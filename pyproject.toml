@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "isar-synth"
+version = "0.1.0"
+description = "ISAR Phase 1 — synthetic-core validation harness for DHO spectrum fitting"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "matplotlib>=3.8",
+    "iminuit>=2.25",
+    "lmfit>=1.2",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.4"]
+
+[tool.setuptools]
+# Fitting_Functions.py is a top-level module at the repo root, imported unchanged.
+py-modules = ["Fitting_Functions"]
+packages = ["isar", "isar.synth"]
+
+[tool.pytest.ini_options]
+testpaths = ["isar/synth/tests"]
+markers = [
+    "slow: marks tests that run many fits (deselect with '-m \"not slow\"')",
+]
