@@ -32,6 +32,12 @@ divergence_tol = 5.0            # |sensor - setpoint| beyond this flags sensor_d
 key = ["sample", "q", "T"]
 merge = "separate"             # S30 keeps duplicate measurements as separate points
 
+[qc]                          # deterministic QC thresholds (§7.1-7.2) — all have code defaults
+empty_k = 5.0                 # a peak excursion must beat empty_k*sqrt(median) or the spectrum is flat
+stale_min_run = 3             # a leading near-equal, high, low-scatter run this long is stale_head
+stale_equal_tol = 0.02        # "near-equal" = within 2% of the first point's value
+stale_high_frac = 0.5         # ...and "high" = at least 50% of the spectrum max (background fails this)
+
 # The nine analyzers. value_index is the #V line carrying this analyzer's H/K/L (named by the
 # parallel #H line); signal_column is the AnaN_*std column resolved by name from #L. Per-analyzer Q
 # is read from the file (D2), so q_offset is unused here. `enabled` marks which analyzers carry

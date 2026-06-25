@@ -42,6 +42,12 @@ divergence_tol = 5.0
 key = ["sample", "q", "T"]
 merge = "separate"
 
+[qc]                            # deterministic QC thresholds (§7.1-7.2) — all have code defaults
+empty_k = 5.0                   # a peak excursion must beat empty_k*sqrt(median) or the spectrum is flat
+stale_min_run = 3               # a leading near-equal, high, low-scatter run this long is stale_head
+stale_equal_tol = 0.02          # "near-equal" = within 2% of the first point's value
+stale_high_frac = 0.5           # ...and "high" = at least 50% of the spectrum max (background fails this)
+
 # Cosmic-ray rejection policy (§7.3). `poisson` is ISAR's default: it refuses to reject sub-level
 # fluctuations the beamline's blind 3-sigma clip nukes (e.g. a single legitimate count at an
 # otherwise-empty point). `sigma_clip` reproduces the beamline mean±Nσ clip (used to validate

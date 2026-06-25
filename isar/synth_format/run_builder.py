@@ -69,7 +69,7 @@ def build_scan_from_truths(
     monitor_level: float = 4.0e6,
     count_time: float = 60.0,
     temperature_setpoint: float = 290.0,
-    temperature_sensor: float = 300.0,
+    temperature_sensor: float = 291.0,    # within the 5 K divergence_tol of the setpoint (clean)
     scan_type: str = "measurement",
     command: str = "fscan synthetic times_from_file",
 ) -> RunScan:
@@ -176,7 +176,7 @@ def build_s30_raw_run(
             command="fscan synthetic times_from_file",
             energy=energy, central_q=list(q_list[4]), detectors=detectors,
             monitor=mini_monitor.sum(axis=1), time=mini_time.sum(axis=1),
-            temperature_setpoint=290.0, temperature_sensor=300.0,
+            temperature_setpoint=290.0, temperature_sensor=291.0,   # within divergence_tol (clean)
             miniscan_monitor=mini_monitor, miniscan_time=mini_time))
         sn += 1
 
@@ -204,4 +204,4 @@ def _build_raw_ascan(cfg, q_list, *, scan_number, motor, command, scan_type, see
         scan_number=scan_number, scan_type=scan_type, command=command,
         energy=positions, central_q=list(q_list[4]), detectors=detectors,
         monitor=np.full(nP, float(monitor_level)), time=np.full(nP, float(count_time)),
-        temperature_setpoint=290.0, temperature_sensor=300.0, scanned_motor=motor)
+        temperature_setpoint=290.0, temperature_sensor=291.0, scanned_motor=motor)

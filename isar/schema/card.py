@@ -63,6 +63,7 @@ class CardPolicy:
     miniscans_per_point: int = 0                             # raw fscan group size (0 = no grouping)
     reduction: dict = field(default_factory=dict)            # cosmic-ray rejection policy (§7.3)
     ascan_classification: dict = field(default_factory=dict)  # motor -> scan_type (default alignment)
+    qc: dict = field(default_factory=dict)                   # deterministic QC thresholds (§7.1-7.2)
 
 
 @dataclass

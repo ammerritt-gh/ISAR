@@ -54,6 +54,7 @@ class SpectrumSection:
     reject_source: str | None
     has_miniscans: bool
     removals: list = field(default_factory=list)
+    flags: list = field(default_factory=list)   # spectrum_flags as {type, severity, reason} (e.g. dead_detector)
 
 
 @dataclass
@@ -64,6 +65,7 @@ class ScanSection:
     energy_min: float | None
     energy_max: float | None
     spectra: list = field(default_factory=list)
+    scan_flags: list = field(default_factory=list)  # scan_flags as {type, severity, reason}
     narrative: str | None = None    # §7.3 LLM slot — empty in this deterministic chunk
     decision: str | None = None     # §8 slot
 
@@ -116,24 +118,37 @@ def _spectrum_section(record, det_id, sp) -> SpectrumSection:
                 reason=(f"{len(passes)} of {int(np.sum(~np.isnan(sp.miniscan_counts[i])))} passes "
                         f"rejected as cosmic ray(s) ({sp.miniscan_reject_source})")))
 
-    # masked points: normalization undefined (zero kept monitor); kept in the array, flagged here
+    # masked points: kept in the array, listed here with the reason from their governing point-flag
+    # when one applies (monitor_dropout, stale_head, …), else the default zero-kept-monitor note —
+    # nothing is deleted (§0.4), the mask is the reversible keep/drop layer.
+    pf_by_index: dict = {}
+    for pf in sp.point_flags:
+        pf_by_index.setdefault(int(pf.index), pf)
     cosmic_points = {rm.point for rm in removals}
     for i in np.nonzero(~sp.mask.astype(bool))[0]:
-        if int(i) in cosmic_points:
+        i = int(i)
+        if i in cosmic_points:
             continue
+        pf = pf_by_index.get(i)
+        if pf is not None and pf.type != "cosmic_ray_rejected":
+            kind, reason = pf.type, pf.reason
+        else:
+            kind = "masked"
+            reason = "masked: zero kept monitor — normalization undefined at this point"
         removals.append(Removal(
-            stable_id=f"{exp}:{scan}:{det_id}:p{int(i)}", kind="masked",
-            scan_number=scan, detector_id=det_id, point=int(i),
+            stable_id=f"{exp}:{scan}:{det_id}:p{i}", kind=kind,
+            scan_number=scan, detector_id=det_id, point=i,
             energy=(float(energy[i]) if energy is not None else None),
-            passes=[], magnitude=0.0, rule=None,
-            reason="masked: zero kept monitor — normalization undefined at this point"))
+            passes=[], magnitude=0.0, rule=None, reason=reason))
 
     removals.sort(key=lambda rm: rm.point)
     return SpectrumSection(
         detector_id=det_id, q=[round(float(v), 5) for v in sp.q], q_source=sp.q_source,
         n_points=int(len(sp.intensity)), n_masked=int(np.sum(~sp.mask.astype(bool))),
         reject_source=sp.miniscan_reject_source,
-        has_miniscans=sp.miniscan_counts is not None, removals=removals)
+        has_miniscans=sp.miniscan_counts is not None, removals=removals,
+        flags=[{"type": f.type, "severity": f.severity, "reason": f.reason}
+               for f in sp.spectrum_flags])
 
 
 def _scan_section(record) -> ScanSection:
@@ -146,7 +161,9 @@ def _scan_section(record) -> ScanSection:
                      if len(record.temperature.setpoint) else float("nan")),
         energy_min=(float(np.min(energy)) if energy is not None and len(energy) else None),
         energy_max=(float(np.max(energy)) if energy is not None and len(energy) else None),
-        spectra=spectra)
+        spectra=spectra,
+        scan_flags=[{"type": f.type, "severity": f.severity, "reason": f.reason}
+                    for f in record.scan_flags])
 
 
 def _catalogue(collation) -> list:

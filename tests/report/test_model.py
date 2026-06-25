@@ -2,8 +2,8 @@
 with a stable id, magnitude, rule, and the reversibility note. Nothing is ever deleted (§0.4)."""
 import numpy as np
 
-from isar.parsers import spec_s30_raw
-from isar.reduce import collate, combine
+from isar.parsers import spec_s30, spec_s30_raw
+from isar.reduce import collate, combine, qc
 from isar.report import model as report_model
 from isar.synth_format import quirks, run_builder
 
@@ -87,6 +87,47 @@ def test_masked_monitor_dropout_point_is_in_the_ledger(tmp_path):
     masked = [rm for s in model.scans for sp in s.spectra for rm in sp.removals
               if rm.kind == "masked"]
     assert any(rm.point == 3 for rm in masked)
+
+
+def _qc_model(run, card, tmp_path):
+    # Supplementary path (intensity at parse time) is the simplest substrate for QC flags.
+    path = tmp_path / f"{run.experiment_id}.spec_supplementary.dat"
+    path.write_bytes(spec_s30.emit_file(run, card))
+    records = spec_s30.parse_file(path, card)
+    for r in records:
+        qc.qc_record(r, card)
+    return report_model.build_report_model(records, collate.collate(records, card), card)
+
+
+def test_qc_scan_and_spectrum_flags_surface_in_the_model(tmp_path):
+    card = spec_s30.card_template()
+    run = run_builder.build_s30_run("QCM", n_scans=1, seed0=7, target_peak_counts=200.0)
+    quirks.inject_dead_detector(run.scans[0], "ana3")
+    quirks.inject_sensor_divergence(run.scans[0], value=350.0)
+    model = _qc_model(run, card, tmp_path)
+    s = model.scans[0]
+    assert "sensor_divergence" in {f["type"] for f in s.scan_flags}   # scan-level flag rendered
+    ana3 = next(sp for sp in s.spectra if sp.detector_id == "ana3")
+    assert "dead_detector" in {f["type"] for f in ana3.flags}          # spectrum-level flag rendered
+
+
+def test_truncated_scan_flag_surfaces_in_the_model(tmp_path):
+    card = spec_s30.card_template()
+    run = run_builder.build_s30_run("QCT", n_scans=1, seed0=7)
+    quirks.inject_truncation(run.scans[0], n_keep=3)                  # < min_points
+    model = _qc_model(run, card, tmp_path)
+    assert "truncated" in {f["type"] for s in model.scans for f in s.scan_flags}
+
+
+def test_stale_head_masked_point_named_in_ledger_not_zero_monitor(tmp_path):
+    card = spec_s30.card_template()
+    run = run_builder.build_s30_run("QCS", n_scans=1, seed0=7, target_peak_counts=200.0)
+    quirks.inject_stale_head(run.scans[0], "ana5", n=3)
+    model = _qc_model(run, card, tmp_path)
+    ana5 = next(sp for sp in model.scans[0].spectra if sp.detector_id == "ana5")
+    stale = [rm for rm in ana5.removals if rm.kind == "stale_head"]
+    assert {rm.point for rm in stale} == {0, 1, 2}                    # the masked leading run
+    assert all("zero kept monitor" not in rm.reason for rm in stale)  # flag-aware reason, not default
 
 
 def test_model_is_json_serializable(tmp_path):

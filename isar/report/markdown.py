@@ -82,10 +82,16 @@ def render_markdown(model, figures_map: dict):
     for s in model.scans:
         md += ["", f"## Scan {s.scan_number} — {s.scan_type} "
                    f"(T={_fmt(s.temperature)} K, E {_fmt(s.energy_min)}…{_fmt(s.energy_max)} meV)"]
+        if s.scan_flags:
+            md.append(_table(["scan flag", "severity", "reason"],
+                             [(f["type"], f["severity"], f["reason"]) for f in s.scan_flags]))
         for sp in s.spectra:
             md += ["", f"### {sp.detector_id} — Q={sp.q} ({sp.q_source}); "
-                       f"{sp.n_masked} of {sp.n_points} masked",
-                   img(_model.fig_spectrum(s.scan_number, sp.detector_id), sp.detector_id)]
+                       f"{sp.n_masked} of {sp.n_points} masked"]
+            if sp.flags:
+                md.append(_table(["spectrum flag", "severity", "reason"],
+                                 [(f["type"], f["severity"], f["reason"]) for f in sp.flags]))
+            md.append(img(_model.fig_spectrum(s.scan_number, sp.detector_id), sp.detector_id))
             if not sp.removals:
                 continue
             md.append(_table(

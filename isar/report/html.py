@@ -87,9 +87,15 @@ def render_html(model, figures_map: dict) -> str:
     for s in model.scans:
         o.append(f"<h2>Scan {s.scan_number} — {_esc(s.scan_type)} "
                  f"(T={_fmt(s.temperature)} K, E {_fmt(s.energy_min)}…{_fmt(s.energy_max)} meV)</h2>")
+        if s.scan_flags:
+            o.append(_table(["scan flag", "severity", "reason"],
+                            [(f["type"], f["severity"], f["reason"]) for f in s.scan_flags]))
         for sp in s.spectra:
             o.append(f"<h3>{_esc(sp.detector_id)} — Q={_esc(sp.q)} ({_esc(sp.q_source)}); "
                      f"{sp.n_masked} of {sp.n_points} masked</h3>")
+            if sp.flags:
+                o.append(_table(["spectrum flag", "severity", "reason"],
+                                [(f["type"], f["severity"], f["reason"]) for f in sp.flags]))
             o.append(_img(figures_map.get(_model.fig_spectrum(s.scan_number, sp.detector_id)),
                           sp.detector_id))
             if not sp.removals:
@@ -98,7 +104,7 @@ def render_html(model, figures_map: dict) -> str:
                      _fmt(rm.magnitude), rm.rule or "", rm.reason) for rm in sp.removals]
             o.append(_table(["id", "kind", "point", "E (meV)", "passes", "counts removed",
                              "rule", "reason"], rows,
-                            row_classes=[rm.kind == "masked" and "masked" or "removal"
+                            row_classes=["removal" if rm.kind == "cosmic_ray_rejected" else "masked"
                                          for rm in sp.removals]))
             for rm in sp.removals:
                 if rm.kind == "cosmic_ray_rejected":

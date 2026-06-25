@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from isar.parsers import registry, spec_s30, spec_s30_raw
-from isar.reduce import combine
+from isar.reduce import combine, qc
 from isar.report import build as report_build
 from isar.schema import axes, scan
 from isar.synth_format import quirks, run_builder
@@ -91,6 +91,7 @@ def _raw_eyeball() -> dict:
     for r in syn_records:
         if r.scan_type == "measurement":
             combine.reduce_record(r, raw_card)
+            qc.qc_record(r, raw_card)               # deterministic QC after reduction (§7.1-7.2)
     syn = next(r for r in syn_records if r.scan_type == "measurement")
     syn_report = report_build.generate_report(syn_records, raw_card, _OUT / "report" / "synthetic")
 
@@ -104,6 +105,7 @@ def _raw_eyeball() -> dict:
         for r in records:
             if r.scan_type == "measurement":
                 combine.reduce_record(r, c)
+                qc.qc_record(r, c)                  # QC the real fixture too — surface any real flags
         return records, c
 
     real_poisson, real_card = _reduce_real("poisson")
@@ -117,6 +119,34 @@ def _raw_eyeball() -> dict:
             "injected": (det, p0, m0), "syn_rejected": _count_rejected(syn),
             "real_poisson": _count(real_poisson), "real_sigma": _count(real_sigma),
             "rule": raw_card.policy.reduction.get("rule")}
+
+
+def _qc_demo() -> dict:
+    """A supplementary run carrying one of every deterministic QC quirk, so the human sees each flag
+    rendered: truncated + dead_detector + sensor_divergence + stale_head on scan 1, and a whole-scan
+    `empty` (beam down) on scan 2. Nothing is deleted — every flag is shown with its reason (§7.4).
+    """
+    card = spec_s30.card_template()
+    run = run_builder.build_s30_run("SYN_S30_QC", n_scans=2, seed0=4242, target_peak_counts=200.0)
+    s1, s2 = run.scans
+    s1.command = "fscan synthetic np 999"            # claims 999 points -> truncated (short)
+    quirks.inject_dead_detector(s1, "ana3")          # one analyzer dead among live siblings
+    quirks.inject_sensor_divergence(s1, value=350.0)  # T sensor 60 K from the setpoint
+    quirks.inject_stale_head(s1, "ana5", n=3)        # HERIX leading stale-first-points
+    for d in s2.detectors:                           # beam down: the whole scan flat -> empty
+        quirks.inject_flat(s2, d.detector_id)
+
+    path = _OUT / "SYN_S30_QC.spec_supplementary.dat"
+    path.write_bytes(spec_s30.emit_file(run, card))
+    records = spec_s30.parse_file(path, card)
+    for r in records:
+        qc.qc_record(r, card)
+    report = report_build.generate_report(records, card, _OUT / "report" / "qc_demo")
+    flags = sorted(
+        {f.type for r in records for f in r.scan_flags}
+        | {f.type for r in records for sp in r.spectra.values() for f in sp.spectrum_flags}
+        | {pf.type for r in records for sp in r.spectra.values() for pf in sp.point_flags})
+    return {"report": report, "flags": flags}
 
 
 def main() -> None:
@@ -135,18 +165,20 @@ def main() -> None:
 
     raw = _raw_eyeball()
     det, p0, m0 = raw["injected"]
+    qcd = _qc_demo()
 
     print(_banner([
-        "ISAR Phase 2 - parse + RAW reduction + REPORT: ALL GATES PASSED. Eyeball pause.",
+        "ISAR Phase 2 - parse + RAW reduction + QC + REPORT: ALL GATES PASSED. Eyeball pause.",
         "",
         "Gate A  (synthetic supplementary round-trip parse(emit(truth)) == truth): PASS",
         "Gate B  (real supplementary smoke, all 90 scans parsed sane):             PASS",
         "Gate A' (synthetic raw round-trip + injected cosmic ray rejected):        PASS",
         "Gate C  (raw reduction reproduces the beamline sum_o/5std/3std):          PASS",
         "",
-        "OPEN THESE REPORTS (what the scans looked like + what got removed and why):",
+        "OPEN THESE REPORTS (what the scans looked like + what got removed/flagged and why):",
         f"  synthetic (injected cosmic ray):  {raw['syn_report']['html']}",
         f"  real fixture (Poisson default):   {raw['real_report']['html']}",
+        f"  deterministic QC demo:            {qcd['report']['html']}",
         "  (each report has a Markdown + PNG twin and a machine-readable report.json sidecar)",
         "",
         f"  Injected cosmic ray at {det} point {p0} pass {m0}; default rule = {raw['rule']}.",
@@ -155,7 +187,8 @@ def main() -> None:
         f"(reproduces the beamline);",
         f"               Poisson rejected {raw['real_poisson']} (conservative — refuses low-count "
         f"fluctuations).",
-        "  -> The report shows every removal with its reason; nothing is deleted (reversible, §0.4).",
+        f"  QC demo flags surfaced: {', '.join(qcd['flags'])}",
+        "  -> Every removal AND flag is shown with its reason; nothing is deleted (reversible, §0.4).",
     ]))
 
 
