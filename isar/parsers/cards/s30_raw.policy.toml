@@ -14,8 +14,10 @@ plugin = "spec_s30_raw"
 energy_column = "HerixE"        # the fscan abscissa (already-converted energy), data column 0
 monitor_column = "ICO-C"        # the incident-flux ion-chamber monitor (per pass)
 time_column = "Seconds"         # per-pass counting time (first of the duplicated Seconds columns)
-counting_mode = "time"          # fscan counts to time; the monitor is the flux normalizer
-normalize_by = "monitor"        # intensity = combined signal / combined ICO-C (combine-before-divide §7.5)
+counting_mode = "time"          # fscan counts to time; the monitor is the recorded flux
+normalize_by = "monitor"        # ICO-C is the flux monitor: stored + gates validity (==0 -> masked).
+                                # The stored signal is RAW COUNTS (combine kept passes; divide
+                                # downstream only if you choose — raw counts show √N errors plainly)
 raw_abscissa_kind = "energy"    # HerixE is already energy...
 energy_status = "needs_zero"    # ...but the elastic zero is uncalibrated (the zero-fit is Phase 3)
 variance_convention = "none"    # D3: store variance honestly, NO zero-count floor

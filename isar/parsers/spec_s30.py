@@ -57,14 +57,17 @@ def _meta_value(header, block, field_name: str):
     return None
 
 
-def _normalize(N: np.ndarray, denom: np.ndarray):
-    """intensity = N/denom, variance = N/denom² (Poisson, NO floor). denom==0 → masked + flagged."""
+def _raw_signal(N: np.ndarray, denom: np.ndarray):
+    """Keep RAW COUNTS as the signal: intensity = N (counts), variance = N (Poisson, σ=√N, NO floor).
+
+    The monitor `denom` is NOT divided in — raw counts state the statistical error plainly and flux
+    normalization is left a reversible downstream choice (the monitor is stored on the record). The
+    monitor still gates validity: `denom == 0` (no flux) → the point is masked + flagged, kept and
+    shown, never deleted (§0.4).
+    """
     valid = denom != 0
-    intensity = np.zeros_like(N)
-    variance = np.zeros_like(N)
-    np.divide(N, denom, out=intensity, where=valid)
-    np.divide(N, denom * denom, out=variance, where=valid)
-    return intensity, variance, valid
+    counts = np.asarray(N, dtype="float64")
+    return counts, counts.copy(), valid
 
 
 def parse_file(path: str | Path, card: Card) -> list[scan.ScanRecord]:
@@ -95,7 +98,7 @@ def parse_file(path: str | Path, card: Card) -> list[scan.ScanRecord]:
                 q = list(det.q_offset) if det.q_offset else [float("nan")] * 3
                 q_source = "card_offset"
             N = data[:, spec_base.column_index(block, det.signal_column)].astype("float64")
-            intensity, variance, valid = _normalize(N, denom)
+            intensity, variance, valid = _raw_signal(N, denom)
             point_flags = [scan.PointFlag(int(i), "monitor_dropout", f"{pol.normalize_by}==0")
                            for i in np.nonzero(~valid)[0]]
             spectra[det.detector_id] = scan.Spectrum(

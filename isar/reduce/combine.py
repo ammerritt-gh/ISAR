@@ -14,9 +14,10 @@ passes to reject and combines the survivors. Two rules, card-selectable:
   distinguish from a weak real feature, leaving that call to later adjudication (§8).
 
 Rejection only ever *marks* passes (`miniscan_reject`); nothing is deleted (§0.4). `combine_spectrum`
-sums kept counts AND kept monitors, THEN divides (§7.5), and stores honest Poisson variance with no
-zero-count floor (D3). NaN entries in the ensemble are padding (a truncated final group) and are
-always excluded.
+sums the kept passes into RAW COUNTS (the signal we keep, with Poisson variance σ=√N) and does NOT
+divide by the monitor — flux normalization is left as a reversible downstream choice, with the
+monitor preserved on the record. No zero-count floor (D3). NaN entries in the ensemble are padding (a
+truncated final group) and are always excluded.
 """
 from __future__ import annotations
 
@@ -62,12 +63,15 @@ def reject_poisson(counts_2d, *, k: float, min_level: float) -> np.ndarray:
 
 
 def combine_spectrum(counts_2d, reject_2d, monitor_2d):
-    """Combine surviving passes (§7.5): sum kept counts AND kept monitors, THEN divide.
+    """Combine surviving passes into RAW COUNTS — sum the kept counts; do NOT divide by the monitor.
 
-    Returns `(intensity[nP], variance[nP], mask[nP])`. `intensity = N/M`, `variance = N/M²` with no
-    zero-count floor (D3); a point whose kept monitor sums to zero is masked (kept in the array as
-    0, never deleted, §0.4). The reject mask is per-analyzer, so the same shared monitor yields
-    different denominators for different analyzers — physically correct.
+    Returns `(counts[nP], variance[nP], mask[nP])`. `counts = N = Σ kept counts`; `variance = N`, the
+    honest Poisson variance (σ = √N), with no zero-count floor (D3). Raw counts are kept as the
+    signal because √N states the statistical error plainly; the monitor is preserved on the record so
+    flux normalization stays an optional, reversible downstream choice — never baked in (combine, then
+    divide only if you choose to). The kept monitor still gates validity: a point whose kept monitor
+    sums to zero saw no flux, so it is masked (kept in the array, shown, never deleted — §0.4). The
+    reject mask is per-analyzer, so the same shared monitor yields different kept counts per analyzer.
     """
     c = np.asarray(counts_2d, dtype="float64")
     rej = np.asarray(reject_2d, dtype=bool)
@@ -75,12 +79,8 @@ def combine_spectrum(counts_2d, reject_2d, monitor_2d):
     keep = (~rej) & (~np.isnan(c)) & (~np.isnan(mon))
     N = np.where(keep, c, 0.0).sum(axis=1)
     M = np.where(keep, mon, 0.0).sum(axis=1)
-    valid = M != 0
-    intensity = np.zeros_like(N)
-    variance = np.zeros_like(N)
-    np.divide(N, M, out=intensity, where=valid)
-    np.divide(N, M * M, out=variance, where=valid)
-    return intensity, variance, valid
+    mask = M != 0
+    return N, N.copy(), mask
 
 
 def _reject_for(counts, reduction: dict):
@@ -94,17 +94,18 @@ def _reject_for(counts, reduction: dict):
 
 
 def reduce_record(record, card):
-    """Combine every miniscan-bearing spectrum in `record` in place (cosmic-ray reject → divide).
+    """Combine every miniscan-bearing spectrum in `record` in place (cosmic-ray reject → raw counts).
 
     For each enabled raw spectrum: run the card's rule, store the reject mask + its source, combine
-    to `intensity/variance/mask`, append a `cosmic_ray_rejected` point flag (count + magnitude) per
-    point where a real pass was rejected, and drop the `unreduced` flag. Spectra without a miniscan
-    ensemble (e.g. the supplementary path, or ascans) are left untouched. Returns the record.
+    the kept passes into `intensity` (RAW COUNTS) + `variance` (Poisson N) + `mask`, append a
+    `cosmic_ray_rejected` point flag (count + magnitude) per point where a real pass was rejected,
+    and drop the `unreduced` flag. Spectra without a miniscan ensemble (e.g. the supplementary path,
+    or ascans) are left untouched. Returns the record.
 
     The record-level `normalization.monitor/time` are the full per-point sums (total flux), left as
-    the parser set them; the per-analyzer effective denominators live inside each spectrum's
-    intensity/variance because rejection is per-analyzer (downstream collation must recompute from
-    the per-spectrum ensemble, not the record-level monitor).
+    the parser set them, and the per-analyzer kept monitor is recoverable from the kept ensemble — so
+    flux normalization stays an optional, reversible downstream step; we never bake the division into
+    the stored signal (combine, then divide only if you choose to).
     """
     mini_monitor = record.normalization.miniscan_monitor
     for sp in record.spectra.values():

@@ -11,7 +11,9 @@ energy_column = "HerixE"        # the abscissa column (already-converted energy)
 monitor_column = "ICO-C"        # the incident-flux ion-chamber monitor
 time_column = "Seconds"         # per-point counting time
 counting_mode = "time"          # fscan counts to time; the monitor is the flux normalizer
-normalize_by = "monitor"        # intensity = signal / ICO-C  (the reference parser's normalization)
+normalize_by = "monitor"        # ICO-C is the flux monitor: stored + gates validity (==0 -> masked).
+                                # The stored signal is RAW COUNTS; we do NOT divide by it (normalize
+                                # downstream if you wish — raw counts state the Poisson error plainly)
 raw_abscissa_kind = "energy"    # HerixE is already energy...
 energy_status = "needs_zero"    # ...but the elastic zero is uncalibrated (the zero-fit is Phase 3)
 variance_convention = "none"    # D3: store variance honestly, NO zero-count floor

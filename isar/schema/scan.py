@@ -54,8 +54,9 @@ class Spectrum:
     detector_id: str
     q: list[float]                     # this spectrum's actual Q (D2: from #V4-#V12 where logged)
     q_source: str                      # "reported" | "card_offset"
-    intensity: np.ndarray              # normalized rate (combined, post-rejection for raw)
-    variance: np.ndarray               # honest Poisson variance, 0 for 0 counts (D3)
+    intensity: np.ndarray              # the signal: RAW COUNTS (combined, post-rejection); monitor
+                                       # is stored, not divided in — normalize downstream if you wish
+    variance: np.ndarray               # honest Poisson variance = counts (σ=√N), 0 for 0 counts (D3)
     mask: np.ndarray                   # True=keep; NEVER applied to intensity (§0.4)
     point_flags: list[PointFlag]
     spectrum_flags: list[Flag]

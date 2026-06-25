@@ -21,7 +21,7 @@ test = ["pytest>=7.4"]
 [tool.setuptools]
 # Fitting_Functions.py is a top-level module at the repo root, imported unchanged.
 py-modules = ["Fitting_Functions"]
-packages = ["isar", "isar.synth", "isar.schema", "isar.parsers", "isar.synth_format", "isar.reduce"]
+packages = ["isar", "isar.synth", "isar.schema", "isar.parsers", "isar.synth_format", "isar.reduce", "isar.report"]
 
 [tool.setuptools.package-data]
 # Ship the human-authored card policy templates (D8) inside the wheel.

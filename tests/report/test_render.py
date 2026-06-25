@@ -1,0 +1,54 @@
+"""Renderers: a self-contained HTML (plots embedded) and Markdown + PNG files. Both must surface the
+key facts — what got removed, why, the rule, and the reversibility note — nothing hidden."""
+import numpy as np
+
+from isar.parsers import spec_s30_raw
+from isar.reduce import collate, combine
+from isar.report import figures, html, markdown
+from isar.report import model as report_model
+from isar.synth_format import quirks, run_builder
+
+
+def _model_and_figs(tmp_path):
+    card = spec_s30_raw.card_template()
+    run = run_builder.build_s30_raw_run("REND", n_scans=1, seed0=11, include_ascans=True)
+    sc = run.scans[0]
+    d = next(x for x in sc.detectors if x.detector_id == "ana5")
+    p0 = int(np.argmax(d.miniscan_counts.sum(axis=1)))
+    quirks.inject_miniscan_cosmic_ray(sc, "ana5", p0, 7, magnitude=1.0e4)
+    path = tmp_path / "REND.spec"
+    path.write_bytes(spec_s30_raw.emit_file(run, card))
+    records = spec_s30_raw.parse_file(path, card)
+    for r in records:
+        if r.scan_type == "measurement":
+            combine.reduce_record(r, card)
+    col = collate.collate(records, card)
+    model = report_model.build_report_model(records, col, card)
+    figs = figures.report_figures(records, col)
+    return model, figs, p0
+
+
+def test_html_is_self_contained_and_shows_removals(tmp_path):
+    model, figs, p0 = _model_and_figs(tmp_path)
+    doc = html.render_html(model, figs)
+    assert "<html" in doc.lower()
+    assert "reversible" in doc.lower()           # the never-deleted assurance
+    assert "poisson" in doc                       # the rule that decided
+    assert "Scan 1" in doc or "scan 1" in doc
+    assert f"ana5:p{p0}" in doc                    # the cosmic-ray removal's stable id
+    assert "data:image/png;base64," in doc         # plots embedded inline
+    assert 'src="figures/' not in doc              # ...not referenced as external files
+
+
+def test_markdown_references_png_files_that_exist(tmp_path):
+    model, figs, p0 = _model_and_figs(tmp_path)
+    md, files = markdown.render_markdown(model, figs)
+    assert "reversible" in md.lower()
+    assert "poisson" in md
+    assert f"ana5:p{p0}" in md
+    assert "data:image/png" not in md              # markdown links files, doesn't embed
+    # every image the markdown references is provided as a real PNG in `files`
+    refs = [ln for ln in md.splitlines() if "](" in ln and ".png)" in ln]
+    assert refs
+    assert any(path.endswith(".png") for path in files)
+    assert all(png.startswith(b"\x89PNG") for png in files.values())

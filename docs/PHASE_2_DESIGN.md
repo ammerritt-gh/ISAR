@@ -339,8 +339,8 @@ only *building* the latter.
   |---|---|---|
   | `detector_id` | str | analyzer/detector channel |
   | `q` | [h,k,l] | this spectrum's actual Q (read from file where logged — S30 `#V4`–`#V12`; else central + card offset) |
-  | `intensity` | float[nP] | normalized rate |
-  | `variance` | float[nP] | propagated Poisson variance (floor convention recorded, §5.5) |
+  | `intensity` | float[nP] | the signal: **raw counts** (combined kept passes; monitor stored, NOT divided in — normalization is a reversible downstream choice, so √N states the error plainly). *Refined from "normalized rate" at implementation — see note below.* |
+  | `variance` | float[nP] | Poisson variance = counts (σ=√N); no zero-count floor (D3, §5.5) |
   | `mask` | bool[nP] | per-point keep(true)/flag(false); **never** applied to `intensity` |
   | `point_flags` | list | per-point {index, type, reason} |
   | `spectrum_flags` | list | per-spectrum {type, severity, reason} (e.g. `dead_detector`) |
@@ -739,7 +739,11 @@ instrument; 6–8 deliver the report quality and goal 4.
   emitter need only be schema-faithful (right fields/structure/values) for known-truth coverage; the
   **real-file smoke test** carries byte-level brittleness, which genuine facility output tests better than
   any synthetic emitter could.
-- **D6 — report figures: matplotlib static PNG (§7.4).** No interactivity needed.
+- **D6 — report figures: matplotlib static PNG (§7.4).** No interactivity needed. *(Refined at
+  implementation: the report renders in BOTH a self-contained HTML — same PNGs embedded inline as
+  base64, one shareable file — and Markdown + sibling PNGs, plus a machine-readable `report.json`
+  sidecar. Same figures, two renderers over one format-agnostic model; HTML is the human-facing
+  "here is exactly what happened to your data" artifact, Markdown stays VCS-diffable.)*
 - **D7 — deferred scan types/dimensions: deferred by design, MVP-focused.** The schema *represents*
   constant-E, angle/mesh/ramp scans, polarization channels, pump-probe, and multi-sample (§5.6); none are
   built in Phase 2. Activation trigger for each is real data that needs it (e.g. polarized HB-1 → the spin

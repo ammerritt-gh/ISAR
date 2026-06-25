@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 
 from isar.parsers import registry, spec_base
-from isar.parsers.spec_s30 import _meta_value, _normalize, _raw_header
+from isar.parsers.spec_s30 import _meta_value, _raw_header, _raw_signal
 from isar.schema import axes, scan
 from isar.schema.card import Card
 from isar.schema.scan import RAW_ABSCISSA_KINDS
@@ -215,7 +215,7 @@ def _parse_ascan(header, block, card, fname, scan_type) -> scan.ScanRecord:
             continue
         q, q_source = _reported_q(block, det)
         N = col(det.signal_column).astype("float64")
-        intensity, variance, valid = _normalize(N, denom)
+        intensity, variance, valid = _raw_signal(N, denom)
         point_flags = [scan.PointFlag(int(i), "monitor_dropout", f"{pol.normalize_by}==0")
                        for i in np.nonzero(~valid)[0]]
         spectra[det.detector_id] = scan.Spectrum(

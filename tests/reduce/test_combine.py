@@ -73,14 +73,14 @@ def test_reject_poisson_rejects_a_true_cosmic_ray_on_a_real_peak():
 # ---------------------------------------------------------------------------
 # combine-before-divide (§7.5), no zero-count floor (D3)
 # ---------------------------------------------------------------------------
-def test_combine_spectrum_sums_then_divides():
+def test_combine_spectrum_sums_kept_passes_into_raw_counts():
     counts = np.array([[2.0, 3.0, 0.0]])
     reject = np.zeros((1, 3), dtype=bool)
     monitor = np.array([[10.0, 10.0, 10.0]])
     I, V, mask = combine.combine_spectrum(counts, reject, monitor)
     assert bool(mask[0]) is True
-    assert np.isclose(I[0], 5.0 / 30.0)        # N=5, M=30 — divide the sums, not the rows
-    assert np.isclose(V[0], 5.0 / 30.0 ** 2)   # honest Poisson variance N/M²
+    assert np.isclose(I[0], 5.0)               # N = 2+3 raw counts — NOT divided by the monitor
+    assert np.isclose(V[0], 5.0)               # honest Poisson variance = N (σ=√N)
 
 
 def test_combine_spectrum_zero_counts_give_honest_zero_variance():
@@ -89,27 +89,28 @@ def test_combine_spectrum_zero_counts_give_honest_zero_variance():
     assert I[0] == 0.0 and V[0] == 0.0 and bool(mask[0]) is True   # D3: zero, never a floor
 
 
-def test_combine_spectrum_zero_monitor_masks_the_point():
+def test_combine_spectrum_zero_monitor_masks_the_point_but_keeps_the_count():
+    # No flux → masked (normalization undefined), but the raw count is shown, not hidden (§0.4).
     I, V, mask = combine.combine_spectrum(
         np.array([[5.0, 5.0]]), np.zeros((1, 2), bool), np.zeros((1, 2)))
-    assert bool(mask[0]) is False and I[0] == 0.0
+    assert bool(mask[0]) is False and I[0] == 10.0
 
 
-def test_combine_per_analyzer_reject_changes_the_denominator():
-    # Same shared monitor, different per-analyzer reject masks → different kept-monitor denominators.
+def test_combine_per_analyzer_reject_changes_the_kept_counts():
+    # Different per-analyzer reject masks → different kept raw counts (the signal, not a ratio).
     counts = np.array([[10.0, 10.0, 10.0]])
     monitor = np.array([[4.0, 4.0, 4.0]])
-    IA, _, _ = combine.combine_spectrum(counts, np.zeros((1, 3), bool), monitor)
-    IB, _, _ = combine.combine_spectrum(counts, np.array([[False, False, True]]), monitor)
-    assert np.isclose(IA[0], 30.0 / 12.0)      # keep all: N=30, M=12
-    assert np.isclose(IB[0], 20.0 / 8.0)       # drop one pass: N=20, M=8
+    NA, _, _ = combine.combine_spectrum(counts, np.zeros((1, 3), bool), monitor)
+    NB, _, _ = combine.combine_spectrum(counts, np.array([[False, False, True]]), monitor)
+    assert np.isclose(NA[0], 30.0)             # keep all three passes
+    assert np.isclose(NB[0], 20.0)             # drop one pass
 
 
 def test_combine_spectrum_nan_padding_excluded():
     counts = np.array([[4.0, 6.0, np.nan]])
     monitor = np.array([[10.0, 10.0, np.nan]])
     I, _, mask = combine.combine_spectrum(counts, np.zeros((1, 3), bool), monitor)
-    assert bool(mask[0]) and np.isclose(I[0], 10.0 / 20.0)   # padding ignored
+    assert bool(mask[0]) and np.isclose(I[0], 10.0)   # padding ignored; N = 4+6 raw counts
 
 
 # ---------------------------------------------------------------------------

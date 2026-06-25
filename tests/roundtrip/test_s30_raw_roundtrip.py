@@ -61,16 +61,16 @@ def test_injected_cosmic_ray_rejected_and_only_it_poisson(tmp_path):
     assert int(sp.miniscan_reject.sum()) == 1                 # ...and nothing else (no false +)
     assert any(f.type == "cosmic_ray_rejected" and f.index == p0 for f in sp.point_flags)
 
-    # The reduced intensity equals combining every pass EXCEPT the rejected one (ray removed).
-    mon = rec.normalization.miniscan_monitor
+    # The signal is RAW COUNTS: summing every kept pass EXCEPT the rejected one (ray removed), and
+    # the variance is that same Poisson count (σ=√N).
     keep = np.ones_like(clean, dtype=bool)
     keep[p0, m0] = False
-    expected = np.where(keep, clean, 0.0).sum(axis=1) / np.where(keep, mon, 0.0).sum(axis=1)
-    assert np.allclose(sp.intensity, expected)
+    expected_counts = np.where(keep, clean, 0.0).sum(axis=1)
+    assert np.allclose(sp.intensity, expected_counts)
+    assert np.allclose(sp.variance, expected_counts)
 
-    # Sanity that the test bites: without rejection the 1e4-count ray dominates the point's rate.
-    naive = (clean.sum(axis=1) + np.where(np.arange(clean.shape[0]) == p0, 1.0e4, 0.0)) \
-        / mon.sum(axis=1)
+    # Sanity that the test bites: without rejection the 1e4-count ray dominates the point's counts.
+    naive = clean.sum(axis=1) + np.where(np.arange(clean.shape[0]) == p0, 1.0e4, 0.0)
     assert naive[p0] > 5 * sp.intensity[p0]
 
 

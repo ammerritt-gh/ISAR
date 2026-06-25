@@ -15,6 +15,7 @@ import numpy as np
 
 from isar.parsers import registry, spec_s30, spec_s30_raw
 from isar.reduce import combine
+from isar.report import build as report_build
 from isar.schema import axes, scan
 from isar.synth_format import quirks, run_builder
 
@@ -50,8 +51,8 @@ def roundtrip_record(plugin, run, card, path) -> list[scan.ScanRecord]:
             where = f"{tag}/{d.detector_id}"
             assert sp.q_source == "reported", f"{where}: q_source {sp.q_source}"
             assert np.allclose(sp.q, d.q), f"{where}: Q"
-            assert np.allclose(sp.intensity, d.counts / sc.monitor), f"{where}: intensity"
-            assert np.allclose(sp.variance, d.counts / sc.monitor**2), f"{where}: variance"
+            assert np.allclose(sp.intensity, d.counts), f"{where}: intensity (raw counts)"
+            assert np.allclose(sp.variance, d.counts), f"{where}: variance (Poisson N)"
 
     return records
 
@@ -77,7 +78,7 @@ def _raw_eyeball() -> dict:
     """
     raw_card = spec_s30_raw.card_template()
 
-    # Gate A': synthetic raw + injected cosmic ray -> emit -> parse -> reduce.
+    # Gate A': synthetic raw + injected cosmic ray -> emit -> parse -> reduce -> REPORT.
     run = run_builder.build_s30_raw_run("SYN_S30_RAW_EYEBALL", n_scans=1, seed0=2024)
     sc = run.scans[0]
     det = "ana5"
@@ -86,31 +87,35 @@ def _raw_eyeball() -> dict:
     quirks.inject_miniscan_cosmic_ray(sc, det, p0, m0, magnitude=1.0e4)
     raw_emitted = _OUT / "SYN_S30_RAW.spec"
     raw_emitted.write_bytes(spec_s30_raw.emit_file(run, raw_card))
-    syn = next(r for r in spec_s30_raw.parse_file(raw_emitted, raw_card)
-               if r.scan_type == "measurement")
-    combine.reduce_record(syn, raw_card)
-    syn_json = _OUT / "syn_raw_reduced.json"
-    syn_json.write_text(json.dumps(syn.to_dict(), indent=2), encoding="utf-8")
+    syn_records = spec_s30_raw.parse_file(raw_emitted, raw_card)
+    for r in syn_records:
+        if r.scan_type == "measurement":
+            combine.reduce_record(r, raw_card)
+    syn = next(r for r in syn_records if r.scan_type == "measurement")
+    syn_report = report_build.generate_report(syn_records, raw_card, _OUT / "report" / "synthetic")
 
-    # Gate C artifact: reduce a REAL raw record under BOTH rules, to show the controlled divergence
-    # — the beamline-reproducing sigma_clip vs ISAR's conservative Poisson — on the same real data.
+    # Gate C artifact: reduce the REAL raw fixture under BOTH rules, to show the controlled divergence
+    # — the beamline-reproducing sigma_clip vs ISAR's conservative Poisson — on the same real data,
+    # and render a full report for the (default, Poisson) reduction.
     def _reduce_real(rule):
-        rec = next(r for r in spec_s30_raw.parse_file(_REAL_S30_RAW, raw_card)
-                   if r.scan_type == "measurement")
+        records = spec_s30_raw.parse_file(_REAL_S30_RAW, raw_card)
         c = spec_s30_raw.card_template()
         c.policy.reduction = dict(raw_card.policy.reduction, rule=rule)
-        combine.reduce_record(rec, c)
-        return rec
+        for r in records:
+            if r.scan_type == "measurement":
+                combine.reduce_record(r, c)
+        return records, c
 
-    real_poisson = _reduce_real("poisson")
-    real_sigma = _reduce_real("sigma_clip")
-    real_json = _OUT / "real_raw_reduced_sigma_clip.json"
-    real_json.write_text(json.dumps(real_sigma.to_dict(), indent=2), encoding="utf-8")
+    real_poisson, real_card = _reduce_real("poisson")
+    real_sigma, _ = _reduce_real("sigma_clip")
+    real_report = report_build.generate_report(real_poisson, real_card, _OUT / "report" / "real")
 
-    return {"emitted": raw_emitted, "syn_json": syn_json, "real_json": real_json,
+    def _count(records):
+        return sum(_count_rejected(r) for r in records if r.scan_type == "measurement")
+
+    return {"emitted": raw_emitted, "syn_report": syn_report, "real_report": real_report,
             "injected": (det, p0, m0), "syn_rejected": _count_rejected(syn),
-            "real_poisson": _count_rejected(real_poisson),
-            "real_sigma": _count_rejected(real_sigma),
+            "real_poisson": _count(real_poisson), "real_sigma": _count(real_sigma),
             "rule": raw_card.policy.reduction.get("rule")}
 
 
@@ -132,19 +137,17 @@ def main() -> None:
     det, p0, m0 = raw["injected"]
 
     print(_banner([
-        "ISAR Phase 2 - S30 parser + RAW miniscan reduction: ALL GATES PASSED. Eyeball pause.",
+        "ISAR Phase 2 - parse + RAW reduction + REPORT: ALL GATES PASSED. Eyeball pause.",
         "",
         "Gate A  (synthetic supplementary round-trip parse(emit(truth)) == truth): PASS",
         "Gate B  (real supplementary smoke, all 90 scans parsed sane):             PASS",
         "Gate A' (synthetic raw round-trip + injected cosmic ray rejected):        PASS",
         "Gate C  (raw reduction reproduces the beamline sum_o/5std/3std):          PASS",
         "",
-        "Please eyeball before sign-off:",
-        f"  emitted supplementary SPEC:                 {emitted}",
-        f"  real supplementary reparsed record:         {real_json}",
-        f"  emitted RAW SPEC (individual miniscans):    {raw['emitted']}",
-        f"  synthetic raw REDUCED record:               {raw['syn_json']}",
-        f"  real raw REDUCED record (sigma_clip):       {raw['real_json']}",
+        "OPEN THESE REPORTS (what the scans looked like + what got removed and why):",
+        f"  synthetic (injected cosmic ray):  {raw['syn_report']['html']}",
+        f"  real fixture (Poisson default):   {raw['real_report']['html']}",
+        "  (each report has a Markdown + PNG twin and a machine-readable report.json sidecar)",
         "",
         f"  Injected cosmic ray at {det} point {p0} pass {m0}; default rule = {raw['rule']}.",
         f"  Synthetic: {raw['syn_rejected']} pass(es) rejected (expect 1 = the injection, no false +).",
@@ -152,7 +155,7 @@ def main() -> None:
         f"(reproduces the beamline);",
         f"               Poisson rejected {raw['real_poisson']} (conservative — refuses low-count "
         f"fluctuations).",
-        "  -> miniscan_reject marks rejected passes; nothing is deleted (reversible, §0.4).",
+        "  -> The report shows every removal with its reason; nothing is deleted (reversible, §0.4).",
     ]))
 
 
