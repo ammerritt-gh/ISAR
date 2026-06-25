@@ -87,6 +87,27 @@ def miniscan_figure(record, det_id: str, point: int) -> bytes:
     return _png_bytes(fig)
 
 
+def merged_figure(merged) -> bytes:
+    """The combine-before-divide result: summed raw counts vs energy (±√ΣN), masked points shown."""
+    energy = np.asarray(merged.energy, dtype="float64")
+    intensity = np.asarray(merged.intensity, dtype="float64")
+    yerr = np.sqrt(np.clip(np.asarray(merged.variance, dtype="float64"), 0.0, None))
+    mask = np.asarray(merged.mask, dtype=bool)
+
+    fig, ax = plt.subplots(figsize=(6.0, 3.4))
+    ax.errorbar(energy[mask], intensity[mask], yerr=yerr[mask], fmt="o-", ms=3, lw=1, color="C2",
+                label=f"merged ΣN ({merged.n_members} scans)")
+    if np.any(~mask):
+        ax.scatter(energy[~mask], intensity[~mask], marker="x", color="red", zorder=5,
+                   label="masked (shown, not deleted)")
+    ax.set_xlabel("energy transfer (meV)")
+    ax.set_ylabel("counts (raw ΣN; Poisson √N)")
+    ax.set_title(f"merged spectrum — {merged.n_members} scans combined before divide", fontsize=9)
+    ax.legend(fontsize=7, framealpha=0.9)
+    fig.tight_layout()
+    return _png_bytes(fig)
+
+
 def coverage_figure(collation) -> bytes:
     """Which Q points were measured along the dominant-varying component, with gaps shaded red."""
     cov = collation.coverage
@@ -114,4 +135,7 @@ def report_figures(records, collation) -> dict:
             for i in _rejected_points(sp):
                 figs[_model.fig_miniscan(rec.scan_number, det_id, int(i))] = \
                     miniscan_figure(rec, det_id, int(i))
+    if getattr(collation, "merge", "separate") == "merge":
+        for i, g in enumerate(gg for gg in collation.groups if gg.merged is not None):
+            figs[_model.fig_merged(i)] = merged_figure(g.merged)
     return figs

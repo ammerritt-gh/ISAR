@@ -84,6 +84,17 @@ def render_html(model, figures_map: dict) -> str:
         ("counts removed", _fmt(model.rollup["counts_removed"])),
     ]))
 
+    if model.merged:
+        o.append("<h2>Merged spectra (combine-before-divide)</h2>")
+        o.append("<p class='note'>Repeat scans at the same (Q, T) are combined by summing raw counts "
+                 "AND monitors, then dividing only if you wish — never averaging already-normalized "
+                 "rates (§7.5). Each contributing scan is still shown in full below.</p>")
+        for m in model.merged:
+            members = ", ".join(str(mem[1]) for mem in m.members)
+            o.append(f"<h3>{_esc(m.key_fields)} — {m.n_members} scans, {m.n_points} points</h3>")
+            o.append(_img(figures_map.get(m.fig_id), "merged spectrum"))
+            o.append(f"<p>combined scans: {_esc(members)}</p>")
+
     for s in model.scans:
         o.append(f"<h2>Scan {s.scan_number} — {_esc(s.scan_type)} "
                  f"(T={_fmt(s.temperature)} K, E {_fmt(s.energy_min)}…{_fmt(s.energy_max)} meV)</h2>")
@@ -115,8 +126,9 @@ def render_html(model, figures_map: dict) -> str:
 
     if model.other_scans:
         o.append("<h2>Alignment / calibration scans (captured, not reduced)</h2>")
-        o.append(_table(["scan", "type", "scanned axis"],
-                        [(x["scan_number"], x["scan_type"], x["axis"]) for x in model.other_scans]))
+        o.append(_table(["scan", "type", "scanned axis", "flags"],
+                        [(x["scan_number"], x["scan_type"], x["axis"], x.get("flags", ""))
+                         for x in model.other_scans]))
 
     o.append("</body></html>")
     return "\n".join(o)

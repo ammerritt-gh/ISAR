@@ -2,7 +2,7 @@
 with a stable id, magnitude, rule, and the reversibility note. Nothing is ever deleted (§0.4)."""
 import numpy as np
 
-from isar.parsers import spec_s30, spec_s30_raw
+from isar.parsers import ill_in8, spec_s30, spec_s30_raw
 from isar.reduce import collate, combine, qc
 from isar.report import model as report_model
 from isar.synth_format import quirks, run_builder
@@ -128,6 +128,22 @@ def test_stale_head_masked_point_named_in_ledger_not_zero_monitor(tmp_path):
     stale = [rm for rm in ana5.removals if rm.kind == "stale_head"]
     assert {rm.point for rm in stale} == {0, 1, 2}                    # the masked leading run
     assert all("zero kept monitor" not in rm.reason for rm in stale)  # flag-aware reason, not default
+
+
+def test_in8_merged_spectra_appear_in_the_model(tmp_path):
+    card = ill_in8.card_template()
+    run = run_builder.build_in8_run("DIR-RPT", n_scans=2, seed0=7)
+    path = tmp_path / "DIR-RPT.numor"
+    path.write_bytes(ill_in8.emit_file(run, card))
+    records = ill_in8.parse_file(path, card)
+    model = report_model.build_report_model(records, collate.collate(records, card), card)
+
+    assert len(model.merged) == 1                         # both scans at one (Q,T) -> one merged
+    m = model.merged[0]
+    assert m.n_members == 2
+    assert {mem[1] for mem in m.members} == {55000, 55001}   # both numors named
+    assert m.n_points > 0 and m.fig_id
+    assert len(model.scans) == 2                          # ...and each contributing scan still shown
 
 
 def test_model_is_json_serializable(tmp_path):

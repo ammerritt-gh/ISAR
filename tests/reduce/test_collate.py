@@ -4,9 +4,16 @@ combine-before-divide primitive (for IN8/future merges) sums counts AND monitors
 """
 import numpy as np
 
-from isar.parsers import spec_s30_raw
+from isar.parsers import ill_in8, spec_s30_raw
 from isar.reduce import collate, combine
 from isar.synth_format import quirks, run_builder
+
+
+def _in8_records(run, tmp_path):
+    card = ill_in8.card_template()
+    path = tmp_path / f"{run.experiment_id}.numor"
+    path.write_bytes(ill_in8.emit_file(run, card))
+    return ill_in8.parse_file(path, card), card
 
 
 def _reduced_measurements(run, card, tmp_path):
@@ -85,6 +92,43 @@ def test_collate_rollup_counts_the_injected_cosmic_ray(tmp_path):
     assert col.rollup.points_with_rejection == 1
     assert col.rollup.counts_removed > 9000           # ~1e4 injected
     assert col.rollup.point_flags.get("cosmic_ray_rejected", 0) == 1
+
+
+def test_s30_separate_groups_have_no_merged_spectrum(tmp_path):
+    card = spec_s30_raw.card_template()
+    run = run_builder.build_s30_raw_run("SEP", n_scans=2, seed0=5, include_ascans=False)
+    col = collate.collate(_reduced_measurements(run, card, tmp_path), card)
+    assert col.merge == "separate"
+    assert all(g.merged is None for g in col.groups)   # separate = catalogue only, no physical combine
+
+
+def test_in8_merge_sums_repeat_counts_and_monitors(tmp_path):
+    # Two IN8 scans at the same (Q, T) on the same grid -> one group whose merged spectrum is the
+    # point-wise sum of counts AND monitors (combine-before-divide, raw counts kept; §7.5).
+    run = run_builder.build_in8_run("DIR-M", n_scans=2, seed0=7)
+    records, card = _in8_records(run, tmp_path)
+    col = collate.collate(records, card)
+    assert col.merge == "merge"
+    assert len(col.groups) == 1
+    g = col.groups[0]
+    assert g.merged is not None
+    s0, s1 = records[0].spectra["det0"], records[1].spectra["det0"]
+    assert np.allclose(g.merged.intensity, s0.intensity + s1.intensity)
+    assert np.allclose(g.merged.variance, s0.intensity + s1.intensity)   # variance = ΣN (Poisson)
+    assert np.allclose(g.merged.monitor,
+                       records[0].normalization.monitor + records[1].normalization.monitor)
+    assert {m[1] for m in g.merged.members} == {55000, 55001}            # both numors listed
+
+
+def test_in8_t_round_groups_drifting_setpoints(tmp_path):
+    # Same Q, header RT drifting 54.6 vs 55.2 -> grouped by the card's t_round=5 K bin.
+    run = run_builder.build_in8_run("DIR-T", n_scans=2, seed0=7)
+    run.scans[0].temperature_setpoint = 54.6
+    run.scans[1].temperature_setpoint = 55.2
+    records, card = _in8_records(run, tmp_path)
+    col = collate.collate(records, card)
+    assert len(col.groups) == 1                          # both fall in the same T bin
+    assert col.groups[0].merged.n_members == 2
 
 
 def test_merge_before_divide_sums_counts_and_monitors_then_divides():

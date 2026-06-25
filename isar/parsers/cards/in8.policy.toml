@@ -1,0 +1,53 @@
+# IN8 (ILL) — thermal triple-axis spectrometer (TAS), numor ASCII format, 2025 beamtime (DIR-397).
+# Human-authored policy half of the experiment card (D8): the machine READS this, never writes it.
+#
+# IN8 is a SINGLE-detector instrument: one spectrum per scan (det0), unlike S30's nine analyzers.
+# Measurements are constant-Q energy scans (`bs qh h k l ... mn MON`); motor scans (`sc a3 ...`) are
+# alignments. The stored signal is RAW COUNTS (CNTS); the monitor (M1) is stored, not divided in —
+# normalize downstream to `monitor_reference` if you wish (raw counts state the Poisson error plainly).
+
+facility = "ILL"
+instrument = "IN8"
+format_version = "2025"
+plugin = "ill_in8"
+
+energy_column = "EN"            # the bs-qh scanned abscissa (energy transfer, meV)
+monitor_column = "M1"           # the incident-beam monitor (the `mn` preset counts to this)
+time_column = "TIME"            # per-point counting time (seconds)
+counting_mode = "monitor"       # bs qh counts to a monitor preset; detected per scan (mn vs ti)
+normalize_by = "monitor"        # M1 gates validity (==0 -> masked). Signal stays RAW COUNTS.
+monitor_reference = 160000.0    # optional downstream normalization target (the legacy's M1 preset)
+raw_abscissa_kind = "energy"    # EN is energy transfer...
+energy_status = "absolute"      # ...and fixed-kf geometry makes it absolute (no elastic-zero fit here)
+variance_convention = "none"    # D3: store variance honestly, NO zero-count floor
+min_points = 5
+hkl_round_step = 0.05
+measurement_pattern = "bs"      # a `bs ...` scan (Q-E) is a measurement
+alignment_pattern = "sc"        # a `sc ...` motor scan is an alignment
+exclusions_seed = []            # durable bad numors go here, e.g. [55217]  # excluded by legacy
+
+[temperature_rule]
+setpoint_param = "RT"           # the regulation setpoint, from the header `PARAM: ... RT= ...`
+sensor_columns = ["TT"]         # the per-point sample sensor, a DATA_ column
+divergence_tol = 20.0           # |sensor - setpoint| beyond this flags sensor_divergence (catches the
+                                # disconnected sensor: 055177 TT≈299 vs RT=221.57; tolerant of normal
+                                # few-K sample/regulation offsets)
+
+[collation]
+key = ["sample", "q", "T"]
+merge = "merge"                 # IN8 combines repeat scans at the same (Q, T): combine-before-divide
+t_round = 5.0                   # T-grouping bin (K): regulation T drifts, so group same-setpoint scans
+
+[qc]                            # deterministic QC thresholds (§7.1-7.2) — all have code defaults
+empty_k = 5.0
+stale_min_run = 3
+stale_equal_tol = 0.02
+stale_high_frac = 0.5
+
+# The single detector. value_index is unused for numor (no #V lines); signal_column is the CNTS
+# column resolved by name from the DATA_ header. Per-scan Q comes from the COMND, not an offset.
+[[detectors]]
+detector_id = "det0"
+value_index = 0
+signal_column = "CNTS"
+enabled = true

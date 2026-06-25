@@ -29,6 +29,10 @@ def fig_miniscan(scan_number: int, detector_id: str, point: int) -> str:
     return f"miniscan:{scan_number}:{detector_id}:p{point}"
 
 
+def fig_merged(index: int) -> str:
+    return f"merged:{index}"
+
+
 @dataclass
 class Removal:
     stable_id: str               # exp:scan:det:p{point}  — addressable by the §8 review surface
@@ -71,6 +75,17 @@ class ScanSection:
 
 
 @dataclass
+class MergedSection:
+    """One combine-before-divide group (merge="merge"): the merged spectrum + which scans went in."""
+    key_fields: dict
+    members: list                # [[experiment_id, scan_number, detector_id], …] combined
+    n_members: int
+    n_points: int
+    n_masked: int
+    fig_id: str
+
+
+@dataclass
 class ReportModel:
     experiment_id: str
     facility: str
@@ -89,6 +104,7 @@ class ReportModel:
     rollup: dict
     scans: list
     other_scans: list
+    merged: list = field(default_factory=list)
     note: str = ("Signal is RAW COUNTS (errors √N); the monitor is preserved for optional, reversible "
                  "normalization, never baked in. Masked/rejected points are shown, never hidden, and "
                  "never deleted — the raw arrays remain, so every decision is reversible (§0.4, §7.4).")
@@ -177,7 +193,7 @@ def build_report_model(records, collation, card) -> ReportModel:
     """Assemble the report model from reduced records + their collation. Read-only over the records."""
     measurements = [r for r in records if r.scan_type == "measurement"]
     others = [r for r in records if r.scan_type != "measurement"]
-    head = (records[0] if records else None)
+    head = (measurements[0] if measurements else (records[0] if records else None))
     src = head.source if head else None
     cov = collation.coverage
     roll = collation.rollup
@@ -185,8 +201,18 @@ def build_report_model(records, collation, card) -> ReportModel:
     scans = [_scan_section(r) for r in measurements]
     n_removals = sum(len(sp.removals) for s in scans for sp in s.spectra)
 
+    merged = []
+    if getattr(collation, "merge", "separate") == "merge":
+        for i, g in enumerate(gg for gg in collation.groups if gg.merged is not None):
+            ms = g.merged
+            merged.append(MergedSection(
+                key_fields=g.key_fields,
+                members=[[e, s, d] for (e, s, d) in ms.members], n_members=ms.n_members,
+                n_points=int(len(ms.energy)),
+                n_masked=int(np.sum(~np.asarray(ms.mask, dtype=bool))), fig_id=fig_merged(i)))
+
     return ReportModel(
-        experiment_id=(src.file if src else ""),
+        experiment_id=(head.experiment_id if head else ""),
         facility=card.policy.facility, instrument=card.policy.instrument,
         plugin=(src.plugin if src else card.policy.plugin),
         plugin_version=(src.plugin_version if src else ""),
@@ -207,5 +233,7 @@ def build_report_model(records, collation, card) -> ReportModel:
                 "counts_removed": round(roll.counts_removed, 3)},
         scans=scans,
         other_scans=[{"scan_number": r.scan_number, "scan_type": r.scan_type,
-                      "axis": (axes.scanned_axes(r)[0].name if axes.scanned_axes(r) else "")}
-                     for r in others])
+                      "axis": (axes.scanned_axes(r)[0].name if axes.scanned_axes(r) else ""),
+                      "flags": "; ".join(f"{f.type}({f.severity})" for f in r.scan_flags)}
+                     for r in others],
+        merged=merged)

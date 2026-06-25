@@ -2,7 +2,7 @@
 key facts — what got removed, why, the rule, and the reversibility note — nothing hidden."""
 import numpy as np
 
-from isar.parsers import spec_s30, spec_s30_raw
+from isar.parsers import ill_in8, spec_s30, spec_s30_raw
 from isar.reduce import collate, combine, qc
 from isar.report import figures, html, markdown
 from isar.report import model as report_model
@@ -61,6 +61,23 @@ def test_qc_flags_render_in_html_and_markdown(tmp_path):
         assert "dead_detector" in text
         assert "sensor_divergence" in text
         assert "stale_head" in text
+
+
+def test_in8_merged_section_renders_in_html_and_markdown(tmp_path):
+    card = ill_in8.card_template()
+    run = run_builder.build_in8_run("DIR-REND", n_scans=2, seed0=7)
+    path = tmp_path / "DIR-REND.numor"
+    path.write_bytes(ill_in8.emit_file(run, card))
+    records = ill_in8.parse_file(path, card)
+    col = collate.collate(records, card)
+    model = report_model.build_report_model(records, col, card)
+    figs = figures.report_figures(records, col)
+
+    doc = html.render_html(model, figs)
+    md, _ = markdown.render_markdown(model, figs)
+    for text in (doc, md):
+        assert "Merged" in text
+        assert "55000" in text and "55001" in text       # the contributing numors are listed
 
 
 def test_markdown_references_png_files_that_exist(tmp_path):

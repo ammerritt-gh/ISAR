@@ -13,8 +13,8 @@ from pathlib import Path
 
 import numpy as np
 
-from isar.parsers import registry, spec_s30, spec_s30_raw
-from isar.reduce import combine, qc
+from isar.parsers import ill_in8, registry, spec_s30, spec_s30_raw
+from isar.reduce import collate, combine, qc
 from isar.report import build as report_build
 from isar.schema import axes, scan
 from isar.synth_format import quirks, run_builder
@@ -22,12 +22,14 @@ from isar.synth_format import quirks, run_builder
 _REPO = Path(__file__).resolve().parents[2]
 _REAL_S30 = _REPO / "test_data" / "APS S30" / "FeSe_1-xS_x_1.spec_supplementary.dat"
 _REAL_S30_RAW = _REPO / "test_data" / "APS S30 raw" / "Fe2Mo3O8_trimmed.spec"
+_REAL_IN8 = _REPO / "test_data" / "ILL IN8"
 _OUT = _REPO / "out" / "phase2_eyeball"
 
 
-def roundtrip_record(plugin, run, card, path) -> list[scan.ScanRecord]:
+def roundtrip_record(plugin, run, card, path, *, central_det="ana5") -> list[scan.ScanRecord]:
     """Emit the run, parse it back, and assert each scan/detector reproduces the truth.
 
+    `central_det` is the detector carrying the scan's central Q (S30: ana5/#V8; IN8: the sole det0).
     Raises AssertionError naming the failing scan/detector. Returns the parsed records.
     """
     Path(path).write_bytes(plugin.emit_file(run, card))
@@ -44,7 +46,7 @@ def roundtrip_record(plugin, run, card, path) -> list[scan.ScanRecord]:
         assert np.allclose(rec.normalization.monitor, sc.monitor), f"{tag}: monitor"
         assert np.allclose(rec.normalization.time, sc.time), f"{tag}: time"
         assert np.isclose(rec.temperature.setpoint[0], sc.temperature_setpoint), f"{tag}: T"
-        assert np.allclose(rec.spectra["ana5"].q, sc.central_q), f"{tag}: central Q (ana5/#V8)"
+        assert np.allclose(rec.spectra[central_det].q, sc.central_q), f"{tag}: central Q ({central_det})"
 
         for d in sc.detectors:
             sp = rec.spectra[d.detector_id]
@@ -149,6 +151,38 @@ def _qc_demo() -> dict:
     return {"report": report, "flags": flags}
 
 
+def _in8_eyeball() -> dict | None:
+    """Parse the real IN8 numor directory (DIR-397), QC each, collate (merge), and render a report.
+
+    The payoff for next week's beamtime: the user's real numors flow parse -> QC -> collate(merge) ->
+    report, grouped by Q/T with repeat scans combined, the disconnected sensor flagged. Returns None
+    if the (gitignored) data isn't present.
+    """
+    if not _REAL_IN8.is_dir():
+        return None
+    card = ill_in8.card_template()
+    files = sorted(p for p in _REAL_IN8.glob("*") if p.is_file() and not p.suffix)
+    records, skipped = [], []
+    for p in files:
+        try:
+            recs = ill_in8.parse_file(p, card)
+        except Exception as exc:                       # e.g. a Q-scan (out of scope) — skip, don't crash
+            skipped.append((p.name, str(exc)))
+            continue
+        for r in recs:
+            qc.qc_record(r, card)
+            records.append(r)
+    if not records:
+        return None
+    report = report_build.generate_report(records, card, _OUT / "report" / "in8")
+    col = collate.collate(records, card)
+    n_meas = sum(1 for r in records if r.scan_type == "measurement")
+    sensor_div = sum(1 for r in records for f in r.scan_flags if f.type == "sensor_divergence")
+    return {"report": report, "n_files": len(files), "n_meas": n_meas,
+            "n_groups": len(col.groups), "n_merged": sum(g.merged is not None for g in col.groups),
+            "sensor_div": sensor_div, "skipped": skipped}
+
+
 def main() -> None:
     _OUT.mkdir(parents=True, exist_ok=True)
     card = spec_s30.card_template()
@@ -166,6 +200,18 @@ def main() -> None:
     raw = _raw_eyeball()
     det, p0, m0 = raw["injected"]
     qcd = _qc_demo()
+    in8 = _in8_eyeball()
+
+    in8_lines = []
+    if in8 is not None:
+        in8_lines = [
+            "",
+            "REAL IN8 (ILL TAS, DIR-397) — your numor data through ISAR:",
+            f"  report: {in8['report']['html']}",
+            f"  {in8['n_files']} numors parsed, {in8['n_meas']} measurements -> {in8['n_groups']} "
+            f"(Q,T) groups, {in8['n_merged']} merged from repeats; "
+            f"{in8['sensor_div']} sensor_divergence flag(s).",
+        ]
 
     print(_banner([
         "ISAR Phase 2 - parse + RAW reduction + QC + REPORT: ALL GATES PASSED. Eyeball pause.",
@@ -189,6 +235,7 @@ def main() -> None:
         f"fluctuations).",
         f"  QC demo flags surfaced: {', '.join(qcd['flags'])}",
         "  -> Every removal AND flag is shown with its reason; nothing is deleted (reversible, §0.4).",
+        *in8_lines,
     ]))
 
 

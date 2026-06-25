@@ -79,6 +79,16 @@ def render_markdown(model, figures_map: dict):
                ("counts removed", _fmt(model.rollup["counts_removed"])),
            ])]
 
+    if model.merged:
+        md += ["", "## Merged spectra (combine-before-divide)",
+               "Repeat scans at the same (Q, T) are combined by summing raw counts AND monitors, "
+               "then dividing only if you wish — never averaging already-normalized rates (§7.5). "
+               "Each contributing scan is still shown in full below."]
+        for i, m in enumerate(model.merged):
+            members = ", ".join(str(mem[1]) for mem in m.members)
+            md += ["", f"### {m.key_fields} — {m.n_members} scans, {m.n_points} points",
+                   img(m.fig_id, "merged spectrum"), f"combined scans: {members}"]
+
     for s in model.scans:
         md += ["", f"## Scan {s.scan_number} — {s.scan_type} "
                    f"(T={_fmt(s.temperature)} K, E {_fmt(s.energy_min)}…{_fmt(s.energy_max)} meV)"]
@@ -107,7 +117,8 @@ def render_markdown(model, figures_map: dict):
 
     if model.other_scans:
         md += ["", "## Alignment / calibration scans (captured, not reduced)",
-               _table(["scan", "type", "scanned axis"],
-                      [(x["scan_number"], x["scan_type"], x["axis"]) for x in model.other_scans])]
+               _table(["scan", "type", "scanned axis", "flags"],
+                      [(x["scan_number"], x["scan_type"], x["axis"], x.get("flags", ""))
+                       for x in model.other_scans])]
 
     return "\n".join(md) + "\n", files

@@ -116,6 +116,43 @@ def build_s30_run(
 # ---------------------------------------------------------------------------
 # Raw S30 run: per-point counts split into individual miniscan passes (§ raw ingestion)
 # ---------------------------------------------------------------------------
+def build_in8_run(
+    experiment_id: str,
+    *,
+    n_scans: int = 3,
+    seed0: int = 2000,
+    target_peak_counts: float = 200.0,
+    q_point: list | None = None,
+    temperature_setpoint: float = 290.0,
+    monitor_level: float = 1.0e5,
+    count_time: float = 60.0,
+    first_numor: int = 55000,
+    cfg: config.RunConfig | None = None,
+) -> Run:
+    """A small IN8 run: single-`det0` constant-Q energy scans, all at one (Q, T) so the merge has
+    repeats to combine. Each scan is a fresh Poisson draw of the same lineshape on the same grid.
+    """
+    cfg = cfg or config.default_run_config()
+    q = list(q_point) if q_point is not None else [2.15, 0.05, 0.0]   # avoid the 2.0 zone centre
+    scans: list[RunScan] = []
+    for s in range(n_scans):
+        gt = generate.make_ground_truth(cfg, H=q[0], target_peak_counts=target_peak_counts,
+                                        seed=seed0 + s * 100)
+        energy = noise.energy_grid(gt.x_min, gt.x_max, gt.x_step)
+        nP = len(energy)
+        det = RunDetector(detector_id="det0", q=list(q),
+                          counts=noise.draw_counts(gt).astype("float64"))
+        step = float(gt.x_step)
+        command = (f"bs qh {q[0]} {q[1]} {q[2]} {energy[0]:.4g} "
+                   f"dqh 0 0 0 {step:g} np {nP} mn {int(monitor_level)}")
+        scans.append(RunScan(
+            scan_number=first_numor + s, scan_type="measurement", command=command,
+            energy=energy, central_q=list(q), detectors=[det],
+            monitor=np.full(nP, float(monitor_level)), time=np.full(nP, float(count_time)),
+            temperature_setpoint=temperature_setpoint, temperature_sensor=temperature_setpoint + 1.0))
+    return Run(experiment_id=experiment_id, scans=scans)
+
+
 def _split_into_miniscans(per_point_counts: np.ndarray, n_mini: int, rng) -> np.ndarray:
     """Distribute each point's integer counts across `n_mini` passes (Poisson thinning).
 
