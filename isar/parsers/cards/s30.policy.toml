@@ -1,0 +1,89 @@
+# S30 HERIX (APS) — IXS, SPEC supplementary format, 2025 beamtime.
+# Human-authored policy half of the experiment card (D8): the machine READS this, never writes it.
+# Copy this template per beamtime, edit the detector enables and exclusions, and run reduction.
+
+facility = "APS"
+instrument = "S30"
+format_version = "2025"
+plugin = "spec_s30"
+
+energy_column = "HerixE"        # the abscissa column (already-converted energy)
+monitor_column = "ICO-C"        # the incident-flux ion-chamber monitor
+time_column = "Seconds"         # per-point counting time
+counting_mode = "time"          # fscan counts to time; the monitor is the flux normalizer
+normalize_by = "monitor"        # intensity = signal / ICO-C  (the reference parser's normalization)
+raw_abscissa_kind = "energy"    # HerixE is already energy...
+energy_status = "needs_zero"    # ...but the elastic zero is uncalibrated (the zero-fit is Phase 3)
+variance_convention = "none"    # D3: store variance honestly, NO zero-count floor
+min_points = 5
+hkl_round_step = 0.05
+measurement_pattern = "fscan"   # an fscan is a measurement
+alignment_pattern = "ascan"     # an ascan (motor scan) is an alignment
+exclusions_seed = []            # durable bad-scan numbers go here, e.g. [55217]  # bad mono feedback
+
+[temperature_rule]
+setpoint_field = "T_Control"
+sensor_fields = ["T_Sample"]
+divergence_tol = 5.0            # |sensor - setpoint| beyond this flags sensor_divergence (QC, later)
+
+[collation]
+key = ["sample", "q", "T"]
+merge = "separate"             # S30 keeps duplicate measurements as separate points
+
+# The nine analyzers. value_index is the #V line carrying this analyzer's H/K/L (named by the
+# parallel #H line); signal_column is the AnaN_*std column resolved by name from #L. Per-analyzer Q
+# is read from the file (D2), so q_offset is unused here. `enabled` marks which analyzers carry
+# signal THIS experiment (§0.3) — flip to false for a known-dead analyzer.
+[[detectors]]
+detector_id = "ana1"
+value_index = 4
+signal_column = "Ana1_3std"
+enabled = true
+
+[[detectors]]
+detector_id = "ana2"
+value_index = 5
+signal_column = "Ana2_3std"
+enabled = true
+
+[[detectors]]
+detector_id = "ana3"
+value_index = 6
+signal_column = "Ana3_3std"
+enabled = true
+
+[[detectors]]
+detector_id = "ana4"
+value_index = 7
+signal_column = "Ana4_3std"
+enabled = true
+
+[[detectors]]
+detector_id = "ana5"
+value_index = 8
+signal_column = "Ana5_3std"
+enabled = true
+
+[[detectors]]
+detector_id = "ana6"
+value_index = 9
+signal_column = "Ana6_3std"
+enabled = true
+
+[[detectors]]
+detector_id = "ana7"
+value_index = 10
+signal_column = "Ana7_3std"
+enabled = true
+
+[[detectors]]
+detector_id = "ana8"
+value_index = 11
+signal_column = "Ana8_3std"
+enabled = true
+
+[[detectors]]
+detector_id = "ana9"
+value_index = 12
+signal_column = "Ana9_3std"
+enabled = true

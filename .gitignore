@@ -12,3 +12,4 @@ env/
 
 # ISAR synthetic-harness outputs
 /out/
+test_data/

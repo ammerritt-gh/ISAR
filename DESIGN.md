@@ -294,6 +294,15 @@ inferences. Encode the constraints; don't have a model rediscover them per scan.
 peak center in EN is the energy transfer. A no-elastic-line scan on HERIX without a zero is a
 flagged non-result.
 
+> **Refinement (per the schema survey, `docs/SCHEMA_LANDSCAPE.md`; realized in Phase 2 §5.3).** The
+> binary `energy.absolute` is too coarse for IXS in general. The honest model is a per-card
+> `raw_abscissa_kind` + `status` with **three** states: `absolute` (fixed-kf TAS — IN8, HB-3),
+> `needs_zero` (the raw column is already energy but the zero is uncalibrated — S30 HERIX, whose
+> `HerixE` column is converted), and `needs_conversion_and_zero` (the raw abscissa is *monochromator
+> temperature*, not energy — ESRF ID28). So S30 is not merely "not absolute"; it is "energy-but-zeroless,"
+> a different case from ID28's "temperature-needing-conversion." The zero-fitting and T→E conversion stay
+> deferred (Phase 3); only the field that distinguishes the three cases is needed up front.
+
 **Resolution differs in dimensionality, not just value.** On IXS the resolution is tight in Q and
 near-1D in energy → Voigt convolution is legitimate. On a TAS it's a tilted **4D ellipsoid** in
 (Q,E), and the **apparent** linewidth depends on the dispersion slope cutting through it

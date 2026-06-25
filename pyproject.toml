@@ -21,10 +21,15 @@ test = ["pytest>=7.4"]
 [tool.setuptools]
 # Fitting_Functions.py is a top-level module at the repo root, imported unchanged.
 py-modules = ["Fitting_Functions"]
-packages = ["isar", "isar.synth"]
+packages = ["isar", "isar.synth", "isar.schema", "isar.parsers", "isar.synth_format", "isar.reduce"]
+
+[tool.setuptools.package-data]
+# Ship the human-authored card policy templates (D8) inside the wheel.
+"isar.parsers" = ["cards/*.toml"]
 
 [tool.pytest.ini_options]
-testpaths = ["isar/synth/tests"]
+# Phase 1 lives under isar/synth/tests; Phase 2 (schema, parsers, synth_format) under tests/.
+testpaths = ["isar/synth/tests", "tests"]
 markers = [
     "slow: marks tests that run many fits (deselect with '-m \"not slow\"')",
 ]
