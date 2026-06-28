@@ -162,3 +162,37 @@ def test_normalization_miniscan_monitor_time_2d_round_trip():
     assert _json.objects_close(norm, restored)
     assert restored.miniscan_monitor.shape == (nP, n_mini)
     assert restored.miniscan_time.dtype == np.float64
+
+
+# ---------------------------------------------------------------------------
+# LLM adjudication: the optional decision block survives the JSON store (§7.3).
+# ---------------------------------------------------------------------------
+def test_scan_record_adjudication_defaults_none():
+    """A record reduced without the LLM stage has no adjudication, and that round-trips as None."""
+    rec = _example_record()
+    assert rec.adjudication is None
+    restored = scan.ScanRecord.from_dict(json.loads(json.dumps(rec.to_dict())))
+    assert restored.adjudication is None
+    assert scan.records_close(rec, restored)
+
+
+def test_adjudication_round_trip():
+    """An attached Adjudication (decisions + narrative) survives to_dict → JSON → from_dict."""
+    rec = _example_record()
+    rec.adjudication = scan.Adjudication(
+        decisions=[
+            scan.Decision(target="point:ana1:4", decision="mask",
+                          shape="not_applicable", reason="cosmic ray", confidence=0.99),
+            scan.Decision(target="spectrum:ana5", decision="drop_detector",
+                          shape="not_applicable", reason="dead detector", confidence=0.9),
+        ],
+        narrative="One cosmic ray masked on ana1; ana5 dropped as dead.",
+        model_id="local_desktop/qwen3p5-9b",
+    )
+    restored = scan.ScanRecord.from_dict(json.loads(json.dumps(rec.to_dict())))
+    assert scan.records_close(rec, restored)
+    adj = restored.adjudication
+    assert adj.model_id == "local_desktop/qwen3p5-9b"
+    assert adj.decisions[0].decision == "mask"
+    assert adj.decisions[0].confidence == 0.99
+    assert adj.decisions[1].target == "spectrum:ana5"

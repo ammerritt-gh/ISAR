@@ -47,6 +47,27 @@ class PointFlag:
 
 
 # ---------------------------------------------------------------------------
+# LLM adjudication (§7.3) — the optional, non-destructive decision layer
+# ---------------------------------------------------------------------------
+@dataclass
+class Decision:
+    """One LLM verdict on a deterministic QC candidate (§7.3). Advisory — never applied to arrays."""
+    target: str                        # "scan" | "spectrum:<det>" | "point:<det>:<index>"
+    decision: str                      # "mask" | "keep" | "drop_detector" | "hold_for_human"
+    shape: str | None                  # "whole_peak"|"clipped_peak"|"no_peak"|"not_applicable"|None
+    reason: str
+    confidence: float
+
+
+@dataclass
+class Adjudication:
+    """The adjudicator's output for one scan: per-flag decisions + a human-facing narrative."""
+    decisions: list[Decision]
+    narrative: str
+    model_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # Per-spectrum signal block (§5.3)
 # ---------------------------------------------------------------------------
 @dataclass
@@ -191,6 +212,7 @@ class ScanRecord:
     scan_flags: list[Flag]
     raw_header: dict
     source: Source
+    adjudication: Adjudication | None = None   # §7.3 LLM decisions; None until the stage runs
 
     def to_dict(self) -> dict:
         return _json.to_jsonable(self)

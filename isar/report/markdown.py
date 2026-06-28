@@ -95,6 +95,12 @@ def render_markdown(model, figures_map: dict):
         if s.scan_flags:
             md.append(_table(["scan flag", "severity", "reason"],
                              [(f["type"], f["severity"], f["reason"]) for f in s.scan_flags]))
+        if s.narrative:
+            md.append(f"\n**Adjudication:** {s.narrative}")
+        if s.adjudication:
+            md.append(_table(["target", "decision", "shape", "reason", "confidence"],
+                             [(a["target"], a["decision"], a.get("shape") or "", a["reason"],
+                               _fmt(a["confidence"])) for a in s.adjudication]))
         for sp in s.spectra:
             md += ["", f"### {sp.detector_id} — Q={sp.q} ({sp.q_source}); "
                        f"{sp.n_masked} of {sp.n_points} masked"]

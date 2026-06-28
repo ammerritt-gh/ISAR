@@ -101,6 +101,12 @@ def render_html(model, figures_map: dict) -> str:
         if s.scan_flags:
             o.append(_table(["scan flag", "severity", "reason"],
                             [(f["type"], f["severity"], f["reason"]) for f in s.scan_flags]))
+        if s.narrative:
+            o.append(f"<p class='note'><b>Adjudication:</b> {_esc(s.narrative)}</p>")
+        if s.adjudication:
+            o.append(_table(["target", "decision", "shape", "reason", "confidence"],
+                            [(a["target"], a["decision"], a.get("shape") or "", a["reason"],
+                              _fmt(a["confidence"])) for a in s.adjudication]))
         for sp in s.spectra:
             o.append(f"<h3>{_esc(sp.detector_id)} — Q={_esc(sp.q)} ({_esc(sp.q_source)}); "
                      f"{sp.n_masked} of {sp.n_points} masked</h3>")

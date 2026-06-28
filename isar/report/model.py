@@ -70,8 +70,9 @@ class ScanSection:
     energy_max: float | None
     spectra: list = field(default_factory=list)
     scan_flags: list = field(default_factory=list)  # scan_flags as {type, severity, reason}
-    narrative: str | None = None    # §7.3 LLM slot — empty in this deterministic chunk
-    decision: str | None = None     # §8 slot
+    narrative: str | None = None    # §7.3 LLM slot — the adjudicator's per-scan prose
+    decision: str | None = None     # §8 slot — rollup verdict of the adjudication decisions
+    adjudication: list = field(default_factory=list)  # per-flag decisions {target,decision,shape,reason,confidence}
 
 
 @dataclass
@@ -167,10 +168,25 @@ def _spectrum_section(record, det_id, sp) -> SpectrumSection:
                for f in sp.spectrum_flags])
 
 
+def _adjudication_rows(adj) -> list:
+    return [{"target": d.target, "decision": d.decision, "shape": d.shape,
+             "reason": d.reason, "confidence": d.confidence} for d in adj.decisions]
+
+
+def _decision_rollup(adj) -> str:
+    if not adj.decisions:
+        return "no decisions"
+    counts: dict = {}
+    for d in adj.decisions:
+        counts[d.decision] = counts.get(d.decision, 0) + 1
+    return ", ".join(f"{n}×{k}" for k, n in counts.items())
+
+
 def _scan_section(record) -> ScanSection:
     energy = _energy(record)
     spectra = [_spectrum_section(record, det_id, sp)
                for det_id, sp in record.spectra.items()]
+    adj = getattr(record, "adjudication", None)
     return ScanSection(
         scan_number=record.scan_number, scan_type=record.scan_type,
         temperature=(float(record.temperature.setpoint[0])
@@ -179,7 +195,10 @@ def _scan_section(record) -> ScanSection:
         energy_max=(float(np.max(energy)) if energy is not None and len(energy) else None),
         spectra=spectra,
         scan_flags=[{"type": f.type, "severity": f.severity, "reason": f.reason}
-                    for f in record.scan_flags])
+                    for f in record.scan_flags],
+        narrative=(adj.narrative if adj else None),
+        decision=(_decision_rollup(adj) if adj else None),
+        adjudication=(_adjudication_rows(adj) if adj else []))
 
 
 def _catalogue(collation) -> list:

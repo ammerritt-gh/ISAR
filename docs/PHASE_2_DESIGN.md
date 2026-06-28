@@ -575,6 +575,10 @@ type, reason}` that the report renders. None of them delete; none of them are th
   FeSeS_3 manual-override echo).
 
 ### 7.3 The LLM's job — adjudicate the flags (via LLMM / Prompter, off the critical path)
+> **As-built (2026-06-28):** this layer is implemented, tested, and live-verified — see
+> **`docs/ADJUDICATION.md`** for the as-built record (decision contract, components, the model-selection
+> probe + evidence, how to run, known gaps). The text below is the original design intent.
+
 Per 0.5 the LLM is **stage 2: it makes the QC decision** on the deterministic candidates, using context
 and shape, and emits structured output (LLMM schema, not ```json-strip + `json.loads`):
 1. **Decide** each flagged point/scan/spectrum: mask the cosmic ray; keep the genuinely short scan; drop

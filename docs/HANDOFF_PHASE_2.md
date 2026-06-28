@@ -75,6 +75,9 @@ normalized JSON records + human-readable reports. **No fitting** — that is Pha
 7. `reduce/adjudicate.py` — LLM decision + shape-judgment + narration via LLMM. **First** run a Prompter
    probe (local 9B and a NanoGPT tier) on a few synthetic quirked scans to confirm the local tier decides
    sensibly and doesn't invent flags (§7.3). Structured output; off the critical path.
+   **DONE (2026-06-28)** — built, TDD-tested, live-verified; probe + evidence recorded in
+   **`docs/ADJUDICATION.md`**. (Local 9B is the offline default; `nanogpt/openai/gpt-oss-120b` the cloud
+   fallback. The CPU 2B was ruled out as destructive.)
 8. `driver/reduce_run.py` honoring `card.state.exclusions`/`.corrections` — close the loop; verify a
    re-run is idempotent.
 
@@ -116,6 +119,8 @@ normalized JSON records + human-readable reports. **No fitting** — that is Pha
   PNG report, with masked points visible and a review surface that feeds `card.state`.
 - A re-run honoring an edited card is idempotent.
 - The LLM-adjudication Prompter probe is documented (does the local tier do the job, or do we escalate?).
+  **DONE** — `docs/ADJUDICATION.md` §7: the GPU 9B clears the adequacy bar (zero destructive errors),
+  `gpt-oss-120b` is the cloud fallback; full model-by-model evidence recorded.
 
 ## One operational note for the human (not a build task)
 At the start of each beamtime, the human points the session at a freshly captured file to confirm the
