@@ -6,6 +6,53 @@ Baker–Cousins) survives contact with **real, non-IXS** data — the IN8 numors
 class, and it doubles as a concrete messy-data example for `PHASE_3_DESIGN.md`. Run this in Claude Code
 (code + data + deps are all in-repo); this note only captures what was already read so it isn't re-derived.
 
+---
+
+## Outcome (executed 2026-06-29 — `docs/in8_phase1_check.py`, outputs in `out/in8_phase1/`)
+
+**The core recovers ω₀ on real TAS data — the pass condition is met.** The check was run as a
+standalone script that reuses the *production* parsers (`isar.parsers.ill_in8`, `isar.parsers.spec_s30`),
+the fitter (`isar.synth.fit`), the collation merge (`isar.reduce.collate`), and the lineshape library
+(`isar.synth._ff`). No throwaway reader was needed (the Phase-2 parser superseded that plan). Outputs:
+`results_in8.csv`, `results_in8_merged.csv`, `results_s30.csv`, `figures/`, `FINDINGS.md`. Suite stays
+green (268 tests).
+
+Headline numbers:
+- **055182 (clean anchor): ω₀ = 4.47 ± 0.03 meV, converged** — matches the hand-vetted ~4.2 meV phonon.
+- **6 of 17 `bs qh` scans pass `assess_success`** (with the corrected resolution, below). On TAS the
+  bottleneck is **convergence itself**, not error quality: MINOS is produced only for the converged scans.
+- **S30 IXS positive control: 6/6 converge**, cost/dof ~1–4, *meaningful* Γ, and a clean ω₀(K) dispersion
+  (~5→7 meV). Same core, validated instrument — the contrast is the product.
+
+Three things we learned that change Phase 3 (all folded into `PHASE_3_DESIGN.md` §3/§5/§6/§8):
+
+1. **Resolution is now Cooper–Nathans from the header, not a guess.** The initial 0.25 meV guess was too
+   narrow; CN (ported from ResCal `rc_cnmat` into the check; `cn_resolution_matrix`/`cn_energy_fwhm`)
+   gives the elastic energy FWHM **≈0.58 meV** for this config (≈Q-independent at the elastic line, ~0.70
+   at the phonon), corroborated by the cot(θ_M)·collimation estimate (~0.55). This scalar CN energy
+   resolution is the precursor to the §8 4-D engine and a candidate for `isar/synth/resolution`.
+2. **The broad low-E tail is NOT resolution — it is real quasi-elastic / diffuse scattering.** Sweeping
+   the assumed width shows cost/dof only bottoms out (~7 on 055182) near ~1.5 meV, far broader than any
+   plausible instrument resolution; a CN-width (or narrower) elastic line can at most spike the single
+   nearest point (see the 055182 overlay) and leaves the tail in the residuals (cost/dof 121→21 once the
+   resolution is corrected). Fe₂Mo₃O₈ is magnetic, so magnetic quasi-elastic scattering is the likely
+   source. **Phase 3's TAS structure basis needs a quasi-elastic/background component**, distinct from the
+   sharp elastic Voigt and the flat BG. ω₀ is robust to all of this.
+3. **The "large elastic peak" the fit reports is a degenerate dummy.** With the elastic line off-window
+   (FX=2, EN≥1, elastic at 0), the elastic NNLS column has no in-window leverage, so the fit hands it an
+   arbitrary huge amplitude that contributes ~0 — it is *not* modeling the tail. (§3 IC note.)
+
+Secondary findings: per-scan repeats reproduce ω₀ where the feature is strong (np=25 Q=(2,0,4):
+055289/055294 agree to ~0.08 meV) and scatter 1–2 meV where sparse/weak (np=12 pairs) — the
+detection-power signal for §6. Collation merges same-(sample,Q,T) spectra but regulation-T drift splits
+nominal repeats across T-bins and different E-start windows combine into wider spectra (see
+`results_in8_merged.csv`). `055189` (`bs a3p`) crashes the Q-token parse and is skipped; `055183` is a
+3-point aborted scan. No vanadium/incoherent-elastic scan exists in the set, so Γ stays throwaway on TAS
+regardless of resolution.
+
+> The sections below are the original handoff/plan, kept for context. Where they propose a throwaway
+> reader or a nominal resolution, see the Outcome above for what was actually done.
+
 ## What the fitter needs vs. what a numor gives
 `fit(x, counts, *, gauss_fwhm, lorentz_fwhm, T, center=0.0, estimator="baker_cousins",
 backend="iminuit", minos=True, ic_mode="grid")` wants an energy array (meV), integer counts, a Voigt

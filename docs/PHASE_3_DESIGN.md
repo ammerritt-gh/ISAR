@@ -163,6 +163,16 @@ residual-diagnosis LLM pass runs **after** deterministic attempts, off the criti
 beamtime the prior is sparse, so the deterministic grid+NNLS does most of the work — which is the right
 default, since it is reproducible and model-free.
 
+**Empirical note (IN8 Phase-1 check, 2026-06-29 — `docs/in8_phase1_check.py`).** The grid+NNLS IC seeds
+ω₀ correctly with no prior on clean data (055182 → 4.47 meV). It surfaced two soft spots the structure
+loop must handle: (a) when the elastic line is **off-window** (IN8 FX=2, EN≥1, elastic at 0), the elastic
+NNLS column has no in-window leverage and becomes **degenerate** — the fit hands it an arbitrary huge
+amplitude that contributes ~0, so it is not actually modeling anything; and (b) at the *correct* (Cooper–
+Nathans) resolution a sharp elastic can at most spike the single nearest point, so the elastic+Stokes
+hypothesis's NNLS basis must include a **broad quasi-elastic / background** column (§8), not just the
+resolution-width elastic. The single-DHO IC also could not represent the two-feature scan (055181), as
+expected — the structure enumeration (§2) is exactly the fix.
+
 ---
 
 ## 4. Model selection & modality-branched reporting
@@ -244,6 +254,14 @@ reserved for the authoritative number and for flagged/ambiguous scans. **Where M
 disagree, the scan is out of the asymptotic regime** — a free, built-in "too sparse to trust the fast
 error" detector, computed by running both.
 
+**Empirical note (IN8 Phase-1 check).** On real IN8 TAS data MINOS was produced for *only* the scans that
+fully converged (6 of 17); the rest yielded no usable covariance/profile at all. So on sparse TAS data
+**convergence itself is the first discriminator**, upstream of the MINOS↔bootstrap agreement test — the
+bootstrap (§5.2), which has no silent-failure mode, is what must carry these scans. One concrete gap to
+close here: the Phase-1 `fit()` reports MINOS on the fitted Ω_d/Γ but **not on the derived ω₀** (ω₀ carries
+a HESSE-propagated error only); §5 must propagate the profile/bootstrap interval to ω₀, the reported
+quantity.
+
 ### 5.4 Bayesian path — posterior sampling
 Answers the different, complementary question, and brings three things the frequentist side structurally
 cannot:
@@ -305,6 +323,15 @@ empty"). Early in a beamtime the operator is present to break such loops by hand
 assumption — Phase 3 is not "fully automated"), so this is a guard, not a hard requirement, but it is
 designed in so Phases 4/5 inherit it.
 
+**Empirical note (IN8 Phase-1 check).** Two of these buckets got concrete evidence. The repeat pairs make
+the *underpowered* split real: the strong np=25 Q=(2,0,4) pair (055289/055294) reproduces ω₀ to ~0.08 meV,
+while the sparse np=12 and weak-feature pairs scatter 1–2 meV — exactly the low-power instability the
+detection-power test must catch. And the unmodeled broad quasi-elastic tail (§8) is precisely the
+*structured residual* that must **not** be classed as *junk*: GoF is poor (cost/dof ≫ 1) yet the phonon is
+real and ω₀ is recovered — so the junk trigger's "residual with no interpretable structure" clause is
+load-bearing, and a high cost/dof from a known-missing component (quasi-elastic) should route to a
+"model-incomplete" flag, not to junk.
+
 ---
 
 ## 7. Calibration solving (the part Phase 2 deferred here)
@@ -343,6 +370,27 @@ operator is per-card**, and the two instrument classes differ in *dimensionality
   is** — the loop can report a calibrated ω from a 1-D fit while marking Γ as *resolution-limited / not
   yet deconvolved* until the 4-D path is in. Whether to wrap an existing engine or implement the
   Cooper–Nathans projection ourselves is an open decision (§15-D5).
+
+**Empirical validation (IN8 Phase-1 check, 2026-06-29 — `docs/in8_phase1_check.py`, `out/in8_phase1/`).**
+The 1-D Voigt core was run against the real Fe₂Mo₃O₈ IN8 numors and **recovers ω₀** (clean anchor 055182 =
+4.47 meV ≈ hand-vetted 4.2; converged on 6/17 `bs qh` scans). The S30 IXS positive control (same core,
+resolution *measured* from the in-window elastic line) recovers a full ω₀(K) dispersion with **meaningful Γ**
+— confirming the IXS↔TAS difference is the convolution *dimensionality*, not the core. Two concrete results
+for this section:
+
+- **Cooper–Nathans is now computed from the numor header** (DM/DA/KFIX/ALF/BET/ETA), ported from ResCal
+  `rc_cnmat` into the check (`cn_resolution_matrix` / `cn_energy_fwhm`, Cooper & Nathans 1967). It gives the
+  elastic energy FWHM **≈0.58 meV** for this config (≈Q-independent at the elastic line; ~0.70 at the
+  phonon), corroborated by the cot(θ_M)·collimation estimate. **This scalar CN energy resolution is the
+  precursor to the 4-D engine (D5) and the first candidate for `isar/synth/resolution`** — it already
+  removes the "guess the resolution" step for TAS.
+- **The broad low-E tail in the data is NOT resolution — it is real quasi-elastic / diffuse scattering.** A
+  width sweep shows the fit's cost/dof only bottoms out near ~1.5 meV, far broader than any plausible CN
+  resolution (0.58), so a sharp elastic line cannot and should not absorb it (at the CN width the elastic
+  can only spike the single nearest point). Fe₂Mo₃O₈ is magnetic ⇒ likely magnetic quasi-elastic. **The TAS
+  card's structure basis (§2/§3) therefore needs a quasi-elastic/background component**, distinct from the
+  elastic Voigt and the flat BG. This is a fit-quality / Γ issue only; ω₀ is recovered throughout — the
+  concrete embodiment of "ω trustworthy before Γ on TAS."
 
 ---
 
@@ -486,7 +534,11 @@ python -m isar.tests.gold_tas                       :: score against the IN8 tru
 7. **Bayesian path** (`bayes.py`) — posterior sampling + diagnostics + fallback; the second paradigm and the
    full agreement diagnostic. Heavier; comes after the frequentist path is scored.
 8. **Second-instrument generalization** (`gold_tas`) + **TAS 4-D resolution** (`tas4d.py`) — prove the
-   analysis layer on IN8; report ω before Γ until the 4-D path lands.
+   analysis layer on IN8; report ω before Γ until the 4-D path lands. *Started:* the IN8 Phase-1 check
+   already validates ω₀ recovery on real IN8 and provides a **scalar Cooper–Nathans energy resolution from
+   the header** (port of `rc_cnmat`); promote it to `isar/synth/resolution` and add a quasi-elastic/
+   background structure for the magnetic QE tail (§8). The remaining gap is the focusing-dependent Γ (the
+   full 4-D ellipsoid + local dispersion).
 9. **Growing-point-set re-entrancy pass** — confirm the fit/error layer honours the §11 contract (warm-start,
    pure function of points-so-far), so Phase 4 inherits it.
 10. **LLM residual-diagnosis path** (`analyze` ↔ LLMM) — async, off critical path, only after the
@@ -523,7 +575,10 @@ the one LLM capability that earns its place.
 
 - **D5 — TAS 4-D convolution engine:** wrap an existing engine (ResLib / Tobyfit) or implement the
   Cooper–Nathans/Popovici projection ourselves? Decides how soon IN8 *Γ* (not just ω) is trustworthy.
-  Inherited from `DESIGN.md` §13-Q3.
+  Inherited from `DESIGN.md` §13-Q3. *Partial progress:* the **scalar CN energy resolution is already
+  implemented** (port of ResCal `rc_cnmat` in the IN8 Phase-1 check, §8) and gives the right elastic FWHM
+  (~0.58 meV), so the "ourselves" path is demonstrably feasible; the open part is specifically the 4-D
+  ellipsoid + local-dispersion focusing that makes Γ (not ω) trustworthy.
 - **D9 — Bayesian sampler:** NUTS (numpyro) vs nested sampling (dynesty). Nested gives the evidence for §4
   weights as a bonus; NUTS may be faster for the 5-parameter model. Decide when building `bayes.py` (step 7).
 - **D10 — bootstrap `M` and interval type:** `M`≈100–200 expected affordable (§11), percentile vs BCa.
