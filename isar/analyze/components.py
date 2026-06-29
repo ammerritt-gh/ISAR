@@ -1,0 +1,211 @@
+"""Composable model components for the structure-hypothesis loop.
+
+A :class:`Component` owns an ordered list of named :class:`Parameter` objects and knows
+how to ``evaluate`` its contribution on an energy grid. A :class:`CompositeModel` is an
+ordered list of components summed together, with a flat prefixed parameter namespace
+(``phonon.Omega_d``, ``elastic.E``, ``bg.BG`` …).
+
+The components wrap the *frozen, validated* lineshape library
+(``Fitting_Functions.convolute_voigt_dho`` via :mod:`isar.synth._ff`) — the physics is
+not reimplemented here. The phonon component carries its own Bose-tied anti-Stokes
+(``peak="stokes+astokes"``), so anti-Stokes is never a free parameter (a *functional*
+tie, unlike PUFFIN's equality-only link groups).
+
+Parameter ``kind`` (``"linear"`` vs ``"nonlinear"``) is what the grid+NNLS IC
+(:mod:`isar.analyze.ic`) needs: linear amplitudes are solved by non-negative least
+squares at fixed nonlinear values; nonlinear values (Ω_d, Γ) are grid-scanned / optimized.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from isar.synth._ff import Voigt, convolute_voigt_dho
+from isar.synth.fit import omega0_from, omega0_value_error
+
+
+@dataclass(frozen=True)
+class Parameter:
+    """A single model parameter. ``kind`` is ``"linear"`` (NNLS amplitude) or
+    ``"nonlinear"`` (grid-scanned / optimized)."""
+
+    name: str
+    kind: str  # "linear" | "nonlinear"
+
+
+class Component:
+    """Base class for a model component.
+
+    Subclasses set ``prefix`` and ``params`` and implement :meth:`evaluate` and
+    :meth:`unit_columns`. ``ctx`` is any object exposing ``gauss_fwhm``,
+    ``lorentz_fwhm``, ``center`` and ``T`` (e.g. :class:`isar.analyze.context.ScanContext`).
+    """
+
+    prefix: str = "component"
+    params: tuple[Parameter, ...] = ()
+
+    def param_names(self) -> list[str]:
+        return [p.name for p in self.params]
+
+    def linear_params(self) -> list[str]:
+        return [p.name for p in self.params if p.kind == "linear"]
+
+    def nonlinear_params(self) -> list[str]:
+        return [p.name for p in self.params if p.kind == "nonlinear"]
+
+    def evaluate(self, x, local: dict, ctx) -> np.ndarray:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def unit_columns(self, x, nonlinear: dict, ctx) -> dict:  # pragma: no cover - abstract
+        """Each linear amplitude's unit-response column (amplitude = 1), given the
+        component's nonlinear values. Used to build the NNLS basis."""
+        raise NotImplementedError
+
+
+class PhononDHO(Component):
+    """Stokes DHO + its Bose-tied anti-Stokes, convolved with the Voigt resolution.
+
+    Fit-space params: ``Omega_d``, ``Gamma`` (nonlinear) and ``A`` (linear). The reported
+    ω₀ = √(Ω_d²+Γ²) is derived, never fit directly (keeps Ω_d ≥ 0, ω₀ ≥ Γ).
+    """
+
+    prefix = "phonon"
+    params = (Parameter("Omega_d", "nonlinear"),
+              Parameter("Gamma", "nonlinear"),
+              Parameter("A", "linear"))
+
+    def evaluate(self, x, local: dict, ctx) -> np.ndarray:
+        omega0 = omega0_from(local["Omega_d"], local["Gamma"])
+        return convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
+                                   local["Gamma"], local["A"], 0.0, 0.0, ctx.T,
+                                   peak="stokes+astokes")
+
+    def unit_columns(self, x, nonlinear: dict, ctx) -> dict:
+        unit = {"Omega_d": nonlinear["Omega_d"], "Gamma": nonlinear["Gamma"], "A": 1.0}
+        return {"A": self.evaluate(x, unit, ctx)}
+
+
+class Elastic(Component):
+    """Resolution-limited elastic line: a Voigt at ``ctx.center`` (width = resolution).
+
+    Linear param ``E`` (the Voigt area). Distinct from a broad quasi-elastic component
+    (which would carry its own nonlinear width) — that is a later-step extension.
+    """
+
+    prefix = "elastic"
+    params = (Parameter("E", "linear"),)
+
+    def evaluate(self, x, local: dict, ctx) -> np.ndarray:
+        return Voigt(np.asarray(x, dtype=float), local["E"],
+                     ctx.gauss_fwhm, ctx.lorentz_fwhm, ctx.center)
+
+    def unit_columns(self, x, nonlinear: dict, ctx) -> dict:
+        return {"E": self.evaluate(x, {"E": 1.0}, ctx)}
+
+
+class ConstantBackground(Component):
+    """Flat background. Linear param ``BG``."""
+
+    prefix = "bg"
+    params = (Parameter("BG", "linear"),)
+
+    def evaluate(self, x, local: dict, ctx) -> np.ndarray:
+        return np.full(np.shape(x), float(local["BG"]), dtype=float)
+
+    def unit_columns(self, x, nonlinear: dict, ctx) -> dict:
+        return {"BG": np.ones(np.shape(x), dtype=float)}
+
+
+class CompositeModel:
+    """An ordered list of components summed together over a flat parameter vector.
+
+    The global parameter order is the concatenation of each component's params, named
+    ``f"{component.prefix}.{param}"``. For ``[PhononDHO, Elastic, ConstantBackground]``
+    this is exactly ``(Omega_d, Gamma, A, E, BG)`` — matching the frozen Phase-1 fitter.
+    """
+
+    def __init__(self, components: list[Component]):
+        self.components = list(components)
+
+    # -- parameter namespace -------------------------------------------------
+    def _global(self, comp: Component, name: str) -> str:
+        return f"{comp.prefix}.{name}"
+
+    def param_names(self) -> list[str]:
+        return [self._global(c, n) for c in self.components for n in c.param_names()]
+
+    def linear_names(self) -> list[str]:
+        return [self._global(c, n) for c in self.components for n in c.linear_params()]
+
+    def nonlinear_names(self) -> list[str]:
+        return [self._global(c, n) for c in self.components for n in c.nonlinear_params()]
+
+    @property
+    def n_params(self) -> int:
+        return len(self.param_names())
+
+    # -- evaluation ----------------------------------------------------------
+    def _split(self, theta) -> list[dict]:
+        """Map a flat theta vector to one local {name: value} dict per component."""
+        theta = np.asarray(theta, dtype=float)
+        out, i = [], 0
+        for c in self.components:
+            names = c.param_names()
+            out.append({n: float(theta[i + k]) for k, n in enumerate(names)})
+            i += len(names)
+        return out
+
+    def evaluate(self, x, theta, ctx) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        total = np.zeros_like(x)
+        for comp, local in zip(self.components, self._split(theta)):
+            total = total + comp.evaluate(x, local, ctx)
+        return total
+
+    def evaluate_components(self, x, theta, ctx) -> list[tuple[str, np.ndarray]]:
+        """Per-component contributions ``[(prefix, values), …]`` (they sum to evaluate).
+
+        Useful for plotting the model decomposition and for residual diagnosis."""
+        x = np.asarray(x, dtype=float)
+        return [(comp.prefix, comp.evaluate(x, local, ctx))
+                for comp, local in zip(self.components, self._split(theta))]
+
+    def nnls_basis(self, x, nonlinear_global: dict, ctx):
+        """Stack each linear amplitude's unit column → (phi, linear_global_names).
+
+        ``nonlinear_global`` maps global nonlinear names (e.g. ``"phonon.Omega_d"``) to
+        the values at which the basis is evaluated (the IC grid candidate)."""
+        cols, names = [], []
+        for comp in self.components:
+            local_nl = {n: nonlinear_global[self._global(comp, n)]
+                        for n in comp.nonlinear_params()}
+            unit = comp.unit_columns(x, local_nl, ctx)
+            for n in comp.linear_params():
+                names.append(self._global(comp, n))
+                cols.append(np.asarray(unit[n], dtype=float))
+        phi = np.column_stack(cols) if cols else np.empty((np.size(x), 0))
+        return phi, names
+
+    # -- derived quantities --------------------------------------------------
+    def _phonon_index(self):
+        """Global index of the phonon's Omega_d (Gamma is the next slot), or None."""
+        i = 0
+        for c in self.components:
+            if isinstance(c, PhononDHO):
+                return i  # Omega_d first, Gamma second within PhononDHO
+            i += len(c.param_names())
+        return None
+
+    def omega0(self, theta, cov):
+        """Derived ω₀ and its (HESSE-propagated) error for the phonon component."""
+        theta = np.asarray(theta, dtype=float)
+        i = self._phonon_index()
+        if i is None:
+            raise ValueError("composite has no PhononDHO component")
+        sub = None
+        if cov is not None:
+            cov = np.asarray(cov, dtype=float)
+            sub = np.array([[cov[i, i], cov[i, i + 1]],
+                            [cov[i + 1, i], cov[i + 1, i + 1]]])
+        return omega0_value_error(theta[i], theta[i + 1], sub)
