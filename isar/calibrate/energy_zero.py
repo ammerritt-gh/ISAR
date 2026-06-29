@@ -98,3 +98,52 @@ def resolve_zero(x, counts, record, series) -> ZeroResolution:
         if interp is not None:
             return ZeroResolution(interp, "interpolated")
     return ZeroResolution(None, None)
+
+
+# --- calibration from dedicated elastic (Bragg) scans -----------------------------------------
+
+_DEFAULT_RESOLUTION = (0.96, 0.60)   # (gauss_fwhm, lorentz_fwhm) meV — fallback for an unseen slit
+
+
+@dataclass(frozen=True)
+class EnergyCalibration:
+    """The energy-zero + resolution an analysis needs, built once from the elastic/Bragg scans.
+
+    ``zeros`` is a scan-keyed :class:`ZeroSeries` (interpolated to a phonon scan's number — the
+    elastic scans bracket the phonon scans in scan order, so this tracks the temporal drift, D8).
+    ``resolution_by_slit`` maps a slit width to the median Voigt (gauss, lorentz) FWHM measured on
+    the elastic scans at that slit. A phonon scan with no zero in coverage → held-for-calibration
+    (``zero`` returns ``None``, never E0 = 0)."""
+
+    zeros: "ZeroSeries"
+    resolution_by_slit: dict
+    default_resolution: tuple = _DEFAULT_RESOLUTION
+
+    def zero(self, key) -> float | None:
+        return self.zeros.interpolate(key)
+
+    def resolution(self, slit) -> tuple:
+        try:
+            return self.resolution_by_slit.get(int(slit), self.default_resolution)
+        except (TypeError, ValueError):
+            return self.default_resolution
+
+
+def build_energy_calibration(elastic_scans, *, key: str = "scan_number",
+                             default_resolution: tuple = _DEFAULT_RESOLUTION) -> EnergyCalibration:
+    """Fit each elastic scan's line (``fit_elastic``) and assemble the zero series + per-slit
+    resolution. Only significant elastics (``ok``) contribute; ``key`` chooses the series key
+    (``"scan_number"`` — robust and monotonic — or ``"time"``)."""
+    points: list[tuple[float, float]] = []
+    by_slit: dict[int, list[tuple[float, float]]] = {}
+    for s in elastic_scans:
+        center, gfw, lfw, ok = fit_elastic(np.asarray(s.energy, float), np.asarray(s.counts, float))
+        if not ok:
+            continue
+        points.append((float(getattr(s, key)), float(center)))
+        by_slit.setdefault(int(s.slit), []).append((float(gfw), float(lfw)))
+    resolution_by_slit = {
+        slit: (float(np.median([g for g, _ in vals])), float(np.median([l for _, l in vals])))
+        for slit, vals in by_slit.items()
+    }
+    return EnergyCalibration(ZeroSeries.build(points), resolution_by_slit, default_resolution)
