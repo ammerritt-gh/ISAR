@@ -71,3 +71,29 @@ def test_is_bimodal_detects_two_clusters():
 def test_is_bimodal_degenerate_inputs():
     assert B.is_bimodal(np.full(50, 5.0)) is False     # zero spread
     assert B.is_bimodal(np.array([5.0, 5.1])) is False  # too few
+
+
+def test_is_bimodal_weights_can_split_or_merge():
+    """Weighting feeds the pooled across-model density: down-weighting a cluster below the
+    relative-height floor collapses the fork to a fold."""
+    rng = np.random.default_rng(0)
+    s = np.concatenate([rng.normal(5.0, 0.1, 200), rng.normal(8.0, 0.1, 200)])
+    assert B.is_bimodal(s, weights=np.ones(s.size)) is True
+    w = np.where(s < 6.5, 1.0, 1e-3)                    # crush the upper cluster
+    assert B.is_bimodal(s, weights=w) is False
+
+
+def test_kde_modes_reports_split_between_two_clusters():
+    rng = np.random.default_rng(1)
+    s = np.concatenate([rng.normal(5.0, 0.1, 200), rng.normal(8.0, 0.1, 200)])
+    m = B.kde_modes(s)
+    assert m.bimodal is True
+    assert m.split is not None and 5.0 < m.split < 8.0  # the valley sits between the modes
+    assert len(m.peaks) >= 2
+
+
+def test_kde_modes_unimodal_has_no_split():
+    rng = np.random.default_rng(2)
+    m = B.kde_modes(rng.normal(6.0, 0.2, 300))
+    assert m.bimodal is False
+    assert m.split is None

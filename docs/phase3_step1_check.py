@@ -14,13 +14,18 @@ No library code is modified. Run from the repo root:
 
 It also attaches the frequentist error layer (§5: parametric bootstrap + MINOS/ω₀-profile +
 MINOS↔bootstrap agreement) to the elastic+stokes+bg fit and checks the bootstrap ω₀ interval
-against the HESSE σ — on these well-counted scans they should agree (Bernstein–von Mises).
+against the HESSE σ — on these well-counted scans they should agree (Bernstein–von Mises) — and
+runs the step-2 model selection (§4: AIC/AICc/BIC + Akaike weights + nested LRT, then the pooled
+across-model fold/fork). On the control set elastic+stokes+bg is the lone survivor → fold; the
+multimodal fork is demonstrated on a synthetic two-structure disagreement.
 
 Outputs (under the gitignored out/phase3_step1/):
     results_step1.csv     per (scan, hypothesis): ω₀, Γ, cost/dof, k, status flags, Δ vs Phase-1,
-                          and for elastic+stokes+bg the bootstrap/profile ω₀ intervals + regime
+                          the bootstrap/profile ω₀ intervals + regime, and AIC/weights + modality
     figures/s30_scan*.png one per scan: data + elastic+stokes+bg (with phonon/elastic/bg
                           decomposition) + pull residual
+    figures/selection_akaike_weights.png  per-scan Akaike weights (elastic+stokes+bg vs stokes+bg)
+    figures/synthetic_fork.png  synthetic multimodal fork: pooled density + modes + weights
     figures/bootstrap_omega0_histograms.png  per-scan ω₀ bootstrap distribution vs HESSE σ
     figures/dispersion_summary.png  ω₀(K) with bootstrap error bars, overlaid on the Phase-1 baseline
 """
@@ -36,7 +41,7 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from isar.analyze import errors, loop                      # noqa: E402
+from isar.analyze import errors, loop, select              # noqa: E402
 from isar.analyze.context import ScanContext               # noqa: E402
 from isar.analyze.structures import enumerate_structures   # noqa: E402
 from isar.parsers import spec_s30                          # noqa: E402
@@ -200,7 +205,71 @@ def bootstrap_histograms(path, panels):
     fig.tight_layout(); fig.savefig(path, dpi=120); plt.close(fig)
 
 
-def write_findings(path, rows, worst_o, worst_g):
+def selection_summary(path, sel_rows):
+    """Per-scan Akaike weights (elastic+stokes+bg vs stokes+bg) — the model-selection
+    eyeball: the elastic structure should take ~all the weight on every control scan."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    tags = [sr["tag"].replace("s30_", "").replace("_ana5", "") for sr in sel_rows]
+    w_el = [sr["w_elastic"] for sr in sel_rows]
+    w_so = [sr["w_stokes"] for sr in sel_rows]
+    xpos = np.arange(len(sel_rows))
+    fig, ax = plt.subplots(figsize=(7.0, 4.0))
+    ax.bar(xpos - 0.18, w_el, width=0.36, color="C1", label="elastic+stokes+bg")
+    ax.bar(xpos + 0.18, w_so, width=0.36, color="0.6", label="stokes+bg")
+    for i, sr in enumerate(sel_rows):
+        if not sr["stokes_converged"]:                     # mark non-converged reduced model
+            ax.annotate("n/c", (xpos[i] + 0.18, 0.02), fontsize=7, ha="center", color="0.4")
+    ax.set_ylim(0, 1.08); ax.set_xticks(xpos); ax.set_xticklabels(tags, rotation=20, fontsize=8)
+    ax.set_ylabel("Akaike weight"); ax.set_title("S30 control — model selection (Akaike weights)")
+    ax.legend(fontsize=8); fig.tight_layout(); fig.savefig(path, dpi=120); plt.close(fig)
+
+
+def _fake_result(label, k, cost, samples):
+    """A StructureFitResult carrying fabricated bootstrap samples — for the synthetic fork
+    demo only (the control scans never fork)."""
+    s = np.asarray(samples, dtype=float)
+    params = {f"{label}.p{i}": 0.0 for i in range(k)}
+    return loop.StructureFitResult(
+        label=label, k=k, ndof=40, cost=cost, cost_per_dof=cost / 40,
+        optimizer_converged=True, covariance_ok=True, profile_ok=True, well_constrained=True,
+        analysis_usable=True, params=params, param_errors={n: None for n in params},
+        gamma=0.4, gamma_err=0.05, omega0=float(np.median(s)), omega0_err_hesse=0.05,
+        message="ok", within_model={"omega0_samples": s})
+
+
+def synthetic_fork_demo(path):
+    """The multimodal fork is unreachable on the well-counted single-phonon control set (one
+    survivor -> fold). Demonstrate the fork report shape on a synthetic two-structure
+    disagreement: two equally-supported structures placing omega0 at ~5 and ~8 meV. Returns
+    the Selection so the report can quote its modes/weights."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    rng = np.random.default_rng(20240629)
+    a = _fake_result("structA@5meV", 5, 100.0, rng.normal(5.0, 0.18, 400))
+    b = _fake_result("structB@8meV", 5, 100.0, rng.normal(8.0, 0.18, 400))  # equal AIC -> w 0.5/0.5
+    sel = select.select_models([a, b], stamp=False)
+    p = sel.pooled
+
+    fig, ax = plt.subplots(figsize=(6.5, 4.0))
+    ax.hist(p.samples, bins=60, weights=p.weights, density=True, color="C0", alpha=0.55,
+            label="pooled across-model density")
+    for i, m in enumerate(p.modes):
+        ax.axvline(m.location, color="C3", lw=1.8,
+                   label=f"mode {i + 1}: {m.location:.2f} meV (w={m.weight:.2f})")
+        lo, _md, hi = m.interval
+        ax.axvspan(lo, hi, color="C3", alpha=0.12)
+    ax.set_xlabel("omega0 (meV)"); ax.set_ylabel("density")
+    ax.set_title("Synthetic multimodal fork — two equally-supported structures")
+    ax.legend(fontsize=7); fig.tight_layout(); fig.savefig(path, dpi=120); plt.close(fig)
+    return sel
+
+
+def write_findings(path, rows, worst_o, worst_g, sel_rows, fork):
     """Consolidated markdown report (mirrors docs/in8_phase1_check.py's FINDINGS.md), built
     from the per-scan rows so it stays in lock-step with the run."""
     el = [r for r in rows if r["label"] == "elastic+stokes+bg"]
@@ -210,7 +279,7 @@ def write_findings(path, rows, worst_o, worst_g):
     bh = [r["boot_hw_over_hesse"] for r in el
           if isinstance(r.get("boot_hw_over_hesse"), (int, float))]
 
-    L = ["# Phase 3 — S30 control check: structure loop + frequentist errors\n\n",
+    L = ["# Phase 3 — S30 control check: structure loop + errors + model selection\n\n",
          "Generated by `docs/phase3_step1_check.py` on the six FeSeS_1 S30 (IXS) control scans "
          "(Q=(3.77,K,-0.09), analyzer ana5). Outputs are gitignored; reproduce with "
          "`python docs/phase3_step1_check.py`.\n\n",
@@ -235,14 +304,50 @@ def write_findings(path, rows, worst_o, worst_g):
                  "(authoritative); HESSE is a convergence check only.\n")
     L.append("\nCalibration: the synthetic coverage gate `tests/analyze/test_bootstrap_coverage.py` "
              "(slow) confirms the 68% bootstrap omega0 interval covers truth ≈68%.\n\n")
+
+    L.append("## Step 2 — model selection + modality (§4; built last, consumes the step-3 bootstrap)\n\n")
+    L.append("Selection is by AIC (Akaike weights; `cost` is Baker-Cousins -2lnL so AIC = cost + 2k), "
+             "with AICc/BIC and the nested likelihood-ratio test (the Poisson analog of the nested "
+             "F-test: deviance drop ~ chi2(dk)) reported alongside. On every control scan "
+             "elastic+stokes+bg is the lone survivor (Akaike weight ~1); where stokes+bg converged, "
+             "the nested LRT confirms the elastic component is warranted (p << 1e-3). The pooled "
+             "across-model omega0 distribution is unimodal -> **fold**, and with a single survivor the "
+             "folded interval equals the bootstrap interval.\n\n")
+    L.append("| scan | T (K) | elastic weight | stokes+bg dAIC | nested LRT p | modality | folded omega0 68% |\n")
+    L.append("|---|---|---|---|---|---|---|\n")
+    for sr in sel_rows:
+        dAIC = f"{sr['dAIC_stokes']:.0f}" if np.isfinite(sr["dAIC_stokes"]) else "n/c"
+        pv = f"{sr['nested_p']:.1e}" if np.isfinite(sr["nested_p"]) else "n/c"
+        fold = f"[{sr['fold'][0]:.3f}, {sr['fold'][2]:.3f}]" if sr["fold"] else "-"
+        L.append(f"| {sr['tag']} | {sr['T']:.0f} | {sr['w_elastic']:.3f} | {dAIC} | {pv} | "
+                 f"{sr['modality']} | {fold} |\n")
+    L.append("\n(`n/c` = stokes+bg did not converge, so it is excluded from selection and the nested "
+             "LRT; elastic still wins as the only converged structure.)\n\n")
+    if fork is not None and fork.pooled is not None:
+        L.append("### Multimodal fork (synthetic)\n\n")
+        L.append("The fork is unreachable on this single-phonon control set (one survivor -> fold), so "
+                 "it is exercised on a synthetic two-structure disagreement (two equally-supported "
+                 "structures placing omega0 at ~5 and ~8 meV). `select_models` returns a fork rather "
+                 "than averaging into the gap:\n\n")
+        L.append(f"- {fork.pooled.disambiguation}\n")
+        for i, m in enumerate(fork.pooled.modes):
+            L.append(f"  - mode {i + 1}: omega0 = {m.location:.2f} meV, weight {m.weight:.2f}, "
+                     f"68% [{m.interval[0]:.2f}, {m.interval[2]:.2f}]\n")
+        L.append("\nSee `figures/synthetic_fork.png`. Fold/fork logic + determinism are covered by "
+                 "`tests/analyze/test_select_modality.py`; AIC/weights/nested-LRT by "
+                 "`tests/analyze/test_select.py`.\n\n")
+
     L.append("## Figures (`out/phase3_step1/figures/`)\n\n"
              "- `s30_scan*.png` — data + elastic+stokes+bg with phonon/elastic/bg decomposition + pull residual.\n"
+             "- `selection_akaike_weights.png` — per-scan Akaike weights (elastic+stokes+bg vs stokes+bg).\n"
+             "- `synthetic_fork.png` — synthetic multimodal fork: pooled density + modes + weights.\n"
              "- `bootstrap_omega0_histograms.png` — per-scan omega0 bootstrap distribution vs HESSE sigma (BvM eyeball).\n"
              "- `dispersion_summary.png` — omega0(K) with bootstrap error bars, overlaid on the Phase-1 baseline.\n\n")
     L.append("## Scope / caveats\n\n"
-             "- This control set is well-counted, in-window-elastic, single-phonon → all asymptotic, no fork. "
-             "The sparse-regime flag and the (step-2) multimodal fork are exercised by the unit/synthetic tests, not these scans.\n"
-             "- Per-(scan, hypothesis) numbers incl. status flags and intervals are in `results_step1.csv`.\n")
+             "- This control set is well-counted, in-window-elastic, single-phonon → all asymptotic, "
+             "one survivor, fold. The sparse-regime flag is exercised by the unit tests and the "
+             "multimodal fork by the synthetic demo above (plus `test_select_modality.py`), not these scans.\n"
+             "- Per-(scan, hypothesis) numbers incl. status flags, intervals, AIC/weights are in `results_step1.csv`.\n")
     path.write_text("".join(L), encoding="utf-8")
 
 
@@ -263,8 +368,8 @@ def main():
     by_scan = {rec.scan_number: rec for rec in spec_s30.parse_file(S30_FILE, card)}
     ref = load_reference()
 
-    rows, deltas, disp, boot_panels = [], [], [], []
-    print("== Phase-3 step-3: structure loop + frequentist errors on S30 control ==")
+    rows, deltas, disp, boot_panels, sel_rows = [], [], [], [], []
+    print("== Phase-3 steps 1-3: structure loop + errors + model selection on S30 control ==")
     for scan_no in S30_CONTROL_SCANS:
         rec = by_scan.get(scan_no)
         if rec is None:
@@ -285,6 +390,8 @@ def main():
             errors.attach(es, by_hyp["elastic+stokes+bg"], ctx,
                           M=BOOT_M, seed=4000 + scan_no, with_profile=True)
         wm = es.within_model if es is not None else None
+        sel = select.select_models(results)                 # step-2 model selection (stamps across_model)
+        score_by_label = {s.label: s for s in sel.scores}
 
         tag = f"s30_scan{scan_no}_{S30_ANALYZER}"
         ref_row = ref.get(tag)
@@ -293,6 +400,18 @@ def main():
             es_do = round(es.omega0 - float(ref_row["omega0"]), 4)
             es_dg = round(es.gamma - float(ref_row["gamma"]), 4)
             deltas.append((tag, es_do, es_dg))
+        se, sso = score_by_label.get("elastic+stokes+bg"), score_by_label.get("stokes+bg")
+        if se is not None:
+            sel_rows.append({
+                "tag": tag, "T": ctx.T, "w_elastic": se.weight,
+                "w_stokes": (sso.weight if sso is not None else 0.0),
+                "stokes_converged": sso is not None,
+                "dAIC_stokes": (sso.delta_aic if sso is not None else float("nan")),
+                "nested_p": (se.nested["p_value"] if se.nested else float("nan")),
+                "modality": sel.modality,
+                "fold": (sel.pooled.interval if (sel.pooled is not None
+                         and sel.pooled.modality == "fold") else None),
+            })
         for r in results:
             is_elastic = r.label == "elastic+stokes+bg"
             row = {
@@ -323,6 +442,18 @@ def main():
                                               if np.isfinite(ag.gamma_ratio) else ""),
                     "regime": ag.regime, "bimodal": int(wm["bimodal"]), "n_boot": wm["n_converged"],
                 })
+            sc = score_by_label.get(r.label)                # step-2 selection metrics
+            if sc is not None:
+                row.update({"aic": round(sc.aic, 2), "aicc": round(sc.aicc, 2),
+                            "bic": round(sc.bic, 2), "delta_aic": round(sc.delta_aic, 2),
+                            "akaike_weight": round(sc.weight, 4)})
+                if is_elastic:
+                    row["nested_p"] = f"{sc.nested['p_value']:.2e}" if sc.nested else ""
+                    if sel.pooled is not None:
+                        row["modality"] = sel.pooled.modality
+                        if sel.pooled.modality == "fold":
+                            row["fold_o0_lo"] = round(sel.pooled.interval[0], 4)
+                            row["fold_o0_hi"] = round(sel.pooled.interval[2], 4)
             rows.append(row)
         delta_str = (f"  | dOmega0={es_do:+.4f} dGamma={es_dg:+.4f}" if es_do is not None else "")
         print(f"  scan#{scan_no}: elastic+stokes+bg omega0={es.omega0:.3f} gamma={es.gamma:.3f} "
@@ -341,6 +472,11 @@ def main():
                                 "hesse_sigma": sig, "boot_interval": wm["freq_interval"],
                                 "samples": wm["omega0_samples"],
                                 "regime": wm["agreement"].regime})
+        if se is not None:
+            so_note = (f"stokes+bg dAIC={sso.delta_aic:.0f}" if sso is not None
+                       else "stokes+bg non-converged")
+            print(f"      selection: elastic weight={se.weight:.3f}, {so_note}, "
+                  f"modality={sel.modality}")
         overlay(FIGDIR / f"{tag}.png", f"S30 scan#{scan_no} {S30_ANALYZER} (T={ctx.T:.0f} K)",
                 ctx, fits_by_label)
         print(f"  figure: {tag}.png")
@@ -360,11 +496,16 @@ def main():
     if boot_panels:
         bootstrap_histograms(FIGDIR / "bootstrap_omega0_histograms.png", boot_panels)
         print("  figure: bootstrap_omega0_histograms.png")
+    if sel_rows:
+        selection_summary(FIGDIR / "selection_akaike_weights.png", sel_rows)
+        print("  figure: selection_akaike_weights.png")
+    fork_sel = synthetic_fork_demo(FIGDIR / "synthetic_fork.png")
+    print("  figure: synthetic_fork.png")
 
     worst_o = max((abs(d[1]) for d in deltas), default=float("nan"))
     worst_g = max((abs(d[2]) for d in deltas), default=float("nan"))
     if rows:
-        write_findings(OUT / "FINDINGS.md", rows, worst_o, worst_g)
+        write_findings(OUT / "FINDINGS.md", rows, worst_o, worst_g, sel_rows, fork_sel)
         print(f"  wrote {OUT / 'FINDINGS.md'}")
 
     # --- regression gate vs the frozen Phase-1 baseline ---------------------

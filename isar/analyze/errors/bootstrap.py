@@ -41,33 +41,57 @@ def _percentile_interval(samples: np.ndarray, level: float) -> tuple[float, floa
             float(np.percentile(samples, hi_q)))
 
 
-def is_bimodal(samples, *, grid: int = 256, rel_height: float = 0.1, dip: float = 0.75) -> bool:
-    """True if the sample density has two prominent modes separated by a real valley.
+@dataclass
+class KdeModes:
+    """KDE peak/valley summary of a sample density. ``split`` is the x-location of the valley
+    between the two tallest peaks (the fork boundary) when ``bimodal``, else ``None``."""
 
-    A KDE is sampled on a grid; local maxima at least `rel_height` of the global peak are
-    counted, and the two tallest must be separated by a valley dropping to ≤ `dip` of the
-    shorter peak. Feeds §4's modality test (the two-phonon ambiguity appears here)."""
+    xs: np.ndarray
+    density: np.ndarray
+    peaks: list          # grid indices of qualifying local maxima
+    bimodal: bool
+    split: float | None
+
+
+def kde_modes(samples, *, weights=None, grid: int = 256, rel_height: float = 0.1,
+              dip: float = 0.75) -> KdeModes:
+    """Summarise a (optionally weighted) sample density: a KDE is sampled on a grid, local
+    maxima at least `rel_height` of the global peak are counted, and the two tallest are
+    bimodal when separated by a valley dropping to ≤ `dip` of the shorter peak; `split` is
+    that valley's location. Weighting is what lets §4's pooled across-model mixture be
+    evaluated honestly — each survivor's samples carry its Akaike weight."""
     s = np.asarray(samples, dtype=float)
-    s = s[np.isfinite(s)]
+    finite = np.isfinite(s)
+    s = s[finite]
+    w = np.asarray(weights, dtype=float)[finite] if weights is not None else None
     if s.size < 20 or np.ptp(s) <= 0.0:
-        return False
+        return KdeModes(np.empty(0), np.empty(0), [], False, None)
     from scipy.stats import gaussian_kde
     try:
-        kde = gaussian_kde(s)
+        kde = gaussian_kde(s, weights=w)
     except Exception:                              # singular covariance, etc.
-        return False
+        return KdeModes(np.empty(0), np.empty(0), [], False, None)
     xs = np.linspace(float(s.min()), float(s.max()), grid)
     d = np.asarray(kde(xs), dtype=float)
     dmax = float(d.max())
     if dmax <= 0.0:
-        return False
+        return KdeModes(xs, d, [], False, None)
     peaks = [i for i in range(1, grid - 1)
              if d[i] > d[i - 1] and d[i] >= d[i + 1] and d[i] >= rel_height * dmax]
     if len(peaks) < 2:
-        return False
+        return KdeModes(xs, d, peaks, False, None)
     a, b = sorted(sorted(peaks, key=lambda i: d[i])[-2:])
-    valley = float(d[a:b + 1].min())
-    return bool(valley <= dip * min(float(d[a]), float(d[b])))
+    valley_i = a + int(np.argmin(d[a:b + 1]))
+    bimodal = bool(float(d[valley_i]) <= dip * min(float(d[a]), float(d[b])))
+    return KdeModes(xs, d, peaks, bimodal, float(xs[valley_i]) if bimodal else None)
+
+
+def is_bimodal(samples, *, weights=None, grid: int = 256, rel_height: float = 0.1,
+               dip: float = 0.75) -> bool:
+    """True if the sample density has two prominent modes separated by a real valley.
+    Thin wrapper over :func:`kde_modes`; feeds §4's modality test (the two-phonon ambiguity
+    appears here as a double-peaked bootstrap)."""
+    return kde_modes(samples, weights=weights, grid=grid, rel_height=rel_height, dip=dip).bimodal
 
 
 def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 12345,
