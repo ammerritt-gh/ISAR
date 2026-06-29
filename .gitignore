@@ -13,3 +13,4 @@ env/
 # ISAR synthetic-harness outputs
 /out/
 test_data/
+ISAR.code-workspace
