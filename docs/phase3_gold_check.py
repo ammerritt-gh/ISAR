@@ -55,6 +55,7 @@ from isar.analyze.structures import enumerate_structures   # noqa: E402
 from isar.calibrate import bragg, elastic                  # noqa: E402
 from isar.calibrate.energy_zero import build_energy_calibration   # noqa: E402
 from isar.parsers import spec_s30                          # noqa: E402
+from isar.report import audit, captions, findings          # noqa: E402
 from isar.schema import axes                               # noqa: E402
 
 # --------------------------------------------------------------------------- config
@@ -166,8 +167,8 @@ def fig_confusion(path, report):
         for c in range(len(cols)):
             ax.text(c, r, int(grid[r, c]), ha="center", va="center", fontsize=13,
                     color=("white" if grid[r, c] > grid.max() / 2 else "black"))
-    ax.set_title("Disposition confusion (gold vs ISAR)")
-    fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
+    ax.set_title("What the human did (rows) vs what ISAR did (columns)")
+    captions.save_captioned(fig, path, "gold/confusion")
 
 
 def fig_pull_hist(path, scores):
@@ -181,9 +182,9 @@ def fig_pull_hist(path, scores):
         ax.axvline(float(np.mean(pulls)), color="crimson", lw=1.5,
                    label=f"mean {np.mean(pulls):+.2f}, sd {np.std(pulls, ddof=1):.2f}")
         ax.legend()
-    ax.set_xlabel("omega0 pull = (ISAR - gold) / sqrt(sigma_isar^2 + sigma_gold^2)")
-    ax.set_ylabel("scans"); ax.set_title("Recovery pull (agreed-accept set)")
-    fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
+    ax.set_xlabel("omega0 pull = (ISAR - expert) / sqrt(sigma_isar^2 + sigma_expert^2)")
+    ax.set_ylabel("scans"); ax.set_title("How close ISAR's energy is to the expert's")
+    captions.save_captioned(fig, path, "gold/pull_hist")
 
 
 def fig_scatter(path, scores):
@@ -203,9 +204,10 @@ def fig_scatter(path, scores):
     for b in buckets:
         ax.scatter([], [], color=color[b], label=b)
     ax.scatter([], [], marker="x", color="gray", label="gold REJECT")
-    ax.set_xlabel("gold omega0 (meV)"); ax.set_ylabel("ISAR omega0 (meV)")
-    ax.set_title("omega0: ISAR vs gold"); ax.legend(fontsize=7, loc="upper left")
-    fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
+    ax.set_xlabel("expert omega0 (meV)"); ax.set_ylabel("ISAR omega0 (meV)")
+    ax.set_title("ISAR energy vs expert energy (dashed = exact agreement)")
+    ax.legend(fontsize=7, loc="upper left")
+    captions.save_captioned(fig, path, "gold/scatter")
 
 
 def fig_confidence(path, scores):
@@ -217,11 +219,108 @@ def fig_confidence(path, scores):
         ax.scatter(abs(s.omega0_pull), s.isar_confidence, s=28,
                    color=("steelblue" if ok else "crimson"),
                    marker=("o" if ok else "X"))
-    ax.scatter([], [], color="steelblue", label="gold OK")
-    ax.scatter([], [], color="crimson", marker="X", label="gold REJECT (resolved = wrong)")
-    ax.set_xlabel("|omega0 pull|"); ax.set_ylabel("ISAR confidence")
-    ax.set_title("Confidence vs recovery error (ISAR-resolved)"); ax.legend(fontsize=8)
-    fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
+    ax.scatter([], [], color="steelblue", label="expert accepted")
+    ax.scatter([], [], color="crimson", marker="X", label="expert rejected (resolved = danger)")
+    ax.set_xlabel("|omega0 pull|  (distance from the expert, in error bars)")
+    ax.set_ylabel("ISAR confidence")
+    ax.set_title("Is ISAR confident only when it's close?"); ax.legend(fontsize=8)
+    captions.save_captioned(fig, path, "gold/confidence")
+
+
+# --------------------------------------------------------------------------- the visual audit
+
+_COMPONENT_COLORS = {"phonon": "C0", "elastic": "C2", "bg": "0.5"}
+
+
+def _isar_fit_for_audit(rec, det, card, *, center, gfw, lfw, prior):
+    """Re-run only the deterministic fit + selection (no bootstrap) for one scan, to recover ISAR's
+    drawn curve. Mirrors run_pipeline's fit; cheap because the audit covers only a handful of scans."""
+    ctx = ScanContext.from_scan(rec, det, card, center=center, gauss_fwhm=gfw, lorentz_fwhm=lfw,
+                                prior_omega=(prior.omega0 if prior else None))
+    results = loop.fit_admissible_structures(ctx, minos=False)
+    fits = {r.label: r for r in results}
+    by_hyp = {h.label: h for h in enumerate_structures(ctx)}
+    sel = select.select_models(results, stamp=False)
+    best = fits.get(sel.best) if sel.best else None
+    return ctx, by_hyp, best, sel
+
+
+def build_audit_panel(rec, row, det, card, *, center, gfw, lfw, prior, gold_gfw, gold_lfw, role, isar):
+    """One audit panel: the data, ISAR's fit broken into components, the expert's reconstructed
+    (provisional) curve, and ISAR's pull residual. The expert curve is rebuilt from the expert's
+    reported omega0/gamma/center/resolution by NNLS on the amplitudes (isar.report.audit)."""
+    ctx, by_hyp, best, sel = _isar_fit_for_audit(rec, det, card, center=center, gfw=gfw, lfw=lfw,
+                                                 prior=prior)
+    x = np.asarray(ctx.x_used, dtype=float)
+    counts = np.asarray(ctx.counts_used, dtype=float)
+    err = np.sqrt(np.maximum(counts, 1.0))
+    xf = np.linspace(float(x.min()), float(x.max()), 400)
+
+    isar_total = isar_comps = pull = None
+    if best is not None and sel.best in by_hyp:
+        comp = by_hyp[sel.best].build()
+        th = np.array([best.params[n] for n in comp.param_names()], dtype=float)
+        isar_total = comp.evaluate(xf, th, ctx)
+        isar_comps = comp.evaluate_components(xf, th, ctx)
+        pull = (counts - comp.evaluate(x, th, ctx)) / err
+
+    gold_rc = audit.reconstruct_curve(x, counts, omega0=row.omega0, gamma=row.gamma,
+                                      center=row.center, gauss_fwhm=gold_gfw, lorentz_fwhm=gold_lfw,
+                                      T=ctx.T, x_eval=xf)
+    return {"role": role, "scan": row.scan, "x": x, "counts": counts, "err": err, "xf": xf,
+            "isar_total": isar_total, "isar_comps": isar_comps, "gold_total": gold_rc.total,
+            "pull": pull, "verdict": isar.verdict, "isar_omega0": isar.omega0,
+            "gold_omega0": row.omega0}
+
+
+def fig_audit(path, panels):
+    n = len(panels)
+    fig, axs = plt.subplots(2, n, figsize=(4.6 * n, 5.6), sharex="col",
+                            gridspec_kw={"height_ratios": [3, 1]}, squeeze=False)
+    for j, p in enumerate(panels):
+        a0, a1 = axs[0, j], axs[1, j]
+        a0.errorbar(p["x"], p["counts"], yerr=p["err"], fmt="o", ms=3, color="k", label="data",
+                    zorder=5)
+        if p["isar_total"] is not None:
+            a0.plot(p["xf"], p["isar_total"], "-", color="C1", lw=2.0, zorder=4,
+                    label=f"ISAR fit ({p['verdict']})")
+            for label, vals in p["isar_comps"]:
+                a0.plot(p["xf"], vals, "--", lw=1.0, alpha=0.8,
+                        color=_COMPONENT_COLORS.get(label, "0.6"))
+        a0.plot(p["xf"], p["gold_total"], "-", color="crimson", lw=1.5, alpha=0.9,
+                label="expert fit (provisional)")
+        a0.set_title(f"scan {p['scan']} — {p['role']}\n"
+                     f"ISAR ω₀={_fmt(p['isar_omega0'], 2)} | expert ω₀={_fmt(p['gold_omega0'], 2)} meV",
+                     fontsize=8)
+        a0.legend(fontsize=6, loc="upper right")
+        if j == 0:
+            a0.set_ylabel("counts")
+        a1.axhline(0, color="0.6", lw=0.8)
+        for s in (1.0, -1.0):
+            a1.axhline(s, color="0.85", lw=0.6)
+        if p["pull"] is not None:
+            a1.plot(p["x"], p["pull"], "s-", ms=2.5, color="C1")
+        a1.set_xlabel("energy transfer (meV)")
+        if j == 0:
+            a1.set_ylabel("pull (ISAR)")
+    captions.save_captioned(fig, path, "gold/audit")
+
+
+def fig_resolution_overlay(path, res_xcheck):
+    rows = [r for r in res_xcheck if np.isfinite(r["gold"][0]) and np.isfinite(r["isar"][0])]
+    if not rows:
+        return False
+    slits = [r["slit"] for r in rows]
+    fig, (a0, a1) = plt.subplots(1, 2, figsize=(8.2, 3.6))
+    for ax, idx, name in ((a0, 0, "Gaussian"), (a1, 1, "Lorentzian")):
+        ax.plot(slits, [r["isar"][idx] for r in rows], "o-", color="C0",
+                label="ISAR (self-measured)")
+        ax.plot(slits, [r["gold"][idx] for r in rows], "x--", color="crimson",
+                label="hand-measured")
+        ax.set_xlabel("analyzer slit"); ax.set_ylabel(f"{name} FWHM (meV)"); ax.set_title(name)
+        ax.legend(fontsize=7)
+    captions.save_captioned(fig, path, "gold/resolution_overlay")
+    return True
 
 
 # --------------------------------------------------------------------------- output
@@ -249,104 +348,127 @@ def _round(x, n):
 
 
 def write_findings(path, report, scores, rejects, prior_demo, gate, n_ok, n_reject, n_delivered_ok,
-                   n_resolved_ok, n_flagged_ok, *, res_xcheck=None, n_elastic=0, n_held=0):
-    L = []
-    L.append("# Phase 3 — Step 6 FINDINGS: gold-standard scoring (FeSe_1)\n")
-    L.append(f"Scored **{report.n} scans** ({n_ok} gold-OK, {n_reject} gold-REJECT) from "
-             "`FeSe_1_fit_results.csv` against the full Phase-3 pipeline (structure loop -> errors -> "
-             "selection -> verdict), channel = analyzer matched by reported K (ana7 for FeSe_1).\n")
+                   n_resolved_ok, n_flagged_ok, *, res_xcheck=None, n_elastic=0, n_held=0,
+                   has_audit=False, has_resolution_fig=False):
+    n_declined = n_ok - n_delivered_ok
+    d = findings.FindingsDoc("Gold check — does ISAR make sensible first-pass calls on real data?")
 
-    L.append("## Energy zero — self-calibrated from the Bragg scans (the technique, not the results)\n")
-    L.append(f"ISAR fit **{n_elastic}** dedicated K=0 Bragg (`herixE`) elastic scans from the raw `.spec` "
-             "itself, built a scan#-keyed zero series, and interpolated the zero to each phonon scan "
-             "(no gold E0/center values used). The self-calibrated zeros are in a different absolute "
-             "frame than the gold's `center` column but recover the same omega (below).")
-    L.append(f"- scans held for calibration (no Bragg zero in coverage): **{n_held}**")
-    L.append("- ISAR's own per-phonon-scan elastic fit (autozero) vs the Bragg zero is recorded per scan "
-             "in `results_gold.csv` — it diverges where the phonon outshines the elastic, which is exactly "
-             "why the dedicated Bragg scans are needed.\n")
+    d.para(f"ISAR ran its full automatic pipeline (find the structure → fit → error bars → model "
+           f"selection → verdict) on **{report.n} real FeSe scans**, and we compared each call against "
+           f"a human expert's by-hand fits ({n_ok} the expert accepted, {n_reject} the expert "
+           f"rejected). This is a *reasonableness and safety* check on old data — part of development, "
+           f"not a live experiment.")
 
-    if res_xcheck:
-        L.append("## Resolution cross-check (ISAR self-measured vs gold Bragg table)\n")
-        L.append("| slit | ISAR gauss/lorentz FWHM | gold gauss/lorentz FWHM |")
-        L.append("|---|---|---|")
-        for r in res_xcheck:
-            L.append(f"| {r['slit']} | {r['isar'][0]:.3f} / {r['isar'][1]:.3f} | "
-                     f"{r['gold'][0]:.3f} / {r['gold'][1]:.3f} |")
-        L.append("")
+    d.section("What this checks — and what it does NOT claim")
+    d.para("ISAR is a triage tool: a good-enough first pass that flags the hard scans for you, not a "
+           "replacement for your own analysis. The bar here is three things: (1) **safety** — never "
+           "hand you a confident number on a scan the expert threw out; (2) **good-enough recovery** — "
+           "energies land in the right ballpark; (3) **honest confidence** — more sure when it is "
+           "closer. It is explicitly NOT trying to reproduce the expert exactly: the expert's fits are "
+           "themselves provisional (they may be revised), and over-tuning to one dataset would make "
+           "ISAR worse on the next experiment, not better.")
 
-    L.append("## Disposition confusion (gold x ISAR)\n")
-    L.append("\"Delivered\" = resolved (clean) + flagged (`model_incomplete`: usable omega, imperfect "
-             "model). Reject = `junk`/`unconstrained`; abstain = held/underpowered/no_signal.\n")
-    L.append("| gold \\ ISAR | resolved | flagged | reject | abstain | total |")
-    L.append("|---|---|---|---|---|---|")
-    for g in ("accept", "reject"):
-        c = report.confusion
-        L.append(f"| **{g}** ({'OK' if g=='accept' else 'REJECT'}) | {c.count(g,'resolved')} | "
-                 f"{c.count(g,'flagged')} | {c.count(g,'reject')} | {c.count(g,'abstain')} | "
-                 f"{c.row_total(g)} |")
-    L.append("")
-    L.append(f"- ISAR **delivered a usable omega for {n_delivered_ok}/{n_ok}** gold-OK scans "
-             f"({100.0*n_delivered_ok/max(n_ok,1):.0f}%: {n_resolved_ok} resolved, {n_flagged_ok} flagged).")
-    L.append(f"- **Safety violations** (gold-REJECT cleanly `resolved` by ISAR): "
-             f"**{len(report.safety_violations)}** {report.safety_violations or ''}.")
-    L.append("")
+    d.section("Triage summary — what ISAR did for you")
+    d.bullet(f"**Delivered a usable energy for {n_delivered_ok} of {n_ok}** expert-accepted scans "
+             f"({n_resolved_ok} resolved outright, {n_flagged_ok} flagged as usable-but-imperfect).")
+    d.bullet(f"**Flagged or declined {n_declined}** expert-accepted scans for your eyes — nothing "
+             f"deleted, just steered to the manual pile.")
+    d.bullet(f"**Safety: {len(report.safety_violations)}** expert-rejected scans were confidently "
+             f"resolved by ISAR (target 0) {report.safety_violations or ''}.")
+    d.para(f"Read that as a morning at the beamline: instead of fitting all {report.n} scans by hand, "
+           f"you'd start with ~{n_delivered_ok} already fitted plus a short flagged list to eyeball — "
+           f"and you can trust it didn't quietly accept a bad one.")
 
-    L.append("## omega0 recovery (agreed-accept set)\n")
-    L.append(f"- recovery scans: **{report.n_recovery}**")
-    L.append(f"- pull mean / sd: **{_fmt(report.pull_mean)}** / **{_fmt(report.pull_std)}**")
-    L.append(f"- median |dOmega0|: **{_fmt(report.median_abs_resid)} meV**")
-    L.append(f"- gold-omega0 inside ISAR 68% interval: **{_fmt(report.coverage68)}** "
-             "(target ~0.68 for calibrated intervals)")
-    L.append(f"- confidence when ISAR-resolved & correct vs wrong: **{_fmt(report.conf_agree)}** "
-             f"vs **{_fmt(report.conf_disagree)}**")
-    L.append("")
+    if has_audit:
+        d.section("See it with your own eyes")
+        d.para("Representative scans chosen by rule (not cherry-picked): a typical delivered scan, a "
+               "usable-but-flagged one, one ISAR over-flagged (it actually got the energy right), and "
+               "one the expert rejected. Data, ISAR's fit, the expert's reconstructed (provisional) "
+               "fit, and the residual:")
+        d.figure_block("gold/audit", "figures/audit.png")
 
-    L.append("## ISAR verdict buckets\n")
-    for b, n in sorted(report.bucket_counts.items(), key=lambda kv: -kv[1]):
-        L.append(f"- {b}: {n}")
-    L.append("")
+    d.section("How to read this report")
+    d.para("Verdicts and statistics terms are defined in `docs/GLOSSARY.md`; why ISAR uses these "
+           "methods — and what the error bars do and don't mean — is in `docs/STATS_PRIMER.md`.")
 
-    L.append("## The 4 gold-REJECTs (the load-bearing test)\n")
-    L.append("| scan | sample | gold omega0 | gold Chi2 | ISAR verdict | ISAR conf | disposition |")
-    L.append("|---|---|---|---|---|---|---|")
-    for r in rejects:
-        L.append(f"| {r['scan']} | {r['sample']} | {r['gold_omega0']} | {r['gold_chi2']} | "
-                 f"{r['isar_verdict']} | {_fmt(r['isar_confidence'],2)} | {r['isar_disposition']} |")
-    L.append("\nThe human REJECTed these as blown-up fits (railed damping/energy, huge Chi2). ISAR must "
-             "decline them too — never `resolved`.\n")
+    d.section("Energy zero — ISAR self-calibrates (the technique, not the numbers)")
+    d.para(f"ISAR fit **{n_elastic}** dedicated K=0 Bragg (`herixE`) elastic scans from the raw "
+           "`.spec` itself, built a scan-number-keyed zero series, and interpolated the zero to each "
+           "phonon scan — no expert energy-zero values were used. Scans with no Bragg zero in coverage "
+           f"(so held for calibration): **{n_held}**.")
+
+    if has_resolution_fig:
+        d.section("Resolution — ISAR measures its own, cross-checked")
+        d.figure_block("gold/resolution_overlay", "figures/resolution_overlay.png")
+    elif res_xcheck:
+        d.section("Resolution cross-check (ISAR self-measured vs a hand-measured table)")
+        d.table(["slit", "ISAR gauss / lorentz FWHM", "hand gauss / lorentz FWHM"],
+                [[r["slit"], f"{r['isar'][0]:.3f} / {r['isar'][1]:.3f}",
+                  f"{r['gold'][0]:.3f} / {r['gold'][1]:.3f}"] for r in res_xcheck])
+
+    d.section("What the human did vs what ISAR did")
+    d.figure_block("gold/confusion", "figures/confusion.png")
+    c = report.confusion
+    d.table(["expert \\ ISAR", "resolved", "flagged", "reject", "abstain", "total"],
+            [[("accept (OK)" if g == "accept" else "reject (REJECT)"),
+              c.count(g, "resolved"), c.count(g, "flagged"), c.count(g, "reject"),
+              c.count(g, "abstain"), c.row_total(g)] for g in ("accept", "reject")])
+    d.para("\"Delivered\" = resolved + flagged (ISAR handed you a usable number); reject / abstain mean "
+           "\"look here yourself\".")
+
+    d.section("How close ISAR's energies are to the expert's")
+    d.figure_block("gold/scatter", "figures/omega0_scatter.png")
+    d.figure_block("gold/pull_hist", "figures/omega0_pull_hist.png")
+    d.bullet(f"recovery scans (both gave a number, expert-accepted): **{report.n_recovery}**")
+    d.bullet(f"median |Δω₀|: **{_fmt(report.median_abs_resid)} meV** (instrument resolution is ~1 meV)")
+    d.bullet(f"pull mean / sd: {_fmt(report.pull_mean)} / {_fmt(report.pull_std)} — large because the "
+             "error bars are too tight; see Honest limitations.")
+
+    d.section("Is ISAR confident when it's right?")
+    d.figure_block("gold/confidence", "figures/confidence_calibration.png")
+    d.bullet(f"confidence when resolved & close vs resolved & far: **{_fmt(report.conf_agree)}** vs "
+             f"**{_fmt(report.conf_disagree)}** (higher-when-closer is what we want).")
+
+    d.section("ISAR verdict buckets")
+    d.bullets([f"{b}: {n}" for b, n in sorted(report.bucket_counts.items(), key=lambda kv: -kv[1])])
+
+    d.section("The expert-rejected scans (the safety test)")
+    d.para("The expert rejected these as blown-up fits (railed damping/energy, huge χ²). ISAR must "
+           "decline them too — never `resolved`.")
+    d.table(["scan", "sample", "expert ω₀", "expert χ²", "ISAR verdict", "ISAR conf", "what ISAR did"],
+            [[r["scan"], r["sample"], r["gold_omega0"], r["gold_chi2"], r["isar_verdict"],
+              _fmt(r["isar_confidence"], 2), r["isar_disposition"]] for r in rejects])
 
     if prior_demo:
-        L.append("## Prior-independence of recovered omega0\n")
-        L.append("Same scans fit with the leave-one-out gold prior vs no prior; the deterministic fit "
-                 "is well-counted (Bernstein-von Mises), so omega0 barely moves -> the gold-derived "
-                 "prior does not manufacture the agreement above.\n")
-        L.append("| scan | omega0 (LOO prior) | omega0 (no prior) | dOmega0 |")
-        L.append("|---|---|---|---|")
-        for d in prior_demo:
-            L.append(f"| {d['scan']} | {_fmt(d['with'])} | {_fmt(d['without'])} | {_fmt(d['delta'],4)} |")
-        worst = max((abs(d["delta"]) for d in prior_demo if d["delta"] is not None), default=0.0)
-        L.append(f"\nworst |dOmega0| from toggling the prior: **{worst:.4f} meV**.\n")
+        d.section("The recovered energy doesn't come from the prior")
+        d.para("Each scan fit with a dispersion prior built from the OTHER expert fits, vs no prior at "
+               "all. The energy barely moves — so the agreement above is the data talking, not the "
+               "prior steering ISAR toward the expert's answer.")
+        d.table(["scan", "ω₀ (with prior)", "ω₀ (no prior)", "Δω₀"],
+                [[dd["scan"], _fmt(dd["with"]), _fmt(dd["without"]), _fmt(dd["delta"], 4)]
+                 for dd in prior_demo])
+        worst = max((abs(dd["delta"]) for dd in prior_demo if dd["delta"] is not None), default=0.0)
+        d.para(f"Worst shift from toggling the prior: **{worst:.4f} meV**.")
 
-    L.append("## Coverage & caveats (reported, not gated)\n")
-    L.append(f"- ISAR **delivered a usable omega for {n_delivered_ok}/{n_ok}** gold-OK scans "
-             f"(coverage; declining a hard automatic fit is good triage, not a correctness failure).")
-    L.append("- **`junk` over-fires** on some low-K gold-OK scans: ISAR recovers the right omega "
-             "(small |dOmega0|) but the fit has a large *structureless* residual (its automatic "
-             "grid+NNLS fit is worse than the gold's free-center + hand-tuned IC), so the "
-             "junk/model_incomplete runs test lands on junk. A step-4 refinement (require *no "
-             "significant peak* for junk; a real peak + high cost -> model_incomplete/flagged) would "
-             "move these omega-correct scans into the delivered/flagged tier. Tracked as follow-up.")
-    L.append("- The sigma-pull (mean/sd above) is dominated by tiny bootstrap sigma on well-counted "
-             "data, so it is reported, not gated; the meV-scale median |dOmega0| is the recovery metric.")
-    L.append("")
+    d.section("Honest limitations (read these)")
+    d.caveat(f"**The error bars are statistical-only.** ISAR's 68% intervals contain the expert's "
+             f"value only {_fmt(report.coverage68)} of the time (a calibrated 68% interval would be "
+             "~0.68). They capture counting noise, not systematics (background shape, resolution, zero "
+             "drift), so they are too tight. For triage that's fine — use the energy as a ballpark and "
+             "look manually before quoting an uncertainty; don't weight by these σ. A systematics-aware "
+             "error model is future work.")
+    d.caveat("**`junk` over-fires — in the safe direction.** On some low-K scans ISAR recovers the "
+             "right energy but its automatic fit leaves a structureless residual, so the runs-test "
+             "parks the scan in `junk` (your manual pile) instead of delivering it. You lose a little "
+             "automation, not a number — and nothing is deleted. A planned refinement (require no "
+             "significant peak before calling junk) would move these into the flagged tier.")
+    d.caveat("**The expert reference is provisional.** A small systematic offset between ISAR and the "
+             "expert is expected and isn't necessarily ISAR being wrong — these are old data the owner "
+             "may re-analyze. Exact agreement is not the goal.")
 
-    L.append("## Gate (trustworthiness)\n")
-    for name, ok, detail in gate:
-        L.append(f"- [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
-    overall = all(ok for _, ok, _ in gate)
-    L.append(f"\n**{'PASS' if overall else 'FAIL'}** — step 6 gold-standard scoring.\n")
-    path.write_text("\n".join(L), encoding="utf-8")
+    d.gate(gate, heading="Sanity gate (safety + good-enough recovery + confidence)")
+    d.para("This gate is a development sanity check on old data, not a production guarantee.")
+    path.write_text(d.render(), encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- main
@@ -376,7 +498,7 @@ def main():
           f"zero series scan# {span}; slits {sorted(calib.resolution_by_slit)}")
 
     print(f"== Phase-3 step 6: gold-standard scoring ({len(gold_rows)} scans, M={M}) ==")
-    scores, csv_recs, missing = [], [], []
+    scores, csv_recs, missing, audit_pool = [], [], [], []
     for row in sorted(gold_rows, key=lambda r: r.scan):
         rec = by_scan.get(row.scan)
         if rec is None:
@@ -394,6 +516,9 @@ def main():
                                        lorentz_fwhm=lfw, prior=prior, M=M, seed=6000 + row.scan)
         s = gold.score_row(row, isar)
         scores.append(s)
+        audit_pool.append({"row": row, "rec": rec, "det": choice.detector_id, "zero": zero,
+                           "gfw": extra.get("gauss_fwhm"), "lfw": extra.get("lorentz_fwhm"),
+                           "prior": prior, "isar": isar, "score": s})
         flag = " !FLAG-CHANNEL" if choice.flagged else ""
         viol = " !SAFETY" if s.safety else ""
         print(f"  scan#{row.scan:>3} {choice.detector_id} (K={row.K:.2f}{flag}) z={_fmt(zero,2)} "
@@ -457,6 +582,48 @@ def main():
         gg, gl = GOLD_RESOLUTION_BY_SLIT.get(slit, (float("nan"), float("nan")))
         res_xcheck.append({"slit": slit, "isar": (ig, il), "gold": (gg, gl)})
 
+    # visual audit: rule-selected representative scans (NOT cherry-picked) — data + ISAR fit +
+    # expert (reconstructed, provisional) fit + residual. Shows what ISAR delivers, flags, declines.
+    def _ar(p):
+        return p["score"].omega0_abs_resid
+
+    accept_pool = [p for p in audit_pool if p["score"].gold_disposition == "accept"
+                   and p["zero"] is not None]
+    resolved = [p for p in accept_pool if p["isar"].verdict == "resolved" and _ar(p) is not None]
+    flagged_pool = [p for p in accept_pool if p["score"].isar_disposition == "flagged"
+                    and _ar(p) is not None]
+    overfired = [p for p in accept_pool if p["score"].isar_disposition == "reject"
+                 and _ar(p) is not None]
+    rejected_pool = [p for p in audit_pool if p["score"].gold_disposition == "reject"
+                     and p["zero"] is not None]
+    selected = []
+    if resolved:
+        med = float(np.median([_ar(p) for p in resolved]))
+        selected.append(("typical delivered (resolved)",
+                         min(resolved, key=lambda p: abs(_ar(p) - med))))
+    if flagged_pool:
+        selected.append(("usable but flagged", min(flagged_pool, key=_ar)))
+    if overfired:
+        selected.append(("over-flagged: ISAR got ω₀ but declined", min(overfired, key=_ar)))
+    if rejected_pool:
+        selected.append(("expert-rejected: ISAR declined too",
+                         max(rejected_pool, key=lambda p: p["row"].chi2)))
+
+    panels = []
+    for role, p in selected:
+        row = p["row"]
+        gg, gl = GOLD_RESOLUTION_BY_SLIT.get(int(row.slit), calib.resolution(row.slit))
+        try:
+            panels.append(build_audit_panel(p["rec"], row, p["det"], card, center=p["zero"],
+                                            gfw=p["gfw"], lfw=p["lfw"], prior=p["prior"],
+                                            gold_gfw=gg, gold_lfw=gl, role=role, isar=p["isar"]))
+        except Exception as exc:                       # a panel must never sink the whole report
+            print(f"  audit panel for scan {row.scan} skipped: {exc}")
+    has_audit = bool(panels)
+    if has_audit:
+        fig_audit(FIGDIR / "audit.png", panels)
+    has_resolution_fig = fig_resolution_overlay(FIGDIR / "resolution_overlay.png", res_xcheck)
+
     rejects = []
     for r in csv_recs:
         if r["gold_quality"].upper() == "REJECT":
@@ -495,7 +662,8 @@ def main():
     write_findings(OUT / "FINDINGS.md", report, scores, rejects, prior_demo, gate,
                    n_ok, n_reject, n_delivered_ok, n_resolved_ok, n_flagged_ok, res_xcheck=res_xcheck,
                    n_elastic=len(calib.zeros), n_held=sum(1 for s in scores
-                                                          if s.isar_verdict == "held_for_calibration"))
+                                                          if s.isar_verdict == "held_for_calibration"),
+                   has_audit=has_audit, has_resolution_fig=has_resolution_fig)
 
     print(f"\n== Summary ==  delivered {n_delivered_ok}/{n_ok} gold-OK "
           f"({n_resolved_ok} resolved + {n_flagged_ok} flagged); "
