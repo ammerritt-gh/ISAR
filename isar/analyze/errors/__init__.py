@@ -1,0 +1,42 @@
+"""Within-model error estimation for the structure loop (§5).
+
+The reported uncertainty is built side-by-side from independent paradigms; their agreement
+is itself the trust signal. This slice ships the frequentist half: the parametric bootstrap
+(:mod:`~isar.analyze.errors.bootstrap`, the authoritative interval), MINOS + an ω₀ profile
+(:mod:`~isar.analyze.errors.profile`), and the MINOS↔bootstrap agreement
+(:mod:`~isar.analyze.errors.agree`). The Bayesian path (§5.4) is step 7.
+"""
+from isar.analyze.errors.bootstrap import BootstrapResult, parametric_bootstrap
+
+__all__ = ["BootstrapResult", "parametric_bootstrap", "attach"]
+
+
+def attach(result, hyp, ctx, *, M=200, seed=12345, backend="iminuit", with_profile=False):
+    """Run the frequentist error layer on a fitted hypothesis and populate
+    ``result.within_model`` (the slot step 1 reserved). No-op on a non-converged fit
+    (bootstrapping a degenerate model is meaningless — it stays for step-3 bootstrap only
+    when the optimizer actually converged). Returns the (mutated) result.
+
+    ``with_profile`` adds the MINOS/ω₀-profile + MINOS↔bootstrap agreement (phase B)."""
+    if not result.optimizer_converged:
+        return result
+    boot = parametric_bootstrap(hyp, ctx, result, M=M, seed=seed, backend=backend)
+    within = {
+        "freq_interval": boot.omega0_interval,     # (lo, median, hi) ω₀ — authoritative
+        "gamma_interval": boot.gamma_interval,
+        "n_converged": boot.n_converged,
+        "M": boot.M,
+        "bimodal": boot.bimodal,
+        "omega0_samples": boot.omega0_samples,
+    }
+    if with_profile:
+        from isar.analyze.errors import agree as _agree
+        from isar.analyze.errors import profile as _profile
+        minos = _profile.minos_intervals(hyp, ctx, result)
+        prof = _profile.omega0_profile_interval(hyp, ctx, result)
+        within["profile_interval"] = prof
+        within["minos"] = minos
+        within["agreement"] = _agree.agreement(boot, minos, profile_omega0=prof)
+    result.within_model = within
+    return result
+

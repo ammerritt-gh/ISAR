@@ -163,8 +163,17 @@ def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False) -> StructureFitR
     return result_from_backend(hyp.label, prob.composite, prob.costv, prob.n_used, prob.k, br)
 
 
-def fit_admissible_structures(ctx, *, backend="iminuit", minos=False) -> list[StructureFitResult]:
+def fit_admissible_structures(ctx, *, backend="iminuit", minos=False, errors=False,
+                              M=200, seed=12345) -> list[StructureFitResult]:
     """Enumerate the admissible structures and fit each (the §2→§3 loop). Step-2 model
-    selection will consume this list; step 1 just returns it."""
-    return [fit_hypothesis(h, ctx, backend=backend, minos=minos)
-            for h in enumerate_structures(ctx)]
+    selection will consume this list; step 1 just returns it.
+
+    With ``errors=True`` the frequentist error layer (bootstrap, §5.2) is attached to each
+    converged result's ``within_model``. Off by default so step 1's fast path is unchanged."""
+    hyps = enumerate_structures(ctx)
+    results = [fit_hypothesis(h, ctx, backend=backend, minos=minos) for h in hyps]
+    if errors:
+        from isar.analyze import errors as _errors  # lazy: errors imports loop
+        for r, h in zip(results, hyps):
+            _errors.attach(r, h, ctx, M=M, seed=seed, backend=backend)
+    return results

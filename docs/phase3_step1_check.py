@@ -12,11 +12,17 @@ No library code is modified. Run from the repo root:
 
     python docs/phase3_step1_check.py
 
+It also attaches the frequentist error layer (§5: parametric bootstrap + MINOS/ω₀-profile +
+MINOS↔bootstrap agreement) to the elastic+stokes+bg fit and checks the bootstrap ω₀ interval
+against the HESSE σ — on these well-counted scans they should agree (Bernstein–von Mises).
+
 Outputs (under the gitignored out/phase3_step1/):
-    results_step1.csv     per (scan, hypothesis): ω₀, Γ, cost/dof, k, status flags, Δ vs Phase-1
+    results_step1.csv     per (scan, hypothesis): ω₀, Γ, cost/dof, k, status flags, Δ vs Phase-1,
+                          and for elastic+stokes+bg the bootstrap/profile ω₀ intervals + regime
     figures/s30_scan*.png one per scan: data + elastic+stokes+bg (with phonon/elastic/bg
                           decomposition) + pull residual
-    figures/dispersion_summary.png  ω₀(K) for this run overlaid on the Phase-1 baseline
+    figures/bootstrap_omega0_histograms.png  per-scan ω₀ bootstrap distribution vs HESSE σ
+    figures/dispersion_summary.png  ω₀(K) with bootstrap error bars, overlaid on the Phase-1 baseline
 """
 from __future__ import annotations
 
@@ -30,7 +36,7 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from isar.analyze import loop                              # noqa: E402
+from isar.analyze import errors, loop                      # noqa: E402
 from isar.analyze.context import ScanContext               # noqa: E402
 from isar.analyze.structures import enumerate_structures   # noqa: E402
 from isar.parsers import spec_s30                          # noqa: E402
@@ -48,6 +54,7 @@ S30_ANCHOR_SCAN = 168
 S30_ANALYZER = "ana5"
 TOL_OMEGA0 = 0.05   # meV — regression tolerance vs the Phase-1 baseline
 TOL_GAMMA = 0.05    # meV
+BOOT_M = 200        # parametric-bootstrap draws per scan (§5.2)
 
 
 def measure_resolution(x, counts):
@@ -139,9 +146,17 @@ def dispersion_summary(path, disp):
 
     disp = sorted(disp, key=lambda d: d["K"])
     K = [d["K"] for d in disp]
+    o = [d["omega0"] for d in disp]
+    lo_err, hi_err = [], []                                 # asymmetric bootstrap bars
+    for d in disp:
+        if d.get("boot"):
+            blo, bhi = d["boot"]
+            lo_err.append(max(d["omega0"] - blo, 0.0)); hi_err.append(max(bhi - d["omega0"], 0.0))
+        else:
+            lo_err.append(d["omega0_err"]); hi_err.append(d["omega0_err"])
     fig, ax = plt.subplots(figsize=(6.5, 4.5))
-    ax.errorbar(K, [d["omega0"] for d in disp], yerr=[d["omega0_err"] for d in disp],
-                fmt="o-", color="C1", capsize=3, label="elastic+stokes+bg (this run)")
+    ax.errorbar(K, o, yerr=[lo_err, hi_err], fmt="o-", color="C1", capsize=3,
+                label="elastic+stokes+bg ± bootstrap 68%")
     ref_K = [d["K"] for d in disp if d["ref"] is not None]
     ref_o = [d["ref"] for d in disp if d["ref"] is not None]
     if ref_K:
@@ -152,6 +167,37 @@ def dispersion_summary(path, disp):
     ax.set_xlabel("K (rlu) along (3.77, K, -0.09)"); ax.set_ylabel("omega0 (meV)")
     ax.set_title("S30 control dispersion — structure loop vs Phase-1 baseline")
     ax.legend(fontsize=8); fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
+
+
+def bootstrap_histograms(path, panels):
+    """Grid of per-scan ω₀ bootstrap-sample histograms with the 68% percentile band and the
+    HESSE σ band overlaid — the Bernstein–von Mises eyeball (the two should agree here)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    n = len(panels)
+    ncol = 3
+    nrow = int(np.ceil(n / ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(4.3 * ncol, 3.2 * nrow), squeeze=False)
+    axes = axes.ravel()
+    for ax, p in zip(axes, panels):
+        s = np.asarray(p["samples"], dtype=float)
+        if s.size:
+            ax.hist(s, bins=30, density=True, color="C0", alpha=0.65)
+        lo, _med, hi = p["boot_interval"]
+        if np.isfinite(lo) and np.isfinite(hi):
+            ax.axvspan(lo, hi, color="C0", alpha=0.18, label=f"boot 68% [{lo:.2f},{hi:.2f}]")
+        o0, sig = p["omega0"], p["hesse_sigma"]
+        if np.isfinite(sig):
+            ax.axvspan(o0 - sig, o0 + sig, color="C3", alpha=0.18, label=f"HESSE ±{sig:.2f}")
+        ax.axvline(o0, color="k", lw=1.5, label=f"fit ω₀={o0:.2f}")
+        ax.set_title(f"{p['tag']}  (T={p['T']:.0f} K, {p['regime']})", fontsize=8)
+        ax.set_xlabel("ω₀ (meV)"); ax.legend(fontsize=6)
+    for ax in axes[n:]:
+        ax.set_visible(False)
+    fig.suptitle("Bootstrap ω₀ distribution vs HESSE σ (Bernstein–von Mises check)", fontsize=11)
+    fig.tight_layout(); fig.savefig(path, dpi=120); plt.close(fig)
 
 
 def load_reference():
@@ -171,8 +217,8 @@ def main():
     by_scan = {rec.scan_number: rec for rec in spec_s30.parse_file(S30_FILE, card)}
     ref = load_reference()
 
-    rows, deltas, disp = [], [], []
-    print("== Phase-3 step-1: structure loop on S30 control ==")
+    rows, deltas, disp, boot_panels = [], [], [], []
+    print("== Phase-3 step-3: structure loop + frequentist errors on S30 control ==")
     for scan_no in S30_CONTROL_SCANS:
         rec = by_scan.get(scan_no)
         if rec is None:
@@ -186,8 +232,13 @@ def main():
 
         results = loop.fit_admissible_structures(ctx, minos=True)
         fits_by_label = {r.label: r for r in results}
+        by_hyp = {h.label: h for h in enumerate_structures(ctx)}
         es = fits_by_label.get("elastic+stokes+bg")
         so = fits_by_label.get("stokes+bg")
+        if es is not None:                                  # the authoritative error layer (§5)
+            errors.attach(es, by_hyp["elastic+stokes+bg"], ctx,
+                          M=BOOT_M, seed=4000 + scan_no, with_profile=True)
+        wm = es.within_model if es is not None else None
 
         tag = f"s30_scan{scan_no}_{S30_ANALYZER}"
         ref_row = ref.get(tag)
@@ -198,7 +249,7 @@ def main():
             deltas.append((tag, es_do, es_dg))
         for r in results:
             is_elastic = r.label == "elastic+stokes+bg"
-            rows.append({
+            row = {
                 "id": tag, "label": r.label, "T": round(ctx.T, 1),
                 "omega0": round(r.omega0, 4), "omega0_err_hesse": round(r.omega0_err_hesse, 4),
                 "gamma": round(r.gamma, 4), "gamma_err": round(r.gamma_err, 4),
@@ -211,27 +262,58 @@ def main():
                 "ref_omega0": ref_row["omega0"] if ref_row else "",
                 "d_omega0": es_do if (is_elastic and es_do is not None) else "",
                 "d_gamma": es_dg if (is_elastic and es_dg is not None) else "",
-            })
+            }
+            if is_elastic and wm is not None:               # bootstrap / profile / agreement
+                blo, _bmed, bhi = wm["freq_interval"]
+                plo, phi = wm["profile_interval"]
+                ag = wm["agreement"]
+                sig = r.omega0_err_hesse
+                row.update({
+                    "boot_o0_lo": round(blo, 4), "boot_o0_hi": round(bhi, 4),
+                    "prof_o0_lo": round(plo, 4), "prof_o0_hi": round(phi, 4),
+                    "boot_hw_over_hesse": (round(((bhi - blo) / 2.0) / sig, 3)
+                                           if np.isfinite(sig) and sig > 0 else ""),
+                    "gamma_minos_over_boot": (round(ag.gamma_ratio, 3)
+                                              if np.isfinite(ag.gamma_ratio) else ""),
+                    "regime": ag.regime, "bimodal": int(wm["bimodal"]), "n_boot": wm["n_converged"],
+                })
+            rows.append(row)
         delta_str = (f"  | dOmega0={es_do:+.4f} dGamma={es_dg:+.4f}" if es_do is not None else "")
         print(f"  scan#{scan_no}: elastic+stokes+bg omega0={es.omega0:.3f} gamma={es.gamma:.3f} "
               f"(cost/dof={es.cost_per_dof:.2f}); stokes+bg omega0={so.omega0:.3f} "
               f"(cost/dof={so.cost_per_dof:.2f}){delta_str}")
-        if es is not None:
+        if wm is not None:
+            blo, _bmed, bhi = wm["freq_interval"]
+            sig = es.omega0_err_hesse
+            ratio = (((bhi - blo) / 2.0) / sig) if (np.isfinite(sig) and sig > 0) else float("nan")
+            print(f"      bootstrap omega0 68% [{blo:.3f}, {bhi:.3f}] (hw {(bhi - blo) / 2:.3f}); "
+                  f"HESSE sigma {sig:.3f}; boot/HESSE {ratio:.2f}; regime {wm['agreement'].regime}")
             disp.append({"K": float(sp.q[1]), "T": ctx.T, "omega0": es.omega0,
-                         "omega0_err": es.omega0_err_hesse,
+                         "omega0_err": sig, "boot": (blo, bhi),
                          "ref": float(ref_row["omega0"]) if ref_row else None})
+            boot_panels.append({"tag": tag, "T": ctx.T, "omega0": es.omega0,
+                                "hesse_sigma": sig, "boot_interval": wm["freq_interval"],
+                                "samples": wm["omega0_samples"],
+                                "regime": wm["agreement"].regime})
         overlay(FIGDIR / f"{tag}.png", f"S30 scan#{scan_no} {S30_ANALYZER} (T={ctx.T:.0f} K)",
                 ctx, fits_by_label)
         print(f"  figure: {tag}.png")
 
-    fields = list(rows[0].keys())
+    fields = []                                            # union of keys (elastic rows have extras)
+    for row in rows:
+        for k in row:
+            if k not in fields:
+                fields.append(k)
     with (OUT / "results_step1.csv").open("w", newline="", encoding="utf-8") as fh:
-        w = csv.DictWriter(fh, fieldnames=fields)
+        w = csv.DictWriter(fh, fieldnames=fields, restval="")
         w.writeheader(); w.writerows(rows)
     print(f"  wrote {OUT / 'results_step1.csv'}")
     if disp:
         dispersion_summary(FIGDIR / "dispersion_summary.png", disp)
         print("  figure: dispersion_summary.png")
+    if boot_panels:
+        bootstrap_histograms(FIGDIR / "bootstrap_omega0_histograms.png", boot_panels)
+        print("  figure: bootstrap_omega0_histograms.png")
 
     # --- regression gate vs the frozen Phase-1 baseline ---------------------
     print("\n== Regression vs out/in8_phase1/results_s30.csv (elastic+stokes+bg) ==")
