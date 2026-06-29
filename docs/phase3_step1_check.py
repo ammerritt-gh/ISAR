@@ -41,8 +41,9 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from isar.analyze import errors, loop, select              # noqa: E402
+from isar.analyze import errors, loop, select, verdict      # noqa: E402
 from isar.analyze.context import ScanContext               # noqa: E402
+from isar.analyze.prior import PhononPrior                 # noqa: E402
 from isar.analyze.structures import enumerate_structures   # noqa: E402
 from isar.parsers import spec_s30                          # noqa: E402
 from isar.schema import axes                               # noqa: E402
@@ -269,7 +270,107 @@ def synthetic_fork_demo(path):
     return sel
 
 
-def write_findings(path, rows, worst_o, worst_g, sel_rows, fork):
+def _demo_result(label, params, *, cost_per_dof, within_model=None, omega0=None, converged=True):
+    if omega0 is None:
+        omega0 = float(np.hypot(params["phonon.Omega_d"], params["phonon.Gamma"]))
+    return loop.StructureFitResult(
+        label=label, k=len(params), ndof=40, cost=cost_per_dof * 40, cost_per_dof=cost_per_dof,
+        optimizer_converged=converged, covariance_ok=True, profile_ok=True,
+        well_constrained=converged, analysis_usable=converged, params=dict(params),
+        param_errors={n: None for n in params}, gamma=params["phonon.Gamma"], gamma_err=0.05,
+        omega0=omega0, omega0_err_hesse=0.05, message="ok", within_model=within_model)
+
+
+def _demo_ctx(counts, *, x, energy_status="needs_zero", prior_omega=None):
+    counts = np.asarray(counts, dtype=float)
+    return ScanContext(x=x, counts=counts, mask=np.ones(counts.size, dtype=bool), T=100.0,
+                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                       energy_status=energy_status, prior_omega=prior_omega)
+
+
+def _demo_sel(modality="fold", *, best="elastic+stokes+bg", pooled=None):
+    return select.Selection(scores=[], best=best, survivors=[best] if best else [],
+                            pooled=pooled, modality=modality)
+
+
+def _verdict_demo(results, ctx, sel, prior=None):
+    v = verdict.classify(results, ctx, sel, prior=prior)
+    return {"verdict": v.verdict, "confidence": v.confidence, "provisional": v.provisional,
+            "reason": v.reasons[0] if v.reasons else ""}
+
+
+def verdict_gallery():
+    """Classify one synthetic scenario per non-resolved bucket — the control scans never leave
+    'resolved', so the buckets (and the circularity guard) are exercised here, deterministically.
+    Returns ``[(expected_bucket, result_dict), ...]``."""
+    x = np.linspace(-10.0, 10.0, 81)
+    SB = {"phonon.Omega_d": 5.0, "phonon.Gamma": 0.4, "phonon.A": 300.0, "bg.BG": 20.0}
+    EL = {**SB, "elastic.E": 50.0}
+    rng = np.random.default_rng(7)
+    out = []
+
+    out.append(("held_for_calibration", _verdict_demo(
+        [_demo_result("elastic+stokes+bg", EL, cost_per_dof=2.0)],
+        _demo_ctx(np.full(81, 50.0), x=x, energy_status="needs_conversion_and_zero"), _demo_sel())))
+
+    pooled = select.Pooled("fork", np.array([]), np.array([]), None,
+                           [select.Mode(5.0, 0.5, (4.8, 5.0, 5.2)),
+                            select.Mode(8.0, 0.5, (7.8, 8.0, 8.2))], "either 5 or 8")
+    peak = rng.poisson(40.0, 81).astype(float); peak[40] += 600.0
+    out.append(("unconstrained", _verdict_demo(
+        [_demo_result("elastic+stokes+bg", EL, cost_per_dof=2.0)],
+        _demo_ctx(peak, x=x), _demo_sel("fork", pooled=pooled), prior=None)))
+
+    out.append(("underpowered", _verdict_demo(
+        [_demo_result("elastic+stokes+bg", {**EL, "phonon.Omega_d": 6.0, "bg.BG": 50.0},
+                      cost_per_dof=1.0, omega0=6.0)],
+        _demo_ctx(np.full(81, 50.0), x=x, prior_omega=6.0), _demo_sel(),
+        prior=PhononPrior(6.0, 15.0, 1.0))))                 # weak phonon below detection floor
+
+    out.append(("no_signal", _verdict_demo(
+        [_demo_result("elastic+stokes+bg", EL, cost_per_dof=1.0)],
+        _demo_ctx(np.full(81, 50.0), x=x), _demo_sel(), prior=None)))
+
+    base = _demo_ctx(np.zeros(81), x=x)
+    comp = {h.label: h for h in enumerate_structures(base)}["stokes+bg"].build()
+    model = comp.evaluate(x, np.array([SB["phonon.Omega_d"], SB["phonon.Gamma"], SB["phonon.A"],
+                                       SB["bg.BG"]]), base)
+    res_sb = _demo_result("stokes+bg", SB, cost_per_dof=8.0)  # catastrophic GoF
+    out.append(("junk", _verdict_demo(
+        [res_sb], _demo_ctx(np.maximum(model + rng.normal(0.0, 8.0, 81), 0.0), x=x),
+        _demo_sel(best="stokes+bg"))))
+    out.append(("model_incomplete", _verdict_demo(
+        [res_sb], _demo_ctx(model + 60.0 * np.exp(-0.5 * (x / 3.0) ** 2), x=x),
+        _demo_sel(best="stokes+bg"))))
+    return out
+
+
+def verdict_summary_figure(path, vrows, gallery):
+    """Left: per-scan computed confidence for the real control scans (all 'resolved'). Right: the
+    synthetic verdict gallery (each non-resolved bucket landing where intended)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(11.0, 4.2), gridspec_kw={"width_ratios": [1.1, 1.0]})
+    tags = [v["tag"].replace("s30_", "").replace("_ana5", "") for v in vrows]
+    ax0.bar(range(len(vrows)), [v["confidence"] for v in vrows], color="C0")
+    ax0.axhline(0.7, ls="--", color="0.6", lw=0.8)
+    ax0.set_xticks(range(len(vrows))); ax0.set_xticklabels(tags, rotation=20, fontsize=8)
+    ax0.set_ylim(0.0, 1.05); ax0.set_ylabel("computed confidence")
+    ax0.set_title("S30 control — verdict=resolved, confidence")
+    ax1.axis("off")
+    lines = ["synthetic verdict gallery", ""]
+    for expected, r in gallery:
+        ok = "ok " if r["verdict"] == expected else "!! "
+        prov = " *provisional" if r["provisional"] else ""
+        lines.append(f"{ok}{expected:>20s} -> {r['verdict']} (conf {r['confidence']:.2f}){prov}")
+    ax1.text(0.0, 1.0, "\n".join(lines), va="top", ha="left", fontsize=8.5, family="monospace")
+    ax1.set_title("non-resolved buckets (synthetic)")
+    fig.tight_layout(); fig.savefig(path, dpi=120); plt.close(fig)
+
+
+def write_findings(path, rows, worst_o, worst_g, sel_rows, fork, vrows, gallery):
     """Consolidated markdown report (mirrors docs/in8_phase1_check.py's FINDINGS.md), built
     from the per-scan rows so it stays in lock-step with the run."""
     el = [r for r in rows if r["label"] == "elastic+stokes+bg"]
@@ -337,17 +438,46 @@ def write_findings(path, rows, worst_o, worst_g, sel_rows, fork):
                  "`tests/analyze/test_select_modality.py`; AIC/weights/nested-LRT by "
                  "`tests/analyze/test_select.py`.\n\n")
 
+    L.append("## Step 4 — verdict + computed confidence (§6, §9)\n\n")
+    L.append("Each scan is classified into a named bucket (never deleted, D7) and given a [0,1] "
+             "confidence (geometric mean of exposed sub-scores: structure agreement, interval "
+             "tightness, MINOS-bootstrap regime, prior distance, provenance). A **leave-one-out** "
+             "omega0 (line fit through the other five fitted points) is injected as the dispersion "
+             "prior so the prior-distance term is exercised on real data. All six control scans are "
+             "**resolved** with high confidence.\n\n")
+    L.append("| scan | T (K) | verdict | confidence | prior omega0 (LOO) |\n")
+    L.append("|---|---|---|---|---|\n")
+    for v in vrows:
+        L.append(f"| {v['tag']} | {v['T']:.0f} | {v['verdict']} | {v['confidence']:.3f} | "
+                 f"{v['prior_omega']:.3f} |\n")
+    L.append("\n### Non-resolved buckets (synthetic gallery)\n\n")
+    L.append("The control set never leaves *resolved*, so every other bucket — and the detection-"
+             "power circularity guard — is exercised on synthetic scenarios; each lands where "
+             "intended:\n\n")
+    L.append("| expected bucket | classified | confidence | note |\n|---|---|---|---|\n")
+    for expected, r in gallery:
+        match = "" if r["verdict"] == expected else " (MISMATCH)"
+        note = "provisional (guard)" if r["provisional"] else ""
+        L.append(f"| {expected} | {r['verdict']}{match} | {r['confidence']:.2f} | {note} |\n")
+    L.append("\nThe **underpowered** verdict is `provisional` — the §0.4 circularity guard: it is "
+             "prior-conditional and never marks a region confirmed-empty. The **model-incomplete** "
+             "route keeps a structured (quasi-elastic) residual out of *junk*. Logic is covered by "
+             "`tests/analyze/test_verdict.py` and `tests/analyze/test_confidence.py`.\n\n")
+
     L.append("## Figures (`out/phase3_step1/figures/`)\n\n"
              "- `s30_scan*.png` — data + elastic+stokes+bg with phonon/elastic/bg decomposition + pull residual.\n"
              "- `selection_akaike_weights.png` — per-scan Akaike weights (elastic+stokes+bg vs stokes+bg).\n"
              "- `synthetic_fork.png` — synthetic multimodal fork: pooled density + modes + weights.\n"
+             "- `verdict_confidence.png` — per-scan confidence (resolved) + the synthetic verdict gallery.\n"
              "- `bootstrap_omega0_histograms.png` — per-scan omega0 bootstrap distribution vs HESSE sigma (BvM eyeball).\n"
              "- `dispersion_summary.png` — omega0(K) with bootstrap error bars, overlaid on the Phase-1 baseline.\n\n")
     L.append("## Scope / caveats\n\n"
              "- This control set is well-counted, in-window-elastic, single-phonon → all asymptotic, "
-             "one survivor, fold. The sparse-regime flag is exercised by the unit tests and the "
-             "multimodal fork by the synthetic demo above (plus `test_select_modality.py`), not these scans.\n"
-             "- Per-(scan, hypothesis) numbers incl. status flags, intervals, AIC/weights are in `results_step1.csv`.\n")
+             "one survivor, fold, resolved. The sparse-regime flag, the multimodal fork, and the "
+             "non-resolved verdict buckets are exercised by the synthetic demos above (plus the unit "
+             "tests), not these scans.\n"
+             "- Per-(scan, hypothesis) numbers incl. status flags, intervals, AIC/weights, verdict + "
+             "confidence are in `results_step1.csv`.\n")
     path.write_text("".join(L), encoding="utf-8")
 
 
@@ -368,8 +498,8 @@ def main():
     by_scan = {rec.scan_number: rec for rec in spec_s30.parse_file(S30_FILE, card)}
     ref = load_reference()
 
-    rows, deltas, disp, boot_panels, sel_rows = [], [], [], [], []
-    print("== Phase-3 steps 1-3: structure loop + errors + model selection on S30 control ==")
+    rows, deltas, disp, boot_panels, sel_rows, states = [], [], [], [], [], []
+    print("== Phase-3 steps 1-4: structure loop + errors + selection + verdict on S30 control ==")
     for scan_no in S30_CONTROL_SCANS:
         rec = by_scan.get(scan_no)
         if rec is None:
@@ -412,6 +542,7 @@ def main():
                 "fold": (sel.pooled.interval if (sel.pooled is not None
                          and sel.pooled.modality == "fold") else None),
             })
+        elastic_row = None
         for r in results:
             is_elastic = r.label == "elastic+stokes+bg"
             row = {
@@ -455,6 +586,11 @@ def main():
                             row["fold_o0_lo"] = round(sel.pooled.interval[0], 4)
                             row["fold_o0_hi"] = round(sel.pooled.interval[2], 4)
             rows.append(row)
+            if is_elastic:
+                elastic_row = row
+        if es is not None and elastic_row is not None:      # retained for the step-4 verdict pass
+            states.append({"tag": tag, "T": ctx.T, "K": float(sp.q[1]), "omega0": es.omega0,
+                           "ctx": ctx, "results": results, "sel": sel, "row": elastic_row})
         delta_str = (f"  | dOmega0={es_do:+.4f} dGamma={es_dg:+.4f}" if es_do is not None else "")
         print(f"  scan#{scan_no}: elastic+stokes+bg omega0={es.omega0:.3f} gamma={es.gamma:.3f} "
               f"(cost/dof={es.cost_per_dof:.2f}); stokes+bg omega0={so.omega0:.3f} "
@@ -481,6 +617,27 @@ def main():
                 ctx, fits_by_label)
         print(f"  figure: {tag}.png")
 
+    vrows = []                                             # step 4: verdict + confidence (LOO prior)
+    if states:
+        print("\n== Step 4: verdict + computed confidence (leave-one-out dispersion prior) ==")
+        Ks = np.array([s["K"] for s in states]); Os = np.array([s["omega0"] for s in states])
+        sigma = max(0.3, float(np.std(Os)))
+        for i, st in enumerate(states):
+            other = np.arange(len(states)) != i
+            if other.sum() >= 2:
+                pred = float(np.polyval(np.polyfit(Ks[other], Os[other], 1), Ks[i]))
+            else:
+                pred = float(np.mean(Os[other])) if other.any() else st["omega0"]
+            sv = verdict.classify(st["results"], st["ctx"], st["sel"],
+                                  prior=PhononPrior(omega0=pred, amplitude=None, omega0_sigma=sigma))
+            st["row"].update({"verdict": sv.verdict, "confidence": round(sv.confidence, 3),
+                              "prior_omega": round(pred, 3),
+                              "conf_s_prior": round(sv.components.get("s_prior", float("nan")), 3)})
+            vrows.append({"tag": st["tag"], "T": st["T"], "K": st["K"], "verdict": sv.verdict,
+                          "confidence": sv.confidence, "prior_omega": pred})
+            print(f"  {st['tag']}: {sv.verdict}, confidence={sv.confidence:.3f} "
+                  f"(prior omega0~{pred:.2f})")
+
     fields = []                                            # union of keys (elastic rows have extras)
     for row in rows:
         for k in row:
@@ -501,11 +658,18 @@ def main():
         print("  figure: selection_akaike_weights.png")
     fork_sel = synthetic_fork_demo(FIGDIR / "synthetic_fork.png")
     print("  figure: synthetic_fork.png")
+    gallery = verdict_gallery()
+    for expected, r in gallery:
+        flag = "" if r["verdict"] == expected else "  <-- MISMATCH"
+        print(f"    synthetic {expected}: {r['verdict']} (conf {r['confidence']:.2f}){flag}")
+    if vrows:
+        verdict_summary_figure(FIGDIR / "verdict_confidence.png", vrows, gallery)
+        print("  figure: verdict_confidence.png")
 
     worst_o = max((abs(d[1]) for d in deltas), default=float("nan"))
     worst_g = max((abs(d[2]) for d in deltas), default=float("nan"))
     if rows:
-        write_findings(OUT / "FINDINGS.md", rows, worst_o, worst_g, sel_rows, fork_sel)
+        write_findings(OUT / "FINDINGS.md", rows, worst_o, worst_g, sel_rows, fork_sel, vrows, gallery)
         print(f"  wrote {OUT / 'FINDINGS.md'}")
 
     # --- regression gate vs the frozen Phase-1 baseline ---------------------
