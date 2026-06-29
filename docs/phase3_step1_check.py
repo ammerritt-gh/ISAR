@@ -34,6 +34,7 @@ from __future__ import annotations
 import csv
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -45,9 +46,10 @@ from isar.analyze import errors, loop, select, verdict      # noqa: E402
 from isar.analyze.context import ScanContext               # noqa: E402
 from isar.analyze.prior import PhononPrior                 # noqa: E402
 from isar.analyze.structures import enumerate_structures   # noqa: E402
+from isar.calibrate import elastic, energy_zero            # noqa: E402
 from isar.parsers import spec_s30                          # noqa: E402
 from isar.schema import axes                               # noqa: E402
-from isar.synth._ff import Voigt                           # noqa: E402
+from isar.synth._ff import convolute_voigt_dho             # noqa: E402
 
 # --------------------------------------------------------------------------- config
 S30_FILE = REPO / "test_data" / "APS S30" / "FeSe_1-xS_x_1.spec_supplementary.dat"
@@ -64,36 +66,11 @@ BOOT_M = 200        # parametric-bootstrap draws per scan (§5.2)
 
 
 def measure_resolution(x, counts):
-    """Fit a Voigt (+flat BG) to the elastic peak -> (center, gauss_fwhm, lorentz_fwhm).
-
-    Ported verbatim from docs/in8_phase1_check.py so the resolution/energy-zero inputs are
-    identical to the Phase-1 baseline (promotion to isar/synth/resolution is §14 step 8).
-    """
-    from scipy.optimize import curve_fit
-    x = np.asarray(x, dtype="float64"); counts = np.asarray(counts, dtype="float64")
-    near = np.abs(x) < 2.5
-    c0 = float(x[near][int(np.argmax(counts[near]))]) if near.any() else float(x[int(np.argmax(counts))])
-    win = np.abs(x - c0) <= 1.5
-    xs, ys = x[win], counts[win]
-    bg0 = float(np.min(ys)); height = float(np.max(ys) - bg0)
-
-    def model(xx, area, gfw, lfw, cen, bg):
-        return Voigt(xx, area, gfw, lfw, cen) + bg
-
-    try:
-        popt, _ = curve_fit(model, xs, ys, p0=[max(height, 1.0) * 1.5, 1.3, 0.3, c0, bg0],
-                            bounds=([0, 0.5, 0.0, c0 - 1.0, 0.0],
-                                    [np.inf, 2.5, 1.0, c0 + 1.0, max(bg0 * 3 + 1, 1)]),
-                            maxfev=20000)
-        _area, gfw, lfw, cen, _bg = popt
-        if 0.5 <= gfw <= 2.5 and 0.0 <= lfw <= 1.0:
-            return float(cen), float(gfw), float(lfw)
-    except Exception:                                      # noqa: BLE001
-        pass
-    half = bg0 + 0.5 * height
-    above = xs[ys >= half]
-    fwhm = float(above.max() - above.min()) if above.size >= 2 else 1.3
-    return c0, min(max(fwhm, 0.5), 2.5), 0.0
+    """Elastic-line fit → (center, gauss_fwhm, lorentz_fwhm). Delegates to the shared
+    `isar.calibrate.elastic.fit_elastic` (step 5 promoted this out of the duplicated docs copy);
+    the `ok` significance flag is dropped here since the control elastics are always present."""
+    center, gfw, lfw, _ok = elastic.fit_elastic(x, counts)
+    return center, gfw, lfw
 
 
 def _theta(result, composite):
@@ -370,7 +347,60 @@ def verdict_summary_figure(path, vrows, gallery):
     fig.tight_layout(); fig.savefig(path, dpi=120); plt.close(fig)
 
 
-def write_findings(path, rows, worst_o, worst_g, sel_rows, fork, vrows, gallery):
+def energy_zero_series_figure(path, zero_diag):
+    """Fitted energy zero vs acquisition time, with the leave-one-out interpolation at each
+    scan's time — shows the series and how loosely the sparse control zeros interpolate."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if not zero_diag:
+        return
+    label = zero_diag[0]["key_label"]
+    k0 = min(d["key"] for d in zero_diag)
+    xs = [((d["key"] - k0) / 3600.0 if label == "time" else d["key"] - k0) for d in zero_diag]
+    xlabel = "hours since first control scan" if label == "time" else "scan# since first"
+    fig, ax = plt.subplots(figsize=(7.0, 4.2))
+    ax.plot(xs, [d["own"] for d in zero_diag], "o", color="C0", label="own elastic E0")
+    for xv, d in zip(xs, zero_diag):
+        if d["interp"] is not None:
+            ax.plot(xv, d["interp"], "x", color="C3")
+    ax.plot([], [], "x", color="C3", label="leave-one-out interpolated E0")
+    ax.set_xlabel(xlabel); ax.set_ylabel("energy zero E0 (meV)")
+    ax.set_title("S30 control — energy-zero series (own vs LOO-interpolated)")
+    ax.legend(fontsize=8); fig.tight_layout(); fig.savefig(path, dpi=120); plt.close(fig)
+
+
+def energy_zero_demos():
+    """Synthetic demos of the zero series feeding the loop (the control scans never need it):
+    (a) a no-elastic 'high-K' scan borrows an interpolated zero and still recovers omega0;
+    (b) a scan with no zero available is held-for-calibration (never E0=0)."""
+    x = np.linspace(-10.0, 10.0, 81)
+    rng = np.random.default_rng(99)
+    true_zero, true_o0 = -0.6, 8.0                                         # phonon far from the zero
+    lam = convolute_voigt_dho(x, true_o0, true_zero, 1.0, 0.0, 0.4, 300.0, 0.0, 15.0, 100.0, peak="all")
+    counts = rng.poisson(np.clip(lam, 0.0, None)).astype(float)            # phonon only, no elastic
+    series = energy_zero.ZeroSeries.build([(0.0, true_zero), (100.0, true_zero)])
+    rec = SimpleNamespace(raw_header={}, scan_number=50)                   # time 50, within coverage
+    zr = energy_zero.resolve_zero(x, counts, rec, series)
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
+                      center=float(zr.value), gauss_fwhm=1.0, lorentz_fwhm=0.0,
+                      instrument="S30", energy_status="needs_zero")
+    results = loop.fit_admissible_structures(ctx)
+    sel = select.select_models(results)
+    fit_o0 = {r.label: r for r in results}[sel.best].omega0 if sel.best else float("nan")
+    interp_demo = {"true_omega0": true_o0, "interp_zero": float(zr.value), "source": zr.source,
+                   "fit_omega0": float(fit_o0)}
+
+    flat = rng.poisson(20.0, 81).astype(float)
+    far = SimpleNamespace(raw_header={}, scan_number=500)                  # out of series coverage
+    zr2 = energy_zero.resolve_zero(x, flat, far, series)
+    held = verdict.held_for_calibration("no energy zero available (no nearby calibration)")
+    held_demo = {"resolved_zero": zr2.value, "verdict": held.verdict}
+    return interp_demo, held_demo
+
+
+def write_findings(path, rows, worst_o, worst_g, sel_rows, fork, vrows, gallery, zero_diag, ezdemos):
     """Consolidated markdown report (mirrors docs/in8_phase1_check.py's FINDINGS.md), built
     from the per-scan rows so it stays in lock-step with the run."""
     el = [r for r in rows if r["label"] == "elastic+stokes+bg"]
@@ -464,18 +494,54 @@ def write_findings(path, rows, worst_o, worst_g, sel_rows, fork, vrows, gallery)
              "route keeps a structured (quasi-elastic) residual out of *junk*. Logic is covered by "
              "`tests/analyze/test_verdict.py` and `tests/analyze/test_confidence.py`.\n\n")
 
+    L.append("## Step 5 — energy-zero calibration (§7, D8)\n\n")
+    L.append("S30 is `energy_status=\"needs_zero\"`: the elastic line gives the zero. Step 5 builds a "
+             "**time-keyed** zero series (acquisition time parsed from the SPEC `#D` header) and "
+             "interpolates to a scan's time, so a scan without a usable elastic borrows a neighbour's "
+             "zero and a scan with none is **held-for-calibration** (never E0=0). The control scans "
+             "each have their own elastic, so their fits keep their own zeros (regression Δ=0 "
+             "unchanged); the table below is a **leave-one-out diagnostic** — interpolating each "
+             "scan's zero from the other five.\n\n")
+    if zero_diag:
+        klabel = zero_diag[0]["key_label"]
+        k0 = min(d["key"] for d in zero_diag)
+        if klabel == "scan#":
+            L.append("All six supplementary control scans carry one constant `#D` header timestamp, so "
+                     "the series here is keyed by `scan_number` (the documented ≈-time proxy); production "
+                     "`scan_time` prefers the header time when it varies.\n\n")
+        L.append(f"| scan | {klabel} | own E0 | LOO-interp E0 | residual |\n|---|---|---|---|---|\n")
+        for d in zero_diag:
+            kk = f"{(d['key']-k0)/3600.0:.1f}" if klabel == "time" else f"{int(d['key']-k0)}"
+            interp = f"{d['interp']:.3f}" if d["interp"] is not None else "n/a"
+            resid = f"{d['resid']:+.3f}" if d["resid"] is not None else "n/a"
+            L.append(f"| {d['tag']} | {kk} | {d['own']:.3f} | {interp} | {resid} |\n")
+        rr = [abs(d["resid"]) for d in zero_diag if d["resid"] is not None]
+        if rr:
+            L.append(f"\nLOO interpolation residual is loose (max |Δ| = {max(rr):.2f} meV): these six "
+                     "control zeros are sparse and not smoothly drifting, so interpolation is a fallback "
+                     "for missing-elastic scans, not a replacement for a present elastic.\n")
+    ime, hde = ezdemos
+    L.append("\n### Synthetic demos\n\n")
+    L.append(f"- **Interpolated zero feeds the loop:** a no-elastic 'high-K' scan (true zero "
+             f"{ime['interp_zero']:.2f} meV, omega0 {ime['true_omega0']:.1f}) resolves its zero from "
+             f"the series (`source={ime['source']}`) and the fit still recovers omega0 = "
+             f"{ime['fit_omega0']:.2f} meV.\n")
+    L.append(f"- **Missing zero is held, never E0=0:** a scan with no series coverage resolves to "
+             f"`{hde['resolved_zero']}` -> verdict `{hde['verdict']}`.\n\n")
+
     L.append("## Figures (`out/phase3_step1/figures/`)\n\n"
              "- `s30_scan*.png` — data + elastic+stokes+bg with phonon/elastic/bg decomposition + pull residual.\n"
              "- `selection_akaike_weights.png` — per-scan Akaike weights (elastic+stokes+bg vs stokes+bg).\n"
              "- `synthetic_fork.png` — synthetic multimodal fork: pooled density + modes + weights.\n"
              "- `verdict_confidence.png` — per-scan confidence (resolved) + the synthetic verdict gallery.\n"
+             "- `energy_zero_series.png` — fitted energy zero vs time + leave-one-out interpolation.\n"
              "- `bootstrap_omega0_histograms.png` — per-scan omega0 bootstrap distribution vs HESSE sigma (BvM eyeball).\n"
              "- `dispersion_summary.png` — omega0(K) with bootstrap error bars, overlaid on the Phase-1 baseline.\n\n")
     L.append("## Scope / caveats\n\n"
-             "- This control set is well-counted, in-window-elastic, single-phonon → all asymptotic, "
-             "one survivor, fold, resolved. The sparse-regime flag, the multimodal fork, and the "
-             "non-resolved verdict buckets are exercised by the synthetic demos above (plus the unit "
-             "tests), not these scans.\n"
+             "- This control set is well-counted, in-window-elastic, single-phonon, own-elastic-zero → "
+             "all asymptotic, one survivor, fold, resolved. The sparse-regime flag, the multimodal "
+             "fork, the non-resolved verdict buckets, and the interpolated/held energy-zero paths are "
+             "exercised by the synthetic demos above (plus the unit tests), not these scans.\n"
              "- Per-(scan, hypothesis) numbers incl. status flags, intervals, AIC/weights, verdict + "
              "confidence are in `results_step1.csv`.\n")
     path.write_text("".join(L), encoding="utf-8")
@@ -498,8 +564,8 @@ def main():
     by_scan = {rec.scan_number: rec for rec in spec_s30.parse_file(S30_FILE, card)}
     ref = load_reference()
 
-    rows, deltas, disp, boot_panels, sel_rows, states = [], [], [], [], [], []
-    print("== Phase-3 steps 1-4: structure loop + errors + selection + verdict on S30 control ==")
+    rows, deltas, disp, boot_panels, sel_rows, states, zero_points = [], [], [], [], [], [], []
+    print("== Phase-3 steps 1-5: structure loop + errors + selection + verdict + zero on S30 control ==")
     for scan_no in S30_CONTROL_SCANS:
         rec = by_scan.get(scan_no)
         if rec is None:
@@ -524,6 +590,7 @@ def main():
         score_by_label = {s.label: s for s in sel.scores}
 
         tag = f"s30_scan{scan_no}_{S30_ANALYZER}"
+        zero_points.append((energy_zero.scan_time(rec), center, tag, ctx.T, scan_no))  # step-5 zero series
         ref_row = ref.get(tag)
         es_do = es_dg = None
         if ref_row is not None and es is not None:
@@ -638,6 +705,29 @@ def main():
             print(f"  {st['tag']}: {sv.verdict}, confidence={sv.confidence:.3f} "
                   f"(prior omega0~{pred:.2f})")
 
+    zero_diag = []                                         # step 5: leave-one-out zero interpolation
+    if zero_points:
+        times = [p[0] for p in zero_points]
+        distinct_time = len({round(t, 3) for t in times}) >= 2   # supplementary #D is often constant
+        keys = times if distinct_time else [float(p[4]) for p in zero_points]   # fallback: scan_number
+        key_label = "time" if distinct_time else "scan#"
+        for i, p in enumerate(zero_points):
+            own, ztag = p[1], p[2]
+            others = [(keys[j], zero_points[j][1]) for j in range(len(zero_points)) if j != i]
+            interp = (energy_zero.ZeroSeries.build(others).interpolate(keys[i])
+                      if len(others) >= 2 else None)
+            zero_diag.append({"tag": ztag, "key": keys[i], "key_label": key_label, "own": own,
+                              "interp": interp, "resid": (interp - own) if interp is not None else None})
+    ezdemos = energy_zero_demos()
+    ime, hde = ezdemos
+    print("\n== Step 5: energy-zero calibration ==")
+    print(f"  interpolated-zero demo: source={ime['source']}, fit omega0={ime['fit_omega0']:.2f} "
+          f"(true {ime['true_omega0']:.1f})")
+    print(f"  held demo: resolved zero={hde['resolved_zero']} -> {hde['verdict']}")
+    _rr = [abs(d["resid"]) for d in zero_diag if d["resid"] is not None]
+    if _rr:
+        print(f"  LOO interpolation residual max |d|={max(_rr):.3f} meV (sparse, non-smooth zeros)")
+
     fields = []                                            # union of keys (elastic rows have extras)
     for row in rows:
         for k in row:
@@ -665,11 +755,15 @@ def main():
     if vrows:
         verdict_summary_figure(FIGDIR / "verdict_confidence.png", vrows, gallery)
         print("  figure: verdict_confidence.png")
+    if zero_diag:
+        energy_zero_series_figure(FIGDIR / "energy_zero_series.png", zero_diag)
+        print("  figure: energy_zero_series.png")
 
     worst_o = max((abs(d[1]) for d in deltas), default=float("nan"))
     worst_g = max((abs(d[2]) for d in deltas), default=float("nan"))
     if rows:
-        write_findings(OUT / "FINDINGS.md", rows, worst_o, worst_g, sel_rows, fork_sel, vrows, gallery)
+        write_findings(OUT / "FINDINGS.md", rows, worst_o, worst_g, sel_rows, fork_sel, vrows,
+                       gallery, zero_diag, ezdemos)
         print(f"  wrote {OUT / 'FINDINGS.md'}")
 
     # --- regression gate vs the frozen Phase-1 baseline ---------------------

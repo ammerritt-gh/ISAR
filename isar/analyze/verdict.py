@@ -138,6 +138,12 @@ class ScanVerdict:
     provisional: bool = False
 
 
+def held_for_calibration(reason: str) -> ScanVerdict:
+    """Construct the held-for-calibration verdict. The pre-fit calibration gate (a missing energy
+    zero, §7) calls this before any fit — a missing zero is a flagged non-result, never E0=0."""
+    return ScanVerdict("held_for_calibration", 0.0, reasons=[reason])
+
+
 def classify(results, ctx, selection, *, prior=None) -> ScanVerdict:
     """Classify one scan into a named bucket (§6) with a computed confidence (§9). Deterministic
     precedence (held → unconstrained → junk/model-incomplete → no-signal/underpowered → resolved);
@@ -150,8 +156,7 @@ def classify(results, ctx, selection, *, prior=None) -> ScanVerdict:
 
     # 1. held-for-calibration — energy axis not usable (no fitted zero / needs conversion).
     if ctx.energy_status == "needs_conversion_and_zero":
-        return ScanVerdict("held_for_calibration", 0.0,
-                           reasons=["energy axis uncalibrated (needs_conversion_and_zero)"])
+        return held_for_calibration("energy axis uncalibrated (needs_conversion_and_zero)")
 
     # 2. nothing converged.
     if selection.best is None:

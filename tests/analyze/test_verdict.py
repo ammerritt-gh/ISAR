@@ -69,6 +69,13 @@ def test_held_for_calibration_when_uncalibrated():
     assert v.verdict == "held_for_calibration"
 
 
+def test_held_for_calibration_helper():
+    v = verdict.held_for_calibration("no energy zero available")
+    assert v.verdict == "held_for_calibration"
+    assert v.confidence == 0.0
+    assert "no energy zero" in v.reasons[0]
+
+
 def test_unconstrained_when_nothing_converges():
     ctx = _ctx(np.full(61, 50.0))
     sel = select.Selection(scores=[], best=None, survivors=[], pooled=None, modality="none")
