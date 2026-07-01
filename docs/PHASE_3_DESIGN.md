@@ -283,6 +283,15 @@ untrustworthy → fall back to frequentist + flag," consistent with `DESIGN.md` 
 visible." With a 5-parameter cheap model, NUTS (numpyro) or nested sampling converges fast; the discipline
 is only that the failure is *caught*.
 
+**Build note (step 7, 2026-07-01 — `isar/analyze/errors/bayes.py`).** Implemented as **dynesty static
+nested sampling** (D9 resolved, §15): gradient-free, so it calls the *identical* Baker–Cousins likelihood
+the bootstrap/MINOS use — no JAX reimplementation, no model divergence to contaminate §5.5 — and returns the
+evidence as a bonus. The dispersion prior is folded into the log-likelihood as `Normal(ω₀, σ)` because
+ω₀=√(Ω_d²+Γ²) is non-separable in the sampled (Ω_d,Γ). The silent-failure gate is keyed on **ESS**
+(nlive-robust) rather than `logzerr` — the latter scales √(H/nlive), so it measures the live-point *budget*
+and evidence precision (the §4 follow-on), not interval validity. A failed gate *or* any sampler exception
+sets `bayes_ok=False` → frequentist fallback + flag.
+
 ### 5.5 Agreement is the product
 In the well-counted regime the two paradigms agree (Bernstein–von Mises) and either is reported. **Where
 they diverge, the divergence localizes why,** and that is a reported diagnostic and a §12 confidence input:
@@ -295,6 +304,13 @@ they diverge, the divergence localizes why,** and that is a reported diagnostic 
 The error layer is therefore pluggable and side-by-side, exactly like estimators and backends. The
 deliverable per scan is not "ω ± σ" but a small object: `{within_model: {freq_interval, bayes_interval,
 agreement_metric}, across_model: {folded_interval | fork}, paradigm_divergence_flags}`.
+
+**Build note (step 7).** `agree.py` now carries the full **three-method** error-extraction cross-check on ω₀
+— the HESSE / bootstrap / posterior half-widths as data, plus the `prior_driven` / `fork_suspected` /
+`unconstrained` flags — and stays backward-compatible with the frequentist-only call. `attach(with_bayes=,
+prior=)` writes `bayes_interval` / `log_evidence` / `bayes_ok` into `within_model`. Consumption of the new
+flags by `confidence.py`/`verdict.py`, and of `log_evidence` by `select.py` as evidence weights (§4), are the
+step-7 follow-ons (§14).
 
 ---
 
@@ -431,6 +447,17 @@ contain truth 68 % of the time?) against the MC-against-truth pull width. If per
 matches the cohort pull width, the promotion of §0.1 is validated; if not, that mismatch is itself a
 finding.
 
+**Build note (step 7, `tests/analyze/test_bayes_coverage.py`).** The bootstrap-calibration self-test is
+promoted to a three-method comparison (HESSE / bootstrap / posterior). A concrete, honest finding: on the
+clean synthetic generator **HESSE does not degrade on ω₀** — ω₀ is a *location* parameter, robustly recovered
+even at low counts (covariance valid and ≈0.6 coverage down to target=6), and Γ here sits far from its floor —
+so all three roads *coincide* here. The Jacobian's documented failure (§5.1, `TRUST_SIGMA_FACTOR`) is the
+Γ→0 / parameter-at-boundary / structural-ambiguity corner of *real* messy data, which this generator does not
+manufacture; the gate therefore makes no synthetic HESSE-breakdown claim. What it *does* prove is the honest
+Step-7 product: **bootstrap ≈ posterior, both calibrated on ω₀**, across a well-counted and a sparse regime —
+the two roads that replace the fragile Jacobian mutually confirming each other exactly where a single error
+estimate is least trustworthy. Consistent with §8's "ω₀ trustworthy before Γ".
+
 ---
 
 ## 11. The growing-point-set contract (forward design for Phases 4/5)
@@ -532,7 +559,14 @@ python -m isar.tests.gold_tas                       :: score against the IN8 tru
 6. **Gold-standard scoring** (`tests/gold`) — score every verdict against FeSeS_1. This is the gate; nothing
    after step 2 should be called done without it.
 7. **Bayesian path** (`bayes.py`) — posterior sampling + diagnostics + fallback; the second paradigm and the
-   full agreement diagnostic. Heavier; comes after the frequentist path is scored.
+   full agreement diagnostic. Heavier; comes after the frequentist path is scored. *Done:* dynesty static
+   nested sampling (D9), ESS-gated convergence with frequentist fallback, the dispersion prior as a literal
+   Normal prior on ω₀; `agree.py` extended to the three-method (HESSE / bootstrap / posterior) error-extraction
+   cross-check with `prior_driven` / `fork_suspected` / `unconstrained` flags; `attach(..., with_bayes=, prior=)`
+   writes `bayes_interval` / `log_evidence` / `bayes_ok`; synthetic three-method coverage gate
+   (`tests/analyze/test_bayes_coverage.py`). *Follow-ons (out of step 7):* teach `confidence.py`/`verdict.py` to
+   consume the new flags, and wire `log_evidence` into `select.py` as an evidence-weight alternative to the
+   Akaike weights (§4).
 8. **Second-instrument generalization** (`gold_tas`) + **TAS 4-D resolution** (`tas4d.py`) — prove the
    analysis layer on IN8; report ω before Γ until the 4-D path lands. *Started:* the IN8 Phase-1 check
    already validates ω₀ recovery on real IN8 and provides a **scalar Cooper–Nathans energy resolution from
@@ -579,8 +613,18 @@ the one LLM capability that earns its place.
   implemented** (port of ResCal `rc_cnmat` in the IN8 Phase-1 check, §8) and gives the right elastic FWHM
   (~0.58 meV), so the "ourselves" path is demonstrably feasible; the open part is specifically the 4-D
   ellipsoid + local-dispersion focusing that makes Γ (not ω) trustworthy.
-- **D9 — Bayesian sampler:** NUTS (numpyro) vs nested sampling (dynesty). Nested gives the evidence for §4
-  weights as a bonus; NUTS may be faster for the 5-parameter model. Decide when building `bayes.py` (step 7).
+- **D9 — Bayesian sampler: RESOLVED → dynesty (static nested sampling).** Built in step 7
+  (`isar/analyze/errors/bayes.py`). The forward model (`convolute_voigt_dho`, numpy FFT + interpolation) is
+  **not differentiable**, so NUTS would need a JAX reimplementation that risks diverging from the frozen numpy
+  model and contaminating the §5.5 agreement diagnostic; a gradient-free sampler calls the **exact** Baker–
+  Cousins log-likelihood the bootstrap/MINOS use, keeping the statistical model provably identical across
+  paradigms. Nested sampling also returns the marginal-likelihood **evidence** (`log_evidence`, for the §4
+  evidence-weight follow-on) and has a self-contained `dlogz` stopping criterion. Two refinements found in
+  build: (a) interval quality is gated on **ESS** (nlive-robust), not `logzerr` (which scales as √(H/nlive) —
+  it governs *evidence* precision, the §4 follow-on, not interval validity); (b) the ω₀ prior is folded into
+  the log-likelihood because ω₀=√(Ω_d²+Γ²) is a non-separable function of the sampled parameters. A failed
+  convergence gate sets `bayes_ok=False` → frequentist fallback + flag. `nlive` (default 400) is a D10-adjacent
+  empirical pin.
 - **D10 — bootstrap `M` and interval type:** `M`≈100–200 expected affordable (§11), percentile vs BCa.
   Pin empirically against the coverage self-test (§10, step 3).
 - **D11 — prior representation for IC seeding across temperatures:** ω(Q) shifts with T near transitions, so

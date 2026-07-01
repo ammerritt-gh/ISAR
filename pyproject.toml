@@ -13,6 +13,7 @@ dependencies = [
     "matplotlib>=3.8",
     "iminuit>=2.25",
     "lmfit>=1.2",
+    "dynesty>=2.1",
 ]
 
 [project.optional-dependencies]
