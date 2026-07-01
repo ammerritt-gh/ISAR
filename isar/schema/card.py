@@ -57,6 +57,8 @@ class CardPolicy:
     variance_convention: str = "none"  # D3
     min_points: int = 5
     hkl_round_step: float = 0.05
+    quasielastic_fwhm: float | None = None  # broad QE Lorentzian FWHM (meV) for the §8 TAS
+    #                                         structure component; None ⇒ no QE hypothesis (IXS default)
     exclusions_seed: list = field(default_factory=list)
     # Raw-S30 ingestion (optional; absent in the supplementary card, which keeps these defaults).
     multiword_columns: list = field(default_factory=list)   # #L names containing spaces

@@ -104,6 +104,30 @@ class Elastic(Component):
         return {"E": self.evaluate(x, {"E": 1.0}, ctx)}
 
 
+class QuasiElastic(Component):
+    """Broad quasi-elastic line: a Lorentzian of fixed width ``ctx.quasielastic_fwhm``
+    centred at ``ctx.center``, convolved with the Gaussian resolution — i.e. a Voigt whose
+    *Lorentzian* part is the (broad) QE width, not the resolution's narrow Lorentzian.
+
+    Linear param ``QE`` (the Voigt area); the width is a card default, not fitted, so this
+    slots into the NNLS basis as one extra linear column and model selection decides if it
+    earns its parameter (§2/§4 "added only on evidence"). It models real diffuse / magnetic
+    quasi-elastic scattering (e.g. Fe₂Mo₃O₈, §8) — distinct from the resolution-limited
+    :class:`Elastic`, and, being broad, it has in-window leverage at EN≥1 where the sharp
+    elastic has none (the off-window-elastic degeneracy the elastic gate excludes).
+    """
+
+    prefix = "qe"
+    params = (Parameter("QE", "linear"),)
+
+    def evaluate(self, x, local: dict, ctx) -> np.ndarray:
+        return Voigt(np.asarray(x, dtype=float), local["QE"],
+                     ctx.gauss_fwhm, ctx.quasielastic_fwhm, ctx.center)
+
+    def unit_columns(self, x, nonlinear: dict, ctx) -> dict:
+        return {"QE": self.evaluate(x, {"QE": 1.0}, ctx)}
+
+
 class ConstantBackground(Component):
     """Flat background. Linear param ``BG``."""
 

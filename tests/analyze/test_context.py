@@ -55,7 +55,7 @@ def _stub_record():
 
 def test_from_scan_wires_fields():
     rec = _stub_record()
-    card = SimpleNamespace(policy=SimpleNamespace(instrument="S30"))
+    card = SimpleNamespace(policy=SimpleNamespace(instrument="S30", quasielastic_fwhm=None))
     ctx = CTX.ScanContext.from_scan(rec, "ana5", card,
                                     center=-0.5, gauss_fwhm=1.3, lorentz_fwhm=0.2)
     assert np.allclose(ctx.x, axes.scanned_axes(rec)[0].values)
@@ -65,4 +65,21 @@ def test_from_scan_wires_fields():
     assert ctx.instrument == "S30"
     assert ctx.energy_status == "needs_zero"
     assert ctx.prior_omega is None
+    assert ctx.quasielastic_fwhm is None  # S30 card does not enable a quasi-elastic component
     assert ctx.x_used.size == 41  # all-true mask
+
+
+def test_scancontext_quasielastic_fwhm_defaults_none():
+    x = np.array([1.0, 2.0, 3.0])
+    ctx = CTX.ScanContext(x=x, counts=np.ones(3), mask=np.ones(3, dtype=bool), T=100.0,
+                          center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                          energy_status="needs_zero")
+    assert ctx.quasielastic_fwhm is None
+
+
+def test_from_scan_sources_quasielastic_fwhm_from_tas_card():
+    rec = _stub_record()
+    card = SimpleNamespace(policy=SimpleNamespace(instrument="IN8", quasielastic_fwhm=1.5))
+    ctx = CTX.ScanContext.from_scan(rec, "ana5", card,
+                                    center=0.0, gauss_fwhm=0.6, lorentz_fwhm=0.0)
+    assert ctx.quasielastic_fwhm == 1.5

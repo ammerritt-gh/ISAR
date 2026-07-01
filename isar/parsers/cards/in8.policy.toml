@@ -25,6 +25,11 @@ hkl_round_step = 0.05
 measurement_pattern = "bs"      # a `bs ...` scan (Q-E) is a measurement
 alignment_pattern = "sc"        # a `sc ...` motor scan is an alignment
 exclusions_seed = []            # durable bad numors go here, e.g. [55217]  # excluded by legacy
+quasielastic_fwhm = 1.5         # §8: Fe2Mo3O8 has a real broad magnetic quasi-elastic tail (the
+                                # Phase-1 width sweep bottomed out near ~1.5 meV, far broader than the
+                                # ~0.58 meV CN elastic resolution). Admits a fixed-width QE structure
+                                # component (isar.analyze.components.QuasiElastic); model selection
+                                # decides per scan if it earns its parameter. Unset (None) on IXS cards.
 
 [temperature_rule]
 setpoint_param = "RT"           # the regulation setpoint, from the header `PARAM: ... RT= ...`

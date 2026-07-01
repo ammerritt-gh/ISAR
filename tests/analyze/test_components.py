@@ -13,10 +13,12 @@ from isar.synth._ff import Voigt, convolute_voigt_dho
 from isar.synth.fit import omega0_from, omega0_value_error
 
 
-def _ctx(gauss_fwhm=1.2, lorentz_fwhm=0.3, center=-0.5, T=200.0, x=None, counts=None):
+def _ctx(gauss_fwhm=1.2, lorentz_fwhm=0.3, center=-0.5, T=200.0, x=None, counts=None,
+         quasielastic_fwhm=1.5):
     """Duck-typed stand-in for ScanContext (only the fields components read)."""
     return SimpleNamespace(gauss_fwhm=gauss_fwhm, lorentz_fwhm=lorentz_fwhm,
-                           center=center, T=T, x=x, counts=counts)
+                           center=center, T=T, x=x, counts=counts,
+                           quasielastic_fwhm=quasielastic_fwhm)
 
 
 def test_constant_background_is_flat():
@@ -55,6 +57,42 @@ def test_phonon_tied_antistokes_grows_with_T():
     gain = x < -1.0  # anti-Stokes (energy-gain) side
     assert hot[gain].sum() > 10.0 * cold[gain].sum()
     assert cold[gain].sum() >= 0.0
+
+
+def test_quasielastic_is_broad_voigt_at_center():
+    """A quasi-elastic Lorentzian of width ctx.quasielastic_fwhm convolved with the Gaussian
+    resolution — a Voigt with the QE width as its Lorentzian part, at ctx.center."""
+    x = np.linspace(-10, 10, 81)
+    ctx = _ctx(gauss_fwhm=0.6, lorentz_fwhm=0.0, center=0.0, quasielastic_fwhm=1.5)
+    out = C.QuasiElastic().evaluate(x, {"QE": 12.0}, ctx)
+    expected = Voigt(x, 12.0, ctx.gauss_fwhm, ctx.quasielastic_fwhm, ctx.center)
+    assert np.allclose(out, expected)
+
+
+def test_quasielastic_param_is_a_single_linear_amplitude():
+    qe = C.QuasiElastic()
+    assert qe.prefix == "qe"
+    assert qe.param_names() == ["QE"]
+    assert qe.linear_params() == ["QE"]
+    assert qe.nonlinear_params() == []
+
+
+def test_quasielastic_unit_column_is_unit_amplitude_response():
+    x = np.linspace(-8, 8, 65)
+    ctx = _ctx(gauss_fwhm=0.6, lorentz_fwhm=0.0, center=0.5, quasielastic_fwhm=1.8)
+    unit = C.QuasiElastic().unit_columns(x, {}, ctx)
+    assert set(unit) == {"QE"}
+    assert np.allclose(unit["QE"], Voigt(x, 1.0, ctx.gauss_fwhm, ctx.quasielastic_fwhm, ctx.center))
+
+
+def test_quasielastic_has_in_window_leverage_where_sharp_elastic_has_none():
+    """The reason QE is admissible on IN8 (EN>=1) where the resolution-limited elastic is not:
+    2 meV off centre, the broad QE column still carries amplitude; the sharp elastic is ~0."""
+    x = np.array([2.0])
+    ctx = _ctx(gauss_fwhm=0.6, lorentz_fwhm=0.0, center=0.0, quasielastic_fwhm=1.5)
+    qe = C.QuasiElastic().evaluate(x, {"QE": 1.0}, ctx)[0]
+    el = C.Elastic().evaluate(x, {"E": 1.0}, ctx)[0]
+    assert qe > 1000.0 * el
 
 
 def test_composite_equals_convolute_voigt_dho_all():

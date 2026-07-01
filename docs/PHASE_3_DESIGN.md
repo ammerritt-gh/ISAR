@@ -582,6 +582,24 @@ Steps 1–6 deliver a fully deterministic, scored, single-paradigm Phase 3 on th
 shippable triage tool. 7–8 add the second paradigm and the second instrument. 9–10 set up Phase 4 and add
 the one LLM capability that earns its place.
 
+**Build note (step 8, 2026-07-01).** The second-instrument generalization (`gold_tas`) is built and green
+(the 4-D `tas4d.py` remains deferred, D5). The scalar Cooper–Nathans energy resolution is promoted from the
+Phase-1 check to `isar/synth/resolution.py` (`cn_energy_fwhm`, ≈0.58 meV on 055182, fallback on a closed
+triangle). A **fixed-width, amplitude-only** `QuasiElastic` component (`isar/analyze/components.py` — a Voigt
+whose *Lorentzian* part is the broad QE width, so it slots into the NNLS basis as one linear column, no new
+nonlinear parameter) is admitted for TAS via a card-declared `quasielastic_fwhm`
+(`in8.policy.toml` → `CardPolicy`/`ScanContext` → `structures.quasielastic_admissible`); `enumerate_structures`
+then adds `stokes+qe+bg` / `elastic+stokes+qe+bg` and AIC/BIC decides per scan (the deterministic realization
+of "added only on evidence"). The full Phase-3 pipeline is scored against a thin hand-vetted IN8 anchor set
+(`test_data/ILL IN8/IN8_fit_results.csv`; only 055182 ≈ 4.2 meV and the aborted 055183 are vetted truth) by
+`docs/phase3_gold_in8_check.py` — **prior-free**, `center=0`, CN resolution. Result: recovers ω₀ on 055182
+(|Δ| = 0.31 meV) and declines the 3-point 055183 (safety 0); the QE component demonstrably earns its parameter
+(055194 cost/dof 8.4→2.1; 055182/055186 have *no* usable single-DHO fit → usable with QE). Honest scope: a
+generalization **smoke test** (~5 anchors), not a statistical validation — the 83-scan IXS gold stays the
+gate, and the verdict layer **over-flags to `junk` on TAS** (the known §6 refinement — route a high cost from
+a known-missing component to `model_incomplete`, not `junk` — is the follow-on, not step 8). *Remaining (D5):*
+the focusing-dependent Γ (the full 4-D ellipsoid + local dispersion); ω₀ before Γ until then.
+
 ---
 
 ## 15. Decisions

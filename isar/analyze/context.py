@@ -27,6 +27,8 @@ class ScanContext:
     instrument: str          # "S30" (IXS) | "IN8" (TAS) …
     energy_status: str       # "absolute" | "needs_zero" | "needs_conversion_and_zero"
     prior_omega: float | None = None  # running dispersion-prior ω(Q), if any (None at step 1)
+    quasielastic_fwhm: float | None = None  # broad quasi-elastic Lorentzian FWHM (meV); None ⇒ no QE
+    #                                         component admissible (§8 TAS card default; unset on IXS)
 
     @property
     def x_used(self) -> np.ndarray:
@@ -63,4 +65,5 @@ class ScanContext:
             instrument=card.policy.instrument,
             energy_status=record.energy_calibration.status,
             prior_omega=prior_omega,
+            quasielastic_fwhm=card.policy.quasielastic_fwhm,
         )

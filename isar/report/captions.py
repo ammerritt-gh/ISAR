@@ -281,4 +281,20 @@ CAPTIONS: dict[str, Caption] = {
         jargon=(("TAS", "triple-axis spectrometer (neutron)"),
                 ("Voigt", "a Gaussian⊗Lorentzian resolution shape"),
                 ("quasi-elastic", "a broad component near zero energy transfer"))),
+    "in8_gold/anchors": Caption(
+        title="ISAR's fits on real triple-axis anchors",
+        what="each panel is one IN8 scan: data with error bars, ISAR's best fit broken into its "
+             "components (phonon / quasi-elastic / background), and the pull residual below.",
+        good="the phonon component sits at the right energy and the broad quasi-elastic component "
+             "absorbs the low-energy magnetic tail, leaving a flat pull — the energy is trustworthy even "
+             "where the model is imperfect.",
+        jargon=(_J_PULL, ("quasi-elastic", "a broad component near zero energy transfer — real "
+                          "magnetic/diffuse scattering on this sample, not resolution"))),
+    "in8_gold/scatter": Caption(
+        title="ISAR energy vs gold energy (IN8)",
+        what="one point per scored scan: ISAR's ω₀ (y) against the gold ω₀ (x); dashed is exact "
+             "agreement, × marks the rejected anchor.",
+        good="points hug the diagonal — ISAR recovers the same energy on a second instrument. NB only "
+             "055182 is vetted truth; the other gold values are provisional placeholders.",
+        jargon=()),
 }

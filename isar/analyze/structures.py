@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from isar.analyze.components import Component, ConstantBackground, Elastic, PhononDHO
+from isar.analyze.components import (
+    Component, ConstantBackground, Elastic, PhononDHO, QuasiElastic,
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,18 @@ def elastic_admissible(ctx) -> bool:
     return (lo - tol) <= ctx.center <= (hi + tol)
 
 
+def quasielastic_admissible(ctx) -> bool:
+    """A broad quasi-elastic component is admissible iff the experiment card declares its
+    width (``ctx.quasielastic_fwhm`` is not None — a TAS card default, §8).
+
+    Unlike the sharp :class:`~isar.analyze.components.Elastic`, a *broad* quasi-elastic has
+    leverage across the window even when the elastic centre is off-window (the IN8 FX=2,
+    EN≥1 case), so it carries no in-window gate. Whether it earns its extra parameter on a
+    given scan is left to model selection (§4) — it is enumerated, not assumed.
+    """
+    return getattr(ctx, "quasielastic_fwhm", None) is not None
+
+
 def antistokes_mode(ctx) -> str:
     """How anti-Stokes is handled for this context. Step 1: always ``"tied"`` — the Bose
     tie inside :class:`PhononDHO` (negligible as T→0, growing with T), so a low-T gain-side
@@ -59,10 +73,19 @@ def enumerate_structures(ctx) -> list[Hypothesis]:
     """The admissible structure hypotheses for this scan context (§2).
 
     Always emits the single-phonon ``stokes+bg``; adds ``elastic+stokes+bg`` when the
-    elastic line is admissible. Second-phonon / quasi-elastic / sloped-BG are not
-    enumerated by default — added only on evidence at later steps.
+    elastic line is admissible, ``stokes+qe+bg`` when the card declares a broad
+    quasi-elastic width (§8 TAS), and ``elastic+stokes+qe+bg`` when both gates fire. The
+    quasi-elastic is opt-in per card, not enumerated by default; model selection (§4)
+    decides whether it earns its parameter. Second-phonon / sloped-BG remain later-step.
     """
+    elastic = elastic_admissible(ctx)
+    qe = quasielastic_admissible(ctx)
     hyps = [Hypothesis("stokes+bg", (PhononDHO, ConstantBackground))]
-    if elastic_admissible(ctx):
+    if elastic:
         hyps.append(Hypothesis("elastic+stokes+bg", (PhononDHO, Elastic, ConstantBackground)))
+    if qe:
+        hyps.append(Hypothesis("stokes+qe+bg", (PhononDHO, QuasiElastic, ConstantBackground)))
+    if elastic and qe:
+        hyps.append(Hypothesis("elastic+stokes+qe+bg",
+                               (PhononDHO, Elastic, QuasiElastic, ConstantBackground)))
     return hyps
