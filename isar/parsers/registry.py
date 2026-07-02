@@ -13,13 +13,46 @@ from pathlib import Path
 # (facility, instrument, format_version) -> plugin
 REGISTRY: dict[tuple[str, str, str], object] = {}
 
+# name -> plugin (the card pins a parser by name: `plugin = "spec_s30"`). Populated by
+# `isar/parsers/__init__.py` at import time (UNIFICATION_DESIGN §2.3).
+REGISTRY_BY_NAME: dict[str, object] = {}
+
 
 def register(plugin, facility: str, instrument: str, format_version: str) -> None:
     REGISTRY[(facility, instrument, format_version)] = plugin
 
 
+def register_named(plugin) -> None:
+    """Register a plugin under its `.name` for card-pinned resolution."""
+    REGISTRY_BY_NAME[plugin.name] = plugin
+
+
 def get(facility: str, instrument: str, format_version: str):
     return REGISTRY[(facility, instrument, format_version)]
+
+
+def plugin_by_name(name: str):
+    """Resolve the parser a card pins by name (`card.policy.plugin`)."""
+    try:
+        return REGISTRY_BY_NAME[name]
+    except KeyError:
+        raise KeyError(
+            f"no parser plugin named {name!r} registered "
+            f"(known: {sorted(REGISTRY_BY_NAME)})"
+        ) from None
+
+
+def default_plugin_name(facility: str, instrument: str, format_version: str) -> str | None:
+    """The parser to scaffold a card from, given a detected format tuple (used by `isar init`).
+
+    Returns None for a recognized-but-unsupported instrument (e.g. ID28/BL43LXU, whose SPEC readers
+    exist but whose card templates are not yet shipped).
+    """
+    if (facility, instrument) == ("APS", "S30"):
+        return "spec_s30_raw" if format_version.endswith("-raw") else "spec_s30"
+    if (facility, instrument) == ("ILL", "IN8"):
+        return "ill_in8"
+    return None
 
 
 def plugin_for(path: str | Path):

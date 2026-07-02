@@ -3,9 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "isar-synth"
+name = "isar"
 version = "0.1.0"
-description = "ISAR Phase 1 — synthetic-core validation harness for DHO spectrum fitting"
+description = "ISAR — automated inelastic-scattering data reduction, review, and triage-fitting pipeline"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26",
@@ -19,10 +19,13 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=7.4"]
 
+[project.scripts]
+isar = "isar.cli.main:main"
+
 [tool.setuptools]
 # Fitting_Functions.py is a top-level module at the repo root, imported unchanged.
 py-modules = ["Fitting_Functions"]
-packages = ["isar", "isar.synth", "isar.schema", "isar.parsers", "isar.synth_format", "isar.reduce", "isar.report", "isar.analyze", "isar.analyze.errors", "isar.calibrate"]
+packages = ["isar", "isar.synth", "isar.schema", "isar.parsers", "isar.synth_format", "isar.reduce", "isar.report", "isar.analyze", "isar.analyze.errors", "isar.calibrate", "isar.session", "isar.cli"]
 
 [tool.setuptools.package-data]
 # Ship the human-authored card policy templates (D8) inside the wheel.
