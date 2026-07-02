@@ -69,10 +69,11 @@ machine-local and cannot be restored from git.
 - **S30:** `test_data/APS S30/` — `FeSe_1-xS_x_1.spec_supplementary.dat` (measurements) **and**
   `FeSe_1-xS_x_1.spec` (companion raw SPEC holding the K≈0 elastics the zero calibration needs);
   `FeSe_1_fit_results.csv` (gold, **used only by `isar score` and the step-5 comparison**).
-  **Trap:** the directory ALSO holds a second experiment (`FeSeS_1.spec_supplementary.dat`, ~56
-  scans, same detected format) and two more raw `.spec` files. The step-5 gate must therefore run
-  on **explicit files** with `companion_glob = "FeSe_1-xS_x_1.spec"`, not on the bare directory —
-  see design §10 step 5.
+  **Trap:** the directory historically held a second experiment (`FeSeS_1.spec_supplementary.dat`,
+  same detected format) and two more raw `.spec` files — now relabeled `*.UNUSED` on this machine
+  so they no longer detect. The step-5 gate still runs on **explicit files** with
+  `companion_glob = "FeSe_1-xS_x_1.spec"`, and ingest must not assume one experiment per directory
+  (the general case is real) — see design §10 step 5.
 - **IN8:** `test_data/ILL IN8/` — numor files (`0551xx`/`0552xx`); `.nxs` twins must be *skipped
   gracefully, listed not fatal*. **Currently missing:** `IN8_fit_results.csv` (anchor 055182
   vetted-recover ≈ 4.2 meV, 055183 vetted-reject; the other rows were Phase-1 placeholders) is not

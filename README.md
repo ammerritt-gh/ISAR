@@ -13,9 +13,11 @@ this yourself*. It is fast feedback for steering an experiment, not the system o
 published numbers. Nothing is ever deleted; a human reviews everything afterward.
 
 > **Status: development.** The analysis pipeline is built and validated on real data from two very
-> different instruments (APS Sector-30 HERIX and ILL IN8); the unification phase — the `isar` CLI
-> that runs it end-to-end on new data — is designed and being built. See
-> [docs/UNIFICATION_DESIGN.md](docs/UNIFICATION_DESIGN.md).
+> different instruments (APS Sector-30 HERIX and ILL IN8). The unification phase — the `isar` CLI
+> (`init/run/status/report/score`) that runs it end-to-end on new data — is now built and tested
+> (`tests/session/`); one validation (the full 83-scan S30 statistical gate at M=200) is still
+> pending. See [docs/UNIFICATION_DESIGN.md](docs/UNIFICATION_DESIGN.md) and, to run it,
+> [docs/USING_ISAR.md](docs/USING_ISAR.md).
 
 ## The pipeline
 

@@ -1,8 +1,14 @@
 # ISAR Unification — Assembly into a product (the tool grows a front door)
 
-**Status:** Design for the build. Decisions U1–U8 are settled (recorded in §9 with rationale); the
-open engineering items are marked inline. Companion build briefing: `docs/HANDOFF_UNIFICATION.md`.
-User-facing companion: `docs/USING_ISAR.md` (documents the CLI this design specifies).
+**Status:** Built (2026-07). The `isar` CLI + `isar/session/` layer described here are implemented and
+tested (`tests/session/`); decisions U1–U8 held through the build. **One gate is deferred:** the full
+83-scan S30 statistical comparison at M=200 (§10 step 5) is a multi-minute run left for a fast
+machine — the calibration layer is proven to reproduce the gold check's per-scan inputs to machine
+precision (step 3 gate, `tests/session/test_calibrations.py`), and the driver is proven end-to-end on
+IN8 + a synthetic S30 held/idempotency/corrections smoke, but the end-to-end ω₀ comparison against
+`results_gold.csv` has not yet been run. Decisions U1–U8 are in §9; open engineering items are marked
+inline. Companion build briefing: `docs/HANDOFF_UNIFICATION.md`. User-facing companion:
+`docs/USING_ISAR.md`.
 
 **Relationship to the master design:** This is the realization of `DESIGN.md` §3 (the architecture
 diagram's spine), §4 (the event-stream model), §7.1 (ingestion & batching), the accumulated-state
@@ -459,12 +465,12 @@ Each step is mergeable and gated before the next. Windows note: test-data paths 
 5. **Driver + `isar run`** (§2.5) — the heavyweight gate, run locally:
    - **S30**: workspace with `[fitting] detectors = ["ana7"]`; run on **explicit files, not the
      directory** — `isar run "test_data/APS S30/FeSe_1-xS_x_1.spec_supplementary.dat" ...` with
-     `[calibration] companion_glob = "FeSe_1-xS_x_1.spec"`. (The directory also holds a *second
-     experiment* — `FeSeS_1.spec_supplementary.dat`, ~56 scans, same detected format — plus two
-     more raw `.spec` files; a bare directory run with `companion_glob = "*.spec"` would ingest
-     foreign scans and mix three experiments' elastics into one zero series, polluting the gold
-     comparison. That multi-experiment-per-directory case is real and allowed in general use; for
-     *this gate* the inputs must match what the gold check read.) Against `results_gold.csv`: same
+     `[calibration] companion_glob = "FeSe_1-xS_x_1.spec"`. (Historically the directory also held a
+     *second experiment* — `FeSeS_1.spec_supplementary.dat`, same detected format — plus two more
+     raw `.spec` files; those have been relabeled `*.UNUSED` on this machine so directory ingest no
+     longer sees them, but the general multi-experiment-per-directory case is real and allowed —
+     ingest must not assume one experiment per directory, and this gate pins inputs to what the
+     gold check read.) Against `results_gold.csv`: same
      held set; **0 gold-REJECT scans resolved (safety — the load-bearing property)**; ω₀ median
      |Δ| ≲ 0.05 meV on delivered scans; dispositions within a few scans. Confidence values may
      drift (auto prior ≠ LOO gold prior) — gate on dispositions and ω₀, not confidence (R4).

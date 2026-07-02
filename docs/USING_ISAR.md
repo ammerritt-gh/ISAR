@@ -5,10 +5,11 @@ Written for a scientist at (or preparing for) a beamtime. For what ISAR *is* and
 start with [READING_GUIDE.md](READING_GUIDE.md); for what a verdict means, see
 [INTERPRETING_A_VERDICT.md](INTERPRETING_A_VERDICT.md).
 
-> **Status: this documents the v1 CLI specified in [UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md),
-> currently being built.** It is written first, deliberately, as the contract the build must meet:
-> when the unification phase lands, everything on this page must be literally true. If you're
-> reading this before then, the `docs/*_check.py` scripts are still the only way to run ISAR.
+> **Status: the v1 CLI described here is built** (`isar init/run/status/report/score`, tested in
+> `tests/session/`). It runs end-to-end on IN8 today and on S30 once a companion `.spec` supplies the
+> energy zero. One validation is still pending — the full 83-scan S30 statistical comparison at M=200
+> (a multi-minute run) — so treat the S30 accuracy numbers as expected-not-yet-confirmed until that
+> gate is run (see [UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md) §10 step 5).
 
 ## The idea in one paragraph
 
