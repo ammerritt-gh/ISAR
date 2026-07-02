@@ -42,6 +42,14 @@ divergence_tol = 5.0
 key = ["sample", "q", "T"]
 merge = "separate"
 
+[calibration]                   # UNIFICATION_DESIGN §3
+method = "elastic_records"      # the herixE elastics arrive in-stream as parsed calibration records
+analyzer_column = "Ana7"        # elastic counts column for the zero fit
+
+[fitting]                       # user fitting guidelines (UNIFICATION_DESIGN §6) — all optional
+monitor_frac = 0.9
+min_fit_points = 6
+
 [qc]                            # deterministic QC thresholds (§7.1-7.2) — all have code defaults
 empty_k = 5.0                   # a peak excursion must beat empty_k*sqrt(median) or the spectrum is flat
 stale_min_run = 3               # a leading near-equal, high, low-scatter run this long is stale_head

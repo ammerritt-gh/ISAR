@@ -43,6 +43,15 @@ key = ["sample", "q", "T"]
 merge = "merge"                 # IN8 combines repeat scans at the same (Q, T): combine-before-divide
 t_round = 5.0                   # T-grouping bin (K): regulation T drifts, so group same-setpoint scans
 
+[calibration]                   # UNIFICATION_DESIGN §3
+method = "cooper_nathans"       # fixed-kf absolute axis (center=0); analytical per-scan resolution
+                                # from the numor header (isar.calibrate.tas.cn_energy_fwhm)
+
+[fitting]                       # user fitting guidelines (UNIFICATION_DESIGN §6) — all optional
+monitor_frac = 0.9              # mask a point whose monitor counted short (truncated tail)
+min_fit_points = 6              # need > len(params)=5 kept points for a positive dof
+# omega_window = [0.5, 30.0]    # optional sanity window (meV)
+
 [qc]                            # deterministic QC thresholds (§7.1-7.2) — all have code defaults
 empty_k = 5.0
 stale_min_run = 3

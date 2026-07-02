@@ -32,6 +32,22 @@ divergence_tol = 5.0            # |sensor - setpoint| beyond this flags sensor_d
 key = ["sample", "q", "T"]
 merge = "separate"             # S30 keeps duplicate measurements as separate points
 
+[calibration]                 # how the energy zero + resolution are established (UNIFICATION_DESIGN §3)
+method = "bragg_companion"    # the K≈0 elastics live in the companion raw .spec (not this .dat)
+companion_glob = "*.spec"     # raw SPEC files in the data dir are the elastic source (never parsed
+                              # as measurements — see the R2 guard). Narrow this (e.g. the exact
+                              # "<experiment>.spec") when a directory holds more than one experiment.
+analyzer_column = "Ana7"      # elastic counts column for the zero + per-slit resolution fits
+k_max = 0.05                  # a herixE block is a zone-centre elastic only if |K| <= this
+slit_p_group = 17             # per-scan slit for MEASUREMENTS: raw .spec #P<group>[index]...
+slit_p_index = 4              # ...index 4 of #P17 is the Ana7 slit (matches calibrate.bragg)
+
+[fitting]                     # user fitting guidelines (UNIFICATION_DESIGN §6) — all optional
+# detectors = ["ana7"]        # which spectra to fit (default: all enabled detectors)
+# omega_window = [1.0, 20.0]  # a resolved fit with omega0 outside this window is demoted to flagged
+monitor_frac = 0.9            # mask a point whose monitor counted short of this fraction of preset
+min_fit_points = 6            # fewer usable points than this -> non-result (undersampled)
+
 [qc]                          # deterministic QC thresholds (§7.1-7.2) — all have code defaults
 empty_k = 5.0                 # a peak excursion must beat empty_k*sqrt(median) or the spectrum is flat
 stale_min_run = 3             # a leading near-equal, high, low-scatter run this long is stale_head
