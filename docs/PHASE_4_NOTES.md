@@ -14,6 +14,11 @@ never auto-fired.**
 told to produce: the running dispersion prior (with confidence), the computed confidence (§9), the
 non-result buckets (§6, especially *underpowered* with its detection-power estimate), and the correction
 channel (`DESIGN.md` §10). Phase 4 is largely a consumer of these, plus a counts→error projection.
+The **unification phase** (`UNIFICATION_DESIGN.md`) sits between: it is what actually *materializes*
+these inputs as persistent session state — the auto-built dispersion prior, per-fit provenance, the
+held/non-result ledger — and its v1 prior deliberately carries `amplitude=None` (detection power
+abstains); enabling the underpowered power estimate by carrying neighbor amplitudes is the marked
+extension Phase 4 will need first.
 
 **The operating mode that shapes Phase 3.** "Refit everything after every point" is Phase 4's heart —
 reduce wasted beam by watching the error shrink live. This is why Phase 3 must build the fit/error layer

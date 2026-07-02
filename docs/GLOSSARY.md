@@ -52,6 +52,32 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **fork / fold** — a *fork* is two or more equally-supported answers reported separately (the data are
   ambiguous); a *fold* is a single agreed answer.
 
+## Running ISAR — cards, workspaces, and the prior
+
+- **experiment card** — the one place all per-experiment decisions live, in two halves: a
+  human-edited `card.policy.toml` (detectors, column names, collation rules, your fitting
+  guidelines — ISAR never writes it) and a machine-written `card.state.json` (accumulated state:
+  calibration versions, the dispersion prior, exclusions).
+- **workspace** — the per-experiment directory `isar init` creates: the card, the session ledger,
+  and the `report/` output. One experiment = one workspace.
+- **session ledger** — ISAR's bookkeeping (`session.json`): which files it has seen and what
+  happened to each scan. Deleting it is safe (a re-run rebuilds it); the card state is not.
+- **idempotent run** — re-running `isar run` on the same data does no redundant work: every file
+  is re-read, but only scans that are new, changed, previously *held*, or touched by a card edit
+  (a new guideline or exclusion) are (re)fitted.
+- **held** — a scan ISAR is not ready to fit (most often `held_for_calibration`: no energy zero
+  measured yet). Held scans are re-examined automatically on every later run; ISAR never guesses
+  the missing piece.
+- **dispersion prior** — the running ω(Q) expectation ISAR builds from its own resolved fits
+  (same sample and temperature), used to seed initial conditions and sanity-check new fits. Only
+  clean, single-answer (*fold*) results enter it; ambiguous (*fork*) results never do.
+- **expectation / guideline** — what *you* tell ISAR in the card's `[fitting]` section: expected
+  phonon energies (per Q range or per scan), restricted model choices, known-bad scans. Guidelines
+  narrow what the automation tries; they can never force a physically inadmissible model.
+- **provenance** — every reported number carries where its inputs came from: which resolution
+  version, which energy-zero source, whether the seed was your expectation or the auto prior and
+  how many neighbors informed it.
+
 ## Validation vocabulary
 
 - **gold / expert fit** — a human's by-hand fit of the same data (in their usual tool). ISAR is compared

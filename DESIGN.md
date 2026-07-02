@@ -8,7 +8,10 @@ the floating R is intentional, not undecided. Canonical machine name is `isar` (
 command). Also, fittingly, the river through Munich.
 
 **Status:** Draft for discussion. Supersedes the haphazard first pass, retained for reference at
-`C:\Users\AMM\Documents\Github\LangGraph Test 1`.
+`C:\Users\AMM\Documents\Github\LangGraph Test 1`. Phases 1–3 (validation harness, schema/parsers/
+reduce, analysis) are built and validated; the assembly of it all into a runnable product — §14
+items 5–7, the CLI + session layer — is designed in **`docs/UNIFICATION_DESIGN.md`**, which also
+resolves §13 Q1/Q2/Q4/Q5.
 **Scope:** A during-beamtime processing tool that ingests scans in batches on a separate
 machine, classifies and QCs them, fits phonons, collates by Q, and produces review
 reports fast enough to steer the experiment. A human checks everything afterward.
@@ -123,6 +126,12 @@ between batches *and* across restarts (a multi-day tool will be killed and resta
 per-analyzer resolution (versioned), the running dispersion prior, the current-sample mapping,
 the energy-zero time series, and the exclusions/corrections log. A LangGraph checkpointer keyed
 to the session id makes a restart a non-event provided ingestion is idempotent.
+
+> **Refinement (unification design, U2/U3/U4).** The checkpointer is realized as plain JSON in a
+> per-experiment *workspace* — the card's accumulated-state half in `card.state.json`
+> (experiment-owned) plus a `session.json` ledger (machine bookkeeping, deletable/rebuildable) —
+> no LangGraph, no DB. Restart-safety comes from files-as-truth: every run re-parses everything
+> and re-fits only new/held/changed scans. See `docs/UNIFICATION_DESIGN.md` §2.
 
 **One graph, two drivers (later).** The per-scan node logic is shared. A *live* driver feeds
 batches into the session; a *batch re-analysis* driver re-runs everything post-beamtime from
@@ -386,32 +395,52 @@ inherently lower-confidence than the same fit late in the run.
 
 1. **Live-first or batch-re-analysis-first?** Shared node logic, two drivers. Recommendation:
    live first (it's the stated value), batch re-analysis once the card + harness exist.
+   **RESOLVED (unification U1):** a re-runnable, idempotent batch CLI (`isar run`) run per batch
+   *is* the live driver; a watch/daemon mode and the batch re-analysis driver come later on top.
 2. **Batch payload for S30:** growing-file resend (reparse + dedup) vs new-scans-only (needs a
    manifest)? IN8 sidesteps this entirely (per-file). Pick the S30 convention explicitly.
+   **RESOLVED (unification U4):** growing-file resend — every run re-parses everything, dedups by
+   `(experiment_id, scan_number)` keeping the last occurrence, and re-fits only new/held/changed.
 3. **TAS 4D convolution:** wrap an existing engine (ResLib/Tobyfit/Reslib) or implement
-   Cooper-Nathans projection ourselves? Affects how soon IN8 Γ is trustworthy vs just ω.
+   Cooper-Nathans projection ourselves? Affects how soon IN8 Γ is trustworthy vs just ω. *(Still
+   open — deferred; Γ carried as provisional on TAS, Phase 3 D5.)*
 4. **Card format:** TOML/YAML for the policy half, with the state half in a small DB/JSON the
    session writes? Or one growing file? The state half is written every batch.
+   **RESOLVED (D8 + unification U3):** policy = human-authored TOML (machine never writes it);
+   state = two JSON files — `card.state.json` (experiment-owned accumulated state) and
+   `session.json` (machine ledger, deletable/rebuildable).
 5. **Checkpointer backend** for the session (SQLite is probably enough for a single box).
+   **RESOLVED (unification U2):** plain JSON + files-as-truth idempotency; no checkpointer
+   dependency.
 6. **How much of the dispersion prior is shared across temperatures** for IC seeding — ω(K)
-   shifts with T near transitions, so a naive cross-T prior could mislead.
+   shifts with T near transitions, so a naive cross-T prior could mislead. *(Partially resolved:
+   the unification prior builder pools same-T first and falls back across T only when fewer than
+   two same-T points exist — the gold check's rule; revisit near transitions with data.)*
 
 ---
 
 ## 14. Suggested build order
 
-1. **Validation harness** against FeSeS_1 — so everything after is measurable.
+1. **Validation harness** against FeSeS_1 — so everything after is measurable. **DONE (Phase 1 +
+   `isar/analyze/gold.py`; evidence in `out/phase3_gold/`).**
 2. **Experiment card schema** — drafted against both S30 and IN8 columns (§6); this forces every
-   policy difference into one explicit place.
+   policy difference into one explicit place. **DONE (Phase 2, D8; policy half — the accumulated-
+   state half lands with unification §2.1).**
 3. **Normalized scan schema + two parser plugins** (`spec_s30`, `ill_ascii_in8`) reading policy
-   from the card; strip the hardcoded magic out of the IN8 parser.
+   from the card; strip the hardcoded magic out of the IN8 parser. **DONE (Phase 2).**
 4. **Deterministic core fixes**: AIC/BIC peak-count selection, time-keyed energy zero with
-   "missing → flagged," per-card resolution. Score against the harness.
+   "missing → flagged," per-card resolution. Score against the harness. **DONE (Phase 3) — except
+   the per-card/versioned resolution *wiring*: the calibration functions exist but the card-driven
+   `[calibration]` selection and `resolution_versions` state land with unification §3.**
 5. **Session + ingestion + event model**: persistent store, idempotent batch ingestion, gap
    detection, alignment-as-context-update, sample/resolution bootstrap gates.
+   **← CURRENT: designed in `docs/UNIFICATION_DESIGN.md` (with the CLI and run report), in build.**
 6. **LLM layer via LLMM**: structured-output IC/peak-structure proposal and triage reports; then
-   the async residual-diagnosis path.
-7. **Correction return channel**: human review actions as session mutations.
+   the async residual-diagnosis path. *(QC-flag adjudication built in Phase 2, opt-in in the
+   unified driver (U5); IC-proposal and residual-diagnosis paths still future.)*
+7. **Correction return channel**: human review actions as session mutations. *(Minimal form ships
+   with unification — card edits + re-run with ledger invalidation, §6 there; richer review
+   surface later.)*
 8. Only then: the second (batch re-analysis) driver, and the TAS 4D convolution if IN8 Γ is needed.
 
 ---
