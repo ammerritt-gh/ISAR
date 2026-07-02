@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from isar.schema import _json
@@ -67,12 +67,25 @@ class CardPolicy:
     ascan_classification: dict = field(default_factory=dict)  # motor -> scan_type (default alignment)
     qc: dict = field(default_factory=dict)                   # deterministic QC thresholds (§7.1-7.2)
     adjudication: dict = field(default_factory=dict)         # LLM adjudication config (§7.3)
+    # Unification (UNIFICATION_DESIGN §2.1) — the CLI/session layer reads these. Absent in older
+    # cards; defaults preserve pre-unification behavior. Without these fields declared here,
+    # `_json.from_dataclass` would silently DROP the [calibration]/[fitting]/[sample] TOML tables.
+    calibration: dict = field(default_factory=dict)          # [calibration] — method + knobs (§3)
+    fitting: dict = field(default_factory=dict)              # [fitting] — user guidelines (§6)
+    sample: dict = field(default_factory=dict)               # [sample] — name override, require_alignment
 
 
 @dataclass
 class CardState:
     exclusions: list = field(default_factory=list)
     corrections: list = field(default_factory=list)  # append-only audit (LLM vs human, §8)
+    # Unification (UNIFICATION_DESIGN §2.1) — the DESIGN.md §6 accumulated-state half. All optional
+    # with list defaults, so a pre-unification `<exp>.state.json` (exclusions + corrections only)
+    # loads unchanged.
+    resolution_versions: list = field(default_factory=list)  # [{version, method, source, created, ...}]
+    energy_zero_series: list = field(default_factory=list)   # [{key, e0, source_scan}]
+    dispersion_prior: list = field(default_factory=list)     # PriorPoint dicts (§5)
+    sample_map: list = field(default_factory=list)           # [{from_scan, sample, source}]
 
     def to_dict(self) -> dict:
         return _json.to_jsonable(self)
@@ -86,6 +99,19 @@ def load_policy(path) -> CardPolicy:
     with open(path, "rb") as f:
         d = tomllib.load(f)
     return _json.from_dataclass(CardPolicy, d)
+
+
+def unknown_toml_tables(path) -> list[str]:
+    """Top-level TOML keys that match no `CardPolicy` field (UNIFICATION_DESIGN U7).
+
+    `_json.from_dataclass` silently drops unknown keys, so a typo'd section (`[fittng]`) or a
+    misspelled scalar vanishes without error. The CLI calls this and warns, turning a silent
+    no-op into a visible one. Purely diagnostic — never raises, never mutates.
+    """
+    with open(path, "rb") as f:
+        d = tomllib.load(f)
+    known = {f.name for f in fields(CardPolicy)}
+    return sorted(k for k in d if k not in known)
 
 
 def load_state(path) -> CardState:
