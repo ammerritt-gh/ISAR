@@ -16,10 +16,12 @@ from isar.parsers import registry
 from isar.schema.card import Card
 
 # Suffixes that are never instrument data — skip without opening (binaries, logs, our own output,
-# and the `.UNUSED` relabel marker for retired datasets).
-SKIP_SUFFIXES = {".nxs", ".log", ".json", ".md", ".png", ".csv", ".tmp", ".unused"}
+# and the `.UNUSED` relabel marker for retired datasets). `.json` is NOT skipped: TAVI simulator
+# scans are JSON and `registry.detect` recognizes them structurally; workspace state JSONs are
+# excluded by name below, and unrelated JSON fails detection and lands in `unrecognized`.
+SKIP_SUFFIXES = {".nxs", ".log", ".md", ".png", ".csv", ".tmp", ".unused"}
 # Our own workspace files — never ingest them even if a data path points at a workspace.
-WORKSPACE_NAMES = {"card.policy.toml", "card.state.json", "session.json"}
+WORKSPACE_NAMES = {"card.policy.toml", "card.state.json", "session.json", "report.json"}
 
 
 @dataclass

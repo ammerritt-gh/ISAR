@@ -52,6 +52,8 @@ def default_plugin_name(facility: str, instrument: str, format_version: str) -> 
         return "spec_s30_raw" if format_version.endswith("-raw") else "spec_s30"
     if (facility, instrument) == ("ILL", "IN8"):
         return "ill_in8"
+    if facility == "TAVI":
+        return "tavi"
     return None
 
 
@@ -133,5 +135,10 @@ def detect(path: str | Path) -> tuple[str, str, str]:
     instr = next((l.split(":", 1)[1].strip() for l in head if l.startswith("INSTR:")), None)
     if instr:
         return ("ILL", instr, _numor_year(text))
+
+    # TAVI simulator scan JSON — a saved /scan/{id}/data response body. JSON has
+    # no facility header, so the sniff is structural: an object carrying job_id.
+    if head and head[0].lstrip().startswith("{") and '"job_id"' in text:
+        return ("TAVI", "PUMA", "v1")
 
     raise ValueError(f"unrecognized file format: {Path(path).name}")

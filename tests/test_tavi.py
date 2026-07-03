@@ -132,7 +132,8 @@ def test_cooper_nathans_params_present_and_derived(tmp_path):
     assert (p["ALF1"], p["ALF2"], p["ALF3"], p["ALF4"]) == (40.0, 40.0, 30.0, 30.0)
     assert p["BET1"] == 30.0
     # Mosaics + senses from the card constants.
-    assert (p["ETAM"], p["ETAA"], p["ETAS"]) == (30.0, 30.0, 0.0)
+    assert (p["ETAM"], p["ETAA"]) == (30.0, 30.0)
+    assert "ETAS" not in p  # zero card mosaic is omitted so CN reuses ETAM
     assert (p["SM"], p["SS"], p["SA"]) == (1, -1, 1)
     # The whole payload is retained.
     assert rec.raw_header["tavi"]["job_id"] == "j-0001"
@@ -239,3 +240,29 @@ def test_card_template_loads_and_validates():
     assert card.policy.calibration["method"] == "cooper_nathans"
     assert card.validate() == []
     assert card.policy.detectors[0].detector_id == "det"
+
+
+# ---------------------------------------------------------------------------
+# registry detection + Cooper-Nathans regressions (post-integration fixes)
+# ---------------------------------------------------------------------------
+def test_registry_detect_recognizes_tavi_json(tmp_path):
+    path = _write(tmp_path, "j-0001.json", _deltae_json())
+    assert registry.detect(path) == ("TAVI", "PUMA", "v1")
+    assert registry.default_plugin_name("TAVI", "PUMA", "v1") == "tavi"
+
+
+def test_registry_detect_rejects_foreign_json(tmp_path):
+    path = _write(tmp_path, "other.json", {"foo": 1})
+    with pytest.raises(ValueError):
+        registry.detect(path)
+
+
+def test_zero_sample_mosaic_omits_etas_so_cn_computes(tmp_path):
+    # A zero ETAS divides by zero inside cn_resolution_matrix; the plugin must
+    # omit it (cn then reuses ETAM) so the resolution is computed, not the
+    # 0.6 meV fallback.
+    rec = tavi.parse_file(_write(tmp_path, "j-0001.json", _deltae_json()), _card())[0]
+    assert "ETAS" not in rec.raw_header["params"]
+    fwhm = tas.cn_energy_fwhm(rec)
+    assert fwhm != tas.FALLBACK_FWHM
+    assert 0.1 < fwhm < 5.0

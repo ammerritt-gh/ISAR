@@ -49,7 +49,7 @@ method = "cooper_nathans"      # analytical per-scan energy resolution (isar.cal
 # Mosaics + senses TAVI does NOT expose — documented defaults (arcmin; senses = SM, SS, SA):
 etam = 30.0                    # monochromator mosaic
 etaa = 30.0                    # analyzer mosaic
-etas = 0.0                     # sample mosaic
+etas = 0.0                     # sample mosaic; 0 = omit (Cooper-Nathans then reuses etam)
 senses = [1, -1, 1]            # SM, SS, SA (mono +1, sample -1, analyzer +1)
 # Vertical collimations BET1..4 (arcmin) — not in the payload; horizontal ALF1..4 come from the
 # scan's `collimation.alpha_*`. Also the ALF fallback if a scan's collimation slot is unparseable.

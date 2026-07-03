@@ -168,7 +168,11 @@ def _cn_params(params: dict, card: Card) -> dict:
     # Mosaics + senses: TAVI exposes none → card constants (documented defaults).
     p["ETAM"] = float(cal.get("etam", 30.0))
     p["ETAA"] = float(cal.get("etaa", 30.0))
-    p["ETAS"] = float(cal.get("etas", 0.0))
+    # A zero sample mosaic breaks the Cooper-Nathans matrix (1/(etas*q)^2 term);
+    # omit ETAS when non-positive so cn_resolution_matrix falls back to ETAM.
+    etas = float(cal.get("etas", 0.0))
+    if etas > 0.0:
+        p["ETAS"] = etas
     senses = cal.get("senses", [1, -1, 1])
     p["SM"], p["SS"], p["SA"] = (int(senses[0]), int(senses[1]), int(senses[2]))
     # Horizontal collimations from the payload; vertical from card constants.

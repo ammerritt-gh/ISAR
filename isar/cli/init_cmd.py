@@ -49,7 +49,9 @@ def _first_recognizable(path: Path):
         sorted(f for f in path.rglob("*") if f.is_file()) if path.is_dir() else []
     )
     for f in candidates:
-        if f.suffix.lower() in {".nxs", ".log", ".json", ".png", ".tmp", ".unused"}:
+        # .json is NOT skipped: TAVI simulator scans are JSON and detect()
+        # recognizes them structurally; unrelated JSON raises and is skipped.
+        if f.suffix.lower() in {".nxs", ".log", ".png", ".tmp", ".unused"}:
             continue
         try:
             return f, registry.detect(f)
