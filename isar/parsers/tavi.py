@@ -1,0 +1,371 @@
+"""TAVI parser — the McStas triple-axis SIMULATOR plugin (§6, dedicated catalogue).
+
+TAVI is not a real instrument: it is a McStas-backed virtual triple-axis spectrometer driven over an
+HTTP API. The reduction input is one JSON file per completed scan — the saved body of TAVI's
+`GET /scan/{id}/data` response. This plugin is deliberately a SEPARATE catalogue from the real-numor
+parsers (ill_in8, spec_s30): TAVI emits API job JSON, never numors, so the two never share a reader.
+
+A TAVI JSON carries a frozen `launch.parameters` set (the full instrument state) plus a `result`
+block (the scanned variable, its values, and per-point RAW COUNTS). The stored signal is RAW COUNTS;
+the "monitor" is the simulated source budget `number_neutrons` per point (constant) — it is stored,
+not divided in, so the Poisson error stays plain (variance = counts). Fixed-ki/kf geometry makes the
+meV energy axis absolute (no elastic-zero fit needed — this is a simulator, the axis is exact).
+
+Card constants fill the gaps TAVI's payload does not expose (each a candidate for a TAVI-side
+follow-up): sample temperature (TAVI has no sample sensor → a card setpoint), monochromator/analyzer
+mosaics ETAM/ETAA, sample mosaic ETAS, the scattering senses SM/SS/SA, and the VERTICAL collimations
+BET1..4. The HORIZONTAL collimations ALF1..4 ARE in the payload (`collimation.alpha_1..alpha_4`, in
+arcmin) and are used directly; d-spacings DM/DA come from the crystal-id → d map below (card override
+wins). experiment_id comes from the card ([sample] experiment_id/name) since TAVI JSONs carry no
+EXPNO.
+"""
+from __future__ import annotations
+
+import json
+import math
+import re
+from pathlib import Path
+
+import numpy as np
+
+from isar.schema import axes, scan
+from isar.schema.card import Card
+
+name = "tavi"
+version = "0.1.0"
+
+_CARD_PATH = Path(__file__).parent / "cards" / "tavi.policy.toml"
+
+# meV = _EK * k^2  (k in Angstrom^-1); k = sqrt(E / _EK). Matches isar.calibrate.tas (_F = 1/_EK).
+_EK = 2.072142
+
+# Crystal id → d-spacing (Angstrom). Card [calibration] dm/da override these when present.
+_DSPACING = {
+    "pg002": 3.355, "pg002_test": 3.355,
+    "si111": 3.135, "cu220": 1.278, "ge311": 1.714,
+}
+
+# Which result.variable_1 values are elastic-scan (calibration) candidates when deltaE ≈ 0.
+_ELASTIC_VARS = {"h", "k", "l", "omega", "a3"}
+_AXIS_KIND = {"deltae": "energy", "h": "q_h", "k": "q_k", "l": "q_l"}
+_AXIS_UNITS = {"energy": "meV", "q_h": "rlu", "q_k": "rlu", "q_l": "rlu", "angle": "deg"}
+
+
+# ---------------------------------------------------------------------------
+# Card template + signature sniff
+# ---------------------------------------------------------------------------
+def card_template() -> Card:
+    """The bundled TAVI card (policy from the shipped TOML; fresh, empty state)."""
+    return Card.load(_CARD_PATH)
+
+
+def matches(path: str | Path) -> bool:
+    """A TAVI scan file is JSON with top-level `job_id` + `result`. Cheap sniff then full load."""
+    p = Path(path)
+    if p.suffix.lower() != ".json":
+        return False
+    try:
+        with open(p, "rb") as f:
+            head = f.read(512).lstrip()
+        if not head.startswith(b"{"):
+            return False
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and "job_id" in data and "result" in data
+
+
+# ---------------------------------------------------------------------------
+# Small coercions
+# ---------------------------------------------------------------------------
+def _num(v):
+    """Best-effort float (accepts numeric strings like "1e8"); None if not parseable."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _scan_number(job_id: str) -> int:
+    """"j-0001" → 1. The trailing digit run; 0 if none."""
+    m = re.search(r"(\d+)\s*$", str(job_id or ""))
+    return int(m.group(1)) if m else 0
+
+
+# ---------------------------------------------------------------------------
+# Cooper-Nathans header (raw_header["params"]) — the keys isar.calibrate.tas reads
+# ---------------------------------------------------------------------------
+def _dspacing(crystal_id, cal: dict, override_key: str) -> float:
+    """d-spacing (Angstrom): card [calibration] override wins, else crystal-id map, else PG002."""
+    if override_key in cal:
+        return float(cal[override_key])
+    cid = str(crystal_id or "").lower().replace(" ", "")
+    return _DSPACING.get(cid, _DSPACING["pg002"])
+
+
+def _kfix(params: dict):
+    """(KFIX, FX): fixed wavevector + FX convention (1 = Ki fixed, 2 = Kf fixed).
+
+    isar.calibrate.tas uses ki = sqrt(kfix^2 + (fx-1)*_F*w), kf = sqrt(kfix^2 - (2-fx)*_F*w), so
+    FX=1 pins ki and FX=2 pins kf — matching TAVI's `K_fixed` mode string.
+    """
+    mode = str(params.get("K_fixed", "")).lower()
+    if "ki" in mode:
+        fx = 1
+        k = _num(params.get("Ki"))
+        e_fallback = _num(params.get("Ei"))
+    else:  # default / "Kf Fixed"
+        fx = 2
+        k = _num(params.get("Kf"))
+        e_fallback = _num(params.get("Ef"))
+    if k is None:                                   # derive k from the fixed energy: E = _EK * k^2
+        e = _num(params.get("fixed_E"))
+        if e is None:
+            e = e_fallback
+        k = math.sqrt(e / _EK) if (e is not None and e > 0) else None
+    return k, fx
+
+
+def _collimation_alfs(coll, cal: dict) -> list[float]:
+    """ALF1..4 (arcmin) from TAVI `collimation.alpha_1..alpha_4`. Multi-select slot → tightest
+    (min) blade. Non-numeric or missing slot → card [calibration] `collimations` fallback.
+    """
+    fallback = [float(x) for x in (cal.get("collimations") or [30.0, 30.0, 30.0, 30.0])]
+    if not isinstance(coll, dict):
+        return list(fallback)
+    out: list[float] = []
+    for i, slot in enumerate(("alpha_1", "alpha_2", "alpha_3", "alpha_4")):
+        v = coll.get(slot)
+        if isinstance(v, (list, tuple)):
+            nums = [x for x in (_num(z) for z in v) if x is not None]
+            out.append(min(nums) if nums else fallback[i])
+        else:
+            fv = _num(v)
+            out.append(fv if fv is not None else fallback[i])
+    return out
+
+
+def _cn_params(params: dict, card: Card) -> dict:
+    """Build raw_header["params"] with the Cooper-Nathans keys isar.calibrate.tas.cn_energy_fwhm reads."""
+    cal = card.policy.calibration or {}
+    p: dict = {}
+    p["QH"] = _num(params.get("H")) or 0.0
+    p["QK"] = _num(params.get("K")) or 0.0
+    p["QL"] = _num(params.get("L")) or 0.0
+    p["EN"] = _num(params.get("deltaE")) or 0.0
+    p["AS"] = _num(params.get("lattice_a")) or 1.0
+    p["BS"] = _num(params.get("lattice_b")) or 1.0
+    p["CS"] = _num(params.get("lattice_c")) or 1.0
+    p["DM"] = _dspacing(params.get("monocris"), cal, "dm")
+    p["DA"] = _dspacing(params.get("anacris"), cal, "da")
+    kfix, fx = _kfix(params)
+    if kfix is not None:
+        p["KFIX"] = float(kfix)
+    p["FX"] = int(fx)
+    # Mosaics + senses: TAVI exposes none → card constants (documented defaults).
+    p["ETAM"] = float(cal.get("etam", 30.0))
+    p["ETAA"] = float(cal.get("etaa", 30.0))
+    p["ETAS"] = float(cal.get("etas", 0.0))
+    senses = cal.get("senses", [1, -1, 1])
+    p["SM"], p["SS"], p["SA"] = (int(senses[0]), int(senses[1]), int(senses[2]))
+    # Horizontal collimations from the payload; vertical from card constants.
+    alf = _collimation_alfs(params.get("collimation"), cal)
+    for i in range(4):
+        p[f"ALF{i + 1}"] = float(alf[i])
+    bet = [float(x) for x in (cal.get("bet") or [30.0, 30.0, 30.0, 30.0])]
+    for i in range(4):
+        p[f"BET{i + 1}"] = float(bet[i])
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Classification
+# ---------------------------------------------------------------------------
+def _classify(variable_1, params: dict) -> str:
+    var = str(variable_1 or "").lower()
+    if var == "deltae":
+        return "measurement"
+    deltaE = _num(params.get("deltaE")) or 0.0
+    if abs(deltaE) <= 1e-6 and var in _ELASTIC_VARS:
+        return "calibration"
+    return "alignment"
+
+
+# ---------------------------------------------------------------------------
+# parse_file
+# ---------------------------------------------------------------------------
+def parse_file(path: str | Path, card: Card) -> list[scan.ScanRecord]:
+    """Parse one TAVI scan JSON into a single ScanRecord (all points; masked, never dropped)."""
+    pol = card.policy
+    p = Path(path)
+    with open(p, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    result = data.get("result") or {}
+    launch = data.get("launch") or {}
+    params = launch.get("parameters") or {}
+
+    mode = str(result.get("mode", "1D"))
+    if mode == "2D" or result.get("counts_grid") is not None or result.get("variable_2"):
+        # 2D scans are out of scope for v1. Raise a clear ValueError — the ISAR convention callers
+        # catch to skip gracefully with a reason (mirrors ill_in8's unsupported-scan handling).
+        raise ValueError(f"{p.name}: 2D TAVI scan (mode={mode!r}) not supported by the v1 parser")
+
+    variable_1 = result.get("variable_1")
+    values = np.asarray(result.get("scan_values_1") or [], dtype="float64")
+    nP = len(values)
+
+    # Signal: RAW COUNTS; None entries (skipped/infeasible points) → NaN + masked, never deleted.
+    counts_raw = result.get("counts") or []
+    intensity = np.array([np.nan if c is None else float(c) for c in counts_raw], dtype="float64")
+    if len(intensity) != nP:                       # defensive: pad/trim to the axis length
+        intensity = np.resize(intensity, nP) if nP else intensity
+
+    vm = result.get("valid_mask_1")
+    if vm is None:
+        mask = ~np.isnan(intensity)
+    else:
+        mask = np.asarray(vm, dtype=bool)
+        if len(mask) != nP:
+            mask = np.resize(mask, nP)
+    mask = mask & ~np.isnan(intensity)
+    for idx in _skipped_indices(result.get("skipped_points")):
+        if 0 <= idx < nP:
+            mask[idx] = False
+
+    point_flags = [scan.PointFlag(int(i), "invalid_point", "skipped or infeasible (valid_mask_1)")
+                   for i in np.nonzero(~mask)[0]]
+
+    h = _num(params.get("H")) or 0.0
+    k = _num(params.get("K")) or 0.0
+    l = _num(params.get("L")) or 0.0
+    det = pol.detectors[0]
+    spectra = {det.detector_id: scan.Spectrum(
+        detector_id=det.detector_id, q=[h, k, l], q_source="reported",
+        intensity=intensity, variance=intensity.copy(), mask=mask.astype(bool),
+        point_flags=point_flags, spectrum_flags=[], resolution=None)}
+
+    scan_type = _classify(variable_1, params)
+    var = str(variable_1 or "").lower()
+    if var == "deltae":
+        scan_axes = [axes.energy_axis(values), *axes.constant_q_axes(h, k, l, nP)]
+        raw_abscissa_kind = "energy"
+    else:
+        kind = _AXIS_KIND.get(var, "angle")
+        scan_axes = [scan.ScanAxis(name=str(variable_1 or "axis"), kind=kind, role="scanned",
+                                   units=_AXIS_UNITS.get(kind, ""), values=values)]
+        raw_abscissa_kind = "angle"                # RAW_ABSCISSA_KINDS has no q_* member
+
+    # Monitor == the simulated source budget per point (number_neutrons), constant. Stored, not
+    # divided in — this is the count TAVI shot at each point, so it is the honest normalizer.
+    nn = _num(params.get("number_neutrons")) or _num(launch.get("number_neutrons")) or 0.0
+    monitor = np.full(nP, float(nn), dtype="float64")
+    time = np.zeros(nP, dtype="float64")
+
+    rule = pol.temperature_rule or {}
+    t_set = float(rule.get("setpoint", 300.0))     # TAVI has no sample sensor → card setpoint
+    temperature = scan.Temperature(setpoint=np.full(nP, t_set, dtype="float64"),
+                                   sensors={}, valid_mask=np.ones(nP, dtype=bool), snap_applied=False)
+
+    kfix, fx = _kfix(params)
+    geometry = scan.Geometry(
+        fixed_mode={1: "ki", 2: "kf"}.get(fx),
+        fixed_value=(float(kfix) if kfix is not None else None),
+        mono={"d_spacing": _dspacing(params.get("monocris"), pol.calibration or {}, "dm"),
+              "crystal": params.get("monocris")},
+        ana={"d_spacing": _dspacing(params.get("anacris"), pol.calibration or {}, "da"),
+             "crystal": params.get("anacris")},
+        collimation=_collimation_alfs(params.get("collimation"), pol.calibration or {}), filter=None)
+
+    raw_header = {"tavi": data, "params": _cn_params(params, card)}
+    source = scan.Source(
+        file=p.name, byte_range=None, line_range=None, plugin=name, plugin_version=version,
+        format_version=pol.format_version, schema_version=scan.SCHEMA_VERSION)
+
+    experiment_id = (pol.sample.get("experiment_id") or pol.sample.get("name") or "tavi")
+
+    record = scan.ScanRecord(
+        experiment_id=str(experiment_id),
+        scan_number=_scan_number(data.get("job_id")),
+        scan_type=scan_type, scan_type_source="inferred",
+        scan_axes=scan_axes, spectra=spectra,
+        normalization=scan.Normalization(
+            counting_mode=pol.counting_mode, monitor=monitor, time=time,
+            preset=float(nn), monitor_correction=False),
+        temperature=temperature,
+        environment=scan.Environment(field=None, logs={}),
+        geometry=geometry,
+        energy_calibration=scan.EnergyCalibration(
+            raw_abscissa_kind=raw_abscissa_kind, transform=None, elastic_zero_offset=None,
+            status="absolute"),                    # fixed-ki/kf simulator: exact absolute meV axis
+        scan_flags=[], raw_header=raw_header, source=source)
+    return [record]
+
+
+def _skipped_indices(skipped) -> list[int]:
+    """Accept either a list of point indices or a list of {"index": i, ...} descriptors."""
+    out: list[int] = []
+    for s in skipped or []:
+        if isinstance(s, dict):
+            i = s.get("index", s.get("point"))
+            if i is not None:
+                out.append(int(i))
+        else:
+            try:
+                out.append(int(s))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+# ---------------------------------------------------------------------------
+# emit_file — the inverse (TAVI JSON) for the round-trip gate
+# ---------------------------------------------------------------------------
+def emit_file(run, card: Card) -> bytes:
+    """Serialize one synthetic scan back to TAVI `GET /scan/{id}/data` JSON bytes.
+
+    TAVI stores one scan per file, so this emits `run.scans[0]` (a deltaE measurement). Duck-typed on
+    the run_builder `Run`/`RunScan` shape: `scan_number`, `energy`, single `det0` detector with `q` +
+    `counts`, `monitor`. `parse_file` inverts it exactly (Gate A).
+    """
+    sc = run.scans[0]
+    d = sc.detectors[0]
+    h, k, l = float(d.q[0]), float(d.q[1]), float(d.q[2])
+    energy = np.asarray(sc.energy, dtype="float64")
+    counts = np.asarray(d.counts, dtype="float64")
+    nP = len(energy)
+    nn = int(round(float(np.asarray(sc.monitor)[0]))) if nP else 0
+
+    parameters = {
+        "H": h, "K": k, "L": l, "deltaE": 0.0,
+        "Ki": 2.662, "Ei": 14.7, "Kf": 2.662, "Ef": 14.7,
+        "K_fixed": "Kf Fixed", "fixed_E": 14.7,
+        "monocris": "pg002", "anacris": "pg002",
+        "lattice_a": 3.94, "lattice_b": 3.94, "lattice_c": 3.94,
+        "lattice_alpha": 90.0, "lattice_beta": 90.0, "lattice_gamma": 90.0,
+        "collimation": {"alpha_1": "40", "alpha_2": ["40"], "alpha_3": "30", "alpha_4": "30"},
+        "number_neutrons": nn,
+    }
+    result = {
+        "mode": "1D", "variable_1": "deltaE", "variable_2": None,
+        "total_counts": float(counts.sum()), "max_counts": float(counts.max()) if nP else 0.0,
+        "output_folder": "", "skipped_points": [],
+        "scan_values_1": energy.tolist(), "scan_values_2": None,
+        "valid_mask_1": [True] * nP,
+        "counts": counts.tolist(), "counts_grid": None, "metadata": {},
+    }
+    launch = {
+        "scan_command1": getattr(sc, "command", f"deltaE {energy[0] if nP else 0} "
+                                 f"{energy[-1] if nP else 0} 0.5"),
+        "scan_command2": "", "number_neutrons": nn, "isolated": True, "parameters": parameters,
+    }
+    obj = {
+        "job_id": f"j-{int(sc.scan_number):04d}", "source": "api", "state": "done",
+        "submitted_at": 0.0, "started_at": 0.0, "finished_at": 0.0,
+        "progress": {"done": nP, "total": nP}, "error": None,
+        "launch": launch, "result": result,
+    }
+    return (json.dumps(obj) + "\n").encode("utf-8")
