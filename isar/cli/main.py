@@ -42,9 +42,19 @@ def build_parser() -> argparse.ArgumentParser:
     prp.add_argument("--workspace", required=True)
     prp.add_argument("--formats", default="html,markdown", help="report formats (comma-separated)")
 
-    psc = sub.add_parser("score", help="score a run against a gold-fit CSV")
+    psc = sub.add_parser("score", help="score a run against a human gold CSV or known analytic truth")
     psc.add_argument("--workspace", required=True)
-    psc.add_argument("--gold", required=True)
+    # Mutually exclusive: gold (human-fit CSV) vs truth (σ-calibration against known truth).
+    src = psc.add_mutually_exclusive_group(required=True)
+    src.add_argument("--gold", help="human gold-fit CSV (disposition + ω scoring, safety-gated)")
+    src.add_argument("--truth-fn", dest="truth_fn",
+                     help="analytic truth function name (e.g. phonon_dft) for interval-coverage scoring")
+    src.add_argument("--truth-csv", dest="truth_csv",
+                     help="truth table CSV (h,k,l,omega_true) or (q,omega_true) for coverage scoring")
+    psc.add_argument("--bucket-by", dest="bucket_by", default=None,
+                     help="results.csv column to bucket σ-calibration coverage by (truth mode)")
+    psc.add_argument("--json", default=None,
+                     help="write the full scoring dict to this path (truth mode)")
     return p
 
 

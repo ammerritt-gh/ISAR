@@ -20,15 +20,17 @@ authority, driver = future). Last updated: 2026-07-03.
 
 ## σ-calibration (closed-loop Phase 0 — highest-value near-term)
 
-- [ ] **Interval-coverage scoring against known truth** — the TAVI closed loop provides
-      analytic ground truth (Phonon_DFT: acoustic E = 6·sin(πq/2) meV, T = 200 K);
-      run known-ω scans, measure empirical coverage of `interval_lo/hi`, derive the
-      inflation factor/calibration curve. First live data point already exists:
+- [x] **Interval-coverage scoring against known truth** — home built: `isar score
+      --workspace DIR --truth-fn phonon_dft` (or `--truth-csv PATH`), mutually exclusive
+      with `--gold` (`isar/analyze/truth.py` + `isar/cli/score_cmd.py::run_truth`). Reports
+      68% interval coverage, ω₀ pull, median |Δ|, the suggested INFLATION FACTOR k (68th
+      percentile of |Δ|/halfwidth), and — separately — the signed center-pull mean that
+      inflation cannot fix; `--bucket-by COL` groups by a results.csv column, `--json PATH`
+      dumps the full dict for the campaign. Truth is analytic (no safety concept → exit 0).
+      `phonon_dft` mirrors TAVI PhononSQW (acoustic E = 6·sqrt(Σ sin²(πq_i/2)) meV, period-2
+      fold, zone centers at even integers). STILL TODO: run known-ω scans through the loop and
+      derive the calibration curve from the emitted JSON. First live data point:
       ω₀ = 1.494 ± 0.035 vs truth 1.400 — truth outside the 68% interval.
-      Possible home: an `isar score` mode that takes a truth function/table instead
-      of a gold CSV. Directly addresses the statistical-only error-bar limitation
-      (READING_GUIDE "when not to trust ISAR"); separates bar-optimism from any
-      resolution pull on the fitted center.
 
 ## TAS resolution
 
