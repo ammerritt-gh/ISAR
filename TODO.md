@@ -65,6 +65,18 @@ Each is a card constant today; switch to per-scan payload truth when TAVI expose
       (DESIGN.md §10; v1 channel works — exercised live 2026-07-03 with a
       temperature fix + seeded expectation re-fitting exactly the affected scans).
 
+## Driver (Phase 4)
+
+Decisions settled 2026-07-06:
+
+- [ ] Driver lives in `isar/drive/` (`isar drive` CLI subcommand), not a separate
+      repo. Consumes analysis only via the `isar run` subprocess + file contract
+      (`report/results.csv`, `report.json`, `card.state.json`); never imports fit
+      internals.
+- [ ] σ-calibration first pass runs on the TAVI deterministic tier.
+- [ ] MVP targets: ω₀ only, acoustic branch only.
+- [ ] Supervisor: cloud LLM via LLMM pinned routing.
+
 ## Platform
 
 - [ ] **Query API for downstream consumers** — the driver currently reads

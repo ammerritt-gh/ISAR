@@ -48,8 +48,10 @@ are small and explicit, e.g. phonon+background vs elastic+phonon+background.) Wh
 different structures fit equally well — say a one-phonon vs a two-phonon description — ISAR reports a
 **fork** (both answers) instead of averaging them into a single wrong number.
 
-*(A Bayesian posterior path — and a frequentist↔Bayesian agreement check — is planned but not yet
-built. ISAR's intervals today are the frequentist bootstrap/profile ones above.)*
+*(A Bayesian posterior path — and a frequentist↔Bayesian agreement check — is built
+(`isar/analyze/errors/bayes.py`, dynesty nested sampling; attach via `errors.attach(..., with_bayes=True)`)
+but not yet wired into the driver-facing fit path. ISAR's intervals in that path today are the
+frequentist bootstrap/profile ones above.)*
 
 ## 4. The honest caveat: ISAR's error bars are statistical-only
 
