@@ -25,7 +25,7 @@ isar = "isar.cli.main:main"
 [tool.setuptools]
 # Fitting_Functions.py is a top-level module at the repo root, imported unchanged.
 py-modules = ["Fitting_Functions"]
-packages = ["isar", "isar.synth", "isar.schema", "isar.parsers", "isar.synth_format", "isar.reduce", "isar.report", "isar.analyze", "isar.analyze.errors", "isar.calibrate", "isar.session", "isar.cli"]
+packages = ["isar", "isar.synth", "isar.schema", "isar.parsers", "isar.synth_format", "isar.reduce", "isar.report", "isar.analyze", "isar.analyze.errors", "isar.calibrate", "isar.session", "isar.cli", "isar.drive", "isar.drive.supervisor", "isar.drive.acquisition", "isar.drive.instrument", "isar.drive.isar_io"]
 
 [tool.setuptools.package-data]
 # Ship the human-authored card policy templates (D8) inside the wheel.
@@ -36,4 +36,5 @@ packages = ["isar", "isar.synth", "isar.schema", "isar.parsers", "isar.synth_for
 testpaths = ["isar/synth/tests", "tests"]
 markers = [
     "slow: marks tests that run many fits (deselect with '-m \"not slow\"')",
+    "live: marks tests that require a running TAVI at 127.0.0.1:8642 (set ISAR_LIVE_TAVI to enable)",
 ]

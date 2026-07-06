@@ -55,6 +55,13 @@ def build_parser() -> argparse.ArgumentParser:
                      help="results.csv column to bucket σ-calibration coverage by (truth mode)")
     psc.add_argument("--json", default=None,
                      help="write the full scoring dict to this path (truth mode)")
+
+    pd = sub.add_parser("drive", help="run the measurement driver campaign (skeleton; loop lands next round)")
+    pd.add_argument("--goal", required=True, help="natural-language measurement goal")
+    pd.add_argument("--workspace", required=True, help="ISAR workspace (init'd) the driver drives")
+    pd.add_argument("--tier", default="deterministic", choices=["deterministic", "mcstas"],
+                    help="fidelity tier (LLM_HARNESS_DESIGN §6)")
+    pd.add_argument("--budget", default=None, help="campaign budget (e.g. counting seconds)")
     return p
 
 
@@ -80,6 +87,18 @@ def main(argv=None) -> int:
     if cmd == "score":
         from isar.cli import score_cmd
         return score_cmd.run(args)
+    if cmd == "drive":
+        # Skeleton + plumbing are live (objective, TAVI client, ISAR file I/O, σ-calibration,
+        # session log); the adaptive loop lands next round. run_campaign raises with a design pointer.
+        from isar.drive.loop import run_campaign
+        from isar.drive.objective import ObjectiveSpec  # noqa: F401  (skeleton import; wiring next round)
+        try:
+            run_campaign(None, {"goal": args.goal, "workspace": args.workspace,
+                                "tier": args.tier, "budget": args.budget})
+        except NotImplementedError as exc:
+            print(f"isar drive: {exc}", file=sys.stderr)
+            return 2
+        return 0
     print(f"unknown command: {cmd}", file=sys.stderr)
     return 2
 
