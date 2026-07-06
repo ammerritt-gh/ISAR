@@ -54,7 +54,8 @@ class ObjectiveSpec:
         norm: list[tuple[float, float, float]] = []
         for p in self.path:
             h, k, l = p
-            norm.append((float(h), float(k), float(l)))
+            # Round to 9 dp so grid arithmetic (e.g. 2.1 + 0.1·2) does not leave 2.3000000000000003.
+            norm.append((round(float(h), 9), round(float(k), 9), round(float(l), 9)))
         self.path = norm
         if not isinstance(self.budget, dict) or "kind" not in self.budget or "amount" not in self.budget:
             raise ValueError("budget must be a dict with 'kind' and 'amount' keys")

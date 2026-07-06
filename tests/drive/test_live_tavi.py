@@ -77,3 +77,44 @@ def test_live_end_to_end_plumbing(tmp_path):
     verdicts = [r.get("verdict") for r in rows if r.get("verdict")]
     print(f"[live] job {job_id}: {len(rows)} result row(s); verdicts={verdicts}; "
           f"dispersion_prior points={len(state_dict.get('dispersion_prior', []))}")
+
+
+def test_live_short_campaign_reaches_met(tmp_path):
+    """A short end-to-end driver campaign on the deterministic tier via the LLM-free --spec path.
+
+    Tolerance 0.5 meV (achievable per the calibration findings), H 2.1→2.4 step 0.1 (4 cheap points),
+    a generous budget. Asserts the campaign terminates ``met`` with a session log showing the
+    propose → analyze → decide chain.
+    """
+    from isar.drive.loop import run_campaign
+    from isar.drive.objective import ObjectiveSpec
+    from isar.drive.session_log import read_log
+
+    client = TaviClient()
+    schema = client.get_schema()
+    if "deterministic" not in schema.get("engines", []):
+        pytest.skip("TAVI does not advertise the deterministic engine")
+
+    ws = _init_tavi_workspace(tmp_path / "ws")
+    objective = ObjectiveSpec.along_h(
+        h_start=2.1, h_end=2.4, step=0.1, tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e13}, tier="deterministic", name="live-mvp")
+
+    summary = run_campaign(objective, {"workspace": ws, "seed": 11, "max_iters": 80})
+    kinds = {e["kind"] for e in read_log(summary["session_log"])}
+    print(f"[live] campaign stop={summary['stop']['state']} reasons={summary['stop']['reasons']}")
+    for expected in ("propose", "analyze", "decide", "stop"):
+        assert expected in kinds, f"missing {expected} in session log"
+    assert summary["stop"]["state"] == "met", summary["stop"]["reasons"]
+
+
+@pytest.mark.skipif(not os.environ.get("ISAR_LIVE_LLMM"),
+                    reason="set ISAR_LIVE_LLMM (and run LLMM at 127.0.0.1:8766) to enable")
+def test_live_goal_to_spec():
+    """goal→ObjectiveSpec against a live LLMM (skipped unless ISAR_LIVE_LLMM is set)."""
+    from isar.drive.supervisor.goal_to_spec import goal_to_spec
+    spec = goal_to_spec("map the acoustic phonon dispersion from H=2.1 to H=2.4 at K=0 L=0, "
+                        "resolve the energy to +/- 0.5 meV, overnight")
+    assert spec.tolerance_meV == pytest.approx(0.5, abs=0.2)
+    assert spec.path[0][0] == pytest.approx(2.1, abs=0.05)
+    print(f"[live] goal->spec: {spec.to_dict()}")
