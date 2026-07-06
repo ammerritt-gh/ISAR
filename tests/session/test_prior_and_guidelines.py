@@ -142,6 +142,91 @@ def test_guidelines_signature_changes_with_exclusion():
     assert other_base == other_excl
 
 
+# --------------------------------------------------------------------------- fit-window masking (Stage D)
+def test_parse_fit_window_fields_from_toml():
+    card = _card_with_fitting({
+        "expectations": [{
+            "q": {"component": "k", "min": 0.1, "max": 0.35},
+            "fit_range": [2.0, 8.0],
+            "exclude_regions": [[3.0, 3.5], [6.0, 6.2]],
+            "peaks": [{"omega0": 4.05, "sigma": 0.5}, {"omega0": 6.5, "sigma": 0.4}],
+        }]})
+    g = G.resolve(card)
+    fr, excl = g.mask_regions_for(scan_number=200, q=[3.0, 0.25, -0.1], T=100.0)
+    assert fr == (2.0, 8.0)
+    assert excl == ((3.0, 3.5), (6.0, 6.2))
+    peaks = g.peaks_for(scan_number=200, q=[3.0, 0.25, -0.1], T=100.0)
+    assert peaks == ({"omega0": 4.05, "sigma": 0.5}, {"omega0": 6.5, "sigma": 0.4})
+    # Outside the K range -> no mask, no peaks.
+    assert g.mask_regions_for(scan_number=200, q=[3.0, 0.9, -0.1], T=100.0) == (None, ())
+    assert g.peaks_for(scan_number=200, q=[3.0, 0.9, -0.1], T=100.0) == ()
+
+
+def test_scalar_omega0_normalizes_to_one_peak():
+    card = _card_with_fitting({
+        "expectations": [{"scans": [7], "omega0": 5.2, "omega0_sigma": 0.6}]})
+    g = G.resolve(card)
+    peaks = g.peaks_for(scan_number=7, q=None, T=None)
+    assert peaks == ({"omega0": 5.2, "sigma": 0.6},)
+    # expectation_for (primary-only back-compat) is unchanged.
+    p = g.expectation_for(scan_number=7, q=None, T=None)
+    assert p.omega0 == 5.2 and p.omega0_sigma == 0.6
+    # No explicit peaks and no scalar omega0 -> empty.
+    assert G.Expectation().peak_hints() == ()
+
+
+def test_override_beats_expectation_for_mask_and_peaks():
+    card = _card_with_fitting({
+        "expectations": [{"scans": [42], "fit_range": [1.0, 9.0],
+                          "exclude_regions": [[2.0, 2.5]],
+                          "peaks": [{"omega0": 5.0, "sigma": 0.5}]}],
+        "overrides": [{"scan": 42, "fit_range": [3.0, 7.0],
+                       "exclude_regions": [[4.0, 4.2]],
+                       "peaks": [{"omega0": 4.0, "sigma": 0.3},
+                                 {"omega0": 6.0, "sigma": 0.3}]}]})
+    g = G.resolve(card)
+    fr, excl = g.mask_regions_for(scan_number=42, q=None, T=None)
+    assert fr == (3.0, 7.0) and excl == ((4.0, 4.2),)          # override wins
+    peaks = g.peaks_for(scan_number=42, q=None, T=None)
+    assert peaks == ({"omega0": 4.0, "sigma": 0.3}, {"omega0": 6.0, "sigma": 0.3})
+
+
+def test_malformed_fit_window_fields_warn_and_ignore():
+    card = _card_with_fitting({
+        "expectations": [{
+            "scans": [3],
+            "fit_range": [8.0, 2.0],                            # lo >= hi -> ignored
+            "exclude_regions": [[3.0, 2.0], [5.0, 6.0]],        # first bad -> dropped
+            "peaks": [{"sigma": 0.5},                           # no omega0 -> dropped
+                      {"omega0": 4.0, "sigma": -1.0},           # sigma <= 0 -> dropped
+                      {"omega0": 6.0}],                         # ok, default sigma
+        }]})
+    with pytest.warns(UserWarning):
+        g = G.resolve(card)
+    fr, excl = g.mask_regions_for(scan_number=3, q=None, T=None)
+    assert fr is None
+    assert excl == ((5.0, 6.0),)
+    assert g.peaks_for(scan_number=3, q=None, T=None) == ({"omega0": 6.0, "sigma": 0.5},)
+
+
+def test_signature_includes_fit_window_and_changes_on_edit():
+    base = _card_with_fitting({})
+    sig_base = G.guidelines_signature(G.resolve(base), scan_number=50, q=None, T=None)
+    assert "fit_range" in sig_base and "exclude_regions" in sig_base and "peaks" in sig_base
+
+    for field_edit in (
+        {"expectations": [{"scans": [50], "fit_range": [1.0, 9.0]}]},
+        {"expectations": [{"scans": [50], "exclude_regions": [[3.0, 3.5]]}]},
+        {"expectations": [{"scans": [50], "peaks": [{"omega0": 4.0, "sigma": 0.5}]}]},
+    ):
+        edited = _card_with_fitting(field_edit)
+        sig_edit = G.guidelines_signature(G.resolve(edited), scan_number=50, q=None, T=None)
+        assert sig_edit != sig_base
+        # A scan the edit doesn't touch keeps its signature.
+        assert (G.guidelines_signature(G.resolve(edited), scan_number=999, q=None, T=None)
+                == G.guidelines_signature(G.resolve(base), scan_number=999, q=None, T=None))
+
+
 # --------------------------------------------------------------------------- gold reproduction gate
 def test_prior_reproduces_predict_omega_shape():
     """prior_for must match the gold check's predict_omega on a K-dispersion at one T (same rule:
