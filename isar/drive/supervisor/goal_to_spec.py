@@ -54,13 +54,25 @@ GOAL_SCHEMA = {
     },
 }
 
+_EXAMPLE = {
+    "path": {"h_start": 1.0, "h_end": 2.0, "k": 0.0, "l": 0.0},
+    "step_h": 0.1,
+    "tolerance_meV": 0.5,
+    "budget_hours": 8,
+    "notes": "acoustic branch (1,0,0)->(2,0,0)",
+}
+
 SYSTEM = (
     "You translate a neutron triple-axis measurement goal into a machine objective for an autonomous "
     "driver. The path is a straight segment in H at fixed K, L. Extract: path {h_start, h_end, k, l}, "
     "step_h (the H grid spacing, default 0.05 if unstated), tolerance_meV (the per-point target on the "
-    "phonon energy ω₀; map '±X meV' to X), and a budget as EITHER budget_hours OR budget_neutrons "
-    "('overnight' ≈ 8 hours). Optionally a short notes string. Return ONLY a JSON object matching this "
-    "schema:\n" + json.dumps(GOAL_SCHEMA)
+    "phonon energy ω₀; map '±X meV' to X, 'less than X meV' to X), and a budget as EITHER budget_hours "
+    "OR budget_neutrons ('overnight' ≈ 8 hours; if no budget is stated, use budget_hours = 8). "
+    "Optionally a short notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
+    "these keys, no wrapper object, no extra keys, and never enumerate grid points:\n"
+    + json.dumps(GOAL_SCHEMA)
+    + "\n\nExample. Goal: 'map the acoustic phonon from (1,0,0) to (2,0,0) to +-0.5 meV, steps of 0.1, "
+    "overnight'. Reply:\n" + json.dumps(_EXAMPLE)
 )
 
 _REPAIR_SUFFIX = (
