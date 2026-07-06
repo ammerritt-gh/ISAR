@@ -65,12 +65,21 @@ card edit with exact-scan re-fit; S30 gold unregressed.
       unconstrained fits proposes {structures, peaks, exclude_regions, fit_range, reason};
       writes card.state.corrections; applies only via guidelines-hash re-fit (P1). The
       fields it edits now exist.
-- [ ] **Greedy-IC seed robustness** — on ~1/3 of wide-window noise seeds the gate fires but
-      the 2-mode candidate loses AIC because the residual grid scan misses the optic; card
-      hints did not reliably rescue. c/dof still flags those fits (triage holds). Candidate
-      fixes: multi-start mode-2 grid, residual-peak-detection seeding.
-- [ ] **γ-at-bound interval calibration** — 2-mode fits with Γ collapsed to its bound report
-      halfwidths ~1e-3 meV; poisons inflation stats despite good centers.
+- [x] **Greedy-IC seed robustness** — DONE. Diagnosis: the greedy seed was never the problem
+      (it placed both modes correctly); the k=7 two-mode fit reached a good small-EDM minimum but
+      exhausted MIGRAD's DEFAULT call budget (~1145 at k=7) first, so `has_reached_call_limit`
+      fired, `m.valid` went False, and the (good) 2-mode fit was dropped from selection → fell
+      back to 1-mode. Fix: `backends._migrad_ncall` = a modest 4× of MINUIT's default ceiling —
+      certifies the well-constrained k=7-8 fits (need ~1400-2000 calls) while the cutoff still
+      rejects non-identifiable overfits (the IN8 `stokes2+qe+bg` limps ~13k calls). All 3 failing
+      seeds now select 2-mode (primary Δ +0.003/+0.003/−0.056 meV), the 6 good seeds stay 2-mode,
+      IN8 anchor still recovers 4.49, single-peak stays 1-mode.
+- [x] **γ-at-bound interval calibration** — DONE (honest-flag route). A phonon Γ railed to its
+      floor (within 5×) is a resolution-limited δ-spike → the bootstrap ω₀ interval collapses to a
+      spurious ~1e-3 meV halfwidth. `loop._gamma_at_bound` flags it; `StructureFitResult
+      .gamma_at_bound` → `FitOutcome.interval_reliable` → results.csv `interval_reliable` column;
+      `isar score --truth` excludes flagged rows from coverage/inflation but still scores their
+      center pull. An honestly-flagged unreliable bar beats a silently-repaired one.
 - [ ] **Multi-branch dispersion prior** — PriorPoint has no branch/mode field; prior gets
       primary mode only today.
 - [ ] **N=3** — mechanical extension once 2-mode is field-proven.

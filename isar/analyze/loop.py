@@ -23,6 +23,26 @@ from isar.synth.fit import assess_success, omega0_value_error
 GAMMA_FLOOR = 1e-3
 GAMMA_MAX = 5.0
 
+# A phonon Γ this close to the floor is a resolution-limited δ-spike, not a fitted intrinsic
+# width: ω₀ = √(Ω_d²+Γ²) ≈ Ω_d with Γ unmovable, so the parametric bootstrap collapses to a
+# degenerate ω₀ interval (halfwidth ~1e-3 meV) that is spuriously tight, not trustworthy. Fits
+# with any Γ within this tolerance of GAMMA_FLOOR (or at GAMMA_MAX, a runaway-broad DHO) get
+# their ω₀ interval flagged unreliable so the σ-calibration / downstream can filter them out
+# (an honestly-flagged interval beats a silently repaired one — ISAR philosophy). 5×floor
+# separates resolution-limited spikes (≤0.005 meV) from genuinely-fit widths (≳0.05 meV) with
+# wide margin, and is a flag, never a value edit.
+GAMMA_BOUND_TOL = 5.0 * GAMMA_FLOOR
+
+
+def _gamma_at_bound(gammas) -> bool:
+    """True if any phonon Γ has railed out — pinned near GAMMA_FLOOR (resolution-limited spike)
+    or GAMMA_MAX (runaway-broad) — so its derived ω₀ interval is not trustworthy."""
+    for g in gammas:
+        g = float(g)
+        if g <= GAMMA_FLOOR + GAMMA_BOUND_TOL or g >= GAMMA_MAX * (1.0 - 1e-3):
+            return True
+    return False
+
 # cost/dof of the best converged 1-mode fit above which the two-stage loop offers the 2-mode
 # hypothesis set. A documented default (Baker–Cousins -2lnL/dof; a good fit sits near 1),
 # deliberately loose — the runs-test structured-residual clause catches the wide-window trap
@@ -98,6 +118,9 @@ class StructureFitResult:
     # PRIMARY mode's (back-compat). ``n_modes`` == len(modes) (1 for a single-phonon fit).
     modes: list | None = None
     n_modes: int = 1
+    # True when any phonon Γ railed out to its bound → the derived ω₀ interval is degenerate and
+    # must be flagged unreliable (not silently trusted). See :func:`_gamma_at_bound`.
+    gamma_at_bound: bool = False
 
 
 def build_problem(hyp, ctx, *, x0=None) -> Problem:
@@ -180,13 +203,15 @@ def result_from_backend(label, composite, costv, n_used, k, br,
                                            br.covariance_ok, EPS_OMEGA_D))
     analysis_usable = optimizer_converged
 
+    gamma_at_bound = _gamma_at_bound(m["gamma"] for m in modes)
+
     return StructureFitResult(
         label=label, k=k, ndof=ndof, cost=cost, cost_per_dof=cost_per_dof,
         optimizer_converged=optimizer_converged, covariance_ok=covariance_ok,
         profile_ok=profile_ok, well_constrained=well_constrained,
         analysis_usable=analysis_usable, params=params, param_errors=param_errors,
         gamma=gamma, gamma_err=gamma_err, omega0=omega0, omega0_err_hesse=omega0_err,
-        message=br.message, modes=modes, n_modes=n_modes,
+        message=br.message, modes=modes, n_modes=n_modes, gamma_at_bound=gamma_at_bound,
     )
 
 

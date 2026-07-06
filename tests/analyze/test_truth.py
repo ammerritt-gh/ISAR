@@ -119,6 +119,36 @@ def test_center_pull_is_separated_from_bar_optimism():
     assert rep.pull_mean is not None and rep.pull_mean > 0
 
 
+def test_unreliable_interval_rows_excluded_from_coverage_and_inflation():
+    """FIX 2: a row whose interval is flagged unreliable (γ-at-bound degenerate bootstrap) must
+    not poison coverage or the inflation factor — its absurdly tight halfwidth is ignored — but
+    its center pull (Δ) is still scored. A well-calibrated reliable row alongside it survives."""
+    good = truth.ResultRow(scan=1, detector="a", hkl=(3, 0, 0), verdict="resolved",
+                           disposition="resolved", omega0=6.0, interval_lo=5.0, interval_hi=7.0)
+    poison = truth.ResultRow(scan=2, detector="a", hkl=(3, 0, 0), verdict="resolved",
+                             disposition="resolved", omega0=6.5,
+                             interval_lo=6.4993, interval_hi=6.5007,   # halfwidth ~7e-4
+                             interval_reliable=False)
+    rep = truth.score_results([good, poison], lambda hkl: 6.0)
+    assert rep.n_scored == 2                                   # both scored for center pull
+    assert rep.n_zero_halfwidth == 1                           # the poison row: no usable interval
+    # coverage over the one reliable row (truth 6.0 ∈ [5,7]) → 1.0, unpolluted by the tight bar.
+    assert rep.coverage68 == 1.0
+    # inflation from the reliable row only (|Δ|=0/hw → 0), not the 60σ poison pull.
+    assert rep.inflation is not None and rep.inflation < 1.0
+    # the poison row's Δ (+0.5) still contributes to the signed center pull.
+    assert rep.center_pull_mean is not None and rep.center_pull_mean > 0.0
+
+
+def test_interval_reliable_defaults_true_when_column_absent(tmp_path):
+    """Back-compat: a results.csv written before the column existed loads as reliable."""
+    p = tmp_path / "results.csv"
+    p.write_text("scan,detector,h,k,l,verdict,omega0,interval_lo,interval_hi\n"
+                 "1,a,3,0,0,resolved,6.0,5.5,6.5\n", encoding="utf-8")
+    rows = truth.load_results(p)
+    assert len(rows) == 1 and rows[0].interval_reliable is True
+
+
 def test_zero_halfwidth_rows_skipped_from_inflation():
     rows = [
         truth.ResultRow(scan=1, detector="a", hkl=(3, 0, 0), verdict="resolved",

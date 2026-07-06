@@ -125,6 +125,8 @@ class ResultRow:
     omega0: float | None
     interval_lo: float | None
     interval_hi: float | None
+    interval_reliable: bool = True   # False → interval degenerate (γ-at-bound); excluded from
+                                     # coverage/inflation but still scored for center pull
     bucket: str | None = None   # value of the --bucket-by column, if any
 
 
@@ -135,6 +137,14 @@ def _fnum(v):
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _fbool(v, *, default: bool = True) -> bool:
+    """Parse a results.csv boolean cell; absent/blank → ``default`` (back-compat with runs
+    written before the column existed)."""
+    if v in (None, ""):
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes")
 
 
 def load_results(path: str | Path, *, bucket_by: str | None = None) -> list[ResultRow]:
@@ -155,6 +165,7 @@ def load_results(path: str | Path, *, bucket_by: str | None = None) -> list[Resu
                 omega0=_fnum(r.get("omega0")),
                 interval_lo=_fnum(r.get("interval_lo")),
                 interval_hi=_fnum(r.get("interval_hi")),
+                interval_reliable=_fbool(r.get("interval_reliable")),
                 bucket=((r.get(bucket_by) or None) if bucket_by else None)))
     return rows
 
@@ -177,13 +188,14 @@ class TruthScore:
 
 def score_row(row: ResultRow, omega_true: float) -> TruthScore:
     delta = row.omega0 - omega_true
-    hw = None
-    if row.interval_lo is not None and row.interval_hi is not None:
-        hw = 0.5 * (row.interval_hi - row.interval_lo)
+    # A flagged-unreliable interval (γ-at-bound degenerate bootstrap) is treated as *no*
+    # interval: it must not poison coverage or the inflation factor. The center pull (Δ) is
+    # still scored — the reported ω₀ is a real point estimate even when its bar is untrustworthy.
+    have_interval = (row.interval_lo is not None and row.interval_hi is not None
+                     and row.interval_reliable)
+    hw = 0.5 * (row.interval_hi - row.interval_lo) if have_interval else None
     pull = (delta / hw) if (hw is not None and hw > 0) else None
-    in_interval = None
-    if row.interval_lo is not None and row.interval_hi is not None:
-        in_interval = bool(row.interval_lo <= omega_true <= row.interval_hi)
+    in_interval = bool(row.interval_lo <= omega_true <= row.interval_hi) if have_interval else None
     return TruthScore(scan=row.scan, detector=row.detector, hkl=row.hkl, omega0=row.omega0,
                       omega_true=omega_true, delta=delta, halfwidth=hw, pull=pull,
                       in_interval=in_interval, bucket=row.bucket)

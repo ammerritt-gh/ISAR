@@ -133,7 +133,12 @@ def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 1234
         def costv(theta, _cb=counts_b):
             return est.cost(_cb, prob.composite.evaluate(x, theta, ctx))
 
-        br = backends.minimize(backend, costv, theta_fit, prob.bounds, be_names, minos=False)
+        # Bootstrap refits warm-start at the fit and only need a point estimate — a failed refit
+        # is counted (`n_converged`), never fatal — so they run on MINUIT's plain default budget,
+        # not the raised certification budget the main fit uses. This keeps the per-scan bootstrap
+        # cost unchanged from before the FIX-1 budget bump (which is per-fit, not per-refit).
+        br = backends.minimize(backend, costv, theta_fit, prob.bounds, be_names, minos=False,
+                               ncall=backends._default_migrad_ncall(len(be_names)))
         if not br.success:
             continue
         n_conv += 1

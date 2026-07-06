@@ -54,6 +54,9 @@ class FitOutcome:
     reasons: list = field(default_factory=list)
     n_modes: int = 1
     modes: list | None = None    # per-mode dicts (canonicalized ascending by ω₀) when n_modes > 1
+    # FIX 2: False when a phonon Γ railed out to its bound → the reported ω₀ interval is
+    # degenerate/untrustworthy (see fit_one). Defaulted True for back-compat with older ledgers.
+    interval_reliable: bool = True
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -162,12 +165,22 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     if warn:
         reasons.append(warn)
 
+    # FIX 2: a phonon Γ railed out to its bound makes the derived ω₀ interval degenerate (a
+    # spuriously tight bootstrap ~1e-3 meV). Flag the interval unreliable + record why, rather
+    # than silently trusting it — `isar score --truth` and downstream filter on this flag.
+    interval_reliable = True
+    if best is not None and getattr(best, "gamma_at_bound", False) and interval is not None:
+        interval_reliable = False
+        reasons.append("phonon Γ at bound: ω₀ interval unreliable (resolution-limited spike, "
+                       "degenerate bootstrap)")
+
     n_modes = int(best.n_modes) if best is not None else 1
     modes = list(best.modes) if (best is not None and best.modes) else None
     return {
         "verdict": sv.verdict, "confidence": sv.confidence, "reasons": reasons,
         "omega0": omega0, "omega0_err": (best.omega0_err_hesse if best else None),
         "interval": (tuple(interval) if interval is not None else None),
+        "interval_reliable": interval_reliable,
         "modality": sel.modality, "best_label": sel.best,
         "gamma": (best.gamma if best else None),
         "cost_per_dof": (best.cost_per_dof if best else None),
@@ -343,7 +356,8 @@ def _process_one(rec, det, q, T, sample, scan_id, card, session, g, runcal, excl
         gamma_provisional=(card.policy.energy_status == "absolute"),
         best_label=fit["best_label"], cost_per_dof=fit["cost_per_dof"],
         q=q, T=T, sample=sample, prior_used=prior_used, calib=calres.summary(),
-        reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"])
+        reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
+        interval_reliable=fit.get("interval_reliable", True))
 
     # Feed the running prior (gated to resolved + fold).
     session_prior.add_point(card.state, scan_id=scan_id, sample=sample, T=T, q=q,
@@ -392,8 +406,8 @@ def _tally(session: SessionState) -> dict:
 
 _CSV_COLUMNS = [
     "scan", "detector", "sample", "T", "h", "k", "l", "status", "verdict", "disposition",
-    "confidence", "omega0", "omega0_err", "interval_lo", "interval_hi", "gamma",
-    "gamma_provisional", "n_modes", "secondary_omega0", "secondary_omega0_err",
+    "confidence", "omega0", "omega0_err", "interval_lo", "interval_hi", "interval_reliable",
+    "gamma", "gamma_provisional", "n_modes", "secondary_omega0", "secondary_omega0_err",
     "best_model", "cost_per_dof", "zero", "zero_source", "gauss_fwhm",
     "lorentz_fwhm", "resolution_source", "resolution_version", "prior_omega", "prior_sigma",
     "prior_n", "prior_source", "reasons",
@@ -437,6 +451,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "confidence": oc.get("confidence"), "omega0": oc.get("omega0"),
                 "omega0_err": oc.get("omega0_err"),
                 "interval_lo": (iv[0] if iv else None), "interval_hi": (iv[-1] if iv else None),
+                "interval_reliable": oc.get("interval_reliable", True),
                 "gamma": oc.get("gamma"), "gamma_provisional": oc.get("gamma_provisional"),
                 "n_modes": oc.get("n_modes") or 1,
                 "secondary_omega0": _secondary_mode(oc)[0],

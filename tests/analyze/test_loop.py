@@ -150,3 +150,96 @@ def test_two_stage_offers_multimode_when_two_peaks_declared():
     peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
     results = loop.fit_structures_two_stage(ctx, minos=False, peaks=peaks)
     assert "stokes2+bg" in {r.label for r in results}
+
+
+# --- FIX 1: greedy-IC "seed robustness" was really a MIGRAD call-budget starvation ----------
+
+def _sparse_two_peak_ctx(seed=208, o1=5.7, o2=7.9, a1=12.0, a2=8.0, g=0.5, bg=0.05, n=44):
+    """A sparse (many-zero-count) wide-window two-peak scan: a strong 'optic' + a weaker
+    'acoustic', mirroring the closed-loop regime where the k=7 two-mode fit is near-degenerate
+    and MIGRAD needs more than iminuit's default call budget to certify a minimum."""
+    x = np.linspace(-4.0, 11.0, n)
+    p1 = convolute_voigt_dho(x, o1, 0.0, 1.37, 0.0, g, a1, 0.0, 0.0, 40.0, peak="stokes+astokes")
+    p2 = convolute_voigt_dho(x, o2, 0.0, 1.37, 0.0, g, a2, 0.0, 0.0, 40.0, peak="stokes+astokes")
+    lam = np.clip(p1 + p2 + bg, 0.0, None)
+    counts = np.random.default_rng(seed).poisson(lam).astype(float)
+    return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=40.0,
+                       center=0.0, gauss_fwhm=1.37, lorentz_fwhm=0.0, instrument="S30",
+                       energy_status="needs_zero")
+
+
+def test_migrad_budget_exceeds_iminuit_default():
+    """The raised budget is strictly greater than iminuit's own default (200+100·npar+5·npar²)
+    for every parameter count, so a fit that already converges inside the default is untouched
+    while the k≥7 fits get the head-room they were being starved of."""
+    from isar.synth import backends
+    for npar in (4, 5, 7, 8, 10):
+        default = 200 + 100 * npar + 5 * npar * npar
+        assert backends._migrad_ncall(npar) > default
+
+
+def test_call_budget_starvation_drops_two_mode_that_raised_budget_certifies(monkeypatch):
+    """Reproduce-then-fix: on the SAME data and SAME greedy seed, a starved MIGRAD budget leaves
+    the k=7 two-mode fit uncertified (has_reached_call_limit → not valid → dropped by selection);
+    the raised budget lets the identical fit converge to the identical minimum and recover the
+    hard (weaker) secondary peak. The greedy seed is fine either way — the failure was the fit
+    being cut short, not the seed."""
+    from isar.analyze import ic, select
+    from isar.analyze.structures import enumerate_multimode
+    from isar.synth import backends
+
+    ctx = _sparse_two_peak_ctx()
+    hyp2 = {h.label: h for h in enumerate_multimode(ctx)}["stokes2+bg"]
+    one = loop.fit_hypothesis(_by_label(ctx)["stokes+bg"], ctx)
+    x0 = ic.greedy_multimode_ic(hyp2.build(), ctx, one)
+
+    # starved budget → the fit hits the call limit and is NOT certified as converged.
+    monkeypatch.setattr(backends, "_migrad_ncall", lambda npar: 40)
+    starved = loop.fit_hypothesis(hyp2, ctx, x0=x0)
+    assert starved.optimizer_converged is False
+    monkeypatch.undo()
+
+    # raised (real) budget → the identical fit certifies and recovers both peaks.
+    fixed = loop.fit_hypothesis(hyp2, ctx, x0=x0)
+    assert fixed.optimizer_converged is True
+    o = sorted(m["omega0"] for m in fixed.modes)
+    assert abs(o[0] - 5.7) < 0.2 and abs(o[1] - 7.9) < 0.3
+    assert fixed.cost < starved.cost                       # the certified minimum is the better one
+
+    # end-to-end: selection now picks a two-mode structure.
+    sel = select.select_models(loop.fit_structures_two_stage(ctx, minos=False))
+    assert sel.best is not None and "stokes2" in sel.best
+
+
+def test_sparse_two_peak_selects_two_mode_and_single_peak_stays_one_mode():
+    """No overfitting regression: the fix does not turn a genuine single peak into two modes."""
+    from isar.analyze import select
+    two = select.select_models(loop.fit_structures_two_stage(_sparse_two_peak_ctx(), minos=False))
+    assert "stokes2" in (two.best or "")
+    single = select.select_models(loop.fit_structures_two_stage(_one_peak_ctx(), minos=False))
+    assert single.best is not None and "stokes2" not in single.best
+
+
+# --- FIX 2: a phonon Γ railed out to its bound → the ω₀ interval is flagged unreliable -------
+
+def test_gamma_at_bound_helper():
+    assert loop._gamma_at_bound([0.0011, 0.5]) is True       # near the lower floor
+    assert loop._gamma_at_bound([loop.GAMMA_MAX * 0.9999]) is True   # runaway broad
+    assert loop._gamma_at_bound([0.05, 0.3]) is False        # genuinely fitted widths
+
+
+def test_result_flags_gamma_at_bound():
+    """A converged fit with a phonon Γ pinned at the floor carries ``gamma_at_bound`` so the
+    driver can flag its ω₀ interval unreliable (the degenerate-bootstrap case)."""
+    comp = CompositeModel([PhononDHO(), ConstantBackground()])  # (Omega_d, Gamma, A, BG)
+    theta = np.array([5.0, loop.GAMMA_FLOOR, 300.0, 10.0])
+    br = BackendResult(x=theta, success=True, message="ok", n_eval=10,
+                       covariance=None, covariance_ok=False, at_limit={}, merrors=None)
+    res = loop.result_from_backend("stokes+bg", comp, lambda th: 5.0, n_used=20, k=4, br=br)
+    assert res.gamma_at_bound is True
+
+    theta2 = np.array([5.0, 0.4, 300.0, 10.0])                 # a real width
+    br2 = BackendResult(x=theta2, success=True, message="ok", n_eval=10,
+                        covariance=None, covariance_ok=False, at_limit={}, merrors=None)
+    res2 = loop.result_from_backend("stokes+bg", comp, lambda th: 5.0, n_used=20, k=4, br=br2)
+    assert res2.gamma_at_bound is False

@@ -40,10 +40,40 @@ def _at_limit_map(x, bounds, names) -> dict:
     return {nm: _at_limit(v, lo, hi) for nm, (lo, hi), v in zip(names, bounds, x)}
 
 
+# MIGRAD budget = this multiple of MINUIT's own default ceiling. See _migrad_ncall.
+_MIGRAD_NCALL_MULT = 4
+
+
+def _default_migrad_ncall(npar: int) -> int:
+    """MINUIT's own default call ceiling for ``npar`` free parameters."""
+    return 200 + 100 * npar + 5 * npar * npar
+
+
+def _migrad_ncall(npar: int) -> int:
+    """MIGRAD call budget for ``npar`` free parameters — a modest multiple of MINUIT's own
+    default ceiling ``200 + 100·npar + 5·npar²``.
+
+    Why raise it. The k≥7 near-degenerate multi-mode fits in the sparse wide-window regime reach
+    a small-EDM minimum but exhaust the DEFAULT budget on the way (measured need ~1400-2000 calls
+    for k=7-8, vs a ~1145 default at k=7). MIGRAD then sets ``has_reached_call_limit`` and
+    ``m.valid`` is False even though the point estimate is good, so the fit is wrongly dropped
+    from model selection and the loop falls back to 1-mode (the greedy-IC "seed robustness"
+    symptom — the seed is fine, the fit was cut short).
+
+    Why only MODEST. The budget cutoff is also a weak regularizer: a fit that needs a *large*
+    multiple of its default budget is crawling along a near-flat (non-identifiable) direction —
+    the signature of an unconstrained extra parameter, i.e. an overfit. On the IN8 anchor the
+    spurious ``stokes2+qe+bg`` fit needs ~13k calls to limp to its minimum, whereas the physical
+    ``stokes2+bg`` needs ~1400; a ~4× ceiling certifies the well-constrained fits (TAVI + IN8)
+    while still cutting off that overfit so it never enters selection. Strictly greater than the
+    default for all npar, so any fit that already converges inside the default is untouched."""
+    return _MIGRAD_NCALL_MULT * _default_migrad_ncall(npar)
+
+
 # ----------------------------------------------------------------------------
 # iminuit (primary)
 # ----------------------------------------------------------------------------
-def iminuit_minimize(costv, x0, bounds, names, *, minos=False) -> BackendResult:
+def iminuit_minimize(costv, x0, bounds, names, *, minos=False, ncall=None) -> BackendResult:
     from iminuit import Minuit
 
     names = list(names)
@@ -56,7 +86,11 @@ def iminuit_minimize(costv, x0, bounds, names, *, minos=False) -> BackendResult:
     for nm, (lo, hi) in zip(names, bounds):
         m.limits[nm] = (lo, hi)
 
-    m.migrad()
+    # Default (ncall=None): the raised certification budget (_migrad_ncall) so a slow-but-good
+    # k≥7 fit certifies for selection. Callers that only need a point estimate and tolerate
+    # non-convergence — the parametric bootstrap, which counts failed refits — pass the plain
+    # default budget to keep the per-scan refit cost unchanged from before this fix.
+    m.migrad(ncall=(_migrad_ncall(len(names)) if ncall is None else int(ncall)))
     success = bool(m.valid)
 
     covariance = None
@@ -175,9 +209,11 @@ BACKENDS = {
 }
 
 
-def minimize(backend: str, costv, x0, bounds, names, *, minos=False) -> BackendResult:
+def minimize(backend: str, costv, x0, bounds, names, *, minos=False, ncall=None) -> BackendResult:
     try:
         fn = BACKENDS[backend]
     except KeyError:
         raise KeyError(f"unknown backend {backend!r}; choices: {sorted(BACKENDS)}") from None
+    if backend == "iminuit":
+        return fn(costv, x0, bounds, names, minos=minos, ncall=ncall)
     return fn(costv, x0, bounds, names, minos=minos)

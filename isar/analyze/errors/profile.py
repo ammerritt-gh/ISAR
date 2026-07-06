@@ -94,6 +94,14 @@ def omega0_profile_interval(hyp, ctx, fit_result, *, delta: float = 1.0) -> tupl
 
     def crossing(direction):
         prev, step = best, step0
+        # The bracket [prev, nxt] must straddle the target for brentq. That relies on
+        # g(best) ≤ 0 — the profile re-minimization reaching the reported cost at the best-fit ω₀.
+        # A weaker reduced-space L-BFGS-B can land ABOVE a well-converged MIGRAD minimum, making
+        # g(best) > 0; there is then no clean 1σ crossing on this side, so report nan (the
+        # function's existing "profile unavailable" sentinel) rather than hand brentq a
+        # same-sign bracket.
+        if g(prev) > 0:
+            return float("nan")
         for _ in range(80):
             nxt = prev + direction * step
             if nxt <= _OD_FLOOR:
