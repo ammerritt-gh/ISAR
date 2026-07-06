@@ -1,42 +1,42 @@
 {
   "truth_source": "fn:phonon_dft",
   "bucket_by": "number_neutrons",
-  "n_scored": 46,
+  "n_scored": 48,
   "n_delivered_no_truth": 0,
-  "n_not_delivered": 53,
-  "n_zero_halfwidth": 0,
-  "coverage68": 0.021739130434782608,
-  "inflation": 14.264768006831444,
-  "pull_mean": -8.747052906675506,
-  "pull_std": 86.8898778909838,
-  "center_pull_mean": 0.11728526401574434,
-  "median_abs_delta": 0.09451235165585636,
+  "n_not_delivered": 18,
+  "n_zero_halfwidth": 43,
+  "coverage68": 0.4,
+  "inflation": 1.4508872363666483,
+  "pull_mean": 0.6035927040129415,
+  "pull_std": 2.072258678095024,
+  "center_pull_mean": -0.028205676931668557,
+  "median_abs_delta": 0.05142766118666753,
   "buckets": [
     {
       "label": "10000000",
-      "n": 8,
+      "n": 10,
       "coverage68": 0.0,
-      "inflation": 26.822536214383124,
-      "center_pull_mean": -0.06847852567892404
+      "inflation": 0.7489081778446781,
+      "center_pull_mean": -0.10656095581213043
     },
     {
       "label": "30000000",
-      "n": 17,
-      "coverage68": 0.058823529411764705,
-      "inflation": 9.763534370136657,
-      "center_pull_mean": 0.17624987105016096
+      "n": 19,
+      "coverage68": 0.5,
+      "inflation": 1.7043797490014325,
+      "center_pull_mean": 0.0034258134764534906
     },
     {
       "label": "100000000",
-      "n": 21,
-      "coverage68": 0.0,
-      "inflation": 13.312715874279764,
-      "center_pull_mean": 0.1403191686810903
+      "n": 19,
+      "coverage68": null,
+      "inflation": null,
+      "center_pull_mean": -0.018597546876389617
     }
   ],
   "rows": [
     {
-      "scan": 4,
+      "scan": 1,
       "detector": "det",
       "hkl": [
         2.03,
@@ -46,61 +46,109 @@
       "omega0": 0.01614536639517642,
       "omega_true": 0.2826387042578541,
       "delta": -0.26649333786267765,
-      "halfwidth": 0.017097333618860205,
-      "pull": -15.586836158399969,
-      "in_interval": false,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 6,
+      "scan": 2,
       "detector": "det",
       "hkl": [
         2.03,
         0.0,
         0.0
       ],
-      "omega0": 0.01605675985709905,
+      "omega0": 0.03336520838399355,
       "omega_true": 0.2826387042578541,
-      "delta": -0.26658194440075506,
-      "halfwidth": 0.019504353510149123,
-      "pull": -13.667817508641786,
-      "in_interval": false,
+      "delta": -0.24927349587386055,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 10,
+      "scan": 4,
       "detector": "det",
       "hkl": [
         2.03,
         0.0,
         0.0
       ],
-      "omega0": 0.12530585205153327,
+      "omega0": 0.03241703493784271,
       "omega_true": 0.2826387042578541,
-      "delta": -0.15733285220632082,
-      "halfwidth": 0.0003751267132346692,
-      "pull": -419.4125522271127,
-      "in_interval": false,
+      "delta": -0.2502216693200114,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 19,
+      "scan": 7,
       "detector": "det",
       "hkl": [
         2.06,
         0.0,
         0.0
       ],
-      "omega0": 0.4493919575383134,
+      "omega0": 0.324951086285992,
       "omega_true": 0.5646498799110864,
-      "delta": -0.11525792237277299,
-      "halfwidth": 0.0005726715687965345,
-      "pull": -201.2635665063428,
-      "in_interval": false,
+      "delta": -0.2396987936250944,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 20,
+      "scan": 8,
+      "detector": "det",
+      "hkl": [
+        2.06,
+        0.0,
+        0.0
+      ],
+      "omega0": 0.34978349758494015,
+      "omega_true": 0.5646498799110864,
+      "delta": -0.21486638232614624,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
+      "bucket": null
+    },
+    {
+      "scan": 9,
+      "detector": "det",
+      "hkl": [
+        2.06,
+        0.0,
+        0.0
+      ],
+      "omega0": 0.42517232786263287,
+      "omega_true": 0.5646498799110864,
+      "delta": -0.13947755204845352,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
+      "bucket": null
+    },
+    {
+      "scan": 10,
+      "detector": "det",
+      "hkl": [
+        2.06,
+        0.0,
+        0.0
+      ],
+      "omega0": 0.3988907061749122,
+      "omega_true": 0.5646498799110864,
+      "delta": -0.16575917373617421,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
+      "bucket": null
+    },
+    {
+      "scan": 12,
       "detector": "det",
       "hkl": [
         2.06,
@@ -110,13 +158,13 @@
       "omega0": 0.3995808447234337,
       "omega_true": 0.5646498799110864,
       "delta": -0.1650690351876527,
-      "halfwidth": 0.0007000011987120802,
-      "pull": -235.81250359479426,
-      "in_interval": false,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 22,
+      "scan": 13,
       "detector": "det",
       "hkl": [
         2.1,
@@ -126,13 +174,13 @@
       "omega0": 0.9754245536212833,
       "omega_true": 0.938606790241386,
       "delta": 0.036817763379897284,
-      "halfwidth": 0.0012122809663022704,
-      "pull": 30.370652021535687,
-      "in_interval": false,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 23,
+      "scan": 14,
       "detector": "det",
       "hkl": [
         2.1,
@@ -142,29 +190,13 @@
       "omega0": 0.8743758992608544,
       "omega_true": 0.938606790241386,
       "delta": -0.0642308909805317,
-      "halfwidth": 0.0018036365367162799,
-      "pull": -35.61188170287964,
-      "in_interval": false,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 24,
-      "detector": "det",
-      "hkl": [
-        2.1,
-        0.0,
-        0.0
-      ],
-      "omega0": 0.8996073382694276,
-      "omega_true": 0.938606790241386,
-      "delta": -0.03899945197195842,
-      "halfwidth": 0.0011083526341494343,
-      "pull": -35.1868627098876,
-      "in_interval": false,
-      "bucket": null
-    },
-    {
-      "scan": 25,
+      "scan": 15,
       "detector": "det",
       "hkl": [
         2.1,
@@ -174,13 +206,13 @@
       "omega0": 0.9999199506180166,
       "omega_true": 0.938606790241386,
       "delta": 0.06131316037663059,
-      "halfwidth": 0.0005114213628972242,
-      "pull": 119.88775758073321,
-      "in_interval": false,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 26,
+      "scan": 16,
       "detector": "det",
       "hkl": [
         2.1,
@@ -190,29 +222,13 @@
       "omega0": 0.949989138946561,
       "omega_true": 0.938606790241386,
       "delta": 0.01138234870517496,
-      "halfwidth": 0.0005205458526936768,
-      "pull": 21.866178831844575,
-      "in_interval": false,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 27,
-      "detector": "det",
-      "hkl": [
-        2.1,
-        0.0,
-        0.0
-      ],
-      "omega0": 0.9240525189508343,
-      "omega_true": 0.938606790241386,
-      "delta": -0.014554271290551757,
-      "halfwidth": 0.001346811268619963,
-      "pull": -10.806466822530437,
-      "in_interval": false,
-      "bucket": null
-    },
-    {
-      "scan": 28,
+      "scan": 17,
       "detector": "det",
       "hkl": [
         2.1,
@@ -222,13 +238,13 @@
       "omega0": 0.9499814555658896,
       "omega_true": 0.938606790241386,
       "delta": 0.011374665324503597,
-      "halfwidth": 0.00028116662216881583,
-      "pull": 40.4552476277718,
-      "in_interval": false,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 29,
+      "scan": 18,
       "detector": "det",
       "hkl": [
         2.1,
@@ -238,13 +254,13 @@
       "omega0": 0.9502354828182614,
       "omega_true": 0.938606790241386,
       "delta": 0.011628692576875377,
-      "halfwidth": 0.00034535166201715706,
-      "pull": 33.67203304872951,
-      "in_interval": false,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 31,
+      "scan": 19,
       "detector": "det",
       "hkl": [
         2.2,
@@ -254,45 +270,77 @@
       "omega0": 1.8250012488632719,
       "omega_true": 1.854101966249686,
       "delta": -0.029100717386414177,
-      "halfwidth": 0.006510182626153771,
-      "pull": -4.470030882007213,
-      "in_interval": false,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 33,
+      "scan": 20,
       "detector": "det",
       "hkl": [
         2.2,
         0.0,
         0.0
       ],
-      "omega0": 1.920641730705199,
+      "omega0": 1.7998859256745416,
       "omega_true": 1.854101966249686,
-      "delta": 0.06653976445551302,
-      "halfwidth": 0.0060811156387267085,
-      "pull": 10.942032417828749,
-      "in_interval": false,
+      "delta": -0.0542160405751444,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 36,
+      "scan": 21,
       "detector": "det",
       "hkl": [
         2.2,
         0.0,
         0.0
       ],
-      "omega0": 1.8225421928453243,
+      "omega0": 1.7500264957701874,
       "omega_true": 1.854101966249686,
-      "delta": -0.03155977340436178,
-      "halfwidth": 0.002986215346994614,
-      "pull": -10.568485436297873,
-      "in_interval": false,
+      "delta": -0.10407547047949861,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 38,
+      "scan": 22,
+      "detector": "det",
+      "hkl": [
+        2.2,
+        0.0,
+        0.0
+      ],
+      "omega0": 1.7500826055814254,
+      "omega_true": 1.854101966249686,
+      "delta": -0.10401936066826067,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
+      "bucket": null
+    },
+    {
+      "scan": 23,
+      "detector": "det",
+      "hkl": [
+        2.2,
+        0.0,
+        0.0
+      ],
+      "omega0": 1.8499306958354595,
+      "omega_true": 1.854101966249686,
+      "delta": -0.004171270414226491,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
+      "bucket": null
+    },
+    {
+      "scan": 24,
       "detector": "det",
       "hkl": [
         2.2,
@@ -302,13 +350,29 @@
       "omega0": 1.875143472649061,
       "omega_true": 1.854101966249686,
       "delta": 0.021041506399374965,
-      "halfwidth": 0.0018641114046604734,
-      "pull": 11.287687177262582,
-      "in_interval": false,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 41,
+      "scan": 25,
+      "detector": "det",
+      "hkl": [
+        2.3,
+        0.0,
+        0.0
+      ],
+      "omega0": 2.7251747262304122,
+      "omega_true": 2.723942998437279,
+      "delta": 0.001231727793133075,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
+      "bucket": null
+    },
+    {
+      "scan": 26,
       "detector": "det",
       "hkl": [
         2.3,
@@ -318,13 +382,29 @@
       "omega0": 2.7381636077728135,
       "omega_true": 2.723942998437279,
       "delta": 0.014220609335534373,
-      "halfwidth": 0.013577576511128786,
-      "pull": 1.0473599116807428,
+      "halfwidth": 0.018988455135395377,
+      "pull": 0.7489081778446781,
       "in_interval": false,
       "bucket": null
     },
     {
-      "scan": 44,
+      "scan": 27,
+      "detector": "det",
+      "hkl": [
+        2.3,
+        0.0,
+        0.0
+      ],
+      "omega0": 2.7249787024658225,
+      "omega_true": 2.723942998437279,
+      "delta": 0.0010357040285433605,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
+      "bucket": null
+    },
+    {
+      "scan": 28,
       "detector": "det",
       "hkl": [
         2.3,
@@ -334,13 +414,45 @@
       "omega0": 2.6993894919807286,
       "omega_true": 2.723942998437279,
       "delta": -0.024553506456550522,
-      "halfwidth": 0.017200349594420627,
-      "pull": -1.4275004308351429,
-      "in_interval": false,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 52,
+      "scan": 29,
+      "detector": "det",
+      "hkl": [
+        2.3,
+        0.0,
+        0.0
+      ],
+      "omega0": 2.7750144209699044,
+      "omega_true": 2.723942998437279,
+      "delta": 0.0510714225326252,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
+      "bucket": null
+    },
+    {
+      "scan": 30,
+      "detector": "det",
+      "hkl": [
+        2.3,
+        0.0,
+        0.0
+      ],
+      "omega0": 2.7250196405924596,
+      "omega_true": 2.723942998437279,
+      "delta": 0.0010766421551804406,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
+      "bucket": null
+    },
+    {
+      "scan": 33,
       "detector": "det",
       "hkl": [
         2.4,
@@ -350,29 +462,61 @@
       "omega0": 3.512031054111334,
       "omega_true": 3.5267115137548384,
       "delta": -0.014680459643504395,
-      "halfwidth": 0.008763820777505149,
-      "pull": -1.6751209336897888,
+      "halfwidth": 0.009065393961988466,
+      "pull": -1.619395660581339,
       "in_interval": false,
       "bucket": null
     },
     {
-      "scan": 57,
+      "scan": 34,
       "detector": "det",
       "hkl": [
         2.4,
         0.0,
         0.0
       ],
-      "omega0": 3.5480866200414547,
+      "omega0": 3.575343554053175,
       "omega_true": 3.5267115137548384,
-      "delta": 0.02137510628661632,
-      "halfwidth": 0.006056062666908835,
-      "pull": 3.5295384909758054,
-      "in_interval": false,
+      "delta": 0.048632040298336676,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 61,
+      "scan": 35,
+      "detector": "det",
+      "hkl": [
+        2.4,
+        0.0,
+        0.0
+      ],
+      "omega0": 3.4749042761208218,
+      "omega_true": 3.5267115137548384,
+      "delta": -0.05180723763401662,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
+      "bucket": null
+    },
+    {
+      "scan": 36,
+      "detector": "det",
+      "hkl": [
+        2.4,
+        0.0,
+        0.0
+      ],
+      "omega0": 3.4749276139141285,
+      "omega_true": 3.5267115137548384,
+      "delta": -0.05178389984070986,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
+      "bucket": null
+    },
+    {
+      "scan": 39,
       "detector": "det",
       "hkl": [
         2.5,
@@ -382,29 +526,13 @@
       "omega0": 4.225248227168752,
       "omega_true": 4.242640687119286,
       "delta": -0.017392459950533734,
-      "halfwidth": 0.004558780943985763,
-      "pull": -3.8151558858029766,
-      "in_interval": false,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 63,
-      "detector": "det",
-      "hkl": [
-        2.5,
-        0.0,
-        0.0
-      ],
-      "omega0": 4.32876260786846,
-      "omega_true": 4.242640687119286,
-      "delta": 0.08612192074917413,
-      "halfwidth": 0.0036728646676005283,
-      "pull": 23.448160643892532,
-      "in_interval": false,
-      "bucket": null
-    },
-    {
-      "scan": 64,
+      "scan": 41,
       "detector": "det",
       "hkl": [
         2.5,
@@ -414,13 +542,13 @@
       "omega0": 4.250111135485475,
       "omega_true": 4.242640687119286,
       "delta": 0.007470448366189153,
-      "halfwidth": 0.0004960537835723144,
-      "pull": 15.059754836241694,
-      "in_interval": false,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 65,
+      "scan": 42,
       "detector": "det",
       "hkl": [
         2.5,
@@ -430,29 +558,13 @@
       "omega0": 4.2501680269225215,
       "omega_true": 4.242640687119286,
       "delta": 0.007527339803235833,
-      "halfwidth": 0.0005133653305708918,
-      "pull": 14.662735005624546,
-      "in_interval": false,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 66,
-      "detector": "det",
-      "hkl": [
-        2.5,
-        0.0,
-        0.0
-      ],
-      "omega0": 4.22550705369273,
-      "omega_true": 4.242640687119286,
-      "delta": -0.01713363342655594,
-      "halfwidth": 0.0024180213095097436,
-      "pull": -7.085807457184817,
-      "in_interval": false,
-      "bucket": null
-    },
-    {
-      "scan": 70,
+      "scan": 45,
       "detector": "det",
       "hkl": [
         2.6,
@@ -462,29 +574,45 @@
       "omega0": 4.760732174661184,
       "omega_true": 4.854101966249685,
       "delta": -0.09336979158850056,
-      "halfwidth": 0.09598366921522006,
-      "pull": -0.972767475466493,
+      "halfwidth": 0.10693727334634939,
+      "pull": -0.8731267280968877,
       "in_interval": true,
       "bucket": null
     },
     {
-      "scan": 72,
+      "scan": 46,
       "detector": "det",
       "hkl": [
         2.6,
         0.0,
         0.0
       ],
-      "omega0": 4.949756877972897,
+      "omega0": 4.799368802687776,
       "omega_true": 4.854101966249685,
-      "delta": 0.09565491172321217,
-      "halfwidth": 0.00043694265478455563,
-      "pull": 218.91868572633854,
-      "in_interval": false,
+      "delta": -0.054733163561908604,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 74,
+      "scan": 47,
+      "detector": "det",
+      "hkl": [
+        2.6,
+        0.0,
+        0.0
+      ],
+      "omega0": 4.799935975426365,
+      "omega_true": 4.854101966249685,
+      "delta": -0.05416599082331963,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
+      "bucket": null
+    },
+    {
+      "scan": 48,
       "detector": "det",
       "hkl": [
         2.6,
@@ -494,45 +622,29 @@
       "omega0": 4.823854282514287,
       "omega_true": 4.854101966249685,
       "delta": -0.030247683735397324,
-      "halfwidth": 0.004800949260649112,
-      "pull": -6.300354803438953,
-      "in_interval": false,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 75,
-      "detector": "det",
-      "hkl": [
-        2.6,
-        0.0,
-        0.0
-      ],
-      "omega0": 5.002828625626196,
-      "omega_true": 4.854101966249685,
-      "delta": 0.14872665937651153,
-      "halfwidth": 0.06089124109848809,
-      "pull": 2.4424967646160254,
-      "in_interval": false,
-      "bucket": null
-    },
-    {
-      "scan": 79,
+      "scan": 51,
       "detector": "det",
       "hkl": [
         2.7,
         0.0,
         0.0
       ],
-      "omega0": 5.532275109507723,
+      "omega0": 5.32662220392123,
       "omega_true": 5.346039145130208,
-      "delta": 0.18623596437751555,
-      "halfwidth": 0.1249478154486825,
-      "pull": 1.4905099677713438,
-      "in_interval": false,
+      "delta": -0.019416941208977967,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 80,
+      "scan": 52,
       "detector": "det",
       "hkl": [
         2.7,
@@ -542,157 +654,109 @@
       "omega0": 5.509469361482785,
       "omega_true": 5.346039145130208,
       "delta": 0.1634302163525776,
-      "halfwidth": 0.15230969917720882,
-      "pull": 1.0730125345624266,
-      "in_interval": false,
+      "halfwidth": 0.16060677181873118,
+      "pull": 1.0175798598145855,
+      "in_interval": true,
       "bucket": null
     },
     {
-      "scan": 82,
+      "scan": 53,
       "detector": "det",
       "hkl": [
         2.7,
         0.0,
         0.0
       ],
-      "omega0": 5.483114961785495,
+      "omega0": 5.326593509017289,
       "omega_true": 5.346039145130208,
-      "delta": 0.13707581665528767,
-      "halfwidth": 0.0724162168147835,
-      "pull": 1.8928883982697113,
-      "in_interval": false,
+      "delta": -0.01944563611291894,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 83,
+      "scan": 54,
       "detector": "det",
       "hkl": [
         2.7,
         0.0,
         0.0
       ],
-      "omega0": 5.479477393048073,
+      "omega0": 5.222668863225979,
       "omega_true": 5.346039145130208,
-      "delta": 0.13343824791786574,
-      "halfwidth": 0.07938770560928932,
-      "pull": 1.6808427311728713,
-      "in_interval": false,
+      "delta": -0.12337028190422838,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 84,
-      "detector": "det",
-      "hkl": [
-        2.7,
-        0.0,
-        0.0
-      ],
-      "omega0": 5.641419153307502,
-      "omega_true": 5.346039145130208,
-      "delta": 0.29538000817729415,
-      "halfwidth": 0.06862779089552173,
-      "pull": 4.304087372227641,
-      "in_interval": false,
-      "bucket": null
-    },
-    {
-      "scan": 88,
+      "scan": 57,
       "detector": "det",
       "hkl": [
         2.8,
         0.0,
         0.0
       ],
-      "omega0": 6.110327227191063,
+      "omega0": 5.550415559953115,
       "omega_true": 5.706339097770921,
-      "delta": 0.4039881294201422,
-      "halfwidth": 0.17970107911912026,
-      "pull": 2.2481118722294733,
-      "in_interval": false,
+      "delta": -0.15592353781780588,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 90,
+      "scan": 59,
       "detector": "det",
       "hkl": [
         2.8,
         0.0,
         0.0
       ],
-      "omega0": 6.2461060392228935,
+      "omega0": 5.649773510906609,
       "omega_true": 5.706339097770921,
-      "delta": 0.5397669414519726,
-      "halfwidth": 0.13981571521674585,
-      "pull": 3.8605598849543648,
-      "in_interval": false,
+      "delta": -0.05656558686431179,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 91,
+      "scan": 60,
       "detector": "det",
       "hkl": [
         2.8,
         0.0,
         0.0
       ],
-      "omega0": 5.970105217589961,
+      "omega0": 5.7501793985092355,
       "omega_true": 5.706339097770921,
-      "delta": 0.2637661198190404,
-      "halfwidth": 0.08332943082132527,
-      "pull": 3.1653416712350646,
-      "in_interval": false,
+      "delta": 0.043840300738314575,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 92,
-      "detector": "det",
-      "hkl": [
-        2.8,
-        0.0,
-        0.0
-      ],
-      "omega0": 6.302849340234308,
-      "omega_true": 5.706339097770921,
-      "delta": 0.5965102424633875,
-      "halfwidth": 0.11388732210025898,
-      "pull": 5.237722965671796,
-      "in_interval": false,
-      "bucket": null
-    },
-    {
-      "scan": 93,
-      "detector": "det",
-      "hkl": [
-        2.8,
-        0.0,
-        0.0
-      ],
-      "omega0": 6.107198503962036,
-      "omega_true": 5.706339097770921,
-      "delta": 0.40085940619111504,
-      "halfwidth": 0.0752657670535597,
-      "pull": 5.325919363923581,
-      "in_interval": false,
-      "bucket": null
-    },
-    {
-      "scan": 97,
+      "scan": 63,
       "detector": "det",
       "hkl": [
         2.9,
         0.0,
         0.0
       ],
-      "omega0": 6.169939240526454,
+      "omega0": 5.8237338383421235,
       "omega_true": 5.926130043570826,
-      "delta": 0.24380919695562842,
-      "halfwidth": 0.13816907885305874,
-      "pull": 1.7645713424413632,
-      "in_interval": false,
+      "delta": -0.10239620522870219,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 98,
+      "scan": 64,
       "detector": "det",
       "hkl": [
         2.9,
@@ -702,80 +766,48 @@
       "omega0": 6.951446321571061,
       "omega_true": 5.926130043570826,
       "delta": 1.0253162780002354,
-      "halfwidth": 0.31780451023075473,
-      "pull": 3.22624835391972,
+      "halfwidth": 0.27385599920319015,
+      "pull": 3.7439978710836708,
       "in_interval": false,
       "bucket": null
     },
     {
-      "scan": 99,
+      "scan": 65,
       "detector": "det",
       "hkl": [
         2.9,
         0.0,
         0.0
       ],
-      "omega0": 6.301469045645301,
+      "omega0": 5.924946203688591,
       "omega_true": 5.926130043570826,
-      "delta": 0.3753390020744751,
-      "halfwidth": 0.11769249446964114,
-      "pull": 3.1891498584159423,
-      "in_interval": false,
+      "delta": -0.0011838398822350271,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     },
     {
-      "scan": 100,
+      "scan": 66,
       "detector": "det",
       "hkl": [
         2.9,
         0.0,
         0.0
       ],
-      "omega0": 6.220379499480903,
+      "omega0": 5.975556097422141,
       "omega_true": 5.926130043570826,
-      "delta": 0.29424945591007745,
-      "halfwidth": 0.08306489180156484,
-      "pull": 3.542404613166957,
-      "in_interval": false,
-      "bucket": null
-    },
-    {
-      "scan": 101,
-      "detector": "det",
-      "hkl": [
-        2.9,
-        0.0,
-        0.0
-      ],
-      "omega0": 6.629806844911563,
-      "omega_true": 5.926130043570826,
-      "delta": 0.7036768013407375,
-      "halfwidth": 0.12275772135806573,
-      "pull": 5.732240657092507,
-      "in_interval": false,
-      "bucket": null
-    },
-    {
-      "scan": 102,
-      "detector": "det",
-      "hkl": [
-        2.9,
-        0.0,
-        0.0
-      ],
-      "omega0": 6.303773196194309,
-      "omega_true": 5.926130043570826,
-      "delta": 0.3776431526234836,
-      "halfwidth": 0.06320022404687897,
-      "pull": 5.9753451561083955,
-      "in_interval": false,
+      "delta": 0.04942605385131493,
+      "halfwidth": null,
+      "pull": null,
+      "in_interval": null,
       "bucket": null
     }
   ],
   "_campaign": {
     "date": "2026-07-06",
     "tavi_commit": "1937fe6a",
-    "isar_commit": "f1228d8",
+    "isar_commit": "0505251",
     "sample": "Al_phonon_DFT",
     "truth_fn": "phonon_dft",
     "h_grid": [
@@ -801,8 +833,8 @@
       202,
       303
     ],
-    "n_scans": 99,
-    "n_delivered": 99,
+    "n_scans": 66,
+    "n_delivered": 66,
     "engine": "deterministic"
   }
 }

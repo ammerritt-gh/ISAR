@@ -224,7 +224,7 @@ def _expectations_block() -> str:
             f'q = {{component = "h", min = {h - 0.02:.3f}, max = {h + 0.02:.3f}}}',
             f"omega0 = {e_true(h):.4f}",
             "omega0_sigma = 0.5",
-            'structures = ["stokes+bg"]',
+            'structures = ["stokes+bg", "stokes2+bg"]',
             "",
         ]
     return "\n".join(lines) + "\n"
@@ -383,7 +383,7 @@ def main(argv=None) -> int:
 
     print(f"isar run over {len(delivered)} scans ...")
     t1 = time.time()
-    run_args = ["run", str(data_dir), "--workspace", str(ws_dir)]
+    run_args = ["run", str(data_dir), "--workspace", str(ws_dir), "--workers", "30"]
     if args.M is not None:
         run_args += ["--M", str(args.M)]
     proc = run_isar_cli(*run_args)
