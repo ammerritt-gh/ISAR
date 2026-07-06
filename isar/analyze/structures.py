@@ -17,20 +17,24 @@ from isar.analyze.components import (
 
 @dataclass(frozen=True)
 class Hypothesis:
-    """A named structure recipe: the ordered component classes that build its composite."""
+    """A named structure recipe: the ordered components that build its composite. Each entry is
+    either a component *class* (instantiated with its default prefix) or a pre-built component
+    *instance* (an explicit prefix override, e.g. ``PhononDHO(prefix="phonon2")`` for N-mode).
+    """
 
     label: str
-    components: tuple[type[Component], ...]
+    components: tuple
 
     @property
     def k(self) -> int:
         """Number of free parameters (the model's degrees of freedom consumed)."""
-        return sum(len(c.params) for c in self.components)
+        return self.build().n_params
 
     def build(self):
-        """Instantiate the CompositeModel for this hypothesis."""
+        """Instantiate the CompositeModel for this hypothesis. Classes are instantiated;
+        pre-built instances (components are stateless) are reused as-is."""
         from isar.analyze.components import CompositeModel
-        return CompositeModel([c() for c in self.components])
+        return CompositeModel([c() if isinstance(c, type) else c for c in self.components])
 
 
 def elastic_admissible(ctx) -> bool:
@@ -88,4 +92,36 @@ def enumerate_structures(ctx) -> list[Hypothesis]:
     if elastic and qe:
         hyps.append(Hypothesis("elastic+stokes+qe+bg",
                                (PhononDHO, Elastic, QuasiElastic, ConstantBackground)))
+    return hyps
+
+
+def enumerate_multimode(ctx, n_max: int = 2) -> list[Hypothesis]:
+    """The two-mode (2-phonon) structure hypotheses for this scan context — the escalation set
+    the two-stage loop (:mod:`isar.analyze.loop`) offers when the 1-mode winner's fit is poor
+    or its residual is structured (§ multiplicity is data-gated, never a free knob).
+
+    Mirrors :func:`enumerate_structures` under the identical elastic/quasi-elastic gates, but
+    with a second phonon. Mode 1 keeps the default ``phonon`` prefix so each 1-mode hypothesis
+    is *strictly nested* in its 2-mode counterpart (the LRT/AIC comparison in §4 is then exact);
+    mode 2 gets the ``phonon2`` namespace. Capped at N=2 this round (``n_max`` is accepted for
+    the later N=3 extension; values >2 are treated as 2)."""
+    if n_max < 2:
+        return []
+    elastic = elastic_admissible(ctx)
+    qe = quasielastic_admissible(ctx)
+
+    def twophonon():
+        # class = mode 1 (default "phonon" prefix); instance = mode 2 ("phonon2").
+        return (PhononDHO, PhononDHO(prefix="phonon2"))
+
+    hyps = [Hypothesis("stokes2+bg", (*twophonon(), ConstantBackground))]
+    if elastic:
+        hyps.append(Hypothesis("elastic+stokes2+bg",
+                               (*twophonon(), Elastic, ConstantBackground)))
+    if qe:
+        hyps.append(Hypothesis("stokes2+qe+bg",
+                               (*twophonon(), QuasiElastic, ConstantBackground)))
+    if elastic and qe:
+        hyps.append(Hypothesis("elastic+stokes2+qe+bg",
+                               (*twophonon(), Elastic, QuasiElastic, ConstantBackground)))
     return hyps

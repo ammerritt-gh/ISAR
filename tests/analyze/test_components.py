@@ -159,6 +159,45 @@ def test_composite_omega0_error_nan_without_covariance():
     assert np.isnan(err)
 
 
+def test_instance_prefix_override_namespaces_two_phonons():
+    """Two PhononDHO instances with distinct prefixes share no parameter names (the N-mode
+    namespace) — and the default class-instantiated PhononDHO still carries ``phonon``."""
+    assert C.PhononDHO().prefix == "phonon"                 # class default unchanged
+    p1, p2 = C.PhononDHO(prefix="phonon1"), C.PhononDHO(prefix="phonon2")
+    assert p1.prefix == "phonon1" and p2.prefix == "phonon2"
+    assert C.PhononDHO().prefix == "phonon"                 # instance override did not mutate class
+    comp = C.CompositeModel([p1, p2, C.ConstantBackground()])
+    assert comp.param_names() == ["phonon1.Omega_d", "phonon1.Gamma", "phonon1.A",
+                                  "phonon2.Omega_d", "phonon2.Gamma", "phonon2.A", "bg.BG"]
+    assert len(set(comp.param_names())) == 7               # no collision
+
+
+def test_phonon_indices_and_omega0_all_sorted():
+    comp = C.CompositeModel([C.PhononDHO(prefix="phonon1"), C.PhononDHO(prefix="phonon2"),
+                             C.ConstantBackground()])
+    # phonon1 is the HIGH-ω₀ mode; phonon2 the low one — omega0_all must canonicalize ascending.
+    theta = np.array([9.0, 0.3, 100.0,   3.0, 0.3, 400.0,   10.0])
+    assert comp.phonon_indices() == [0, 3]
+    w = comp.omega0_all(theta, None)
+    assert [round(o, 3) for o, _ in w] == sorted(round(o, 3) for o, _ in w)
+    assert np.isclose(w[0][0], omega0_from(3.0, 0.3))       # low mode first
+    assert np.isclose(w[1][0], omega0_from(9.0, 0.3))
+
+
+def test_primary_phonon_index_amplitude_then_prior():
+    comp = C.CompositeModel([C.PhononDHO(prefix="phonon1"), C.PhononDHO(prefix="phonon2"),
+                             C.ConstantBackground()])
+    theta = np.array([9.0, 0.3, 100.0,   3.0, 0.3, 400.0,   10.0])
+    # no prior → largest amplitude (phonon2, A=400 at index 3)
+    assert comp.primary_phonon_index(theta, None) == 3
+    o_primary, _ = comp.omega0(theta, None)
+    assert np.isclose(o_primary, omega0_from(3.0, 0.3))
+    # prior near the high mode → nearest-to-prior wins (phonon1 at index 0)
+    assert comp.primary_phonon_index(theta, None, prior_omega=9.0) == 0
+    o_prior, _ = comp.omega0(theta, None, prior_omega=9.0)
+    assert np.isclose(o_prior, omega0_from(9.0, 0.3))
+
+
 def test_composite_evaluate_components_sum_to_total():
     x = np.linspace(-10, 10, 81)
     ctx = _ctx()

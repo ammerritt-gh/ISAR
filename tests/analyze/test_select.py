@@ -89,6 +89,69 @@ def test_all_non_converged_yields_empty_scores():
     assert select.score_models([bad]) == []
 
 
+def test_nested_lrt_pairs_one_mode_subset_two_mode():
+    """The 1-mode stokes+bg params are a strict subset of the 2-mode stokes2+bg params, so the
+    unchanged nested LRT pairs them (mode 1 keeps the ``phonon`` prefix — that is what makes
+    the subset relation hold)."""
+    one = _result("stokes+bg", k=4, ndof=20, cost=140.0,
+                  params={"phonon.Omega_d": 0, "phonon.Gamma": 0, "phonon.A": 0, "bg.BG": 0})
+    two = _result("stokes2+bg", k=7, ndof=17, cost=95.0,
+                  params={"phonon.Omega_d": 0, "phonon.Gamma": 0, "phonon.A": 0,
+                          "phonon2.Omega_d": 0, "phonon2.Gamma": 0, "phonon2.A": 0, "bg.BG": 0})
+    scores = _by_label([one, two])
+    nt = scores["stokes2+bg"].nested
+    assert nt is not None and nt["reduced"] == "stokes+bg"
+    assert nt["dof"] == 3                                 # a whole extra phonon (Ω_d, Γ, A)
+    assert nt["delta_deviance"] == 45.0
+    assert scores["stokes+bg"].nested is None
+
+
+def _two_peak_ctx(o1=4.0, a1=500.0, o2=10.0, a2=350.0, g=0.35, bg=8.0, n=121, seed=7):
+    x = np.linspace(-6.0, 24.0, n)
+    p1 = convolute_voigt_dho(x, o1, 0.0, 1.0, 0.0, g, a1, 0.0, 0.0, 50.0, peak="stokes+astokes")
+    p2 = convolute_voigt_dho(x, o2, 0.0, 1.0, 0.0, g, a2, 0.0, 0.0, 50.0, peak="stokes+astokes")
+    counts = np.random.default_rng(seed).poisson(np.clip(p1 + p2 + bg, 0.0, None)).astype(float)
+    return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
+                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                       energy_status="needs_zero")
+
+
+def _one_peak_ctx(o1=5.0, a1=500.0, g=0.4, bg=8.0, n=81, seed=3):
+    x = np.linspace(-8.0, 16.0, n)
+    lam = convolute_voigt_dho(x, o1, 0.0, 1.0, 0.0, g, a1, 0.0, 0.0, 50.0, peak="stokes+astokes") + bg
+    counts = np.random.default_rng(seed).poisson(np.clip(lam, 0.0, None)).astype(float)
+    return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
+                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                       energy_status="needs_zero")
+
+
+def test_two_stage_select_accepts_second_mode_on_true_double_peak():
+    """End-to-end: a wide two-peak spectrum → the two-stage loop offers 2-mode, AIC selects it,
+    and the PRIMARY (largest-amplitude, acoustic-like ~4 meV) ω₀ interval brackets the truth."""
+    ctx = _two_peak_ctx()
+    results = loop.fit_structures_two_stage(ctx, with_errors=True, M=40, seed=1)
+    sel = select.select_models(results)
+    assert sel.best == "stokes2+bg"
+    win = {r.label: r for r in results}["stokes2+bg"]
+    assert win.n_modes == 2
+    assert abs(win.omega0 - 4.0) < 0.6                    # primary = the stronger (a1>a2) mode
+    lo, med, hi = win.within_model["freq_interval"]
+    assert lo <= win.omega0 <= hi                         # interval brackets the fitted primary
+    assert abs(med - 4.0) < 0.3                           # …sits on the true acoustic peak (~4 meV)
+    assert hi < 7.0                                        # …cleanly separated from the 10 meV mode
+
+
+def test_two_stage_select_rejects_second_mode_on_true_single_peak():
+    """When ≥2 peaks are declared the 2-mode set is fit even on a true single peak, but AIC
+    rejects the extra mode: the 1-mode stokes+bg wins."""
+    ctx = _one_peak_ctx()
+    peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
+    results = loop.fit_structures_two_stage(ctx, with_errors=True, M=40, seed=1, peaks=peaks)
+    assert "stokes2+bg" in {r.label for r in results}     # it WAS offered
+    sel = select.select_models(results)
+    assert sel.best == "stokes+bg"                        # …and rejected on AIC
+
+
 def _spectrum_ctx(seed=0, omega0=5.0, n=81):
     x = np.linspace(-10.0, 10.0, n)
     lam = convolute_voigt_dho(x, omega0, 0.0, 1.0, 0.0, 0.4, 300.0, 80.0, 15.0, 100.0, peak="all")

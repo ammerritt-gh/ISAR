@@ -45,6 +45,17 @@ class Component:
     prefix: str = "component"
     params: tuple[Parameter, ...] = ()
 
+    def __init__(self, prefix: str | None = None):
+        """Optional instance-level ``prefix`` override (default: the class attribute).
+
+        Components are stateless — ``params`` is a class attribute and ``evaluate`` reads
+        only its arguments — so instantiating a subclass by class (``PhononDHO()``) keeps the
+        class prefix, while ``PhononDHO(prefix="phonon2")`` gives an independent namespace
+        (the N-mode case). Subclasses do not define ``__init__``; they inherit this one.
+        """
+        if prefix is not None:
+            self.prefix = prefix
+
     def param_names(self) -> list[str]:
         return [p.name for p in self.params]
 
@@ -212,24 +223,60 @@ class CompositeModel:
         return phi, names
 
     # -- derived quantities --------------------------------------------------
-    def _phonon_index(self):
-        """Global index of the phonon's Omega_d (Gamma is the next slot), or None."""
-        i = 0
+    def _phonon_slots(self):
+        """``[(global_index_of_Omega_d, component), …]`` for each PhononDHO, in component
+        order. Within a PhononDHO the params are ``(Omega_d, Gamma, A)`` so ``i`` is Omega_d,
+        ``i+1`` is Gamma, ``i+2`` is the linear amplitude A."""
+        out, i = [], 0
         for c in self.components:
             if isinstance(c, PhononDHO):
-                return i  # Omega_d first, Gamma second within PhononDHO
+                out.append((i, c))
             i += len(c.param_names())
-        return None
+        return out
 
-    def omega0(self, theta, cov):
-        """Derived ω₀ and its (HESSE-propagated) error for the phonon component."""
-        theta = np.asarray(theta, dtype=float)
-        i = self._phonon_index()
-        if i is None:
-            raise ValueError("composite has no PhononDHO component")
+    def _phonon_index(self):
+        """Global index of the FIRST phonon's Omega_d (back-compat helper), or None."""
+        slots = self._phonon_slots()
+        return slots[0][0] if slots else None
+
+    def phonon_indices(self) -> list[int]:
+        """Global Omega_d index of every PhononDHO, in component order."""
+        return [i for i, _ in self._phonon_slots()]
+
+    def _omega0_at(self, theta, cov, i):
+        """ω₀ + HESSE error for the phonon whose Omega_d is at global index ``i``."""
         sub = None
         if cov is not None:
             cov = np.asarray(cov, dtype=float)
             sub = np.array([[cov[i, i], cov[i, i + 1]],
                             [cov[i + 1, i], cov[i + 1, i + 1]]])
         return omega0_value_error(theta[i], theta[i + 1], sub)
+
+    def omega0_all(self, theta, cov):
+        """All phonons' derived (ω₀, error), sorted ascending by ω₀ (canonicalization)."""
+        theta = np.asarray(theta, dtype=float)
+        out = [self._omega0_at(theta, cov, i) for i in self.phonon_indices()]
+        out.sort(key=lambda t: t[0])
+        return out
+
+    def primary_phonon_index(self, theta, cov=None, prior_omega=None):
+        """Global Omega_d index of the *primary* phonon. With a dispersion prior, the mode
+        whose ω₀ is nearest the prior; otherwise the largest-amplitude mode (A is the phonon's
+        linear param, at global index ``i+2``). ``None`` if there is no phonon."""
+        theta = np.asarray(theta, dtype=float)
+        slots = self.phonon_indices()
+        if not slots:
+            return None
+        if prior_omega is not None:
+            po = float(prior_omega)
+            return min(slots, key=lambda i: abs(omega0_from(theta[i], theta[i + 1]) - po))
+        return max(slots, key=lambda i: theta[i + 2])
+
+    def omega0(self, theta, cov, prior_omega=None):
+        """Derived ω₀ and its (HESSE-propagated) error for the *primary* phonon (§ primary =
+        nearest-to-prior / largest-amplitude). Single-phonon composites are unchanged."""
+        theta = np.asarray(theta, dtype=float)
+        i = self.primary_phonon_index(theta, cov, prior_omega)
+        if i is None:
+            raise ValueError("composite has no PhononDHO component")
+        return self._omega0_at(theta, cov, i)

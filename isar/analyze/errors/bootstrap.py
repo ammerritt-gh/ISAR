@@ -112,8 +112,18 @@ def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 1234
     lam = np.clip(prob.composite.evaluate(x, theta_fit, ctx), 0.0, None)
     est = estimators.get_estimator("baker_cousins")
     be_names = [loop._sanitize(n) for n in names]
-    od_i = names.index(next(n for n in names if n.endswith(".Omega_d")))
-    g_i = names.index(next(n for n in names if n.endswith(".Gamma")))
+
+    # Per-mode canonicalization (kills bootstrap label-switching on close modes): each phonon's
+    # (Ω_d, Γ) are at global indices (i, i+1). The PRIMARY mode is fixed from the ORIGINAL fit;
+    # per replicate we sort phonons ascending by ω₀ and take the mode at the primary's sorted
+    # rank. Single-phonon fits reduce to the previous behaviour (one mode, rank 0).
+    phonon_i = prob.composite.phonon_indices()
+    fit_w0 = [np.sqrt(theta_fit[i] ** 2 + theta_fit[i + 1] ** 2) for i in phonon_i]
+    order = list(np.argsort(fit_w0))                    # component-order positions, ascending ω₀
+    prim_global = prob.composite.primary_phonon_index(
+        theta_fit, None, getattr(ctx, "prior_omega", None))
+    prim_pos = phonon_i.index(prim_global)
+    prim_rank = order.index(prim_pos)                   # primary's rank in the sorted order
 
     rng = np.random.default_rng(seed)
     o_samples, g_samples, n_conv = [], [], 0
@@ -127,7 +137,10 @@ def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 1234
         if not br.success:
             continue
         n_conv += 1
-        od_b, g_b = float(br.x[od_i]), float(br.x[g_i])
+        w0 = np.array([np.sqrt(float(br.x[i]) ** 2 + float(br.x[i + 1]) ** 2)
+                       for i in phonon_i])
+        sel_pos = phonon_i[int(np.argsort(w0)[prim_rank])]  # global index of the primary mode
+        od_b, g_b = float(br.x[sel_pos]), float(br.x[sel_pos + 1])
         o_samples.append(float(np.sqrt(od_b ** 2 + g_b ** 2)))
         g_samples.append(g_b)
 

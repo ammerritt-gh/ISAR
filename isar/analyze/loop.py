@@ -15,13 +15,19 @@ from typing import Callable
 
 import numpy as np
 
-from isar.analyze.ic import EPS_OMEGA_D, structure_ic
-from isar.analyze.structures import enumerate_structures
+from isar.analyze.ic import EPS_OMEGA_D, greedy_multimode_ic, structure_ic
+from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.synth import backends, estimators
-from isar.synth.fit import assess_success
+from isar.synth.fit import assess_success, omega0_value_error
 
 GAMMA_FLOOR = 1e-3
 GAMMA_MAX = 5.0
+
+# cost/dof of the best converged 1-mode fit above which the two-stage loop offers the 2-mode
+# hypothesis set. A documented default (Baker–Cousins -2lnL/dof; a good fit sits near 1),
+# deliberately loose — the runs-test structured-residual clause catches the wide-window trap
+# where cost/dof looks acceptable — and NOT tuned to any single toy spectrum.
+GATE_COST = 2.0
 
 
 def _sanitize(name: str) -> str:
@@ -87,18 +93,32 @@ class StructureFitResult:
     # forward-design slots for the error/selection layers (reviews F3) — unused at step 1
     within_model: dict | None = None
     across_model: dict | None = None
+    # N-mode: per-phonon detail (canonicalized ascending by ω₀). Each dict is
+    # {omega0, omega0_err, gamma, gamma_err, amplitude}; the scalar omega0/gamma above are the
+    # PRIMARY mode's (back-compat). ``n_modes`` == len(modes) (1 for a single-phonon fit).
+    modes: list | None = None
+    n_modes: int = 1
 
 
-def build_problem(hyp, ctx) -> Problem:
-    """Assemble the per-hypothesis :class:`Problem` (composite, IC, bounds, cost)."""
+def build_problem(hyp, ctx, *, x0=None) -> Problem:
+    """Assemble the per-hypothesis :class:`Problem` (composite, IC, bounds, cost).
+
+    ``x0`` overrides the default grid+NNLS initial condition: pass a dict keyed by
+    ``composite.param_names()`` (e.g. from :func:`~isar.analyze.ic.greedy_multimode_ic`) or a
+    ready array. Defaults to :func:`~isar.analyze.ic.structure_ic` (unchanged 1-mode path)."""
     composite = hyp.build()
     x = ctx.x_used
     counts = ctx.counts_used
     x_max = float(np.max(x))
     cmax = max(float(np.max(counts)), 1.0)
 
-    x0 = structure_ic(composite, ctx)
     names = composite.param_names()
+    if x0 is None:
+        x0 = structure_ic(composite, ctx)
+    elif isinstance(x0, dict):
+        x0 = np.array([x0[n] for n in names], dtype=float)
+    else:
+        x0 = np.asarray(x0, dtype=float)
     bounds = [_bound(n, x_max, cmax) for n in names]
     est = estimators.get_estimator("baker_cousins")
 
@@ -109,15 +129,19 @@ def build_problem(hyp, ctx) -> Problem:
                    free_names=names, k=len(names), n_used=int(x.size))
 
 
-def result_from_backend(label, composite, costv, n_used, k, br) -> StructureFitResult:
+def result_from_backend(label, composite, costv, n_used, k, br,
+                        *, prior_omega=None) -> StructureFitResult:
     """Build a :class:`StructureFitResult` from a backend result, reading the *raw,
-    separated* convergence/covariance/profile signals (not the lossy combined success)."""
+    separated* convergence/covariance/profile signals (not the lossy combined success).
+
+    Per-phonon detail is collected into ``modes`` (canonicalized ascending by ω₀); the reported
+    scalar ω₀/Γ are the PRIMARY mode's (nearest ``prior_omega`` if given, else largest
+    amplitude). Single-phonon fits are unchanged (one mode, itself primary)."""
     theta = np.asarray(br.x, dtype=float)
     cov = br.covariance if br.covariance_ok else None
     errs = np.sqrt(np.diag(cov)) if cov is not None else None
     names = composite.param_names()
 
-    omega0, omega0_err = composite.omega0(theta, cov)
     cost = float(costv(theta))
     ndof = n_used - k
     cost_per_dof = cost / ndof if ndof > 0 else float("nan")
@@ -128,10 +152,21 @@ def result_from_backend(label, composite, costv, n_used, k, br) -> StructureFitR
     else:
         param_errors = {n: None for n in names}
 
-    gname = next(n for n in names if n.endswith(".Gamma"))
-    gamma = params[gname]
-    gamma_err = param_errors[gname]
-    gamma_err = float(gamma_err) if gamma_err is not None else float("nan")
+    # per-mode collection, canonicalized ascending by ω₀ (kills label switching)
+    modes = []
+    for i in composite.phonon_indices():
+        w0, w0e = composite._omega0_at(theta, cov, i)
+        g_err = float(errs[i + 1]) if errs is not None else float("nan")
+        modes.append({"omega0": w0, "omega0_err": w0e, "gamma": float(theta[i + 1]),
+                      "gamma_err": g_err, "amplitude": float(theta[i + 2])})
+    modes.sort(key=lambda m: m["omega0"])
+    n_modes = len(modes)
+
+    # primary mode → the reported scalar ω₀ / Γ (back-compat)
+    prim_i = composite.primary_phonon_index(theta, cov, prior_omega)
+    omega0, omega0_err = composite._omega0_at(theta, cov, prim_i)
+    gamma = float(theta[prim_i + 1])
+    gamma_err = float(errs[prim_i + 1]) if errs is not None else float("nan")
 
     optimizer_converged = bool(br.success)
     covariance_ok = bool(br.covariance_ok)
@@ -151,16 +186,18 @@ def result_from_backend(label, composite, costv, n_used, k, br) -> StructureFitR
         profile_ok=profile_ok, well_constrained=well_constrained,
         analysis_usable=analysis_usable, params=params, param_errors=param_errors,
         gamma=gamma, gamma_err=gamma_err, omega0=omega0, omega0_err_hesse=omega0_err,
-        message=br.message,
+        message=br.message, modes=modes, n_modes=n_modes,
     )
 
 
-def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False) -> StructureFitResult:
-    """Fit one structure hypothesis and classify the result."""
-    prob = build_problem(hyp, ctx)
+def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False, x0=None) -> StructureFitResult:
+    """Fit one structure hypothesis and classify the result. ``x0`` overrides the default IC
+    (see :func:`build_problem`) — the two-stage loop passes the greedy multimode seed."""
+    prob = build_problem(hyp, ctx, x0=x0)
     be_names = [_sanitize(n) for n in prob.free_names]
     br = backends.minimize(backend, prob.costv, prob.x0, prob.bounds, be_names, minos=minos)
-    return result_from_backend(hyp.label, prob.composite, prob.costv, prob.n_used, prob.k, br)
+    return result_from_backend(hyp.label, prob.composite, prob.costv, prob.n_used, prob.k, br,
+                               prior_omega=getattr(ctx, "prior_omega", None))
 
 
 def fit_admissible_structures(ctx, *, backend="iminuit", minos=False, errors=False,
@@ -175,5 +212,64 @@ def fit_admissible_structures(ctx, *, backend="iminuit", minos=False, errors=Fal
     if errors:
         from isar.analyze import errors as _errors  # lazy: errors imports loop
         for r, h in zip(results, hyps):
+            _errors.attach(r, h, ctx, M=M, seed=seed, backend=backend)
+    return results
+
+
+def _best_converged(results):
+    """The min-AIC converged fit (AIC = cost + 2k), or ``None`` if nothing converged."""
+    conv = [r for r in results if r.optimizer_converged]
+    if not conv:
+        return None
+    return min(conv, key=lambda r: r.cost + 2.0 * r.k)
+
+
+def _offer_multimode(results, ctx) -> bool:
+    """Whether to escalate to the 2-mode hypothesis set. Fires when the best converged 1-mode
+    fit has ``cost_per_dof > GATE_COST`` OR its residual is structured by the Wald–Wolfowitz
+    runs test (:func:`isar.analyze.verdict._residual_structured` — the wide-window trap where
+    one DHO spans two peaks and cost/dof still looks acceptable). ``False`` if nothing
+    converged (there is no fit to diagnose)."""
+    best = _best_converged(results)
+    if best is None:
+        return False
+    if np.isfinite(best.cost_per_dof) and best.cost_per_dof > GATE_COST:
+        return True
+    from isar.analyze.verdict import _pull, _residual_structured  # lazy: verdict → structures
+    pull = _pull(best, ctx)
+    return bool(pull is not None and _residual_structured(pull))
+
+
+def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors=False,
+                             M=200, seed=12345, peaks=None) -> list[StructureFitResult]:
+    """Two-stage, data-gated structure enumeration (§ multiplicity). Fit the 1-mode set; if the
+    gate (:func:`_offer_multimode`) fires OR ``peaks`` declares ≥2 expected peaks, also fit the
+    2-mode set (:func:`~isar.analyze.structures.enumerate_multimode`) seeded by
+    :func:`~isar.analyze.ic.greedy_multimode_ic`, and return the UNION for a single
+    :func:`~isar.analyze.select.select_models` pass — AIC/BIC then decide whether the second
+    mode earns its parameters. 2-mode hypotheses with no positive dof (``n_used − k ≤ 0``) are
+    skipped. ``peaks`` is threaded through untouched (the driver supplies it later); this
+    function never imports session/guideline code.
+
+    With ``with_errors`` the bootstrap error layer is attached to every returned fit (so the
+    select pass can pool survivors from both stages)."""
+    one_hyps = enumerate_structures(ctx)
+    pairs = [(fit_hypothesis(h, ctx, backend=backend, minos=minos), h) for h in one_hyps]
+
+    expected_two = peaks is not None and len(peaks) >= 2
+    if _offer_multimode([r for r, _ in pairs], ctx) or expected_two:
+        best_one = _best_converged([r for r, _ in pairs])
+        n_used = int(ctx.x_used.size)
+        for h in enumerate_multimode(ctx):
+            if n_used - h.k <= 0:                     # ndof guard: no positive dof
+                continue
+            x0 = greedy_multimode_ic(h.build(), ctx, best_one, peaks=peaks)
+            r = fit_hypothesis(h, ctx, backend=backend, minos=minos, x0=x0)
+            pairs.append((r, h))
+
+    results = [r for r, _ in pairs]
+    if with_errors:
+        from isar.analyze import errors as _errors  # lazy: errors imports loop
+        for r, h in pairs:
             _errors.attach(r, h, ctx, M=M, seed=seed, backend=backend)
     return results

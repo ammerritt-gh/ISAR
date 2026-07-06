@@ -6,7 +6,8 @@ import numpy as np
 from isar.analyze import loop
 from isar.analyze.context import ScanContext
 from isar.analyze.errors import bootstrap as B
-from isar.analyze.structures import enumerate_structures
+from isar.analyze.ic import greedy_multimode_ic
+from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.synth._ff import convolute_voigt_dho
 
 
@@ -58,6 +59,36 @@ def test_bootstrap_gamma_interval_ordered():
     boot = B.parametric_bootstrap(hyp, ctx, fit, M=50, seed=3)
     glo, gmed, ghi = boot.gamma_interval
     assert glo <= gmed <= ghi
+
+
+def _two_peak_ctx(o1=5.0, a1=650.0, o2=8.5, a2=300.0, g=0.35, bg=8.0, n=121, seed=5):
+    x = np.linspace(-6.0, 22.0, n)
+    p1 = convolute_voigt_dho(x, o1, 0.0, 1.0, 0.0, g, a1, 0.0, 0.0, 50.0, peak="stokes+astokes")
+    p2 = convolute_voigt_dho(x, o2, 0.0, 1.0, 0.0, g, a2, 0.0, 0.0, 50.0, peak="stokes+astokes")
+    counts = np.random.default_rng(seed).poisson(np.clip(p1 + p2 + bg, 0.0, None)).astype(float)
+    return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
+                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                       energy_status="needs_zero")
+
+
+def test_bootstrap_canonicalizes_two_close_modes_no_label_switch():
+    """Two nearby modes (~5 and ~8.5 meV): per-replicate sort-by-ω₀ pins the primary sample to
+    the primary's rank, so the PRIMARY interval stays tight around its truth and does NOT
+    inflate to span both peaks (the label-switching failure mode)."""
+    ctx = _two_peak_ctx()
+    one = loop.fit_hypothesis({h.label: h for h in enumerate_structures(ctx)}["stokes+bg"], ctx)
+    hyp = {h.label: h for h in enumerate_multimode(ctx)}["stokes2+bg"]
+    x0 = greedy_multimode_ic(hyp.build(), ctx, one)
+    fit = loop.fit_hypothesis(hyp, ctx, x0=x0)
+    assert fit.n_modes == 2
+    boot = B.parametric_bootstrap(hyp, ctx, fit, M=80, seed=1)
+    lo, med, hi = boot.omega0_interval
+    # primary = the larger-amplitude ~5 meV mode; its interval brackets 5 and stays well below
+    # the ~3.5 meV mode separation (not straddling the 8.5 meV mode).
+    assert lo <= fit.omega0 <= hi
+    assert abs(med - 5.0) < 0.8
+    assert (hi - lo) < 1.5
+    assert hi < 7.0
 
 
 def test_is_bimodal_detects_two_clusters():

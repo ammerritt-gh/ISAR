@@ -78,6 +78,40 @@ def test_antistokes_gate_is_tied_at_step1():
     assert S.antistokes_mode(_ixs_ctx()) == "tied"
 
 
+def test_enumerate_multimode_two_phonon_build_and_k():
+    """The 2-mode escalation set: mode 1 keeps the ``phonon`` prefix (so the 1-mode hypothesis
+    is strictly nested), mode 2 is ``phonon2``; k counts both phonons + bg."""
+    hyps = S.enumerate_multimode(_ixs_ctx())
+    by_label = {h.label: h for h in hyps}
+    assert set(by_label) == {"stokes2+bg", "elastic+stokes2+bg"}
+    two = by_label["stokes2+bg"].build()
+    assert two.param_names() == ["phonon.Omega_d", "phonon.Gamma", "phonon.A",
+                                 "phonon2.Omega_d", "phonon2.Gamma", "phonon2.A", "bg.BG"]
+    assert by_label["stokes2+bg"].k == 7
+    assert by_label["elastic+stokes2+bg"].k == 8
+    # 1-mode params are a strict subset of the 2-mode params (nesting the LRT keys on)
+    one = {h.label: h for h in S.enumerate_structures(_ixs_ctx())}
+    assert set(one["stokes+bg"].build().param_names()) < set(two.param_names())
+
+
+def test_enumerate_multimode_honors_elastic_and_qe_gates():
+    # off-window elastic, no QE → only stokes2+bg
+    assert [h.label for h in S.enumerate_multimode(_tas_offwindow_ctx())] == ["stokes2+bg"]
+    # off-window elastic + QE declared → stokes2+bg + stokes2+qe+bg
+    assert [h.label for h in S.enumerate_multimode(_tas_offwindow_ctx(quasielastic_fwhm=1.5))] == \
+        ["stokes2+bg", "stokes2+qe+bg"]
+    # in-window elastic + QE declared → all four
+    assert [h.label for h in S.enumerate_multimode(_ixs_ctx(quasielastic_fwhm=1.5))] == \
+        ["stokes2+bg", "elastic+stokes2+bg", "stokes2+qe+bg", "elastic+stokes2+qe+bg"]
+
+
+def test_enumerate_multimode_capped_at_two():
+    assert S.enumerate_multimode(_ixs_ctx(), n_max=1) == []
+    # n_max > 2 is treated as 2 this round (still a two-phonon set)
+    assert [h.label for h in S.enumerate_multimode(_ixs_ctx(), n_max=3)] == \
+        ["stokes2+bg", "elastic+stokes2+bg"]
+
+
 def test_hypothesis_build_param_order():
     by_label = {h.label: h for h in S.enumerate_structures(_ixs_ctx())}
     full = by_label["elastic+stokes+bg"].build()

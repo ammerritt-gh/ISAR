@@ -86,3 +86,67 @@ def test_fit_admissible_structures_emits_both_then_offwindow_one():
                       energy_status="absolute")
     res = loop.fit_admissible_structures(off, minos=False)
     assert [r.label for r in res] == ["stokes+bg"]
+
+
+def _two_peak_ctx(o1=4.0, a1=500.0, o2=10.0, a2=350.0, g=0.35, bg=8.0, n=121, seed=None):
+    x = np.linspace(-6.0, 24.0, n)
+    p1 = convolute_voigt_dho(x, o1, 0.0, 1.0, 0.0, g, a1, 0.0, 0.0, 50.0, peak="stokes+astokes")
+    p2 = convolute_voigt_dho(x, o2, 0.0, 1.0, 0.0, g, a2, 0.0, 0.0, 50.0, peak="stokes+astokes")
+    counts = p1 + p2 + bg
+    if seed is not None:
+        counts = np.random.default_rng(seed).poisson(np.clip(counts, 0.0, None)).astype(float)
+    return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
+                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                       energy_status="needs_zero")
+
+
+def _one_peak_ctx(o1=5.0, a1=500.0, g=0.4, bg=8.0, n=81, seed=3):
+    x = np.linspace(-8.0, 16.0, n)
+    counts = convolute_voigt_dho(x, o1, 0.0, 1.0, 0.0, g, a1, 0.0, 0.0, 50.0,
+                                 peak="stokes+astokes") + bg
+    if seed is not None:
+        counts = np.random.default_rng(seed).poisson(np.clip(counts, 0.0, None)).astype(float)
+    return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
+                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                       energy_status="needs_zero")
+
+
+def test_gate_fires_on_two_peak_residual_not_on_clean_single():
+    two = _two_peak_ctx()
+    one_results = loop.fit_admissible_structures(two, minos=False)
+    assert loop._offer_multimode(one_results, two) is True     # one DHO can't fit two peaks
+
+    single = _one_peak_ctx()
+    ok_results = loop.fit_admissible_structures(single, minos=False)
+    assert loop._offer_multimode(ok_results, single) is False  # a single DHO fits fine
+
+
+def test_two_stage_adds_multimode_when_gate_fires():
+    ctx = _two_peak_ctx()
+    results = loop.fit_structures_two_stage(ctx, minos=False)
+    labels = {r.label for r in results}
+    assert "stokes+bg" in labels                                # 1-mode set always present
+    assert "stokes2+bg" in labels                               # escalated on the gate
+    two = {r.label: r for r in results}["stokes2+bg"]
+    assert two.n_modes == 2 and len(two.modes) == 2
+    # modes canonicalized ascending by ω₀ and bracket the two true peaks (~4 and ~10 meV)
+    o = [m["omega0"] for m in two.modes]
+    assert o == sorted(o)
+    assert abs(o[0] - 4.0) < 1.0 and abs(o[1] - 10.0) < 1.0
+
+
+def test_two_stage_single_peak_stays_one_mode():
+    ctx = _one_peak_ctx()
+    results = loop.fit_structures_two_stage(ctx, minos=False)
+    # gate did not fire → no 2-mode ("stokes2…") hypothesis was offered
+    assert not any("stokes2" in r.label for r in results)
+    assert all(r.n_modes == 1 for r in results)
+
+
+def test_two_stage_offers_multimode_when_two_peaks_declared():
+    """Even a clean single-peak scan gets the 2-mode set offered when ≥2 peaks are declared
+    (the driver-supplied ``peaks`` hint); AIC is then left to reject the extra mode."""
+    ctx = _one_peak_ctx()
+    peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
+    results = loop.fit_structures_two_stage(ctx, minos=False, peaks=peaks)
+    assert "stokes2+bg" in {r.label for r in results}
