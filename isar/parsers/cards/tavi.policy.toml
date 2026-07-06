@@ -7,10 +7,13 @@
 # source budget `number_neutrons` per point (constant) — stored, not divided in.
 #
 # Because TAVI is a simulator with fixed ki/kf geometry, the meV energy axis is ABSOLUTE (exact) — no
-# elastic-zero fit. Cooper-Nathans resolution is analytical per scan. Several CN inputs are NOT in
-# TAVI's payload (sample temperature, mono/ana/sample mosaics, scattering senses, vertical
-# collimations); the [calibration] constants below supply them. Each is a candidate for a TAVI-side
-# API follow-up so per-scan truth can replace these constants.
+# elastic-zero fit. Cooper-Nathans resolution is analytical per scan. TAVI's payload now carries the
+# per-scan instrument truth these constants used to stand in for (sample temperature, mono/ana/sample
+# mosaics, scattering senses, vertical collimations). PRECEDENCE: the parser PREFERS the payload value
+# when present and uses the [calibration]/[temperature_rule] constant below only as a GAP-FILLER —
+# the same payload-wins rule as the horizontal collimations. Legacy JSONs without the truth fields
+# fall back to these constants and parse unchanged. Per-field provenance (payload vs card) lands in
+# raw_header["provenance"] plus an info-level `card_fallback` scan flag.
 
 facility = "TAVI"              # dedicated simulator catalogue — never collides with real-instrument
 instrument = "PUMA"            # parsers (ill_in8, spec_s30). Registry tuple (facility, instrument, fmt).
@@ -32,8 +35,8 @@ alignment_pattern = "omega"    # a motor/angle scan is an alignment
 exclusions_seed = []
 
 [temperature_rule]
-# TAVI's API does not expose sample temperature. This card setpoint stands in (source: setpoint).
-# TODO(TAVI): expose a per-scan sample temperature so this constant can be replaced by truth.
+# Gap-filler only: used when the payload has no `temperature`. When the payload carries the true
+# sample setpoint (launch.parameters.temperature) the parser prefers it and marks provenance=payload.
 setpoint = 300.0
 
 [collation]
@@ -46,13 +49,15 @@ method = "cooper_nathans"      # analytical per-scan energy resolution (isar.cal
 # d-spacings (Angstrom): override the crystal-id → d map baked into the parser. Uncomment to pin.
 # dm = 3.355                   # monochromator (PG002)
 # da = 3.355                   # analyzer (PG002)
-# Mosaics + senses TAVI does NOT expose — documented defaults (arcmin; senses = SM, SS, SA):
-etam = 30.0                    # monochromator mosaic
-etaa = 30.0                    # analyzer mosaic
-etas = 0.0                     # sample mosaic; 0 = omit (Cooper-Nathans then reuses etam)
-senses = [1, -1, 1]            # SM, SS, SA (mono +1, sample -1, analyzer +1)
-# Vertical collimations BET1..4 (arcmin) — not in the payload; horizontal ALF1..4 come from the
-# scan's `collimation.alpha_*`. Also the ALF fallback if a scan's collimation slot is unparseable.
+# Mosaics + senses — GAP-FILLERS (arcmin; senses = SM, SS, SA). The payload's eta_m/eta_a/eta_s and
+# sense_m/sense_s/sense_a win when present; these apply only to legacy JSONs that omit them.
+etam = 30.0                    # monochromator mosaic (fallback for payload eta_m)
+etaa = 30.0                    # analyzer mosaic (fallback for payload eta_a)
+etas = 0.0                     # sample mosaic (fallback for payload eta_s); 0 = omit (CN reuses etam).
+                               # A payload eta_s <= 0 is likewise omitted — same div-by-zero guard.
+senses = [1, -1, 1]            # SM, SS, SA (fallback for payload sense_m/sense_s/sense_a)
+# Vertical collimations BET1..4 (arcmin) — fallback for the payload's beta_1..beta_4. Horizontal
+# ALF1..4 come from the scan's `collimation.alpha_*`; `collimations` below is only their gap-filler.
 bet = [30.0, 30.0, 30.0, 30.0]
 collimations = [30.0, 30.0, 30.0, 30.0]
 

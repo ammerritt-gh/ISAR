@@ -11,13 +11,21 @@ the "monitor" is the simulated source budget `number_neutrons` per point (consta
 not divided in, so the Poisson error stays plain (variance = counts). Fixed-ki/kf geometry makes the
 meV energy axis absolute (no elastic-zero fit needed — this is a simulator, the axis is exact).
 
-Card constants fill the gaps TAVI's payload does not expose (each a candidate for a TAVI-side
-follow-up): sample temperature (TAVI has no sample sensor → a card setpoint), monochromator/analyzer
-mosaics ETAM/ETAA, sample mosaic ETAS, the scattering senses SM/SS/SA, and the VERTICAL collimations
-BET1..4. The HORIZONTAL collimations ALF1..4 ARE in the payload (`collimation.alpha_1..alpha_4`, in
-arcmin) and are used directly; d-spacings DM/DA come from the crystal-id → d map below (card override
-wins). experiment_id comes from the card ([sample] experiment_id/name) since TAVI JSONs carry no
-EXPNO.
+TAVI's payload now carries the per-scan instrument truth that older JSONs lacked, all in
+`launch.parameters` (duplicated in `result.metadata`): sample `temperature`, monochromator/analyzer
+mosaics `eta_m`/`eta_a`, sample mosaic `eta_s`, scattering senses `sense_m`/`sense_s`/`sense_a`, the
+VERTICAL collimations `beta_1..beta_4`, and a `sample_key`. The plugin PREFERS these payload values
+and falls back to the card [calibration]/[temperature_rule] constants only when a field is absent —
+the same payload-wins-when-present rule already used for the horizontal collimations
+`collimation.alpha_1..alpha_4` (card `collimations` is only their gap-filler). Legacy JSONs that carry
+none of the truth fields parse identically to before (card constants throughout). Per-field
+provenance (payload-truth vs card-fallback) is recorded in `raw_header["provenance"]` and summarized
+as an info-level `card_fallback` scan flag so downstream QC can tell which CN inputs are constants.
+
+The HORIZONTAL collimations ALF1..4 come from the payload directly (arcmin); d-spacings DM/DA come
+from the crystal-id → d map below (card override wins). experiment_id comes from the card ([sample]
+experiment_id/name) since TAVI JSONs carry no EXPNO; the payload `sample_key` is recorded in
+`raw_header["sample_key"]` for collation but does not (yet) drive a per-sample card section.
 """
 from __future__ import annotations
 
@@ -148,8 +156,44 @@ def _collimation_alfs(coll, cal: dict) -> list[float]:
     return out
 
 
-def _cn_params(params: dict, card: Card) -> dict:
-    """Build raw_header["params"] with the Cooper-Nathans keys isar.calibrate.tas.cn_energy_fwhm reads."""
+def _pick_num(params: dict, payload_key: str, cal: dict, card_key: str, default: float):
+    """Payload value wins when present+parseable; else card [calibration] constant; else `default`.
+
+    Returns (value, source) where source is "payload" or "card" for the provenance record.
+    """
+    n = _num(params.get(payload_key))
+    if n is not None:
+        return float(n), "payload"
+    if card_key in cal:
+        return float(cal[card_key]), "card"
+    return float(default), "card"
+
+
+def _pick_senses(params: dict, cal: dict):
+    """Scattering senses (SM, SS, SA): payload `sense_m/sense_s/sense_a` when ALL present, else the
+    card [calibration] `senses` triple. Returns ((SM, SS, SA), source)."""
+    vals = [_num(params.get(k)) for k in ("sense_m", "sense_s", "sense_a")]
+    if all(v is not None for v in vals):
+        return (int(vals[0]), int(vals[1]), int(vals[2])), "payload"
+    card = cal.get("senses", [1, -1, 1])
+    return (int(card[0]), int(card[1]), int(card[2])), "card"
+
+
+def _pick_beta(params: dict, cal: dict):
+    """Vertical collimations BET1..4: payload `beta_1..beta_4` when ALL present, else the card
+    [calibration] `bet` list. Returns ([BET1..4], source)."""
+    vals = [_num(params.get(k)) for k in ("beta_1", "beta_2", "beta_3", "beta_4")]
+    if all(v is not None for v in vals):
+        return [float(v) for v in vals], "payload"
+    card = [float(x) for x in (cal.get("bet") or [30.0, 30.0, 30.0, 30.0])]
+    return card, "card"
+
+
+def _cn_params(params: dict, card: Card, prov: dict) -> dict:
+    """Build raw_header["params"] with the Cooper-Nathans keys isar.calibrate.tas.cn_energy_fwhm reads.
+
+    Records per-field provenance (payload-truth vs card-fallback) into `prov` as it goes.
+    """
     cal = card.policy.calibration or {}
     p: dict = {}
     p["QH"] = _num(params.get("H")) or 0.0
@@ -165,21 +209,23 @@ def _cn_params(params: dict, card: Card) -> dict:
     if kfix is not None:
         p["KFIX"] = float(kfix)
     p["FX"] = int(fx)
-    # Mosaics + senses: TAVI exposes none → card constants (documented defaults).
-    p["ETAM"] = float(cal.get("etam", 30.0))
-    p["ETAA"] = float(cal.get("etaa", 30.0))
-    # A zero sample mosaic breaks the Cooper-Nathans matrix (1/(etas*q)^2 term);
-    # omit ETAS when non-positive so cn_resolution_matrix falls back to ETAM.
-    etas = float(cal.get("etas", 0.0))
+    # Mosaics: payload truth (eta_m/eta_a) preferred, card constants fill the gap.
+    p["ETAM"], prov["eta_m"] = _pick_num(params, "eta_m", cal, "etam", 30.0)
+    p["ETAA"], prov["eta_a"] = _pick_num(params, "eta_a", cal, "etaa", 30.0)
+    # Sample mosaic: payload eta_s wins when present, card [calibration] etas fills the gap. A
+    # NON-POSITIVE value (from either source) breaks the Cooper-Nathans matrix (1/(etas*q)^2 term),
+    # so it is OMITTED and cn_resolution_matrix falls back to ETAM (regression guard, fixed
+    # 2026-07-03). The provenance still records where the (omitted) value came from.
+    etas, prov["eta_s"] = _pick_num(params, "eta_s", cal, "etas", 0.0)
     if etas > 0.0:
         p["ETAS"] = etas
-    senses = cal.get("senses", [1, -1, 1])
-    p["SM"], p["SS"], p["SA"] = (int(senses[0]), int(senses[1]), int(senses[2]))
-    # Horizontal collimations from the payload; vertical from card constants.
+    # Scattering senses: payload sense_m/sense_s/sense_a preferred, card `senses` fills the gap.
+    (p["SM"], p["SS"], p["SA"]), prov["senses"] = _pick_senses(params, cal)
+    # Horizontal collimations from the payload; vertical (BET) payload-truth then card.
     alf = _collimation_alfs(params.get("collimation"), cal)
     for i in range(4):
         p[f"ALF{i + 1}"] = float(alf[i])
-    bet = [float(x) for x in (cal.get("bet") or [30.0, 30.0, 30.0, 30.0])]
+    bet, prov["beta"] = _pick_beta(params, cal)
     for i in range(4):
         p[f"BET{i + 1}"] = float(bet[i])
     return p
@@ -269,8 +315,15 @@ def parse_file(path: str | Path, card: Card) -> list[scan.ScanRecord]:
     monitor = np.full(nP, float(nn), dtype="float64")
     time = np.zeros(nP, dtype="float64")
 
+    prov: dict = {}                                # per-field provenance: "payload" | "card"
+    # Temperature: payload `temperature` is the true setpoint; card [temperature_rule] setpoint fills
+    # the gap for legacy JSONs (TAVI historically had no sample sensor).
     rule = pol.temperature_rule or {}
-    t_set = float(rule.get("setpoint", 300.0))     # TAVI has no sample sensor → card setpoint
+    t_payload = _num(params.get("temperature"))
+    if t_payload is not None:
+        t_set, prov["temperature"] = float(t_payload), "payload"
+    else:
+        t_set, prov["temperature"] = float(rule.get("setpoint", 300.0)), "card"
     temperature = scan.Temperature(setpoint=np.full(nP, t_set, dtype="float64"),
                                    sensors={}, valid_mask=np.ones(nP, dtype=bool), snap_applied=False)
 
@@ -284,7 +337,23 @@ def parse_file(path: str | Path, card: Card) -> list[scan.ScanRecord]:
              "crystal": params.get("anacris")},
         collimation=_collimation_alfs(params.get("collimation"), pol.calibration or {}), filter=None)
 
-    raw_header = {"tavi": data, "params": _cn_params(params, card)}
+    cn_params = _cn_params(params, card, prov)
+
+    # sample_key: the payload's sample identity. Recorded for collation (which keys on
+    # experiment_id today); a per-sample card section is a future TODO, not wired here.
+    sample_key = params.get("sample_key")
+    prov["sample_key"] = "payload" if sample_key else "absent"
+
+    # Provenance → QC-visible signal: one info flag naming the CN inputs that fell back to card
+    # constants (empty flag list ⇒ every instrument-truth field came from the payload).
+    fallback_fields = sorted(k for k, v in prov.items() if v == "card")
+    scan_flags = []
+    if fallback_fields:
+        scan_flags.append(scan.Flag(
+            "card_fallback", "info",
+            "instrument truth from card constants (payload lacked): " + ", ".join(fallback_fields)))
+
+    raw_header = {"tavi": data, "params": cn_params, "provenance": prov, "sample_key": sample_key}
     source = scan.Source(
         file=p.name, byte_range=None, line_range=None, plugin=name, plugin_version=version,
         format_version=pol.format_version, schema_version=scan.SCHEMA_VERSION)
@@ -305,7 +374,7 @@ def parse_file(path: str | Path, card: Card) -> list[scan.ScanRecord]:
         energy_calibration=scan.EnergyCalibration(
             raw_abscissa_kind=raw_abscissa_kind, transform=None, elastic_zero_offset=None,
             status="absolute"),                    # fixed-ki/kf simulator: exact absolute meV axis
-        scan_flags=[], raw_header=raw_header, source=source)
+        scan_flags=scan_flags, raw_header=raw_header, source=source)
     return [record]
 
 

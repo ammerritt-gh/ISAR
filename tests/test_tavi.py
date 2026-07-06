@@ -37,6 +37,16 @@ def _base_parameters(**over):
     return p
 
 
+def _truth_over():
+    """The per-scan instrument-truth fields TAVI's payload now carries (verified live 2026-07-06)."""
+    return dict(
+        temperature=200.0, eta_m=35, eta_a=35, eta_s=35,
+        sense_m=1, sense_s=-1, sense_a=1,
+        beta_1=120.0, beta_2=120.0, beta_3=120.0, beta_4=120.0,
+        sample_key="Al_phonon_DFT",
+    )
+
+
 def _job(job_id, result, parameters):
     return {
         "job_id": job_id, "source": "api", "state": "done",
@@ -140,6 +150,59 @@ def test_cooper_nathans_params_present_and_derived(tmp_path):
     # And the header actually drives the CN resolution engine to a finite positive FWHM.
     fwhm = tas.cn_energy_fwhm(rec, w=0.0)
     assert np.isfinite(fwhm) and fwhm > 0
+
+
+def test_payload_truth_overrides_card_constants(tmp_path):
+    # Payload carries per-scan instrument truth → those values (and payload provenance) are used,
+    # not the card constants, and no card_fallback flag fires.
+    obj = _deltae_json()
+    obj["launch"]["parameters"] = _base_parameters(**_truth_over())
+    rec = tavi.parse_file(_write(tmp_path, "j-0001.json", obj), _card())[0]
+    p = rec.raw_header["params"]
+    assert (p["ETAM"], p["ETAA"]) == (35.0, 35.0)
+    assert p["ETAS"] == 35.0                          # positive payload eta_s is kept, not omitted
+    assert (p["SM"], p["SS"], p["SA"]) == (1, -1, 1)
+    assert (p["BET1"], p["BET2"], p["BET3"], p["BET4"]) == (120.0, 120.0, 120.0, 120.0)
+    assert rec.temperature.setpoint.tolist() == [200.0] * 5
+    prov = rec.raw_header["provenance"]
+    assert prov["eta_m"] == prov["eta_a"] == prov["eta_s"] == "payload"
+    assert prov["senses"] == prov["beta"] == prov["temperature"] == "payload"
+    assert rec.raw_header["sample_key"] == "Al_phonon_DFT" and prov["sample_key"] == "payload"
+    assert not any(f.type == "card_fallback" for f in rec.scan_flags)
+    # And the payload-truth header still drives CN to a finite positive FWHM.
+    fwhm = tas.cn_energy_fwhm(rec, w=0.0)
+    assert np.isfinite(fwhm) and fwhm > 0
+
+
+def test_legacy_payload_falls_back_to_card_with_provenance_flag(tmp_path):
+    # A legacy JSON with none of the truth fields parses exactly as before: card constants throughout,
+    # card provenance, and one info-level card_fallback flag naming the fallen-back fields.
+    rec = tavi.parse_file(_write(tmp_path, "j-0001.json", _deltae_json()), _card())[0]
+    p = rec.raw_header["params"]
+    assert (p["ETAM"], p["ETAA"]) == (30.0, 30.0)
+    assert "ETAS" not in p
+    assert (p["SM"], p["SS"], p["SA"]) == (1, -1, 1)
+    assert rec.temperature.setpoint.tolist() == [300.0] * 5
+    prov = rec.raw_header["provenance"]
+    assert prov["eta_m"] == prov["senses"] == prov["beta"] == prov["temperature"] == "card"
+    assert rec.raw_header["sample_key"] is None and prov["sample_key"] == "absent"
+    flags = [f for f in rec.scan_flags if f.type == "card_fallback"]
+    assert len(flags) == 1 and flags[0].severity == "info"
+    assert "eta_m" in flags[0].reason and "temperature" in flags[0].reason
+
+
+def test_payload_zero_eta_s_is_omitted_so_cn_computes(tmp_path):
+    # A payload eta_s of 0 must still be omitted (same div-by-zero guard as the zero card mosaic) so
+    # Cooper-Nathans reuses ETAM instead of hitting the 0.6 meV fallback.
+    obj = _deltae_json()
+    obj["launch"]["parameters"] = _base_parameters(eta_m=35, eta_a=35, eta_s=0)
+    rec = tavi.parse_file(_write(tmp_path, "j-0001.json", obj), _card())[0]
+    p = rec.raw_header["params"]
+    assert "ETAS" not in p
+    assert (p["ETAM"], p["ETAA"]) == (35.0, 35.0)     # payload mosaics still preferred
+    assert rec.raw_header["provenance"]["eta_s"] == "payload"   # the (omitted) 0 came from the payload
+    fwhm = tas.cn_energy_fwhm(rec)
+    assert fwhm != tas.FALLBACK_FWHM and 0.1 < fwhm < 5.0
 
 
 def test_ki_fixed_derives_fx1_and_kfix_from_ki(tmp_path):
