@@ -28,9 +28,17 @@ authority, driver = future). Last updated: 2026-07-03.
       inflation cannot fix; `--bucket-by COL` groups by a results.csv column, `--json PATH`
       dumps the full dict for the campaign. Truth is analytic (no safety concept → exit 0).
       `phonon_dft` mirrors TAVI PhononSQW (acoustic E = 6·sqrt(Σ sin²(πq_i/2)) meV, period-2
-      fold, zone centers at even integers). STILL TODO: run known-ω scans through the loop and
-      derive the calibration curve from the emitted JSON. First live data point:
-      ω₀ = 1.494 ± 0.035 vs truth 1.400 — truth outside the 68% interval.
+      fold, zone centers at even integers).
+- [x] **First-pass campaign run (2026-07-06)** — `docs/sigma_calibration_campaign.py`, 99
+      known-ω deterministic scans; artifact `calibration/phonon_dft_deterministic.json` +
+      findings in `calibration/README.md`. Coverage68 = 0.02, inflation ~14 (unstable by
+      ncount tier — systematic-dominated), center pull +0.12 mean rising to +0.5 at the zone
+      boundary. High-q pull diagnosed: ~40% optic-branch window leakage (fixed by N-mode +
+      masking below), ~60% 1-D resolution asymmetry (tas4d ceiling).
+- [ ] **Calibration curve v2** — re-run the campaign with the N-mode fitter + wide windows;
+      derive per-configuration inflation. Known issue: 2-mode fits with γ at its bound report
+      absurdly tight intervals (halfwidth ~1e-3 meV) that dominate the inflation metric —
+      interval calibration for γ-at-bound fits is a prerequisite.
 
 ## TAS resolution
 
@@ -43,19 +51,38 @@ authority, driver = future). Last updated: 2026-07-03.
 - [ ] Decide: wrap an existing engine vs implement the CN projection ourselves
       (DESIGN.md §13 Q3, still open).
 
-## `tavi` plugin follow-ups (as TAVI's payload grows)
+## N-mode fitting + fit masking (built 2026-07-06) — fast-follows
 
-Each is a card constant today; switch to per-scan payload truth when TAVI exposes it
-(tracked on the TAVI side in `..\TAVI\TODO.md`):
+The deterministic core landed (1527d25/611e74c/65f90ce): instance-prefixed multi-DHO
+hypotheses, two-stage data-gated enumeration (GATE_COST=2.0 OR runs-test) with AIC/BIC
+disposing, greedy residual IC seeding, card guideline fields `fit_range`/`exclude_regions`/
+`peaks` masking the fit (P5: mask only), additive results.csv columns (n_modes,
+secondary_omega0[_err]). Live-verified: wide-window zone-boundary Δω₀ +1.0 → +0.14/+0.06,
+data-driven, secondary lands on the optic; exclude_regions reproduces narrow-window fits via
+card edit with exact-scan re-fit; S30 gold unregressed.
 
-- [ ] Sample temperature (enables real T-collation + sensor-divergence QC).
-- [ ] Mono/ana/sample mosaics (ETAM/ETAA/ETAS — directly set CN width).
-- [ ] Scattering senses (SM/SS/SA).
-- [ ] Vertical collimations (BET1..4).
+- [ ] **LLM guideline proposer** — adjudicate.py pattern; on flagged/model_incomplete/
+      unconstrained fits proposes {structures, peaks, exclude_regions, fit_range, reason};
+      writes card.state.corrections; applies only via guidelines-hash re-fit (P1). The
+      fields it edits now exist.
+- [ ] **Greedy-IC seed robustness** — on ~1/3 of wide-window noise seeds the gate fires but
+      the 2-mode candidate loses AIC because the residual grid scan misses the optic; card
+      hints did not reliably rescue. c/dof still flags those fits (triage holds). Candidate
+      fixes: multi-start mode-2 grid, residual-peak-detection seeding.
+- [ ] **γ-at-bound interval calibration** — 2-mode fits with Γ collapsed to its bound report
+      halfwidths ~1e-3 meV; poisons inflation stats despite good centers.
+- [ ] **Multi-branch dispersion prior** — PriorPoint has no branch/mode field; prior gets
+      primary mode only today.
+- [ ] **N=3** — mechanical extension once 2-mode is field-proven.
+
+## `tavi` plugin follow-ups
+
+- [x] Per-scan payload truth consumed (2026-07-06, 3b8b8e2): temperature, ETAM/ETAA/ETAS,
+      senses, BET1..4, sample_key — payload-wins with card fallback + provenance flag.
 - [ ] **2D scans** — currently a clear refusal; support when a use case appears
       (path scans / campaigns on the TAVI side may produce them).
-- [ ] Sample selection will appear in the payload once TAVI exposes it — consider
-      per-sample card sections or sample-keyed collation then.
+- [ ] Per-sample card sections / sample-keyed collation (sample_key is recorded in
+      raw_header only; collation still keys on the card experiment_id).
 
 ## LLM layer (DESIGN.md §9, build order 6)
 
