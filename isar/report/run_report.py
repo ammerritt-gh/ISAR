@@ -23,6 +23,19 @@ def _outcomes(session):
     return out
 
 
+def _scan_json(scan, det, status, oc) -> dict:
+    """One report.json `scans` entry. Additive: carries a per-mode `modes` list (mode, omega0,
+    omega0_err, gamma, amplitude) only for multi-mode fits (`n_modes` > 1)."""
+    d = {"scan": scan, "detector": det, "status": status,
+         **{k: oc.get(k) for k in ("verdict", "disposition", "omega0", "confidence", "best_label")}}
+    if (oc.get("n_modes") or 1) > 1 and oc.get("modes"):
+        d["n_modes"] = oc.get("n_modes")
+        d["modes"] = [{"mode": i, "omega0": m.get("omega0"), "omega0_err": m.get("omega0_err"),
+                       "gamma": m.get("gamma"), "amplitude": m.get("amplitude")}
+                      for i, m in enumerate(oc.get("modes"))]
+    return d
+
+
 def _fmt(x, nd=3):
     if x is None:
         return "—"
@@ -123,9 +136,7 @@ def write_run_report(session, card, workspace, *, formats=("html", "markdown")) 
         "instrument": pol.instrument, "facility": pol.facility, "plugin": pol.plugin,
         "counts_status": counts_status, "counts_disposition": counts_disp,
         "scan_gaps": gaps,
-        "scans": [{"scan": s, "detector": d, "status": st, **{k: oc.get(k) for k in
-                   ("verdict", "disposition", "omega0", "confidence", "best_label")}}
-                  for s, d, st, oc in _outcomes(session)],
+        "scans": [_scan_json(s, d, st, oc) for s, d, st, oc in _outcomes(session)],
     }, indent=2), encoding="utf-8")
     written["json"] = pj
     return written

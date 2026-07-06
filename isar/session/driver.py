@@ -20,7 +20,7 @@ import numpy as np
 from isar.analyze import errors, loop, select, verdict
 from isar.analyze import gold as gold_mod
 from isar.analyze.context import ScanContext
-from isar.analyze.structures import enumerate_structures
+from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
 from isar.schema.card import Card
@@ -52,6 +52,8 @@ class FitOutcome:
     prior_used: dict | None
     calib: dict
     reasons: list = field(default_factory=list)
+    n_modes: int = 1
+    modes: list | None = None    # per-mode dicts (canonicalized ascending by ω₀) when n_modes > 1
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -73,9 +75,14 @@ class RunSummary:
 # ===========================================================================
 # context + single-scan fit (the gold-check recipe, generalized)
 # ===========================================================================
-def build_context(record, detector_id, card: Card, calres, prior, g: guide_mod.Guidelines):
-    """A ScanContext with the monitor-short mask folded in. Returns (ctx, n_used) or (None, n_used)
-    when too few points survive (undersampled non-result)."""
+def build_context(record, detector_id, card: Card, calres, prior, g: guide_mod.Guidelines,
+                  *, scan_number=None, q=None, T=None):
+    """A ScanContext with the monitor-short mask and the guideline fit-window mask folded in.
+
+    Returns ``(ctx, n_used, region_reasons)`` or ``(None, n_used, region_reasons)`` when too few
+    points survive (undersampled non-result). P5: only ``ctx.mask`` is ever narrowed — the raw
+    intensity arrays are untouched. ``region_reasons`` records the guideline masking provenance
+    (empty when no ``fit_range``/``exclude_regions`` applied)."""
     ctx = ScanContext.from_scan(
         record, detector_id, card, center=calres.center,
         gauss_fwhm=calres.gauss_fwhm, lorentz_fwhm=calres.lorentz_fwhm,
@@ -85,30 +92,56 @@ def build_context(record, detector_id, card: Card, calres, prior, g: guide_mod.G
     if norm.counting_mode == "monitor" and float(norm.preset) > 0:
         mon = np.asarray(norm.monitor, dtype=float)
         mask = mask & (mon >= g.monitor_frac * float(norm.preset))
-        ctx = replace(ctx, mask=mask)
+
+    # Guideline fit-window mask (P5: mask only; intensity never touched).
+    region_reasons: list = []
+    if scan_number is not None:
+        fit_range, excl = g.mask_regions_for(scan_number=scan_number, q=q, T=T)
+        x = np.asarray(ctx.x, dtype=float)
+        if fit_range is not None:
+            lo, hi = float(fit_range[0]), float(fit_range[1])
+            keep = (x >= lo) & (x <= hi)
+            dropped = int((mask & ~keep).sum())
+            mask = mask & keep
+            if dropped:
+                region_reasons.append(f"fit_range [{lo:g}, {hi:g}] masked {dropped} points")
+        for r in excl:
+            lo, hi = float(r[0]), float(r[1])
+            inside = (x >= lo) & (x <= hi)
+            dropped = int((mask & inside).sum())
+            mask = mask & ~inside
+            if dropped:
+                region_reasons.append(f"exclude_region [{lo:g}, {hi:g}] masked {dropped} points")
+
+    ctx = replace(ctx, mask=mask)
     n_used = int(mask.sum())
     if n_used < g.min_fit_points:
-        return None, n_used
-    return ctx, n_used
+        return None, n_used, region_reasons
+    return ctx, n_used, region_reasons
 
 
-def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None):
-    """Fit the admissible structures (optionally narrowed by guideline labels), select, verdict.
+def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None):
+    """Two-stage structure fit (§ multiplicity), optionally narrowed by guideline labels, then
+    select + verdict. Mirrors docs/phase3_gold*_check.run_pipeline; returns extracted fields.
 
-    Mirrors docs/phase3_gold*_check.run_pipeline exactly; returns a dict of the extracted fields."""
-    hyps = enumerate_structures(ctx)
+    ``peaks`` (guideline hints, ≥2 forces the 2-mode offer and seeds the greedy IC) are threaded
+    into :func:`loop.fit_structures_two_stage`. The whitelist narrows the union of 1- and 2-mode
+    labels (``stokes2+bg`` etc. pass through) — an empty match keeps all + warns."""
+    results = loop.fit_structures_two_stage(ctx, minos=True, peaks=peaks)
+    # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
+    by_hyp = {h.label: h for h in enumerate_structures(ctx)}
+    by_hyp.update({h.label: h for h in enumerate_multimode(ctx)})
+
     warn = None
     if structure_labels:
-        kept = [h for h in hyps if h.label in structure_labels]
+        kept = [r for r in results if r.label in structure_labels]
         if kept:
-            hyps = kept
+            results = kept
         else:
             warn = (f"guideline structures {list(structure_labels)} match no admissible "
-                    f"{[h.label for h in hyps]}; kept all")
+                    f"{[r.label for r in results]}; kept all")
 
-    results = [loop.fit_hypothesis(h, ctx, minos=True) for h in hyps]
     fits = {r.label: r for r in results}
-    by_hyp = {h.label: h for h in hyps}
 
     prelim = select.select_models(results, stamp=False)
     for label in prelim.survivors:
@@ -128,6 +161,9 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None):
     reasons = list(sv.reasons)
     if warn:
         reasons.append(warn)
+
+    n_modes = int(best.n_modes) if best is not None else 1
+    modes = list(best.modes) if (best is not None and best.modes) else None
     return {
         "verdict": sv.verdict, "confidence": sv.confidence, "reasons": reasons,
         "omega0": omega0, "omega0_err": (best.omega0_err_hesse if best else None),
@@ -135,6 +171,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None):
         "modality": sel.modality, "best_label": sel.best,
         "gamma": (best.gamma if best else None),
         "cost_per_dof": (best.cost_per_dof if best else None),
+        "n_modes": n_modes, "modes": modes,
     }
 
 
@@ -274,15 +311,18 @@ def _process_one(rec, det, q, T, sample, scan_id, card, session, g, runcal, excl
             n_neighbors = sum(1 for p in card.state.dispersion_prior
                               if p.get("sample") == sample and p.get("scan_id") != scan_id)
 
-    # Context + undersampled guard.
+    # Context + undersampled guard (min_fit_points re-checked AFTER guideline region masking).
     labels = g.structure_labels_for(scan_number=rec.scan_number, q=q, T=T)
-    ctx, n_used = build_context(rec, det, card, calres, prior, g)
+    peaks = g.peaks_for(scan_number=rec.scan_number, q=q, T=T)
+    ctx, n_used, region_reasons = build_context(
+        rec, det, card, calres, prior, g, scan_number=rec.scan_number, q=q, T=T)
     if ctx is None:
-        return ScanEntry(status="non_result",
-                         reasons=[f"undersampled: {n_used} < {g.min_fit_points} kept points"],
+        rs = [f"undersampled: {n_used} < {g.min_fit_points} kept points"] + region_reasons
+        return ScanEntry(status="non_result", reasons=rs,
                          provenance={"resolution_version": calres.resolution_version}, **base)
 
-    fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels)
+    fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks)
+    fit["reasons"].extend(region_reasons)
 
     disposition = gold_mod.verdict_disposition(fit["verdict"])
     # omega_window demotion (report-level; verdict unchanged).
@@ -303,7 +343,7 @@ def _process_one(rec, det, q, T, sample, scan_id, card, session, g, runcal, excl
         gamma_provisional=(card.policy.energy_status == "absolute"),
         best_label=fit["best_label"], cost_per_dof=fit["cost_per_dof"],
         q=q, T=T, sample=sample, prior_used=prior_used, calib=calres.summary(),
-        reasons=fit["reasons"])
+        reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"])
 
     # Feed the running prior (gated to resolved + fold).
     session_prior.add_point(card.state, scan_id=scan_id, sample=sample, T=T, q=q,
@@ -353,10 +393,27 @@ def _tally(session: SessionState) -> dict:
 _CSV_COLUMNS = [
     "scan", "detector", "sample", "T", "h", "k", "l", "status", "verdict", "disposition",
     "confidence", "omega0", "omega0_err", "interval_lo", "interval_hi", "gamma",
-    "gamma_provisional", "best_model", "cost_per_dof", "zero", "zero_source", "gauss_fwhm",
+    "gamma_provisional", "n_modes", "secondary_omega0", "secondary_omega0_err",
+    "best_model", "cost_per_dof", "zero", "zero_source", "gauss_fwhm",
     "lorentz_fwhm", "resolution_source", "resolution_version", "prior_omega", "prior_sigma",
     "prior_n", "prior_source", "reasons",
 ]
+
+
+def _secondary_mode(oc: dict) -> tuple:
+    """The (omega0, omega0_err) of the non-primary mode for a 2-mode fit, else (None, None).
+
+    Primary = the mode whose ω₀ matches the reported scalar ``omega0``; secondary is the other.
+    """
+    if (oc.get("n_modes") or 1) != 2:
+        return None, None
+    modes = oc.get("modes") or []
+    if len(modes) != 2:
+        return None, None
+    prim = oc.get("omega0")
+    others = [m for m in modes if m.get("omega0") != prim]
+    sec = others[0] if others else modes[-1]
+    return sec.get("omega0"), sec.get("omega0_err")
 
 
 def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
@@ -381,6 +438,9 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "omega0_err": oc.get("omega0_err"),
                 "interval_lo": (iv[0] if iv else None), "interval_hi": (iv[-1] if iv else None),
                 "gamma": oc.get("gamma"), "gamma_provisional": oc.get("gamma_provisional"),
+                "n_modes": oc.get("n_modes") or 1,
+                "secondary_omega0": _secondary_mode(oc)[0],
+                "secondary_omega0_err": _secondary_mode(oc)[1],
                 "best_model": oc.get("best_label"), "cost_per_dof": oc.get("cost_per_dof"),
                 "zero": cal.get("center"), "zero_source": cal.get("zero_source"),
                 "gauss_fwhm": cal.get("gauss_fwhm"), "lorentz_fwhm": cal.get("lorentz_fwhm"),
