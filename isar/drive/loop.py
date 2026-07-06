@@ -239,7 +239,11 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
 
             data = client.get_scan_data(job_id)
             save_scan_json(data, data_dir)
-            run_isar(workspace, [data_dir])
+            # Quick-look scans need only a verdict + rough ω₀ to steer acquisition — fit them
+            # cheap (HESSE, no bootstrap/profile). Production/confirm scans, whose interval the
+            # stop rule consumes, get the full uncertainty layer.
+            errors_arg = ["--errors", "cheap"] if proposal.kind == "quicklook" else None
+            run_isar(workspace, [data_dir], extra_args=errors_arg)
             log_event(log_path, "analyze", {"job_id": job_id})
 
             rows = _new_rows(workspace, consumed)

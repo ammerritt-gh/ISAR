@@ -12,6 +12,8 @@ state instead of hardcoded. Nothing in `isar/analyze/` is modified (§4).
 from __future__ import annotations
 
 import csv
+import os
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -123,14 +125,23 @@ def build_context(record, detector_id, card: Card, calres, prior, g: guide_mod.G
     return ctx, n_used, region_reasons
 
 
-def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None):
+def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
+            errors_tier="full", boot_workers=1):
     """Two-stage structure fit (§ multiplicity), optionally narrowed by guideline labels, then
     select + verdict. Mirrors docs/phase3_gold*_check.run_pipeline; returns extracted fields.
 
     ``peaks`` (guideline hints, ≥2 forces the 2-mode offer and seeds the greedy IC) are threaded
     into :func:`loop.fit_structures_two_stage`. The whitelist narrows the union of 1- and 2-mode
-    labels (``stokes2+bg`` etc. pass through) — an empty match keeps all + warns."""
-    results = loop.fit_structures_two_stage(ctx, minos=True, peaks=peaks)
+    labels (``stokes2+bg`` etc. pass through) — an empty match keeps all + warns.
+
+    ``errors_tier`` selects the uncertainty depth. ``"full"`` (default, unchanged) runs MINOS +
+    parametric bootstrap + ω₀ profile — the authoritative interval the stop rule consumes.
+    ``"cheap"`` is a driver quick-look tier: HESSE only (no MINOS/bootstrap/profile), so the
+    verdict + a rough HESSE ω₀ are produced ~an order of magnitude faster, but the ω₀ interval is
+    left empty and flagged unreliable so nothing downstream trusts it. ``boot_workers`` sets the
+    parametric-bootstrap process-pool size (1 = serial; see :func:`run_batch`)."""
+    full_errors = errors_tier != "cheap"
+    results = loop.fit_structures_two_stage(ctx, minos=full_errors, peaks=peaks)
     # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
     by_hyp = {h.label: h for h in enumerate_structures(ctx)}
     by_hyp.update({h.label: h for h in enumerate_multimode(ctx)})
@@ -147,10 +158,12 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     fits = {r.label: r for r in results}
 
     prelim = select.select_models(results, stamp=False)
-    for label in prelim.survivors:
-        r = fits.get(label)
-        if r is not None and r.optimizer_converged and label in by_hyp:
-            errors.attach(r, by_hyp[label], ctx, M=M, seed=seed, with_profile=True)
+    if full_errors:
+        for label in prelim.survivors:
+            r = fits.get(label)
+            if r is not None and r.optimizer_converged and label in by_hyp:
+                errors.attach(r, by_hyp[label], ctx, M=M, seed=seed, with_profile=True,
+                              boot_workers=boot_workers)
     sel = select.select_models(results)
     sv = verdict.classify(results, ctx, sel, prior=prior)
 
@@ -173,6 +186,13 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         interval_reliable = False
         reasons.append("phonon Γ at bound: ω₀ interval unreliable (resolution-limited spike, "
                        "degenerate bootstrap)")
+    # Cheap quick-look tier: no bootstrap/profile ran, so any interval is absent and the reported
+    # ω₀ carries only a rough HESSE σ — mark it untrustworthy so the stop rule never consumes it.
+    if not full_errors:
+        interval = None
+        interval_reliable = False
+        reasons.append("cheap-errors quick-look: verdict + rough HESSE ω₀ only "
+                       "(no bootstrap/profile interval)")
 
     n_modes = int(best.n_modes) if best is not None else 1
     modes = list(best.modes) if (best is not None and best.modes) else None
@@ -203,8 +223,73 @@ def _exclusion_ids(card: Card) -> set:
     return ids
 
 
+# ===========================================================================
+# worker-budget resolution (performance §; owner approved up to 30 workers)
+# ===========================================================================
+def _resolve_workers(cli_workers=None) -> int:
+    """Scan-level worker count: explicit ``--workers`` (>0) wins, then ``ISAR_WORKERS``, then a
+    default of ``min(30, cpu-2)`` (leave two threads for the OS / this parent process)."""
+    for src in (cli_workers, os.environ.get("ISAR_WORKERS")):
+        if src is None or src == "":
+            continue
+        try:
+            n = int(src)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            return n
+    cpu = os.cpu_count() or 1
+    return max(1, min(30, cpu - 2))
+
+
+def _resolve_boot_workers(default_n) -> int:
+    """Parametric-bootstrap worker count. ``ISAR_BOOTSTRAP_WORKERS`` (>0) overrides; otherwise the
+    caller's ``default_n`` (1 inside a scan-pool worker to avoid nested oversubscription; the full
+    budget when scans run serially — e.g. the drive loop's one-scan-per-``isar run``)."""
+    env = os.environ.get("ISAR_BOOTSTRAP_WORKERS")
+    if env:
+        try:
+            n = int(env)
+            if n > 0:
+                return n
+        except ValueError:
+            pass
+    return max(1, int(default_n))
+
+
+def _process_one_task(args):
+    """Top-level (picklable) entry point for a scan-pool worker: unpack plain data and fit.
+
+    On Windows spawn the worker re-imports this module; every argument is picklable (verified:
+    ScanRecord, Card, Guidelines, RunCalibration). No shared session/card mutation happens here —
+    the returned :class:`ScanEntry` carries everything; the parent applies ledger + prior mutations
+    serially in submission order."""
+    (rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
+     M, errors_tier, seed, boot_workers) = args
+    return _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
+                        chash, ghash, M=M, seed=seed, errors_tier=errors_tier,
+                        boot_workers=boot_workers)
+
+
+def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_workers,
+               use_pool, scan_workers) -> list:
+    """Fit the fresh scan-detectors, serially or over a process pool, preserving submission order."""
+    arg_list = [(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
+                 M, errors_tier, seed, boot_workers)
+                for (rec, det, q, T, sample, scan_id, chash, ghash, seed) in tasks]
+    if not arg_list:
+        return []
+    if not use_pool:
+        return [_process_one_task(a) for a in arg_list]
+    max_workers = min(scan_workers, len(arg_list))
+    # map preserves order → results align with `tasks`, keeping prior-seeding + row order deterministic.
+    with ProcessPoolExecutor(max_workers=max_workers) as ex:
+        return list(ex.map(_process_one_task, arg_list))
+
+
 def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200,
-              detectors=None, formats=("html", "markdown")) -> RunSummary:
+              detectors=None, formats=("html", "markdown"), workers=None,
+              errors_tier="full") -> RunSummary:
     card, session = workspace.load()
     for p in map(str, data_paths):
         if p not in session.data_paths:
@@ -245,6 +330,10 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
 
     summary = RunSummary(gaps=ingest.file_gaps(records), context_lines=ctx_lines)
 
+    # --- Pass 1: split fresh scan-detectors (to fit) from carried ones, preserving report order. ---
+    from isar.session.state import canonical_hash
+    tasks = []          # (rec, det, q, T, sample, scan_id, chash, ghash, seed)
+    plan = []           # ordered: ("carry", scan, outcome) | ("task", scan, det, task_idx)
     for rec in routed.measurements:
         scan = rec.scan_number
         chash = content_hash(rec)
@@ -258,7 +347,6 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
             scan_id = f"{rec.experiment_id}:{scan}:{det}"
 
             gsig = guide_mod.guidelines_signature(g, scan_number=scan, q=q, T=T)
-            from isar.session.state import canonical_hash
             ghash = canonical_hash(gsig)
 
             prev = session.get(scan_id)
@@ -267,17 +355,45 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
             if not fresh:
                 # Unchanged & already resolved: keep the ledger entry, re-list its outcome for the report.
                 if prev.detectors.get(det):
-                    summary.outcomes.append((scan, _outcome_from_entry(prev, det)))
+                    plan.append(("carry", scan, _outcome_from_entry(prev, det)))
                 continue
+            task_idx = len(tasks)
+            tasks.append((rec, det, q, T, sample, scan_id, chash, ghash, seed_base + scan))
+            plan.append(("task", scan, det, task_idx))
 
-            entry = _process_one(rec, det, q, T, sample, scan_id, card, session, g, runcal,
-                                  exclusions, chash, ghash, M=M, seed=seed_base + scan)
-            session.put(entry)
-            summary.n_reprocessed += 1
-            summary.n_fitted_this_run += 1 if entry.status in ("fitted", "non_result") else 0
-            oc = entry.detectors.get(det)
-            if oc:
-                summary.outcomes.append((scan, FitOutcome(**oc) if not isinstance(oc, FitOutcome) else oc))
+    # --- Fit the fresh scans (parallel across scans when it pays; §performance). ---
+    # Worker budget: a scan-pool run keeps the per-scan bootstrap serial (nested pools would
+    # oversubscribe the 32 threads); a serial-scan run (≤1 fresh scan, e.g. the drive loop's
+    # one-scan-per-`isar run`) hands the full budget to the bootstrap instead.
+    scan_workers = _resolve_workers(workers)
+    use_pool = scan_workers > 1 and len(tasks) > 1
+    boot_workers = 1 if use_pool else _resolve_boot_workers(scan_workers)
+    entries = _run_tasks(tasks, card, g, runcal, exclusions, M=M, errors_tier=errors_tier,
+                         boot_workers=boot_workers, use_pool=use_pool, scan_workers=scan_workers)
+
+    # --- Pass 2: apply ledger + prior mutations serially, in submission order (determinism). ---
+    # Prior seeding is START-OF-BATCH: a scan is fit against the dispersion prior as of the batch
+    # start, never a same-batch neighbour's fresh point (this is what makes serial == parallel).
+    # The re-fit idempotency makes it self-healing across runs — a later `isar run` re-seeds from
+    # the now-complete prior only for scans that actually drifted.
+    t_round = float((card.policy.collation or {}).get("t_round", 5.0))
+    for item in plan:
+        if item[0] == "carry":
+            _, scan, outcome = item
+            summary.outcomes.append((scan, outcome))
+            continue
+        _, scan, det, task_idx = item
+        entry = entries[task_idx]
+        session.put(entry)
+        summary.n_reprocessed += 1
+        summary.n_fitted_this_run += 1 if entry.status in ("fitted", "non_result") else 0
+        oc = entry.detectors.get(det)
+        if oc:
+            session_prior.add_point(card.state, scan_id=entry.scan_id, sample=oc.get("sample"),
+                                    T=oc.get("T"), q=oc.get("q"), omega0=oc.get("omega0"),
+                                    modality=oc.get("modality"), verdict=oc.get("verdict"),
+                                    t_round=t_round)
+            summary.outcomes.append((scan, FitOutcome(**oc) if not isinstance(oc, FitOutcome) else oc))
 
     # Collate (all records, whole-experiment view).
     try:
@@ -295,8 +411,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
     return summary
 
 
-def _process_one(rec, det, q, T, sample, scan_id, card, session, g, runcal, exclusions,
-                 chash, ghash, *, M, seed) -> ScanEntry:
+def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
+                 chash, ghash, *, M, seed, errors_tier="full", boot_workers=1) -> ScanEntry:
     base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
                 content_hash=chash, guidelines_hash=ghash)
 
@@ -334,7 +450,8 @@ def _process_one(rec, det, q, T, sample, scan_id, card, session, g, runcal, excl
         return ScanEntry(status="non_result", reasons=rs,
                          provenance={"resolution_version": calres.resolution_version}, **base)
 
-    fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks)
+    fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
+                  errors_tier=errors_tier, boot_workers=boot_workers)
     fit["reasons"].extend(region_reasons)
 
     disposition = gold_mod.verdict_disposition(fit["verdict"])
@@ -359,12 +476,9 @@ def _process_one(rec, det, q, T, sample, scan_id, card, session, g, runcal, excl
         reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
         interval_reliable=fit.get("interval_reliable", True))
 
-    # Feed the running prior (gated to resolved + fold).
-    session_prior.add_point(card.state, scan_id=scan_id, sample=sample, T=T, q=q,
-                            omega0=outcome.omega0, modality=outcome.modality,
-                            verdict=outcome.verdict,
-                            t_round=float((card.policy.collation or {}).get("t_round", 5.0)))
-
+    # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
+    # submission order after the fit returns — start-of-batch seeding, so a parallel batch is
+    # bit-identical to a serial one. This worker never mutates shared card/session state.
     return ScanEntry(status="fitted", reasons=outcome.reasons,
                      detectors={det: outcome.to_dict()},
                      provenance={"resolution_version": calres.resolution_version,

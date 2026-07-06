@@ -21,7 +21,8 @@ def run(args) -> int:
     formats = tuple(f.strip() for f in args.formats.split(",") if f.strip())
     summary = driver.run_batch(
         ws, args.data, force=args.force, llm=args.llm, M=args.M,
-        detectors=args.detectors, formats=formats)
+        detectors=args.detectors, formats=formats,
+        workers=getattr(args, "workers", None), errors_tier=getattr(args, "errors", "full"))
 
     # Try the rich report (build step 6); the CSV that run_batch always writes is the fallback.
     report_note = f"results: {ws.report_dir / 'results.csv'}"

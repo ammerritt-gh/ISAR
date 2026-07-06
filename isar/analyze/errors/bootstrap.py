@@ -11,12 +11,17 @@ up as a wide or multimodal bootstrap, exposed by :func:`is_bimodal`, not as an e
 """
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
 
 from isar.analyze import loop
 from isar.synth import backends, estimators
+
+# Only spin up a process pool for the M-replicate loop when there is enough work to amortize the
+# (Windows-spawn) worker startup. Below this, the serial path is faster.
+_BOOT_PARALLEL_MIN_M = 16
 
 
 @dataclass
@@ -94,14 +99,55 @@ def is_bimodal(samples, *, weights=None, grid: int = 256, rel_height: float = 0.
     return kde_modes(samples, weights=weights, grid=grid, rel_height=rel_height, dip=dip).bimodal
 
 
+def _refit_replicate(counts_b, composite, x, ctx, theta_fit, bounds, be_names,
+                     phonon_i, prim_rank, est, backend, ncall):
+    """Refit one Poisson draw and reduce it to (ω₀, Γ), or ``None`` if the refit failed.
+
+    Warm-starts at the fit; a failed refit is counted (not fatal), matching the serial contract.
+    """
+    def costv(theta):
+        return est.cost(counts_b, composite.evaluate(x, theta, ctx))
+
+    # Bootstrap refits warm-start at the fit and only need a point estimate — a failed refit
+    # is counted (`n_converged`), never fatal — so they run on MINUIT's plain default budget,
+    # not the raised certification budget the main fit uses. This keeps the per-scan bootstrap
+    # cost unchanged from before the FIX-1 budget bump (which is per-fit, not per-refit).
+    br = backends.minimize(backend, costv, theta_fit, bounds, be_names, minos=False, ncall=ncall)
+    if not br.success:
+        return None
+    w0 = np.array([np.sqrt(float(br.x[i]) ** 2 + float(br.x[i + 1]) ** 2) for i in phonon_i])
+    sel_pos = phonon_i[int(np.argsort(w0)[prim_rank])]  # global index of the primary mode
+    od_b, g_b = float(br.x[sel_pos]), float(br.x[sel_pos + 1])
+    return (float(np.sqrt(od_b ** 2 + g_b ** 2)), g_b)
+
+
+def _bootstrap_chunk(args):
+    """A worker-process chunk: rebuild the problem from plain data (``hyp``/``ctx`` are picklable;
+    iminuit closures are not), then refit each pre-drawn ``counts_b`` in order. Returns a list of
+    (ω₀, Γ) tuples / ``None``, in the same order as the chunk — so concatenating chunks in
+    submission order reproduces the serial sample sequence exactly (bit-for-bit determinism)."""
+    (hyp, ctx, theta_fit, counts_chunk, phonon_i, prim_rank, be_names, backend, ncall) = args
+    prob = loop.build_problem(hyp, ctx)
+    est = estimators.get_estimator("baker_cousins")
+    x = ctx.x_used
+    return [_refit_replicate(cb, prob.composite, x, ctx, theta_fit, prob.bounds, be_names,
+                             phonon_i, prim_rank, est, backend, ncall)
+            for cb in counts_chunk]
+
+
 def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 12345,
                          backend: str = "iminuit", interval: str = "percentile",
-                         level: float = 0.68) -> BootstrapResult:
+                         level: float = 0.68, workers: int = 1) -> BootstrapResult:
     """Bootstrap one fitted hypothesis; returns transformed ω₀/Γ intervals + raw samples.
 
     Generates from the best fit (`fit_result.params`), refits each Poisson draw warm-started
     at the fit (the §11 re-entrancy contract), and reduces the converged refits. Failed
-    refits are counted (`n_converged`), never silently dropped."""
+    refits are counted (`n_converged`), never silently dropped.
+
+    ``workers`` > 1 spreads the M embarrassingly-parallel refits over a process pool. The M
+    Poisson draws are pre-generated from a single RNG and dispatched in order, so the sample
+    sequence — and therefore every interval — is identical to the serial path for a given
+    ``seed`` regardless of ``workers``."""
     if interval != "percentile":
         raise NotImplementedError(f"interval={interval!r} not implemented; BCa is D10-pending")
 
@@ -125,29 +171,32 @@ def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 1234
     prim_pos = phonon_i.index(prim_global)
     prim_rank = order.index(prim_pos)                   # primary's rank in the sorted order
 
+    ncall = backends._default_migrad_ncall(len(be_names))
+    # Draw ALL replicates up front from the single RNG — this fixes the draw sequence so the result
+    # is worker-count-independent (determinism), and the draws are cheap vs the refits.
     rng = np.random.default_rng(seed)
-    o_samples, g_samples, n_conv = [], [], 0
-    for _ in range(int(M)):
-        counts_b = rng.poisson(lam).astype(float)
+    M = int(M)
+    counts_all = [rng.poisson(lam).astype(float) for _ in range(M)]
 
-        def costv(theta, _cb=counts_b):
-            return est.cost(_cb, prob.composite.evaluate(x, theta, ctx))
+    workers = max(1, int(workers))
+    if workers > 1 and M >= _BOOT_PARALLEL_MIN_M:
+        n_chunks = min(workers, M)
+        chunks = [counts_all[i::n_chunks] for i in range(n_chunks)]  # round-robin, balanced
+        # Reassembly must restore draw order (chunk i holds draws i, i+n_chunks, ...).
+        results: list = [None] * M
+        args = [(hyp, ctx, theta_fit, ch, phonon_i, prim_rank, be_names, backend, ncall)
+                for ch in chunks]
+        with ProcessPoolExecutor(max_workers=n_chunks) as ex:
+            for ci, chunk_res in enumerate(ex.map(_bootstrap_chunk, args)):
+                results[ci::n_chunks] = chunk_res
+    else:
+        results = [_refit_replicate(cb, prob.composite, x, ctx, theta_fit, prob.bounds, be_names,
+                                    phonon_i, prim_rank, est, backend, ncall)
+                   for cb in counts_all]
 
-        # Bootstrap refits warm-start at the fit and only need a point estimate — a failed refit
-        # is counted (`n_converged`), never fatal — so they run on MINUIT's plain default budget,
-        # not the raised certification budget the main fit uses. This keeps the per-scan bootstrap
-        # cost unchanged from before the FIX-1 budget bump (which is per-fit, not per-refit).
-        br = backends.minimize(backend, costv, theta_fit, prob.bounds, be_names, minos=False,
-                               ncall=backends._default_migrad_ncall(len(be_names)))
-        if not br.success:
-            continue
-        n_conv += 1
-        w0 = np.array([np.sqrt(float(br.x[i]) ** 2 + float(br.x[i + 1]) ** 2)
-                       for i in phonon_i])
-        sel_pos = phonon_i[int(np.argsort(w0)[prim_rank])]  # global index of the primary mode
-        od_b, g_b = float(br.x[sel_pos]), float(br.x[sel_pos + 1])
-        o_samples.append(float(np.sqrt(od_b ** 2 + g_b ** 2)))
-        g_samples.append(g_b)
+    o_samples = [r[0] for r in results if r is not None]
+    g_samples = [r[1] for r in results if r is not None]
+    n_conv = len(o_samples)
 
     o = np.array(o_samples, dtype=float)
     g = np.array(g_samples, dtype=float)
