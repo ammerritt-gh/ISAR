@@ -14,3 +14,4 @@ env/
 /out/
 test_data/
 ISAR.code-workspace
+examples/
