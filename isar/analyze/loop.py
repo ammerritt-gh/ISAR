@@ -223,7 +223,15 @@ def result_from_backend(label, composite, costv, n_used, k, br,
     cost_per_dof = cost / ndof if ndof > 0 else float("nan")
     prior_penalty = float(penalty(theta)) if penalty is not None else None
     posterior_cost = (cost + prior_penalty) if prior_penalty is not None else None
-    fit_kind = "soft_prior" if penalty is not None else "unconstrained"
+    # provenance precedence (contract 4): branch_conditional > stokes_only > soft_prior >
+    # unconstrained. branch_conditional (hard-fix) is Phase 3b; here a one-sided (Bose-dead)
+    # composite tags stokes_only even under a soft prior, so it never reads as an ordinary fit.
+    if composite.is_stokes_only():
+        fit_kind = "stokes_only"
+    elif penalty is not None:
+        fit_kind = "soft_prior"
+    else:
+        fit_kind = "unconstrained"
 
     params = {n: float(v) for n, v in zip(names, theta)}
     if errs is not None:

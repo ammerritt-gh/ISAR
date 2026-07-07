@@ -79,6 +79,12 @@ class PhononDHO(Component):
 
     Fit-space params: ``Omega_d``, ``Gamma`` (nonlinear) and ``A`` (linear). The reported
     ω₀ = √(Ω_d²+Γ²) is derived, never fit directly (keeps Ω_d ≥ 0, ω₀ ≥ Γ).
+
+    ``peak`` selects the lineshape sides passed to ``convolute_voigt_dho``. Default
+    ``"stokes+astokes"`` keeps the Bose-tied pair (unchanged Step-1 behaviour). ``"stokes"``
+    drops the anti-Stokes mirror for the high-q Bose-dead rescue (steering Phase 3a): where
+    ``exp(−ħω/kT)`` is negligible the anti-Stokes carries no counts and only adds a degenerate
+    gain-side peak, so fitting the Stokes side alone removes that degeneracy.
     """
 
     prefix = "phonon"
@@ -86,11 +92,15 @@ class PhononDHO(Component):
               Parameter("Gamma", "nonlinear"),
               Parameter("A", "linear"))
 
+    def __init__(self, prefix: str | None = None, peak: str = "stokes+astokes"):
+        super().__init__(prefix)
+        self.peak = peak
+
     def evaluate(self, x, local: dict, ctx) -> np.ndarray:
         omega0 = omega0_from(local["Omega_d"], local["Gamma"])
         return convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
                                    local["Gamma"], local["A"], 0.0, 0.0, ctx.T,
-                                   peak="stokes+astokes")
+                                   peak=self.peak)
 
     def unit_columns(self, x, nonlinear: dict, ctx) -> dict:
         unit = {"Omega_d": nonlinear["Omega_d"], "Gamma": nonlinear["Gamma"], "A": 1.0}
@@ -242,6 +252,15 @@ class CompositeModel:
     def phonon_indices(self) -> list[int]:
         """Global Omega_d index of every PhononDHO, in component order."""
         return [i for i, _ in self._phonon_slots()]
+
+    def is_stokes_only(self) -> bool:
+        """True iff the composite has ≥1 phonon and *every* phonon is Stokes-only
+        (``peak`` has no anti-Stokes side) — the Bose-dead high-q rescue (Phase 3a).
+        Drives the ``stokes_only`` fit-kind tag so a one-sided fit never reads as an
+        ordinary two-sided ``resolved`` phonon."""
+        slots = self._phonon_slots()
+        return bool(slots) and all("astokes" not in getattr(c, "peak", "stokes+astokes")
+                                   for _, c in slots)
 
     def _omega0_at(self, theta, cov, i):
         """ω₀ + HESSE error for the phonon whose Omega_d is at global index ``i``."""
