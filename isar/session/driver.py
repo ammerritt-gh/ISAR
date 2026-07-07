@@ -175,7 +175,7 @@ def _hesse_interval_and_trust(best, ctx) -> tuple:
 
 
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
-            errors_tier="full", boot_workers=1):
+            errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False):
     """Two-stage structure fit (§ multiplicity), optionally narrowed by guideline labels, then
     select + verdict. Mirrors docs/phase3_gold*_check.run_pipeline; returns extracted fields.
 
@@ -216,7 +216,8 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
             r = fits.get(label)
             if r is not None and r.optimizer_converged and label in by_hyp:
                 errors.attach(r, by_hyp[label], ctx, M=M, seed=seed, with_profile=True,
-                              boot_workers=boot_workers)
+                              boot_workers=boot_workers, boot_executor=boot_executor,
+                              boot_adaptive=boot_adaptive)
     sel = select.select_models(results)
     sv = verdict.classify(results, ctx, sel, prior=prior)
 
@@ -339,22 +340,35 @@ def _process_one_task(args):
     the returned :class:`ScanEntry` carries everything; the parent applies ledger + prior mutations
     serially in submission order."""
     (rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
-     M, errors_tier, seed, boot_workers) = args
+     M, errors_tier, seed, boot_workers, boot_adaptive) = args
     return _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                         chash, ghash, M=M, seed=seed, errors_tier=errors_tier,
-                        boot_workers=boot_workers)
+                        boot_workers=boot_workers, boot_adaptive=boot_adaptive)
 
 
 def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_workers,
-               use_pool, scan_workers) -> list:
-    """Fit the fresh scan-detectors, serially or over a process pool, preserving submission order."""
+               use_pool, scan_workers, boot_executor=None, boot_adaptive=False) -> list:
+    """Fit the fresh scan-detectors, serially or over a process pool, preserving submission order.
+
+    ``boot_executor`` (a shared bootstrap pool) is threaded only through the SERIAL path — an
+    executor is not picklable and must never enter a scan-pool worker (nested pools). The pool path
+    only runs when ``boot_workers == 1`` (Layer A owns the workers), so it never wants a shared pool.
+    """
     arg_list = [(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
-                 M, errors_tier, seed, boot_workers)
+                 M, errors_tier, seed, boot_workers, boot_adaptive)
                 for (rec, det, q, T, sample, scan_id, chash, ghash, seed) in tasks]
     if not arg_list:
         return []
     if not use_pool:
-        return [_process_one_task(a) for a in arg_list]
+        out = []
+        for a in arg_list:
+            (rec, det, q, T, sample, scan_id, card_, g_, runcal_, exclusions_, chash, ghash,
+             M_, tier_, seed, bw, adaptive_) = a
+            out.append(_process_one(rec, det, q, T, sample, scan_id, card_, g_, runcal_,
+                                    exclusions_, chash, ghash, M=M_, seed=seed, errors_tier=tier_,
+                                    boot_workers=bw, boot_executor=boot_executor,
+                                    boot_adaptive=adaptive_))
+        return out
     max_workers = min(scan_workers, len(arg_list))
     # map preserves order → results align with `tasks`, keeping prior-seeding + row order deterministic.
     with ProcessPoolExecutor(max_workers=max_workers) as ex:
@@ -436,15 +450,45 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
             plan.append(("task", scan, det, task_idx))
 
     # --- Fit the fresh scans (parallel across scans when it pays; §performance). ---
-    # Worker budget: a scan-pool run keeps the per-scan bootstrap serial (nested pools would
-    # oversubscribe the 32 threads); a serial-scan run (≤1 fresh scan, e.g. the drive loop's
-    # one-scan-per-`isar run`) hands the full budget to the bootstrap instead.
+    # Only the `full` tier bootstraps. When a full batch is small enough that the Layer-A scan pool
+    # would idle cores (each per-scan bootstrap forced serial), bypass Layer A: fit serially in the
+    # parent and funnel every bootstrap (scans + masters) through ONE shared pool at full budget
+    # (the workorder — one spawn, not N). Large full reprocess batches (tasks > workers, where Layer
+    # A already saturates) and the fast/cheap tiers (no bootstrap) keep the Layer-A parallel-fit path.
     scan_workers = _resolve_workers(workers)
-    use_pool = scan_workers > 1 and len(tasks) > 1
-    boot_workers = 1 if use_pool else _resolve_boot_workers(scan_workers)
-    entries = _run_tasks(tasks, card, g, runcal, exclusions, M=M, errors_tier=errors_tier,
-                         boot_workers=boot_workers, use_pool=use_pool, scan_workers=scan_workers)
+    is_full = errors_tier == "full"
+    use_workorder = is_full and len(tasks) <= scan_workers
+    if use_workorder:
+        use_pool = False
+        boot_workers = _resolve_boot_workers(scan_workers)
+    else:
+        use_pool = scan_workers > 1 and len(tasks) > 1
+        boot_workers = 1 if use_pool else _resolve_boot_workers(scan_workers)
+    boot_adaptive = is_full
+    master_boot_workers = _resolve_boot_workers(scan_workers)
 
+    shared_pool = None
+    if is_full and boot_workers > 1 and not use_pool:
+        shared_pool = ProcessPoolExecutor(max_workers=boot_workers)   # scans + masters, one spawn
+    try:
+        entries = _run_tasks(tasks, card, g, runcal, exclusions, M=M, errors_tier=errors_tier,
+                             boot_workers=boot_workers, use_pool=use_pool, scan_workers=scan_workers,
+                             boot_executor=shared_pool, boot_adaptive=boot_adaptive)
+        _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
+                          workspace, force=force, M=M, seed_base=seed_base, errors_tier=errors_tier,
+                          master_boot_workers=master_boot_workers, boot_executor=shared_pool,
+                          boot_adaptive=boot_adaptive)
+    finally:
+        if shared_pool is not None:
+            shared_pool.shutdown()
+    return summary
+
+
+def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
+                      workspace, *, force, M, seed_base, errors_tier, master_boot_workers,
+                      boot_executor, boot_adaptive):
+    """Pass 2 (ledger + prior) → collate → master fits → tally → write. Split out so the shared
+    bootstrap pool from :func:`run_batch` stays open across the whole full-tier batch."""
     # --- Pass 2: apply ledger + prior mutations serially, in submission order (determinism). ---
     # Prior seeding is START-OF-BATCH: a scan is fit against the dispersion prior as of the batch
     # start, never a same-batch neighbour's fresh point (this is what makes serial == parallel).
@@ -479,14 +523,13 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
     # opts in with collation.merge == "merge". These pooled fits are what let a campaign accumulate
     # statistics by repeating a measurement; s30 (merge="separate") produces none. Never fatal.
     try:
-        # Master fits run AFTER the scan pool has torn down, so they take the full worker budget
-        # for their bootstrap regardless of the per-scan `boot_workers` (which is throttled to 1
-        # during a multi-scan pool to avoid nested oversubscription). Masters run serially w.r.t.
-        # each other, so no nesting here.
-        master_boot_workers = _resolve_boot_workers(scan_workers)
+        # Masters run after the scan phase; their bootstraps take the full worker budget and reuse
+        # the batch's shared pool when one is open (else _fit_masters opens its own). Masters fit
+        # serially w.r.t. each other; only their refits hit the pool.
         n_masters = _fit_masters(summary.collation, records, card, runcal, g, session,
                                  M=M, seed_base=seed_base, errors_tier=errors_tier, force=force,
-                                 boot_workers=master_boot_workers)
+                                 boot_workers=master_boot_workers, boot_executor=boot_executor,
+                                 boot_adaptive=boot_adaptive)
         if n_masters:
             summary.context_lines.append(f"fit {n_masters} merged master scan(s)")
     except Exception as exc:  # noqa: BLE001 — master fitting is additive; a failure never kills the batch
@@ -499,7 +542,6 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
 
     _write_results_csv(workspace, session)
     workspace.save(card, session)
-    return summary
 
 
 # Synthetic scan_number range for master (pooled) ledger entries so they sort AFTER real scans and
@@ -508,7 +550,8 @@ _MASTER_SCAN_BASE = 9_000_000
 
 
 def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
-                 errors_tier="full", force=False, boot_workers=1) -> int:
+                 errors_tier="full", force=False, boot_workers=1, boot_executor=None,
+                 boot_adaptive=False) -> int:
     """Fit the merged master scan for each (Q,T) group; returns how many were (re)fit this run.
 
     Runs only when the card opts in (``collation.merge == "merge"``). Each group's pooled
@@ -524,28 +567,41 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
     from isar.session.state import canonical_hash
 
     rec_by_scan = {rec.scan_number: rec for rec in records}
+    # Reuse the batch's shared bootstrap pool when given; else open one for the master pass (only the
+    # full tier bootstraps, so a pool is pointless otherwise). Masters fit serially; refits hit the pool.
+    own_pool = None
+    ex = boot_executor
+    if ex is None and errors_tier == "full" and boot_workers > 1:
+        own_pool = ProcessPoolExecutor(max_workers=boot_workers)
+        ex = own_pool
     n_fit = 0
-    for idx, grp in enumerate(sorted(collation.groups, key=lambda gg: str(gg.key))):
-        ms = getattr(grp, "merged", None)
-        if ms is None or ms.n_members < 1:
-            continue
-        master_id = "master:" + "_".join(str(k) for k in grp.key)
-        chash = canonical_hash([list(m) for m in ms.members])
-        prev = session.get(master_id)
-        if not force and prev is not None and prev.content_hash == chash:
-            continue                                   # member set unchanged → carry the prior master
-        member_scan, member_det = ms.members[0][1], ms.members[0][2]
-        entry = _fit_master_group(ms, grp, rec_by_scan.get(member_scan), member_det, card, runcal, g,
-                                  master_id, _MASTER_SCAN_BASE + idx, chash,
-                                  M=M, seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier,
-                                  boot_workers=boot_workers)
-        session.put(entry)
-        n_fit += 1
+    try:
+        for idx, grp in enumerate(sorted(collation.groups, key=lambda gg: str(gg.key))):
+            ms = getattr(grp, "merged", None)
+            if ms is None or ms.n_members < 1:
+                continue
+            master_id = "master:" + "_".join(str(k) for k in grp.key)
+            chash = canonical_hash([list(m) for m in ms.members])
+            prev = session.get(master_id)
+            if not force and prev is not None and prev.content_hash == chash:
+                continue                               # member set unchanged → carry the prior master
+            member_scan, member_det = ms.members[0][1], ms.members[0][2]
+            entry = _fit_master_group(ms, grp, rec_by_scan.get(member_scan), member_det, card, runcal,
+                                      g, master_id, _MASTER_SCAN_BASE + idx, chash,
+                                      M=M, seed=seed_base + _MASTER_SCAN_BASE + idx,
+                                      errors_tier=errors_tier, boot_workers=boot_workers,
+                                      boot_executor=ex, boot_adaptive=boot_adaptive)
+            session.put(entry)
+            n_fit += 1
+    finally:
+        if own_pool is not None:
+            own_pool.shutdown()
     return n_fit
 
 
 def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number,
-                      chash, *, M, seed, errors_tier="full", boot_workers=1) -> ScanEntry:
+                      chash, *, M, seed, errors_tier="full", boot_workers=1, boot_executor=None,
+                      boot_adaptive=False) -> ScanEntry:
     """Fit one merged group's pooled spectrum → a ``pooled=True`` ScanEntry (or a non_result)."""
     det = member_det or "merged"
     base = dict(scan_id=master_id, scan_number=int(scan_number), scan_type="measurement",
@@ -576,7 +632,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                       prior_omega=None, quasielastic_fwhm=card.policy.quasielastic_fwhm)
     try:
         fit = fit_one(ctx, card, prior=None, M=M, seed=seed, errors_tier=errors_tier,
-                      boot_workers=boot_workers)
+                      boot_workers=boot_workers, boot_executor=boot_executor,
+                      boot_adaptive=boot_adaptive)
     except Exception as exc:  # noqa: BLE001 — one unfittable pool must not kill the batch (N=16 wrinkle)
         return ScanEntry(status="non_result",
                          reasons=[f"{master_id}: fit error ({type(exc).__name__}): {exc}"], **base)
@@ -601,7 +658,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
 
 
 def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
-                 chash, ghash, *, M, seed, errors_tier="full", boot_workers=1) -> ScanEntry:
+                 chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
+                 boot_executor=None, boot_adaptive=False) -> ScanEntry:
     base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
                 content_hash=chash, guidelines_hash=ghash)
 
@@ -641,7 +699,8 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
 
     try:
         fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
-                      errors_tier=errors_tier, boot_workers=boot_workers)
+                      errors_tier=errors_tier, boot_workers=boot_workers,
+                      boot_executor=boot_executor, boot_adaptive=boot_adaptive)
     except Exception as exc:  # noqa: BLE001 — one unfittable scan must not kill the batch
         return ScanEntry(status="non_result",
                          reasons=[f"fit error ({type(exc).__name__}): {exc}"] + region_reasons,

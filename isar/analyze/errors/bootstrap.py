@@ -135,19 +135,35 @@ def _bootstrap_chunk(args):
             for cb in counts_chunk]
 
 
+def _omega0_halfwidth(results, level: float) -> float:
+    """The ω₀ percentile half-width of the converged draws so far (adaptive-M stability metric)."""
+    o = np.array([r[0] for r in results if r is not None], dtype=float)
+    lo, _med, hi = _percentile_interval(o, level)
+    return (hi - lo) / 2.0 if np.isfinite(hi) and np.isfinite(lo) else float("inf")
+
+
 def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 12345,
                          backend: str = "iminuit", interval: str = "percentile",
-                         level: float = 0.68, workers: int = 1) -> BootstrapResult:
+                         level: float = 0.68, workers: int = 1, executor=None,
+                         adaptive: bool = False, block: int = 32, m_min: int = 64,
+                         rel_eps: float = 0.05) -> BootstrapResult:
     """Bootstrap one fitted hypothesis; returns transformed ω₀/Γ intervals + raw samples.
 
     Generates from the best fit (`fit_result.params`), refits each Poisson draw warm-started
     at the fit (the §11 re-entrancy contract), and reduces the converged refits. Failed
     refits are counted (`n_converged`), never silently dropped.
 
-    ``workers`` > 1 spreads the M embarrassingly-parallel refits over a process pool. The M
-    Poisson draws are pre-generated from a single RNG and dispatched in order, so the sample
+    ``workers`` > 1 spreads the embarrassingly-parallel refits over a process pool. The Poisson
+    draws come off a single seeded RNG in order and are reassembled in draw order, so the sample
     sequence — and therefore every interval — is identical to the serial path for a given
-    ``seed`` regardless of ``workers``."""
+    ``seed`` regardless of ``workers`` or where the refits run.
+
+    ``executor`` (a shared ``ProcessPoolExecutor``) runs the refit chunks on an already-open pool
+    instead of spawning one per call; the callee never closes it. Pass ``workers`` = the pool's
+    size so chunking matches. ``adaptive`` draws in blocks of ``block`` and stops once the ω₀
+    half-width is stable (relative change < ``rel_eps`` for two consecutive blocks) with
+    ``≥ m_min`` draws in, capped at ``M`` — a no-early-stop adaptive run is bit-identical to the
+    fixed path (same RNG order). Defaults keep every existing caller bit-identical."""
     if interval != "percentile":
         raise NotImplementedError(f"interval={interval!r} not implemented; BCa is D10-pending")
 
@@ -172,27 +188,60 @@ def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 1234
     prim_rank = order.index(prim_pos)                   # primary's rank in the sorted order
 
     ncall = backends._default_migrad_ncall(len(be_names))
-    # Draw ALL replicates up front from the single RNG — this fixes the draw sequence so the result
-    # is worker-count-independent (determinism), and the draws are cheap vs the refits.
     rng = np.random.default_rng(seed)
     M = int(M)
-    counts_all = [rng.poisson(lam).astype(float) for _ in range(M)]
-
     workers = max(1, int(workers))
-    if workers > 1 and M >= _BOOT_PARALLEL_MIN_M:
-        n_chunks = min(workers, M)
-        chunks = [counts_all[i::n_chunks] for i in range(n_chunks)]  # round-robin, balanced
-        # Reassembly must restore draw order (chunk i holds draws i, i+n_chunks, ...).
-        results: list = [None] * M
+
+    def _refit_block(counts_list):
+        """Refit a list of draws → (ω₀,Γ)/None in draw order; chunked onto the shared/created pool
+        when it pays, else serial. Any chunking gives identical per-draw results (pure refits);
+        only the draw-order reassembly matters, so this is bit-identical to the serial path."""
+        n = len(counts_list)
+        if n == 0:
+            return []
+        n_chunks = min(workers, n)
+        if n_chunks <= 1 or n < _BOOT_PARALLEL_MIN_M:
+            return [_refit_replicate(cb, prob.composite, x, ctx, theta_fit, prob.bounds, be_names,
+                                     phonon_i, prim_rank, est, backend, ncall) for cb in counts_list]
+        chunks = [counts_list[i::n_chunks] for i in range(n_chunks)]  # round-robin, balanced
         args = [(hyp, ctx, theta_fit, ch, phonon_i, prim_rank, be_names, backend, ncall)
                 for ch in chunks]
-        with ProcessPoolExecutor(max_workers=n_chunks) as ex:
-            for ci, chunk_res in enumerate(ex.map(_bootstrap_chunk, args)):
-                results[ci::n_chunks] = chunk_res
+        out: list = [None] * n
+        if executor is not None:                       # shared pool: never closed by the callee
+            for ci, chunk_res in enumerate(executor.map(_bootstrap_chunk, args)):
+                out[ci::n_chunks] = chunk_res
+        else:
+            with ProcessPoolExecutor(max_workers=n_chunks) as ex:
+                for ci, chunk_res in enumerate(ex.map(_bootstrap_chunk, args)):
+                    out[ci::n_chunks] = chunk_res
+        return out
+
+    if adaptive:
+        # Draw in blocks off the same RNG; stop once the ω₀ half-width has stabilised. Because the
+        # block draws come off the RNG in the same order as the fixed path, a no-early-stop run is
+        # bit-identical — early stop only truncates once the interval has converged.
+        results = []
+        prev_hw = None
+        stable = 0
+        total = 0
+        while total < M:
+            n = min(int(block), M - total)
+            block_counts = [rng.poisson(lam).astype(float) for _ in range(n)]
+            results.extend(_refit_block(block_counts))
+            total += n
+            hw = _omega0_halfwidth(results, level)
+            if total >= int(m_min) and prev_hw is not None and hw > 0.0 and \
+                    abs(hw - prev_hw) / hw < rel_eps:
+                stable += 1
+                if stable >= 2:
+                    break
+            else:
+                stable = 0
+            prev_hw = hw
     else:
-        results = [_refit_replicate(cb, prob.composite, x, ctx, theta_fit, prob.bounds, be_names,
-                                    phonon_i, prim_rank, est, backend, ncall)
-                   for cb in counts_all]
+        # Draw ALL replicates up front from the single RNG (fixes the sequence → worker-independent).
+        counts_all = [rng.poisson(lam).astype(float) for _ in range(M)]
+        results = _refit_block(counts_all)
 
     o_samples = [r[0] for r in results if r is not None]
     g_samples = [r[1] for r in results if r is not None]
@@ -204,6 +253,6 @@ def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 1234
         omega0_interval=_percentile_interval(o, level),
         gamma_interval=_percentile_interval(g, level),
         omega0_samples=o, gamma_samples=g,
-        n_converged=n_conv, M=int(M), interval_type=interval,
+        n_converged=n_conv, M=len(results), interval_type=interval,
         bimodal=is_bimodal(o), seed=int(seed),
     )

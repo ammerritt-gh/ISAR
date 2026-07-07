@@ -12,7 +12,8 @@ __all__ = ["BootstrapResult", "parametric_bootstrap", "attach"]
 
 
 def attach(result, hyp, ctx, *, M=200, seed=12345, backend="iminuit",
-           with_profile=False, with_bayes=False, prior=None, boot_workers=1):
+           with_profile=False, with_bayes=False, prior=None, boot_workers=1,
+           boot_executor=None, boot_adaptive=False):
     """Run the within-model error layer on a fitted hypothesis and populate
     ``result.within_model`` (the slot step 1 reserved). No-op on a non-converged fit
     (bootstrapping a degenerate model is meaningless — it stays for step-3 bootstrap only
@@ -25,7 +26,8 @@ def attach(result, hyp, ctx, *, M=200, seed=12345, backend="iminuit",
     if not result.optimizer_converged:
         return result
     boot = parametric_bootstrap(hyp, ctx, result, M=M, seed=seed, backend=backend,
-                                workers=boot_workers)
+                                workers=boot_workers, executor=boot_executor,
+                                adaptive=boot_adaptive)
     within = {
         "freq_interval": boot.omega0_interval,     # (lo, median, hi) ω₀ — authoritative
         "gamma_interval": boot.gamma_interval,

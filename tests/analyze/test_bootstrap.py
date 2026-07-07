@@ -2,6 +2,7 @@
 scatter is the error. The authoritative ω₀ interval comes from transforming each draw
 (ω₀=√(Ω_d²+Γ²)), not from propagating the point HESSE σ (review F4)."""
 import numpy as np
+import pytest
 
 from isar.analyze import loop
 from isar.analyze.context import ScanContext
@@ -51,6 +52,47 @@ def test_bootstrap_seed_reproducible():
     b = B.parametric_bootstrap(hyp, ctx, fit, M=40, seed=7)
     assert np.array_equal(a.omega0_samples, b.omega0_samples)
     assert a.omega0_interval == b.omega0_interval
+
+
+def test_adaptive_no_early_stop_matches_fixed():
+    # rel_eps=0 never declares stability → runs to M; block draws come off the same RNG in the same
+    # order as the fixed path → bit-identical samples and interval.
+    ctx = _spectrum_ctx()
+    hyp, fit = _fitted(ctx)
+    fixed = B.parametric_bootstrap(hyp, ctx, fit, M=64, seed=5)
+    adap = B.parametric_bootstrap(hyp, ctx, fit, M=64, seed=5, adaptive=True, block=32,
+                                  m_min=64, rel_eps=0.0)
+    assert np.array_equal(fixed.omega0_samples, adap.omega0_samples)
+    assert fixed.omega0_interval == adap.omega0_interval
+    assert adap.M == 64
+
+
+def test_adaptive_stops_early_on_stable_interval():
+    # A clean single peak: the ω₀ half-width stabilises fast, so adaptive stops before the cap.
+    ctx = _spectrum_ctx()
+    hyp, fit = _fitted(ctx)
+    adap = B.parametric_bootstrap(hyp, ctx, fit, M=200, seed=5, adaptive=True, block=32,
+                                  m_min=64, rel_eps=0.25)
+    assert 64 <= adap.M < 200
+    lo, _med, hi = adap.omega0_interval
+    assert lo <= fit.omega0 <= hi
+
+
+@pytest.mark.slow
+def test_bootstrap_parallel_and_injected_executor_match_serial():
+    # Determinism across execution modes: serial == self-created pool == injected shared pool,
+    # bit-identical for a fixed seed (the workorder rests on this).
+    from concurrent.futures import ProcessPoolExecutor
+    ctx = _spectrum_ctx()
+    hyp, fit = _fitted(ctx)
+    serial = B.parametric_bootstrap(hyp, ctx, fit, M=32, seed=11, workers=1)
+    created = B.parametric_bootstrap(hyp, ctx, fit, M=32, seed=11, workers=4)
+    assert np.array_equal(serial.omega0_samples, created.omega0_samples)
+    assert serial.omega0_interval == created.omega0_interval
+    with ProcessPoolExecutor(max_workers=4) as ex:
+        injected = B.parametric_bootstrap(hyp, ctx, fit, M=32, seed=11, workers=4, executor=ex)
+    assert np.array_equal(serial.omega0_samples, injected.omega0_samples)
+    assert serial.omega0_interval == injected.omega0_interval
 
 
 def test_bootstrap_gamma_interval_ordered():

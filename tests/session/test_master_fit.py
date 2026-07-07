@@ -37,7 +37,7 @@ def _stub(monkeypatch):
     calls = []
 
     def fake(ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number, chash,
-             *, M, seed, errors_tier="full", boot_workers=1):
+             *, M, seed, errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False):
         calls.append(master_id)
         e = ScanEntry(scan_id=master_id, scan_number=int(scan_number), scan_type="measurement",
                       content_hash=chash, status="fitted")
@@ -76,6 +76,29 @@ def test_master_fit_and_member_set_idempotency(monkeypatch):
     ms.n_members = 3
     assert driver._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000) == 1
     assert s.scans[mid].detectors["det"]["n_members"] == 3
+
+
+def test_run_tasks_serial_threads_shared_executor_and_adaptive(monkeypatch):
+    # The workorder's contract: the SERIAL path threads the shared bootstrap pool + adaptive flag
+    # into each fit (an executor is not picklable → it must never enter the pool path).
+    captured = {}
+
+    def fake_process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
+                         chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
+                         boot_executor=None, boot_adaptive=False):
+        captured.update(executor=boot_executor, adaptive=boot_adaptive, boot_workers=boot_workers)
+        return ScanEntry(scan_id=scan_id, scan_number=1, scan_type="measurement",
+                         content_hash=chash, status="fitted")
+
+    monkeypatch.setattr(driver, "_process_one", fake_process_one)
+    sentinel = object()
+    tasks = [(None, "det", [0.0, 0.0, 0.0], 0.0, "S", "E:1:det", "ch", "gh", 6001)]
+    out = driver._run_tasks(tasks, None, None, None, set(), M=20, errors_tier="full",
+                            boot_workers=8, use_pool=False, scan_workers=8,
+                            boot_executor=sentinel, boot_adaptive=True)
+    assert len(out) == 1
+    assert captured["executor"] is sentinel
+    assert captured["adaptive"] is True and captured["boot_workers"] == 8
 
 
 def test_s30_separate_card_produces_no_master_rows(tmp_path):
