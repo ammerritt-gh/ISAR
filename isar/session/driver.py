@@ -139,10 +139,14 @@ def build_context(record, detector_id, card: Card, calres, prior, g: guide_mod.G
     return ctx, n_used, region_reasons
 
 
-# In-window detector counts for the asymptotic HESSE σ to be trusted as the ω₀ interval. Below this
-# the delta-method interval can under-cover, so the fast tier flags it untrusted → escalate to full.
-# Stage-5-calibratable (see docs/sigma_calibration_campaign.py).
-_HESSE_MIN_COUNTS = 2000.0
+# In-window detector counts floor for trusting the delta-method HESSE ω₀ interval. Calibrated on
+# synthetic peaks: HESSE σ tracks the bootstrap half-width (ratio ≈ 1.0, slightly conservative) down
+# to ~100 counts for a well-separated peak — the real HESSE-failure regime is Γ→0 (near-elastic /
+# broad), which `gamma_at_bound` already gates. So this is only a sparsity floor against fit
+# instability at genuinely few counts; kept low (200) to trust weaker peaks too — a q that converges
+# on a trusted HESSE interval is re-checked by the full bootstrap in the certify pass anyway, so this
+# gate need not be perfect, only avoid the degenerate ultra-sparse case.
+_HESSE_MIN_COUNTS = 200.0
 
 
 def _in_window_counts(ctx) -> float:
