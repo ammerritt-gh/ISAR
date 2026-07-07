@@ -26,6 +26,7 @@ from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
 from isar.schema.card import Card
+from isar.schema.steering import IntensityMeasure
 from isar.session import calibrations, guidelines as guide_mod, ingest, router, session_prior
 from isar.session.state import ScanEntry, SessionState, content_hash
 from isar.session.workspace import Workspace
@@ -71,6 +72,10 @@ class FitOutcome:
     # n_members = how many scans were summed. Per-scan fits leave these at their defaults.
     pooled: bool = False
     n_members: int | None = None
+    # Portable, provenance-bearing intensity for the primary phonon (steering contract 2). A dict
+    # (IntensityMeasure.to_dict) or None; carried onto the dispersion prior so a later scan can
+    # predict expected counts. Absent on masters (no single-record normalization) and older ledgers.
+    intensity: dict | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -176,6 +181,53 @@ def _hesse_interval_and_trust(best, ctx) -> tuple:
                and not bool(getattr(best, "gamma_at_bound", False))
                and _in_window_counts(ctx) >= _HESSE_MIN_COUNTS)
     return interval, trusted
+
+
+def _exposure_per_point(rec, ctx) -> tuple[float, str]:
+    """Median per-point counting exposure over the kept points, and the counting mode.
+
+    The portable normaliser for the fitted amplitude (steering contract 2): monitor counts (or
+    seconds) per point over the fit window (``ctx.mask``). NaN when unavailable → no IntensityMeasure.
+    """
+    norm = getattr(rec, "normalization", None)
+    if norm is None:
+        return float("nan"), ""
+    mode = getattr(norm, "counting_mode", "") or ""
+    arr = norm.monitor if mode == "monitor" else norm.time
+    try:
+        a = np.asarray(arr, dtype=float)
+        m = np.asarray(ctx.mask, dtype=bool)
+        if a.size == m.size and m.any():
+            a = a[m]
+        a = a[np.isfinite(a) & (a > 0)]
+        return (float(np.median(a)) if a.size else float("nan")), mode
+    except Exception:  # noqa: BLE001 — a malformed normalization just yields no intensity measure
+        return float("nan"), mode
+
+
+def _primary_amplitude(fit) -> float | None:
+    """Fitted amplitude of the primary phonon (the mode nearest the reported ω₀)."""
+    modes = fit.get("modes")
+    w0 = fit.get("omega0")
+    if not modes or w0 is None:
+        return None
+    prim = min(modes, key=lambda m: abs(float(m.get("omega0", 1e18)) - float(w0)))
+    a = prim.get("amplitude")
+    return float(a) if a is not None else None
+
+
+def _intensity_measure(rec, ctx, fit) -> dict | None:
+    """Portable :class:`IntensityMeasure` dict for the primary phonon, or None when not computable."""
+    amp = _primary_amplitude(fit)
+    if amp is None:
+        return None
+    exposure, mode = _exposure_per_point(rec, ctx)
+    if not np.isfinite(exposure) or exposure <= 0:
+        return None
+    return IntensityMeasure(
+        value=amp / exposure, exposure=exposure, counting_mode=(mode or "monitor"),
+        gauss_fwhm=float(ctx.gauss_fwhm), lorentz_fwhm=float(ctx.lorentz_fwhm),
+        instrument=str(ctx.instrument)).to_dict()
 
 
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
@@ -511,10 +563,16 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
         summary.n_fitted_this_run += 1 if entry.status in ("fitted", "non_result") else 0
         oc = entry.detectors.get(det)
         if oc:
+            g_err = None
+            _modes, _w0 = oc.get("modes"), oc.get("omega0")
+            if _modes and _w0 is not None:
+                _pm = min(_modes, key=lambda m: abs(float(m.get("omega0", 1e18)) - float(_w0)))
+                g_err = _pm.get("gamma_err")
             session_prior.add_point(card.state, scan_id=entry.scan_id, sample=oc.get("sample"),
                                     T=oc.get("T"), q=oc.get("q"), omega0=oc.get("omega0"),
                                     modality=oc.get("modality"), verdict=oc.get("verdict"),
-                                    t_round=t_round)
+                                    gamma=oc.get("gamma"), gamma_err=g_err,
+                                    intensity=oc.get("intensity"), t_round=t_round)
             summary.outcomes.append((scan, FitOutcome(**oc) if not isinstance(oc, FitOutcome) else oc))
 
     # Collate (all records, whole-experiment view).
@@ -733,7 +791,8 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
         interval_reliable=fit.get("interval_reliable", True),
         omega0_profile=fit.get("omega0_profile"),
-        hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False))
+        hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
+        intensity=_intensity_measure(rec, ctx, fit))
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is

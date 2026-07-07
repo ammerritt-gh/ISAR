@@ -86,6 +86,7 @@ class CardState:
     energy_zero_series: list = field(default_factory=list)   # [{key, e0, source_scan}]
     dispersion_prior: list = field(default_factory=list)     # PriorPoint dicts (§5)
     sample_map: list = field(default_factory=list)           # [{from_scan, sample, source}]
+    branch_models: list = field(default_factory=list)        # BranchModel dicts (steering, Phase 2+)
 
     def to_dict(self) -> dict:
         return _json.to_jsonable(self)

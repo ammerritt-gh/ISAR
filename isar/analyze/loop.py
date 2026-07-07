@@ -121,6 +121,14 @@ class StructureFitResult:
     # True when any phonon Γ railed out to its bound → the derived ω₀ interval is degenerate and
     # must be flagged unreliable (not silently trusted). See :func:`_gamma_at_bound`.
     gamma_at_bound: bool = False
+    # Steering (fit-vs-decide contract 1 + provenance tag, Phase 2+). ``cost`` above is always the
+    # DATA-only Baker–Cousins cost (what AIC / cost_per_dof / falsification read). When a soft prior
+    # constrains the fit, ``prior_penalty`` is its penalty at θ̂ and ``posterior_cost = cost +
+    # prior_penalty`` is what the optimiser minimised. ``fit_kind`` tags provenance so a constrained /
+    # one-sided / demoted fit is never mistaken for an ordinary resolved phonon fit (contract 4).
+    prior_penalty: float | None = None      # None ⇒ unconstrained (posterior_cost == cost)
+    posterior_cost: float | None = None
+    fit_kind: str = "unconstrained"         # unconstrained|soft_prior|branch_conditional|stokes_only|descriptor_only
 
 
 def build_problem(hyp, ctx, *, x0=None) -> Problem:

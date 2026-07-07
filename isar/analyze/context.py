@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from isar.schema import axes
+from isar.schema.steering import ParamConstraints
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,8 @@ class ScanContext:
     prior_omega: float | None = None  # running dispersion-prior ω(Q), if any (None at step 1)
     quasielastic_fwhm: float | None = None  # broad quasi-elastic Lorentzian FWHM (meV); None ⇒ no QE
     #                                         component admissible (§8 TAS card default; unset on IXS)
+    constraints: ParamConstraints | None = None  # fit-time soft/hard param constraints (Phase 2+;
+    #                                              None ⇒ unconstrained. Nothing reads it yet.)
 
     @property
     def x_used(self) -> np.ndarray:

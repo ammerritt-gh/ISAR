@@ -25,8 +25,14 @@ SAME_T_TOL = 0.5        # K — "same temperature" for pooling (matches predict_
 
 
 def add_point(state: CardState, *, scan_id, sample, T, q, omega0, modality, verdict,
-              t_round: float = 5.0) -> bool:
-    """Append/replace a prior point, gated to resolved + fold. Returns True if a point was stored."""
+              gamma=None, gamma_err=None, intensity=None, t_round: float = 5.0) -> bool:
+    """Append/replace a prior point, gated to resolved + fold. Returns True if a point was stored.
+
+    ``gamma``/``gamma_err`` and ``intensity`` (a portable :class:`~isar.schema.steering.IntensityMeasure`
+    dict, steering contract 2) are stored when supplied so a branch model (Phase 2+) can carry Γ(q) and
+    A(q) alongside ω₀(q). All three are optional and omitted from the point when None, so older callers
+    and stored points are unchanged.
+    """
     if verdict != "resolved" or modality != "fold" or omega0 is None:
         return False
     point = {
@@ -39,6 +45,12 @@ def add_point(state: CardState, *, scan_id, sample, T, q, omega0, modality, verd
         "modality": modality,
         "verdict": verdict,
     }
+    if gamma is not None:
+        point["gamma"] = float(gamma)
+    if gamma_err is not None:
+        point["gamma_err"] = float(gamma_err)
+    if intensity is not None:
+        point["intensity"] = intensity   # already a JSON-able IntensityMeasure dict
     # Replace an existing point for the same scan (a re-fit supersedes).
     state.dispersion_prior = [p for p in state.dispersion_prior if p.get("scan_id") != scan_id]
     state.dispersion_prior.append(point)
