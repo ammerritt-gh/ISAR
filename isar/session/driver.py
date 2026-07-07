@@ -27,7 +27,7 @@ from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
 from isar.schema.card import Card
-from isar.schema.steering import IntensityMeasure
+from isar.schema.steering import IntensityMeasure, ParamConstraints
 from isar.session import branch_model, calibrations, guidelines as guide_mod, ingest, router, session_prior
 
 # Steering Phase 2c: apply the low-q branch soft-constraint when the dispersion prior predicts a
@@ -360,6 +360,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "cost_per_dof": (best.cost_per_dof if best else None),
         "n_modes": n_modes, "modes": modes,
         "fit_kind": (best.fit_kind if best else "unconstrained"),
+        "gamma_at_bound": bool(getattr(best, "gamma_at_bound", False)) if best else False,
     }
 
 
@@ -810,6 +811,32 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         return ScanEntry(status="non_result",
                          reasons=[f"fit error ({type(exc).__name__}): {exc}"] + region_reasons,
                          provenance={"resolution_version": calres.resolution_version}, **base)
+
+    # Steering Phase 3b — hard-fix escalation: if the (soft / Stokes-only) fit STILL rails Γ to its
+    # bound (true low-count degeneracy — Γ un-identifiable even under the soft prior) and the branch
+    # predicts Γ within its anchor range, re-fit with Γ frozen to the branch value (k reduced,
+    # tagged branch_conditional). Only in-range (never hard-fix an extrapolated branch); adopted
+    # only if it converges and no longer rails. A soft A constraint, if any, is preserved.
+    if fit.get("gamma_at_bound") and prior is not None and np.isfinite(prior.omega0):
+        pred = branch_model.branch_for(card.state, sample=sample, T=T, omega0=float(prior.omega0))
+        if pred is not None and pred.in_anchor_range and pred.gamma > 0:
+            soft = dict(ctx.constraints.soft) if ctx.constraints is not None else {}
+            soft.pop("phonon.Gamma", None)                 # Γ becomes hard, not soft
+            hctx = replace(ctx, constraints=ParamConstraints(
+                soft=soft, hard={"phonon.Gamma": float(pred.gamma)}))
+            try:
+                hfit = fit_one(hctx, card, prior=prior, M=M, seed=seed, structure_labels=labels,
+                               peaks=peaks, errors_tier=errors_tier, boot_workers=boot_workers,
+                               boot_executor=boot_executor, boot_adaptive=boot_adaptive)
+            except Exception:  # noqa: BLE001 — escalation is best-effort; keep the original fit
+                hfit = None
+            if hfit is not None and hfit.get("omega0") is not None \
+                    and not hfit.get("gamma_at_bound"):
+                fit = hfit
+                region_reasons.append(
+                    f"hard-fix escalation: Γ frozen to branch {pred.gamma:.2f} meV "
+                    f"(branch_conditional; soft prior alone left Γ at bound)")
+
     fit["reasons"].extend(region_reasons)
 
     disposition = gold_mod.verdict_disposition(fit["verdict"])
