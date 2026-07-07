@@ -62,6 +62,8 @@ def _is_clean_anchor(p: dict, sample, t_bin) -> bool:
     intensity, and is well-separated from the elastic line (ω₀ ≳ 2Γ and ≳ SEP·resolution)."""
     if p.get("sample") != sample:
         return False
+    if p.get("fit_kind", "unconstrained") != "unconstrained":
+        return False                       # contract 4: a constrained/demoted fit never seeds a branch
     tb = p.get("t_bin", p.get("T"))
     if tb is None or abs(float(tb) - float(t_bin)) > 1e-9:
         return False

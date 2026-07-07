@@ -59,6 +59,19 @@ def test_clean_anchor_gate_rejects():
     # not separated from the elastic line (ω₀ < 2Γ)
     merged = _pt("S:1", 0.4, 0.5, 100.0)
     assert BM._is_clean_anchor(merged, "S", 100.0) is False
+    # contract 4: a constrained fit never seeds a branch (no self-reinforcement)
+    constrained = dict(good); constrained["fit_kind"] = "soft_prior"
+    assert BM._is_clean_anchor(constrained, "S", 100.0) is False
+
+
+def test_add_point_stores_fit_kind_only_when_constrained():
+    st = CardState()
+    SP.add_point(st, scan_id="a", sample="S", T=100, q=[3, 0.1, 0], omega0=5.0, modality="fold",
+                 verdict="resolved", fit_kind="unconstrained")
+    assert "fit_kind" not in st.dispersion_prior[0]      # default omitted (lean point)
+    SP.add_point(st, scan_id="b", sample="S", T=100, q=[3, 0.1, 0], omega0=5.0, modality="fold",
+                 verdict="resolved", fit_kind="soft_prior")
+    assert st.dispersion_prior[1]["fit_kind"] == "soft_prior"
 
 
 # --------------------------------------------------------------------------- soft constraints

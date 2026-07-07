@@ -25,7 +25,8 @@ SAME_T_TOL = 0.5        # K — "same temperature" for pooling (matches predict_
 
 
 def add_point(state: CardState, *, scan_id, sample, T, q, omega0, modality, verdict,
-              gamma=None, gamma_err=None, intensity=None, t_round: float = 5.0) -> bool:
+              gamma=None, gamma_err=None, intensity=None, fit_kind=None,
+              t_round: float = 5.0) -> bool:
     """Append/replace a prior point, gated to resolved + fold. Returns True if a point was stored.
 
     ``gamma``/``gamma_err`` and ``intensity`` (a portable :class:`~isar.schema.steering.IntensityMeasure`
@@ -51,6 +52,8 @@ def add_point(state: CardState, *, scan_id, sample, T, q, omega0, modality, verd
         point["gamma_err"] = float(gamma_err)
     if intensity is not None:
         point["intensity"] = intensity   # already a JSON-able IntensityMeasure dict
+    if fit_kind and fit_kind != "unconstrained":
+        point["fit_kind"] = fit_kind     # contract 4: a constrained/demoted fit must not seed a branch
     # Replace an existing point for the same scan (a re-fit supersedes).
     state.dispersion_prior = [p for p in state.dispersion_prior if p.get("scan_id") != scan_id]
     state.dispersion_prior.append(point)

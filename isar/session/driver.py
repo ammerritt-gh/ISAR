@@ -28,7 +28,12 @@ from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
 from isar.schema.card import Card
 from isar.schema.steering import IntensityMeasure
-from isar.session import calibrations, guidelines as guide_mod, ingest, router, session_prior
+from isar.session import branch_model, calibrations, guidelines as guide_mod, ingest, router, session_prior
+
+# Steering Phase 2c: apply the low-q branch soft-constraint when the dispersion prior predicts a
+# phonon within this many resolution FWHM of the elastic line (the merging regime where Γ/A go
+# unidentifiable). Above it the peak is well separated and the fit is left unconstrained.
+LOW_Q_FWHM_FACTOR = 2.0
 from isar.session.state import ScanEntry, SessionState, content_hash
 from isar.session.workspace import Workspace
 
@@ -81,6 +86,9 @@ class FitOutcome:
     # independent of the phonon model. Attached to every scan; nothing decides on it yet (the Phase-4
     # falsification gate compares its peak count to the fitted mode count). None on older ledgers.
     descriptor: dict | None = None
+    # Fit provenance (steering contract 4): unconstrained | soft_prior | branch_conditional |
+    # stokes_only | descriptor_only. Anything but "unconstrained" is not an ordinary phonon fit.
+    fit_kind: str = "unconstrained"
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -351,6 +359,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "gamma": (best.gamma if best else None),
         "cost_per_dof": (best.cost_per_dof if best else None),
         "n_modes": n_modes, "modes": modes,
+        "fit_kind": (best.fit_kind if best else "unconstrained"),
     }
 
 
@@ -587,7 +596,8 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
                                     T=oc.get("T"), q=oc.get("q"), omega0=oc.get("omega0"),
                                     modality=oc.get("modality"), verdict=oc.get("verdict"),
                                     gamma=oc.get("gamma"), gamma_err=g_err,
-                                    intensity=oc.get("intensity"), t_round=t_round)
+                                    intensity=oc.get("intensity"),
+                                    fit_kind=oc.get("fit_kind"), t_round=t_round)
             summary.outcomes.append((scan, FitOutcome(**oc) if not isinstance(oc, FitOutcome) else oc))
 
     # Collate (all records, whole-experiment view).
@@ -726,7 +736,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         calib=calres.summary(), reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
         interval_reliable=fit.get("interval_reliable", True), omega0_profile=fit.get("omega0_profile"),
         hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
-        pooled=True, n_members=int(ms.n_members), descriptor=_scan_descriptor(ctx))
+        pooled=True, n_members=int(ms.n_members), descriptor=_scan_descriptor(ctx),
+        fit_kind=fit.get("fit_kind", "unconstrained"))
     entry = ScanEntry(status="fitted", **base)
     entry.detectors[det] = outcome.to_dict()
     entry.provenance = {"pooled": True, "n_members": int(ms.n_members),
@@ -774,6 +785,23 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         return ScanEntry(status="non_result", reasons=rs,
                          provenance={"resolution_version": calres.resolution_version}, **base)
 
+    # Steering Phase 2c — LOW-q rescue: near the zone centre the acoustic peak merges with the
+    # elastic line and Γ/A go unidentifiable. If the dispersion prior predicts a phonon within
+    # LOW_Q_FWHM_FACTOR·resolution of the elastic line AND a branch model exists, softly pin Γ and A
+    # to the branch (contract 1: penalty enters the objective only) and let ω₀ float. Off for
+    # well-separated peaks and whenever no branch/prior is available (⇒ no behavior change there).
+    if prior is not None and np.isfinite(prior.omega0) \
+            and prior.omega0 < LOW_Q_FWHM_FACTOR * ctx.gauss_fwhm:
+        pred = branch_model.branch_for(card.state, sample=sample, T=T, omega0=float(prior.omega0))
+        if pred is not None:
+            exposure, _mode = _exposure_per_point(rec, ctx)
+            cons = pred.soft_constraints(exposure if np.isfinite(exposure) else 0.0)
+            if not cons.is_empty():
+                ctx = replace(ctx, constraints=cons)
+                region_reasons.append(
+                    f"low-q branch soft-constraint applied (Γ≈{pred.gamma:.2f}±{pred.gamma_sigma:.2f}, "
+                    f"A from 1/ω{'' if pred.in_anchor_range else '; extrapolated'})")
+
     try:
         fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
                       errors_tier=errors_tier, boot_workers=boot_workers,
@@ -807,7 +835,8 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         interval_reliable=fit.get("interval_reliable", True),
         omega0_profile=fit.get("omega0_profile"),
         hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
-        intensity=_intensity_measure(rec, ctx, fit), descriptor=_scan_descriptor(ctx))
+        intensity=_intensity_measure(rec, ctx, fit), descriptor=_scan_descriptor(ctx),
+        fit_kind=fit.get("fit_kind", "unconstrained"))
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is
