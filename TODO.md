@@ -121,10 +121,14 @@ Decisions settled 2026-07-06:
       per-q stuck semantics). Full writeup: `docs/MVP_FIRST_RUN.md`.
 - [ ] **Production-fit latency — NEXT TEST.** Scans are near-instant on the deterministic
       tier; each production/confirm fit runs the full bootstrap layer (~1–2 min), so a
-      campaign (~50+ production-tier fits) is fitting-bound. Candidates: fewer bootstrap
-      replicates gated on the tolerance actually needed, profile likelihood instead of
-      bootstrap, warm-start production fits from the quicklook result, batch fits across
-      pending scans.
+      campaign (~50+ production-tier fits) is fitting-bound. Two levers, cut fits before
+      you speed up each fit:
+      1. **Confirm churn.** A q with its half-width right at tolerance re-confirms forever
+         (first run: H=2.1 = 22 confirm fits, H=2.15 = 12, vs 1 each for well-inside q).
+         Cap confirms per q / abandon a q once *n* confirms fail to seat.
+      2. **Per-fit speed.** Fewer bootstrap replicates gated on the tolerance actually
+         needed, profile likelihood instead of bootstrap, warm-start production fits from
+         the quicklook result, batch fits across pending scans.
 - [ ] **Supervisor-model auto-fallback** — gpt-oss-120b throws transient 503s; today the
       operator pins `LLMM_SUPERVISOR_MODEL` by hand (deepseek-v4-pro:thinking is the proven
       backup). Fall back automatically down a probed shortlist.

@@ -70,6 +70,14 @@ completed run's `campaign_summary.json`.
   per-scan production fit (bootstrap workers are already parallel *within* a scan;
   candidates: replicate count vs tolerance need, profile-likelihood instead of bootstrap for
   the interval, warm-starting from the quicklook fit).
+- **Confirm churn at marginal q multiplies the fit count.** Observed in the first run: a q
+  whose calibrated half-width sits *right at* the 0.1 meV tolerance keeps earning a first
+  crossing (margin) but its confirm keeps landing just over bare tolerance, so it re-confirms
+  repeatedly — H=2.1 spent **22 confirm fits**, H=2.15 twelve, while the well-inside q's took
+  one each. This is the peeking guard (`stopping.q_converged`, `FIRST_CROSSING_MARGIN`) doing
+  its job against noise, but at marginal q it dominates the fit budget. Worth a cap or a
+  smarter margin (e.g. give up on a q once *n* confirms fail to seat) before, or alongside,
+  the per-fit speedup — cutting redundant confirms is a bigger win than shaving each fit.
 - Γ is structurally unmeasurable for an acoustic branch (ω₀ → 0); a smarter objective parser
   could exclude zone centers up front rather than spending 4 scans discovering it.
 - gpt-oss-120b availability is flaky; automatic supervisor-model fallback is TODO.
