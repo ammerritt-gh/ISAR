@@ -37,8 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--workers", type=int, default=None,
                     help="parallel fit workers across scans (default min(30, cpu-2); "
                          "env ISAR_WORKERS; 1 = serial)")
-    pr.add_argument("--errors", default="full", choices=["full", "cheap"],
-                    help="uncertainty depth: 'full' (MINOS+bootstrap+profile, default) or "
+    pr.add_argument("--errors", default="full", choices=["full", "fast", "cheap"],
+                    help="uncertainty depth: 'full' (MINOS+bootstrap+profile, default), "
+                         "'fast' (HESSE ω₀ interval + trust flag, no bootstrap), or "
                          "'cheap' (HESSE only — quick-look verdict + rough ω₀, no interval)")
 
     ps = sub.add_parser("status", help="summarize a workspace's ledger without reprocessing")

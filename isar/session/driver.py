@@ -63,6 +63,10 @@ class FitOutcome:
     # the parametric-bootstrap `interval` it stays well-defined when Γ→0 (the bound corner where the
     # bootstrap collapses), so the driver prefers it when `interval_reliable` is False.
     omega0_profile: tuple | None = None
+    # Fast (HESSE) tier: the delta-method ω₀ ± 1σ_HESSE interval and whether it is trusted as the
+    # convergence interval (Γ off-bound + PD covariance + counts). None/False on other tiers.
+    hesse_interval: tuple | None = None
+    hesse_trusted: bool = False
     # A "master" fit of the combine-before-divide pool of all scans at this (Q,T): pooled=True with
     # n_members = how many scans were summed. Per-scan fits leave these at their defaults.
     pooled: bool = False
@@ -72,6 +76,7 @@ class FitOutcome:
         d = dict(self.__dict__)
         d["interval"] = list(self.interval) if self.interval is not None else None
         d["omega0_profile"] = list(self.omega0_profile) if self.omega0_profile is not None else None
+        d["hesse_interval"] = list(self.hesse_interval) if self.hesse_interval is not None else None
         return d
 
 
@@ -134,6 +139,41 @@ def build_context(record, detector_id, card: Card, calres, prior, g: guide_mod.G
     return ctx, n_used, region_reasons
 
 
+# In-window detector counts for the asymptotic HESSE σ to be trusted as the ω₀ interval. Below this
+# the delta-method interval can under-cover, so the fast tier flags it untrusted → escalate to full.
+# Stage-5-calibratable (see docs/sigma_calibration_campaign.py).
+_HESSE_MIN_COUNTS = 2000.0
+
+
+def _in_window_counts(ctx) -> float:
+    """Total detector counts over the fit window (the kept points)."""
+    try:
+        counts = np.asarray(ctx.counts, dtype=float)
+        mask = np.asarray(ctx.mask, dtype=bool)
+        return float(counts[mask].sum())
+    except Exception:  # noqa: BLE001 — a malformed ctx just fails the counts gate
+        return 0.0
+
+
+def _hesse_interval_and_trust(best, ctx) -> tuple:
+    """(interval, trusted) for the fast tier.
+
+    ``interval`` is the delta-method ω₀ ± 1σ_HESSE (0.68, matching the bootstrap level), or None
+    when the HESSE σ is not a finite positive number (a non-positive-definite covariance on the
+    derived ω₀). ``trusted`` additionally requires the covariance to be valid, Γ off its zero-bound,
+    and enough in-window counts — the conditions under which HESSE σ ≈ the bootstrap half-width."""
+    if best is None:
+        return None, False
+    w0, sig = best.omega0, best.omega0_err_hesse
+    if w0 is None or sig is None or not np.isfinite(w0) or not np.isfinite(sig) or sig <= 0:
+        return None, False           # non-PD / degenerate → no usable HESSE interval
+    interval = (float(w0 - sig), float(w0 + sig))
+    trusted = (bool(getattr(best, "covariance_ok", False))
+               and not bool(getattr(best, "gamma_at_bound", False))
+               and _in_window_counts(ctx) >= _HESSE_MIN_COUNTS)
+    return interval, trusted
+
+
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
             errors_tier="full", boot_workers=1):
     """Two-stage structure fit (§ multiplicity), optionally narrowed by guideline labels, then
@@ -145,12 +185,16 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
 
     ``errors_tier`` selects the uncertainty depth. ``"full"`` (default, unchanged) runs MINOS +
     parametric bootstrap + ω₀ profile — the authoritative interval the stop rule consumes.
-    ``"cheap"`` is a driver quick-look tier: HESSE only (no MINOS/bootstrap/profile), so the
-    verdict + a rough HESSE ω₀ are produced ~an order of magnitude faster, but the ω₀ interval is
-    left empty and flagged unreliable so nothing downstream trusts it. ``boot_workers`` sets the
-    parametric-bootstrap process-pool size (1 = serial; see :func:`run_batch`)."""
-    full_errors = errors_tier != "cheap"
-    results = loop.fit_structures_two_stage(ctx, minos=full_errors, peaks=peaks)
+    ``"fast"`` runs the MIGRAD+HESSE fit only and reports the delta-method ω₀ interval
+    (``ω₀ ± 1σ_HESSE``) plus a ``hesse_trusted`` flag: in the asymptotic regime (Γ off-bound,
+    positive-definite HESSE σ, enough counts) that interval ≈ the bootstrap half-width, so the
+    driver can converge on it without paying for a bootstrap; untrusted → escalate to ``full``.
+    ``"cheap"`` is the quick-look tier: HESSE only, no interval at all (verdict + rough ω₀ to steer
+    acquisition, ~an order of magnitude faster). ``boot_workers`` sets the parametric-bootstrap
+    process-pool size (1 = serial; see :func:`run_batch`)."""
+    run_full = errors_tier == "full"     # MINOS + bootstrap + ω₀ profile (authoritative interval)
+    run_fast = errors_tier == "fast"     # HESSE ω₀ interval + trust flag, no bootstrap (fast loop)
+    results = loop.fit_structures_two_stage(ctx, minos=run_full, peaks=peaks)
     # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
     by_hyp = {h.label: h for h in enumerate_structures(ctx)}
     by_hyp.update({h.label: h for h in enumerate_multimode(ctx)})
@@ -167,7 +211,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     fits = {r.label: r for r in results}
 
     prelim = select.select_models(results, stamp=False)
-    if full_errors:
+    if run_full:
         for label in prelim.survivors:
             r = fits.get(label)
             if r is not None and r.optimizer_converged and label in by_hyp:
@@ -200,9 +244,21 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         interval_reliable = False
         reasons.append("phonon Γ at bound: ω₀ interval unreliable (resolution-limited spike, "
                        "degenerate bootstrap)")
-    # Cheap quick-look tier: no bootstrap/profile ran, so any interval is absent and the reported
-    # ω₀ carries only a rough HESSE σ — mark it untrustworthy so the stop rule never consumes it.
-    if not full_errors:
+    # Fast (HESSE) tier: no bootstrap/profile ran; report the delta-method ω₀ interval + trust gate.
+    # The bootstrap `interval`/profile are absent (interval_reliable=False); the loop keys off
+    # hesse_trusted instead, escalating to `full` when the asymptotic approximation does not hold.
+    hesse_interval = None
+    hesse_trusted = False
+    if run_fast:
+        hesse_interval, hesse_trusted = _hesse_interval_and_trust(best, ctx)
+        interval = None
+        omega0_profile = None
+        interval_reliable = False
+        reasons.append("fast-errors tier: HESSE ω₀ interval only "
+                       + ("(trusted)" if hesse_trusted else "(untrusted → escalate to full)"))
+    # Cheap quick-look tier: no interval at all, only a rough HESSE ω₀ — mark it untrustworthy so
+    # the stop rule never consumes it.
+    if errors_tier == "cheap":
         interval = None
         omega0_profile = None
         interval_reliable = False
@@ -217,6 +273,8 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "interval": (tuple(interval) if interval is not None else None),
         "omega0_profile": (tuple(omega0_profile) if omega0_profile is not None else None),
         "interval_reliable": interval_reliable,
+        "hesse_interval": (tuple(hesse_interval) if hesse_interval is not None else None),
+        "hesse_trusted": hesse_trusted,
         "modality": sel.modality, "best_label": sel.best,
         "gamma": (best.gamma if best else None),
         "cost_per_dof": (best.cost_per_dof if best else None),
@@ -421,8 +479,14 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
     # opts in with collation.merge == "merge". These pooled fits are what let a campaign accumulate
     # statistics by repeating a measurement; s30 (merge="separate") produces none. Never fatal.
     try:
+        # Master fits run AFTER the scan pool has torn down, so they take the full worker budget
+        # for their bootstrap regardless of the per-scan `boot_workers` (which is throttled to 1
+        # during a multi-scan pool to avoid nested oversubscription). Masters run serially w.r.t.
+        # each other, so no nesting here.
+        master_boot_workers = _resolve_boot_workers(scan_workers)
         n_masters = _fit_masters(summary.collation, records, card, runcal, g, session,
-                                 M=M, seed_base=seed_base, errors_tier=errors_tier, force=force)
+                                 M=M, seed_base=seed_base, errors_tier=errors_tier, force=force,
+                                 boot_workers=master_boot_workers)
         if n_masters:
             summary.context_lines.append(f"fit {n_masters} merged master scan(s)")
     except Exception as exc:  # noqa: BLE001 — master fitting is additive; a failure never kills the batch
@@ -444,7 +508,7 @@ _MASTER_SCAN_BASE = 9_000_000
 
 
 def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
-                 errors_tier="full", force=False) -> int:
+                 errors_tier="full", force=False, boot_workers=1) -> int:
     """Fit the merged master scan for each (Q,T) group; returns how many were (re)fit this run.
 
     Runs only when the card opts in (``collation.merge == "merge"``). Each group's pooled
@@ -473,14 +537,15 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
         member_scan, member_det = ms.members[0][1], ms.members[0][2]
         entry = _fit_master_group(ms, grp, rec_by_scan.get(member_scan), member_det, card, runcal, g,
                                   master_id, _MASTER_SCAN_BASE + idx, chash,
-                                  M=M, seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier)
+                                  M=M, seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier,
+                                  boot_workers=boot_workers)
         session.put(entry)
         n_fit += 1
     return n_fit
 
 
 def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number,
-                      chash, *, M, seed, errors_tier="full") -> ScanEntry:
+                      chash, *, M, seed, errors_tier="full", boot_workers=1) -> ScanEntry:
     """Fit one merged group's pooled spectrum → a ``pooled=True`` ScanEntry (or a non_result)."""
     det = member_det or "merged"
     base = dict(scan_id=master_id, scan_number=int(scan_number), scan_type="measurement",
@@ -510,7 +575,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                       instrument=card.policy.instrument, energy_status=card.policy.energy_status,
                       prior_omega=None, quasielastic_fwhm=card.policy.quasielastic_fwhm)
     try:
-        fit = fit_one(ctx, card, prior=None, M=M, seed=seed, errors_tier=errors_tier)
+        fit = fit_one(ctx, card, prior=None, M=M, seed=seed, errors_tier=errors_tier,
+                      boot_workers=boot_workers)
     except Exception as exc:  # noqa: BLE001 — one unfittable pool must not kill the batch (N=16 wrinkle)
         return ScanEntry(status="non_result",
                          reasons=[f"{master_id}: fit error ({type(exc).__name__}): {exc}"], **base)
@@ -525,6 +591,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         q=q, T=T, sample=str(grp.key_fields.get("sample", "")), prior_used=None,
         calib=calres.summary(), reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
         interval_reliable=fit.get("interval_reliable", True), omega0_profile=fit.get("omega0_profile"),
+        hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
         pooled=True, n_members=int(ms.n_members))
     entry = ScanEntry(status="fitted", **base)
     entry.detectors[det] = outcome.to_dict()
@@ -602,7 +669,8 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         q=q, T=T, sample=sample, prior_used=prior_used, calib=calres.summary(),
         reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
         interval_reliable=fit.get("interval_reliable", True),
-        omega0_profile=fit.get("omega0_profile"))
+        omega0_profile=fit.get("omega0_profile"),
+        hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False))
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is
@@ -649,7 +717,8 @@ def _tally(session: SessionState) -> dict:
 _CSV_COLUMNS = [
     "scan", "detector", "sample", "T", "h", "k", "l", "status", "verdict", "disposition",
     "confidence", "omega0", "omega0_err", "interval_lo", "interval_hi", "interval_reliable",
-    "omega0_profile_lo", "omega0_profile_hi", "pooled", "n_members",
+    "omega0_profile_lo", "omega0_profile_hi", "hesse_lo", "hesse_hi", "hesse_trusted",
+    "pooled", "n_members",
     "gamma", "gamma_provisional", "n_modes", "secondary_omega0", "secondary_omega0_err",
     "best_model", "cost_per_dof", "zero", "zero_source", "gauss_fwhm",
     "lorentz_fwhm", "resolution_source", "resolution_version", "prior_omega", "prior_sigma",
@@ -686,6 +755,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
             q = oc.get("q") or [None, None, None]
             iv = oc.get("interval")
             piv = oc.get("omega0_profile")
+            hiv = oc.get("hesse_interval")
             cal = oc.get("calib") or {}
             pr = oc.get("prior_used") or {}
             rows.append({
@@ -698,6 +768,8 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "interval_reliable": oc.get("interval_reliable", True),
                 "omega0_profile_lo": (piv[0] if piv else None),
                 "omega0_profile_hi": (piv[-1] if piv else None),
+                "hesse_lo": (hiv[0] if hiv else None), "hesse_hi": (hiv[-1] if hiv else None),
+                "hesse_trusted": oc.get("hesse_trusted"),
                 "pooled": oc.get("pooled") or None, "n_members": oc.get("n_members"),
                 "gamma": oc.get("gamma"), "gamma_provisional": oc.get("gamma_provisional"),
                 "n_modes": oc.get("n_modes") or 1,

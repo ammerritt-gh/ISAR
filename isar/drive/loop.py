@@ -100,23 +100,28 @@ def _row_hkl(row: dict):
 def _pick_interval(row: dict) -> tuple:
     """The (lo, hi) the convergence test should use, and whether it is trustworthy.
 
-    The parametric-bootstrap ``interval_lo/hi`` is the default, but when ISAR flags it unreliable
-    (``interval_reliable`` is False — a phonon Γ railed to its bound collapses the bootstrap ω₀
-    interval to a spurious spike), the exact ω₀ **profile** interval is used instead: it stays
-    well-defined in the Γ→0 corner. Returns ``(lo, hi, ok)``; ``ok`` is False when neither a reliable
-    bootstrap nor a profile interval is available (→ no calibrated half-width, q not converged).
+    Precedence, most-authoritative first: the parametric-bootstrap ``interval_lo/hi`` (full tier)
+    when ISAR does not flag it unreliable; else the exact ω₀ **profile** interval (full tier, robust
+    in the Γ→0 corner where the bootstrap collapses to a spurious spike); else the delta-method
+    **HESSE** interval (fast tier) when ISAR marks it ``hesse_trusted`` — the asymptotic regime where
+    HESSE σ ≈ the bootstrap half-width, so the loop can converge without paying for a bootstrap.
+    Returns ``(lo, hi, ok)``; ``ok`` is False when none is available (→ no calibrated half-width, q
+    not converged: an untrusted HESSE fit escalates to the full tier rather than certifying).
     """
     lo, hi = row.get("interval_lo"), row.get("interval_hi")
     plo, phi = row.get("omega0_profile_lo"), row.get("omega0_profile_hi")
+    hlo, hhi = row.get("hesse_lo"), row.get("hesse_hi")
     reliable = row.get("interval_reliable")            # bool | None (None = older ledger → trust it)
     if reliable is not False and lo is not None and hi is not None:
-        return lo, hi, True
+        return lo, hi, True                            # bootstrap (well-constrained, full tier)
     if plo is not None and phi is not None:            # bootstrap flagged → the profile interval
-        return plo, phi, True
+        return plo, phi, True                          # profile (Γ-at-bound robust, full tier)
+    if hlo is not None and hhi is not None and row.get("hesse_trusted"):
+        return hlo, hhi, True                          # trusted HESSE (fast tier)
     return None, None, False
 
 
-def _observation_from_row(row: dict, proposal, calibration: Calibration) -> dict:
+def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibration) -> dict:
     disp = row.get("disposition")
     verdict = row.get("verdict")
     # `flagged` (model_incomplete) still carries a usable ω₀ — for an ω₀-tolerance objective the flag
@@ -126,10 +131,10 @@ def _observation_from_row(row: dict, proposal, calibration: Calibration) -> dict
     lo, hi, ok = _pick_interval(row)
     if usable and ok:
         try:
-            hw = calibration.calibrated_halfwidth(lo, hi, bucket=str(proposal.ncount))
+            hw = calibration.calibrated_halfwidth(lo, hi, bucket=str(ncount))
         except Exception:   # noqa: BLE001  (bad interval → treat as un-calibratable, not a crash)
             hw = None
-    elif usable and proposal.kind == "quicklook":
+    elif usable and kind == "quicklook":
         # Cheap-tier quicklooks carry only a HESSE omega0_err (no bootstrap interval). Good enough to
         # SEED the ω(q) acquisition model (steering only); it never reaches the stop rule, which
         # consumes the master (pooled) half-width built from a real interval.
@@ -137,11 +142,11 @@ def _observation_from_row(row: dict, proposal, calibration: Calibration) -> dict
         if err is not None and w0 is not None and float(err) > 0:
             try:
                 hw = calibration.calibrated_halfwidth(float(w0) - float(err), float(w0) + float(err),
-                                                      bucket=str(proposal.ncount))
+                                                      bucket=str(ncount))
             except Exception:   # noqa: BLE001
                 hw = None
     return {
-        "hkl": _row_hkl(row), "kind": proposal.kind, "calibrated_halfwidth": hw,
+        "hkl": _row_hkl(row), "kind": kind, "calibrated_halfwidth": hw,
         "resolved": usable, "disposition": disp, "verdict": verdict,
         "omega0": row.get("omega0"), "scan": row.get("scan"), "detector": row.get("detector"),
     }
@@ -176,6 +181,67 @@ def _read_master_rows(workspace, calibration: Calibration) -> list[dict]:
     for r in rows:
         if r.get("pooled") and _row_hkl(r) is not None:
             out.append(_master_obs_from_row(r, calibration))
+    return out
+
+
+def _hkl_close(a, b, tol: float = 1e-4) -> bool:
+    return a is not None and b is not None and all(abs(x - y) <= tol for x, y in zip(a, b))
+
+
+def _q_needs_full_errors(workspace, hkl) -> bool:
+    """Whether this production q needs the full (bootstrap+profile) tier rather than fast (HESSE).
+
+    True when the q already has a usable fit whose only error is an UNtrusted HESSE interval and no
+    trustworthy interval yet — the Γ-at-bound / low-count corner where the fast HESSE σ cannot be
+    trusted and only the exact profile interval certifies. False when the q has a trusted HESSE (or an
+    existing reliable bootstrap/profile), so it stays on the cheap fast tier."""
+    try:
+        rows = read_results_csv(workspace)
+    except FileNotFoundError:
+        return False
+    saw_untrusted = False
+    for r in rows:
+        if not _hkl_close(_row_hkl(r), hkl):
+            continue
+        if r.get("disposition") not in _USABLE or r.get("omega0") is None:
+            continue
+        if _pick_interval(r)[2]:
+            return False                              # already have a trustworthy interval → fast is fine
+        if r.get("hesse_lo") is not None and not r.get("hesse_trusted"):
+            saw_untrusted = True
+    return saw_untrusted
+
+
+def _errors_arg_for(proposal, workspace) -> list[str]:
+    """The ``isar run --errors`` tier for this proposal (LLM_HARNESS_DESIGN §8 escalation ladder):
+
+    - quicklook → ``cheap`` (HESSE only, no interval — steers the ω(q) model);
+    - production → ``fast`` (HESSE interval + trust flag, no bootstrap) by default, escalating to
+      ``full`` (bootstrap+profile) once the q shows an untrusted-HESSE fit that needs the reliable
+      interval. The bootstrap thus fires only where the fast HESSE approximation cannot be trusted.
+    """
+    if proposal.kind == "quicklook":
+        return ["--errors", "cheap"]
+    if _q_needs_full_errors(workspace, (proposal.h, proposal.k, proposal.l)):
+        return ["--errors", "full"]
+    return ["--errors", "fast"]
+
+
+def _recertified_observations(workspace, calibration: Calibration, scan_kind: dict) -> list[dict]:
+    """Rebuild the per-scan observations from the (now bootstrap-certified) results.csv so the campaign
+    summary reports certified intervals. Uses the recorded ``(kind, ncount)`` per (scan, detector);
+    pooled/master rows are excluded (read separately via :func:`_read_master_rows`)."""
+    try:
+        rows = read_results_csv(workspace)
+    except FileNotFoundError:
+        return []
+    out = []
+    for r in rows:
+        if r.get("pooled") or _row_hkl(r) is None:
+            continue
+        kind, ncount = scan_kind.get((r.get("scan"), r.get("detector")),
+                                     ("production", PRODUCTION_NCOUNT))
+        out.append(_observation_from_row(r, kind, ncount, calibration))
     return out
 
 
@@ -243,6 +309,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
 
     observations: list[dict] = []
     consumed: set = set()
+    scan_kind: dict = {}          # (scan, detector) -> (kind, ncount), to rebuild obs after certify
     scan_counter = 0
 
     log_event(log_path, "decide", {"event": "campaign_start", "objective": objective.to_dict(),
@@ -317,16 +384,17 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             if not (workspace / "card.policy.toml").exists():
                 init_isar(workspace, scan_path)
                 log_event(log_path, "decide", {"event": "workspace_init", "probe": str(scan_path)})
-            # Quick-look scans need only a verdict + rough ω₀ to steer acquisition — fit them
-            # cheap (HESSE, no bootstrap/profile). Production/confirm scans, whose interval the
-            # stop rule consumes, get the full uncertainty layer.
-            errors_arg = ["--errors", "cheap"] if proposal.kind == "quicklook" else None
+            # Error tier per the escalation ladder: quicklook → cheap (steer only), production →
+            # fast (HESSE interval + trust flag), escalating to full (bootstrap+profile) only where an
+            # untrusted-HESSE q needs the reliable interval. The bootstrap fires only where needed.
+            errors_arg = _errors_arg_for(proposal, workspace)
             run_isar(workspace, [data_dir], extra_args=errors_arg)
-            log_event(log_path, "analyze", {"job_id": job_id})
+            log_event(log_path, "analyze", {"job_id": job_id, "errors_tier": errors_arg[-1]})
 
             rows = _new_rows(workspace, consumed)
             for r in rows:
-                observations.append(_observation_from_row(r, proposal, calibration))
+                observations.append(_observation_from_row(r, proposal.kind, proposal.ncount, calibration))
+                scan_kind[(r.get("scan"), r.get("detector"))] = (proposal.kind, proposal.ncount)
 
             if not _rows_missed(rows):
                 break
@@ -359,12 +427,31 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                        "converged": sum(1 for g in grid if g.converged),
                                        "n_grid": len(grid)})
 
-    master_rows = _read_master_rows(workspace, calibration)
-    if decision is None:
-        grid = summarize_grid(objective, observations, master_rows)
-        decision = evaluate_stop(objective, grid, budget_state, calibration=calibration, floor=floor)
+    # Certification: the loop converged on fast HESSE intervals; run ONE full bootstrap+profile pass
+    # (forced) so every reported ω₀ interval is bootstrap-backed (the "one bootstrap to certify"
+    # decision). Bounded — once, at the end, only when the objective is met. Then re-evaluate honestly:
+    # if a q's bootstrap-certified interval crosses tolerance the summary reflects that, not the
+    # optimistic fast-tier stop (the triage tool reports the certified truth).
+    ran_certify = decision is not None and decision.state == "met"
+    if ran_certify:
+        log_event(log_path, "decide", {"event": "certify_start", "tier": "full"})
+        try:
+            run_isar(workspace, [data_dir], extra_args=["--errors", "full", "--force"])
+            observations = _recertified_observations(workspace, calibration, scan_kind)
+            log_event(log_path, "decide", {"event": "certify_done"})
+        except Exception as e:   # noqa: BLE001 — never lose a met campaign to a certification hiccup
+            log_event(log_path, "exception", {"action": "certify_failed", "error": str(e)})
+            ran_certify = False
 
+    master_rows = _read_master_rows(workspace, calibration)
     grid = summarize_grid(objective, observations, master_rows)
+    if decision is None or ran_certify:
+        decision = evaluate_stop(objective, grid, budget_state, calibration=calibration, floor=floor)
+        if ran_certify and decision.state != "met":
+            log_event(log_path, "exception",
+                      {"action": "certify_regression", "state": decision.state,
+                       "note": "a q's bootstrap-certified interval exceeded the fast-tier stop"})
+
     summary = _campaign_summary(objective, grid, decision, budget_state, workspace, log_path,
                                 len(observations))
     log_event(log_path, "stop", {"state": decision.state, "reasons": decision.reasons})

@@ -211,6 +211,66 @@ def test_fit_one_single_peak_leaves_secondary_blank(tmp_path):
     assert row["secondary_omega0"] is None and row["secondary_omega0_err"] is None
 
 
+# --------------------------------------------------------------------------- fast (HESSE) tier
+def test_hesse_trust_gate_unit():
+    # Pure gate logic (no fitting): Γ off-bound + PD σ + counts ≥ floor → trusted; each failure mode
+    # flips it; a non-finite/non-positive σ yields no interval at all.
+    ctx_hi = types.SimpleNamespace(counts=np.full(50, 100.0), mask=np.ones(50, dtype=bool))  # 5000
+    good = types.SimpleNamespace(omega0=5.0, omega0_err_hesse=0.02, covariance_ok=True,
+                                 gamma_at_bound=False)
+    iv, trusted = driver._hesse_interval_and_trust(good, ctx_hi)
+    assert iv == (pytest.approx(4.98), pytest.approx(5.02)) and trusted is True
+
+    gb = types.SimpleNamespace(omega0=5.0, omega0_err_hesse=0.02, covariance_ok=True,
+                               gamma_at_bound=True)                       # Γ at bound → untrusted
+    iv2, t2 = driver._hesse_interval_and_trust(gb, ctx_hi)
+    assert iv2 is not None and t2 is False
+
+    ctx_lo = types.SimpleNamespace(counts=np.full(50, 1.0), mask=np.ones(50, dtype=bool))     # 50
+    assert driver._hesse_interval_and_trust(good, ctx_lo)[1] is False      # low counts → untrusted
+
+    bad = types.SimpleNamespace(omega0=5.0, omega0_err_hesse=float("nan"), covariance_ok=False,
+                                gamma_at_bound=False)
+    assert driver._hesse_interval_and_trust(bad, ctx_hi) == (None, False)  # non-PD → no interval
+
+
+def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
+    # A well-resolved single peak with plenty of counts: the fast tier reports a trusted HESSE
+    # interval and runs NO bootstrap/profile (interval + omega0_profile stay None).
+    x = np.linspace(-8.0, 16.0, 81)
+    counts = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
+                                 peak="stokes+astokes") + 8.0
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
+                      center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero")
+    fit = driver.fit_one(ctx, _card_with_fitting({}), prior=None, M=20, seed=1, errors_tier="fast")
+
+    assert fit["hesse_interval"] is not None
+    lo, hi = fit["hesse_interval"]
+    assert lo < fit["omega0"] < hi
+    assert fit["hesse_trusted"] is True
+    assert fit["interval"] is None and fit["omega0_profile"] is None     # no bootstrap/profile ran
+    assert fit["interval_reliable"] is False
+
+    outcome = driver.FitOutcome(
+        detector_id="ana7", verdict=fit["verdict"], disposition="resolved",
+        confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
+        interval=fit["interval"], modality=fit["modality"], gamma=fit["gamma"],
+        gamma_provisional=False, best_label=fit["best_label"], cost_per_dof=fit["cost_per_dof"],
+        q=[3.0, 0.2, 0.0], T=50.0, sample="S", prior_used=None, calib={},
+        reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
+        hesse_interval=fit["hesse_interval"], hesse_trusted=fit["hesse_trusted"])
+    st = SessionState()
+    st.put(ScanEntry(scan_id="E:9:ana7", scan_number=9, scan_type="measurement",
+                     status="fitted", detectors={"ana7": outcome.to_dict()}))
+    ws = Workspace.open(tmp_path / "ws")
+    ws.root.mkdir(parents=True)
+    driver._write_results_csv(ws, st)
+    row = readers.read_results_csv(ws.root)[0]
+    assert isinstance(row["hesse_lo"], float) and isinstance(row["hesse_hi"], float)
+    assert row["hesse_trusted"] is True
+
+
 # --------------------------------------------------------------------------- report.json modes
 def _report_card():
     pol = card_mod.CardPolicy(

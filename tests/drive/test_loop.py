@@ -12,7 +12,9 @@ from pathlib import Path
 import pytest
 
 from isar.drive.acquisition.calibration import Calibration
-from isar.drive.loop import _pick_interval, run_campaign
+import types
+
+from isar.drive.loop import _errors_arg_for, _pick_interval, run_campaign
 from isar.drive.objective import ObjectiveSpec
 from isar.drive.session_log import read_log
 from isar.drive.supervisor.stopping import PRODUCTION_NCOUNT, QUICKLOOK_NCOUNT
@@ -66,10 +68,14 @@ class MockTavi:
 import math as _math
 
 
-def make_mock_runner(omega_true, *, window_gate=True):
+def make_mock_runner(omega_true, *, window_gate=True, hesse_only=False):
     """A fake `isar run`: writes results.csv from the saved scans, including the master (pooled) row
     per (Q,T) that ISAR now emits. The master's interval shrinks ~1/√N with the pooled production
-    count, so a q converges by accumulation. Declines when the window misses the peak."""
+    count, so a q converges by accumulation. Declines when the window misses the peak.
+
+    ``hesse_only=True`` makes production + master rows carry a *trusted HESSE* interval
+    (``hesse_lo/hi`` + ``hesse_trusted``) with the bootstrap ``interval_lo/hi`` empty — the fast-tier
+    path, so the loop converges on HESSE and then runs its certification pass."""
     assigned: dict[str, int] = {}
 
     def runner(workspace, data_paths, **kw):
@@ -95,8 +101,12 @@ def make_mock_runner(omega_true, *, window_gate=True):
             else:
                 raw_hw = 0.6 if n <= QUICKLOOK_NCOUNT else 0.3
                 base.update({"verdict": "resolved", "disposition": "resolved", "omega0": true,
-                             "interval_lo": true - raw_hw, "interval_hi": true + raw_hw,
                              "confidence": 0.9, "reasons": "resolved"})
+                if hesse_only and n > QUICKLOOK_NCOUNT:
+                    base.update({"hesse_lo": true - raw_hw, "hesse_hi": true + raw_hw,
+                                 "hesse_trusted": True})
+                else:
+                    base.update({"interval_lo": true - raw_hw, "interval_hi": true + raw_hw})
                 if n > QUICKLOOK_NCOUNT:
                     prod_per_h[h] = prod_per_h.get(h, 0) + 1
             rows.append(base)
@@ -105,17 +115,22 @@ def make_mock_runner(omega_true, *, window_gate=True):
         for h, npool in sorted(prod_per_h.items()):
             hw = 0.3 / _math.sqrt(npool)
             true = omega_true(h)
-            rows.append({"scan": master_scan, "detector": "det", "h": h, "k": 0.0, "l": 0.0,
-                         "status": "fitted", "verdict": "resolved", "disposition": "resolved",
-                         "omega0": true, "interval_lo": true - hw, "interval_hi": true + hw,
-                         "interval_reliable": True, "pooled": True, "n_members": npool,
-                         "confidence": 0.9, "reasons": "pooled master"})
+            mrow = {"scan": master_scan, "detector": "det", "h": h, "k": 0.0, "l": 0.0,
+                    "status": "fitted", "verdict": "resolved", "disposition": "resolved",
+                    "omega0": true, "interval_reliable": True, "pooled": True, "n_members": npool,
+                    "confidence": 0.9, "reasons": "pooled master"}
+            if hesse_only:
+                mrow.update({"hesse_lo": true - hw, "hesse_hi": true + hw, "hesse_trusted": True})
+            else:
+                mrow.update({"interval_lo": true - hw, "interval_hi": true + hw})
+            rows.append(mrow)
             master_scan += 1
         report = Path(workspace) / "report"
         report.mkdir(parents=True, exist_ok=True)
         cols = ["scan", "detector", "h", "k", "l", "status", "verdict", "disposition",
                 "confidence", "omega0", "omega0_err", "interval_lo", "interval_hi",
-                "interval_reliable", "pooled", "n_members", "reasons"]
+                "interval_reliable", "hesse_lo", "hesse_hi", "hesse_trusted",
+                "pooled", "n_members", "reasons"]
         with open(report / "results.csv", "w", newline="", encoding="utf-8") as fh:
             w = csv.DictWriter(fh, fieldnames=cols)
             w.writeheader()
@@ -147,6 +162,82 @@ def test_pick_interval_unusable_when_flagged_and_no_profile():
     row = {"interval_lo": 0.9499, "interval_hi": 0.9501, "interval_reliable": False,
            "omega0_profile_lo": None, "omega0_profile_hi": None}
     assert _pick_interval(row) == (None, None, False)
+
+
+def test_pick_interval_uses_trusted_hesse_when_no_bootstrap():
+    # Fast tier: only the HESSE interval is present and trusted → use it.
+    row = {"interval_lo": None, "interval_hi": None, "interval_reliable": None,
+           "omega0_profile_lo": None, "omega0_profile_hi": None,
+           "hesse_lo": 4.95, "hesse_hi": 5.05, "hesse_trusted": True}
+    assert _pick_interval(row) == (4.95, 5.05, True)
+
+
+def test_pick_interval_untrusted_hesse_is_unusable():
+    # Fast tier, untrusted (Γ-at-bound / low counts): not usable → escalate to full, don't certify.
+    row = {"interval_lo": None, "interval_hi": None, "interval_reliable": None,
+           "hesse_lo": 4.95, "hesse_hi": 5.05, "hesse_trusted": False}
+    assert _pick_interval(row) == (None, None, False)
+
+
+def test_pick_interval_bootstrap_outranks_hesse():
+    # Full tier present alongside HESSE → bootstrap wins (most authoritative).
+    row = {"interval_lo": 4.9, "interval_hi": 5.1, "interval_reliable": True,
+           "hesse_lo": 4.95, "hesse_hi": 5.05, "hesse_trusted": True}
+    assert _pick_interval(row) == (4.9, 5.1, True)
+
+
+# --------------------------------------------------------------------------- error-tier ladder
+_HCOLS = ["scan", "detector", "h", "k", "l", "status", "verdict", "disposition", "omega0",
+          "interval_lo", "interval_hi", "interval_reliable", "omega0_profile_lo",
+          "omega0_profile_hi", "hesse_lo", "hesse_hi", "hesse_trusted", "pooled", "n_members",
+          "reasons"]
+
+
+def _write_results(ws, rows):
+    report = ws / "report"
+    report.mkdir(parents=True, exist_ok=True)
+    with open(report / "results.csv", "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=_HCOLS)
+        w.writeheader()
+        for r in rows:
+            w.writerow({c: r.get(c) for c in _HCOLS})
+
+
+def _prop(h, kind="production"):
+    nc = QUICKLOOK_NCOUNT if kind == "quicklook" else PRODUCTION_NCOUNT
+    return types.SimpleNamespace(h=h, k=0.0, l=0.0, kind=kind, ncount=nc)
+
+
+def test_errors_tier_ladder_fast_by_default_escalates_on_untrusted_hesse(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    # Quick-looks are always cheap (steer only).
+    assert _errors_arg_for(_prop(2.1, "quicklook"), ws) == ["--errors", "cheap"]
+    # No prior fit at this q → production runs fast.
+    assert _errors_arg_for(_prop(2.1), ws) == ["--errors", "fast"]
+    # A usable fit whose only error is an untrusted HESSE → escalate to full (needs the reliable interval).
+    _write_results(ws, [{"scan": 1, "detector": "det", "h": 2.1, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "disposition": "flagged", "omega0": 0.95,
+                         "hesse_lo": 0.94, "hesse_hi": 0.96, "hesse_trusted": False}])
+    assert _errors_arg_for(_prop(2.1), ws) == ["--errors", "full"]
+    # A trusted-HESSE q stays on the cheap fast tier.
+    _write_results(ws, [{"scan": 2, "detector": "det", "h": 2.2, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "disposition": "resolved", "omega0": 1.1,
+                         "hesse_lo": 1.09, "hesse_hi": 1.11, "hesse_trusted": True}])
+    assert _errors_arg_for(_prop(2.2), ws) == ["--errors", "fast"]
+
+
+def test_campaign_reaches_met_via_hesse_then_certifies(tmp_path):
+    # Production/master fits carry only a trusted HESSE interval (fast tier); the campaign converges
+    # on it and then runs its bootstrap certification pass (logged).
+    omega = lambda h: (h - 2.0) * 2.0
+    client = MockTavi(omega)
+    summary, ws = _run(tmp_path, _objective(), client, make_mock_runner(omega, hesse_only=True))
+    assert summary["stop"]["state"] == "met", summary["stop"]["reasons"]
+    assert all(g["converged"] for g in summary["grid"])
+    events = [(e["kind"], (e.get("payload") or {}).get("event")) for e in read_log(summary["session_log"])]
+    assert ("decide", "certify_start") in events
+    assert ("decide", "certify_done") in events
 
 
 def _objective(tol=0.5, amount=1e13):

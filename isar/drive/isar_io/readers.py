@@ -27,13 +27,14 @@ from typing import Any
 _NUMERIC_COLUMNS = frozenset({
     "T", "h", "k", "l", "confidence", "omega0", "omega0_err",
     "interval_lo", "interval_hi", "omega0_profile_lo", "omega0_profile_hi",
+    "hesse_lo", "hesse_hi",
     "gamma", "cost_per_dof",
     "zero", "gauss_fwhm", "lorentz_fwhm", "prior_omega", "prior_sigma",
     "secondary_omega0", "secondary_omega0_err",
 })
 _INT_COLUMNS = frozenset({"scan", "prior_n", "n_modes", "n_members"})
 # Coerced to bool ("True"/"False" → True/False; "" → None). ISAR writes Python bool reprs.
-_BOOL_COLUMNS = frozenset({"interval_reliable", "pooled"})
+_BOOL_COLUMNS = frozenset({"interval_reliable", "pooled", "hesse_trusted"})
 
 
 def _report_dir(workspace: str | Path) -> Path:
