@@ -66,7 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
     src = pd.add_mutually_exclusive_group(required=True)
     src.add_argument("--goal", help="natural-language measurement goal (LLM supervisor; needs LLMM)")
     src.add_argument("--spec", help="objective spec JSON file (LLM-free path)")
-    pd.add_argument("--workspace", required=True, help="ISAR workspace (init'd) the driver drives")
+    pd.add_argument("--workspace", required=True,
+                    help="ISAR workspace the driver drives (auto-init'd after the first scan)")
     pd.add_argument("--tier", default="deterministic", choices=["deterministic", "mcstas"],
                     help="fidelity tier (LLM_HARNESS_DESIGN §6)")
     pd.add_argument("--budget", default=None,

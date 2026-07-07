@@ -29,6 +29,7 @@ from isar.drive.acquisition.acquire import propose_scan
 from isar.drive.acquisition.calibration import Calibration, load_calibration
 from isar.drive.instrument.tavi_client import TaviClient
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
+from isar.drive.isar_io.runner import init_isar as _default_init_isar
 from isar.drive.isar_io.runner import run_isar as _default_run_isar
 from isar.drive.isar_io.scan_writer import save_scan_json
 from isar.drive.objective import ObjectiveSpec
@@ -105,6 +106,17 @@ def _observation_from_row(row: dict, proposal, calibration: Calibration) -> dict
             hw = calibration.calibrated_halfwidth(lo, hi, bucket=str(proposal.ncount))
         except Exception:   # noqa: BLE001  (bad interval → treat as un-calibratable, not a crash)
             hw = None
+    elif resolved and proposal.kind == "quicklook":
+        # Cheap-tier quicklooks carry only a HESSE omega0_err (no bootstrap interval). That is good
+        # enough to SEED the ω(q) acquisition model (steering only); it never reaches the stop rule,
+        # which consumes production/confirm halfwidths built from real intervals above.
+        err, w0 = row.get("omega0_err"), row.get("omega0")
+        if err is not None and w0 is not None and float(err) > 0:
+            try:
+                hw = calibration.calibrated_halfwidth(float(w0) - float(err), float(w0) + float(err),
+                                                      bucket=str(proposal.ncount))
+            except Exception:   # noqa: BLE001
+                hw = None
     return {
         "hkl": _row_hkl(row), "kind": proposal.kind, "calibrated_halfwidth": hw,
         "resolved": resolved, "disposition": disp, "verdict": verdict,
@@ -140,7 +152,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
 
     Returns a campaign summary dict (see the bottom of this function). ``config`` keys:
 
-    - ``workspace`` (required): an ``isar init``-ed workspace directory.
+    - ``workspace`` (required): the workspace directory. If it has no ``card.policy.toml`` the
+      driver runs ``isar init`` itself after the first scan lands (init needs a data file).
     - ``client``: a TAVI client (default :class:`TaviClient` at ``tavi_url``).
     - ``tavi_url``: base URL for the default client.
     - ``run_isar``: callable ``(workspace, data_paths) -> Any`` (default the ``isar run`` subprocess).
@@ -159,6 +172,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     if client is None:
         client = TaviClient(config["tavi_url"]) if config.get("tavi_url") else TaviClient()
     run_isar = config.get("run_isar", _default_run_isar)
+    init_isar = config.get("init_isar", _default_init_isar)
     resolution_cb = _make_resolution_cb(client, config.get("resolution"))
     engine = objective.tier
     base_seed = int(config.get("seed", 0))
@@ -238,7 +252,12 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                 break
 
             data = client.get_scan_data(job_id)
-            save_scan_json(data, data_dir)
+            scan_path = save_scan_json(data, data_dir)
+            # Lazy `isar init`: the instrument card can only be scaffolded from a recognizable
+            # data file, which first exists NOW. Subprocess keeps the analysis boundary.
+            if not (workspace / "card.policy.toml").exists():
+                init_isar(workspace, scan_path)
+                log_event(log_path, "decide", {"event": "workspace_init", "probe": str(scan_path)})
             # Quick-look scans need only a verdict + rough ω₀ to steer acquisition — fit them
             # cheap (HESSE, no bootstrap/profile). Production/confirm scans, whose interval the
             # stop rule consumes, get the full uncertainty layer.

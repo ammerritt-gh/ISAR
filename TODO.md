@@ -5,7 +5,7 @@ Design references: `DESIGN.md` (master), `docs/UNIFICATION_DESIGN.md` (current
 phase, §10 gates / §11 risks / §12 non-goals), `docs/READING_GUIDE.md`, and the
 closed-loop system capstone in the TAVI repo
 (`..\TAVI\docs\CLOSED_LOOP_DESIGN.md` — TAVI = instrument, ISAR = analysis
-authority, driver = future). Last updated: 2026-07-03.
+authority, driver = future). Last updated: 2026-07-07.
 
 ## Deferred validation gates (unification §10)
 
@@ -107,13 +107,29 @@ card edit with exact-scan re-fit; S30 gold unregressed.
 
 Decisions settled 2026-07-06:
 
-- [ ] Driver lives in `isar/drive/` (`isar drive` CLI subcommand), not a separate
+- [x] Driver lives in `isar/drive/` (`isar drive` CLI subcommand), not a separate
       repo. Consumes analysis only via the `isar run` subprocess + file contract
       (`report/results.csv`, `report.json`, `card.state.json`); never imports fit
       internals.
-- [ ] σ-calibration first pass runs on the TAVI deterministic tier.
-- [ ] MVP targets: ω₀ only, acoustic branch only.
-- [ ] Supervisor: cloud LLM via LLMM pinned routing.
+- [x] σ-calibration first pass runs on the TAVI deterministic tier
+      (`calibration/phonon_dft_deterministic.json`, v2 2026-07-06).
+- [x] MVP targets: ω₀ only, acoustic branch only.
+- [x] Supervisor: cloud LLM via LLMM pinned routing.
+- [x] **First end-to-end autonomous run (2026-07-07)** — NL goal → 21-point campaign →
+      calibrated stop decision, zero human numbers. Five live-run defects found + fixed
+      (lazy `isar init`, latin-1 header, anti-Stokes recenter, quicklook HESSE model seed,
+      per-q stuck semantics). Full writeup: `docs/MVP_FIRST_RUN.md`.
+- [ ] **Production-fit latency — NEXT TEST.** Scans are near-instant on the deterministic
+      tier; each production/confirm fit runs the full bootstrap layer (~1–2 min), so a
+      campaign (~50+ production-tier fits) is fitting-bound. Candidates: fewer bootstrap
+      replicates gated on the tolerance actually needed, profile likelihood instead of
+      bootstrap, warm-start production fits from the quicklook result, batch fits across
+      pending scans.
+- [ ] **Supervisor-model auto-fallback** — gpt-oss-120b throws transient 503s; today the
+      operator pins `LLMM_SUPERVISOR_MODEL` by hand (deepseek-v4-pro:thinking is the proven
+      backup). Fall back automatically down a probed shortlist.
+- [ ] **Objective-aware Γ exclusion** — acoustic ω₀→0 at zone centers is structurally
+      unmeasurable; parse-time exclusion beats spending 4 scans discovering it per campaign.
 
 ## Platform
 

@@ -18,8 +18,11 @@ decision. The LLM supervisor consumes the decision; it does not compute it.
 
 **Overall decision.** ``met`` when every grid q is converged. ``unmeetable`` (with reasons) when the
 budget is exhausted with the path still under-determined, the tolerance is below the resolution-
-asymmetry systematic **floor** (default the calibration's ``center_pull_mean``), or a q keeps
-declining past ``max_declines``. Otherwise ``continue``.
+asymmetry systematic **floor** (default the calibration's ``center_pull_mean``), or every remaining
+q is **stuck** (declined ``max_declines``× without converging). A stuck q is abandoned — the
+acquisition engine skips it and the campaign keeps mapping the rest — so a single hopeless point
+(e.g. Γ, where the acoustic branch is degenerate with the elastic line) does not abort the map.
+Otherwise ``continue``.
 """
 from __future__ import annotations
 
@@ -28,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 FIRST_CROSSING_MARGIN = 1.2   # conservative margin on the half-width at the first crossing
-MAX_DECLINES = 3              # a q that declines this many times is treated as unmeetable
+MAX_DECLINES = 3              # a q that declines this many CONSECUTIVE times is abandoned (stuck)
 _HKL_TOL = 1e-4              # r.l.u. tolerance for matching an observation to a path grid point
 _BIG = float("inf")
 
@@ -128,6 +131,11 @@ class GridQ:
         return q_converged(self.prod_fits, self.tolerance)
 
     @property
+    def stuck(self) -> bool:
+        """Declined ``MAX_DECLINES``+ consecutive times without converging — stop spending beam here."""
+        return not self.converged and self.n_decline >= MAX_DECLINES
+
+    @property
     def deficit(self) -> float:
         """Calibrated σ-above-tolerance deficit (``halfwidth − tolerance``); ``+inf`` if never fit."""
         if self.best_halfwidth is None:
@@ -160,6 +168,11 @@ def summarize_grid(objective, observations: list[dict]) -> list[GridQ]:
             g.n_quicklook += 1
         if not resolved:
             g.n_decline += 1
+        else:
+            # Consecutive-decline counter: a resolved fit proves the q CAN deliver, so earlier
+            # window-hunting misses (recenter attempts each log an unresolved row) must not count
+            # toward abandoning it.
+            g.n_decline = 0
         if resolved and obs.get("omega0") is not None:
             # Keep the tightest resolved estimate as the point that feeds the ω(q) model.
             if g.best_halfwidth is None or (hw is not None and hw < g.best_halfwidth):
@@ -223,7 +236,7 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
     fl = systematic_floor(calibration, floor)
     per_q = [{"hkl": list(g.hkl), "q": g.q, "converged": g.converged,
               "calibrated_halfwidth": g.best_halfwidth, "resolved": g.best_resolved,
-              "n_decline": g.n_decline} for g in grid]
+              "n_decline": g.n_decline, "stuck": g.stuck} for g in grid]
 
     # Tolerance below the systematic floor is unmeetable by construction — check before "met".
     if tol < fl:
@@ -243,11 +256,18 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
         n_unconverged = sum(1 for g in grid if not g.converged)
         reasons.append(f"budget exhausted ({spent:g}/{amount:g} {budget_state.get('kind', '')}) "
                        f"with {n_unconverged} grid q still under-determined")
+        return StopDecision("unmeetable", reasons, per_q)
+
+    # A stuck q (declined max_declines×) is abandoned, not campaign-fatal: the acquisition engine
+    # skips it and the campaign keeps mapping the rest. Terminal only when no workable q remains.
     stuck = [g for g in grid if (not g.converged) and g.n_decline >= max_declines]
-    for g in stuck:
-        reasons.append(f"q={g.q:g} (hkl={list(g.hkl)}) declined {g.n_decline}× "
-                       f"(≥ {max_declines}) — cannot deliver the statistics here")
-    if reasons:
+    workable = [g for g in grid if not g.converged and g.n_decline < max_declines]
+    if stuck and not workable:
+        n_conv = sum(1 for g in grid if g.converged)
+        reasons.append(f"converged {n_conv}/{len(grid)} grid q; the rest cannot deliver the statistics:")
+        for g in stuck:
+            reasons.append(f"q={g.q:g} (hkl={list(g.hkl)}) declined {g.n_decline}× "
+                           f"(≥ {max_declines})")
         return StopDecision("unmeetable", reasons, per_q)
 
     return StopDecision("continue", [], per_q)

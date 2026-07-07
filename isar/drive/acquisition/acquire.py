@@ -124,7 +124,8 @@ def _select_target(grid: list[GridQ], model) -> tuple[GridQ | None, str, str]:
     """Pick the next grid q and its scan kind. Returns ``(gridq, kind, reason)``.
 
     Unvisited q (quick-look) win first, ranked by model-predicted σ; then the largest-deficit
-    non-converged q is escalated to production / confirm.
+    non-converged q is escalated to production / confirm. Stuck q (declined ``MAX_DECLINES``×
+    without converging) are abandoned — no more beam spent there.
     """
     unvisited = [g for g in grid if not g.visited]
     if unvisited:
@@ -132,9 +133,9 @@ def _select_target(grid: list[GridQ], model) -> tuple[GridQ | None, str, str]:
         return pick, "quicklook", (
             f"unvisited q={pick.q:g} (hkl={list(pick.hkl)}); quick-look to seed the ω(q) model and "
             f"count rate (predicted σ={model.predict(pick.q)[1]:g} meV)")
-    candidates = [g for g in grid if not g.converged]
+    candidates = [g for g in grid if not (g.converged or g.stuck)]
     if not candidates:
-        return None, "", "all grid q converged"
+        return None, "", "all grid q converged or abandoned (stuck)"
     pick = max(candidates, key=lambda g: g.deficit)
     kind = next_kind_for_q(pick.prod_fits, pick.tolerance) or "production"
     deficit = pick.deficit

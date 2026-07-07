@@ -112,8 +112,12 @@ def handle_missed_window(counts: Sequence, scan_values: Sequence, *, e_lo: float
         center = 0.5 * (float(e_lo) + float(e_hi))
         reason = "no counts to re-center on; widening the window symmetrically and retrying"
     else:
-        center = peak
-        reason = f"peak observed at deltaE={peak:g} meV, outside/near the window edge; re-centering and widening"
+        # Reflect an anti-Stokes peak to the Stokes side: the DHO is two-sided (kT ≫ ħω here, both
+        # branches comparable) but the analysis fits the positive-deltaE branch, so a window
+        # recentered onto -|ω₀| would carry no Stokes coverage at all.
+        center = abs(peak)
+        reason = (f"peak observed at deltaE={peak:g} meV, outside/near the window edge; "
+                  f"re-centering on the Stokes side ({center:g} meV) and widening")
     new_lo = center - new_width / 2.0
     new_hi = center + new_width / 2.0
     return ExceptionAction("recenter", reason,

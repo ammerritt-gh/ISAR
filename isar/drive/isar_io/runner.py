@@ -27,6 +27,20 @@ class IsarRunError(RuntimeError):
             f"--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}")
 
 
+def init_isar(workspace: str | Path, data_path: str | Path, *, timeout: float | None = None):
+    """Run ``isar init <data> --out <workspace>`` in a subprocess (idempotent guard is the caller's).
+
+    The driver calls this lazily after the FIRST scan lands in the data dir — ``isar init`` needs a
+    recognizable data file to detect the instrument, which does not exist when the campaign starts.
+    Raises :class:`IsarRunError` on a nonzero exit.
+    """
+    cmd = [sys.executable, "-m", "isar.cli.main", "init", str(data_path), "--out", str(workspace)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        raise IsarRunError(proc.returncode, proc.stdout, proc.stderr, cmd)
+    return proc
+
+
 def run_isar(workspace: str | Path, data_paths: Sequence[str | Path], *, force: bool = False,
              extra_args: Sequence[str] | None = None, timeout: float | None = None):
     """Run ``isar run <data...> --workspace <workspace>`` in a subprocess.

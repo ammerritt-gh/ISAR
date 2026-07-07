@@ -106,7 +106,11 @@ class TaviClient:
         """``POST /scan`` — submit a scan job; returns the 202 payload ``{job_id, state, ...}``.
 
         Pass ``idempotency_key`` to reuse an ``Idempotency-Key`` header on an uncertain retry.
+        The key is escaped to ASCII (http.client encodes header values latin-1; campaign names
+        can carry arbitrary unicode from the goal text).
         """
+        if idempotency_key:
+            idempotency_key = idempotency_key.encode("ascii", "backslashreplace").decode("ascii")
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
         return self._request("POST", "/scan", body=body, headers=headers)
 

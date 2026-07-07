@@ -450,8 +450,13 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         return ScanEntry(status="non_result", reasons=rs,
                          provenance={"resolution_version": calres.resolution_version}, **base)
 
-    fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
-                  errors_tier=errors_tier, boot_workers=boot_workers)
+    try:
+        fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
+                      errors_tier=errors_tier, boot_workers=boot_workers)
+    except Exception as exc:  # noqa: BLE001 — one unfittable scan must not kill the batch
+        return ScanEntry(status="non_result",
+                         reasons=[f"fit error ({type(exc).__name__}): {exc}"] + region_reasons,
+                         provenance={"resolution_version": calres.resolution_version}, **base)
     fit["reasons"].extend(region_reasons)
 
     disposition = gold_mod.verdict_disposition(fit["verdict"])

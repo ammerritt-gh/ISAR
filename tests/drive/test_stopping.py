@@ -85,13 +85,28 @@ def test_unmeetable_when_tolerance_below_floor():
     assert any("floor" in r for r in d.reasons)
 
 
-def test_unmeetable_on_repeated_declines():
+def test_stuck_q_is_skipped_not_campaign_fatal():
+    # One q declined 3x while other grid points are still workable: the campaign continues.
     obj = _obj()
     obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined") for _ in range(3)]
     grid = st.summarize_grid(obj, obs)
     d = st.evaluate_stop(obj, grid, {"kind": "neutrons", "amount": 1e12, "spent": 0.0}, max_declines=3)
+    assert d.state == "continue"
+    assert [p["stuck"] for p in d.per_q] == [True, False, False, False]
+
+
+def test_unmeetable_when_every_remaining_q_is_stuck():
+    obj = _obj()
+    obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined") for _ in range(3)]
+    # The other three grid q converge (crossing with margin + confirm).
+    for h in (2.2, 2.3, 2.4):
+        obs.append(_obs((h, 0.0, 0.0), "production", 0.3))
+        obs.append(_obs((h, 0.0, 0.0), "confirm", 0.3))
+    grid = st.summarize_grid(obj, obs)
+    d = st.evaluate_stop(obj, grid, {"kind": "neutrons", "amount": 1e12, "spent": 0.0}, max_declines=3)
     assert d.state == "unmeetable"
     assert any("declined" in r for r in d.reasons)
+    assert any("converged 3/4" in r for r in d.reasons)
 
 
 def test_path_scalars_are_arclength():

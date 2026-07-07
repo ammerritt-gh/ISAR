@@ -57,6 +57,10 @@ def structure_ic(composite, ctx, *, gamma0=GAMMA0, estimator="baker_cousins") ->
         if cost < best_cost:
             best_cost, best = cost, (float(od), dict(zip(lin_names, coef)))
 
+    if best is None:
+        raise ValueError(
+            f"structure_ic: empty Ω_d candidate grid (x_used spans {float(np.min(x)):g}.."
+            f"{x_max:g} meV) — the fit window has no Stokes-side (positive deltaE) coverage")
     od, lin = best
     out = []
     for name in composite.param_names():
