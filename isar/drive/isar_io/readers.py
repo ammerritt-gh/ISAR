@@ -26,11 +26,14 @@ from typing import Any
 # Columns coerced to float when present and non-empty. Everything else stays a string (or None).
 _NUMERIC_COLUMNS = frozenset({
     "T", "h", "k", "l", "confidence", "omega0", "omega0_err",
-    "interval_lo", "interval_hi", "gamma", "cost_per_dof",
+    "interval_lo", "interval_hi", "omega0_profile_lo", "omega0_profile_hi",
+    "gamma", "cost_per_dof",
     "zero", "gauss_fwhm", "lorentz_fwhm", "prior_omega", "prior_sigma",
     "secondary_omega0", "secondary_omega0_err",
 })
-_INT_COLUMNS = frozenset({"scan", "prior_n", "n_modes"})
+_INT_COLUMNS = frozenset({"scan", "prior_n", "n_modes", "n_members"})
+# Coerced to bool ("True"/"False" → True/False; "" → None). ISAR writes Python bool reprs.
+_BOOL_COLUMNS = frozenset({"interval_reliable", "pooled"})
 
 
 def _report_dir(workspace: str | Path) -> Path:
@@ -40,6 +43,13 @@ def _report_dir(workspace: str | Path) -> Path:
 def _coerce(column: str, value: str | None):
     if value is None or value == "":
         return None
+    if column in _BOOL_COLUMNS:
+        s = str(value).strip().lower()
+        if s in ("true", "1"):
+            return True
+        if s in ("false", "0"):
+            return False
+        return value
     if column in _INT_COLUMNS:
         try:
             return int(float(value))

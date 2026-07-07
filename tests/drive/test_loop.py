@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from isar.drive.acquisition.calibration import Calibration
-from isar.drive.loop import run_campaign
+from isar.drive.loop import _pick_interval, run_campaign
 from isar.drive.objective import ObjectiveSpec
 from isar.drive.session_log import read_log
 from isar.drive.supervisor.stopping import PRODUCTION_NCOUNT, QUICKLOOK_NCOUNT
@@ -101,6 +101,31 @@ def make_mock_runner(omega_true, *, window_gate=True):
             for r in rows:
                 w.writerow({c: r.get(c) for c in cols})
     return runner
+
+
+def test_pick_interval_prefers_bootstrap_when_reliable():
+    row = {"interval_lo": 4.9, "interval_hi": 5.1, "interval_reliable": True,
+           "omega0_profile_lo": 4.95, "omega0_profile_hi": 5.05}
+    assert _pick_interval(row) == (4.9, 5.1, True)
+
+
+def test_pick_interval_falls_back_to_profile_when_gamma_at_bound():
+    # Bootstrap collapsed (spurious spike) + flagged unreliable → use the robust profile interval.
+    row = {"interval_lo": 0.9499, "interval_hi": 0.9501, "interval_reliable": False,
+           "omega0_profile_lo": 0.944, "omega0_profile_hi": 0.956}
+    assert _pick_interval(row) == (0.944, 0.956, True)
+
+
+def test_pick_interval_none_reliable_is_trusted():
+    # Older ledgers have no interval_reliable column (None) → trust the bootstrap interval.
+    row = {"interval_lo": 4.9, "interval_hi": 5.1, "interval_reliable": None}
+    assert _pick_interval(row) == (4.9, 5.1, True)
+
+
+def test_pick_interval_unusable_when_flagged_and_no_profile():
+    row = {"interval_lo": 0.9499, "interval_hi": 0.9501, "interval_reliable": False,
+           "omega0_profile_lo": None, "omega0_profile_hi": None}
+    assert _pick_interval(row) == (None, None, False)
 
 
 def _objective(tol=0.5, amount=1e13):

@@ -95,13 +95,32 @@ def _row_hkl(row: dict):
     return (float(h), float(k), float(l))
 
 
+def _pick_interval(row: dict) -> tuple:
+    """The (lo, hi) the convergence test should use, and whether it is trustworthy.
+
+    The parametric-bootstrap ``interval_lo/hi`` is the default, but when ISAR flags it unreliable
+    (``interval_reliable`` is False — a phonon Γ railed to its bound collapses the bootstrap ω₀
+    interval to a spurious spike), the exact ω₀ **profile** interval is used instead: it stays
+    well-defined in the Γ→0 corner. Returns ``(lo, hi, ok)``; ``ok`` is False when neither a reliable
+    bootstrap nor a profile interval is available (→ no calibrated half-width, q not converged).
+    """
+    lo, hi = row.get("interval_lo"), row.get("interval_hi")
+    plo, phi = row.get("omega0_profile_lo"), row.get("omega0_profile_hi")
+    reliable = row.get("interval_reliable")            # bool | None (None = older ledger → trust it)
+    if reliable is not False and lo is not None and hi is not None:
+        return lo, hi, True
+    if plo is not None and phi is not None:            # bootstrap flagged → the profile interval
+        return plo, phi, True
+    return None, None, False
+
+
 def _observation_from_row(row: dict, proposal, calibration: Calibration) -> dict:
     disp = row.get("disposition")
     verdict = row.get("verdict")
     resolved = disp == "resolved"
     hw = None
-    lo, hi = row.get("interval_lo"), row.get("interval_hi")
-    if resolved and lo is not None and hi is not None:
+    lo, hi, ok = _pick_interval(row)
+    if resolved and ok:
         try:
             hw = calibration.calibrated_halfwidth(lo, hi, bucket=str(proposal.ncount))
         except Exception:   # noqa: BLE001  (bad interval → treat as un-calibratable, not a crash)

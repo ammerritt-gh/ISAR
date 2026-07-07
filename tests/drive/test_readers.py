@@ -38,6 +38,30 @@ def test_reads_results_csv_with_numeric_coercion(tmp_path):
     assert r["gamma_provisional"] == "True"
 
 
+def test_profile_interval_and_bool_coercion(tmp_path):
+    _write_results(tmp_path, [
+        {"scan": 7, "detector": "det0", "status": "fitted", "verdict": "resolved",
+         "disposition": "resolved", "omega0": 0.95, "interval_lo": 0.949, "interval_hi": 0.951,
+         "interval_reliable": "False", "omega0_profile_lo": 0.944, "omega0_profile_hi": 0.956,
+         "reasons": "ok"},
+    ])
+    r = readers.read_results_csv(tmp_path)[0]
+    # The Gamma-at-bound bootstrap collapsed (tiny) but the profile interval is the reliable one.
+    assert r["omega0_profile_lo"] == pytest.approx(0.944)
+    assert r["omega0_profile_hi"] == pytest.approx(0.956)
+    assert r["interval_reliable"] is False          # coerced from the string "False"
+
+
+def test_interval_reliable_true_and_empty(tmp_path):
+    _write_results(tmp_path, [
+        {"scan": 1, "detector": "d", "status": "fitted", "interval_reliable": "True"},
+        {"scan": 2, "detector": "d", "status": "fitted"},   # absent → empty → None
+    ])
+    rows = readers.read_results_csv(tmp_path)
+    assert rows[0]["interval_reliable"] is True
+    assert rows[1]["interval_reliable"] is None
+
+
 def test_empty_cells_become_none(tmp_path):
     # A held scan row: no detector/omega0.
     _write_results(tmp_path, [{"scan": 3, "status": "held_for_calibration", "reasons": "no zero"}])

@@ -59,10 +59,19 @@ class FitOutcome:
     # FIX 2: False when a phonon Γ railed out to its bound → the reported ω₀ interval is
     # degenerate/untrustworthy (see fit_one). Defaulted True for back-compat with older ledgers.
     interval_reliable: bool = True
+    # Exact 1-D profile-likelihood interval on ω₀ (errors/profile.omega0_profile_interval). Unlike
+    # the parametric-bootstrap `interval` it stays well-defined when Γ→0 (the bound corner where the
+    # bootstrap collapses), so the driver prefers it when `interval_reliable` is False.
+    omega0_profile: tuple | None = None
+    # A "master" fit of the combine-before-divide pool of all scans at this (Q,T): pooled=True with
+    # n_members = how many scans were summed. Per-scan fits leave these at their defaults.
+    pooled: bool = False
+    n_members: int | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
         d["interval"] = list(self.interval) if self.interval is not None else None
+        d["omega0_profile"] = list(self.omega0_profile) if self.omega0_profile is not None else None
         return d
 
 
@@ -174,6 +183,11 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         interval = best.within_model["freq_interval"]
     elif sel.pooled is not None and sel.pooled.modality == "fold":
         interval = sel.pooled.interval
+    # Exact ω₀ profile interval (robust to Γ→0); the driver prefers it when the bootstrap is
+    # flagged unreliable below. Absent on the cheap tier (no profile ran).
+    omega0_profile = None
+    if best is not None and best.within_model:
+        omega0_profile = best.within_model.get("profile_interval")
     reasons = list(sv.reasons)
     if warn:
         reasons.append(warn)
@@ -190,6 +204,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # ω₀ carries only a rough HESSE σ — mark it untrustworthy so the stop rule never consumes it.
     if not full_errors:
         interval = None
+        omega0_profile = None
         interval_reliable = False
         reasons.append("cheap-errors quick-look: verdict + rough HESSE ω₀ only "
                        "(no bootstrap/profile interval)")
@@ -200,6 +215,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "verdict": sv.verdict, "confidence": sv.confidence, "reasons": reasons,
         "omega0": omega0, "omega0_err": (best.omega0_err_hesse if best else None),
         "interval": (tuple(interval) if interval is not None else None),
+        "omega0_profile": (tuple(omega0_profile) if omega0_profile is not None else None),
         "interval_reliable": interval_reliable,
         "modality": sel.modality, "best_label": sel.best,
         "gamma": (best.gamma if best else None),
@@ -401,6 +417,17 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
     except Exception as exc:  # noqa: BLE001 — collation is a report aid, never fail the batch on it
         summary.context_lines.append(f"collation skipped: {exc}")
 
+    # Fit the merged "master scan" per (Q,T) group (combine-before-divide pooling), when the card
+    # opts in with collation.merge == "merge". These pooled fits are what let a campaign accumulate
+    # statistics by repeating a measurement; s30 (merge="separate") produces none. Never fatal.
+    try:
+        n_masters = _fit_masters(summary.collation, records, card, runcal, g, session,
+                                 M=M, seed_base=seed_base, errors_tier=errors_tier, force=force)
+        if n_masters:
+            summary.context_lines.append(f"fit {n_masters} merged master scan(s)")
+    except Exception as exc:  # noqa: BLE001 — master fitting is additive; a failure never kills the batch
+        summary.context_lines.append(f"master fitting skipped: {exc}")
+
     summary.counts = _tally(session)
     session.last_run = {"counts": summary.counts,
                         "scan_gaps": [f"{e}: {a}->{b}" for (e, a, b) in summary.gaps],
@@ -409,6 +436,101 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
     _write_results_csv(workspace, session)
     workspace.save(card, session)
     return summary
+
+
+# Synthetic scan_number range for master (pooled) ledger entries so they sort AFTER real scans and
+# never collide with a real scan_number. The real identity is the scan_id + member-set content_hash.
+_MASTER_SCAN_BASE = 9_000_000
+
+
+def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
+                 errors_tier="full", force=False) -> int:
+    """Fit the merged master scan for each (Q,T) group; returns how many were (re)fit this run.
+
+    Runs only when the card opts in (``collation.merge == "merge"``). Each group's pooled
+    ``MergedSpectrum`` (combine-before-divide ΣN counts) is fit through the same ``fit_one`` path as a
+    single scan and stored as a ``master:<key>`` ledger entry marked ``pooled=True``. Idempotent on the
+    member SET: the entry's ``content_hash`` is a hash of ``ms.members``, so a master refits exactly
+    when a member scan arrives or drifts (``collate`` re-runs over all records every batch, so masters
+    cannot piggyback on the per-scan freshness flags). Never fatal — a bad group yields a
+    ``non_result`` entry, never a crash.
+    """
+    if collation is None or getattr(collation, "merge", "separate") != "merge":
+        return 0
+    from isar.session.state import canonical_hash
+
+    rec_by_scan = {rec.scan_number: rec for rec in records}
+    n_fit = 0
+    for idx, grp in enumerate(sorted(collation.groups, key=lambda gg: str(gg.key))):
+        ms = getattr(grp, "merged", None)
+        if ms is None or ms.n_members < 1:
+            continue
+        master_id = "master:" + "_".join(str(k) for k in grp.key)
+        chash = canonical_hash([list(m) for m in ms.members])
+        prev = session.get(master_id)
+        if not force and prev is not None and prev.content_hash == chash:
+            continue                                   # member set unchanged → carry the prior master
+        member_scan, member_det = ms.members[0][1], ms.members[0][2]
+        entry = _fit_master_group(ms, grp, rec_by_scan.get(member_scan), member_det, card, runcal, g,
+                                  master_id, _MASTER_SCAN_BASE + idx, chash,
+                                  M=M, seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier)
+        session.put(entry)
+        n_fit += 1
+    return n_fit
+
+
+def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number,
+                      chash, *, M, seed, errors_tier="full") -> ScanEntry:
+    """Fit one merged group's pooled spectrum → a ``pooled=True`` ScanEntry (or a non_result)."""
+    det = member_det or "merged"
+    base = dict(scan_id=master_id, scan_number=int(scan_number), scan_type="measurement",
+                content_hash=chash, guidelines_hash="")
+    q = list(grp.key_fields.get("q") or [0.0, 0.0, 0.0])
+    T_disp = grp.key_fields.get("T")
+    T = float(T_disp) if T_disp is not None else float("nan")
+    if member_rec is None:
+        return ScanEntry(status="non_result", reasons=[f"{master_id}: no member record for resolution"],
+                         **base)
+    try:
+        calres = calibrations.resolve(member_rec, member_det, card, runcal)
+    except Exception as exc:  # noqa: BLE001
+        return ScanEntry(status="non_result", reasons=[f"{master_id}: resolution failed ({exc})"], **base)
+
+    x = np.asarray(ms.energy, dtype=float)
+    counts = np.asarray(ms.intensity, dtype=float)
+    mask = np.asarray(ms.mask, dtype=bool)
+    if int(mask.sum()) < g.min_fit_points:
+        return ScanEntry(status="non_result",
+                         reasons=[f"{master_id}: undersampled pool ({int(mask.sum())} < "
+                                  f"{g.min_fit_points} kept points)"], **base)
+    # Pooled spectrum → ScanContext directly (bypasses build_context: a merged group has no single
+    # ScanRecord/normalization; MergedSpectrum.mask already encodes monitor validity).
+    ctx = ScanContext(x=x, counts=counts, mask=mask, T=T, center=calres.center,
+                      gauss_fwhm=calres.gauss_fwhm, lorentz_fwhm=calres.lorentz_fwhm,
+                      instrument=card.policy.instrument, energy_status=card.policy.energy_status,
+                      prior_omega=None, quasielastic_fwhm=card.policy.quasielastic_fwhm)
+    try:
+        fit = fit_one(ctx, card, prior=None, M=M, seed=seed, errors_tier=errors_tier)
+    except Exception as exc:  # noqa: BLE001 — one unfittable pool must not kill the batch (N=16 wrinkle)
+        return ScanEntry(status="non_result",
+                         reasons=[f"{master_id}: fit error ({type(exc).__name__}): {exc}"], **base)
+
+    disposition = gold_mod.verdict_disposition(fit["verdict"])
+    outcome = FitOutcome(
+        detector_id=det, verdict=fit["verdict"], disposition=disposition,
+        confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
+        interval=fit["interval"], modality=fit["modality"], gamma=fit["gamma"],
+        gamma_provisional=(card.policy.energy_status == "absolute"),
+        best_label=fit["best_label"], cost_per_dof=fit["cost_per_dof"],
+        q=q, T=T, sample=str(grp.key_fields.get("sample", "")), prior_used=None,
+        calib=calres.summary(), reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
+        interval_reliable=fit.get("interval_reliable", True), omega0_profile=fit.get("omega0_profile"),
+        pooled=True, n_members=int(ms.n_members))
+    entry = ScanEntry(status="fitted", **base)
+    entry.detectors[det] = outcome.to_dict()
+    entry.provenance = {"pooled": True, "n_members": int(ms.n_members),
+                        "members": [list(m) for m in ms.members]}
+    return entry
 
 
 def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
@@ -479,7 +601,8 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         best_label=fit["best_label"], cost_per_dof=fit["cost_per_dof"],
         q=q, T=T, sample=sample, prior_used=prior_used, calib=calres.summary(),
         reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
-        interval_reliable=fit.get("interval_reliable", True))
+        interval_reliable=fit.get("interval_reliable", True),
+        omega0_profile=fit.get("omega0_profile"))
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is
@@ -526,6 +649,7 @@ def _tally(session: SessionState) -> dict:
 _CSV_COLUMNS = [
     "scan", "detector", "sample", "T", "h", "k", "l", "status", "verdict", "disposition",
     "confidence", "omega0", "omega0_err", "interval_lo", "interval_hi", "interval_reliable",
+    "omega0_profile_lo", "omega0_profile_hi", "pooled", "n_members",
     "gamma", "gamma_provisional", "n_modes", "secondary_omega0", "secondary_omega0_err",
     "best_model", "cost_per_dof", "zero", "zero_source", "gauss_fwhm",
     "lorentz_fwhm", "resolution_source", "resolution_version", "prior_omega", "prior_sigma",
@@ -561,6 +685,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
         for det, oc in e.detectors.items():
             q = oc.get("q") or [None, None, None]
             iv = oc.get("interval")
+            piv = oc.get("omega0_profile")
             cal = oc.get("calib") or {}
             pr = oc.get("prior_used") or {}
             rows.append({
@@ -571,6 +696,9 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "omega0_err": oc.get("omega0_err"),
                 "interval_lo": (iv[0] if iv else None), "interval_hi": (iv[-1] if iv else None),
                 "interval_reliable": oc.get("interval_reliable", True),
+                "omega0_profile_lo": (piv[0] if piv else None),
+                "omega0_profile_hi": (piv[-1] if piv else None),
+                "pooled": oc.get("pooled") or None, "n_members": oc.get("n_members"),
                 "gamma": oc.get("gamma"), "gamma_provisional": oc.get("gamma_provisional"),
                 "n_modes": oc.get("n_modes") or 1,
                 "secondary_omega0": _secondary_mode(oc)[0],
