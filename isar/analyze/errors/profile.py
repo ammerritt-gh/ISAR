@@ -19,11 +19,16 @@ _OD_FLOOR = 1e-6  # keep Ω_d = √(ω₀²−Γ²) strictly real/positive in th
 
 
 def _cost_closure(prob, ctx):
+    """The objective the profile scans: data cost + soft-prior penalty (contract 1). Unconstrained
+    fits scan the data cost exactly as before, so the ω₀ profile interval is the honest posterior
+    (data∩prior) width when constrained and unchanged otherwise."""
     est = estimators.get_estimator("baker_cousins")
     x, counts = ctx.x_used, ctx.counts_used
+    penalty = prob.penalty
 
     def costv(theta):
-        return est.cost(counts, prob.composite.evaluate(x, theta, ctx))
+        c = est.cost(counts, prob.composite.evaluate(x, theta, ctx))
+        return c + penalty(theta) if penalty is not None else c
 
     return costv
 
@@ -85,7 +90,10 @@ def omega0_profile_interval(hyp, ctx, fit_result, *, delta: float = 1.0) -> tupl
         return float(res.fun)
 
     best = float(fit_result.omega0)
-    target = float(fit_result.cost) + delta
+    # Scan the objective vs the objective's minimum: the posterior cost when soft-constrained (so
+    # the Δcost=1 crossings are the posterior interval), else the data cost (unchanged).
+    base = fit_result.posterior_cost if fit_result.posterior_cost is not None else fit_result.cost
+    target = float(base) + delta
     step0 = max(fit_result.omega0_err_hesse if np.isfinite(fit_result.omega0_err_hesse) else 0.1,
                 0.02)
 

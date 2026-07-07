@@ -128,6 +128,9 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, seed: int = 12345,
         return _failed("fit did not converge")
 
     prob = loop.build_problem(hyp, ctx)
+    # NB (steering contract 1): nested sampling carries its own ω₀ prior (below, via ``prior_used``);
+    # it does NOT apply ``ctx.constraints`` soft penalties. Soft Γ/A constraints are honoured by the
+    # authoritative bootstrap + profile intervals, not this opt-in Bayesian path.
     names = prob.free_names
     x = ctx.x_used
     counts = ctx.counts_used

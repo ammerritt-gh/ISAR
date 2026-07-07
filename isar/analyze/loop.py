@@ -70,7 +70,13 @@ def _bound(name: str, x_max: float, cmax: float) -> tuple[float, float]:
 
 @dataclass
 class Problem:
-    """A fittable problem for one hypothesis: cost, IC, bounds, free names, sizes."""
+    """A fittable problem for one hypothesis: cost, IC, bounds, free names, sizes.
+
+    ``costv`` is the **data-only** Baker–Cousins cost — the scalar AIC/BIC/GOF and the verdict read
+    (fit-vs-decide contract 1). ``penalty`` (a soft-prior term from ``ctx.constraints``, or None) is
+    added to the ``objective`` the optimiser minimises, and only there, so the reported cost never
+    sees the prior.
+    """
 
     composite: object
     costv: Callable[[np.ndarray], float]
@@ -79,10 +85,20 @@ class Problem:
     free_names: list[str]
     k: int
     n_used: int
+    penalty: Callable[[np.ndarray], float] | None = None
 
     @property
     def ndof(self) -> int:
         return self.n_used - self.k
+
+    @property
+    def objective(self) -> Callable[[np.ndarray], float]:
+        """What the optimiser minimises: data cost + soft-prior penalty (contract 1). Identical to
+        ``costv`` when unconstrained, so an unconstrained fit is bit-for-bit unchanged."""
+        if self.penalty is None:
+            return self.costv
+        cost, pen = self.costv, self.penalty
+        return lambda theta: cost(theta) + pen(theta)
 
 
 @dataclass
@@ -156,14 +172,43 @@ def build_problem(hyp, ctx, *, x0=None) -> Problem:
     def costv(theta):
         return est.cost(counts, composite.evaluate(x, theta, ctx))
 
+    penalty = _soft_penalty(getattr(ctx, "constraints", None), names)
     return Problem(composite=composite, costv=costv, x0=x0, bounds=bounds,
-                   free_names=names, k=len(names), n_used=int(x.size))
+                   free_names=names, k=len(names), n_used=int(x.size), penalty=penalty)
+
+
+def _soft_penalty(constraints, names):
+    """A Gaussian-prior penalty ``Σ((θ_i−μ)/σ)²`` over the soft-constrained params present in
+    ``names`` (contract 1's soft path), or None. With ``errordef=1`` this contributes Δcost=1 at 1σ,
+    so HESSE/MINOS on the objective return the honest data∩prior posterior width. Added to the
+    objective only — never the data cost. Hard constraints are Phase 3 (they drop params, not
+    penalise them), so they are ignored here."""
+    if constraints is None or not getattr(constraints, "soft", None):
+        return None
+    terms = []
+    for name, ms in constraints.soft.items():
+        if name in names:
+            mu, sig = float(ms[0]), float(ms[1])
+            if sig > 0:
+                terms.append((names.index(name), mu, sig))
+    if not terms:
+        return None
+
+    def penalty(theta):
+        return float(sum(((float(theta[i]) - mu) / sig) ** 2 for i, mu, sig in terms))
+
+    return penalty
 
 
 def result_from_backend(label, composite, costv, n_used, k, br,
-                        *, prior_omega=None) -> StructureFitResult:
+                        *, prior_omega=None, penalty=None) -> StructureFitResult:
     """Build a :class:`StructureFitResult` from a backend result, reading the *raw,
     separated* convergence/covariance/profile signals (not the lossy combined success).
+
+    ``costv`` is the **data-only** cost, so ``cost``/``cost_per_dof`` (what AIC and the verdict read)
+    never include the prior (contract 1). When a soft ``penalty`` constrained the fit, its value at
+    θ̂ is recorded in ``prior_penalty`` and ``posterior_cost = cost + prior_penalty`` (what the
+    optimiser minimised); ``fit_kind`` is tagged ``soft_prior``.
 
     Per-phonon detail is collected into ``modes`` (canonicalized ascending by ω₀); the reported
     scalar ω₀/Γ are the PRIMARY mode's (nearest ``prior_omega`` if given, else largest
@@ -173,9 +218,12 @@ def result_from_backend(label, composite, costv, n_used, k, br,
     errs = np.sqrt(np.diag(cov)) if cov is not None else None
     names = composite.param_names()
 
-    cost = float(costv(theta))
+    cost = float(costv(theta))                            # DATA-only (contract 1)
     ndof = n_used - k
     cost_per_dof = cost / ndof if ndof > 0 else float("nan")
+    prior_penalty = float(penalty(theta)) if penalty is not None else None
+    posterior_cost = (cost + prior_penalty) if prior_penalty is not None else None
+    fit_kind = "soft_prior" if penalty is not None else "unconstrained"
 
     params = {n: float(v) for n, v in zip(names, theta)}
     if errs is not None:
@@ -220,6 +268,7 @@ def result_from_backend(label, composite, costv, n_used, k, br,
         analysis_usable=analysis_usable, params=params, param_errors=param_errors,
         gamma=gamma, gamma_err=gamma_err, omega0=omega0, omega0_err_hesse=omega0_err,
         message=br.message, modes=modes, n_modes=n_modes, gamma_at_bound=gamma_at_bound,
+        prior_penalty=prior_penalty, posterior_cost=posterior_cost, fit_kind=fit_kind,
     )
 
 
@@ -228,9 +277,9 @@ def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False, x0=None) -> Stru
     (see :func:`build_problem`) — the two-stage loop passes the greedy multimode seed."""
     prob = build_problem(hyp, ctx, x0=x0)
     be_names = [_sanitize(n) for n in prob.free_names]
-    br = backends.minimize(backend, prob.costv, prob.x0, prob.bounds, be_names, minos=minos)
+    br = backends.minimize(backend, prob.objective, prob.x0, prob.bounds, be_names, minos=minos)
     return result_from_backend(hyp.label, prob.composite, prob.costv, prob.n_used, prob.k, br,
-                               prior_omega=getattr(ctx, "prior_omega", None))
+                               prior_omega=getattr(ctx, "prior_omega", None), penalty=prob.penalty)
 
 
 def fit_admissible_structures(ctx, *, backend="iminuit", minos=False, errors=False,
