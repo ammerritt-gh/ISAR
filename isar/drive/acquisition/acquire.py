@@ -30,7 +30,6 @@ from isar.drive.supervisor.stopping import (
     PRODUCTION_NCOUNT,
     QUICKLOOK_NCOUNT,
     GridQ,
-    next_kind_for_q,
     summarize_grid,
 )
 
@@ -124,8 +123,9 @@ def _select_target(grid: list[GridQ], model) -> tuple[GridQ | None, str, str]:
     """Pick the next grid q and its scan kind. Returns ``(gridq, kind, reason)``.
 
     Unvisited q (quick-look) win first, ranked by model-predicted σ; then the largest-deficit
-    non-converged q is escalated to production / confirm. Stuck q (declined ``MAX_DECLINES``×
-    without converging) are abandoned — no more beam spent there.
+    non-converged q gets another PRODUCTION scan, which ISAR pools into that q's master fit —
+    accumulating statistics until the master's ω₀ interval meets tolerance. Stuck q (no signal after
+    ``MAX_DECLINES`` tries, or ``MAX_PROD_ATTEMPTS`` pooled scans without converging) are abandoned.
     """
     unvisited = [g for g in grid if not g.visited]
     if unvisited:
@@ -137,15 +137,16 @@ def _select_target(grid: list[GridQ], model) -> tuple[GridQ | None, str, str]:
     if not candidates:
         return None, "", "all grid q converged or abandoned (stuck)"
     pick = max(candidates, key=lambda g: g.deficit)
-    kind = next_kind_for_q(pick.prod_fits, pick.tolerance) or "production"
     deficit = pick.deficit
     deficit_str = "unfitted" if deficit == float("inf") else f"{deficit:g} meV over tolerance"
-    return pick, kind, (
-        f"largest-deficit q={pick.q:g} (hkl={list(pick.hkl)}); {deficit_str}; escalate to {kind}")
+    n_pool = (pick.master or {}).get("n_members") or pick.n_production
+    return pick, "production", (
+        f"largest-deficit q={pick.q:g} (hkl={list(pick.hkl)}); {deficit_str}; production scan to "
+        f"accumulate the master (pool now {n_pool})")
 
 
 def propose_scan(objective, model, results_so_far: list[dict], resolution_info=None,
-                 budget_state: dict | None = None) -> ScanProposal | None:
+                 budget_state: dict | None = None, master_rows: list[dict] | None = None) -> ScanProposal | None:
     """Propose the next scan (Q, energy window, neutron count), or ``None`` if nothing remains.
 
     Args:
@@ -159,7 +160,7 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
         budget_state: informational; carried onto the proposal meta. The stopping criterion owns the
             budget verdict, not the acquisition function.
     """
-    grid = summarize_grid(objective, results_so_far or [])
+    grid = summarize_grid(objective, results_so_far or [], master_rows or [])
     pick, kind, reason = _select_target(grid, model)
     if pick is None:
         return None

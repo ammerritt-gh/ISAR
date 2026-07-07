@@ -63,13 +63,19 @@ class MockTavi:
         return {"ok": True, "fwhm": {"dE": 0.8}}
 
 
+import math as _math
+
+
 def make_mock_runner(omega_true, *, window_gate=True):
-    """A fake `isar run`: writes results.csv from the saved scans. Declines when the window misses."""
+    """A fake `isar run`: writes results.csv from the saved scans, including the master (pooled) row
+    per (Q,T) that ISAR now emits. The master's interval shrinks ~1/√N with the pooled production
+    count, so a q converges by accumulation. Declines when the window misses the peak."""
     assigned: dict[str, int] = {}
 
     def runner(workspace, data_paths, **kw):
         data_dir = Path(data_paths[0])
         rows = []
+        prod_per_h: dict[float, int] = {}       # production scans that hit the peak, per H (the pool)
         for f in sorted(data_dir.glob("*.json")):
             d = json.loads(f.read_text(encoding="utf-8"))
             params = d.get("launch", {}).get("parameters", {})
@@ -81,7 +87,8 @@ def make_mock_runner(omega_true, *, window_gate=True):
             grid = _parse_grid(params["scan_command1"])
             true = omega_true(h)
             contained = (grid[0] <= true <= grid[-1]) if window_gate else True
-            base = {"scan": scan_id, "detector": "det", "h": h, "k": k, "l": l, "status": "fitted"}
+            base = {"scan": scan_id, "detector": "det", "h": h, "k": k, "l": l, "status": "fitted",
+                    "interval_reliable": True}
             if not contained:
                 base.update({"verdict": "no_signal", "disposition": "declined", "omega0": None,
                              "interval_lo": None, "interval_hi": None, "reasons": "peak outside window"})
@@ -90,11 +97,25 @@ def make_mock_runner(omega_true, *, window_gate=True):
                 base.update({"verdict": "resolved", "disposition": "resolved", "omega0": true,
                              "interval_lo": true - raw_hw, "interval_hi": true + raw_hw,
                              "confidence": 0.9, "reasons": "resolved"})
+                if n > QUICKLOOK_NCOUNT:
+                    prod_per_h[h] = prod_per_h.get(h, 0) + 1
             rows.append(base)
+        # Master (pooled) rows: one per H with pooled production scans; interval ~ 0.3/√N.
+        master_scan = 9_000_000
+        for h, npool in sorted(prod_per_h.items()):
+            hw = 0.3 / _math.sqrt(npool)
+            true = omega_true(h)
+            rows.append({"scan": master_scan, "detector": "det", "h": h, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "verdict": "resolved", "disposition": "resolved",
+                         "omega0": true, "interval_lo": true - hw, "interval_hi": true + hw,
+                         "interval_reliable": True, "pooled": True, "n_members": npool,
+                         "confidence": 0.9, "reasons": "pooled master"})
+            master_scan += 1
         report = Path(workspace) / "report"
         report.mkdir(parents=True, exist_ok=True)
         cols = ["scan", "detector", "h", "k", "l", "status", "verdict", "disposition",
-                "confidence", "omega0", "omega0_err", "interval_lo", "interval_hi", "reasons"]
+                "confidence", "omega0", "omega0_err", "interval_lo", "interval_hi",
+                "interval_reliable", "pooled", "n_members", "reasons"]
         with open(report / "results.csv", "w", newline="", encoding="utf-8") as fh:
             w = csv.DictWriter(fh, fieldnames=cols)
             w.writeheader()
@@ -172,9 +193,9 @@ def test_starts_with_quicklooks_then_escalates(tmp_path):
     assert [p["kind"] for p in proposals[:4]] == ["quicklook"] * 4
     assert {tuple(p["hkl"]) for p in proposals[:4]} == {
         (2.1, 0.0, 0.0), (2.2, 0.0, 0.0), (2.3, 0.0, 0.0), (2.4, 0.0, 0.0)}
-    # Production and confirm scans appear later in the ladder.
+    # Production scans (accumulated into the master) appear later in the ladder.
     later = {p["kind"] for p in proposals[4:]}
-    assert "production" in later and "confirm" in later
+    assert "production" in later
 
 
 def test_campaign_unmeetable_on_budget(tmp_path):

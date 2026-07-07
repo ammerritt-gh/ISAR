@@ -49,20 +49,27 @@ def test_picks_worst_deficit_q_for_production():
     assert p.kind == "production" and p.ncount == acq.PRODUCTION_NCOUNT
 
 
-def test_escalates_to_confirm_after_a_resolved_first_crossing():
-    # Single-point path: one resolved production first crossing -> the next scan is a confirm.
+def _master(hkl, hw, disp="resolved", reliable=True, n=2):
+    return {"hkl": hkl, "omega0": 3.0, "halfwidth": hw, "reliable": reliable,
+            "usable": disp in ("resolved", "flagged"), "disposition": disp, "n_members": n}
+
+
+def test_keeps_producing_when_master_over_tolerance():
+    # Single-point path: the master exists but is still over tolerance -> another production scan.
     obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.1, step=0.1, tolerance_meV=0.5,
                                 budget={"kind": "neutrons", "amount": 1e12})
     obs = [_obs((2.1, 0.0, 0.0), "quicklook", 0.9), _obs((2.1, 0.0, 0.0), "production", 0.30)]
-    p = acq.propose_scan(obj, _model(obs), obs, {"fwhm_dE": 0.8}, {})
-    assert p.kind == "confirm" and p.ncount == acq.PRODUCTION_NCOUNT
+    masters = [_master((2.1, 0.0, 0.0), 0.9)]
+    p = acq.propose_scan(obj, _model(obs), obs, {"fwhm_dE": 0.8}, {}, master_rows=masters)
+    assert p.kind == "production" and p.ncount == acq.PRODUCTION_NCOUNT
 
 
-def test_returns_none_when_all_converged():
+def test_returns_none_when_master_within_tolerance():
     obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.1, step=0.1, tolerance_meV=0.5,
                                 budget={"kind": "neutrons", "amount": 1e12})
-    obs = [_obs((2.1, 0.0, 0.0), "production", 0.30), _obs((2.1, 0.0, 0.0), "confirm", 0.35)]
-    assert acq.propose_scan(obj, _model(obs), obs, {"fwhm_dE": 0.8}, {}) is None
+    obs = [_obs((2.1, 0.0, 0.0), "production", 0.30)]
+    masters = [_master((2.1, 0.0, 0.0), 0.30)]     # pooled interval within tolerance -> converged
+    assert acq.propose_scan(obj, _model(obs), obs, {"fwhm_dE": 0.8}, {}, master_rows=masters) is None
 
 
 def test_energy_window_rule():

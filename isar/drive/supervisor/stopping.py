@@ -30,8 +30,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-FIRST_CROSSING_MARGIN = 1.2   # conservative margin on the half-width at the first crossing
-MAX_DECLINES = 3              # a q that declines this many CONSECUTIVE times is abandoned (stuck)
+MAX_DECLINES = 3              # a q that declines (no signal) this many CONSECUTIVE times is abandoned
+FIRST_CROSSING_MARGIN = 1.2  # retained for back-compat (legacy q_converged); unused by the master path
 _HKL_TOL = 1e-4              # r.l.u. tolerance for matching an observation to a path grid point
 _BIG = float("inf")
 
@@ -68,6 +68,8 @@ def match_grid_index(hkl, path, *, tol: float = _HKL_TOL) -> int | None:
 
 
 # --------------------------------------------------------------------------- per-q convergence core
+# LEGACY (unused by the driver): the old "two consecutive independent production fits" convergence.
+# Replaced by GridQ.converged (the master/pooled fit). Kept only so older callers/tests still import.
 def q_converged(prod_fits: list[dict], tolerance: float, *,
                 first_margin: float = FIRST_CROSSING_MARGIN) -> bool:
     """Is a grid q converged, given its chronological production/confirm fits?
@@ -106,49 +108,77 @@ def next_kind_for_q(prod_fits: list[dict], tolerance: float, *,
     return "production"
 
 
+# A fit whose ω₀ is usable for an ω₀-tolerance objective. `flagged` (model_incomplete) is INCLUDED:
+# at low q the 1-D-resolution model has a structured residual (the tas4d ceiling) so the fit flags,
+# but ω₀ and its interval are still good — the flag documents peak-shape imperfection, not an ω₀
+# error, and the systematic floor guards accuracy. `resolved` and `flagged` both carry a usable ω₀.
+USABLE_DISPOSITIONS = frozenset({"resolved", "flagged"})
+
+# A q that has pooled this many production scans without converging is abandoned (its master interval
+# has stopped shrinking below tolerance — a systematic floor, not a counts problem).
+MAX_PROD_ATTEMPTS = 8
+
+
 # --------------------------------------------------------------------------- grid summary
 @dataclass
 class GridQ:
-    """A per-grid-point rollup the acquisition function and the stopping criterion both consume."""
+    """A per-grid-point rollup the acquisition function and the stopping criterion both consume.
+
+    Convergence is decided by the q's **master** (pooled) fit — the combine-before-divide fit of all
+    production scans at this q, which ISAR refits as each new scan lands. Per-scan fits feed the ω(q)
+    steering model and the abandon counters, but the number the campaign certifies is the master's.
+    """
 
     index: int
     hkl: tuple[float, float, float]
     q: float
     tolerance: float
-    prod_fits: list[dict] = field(default_factory=list)
+    n_production: int = 0          # production scans taken at this q (each grows the pool)
     n_quicklook: int = 0
-    n_decline: int = 0
+    n_decline: int = 0             # consecutive per-scan fits with no usable ω₀ (junk/no_signal)
     best_omega0: float | None = None
     best_halfwidth: float | None = None
     best_resolved: bool = False
+    master: dict | None = None     # {"omega0","halfwidth","reliable","usable","disposition","n_members"}
 
     @property
     def visited(self) -> bool:
-        return self.n_quicklook > 0 or bool(self.prod_fits) or self.n_decline > 0
+        return self.n_quicklook > 0 or self.n_production > 0 or self.n_decline > 0
 
     @property
     def converged(self) -> bool:
-        return q_converged(self.prod_fits, self.tolerance)
+        """The master fit delivers a usable ω₀ with a reliable interval within tolerance."""
+        m = self.master
+        return bool(m and m.get("usable") and m.get("reliable")
+                    and m.get("halfwidth") is not None and m["halfwidth"] <= self.tolerance)
 
     @property
     def stuck(self) -> bool:
-        """Declined ``MAX_DECLINES``+ consecutive times without converging — stop spending beam here."""
-        return not self.converged and self.n_decline >= MAX_DECLINES
+        """Abandoned: can't get signal (``MAX_DECLINES`` consecutive junk fits) or the master has
+        pooled ``MAX_PROD_ATTEMPTS`` scans without converging (interval floored above tolerance)."""
+        if self.converged:
+            return False
+        return self.n_decline >= MAX_DECLINES or self.n_production >= MAX_PROD_ATTEMPTS
 
     @property
     def deficit(self) -> float:
-        """Calibrated σ-above-tolerance deficit (``halfwidth − tolerance``); ``+inf`` if never fit."""
-        if self.best_halfwidth is None:
-            return _BIG
-        return self.best_halfwidth - self.tolerance
+        """Calibrated σ-above-tolerance deficit; ``+inf`` if never fit. Prefers the master half-width,
+        falling back to the best per-scan (quick-look) half-width for a not-yet-pooled q."""
+        hw = None
+        if self.master is not None:
+            hw = self.master.get("halfwidth")
+        if hw is None:
+            hw = self.best_halfwidth
+        return _BIG if hw is None else hw - self.tolerance
 
 
-def summarize_grid(objective, observations: list[dict]) -> list[GridQ]:
-    """Roll a chronological ``observations`` list into one :class:`GridQ` per objective grid point.
+def summarize_grid(objective, observations: list[dict], master_rows: list[dict] | None = None):
+    """One :class:`GridQ` per objective grid point from the per-scan ``observations`` + ``master_rows``.
 
-    Each observation is a dict ``{"hkl", "kind", "calibrated_halfwidth", "resolved", "disposition",
-    "omega0"}``. Observations are matched to a grid point by nearest hkl; anything off-grid is ignored
-    (the driver only scans grid points, so this is defensive).
+    Per-scan observations ``{"hkl","kind","calibrated_halfwidth","resolved","disposition","omega0"}``
+    feed the ω(q) steering model and the abandon counters. ``master_rows`` (the pooled fits, read fresh
+    each iteration — their interval shrinks as scans accumulate) decide convergence. Both match to a
+    grid point by nearest hkl; off-grid entries are ignored.
     """
     path = objective.path
     scalars = path_scalars(path)
@@ -160,30 +190,32 @@ def summarize_grid(objective, observations: list[dict]) -> list[GridQ]:
             continue
         g = grid[i]
         kind = obs.get("kind")
-        resolved = bool(obs.get("resolved"))
+        # `resolved` on the observation is "usable for steering" — set by loop._observation_from_row
+        # for resolved-or-flagged fits carrying a calibrated half-width.
+        usable = bool(obs.get("resolved"))
         hw = obs.get("calibrated_halfwidth")
         if kind in PRODUCTION_KINDS:
-            g.prod_fits.append({"halfwidth": hw, "resolved": resolved, "kind": kind})
+            g.n_production += 1
         elif kind == "quicklook":
             g.n_quicklook += 1
-        if not resolved:
+        if not usable:
             g.n_decline += 1
         else:
-            # Consecutive-decline counter: a resolved fit proves the q CAN deliver, so earlier
-            # window-hunting misses (recenter attempts each log an unresolved row) must not count
-            # toward abandoning it.
-            g.n_decline = 0
-        if resolved and obs.get("omega0") is not None:
-            # Keep the tightest resolved estimate as the point that feeds the ω(q) model.
-            if g.best_halfwidth is None or (hw is not None and hw < g.best_halfwidth):
+            g.n_decline = 0        # a usable fit proves the q CAN deliver — reset the abandon counter
+            if obs.get("omega0") is not None and (g.best_halfwidth is None
+                                                  or (hw is not None and hw < g.best_halfwidth)):
                 g.best_omega0 = float(obs["omega0"])
                 g.best_halfwidth = hw
                 g.best_resolved = True
+    for mr in (master_rows or []):
+        i = match_grid_index(tuple(mr["hkl"]), path)
+        if i is not None:
+            grid[i].master = mr
     return grid
 
 
 def model_points(grid: list[GridQ]) -> list[tuple[float, float, float]]:
-    """The ``(q, omega0, halfwidth)`` triples for the ω(q) model — one per resolved grid point."""
+    """The ``(q, omega0, halfwidth)`` triples for the ω(q) model — one per grid point with a usable fit."""
     pts = []
     for g in grid:
         if g.best_resolved and g.best_omega0 is not None and g.best_halfwidth is not None:
@@ -230,13 +262,18 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
         budget_state: ``{"kind", "amount", "spent"}`` — neutrons or counting-seconds consumed.
         calibration: the loaded σ-calibration (its ``center_pull_mean`` supplies the default floor).
         floor: explicit systematic floor override (meV).
-        max_declines: a non-converged q that has declined this many times is unmeetable.
+        max_declines: kept for signature back-compat; the abandon rule lives in ``GridQ.stuck``.
     """
     tol = objective.tolerance_meV
     fl = systematic_floor(calibration, floor)
-    per_q = [{"hkl": list(g.hkl), "q": g.q, "converged": g.converged,
-              "calibrated_halfwidth": g.best_halfwidth, "resolved": g.best_resolved,
-              "n_decline": g.n_decline, "stuck": g.stuck} for g in grid]
+    per_q = []
+    for g in grid:
+        m = g.master or {}
+        per_q.append({"hkl": list(g.hkl), "q": g.q, "converged": g.converged,
+                      "calibrated_halfwidth": m.get("halfwidth"), "omega0": m.get("omega0"),
+                      "n_members": m.get("n_members"), "disposition": m.get("disposition"),
+                      "interval_reliable": m.get("reliable"), "n_production": g.n_production,
+                      "n_decline": g.n_decline, "stuck": g.stuck})
 
     # Tolerance below the systematic floor is unmeetable by construction — check before "met".
     if tol < fl:
@@ -246,8 +283,8 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
 
     if grid and all(g.converged for g in grid):
         return StopDecision("met",
-                            [f"all {len(grid)} grid q converged: calibrated σ(ω₀) ≤ {tol:g} meV, "
-                             "resolved, confirmed on two consecutive production fits"], per_q)
+                            [f"all {len(grid)} grid q converged: the pooled master ω₀ interval "
+                             f"(inflation-calibrated) ≤ {tol:g} meV at each point"], per_q)
 
     reasons: list[str] = []
     spent = float(budget_state.get("spent", 0.0))
@@ -258,16 +295,18 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                        f"with {n_unconverged} grid q still under-determined")
         return StopDecision("unmeetable", reasons, per_q)
 
-    # A stuck q (declined max_declines×) is abandoned, not campaign-fatal: the acquisition engine
-    # skips it and the campaign keeps mapping the rest. Terminal only when no workable q remains.
-    stuck = [g for g in grid if (not g.converged) and g.n_decline >= max_declines]
-    workable = [g for g in grid if not g.converged and g.n_decline < max_declines]
+    # A stuck q is abandoned, not campaign-fatal: the acquisition engine skips it and the campaign
+    # keeps mapping the rest. Terminal only when no workable (non-converged, non-stuck) q remains.
+    stuck = [g for g in grid if g.stuck]
+    workable = [g for g in grid if not g.converged and not g.stuck]
     if stuck and not workable:
         n_conv = sum(1 for g in grid if g.converged)
         reasons.append(f"converged {n_conv}/{len(grid)} grid q; the rest cannot deliver the statistics:")
         for g in stuck:
-            reasons.append(f"q={g.q:g} (hkl={list(g.hkl)}) declined {g.n_decline}× "
-                           f"(≥ {max_declines})")
+            why = (f"pooled {g.n_production} scans without converging (interval floored above tolerance)"
+                   if g.n_production >= MAX_PROD_ATTEMPTS
+                   else f"declined {g.n_decline}× (no signal)")
+            reasons.append(f"q={g.q:g} (hkl={list(g.hkl)}) {why}")
         return StopDecision("unmeetable", reasons, per_q)
 
     return StopDecision("continue", [], per_q)

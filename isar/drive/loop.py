@@ -36,6 +36,8 @@ from isar.drive.objective import ObjectiveSpec
 from isar.drive.session_log import log_event
 from isar.drive.supervisor import exceptions as exc
 from isar.drive.supervisor.stopping import (
+    PRODUCTION_NCOUNT,
+    USABLE_DISPOSITIONS as _USABLE,
     evaluate_stop,
     model_points,
     summarize_grid,
@@ -117,18 +119,20 @@ def _pick_interval(row: dict) -> tuple:
 def _observation_from_row(row: dict, proposal, calibration: Calibration) -> dict:
     disp = row.get("disposition")
     verdict = row.get("verdict")
-    resolved = disp == "resolved"
+    # `flagged` (model_incomplete) still carries a usable ω₀ — for an ω₀-tolerance objective the flag
+    # documents peak-shape imperfection, not an ω₀ error (see stopping.USABLE_DISPOSITIONS).
+    usable = disp in _USABLE
     hw = None
     lo, hi, ok = _pick_interval(row)
-    if resolved and ok:
+    if usable and ok:
         try:
             hw = calibration.calibrated_halfwidth(lo, hi, bucket=str(proposal.ncount))
         except Exception:   # noqa: BLE001  (bad interval → treat as un-calibratable, not a crash)
             hw = None
-    elif resolved and proposal.kind == "quicklook":
-        # Cheap-tier quicklooks carry only a HESSE omega0_err (no bootstrap interval). That is good
-        # enough to SEED the ω(q) acquisition model (steering only); it never reaches the stop rule,
-        # which consumes production/confirm halfwidths built from real intervals above.
+    elif usable and proposal.kind == "quicklook":
+        # Cheap-tier quicklooks carry only a HESSE omega0_err (no bootstrap interval). Good enough to
+        # SEED the ω(q) acquisition model (steering only); it never reaches the stop rule, which
+        # consumes the master (pooled) half-width built from a real interval.
         err, w0 = row.get("omega0_err"), row.get("omega0")
         if err is not None and w0 is not None and float(err) > 0:
             try:
@@ -138,9 +142,41 @@ def _observation_from_row(row: dict, proposal, calibration: Calibration) -> dict
                 hw = None
     return {
         "hkl": _row_hkl(row), "kind": proposal.kind, "calibrated_halfwidth": hw,
-        "resolved": resolved, "disposition": disp, "verdict": verdict,
+        "resolved": usable, "disposition": disp, "verdict": verdict,
         "omega0": row.get("omega0"), "scan": row.get("scan"), "detector": row.get("detector"),
     }
+
+
+def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
+    """A master (pooled) fit → the convergence observation for its q. The calibrated half-width uses
+    the reliable interval (profile when the bootstrap is Γ-at-bound) at the production count bucket."""
+    lo, hi, ok = _pick_interval(row)
+    hw = None
+    if ok:
+        try:
+            hw = calibration.calibrated_halfwidth(lo, hi, bucket=str(PRODUCTION_NCOUNT))
+        except Exception:   # noqa: BLE001
+            hw = None
+    disp = row.get("disposition")
+    return {
+        "hkl": _row_hkl(row), "omega0": row.get("omega0"), "halfwidth": hw,
+        "reliable": bool(ok), "usable": (disp in _USABLE and row.get("omega0") is not None),
+        "disposition": disp, "n_members": row.get("n_members"),
+    }
+
+
+def _read_master_rows(workspace, calibration: Calibration) -> list[dict]:
+    """All current master (pooled=True) rows in results.csv → convergence observations. Read FRESH
+    every iteration (not consume-once): a master's interval shrinks as scans accumulate into it."""
+    try:
+        rows = read_results_csv(workspace)
+    except FileNotFoundError:
+        return []
+    out = []
+    for r in rows:
+        if r.get("pooled") and _row_hkl(r) is not None:
+            out.append(_master_obs_from_row(r, calibration))
+    return out
 
 
 def _new_rows(workspace, consumed: set) -> list[dict]:
@@ -151,6 +187,8 @@ def _new_rows(workspace, consumed: set) -> list[dict]:
         return []
     out = []
     for r in rows:
+        if r.get("pooled"):            # master (pooled) rows drive convergence, read fresh elsewhere
+            continue
         key = (r.get("scan"), r.get("detector"))
         if key in consumed or _row_hkl(r) is None:
             continue
@@ -160,10 +198,10 @@ def _new_rows(workspace, consumed: set) -> list[dict]:
 
 
 def _rows_missed(rows: list[dict]) -> bool:
-    """True when a scan produced no resolved detector (peak outside the window / no signal)."""
+    """True when a scan produced no usable detector (peak outside the window / no signal)."""
     if not rows:
         return True
-    return not any(r.get("disposition") == "resolved" for r in rows)
+    return not any(r.get("disposition") in _USABLE for r in rows)
 
 
 def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[str, Any]:
@@ -213,13 +251,15 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
 
     decision = None
     for _ in range(max_iters):
-        grid = summarize_grid(objective, observations)
+        master_rows = _read_master_rows(workspace, calibration)
+        grid = summarize_grid(objective, observations, master_rows)
         decision = evaluate_stop(objective, grid, budget_state, calibration=calibration, floor=floor)
         if decision.state != "continue":
             break
 
         model = acq_model.fit(model_points(grid))
-        proposal = propose_scan(objective, model, observations, resolution_cb, budget_state)
+        proposal = propose_scan(objective, model, observations, resolution_cb, budget_state,
+                                master_rows=master_rows)
         if proposal is None:
             decision = evaluate_stop(objective, grid, budget_state, calibration=calibration, floor=floor)
             break
@@ -312,17 +352,19 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                 log_event(log_path, "exception",
                           exc.handle_flagged(disp, verdict=r.get("verdict")).to_dict())
 
-        grid = summarize_grid(objective, observations)
+        master_rows = _read_master_rows(workspace, calibration)
+        grid = summarize_grid(objective, observations, master_rows)
         log_event(log_path, "decide", {"event": "model_update",
                                        "n_observations": len(observations),
                                        "converged": sum(1 for g in grid if g.converged),
                                        "n_grid": len(grid)})
 
+    master_rows = _read_master_rows(workspace, calibration)
     if decision is None:
-        grid = summarize_grid(objective, observations)
+        grid = summarize_grid(objective, observations, master_rows)
         decision = evaluate_stop(objective, grid, budget_state, calibration=calibration, floor=floor)
 
-    grid = summarize_grid(objective, observations)
+    grid = summarize_grid(objective, observations, master_rows)
     summary = _campaign_summary(objective, grid, decision, budget_state, workspace, log_path,
                                 len(observations))
     log_event(log_path, "stop", {"state": decision.state, "reasons": decision.reasons})
@@ -341,9 +383,18 @@ def _charge_budget(budget_state: dict, proposal, eta) -> None:
 
 
 def _campaign_summary(objective, grid, decision, budget_state, workspace, log_path, n_obs) -> dict:
-    dispersion = [{"hkl": list(g.hkl), "q": g.q, "omega0": g.best_omega0,
-                   "calibrated_halfwidth": g.best_halfwidth, "converged": g.converged}
-                  for g in grid if g.best_resolved]
+    # The certified number per q is the master (pooled) fit's; fall back to the best per-scan estimate
+    # for a q that was quick-looked but never pooled.
+    def _omega0(g):
+        return (g.master or {}).get("omega0", g.best_omega0)
+
+    def _hw(g):
+        return (g.master or {}).get("halfwidth", g.best_halfwidth)
+
+    dispersion = [{"hkl": list(g.hkl), "q": g.q, "omega0": _omega0(g),
+                   "calibrated_halfwidth": _hw(g), "n_members": (g.master or {}).get("n_members"),
+                   "converged": g.converged}
+                  for g in grid if _omega0(g) is not None]
     try:
         card = read_card_state(workspace)
         prior_points = card.get("dispersion_prior") or []
@@ -353,9 +404,11 @@ def _campaign_summary(objective, grid, decision, budget_state, workspace, log_pa
         "objective": objective.to_dict(),
         "stop": decision.to_dict(),
         "grid": [{"hkl": list(g.hkl), "q": g.q, "converged": g.converged,
-                  "calibrated_halfwidth": g.best_halfwidth, "omega0": g.best_omega0,
-                  "resolved": g.best_resolved, "n_decline": g.n_decline,
-                  "n_production_fits": len(g.prod_fits)} for g in grid],
+                  "calibrated_halfwidth": (g.master or {}).get("halfwidth"), "omega0": _omega0(g),
+                  "disposition": (g.master or {}).get("disposition"),
+                  "n_members": (g.master or {}).get("n_members"),
+                  "n_production": g.n_production, "n_decline": g.n_decline,
+                  "stuck": g.stuck} for g in grid],
         "dispersion": dispersion,
         "dispersion_prior_points": len(prior_points),
         "budget": dict(budget_state),
