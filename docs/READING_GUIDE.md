@@ -4,12 +4,15 @@ This is the front door. It explains, for a scientist who knows inelastic scatter
 fitting but has never used ISAR, **what problem ISAR solves, what it deliberately does not do, and
 how we know it works** — then points you at the right report or document for each question.
 
-> Status: ISAR is in **development and testing**. Everything here runs on *old* data to exercise the
-> workflow, not on a live experiment. The goal right now is to make ISAR's behaviour legible — to
-> understand what it does and to show why the approach is worth continuing. The next step is the
-> **unification phase**: assembling the validated pieces behind an `isar` command-line tool that
-> runs end-to-end on new data ([UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md); the intended user
-> workflow is documented ahead of the build in [USING_ISAR.md](USING_ISAR.md)).
+> Status: ISAR is in **development and testing**. The analysis pipeline is assembled behind an
+> `isar` command-line tool that runs end-to-end ([UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md),
+> built; user workflow in [USING_ISAR.md](USING_ISAR.md)), and the **autonomous driver**
+> (`isar drive`) now closes the loop: from a natural-language goal it proposes scans, drives the
+> TAVI virtual instrument, fits each scan, and decides where to remeasure and when to stop — with
+> no human numbers in the loop ([MVP_FIRST_RUN.md](MVP_FIRST_RUN.md)). This runs on the TAVI
+> *simulator* and on *old* data to exercise the workflow, not yet on a live experiment. The goal
+> right now is to make ISAR's behaviour legible — to understand what it does and to show why the
+> approach is worth continuing.
 
 ## The problem
 
@@ -100,6 +103,7 @@ every call with your own eyes.
 |---|---|
 | What is ISAR for / why trust it? | this guide |
 | How will I run it on my own data (the CLI)? | [USING_ISAR.md](USING_ISAR.md) |
+| How does the autonomous loop work (goal → scans → stop)? | [MVP_FIRST_RUN.md](MVP_FIRST_RUN.md), [PHASE_4_NOTES.md](PHASE_4_NOTES.md) |
 | What does a term mean (pull, fold/fork, cost/dof, a verdict)? | [GLOSSARY.md](GLOSSARY.md) |
 | Why these statistics (vs χ² / HESSE / eyeballing models)? | [STATS_PRIMER.md](STATS_PRIMER.md) |
 | What should I *do* with a given verdict? | [INTERPRETING_A_VERDICT.md](INTERPRETING_A_VERDICT.md) |

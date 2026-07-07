@@ -5,8 +5,9 @@ Written for a scientist at (or preparing for) a beamtime. For what ISAR *is* and
 start with [READING_GUIDE.md](READING_GUIDE.md); for what a verdict means, see
 [INTERPRETING_A_VERDICT.md](INTERPRETING_A_VERDICT.md).
 
-> **Status: the v1 CLI described here is built** (`isar init/run/status/report/score`, tested in
-> `tests/session/`). It runs end-to-end on IN8 today and on S30 once a companion `.spec` supplies the
+> **Status: the v1 CLI described here is built** (`isar init/run/status/report/score`, plus the
+> autonomous `isar drive`, tested in `tests/session/` and `tests/drive/`). It runs end-to-end on IN8
+> today and on S30 once a companion `.spec` supplies the
 > energy zero. One validation is still pending — the full 83-scan S30 statistical comparison at M=200
 > (a multi-minute run) — so treat the S30 accuracy numbers as expected-not-yet-confirmed until that
 > gate is run (see [UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md) §10 step 5).
@@ -72,6 +73,13 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
 - **`isar score --workspace DIR --gold your_fits.csv`** — optional: if you have your own by-hand
   fits for (some of) the same scans, score ISAR against them (the validation harness the gold
   reports use). Never required — `isar run` works on data nobody has fit before.
+- **`isar drive --goal "..." --workspace DIR`** — the autonomous measurement loop: from a
+  natural-language goal it proposes scans, drives a virtual instrument (TAVI), fits each scan with
+  the same `isar run` pipeline, and decides where to remeasure and when to stop — writing an
+  audited `report/session_log.jsonl` and `report/campaign_summary.json`. Needs LLMM (goal-parsing)
+  and a running TAVI instrument. Use `--spec spec.json` for an LLM-free run. **Currently drives the
+  TAVI simulator only** (development tier), not a live beamline. See
+  [MVP_FIRST_RUN.md](MVP_FIRST_RUN.md).
 
 ## Telling ISAR what you know — the `[fitting]` guidelines
 
