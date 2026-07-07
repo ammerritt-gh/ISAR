@@ -54,11 +54,12 @@ def _master(hkl, hw, disp="resolved", reliable=True, n=2):
             "usable": disp in ("resolved", "flagged"), "disposition": disp, "n_members": n}
 
 
-def test_keeps_producing_when_master_over_tolerance():
-    # Single-point path: the master exists but is still over tolerance -> another production scan.
+def test_keeps_producing_when_both_master_and_single_over_tolerance():
+    # Neither the master nor any single production fit is within tolerance yet → another production
+    # scan to accumulate.
     obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.1, step=0.1, tolerance_meV=0.5,
                                 budget={"kind": "neutrons", "amount": 1e12})
-    obs = [_obs((2.1, 0.0, 0.0), "quicklook", 0.9), _obs((2.1, 0.0, 0.0), "production", 0.30)]
+    obs = [_obs((2.1, 0.0, 0.0), "quicklook", 0.9), _obs((2.1, 0.0, 0.0), "production", 0.9)]
     masters = [_master((2.1, 0.0, 0.0), 0.9)]
     p = acq.propose_scan(obj, _model(obs), obs, {"fwhm_dE": 0.8}, {}, master_rows=masters)
     assert p.kind == "production" and p.ncount == acq.PRODUCTION_NCOUNT

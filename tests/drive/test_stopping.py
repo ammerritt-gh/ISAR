@@ -50,6 +50,16 @@ def test_unreliable_master_does_not_converge():
     assert st.evaluate_stop(obj, grid, _BUDGET).state != "met"
 
 
+def test_single_production_converges_when_master_degraded():
+    # Model-limited q: pooling degrades the fit so the master is junk (unusable), but a single
+    # production fit is flagged + reliable + within tolerance → converge on the single fit.
+    obj = _obj()
+    obs = [_obs((h, 0.0, 0.0), "production", 0.3, disp="flagged") for h in (2.1, 2.2, 2.3, 2.4)]
+    masters = [_master((h, 0.0, 0.0), 0.001, disp="junk", reliable=False) for h in (2.1, 2.2, 2.3, 2.4)]
+    grid = st.summarize_grid(obj, obs, masters)
+    assert st.evaluate_stop(obj, grid, _BUDGET).state == "met"
+
+
 def test_master_over_tolerance_keeps_accumulating():
     obj = _obj()
     # One master still over tolerance (needs more pooled scans) → continue.

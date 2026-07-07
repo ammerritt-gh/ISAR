@@ -383,13 +383,13 @@ def _charge_budget(budget_state: dict, proposal, eta) -> None:
 
 
 def _campaign_summary(objective, grid, decision, budget_state, workspace, log_path, n_obs) -> dict:
-    # The certified number per q is the master (pooled) fit's; fall back to the best per-scan estimate
-    # for a q that was quick-looked but never pooled.
+    # The certified number per q is the tightest trustworthy fit (master pooled OR best single
+    # production, whichever is smaller); fall back to the best quick-look estimate for an un-pooled q.
     def _omega0(g):
-        return (g.master or {}).get("omega0", g.best_omega0)
+        return g.cert_omega0 if g.cert_omega0 is not None else g.best_omega0
 
     def _hw(g):
-        return (g.master or {}).get("halfwidth", g.best_halfwidth)
+        return g.cert_halfwidth if g.cert_halfwidth is not None else g.best_halfwidth
 
     dispersion = [{"hkl": list(g.hkl), "q": g.q, "omega0": _omega0(g),
                    "calibrated_halfwidth": _hw(g), "n_members": (g.master or {}).get("n_members"),
@@ -404,8 +404,9 @@ def _campaign_summary(objective, grid, decision, budget_state, workspace, log_pa
         "objective": objective.to_dict(),
         "stop": decision.to_dict(),
         "grid": [{"hkl": list(g.hkl), "q": g.q, "converged": g.converged,
-                  "calibrated_halfwidth": (g.master or {}).get("halfwidth"), "omega0": _omega0(g),
-                  "disposition": (g.master or {}).get("disposition"),
+                  "calibrated_halfwidth": g.cert_halfwidth, "omega0": _omega0(g),
+                  "master_halfwidth": (g.master or {}).get("halfwidth"),
+                  "single_prod_halfwidth": g.best_prod_halfwidth,
                   "n_members": (g.master or {}).get("n_members"),
                   "n_production": g.n_production, "n_decline": g.n_decline,
                   "stuck": g.stuck} for g in grid],

@@ -139,6 +139,8 @@ class GridQ:
     best_omega0: float | None = None
     best_halfwidth: float | None = None
     best_resolved: bool = False
+    best_prod_halfwidth: float | None = None  # tightest usable+reliable SINGLE production fit
+    best_prod_omega0: float | None = None
     master: dict | None = None     # {"omega0","halfwidth","reliable","usable","disposition","n_members"}
 
     @property
@@ -146,11 +148,33 @@ class GridQ:
         return self.n_quicklook > 0 or self.n_production > 0 or self.n_decline > 0
 
     @property
-    def converged(self) -> bool:
-        """The master fit delivers a usable ω₀ with a reliable interval within tolerance."""
+    def _master_hw(self) -> float | None:
         m = self.master
-        return bool(m and m.get("usable") and m.get("reliable")
-                    and m.get("halfwidth") is not None and m["halfwidth"] <= self.tolerance)
+        if m and m.get("usable") and m.get("reliable") and m.get("halfwidth") is not None:
+            return float(m["halfwidth"])
+        return None
+
+    @property
+    def cert_halfwidth(self) -> float | None:
+        """The tightest trustworthy ω₀ half-width for this q: the master (pooled) fit when it is
+        usable+reliable, OR the best single production fit — whichever is smaller. A single production
+        fit is the fallback when pooling to higher statistics DEGRADES a model-limited q (the pooled
+        residual reads as junk), where accumulating more counts cannot help — only a better model can."""
+        cands = [h for h in (self._master_hw, self.best_prod_halfwidth) if h is not None]
+        return min(cands) if cands else None
+
+    @property
+    def cert_omega0(self) -> float | None:
+        mh, ph = self._master_hw, self.best_prod_halfwidth
+        if mh is not None and (ph is None or mh <= ph):
+            return (self.master or {}).get("omega0")
+        return self.best_prod_omega0
+
+    @property
+    def converged(self) -> bool:
+        """A trustworthy ω₀ interval (master OR best single production) is within tolerance."""
+        hw = self.cert_halfwidth
+        return hw is not None and hw <= self.tolerance
 
     @property
     def stuck(self) -> bool:
@@ -162,11 +186,10 @@ class GridQ:
 
     @property
     def deficit(self) -> float:
-        """Calibrated σ-above-tolerance deficit; ``+inf`` if never fit. Prefers the master half-width,
-        falling back to the best per-scan (quick-look) half-width for a not-yet-pooled q."""
-        hw = None
-        if self.master is not None:
-            hw = self.master.get("halfwidth")
+        """Calibrated σ-above-tolerance deficit; ``+inf`` if never fit. Uses the certified half-width
+        (master or best single production), falling back to the best per-scan/quick-look estimate for
+        a q that has only been quick-looked."""
+        hw = self.cert_halfwidth
         if hw is None:
             hw = self.best_halfwidth
         return _BIG if hw is None else hw - self.tolerance
@@ -207,6 +230,12 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                 g.best_omega0 = float(obs["omega0"])
                 g.best_halfwidth = hw
                 g.best_resolved = True
+            # A usable single PRODUCTION fit with a real (reliable) interval is a convergence
+            # candidate in its own right — it beats the master when pooling degrades a model-limited q.
+            if kind in PRODUCTION_KINDS and hw is not None and obs.get("omega0") is not None and (
+                    g.best_prod_halfwidth is None or hw < g.best_prod_halfwidth):
+                g.best_prod_halfwidth = hw
+                g.best_prod_omega0 = float(obs["omega0"])
     for mr in (master_rows or []):
         i = match_grid_index(tuple(mr["hkl"]), path)
         if i is not None:
@@ -270,10 +299,12 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
     for g in grid:
         m = g.master or {}
         per_q.append({"hkl": list(g.hkl), "q": g.q, "converged": g.converged,
-                      "calibrated_halfwidth": m.get("halfwidth"), "omega0": m.get("omega0"),
-                      "n_members": m.get("n_members"), "disposition": m.get("disposition"),
-                      "interval_reliable": m.get("reliable"), "n_production": g.n_production,
-                      "n_decline": g.n_decline, "stuck": g.stuck})
+                      "calibrated_halfwidth": g.cert_halfwidth, "omega0": g.cert_omega0,
+                      "master_halfwidth": m.get("halfwidth"), "master_n_members": m.get("n_members"),
+                      "single_prod_halfwidth": g.best_prod_halfwidth,
+                      "source": ("master" if (g._master_hw is not None and g.cert_halfwidth == g._master_hw)
+                                 else "single_production" if g.cert_halfwidth is not None else None),
+                      "n_production": g.n_production, "n_decline": g.n_decline, "stuck": g.stuck})
 
     # Tolerance below the systematic floor is unmeetable by construction — check before "met".
     if tol < fl:
