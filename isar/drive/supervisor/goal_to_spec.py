@@ -26,8 +26,11 @@ from isar.drive.objective import ObjectiveSpec
 Dispatcher = _llm.Dispatcher
 LLMMClient = _llm.LLMMClient
 
-# Cloud pin (configurable). Default matches the adjudicator bake-off's proven cloud comparator.
-DEFAULT_SUPERVISOR_MODEL = "nanogpt/openai/gpt-oss-120b"
+# Cloud pin (configurable via LLMM_SUPERVISOR_MODEL). GLM 5.2 replaced gpt-oss-120b, whose NanoGPT
+# serviceability had collapsed (~23% success, frequent dropped dispatches at goal-parse time). GLM 5.2
+# reports >95% health, supports structured output, and dispatches in ~1.6s — right for a one-shot
+# schema-enforced goal parse. `thinking` is pinned False by the client, so the non-thinking base ref.
+DEFAULT_SUPERVISOR_MODEL = "nanogpt/zai-org/glm-5.2"
 DEFAULT_ENDPOINT = "http://127.0.0.1:8766"
 
 GOAL_SCHEMA = {
