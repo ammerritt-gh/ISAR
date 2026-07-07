@@ -100,13 +100,16 @@ def is_bimodal(samples, *, weights=None, grid: int = 256, rel_height: float = 0.
 
 
 def _refit_replicate(counts_b, composite, x, ctx, theta_fit, bounds, be_names,
-                     phonon_i, prim_rank, est, backend, ncall, penalty=None):
+                     phonon_i, prim_rank, est, backend, ncall, penalty=None,
+                     fixed_pos=(), fixed_vals=()):
     """Refit one Poisson draw and reduce it to (ω₀, Γ), or ``None`` if the refit failed.
 
     Warm-starts at the fit; a failed refit is counted (not fatal), matching the serial contract.
     When the fit was soft-constrained, ``penalty`` is added to the refit objective too (contract 1),
     so the replicate scatter — and thus the reported interval — reflects the prior, not a penalised
-    point estimate with unpenalised scatter.
+    point estimate with unpenalised scatter. When the fit was hard-fixed (branch-conditional), the
+    same params are frozen in every replicate (``fixed_pos``/``fixed_vals`` via
+    :func:`loop._minimize_fixed`), so the interval reflects the conditioned model, not free Γ scatter.
     """
     def objective(theta):
         c = est.cost(counts_b, composite.evaluate(x, theta, ctx))
@@ -116,7 +119,8 @@ def _refit_replicate(counts_b, composite, x, ctx, theta_fit, bounds, be_names,
     # is counted (`n_converged`), never fatal — so they run on MINUIT's plain default budget,
     # not the raised certification budget the main fit uses. This keeps the per-scan bootstrap
     # cost unchanged from before the FIX-1 budget bump (which is per-fit, not per-refit).
-    br = backends.minimize(backend, objective, theta_fit, bounds, be_names, minos=False, ncall=ncall)
+    br = loop._minimize_fixed(backend, objective, theta_fit, bounds, be_names,
+                              list(fixed_pos), list(fixed_vals), minos=False, ncall=ncall)
     if not br.success:
         return None
     w0 = np.array([np.sqrt(float(br.x[i]) ** 2 + float(br.x[i + 1]) ** 2) for i in phonon_i])
@@ -135,7 +139,8 @@ def _bootstrap_chunk(args):
     est = estimators.get_estimator("baker_cousins")
     x = ctx.x_used
     return [_refit_replicate(cb, prob.composite, x, ctx, theta_fit, prob.bounds, be_names,
-                             phonon_i, prim_rank, est, backend, ncall, prob.penalty)
+                             phonon_i, prim_rank, est, backend, ncall, prob.penalty,
+                             prob.fixed_pos, prob.fixed_vals)
             for cb in counts_chunk]
 
 
@@ -206,7 +211,8 @@ def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 1234
         n_chunks = min(workers, n)
         if n_chunks <= 1 or n < _BOOT_PARALLEL_MIN_M:
             return [_refit_replicate(cb, prob.composite, x, ctx, theta_fit, prob.bounds, be_names,
-                                     phonon_i, prim_rank, est, backend, ncall, prob.penalty)
+                                     phonon_i, prim_rank, est, backend, ncall, prob.penalty,
+                                     prob.fixed_pos, prob.fixed_vals)
                     for cb in counts_list]
         chunks = [counts_list[i::n_chunks] for i in range(n_chunks)]  # round-robin, balanced
         args = [(hyp, ctx, theta_fit, ch, phonon_i, prim_rank, be_names, backend, ncall)

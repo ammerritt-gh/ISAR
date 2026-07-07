@@ -10,7 +10,7 @@ HESSE-propagated and **provisional** (review F4); the authoritative interval is 
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 import numpy as np
@@ -18,6 +18,7 @@ import numpy as np
 from isar.analyze.ic import EPS_OMEGA_D, greedy_multimode_ic, structure_ic
 from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.synth import backends, estimators
+from isar.synth.backends import BackendResult
 from isar.synth.fit import assess_success, omega0_value_error
 
 GAMMA_FLOOR = 1e-3
@@ -86,10 +87,20 @@ class Problem:
     k: int
     n_used: int
     penalty: Callable[[np.ndarray], float] | None = None
+    # Hard-fixed params (contract 4, Phase 3b): positions into the FULL param vector and their
+    # frozen values. Everything (costv/penalty/objective/composite) stays full-vector; fixing is
+    # applied only inside :func:`_minimize_fixed` (which minimises the free subspace) and shrinks
+    # ``k``. Empty ⇒ no param frozen ⇒ every path is bit-identical to an ordinary fit.
+    fixed_pos: list[int] = field(default_factory=list)
+    fixed_vals: list[float] = field(default_factory=list)
 
     @property
     def ndof(self) -> int:
         return self.n_used - self.k
+
+    @property
+    def is_hard_fixed(self) -> bool:
+        return bool(self.fixed_pos)
 
     @property
     def objective(self) -> Callable[[np.ndarray], float]:
@@ -172,22 +183,25 @@ def build_problem(hyp, ctx, *, x0=None) -> Problem:
     def costv(theta):
         return est.cost(counts, composite.evaluate(x, theta, ctx))
 
-    penalty = _soft_penalty(getattr(ctx, "constraints", None), names)
+    fixed_pos, fixed_vals = _hard_fixed(getattr(ctx, "constraints", None), names)
+    fixed_names = {names[i] for i in fixed_pos}
+    penalty = _soft_penalty(getattr(ctx, "constraints", None), names, skip=fixed_names)
     return Problem(composite=composite, costv=costv, x0=x0, bounds=bounds,
-                   free_names=names, k=len(names), n_used=int(x.size), penalty=penalty)
+                   free_names=names, k=len(names) - len(fixed_pos), n_used=int(x.size),
+                   penalty=penalty, fixed_pos=fixed_pos, fixed_vals=fixed_vals)
 
 
-def _soft_penalty(constraints, names):
+def _soft_penalty(constraints, names, *, skip=()):
     """A Gaussian-prior penalty ``Σ((θ_i−μ)/σ)²`` over the soft-constrained params present in
     ``names`` (contract 1's soft path), or None. With ``errordef=1`` this contributes Δcost=1 at 1σ,
     so HESSE/MINOS on the objective return the honest data∩prior posterior width. Added to the
-    objective only — never the data cost. Hard constraints are Phase 3 (they drop params, not
-    penalise them), so they are ignored here."""
+    objective only — never the data cost. ``skip`` names (the hard-fixed params) are excluded — a
+    param cannot be both frozen and softly penalised."""
     if constraints is None or not getattr(constraints, "soft", None):
         return None
     terms = []
     for name, ms in constraints.soft.items():
-        if name in names:
+        if name in names and name not in skip:
             mu, sig = float(ms[0]), float(ms[1])
             if sig > 0:
                 terms.append((names.index(name), mu, sig))
@@ -200,8 +214,64 @@ def _soft_penalty(constraints, names):
     return penalty
 
 
+def _hard_fixed(constraints, names):
+    """Positions into the full ``names`` vector, and the frozen values, for every hard constraint
+    (``ParamConstraints.hard``) whose target is a param of this composite and finite. Returns two
+    parallel lists ``(positions, values)`` — empty when nothing is hard-fixed. See
+    :func:`_minimize_fixed` for how they are applied (the composite stays full-vector)."""
+    hard = getattr(constraints, "hard", None) if constraints is not None else None
+    if not hard:
+        return [], []
+    pos, vals = [], []
+    for name, v in hard.items():
+        if name in names:
+            fv = float(v)
+            if np.isfinite(fv):
+                pos.append(names.index(name))
+                vals.append(fv)
+    return pos, vals
+
+
+def _minimize_fixed(backend, objective, x0, bounds, be_names, fixed_pos, fixed_vals,
+                    *, minos=False, ncall=None) -> BackendResult:
+    """Minimise a **full-vector** ``objective`` with the coordinates in ``fixed_pos`` frozen to
+    ``fixed_vals``, returning a :class:`BackendResult` in **full space** (frozen coords embedded,
+    covariance expanded with zero rows/cols — a fixed param has zero variance and zero covariance,
+    which is exactly right). When ``fixed_pos`` is empty this delegates unchanged, so an ordinary
+    fit is bit-for-bit identical.
+
+    Freezing at this boundary keeps every consumer (``costv``/``penalty``/``result_from_backend``'s
+    positional per-phonon indexing) full-vector and untouched; the optimiser only ever sees the
+    reduced free subspace, so ``k``/HESSE are natively reduced (contract 4)."""
+    x0 = np.asarray(x0, dtype=float)
+    if not fixed_pos:
+        return backends.minimize(backend, objective, x0, bounds, be_names, minos=minos, ncall=ncall)
+    n = x0.size
+    fixed_set = set(fixed_pos)
+    free_pos = [i for i in range(n) if i not in fixed_set]
+    template = x0.copy()
+    template[list(fixed_pos)] = np.asarray(fixed_vals, dtype=float)
+
+    def embed(theta_free):
+        full = template.copy()
+        full[free_pos] = np.asarray(theta_free, dtype=float)
+        return full
+
+    br = backends.minimize(backend, lambda tf: objective(embed(tf)),
+                           x0[free_pos], [bounds[i] for i in free_pos],
+                           [be_names[i] for i in free_pos], minos=minos, ncall=ncall)
+    x_full = embed(br.x)
+    cov_full = None
+    if br.covariance is not None:
+        sub = np.asarray(br.covariance, dtype=float)
+        cov_full = np.zeros((n, n))
+        cov_full[np.ix_(free_pos, free_pos)] = sub
+    return BackendResult(x_full, br.success, br.message, br.n_eval, cov_full,
+                         br.covariance_ok, dict(br.at_limit), br.merrors)
+
+
 def result_from_backend(label, composite, costv, n_used, k, br,
-                        *, prior_omega=None, penalty=None) -> StructureFitResult:
+                        *, prior_omega=None, penalty=None, hard_fixed=False) -> StructureFitResult:
     """Build a :class:`StructureFitResult` from a backend result, reading the *raw,
     separated* convergence/covariance/profile signals (not the lossy combined success).
 
@@ -224,9 +294,12 @@ def result_from_backend(label, composite, costv, n_used, k, br,
     prior_penalty = float(penalty(theta)) if penalty is not None else None
     posterior_cost = (cost + prior_penalty) if prior_penalty is not None else None
     # provenance precedence (contract 4): branch_conditional > stokes_only > soft_prior >
-    # unconstrained. branch_conditional (hard-fix) is Phase 3b; here a one-sided (Bose-dead)
-    # composite tags stokes_only even under a soft prior, so it never reads as an ordinary fit.
-    if composite.is_stokes_only():
+    # unconstrained. A hard-fixed (branch-conditional) fit dropped a param to its branch value; a
+    # one-sided (Bose-dead) composite is stokes_only even under a soft prior; so a rescued fit
+    # never reads as an ordinary two-sided resolved phonon.
+    if hard_fixed:
+        fit_kind = "branch_conditional"
+    elif composite.is_stokes_only():
         fit_kind = "stokes_only"
     elif penalty is not None:
         fit_kind = "soft_prior"
@@ -285,9 +358,11 @@ def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False, x0=None) -> Stru
     (see :func:`build_problem`) — the two-stage loop passes the greedy multimode seed."""
     prob = build_problem(hyp, ctx, x0=x0)
     be_names = [_sanitize(n) for n in prob.free_names]
-    br = backends.minimize(backend, prob.objective, prob.x0, prob.bounds, be_names, minos=minos)
+    br = _minimize_fixed(backend, prob.objective, prob.x0, prob.bounds, be_names,
+                         prob.fixed_pos, prob.fixed_vals, minos=minos)
     return result_from_backend(hyp.label, prob.composite, prob.costv, prob.n_used, prob.k, br,
-                               prior_omega=getattr(ctx, "prior_omega", None), penalty=prob.penalty)
+                               prior_omega=getattr(ctx, "prior_omega", None),
+                               penalty=prob.penalty, hard_fixed=prob.is_hard_fixed)
 
 
 def fit_admissible_structures(ctx, *, backend="iminuit", minos=False, errors=False,
