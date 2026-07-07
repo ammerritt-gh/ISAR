@@ -22,6 +22,7 @@ import numpy as np
 from isar.analyze import errors, loop, select, verdict
 from isar.analyze import gold as gold_mod
 from isar.analyze.context import ScanContext
+from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
@@ -76,6 +77,10 @@ class FitOutcome:
     # (IntensityMeasure.to_dict) or None; carried onto the dispersion prior so a later scan can
     # predict expected counts. Absent on masters (no single-record normalization) and older ledgers.
     intensity: dict | None = None
+    # Model-free L0 description of the spectrum (ScanDescriptor.to_dict): peaks + significance,
+    # independent of the phonon model. Attached to every scan; nothing decides on it yet (the Phase-4
+    # falsification gate compares its peak count to the fitted mode count). None on older ledgers.
+    descriptor: dict | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -228,6 +233,16 @@ def _intensity_measure(rec, ctx, fit) -> dict | None:
         value=amp / exposure, exposure=exposure, counting_mode=(mode or "monitor"),
         gauss_fwhm=float(ctx.gauss_fwhm), lorentz_fwhm=float(ctx.lorentz_fwhm),
         instrument=str(ctx.instrument)).to_dict()
+
+
+def _scan_descriptor(ctx) -> dict | None:
+    """Model-free L0 descriptor for this scan (`ScanDescriptor.to_dict`), or None on any failure —
+    it is a report aid + Phase-4 falsification input, never a reason to fail a fit."""
+    try:
+        return describe_spectrum(ctx.x, ctx.counts, center=ctx.center, gauss_fwhm=ctx.gauss_fwhm,
+                                 lorentz_fwhm=ctx.lorentz_fwhm, mask=ctx.mask).to_dict()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
@@ -711,7 +726,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         calib=calres.summary(), reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
         interval_reliable=fit.get("interval_reliable", True), omega0_profile=fit.get("omega0_profile"),
         hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
-        pooled=True, n_members=int(ms.n_members))
+        pooled=True, n_members=int(ms.n_members), descriptor=_scan_descriptor(ctx))
     entry = ScanEntry(status="fitted", **base)
     entry.detectors[det] = outcome.to_dict()
     entry.provenance = {"pooled": True, "n_members": int(ms.n_members),
@@ -792,7 +807,7 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         interval_reliable=fit.get("interval_reliable", True),
         omega0_profile=fit.get("omega0_profile"),
         hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
-        intensity=_intensity_measure(rec, ctx, fit))
+        intensity=_intensity_measure(rec, ctx, fit), descriptor=_scan_descriptor(ctx))
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is

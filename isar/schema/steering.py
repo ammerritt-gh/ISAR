@@ -58,6 +58,63 @@ class IntensityMeasure:
 
 
 @dataclass(frozen=True)
+class DescriptorPeak:
+    """One model-free feature found by the L0 descriptor: "signal at E=X, width W, intensity I".
+
+    ``significance`` is the one-sided Gaussian-equivalent σ of ``p_value`` (the exact-Poisson tail of
+    the integrated excess over the local background), so it stays meaningful at low counts.
+    ``integrated_intensity`` is the raw background-subtracted counts over the peak's resolution
+    window (not exposure-normalised — that is :class:`IntensityMeasure`'s job downstream).
+    """
+
+    energy: float              # peak centre (meV, same axis as the fit)
+    width: float               # FWHM estimate (meV), floored at the resolution
+    integrated_intensity: float  # Σ(counts − background) over the peak window (raw counts)
+    significance: float        # one-sided Gaussian-equivalent σ of p_value
+    p_value: float             # exact-Poisson family-wise-uncorrected tail probability
+
+    def to_dict(self) -> dict:
+        return dict(self.__dict__)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "DescriptorPeak":
+        return cls(**{k: d[k] for k in d if k in cls.__dataclass_fields__})
+
+
+@dataclass(frozen=True)
+class ScanDescriptor:
+    """The per-scan model-free description (L0). A characterised **statistical contract**, not a
+    boolean: peaks are accepted only when their exact-Poisson tail clears a Bonferroni threshold
+    ``alpha / n_res`` over the ``n_res`` independent resolution elements in the window, so the
+    per-scan false-positive rate is ≈ ``alpha`` under a flat Poisson background (contract 3 / §4.3).
+
+    ``peaks`` excludes the elastic line and masked/QC-failed points. ``n_peaks`` is what the
+    falsification gate compares against a fitted model's mode count.
+    """
+
+    peaks: tuple = ()          # tuple[DescriptorPeak]
+    background: float = 0.0     # estimated flat background level (counts/point)
+    n_res: float = 0.0          # independent resolution elements in the searched window
+    alpha: float = 0.05         # target per-scan false-positive rate
+    n_points: int = 0           # kept points searched
+
+    @property
+    def n_peaks(self) -> int:
+        return len(self.peaks)
+
+    def to_dict(self) -> dict:
+        return {"peaks": [p.to_dict() for p in self.peaks], "background": self.background,
+                "n_res": self.n_res, "alpha": self.alpha, "n_points": self.n_points}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ScanDescriptor":
+        peaks = tuple(DescriptorPeak.from_dict(p) for p in (d.get("peaks") or ()))
+        return cls(peaks=peaks, background=float(d.get("background", 0.0)),
+                   n_res=float(d.get("n_res", 0.0)), alpha=float(d.get("alpha", 0.05)),
+                   n_points=int(d.get("n_points", 0)))
+
+
+@dataclass(frozen=True)
 class ParamConstraints:
     """Fit-time constraints on named global parameters (e.g. ``"phonon.Gamma"``, ``"phonon.A"``).
 
