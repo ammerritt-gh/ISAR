@@ -115,6 +115,35 @@ class ScanDescriptor:
 
 
 @dataclass(frozen=True)
+class ProposalScore:
+    """The acquisition score behind one :class:`~isar.drive.acquisition.acquire.ScanProposal` (Phase 5).
+
+    Serialized onto the proposal ``meta`` and the session log so the ranking is auditable — which
+    method ranked the scan, the EIG, the cost, and the prior/predicted σ(ω₀). ``method`` is
+    ``"counts"`` (5a diminishing-returns EIG), ``"fisher"`` (5b forward-model screen), ``"explore"``
+    (an unvisited q — no baseline, EIG effectively infinite), or ``"deficit"`` (the σ-deficit
+    fallback when no cost history exists). Non-finite scores are stored as ``None`` so the dict
+    round-trips through strict JSON.
+    """
+
+    method: str
+    eig: float | None = None          # goal-weighted EIG on ω₀ (None = +inf, no baseline yet)
+    cost: float = 0.0                 # ΔC = n_points × ncount (monitor-count budget)
+    eig_per_cost: float | None = None  # the ranking key (None = +inf)
+    sigma_prior: float | None = None  # σ(ω₀) belief before the scan (meV)
+    sigma_scan: float | None = None   # predicted σ(ω₀) after the scan (meV)
+    c_spent: float = 0.0              # C_q accumulated cost at this q before the scan
+    reason: str = ""
+
+    def to_dict(self) -> dict:
+        return dict(self.__dict__)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ProposalScore":
+        return cls(**{k: d[k] for k in d if k in cls.__dataclass_fields__})
+
+
+@dataclass(frozen=True)
 class ParamConstraints:
     """Fit-time constraints on named global parameters (e.g. ``"phonon.Gamma"``, ``"phonon.A"``).
 

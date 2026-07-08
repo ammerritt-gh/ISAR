@@ -14,6 +14,7 @@ wrong — fix the card, not the parser (§6).
 from __future__ import annotations
 
 import json
+import os
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -134,9 +135,16 @@ class Card:
         return cls(policy, state)
 
     def save_state(self, path) -> Path:
-        """Write the machine-owned state half as JSON. Never touches the policy TOML (D8)."""
+        """Write the machine-owned state half as JSON, **atomically**. Never touches the policy TOML
+        (D8). Atomic (write-temp + ``os.replace``) so a crash mid-write cannot leave a truncated /
+        corrupt ``card.state.json`` — the drive reads this file across process boundaries to recover the
+        branch model (and the rest of the accumulated state) after a crash, so a torn write would poison
+        the restart. On failure the prior file is left intact."""
         p = Path(path)
-        p.write_text(json.dumps(self.state.to_dict(), indent=2), encoding="utf-8")
+        text = json.dumps(self.state.to_dict(), indent=2)
+        tmp = p.with_name(p.name + f".tmp.{os.getpid()}")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, p)          # atomic on the same filesystem
         return p
 
     def validate(self) -> list[str]:

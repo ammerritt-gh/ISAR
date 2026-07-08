@@ -23,9 +23,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 import json
+import math
+
+import numpy as np
 
 from isar.drive.acquisition import model as acq_model
-from isar.drive.acquisition.acquire import propose_scan
+from isar.drive.acquisition.acquire import points_in_window, propose_scan
 from isar.drive.acquisition.calibration import Calibration, load_calibration
 from isar.drive.instrument.tavi_client import TaviClient
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
@@ -33,7 +36,7 @@ from isar.drive.isar_io.runner import init_isar as _default_init_isar
 from isar.drive.isar_io.runner import run_isar as _default_run_isar
 from isar.drive.isar_io.scan_writer import save_scan_json
 from isar.drive.objective import ObjectiveSpec
-from isar.drive.session_log import log_event
+from isar.drive.session_log import log_event, read_log
 from isar.drive.supervisor import exceptions as exc
 from isar.drive.supervisor.stopping import (
     PRODUCTION_NCOUNT,
@@ -67,6 +70,58 @@ def _make_resolution_cb(client, override):
         except Exception:   # noqa: BLE001  (any transport/refusal → advisory default FWHM)
             return {"ok": False}
     return cb
+
+
+def _make_fisher_provider(card_state: dict, resolution_cb):
+    """The 5b Poisson-Fisher screen provider ``(gridq, omega0_pred, sigma_prior) -> σ_scan|None`` built
+    from the branch(es) the session persisted into ``card.state.json`` (durable / crash-safe — the drive
+    reads the file, never a live session object). Returns ``None`` when no branch exists yet (cold
+    campaign) → the acquisition falls back to the 5a counts tier.
+
+    A candidate q is **Fisher-grounded** only when its last fit was ``unconstrained`` AND the branch
+    covers its predicted ω₀ *in* the anchor range (the misspecification guard: a mistrusted/extrapolated
+    rate never drives a confident Fisher EIG). Given that, it predicts the scan's λ(E) from the branch
+    (Γ, A∝1/ω) at production exposure, adds the branch soft-constraint precision the low-q fit will use,
+    and returns the identifiability-aware σ(ω₀) — or ``None`` when ω₀ is unidentifiable even with the
+    prior (σ=∞). Boundary-clean: imports only isar.drive + isar.synth (both permitted)."""
+    branch_models = (card_state or {}).get("branch_models") or []
+    if not branch_models:
+        return None
+
+    from isar.drive.acquisition.acquire import _energy_window, _resolve_fwhm
+    from isar.drive.acquisition.branch_view import predict_branch, select_branch
+    from isar.drive.acquisition.eig import fisher_information, sigma_omega0
+    from isar.synth.fit import omega_d_from      # isar.synth is boundary-allowed
+
+    def provider(g, omega0_pred, sigma_prior):
+        if getattr(g, "last_fit_kind", None) != "unconstrained":
+            return None
+        if omega0_pred is None or not math.isfinite(omega0_pred) or omega0_pred <= 0:
+            return None
+        branch = select_branch(branch_models, omega0_pred)
+        if branch is None:
+            return None
+        pred = predict_branch(branch, float(omega0_pred))
+        if not pred.in_anchor_range or pred.gamma <= 0:
+            return None
+        T = float(branch.get("t_bin", 0.0))         # the branch carries its own T-bin
+        exposure = float(PRODUCTION_NCOUNT)
+        amp = float(pred.amplitude_norm) * exposure
+        gamma = float(pred.gamma)
+        od = omega_d_from(float(omega0_pred), gamma)
+        h, k, l = g.hkl
+        fwhm = _resolve_fwhm(resolution_cb, h, k, l, float(omega0_pred))
+        e_lo, e_hi, _step, n_points = _energy_window(float(omega0_pred), fwhm)
+        x_grid = np.linspace(e_lo, e_hi, max(int(n_points), 2))
+        g_sig = max(float(pred.gamma_sigma), 1e-6)
+        a_sig = max(float(pred.amplitude_rel_sigma) * amp, 1e-6)
+        prior_prec = {1: 1.0 / g_sig ** 2, 2: 1.0 / a_sig ** 2}   # branch soft precision on Γ, A
+        theta = (od, gamma, amp, 0.0, 1.0)                        # E=0, nominal flat background
+        info = fisher_information(theta, x_grid, fwhm, 0.0, T, center=0.0, prior_precision=prior_prec)
+        ss = sigma_omega0(theta, info)
+        return ss if math.isfinite(ss) else None
+
+    return provider
 
 
 def _validate_body(proposal, *, allow_partial: bool = False) -> dict[str, Any]:
@@ -121,7 +176,8 @@ def _pick_interval(row: dict) -> tuple:
     return None, None, False
 
 
-def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibration) -> dict:
+def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibration,
+                          proposal_cost: float = 0.0) -> dict:
     disp = row.get("disposition")
     verdict = row.get("verdict")
     # `flagged` (model_incomplete) still carries a usable ω₀ — for an ω₀-tolerance objective the flag
@@ -149,6 +205,7 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         "hkl": _row_hkl(row), "kind": kind, "calibrated_halfwidth": hw,
         "resolved": usable, "disposition": disp, "verdict": verdict,
         "omega0": row.get("omega0"), "scan": row.get("scan"), "detector": row.get("detector"),
+        "proposal_cost": float(proposal_cost), "fit_kind": row.get("fit_kind"),
     }
 
 
@@ -245,6 +302,68 @@ def _recertified_observations(workspace, calibration: Calibration, scan_kind: di
     return out
 
 
+def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
+    """Rehydrate the loop's in-memory state from the durable files after a crash/restart.
+
+    Convergence needs no resume (the pooled master rows are read fresh every iteration); this recovers
+    what ``run_campaign`` would otherwise reset to zero — the **spend ledger** (``scan_counter`` +
+    ``budget`` neutrons/seconds, exact from the ``run`` events, so a restart neither re-spends beamtime
+    nor reuses a seed / collides an idempotency key), the **folded-row set** (``consumed`` = every
+    ``(scan, detector)`` already in ``results.csv``, so old rows are never re-folded as new), and
+    **best-effort per-scan observations** (kind/ncount by hkl from the run ledger; each q's total cost
+    attributed to one representative row so ``counts_spent`` sums to the true per-q spend). A cold
+    workspace (no log / no results.csv) returns the fresh-start tuple."""
+    runs = [e.get("payload", {}) for e in read_log(log_path) if e.get("kind") == "run"]
+    scan_counter = len(runs)                        # one run event per submitted scan
+    neutrons = seconds = 0.0
+    cost_by_hkl: dict = {}
+    kind_by_hkl: dict = {}
+    ncount_by_hkl: dict = {}
+    for r in runs:
+        cost = float(r.get("cost")) if r.get("cost") is not None else 0.0
+        neutrons += cost
+        eta = r.get("eta")
+        if isinstance(eta, dict) and eta.get("estimated_seconds") is not None:
+            seconds += float(eta["estimated_seconds"])
+        hkl = r.get("hkl")
+        if hkl is None:
+            continue
+        key = tuple(round(float(x), 4) for x in hkl)
+        cost_by_hkl[key] = cost_by_hkl.get(key, 0.0) + cost
+        k = r.get("kind")
+        if k in ("production", "confirm"):
+            kind_by_hkl[key] = "production"
+        elif key not in kind_by_hkl:
+            kind_by_hkl[key] = k or "production"
+        ncount_by_hkl[key] = r.get("ncount") or ncount_by_hkl.get(key)
+
+    observations: list[dict] = []
+    consumed: set = set()
+    scan_kind: dict = {}
+    try:
+        rows = read_results_csv(workspace)
+    except FileNotFoundError:
+        rows = []
+    stamped: set = set()
+    for row in rows:
+        if row.get("pooled") or _row_hkl(row) is None:
+            continue
+        key = tuple(round(float(x), 4) for x in _row_hkl(row))
+        kind = kind_by_hkl.get(key, "production")
+        ncount = int(ncount_by_hkl.get(key) or PRODUCTION_NCOUNT)
+        pc = 0.0
+        if key not in stamped:                      # attribute the q's whole spend to one row
+            pc = cost_by_hkl.get(key, 0.0)
+            stamped.add(key)
+        observations.append(_observation_from_row(row, kind, ncount, calibration, proposal_cost=pc))
+        sd = (row.get("scan"), row.get("detector"))
+        consumed.add(sd)
+        scan_kind[sd] = (kind, ncount)
+
+    return {"observations": observations, "consumed": consumed, "scan_kind": scan_kind,
+            "scan_counter": scan_counter, "neutrons": neutrons, "seconds": seconds}
+
+
 def _new_rows(workspace, consumed: set) -> list[dict]:
     """Rows in results.csv not yet consumed, keyed by (scan, detector); skips status-only rows."""
     try:
@@ -303,18 +422,26 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     wait_timeout = float(config.get("wait_timeout", DEFAULT_WAIT_TIMEOUT))
     floor = systematic_floor(calibration, config.get("floor"))
 
+    # Crash-safe resume: recover the spend ledger + folded rows + observations from the durable files
+    # (session_log + results.csv). A cold workspace yields the fresh-start values.
+    resumed = _resume_state(workspace, log_path, calibration)
     budget = dict(objective.budget)
-    budget_state = {"kind": budget["kind"], "amount": budget["amount"], "spent": 0.0,
-                    "neutrons": 0.0, "seconds": 0.0}
+    budget_state = {"kind": budget["kind"], "amount": budget["amount"],
+                    "neutrons": resumed["neutrons"], "seconds": resumed["seconds"], "spent": 0.0}
+    budget_state["spent"] = (budget_state["neutrons"] if budget_state["kind"] == "neutrons"
+                             else budget_state["seconds"])
 
-    observations: list[dict] = []
-    consumed: set = set()
-    scan_kind: dict = {}          # (scan, detector) -> (kind, ncount), to rebuild obs after certify
-    scan_counter = 0
+    observations: list[dict] = resumed["observations"]
+    consumed: set = resumed["consumed"]
+    scan_kind: dict = resumed["scan_kind"]   # (scan, detector) -> (kind, ncount), to rebuild obs after certify
+    scan_counter = resumed["scan_counter"]
 
     log_event(log_path, "decide", {"event": "campaign_start", "objective": objective.to_dict(),
                                    "calibration": {"inflation": calibration.inflation,
-                                                   "floor_meV": floor}})
+                                                   "floor_meV": floor},
+                                   "resumed": {"scan_counter": scan_counter,
+                                               "n_observations": len(observations),
+                                               "spent": budget_state["spent"]}})
 
     decision = None
     for _ in range(max_iters):
@@ -325,8 +452,12 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             break
 
         model = acq_model.fit(model_points(grid))
+        # 5b Fisher tier: read the branch the session persisted into card.state.json FRESH each
+        # iteration (durable / crash-safe — a file, never a live session object). No branch yet →
+        # provider is None → propose_scan falls back to the 5a counts tier.
+        fisher = _make_fisher_provider(read_card_state(workspace), resolution_cb)
         proposal = propose_scan(objective, model, observations, resolution_cb, budget_state,
-                                master_rows=master_rows)
+                                master_rows=master_rows, fisher=fisher)
         if proposal is None:
             decision = evaluate_stop(objective, grid, budget_state, calibration=calibration, floor=floor)
             break
@@ -364,8 +495,14 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             job_id = submit.get("job_id")
             eta = (submit.get("eta") or {}).get("estimated_seconds")
             _charge_budget(budget_state, proposal, eta)
+            # The run event doubles as the durable SPEND LEDGER for crash resume: kind/ncount/n_points/
+            # hkl + the charged cost (= n_points×ncount) let a restart recover budget + scan_counter.
             log_event(log_path, "run", {"job_id": job_id, "state": submit.get("state"),
-                                        "eta": submit.get("eta"), "attempt": attempt})
+                                        "eta": submit.get("eta"), "attempt": attempt,
+                                        "kind": proposal.kind, "ncount": int(proposal.ncount),
+                                        "n_points": int(proposal.n_points or 0),
+                                        "hkl": [proposal.h, proposal.k, proposal.l],
+                                        "cost": float(proposal.n_points or 1) * float(proposal.ncount)})
 
             snap = client.wait_scan(job_id, timeout=wait_timeout)
             if snap.get("state") != "done":
@@ -392,8 +529,13 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             log_event(log_path, "analyze", {"job_id": job_id, "errors_tier": errors_arg[-1]})
 
             rows = _new_rows(workspace, consumed)
-            for r in rows:
-                observations.append(_observation_from_row(r, proposal.kind, proposal.ncount, calibration))
+            # The scan's actual monitor cost (n_points reflects any recenter; charged once per scan,
+            # onto the first detector row so counts_spent per q is not multiplied by detector count).
+            scan_cost = float(proposal.n_points or 1) * float(proposal.ncount)
+            for j, r in enumerate(rows):
+                observations.append(_observation_from_row(
+                    r, proposal.kind, proposal.ncount, calibration,
+                    proposal_cost=scan_cost if j == 0 else 0.0))
                 scan_kind[(r.get("scan"), r.get("detector"))] = (proposal.kind, proposal.ncount)
 
             if not _rows_missed(rows):
@@ -408,6 +550,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                 break
             proposal.e_lo = act.params["e_lo"]
             proposal.e_hi = act.params["e_hi"]
+            proposal.n_points = points_in_window(proposal.e_lo, proposal.e_hi, proposal.e_step)
             attempt += 1
 
         # ---- exception branch on the final verdict (flagged / held) ----------------------------

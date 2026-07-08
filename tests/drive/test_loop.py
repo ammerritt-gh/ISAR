@@ -14,9 +14,9 @@ import pytest
 from isar.drive.acquisition.calibration import Calibration
 import types
 
-from isar.drive.loop import _errors_arg_for, _pick_interval, run_campaign
+from isar.drive.loop import _errors_arg_for, _pick_interval, _resume_state, run_campaign
 from isar.drive.objective import ObjectiveSpec
-from isar.drive.session_log import read_log
+from isar.drive.session_log import log_event, read_log
 from isar.drive.supervisor.stopping import PRODUCTION_NCOUNT, QUICKLOOK_NCOUNT
 
 _UNITY_CAL = Calibration.from_dict({"inflation": 1.0, "buckets": [], "center_pull_mean": 0.0})
@@ -307,3 +307,58 @@ def test_missed_window_triggers_recenter(tmp_path):
     recenters = [e for e in events if e["kind"] == "exception"
                  and e["payload"].get("action") == "recenter"]
     assert recenters, "a missed window should have logged a recenter action"
+
+
+# --------------------------------------------------------------------------- crash-safe resume (Part C)
+def test_resume_state_recovers_ledger_from_log_and_results(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    # Two submitted scans at the same q (a quick-look then a production) — the durable spend ledger.
+    log_event(log, "run", {"job_id": "j1", "state": "done", "eta": {"estimated_seconds": 5.0},
+                           "kind": "quicklook", "ncount": QUICKLOOK_NCOUNT, "n_points": 50,
+                           "hkl": [2.1, 0.0, 0.0], "cost": 5.0e8})
+    log_event(log, "run", {"job_id": "j2", "state": "done", "eta": {"estimated_seconds": 7.0},
+                           "kind": "production", "ncount": PRODUCTION_NCOUNT, "n_points": 60,
+                           "hkl": [2.1, 0.0, 0.0], "cost": 6.0e9})
+    _write_results(ws, [{"scan": 2, "detector": "det", "h": 2.1, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "verdict": "resolved", "disposition": "resolved",
+                         "omega0": 0.2, "interval_lo": 0.05, "interval_hi": 0.35,
+                         "interval_reliable": True}])
+    r = _resume_state(ws, log, _UNITY_CAL)
+
+    assert r["scan_counter"] == 2                       # exact — no seed reuse / idempotency collision
+    assert r["neutrons"] == pytest.approx(5.0e8 + 6.0e9)  # exact spend — no double-spend on restart
+    assert r["seconds"] == pytest.approx(12.0)
+    assert ("2", "det") in r["consumed"] or (2, "det") in r["consumed"]  # old row never re-folded
+    obs = r["observations"]
+    assert len(obs) == 1 and obs[0]["kind"] == "production"
+    assert sum(o["proposal_cost"] for o in obs) == pytest.approx(5.0e8 + 6.0e9)  # per-q spend recovered
+
+
+def test_cold_workspace_resumes_to_fresh(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    r = _resume_state(ws, ws / "report" / "session_log.jsonl", _UNITY_CAL)
+    assert r == {"observations": [], "consumed": set(), "scan_kind": {},
+                 "scan_counter": 0, "neutrons": 0.0, "seconds": 0.0}
+
+
+def test_restart_recovers_budget_and_does_not_respend(tmp_path):
+    # Run a full campaign, then RESTART run_campaign in the same workspace: it recovers the spend
+    # ledger from the durable files (no reset to zero), recognizes convergence from the pooled masters,
+    # and does not re-charge budget for the already-measured scans.
+    omega = lambda h: (h - 2.0) * 2.0
+    summary1, ws = _run(tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega))
+    assert summary1["stop"]["state"] == "met"
+    spent1 = summary1["budget"]["neutrons"]
+    assert spent1 > 0
+
+    cfg = {"workspace": ws, "client": MockTavi(omega), "run_isar": make_mock_runner(omega),
+           "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7}
+    summary2 = run_campaign(_objective(), cfg)
+    start = [e for e in read_log(summary2["session_log"])
+             if (e.get("payload") or {}).get("event") == "campaign_start"][-1]
+    assert start["payload"]["resumed"]["scan_counter"] > 0
+    assert start["payload"]["resumed"]["spent"] == pytest.approx(spent1)
+    assert summary2["stop"]["state"] == "met"           # already converged from the persisted masters

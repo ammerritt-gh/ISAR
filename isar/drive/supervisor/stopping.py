@@ -136,6 +136,9 @@ class GridQ:
     n_production: int = 0          # production scans taken at this q (each grows the pool)
     n_quicklook: int = 0
     n_decline: int = 0             # consecutive per-scan fits with no usable ω₀ (junk/no_signal)
+    counts_spent: float = 0.0      # accumulated monitor-count budget (Σ proposal_cost) at this q (Phase 5)
+    last_prod_cost: float | None = None  # most recent production scan's cost (ΔC proxy for the next)
+    last_fit_kind: str | None = None     # provenance of the most recent usable fit (5b grounding gate)
     best_omega0: float | None = None
     best_halfwidth: float | None = None
     best_resolved: bool = False
@@ -177,12 +180,30 @@ class GridQ:
         return hw is not None and hw <= self.tolerance
 
     @property
-    def stuck(self) -> bool:
-        """Abandoned: can't get signal (``MAX_DECLINES`` consecutive junk fits) or the master has
-        pooled ``MAX_PROD_ATTEMPTS`` scans without converging (interval floored above tolerance)."""
+    def info_saturated(self) -> bool:
+        """Value-of-information stop (Phase 5): NOT converged, but one more scan would shrink σ(ω₀) by
+        less than :data:`~isar.drive.acquisition.eig.VOI_SIGMA_FRAC` — diminishing returns. Durable by
+        construction: a pure function of the accumulated ``counts_spent`` / certified half-width, so it
+        re-derives every iteration from the persisted observations (no side-channel state that could go
+        stale). Needs a measured cost history; dormant under the 5a √N model until the 5b Fisher σ
+        (which does not shrink when ω₀ is unidentifiable) feeds it teeth."""
         if self.converged:
             return False
-        return self.n_decline >= MAX_DECLINES or self.n_production >= MAX_PROD_ATTEMPTS
+        sigma = self.cert_halfwidth if self.cert_halfwidth is not None else self.best_halfwidth
+        if sigma is None or self.last_prod_cost is None or self.counts_spent <= 0.0:
+            return False
+        from isar.drive.acquisition.eig import voi_saturated
+        return voi_saturated(sigma, self.tolerance, self.counts_spent, self.last_prod_cost)
+
+    @property
+    def stuck(self) -> bool:
+        """Abandoned: can't get signal (``MAX_DECLINES`` consecutive junk fits), the master has pooled
+        ``MAX_PROD_ATTEMPTS`` scans without converging (interval floored above tolerance), or the q is
+        value-of-information saturated (:attr:`info_saturated` — another scan barely helps)."""
+        if self.converged:
+            return False
+        return (self.n_decline >= MAX_DECLINES or self.n_production >= MAX_PROD_ATTEMPTS
+                or self.info_saturated)
 
     @property
     def deficit(self) -> float:
@@ -217,14 +238,20 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
         # for resolved-or-flagged fits carrying a calibrated half-width.
         usable = bool(obs.get("resolved"))
         hw = obs.get("calibrated_halfwidth")
+        cost = float(obs.get("proposal_cost") or 0.0)   # actual submitted scan cost (Phase 5)
+        g.counts_spent += cost
         if kind in PRODUCTION_KINDS:
             g.n_production += 1
+            if cost > 0.0:
+                g.last_prod_cost = cost                 # the next production scan's ΔC proxy
         elif kind == "quicklook":
             g.n_quicklook += 1
         if not usable:
             g.n_decline += 1
         else:
             g.n_decline = 0        # a usable fit proves the q CAN deliver — reset the abandon counter
+            if obs.get("fit_kind"):
+                g.last_fit_kind = obs.get("fit_kind")   # provenance of the most recent usable fit
             if obs.get("omega0") is not None and (g.best_halfwidth is None
                                                   or (hw is not None and hw < g.best_halfwidth)):
                 g.best_omega0 = float(obs["omega0"])
@@ -334,9 +361,14 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
         n_conv = sum(1 for g in grid if g.converged)
         reasons.append(f"converged {n_conv}/{len(grid)} grid q; the rest cannot deliver the statistics:")
         for g in stuck:
-            why = (f"pooled {g.n_production} scans without converging (interval floored above tolerance)"
-                   if g.n_production >= MAX_PROD_ATTEMPTS
-                   else f"declined {g.n_decline}× (no signal)")
+            if g.n_production >= MAX_PROD_ATTEMPTS:
+                why = "pooled {0} scans without converging (interval floored above tolerance)".format(
+                    g.n_production)
+            elif g.info_saturated:
+                why = ("value-of-information saturated (another scan would shrink σ(ω₀) by less than "
+                       "the VOI floor — diminishing returns)")
+            else:
+                why = f"declined {g.n_decline}× (no signal)"
             reasons.append(f"q={g.q:g} (hkl={list(g.hkl)}) {why}")
         return StopDecision("unmeetable", reasons, per_q)
 

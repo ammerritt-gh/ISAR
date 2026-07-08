@@ -586,6 +586,40 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
     return summary
 
 
+def _store_branch_models(state, t_round: float) -> None:
+    """Build the cross-q branch(es) from the (now complete) dispersion prior and persist them into
+    ``state.branch_models`` — one per distinct ``(sample, t_bin)`` — so the DRIVE (a separate,
+    crash-prone process that cannot import :mod:`isar.session`) reads the prediction durably from
+    ``card.state.json``. Replace-by-key so a re-run refreshes rather than accretes; best-effort (a
+    build failure never fails the batch). ``build_branch`` returns ``None`` below ``MIN_ANCHORS``."""
+    points = state.dispersion_prior or []
+    keys: list[tuple] = []
+    for p in points:
+        sample = p.get("sample")
+        tb = p.get("t_bin")
+        if tb is None and p.get("T") is not None:
+            tb = round(float(p["T"]) / t_round) * t_round if t_round else float(p["T"])
+        if sample is None or tb is None:
+            continue
+        key = (sample, float(tb))
+        if key not in keys:
+            keys.append(key)
+    for sample, tb in keys:
+        try:
+            bm = branch_model.build_branch(points, sample=sample, t_bin=tb)
+        except Exception:   # noqa: BLE001
+            bm = None
+        if bm is None:
+            continue
+        bid = bm.get("branch_id", branch_model.BRANCH_ID)
+        state.branch_models = [
+            m for m in (state.branch_models or [])
+            if not (m.get("sample") == sample
+                    and abs(float(m.get("t_bin", -1e18)) - float(tb)) < 1e-9
+                    and m.get("branch_id") == bid)]
+        state.branch_models.append(bm)
+
+
 def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                       workspace, *, force, M, seed_base, errors_tier, master_boot_workers,
                       boot_executor, boot_adaptive):
@@ -621,6 +655,11 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
                                     intensity=oc.get("intensity"),
                                     fit_kind=oc.get("fit_kind"), t_round=t_round)
             summary.outcomes.append((scan, FitOutcome(**oc) if not isinstance(oc, FitOutcome) else oc))
+
+    # Persist the cross-q branch(es) from the now-complete prior into card.state so the DRIVE — a
+    # separate, crash-prone process that cannot import isar.session — reads the prediction durably from
+    # card.state.json (steering Phase 5b-live).
+    _store_branch_models(card.state, t_round)
 
     # Collate (all records, whole-experiment view).
     try:

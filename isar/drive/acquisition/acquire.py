@@ -23,15 +23,23 @@ virtual instrument clock exists; until then the function counts neutrons only.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
+from isar.drive.acquisition.eig import (
+    counts_eig,
+    eig_per_cost,
+    fisher_eig,
+    predicted_sigma_after,
+)
 from isar.drive.supervisor.stopping import (
     PRODUCTION_NCOUNT,
     QUICKLOOK_NCOUNT,
     GridQ,
     summarize_grid,
 )
+from isar.schema.steering import ProposalScore
 
 # Energy-window rule constants (LLM_HARNESS_DESIGN acquisition decisions, binding).
 LOW_MARGIN_MEV = 2.0          # low side = −(E_pred + LOW_MARGIN): span the anti-Stokes side
@@ -102,6 +110,18 @@ def _fwhm_from(info) -> float:
     return DEFAULT_FWHM_MEV
 
 
+def points_in_window(e_lo: float, e_hi: float, e_step: float) -> int:
+    """The number of scan points a ``deltaE e_lo e_hi e_step`` window has (clamped to ``MAX_POINTS``).
+
+    The single source of truth for a window's point count — used by :func:`_energy_window` and by the
+    loop's missed-window recenter so ``ScanProposal.n_points`` (hence the charged cost) stays truthful
+    after ``e_lo``/``e_hi`` are mutated (they otherwise are not recomputed).
+    """
+    step = max(float(e_step), 1e-9)
+    span = max(float(e_hi) - float(e_lo), 0.0)
+    return min(int(span / step) + 1, MAX_POINTS)
+
+
 def _energy_window(e_pred: float, fwhm: float) -> tuple[float, float, float, int]:
     """Build ``(e_lo, e_hi, e_step, n_points)`` from the predicted ω and the resolution FWHM."""
     e = max(float(e_pred), 0.0)                    # a phonon energy is non-negative
@@ -119,34 +139,116 @@ def _energy_window(e_pred: float, fwhm: float) -> tuple[float, float, float, int
     return e_lo, e_hi, e_step, n_points
 
 
-def _select_target(grid: list[GridQ], model) -> tuple[GridQ | None, str, str]:
-    """Pick the next grid q and its scan kind. Returns ``(gridq, kind, reason)``.
+def _q_sigma(g: GridQ) -> float | None:
+    """The q's current ω₀ half-width belief: the certified (master/best-production) half-width, else
+    the best per-scan/quick-look estimate — ``None`` if the q has never been usably fit."""
+    return g.cert_halfwidth if g.cert_halfwidth is not None else g.best_halfwidth
 
-    Unvisited q (quick-look) win first, ranked by model-predicted σ; then the largest-deficit
-    non-converged q gets another PRODUCTION scan, which ISAR pools into that q's master fit —
-    accumulating statistics until the master's ω₀ interval meets tolerance. Stuck q (no signal after
-    ``MAX_DECLINES`` tries, or ``MAX_PROD_ATTEMPTS`` pooled scans without converging) are abandoned.
+
+def _q_next_cost(g: GridQ) -> float:
+    """The ΔC of this q's next production scan — its most recent production cost, else its accumulated
+    cost as a proxy (a scale for the EIG-per-cost key, not a submitted number)."""
+    return float(g.last_prod_cost) if g.last_prod_cost else float(g.counts_spent)
+
+
+def _finite_or_none(x) -> float | None:
+    """``x`` if finite, else ``None`` — so ``+inf`` scores round-trip through strict JSON."""
+    return float(x) if x is not None and math.isfinite(x) else None
+
+
+def _select_target(grid: list[GridQ], model, *,
+                   fisher=None) -> tuple[GridQ | None, str, str, ProposalScore | None]:
+    """Pick the next grid q and its scan kind. Returns ``(gridq, kind, reason, score)``.
+
+    Tiers, most-specific first:
+
+    1. **Unvisited** q → a quick-look (largest model-predicted σ) to seed the ω(q) model + count rate.
+    2. **No-baseline** workable q → a PRODUCTION scan to establish a first usable ω₀ (largest σ-deficit).
+    3. **Baselined** workable q → ranked by **cost-normalized EIG on ω₀**:
+       - **Fisher tier (5b)** — when a ``fisher`` provider grounds any candidate (an in-anchor branch +
+         an unconstrained last fit), rank *only* the grounded candidates by
+         ``fisher_eig(σ_prior, σ_scan)/ΔC`` (the identifiability-aware screen). No silent method-mixing:
+         a candidate the Fisher can't ground drops to the counts tier only if *none* is grounded.
+       - **Counts tier (5a)** — else the goal-weighted counts-EIG per cost, when every candidate carries
+         a measured cost history; otherwise the σ-deficit ranking (regression-safe for hand-built /
+         pre-Phase-5 callers).
+
+    Stuck q (``MAX_DECLINES`` no-signal, ``MAX_PROD_ATTEMPTS`` pooled without converging, or
+    value-of-information saturated) are abandoned. ``score`` carries ``cost=0``/``eig_per_cost=None``;
+    :func:`propose_scan` fills the actual ΔC once the window is known.
     """
     unvisited = [g for g in grid if not g.visited]
     if unvisited:
         pick = max(unvisited, key=lambda g: model.predict(g.q)[1])
-        return pick, "quicklook", (
-            f"unvisited q={pick.q:g} (hkl={list(pick.hkl)}); quick-look to seed the ω(q) model and "
-            f"count rate (predicted σ={model.predict(pick.q)[1]:g} meV)")
+        reason = (f"unvisited q={pick.q:g} (hkl={list(pick.hkl)}); quick-look to seed the ω(q) model "
+                  f"and count rate (predicted σ={model.predict(pick.q)[1]:g} meV)")
+        return pick, "quicklook", reason, ProposalScore(
+            method="explore", c_spent=float(pick.counts_spent), reason=reason)
     candidates = [g for g in grid if not (g.converged or g.stuck)]
     if not candidates:
-        return None, "", "all grid q converged or abandoned (stuck)"
+        return None, "", "all grid q converged or abandoned (stuck)", None
+
+    # Baseline-first: a workable q with no usable ω₀ yet gets a production scan to establish one
+    # (unchanged behaviour — these carry a +inf σ-deficit and win outright).
+    no_baseline = [g for g in candidates if _q_sigma(g) is None]
+    if no_baseline:
+        pick = max(no_baseline, key=lambda g: g.deficit)
+        reason = (f"baseline q={pick.q:g} (hkl={list(pick.hkl)}); no usable ω₀ interval yet; production "
+                  f"scan to establish the master")
+        return pick, "production", reason, ProposalScore(
+            method="explore", c_spent=float(pick.counts_spent), reason=reason)
+
+    # Fisher tier (5b): rank the identifiability-aware EIG for the candidates a grounded rate model can
+    # score. Grounding (in-anchor branch + unconstrained last fit) lives entirely in the provider.
+    if fisher is not None and model is not None:
+        graded = []
+        for g in candidates:
+            w0 = float(model.predict(g.q)[0])
+            sp = _q_sigma(g)
+            ss = fisher(g, w0, sp)
+            if ss is not None and math.isfinite(ss):
+                graded.append((g, sp, ss))
+        if graded:
+            def _fkey(t):
+                g, sp, ss = t
+                return eig_per_cost(fisher_eig(sp, ss), _q_next_cost(g))
+            pick, sp, ss = max(graded, key=_fkey)
+            eig = fisher_eig(sp, ss)
+            reason = (f"max-Fisher-EIG/cost q={pick.q:g} (hkl={list(pick.hkl)}); σ_prior={sp:g}→"
+                      f"σ_scan={ss:g} meV, C={pick.counts_spent:g}; production scan (identifiability-aware)")
+            return pick, "production", reason, ProposalScore(
+                method="fisher", eig=_finite_or_none(eig), sigma_prior=_finite_or_none(sp),
+                sigma_scan=_finite_or_none(ss), c_spent=float(pick.counts_spent), reason=reason)
+
+    # Counts tier (5a): goal-weighted EIG-per-cost when every candidate has a cost history.
+    if all(g.counts_spent > 0.0 for g in candidates):
+        def _ckey(g):
+            dc = _q_next_cost(g)
+            return eig_per_cost(counts_eig(_q_sigma(g), g.tolerance, g.counts_spent, dc), dc)
+        pick = max(candidates, key=_ckey)
+        dc = _q_next_cost(pick)
+        eig = counts_eig(_q_sigma(pick), pick.tolerance, pick.counts_spent, dc)
+        reason = (f"max-EIG/cost q={pick.q:g} (hkl={list(pick.hkl)}); σ={_q_sigma(pick):g} meV over "
+                  f"tolerance {pick.tolerance:g}, C={pick.counts_spent:g}; production scan (EIG-per-cost ranked)")
+        return pick, "production", reason, ProposalScore(
+            method="counts", eig=_finite_or_none(eig), sigma_prior=_finite_or_none(_q_sigma(pick)),
+            sigma_scan=_finite_or_none(predicted_sigma_after(_q_sigma(pick), pick.counts_spent, dc)),
+            c_spent=float(pick.counts_spent), reason=reason)
+
     pick = max(candidates, key=lambda g: g.deficit)
     deficit = pick.deficit
     deficit_str = "unfitted" if deficit == float("inf") else f"{deficit:g} meV over tolerance"
     n_pool = (pick.master or {}).get("n_members") or pick.n_production
-    return pick, "production", (
-        f"largest-deficit q={pick.q:g} (hkl={list(pick.hkl)}); {deficit_str}; production scan to "
-        f"accumulate the master (pool now {n_pool})")
+    reason = (f"largest-deficit q={pick.q:g} (hkl={list(pick.hkl)}); {deficit_str}; production scan to "
+              f"accumulate the master (pool now {n_pool})")
+    return pick, "production", reason, ProposalScore(
+        method="deficit", sigma_prior=_finite_or_none(_q_sigma(pick)),
+        c_spent=float(pick.counts_spent), reason=reason)
 
 
 def propose_scan(objective, model, results_so_far: list[dict], resolution_info=None,
-                 budget_state: dict | None = None, master_rows: list[dict] | None = None) -> ScanProposal | None:
+                 budget_state: dict | None = None, master_rows: list[dict] | None = None,
+                 fisher=None) -> ScanProposal | None:
     """Propose the next scan (Q, energy window, neutron count), or ``None`` if nothing remains.
 
     Args:
@@ -159,9 +261,11 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
             ``(h,k,l,deltaE) -> …`` (the loop wraps ``GET /resolution``). See :func:`_resolve_fwhm`.
         budget_state: informational; carried onto the proposal meta. The stopping criterion owns the
             budget verdict, not the acquisition function.
+        fisher: optional Poisson-Fisher screen provider ``(gridq, omega0_pred, sigma_prior) -> σ_scan``
+            (5b). Returns the predicted post-scan σ(ω₀) when the q is Fisher-grounded, else ``None``.
     """
     grid = summarize_grid(objective, results_so_far or [], master_rows or [])
-    pick, kind, reason = _select_target(grid, model)
+    pick, kind, reason, score = _select_target(grid, model, fisher=fisher)
     if pick is None:
         return None
 
@@ -171,9 +275,12 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
     e_lo, e_hi, e_step, n_points = _energy_window(e_pred, fwhm)
     ncount = QUICKLOOK_NCOUNT if kind == "quicklook" else PRODUCTION_NCOUNT
 
+    dc = float(n_points) * float(ncount)
+    epc = None if score.eig is None else _finite_or_none(eig_per_cost(score.eig, dc))
+    score = replace(score, cost=dc, eig_per_cost=epc)
     return ScanProposal(
         h=h, k=k, l=l, e_lo=e_lo, e_hi=e_hi, e_step=e_step, ncount=ncount, kind=kind,
         reason=reason, e_pred=float(e_pred), fwhm_dE=float(fwhm), n_points=n_points,
-        meta={"e_sigma": float(e_sigma), "q": pick.q,
+        meta={"e_sigma": float(e_sigma), "q": pick.q, "score": score.to_dict(),
               "budget_state": dict(budget_state) if budget_state else {}},
     )
