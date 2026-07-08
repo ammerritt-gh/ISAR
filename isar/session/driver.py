@@ -243,18 +243,27 @@ def _intensity_measure(rec, ctx, fit) -> dict | None:
         instrument=str(ctx.instrument)).to_dict()
 
 
-def _scan_descriptor(ctx) -> dict | None:
-    """Model-free L0 descriptor for this scan (`ScanDescriptor.to_dict`), or None on any failure —
-    it is a report aid + Phase-4 falsification input, never a reason to fail a fit."""
+def _build_descriptor(ctx):
+    """The model-free L0 :class:`ScanDescriptor` for this scan, or None on any failure — a report
+    aid + Phase-4 falsification input, never a reason to fail a fit. Built once per scan and reused
+    for both the verdict (`classify`) and storage (the fit's mask/counts don't change across the
+    hard-fix retry, so one object serves both)."""
     try:
         return describe_spectrum(ctx.x, ctx.counts, center=ctx.center, gauss_fwhm=ctx.gauss_fwhm,
-                                 lorentz_fwhm=ctx.lorentz_fwhm, mask=ctx.mask).to_dict()
+                                 lorentz_fwhm=ctx.lorentz_fwhm, mask=ctx.mask)
     except Exception:  # noqa: BLE001
         return None
 
 
+def _scan_descriptor(ctx) -> dict | None:
+    """`ScanDescriptor.to_dict()` for storage, or None on failure. See :func:`_build_descriptor`."""
+    d = _build_descriptor(ctx)
+    return d.to_dict() if d is not None else None
+
+
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
-            errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False):
+            errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False,
+            descriptor=None):
     """Two-stage structure fit (§ multiplicity), optionally narrowed by guideline labels, then
     select + verdict. Mirrors docs/phase3_gold*_check.run_pipeline; returns extracted fields.
 
@@ -298,7 +307,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
                               boot_workers=boot_workers, boot_executor=boot_executor,
                               boot_adaptive=boot_adaptive)
     sel = select.select_models(results)
-    sv = verdict.classify(results, ctx, sel, prior=prior)
+    sv = verdict.classify(results, ctx, sel, prior=prior, descriptor=descriptor)
 
     best = fits.get(sel.best) if sel.best else None
     omega0 = best.omega0 if best is not None else None
@@ -347,9 +356,21 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
 
     n_modes = int(best.n_modes) if best is not None else 1
     modes = list(best.modes) if (best is not None and best.modes) else None
+
+    # Phase 4a — under-model falsification: the descriptor localised real signal the phonon model
+    # can't fit. This is NOT an ω₀ measurement (machine contract): null the number/intervals and
+    # tag descriptor_only, so the stop rule / gold / truth never count it as a delivered ω₀. The
+    # descriptor peaks (stored separately) are the deliverable; the verdict routes to "unmodeled".
+    omega0_err = best.omega0_err_hesse if best else None
+    fit_kind = best.fit_kind if best else "unconstrained"
+    if sv.verdict == "signal_unmodeled":
+        omega0 = omega0_err = interval = omega0_profile = hesse_interval = None
+        interval_reliable = False
+        fit_kind = "descriptor_only"
+
     return {
         "verdict": sv.verdict, "confidence": sv.confidence, "reasons": reasons,
-        "omega0": omega0, "omega0_err": (best.omega0_err_hesse if best else None),
+        "omega0": omega0, "omega0_err": omega0_err,
         "interval": (tuple(interval) if interval is not None else None),
         "omega0_profile": (tuple(omega0_profile) if omega0_profile is not None else None),
         "interval_reliable": interval_reliable,
@@ -359,7 +380,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "gamma": (best.gamma if best else None),
         "cost_per_dof": (best.cost_per_dof if best else None),
         "n_modes": n_modes, "modes": modes,
-        "fit_kind": (best.fit_kind if best else "unconstrained"),
+        "fit_kind": fit_kind,
         "gamma_at_bound": bool(getattr(best, "gamma_at_bound", False)) if best else False,
     }
 
@@ -718,10 +739,11 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                       gauss_fwhm=calres.gauss_fwhm, lorentz_fwhm=calres.lorentz_fwhm,
                       instrument=card.policy.instrument, energy_status=card.policy.energy_status,
                       prior_omega=None, quasielastic_fwhm=card.policy.quasielastic_fwhm)
+    descriptor = _build_descriptor(ctx)
     try:
         fit = fit_one(ctx, card, prior=None, M=M, seed=seed, errors_tier=errors_tier,
                       boot_workers=boot_workers, boot_executor=boot_executor,
-                      boot_adaptive=boot_adaptive)
+                      boot_adaptive=boot_adaptive, descriptor=descriptor)
     except Exception as exc:  # noqa: BLE001 — one unfittable pool must not kill the batch (N=16 wrinkle)
         return ScanEntry(status="non_result",
                          reasons=[f"{master_id}: fit error ({type(exc).__name__}): {exc}"], **base)
@@ -737,7 +759,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         calib=calres.summary(), reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
         interval_reliable=fit.get("interval_reliable", True), omega0_profile=fit.get("omega0_profile"),
         hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
-        pooled=True, n_members=int(ms.n_members), descriptor=_scan_descriptor(ctx),
+        pooled=True, n_members=int(ms.n_members),
+        descriptor=(descriptor.to_dict() if descriptor is not None else None),
         fit_kind=fit.get("fit_kind", "unconstrained"))
     entry = ScanEntry(status="fitted", **base)
     entry.detectors[det] = outcome.to_dict()
@@ -803,10 +826,14 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                     f"low-q branch soft-constraint applied (Γ≈{pred.gamma:.2f}±{pred.gamma_sigma:.2f}, "
                     f"A from 1/ω{'' if pred.in_anchor_range else '; extrapolated'})")
 
+    # L0 descriptor: built once here (mask/counts are now fixed) and reused for the verdict's
+    # under-model falsification (Phase 4a) AND storage — including through the hard-fix retry below.
+    descriptor = _build_descriptor(ctx)
+
     try:
         fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
                       errors_tier=errors_tier, boot_workers=boot_workers,
-                      boot_executor=boot_executor, boot_adaptive=boot_adaptive)
+                      boot_executor=boot_executor, boot_adaptive=boot_adaptive, descriptor=descriptor)
     except Exception as exc:  # noqa: BLE001 — one unfittable scan must not kill the batch
         return ScanEntry(status="non_result",
                          reasons=[f"fit error ({type(exc).__name__}): {exc}"] + region_reasons,
@@ -827,7 +854,8 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
             try:
                 hfit = fit_one(hctx, card, prior=prior, M=M, seed=seed, structure_labels=labels,
                                peaks=peaks, errors_tier=errors_tier, boot_workers=boot_workers,
-                               boot_executor=boot_executor, boot_adaptive=boot_adaptive)
+                               boot_executor=boot_executor, boot_adaptive=boot_adaptive,
+                               descriptor=descriptor)
             except Exception:  # noqa: BLE001 — escalation is best-effort; keep the original fit
                 hfit = None
             if hfit is not None and hfit.get("omega0") is not None \
@@ -862,7 +890,8 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         interval_reliable=fit.get("interval_reliable", True),
         omega0_profile=fit.get("omega0_profile"),
         hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
-        intensity=_intensity_measure(rec, ctx, fit), descriptor=_scan_descriptor(ctx),
+        intensity=_intensity_measure(rec, ctx, fit),
+        descriptor=(descriptor.to_dict() if descriptor is not None else None),
         fit_kind=fit.get("fit_kind", "unconstrained"))
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
@@ -913,10 +942,24 @@ _CSV_COLUMNS = [
     "omega0_profile_lo", "omega0_profile_hi", "hesse_lo", "hesse_hi", "hesse_trusted",
     "pooled", "n_members",
     "gamma", "gamma_provisional", "n_modes", "secondary_omega0", "secondary_omega0_err",
-    "best_model", "cost_per_dof", "zero", "zero_source", "gauss_fwhm",
+    "best_model", "cost_per_dof", "fit_kind", "descriptor_n_peaks", "descriptor_peaks",
+    "zero", "zero_source", "gauss_fwhm",
     "lorentz_fwhm", "resolution_source", "resolution_version", "prior_omega", "prior_sigma",
     "prior_n", "prior_source", "reasons",
 ]
+
+
+def _descriptor_summary(oc: dict) -> tuple:
+    """(`n_peaks`, compact `"E@σ; …"` string) from the stored descriptor, else (None, None).
+    Surfaces the model-free deliverable on results.csv (Phase 4a) — load-bearing for
+    ``signal_unmodeled`` scans, whose ω₀ is deliberately absent."""
+    desc = oc.get("descriptor")
+    if not desc:
+        return None, None
+    peaks = desc.get("peaks") or []
+    compact = "; ".join(f"{float(p.get('energy', 0.0)):.2f}@{float(p.get('significance', 0.0)):.1f}σ"
+                        for p in peaks)
+    return len(peaks), (compact or None)
 
 
 def _secondary_mode(oc: dict) -> tuple:
@@ -969,6 +1012,9 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "secondary_omega0": _secondary_mode(oc)[0],
                 "secondary_omega0_err": _secondary_mode(oc)[1],
                 "best_model": oc.get("best_label"), "cost_per_dof": oc.get("cost_per_dof"),
+                "fit_kind": oc.get("fit_kind"),
+                "descriptor_n_peaks": _descriptor_summary(oc)[0],
+                "descriptor_peaks": _descriptor_summary(oc)[1],
                 "zero": cal.get("center"), "zero_source": cal.get("zero_source"),
                 "gauss_fwhm": cal.get("gauss_fwhm"), "lorentz_fwhm": cal.get("lorentz_fwhm"),
                 "resolution_source": cal.get("resolution_source"),

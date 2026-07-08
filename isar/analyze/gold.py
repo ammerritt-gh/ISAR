@@ -33,6 +33,11 @@ _RESOLVED = ("resolved",)
 _FLAGGED = ("model_incomplete",)
 _REJECT = ("junk", "unconstrained")
 _ABSTAIN = ("held_for_calibration", "underpowered", "no_signal")
+# Phase 4a: under-model falsification. `signal_unmodeled` = real signal the phonon model can't fit;
+# delivered to the human as a flagged-for-attention DESCRIPTOR result, but deliberately NOT an omega0
+# measurement — its own disposition so it stays out of _DELIVERED (gold/truth omega0 count) and
+# stopping.USABLE_DISPOSITIONS (the drive stop rule). The omega0 is nulled upstream (driver).
+_UNMODELED = ("signal_unmodeled",)
 _DELIVERED = ("resolved", "flagged")
 
 
@@ -146,6 +151,8 @@ def verdict_disposition(label: str) -> str:
         return "resolved"
     if label in _FLAGGED:
         return "flagged"
+    if label in _UNMODELED:
+        return "unmodeled"
     if label in _REJECT:
         return "reject"
     return "abstain"
