@@ -89,6 +89,14 @@ class FitOutcome:
     # Fit provenance (steering contract 4): unconstrained | soft_prior | branch_conditional |
     # stokes_only | descriptor_only. Anything but "unconstrained" is not an ordinary phonon fit.
     fit_kind: str = "unconstrained"
+    # Phase A Bayesian branch assignment: which dispersion branch this scan's ω₀ was assigned to
+    # (acoustic | optic | new | ...), the Shannon entropy of that assignment, whether the acoustic ω₀
+    # was position-resolvable (ω₀ ≳ 1 FWHM), and the soft assignment weight fed to the branch model.
+    # None on older ledgers / when the branch-assignment posterior is off (no dispersion.zone_period).
+    branch_id: str | None = None
+    assignment_entropy: float | None = None
+    resolvable: bool | None = None
+    branch_weight: float | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -653,7 +661,8 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
                                     modality=oc.get("modality"), verdict=oc.get("verdict"),
                                     gamma=oc.get("gamma"), gamma_err=g_err,
                                     intensity=oc.get("intensity"),
-                                    fit_kind=oc.get("fit_kind"), t_round=t_round)
+                                    fit_kind=oc.get("fit_kind"), branch_id=oc.get("branch_id"),
+                                    weight=oc.get("branch_weight"), t_round=t_round)
             summary.outcomes.append((scan, FitOutcome(**oc) if not isinstance(oc, FitOutcome) else oc))
 
     # Persist the cross-q branch(es) from the now-complete prior into card.state so the DRIVE — a
@@ -774,18 +783,50 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                                   f"{g.min_fit_points} kept points)"], **base)
     # Pooled spectrum → ScanContext directly (bypasses build_context: a merged group has no single
     # ScanRecord/normalization; MergedSpectrum.mask already encodes monitor validity).
+    sample = str(grp.key_fields.get("sample", ""))
+    period = _dispersion_period(card)
+    t_round = float((card.policy.collation or {}).get("t_round", 5.0))
+    prior = (session_prior.prior_for(card.state, sample=sample, T=T, q=q, period=period,
+                                     t_round=t_round) if period is not None else None)
+    ao = float(prior.omega0) if (prior is not None and np.isfinite(prior.omega0)) else None
+    # Narrow the IC only when the belief is confident (see _PRIOR_NARROW_SIGMA); else keep the acoustic
+    # mode hint but a wide IC so the pooled fit still finds the resolvable acoustic.
+    ic_ao = ao if (ao is not None and float(prior.omega0_sigma or 1e9) <= _PRIOR_NARROW_SIGMA) else None
     ctx = ScanContext(x=x, counts=counts, mask=mask, T=T, center=calres.center,
                       gauss_fwhm=calres.gauss_fwhm, lorentz_fwhm=calres.lorentz_fwhm,
                       instrument=card.policy.instrument, energy_status=card.policy.energy_status,
-                      prior_omega=None, quasielastic_fwhm=card.policy.quasielastic_fwhm)
+                      prior_omega=ic_ao, quasielastic_fwhm=card.policy.quasielastic_fwhm,
+                      acoustic_omega=ao)
+    near_gamma = ao is not None and ao < _RESOLVABLE_FWHM_FACTOR * calres.gauss_fwhm
     descriptor = _build_descriptor(ctx)
     try:
-        fit = fit_one(ctx, card, prior=None, M=M, seed=seed, errors_tier=errors_tier,
+        fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, errors_tier=errors_tier,
                       boot_workers=boot_workers, boot_executor=boot_executor,
                       boot_adaptive=boot_adaptive, descriptor=descriptor)
     except Exception as exc:  # noqa: BLE001 — one unfittable pool must not kill the batch (N=16 wrinkle)
         return ScanEntry(status="non_result",
                          reasons=[f"{master_id}: fit error ({type(exc).__name__}): {exc}"], **base)
+
+    # Phase A: the pooled master runs the SAME branch triage as a per-scan fit — the acoustic hint
+    # (ctx.acoustic_omega) makes primary_phonon_index report the acoustic mode (not the brighter optic),
+    # and the triage withholds a non-acoustic/unresolvable pool as branch_continuation. Without this a
+    # boundary master delivers the optic as the acoustic ω₀.
+    branch_id = assignment_entropy = branch_weight = resolvable = None
+    if fit.get("verdict") != "signal_unmodeled":
+        triage = _assign_and_triage(fit, descriptor, ctx, card=card, sample=sample, T=T, q=q,
+                                    t_round=t_round, near_gamma=near_gamma)
+        if triage is not None:
+            branch_id = triage.get("branch_id")
+            assignment_entropy = triage.get("entropy")
+            branch_weight = triage.get("weight")
+            resolvable = triage.get("resolvable")
+            if triage.get("deliver") is False and fit.get("omega0") is not None:
+                fit["reasons"].append(f"branch triage (master): not a resolvable acoustic delivery "
+                                      f"(assigned {branch_id}); reported branch_continuation")
+                fit["verdict"] = "branch_continuation"
+                fit["omega0"] = fit["omega0_err"] = fit["interval"] = None
+                fit["omega0_profile"] = fit["hesse_interval"] = None
+                fit["interval_reliable"] = False
 
     disposition = gold_mod.verdict_disposition(fit["verdict"])
     outcome = FitOutcome(
@@ -800,12 +841,86 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
         pooled=True, n_members=int(ms.n_members),
         descriptor=(descriptor.to_dict() if descriptor is not None else None),
-        fit_kind=fit.get("fit_kind", "unconstrained"))
+        fit_kind=fit.get("fit_kind", "unconstrained"),
+        branch_id=branch_id, assignment_entropy=assignment_entropy,
+        resolvable=resolvable, branch_weight=branch_weight)
     entry = ScanEntry(status="fitted", **base)
     entry.detectors[det] = outcome.to_dict()
     entry.provenance = {"pooled": True, "n_members": int(ms.n_members),
                         "members": [list(m) for m in ms.members]}
     return entry
+
+
+# Phase A branch assignment: near a zone centre the acoustic ω₀ is unresolvable BY POSITION (below this
+# × resolution FWHM the merged Stokes/anti-Stokes blob is shape-identical to an elastic peak). There it
+# is measured by the constrained (hard Γ+A / brightness) fit, or reported as branch_continuation.
+_RESOLVABLE_FWHM_FACTOR = 1.0
+# The dispersion prior narrows the Ω_d IC grid to ω₀±1.5 (ic.PRIOR_HALF_WIDTH). A COLD acoustic belief
+# predicts ω₀≈0 with a large σ; narrowing to [0,1.5] there would miss the resolvable acoustic (1.4+) and
+# deadlock the bootstrap. So the prior narrows the IC only when it is CONFIDENT (σ ≤ this); otherwise the
+# IC stays wide (the residual-triggered 2-mode fit surfaces the real modes) while acoustic_omega still
+# selects which mode is the QoI.
+_PRIOR_NARROW_SIGMA = 0.6
+
+
+def _dispersion_period(card) -> float | None:
+    """The card's reduced-zone fold period (``[dispersion] zone_period``), or None when the
+    branch-assignment posterior is not configured (⇒ pre-steering behaviour, unchanged)."""
+    d = getattr(card.policy, "dispersion", None) or {}
+    p = d.get("zone_period")
+    try:
+        return float(p) if p else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, near_gamma):
+    """Bayesian branch assignment + honest triage over a completed fit (Phase A). Returns override
+    fields ``{deliver, branch_id, weight, entropy, resolvable}`` or ``None`` when the posterior is off.
+
+    Delivers the acoustic ω₀ when it is a confident, dominant, *resolvable* feature — OR when a
+    converged near-Γ **constrained** (branch_conditional) fit measured it (the brightness constraint
+    supplies identifiability where position cannot). Otherwise the scan is NOT an acoustic delivery:
+    the caller nulls ω₀ and reports ``branch_continuation``, tagging the fit's assigned branch so an
+    optic/spurious feature can never seed or be scored as the acoustic branch."""
+    period = _dispersion_period(card)
+    if period is None:
+        return None
+    from isar.session import branch_assignment as BA
+    t_bin = round(float(T) / t_round) * t_round if t_round else float(T)
+    beliefs = BA.build_beliefs(card.state.dispersion_prior, sample=sample, t_bin=t_bin,
+                               period=period, t_round=t_round)
+    modes = fit.get("modes")
+    if not modes and fit.get("omega0") is not None:
+        modes = [{"omega0": fit["omega0"], "omega0_err": fit.get("omega0_err"),
+                  "gamma": fit.get("gamma"), "amplitude": 0.0}]
+    feats = BA.features_from(modes or [], descriptor, gauss_fwhm=ctx.gauss_fwhm)
+    if not feats:
+        return {"deliver": bool(fit.get("omega0") is not None), "branch_id": None,
+                "weight": None, "entropy": None, "resolvable": None}
+    u = BA.reduced_q(q, period)
+    post = BA.assignment_posterior(feats, beliefs, u)
+    qoi = BA.acoustic_qoi(feats, post, gauss_fwhm=ctx.gauss_fwhm)
+    ent = float(qoi["entropy"]) if np.isfinite(qoi["entropy"]) else None
+    # Bounded-continuity guard: apply it only once the belief is ESTABLISHED (≥ MIN_ANCHORS real
+    # anchors). During bootstrap the belief has few anchors and MUST be allowed to deliver outward to
+    # seed itself; a hard guard there deadlocks the whole prior. Once established, a lone feature far
+    # past the anchored range (a zone-boundary optic) is withheld. The near-Γ constrained fit is exempt.
+    acoustic_belief = beliefs.get(BA.ACOUSTIC)
+    established = acoustic_belief is not None and acoustic_belief.n_anchors >= branch_model.MIN_ANCHORS
+    extrap_ok = (not established) or acoustic_belief.deliverable(u)
+    constrained_ok = (near_gamma and fit.get("fit_kind") == "branch_conditional"
+                      and fit.get("omega0") is not None and not fit.get("gamma_at_bound")
+                      and qoi["p_acoustic"] >= BA.P_ACOUSTIC_MIN)
+    if constrained_ok or (BA.deliver_acoustic(qoi) and extrap_ok):
+        return {"deliver": True, "branch_id": "acoustic", "weight": float(qoi["p_acoustic"]),
+                "entropy": ent, "resolvable": bool(qoi["resolvable"])}
+    bid = "optic"
+    if fit.get("omega0") is not None:
+        bid, _ = BA.assign_label(fit["omega0"], fit.get("omega0_err") or 0.3 * ctx.gauss_fwhm,
+                                 beliefs, u, gauss_fwhm=ctx.gauss_fwhm)
+    return {"deliver": False, "branch_id": bid, "weight": 0.0, "entropy": ent,
+            "resolvable": bool(qoi["resolvable"])}
 
 
 def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
@@ -828,11 +943,14 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                          provenance={"resolution_version": calres.resolution_version}, **base)
 
     # Prior: user expectation beats the auto prior.
+    period = _dispersion_period(card)
+    t_round = float((card.policy.collation or {}).get("t_round", 5.0))
     prior = g.expectation_for(scan_number=rec.scan_number, q=q, T=T)
     prior_source = "user"
     n_neighbors = None
     if prior is None:
-        prior = session_prior.prior_for(card.state, sample=sample, T=T, q=q, exclude_scan_id=scan_id)
+        prior = session_prior.prior_for(card.state, sample=sample, T=T, q=q, exclude_scan_id=scan_id,
+                                        period=period, t_round=t_round)
         prior_source = "auto" if prior is not None else None
         if prior is not None:
             n_neighbors = sum(1 for p in card.state.dispersion_prior
@@ -848,22 +966,42 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         return ScanEntry(status="non_result", reasons=rs,
                          provenance={"resolution_version": calres.resolution_version}, **base)
 
+    # Phase A: hand the fit the branch-assignment acoustic ω₀(q) prediction so a multi-mode fit reports
+    # the ACOUSTIC mode as primary (not nearest-any-prior / largest-amplitude). Narrow the IC grid with
+    # it only when the belief is CONFIDENT — a cold, uncertain ~0 prediction must not over-narrow the
+    # search and miss the resolvable acoustic (the bootstrap deadlock).
+    if period is not None and prior is not None and np.isfinite(prior.omega0):
+        confident = float(prior.omega0_sigma or 1e9) <= _PRIOR_NARROW_SIGMA
+        ctx = replace(ctx, acoustic_omega=float(prior.omega0),
+                      prior_omega=(float(prior.omega0) if confident else None))
+
     # Steering Phase 2c — LOW-q rescue: near the zone centre the acoustic peak merges with the
     # elastic line and Γ/A go unidentifiable. If the dispersion prior predicts a phonon within
     # LOW_Q_FWHM_FACTOR·resolution of the elastic line AND a branch model exists, softly pin Γ and A
     # to the branch (contract 1: penalty enters the objective only) and let ω₀ float. Off for
     # well-separated peaks and whenever no branch/prior is available (⇒ no behavior change there).
+    near_gamma = (prior is not None and np.isfinite(prior.omega0)
+                  and prior.omega0 < _RESOLVABLE_FWHM_FACTOR * ctx.gauss_fwhm)
     if prior is not None and np.isfinite(prior.omega0) \
             and prior.omega0 < LOW_Q_FWHM_FACTOR * ctx.gauss_fwhm:
         pred = branch_model.branch_for(card.state, sample=sample, T=T, omega0=float(prior.omega0))
         if pred is not None:
             exposure, _mode = _exposure_per_point(rec, ctx)
-            cons = pred.soft_constraints(exposure if np.isfinite(exposure) else 0.0)
+            exp = exposure if np.isfinite(exposure) else 0.0
+            # Near Γ AND in-anchor: the CONSTRAINED recipe (hard Γ+A → the blob's Bose-weighted
+            # brightness pins ω₀ where its position, 0.34 FWHM from the origin, cannot). Elsewhere the
+            # ordinary soft rescue (A stays soft, absorbing monitor / focusing-asymmetry drift).
+            if near_gamma and pred.in_anchor_range:
+                cons = pred.hard_constraints(exp)
+                note = (f"near-Γ constrained fit (hard Γ={pred.gamma:.2f} meV + A from 1/ω; "
+                        f"brightness pins ω₀)")
+            else:
+                cons = pred.soft_constraints(exp)
+                note = (f"low-q branch soft-constraint applied (Γ≈{pred.gamma:.2f}±{pred.gamma_sigma:.2f}, "
+                        f"A from 1/ω{'' if pred.in_anchor_range else '; extrapolated'})")
             if not cons.is_empty():
                 ctx = replace(ctx, constraints=cons)
-                region_reasons.append(
-                    f"low-q branch soft-constraint applied (Γ≈{pred.gamma:.2f}±{pred.gamma_sigma:.2f}, "
-                    f"A from 1/ω{'' if pred.in_anchor_range else '; extrapolated'})")
+                region_reasons.append(note)
 
     # L0 descriptor: built once here (mask/counts are now fixed) and reused for the verdict's
     # under-model falsification (Phase 4a) AND storage — including through the hard-fix retry below.
@@ -904,6 +1042,28 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                     f"hard-fix escalation: Γ frozen to branch {pred.gamma:.2f} meV "
                     f"(branch_conditional; soft prior alone left Γ at bound)")
 
+    # Phase A — Bayesian branch assignment + honest triage. Decide whether this fit's ω₀ is a
+    # deliverable ACOUSTIC measurement or must abstain, and tag the branch it was assigned to so an
+    # optic/spurious feature can never seed or be scored as the acoustic branch. Skipped for
+    # signal_unmodeled (already a non-ω₀ descriptor result) and when the posterior is off (period None).
+    branch_id = assignment_entropy = branch_weight = resolvable = None
+    if fit.get("verdict") != "signal_unmodeled":
+        triage = _assign_and_triage(fit, descriptor, ctx, card=card, sample=sample, T=T, q=q,
+                                    t_round=t_round, near_gamma=near_gamma)
+        if triage is not None:
+            branch_id = triage.get("branch_id")
+            assignment_entropy = triage.get("entropy")
+            branch_weight = triage.get("weight")
+            resolvable = triage.get("resolvable")
+            if triage.get("deliver") is False and fit.get("omega0") is not None:
+                fit["reasons"].append(
+                    f"branch triage: not a resolvable acoustic delivery (assigned {branch_id}); "
+                    f"reported as branch_continuation, ω₀ withheld")
+                fit["verdict"] = "branch_continuation"
+                fit["omega0"] = fit["omega0_err"] = fit["interval"] = None
+                fit["omega0_profile"] = fit["hesse_interval"] = None
+                fit["interval_reliable"] = False
+
     fit["reasons"].extend(region_reasons)
 
     disposition = gold_mod.verdict_disposition(fit["verdict"])
@@ -931,7 +1091,9 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
         intensity=_intensity_measure(rec, ctx, fit),
         descriptor=(descriptor.to_dict() if descriptor is not None else None),
-        fit_kind=fit.get("fit_kind", "unconstrained"))
+        fit_kind=fit.get("fit_kind", "unconstrained"),
+        branch_id=branch_id, assignment_entropy=assignment_entropy,
+        resolvable=resolvable, branch_weight=branch_weight)
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is
@@ -981,7 +1143,8 @@ _CSV_COLUMNS = [
     "omega0_profile_lo", "omega0_profile_hi", "hesse_lo", "hesse_hi", "hesse_trusted",
     "pooled", "n_members",
     "gamma", "gamma_provisional", "n_modes", "secondary_omega0", "secondary_omega0_err",
-    "best_model", "cost_per_dof", "fit_kind", "descriptor_n_peaks", "descriptor_peaks",
+    "best_model", "cost_per_dof", "fit_kind", "branch_id", "assignment_entropy", "resolvable",
+    "descriptor_n_peaks", "descriptor_peaks",
     "zero", "zero_source", "gauss_fwhm",
     "lorentz_fwhm", "resolution_source", "resolution_version", "prior_omega", "prior_sigma",
     "prior_n", "prior_source", "reasons",
@@ -1052,6 +1215,9 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "secondary_omega0_err": _secondary_mode(oc)[1],
                 "best_model": oc.get("best_label"), "cost_per_dof": oc.get("cost_per_dof"),
                 "fit_kind": oc.get("fit_kind"),
+                "branch_id": oc.get("branch_id"),
+                "assignment_entropy": oc.get("assignment_entropy"),
+                "resolvable": oc.get("resolvable"),
                 "descriptor_n_peaks": _descriptor_summary(oc)[0],
                 "descriptor_peaks": _descriptor_summary(oc)[1],
                 "zero": cal.get("center"), "zero_source": cal.get("zero_source"),

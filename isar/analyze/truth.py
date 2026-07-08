@@ -127,6 +127,10 @@ class ResultRow:
     interval_hi: float | None
     interval_reliable: bool = True   # False → interval degenerate (γ-at-bound); excluded from
                                      # coverage/inflation but still scored for center pull
+    branch_id: str | None = None     # Phase A: dispersion branch this ω₀ was assigned to. Only
+                                     # acoustic (or null, older ledgers) rows are scored against the
+                                     # acoustic truth — an optic ω₀ can never register as confident-wrong.
+    resolvable: bool = True          # False → near-Γ unresolvable; not counted as an ω₀ delivery
     bucket: str | None = None   # value of the --bucket-by column, if any
 
 
@@ -166,6 +170,8 @@ def load_results(path: str | Path, *, bucket_by: str | None = None) -> list[Resu
                 interval_lo=_fnum(r.get("interval_lo")),
                 interval_hi=_fnum(r.get("interval_hi")),
                 interval_reliable=_fbool(r.get("interval_reliable")),
+                branch_id=((r.get("branch_id") or None)),
+                resolvable=_fbool(r.get("resolvable")),
                 bucket=((r.get(bucket_by) or None) if bucket_by else None)))
     return rows
 
@@ -299,6 +305,12 @@ def score_results(rows, truth_lookup, *, bucket_by=None, truth_source="",
     scores, no_truth, not_delivered = [], 0, 0
     for row in rows:
         if not gold_mod.delivered(row.disposition) or row.omega0 is None:
+            not_delivered += 1
+            continue
+        # Phase A: only the ACOUSTIC branch is the quantity of interest. A non-acoustic (optic) ω₀ or a
+        # near-Γ unresolvable row is recorded but NOT scored against the acoustic truth — so a wrong-
+        # branch fit can never register as a confident-wrong acoustic delivery. Null = older ledger → scored.
+        if (row.branch_id is not None and row.branch_id != "acoustic") or not row.resolvable:
             not_delivered += 1
             continue
         omega_true = truth_lookup(row.hkl)

@@ -48,6 +48,14 @@ STEP_RES_FRACTION = 0.25      # step ≈ resolution FWHM / 4
 MAX_POINTS = 100              # budget cap on scan length
 DEFAULT_FWHM_MEV = 0.5        # fallback energy resolution when /resolution is unavailable / refuses
 
+# Survey-window rule: when the ω(q) prediction is uncertain (cold model / far extrapolation) the tight
+# high side ``e_pred + 1.5·FWHM`` is unjustified — a dispersing branch can lie far above ``e_pred`` and
+# would never land in-window, so the model never gets an anchor and the acquisition deadlocks (no
+# anchor → narrow window → no anchor). While σ_pred exceeds a resolution width we instead scan the
+# plausible phonon band; as the model seeds, σ_pred drops below FWHM and the window tightens as before.
+SURVEY_SIGMA_K = 3.0          # survey high side covers e_pred + k·σ_pred of the ω(q) predictive spread
+SURVEY_E_HI_MEV = 7.0         # meV ceiling on the survey high side: spans the acoustic band, clips the optic
+
 
 @dataclass
 class ScanProposal:
@@ -122,12 +130,28 @@ def points_in_window(e_lo: float, e_hi: float, e_step: float) -> int:
     return min(int(span / step) + 1, MAX_POINTS)
 
 
-def _energy_window(e_pred: float, fwhm: float) -> tuple[float, float, float, int]:
-    """Build ``(e_lo, e_hi, e_step, n_points)`` from the predicted ω and the resolution FWHM."""
+def _energy_window(e_pred: float, fwhm: float, e_sigma: float = 0.0,
+                   *, survey: bool = False) -> tuple[float, float, float, int]:
+    """Build ``(e_lo, e_hi, e_step, n_points)`` from the predicted ω, the resolution FWHM, and the
+    predictive uncertainty ``e_sigma`` on ω(q).
+
+    The high side is extended to survey the phonon band (capped at :data:`SURVEY_E_HI_MEV`) when the
+    peak is not yet pinned at this q — either because ``e_sigma`` exceeds a resolution width (cold model
+    / far extrapolation) or because ``survey`` is forced (the q has no confirmed resolved fit yet). The
+    latter matters even when the model *looks* confident: a concave dispersion curves above a local-linear
+    prediction, so a tight window centred on a biased-low ``e_pred`` misses the real peak by a hair and
+    the q never seeds. Once a q is resolved the caller drops ``survey`` and the tight window returns.
+    ``e_sigma=0`` and ``survey=False`` reproduce the tight window.
+    """
     e = max(float(e_pred), 0.0)                    # a phonon energy is non-negative
     fwhm = max(float(fwhm), 1e-3)
     e_lo = -(e + LOW_MARGIN_MEV)
     e_hi = e + HIGH_RES_FACTOR * fwhm
+    sig = float(e_sigma)
+    if survey:                                     # unconfirmed q → scan the whole plausible band
+        e_hi = max(e_hi, SURVEY_E_HI_MEV)
+    elif math.isfinite(sig) and sig > fwhm:        # ω(q) not yet localized → survey e_pred + k·σ
+        e_hi = max(e_hi, min(e + SURVEY_SIGMA_K * sig, SURVEY_E_HI_MEV))
     if e_hi <= e_lo:                               # defensive: never invert
         e_hi = e_lo + fwhm
     e_step = STEP_RES_FRACTION * fwhm
@@ -272,7 +296,10 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
     e_pred, e_sigma = model.predict(pick.q)
     h, k, l = pick.hkl
     fwhm = _resolve_fwhm(resolution_info, h, k, l, max(float(e_pred), 0.0))
-    e_lo, e_hi, e_step, n_points = _energy_window(e_pred, fwhm)
+    # Survey the band until this q has a confirmed resolved fit — a concave dispersion sits above the
+    # local-linear e_pred, so a tight window on an unconfirmed q misses the peak and never seeds.
+    survey = not bool(getattr(pick, "best_resolved", False))
+    e_lo, e_hi, e_step, n_points = _energy_window(e_pred, fwhm, e_sigma, survey=survey)
     ncount = QUICKLOOK_NCOUNT if kind == "quicklook" else PRODUCTION_NCOUNT
 
     dc = float(n_points) * float(ncount)

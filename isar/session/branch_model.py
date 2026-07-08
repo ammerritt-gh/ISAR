@@ -56,6 +56,20 @@ class BranchPrediction:
             soft["phonon.A"] = (raw_a, max(self.amplitude_rel_sigma, A_REL_SIGMA_FLOOR) * raw_a)
         return ParamConstraints(soft=soft)
 
+    def hard_constraints(self, exposure) -> ParamConstraints:
+        """The near-Γ **constrained** recipe (Phase A; the old ``examples/old_fitters`` ``Constrained``
+        model): hard-fix BOTH Γ and the raw amplitude A to the branch's 1/ω law, reducing the near-zero
+        acoustic to ω₀-only. With A fixed, the blob's Bose-weighted brightness (∝ 1/ω near Γ) pins ω₀
+        where its *position* — 0.34 FWHM from the origin, Stokes/anti-Stokes merged — cannot. Used only
+        in the near-Γ unresolvable regime, in-anchor (so A is trustworthy); away from Γ the ordinary
+        soft rescue applies (A stays soft, absorbing systematics)."""
+        hard: dict = {}
+        if self.gamma > 0:
+            hard["phonon.Gamma"] = float(self.gamma)
+        if exposure and float(exposure) > 0 and self.amplitude_norm > 0:
+            hard["phonon.A"] = float(self.amplitude_norm) * float(exposure)
+        return ParamConstraints(hard=hard)
+
 
 def _is_clean_anchor(p: dict, sample, t_bin) -> bool:
     """A dispersion-prior point usable as a branch anchor: same sample+T bin, carries Γ and a portable
@@ -78,29 +92,37 @@ def _is_clean_anchor(p: dict, sample, t_bin) -> bool:
     return w >= max(2.0 * g, SEP_FWHM * fwhm)
 
 
-def _linfit(xv, yv) -> tuple[float, float, float]:
-    """(slope, intercept, residual σ) of ``y ~ x``; falls back to (0, mean, std) when x is degenerate."""
+def _linfit(xv, yv, wv=None) -> tuple[float, float, float]:
+    """(slope, intercept, residual σ) of a weighted ``y ~ x``; falls back to (0, weighted-mean, std)
+    when x is degenerate. ``wv`` (assignment weights, Phase A) default to 1 — a low-weight anchor
+    (a soft branch assignment) contributes proportionally less to the trend."""
     xv = np.asarray(xv, dtype=float)
     yv = np.asarray(yv, dtype=float)
-    if xv.size < 2 or len(set(np.round(xv, 9))) < 2:
-        return 0.0, float(np.mean(yv)), float(np.std(yv))
-    slope, intercept = np.polyfit(xv, yv, 1)
+    wv = np.ones_like(xv) if wv is None else np.clip(np.asarray(wv, dtype=float), 0.0, None)
+    if xv.size < 2 or len(set(np.round(xv, 9))) < 2 or wv.sum() <= 0:
+        m = float(np.average(yv, weights=wv)) if wv.sum() > 0 else float(np.mean(yv))
+        return 0.0, m, float(np.std(yv))
+    slope, intercept = np.polyfit(xv, yv, 1, w=np.sqrt(wv))
     resid = yv - (slope * xv + intercept)
     return float(slope), float(intercept), float(np.std(resid))
 
 
 def build_branch(points, *, sample, t_bin, branch_id: str = BRANCH_ID) -> dict | None:
-    """Fit a branch from the clean anchors in ``points`` (``state.dispersion_prior``), or None if too
-    sparse. Γ(ω₀) is a local linear trend; log A(ω₀) is linear in log ω₀ (the 1/ω acoustic law is the
-    slope≈−1 fit itself). Returns a plain JSON-able dict (persists in ``CardState.branch_models``)."""
-    anchors = [p for p in points if _is_clean_anchor(p, sample, t_bin)]
+    """Fit a branch from the clean anchors in ``points`` (``state.dispersion_prior``) **assigned to this
+    branch_id**, or None if too sparse. Γ(ω₀) is a weighted local linear trend; log A(ω₀) is linear in
+    log ω₀ (the 1/ω acoustic law is the slope≈−1 fit itself). Anchors are branch-filtered (Phase A: an
+    optic-assigned anchor can no longer seed the acoustic Γ/A branch) and weighted by their soft
+    assignment weight. Returns a plain JSON-able dict (persists in ``CardState.branch_models``)."""
+    anchors = [p for p in points if _is_clean_anchor(p, sample, t_bin)
+               and (p.get("branch_id") or BRANCH_ID) == branch_id]
     if len(anchors) < MIN_ANCHORS:
         return None
     w = np.array([float(p["omega0"]) for p in anchors])
     g = np.array([float(p["gamma"]) for p in anchors])
     a = np.array([float(p["intensity"]["value"]) for p in anchors])
-    gs, gi, gsig = _linfit(w, g)
-    ls, li, lsig = _linfit(np.log(w), np.log(np.clip(a, 1e-30, None)))
+    wt = np.array([float(p.get("weight", 1.0)) for p in anchors])
+    gs, gi, gsig = _linfit(w, g, wt)
+    ls, li, lsig = _linfit(np.log(w), np.log(np.clip(a, 1e-30, None)), wt)
     return {"branch_id": branch_id, "sample": sample, "t_bin": float(t_bin),
             "w_min": float(w.min()), "w_max": float(w.max()), "n_anchors": len(anchors),
             "gamma": [gs, gi, gsig], "logA": [ls, li, lsig]}

@@ -38,6 +38,11 @@ _ABSTAIN = ("held_for_calibration", "underpowered", "no_signal")
 # measurement — its own disposition so it stays out of _DELIVERED (gold/truth omega0 count) and
 # stopping.USABLE_DISPOSITIONS (the drive stop rule). The omega0 is nulled upstream (driver).
 _UNMODELED = ("signal_unmodeled",)
+# Phase A: near-Γ branch continuation. The acoustic branch is confidently identified but ω₀ is
+# below the resolvable threshold (~1 FWHM from the elastic origin) and no in-anchor branch yet allows
+# the constrained fit — reported as "consistent with → 0 / branch continuation", NOT an ω₀ delivery.
+# Its own disposition so it stays out of _DELIVERED and stopping.USABLE_DISPOSITIONS (like _UNMODELED).
+_BRANCH_CONTINUATION = ("branch_continuation",)
 _DELIVERED = ("resolved", "flagged")
 
 
@@ -153,6 +158,8 @@ def verdict_disposition(label: str) -> str:
         return "flagged"
     if label in _UNMODELED:
         return "unmodeled"
+    if label in _BRANCH_CONTINUATION:
+        return "branch_continuation"
     if label in _REJECT:
         return "reject"
     return "abstain"

@@ -246,20 +246,24 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                 g.last_prod_cost = cost                 # the next production scan's ΔC proxy
         elif kind == "quicklook":
             g.n_quicklook += 1
+        # Phase A: only ACOUSTIC (or null, older ledger) fits steer the ω(q) model / certify a q. A
+        # non-acoustic (optic) ω₀ can never raise the acoustic window centre — the session already
+        # withholds it (branch_continuation), this is the belt-and-suspenders drive-side guard.
+        acoustic = obs.get("branch_id") in (None, "acoustic")
         if not usable:
             g.n_decline += 1
         else:
             g.n_decline = 0        # a usable fit proves the q CAN deliver — reset the abandon counter
             if obs.get("fit_kind"):
                 g.last_fit_kind = obs.get("fit_kind")   # provenance of the most recent usable fit
-            if obs.get("omega0") is not None and (g.best_halfwidth is None
+            if acoustic and obs.get("omega0") is not None and (g.best_halfwidth is None
                                                   or (hw is not None and hw < g.best_halfwidth)):
                 g.best_omega0 = float(obs["omega0"])
                 g.best_halfwidth = hw
                 g.best_resolved = True
             # A usable single PRODUCTION fit with a real (reliable) interval is a convergence
             # candidate in its own right — it beats the master when pooling degrades a model-limited q.
-            if kind in PRODUCTION_KINDS and hw is not None and obs.get("omega0") is not None and (
+            if acoustic and kind in PRODUCTION_KINDS and hw is not None and obs.get("omega0") is not None and (
                     g.best_prod_halfwidth is None or hw < g.best_prod_halfwidth):
                 g.best_prod_halfwidth = hw
                 g.best_prod_omega0 = float(obs["omega0"])

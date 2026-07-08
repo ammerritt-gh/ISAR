@@ -65,6 +65,13 @@ collimations = [30.0, 30.0, 30.0, 30.0]
 name = "tavi"                  # experiment_id fallback (TAVI JSONs carry no EXPNO)
 # experiment_id = "SIM-001"    # optional explicit experiment id (wins over name)
 
+[dispersion]                   # steering branch-assignment geometry (Phase A). SAMPLE geometry, not
+                               # instrument: edit per experiment. Absent ⇒ the branch-assignment
+                               # posterior is off (pre-steering polyfit prior).
+zone_period = 2.0              # reduced-zone fold period (rlu) in which the acoustic branch is gapless
+                               # (ω₀→0 at a zone centre). The Al_phonon_DFT toy folds with period 2
+                               # (zone centres at even H); a real crystal sets its own reciprocal period.
+
 # The single McStas detector. value_index is unused (no #V lines); signal_column names the payload's
 # per-point counts. Per-scan Q comes from launch.parameters H/K/L, not an offset.
 [[detectors]]

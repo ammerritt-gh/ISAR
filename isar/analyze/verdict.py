@@ -77,9 +77,12 @@ def _residual_structured(pull, *, z: float = RUNS_Z) -> bool:
 def _pull(result, ctx):
     """Pull residual (counts - model)/sqrt(counts) for the winning structure, rebuilt from its
     label + fitted params. Used only on the GoF-bad branch (junk vs model-incomplete)."""
-    from isar.analyze.structures import enumerate_structures
+    from isar.analyze.structures import enumerate_multimode, enumerate_structures
 
-    hyp = {h.label: h for h in enumerate_structures(ctx)}.get(result.label)
+    # Span BOTH the 1-mode and 2-mode enumerations: a winning 2-mode label (`stokes2+bg`) must
+    # reconstruct here, else a GoF-bad two-branch fit is silently mis-routed to `junk` (and the
+    # descriptor falsification is disabled for it).
+    hyp = {h.label: h for h in (*enumerate_structures(ctx), *enumerate_multimode(ctx))}.get(result.label)
     if hyp is None:
         return None
     comp = hyp.build()
@@ -163,9 +166,9 @@ def _significant_peaks(descriptor, *, alpha: float = FLAG_ALPHA):
 def _model_curve(win, ctx):
     """The winning model evaluated on ``ctx.x_used`` (counts space), rebuilt from its label + fitted
     params — like :func:`_pull`. ``None`` if the label is not enumerable here."""
-    from isar.analyze.structures import enumerate_structures
+    from isar.analyze.structures import enumerate_multimode, enumerate_structures
 
-    hyp = {h.label: h for h in enumerate_structures(ctx)}.get(win.label)
+    hyp = {h.label: h for h in (*enumerate_structures(ctx), *enumerate_multimode(ctx))}.get(win.label)
     if hyp is None:
         return None
     comp = hyp.build()

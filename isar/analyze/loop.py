@@ -271,7 +271,8 @@ def _minimize_fixed(backend, objective, x0, bounds, be_names, fixed_pos, fixed_v
 
 
 def result_from_backend(label, composite, costv, n_used, k, br,
-                        *, prior_omega=None, penalty=None, hard_fixed=False) -> StructureFitResult:
+                        *, prior_omega=None, acoustic_omega=None, penalty=None,
+                        hard_fixed=False) -> StructureFitResult:
     """Build a :class:`StructureFitResult` from a backend result, reading the *raw,
     separated* convergence/covariance/profile signals (not the lossy combined success).
 
@@ -322,8 +323,9 @@ def result_from_backend(label, composite, costv, n_used, k, br,
     modes.sort(key=lambda m: m["omega0"])
     n_modes = len(modes)
 
-    # primary mode → the reported scalar ω₀ / Γ (back-compat)
-    prim_i = composite.primary_phonon_index(theta, cov, prior_omega)
+    # primary mode → the reported scalar ω₀ / Γ (back-compat); the acoustic hint (Phase A) selects
+    # which mode of a multi-mode fit is the acoustic QoI, ahead of the prior/amplitude fallbacks.
+    prim_i = composite.primary_phonon_index(theta, cov, prior_omega, acoustic_omega)
     omega0, omega0_err = composite._omega0_at(theta, cov, prim_i)
     gamma = float(theta[prim_i + 1])
     gamma_err = float(errs[prim_i + 1]) if errs is not None else float("nan")
@@ -362,6 +364,7 @@ def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False, x0=None) -> Stru
                          prob.fixed_pos, prob.fixed_vals, minos=minos)
     return result_from_backend(hyp.label, prob.composite, prob.costv, prob.n_used, prob.k, br,
                                prior_omega=getattr(ctx, "prior_omega", None),
+                               acoustic_omega=getattr(ctx, "acoustic_omega", None),
                                penalty=prob.penalty, hard_fixed=prob.is_hard_fixed)
 
 

@@ -34,7 +34,7 @@ _NUMERIC_COLUMNS = frozenset({
 })
 _INT_COLUMNS = frozenset({"scan", "prior_n", "n_modes", "n_members"})
 # Coerced to bool ("True"/"False" → True/False; "" → None). ISAR writes Python bool reprs.
-_BOOL_COLUMNS = frozenset({"interval_reliable", "pooled", "hesse_trusted"})
+_BOOL_COLUMNS = frozenset({"interval_reliable", "pooled", "hesse_trusted", "resolvable"})
 
 
 def _report_dir(workspace: str | Path) -> Path:

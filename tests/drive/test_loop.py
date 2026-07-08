@@ -298,8 +298,10 @@ def test_campaign_unmeetable_on_budget(tmp_path):
 
 
 def test_missed_window_triggers_recenter(tmp_path):
-    # ω sits at 3.0 — outside the cold quick-look window — so the first scan misses and re-centers.
-    omega = lambda h: 3.0
+    # ω sits beyond the survey ceiling (SURVEY_E_HI_MEV=7) so even the wide unresolved-q survey window
+    # misses it — the first scan then re-centers. (An ω inside the survey band is now caught outright,
+    # which is the survey window's whole point; the recenter is the fallback for a truly off-band peak.)
+    omega = lambda h: 9.0
     client = MockTavi(omega)
     summary, ws = _run(tmp_path, _objective(), client,
                        make_mock_runner(omega, window_gate=True), max_iters=60)

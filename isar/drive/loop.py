@@ -206,6 +206,7 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         "resolved": usable, "disposition": disp, "verdict": verdict,
         "omega0": row.get("omega0"), "scan": row.get("scan"), "detector": row.get("detector"),
         "proposal_cost": float(proposal_cost), "fit_kind": row.get("fit_kind"),
+        "branch_id": row.get("branch_id"),   # Phase A: only acoustic (or null) rows steer ω(q)
     }
 
 
@@ -383,10 +384,14 @@ def _new_rows(workspace, consumed: set) -> list[dict]:
 
 
 def _rows_missed(rows: list[dict]) -> bool:
-    """True when a scan produced no usable detector (peak outside the window / no signal)."""
+    """True when a scan produced no usable detector (peak outside the window / no signal). A
+    ``branch_continuation`` (Phase A: the near-Γ acoustic, confidently identified but not resolvable
+    by position) is NOT a miss — widening the window would only chase the higher optic branch, never
+    resolve a peak sitting at the elastic origin — so it does not trigger the recenter/widen."""
     if not rows:
         return True
-    return not any(r.get("disposition") in _USABLE for r in rows)
+    return not any(r.get("disposition") in _USABLE or r.get("disposition") == "branch_continuation"
+                   for r in rows)
 
 
 def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[str, Any]:

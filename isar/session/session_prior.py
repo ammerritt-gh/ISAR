@@ -26,13 +26,14 @@ SAME_T_TOL = 0.5        # K — "same temperature" for pooling (matches predict_
 
 def add_point(state: CardState, *, scan_id, sample, T, q, omega0, modality, verdict,
               gamma=None, gamma_err=None, intensity=None, fit_kind=None,
-              t_round: float = 5.0) -> bool:
+              branch_id=None, weight=None, t_round: float = 5.0) -> bool:
     """Append/replace a prior point, gated to resolved + fold. Returns True if a point was stored.
 
     ``gamma``/``gamma_err`` and ``intensity`` (a portable :class:`~isar.schema.steering.IntensityMeasure`
     dict, steering contract 2) are stored when supplied so a branch model (Phase 2+) can carry Γ(q) and
-    A(q) alongside ω₀(q). All three are optional and omitted from the point when None, so older callers
-    and stored points are unchanged.
+    A(q) alongside ω₀(q). ``branch_id`` + ``weight`` are the Phase-A soft branch assignment (which branch
+    this point supports, and how strongly) — the assignment posterior consumes them instead of the old
+    hard clean-anchor gate. All are optional and omitted when None, so older callers/points are unchanged.
     """
     if verdict != "resolved" or modality != "fold" or omega0 is None:
         return False
@@ -54,19 +55,40 @@ def add_point(state: CardState, *, scan_id, sample, T, q, omega0, modality, verd
         point["intensity"] = intensity   # already a JSON-able IntensityMeasure dict
     if fit_kind and fit_kind != "unconstrained":
         point["fit_kind"] = fit_kind     # contract 4: a constrained/demoted fit must not seed a branch
+    if branch_id is not None:
+        point["branch_id"] = str(branch_id)
+    if weight is not None:
+        point["weight"] = float(weight)
     # Replace an existing point for the same scan (a re-fit supersedes).
     state.dispersion_prior = [p for p in state.dispersion_prior if p.get("scan_id") != scan_id]
     state.dispersion_prior.append(point)
     return True
 
 
-def prior_for(state: CardState, *, sample, T, q, exclude_scan_id=None,
-              same_t_tol: float = SAME_T_TOL, sigma_floor: float = SIGMA_FLOOR) -> PhononPrior | None:
+def prior_for(state: CardState, *, sample, T, q, exclude_scan_id=None, period: float | None = None,
+              same_t_tol: float = SAME_T_TOL, sigma_floor: float = SIGMA_FLOOR,
+              t_round: float = 5.0) -> PhononPrior | None:
     """A `PhononPrior` from the accumulated points near (sample, T, q), or None if too sparse.
 
-    amplitude stays None (detection power abstains, v1) — carrying a neighbour-median amplitude to
-    enable the underpowered verdict is the marked Phase-4 extension.
+    When ``period`` is given (the card's reduced-zone fold period, Phase A) the prediction is the
+    **acoustic** :class:`~isar.session.branch_assignment.BranchBelief` at this q — a weighted local
+    dispersion anchored at the Γ-point zero and fed only by acoustic-tagged points, so an off-branch
+    (optic) anchor cannot bias it. Without ``period`` it falls back to the pre-steering global polyfit
+    (unchanged for older callers/samples). amplitude stays None (detection power abstains, v1).
     """
+    if period is not None:
+        from isar.session import branch_assignment as BA
+        pts = [p for p in state.dispersion_prior if p.get("scan_id") != exclude_scan_id]
+        t_bin = round(float(T) / t_round) * t_round if t_round else float(T)
+        beliefs = BA.build_beliefs(pts, sample=sample, t_bin=t_bin, period=float(period),
+                                   t_round=t_round)
+        belief = beliefs.get(BA.ACOUSTIC)
+        if belief is None:
+            return None
+        mu, sig = belief.predict(BA.reduced_q(q, float(period)))
+        return PhononPrior(omega0=float(mu), amplitude=None,
+                           omega0_sigma=max(float(sig), sigma_floor))
+
     pts = [p for p in state.dispersion_prior
            if p.get("sample") == sample and p.get("scan_id") != exclude_scan_id]
     if not pts:
