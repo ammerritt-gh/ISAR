@@ -965,26 +965,67 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
             "resolvable": bool(qoi["resolvable"])}
 
 
-def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
-                 chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
-                 boot_executor=None, boot_adaptive=False) -> ScanEntry:
-    _t_fit0 = time.perf_counter()
-    base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
-                content_hash=chash, guidelines_hash=ghash)
+def _gate_scan(rec, det, card, g, runcal, exclusions, base) -> tuple:
+    """Exclusion + calibration gate. Returns ``(entry, calres)``.
 
+    ``entry`` is a terminal :class:`ScanEntry` (``excluded`` or ``held_for_calibration``) when the
+    scan is gated — ``calres`` is None in the exclusion case; otherwise ``entry`` is None and
+    ``calres`` is the resolved calibration for the fit path. (calres is returned rather than
+    re-resolved by the caller so ``calibrations.resolve`` is still called exactly once.)"""
     # Exclusions (guideline / seed / state) — never fitted.
     reason = g.excluded(rec.scan_number)
     if reason is None and rec.scan_number in exclusions:
         reason = "excluded (card exclusions_seed / state)"
     if reason is not None:
-        return ScanEntry(status="excluded", reasons=[reason], **base)
+        return ScanEntry(status="excluded", reasons=[reason], **base), None
 
     # Calibration gate.
     calres = calibrations.resolve(rec, det, card, runcal)
     if calres.held:
-        return ScanEntry(status="held_for_calibration", reasons=[calres.held_reason],
-                         provenance={"resolution_version": calres.resolution_version}, **base)
+        return (ScanEntry(status="held_for_calibration", reasons=[calres.held_reason],
+                          provenance={"resolution_version": calres.resolution_version}, **base),
+                calres)
+    return None, calres
 
+
+def _apply_low_q_rescue(ctx, prior, card, sample, T, rec, near_gamma, region_reasons):
+    """Steering Phase 2c — LOW-q rescue: near the zone centre the acoustic peak merges with the
+    elastic line and Γ/A go unidentifiable. If the dispersion prior predicts a phonon within
+    LOW_Q_FWHM_FACTOR·resolution of the elastic line AND a branch model exists, softly pin Γ and A
+    to the branch (contract 1: penalty enters the objective only) and let ω₀ float. Off for
+    well-separated peaks and whenever no branch/prior is available (⇒ no behavior change there).
+
+    Returns the (possibly constraint-augmented) ctx; appends the applied-constraint note to
+    ``region_reasons`` in place."""
+    if prior is not None and np.isfinite(prior.omega0) \
+            and prior.omega0 < LOW_Q_FWHM_FACTOR * ctx.gauss_fwhm:
+        pred = branch_model.branch_for(card.state, sample=sample, T=T, omega0=float(prior.omega0))
+        if pred is not None:
+            exposure, _mode = _exposure_per_point(rec, ctx)
+            exp = exposure if np.isfinite(exposure) else 0.0
+            # Near Γ AND in-anchor: the CONSTRAINED recipe (hard Γ+A → the blob's Bose-weighted
+            # brightness pins ω₀ where its position, 0.34 FWHM from the origin, cannot). Elsewhere the
+            # ordinary soft rescue (A stays soft, absorbing monitor / focusing-asymmetry drift).
+            if near_gamma and pred.in_anchor_range:
+                cons = pred.hard_constraints(exp)
+                note = (f"near-Γ constrained fit (hard Γ={pred.gamma:.2f} meV + A from 1/ω; "
+                        f"brightness pins ω₀)")
+            else:
+                cons = pred.soft_constraints(exp)
+                note = (f"low-q branch soft-constraint applied (Γ≈{pred.gamma:.2f}±{pred.gamma_sigma:.2f}, "
+                        f"A from 1/ω{'' if pred.in_anchor_range else '; extrapolated'})")
+            if not cons.is_empty():
+                ctx = replace(ctx, constraints=cons)
+                region_reasons.append(note)
+    return ctx
+
+
+def _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres, base):
+    """Prior lookup + context construction + descriptor building.
+
+    Returns the working set ``(ctx, prior, prior_source, n_neighbors, near_gamma, t_round, labels,
+    peaks, descriptor, region_reasons)``, or a terminal ``non_result`` :class:`ScanEntry` when the
+    scan is undersampled after guideline masking."""
     # Prior: user expectation beats the auto prior.
     period = _dispersion_period(card)
     t_round = float((card.policy.collation or {}).get("t_round", 5.0))
@@ -1018,52 +1059,28 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         ctx = replace(ctx, acoustic_omega=float(prior.omega0),
                       prior_omega=(float(prior.omega0) if confident else None))
 
-    # Steering Phase 2c — LOW-q rescue: near the zone centre the acoustic peak merges with the
-    # elastic line and Γ/A go unidentifiable. If the dispersion prior predicts a phonon within
-    # LOW_Q_FWHM_FACTOR·resolution of the elastic line AND a branch model exists, softly pin Γ and A
-    # to the branch (contract 1: penalty enters the objective only) and let ω₀ float. Off for
-    # well-separated peaks and whenever no branch/prior is available (⇒ no behavior change there).
     near_gamma = (prior is not None and np.isfinite(prior.omega0)
                   and prior.omega0 < _RESOLVABLE_FWHM_FACTOR * ctx.gauss_fwhm)
-    if prior is not None and np.isfinite(prior.omega0) \
-            and prior.omega0 < LOW_Q_FWHM_FACTOR * ctx.gauss_fwhm:
-        pred = branch_model.branch_for(card.state, sample=sample, T=T, omega0=float(prior.omega0))
-        if pred is not None:
-            exposure, _mode = _exposure_per_point(rec, ctx)
-            exp = exposure if np.isfinite(exposure) else 0.0
-            # Near Γ AND in-anchor: the CONSTRAINED recipe (hard Γ+A → the blob's Bose-weighted
-            # brightness pins ω₀ where its position, 0.34 FWHM from the origin, cannot). Elsewhere the
-            # ordinary soft rescue (A stays soft, absorbing monitor / focusing-asymmetry drift).
-            if near_gamma and pred.in_anchor_range:
-                cons = pred.hard_constraints(exp)
-                note = (f"near-Γ constrained fit (hard Γ={pred.gamma:.2f} meV + A from 1/ω; "
-                        f"brightness pins ω₀)")
-            else:
-                cons = pred.soft_constraints(exp)
-                note = (f"low-q branch soft-constraint applied (Γ≈{pred.gamma:.2f}±{pred.gamma_sigma:.2f}, "
-                        f"A from 1/ω{'' if pred.in_anchor_range else '; extrapolated'})")
-            if not cons.is_empty():
-                ctx = replace(ctx, constraints=cons)
-                region_reasons.append(note)
+    ctx = _apply_low_q_rescue(ctx, prior, card, sample, T, rec, near_gamma, region_reasons)
 
     # L0 descriptor: built once here (mask/counts are now fixed) and reused for the verdict's
     # under-model falsification (Phase 4a) AND storage — including through the hard-fix retry below.
     descriptor = _build_descriptor(ctx)
+    return (ctx, prior, prior_source, n_neighbors, near_gamma, t_round, labels, peaks,
+            descriptor, region_reasons)
 
-    try:
-        fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
-                      errors_tier=errors_tier, boot_workers=boot_workers,
-                      boot_executor=boot_executor, boot_adaptive=boot_adaptive, descriptor=descriptor)
-    except Exception as exc:  # noqa: BLE001 — one unfittable scan must not kill the batch
-        return ScanEntry(status="non_result",
-                         reasons=[f"fit error ({type(exc).__name__}): {exc}"] + region_reasons,
-                         provenance={"resolution_version": calres.resolution_version}, **base)
 
-    # Steering Phase 3b — hard-fix escalation: if the (soft / Stokes-only) fit STILL rails Γ to its
-    # bound (true low-count degeneracy — Γ un-identifiable even under the soft prior) and the branch
-    # predicts Γ within its anchor range, re-fit with Γ frozen to the branch value (k reduced,
-    # tagged branch_conditional). Only in-range (never hard-fix an extrapolated branch); adopted
-    # only if it converges and no longer rails. A soft A constraint, if any, is preserved.
+def _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descriptor,
+                         region_reasons, *, M, seed, errors_tier, boot_workers, boot_executor,
+                         boot_adaptive):
+    """Steering Phase 3b — hard-fix escalation: if the (soft / Stokes-only) fit STILL rails Γ to its
+    bound (true low-count degeneracy — Γ un-identifiable even under the soft prior) and the branch
+    predicts Γ within its anchor range, re-fit with Γ frozen to the branch value (k reduced,
+    tagged branch_conditional). Only in-range (never hard-fix an extrapolated branch); adopted
+    only if it converges and no longer rails. A soft A constraint, if any, is preserved.
+
+    Returns the adopted fit dict (the escalated ``hfit`` when accepted, else the original ``fit``);
+    appends its provenance note to ``region_reasons`` in place."""
     if fit.get("gamma_at_bound") and prior is not None and np.isfinite(prior.omega0):
         pred = branch_model.branch_for(card.state, sample=sample, T=T, omega0=float(prior.omega0))
         if pred is not None and pred.in_anchor_range and pred.gamma > 0:
@@ -1084,7 +1101,13 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                 region_reasons.append(
                     f"hard-fix escalation: Γ frozen to branch {pred.gamma:.2f} meV "
                     f"(branch_conditional; soft prior alone left Γ at bound)")
+    return fit
 
+
+def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calres, prior,
+                    prior_source, n_neighbors, near_gamma, t_round, region_reasons, base,
+                    *, M, seed, t_fit0) -> ScanEntry:
+    """Branch assignment + outcome/provenance construction → the terminal ``fitted`` ScanEntry."""
     # Phase A — Bayesian branch assignment + honest triage. Decide whether this fit's ω₀ is a
     # deliverable ACOUSTIC measurement or must abstain, and tag the branch it was assigned to so an
     # optic/spurious feature can never seed or be scored as the acoustic branch. Skipped for
@@ -1145,9 +1168,45 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                      detectors={det: outcome.to_dict()},
                      provenance={"resolution_version": calres.resolution_version,
                                  "M": M, "seed": seed, "prior_source": prior_source,
-                                 "fit_seconds": round(time.perf_counter() - _t_fit0, 4),
+                                 "fit_seconds": round(time.perf_counter() - t_fit0, 4),
                                  "two_stage_seconds": fit.get("two_stage_seconds"),
                                  "errors_attach_seconds": fit.get("errors_attach_seconds")}, **base)
+
+
+def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
+                 chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
+                 boot_executor=None, boot_adaptive=False) -> ScanEntry:
+    _t_fit0 = time.perf_counter()
+    base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
+                content_hash=chash, guidelines_hash=ghash)
+
+    gated, calres = _gate_scan(rec, det, card, g, runcal, exclusions, base)
+    if gated is not None:
+        return gated
+
+    working = _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres, base)
+    if isinstance(working, ScanEntry):
+        return working
+    (ctx, prior, prior_source, n_neighbors, near_gamma, t_round, labels, peaks,
+     descriptor, region_reasons) = working
+
+    try:
+        fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
+                      errors_tier=errors_tier, boot_workers=boot_workers,
+                      boot_executor=boot_executor, boot_adaptive=boot_adaptive, descriptor=descriptor)
+    except Exception as exc:  # noqa: BLE001 — one unfittable scan must not kill the batch
+        return ScanEntry(status="non_result",
+                         reasons=[f"fit error ({type(exc).__name__}): {exc}"] + region_reasons,
+                         provenance={"resolution_version": calres.resolution_version}, **base)
+
+    fit = _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descriptor,
+                               region_reasons, M=M, seed=seed, errors_tier=errors_tier,
+                               boot_workers=boot_workers, boot_executor=boot_executor,
+                               boot_adaptive=boot_adaptive)
+
+    return _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calres, prior,
+                           prior_source, n_neighbors, near_gamma, t_round, region_reasons, base,
+                           M=M, seed=seed, t_fit0=_t_fit0)
 
 
 # ===========================================================================

@@ -19,6 +19,7 @@ TAVI client and shell out to ``isar run``.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -176,6 +177,23 @@ def _pick_interval(row: dict) -> tuple:
     return None, None, False
 
 
+def _calibrated_hw(row: dict, calibration: Calibration, bucket: str) -> float | None:
+    """Shared interval→half-width core of the two observation builders below.
+
+    Takes the reliable ``(lo, hi)`` from :func:`_pick_interval` (bootstrap → profile → trusted HESSE)
+    and returns its calibrated half-width at the given count ``bucket``, or ``None`` when there is no
+    trustworthy interval (``ok`` False) *or* the calibration rejects the interval. Callers keep their
+    distinct output shapes; the quicklook ``omega0_err`` fallback (a different interval source) stays
+    inline in :func:`_observation_from_row`."""
+    lo, hi, ok = _pick_interval(row)
+    if not ok:
+        return None
+    try:
+        return calibration.calibrated_halfwidth(lo, hi, bucket=bucket)
+    except Exception:   # noqa: BLE001  (bad interval → treat as un-calibratable, not a crash)
+        return None
+
+
 def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibration,
                           proposal_cost: float = 0.0) -> dict:
     disp = row.get("disposition")
@@ -184,12 +202,9 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
     # documents peak-shape imperfection, not an ω₀ error (see stopping.USABLE_DISPOSITIONS).
     usable = disp in _USABLE
     hw = None
-    lo, hi, ok = _pick_interval(row)
+    ok = _pick_interval(row)[2]
     if usable and ok:
-        try:
-            hw = calibration.calibrated_halfwidth(lo, hi, bucket=str(ncount))
-        except Exception:   # noqa: BLE001  (bad interval → treat as un-calibratable, not a crash)
-            hw = None
+        hw = _calibrated_hw(row, calibration, str(ncount))
     elif usable and kind == "quicklook":
         # Cheap-tier quicklooks carry only a HESSE omega0_err (no bootstrap interval). Good enough to
         # SEED the ω(q) acquisition model (steering only); it never reaches the stop rule, which
@@ -213,13 +228,8 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
 def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
     """A master (pooled) fit → the convergence observation for its q. The calibrated half-width uses
     the reliable interval (profile when the bootstrap is Γ-at-bound) at the production count bucket."""
-    lo, hi, ok = _pick_interval(row)
-    hw = None
-    if ok:
-        try:
-            hw = calibration.calibrated_halfwidth(lo, hi, bucket=str(PRODUCTION_NCOUNT))
-        except Exception:   # noqa: BLE001
-            hw = None
+    ok = _pick_interval(row)[2]
+    hw = _calibrated_hw(row, calibration, str(PRODUCTION_NCOUNT))
     disp = row.get("disposition")
     return {
         "hkl": _row_hkl(row), "omega0": row.get("omega0"), "halfwidth": hw,
@@ -240,6 +250,16 @@ def _read_master_rows(workspace, calibration: Calibration) -> list[dict]:
         if r.get("pooled") and _row_hkl(r) is not None:
             out.append(_master_obs_from_row(r, calibration))
     return out
+
+
+def _grid_state(objective, observations: list[dict], workspace, calibration: Calibration):
+    """The ``(master_rows, grid)`` pair the loop rebuilds at three points (stop eval, model update,
+    final re-eval). Reads the pooled master rows FRESH (their intervals shrink as scans accumulate),
+    then folds observations + masters into the per-q grid. The three call sites were verified to be
+    identical calls; the caller wraps this in whatever ``timed`` span (or none) belongs at that site."""
+    master_rows = _read_master_rows(workspace, calibration)
+    grid = summarize_grid(objective, observations, master_rows)
+    return master_rows, grid
 
 
 def _hkl_close(a, b, tol: float = 1e-4) -> bool:
@@ -414,45 +434,261 @@ def _rows_missed(rows: list[dict]) -> bool:
                    for r in rows)
 
 
-def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[str, Any]:
-    """Run an adaptive measurement campaign to satisfy ``objective`` (LLM_HARNESS_DESIGN §8).
+@dataclass(frozen=True)
+class CampaignConfig:
+    """The resolved configuration for one :func:`run_campaign` invocation — every ``config`` key
+    turned into the concrete seam / scalar the loop consumes, resolved once by :func:`_campaign_config`
+    so ``run_campaign`` reads only resolved fields.
 
-    Returns a campaign summary dict (see the bottom of this function). ``config`` keys:
+    Fields (config key → resolved field; type; default; when used):
 
-    - ``workspace`` (required): the workspace directory. If it has no ``card.policy.toml`` the
-      driver runs ``isar init`` itself after the first scan lands (init needs a data file).
-    - ``client``: a TAVI client (default :class:`TaviClient` at ``tavi_url``).
-    - ``tavi_url``: base URL for the default client.
-    - ``run_isar``: callable ``(workspace, data_paths) -> Any`` (default the ``isar run`` subprocess).
-    - ``resolution``: a float / dict / callable energy-resolution source (default wraps
-      ``GET /resolution``).
-    - ``calibration``: a :class:`Calibration`, a path, or ``None`` (default the repo artifact).
-    - ``seed``: base seed; scan ``n`` uses ``seed + n``.
-    - ``max_iters``, ``wait_timeout``, ``floor`` (systematic-floor override), ``session_log`` (path).
+    - ``workspace`` (:class:`Path`, config key ``workspace``, **required**): the workspace directory;
+      root of all file I/O. If it has no ``card.policy.toml`` the loop runs ``isar init`` after the
+      first scan lands (init needs a data file).
+    - ``data_dir`` (:class:`Path`, config key ``data_dir``, default ``workspace/"data"``): where each
+      scan's JSON is saved before ``isar run`` reads it.
+    - ``log_path`` (:class:`Path`, config key ``session_log``, default
+      ``workspace/"report"/"session_log.jsonl"``): the durable decision/timing log every event lands in.
+    - ``calibration`` (:class:`Calibration`, config key ``calibration`` accepting a ``Calibration`` /
+      path / ``None``, default the repo artifact): σ-inflation + systematic floor source; drives every
+      calibrated half-width.
+    - ``client`` (TAVI-client-shaped, config keys ``client`` then ``tavi_url``, default
+      :class:`TaviClient` at ``tavi_url`` or its own default): the validate/submit/wait/fetch seam.
+    - ``runner`` (runner object, config key ``run_isar`` — a bare callable/runner adapted via
+      :func:`as_runner` — default :class:`SubprocessRunner`): runs the ISAR analysis; reused across the
+      campaign and closed in its ``finally``.
+    - ``init_isar`` (:class:`Callable` ``(workspace, probe) -> Any``, config key ``init_isar``, default
+      the real ``isar init`` seam): scaffolds the instrument card lazily after the first scan lands.
+    - ``resolution_cb`` (:class:`Callable`, built from config key ``resolution`` — a float / dict /
+      callable, default wraps ``GET /resolution``): the energy-resolution FWHM source for acquisition
+      and the Fisher screen.
+    - ``engine`` (:class:`str`, ``= objective.tier`` — NOT a config key, derived from the objective):
+      the scan engine tier stamped into every ``POST /scan`` body.
+    - ``base_seed`` (:class:`int`, config key ``seed``, default 0): scan ``n`` uses ``base_seed + n``.
+    - ``max_iters`` (:class:`int`, config key ``max_iters``, default :data:`DEFAULT_MAX_ITERS`): the
+      adaptive-loop iteration cap.
+    - ``wait_timeout`` (:class:`float`, config key ``wait_timeout``, default
+      :data:`DEFAULT_WAIT_TIMEOUT`): the per-scan ``wait_scan`` timeout in seconds.
+    - ``floor`` (:class:`float`, ``= systematic_floor(calibration, config["floor"])`` — config key
+      ``floor`` overrides): the systematic ω₀ floor added to every convergence gate.
     """
+    workspace: Path
+    data_dir: Path
+    log_path: Path
+    calibration: Calibration
+    client: Any
+    runner: Any
+    init_isar: Callable
+    resolution_cb: Callable
+    engine: str
+    base_seed: int
+    max_iters: int
+    wait_timeout: float
+    floor: float
+
+
+def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignConfig:
+    """Resolve the raw ``config`` dict (plus ``objective``) into a frozen :class:`CampaignConfig`.
+
+    Centralizes every default and every seam construction (calibration, client, runner, resolution
+    callback, systematic floor). See :class:`CampaignConfig` for the per-key documentation."""
     config = dict(config or {})
     workspace = Path(config["workspace"])
-    data_dir = Path(config.get("data_dir", workspace / "data"))
-    log_path = Path(config.get("session_log", workspace / "report" / "session_log.jsonl"))
-    calibration = _resolve_calibration(config.get("calibration"))
     client = config.get("client")
     if client is None:
         client = TaviClient(config["tavi_url"]) if config.get("tavi_url") else TaviClient()
     # Runner seam: an explicit ``config["run_isar"]`` (callable hook or runner object) is adapted via
-    # ``as_runner``; otherwise a fresh-subprocess SubprocessRunner. Reused across the campaign, closed
-    # in the finally below.
+    # ``as_runner``; otherwise a fresh-subprocess SubprocessRunner.
     runner = as_runner(config["run_isar"]) if config.get("run_isar") is not None else SubprocessRunner()
-    init_isar = config.get("init_isar", _default_init_isar)
-    resolution_cb = _make_resolution_cb(client, config.get("resolution"))
-    engine = objective.tier
-    base_seed = int(config.get("seed", 0))
-    max_iters = int(config.get("max_iters", DEFAULT_MAX_ITERS))
-    wait_timeout = float(config.get("wait_timeout", DEFAULT_WAIT_TIMEOUT))
-    floor = systematic_floor(calibration, config.get("floor"))
+    calibration = _resolve_calibration(config.get("calibration"))
+    return CampaignConfig(
+        workspace=workspace,
+        data_dir=Path(config.get("data_dir", workspace / "data")),
+        log_path=Path(config.get("session_log", workspace / "report" / "session_log.jsonl")),
+        calibration=calibration,
+        client=client,
+        runner=runner,
+        init_isar=config.get("init_isar", _default_init_isar),
+        resolution_cb=_make_resolution_cb(client, config.get("resolution")),
+        engine=objective.tier,
+        base_seed=int(config.get("seed", 0)),
+        max_iters=int(config.get("max_iters", DEFAULT_MAX_ITERS)),
+        wait_timeout=float(config.get("wait_timeout", DEFAULT_WAIT_TIMEOUT)),
+        floor=systematic_floor(calibration, config.get("floor")),
+    )
+
+
+def _declined_observation(proposal, verdict: str) -> dict:
+    """The observation appended when a proposed scan yields no fit — validation rejected it, or the
+    scan job never reached ``done``. Identical shape at both sites; only ``verdict`` differs
+    (``"validation_rejected"`` vs the terminal job state)."""
+    return {"hkl": (proposal.h, proposal.k, proposal.l), "kind": proposal.kind,
+            "calibrated_halfwidth": None, "resolved": False, "disposition": "declined",
+            "verdict": verdict, "omega0": None}
+
+
+def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan_counter: int,
+                      budget_state: dict, observations: list[dict], consumed: set,
+                      scan_kind: dict) -> tuple[list[dict], int]:
+    """Run one proposed scan to a folded result, with bounded missed-window re-centering (a LOOK, §1).
+
+    Owns the inner validate → submit → wait → fetch/save → (lazy init) → ``isar run`` → fold → analyze
+    loop and its recenter/widen retries. Mutates ``observations`` (appends folded or declined rows),
+    ``consumed`` (via :func:`_new_rows`), ``scan_kind``, ``budget_state``, and ``proposal`` (e_lo/e_hi/
+    n_points on recenter) in place; returns ``(rows, scan_counter)`` — the final folded rows (empty on
+    a decline) plus the advanced scan counter. Every ``timed`` span and ``log_event`` payload is
+    verbatim from the original loop body (the profiling / event contract is part of the identity gate)."""
+    client, runner = cfg.client, cfg.runner
+    log_path, workspace, data_dir = cfg.log_path, cfg.workspace, cfg.data_dir
+    # ---- run this proposal, with bounded missed-window re-centering (a LOOK, §1) ----------
+    allow_partial = False
+    attempt = 0
+    rows: list[dict] = []
+    while True:
+        with timed(log_path, "validate", iteration=it, attempt=attempt):
+            val = client.validate(_validate_body(proposal, allow_partial=allow_partial))
+        log_event(log_path, "validate", {"would_queue": val.get("would_queue"),
+                                          "blockers": val.get("blockers"), "eta": val.get("eta"),
+                                          "iter": it})
+        if not val.get("would_queue", False):
+            v_act = exc.handle_validation_rejection(val.get("blockers") or [])
+            log_event(log_path, "exception", {**v_act.to_dict(), "iter": it})
+            if v_act.action == "repair" and not allow_partial:
+                allow_partial = True
+                continue
+            observations.append(_declined_observation(proposal, "validation_rejected"))
+            break
+
+        with timed(log_path, "submit", iteration=it, attempt=attempt) as _m:
+            body = _scan_body(proposal, cfg.engine, cfg.base_seed + scan_counter, allow_partial=allow_partial)
+            submit = client.submit_scan(body, idempotency_key=f"{objective.name or 'campaign'}-{scan_counter}")
+            scan_counter += 1
+            job_id = submit.get("job_id")
+            _m["job_id"] = job_id
+        eta = (submit.get("eta") or {}).get("estimated_seconds")
+        _charge_budget(budget_state, proposal, eta)
+        # The run event doubles as the durable SPEND LEDGER for crash resume: kind/ncount/n_points/
+        # hkl + the charged cost (= n_points×ncount) let a restart recover budget + scan_counter.
+        log_event(log_path, "run", {"job_id": job_id, "state": submit.get("state"),
+                                    "eta": submit.get("eta"), "attempt": attempt,
+                                    "kind": proposal.kind, "ncount": int(proposal.ncount),
+                                    "n_points": int(proposal.n_points or 0),
+                                    "hkl": [proposal.h, proposal.k, proposal.l],
+                                    "cost": float(proposal.n_points or 1) * float(proposal.ncount),
+                                    "iter": it})
+
+        with timed(log_path, "wait_scan", iteration=it, job_id=job_id) as _m:
+            snap = client.wait_scan(job_id, timeout=cfg.wait_timeout)
+            _m["state"] = snap.get("state")
+        if snap.get("state") != "done":
+            log_event(log_path, "exception", {"action": "scan_not_done", "job_id": job_id,
+                                              "state": snap.get("state"), "error": snap.get("error"),
+                                              "iter": it})
+            observations.append(_declined_observation(proposal, str(snap.get("state"))))
+            break
+
+        with timed(log_path, "fetch_save", iteration=it):
+            data = client.get_scan_data(job_id)
+            scan_path = save_scan_json(data, data_dir)
+        # Lazy `isar init`: the instrument card can only be scaffolded from a recognizable
+        # data file, which first exists NOW. Subprocess keeps the analysis boundary.
+        if not (workspace / "card.policy.toml").exists():
+            with timed(log_path, "isar_init", iteration=it):
+                cfg.init_isar(workspace, scan_path)
+            log_event(log_path, "decide", {"event": "workspace_init", "probe": str(scan_path),
+                                           "iter": it})
+        # Error tier per the escalation ladder: quicklook → cheap (steer only), production →
+        # fast (HESSE interval + trust flag), escalating to full (bootstrap+profile) only where an
+        # untrusted-HESSE q needs the reliable interval. The bootstrap fires only where needed.
+        tier = _errors_tier_for(proposal, workspace)
+        with timed(log_path, "isar_run", iteration=it, errors_tier=tier, attempt=attempt):
+            runner.run(workspace, [data_dir], errors_tier=tier)
+
+        with timed(log_path, "fold_rows", iteration=it) as _m:
+            rows = _new_rows(workspace, consumed)
+            # The scan's actual monitor cost (n_points reflects any recenter; charged once per scan,
+            # onto the first detector row so counts_spent per q is not multiplied by detector count).
+            scan_cost = float(proposal.n_points or 1) * float(proposal.ncount)
+            for j, r in enumerate(rows):
+                observations.append(_observation_from_row(
+                    r, proposal.kind, proposal.ncount, cfg.calibration,
+                    proposal_cost=scan_cost if j == 0 else 0.0))
+                scan_kind[(r.get("scan"), r.get("detector"))] = (proposal.kind, proposal.ncount)
+            _m["n_rows"] = len(rows)
+        # Embed the subprocess stage-timing snapshot (best-effort) + the folded rows' outcomes.
+        timings = _read_run_timings(workspace)
+        analyze_payload = {"job_id": job_id, "errors_tier": tier, "iter": it,
+                           "n_rows": len(rows),
+                           "dispositions": [r.get("disposition") or r.get("verdict") for r in rows]}
+        if timings is not None:
+            analyze_payload["timings"] = timings
+        log_event(log_path, "analyze", analyze_payload)
+
+        if not _rows_missed(rows):
+            break
+        # Missed window: LOOK at the counts to re-center + widen, up to the attempt cap.
+        with timed(log_path, "missed_window", iteration=it):
+            result = data.get("result") or {}
+            act = exc.handle_missed_window(
+                result.get("counts") or [], result.get("scan_values_1") or [],
+                e_lo=proposal.e_lo, e_hi=proposal.e_hi, attempt=attempt)
+        log_event(log_path, "exception", {**act.to_dict(), "iter": it})
+        if act.action != "recenter":
+            break
+        proposal.e_lo = act.params["e_lo"]
+        proposal.e_hi = act.params["e_hi"]
+        proposal.n_points = points_in_window(proposal.e_lo, proposal.e_hi, proposal.e_step)
+        attempt += 1
+
+    return rows, scan_counter
+
+
+def _certify(*, cfg: CampaignConfig, decision, observations: list[dict],
+             scan_kind: dict) -> tuple[list[dict], bool]:
+    """The end-of-campaign certification pass (the "one bootstrap to certify" decision).
+
+    When the loop stopped ``met``, run ONE forced full (bootstrap+profile) ``isar run`` so every
+    reported ω₀ interval is bootstrap-backed, then rebuild ``observations`` from the certified
+    ``results.csv``. Best-effort: a certification hiccup logs ``certify_failed`` and reports
+    ``ran_certify=False`` rather than losing a met campaign. Returns ``(observations, ran_certify)`` —
+    the (possibly rebuilt) observations plus whether certification actually completed."""
+    log_path, workspace, data_dir = cfg.log_path, cfg.workspace, cfg.data_dir
+    ran_certify = decision is not None and decision.state == "met"
+    if not ran_certify:
+        return observations, False
+    log_event(log_path, "decide", {"event": "certify_start", "tier": "full"})
+    try:
+        with timed(log_path, "certify", iteration=None):
+            cfg.runner.run(workspace, [data_dir], errors_tier="full", force=True)
+        observations = _recertified_observations(workspace, cfg.calibration, scan_kind)
+        # Embed the certification subprocess timings (iter=None — the certify pass is reported
+        # separately, never averaged into per-iteration stats).
+        timings = _read_run_timings(workspace)
+        analyze_payload = {"job_id": None, "errors_tier": "full", "iter": None,
+                           "n_rows": len(observations),
+                           "dispositions": [o.get("disposition") or o.get("verdict")
+                                            for o in observations]}
+        if timings is not None:
+            analyze_payload["timings"] = timings
+        log_event(log_path, "analyze", analyze_payload)
+        log_event(log_path, "decide", {"event": "certify_done"})
+        return observations, True
+    except Exception as e:   # noqa: BLE001 — never lose a met campaign to a certification hiccup
+        log_event(log_path, "exception", {"action": "certify_failed", "error": str(e)})
+        return observations, False
+
+
+def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[str, Any]:
+    """Run an adaptive measurement campaign to satisfy ``objective`` (LLM_HARNESS_DESIGN §8).
+
+    Returns a campaign summary dict (built by :func:`_campaign_summary`). Every ``config`` key, its
+    type, its default, and where it is used are resolved and documented by :func:`_campaign_config` /
+    :class:`CampaignConfig` — see there for the full key reference."""
+    cfg = _campaign_config(objective, config)
 
     # Crash-safe resume: recover the spend ledger + folded rows + observations from the durable files
     # (session_log + results.csv). A cold workspace yields the fresh-start values.
-    resumed = _resume_state(workspace, log_path, calibration)
+    resumed = _resume_state(cfg.workspace, cfg.log_path, cfg.calibration)
     budget = dict(objective.budget)
     budget_state = {"kind": budget["kind"], "amount": budget["amount"],
                     "neutrons": resumed["neutrons"], "seconds": resumed["seconds"], "spent": 0.0}
@@ -464,12 +700,12 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     scan_kind: dict = resumed["scan_kind"]   # (scan, detector) -> (kind, ncount), to rebuild obs after certify
     scan_counter = resumed["scan_counter"]
 
-    log_event(log_path, "decide", {"event": "campaign_start", "objective": objective.to_dict(),
-                                   "calibration": {"inflation": calibration.inflation,
-                                                   "floor_meV": floor},
-                                   "resumed": {"scan_counter": scan_counter,
-                                               "n_observations": len(observations),
-                                               "spent": budget_state["spent"]}})
+    log_event(cfg.log_path, "decide", {"event": "campaign_start", "objective": objective.to_dict(),
+                                       "calibration": {"inflation": cfg.calibration.inflation,
+                                                       "floor_meV": cfg.floor},
+                                       "resumed": {"scan_counter": scan_counter,
+                                                   "n_observations": len(observations),
+                                                   "spent": budget_state["spent"]}})
 
     decision = None
     try:
@@ -477,205 +713,82 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
         # "timing" event (resume-inert — _resume_state reads only "run" events), and every in-loop
         # log_event carries the iteration index ``it``. The outer ``timed(... "iteration")`` covers the
         # whole body including all break paths (a break exits the span normally, ok=True).
-        for it in range(max_iters):
-            with timed(log_path, "iteration", iteration=it):
-                with timed(log_path, "stop_eval", iteration=it):
-                    master_rows = _read_master_rows(workspace, calibration)
-                    grid = summarize_grid(objective, observations, master_rows)
-                    decision = evaluate_stop(objective, grid, budget_state, calibration=calibration, floor=floor)
+        for it in range(cfg.max_iters):
+            with timed(cfg.log_path, "iteration", iteration=it):
+                with timed(cfg.log_path, "stop_eval", iteration=it):
+                    master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
+                    decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
                 if decision.state != "continue":
                     break
 
-                with timed(log_path, "model_fit", iteration=it):
+                with timed(cfg.log_path, "model_fit", iteration=it):
                     model = acq_model.fit(model_points(grid))
                 # 5b Fisher tier: read the branch the session persisted into card.state.json FRESH each
                 # iteration (durable / crash-safe — a file, never a live session object). No branch yet →
                 # provider is None → propose_scan falls back to the 5a counts tier.
-                with timed(log_path, "fisher_provider", iteration=it):
-                    fisher = _make_fisher_provider(read_card_state(workspace), resolution_cb)
-                with timed(log_path, "propose", iteration=it):
-                    proposal = propose_scan(objective, model, observations, resolution_cb, budget_state,
+                with timed(cfg.log_path, "fisher_provider", iteration=it):
+                    fisher = _make_fisher_provider(read_card_state(cfg.workspace), cfg.resolution_cb)
+                with timed(cfg.log_path, "propose", iteration=it):
+                    proposal = propose_scan(objective, model, observations, cfg.resolution_cb, budget_state,
                                             master_rows=master_rows, fisher=fisher)
                 if proposal is None:
-                    decision = evaluate_stop(objective, grid, budget_state, calibration=calibration, floor=floor)
+                    decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
                     break
-                log_event(log_path, "propose", {**proposal.to_dict(), "iter": it})
+                log_event(cfg.log_path, "propose", {**proposal.to_dict(), "iter": it})
 
                 b_act = exc.handle_budget(budget_state)
                 if b_act is not None:
-                    log_event(log_path, "exception", {**b_act.to_dict(), "iter": it})
+                    log_event(cfg.log_path, "exception", {**b_act.to_dict(), "iter": it})
                     if b_act.action == "exhausted":
                         break
 
-                # ---- run this proposal, with bounded missed-window re-centering (a LOOK, §1) ----------
-                allow_partial = False
-                attempt = 0
-                rows: list[dict] = []
-                while True:
-                    with timed(log_path, "validate", iteration=it, attempt=attempt):
-                        val = client.validate(_validate_body(proposal, allow_partial=allow_partial))
-                    log_event(log_path, "validate", {"would_queue": val.get("would_queue"),
-                                                      "blockers": val.get("blockers"), "eta": val.get("eta"),
-                                                      "iter": it})
-                    if not val.get("would_queue", False):
-                        v_act = exc.handle_validation_rejection(val.get("blockers") or [])
-                        log_event(log_path, "exception", {**v_act.to_dict(), "iter": it})
-                        if v_act.action == "repair" and not allow_partial:
-                            allow_partial = True
-                            continue
-                        observations.append({"hkl": (proposal.h, proposal.k, proposal.l),
-                                             "kind": proposal.kind, "calibrated_halfwidth": None,
-                                             "resolved": False, "disposition": "declined",
-                                             "verdict": "validation_rejected", "omega0": None})
-                        break
-
-                    with timed(log_path, "submit", iteration=it, attempt=attempt) as _m:
-                        body = _scan_body(proposal, engine, base_seed + scan_counter, allow_partial=allow_partial)
-                        submit = client.submit_scan(body, idempotency_key=f"{objective.name or 'campaign'}-{scan_counter}")
-                        scan_counter += 1
-                        job_id = submit.get("job_id")
-                        _m["job_id"] = job_id
-                    eta = (submit.get("eta") or {}).get("estimated_seconds")
-                    _charge_budget(budget_state, proposal, eta)
-                    # The run event doubles as the durable SPEND LEDGER for crash resume: kind/ncount/n_points/
-                    # hkl + the charged cost (= n_points×ncount) let a restart recover budget + scan_counter.
-                    log_event(log_path, "run", {"job_id": job_id, "state": submit.get("state"),
-                                                "eta": submit.get("eta"), "attempt": attempt,
-                                                "kind": proposal.kind, "ncount": int(proposal.ncount),
-                                                "n_points": int(proposal.n_points or 0),
-                                                "hkl": [proposal.h, proposal.k, proposal.l],
-                                                "cost": float(proposal.n_points or 1) * float(proposal.ncount),
-                                                "iter": it})
-
-                    with timed(log_path, "wait_scan", iteration=it, job_id=job_id) as _m:
-                        snap = client.wait_scan(job_id, timeout=wait_timeout)
-                        _m["state"] = snap.get("state")
-                    if snap.get("state") != "done":
-                        log_event(log_path, "exception", {"action": "scan_not_done", "job_id": job_id,
-                                                          "state": snap.get("state"), "error": snap.get("error"),
-                                                          "iter": it})
-                        observations.append({"hkl": (proposal.h, proposal.k, proposal.l),
-                                             "kind": proposal.kind, "calibrated_halfwidth": None,
-                                             "resolved": False, "disposition": "declined",
-                                             "verdict": str(snap.get("state")), "omega0": None})
-                        break
-
-                    with timed(log_path, "fetch_save", iteration=it):
-                        data = client.get_scan_data(job_id)
-                        scan_path = save_scan_json(data, data_dir)
-                    # Lazy `isar init`: the instrument card can only be scaffolded from a recognizable
-                    # data file, which first exists NOW. Subprocess keeps the analysis boundary.
-                    if not (workspace / "card.policy.toml").exists():
-                        with timed(log_path, "isar_init", iteration=it):
-                            init_isar(workspace, scan_path)
-                        log_event(log_path, "decide", {"event": "workspace_init", "probe": str(scan_path),
-                                                       "iter": it})
-                    # Error tier per the escalation ladder: quicklook → cheap (steer only), production →
-                    # fast (HESSE interval + trust flag), escalating to full (bootstrap+profile) only where an
-                    # untrusted-HESSE q needs the reliable interval. The bootstrap fires only where needed.
-                    tier = _errors_tier_for(proposal, workspace)
-                    with timed(log_path, "isar_run", iteration=it, errors_tier=tier, attempt=attempt):
-                        runner.run(workspace, [data_dir], errors_tier=tier)
-
-                    with timed(log_path, "fold_rows", iteration=it) as _m:
-                        rows = _new_rows(workspace, consumed)
-                        # The scan's actual monitor cost (n_points reflects any recenter; charged once per scan,
-                        # onto the first detector row so counts_spent per q is not multiplied by detector count).
-                        scan_cost = float(proposal.n_points or 1) * float(proposal.ncount)
-                        for j, r in enumerate(rows):
-                            observations.append(_observation_from_row(
-                                r, proposal.kind, proposal.ncount, calibration,
-                                proposal_cost=scan_cost if j == 0 else 0.0))
-                            scan_kind[(r.get("scan"), r.get("detector"))] = (proposal.kind, proposal.ncount)
-                        _m["n_rows"] = len(rows)
-                    # Embed the subprocess stage-timing snapshot (best-effort) + the folded rows' outcomes.
-                    timings = _read_run_timings(workspace)
-                    analyze_payload = {"job_id": job_id, "errors_tier": tier, "iter": it,
-                                       "n_rows": len(rows),
-                                       "dispositions": [r.get("disposition") or r.get("verdict") for r in rows]}
-                    if timings is not None:
-                        analyze_payload["timings"] = timings
-                    log_event(log_path, "analyze", analyze_payload)
-
-                    if not _rows_missed(rows):
-                        break
-                    # Missed window: LOOK at the counts to re-center + widen, up to the attempt cap.
-                    with timed(log_path, "missed_window", iteration=it):
-                        result = data.get("result") or {}
-                        act = exc.handle_missed_window(
-                            result.get("counts") or [], result.get("scan_values_1") or [],
-                            e_lo=proposal.e_lo, e_hi=proposal.e_hi, attempt=attempt)
-                    log_event(log_path, "exception", {**act.to_dict(), "iter": it})
-                    if act.action != "recenter":
-                        break
-                    proposal.e_lo = act.params["e_lo"]
-                    proposal.e_hi = act.params["e_hi"]
-                    proposal.n_points = points_in_window(proposal.e_lo, proposal.e_hi, proposal.e_step)
-                    attempt += 1
+                rows, scan_counter = _execute_proposal(
+                    cfg=cfg, objective=objective, proposal=proposal, it=it, scan_counter=scan_counter,
+                    budget_state=budget_state, observations=observations, consumed=consumed,
+                    scan_kind=scan_kind)
 
                 # ---- exception branch on the final verdict (flagged / held) ----------------------------
-                with timed(log_path, "verdict_exceptions", iteration=it):
+                with timed(cfg.log_path, "verdict_exceptions", iteration=it):
                     for r in rows:
                         disp = r.get("disposition")
                         status = r.get("status")
                         if status in exc.HELD_STATUSES:
-                            log_event(log_path, "exception", {**exc.handle_held(status).to_dict(), "iter": it})
+                            log_event(cfg.log_path, "exception", {**exc.handle_held(status).to_dict(), "iter": it})
                         elif disp not in (None, "resolved") and disp not in exc.MISSED_VERDICTS:
-                            log_event(log_path, "exception",
+                            log_event(cfg.log_path, "exception",
                                       {**exc.handle_flagged(disp, verdict=r.get("verdict")).to_dict(), "iter": it})
 
-                with timed(log_path, "model_update", iteration=it):
-                    master_rows = _read_master_rows(workspace, calibration)
-                    grid = summarize_grid(objective, observations, master_rows)
-                log_event(log_path, "decide", {"event": "model_update",
-                                               "n_observations": len(observations),
-                                               "converged": sum(1 for g in grid if g.converged),
-                                               "n_grid": len(grid), "iter": it})
+                with timed(cfg.log_path, "model_update", iteration=it):
+                    master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
+                log_event(cfg.log_path, "decide", {"event": "model_update",
+                                                   "n_observations": len(observations),
+                                                   "converged": sum(1 for g in grid if g.converged),
+                                                   "n_grid": len(grid), "iter": it})
 
         # Certification: the loop converged on fast HESSE intervals; run ONE full bootstrap+profile pass
         # (forced) so every reported ω₀ interval is bootstrap-backed (the "one bootstrap to certify"
         # decision). Bounded — once, at the end, only when the objective is met. Then re-evaluate honestly:
         # if a q's bootstrap-certified interval crosses tolerance the summary reflects that, not the
         # optimistic fast-tier stop (the triage tool reports the certified truth).
-        ran_certify = decision is not None and decision.state == "met"
-        if ran_certify:
-            log_event(log_path, "decide", {"event": "certify_start", "tier": "full"})
-            try:
-                with timed(log_path, "certify", iteration=None):
-                    runner.run(workspace, [data_dir], errors_tier="full", force=True)
-                observations = _recertified_observations(workspace, calibration, scan_kind)
-                # Embed the certification subprocess timings (iter=None — the certify pass is reported
-                # separately, never averaged into per-iteration stats).
-                timings = _read_run_timings(workspace)
-                analyze_payload = {"job_id": None, "errors_tier": "full", "iter": None,
-                                   "n_rows": len(observations),
-                                   "dispositions": [o.get("disposition") or o.get("verdict")
-                                                    for o in observations]}
-                if timings is not None:
-                    analyze_payload["timings"] = timings
-                log_event(log_path, "analyze", analyze_payload)
-                log_event(log_path, "decide", {"event": "certify_done"})
-            except Exception as e:   # noqa: BLE001 — never lose a met campaign to a certification hiccup
-                log_event(log_path, "exception", {"action": "certify_failed", "error": str(e)})
-                ran_certify = False
+        observations, ran_certify = _certify(cfg=cfg, decision=decision, observations=observations,
+                                             scan_kind=scan_kind)
 
-        master_rows = _read_master_rows(workspace, calibration)
-        grid = summarize_grid(objective, observations, master_rows)
+        master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
         if decision is None or ran_certify:
-            decision = evaluate_stop(objective, grid, budget_state, calibration=calibration, floor=floor)
+            decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
             if ran_certify and decision.state != "met":
-                log_event(log_path, "exception",
+                log_event(cfg.log_path, "exception",
                           {"action": "certify_regression", "state": decision.state,
                            "note": "a q's bootstrap-certified interval exceeded the fast-tier stop"})
 
-        summary = _campaign_summary(objective, grid, decision, budget_state, workspace, log_path,
+        summary = _campaign_summary(objective, grid, decision, budget_state, cfg.workspace, cfg.log_path,
                                     len(observations))
-        log_event(log_path, "stop", {"state": decision.state, "reasons": decision.reasons})
-        (workspace / "report").mkdir(parents=True, exist_ok=True)
-        (workspace / "report" / "campaign_summary.json").write_text(
+        log_event(cfg.log_path, "stop", {"state": decision.state, "reasons": decision.reasons})
+        (cfg.workspace / "report").mkdir(parents=True, exist_ok=True)
+        (cfg.workspace / "report" / "campaign_summary.json").write_text(
             json.dumps(summary, indent=2), encoding="utf-8")
     finally:
-        runner.close()
+        cfg.runner.close()
     return summary
 
 
