@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import os
+import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -35,6 +36,7 @@ from isar.session import branch_model, calibrations, guidelines as guide_mod, in
 # unidentifiable). Above it the peak is well separated and the fit is left unconstrained.
 LOW_Q_FWHM_FACTOR = 2.0
 from isar.session.state import ScanEntry, SessionState, content_hash
+from isar.session.timing import NullTimer
 from isar.session.workspace import Workspace
 
 
@@ -290,7 +292,9 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     process-pool size (1 = serial; see :func:`run_batch`)."""
     run_full = errors_tier == "full"     # MINOS + bootstrap + ω₀ profile (authoritative interval)
     run_fast = errors_tier == "fast"     # HESSE ω₀ interval + trust flag, no bootstrap (fast loop)
+    _t_two_stage = time.perf_counter()
     results = loop.fit_structures_two_stage(ctx, minos=run_full, peaks=peaks)
+    two_stage_seconds = round(time.perf_counter() - _t_two_stage, 4)
     # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
     by_hyp = {h.label: h for h in enumerate_structures(ctx)}
     by_hyp.update({h.label: h for h in enumerate_multimode(ctx)})
@@ -307,13 +311,16 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     fits = {r.label: r for r in results}
 
     prelim = select.select_models(results, stamp=False)
+    errors_attach_seconds = 0.0
     if run_full:
+        _t_errors = time.perf_counter()
         for label in prelim.survivors:
             r = fits.get(label)
             if r is not None and r.optimizer_converged and label in by_hyp:
                 errors.attach(r, by_hyp[label], ctx, M=M, seed=seed, with_profile=True,
                               boot_workers=boot_workers, boot_executor=boot_executor,
                               boot_adaptive=boot_adaptive)
+        errors_attach_seconds = round(time.perf_counter() - _t_errors, 4)
     sel = select.select_models(results)
     sv = verdict.classify(results, ctx, sel, prior=prior, descriptor=descriptor)
 
@@ -390,6 +397,8 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "n_modes": n_modes, "modes": modes,
         "fit_kind": fit_kind,
         "gamma_at_bound": bool(getattr(best, "gamma_at_bound", False)) if best else False,
+        "two_stage_seconds": two_stage_seconds,
+        "errors_attach_seconds": errors_attach_seconds,
     }
 
 
@@ -487,19 +496,24 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
 
 def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200,
               detectors=None, formats=("html", "markdown"), workers=None,
-              errors_tier="full") -> RunSummary:
-    card, session = workspace.load()
+              errors_tier="full", timer=None) -> RunSummary:
+    timer = timer or NullTimer()
+    with timer.stage("workspace_load"):
+        card, session = workspace.load()
     for p in map(str, data_paths):
         if p not in session.data_paths:
             session.data_paths.append(p)
 
-    plan = ingest.discover(data_paths, card)
-    records = ingest.parse_all(plan, card)
+    with timer.stage("ingest_parse") as _m_ingest:
+        plan = ingest.discover(data_paths, card)
+        records = ingest.parse_all(plan, card)
+        _m_ingest["n_records"] = len(records)
 
     # Reduce (both no-ops where not applicable; QC never raises).
-    for rec in records:
-        combine.reduce_record(rec, card)
-        qc.qc_record(rec, card)
+    with timer.stage("reduce_qc"):
+        for rec in records:
+            combine.reduce_record(rec, card)
+            qc.qc_record(rec, card)
 
     # File-manifest bookkeeping.
     for f in plan.measurement_files + plan.companion_files:
@@ -512,13 +526,14 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
             pass
 
     # Context updates BEFORE measurements (calibration/alignment/environment).
-    routed = router.route(records)
-    ctx_lines = router.apply_context_updates(
-        routed, card, session, companion_files=plan.companion_files)
+    with timer.stage("route_context"):
+        routed = router.route(records)
+        ctx_lines = router.apply_context_updates(
+            routed, card, session, companion_files=plan.companion_files)
 
-    # Optional LLM adjudication (off critical path; degrade, never stall).
-    if llm or (card.policy.adjudication or {}).get("enabled"):
-        ctx_lines += _maybe_adjudicate(routed.measurements, card)
+        # Optional LLM adjudication (off critical path; degrade, never stall).
+        if llm or (card.policy.adjudication or {}).get("enabled"):
+            ctx_lines += _maybe_adjudicate(routed.measurements, card)
 
     runcal = calibrations.calibration_view(card)
     g = guide_mod.resolve(card)
@@ -581,13 +596,22 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
     if is_full and boot_workers > 1 and not use_pool:
         shared_pool = ProcessPoolExecutor(max_workers=boot_workers)   # scans + masters, one spawn
     try:
-        entries = _run_tasks(tasks, card, g, runcal, exclusions, M=M, errors_tier=errors_tier,
-                             boot_workers=boot_workers, use_pool=use_pool, scan_workers=scan_workers,
-                             boot_executor=shared_pool, boot_adaptive=boot_adaptive)
+        with timer.stage("fit_scans", n_tasks=len(tasks), use_pool=use_pool,
+                         boot_workers=boot_workers) as _m_fit:
+            entries = _run_tasks(tasks, card, g, runcal, exclusions, M=M, errors_tier=errors_tier,
+                                 boot_workers=boot_workers, use_pool=use_pool,
+                                 scan_workers=scan_workers, boot_executor=shared_pool,
+                                 boot_adaptive=boot_adaptive)
+            _m_fit["per_task"] = [
+                {"scan_id": e.scan_id,
+                 "seconds": e.provenance.get("fit_seconds"),
+                 "two_stage_seconds": e.provenance.get("two_stage_seconds"),
+                 "errors_attach_seconds": e.provenance.get("errors_attach_seconds")}
+                for e in entries if e.provenance.get("fit_seconds") is not None]
         _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                           workspace, force=force, M=M, seed_base=seed_base, errors_tier=errors_tier,
                           master_boot_workers=master_boot_workers, boot_executor=shared_pool,
-                          boot_adaptive=boot_adaptive)
+                          boot_adaptive=boot_adaptive, timer=timer)
     finally:
         if shared_pool is not None:
             shared_pool.shutdown()
@@ -630,7 +654,8 @@ def _store_branch_models(state, t_round: float) -> None:
 
 def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                       workspace, *, force, M, seed_base, errors_tier, master_boot_workers,
-                      boot_executor, boot_adaptive):
+                      boot_executor, boot_adaptive, timer=None):
+    timer = timer or NullTimer()
     """Pass 2 (ledger + prior) → collate → master fits → tally → write. Split out so the shared
     bootstrap pool from :func:`run_batch` stays open across the whole full-tier batch."""
     # --- Pass 2: apply ledger + prior mutations serially, in submission order (determinism). ---
@@ -671,34 +696,41 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
     _store_branch_models(card.state, t_round)
 
     # Collate (all records, whole-experiment view).
-    try:
-        summary.collation = collate_mod.collate(records, card)
-    except Exception as exc:  # noqa: BLE001 — collation is a report aid, never fail the batch on it
-        summary.context_lines.append(f"collation skipped: {exc}")
+    with timer.stage("collate"):
+        try:
+            summary.collation = collate_mod.collate(records, card)
+        except Exception as exc:  # noqa: BLE001 — collation is a report aid, never fail the batch on it
+            summary.context_lines.append(f"collation skipped: {exc}")
 
     # Fit the merged "master scan" per (Q,T) group (combine-before-divide pooling), when the card
     # opts in with collation.merge == "merge". These pooled fits are what let a campaign accumulate
     # statistics by repeating a measurement; s30 (merge="separate") produces none. Never fatal.
-    try:
-        # Masters run after the scan phase; their bootstraps take the full worker budget and reuse
-        # the batch's shared pool when one is open (else _fit_masters opens its own). Masters fit
-        # serially w.r.t. each other; only their refits hit the pool.
-        n_masters = _fit_masters(summary.collation, records, card, runcal, g, session,
-                                 M=M, seed_base=seed_base, errors_tier=errors_tier, force=force,
-                                 boot_workers=master_boot_workers, boot_executor=boot_executor,
-                                 boot_adaptive=boot_adaptive)
-        if n_masters:
-            summary.context_lines.append(f"fit {n_masters} merged master scan(s)")
-    except Exception as exc:  # noqa: BLE001 — master fitting is additive; a failure never kills the batch
-        summary.context_lines.append(f"master fitting skipped: {exc}")
+    with timer.stage("fit_masters") as _m_masters:
+        try:
+            # Masters run after the scan phase; their bootstraps take the full worker budget and
+            # reuse the batch's shared pool when one is open (else _fit_masters opens its own).
+            # Masters fit serially w.r.t. each other; only their refits hit the pool.
+            per_master: list = []
+            n_masters = _fit_masters(summary.collation, records, card, runcal, g, session,
+                                     M=M, seed_base=seed_base, errors_tier=errors_tier, force=force,
+                                     boot_workers=master_boot_workers, boot_executor=boot_executor,
+                                     boot_adaptive=boot_adaptive, per_master=per_master)
+            _m_masters["n_masters"] = n_masters
+            _m_masters["per_master"] = per_master
+            if n_masters:
+                summary.context_lines.append(f"fit {n_masters} merged master scan(s)")
+        except Exception as exc:  # noqa: BLE001 — master fitting is additive; a failure never kills the batch
+            summary.context_lines.append(f"master fitting skipped: {exc}")
 
     summary.counts = _tally(session)
     session.last_run = {"counts": summary.counts,
                         "scan_gaps": [f"{e}: {a}->{b}" for (e, a, b) in summary.gaps],
                         "n_fitted_this_run": summary.n_fitted_this_run}
 
-    _write_results_csv(workspace, session)
-    workspace.save(card, session)
+    with timer.stage("write_results"):
+        _write_results_csv(workspace, session)
+    with timer.stage("session_save"):
+        workspace.save(card, session)
 
 
 # Synthetic scan_number range for master (pooled) ledger entries so they sort AFTER real scans and
@@ -708,7 +740,7 @@ _MASTER_SCAN_BASE = 9_000_000
 
 def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
                  errors_tier="full", force=False, boot_workers=1, boot_executor=None,
-                 boot_adaptive=False) -> int:
+                 boot_adaptive=False, per_master=None) -> int:
     """Fit the merged master scan for each (Q,T) group; returns how many were (re)fit this run.
 
     Runs only when the card opts in (``collation.merge == "merge"``). Each group's pooled
@@ -750,6 +782,12 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
                                       boot_executor=ex, boot_adaptive=boot_adaptive)
             session.put(entry)
             n_fit += 1
+            if per_master is not None:
+                per_master.append(
+                    {"master_id": master_id,
+                     "seconds": entry.provenance.get("fit_seconds"),
+                     "two_stage_seconds": entry.provenance.get("two_stage_seconds"),
+                     "errors_attach_seconds": entry.provenance.get("errors_attach_seconds")})
     finally:
         if own_pool is not None:
             own_pool.shutdown()
@@ -760,6 +798,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                       chash, *, M, seed, errors_tier="full", boot_workers=1, boot_executor=None,
                       boot_adaptive=False) -> ScanEntry:
     """Fit one merged group's pooled spectrum → a ``pooled=True`` ScanEntry (or a non_result)."""
+    _t_fit0 = time.perf_counter()
     det = member_det or "merged"
     base = dict(scan_id=master_id, scan_number=int(scan_number), scan_type="measurement",
                 content_hash=chash, guidelines_hash="")
@@ -847,7 +886,10 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
     entry = ScanEntry(status="fitted", **base)
     entry.detectors[det] = outcome.to_dict()
     entry.provenance = {"pooled": True, "n_members": int(ms.n_members),
-                        "members": [list(m) for m in ms.members]}
+                        "members": [list(m) for m in ms.members],
+                        "fit_seconds": round(time.perf_counter() - _t_fit0, 4),
+                        "two_stage_seconds": fit.get("two_stage_seconds"),
+                        "errors_attach_seconds": fit.get("errors_attach_seconds")}
     return entry
 
 
@@ -926,6 +968,7 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
 def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                  chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
                  boot_executor=None, boot_adaptive=False) -> ScanEntry:
+    _t_fit0 = time.perf_counter()
     base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
                 content_hash=chash, guidelines_hash=ghash)
 
@@ -1101,7 +1144,10 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
     return ScanEntry(status="fitted", reasons=outcome.reasons,
                      detectors={det: outcome.to_dict()},
                      provenance={"resolution_version": calres.resolution_version,
-                                 "M": M, "seed": seed, "prior_source": prior_source}, **base)
+                                 "M": M, "seed": seed, "prior_source": prior_source,
+                                 "fit_seconds": round(time.perf_counter() - _t_fit0, 4),
+                                 "two_stage_seconds": fit.get("two_stage_seconds"),
+                                 "errors_attach_seconds": fit.get("errors_attach_seconds")}, **base)
 
 
 # ===========================================================================

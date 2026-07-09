@@ -346,6 +346,89 @@ def test_cold_workspace_resumes_to_fresh(tmp_path):
                  "scan_counter": 0, "neutrons": 0.0, "seconds": 0.0}
 
 
+# --------------------------------------------------------------------------- profiling / timing (step 4)
+def test_campaign_emits_timing_events_covering_core_stages(tmp_path):
+    # A full fake-seam campaign appends "timing" events for the instrumented stages, each carrying a
+    # stage/seconds/ok payload and (in-loop) an iteration index.
+    omega = lambda h: (h - 2.0) * 2.0
+    client = MockTavi(omega)
+    summary, ws = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+    timings = [e["payload"] for e in read_log(summary["session_log"]) if e["kind"] == "timing"]
+    stages = {t["stage"] for t in timings}
+    for expected in ("stop_eval", "model_fit", "propose", "validate", "submit",
+                     "wait_scan", "isar_run", "iteration"):
+        assert expected in stages, f"missing timing stage {expected} in {sorted(stages)}"
+    # Every timing event has the documented span shape.
+    for t in timings:
+        assert set(("stage", "iter", "seconds", "ok")) <= set(t)
+        assert isinstance(t["seconds"], (int, float)) and t["ok"] is True
+    # In-loop spans carry an integer iteration index (the certify span uses iter=None).
+    assert any(isinstance(t["iter"], int) for t in timings if t["stage"] == "iteration")
+
+
+def _runner_with_timings(omega, timings_doc, **kw):
+    """Wrap make_mock_runner so each invocation ALSO drops report/run_timings.json (as `isar run` does),
+    letting the loop embed it into the analyze event."""
+    inner = make_mock_runner(omega, **kw)
+
+    def runner(workspace, data_paths, **rk):
+        inner(workspace, data_paths, **rk)
+        report = Path(workspace) / "report"
+        report.mkdir(parents=True, exist_ok=True)
+        (report / "run_timings.json").write_text(json.dumps(timings_doc), encoding="utf-8")
+    return runner
+
+
+def test_analyze_carries_embedded_run_timings(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    client = MockTavi(omega)
+    doc = {"total_seconds": 1.23, "argv": ["isar", "run"], "errors_tier": "fast", "M": 200,
+           "stages": [{"stage": "ingest_parse", "seconds": 0.4}]}
+    summary, ws = _run(tmp_path, _objective(), client, _runner_with_timings(omega, doc))
+    analyzes = [e["payload"] for e in read_log(summary["session_log"]) if e["kind"] == "analyze"]
+    assert analyzes, "campaign produced no analyze events"
+    embedded = [a for a in analyzes if a.get("timings") is not None]
+    assert embedded, "no analyze event embedded run_timings.json"
+    a = embedded[0]
+    assert a["timings"]["total_seconds"] == 1.23
+    assert "n_rows" in a and isinstance(a["n_rows"], int)
+    assert "dispositions" in a and isinstance(a["dispositions"], list)
+
+
+def test_resume_state_ignores_timing_events(tmp_path):
+    # RESUME REGRESSION: timing events are inert to _resume_state — the recovered spend ledger is
+    # byte-for-byte identical to the same log with the timing events stripped out.
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    log_clean = ws / "report" / "session_log_clean.jsonl"
+    log_event(log, "run", {"job_id": "j1", "state": "done", "eta": {"estimated_seconds": 5.0},
+                           "kind": "quicklook", "ncount": QUICKLOOK_NCOUNT, "n_points": 50,
+                           "hkl": [2.1, 0.0, 0.0], "cost": 5.0e8})
+    log_event(log, "timing", {"stage": "isar_run", "iter": 0, "seconds": 143.2, "ok": True})
+    log_event(log, "run", {"job_id": "j2", "state": "done", "eta": {"estimated_seconds": 7.0},
+                           "kind": "production", "ncount": PRODUCTION_NCOUNT, "n_points": 60,
+                           "hkl": [2.1, 0.0, 0.0], "cost": 6.0e9})
+    log_event(log, "timing", {"stage": "iteration", "iter": 0, "seconds": 150.0, "ok": True})
+    # The same ledger without any timing events.
+    log_event(log_clean, "run", {"job_id": "j1", "state": "done", "eta": {"estimated_seconds": 5.0},
+                                 "kind": "quicklook", "ncount": QUICKLOOK_NCOUNT, "n_points": 50,
+                                 "hkl": [2.1, 0.0, 0.0], "cost": 5.0e8})
+    log_event(log_clean, "run", {"job_id": "j2", "state": "done", "eta": {"estimated_seconds": 7.0},
+                                 "kind": "production", "ncount": PRODUCTION_NCOUNT, "n_points": 60,
+                                 "hkl": [2.1, 0.0, 0.0], "cost": 6.0e9})
+    _write_results(ws, [{"scan": 2, "detector": "det", "h": 2.1, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "verdict": "resolved", "disposition": "resolved",
+                         "omega0": 0.2, "interval_lo": 0.05, "interval_hi": 0.35,
+                         "interval_reliable": True}])
+    r_timed = _resume_state(ws, log, _UNITY_CAL)
+    r_clean = _resume_state(ws, log_clean, _UNITY_CAL)
+    assert r_timed["scan_counter"] == r_clean["scan_counter"]
+    assert r_timed["neutrons"] == pytest.approx(r_clean["neutrons"])
+    assert r_timed["seconds"] == pytest.approx(r_clean["seconds"])
+    assert r_timed["scan_counter"] == 2
+
+
 def test_restart_recovers_budget_and_does_not_respend(tmp_path):
     # Run a full campaign, then RESTART run_campaign in the same workspace: it recovers the spend
     # ledger from the durable files (no reset to zero), recognizes convergence from the pooled masters,

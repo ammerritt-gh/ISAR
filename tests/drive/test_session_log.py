@@ -1,8 +1,10 @@
 """session_log — append-only JSONL decision log."""
 import json
 
+import pytest
+
 from isar.drive import session_log
-from isar.drive.session_log import EVENT_KINDS, log_event, read_log
+from isar.drive.session_log import EVENT_KINDS, log_event, read_log, timed
 
 
 def test_append_and_read(tmp_path):
@@ -68,3 +70,42 @@ def test_creates_parent_dir(tmp_path):
     p = tmp_path / "sub" / "dir" / "log.jsonl"
     log_event(p, "propose", {})
     assert p.exists()
+
+
+# --------------------------------------------------------------------------- timed() span
+def test_timed_writes_timing_record(tmp_path):
+    p = tmp_path / "log.jsonl"
+    with timed(p, "isar_run", iteration=7):
+        pass
+    events = read_log(p)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["kind"] == "timing"
+    assert "kind_unknown" not in ev  # "timing" is a documented kind
+    pay = ev["payload"]
+    assert pay["stage"] == "isar_run"
+    assert pay["iter"] == 7
+    assert pay["ok"] is True
+    assert isinstance(pay["seconds"], float) and pay["seconds"] >= 0.0
+
+
+def test_timed_records_failure_and_reraises(tmp_path):
+    p = tmp_path / "log.jsonl"
+    with pytest.raises(ValueError):
+        with timed(p, "model_fit"):
+            raise ValueError("boom")
+    events = read_log(p)
+    assert len(events) == 1
+    pay = events[0]["payload"]
+    assert pay["stage"] == "model_fit"
+    assert pay["iter"] is None
+    assert pay["ok"] is False
+
+
+def test_timed_meta_mutation_is_logged(tmp_path):
+    p = tmp_path / "log.jsonl"
+    with timed(p, "fold_rows", iteration=3, attempt=0) as meta:
+        meta["n_rows"] = 12
+    pay = read_log(p)[0]["payload"]
+    assert pay["attempt"] == 0
+    assert pay["n_rows"] == 12  # mutation inside the with-block rides into the payload

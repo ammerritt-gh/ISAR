@@ -45,6 +45,15 @@ def build_parser() -> argparse.ArgumentParser:
     ps = sub.add_parser("status", help="summarize a workspace's ledger without reprocessing")
     ps.add_argument("--workspace", required=True)
 
+    pp = sub.add_parser("profile", help="profile a campaign's session log — where time was spent")
+    pp.add_argument("--workspace", required=True)
+    pp.add_argument("--log", default=None,
+                    help="session log path (default <workspace>/report/session_log.jsonl)")
+    pp.add_argument("--top", type=int, default=None,
+                    help="show only the N slowest stages (default: all)")
+    pp.add_argument("--iterations", action="store_true",
+                    help="also print the per-iteration breakdown table")
+
     prp = sub.add_parser("report", help="re-render the report from persisted state")
     prp.add_argument("--workspace", required=True)
     prp.add_argument("--formats", default="html,markdown", help="report formats (comma-separated)")
@@ -114,6 +123,9 @@ def main(argv=None) -> int:
     if cmd == "status":
         from isar.cli import status_cmd
         return status_cmd.run(args)
+    if cmd == "profile":
+        from isar.cli import profile_cmd
+        return profile_cmd.run(args)
     if cmd == "report":
         from isar.cli import report_cmd
         return report_cmd.run(args)

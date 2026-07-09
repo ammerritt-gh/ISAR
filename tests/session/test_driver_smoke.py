@@ -22,6 +22,7 @@ import pytest
 
 from isar.parsers import spec_s30
 from isar.session import driver
+from isar.session.timing import StageTimer
 from isar.session.workspace import Workspace
 from isar.synth_format import run_builder
 
@@ -68,7 +69,62 @@ def test_s30_held_is_idempotent(tmp_path):
     assert all(e.status == "held_for_calibration" for e in ws.load()[1].scans.values())
 
 
+# --------------------------------------------------------------------------- timing instrumentation
+def test_run_batch_emits_timer_stages(tmp_path):
+    """A StageTimer threaded into run_batch records the pipeline stages (mighty-starfish §3). Uses the
+    always-run S30 held path: scans still traverse the fitter as tasks, so fit_scans is emitted."""
+    from isar.parsers import spec_s30 as s30
+    ws = _init_workspace(tmp_path, s30)
+    run = run_builder.build_s30_run("SYN", n_scans=3, seed0=1000)
+    data = tmp_path / "SYN.spec_supplementary.dat"
+    data.write_bytes(s30.emit_file(run, s30.card_template()))
+
+    timer = StageTimer(errors_tier="full", M=10)
+    driver.run_batch(ws, [data], M=10, detectors="ana5", timer=timer)
+
+    d = timer.to_dict()
+    names = [s["stage"] for s in d["stages"]]
+    for expected in ("workspace_load", "ingest_parse", "reduce_qc", "route_context", "fit_scans",
+                     "collate", "fit_masters", "write_results", "session_save"):
+        assert expected in names, f"missing stage {expected} in {names}"
+    ingest = next(s for s in d["stages"] if s["stage"] == "ingest_parse")
+    assert ingest["n_records"] >= 1
+    fit = next(s for s in d["stages"] if s["stage"] == "fit_scans")
+    assert fit["n_tasks"] == 3 and "use_pool" in fit and "boot_workers" in fit
+    assert isinstance(d["total_seconds"], float) and d["total_seconds"] >= 0.0
+
+
 # --------------------------------------------------------------------------- IN8 real-data driver
+@pytest.mark.skipif(not _have_in8, reason="IN8 test_data not present (gitignored)")
+def test_in8_provenance_carries_fit_seconds(tmp_path):
+    """A fitted scan stamps entry.provenance['fit_seconds'] (+ two_stage/errors_attach), which rides
+    home through the ledger round-trip and shows up in the fit_scans stage per_task list."""
+    from isar.parsers import ill_in8
+    data = tmp_path / "in8"
+    data.mkdir()
+    for n in ("055182", "055183"):
+        shutil.copy(IN8_DIR / n, data / n)
+    ws = _init_workspace(tmp_path, ill_in8)
+
+    timer = StageTimer(errors_tier="full", M=30)
+    driver.run_batch(ws, [data], M=30, timer=timer)
+
+    # The reloaded ledger keeps fit_seconds on the fitted scan's provenance (round-trip).
+    _card, session = ws.load()
+    e82 = session.get("397:55182:det0") or _find(session, 55182)
+    assert e82.status == "fitted"
+    prov = e82.provenance
+    assert isinstance(prov.get("fit_seconds"), float) and prov["fit_seconds"] >= 0.0
+    assert "two_stage_seconds" in prov  # attached from the fit dict
+
+    # The fit_scans stage aggregates the per-task timing for the fitted scan.
+    fit = next(s for s in timer.to_dict()["stages"] if s["stage"] == "fit_scans")
+    per_task = fit.get("per_task") or []
+    assert any(t["scan_id"] == e82.scan_id and isinstance(t["seconds"], float)
+               for t in per_task)
+
+
+
 @pytest.mark.skipif(not _have_in8, reason="IN8 test_data not present (gitignored)")
 def test_in8_driver_end_to_end(tmp_path):
     from isar.parsers import ill_in8
