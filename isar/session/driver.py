@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import os
+import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -22,12 +23,21 @@ import numpy as np
 from isar.analyze import errors, loop, select, verdict
 from isar.analyze import gold as gold_mod
 from isar.analyze.context import ScanContext
+from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
 from isar.schema.card import Card
-from isar.session import calibrations, guidelines as guide_mod, ingest, router, session_prior
+from isar.schema.steering import IntensityMeasure, ParamConstraints
+from isar.session import branch_assignment as BA
+from isar.session import branch_model, calibrations, guidelines as guide_mod, ingest, router, session_prior
+
+# Steering Phase 2c: apply the low-q branch soft-constraint when the dispersion prior predicts a
+# phonon within this many resolution FWHM of the elastic line (the merging regime where Γ/A go
+# unidentifiable). Above it the peak is well separated and the fit is left unconstrained.
+LOW_Q_FWHM_FACTOR = 2.0
 from isar.session.state import ScanEntry, SessionState, content_hash
+from isar.session.timing import NullTimer
 from isar.session.workspace import Workspace
 
 
@@ -71,6 +81,29 @@ class FitOutcome:
     # n_members = how many scans were summed. Per-scan fits leave these at their defaults.
     pooled: bool = False
     n_members: int | None = None
+    # Portable, provenance-bearing intensity for the primary phonon (steering contract 2). A dict
+    # (IntensityMeasure.to_dict) or None; carried onto the dispersion prior so a later scan can
+    # predict expected counts. Absent on masters (no single-record normalization) and older ledgers.
+    intensity: dict | None = None
+    # Model-free L0 description of the spectrum (ScanDescriptor.to_dict): peaks + significance,
+    # independent of the phonon model. Attached to every scan; nothing decides on it yet (the Phase-4
+    # falsification gate compares its peak count to the fitted mode count). None on older ledgers.
+    descriptor: dict | None = None
+    # Fit provenance (steering contract 4): unconstrained | soft_prior | branch_conditional |
+    # stokes_only | descriptor_only. Anything but "unconstrained" is not an ordinary phonon fit.
+    fit_kind: str = "unconstrained"
+    # Phase A Bayesian branch assignment: which dispersion branch this scan's ω₀ was assigned to
+    # (acoustic | optic | new | ...), the Shannon entropy of that assignment, whether the acoustic ω₀
+    # was position-resolvable (ω₀ ≳ 1 FWHM), and the soft assignment weight fed to the branch model.
+    # None on older ledgers / when the branch-assignment posterior is off (no dispersion.zone_period).
+    branch_id: str | None = None
+    assignment_entropy: float | None = None
+    resolvable: bool | None = None
+    branch_weight: float | None = None
+    # Rival-branch anchor candidates from THIS delivered scan's other features (each
+    # {omega0, branch_id, weight}) — banked onto the dispersion prior by the parent so an optic
+    # belief can form and claim its own features at later q. None/empty on abstains + older ledgers.
+    secondary_features: list | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -178,14 +211,80 @@ def _hesse_interval_and_trust(best, ctx) -> tuple:
     return interval, trusted
 
 
+def _exposure_per_point(rec, ctx) -> tuple[float, str]:
+    """Median per-point counting exposure over the kept points, and the counting mode.
+
+    The portable normaliser for the fitted amplitude (steering contract 2): monitor counts (or
+    seconds) per point over the fit window (``ctx.mask``). NaN when unavailable → no IntensityMeasure.
+    """
+    norm = getattr(rec, "normalization", None)
+    if norm is None:
+        return float("nan"), ""
+    mode = getattr(norm, "counting_mode", "") or ""
+    arr = norm.monitor if mode == "monitor" else norm.time
+    try:
+        a = np.asarray(arr, dtype=float)
+        m = np.asarray(ctx.mask, dtype=bool)
+        if a.size == m.size and m.any():
+            a = a[m]
+        a = a[np.isfinite(a) & (a > 0)]
+        return (float(np.median(a)) if a.size else float("nan")), mode
+    except Exception:  # noqa: BLE001 — a malformed normalization just yields no intensity measure
+        return float("nan"), mode
+
+
+def _primary_amplitude(fit) -> float | None:
+    """Fitted amplitude of the primary phonon (the mode nearest the reported ω₀)."""
+    modes = fit.get("modes")
+    w0 = fit.get("omega0")
+    if not modes or w0 is None:
+        return None
+    prim = min(modes, key=lambda m: abs(float(m.get("omega0", 1e18)) - float(w0)))
+    a = prim.get("amplitude")
+    return float(a) if a is not None else None
+
+
+def _intensity_measure(rec, ctx, fit) -> dict | None:
+    """Portable :class:`IntensityMeasure` dict for the primary phonon, or None when not computable."""
+    amp = _primary_amplitude(fit)
+    if amp is None:
+        return None
+    exposure, mode = _exposure_per_point(rec, ctx)
+    if not np.isfinite(exposure) or exposure <= 0:
+        return None
+    return IntensityMeasure(
+        value=amp / exposure, exposure=exposure, counting_mode=(mode or "monitor"),
+        gauss_fwhm=float(ctx.gauss_fwhm), lorentz_fwhm=float(ctx.lorentz_fwhm),
+        instrument=str(ctx.instrument)).to_dict()
+
+
+def _build_descriptor(ctx):
+    """The model-free L0 :class:`ScanDescriptor` for this scan, or None on any failure — a report
+    aid + Phase-4 falsification input, never a reason to fail a fit. Built once per scan and reused
+    for both the verdict (`classify`) and storage (the fit's mask/counts don't change across the
+    hard-fix retry, so one object serves both)."""
+    try:
+        return describe_spectrum(ctx.x, ctx.counts, center=ctx.center, gauss_fwhm=ctx.gauss_fwhm,
+                                 lorentz_fwhm=ctx.lorentz_fwhm, mask=ctx.mask)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
-            errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False):
+            errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False,
+            descriptor=None, structure_hint=None):
     """Two-stage structure fit (§ multiplicity), optionally narrowed by guideline labels, then
     select + verdict. Mirrors docs/phase3_gold*_check.run_pipeline; returns extracted fields.
 
     ``peaks`` (guideline hints, ≥2 forces the 2-mode offer and seeds the greedy IC) are threaded
     into :func:`loop.fit_structures_two_stage`. The whitelist narrows the union of 1- and 2-mode
     labels (``stokes2+bg`` etc. pass through) — an empty match keeps all + warns.
+
+    ``structure_hint`` (a previous best_label, master-refit only; card policy
+    ``[fitting].reuse_master_structure``) offers the structure-skip shortcut: fit only that
+    structure + the no-phonon null instead of the full enumeration when the gates permit
+    (:func:`loop.fit_structures_two_stage_hinted`). ``None`` (every other path) is the unchanged
+    full enumeration. The returned ``structure_skipped`` reports whether the shortcut was taken.
 
     ``errors_tier`` selects the uncertainty depth. ``"full"`` (default, unchanged) runs MINOS +
     parametric bootstrap + ω₀ profile — the authoritative interval the stop rule consumes.
@@ -198,7 +297,10 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     process-pool size (1 = serial; see :func:`run_batch`)."""
     run_full = errors_tier == "full"     # MINOS + bootstrap + ω₀ profile (authoritative interval)
     run_fast = errors_tier == "fast"     # HESSE ω₀ interval + trust flag, no bootstrap (fast loop)
-    results = loop.fit_structures_two_stage(ctx, minos=run_full, peaks=peaks)
+    _t_two_stage = time.perf_counter()
+    results, structure_skipped = loop.fit_structures_two_stage_hinted(
+        ctx, minos=run_full, peaks=peaks, structure_hint=structure_hint)
+    two_stage_seconds = round(time.perf_counter() - _t_two_stage, 4)
     # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
     by_hyp = {h.label: h for h in enumerate_structures(ctx)}
     by_hyp.update({h.label: h for h in enumerate_multimode(ctx)})
@@ -215,15 +317,18 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     fits = {r.label: r for r in results}
 
     prelim = select.select_models(results, stamp=False)
+    errors_attach_seconds = 0.0
     if run_full:
+        _t_errors = time.perf_counter()
         for label in prelim.survivors:
             r = fits.get(label)
             if r is not None and r.optimizer_converged and label in by_hyp:
                 errors.attach(r, by_hyp[label], ctx, M=M, seed=seed, with_profile=True,
                               boot_workers=boot_workers, boot_executor=boot_executor,
                               boot_adaptive=boot_adaptive)
+        errors_attach_seconds = round(time.perf_counter() - _t_errors, 4)
     sel = select.select_models(results)
-    sv = verdict.classify(results, ctx, sel, prior=prior)
+    sv = verdict.classify(results, ctx, sel, prior=prior, descriptor=descriptor)
 
     best = fits.get(sel.best) if sel.best else None
     omega0 = best.omega0 if best is not None else None
@@ -272,9 +377,21 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
 
     n_modes = int(best.n_modes) if best is not None else 1
     modes = list(best.modes) if (best is not None and best.modes) else None
+
+    # Phase 4a — under-model falsification: the descriptor localised real signal the phonon model
+    # can't fit. This is NOT an ω₀ measurement (machine contract): null the number/intervals and
+    # tag descriptor_only, so the stop rule / gold / truth never count it as a delivered ω₀. The
+    # descriptor peaks (stored separately) are the deliverable; the verdict routes to "unmodeled".
+    omega0_err = best.omega0_err_hesse if best else None
+    fit_kind = best.fit_kind if best else "unconstrained"
+    if sv.verdict == "signal_unmodeled":
+        omega0 = omega0_err = interval = omega0_profile = hesse_interval = None
+        interval_reliable = False
+        fit_kind = "descriptor_only"
+
     return {
         "verdict": sv.verdict, "confidence": sv.confidence, "reasons": reasons,
-        "omega0": omega0, "omega0_err": (best.omega0_err_hesse if best else None),
+        "omega0": omega0, "omega0_err": omega0_err,
         "interval": (tuple(interval) if interval is not None else None),
         "omega0_profile": (tuple(omega0_profile) if omega0_profile is not None else None),
         "interval_reliable": interval_reliable,
@@ -284,6 +401,11 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "gamma": (best.gamma if best else None),
         "cost_per_dof": (best.cost_per_dof if best else None),
         "n_modes": n_modes, "modes": modes,
+        "fit_kind": fit_kind,
+        "gamma_at_bound": bool(getattr(best, "gamma_at_bound", False)) if best else False,
+        "two_stage_seconds": two_stage_seconds,
+        "errors_attach_seconds": errors_attach_seconds,
+        "structure_skipped": structure_skipped,
     }
 
 
@@ -381,19 +503,24 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
 
 def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200,
               detectors=None, formats=("html", "markdown"), workers=None,
-              errors_tier="full") -> RunSummary:
-    card, session = workspace.load()
+              errors_tier="full", timer=None) -> RunSummary:
+    timer = timer or NullTimer()
+    with timer.stage("workspace_load"):
+        card, session = workspace.load()
     for p in map(str, data_paths):
         if p not in session.data_paths:
             session.data_paths.append(p)
 
-    plan = ingest.discover(data_paths, card)
-    records = ingest.parse_all(plan, card)
+    with timer.stage("ingest_parse") as _m_ingest:
+        plan = ingest.discover(data_paths, card)
+        records = ingest.parse_all(plan, card)
+        _m_ingest["n_records"] = len(records)
 
     # Reduce (both no-ops where not applicable; QC never raises).
-    for rec in records:
-        combine.reduce_record(rec, card)
-        qc.qc_record(rec, card)
+    with timer.stage("reduce_qc"):
+        for rec in records:
+            combine.reduce_record(rec, card)
+            qc.qc_record(rec, card)
 
     # File-manifest bookkeeping.
     for f in plan.measurement_files + plan.companion_files:
@@ -406,13 +533,14 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
             pass
 
     # Context updates BEFORE measurements (calibration/alignment/environment).
-    routed = router.route(records)
-    ctx_lines = router.apply_context_updates(
-        routed, card, session, companion_files=plan.companion_files)
+    with timer.stage("route_context"):
+        routed = router.route(records)
+        ctx_lines = router.apply_context_updates(
+            routed, card, session, companion_files=plan.companion_files)
 
-    # Optional LLM adjudication (off critical path; degrade, never stall).
-    if llm or (card.policy.adjudication or {}).get("enabled"):
-        ctx_lines += _maybe_adjudicate(routed.measurements, card)
+        # Optional LLM adjudication (off critical path; degrade, never stall).
+        if llm or (card.policy.adjudication or {}).get("enabled"):
+            ctx_lines += _maybe_adjudicate(routed.measurements, card)
 
     runcal = calibrations.calibration_view(card)
     g = guide_mod.resolve(card)
@@ -475,24 +603,68 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
     if is_full and boot_workers > 1 and not use_pool:
         shared_pool = ProcessPoolExecutor(max_workers=boot_workers)   # scans + masters, one spawn
     try:
-        entries = _run_tasks(tasks, card, g, runcal, exclusions, M=M, errors_tier=errors_tier,
-                             boot_workers=boot_workers, use_pool=use_pool, scan_workers=scan_workers,
-                             boot_executor=shared_pool, boot_adaptive=boot_adaptive)
+        with timer.stage("fit_scans", n_tasks=len(tasks), use_pool=use_pool,
+                         boot_workers=boot_workers) as _m_fit:
+            entries = _run_tasks(tasks, card, g, runcal, exclusions, M=M, errors_tier=errors_tier,
+                                 boot_workers=boot_workers, use_pool=use_pool,
+                                 scan_workers=scan_workers, boot_executor=shared_pool,
+                                 boot_adaptive=boot_adaptive)
+            _m_fit["per_task"] = [
+                {"scan_id": e.scan_id,
+                 "seconds": e.provenance.get("fit_seconds"),
+                 "two_stage_seconds": e.provenance.get("two_stage_seconds"),
+                 "errors_attach_seconds": e.provenance.get("errors_attach_seconds")}
+                for e in entries if e.provenance.get("fit_seconds") is not None]
         _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                           workspace, force=force, M=M, seed_base=seed_base, errors_tier=errors_tier,
                           master_boot_workers=master_boot_workers, boot_executor=shared_pool,
-                          boot_adaptive=boot_adaptive)
+                          boot_adaptive=boot_adaptive, scan_workers=scan_workers, timer=timer)
     finally:
         if shared_pool is not None:
             shared_pool.shutdown()
     return summary
 
 
+def _store_branch_models(state, t_round: float) -> None:
+    """Build the cross-q branch(es) from the (now complete) dispersion prior and persist them into
+    ``state.branch_models`` — one per distinct ``(sample, t_bin)`` — so the DRIVE (a separate,
+    crash-prone process that cannot import :mod:`isar.session`) reads the prediction durably from
+    ``card.state.json``. Replace-by-key so a re-run refreshes rather than accretes; best-effort (a
+    build failure never fails the batch). ``build_branch`` returns ``None`` below ``MIN_ANCHORS``."""
+    points = state.dispersion_prior or []
+    keys: list[tuple] = []
+    for p in points:
+        sample = p.get("sample")
+        tb = p.get("t_bin")
+        if tb is None and p.get("T") is not None:
+            tb = round(float(p["T"]) / t_round) * t_round if t_round else float(p["T"])
+        if sample is None or tb is None:
+            continue
+        key = (sample, float(tb))
+        if key not in keys:
+            keys.append(key)
+    for sample, tb in keys:
+        try:
+            bm = branch_model.build_branch(points, sample=sample, t_bin=tb)
+        except Exception:   # noqa: BLE001
+            bm = None
+        if bm is None:
+            continue
+        bid = bm.get("branch_id", branch_model.BRANCH_ID)
+        state.branch_models = [
+            m for m in (state.branch_models or [])
+            if not (m.get("sample") == sample
+                    and abs(float(m.get("t_bin", -1e18)) - float(tb)) < 1e-9
+                    and m.get("branch_id") == bid)]
+        state.branch_models.append(bm)
+
+
 def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                       workspace, *, force, M, seed_base, errors_tier, master_boot_workers,
-                      boot_executor, boot_adaptive):
+                      boot_executor, boot_adaptive, scan_workers=1, timer=None):
     """Pass 2 (ledger + prior) → collate → master fits → tally → write. Split out so the shared
     bootstrap pool from :func:`run_batch` stays open across the whole full-tier batch."""
+    timer = timer or NullTimer()
     # --- Pass 2: apply ledger + prior mutations serially, in submission order (determinism). ---
     # Prior seeding is START-OF-BATCH: a scan is fit against the dispersion prior as of the batch
     # start, never a same-batch neighbour's fresh point (this is what makes serial == parallel).
@@ -511,41 +683,83 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
         summary.n_fitted_this_run += 1 if entry.status in ("fitted", "non_result") else 0
         oc = entry.detectors.get(det)
         if oc:
+            g_err = None
+            _modes, _w0 = oc.get("modes"), oc.get("omega0")
+            if _modes and _w0 is not None:
+                _pm = min(_modes, key=lambda m: abs(float(m.get("omega0", 1e18)) - float(_w0)))
+                g_err = _pm.get("gamma_err")
+            # A Phase-A triaged acoustic delivery carries its own hygiene (assignment posterior's
+            # P/dominance/entropy gates), so it may seed from an unpooled quicklook — without this
+            # the acoustic prior only fills from late fold productions while optic banking (below)
+            # fills immediately, and the occupancy prior lets the optic outvote a still-anchorless
+            # acoustic for its own features (the v15 mid-band deadlock). Forks stay excluded.
             session_prior.add_point(card.state, scan_id=entry.scan_id, sample=oc.get("sample"),
                                     T=oc.get("T"), q=oc.get("q"), omega0=oc.get("omega0"),
                                     modality=oc.get("modality"), verdict=oc.get("verdict"),
-                                    t_round=t_round)
+                                    gamma=oc.get("gamma"), gamma_err=g_err,
+                                    intensity=oc.get("intensity"),
+                                    fit_kind=oc.get("fit_kind"), branch_id=oc.get("branch_id"),
+                                    weight=oc.get("branch_weight"), t_round=t_round,
+                                    require_fold=oc.get("branch_id") != "acoustic")
+            # Rival-branch anchors from this DELIVERED scan's other features (optic banking):
+            # stored under suffixed scan_ids; purge first so a refit with fewer secondaries
+            # leaves no stale points behind.
+            card.state.dispersion_prior = [p for p in card.state.dispersion_prior
+                                           if not str(p.get("scan_id", "")).startswith(f"{entry.scan_id}#")]
+            for i, sf in enumerate(oc.get("secondary_features") or []):
+                session_prior.add_point(card.state, scan_id=f"{entry.scan_id}#{sf['branch_id']}{i}",
+                                        sample=oc.get("sample"), T=oc.get("T"), q=oc.get("q"),
+                                        omega0=sf.get("omega0"), modality=oc.get("modality"),
+                                        # A banked rival anchor is an unconstrained DETECTION of the
+                                        # other branch (secondary_branch_points contract) — it must
+                                        # not inherit the primary fit's constrained fit_kind.
+                                        verdict=oc.get("verdict"), fit_kind="unconstrained",
+                                        branch_id=sf.get("branch_id"), weight=sf.get("weight"),
+                                        t_round=t_round, require_fold=False)
             summary.outcomes.append((scan, FitOutcome(**oc) if not isinstance(oc, FitOutcome) else oc))
 
+    # Persist the cross-q branch(es) from the now-complete prior into card.state so the DRIVE — a
+    # separate, crash-prone process that cannot import isar.session — reads the prediction durably from
+    # card.state.json (steering Phase 5b-live).
+    _store_branch_models(card.state, t_round)
+
     # Collate (all records, whole-experiment view).
-    try:
-        summary.collation = collate_mod.collate(records, card)
-    except Exception as exc:  # noqa: BLE001 — collation is a report aid, never fail the batch on it
-        summary.context_lines.append(f"collation skipped: {exc}")
+    with timer.stage("collate"):
+        try:
+            summary.collation = collate_mod.collate(records, card)
+        except Exception as exc:  # noqa: BLE001 — collation is a report aid, never fail the batch on it
+            summary.context_lines.append(f"collation skipped: {exc}")
 
     # Fit the merged "master scan" per (Q,T) group (combine-before-divide pooling), when the card
     # opts in with collation.merge == "merge". These pooled fits are what let a campaign accumulate
     # statistics by repeating a measurement; s30 (merge="separate") produces none. Never fatal.
-    try:
-        # Masters run after the scan phase; their bootstraps take the full worker budget and reuse
-        # the batch's shared pool when one is open (else _fit_masters opens its own). Masters fit
-        # serially w.r.t. each other; only their refits hit the pool.
-        n_masters = _fit_masters(summary.collation, records, card, runcal, g, session,
-                                 M=M, seed_base=seed_base, errors_tier=errors_tier, force=force,
-                                 boot_workers=master_boot_workers, boot_executor=boot_executor,
-                                 boot_adaptive=boot_adaptive)
-        if n_masters:
-            summary.context_lines.append(f"fit {n_masters} merged master scan(s)")
-    except Exception as exc:  # noqa: BLE001 — master fitting is additive; a failure never kills the batch
-        summary.context_lines.append(f"master fitting skipped: {exc}")
+    with timer.stage("fit_masters") as _m_masters:
+        try:
+            # Masters run after the scan phase; their bootstraps take the full worker budget and
+            # reuse the batch's shared pool when one is open (else _fit_masters opens its own).
+            # Masters fit serially w.r.t. each other; only their refits hit the pool.
+            per_master: list = []
+            n_masters = _fit_masters(summary.collation, records, card, runcal, g, session,
+                                     M=M, seed_base=seed_base, errors_tier=errors_tier, force=force,
+                                     boot_workers=master_boot_workers, boot_executor=boot_executor,
+                                     boot_adaptive=boot_adaptive, scan_workers=scan_workers,
+                                     per_master=per_master)
+            _m_masters["n_masters"] = n_masters
+            _m_masters["per_master"] = per_master
+            if n_masters:
+                summary.context_lines.append(f"fit {n_masters} merged master scan(s)")
+        except Exception as exc:  # noqa: BLE001 — master fitting is additive; a failure never kills the batch
+            summary.context_lines.append(f"master fitting skipped: {exc}")
 
     summary.counts = _tally(session)
     session.last_run = {"counts": summary.counts,
                         "scan_gaps": [f"{e}: {a}->{b}" for (e, a, b) in summary.gaps],
                         "n_fitted_this_run": summary.n_fitted_this_run}
 
-    _write_results_csv(workspace, session)
-    workspace.save(card, session)
+    with timer.stage("write_results"):
+        _write_results_csv(workspace, session)
+    with timer.stage("session_save"):
+        workspace.save(card, session)
 
 
 # Synthetic scan_number range for master (pooled) ledger entries so they sort AFTER real scans and
@@ -553,9 +767,29 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
 _MASTER_SCAN_BASE = 9_000_000
 
 
+def _fit_master_group_task(args):
+    """Top-level (picklable) entry point for a master-group pool worker: fit one merged group.
+
+    Bootstrap is forced serial inside the child (``boot_workers=1``, no shared pool) — Layer A owns
+    the process workers, the same trade-off as the scan pool in :func:`_run_tasks`, and the seeded
+    bootstrap is invariant to worker count / where the refits run (errors.bootstrap). The returned
+    :class:`ScanEntry` carries its own timings in ``provenance``; the parent applies ``session.put``
+    serially afterward in sorted-group order. Every argument is picklable (ms/grp are plain collation
+    dataclasses, member_rec a ScanRecord, card/g/runcal as the scan pool already ships)."""
+    (ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number, chash,
+     M, seed, errors_tier, boot_adaptive, structure_hint) = args
+    # Pass structure_hint only when set: with the reuse policy off (default) hint is None and this
+    # call is byte-identical to the pre-B2 call (keeps the "change nothing when off" guarantee).
+    hint_kw = {"structure_hint": structure_hint} if structure_hint is not None else {}
+    return _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id,
+                             scan_number, chash, M=M, seed=seed, errors_tier=errors_tier,
+                             boot_workers=1, boot_executor=None, boot_adaptive=boot_adaptive,
+                             **hint_kw)
+
+
 def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
                  errors_tier="full", force=False, boot_workers=1, boot_executor=None,
-                 boot_adaptive=False) -> int:
+                 boot_adaptive=False, scan_workers=1, per_master=None) -> int:
     """Fit the merged master scan for each (Q,T) group; returns how many were (re)fit this run.
 
     Runs only when the card opts in (``collation.merge == "merge"``). Each group's pooled
@@ -565,48 +799,102 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
     when a member scan arrives or drifts (``collate`` re-runs over all records every batch, so masters
     cannot piggyback on the per-scan freshness flags). Never fatal — a bad group yields a
     ``non_result`` entry, never a crash.
+
+    When more than one group needs refitting and the scan-worker budget allows, the group fits run in
+    parallel over an order-preserving ``ProcessPoolExecutor.map`` (bootstrap forced serial in each
+    child, same Layer-A trade-off as the scan pool); ``session.put`` is still applied serially in the
+    original sorted-group order afterward, so the result is bit-identical to the serial path. A single
+    refit (the normal-iteration case) keeps the in-process serial path with the shared bootstrap pool.
     """
     if collation is None or getattr(collation, "merge", "separate") != "merge":
         return 0
     from isar.session.state import canonical_hash
 
     rec_by_scan = {rec.scan_number: rec for rec in records}
-    # Reuse the batch's shared bootstrap pool when given; else open one for the master pass (only the
-    # full tier bootstraps, so a pool is pointless otherwise). Masters fit serially; refits hit the pool.
-    own_pool = None
-    ex = boot_executor
-    if ex is None and errors_tier == "full" and boot_workers > 1:
-        own_pool = ProcessPoolExecutor(max_workers=boot_workers)
-        ex = own_pool
-    n_fit = 0
-    try:
-        for idx, grp in enumerate(sorted(collation.groups, key=lambda gg: str(gg.key))):
-            ms = getattr(grp, "merged", None)
-            if ms is None or ms.n_members < 1:
-                continue
-            master_id = "master:" + "_".join(str(k) for k in grp.key)
-            chash = canonical_hash([list(m) for m in ms.members])
-            prev = session.get(master_id)
-            if not force and prev is not None and prev.content_hash == chash:
-                continue                               # member set unchanged → carry the prior master
-            member_scan, member_det = ms.members[0][1], ms.members[0][2]
-            entry = _fit_master_group(ms, grp, rec_by_scan.get(member_scan), member_det, card, runcal,
-                                      g, master_id, _MASTER_SCAN_BASE + idx, chash,
-                                      M=M, seed=seed_base + _MASTER_SCAN_BASE + idx,
-                                      errors_tier=errors_tier, boot_workers=boot_workers,
-                                      boot_executor=ex, boot_adaptive=boot_adaptive)
-            session.put(entry)
-            n_fit += 1
-    finally:
-        if own_pool is not None:
-            own_pool.shutdown()
-    return n_fit
+    # Card policy opt-in (default OFF): reuse an invalidated group's previous fitted structure as a
+    # cold-refit hint, skipping the full enumeration when the gates permit. OFF ⇒ hint is always
+    # None ⇒ nothing below the fit call changes (see fit_structures_two_stage_hinted).
+    _pol = getattr(card, "policy", None)
+    reuse_structure = bool((getattr(_pol, "fitting", None) or {}).get("reuse_master_structure", False))
+    # --- Refit list first: apply the membership-hash skip unchanged (carry path untouched). ---
+    # idx is the ORIGINAL sorted-group enumeration position (NOT the refit-list position) so the
+    # per-group seed `seed_base + _MASTER_SCAN_BASE + idx` and synthetic scan_number stay stable.
+    refits = []     # (idx, grp, ms, master_id, chash, member_rec, member_det, structure_hint)
+    for idx, grp in enumerate(sorted(collation.groups, key=lambda gg: str(gg.key))):
+        ms = getattr(grp, "merged", None)
+        if ms is None or ms.n_members < 1:
+            continue
+        master_id = "master:" + "_".join(str(k) for k in grp.key)
+        chash = canonical_hash([list(m) for m in ms.members])
+        prev = session.get(master_id)               # read BEFORE the refit overwrites the ledger
+        if not force and prev is not None and prev.content_hash == chash:
+            continue                               # member set unchanged → carry the prior master
+        member_scan, member_det = ms.members[0][1], ms.members[0][2]
+        # Structure hint: the previous entry's best_label, iff it was a completed (fitted) master
+        # and the reuse policy is on. Anything else (cold group, held/non_result, policy off) → None.
+        hint = None
+        if reuse_structure and prev is not None and prev.status == "fitted":
+            hint = (prev.detectors.get(member_det or "merged") or {}).get("best_label")
+        refits.append((idx, grp, ms, master_id, chash, rec_by_scan.get(member_scan), member_det,
+                       hint))
+    if not refits:
+        return 0
+
+    # --- Fit the refits: parallel across groups when it pays, else serial in-process. ---
+    if len(refits) > 1 and scan_workers > 1:
+        # Parallel: bootstrap forced serial in each child (boot_workers=1, no shared pool). map
+        # preserves order → entries[k] aligns with refits[k], keeping the serial ledger order.
+        arg_list = [(ms, grp, member_rec, member_det, card, runcal, g, master_id,
+                     _MASTER_SCAN_BASE + idx, chash, M, seed_base + _MASTER_SCAN_BASE + idx,
+                     errors_tier, boot_adaptive, hint)
+                    for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in refits]
+        max_workers = min(scan_workers, len(arg_list))
+        with ProcessPoolExecutor(max_workers=max_workers) as ex_pool:
+            entries = list(ex_pool.map(_fit_master_group_task, arg_list))
+    else:
+        # Serial (normal iteration, ≤1 refit, or single worker) — hot path unchanged. Reuse the
+        # batch's shared bootstrap pool when given; else open one for the master pass (only the full
+        # tier bootstraps, so a pool is pointless otherwise).
+        own_pool = None
+        ex = boot_executor
+        if ex is None and errors_tier == "full" and boot_workers > 1:
+            own_pool = ProcessPoolExecutor(max_workers=boot_workers)
+            ex = own_pool
+        try:
+            entries = [
+                _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id,
+                                  _MASTER_SCAN_BASE + idx, chash, M=M,
+                                  seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier,
+                                  boot_workers=boot_workers, boot_executor=ex,
+                                  boot_adaptive=boot_adaptive,
+                                  # hint kwarg only when set → off-path call is byte-identical.
+                                  **({"structure_hint": hint} if hint is not None else {}))
+                for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in refits]
+        finally:
+            if own_pool is not None:
+                own_pool.shutdown()
+
+    # Apply ledger mutations + timing entries serially, in the original sorted-group order.
+    for (idx, grp, ms, master_id, chash, member_rec, member_det, hint), entry in zip(refits, entries):
+        session.put(entry)
+        if per_master is not None:
+            per_master.append(
+                {"master_id": master_id,
+                 "seconds": entry.provenance.get("fit_seconds"),
+                 "two_stage_seconds": entry.provenance.get("two_stage_seconds"),
+                 "errors_attach_seconds": entry.provenance.get("errors_attach_seconds")})
+    return len(refits)
 
 
 def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number,
                       chash, *, M, seed, errors_tier="full", boot_workers=1, boot_executor=None,
-                      boot_adaptive=False) -> ScanEntry:
-    """Fit one merged group's pooled spectrum → a ``pooled=True`` ScanEntry (or a non_result)."""
+                      boot_adaptive=False, structure_hint=None) -> ScanEntry:
+    """Fit one merged group's pooled spectrum → a ``pooled=True`` ScanEntry (or a non_result).
+
+    ``structure_hint`` (the group's previous fitted best_label, opt-in via card policy
+    ``[fitting].reuse_master_structure``) offers the structure-skip shortcut; an entry produced via
+    an accepted hint is stamped ``provenance["structure_skipped"] = True``."""
+    _t_fit0 = time.perf_counter()
     det = member_det or "merged"
     base = dict(scan_id=master_id, scan_number=int(scan_number), scan_type="measurement",
                 content_hash=chash, guidelines_hash="")
@@ -630,17 +918,39 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                                   f"{g.min_fit_points} kept points)"], **base)
     # Pooled spectrum → ScanContext directly (bypasses build_context: a merged group has no single
     # ScanRecord/normalization; MergedSpectrum.mask already encodes monitor validity).
+    sample = str(grp.key_fields.get("sample", ""))
+    period = _dispersion_period(card)
+    t_round = float((card.policy.collation or {}).get("t_round", 5.0))
+    prior = (session_prior.prior_for(card.state, sample=sample, T=T, q=q, period=period,
+                                     t_round=t_round) if period is not None else None)
+    ao = float(prior.omega0) if (prior is not None and np.isfinite(prior.omega0)) else None
+    # Narrow the IC only when the belief is confident (see _PRIOR_NARROW_SIGMA); else keep the acoustic
+    # mode hint but a wide IC so the pooled fit still finds the resolvable acoustic.
+    ic_ao = ao if (ao is not None and float(prior.omega0_sigma or 1e9) <= _PRIOR_NARROW_SIGMA) else None
     ctx = ScanContext(x=x, counts=counts, mask=mask, T=T, center=calres.center,
                       gauss_fwhm=calres.gauss_fwhm, lorentz_fwhm=calres.lorentz_fwhm,
                       instrument=card.policy.instrument, energy_status=card.policy.energy_status,
-                      prior_omega=None, quasielastic_fwhm=card.policy.quasielastic_fwhm)
+                      prior_omega=ic_ao, quasielastic_fwhm=card.policy.quasielastic_fwhm,
+                      acoustic_omega=ao)
+    near_gamma = ao is not None and ao < BA.RESOLVABLE_FWHM_FACTOR * calres.gauss_fwhm
+    descriptor = _build_descriptor(ctx)
     try:
-        fit = fit_one(ctx, card, prior=None, M=M, seed=seed, errors_tier=errors_tier,
+        fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, errors_tier=errors_tier,
                       boot_workers=boot_workers, boot_executor=boot_executor,
-                      boot_adaptive=boot_adaptive)
+                      boot_adaptive=boot_adaptive, descriptor=descriptor,
+                      structure_hint=structure_hint)
     except Exception as exc:  # noqa: BLE001 — one unfittable pool must not kill the batch (N=16 wrinkle)
         return ScanEntry(status="non_result",
                          reasons=[f"{master_id}: fit error ({type(exc).__name__}): {exc}"], **base)
+
+    # Phase A: the pooled master runs the SAME branch triage as a per-scan fit — the acoustic hint
+    # (ctx.acoustic_omega) makes primary_phonon_index report the acoustic mode (not the brighter optic),
+    # and the triage withholds a non-acoustic/unresolvable pool as branch_continuation. Without this a
+    # boundary master delivers the optic as the acoustic ω₀.
+    (branch_id, assignment_entropy, branch_weight, resolvable,
+     secondary_features) = _apply_branch_triage(
+        fit, descriptor, ctx, card=card, sample=sample, T=T, q=q, t_round=t_round,
+        near_gamma=near_gamma, master=True)
 
     disposition = gold_mod.verdict_disposition(fit["verdict"])
     outcome = FitOutcome(
@@ -653,39 +963,206 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         calib=calres.summary(), reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
         interval_reliable=fit.get("interval_reliable", True), omega0_profile=fit.get("omega0_profile"),
         hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
-        pooled=True, n_members=int(ms.n_members))
+        pooled=True, n_members=int(ms.n_members),
+        descriptor=(descriptor.to_dict() if descriptor is not None else None),
+        fit_kind=fit.get("fit_kind", "unconstrained"),
+        branch_id=branch_id, assignment_entropy=assignment_entropy,
+        resolvable=resolvable, branch_weight=branch_weight,
+        secondary_features=secondary_features)
     entry = ScanEntry(status="fitted", **base)
     entry.detectors[det] = outcome.to_dict()
     entry.provenance = {"pooled": True, "n_members": int(ms.n_members),
-                        "members": [list(m) for m in ms.members]}
+                        "members": [list(m) for m in ms.members],
+                        "fit_seconds": round(time.perf_counter() - _t_fit0, 4),
+                        "two_stage_seconds": fit.get("two_stage_seconds"),
+                        "errors_attach_seconds": fit.get("errors_attach_seconds")}
+    if fit.get("structure_skipped"):
+        entry.provenance["structure_skipped"] = True
     return entry
 
 
-def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
-                 chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
-                 boot_executor=None, boot_adaptive=False) -> ScanEntry:
-    base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
-                content_hash=chash, guidelines_hash=ghash)
+# Phase A branch assignment: near a zone centre the acoustic ω₀ is unresolvable BY POSITION (below
+# BA.RESOLVABLE_FWHM_FACTOR × resolution FWHM the merged Stokes/anti-Stokes blob is shape-identical to
+# an elastic peak). There it is measured by the constrained (hard Γ+A / brightness) fit, or reported as
+# branch_continuation.
+# The dispersion prior narrows the Ω_d IC grid to ω₀±1.5 (ic.PRIOR_HALF_WIDTH). A COLD acoustic belief
+# predicts ω₀≈0 with a large σ; narrowing to [0,1.5] there would miss the resolvable acoustic (1.4+) and
+# deadlock the bootstrap. So the prior narrows the IC only when it is CONFIDENT (σ ≤ this); otherwise the
+# IC stays wide (the residual-triggered 2-mode fit surfaces the real modes) while acoustic_omega still
+# selects which mode is the QoI.
+_PRIOR_NARROW_SIGMA = 0.6
 
+
+def _dispersion_period(card) -> float | None:
+    """The card's reduced-zone fold period (``[dispersion] zone_period``), or None when the
+    branch-assignment posterior is not configured (⇒ pre-steering behaviour, unchanged)."""
+    d = getattr(card.policy, "dispersion", None) or {}
+    p = d.get("zone_period")
+    try:
+        return float(p) if p else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, near_gamma):
+    """Bayesian branch assignment + honest triage over a completed fit (Phase A). Returns override
+    fields ``{deliver, branch_id, weight, entropy, resolvable}`` or ``None`` when the posterior is off.
+
+    Delivers the acoustic ω₀ when it is a confident, dominant, *resolvable* feature — OR when a
+    converged near-Γ **constrained** (branch_conditional) fit measured it (the brightness constraint
+    supplies identifiability where position cannot). Otherwise the scan is NOT an acoustic delivery:
+    the caller nulls ω₀ and reports ``branch_continuation``, tagging the fit's assigned branch so an
+    optic/spurious feature can never seed or be scored as the acoustic branch."""
+    period = _dispersion_period(card)
+    if period is None:
+        return None
+    t_bin = round(float(T) / t_round) * t_round if t_round else float(T)
+    beliefs = BA.build_beliefs(card.state.dispersion_prior, sample=sample, t_bin=t_bin,
+                               period=period, t_round=t_round)
+    modes = fit.get("modes")
+    if not modes and fit.get("omega0") is not None:
+        modes = [{"omega0": fit["omega0"], "omega0_err": fit.get("omega0_err"),
+                  "gamma": fit.get("gamma"), "amplitude": 0.0}]
+    feats = BA.features_from(modes or [], descriptor, gauss_fwhm=ctx.gauss_fwhm)
+    if not feats:
+        return {"deliver": bool(fit.get("omega0") is not None), "branch_id": None,
+                "weight": None, "entropy": None, "resolvable": None}
+    u = BA.reduced_q(q, period)
+    post = BA.assignment_posterior(feats, beliefs, u)
+    qoi = BA.acoustic_qoi(feats, post, gauss_fwhm=ctx.gauss_fwhm)
+    ent = float(qoi["entropy"]) if np.isfinite(qoi["entropy"]) else None
+    # Bounded-continuity guard: apply it only once the belief is ESTABLISHED (≥ MIN_ANCHORS real
+    # anchors). During bootstrap the belief has few anchors and MUST be allowed to deliver outward to
+    # seed itself; a hard guard there deadlocks the whole prior. Once established, a lone feature far
+    # past the anchored range (a zone-boundary optic) is withheld. The near-Γ constrained fit is exempt.
+    acoustic_belief = beliefs.get(BA.ACOUSTIC)
+    established = acoustic_belief is not None and acoustic_belief.n_anchors >= branch_model.MIN_ANCHORS
+    extrap_ok = (not established) or acoustic_belief.deliverable(u)
+    constrained_ok = (near_gamma and fit.get("fit_kind") == "branch_conditional"
+                      and fit.get("omega0") is not None and not fit.get("gamma_at_bound")
+                      and qoi["p_acoustic"] >= BA.P_ACOUSTIC_MIN)
+    if constrained_ok or (BA.deliver_acoustic(qoi) and extrap_ok):
+        # Rival-branch banking: a DELIVERED scan's clearly-non-acoustic higher features seed the
+        # optic belief, so at the next q the optic claims its own kin instead of splitting the
+        # acoustic dominance (the post-Phase-A abstention deadlock at mid-band q).
+        return {"deliver": True, "branch_id": "acoustic", "weight": float(qoi["p_acoustic"]),
+                "entropy": ent, "resolvable": bool(qoi["resolvable"]),
+                "secondary_points": BA.secondary_branch_points(feats, post, qoi,
+                                                               gauss_fwhm=ctx.gauss_fwhm)}
+    bid = "optic"
+    if fit.get("omega0") is not None:
+        bid, _ = BA.assign_label(fit["omega0"], fit.get("omega0_err") or 0.3 * ctx.gauss_fwhm,
+                                 beliefs, u, gauss_fwhm=ctx.gauss_fwhm)
+    return {"deliver": False, "branch_id": bid, "weight": 0.0, "entropy": ent,
+            "resolvable": bool(qoi["resolvable"])}
+
+
+def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, near_gamma,
+                         master: bool):
+    """Run branch assignment + honest triage over ``fit`` and apply its verdict (Phase A). Shared by
+    the per-scan (:func:`_finish_outcome`) and pooled-master (:func:`_fit_master_group`) paths.
+
+    Returns ``(branch_id, assignment_entropy, branch_weight, resolvable, secondary_features)`` — all
+    None when the posterior is off or the fit is a ``signal_unmodeled`` descriptor result. When the
+    triage declines delivery it mutates ``fit`` in place: flips the verdict to ``branch_continuation``,
+    nulls the ω₀ fields, and appends a reason (worded per ``master``)."""
+    branch_id = assignment_entropy = branch_weight = resolvable = None
+    secondary_features = None
+    if fit.get("verdict") != "signal_unmodeled":
+        triage = _assign_and_triage(fit, descriptor, ctx, card=card, sample=sample, T=T, q=q,
+                                    t_round=t_round, near_gamma=near_gamma)
+        if triage is not None:
+            branch_id = triage.get("branch_id")
+            assignment_entropy = triage.get("entropy")
+            branch_weight = triage.get("weight")
+            resolvable = triage.get("resolvable")
+            secondary_features = triage.get("secondary_points") or None
+            if triage.get("deliver") is False and fit.get("omega0") is not None:
+                if master:
+                    fit["reasons"].append(
+                        f"branch triage (master): not a resolvable acoustic delivery "
+                        f"(assigned {branch_id}); reported branch_continuation")
+                else:
+                    fit["reasons"].append(
+                        f"branch triage: not a resolvable acoustic delivery (assigned {branch_id}); "
+                        f"reported as branch_continuation, ω₀ withheld")
+                fit["verdict"] = "branch_continuation"
+                fit["omega0"] = fit["omega0_err"] = fit["interval"] = None
+                fit["omega0_profile"] = fit["hesse_interval"] = None
+                fit["interval_reliable"] = False
+    return branch_id, assignment_entropy, branch_weight, resolvable, secondary_features
+
+
+def _gate_scan(rec, det, card, g, runcal, exclusions, base) -> tuple:
+    """Exclusion + calibration gate. Returns ``(entry, calres)``.
+
+    ``entry`` is a terminal :class:`ScanEntry` (``excluded`` or ``held_for_calibration``) when the
+    scan is gated — ``calres`` is None in the exclusion case; otherwise ``entry`` is None and
+    ``calres`` is the resolved calibration for the fit path. (calres is returned rather than
+    re-resolved by the caller so ``calibrations.resolve`` is still called exactly once.)"""
     # Exclusions (guideline / seed / state) — never fitted.
     reason = g.excluded(rec.scan_number)
     if reason is None and rec.scan_number in exclusions:
         reason = "excluded (card exclusions_seed / state)"
     if reason is not None:
-        return ScanEntry(status="excluded", reasons=[reason], **base)
+        return ScanEntry(status="excluded", reasons=[reason], **base), None
 
     # Calibration gate.
     calres = calibrations.resolve(rec, det, card, runcal)
     if calres.held:
-        return ScanEntry(status="held_for_calibration", reasons=[calres.held_reason],
-                         provenance={"resolution_version": calres.resolution_version}, **base)
+        return (ScanEntry(status="held_for_calibration", reasons=[calres.held_reason],
+                          provenance={"resolution_version": calres.resolution_version}, **base),
+                calres)
+    return None, calres
 
+
+def _apply_low_q_rescue(ctx, prior, card, sample, T, rec, near_gamma, region_reasons):
+    """Steering Phase 2c — LOW-q rescue: near the zone centre the acoustic peak merges with the
+    elastic line and Γ/A go unidentifiable. If the dispersion prior predicts a phonon within
+    LOW_Q_FWHM_FACTOR·resolution of the elastic line AND a branch model exists, softly pin Γ and A
+    to the branch (contract 1: penalty enters the objective only) and let ω₀ float. Off for
+    well-separated peaks and whenever no branch/prior is available (⇒ no behavior change there).
+
+    Returns the (possibly constraint-augmented) ctx; appends the applied-constraint note to
+    ``region_reasons`` in place."""
+    if prior is not None and np.isfinite(prior.omega0) \
+            and prior.omega0 < LOW_Q_FWHM_FACTOR * ctx.gauss_fwhm:
+        pred = branch_model.branch_for(card.state, sample=sample, T=T, omega0=float(prior.omega0))
+        if pred is not None:
+            exposure, _mode = _exposure_per_point(rec, ctx)
+            exp = exposure if np.isfinite(exposure) else 0.0
+            # Near Γ AND in-anchor: the CONSTRAINED recipe (hard Γ+A → the blob's Bose-weighted
+            # brightness pins ω₀ where its position, 0.34 FWHM from the origin, cannot). Elsewhere the
+            # ordinary soft rescue (A stays soft, absorbing monitor / focusing-asymmetry drift).
+            if near_gamma and pred.in_anchor_range:
+                cons = pred.hard_constraints(exp)
+                note = (f"near-Γ constrained fit (hard Γ={pred.gamma:.2f} meV + A from 1/ω; "
+                        f"brightness pins ω₀)")
+            else:
+                cons = pred.soft_constraints(exp)
+                note = (f"low-q branch soft-constraint applied (Γ≈{pred.gamma:.2f}±{pred.gamma_sigma:.2f}, "
+                        f"A from 1/ω{'' if pred.in_anchor_range else '; extrapolated'})")
+            if not cons.is_empty():
+                ctx = replace(ctx, constraints=cons)
+                region_reasons.append(note)
+    return ctx
+
+
+def _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres, base):
+    """Prior lookup + context construction + descriptor building.
+
+    Returns the working set ``(ctx, prior, prior_source, n_neighbors, near_gamma, t_round, labels,
+    peaks, descriptor, region_reasons)``, or a terminal ``non_result`` :class:`ScanEntry` when the
+    scan is undersampled after guideline masking."""
     # Prior: user expectation beats the auto prior.
+    period = _dispersion_period(card)
+    t_round = float((card.policy.collation or {}).get("t_round", 5.0))
     prior = g.expectation_for(scan_number=rec.scan_number, q=q, T=T)
     prior_source = "user"
     n_neighbors = None
     if prior is None:
-        prior = session_prior.prior_for(card.state, sample=sample, T=T, q=q, exclude_scan_id=scan_id)
+        prior = session_prior.prior_for(card.state, sample=sample, T=T, q=q, exclude_scan_id=scan_id,
+                                        period=period, t_round=t_round)
         prior_source = "auto" if prior is not None else None
         if prior is not None:
             n_neighbors = sum(1 for p in card.state.dispersion_prior
@@ -701,14 +1178,81 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         return ScanEntry(status="non_result", reasons=rs,
                          provenance={"resolution_version": calres.resolution_version}, **base)
 
-    try:
-        fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
-                      errors_tier=errors_tier, boot_workers=boot_workers,
-                      boot_executor=boot_executor, boot_adaptive=boot_adaptive)
-    except Exception as exc:  # noqa: BLE001 — one unfittable scan must not kill the batch
-        return ScanEntry(status="non_result",
-                         reasons=[f"fit error ({type(exc).__name__}): {exc}"] + region_reasons,
-                         provenance={"resolution_version": calres.resolution_version}, **base)
+    # Phase A: hand the fit the branch-assignment acoustic ω₀(q) prediction so a multi-mode fit reports
+    # the ACOUSTIC mode as primary (not nearest-any-prior / largest-amplitude). Narrow the IC grid with
+    # it only when the belief is CONFIDENT — a cold, uncertain ~0 prediction must not over-narrow the
+    # search and miss the resolvable acoustic (the bootstrap deadlock).
+    if period is not None and prior is not None and np.isfinite(prior.omega0):
+        confident = float(prior.omega0_sigma or 1e9) <= _PRIOR_NARROW_SIGMA
+        ctx = replace(ctx, acoustic_omega=float(prior.omega0),
+                      prior_omega=(float(prior.omega0) if confident else None))
+
+    near_gamma = (prior is not None and np.isfinite(prior.omega0)
+                  and prior.omega0 < BA.RESOLVABLE_FWHM_FACTOR * ctx.gauss_fwhm)
+    ctx = _apply_low_q_rescue(ctx, prior, card, sample, T, rec, near_gamma, region_reasons)
+
+    # L0 descriptor: built once here (mask/counts are now fixed) and reused for the verdict's
+    # under-model falsification (Phase 4a) AND storage — including through the hard-fix retry below.
+    descriptor = _build_descriptor(ctx)
+    return (ctx, prior, prior_source, n_neighbors, near_gamma, t_round, labels, peaks,
+            descriptor, region_reasons)
+
+
+def _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descriptor,
+                         region_reasons, *, M, seed, errors_tier, boot_workers, boot_executor,
+                         boot_adaptive):
+    """Steering Phase 3b — hard-fix escalation: if the (soft / Stokes-only) fit STILL rails Γ to its
+    bound (true low-count degeneracy — Γ un-identifiable even under the soft prior) and the branch
+    predicts Γ within its anchor range, re-fit with Γ frozen to the branch value (k reduced,
+    tagged branch_conditional). Only in-range (never hard-fix an extrapolated branch); adopted
+    only if it converges and no longer rails. A soft A constraint, if any, is preserved.
+
+    Returns the adopted fit dict (the escalated ``hfit`` when accepted, else the original ``fit``);
+    appends its provenance note to ``region_reasons`` in place.
+
+    Skipped when Γ is ALREADY hard-constrained (the near-Γ branch_conditional path): gamma_at_bound is
+    computed from the fitted Γ value regardless of constraints, so a frozen Γ can still read at-bound —
+    but re-freezing an already-frozen Γ rescues nothing, and rebuilding constraints from soft-only here
+    would silently drop the existing hard phonon.A brightness constraint."""
+    already_hard_gamma = (ctx.constraints is not None
+                          and "phonon.Gamma" in (ctx.constraints.hard or {}))
+    if (fit.get("gamma_at_bound") and prior is not None and np.isfinite(prior.omega0)
+            and not already_hard_gamma):
+        pred = branch_model.branch_for(card.state, sample=sample, T=T, omega0=float(prior.omega0))
+        if pred is not None and pred.in_anchor_range and pred.gamma > 0:
+            soft = dict(ctx.constraints.soft) if ctx.constraints is not None else {}
+            soft.pop("phonon.Gamma", None)                 # Γ becomes hard, not soft
+            hctx = replace(ctx, constraints=ParamConstraints(
+                soft=soft, hard={"phonon.Gamma": float(pred.gamma)}))
+            try:
+                hfit = fit_one(hctx, card, prior=prior, M=M, seed=seed, structure_labels=labels,
+                               peaks=peaks, errors_tier=errors_tier, boot_workers=boot_workers,
+                               boot_executor=boot_executor, boot_adaptive=boot_adaptive,
+                               descriptor=descriptor)
+            except Exception:  # noqa: BLE001 — escalation is best-effort; keep the original fit
+                hfit = None
+            if hfit is not None and hfit.get("omega0") is not None \
+                    and not hfit.get("gamma_at_bound"):
+                fit = hfit
+                region_reasons.append(
+                    f"hard-fix escalation: Γ frozen to branch {pred.gamma:.2f} meV "
+                    f"(branch_conditional; soft prior alone left Γ at bound)")
+    return fit
+
+
+def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calres, prior,
+                    prior_source, n_neighbors, near_gamma, t_round, region_reasons, base,
+                    *, M, seed, t_fit0) -> ScanEntry:
+    """Branch assignment + outcome/provenance construction → the terminal ``fitted`` ScanEntry."""
+    # Phase A — Bayesian branch assignment + honest triage. Decide whether this fit's ω₀ is a
+    # deliverable ACOUSTIC measurement or must abstain, and tag the branch it was assigned to so an
+    # optic/spurious feature can never seed or be scored as the acoustic branch. Skipped for
+    # signal_unmodeled (already a non-ω₀ descriptor result) and when the posterior is off (period None).
+    (branch_id, assignment_entropy, branch_weight, resolvable,
+     secondary_features) = _apply_branch_triage(
+        fit, descriptor, ctx, card=card, sample=sample, T=T, q=q, t_round=t_round,
+        near_gamma=near_gamma, master=False)
+
     fit["reasons"].extend(region_reasons)
 
     disposition = gold_mod.verdict_disposition(fit["verdict"])
@@ -733,7 +1277,13 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
         interval_reliable=fit.get("interval_reliable", True),
         omega0_profile=fit.get("omega0_profile"),
-        hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False))
+        hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
+        intensity=_intensity_measure(rec, ctx, fit),
+        descriptor=(descriptor.to_dict() if descriptor is not None else None),
+        fit_kind=fit.get("fit_kind", "unconstrained"),
+        branch_id=branch_id, assignment_entropy=assignment_entropy,
+        resolvable=resolvable, branch_weight=branch_weight,
+        secondary_features=secondary_features)
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is
@@ -741,7 +1291,46 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
     return ScanEntry(status="fitted", reasons=outcome.reasons,
                      detectors={det: outcome.to_dict()},
                      provenance={"resolution_version": calres.resolution_version,
-                                 "M": M, "seed": seed, "prior_source": prior_source}, **base)
+                                 "M": M, "seed": seed, "prior_source": prior_source,
+                                 "fit_seconds": round(time.perf_counter() - t_fit0, 4),
+                                 "two_stage_seconds": fit.get("two_stage_seconds"),
+                                 "errors_attach_seconds": fit.get("errors_attach_seconds")}, **base)
+
+
+def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
+                 chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
+                 boot_executor=None, boot_adaptive=False) -> ScanEntry:
+    _t_fit0 = time.perf_counter()
+    base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
+                content_hash=chash, guidelines_hash=ghash)
+
+    gated, calres = _gate_scan(rec, det, card, g, runcal, exclusions, base)
+    if gated is not None:
+        return gated
+
+    working = _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres, base)
+    if isinstance(working, ScanEntry):
+        return working
+    (ctx, prior, prior_source, n_neighbors, near_gamma, t_round, labels, peaks,
+     descriptor, region_reasons) = working
+
+    try:
+        fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
+                      errors_tier=errors_tier, boot_workers=boot_workers,
+                      boot_executor=boot_executor, boot_adaptive=boot_adaptive, descriptor=descriptor)
+    except Exception as exc:  # noqa: BLE001 — one unfittable scan must not kill the batch
+        return ScanEntry(status="non_result",
+                         reasons=[f"fit error ({type(exc).__name__}): {exc}"] + region_reasons,
+                         provenance={"resolution_version": calres.resolution_version}, **base)
+
+    fit = _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descriptor,
+                               region_reasons, M=M, seed=seed, errors_tier=errors_tier,
+                               boot_workers=boot_workers, boot_executor=boot_executor,
+                               boot_adaptive=boot_adaptive)
+
+    return _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calres, prior,
+                           prior_source, n_neighbors, near_gamma, t_round, region_reasons, base,
+                           M=M, seed=seed, t_fit0=_t_fit0)
 
 
 # ===========================================================================
@@ -783,10 +1372,25 @@ _CSV_COLUMNS = [
     "omega0_profile_lo", "omega0_profile_hi", "hesse_lo", "hesse_hi", "hesse_trusted",
     "pooled", "n_members",
     "gamma", "gamma_provisional", "n_modes", "secondary_omega0", "secondary_omega0_err",
-    "best_model", "cost_per_dof", "zero", "zero_source", "gauss_fwhm",
+    "best_model", "cost_per_dof", "fit_kind", "branch_id", "assignment_entropy", "resolvable",
+    "descriptor_n_peaks", "descriptor_peaks",
+    "zero", "zero_source", "gauss_fwhm",
     "lorentz_fwhm", "resolution_source", "resolution_version", "prior_omega", "prior_sigma",
     "prior_n", "prior_source", "reasons",
 ]
+
+
+def _descriptor_summary(oc: dict) -> tuple:
+    """(`n_peaks`, compact `"E@σ; …"` string) from the stored descriptor, else (None, None).
+    Surfaces the model-free deliverable on results.csv (Phase 4a) — load-bearing for
+    ``signal_unmodeled`` scans, whose ω₀ is deliberately absent."""
+    desc = oc.get("descriptor")
+    if not desc:
+        return None, None
+    peaks = desc.get("peaks") or []
+    compact = "; ".join(f"{float(p.get('energy', 0.0)):.2f}@{float(p.get('significance', 0.0)):.1f}σ"
+                        for p in peaks)
+    return len(peaks), (compact or None)
 
 
 def _secondary_mode(oc: dict) -> tuple:
@@ -839,6 +1443,12 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "secondary_omega0": _secondary_mode(oc)[0],
                 "secondary_omega0_err": _secondary_mode(oc)[1],
                 "best_model": oc.get("best_label"), "cost_per_dof": oc.get("cost_per_dof"),
+                "fit_kind": oc.get("fit_kind"),
+                "branch_id": oc.get("branch_id"),
+                "assignment_entropy": oc.get("assignment_entropy"),
+                "resolvable": oc.get("resolvable"),
+                "descriptor_n_peaks": _descriptor_summary(oc)[0],
+                "descriptor_peaks": _descriptor_summary(oc)[1],
                 "zero": cal.get("center"), "zero_source": cal.get("zero_source"),
                 "gauss_fwhm": cal.get("gauss_fwhm"), "lorentz_fwhm": cal.get("lorentz_fwhm"),
                 "resolution_source": cal.get("resolution_source"),

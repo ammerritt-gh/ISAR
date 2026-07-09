@@ -104,6 +104,21 @@ def test_save_state_writes_json_and_never_touches_policy(tmp_path):
     assert policy_path.read_bytes() == policy_bytes_before
 
 
+def test_save_state_is_atomic_no_temp_leftover(tmp_path):
+    # The drive reads card.state.json across a process boundary to recover the branch after a crash,
+    # so the write is atomic (temp + os.replace): valid JSON on disk, and no .tmp file left behind.
+    policy_path = _write_policy(tmp_path)
+    state_path = tmp_path / "FeSe_1.state.json"
+    c = card.Card.load(policy_path, state_path)
+    c.state.branch_models.append({"branch_id": "acoustic", "sample": "A", "t_bin": 300.0})
+    c.save_state(state_path)
+
+    json.loads(state_path.read_text())          # complete, parseable
+    leftovers = list(tmp_path.glob("*.tmp*"))
+    assert not leftovers, f"atomic write left temp files: {leftovers}"
+    assert card.Card.load(policy_path, state_path).state.branch_models == c.state.branch_models
+
+
 def test_validate_passes_a_well_formed_card(tmp_path):
     c = card.Card.load(_write_policy(tmp_path))
     assert c.validate() == []

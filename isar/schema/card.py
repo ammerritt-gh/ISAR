@@ -14,7 +14,9 @@ wrong — fix the card, not the parser (§6).
 from __future__ import annotations
 
 import json
+import os
 import tomllib
+import uuid
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
@@ -59,6 +61,10 @@ class CardPolicy:
     hkl_round_step: float = 0.05
     quasielastic_fwhm: float | None = None  # broad QE Lorentzian FWHM (meV) for the §8 TAS
     #                                         structure component; None ⇒ no QE hypothesis (IXS default)
+    dispersion: dict = field(default_factory=dict)  # steering branch-assignment geometry:
+    #   {"zone_period": float}  — reduced-zone fold period (rlu) in which the acoustic branch is
+    #   gapless (ω₀→0 at a zone centre). Absent ⇒ the branch-assignment posterior is off and the
+    #   session falls back to the pre-steering polyfit prior. The Al_phonon_DFT MVP card sets 2.0.
     exclusions_seed: list = field(default_factory=list)
     # Raw-S30 ingestion (optional; absent in the supplementary card, which keeps these defaults).
     multiword_columns: list = field(default_factory=list)   # #L names containing spaces
@@ -86,6 +92,10 @@ class CardState:
     energy_zero_series: list = field(default_factory=list)   # [{key, e0, source_scan}]
     dispersion_prior: list = field(default_factory=list)     # PriorPoint dicts (§5)
     sample_map: list = field(default_factory=list)           # [{from_scan, sample, source}]
+    branch_models: list = field(default_factory=list)        # BranchModel dicts (steering, Phase 2+)
+    branch_belief: list = field(default_factory=list)        # per-(sample,t_bin,q) acoustic QoI trace
+    #   {sample, t_bin, q, hkl, omega0, sigma, entropy, resolvable} — the drive reads this (durable,
+    #   boundary-safe) to steer ω(q) by the assignment-inflated σ instead of raw best_omega0 (Phase A).
 
     def to_dict(self) -> dict:
         return _json.to_jsonable(self)
@@ -133,9 +143,23 @@ class Card:
         return cls(policy, state)
 
     def save_state(self, path) -> Path:
-        """Write the machine-owned state half as JSON. Never touches the policy TOML (D8)."""
+        """Write the machine-owned state half as JSON, **atomically**. Never touches the policy TOML
+        (D8). Atomic (write-temp + ``os.replace``) so a crash mid-write cannot leave a truncated /
+        corrupt ``card.state.json`` — the drive reads this file across process boundaries to recover the
+        branch model (and the rest of the accumulated state) after a crash, so a torn write would poison
+        the restart. On failure the prior file is left intact."""
         p = Path(path)
-        p.write_text(json.dumps(self.state.to_dict(), indent=2), encoding="utf-8")
+        text = json.dumps(self.state.to_dict(), indent=2)
+        tmp = p.with_name(p.name + f".tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, p)      # atomic on the same filesystem
+        except BaseException:
+            try:                    # best-effort: don't leave a stale .tmp fragment behind
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
         return p
 
     def validate(self) -> list[str]:

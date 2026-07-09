@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from isar.schema import axes
+from isar.schema.steering import ParamConstraints
 
 
 @dataclass(frozen=True)
@@ -27,8 +28,13 @@ class ScanContext:
     instrument: str          # "S30" (IXS) | "IN8" (TAS) …
     energy_status: str       # "absolute" | "needs_zero" | "needs_conversion_and_zero"
     prior_omega: float | None = None  # running dispersion-prior ω(Q), if any (None at step 1)
+    acoustic_omega: float | None = None  # branch-assignment acoustic ω₀(q) hint (Phase A): which mode
+    #                                     of a multi-mode fit is the acoustic QoI. None ⇒ fall back to
+    #                                     prior_omega / largest-amplitude (branch-agnostic, unchanged).
     quasielastic_fwhm: float | None = None  # broad quasi-elastic Lorentzian FWHM (meV); None ⇒ no QE
     #                                         component admissible (§8 TAS card default; unset on IXS)
+    constraints: ParamConstraints | None = None  # fit-time soft/hard param constraints (Phase 2+;
+    #                                              None ⇒ unconstrained. Nothing reads it yet.)
 
     @property
     def x_used(self) -> np.ndarray:

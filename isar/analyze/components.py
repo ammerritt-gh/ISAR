@@ -79,6 +79,12 @@ class PhononDHO(Component):
 
     Fit-space params: ``Omega_d``, ``Gamma`` (nonlinear) and ``A`` (linear). The reported
     ω₀ = √(Ω_d²+Γ²) is derived, never fit directly (keeps Ω_d ≥ 0, ω₀ ≥ Γ).
+
+    ``peak`` selects the lineshape sides passed to ``convolute_voigt_dho``. Default
+    ``"stokes+astokes"`` keeps the Bose-tied pair (unchanged Step-1 behaviour). ``"stokes"``
+    drops the anti-Stokes mirror for the high-q Bose-dead rescue (steering Phase 3a): where
+    ``exp(−ħω/kT)`` is negligible the anti-Stokes carries no counts and only adds a degenerate
+    gain-side peak, so fitting the Stokes side alone removes that degeneracy.
     """
 
     prefix = "phonon"
@@ -86,11 +92,15 @@ class PhononDHO(Component):
               Parameter("Gamma", "nonlinear"),
               Parameter("A", "linear"))
 
+    def __init__(self, prefix: str | None = None, peak: str = "stokes+astokes"):
+        super().__init__(prefix)
+        self.peak = peak
+
     def evaluate(self, x, local: dict, ctx) -> np.ndarray:
         omega0 = omega0_from(local["Omega_d"], local["Gamma"])
         return convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
                                    local["Gamma"], local["A"], 0.0, 0.0, ctx.T,
-                                   peak="stokes+astokes")
+                                   peak=self.peak)
 
     def unit_columns(self, x, nonlinear: dict, ctx) -> dict:
         unit = {"Omega_d": nonlinear["Omega_d"], "Gamma": nonlinear["Gamma"], "A": 1.0}
@@ -243,6 +253,15 @@ class CompositeModel:
         """Global Omega_d index of every PhononDHO, in component order."""
         return [i for i, _ in self._phonon_slots()]
 
+    def is_stokes_only(self) -> bool:
+        """True iff the composite has ≥1 phonon and *every* phonon is Stokes-only
+        (``peak`` has no anti-Stokes side) — the Bose-dead high-q rescue (Phase 3a).
+        Drives the ``stokes_only`` fit-kind tag so a one-sided fit never reads as an
+        ordinary two-sided ``resolved`` phonon."""
+        slots = self._phonon_slots()
+        return bool(slots) and all("astokes" not in getattr(c, "peak", "stokes+astokes")
+                                   for _, c in slots)
+
     def _omega0_at(self, theta, cov, i):
         """ω₀ + HESSE error for the phonon whose Omega_d is at global index ``i``."""
         sub = None
@@ -259,24 +278,27 @@ class CompositeModel:
         out.sort(key=lambda t: t[0])
         return out
 
-    def primary_phonon_index(self, theta, cov=None, prior_omega=None):
-        """Global Omega_d index of the *primary* phonon. With a dispersion prior, the mode
-        whose ω₀ is nearest the prior; otherwise the largest-amplitude mode (A is the phonon's
-        linear param, at global index ``i+2``). ``None`` if there is no phonon."""
+    def primary_phonon_index(self, theta, cov=None, prior_omega=None, acoustic_omega=None):
+        """Global Omega_d index of the *primary* phonon. Precedence (Phase A): the mode nearest the
+        branch-assignment ``acoustic_omega`` hint (which mode IS the acoustic QoI) if given; else the
+        mode nearest the dispersion ``prior_omega``; else the largest-amplitude mode (A at ``i+2``).
+        ``None`` if there is no phonon. Bit-identical to the pre-Phase-A behaviour when both hints are
+        None."""
         theta = np.asarray(theta, dtype=float)
         slots = self.phonon_indices()
         if not slots:
             return None
-        if prior_omega is not None:
-            po = float(prior_omega)
+        target = acoustic_omega if acoustic_omega is not None else prior_omega
+        if target is not None:
+            po = float(target)
             return min(slots, key=lambda i: abs(omega0_from(theta[i], theta[i + 1]) - po))
         return max(slots, key=lambda i: theta[i + 2])
 
-    def omega0(self, theta, cov, prior_omega=None):
+    def omega0(self, theta, cov, prior_omega=None, acoustic_omega=None):
         """Derived ω₀ and its (HESSE-propagated) error for the *primary* phonon (§ primary =
-        nearest-to-prior / largest-amplitude). Single-phonon composites are unchanged."""
+        acoustic-hint / nearest-to-prior / largest-amplitude). Single-phonon composites are unchanged."""
         theta = np.asarray(theta, dtype=float)
-        i = self.primary_phonon_index(theta, cov, prior_omega)
+        i = self.primary_phonon_index(theta, cov, prior_omega, acoustic_omega)
         if i is None:
             raise ValueError("composite has no PhononDHO component")
         return self._omega0_at(theta, cov, i)

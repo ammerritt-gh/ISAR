@@ -10,14 +10,17 @@ HESSE-propagated and **provisional** (review F4); the authoritative interval is 
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 import numpy as np
 
 from isar.analyze.ic import EPS_OMEGA_D, greedy_multimode_ic, structure_ic
-from isar.analyze.structures import enumerate_multimode, enumerate_structures
+from isar.analyze.structures import (
+    Hypothesis, elastic_admissible, enumerate_multimode, enumerate_structures,
+)
 from isar.synth import backends, estimators
+from isar.synth.backends import BackendResult
 from isar.synth.fit import assess_success, omega0_value_error
 
 GAMMA_FLOOR = 1e-3
@@ -70,7 +73,13 @@ def _bound(name: str, x_max: float, cmax: float) -> tuple[float, float]:
 
 @dataclass
 class Problem:
-    """A fittable problem for one hypothesis: cost, IC, bounds, free names, sizes."""
+    """A fittable problem for one hypothesis: cost, IC, bounds, free names, sizes.
+
+    ``costv`` is the **data-only** Baker–Cousins cost — the scalar AIC/BIC/GOF and the verdict read
+    (fit-vs-decide contract 1). ``penalty`` (a soft-prior term from ``ctx.constraints``, or None) is
+    added to the ``objective`` the optimiser minimises, and only there, so the reported cost never
+    sees the prior.
+    """
 
     composite: object
     costv: Callable[[np.ndarray], float]
@@ -79,10 +88,30 @@ class Problem:
     free_names: list[str]
     k: int
     n_used: int
+    penalty: Callable[[np.ndarray], float] | None = None
+    # Hard-fixed params (contract 4, Phase 3b): positions into the FULL param vector and their
+    # frozen values. Everything (costv/penalty/objective/composite) stays full-vector; fixing is
+    # applied only inside :func:`_minimize_fixed` (which minimises the free subspace) and shrinks
+    # ``k``. Empty ⇒ no param frozen ⇒ every path is bit-identical to an ordinary fit.
+    fixed_pos: list[int] = field(default_factory=list)
+    fixed_vals: list[float] = field(default_factory=list)
 
     @property
     def ndof(self) -> int:
         return self.n_used - self.k
+
+    @property
+    def is_hard_fixed(self) -> bool:
+        return bool(self.fixed_pos)
+
+    @property
+    def objective(self) -> Callable[[np.ndarray], float]:
+        """What the optimiser minimises: data cost + soft-prior penalty (contract 1). Identical to
+        ``costv`` when unconstrained, so an unconstrained fit is bit-for-bit unchanged."""
+        if self.penalty is None:
+            return self.costv
+        cost, pen = self.costv, self.penalty
+        return lambda theta: cost(theta) + pen(theta)
 
 
 @dataclass
@@ -121,6 +150,14 @@ class StructureFitResult:
     # True when any phonon Γ railed out to its bound → the derived ω₀ interval is degenerate and
     # must be flagged unreliable (not silently trusted). See :func:`_gamma_at_bound`.
     gamma_at_bound: bool = False
+    # Steering (fit-vs-decide contract 1 + provenance tag, Phase 2+). ``cost`` above is always the
+    # DATA-only Baker–Cousins cost (what AIC / cost_per_dof / falsification read). When a soft prior
+    # constrains the fit, ``prior_penalty`` is its penalty at θ̂ and ``posterior_cost = cost +
+    # prior_penalty`` is what the optimiser minimised. ``fit_kind`` tags provenance so a constrained /
+    # one-sided / demoted fit is never mistaken for an ordinary resolved phonon fit (contract 4).
+    prior_penalty: float | None = None      # None ⇒ unconstrained (posterior_cost == cost)
+    posterior_cost: float | None = None
+    fit_kind: str = "unconstrained"         # unconstrained|soft_prior|branch_conditional|stokes_only|descriptor_only
 
 
 def build_problem(hyp, ctx, *, x0=None) -> Problem:
@@ -148,14 +185,103 @@ def build_problem(hyp, ctx, *, x0=None) -> Problem:
     def costv(theta):
         return est.cost(counts, composite.evaluate(x, theta, ctx))
 
+    fixed_pos, fixed_vals = _hard_fixed(getattr(ctx, "constraints", None), names)
+    fixed_names = {names[i] for i in fixed_pos}
+    penalty = _soft_penalty(getattr(ctx, "constraints", None), names, skip=fixed_names)
     return Problem(composite=composite, costv=costv, x0=x0, bounds=bounds,
-                   free_names=names, k=len(names), n_used=int(x.size))
+                   free_names=names, k=len(names) - len(fixed_pos), n_used=int(x.size),
+                   penalty=penalty, fixed_pos=fixed_pos, fixed_vals=fixed_vals)
+
+
+def _soft_penalty(constraints, names, *, skip=()):
+    """A Gaussian-prior penalty ``Σ((θ_i−μ)/σ)²`` over the soft-constrained params present in
+    ``names`` (contract 1's soft path), or None. With ``errordef=1`` this contributes Δcost=1 at 1σ,
+    so HESSE/MINOS on the objective return the honest data∩prior posterior width. Added to the
+    objective only — never the data cost. ``skip`` names (the hard-fixed params) are excluded — a
+    param cannot be both frozen and softly penalised."""
+    if constraints is None or not getattr(constraints, "soft", None):
+        return None
+    terms = []
+    for name, ms in constraints.soft.items():
+        if name in names and name not in skip:
+            mu, sig = float(ms[0]), float(ms[1])
+            if sig > 0:
+                terms.append((names.index(name), mu, sig))
+    if not terms:
+        return None
+
+    def penalty(theta):
+        return float(sum(((float(theta[i]) - mu) / sig) ** 2 for i, mu, sig in terms))
+
+    return penalty
+
+
+def _hard_fixed(constraints, names):
+    """Positions into the full ``names`` vector, and the frozen values, for every hard constraint
+    (``ParamConstraints.hard``) whose target is a param of this composite and finite. Returns two
+    parallel lists ``(positions, values)`` — empty when nothing is hard-fixed. See
+    :func:`_minimize_fixed` for how they are applied (the composite stays full-vector)."""
+    hard = getattr(constraints, "hard", None) if constraints is not None else None
+    if not hard:
+        return [], []
+    pos, vals = [], []
+    for name, v in hard.items():
+        if name in names:
+            fv = float(v)
+            if np.isfinite(fv):
+                pos.append(names.index(name))
+                vals.append(fv)
+    return pos, vals
+
+
+def _minimize_fixed(backend, objective, x0, bounds, be_names, fixed_pos, fixed_vals,
+                    *, minos=False, ncall=None) -> BackendResult:
+    """Minimise a **full-vector** ``objective`` with the coordinates in ``fixed_pos`` frozen to
+    ``fixed_vals``, returning a :class:`BackendResult` in **full space** (frozen coords embedded,
+    covariance expanded with zero rows/cols — a fixed param has zero variance and zero covariance,
+    which is exactly right). When ``fixed_pos`` is empty this delegates unchanged, so an ordinary
+    fit is bit-for-bit identical.
+
+    Freezing at this boundary keeps every consumer (``costv``/``penalty``/``result_from_backend``'s
+    positional per-phonon indexing) full-vector and untouched; the optimiser only ever sees the
+    reduced free subspace, so ``k``/HESSE are natively reduced (contract 4)."""
+    x0 = np.asarray(x0, dtype=float)
+    if not fixed_pos:
+        return backends.minimize(backend, objective, x0, bounds, be_names, minos=minos, ncall=ncall)
+    n = x0.size
+    fixed_set = set(fixed_pos)
+    free_pos = [i for i in range(n) if i not in fixed_set]
+    template = x0.copy()
+    template[list(fixed_pos)] = np.asarray(fixed_vals, dtype=float)
+
+    def embed(theta_free):
+        full = template.copy()
+        full[free_pos] = np.asarray(theta_free, dtype=float)
+        return full
+
+    br = backends.minimize(backend, lambda tf: objective(embed(tf)),
+                           x0[free_pos], [bounds[i] for i in free_pos],
+                           [be_names[i] for i in free_pos], minos=minos, ncall=ncall)
+    x_full = embed(br.x)
+    cov_full = None
+    if br.covariance is not None:
+        sub = np.asarray(br.covariance, dtype=float)
+        cov_full = np.zeros((n, n))
+        cov_full[np.ix_(free_pos, free_pos)] = sub
+    return BackendResult(x_full, br.success, br.message, br.n_eval, cov_full,
+                         br.covariance_ok, dict(br.at_limit), br.merrors)
 
 
 def result_from_backend(label, composite, costv, n_used, k, br,
-                        *, prior_omega=None) -> StructureFitResult:
+                        *, prior_omega=None, acoustic_omega=None, penalty=None,
+                        hard_fixed=False) -> StructureFitResult:
     """Build a :class:`StructureFitResult` from a backend result, reading the *raw,
     separated* convergence/covariance/profile signals (not the lossy combined success).
+
+    ``costv`` is the **data-only** cost, so ``cost``/``cost_per_dof`` (what AIC and the verdict read)
+    never include the prior (contract 1). When a soft ``penalty`` constrained the fit, its value at
+    θ̂ is recorded in ``prior_penalty`` and ``posterior_cost = cost + prior_penalty`` (what the
+    optimiser minimised); ``fit_kind`` is tagged ``soft_prior``.
 
     Per-phonon detail is collected into ``modes`` (canonicalized ascending by ω₀); the reported
     scalar ω₀/Γ are the PRIMARY mode's (nearest ``prior_omega`` if given, else largest
@@ -165,9 +291,23 @@ def result_from_backend(label, composite, costv, n_used, k, br,
     errs = np.sqrt(np.diag(cov)) if cov is not None else None
     names = composite.param_names()
 
-    cost = float(costv(theta))
+    cost = float(costv(theta))                            # DATA-only (contract 1)
     ndof = n_used - k
     cost_per_dof = cost / ndof if ndof > 0 else float("nan")
+    prior_penalty = float(penalty(theta)) if penalty is not None else None
+    posterior_cost = (cost + prior_penalty) if prior_penalty is not None else None
+    # provenance precedence (contract 4): branch_conditional > stokes_only > soft_prior >
+    # unconstrained. A hard-fixed (branch-conditional) fit dropped a param to its branch value; a
+    # one-sided (Bose-dead) composite is stokes_only even under a soft prior; so a rescued fit
+    # never reads as an ordinary two-sided resolved phonon.
+    if hard_fixed:
+        fit_kind = "branch_conditional"
+    elif composite.is_stokes_only():
+        fit_kind = "stokes_only"
+    elif penalty is not None:
+        fit_kind = "soft_prior"
+    else:
+        fit_kind = "unconstrained"
 
     params = {n: float(v) for n, v in zip(names, theta)}
     if errs is not None:
@@ -185,8 +325,9 @@ def result_from_backend(label, composite, costv, n_used, k, br,
     modes.sort(key=lambda m: m["omega0"])
     n_modes = len(modes)
 
-    # primary mode → the reported scalar ω₀ / Γ (back-compat)
-    prim_i = composite.primary_phonon_index(theta, cov, prior_omega)
+    # primary mode → the reported scalar ω₀ / Γ (back-compat); the acoustic hint (Phase A) selects
+    # which mode of a multi-mode fit is the acoustic QoI, ahead of the prior/amplitude fallbacks.
+    prim_i = composite.primary_phonon_index(theta, cov, prior_omega, acoustic_omega)
     omega0, omega0_err = composite._omega0_at(theta, cov, prim_i)
     gamma = float(theta[prim_i + 1])
     gamma_err = float(errs[prim_i + 1]) if errs is not None else float("nan")
@@ -212,6 +353,7 @@ def result_from_backend(label, composite, costv, n_used, k, br,
         analysis_usable=analysis_usable, params=params, param_errors=param_errors,
         gamma=gamma, gamma_err=gamma_err, omega0=omega0, omega0_err_hesse=omega0_err,
         message=br.message, modes=modes, n_modes=n_modes, gamma_at_bound=gamma_at_bound,
+        prior_penalty=prior_penalty, posterior_cost=posterior_cost, fit_kind=fit_kind,
     )
 
 
@@ -220,9 +362,12 @@ def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False, x0=None) -> Stru
     (see :func:`build_problem`) — the two-stage loop passes the greedy multimode seed."""
     prob = build_problem(hyp, ctx, x0=x0)
     be_names = [_sanitize(n) for n in prob.free_names]
-    br = backends.minimize(backend, prob.costv, prob.x0, prob.bounds, be_names, minos=minos)
+    br = _minimize_fixed(backend, prob.objective, prob.x0, prob.bounds, be_names,
+                         prob.fixed_pos, prob.fixed_vals, minos=minos)
     return result_from_backend(hyp.label, prob.composite, prob.costv, prob.n_used, prob.k, br,
-                               prior_omega=getattr(ctx, "prior_omega", None))
+                               prior_omega=getattr(ctx, "prior_omega", None),
+                               acoustic_omega=getattr(ctx, "acoustic_omega", None),
+                               penalty=prob.penalty, hard_fixed=prob.is_hard_fixed)
 
 
 def fit_admissible_structures(ctx, *, backend="iminuit", minos=False, errors=False,
@@ -265,19 +410,11 @@ def _offer_multimode(results, ctx) -> bool:
     return bool(pull is not None and _residual_structured(pull))
 
 
-def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors=False,
-                             M=200, seed=12345, peaks=None) -> list[StructureFitResult]:
-    """Two-stage, data-gated structure enumeration (§ multiplicity). Fit the 1-mode set; if the
-    gate (:func:`_offer_multimode`) fires OR ``peaks`` declares ≥2 expected peaks, also fit the
-    2-mode set (:func:`~isar.analyze.structures.enumerate_multimode`) seeded by
-    :func:`~isar.analyze.ic.greedy_multimode_ic`, and return the UNION for a single
-    :func:`~isar.analyze.select.select_models` pass — AIC/BIC then decide whether the second
-    mode earns its parameters. 2-mode hypotheses with no positive dof (``n_used − k ≤ 0``) are
-    skipped. ``peaks`` is threaded through untouched (the driver supplies it later); this
-    function never imports session/guideline code.
-
-    With ``with_errors`` the bootstrap error layer is attached to every returned fit (so the
-    select pass can pool survivors from both stages)."""
+def _enumerate_and_fit(ctx, *, backend="iminuit", minos=False, peaks=None):
+    """The full two-stage enumeration: fit the 1-mode set, escalate to the 2-mode set when the
+    gate fires or ``peaks`` declares ≥2 peaks. Returns ``[(result, hypothesis), ...]`` (both stages
+    unioned). Split out of :func:`fit_structures_two_stage` so the structure-hint shortcut
+    (:func:`fit_structures_two_stage_hinted`) can fall back to it verbatim."""
     one_hyps = enumerate_structures(ctx)
     pairs = [(fit_hypothesis(h, ctx, backend=backend, minos=minos), h) for h in one_hyps]
 
@@ -291,10 +428,97 @@ def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors
             x0 = greedy_multimode_ic(h.build(), ctx, best_one, peaks=peaks)
             r = fit_hypothesis(h, ctx, backend=backend, minos=minos, x0=x0)
             pairs.append((r, h))
+    return pairs
 
+
+def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors=False,
+                             M=200, seed=12345, peaks=None) -> list[StructureFitResult]:
+    """Two-stage, data-gated structure enumeration (§ multiplicity). Fit the 1-mode set; if the
+    gate (:func:`_offer_multimode`) fires OR ``peaks`` declares ≥2 expected peaks, also fit the
+    2-mode set (:func:`~isar.analyze.structures.enumerate_multimode`) seeded by
+    :func:`~isar.analyze.ic.greedy_multimode_ic`, and return the UNION for a single
+    :func:`~isar.analyze.select.select_models` pass — AIC/BIC then decide whether the second
+    mode earns its parameters. 2-mode hypotheses with no positive dof (``n_used − k ≤ 0``) are
+    skipped. ``peaks`` is threaded through untouched (the driver supplies it later); this
+    function never imports session/guideline code.
+
+    With ``with_errors`` the bootstrap error layer is attached to every returned fit (so the
+    select pass can pool survivors from both stages)."""
+    pairs = _enumerate_and_fit(ctx, backend=backend, minos=minos, peaks=peaks)
     results = [r for r, _ in pairs]
     if with_errors:
         from isar.analyze import errors as _errors  # lazy: errors imports loop
         for r, h in pairs:
             _errors.attach(r, h, ctx, M=M, seed=seed, backend=backend)
     return results
+
+
+def _null_aic(ctx, *, backend="iminuit") -> float | None:
+    """AIC of the no-phonon baseline for this context (``elastic+bg`` when the elastic line is
+    admissible, else background-only), or ``None`` when that null does not converge.
+
+    Fit directly (not through :func:`fit_hypothesis`, whose ω₀ extraction assumes a phonon) so the
+    structure-hint shortcut can ask "does the hinted phonon actually earn its parameters over
+    fitting nothing?" without ever admitting a phonon-less result into the selection layer."""
+    from isar.analyze.components import ConstantBackground, Elastic
+
+    comps = (Elastic, ConstantBackground) if elastic_admissible(ctx) else (ConstantBackground,)
+    hyp = Hypothesis("elastic+bg" if len(comps) == 2 else "bg", comps)
+    prob = build_problem(hyp, ctx)
+    be_names = [_sanitize(n) for n in prob.free_names]
+    br = _minimize_fixed(backend, prob.objective, prob.x0, prob.bounds, be_names,
+                         prob.fixed_pos, prob.fixed_vals, minos=False)
+    if not br.success:
+        return None
+    cost = float(prob.costv(np.asarray(br.x, dtype=float)))
+    return cost + 2.0 * prob.k
+
+
+def _try_structure_hint(ctx, structure_hint, *, backend="iminuit", minos=False):
+    """Fit ONLY the hinted structure (cold grid-IC) plus the no-phonon null, and accept the
+    shortcut iff every gate the full enumeration relies on still passes. Returns the one-element
+    result list on acceptance, or ``None`` to signal "fall through to the full enumeration".
+
+    Rejected (→ ``None``) when: the hint label is no longer admissible for this context; the hinted
+    fit does not converge; the two-stage gate (:func:`_offer_multimode`: cost/dof > ``GATE_COST`` or
+    a structured residual) fires, i.e. one structure is not enough; or the no-phonon null is
+    AIC-preferred, i.e. the phonon does not earn its parameters here. On any of these the full
+    enumeration must run — the hint is a computational shortcut, never a correctness override."""
+    by_label = {h.label: h for h in enumerate_structures(ctx)}
+    by_label.update({h.label: h for h in enumerate_multimode(ctx)})
+    hyp = by_label.get(structure_hint)
+    if hyp is None:
+        return None                                    # label no longer in the hypothesis set
+    r = fit_hypothesis(hyp, ctx, backend=backend, minos=minos)   # cold grid-IC, same as full path
+    if not r.optimizer_converged:
+        return None
+    if _offer_multimode([r], ctx):                     # cost/dof or structured-residual gate
+        return None
+    null_aic = _null_aic(ctx, backend=backend)
+    if null_aic is not None and null_aic <= (r.cost + 2.0 * r.k):
+        return None                                    # no-phonon preferred → hint assumption void
+    return [r]
+
+
+def fit_structures_two_stage_hinted(ctx, *, backend="iminuit", minos=False, peaks=None,
+                                    structure_hint=None) -> tuple[list[StructureFitResult], bool]:
+    """:func:`fit_structures_two_stage` with an optional ``structure_hint``. Returns
+    ``(results, structure_skipped)``.
+
+    When ``structure_hint`` is ``None`` (the default, every non-master path) this is bit-for-bit
+    the full enumeration and ``structure_skipped`` is always ``False``. When a label is given
+    (a master refit reusing its previous winner, card policy ``[fitting].reuse_master_structure``)
+    the shortcut in :func:`_try_structure_hint` is attempted first: on acceptance only the hinted
+    structure + the no-phonon null are fit and ``structure_skipped`` is ``True``; on any gate
+    failure the hint is discarded and the full enumeration runs (``structure_skipped`` ``False``).
+
+    **Statistically-equivalent, not bit-identical:** the accepted shortcut hands the selection
+    layer a smaller candidate set (one structure, not the full admissible enumeration), so the
+    AIC comparison, ``modality``, ``confidence`` and ``best_label`` can differ from what the full
+    enumeration would have produced. The gates keep the difference to fits where one structure
+    already explains the data; it is opt-in and excluded from the bit-identity harness."""
+    if structure_hint is not None:
+        hinted = _try_structure_hint(ctx, structure_hint, backend=backend, minos=minos)
+        if hinted is not None:
+            return hinted, True
+    return [r for r, _ in _enumerate_and_fit(ctx, backend=backend, minos=minos, peaks=peaks)], False

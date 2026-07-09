@@ -3,7 +3,7 @@
 **Purpose.** Empirically check whether the Phase 1 fitter (`isar.synth.fit.fit`, DHO ⊗ 1-D Voigt,
 Baker–Cousins) survives contact with **real, non-IXS** data — the IN8 numors in
 `test_data/ILL IN8/`. This is the first stress-test of the synthetic core on a different instrument
-class, and it doubles as a concrete messy-data example for `PHASE_3_DESIGN.md`. Run this in Claude Code
+class, and it doubles as a concrete messy-data example for `archive/PHASE_3_DESIGN.md`. Run this in Claude Code
 (code + data + deps are all in-repo); this note only captures what was already read so it isn't re-derived.
 
 ---
@@ -24,7 +24,7 @@ Headline numbers:
 - **S30 IXS positive control: 6/6 converge**, cost/dof ~1–4, *meaningful* Γ, and a clean ω₀(K) dispersion
   (~5→7 meV). Same core, validated instrument — the contrast is the product.
 
-Three things we learned that change Phase 3 (all folded into `PHASE_3_DESIGN.md` §3/§5/§6/§8):
+Three things we learned that change Phase 3 (all folded into `archive/PHASE_3_DESIGN.md` §3/§5/§6/§8):
 
 1. **Resolution is now Cooper–Nathans from the header, not a guess.** The initial 0.25 meV guess was too
    narrow; CN (ported from ResCal `rc_cnmat` into the check; `cn_resolution_matrix`/`cn_energy_fwhm`)
@@ -102,7 +102,7 @@ incoherent elastic scan if one exists among the numors, or compute Cooper–Nath
 
 **State this loudly in any result:** ω₀ (peak position) is robust to the resolution width and to the
 1-D-vs-4-D issue, so a recovered ω₀ is meaningful. **Γ is not** — on a TAS the 1-D Voigt convolution
-omits the 4-D resolution-ellipsoid focusing effect (`DESIGN.md` §8, `PHASE_3_DESIGN.md` §8), so any Γ
+omits the 4-D resolution-ellipsoid focusing effect (`DESIGN.md` §8, `archive/PHASE_3_DESIGN.md` §8), so any Γ
 from this fit is **resolution-contaminated, not the intrinsic linewidth**. This check validates "the core
 recovers ω on real TAS data"; it does **not** validate Γ on TAS. That is exactly the "ω trustworthy
 before Γ on TAS" point — this spike is its first concrete evidence.
@@ -118,7 +118,7 @@ before Γ on TAS" point — this spike is its first concrete evidence.
    055289 (low-T weak; expect a marginal/underpowered result).
 5. Findings to capture for Phase 3: did the grid IC seed sensibly without a dispersion prior? did
    center=0-off-window break the elastic handling? did MINOS vs HESSE diverge (the sparse-data signal)?
-   These feed `PHASE_3_DESIGN.md` §3 (IC), §5 (errors), §6 (verdict buckets).
+   These feed `archive/PHASE_3_DESIGN.md` §3 (IC), §5 (errors), §6 (verdict buckets).
 
 ## Plumbing reminders
 - `isar/synth/_ff.py` adds the repo root to `sys.path` and imports `Fitting_Functions.py` unchanged —

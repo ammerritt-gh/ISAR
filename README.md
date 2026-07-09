@@ -13,11 +13,16 @@ this yourself*. It is fast feedback for steering an experiment, not the system o
 published numbers. Nothing is ever deleted; a human reviews everything afterward.
 
 > **Status: development.** The analysis pipeline is built and validated on real data from two very
-> different instruments (APS Sector-30 HERIX and ILL IN8). The unification phase — the `isar` CLI
-> (`init/run/status/report/score`) that runs it end-to-end on new data — is now built and tested
-> (`tests/session/`); one validation (the full 83-scan S30 statistical gate at M=200) is still
-> pending. See [docs/UNIFICATION_DESIGN.md](docs/UNIFICATION_DESIGN.md) and, to run it,
-> [docs/USING_ISAR.md](docs/USING_ISAR.md).
+> different instruments (APS Sector-30 HERIX and ILL IN8). The `isar` CLI
+> (`init/run/status/report/score/profile`) runs it end-to-end on new data
+> ([docs/UNIFICATION_DESIGN.md](docs/UNIFICATION_DESIGN.md), [docs/USING_ISAR.md](docs/USING_ISAR.md));
+> one validation (the full 83-scan S30 statistical gate at M=200) is still pending. An autonomous
+> driver (`isar drive`) closes the loop against a simulated instrument (TAVI): model-free spectral
+> descriptor, Bayesian branch assignment, cost-normalised expected-information-gain acquisition. It
+> has passed its first certification scorecard on the synthetic zone re-test; two physics zones
+> (near-Γ, zone boundary) remain open. See
+> [docs/MEASUREMENT_STEERING.md](docs/MEASUREMENT_STEERING.md) (why it steers the way it does) and
+> [docs/MVP_ZONE_RETEST.md](docs/MVP_ZONE_RETEST.md) (current test state).
 
 ## The pipeline
 
@@ -54,7 +59,10 @@ isar run "path\to\data" --workspace my_experiment     # parse -> reduce -> revie
 | Term definitions | [docs/GLOSSARY.md](docs/GLOSSARY.md) |
 | Why these statistics | [docs/STATS_PRIMER.md](docs/STATS_PRIMER.md) |
 | One scan, start to finish | [docs/WORKED_EXAMPLE.md](docs/WORKED_EXAMPLE.md) |
-| Phase design rationale | docs/PHASE_1…3_DESIGN.md, PHASE_4/5_NOTES.md |
+| The autonomous loop — research foundation & design | [docs/MEASUREMENT_STEERING.md](docs/MEASUREMENT_STEERING.md) |
+| Autonomous campaign results (first run, zone re-test) | [docs/MVP_FIRST_RUN.md](docs/MVP_FIRST_RUN.md), [docs/MVP_ZONE_RETEST.md](docs/MVP_ZONE_RETEST.md) |
+| Where did a campaign spend its time? | `isar profile` in [docs/USING_ISAR.md](docs/USING_ISAR.md) |
+| Phase design rationale | [docs/archive/PHASE_1_DESIGN.md](docs/archive/PHASE_1_DESIGN.md), [PHASE_2_DESIGN.md](docs/archive/PHASE_2_DESIGN.md), [PHASE_3_DESIGN.md](docs/archive/PHASE_3_DESIGN.md); forward notes: [docs/PHASE_4_NOTES.md](docs/PHASE_4_NOTES.md), [docs/PHASE_5_NOTES.md](docs/PHASE_5_NOTES.md) |
 
 ## Repository layout
 
@@ -65,6 +73,9 @@ isar/
   reduce/     # QC (mask-not-delete), combine, collate, LLM adjudication (opt-in)
   calibrate/  # elastic fits, time-keyed energy-zero series, Bragg reader
   analyze/    # structure enumeration, ICs, fitting loop, errors, selection, verdict, confidence
+  session/    # workspace/session assembly: driver, priors, branch model, worker, timing
+  cli/        # the isar command (init/run/status/report/score/profile/drive)
+  drive/      # autonomous loop: acquisition (EIG), TAVI I/O, supervisor, session log
   report/     # figures, findings, markdown/html renderers
   synth/      # Phase-1 synthetic core: generator, DHO fitter, estimators, MC scoring
 docs/         # design docs, guides, and the *_check.py validation drivers

@@ -41,9 +41,23 @@ def build_parser() -> argparse.ArgumentParser:
                     help="uncertainty depth: 'full' (MINOS+bootstrap+profile, default), "
                          "'fast' (HESSE ω₀ interval + trust flag, no bootstrap), or "
                          "'cheap' (HESSE only — quick-look verdict + rough ω₀, no interval)")
+    pr.add_argument("--no-render", dest="render", action="store_false", default=True,
+                    help="skip the human report (report.md/.html/.json + figures); results.csv and "
+                         "card.state.json are still written. Used by the driver, which re-renders once "
+                         "at end of campaign — most run time savings come from not importing the report "
+                         "layer / matplotlib per invocation")
 
     ps = sub.add_parser("status", help="summarize a workspace's ledger without reprocessing")
     ps.add_argument("--workspace", required=True)
+
+    pp = sub.add_parser("profile", help="profile a campaign's session log — where time was spent")
+    pp.add_argument("--workspace", required=True)
+    pp.add_argument("--log", default=None,
+                    help="session log path (default <workspace>/report/session_log.jsonl)")
+    pp.add_argument("--top", type=int, default=None,
+                    help="show only the N slowest stages (default: all)")
+    pp.add_argument("--iterations", action="store_true",
+                    help="also print the per-iteration breakdown table")
 
     prp = sub.add_parser("report", help="re-render the report from persisted state")
     prp.add_argument("--workspace", required=True)
@@ -77,6 +91,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="σ-calibration artifact path (default the repo phonon_dft_deterministic.json)")
     pd.add_argument("--tavi", default=None, help="TAVI API base URL (default http://127.0.0.1:8642/api/v1)")
     pd.add_argument("--seed", type=int, default=0, help="base seed for the scan seed sequence")
+    pd.add_argument("--no-worker", dest="worker", action="store_false", default=True,
+                    help="disable the persistent analysis worker; run a fresh `isar run` subprocess "
+                         "per iteration (the pre-worker cold-start path)")
     return p
 
 
@@ -114,6 +131,9 @@ def main(argv=None) -> int:
     if cmd == "status":
         from isar.cli import status_cmd
         return status_cmd.run(args)
+    if cmd == "profile":
+        from isar.cli import profile_cmd
+        return profile_cmd.run(args)
     if cmd == "report":
         from isar.cli import report_cmd
         return report_cmd.run(args)
@@ -137,7 +157,7 @@ def main(argv=None) -> int:
         try:
             summary = run_campaign(objective, {
                 "workspace": args.workspace, "calibration": args.calibration,
-                "tavi_url": args.tavi, "seed": args.seed})
+                "tavi_url": args.tavi, "seed": args.seed, "worker": args.worker})
         except Exception as exc:  # noqa: BLE001  (a campaign error is exit 2, not a stack trace)
             print(f"isar drive: campaign failed: {exc}", file=sys.stderr)
             return 2

@@ -7,11 +7,12 @@ measurement problem. Pinning the R to one word would make the name narrower than
 the floating R is intentional, not undecided. Canonical machine name is `isar` (package, repo,
 command). Also, fittingly, the river through Munich.
 
-**Status:** Draft for discussion. Supersedes the haphazard first pass, retained for reference at
-`C:\Users\AMM\Documents\Github\LangGraph Test 1`. Phases 1–3 (validation harness, schema/parsers/
-reduce, analysis) are built and validated; the assembly of it all into a runnable product — §14
-items 5–7, the CLI + session layer — is designed in **`docs/UNIFICATION_DESIGN.md`**, which also
-resolves §13 Q1/Q2/Q4/Q5.
+**Status:** Living design. Phases 1–3 (validation harness, schema/parsers/reduce, analysis) are
+built and validated; the CLI + session layer (§14 items 5–7) is built per
+**`docs/UNIFICATION_DESIGN.md`** (which also resolves §13 Q1/Q2/Q4/Q5). Phases 4–5 — the
+autonomous drive loop and measurement steering (the "resolution mode" R) — are built against the
+TAVI simulator; the research foundation and current test state live in
+`docs/MEASUREMENT_STEERING.md`, `docs/MVP_FIRST_RUN.md`, and `docs/MVP_ZONE_RETEST.md`.
 **Scope:** A during-beamtime processing tool that ingests scans in batches on a separate
 machine, classifies and QCs them, fits phonons, collates by Q, and produces review
 reports fast enough to steer the experiment. A human checks everything afterward.

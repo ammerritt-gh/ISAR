@@ -14,9 +14,11 @@ import pytest
 from isar.drive.acquisition.calibration import Calibration
 import types
 
-from isar.drive.loop import _errors_arg_for, _pick_interval, run_campaign
+import isar.drive.loop as loop_mod
+from isar.drive.loop import (_campaign_config, _errors_arg_for, _pick_interval, _resume_state,
+                             _run_nonce, run_campaign)
 from isar.drive.objective import ObjectiveSpec
-from isar.drive.session_log import read_log
+from isar.drive.session_log import log_event, read_log
 from isar.drive.supervisor.stopping import PRODUCTION_NCOUNT, QUICKLOOK_NCOUNT
 
 _UNITY_CAL = Calibration.from_dict({"inflation": 1.0, "buckets": [], "center_pull_mean": 0.0})
@@ -253,6 +255,35 @@ def _run(tmp_path, objective, client, runner, **extra):
     return run_campaign(objective, cfg), ws
 
 
+def test_campaign_end_renders_report_once(tmp_path, monkeypatch):
+    # Stage 3: after the loop (and any certify) the campaign re-renders the report ONCE via an
+    # `isar report` subprocess, wrapped in a `report_render` timing span. The end-render uses
+    # subprocess directly (not the runner seam) — monkeypatch it so the test stays fast and doesn't
+    # depend on a real render succeeding; assert the timing span was recorded regardless.
+    calls = []
+
+    class _CP:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(loop_mod.subprocess, "run",
+                        lambda cmd, **k: (calls.append(list(cmd)), _CP())[1])
+
+    omega = lambda h: (h - 2.0) * 2.0
+    client = MockTavi(omega)
+    summary, ws = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+
+    events = read_log(summary["session_log"])
+    renders = [e for e in events if e["kind"] == "timing"
+               and (e.get("payload") or {}).get("stage") == "report_render"]
+    assert len(renders) == 1                      # rendered exactly once, at the end
+    assert isinstance(renders[0]["payload"]["ok"], bool)
+    # ... and it invoked `isar report --workspace <ws>` (not a per-iteration `isar run`).
+    assert calls and calls[-1][3] == "report"
+    assert "--workspace" in calls[-1]
+
+
 def test_campaign_reaches_met(tmp_path):
     omega = lambda h: (h - 2.0) * 2.0     # small ω, always inside the first window
     client = MockTavi(omega)
@@ -298,8 +329,10 @@ def test_campaign_unmeetable_on_budget(tmp_path):
 
 
 def test_missed_window_triggers_recenter(tmp_path):
-    # ω sits at 3.0 — outside the cold quick-look window — so the first scan misses and re-centers.
-    omega = lambda h: 3.0
+    # ω sits beyond the survey ceiling (SURVEY_E_HI_MEV=7) so even the wide unresolved-q survey window
+    # misses it — the first scan then re-centers. (An ω inside the survey band is now caught outright,
+    # which is the survey window's whole point; the recenter is the fallback for a truly off-band peak.)
+    omega = lambda h: 9.0
     client = MockTavi(omega)
     summary, ws = _run(tmp_path, _objective(), client,
                        make_mock_runner(omega, window_gate=True), max_iters=60)
@@ -307,3 +340,218 @@ def test_missed_window_triggers_recenter(tmp_path):
     recenters = [e for e in events if e["kind"] == "exception"
                  and e["payload"].get("action") == "recenter"]
     assert recenters, "a missed window should have logged a recenter action"
+
+
+# --------------------------------------------------------------------------- crash-safe resume (Part C)
+def test_resume_state_recovers_ledger_from_log_and_results(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    # Two submitted scans at the same q (a quick-look then a production) — the durable spend ledger.
+    log_event(log, "run", {"job_id": "j1", "state": "done", "eta": {"estimated_seconds": 5.0},
+                           "kind": "quicklook", "ncount": QUICKLOOK_NCOUNT, "n_points": 50,
+                           "hkl": [2.1, 0.0, 0.0], "cost": 5.0e8})
+    log_event(log, "run", {"job_id": "j2", "state": "done", "eta": {"estimated_seconds": 7.0},
+                           "kind": "production", "ncount": PRODUCTION_NCOUNT, "n_points": 60,
+                           "hkl": [2.1, 0.0, 0.0], "cost": 6.0e9})
+    _write_results(ws, [{"scan": 2, "detector": "det", "h": 2.1, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "verdict": "resolved", "disposition": "resolved",
+                         "omega0": 0.2, "interval_lo": 0.05, "interval_hi": 0.35,
+                         "interval_reliable": True}])
+    r = _resume_state(ws, log, _UNITY_CAL)
+
+    assert r["scan_counter"] == 2                       # exact — no seed reuse / idempotency collision
+    assert r["neutrons"] == pytest.approx(5.0e8 + 6.0e9)  # exact spend — no double-spend on restart
+    assert r["seconds"] == pytest.approx(12.0)
+    assert ("2", "det") in r["consumed"] or (2, "det") in r["consumed"]  # old row never re-folded
+    obs = r["observations"]
+    assert len(obs) == 1 and obs[0]["kind"] == "production"
+    assert sum(o["proposal_cost"] for o in obs) == pytest.approx(5.0e8 + 6.0e9)  # per-q spend recovered
+
+
+def test_resume_state_attributes_per_row_kinds_not_hkl_lock(tmp_path):
+    # One q submitted as a quick-look then two productions (3 result rows). After resume each
+    # reconstructed observation must carry its OWN submission's kind (drawn from the per-q ledger in
+    # order) — the presence of production rows must NOT relabel the quicklook row as production and
+    # inflate n_production (the bug that ate MAX_PROD_ATTEMPTS early → premature 'stuck').
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    for jid, kind, nc, cost in [("j1", "quicklook", QUICKLOOK_NCOUNT, 5.0e8),
+                                ("j2", "production", PRODUCTION_NCOUNT, 6.0e9),
+                                ("j3", "production", PRODUCTION_NCOUNT, 7.0e9)]:
+        log_event(log, "run", {"job_id": jid, "state": "done", "eta": {"estimated_seconds": 1.0},
+                               "kind": kind, "ncount": nc, "n_points": 50,
+                               "hkl": [2.1, 0.0, 0.0], "cost": cost})
+    base = {"h": 2.1, "k": 0.0, "l": 0.0, "status": "fitted", "verdict": "resolved",
+            "disposition": "resolved", "omega0": 0.2, "interval_lo": 0.05, "interval_hi": 0.35,
+            "interval_reliable": True}
+    _write_results(ws, [{"scan": s, "detector": "det", **base} for s in (1, 2, 3)])
+    r = _resume_state(ws, log, _UNITY_CAL)
+
+    obs = r["observations"]
+    kinds = sorted(o["kind"] for o in obs)
+    assert kinds == ["production", "production", "quicklook"]     # per-row, not hkl-locked
+    assert sum(o["kind"] == "production" for o in obs) == 2       # n_production not inflated
+    # The whole q spend lumped onto exactly one row, and that row is a PRODUCTION row.
+    cost_rows = [o for o in obs if o["proposal_cost"] > 0]
+    assert len(cost_rows) == 1 and cost_rows[0]["kind"] == "production"
+    assert sum(o["proposal_cost"] for o in obs) == pytest.approx(5.0e8 + 6.0e9 + 7.0e9)
+
+
+def test_cold_workspace_resumes_to_fresh(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    r = _resume_state(ws, ws / "report" / "session_log.jsonl", _UNITY_CAL)
+    assert r == {"observations": [], "consumed": set(), "scan_kind": {},
+                 "scan_counter": 0, "neutrons": 0.0, "seconds": 0.0}
+
+
+# --------------------------------------------------------------------------- profiling / timing (step 4)
+def test_campaign_emits_timing_events_covering_core_stages(tmp_path):
+    # A full fake-seam campaign appends "timing" events for the instrumented stages, each carrying a
+    # stage/seconds/ok payload and (in-loop) an iteration index.
+    omega = lambda h: (h - 2.0) * 2.0
+    client = MockTavi(omega)
+    summary, ws = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+    timings = [e["payload"] for e in read_log(summary["session_log"]) if e["kind"] == "timing"]
+    stages = {t["stage"] for t in timings}
+    for expected in ("stop_eval", "model_fit", "propose", "validate", "submit",
+                     "wait_scan", "isar_run", "iteration"):
+        assert expected in stages, f"missing timing stage {expected} in {sorted(stages)}"
+    # Every timing event has the documented span shape.
+    for t in timings:
+        assert set(("stage", "iter", "seconds", "ok")) <= set(t)
+        assert isinstance(t["seconds"], (int, float)) and t["ok"] is True
+    # In-loop spans carry an integer iteration index (the certify span uses iter=None).
+    assert any(isinstance(t["iter"], int) for t in timings if t["stage"] == "iteration")
+
+
+def _runner_with_timings(omega, timings_doc, **kw):
+    """Wrap make_mock_runner so each invocation ALSO drops report/run_timings.json (as `isar run` does),
+    letting the loop embed it into the analyze event."""
+    inner = make_mock_runner(omega, **kw)
+
+    def runner(workspace, data_paths, **rk):
+        inner(workspace, data_paths, **rk)
+        report = Path(workspace) / "report"
+        report.mkdir(parents=True, exist_ok=True)
+        (report / "run_timings.json").write_text(json.dumps(timings_doc), encoding="utf-8")
+    return runner
+
+
+def test_analyze_carries_embedded_run_timings(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    client = MockTavi(omega)
+    doc = {"total_seconds": 1.23, "argv": ["isar", "run"], "errors_tier": "fast", "M": 200,
+           "stages": [{"stage": "ingest_parse", "seconds": 0.4}]}
+    summary, ws = _run(tmp_path, _objective(), client, _runner_with_timings(omega, doc))
+    analyzes = [e["payload"] for e in read_log(summary["session_log"]) if e["kind"] == "analyze"]
+    assert analyzes, "campaign produced no analyze events"
+    embedded = [a for a in analyzes if a.get("timings") is not None]
+    assert embedded, "no analyze event embedded run_timings.json"
+    a = embedded[0]
+    assert a["timings"]["total_seconds"] == 1.23
+    assert "n_rows" in a and isinstance(a["n_rows"], int)
+    assert "dispositions" in a and isinstance(a["dispositions"], list)
+
+
+def test_resume_state_ignores_timing_events(tmp_path):
+    # RESUME REGRESSION: timing events are inert to _resume_state — the recovered spend ledger is
+    # byte-for-byte identical to the same log with the timing events stripped out.
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    log_clean = ws / "report" / "session_log_clean.jsonl"
+    log_event(log, "run", {"job_id": "j1", "state": "done", "eta": {"estimated_seconds": 5.0},
+                           "kind": "quicklook", "ncount": QUICKLOOK_NCOUNT, "n_points": 50,
+                           "hkl": [2.1, 0.0, 0.0], "cost": 5.0e8})
+    log_event(log, "timing", {"stage": "isar_run", "iter": 0, "seconds": 143.2, "ok": True})
+    log_event(log, "run", {"job_id": "j2", "state": "done", "eta": {"estimated_seconds": 7.0},
+                           "kind": "production", "ncount": PRODUCTION_NCOUNT, "n_points": 60,
+                           "hkl": [2.1, 0.0, 0.0], "cost": 6.0e9})
+    log_event(log, "timing", {"stage": "iteration", "iter": 0, "seconds": 150.0, "ok": True})
+    # The same ledger without any timing events.
+    log_event(log_clean, "run", {"job_id": "j1", "state": "done", "eta": {"estimated_seconds": 5.0},
+                                 "kind": "quicklook", "ncount": QUICKLOOK_NCOUNT, "n_points": 50,
+                                 "hkl": [2.1, 0.0, 0.0], "cost": 5.0e8})
+    log_event(log_clean, "run", {"job_id": "j2", "state": "done", "eta": {"estimated_seconds": 7.0},
+                                 "kind": "production", "ncount": PRODUCTION_NCOUNT, "n_points": 60,
+                                 "hkl": [2.1, 0.0, 0.0], "cost": 6.0e9})
+    _write_results(ws, [{"scan": 2, "detector": "det", "h": 2.1, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "verdict": "resolved", "disposition": "resolved",
+                         "omega0": 0.2, "interval_lo": 0.05, "interval_hi": 0.35,
+                         "interval_reliable": True}])
+    r_timed = _resume_state(ws, log, _UNITY_CAL)
+    r_clean = _resume_state(ws, log_clean, _UNITY_CAL)
+    assert r_timed["scan_counter"] == r_clean["scan_counter"]
+    assert r_timed["neutrons"] == pytest.approx(r_clean["neutrons"])
+    assert r_timed["seconds"] == pytest.approx(r_clean["seconds"])
+    assert r_timed["scan_counter"] == 2
+
+
+def test_restart_recovers_budget_and_does_not_respend(tmp_path):
+    # Run a full campaign, then RESTART run_campaign in the same workspace: it recovers the spend
+    # ledger from the durable files (no reset to zero), recognizes convergence from the pooled masters,
+    # and does not re-charge budget for the already-measured scans.
+    omega = lambda h: (h - 2.0) * 2.0
+    summary1, ws = _run(tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega))
+    assert summary1["stop"]["state"] == "met"
+    spent1 = summary1["budget"]["neutrons"]
+    assert spent1 > 0
+
+    cfg = {"workspace": ws, "client": MockTavi(omega), "run_isar": make_mock_runner(omega),
+           "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7}
+    summary2 = run_campaign(_objective(), cfg)
+    start = [e for e in read_log(summary2["session_log"])
+             if (e.get("payload") or {}).get("event") == "campaign_start"][-1]
+    assert start["payload"]["resumed"]["scan_counter"] > 0
+    assert start["payload"]["resumed"]["spent"] == pytest.approx(spent1)
+    assert summary2["stop"]["state"] == "met"           # already converged from the persisted masters
+
+
+# --------------------------------------------------------------------------- idempotency run nonce
+def test_run_nonce_mints_and_persists(tmp_path):
+    ws = tmp_path / "ws"
+    nonce1 = _run_nonce(ws)
+    assert (ws / ".run_nonce").exists()
+    assert (ws / ".run_nonce").read_text(encoding="utf-8").strip() == nonce1
+    # a second call against the SAME workspace returns the identical value
+    nonce2 = _run_nonce(ws)
+    assert nonce2 == nonce1
+    # a call against a fresh (different) workspace mints a different nonce
+    ws2 = tmp_path / "ws2"
+    nonce3 = _run_nonce(ws2)
+    assert nonce3 != nonce1
+
+
+def test_campaign_config_sets_run_nonce_from_workspace_file(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    cfg = _campaign_config(_objective(), {"workspace": ws, "client": MockTavi(lambda h: 0.0),
+                                          "run_isar": lambda *a, **k: None,
+                                          "calibration": _UNITY_CAL})
+    assert cfg.run_nonce == (ws / ".run_nonce").read_text(encoding="utf-8").strip()
+    assert cfg.run_nonce != ""
+    # resolving the config again against the same workspace reuses the persisted nonce
+    cfg2 = _campaign_config(_objective(), {"workspace": ws, "client": MockTavi(lambda h: 0.0),
+                                           "run_isar": lambda *a, **k: None,
+                                           "calibration": _UNITY_CAL})
+    assert cfg2.run_nonce == cfg.run_nonce
+
+
+def test_campaign_submit_idempotency_key_contains_run_nonce(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    client = MockTavi(omega)
+    calls = []
+    orig_submit = client.submit_scan
+
+    def spy_submit(body, idempotency_key=None):
+        calls.append(idempotency_key)
+        return orig_submit(body, idempotency_key=idempotency_key)
+    client.submit_scan = spy_submit
+
+    summary, ws = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+    nonce = (ws / ".run_nonce").read_text(encoding="utf-8").strip()
+    assert calls
+    assert all(nonce in key for key in calls)

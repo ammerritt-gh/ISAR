@@ -5,8 +5,8 @@ Written for a scientist at (or preparing for) a beamtime. For what ISAR *is* and
 start with [READING_GUIDE.md](READING_GUIDE.md); for what a verdict means, see
 [INTERPRETING_A_VERDICT.md](INTERPRETING_A_VERDICT.md).
 
-> **Status: the v1 CLI described here is built** (`isar init/run/status/report/score`, plus the
-> autonomous `isar drive`, tested in `tests/session/` and `tests/drive/`). It runs end-to-end on IN8
+> **Status: the v1 CLI described here is built** (`isar init/run/status/report/score/profile`, plus
+> the autonomous `isar drive`, tested in `tests/session/`, `tests/cli/` and `tests/drive/`). It runs end-to-end on IN8
 > today and on S30 once a companion `.spec` supplies the
 > energy zero. One validation is still pending — the full 83-scan S30 statistical comparison at M=200
 > (a multi-minute run) — so treat the S30 accuracy numbers as expected-not-yet-confirmed until that
@@ -80,6 +80,13 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   and a running TAVI instrument. Use `--spec spec.json` for an LLM-free run. **Currently drives the
   TAVI simulator only** (development tier), not a live beamline. See
   [MVP_FIRST_RUN.md](MVP_FIRST_RUN.md).
+- **`isar profile --workspace DIR`** — where an autonomous campaign spent its time. Reads the
+  campaign's `report/session_log.jsonl` timing events and prints a stage breakdown (propose /
+  validate / submit / wait_scan / isar_run / fold / analyze …), the embedded `isar run` subprocess
+  sub-stages (including per-scan interpreter/matplotlib startup overhead), and — with
+  `--iterations` — a per-iteration table. `--log PATH` points at a different log; `--top N` shows
+  only the N slowest stages. Logs written before timing instrumentation degrade to approximate
+  per-kind gap estimates from event timestamps.
 
 ## Telling ISAR what you know — the `[fitting]` guidelines
 
@@ -117,6 +124,24 @@ Three things to know about how guidelines behave:
 - **This is also the correction channel.** ISAR mis-fits a scan → add an override or exclusion →
   `isar run` again. Only the affected scans are refitted. The report's provenance column always
   says whether a fit was seeded by *you* or by the *auto prior*.
+
+`[fitting]` also carries one performance toggle, `reuse_master_structure` (default `false`):
+
+```toml
+[fitting]
+reuse_master_structure = true     # opt-in speed-up for repeated (Q, T) master fits
+```
+
+When a merged "master scan" for a `(Q, T)` group is refit (a new member arrived, or `--force`),
+this reuses the group's *previous* winning structure as a hint: ISAR fits only that one structure
+plus a no-phonon null, skipping the full model enumeration, and accepts the shortcut only if the
+same gates the enumeration relies on still pass (cost/dof within tolerance, no structured residual,
+and the phonon still beats fitting nothing). On any gate failure it silently falls back to the full
+enumeration, so a genuinely changed spectrum is never mis-served. It is **statistically-equivalent,
+not bit-identical**: the selection layer sees a smaller candidate set, so a master's `modality`,
+`confidence` and `best_label` can differ from a full re-enumeration. Off by default; it only ever
+affects master (pooled) fits, never per-scan fits. Skipped fits are marked
+`structure_skipped` in the ledger provenance.
 
 ## During a beamtime
 

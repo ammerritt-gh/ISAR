@@ -81,6 +81,24 @@ def test_energy_window_rule():
     assert npts <= acq.MAX_POINTS
 
 
+def test_energy_window_surveys_when_prediction_uncertain():
+    """A cold/uncertain ω(q) (large σ_pred) must widen the high side to the survey band so a dispersing
+    branch lands in-window — the anti-deadlock rule. A confident σ keeps the tight window."""
+    # cold model: e_pred≈0 but σ_pred huge → high side jumps to the survey ceiling, not 0+1.5·FWHM.
+    _, e_hi_cold, _, _ = acq._energy_window(0.0, 0.8, acq.SURVEY_E_HI_MEV * 10)
+    assert e_hi_cold == pytest.approx(acq.SURVEY_E_HI_MEV)
+    # moderate uncertainty (σ>FWHM): high side = e_pred + k·σ, still under the ceiling.
+    _, e_hi_mid, _, _ = acq._energy_window(1.0, 0.5, 1.5)
+    assert e_hi_mid == pytest.approx(1.0 + acq.SURVEY_SIGMA_K * 1.5)
+    # confident (σ≤FWHM): unchanged tight window.
+    _, e_hi_tight, _, _ = acq._energy_window(4.0, 0.8, 0.2)
+    assert e_hi_tight == pytest.approx(4.0 + acq.HIGH_RES_FACTOR * 0.8)
+    # survey forced (q not yet resolved): scan the band even when the model looks confident (σ small) —
+    # a concave dispersion sits above the local-linear e_pred, so a tight window would miss the peak.
+    _, e_hi_force, _, _ = acq._energy_window(2.0, 0.8, 0.2, survey=True)
+    assert e_hi_force == pytest.approx(acq.SURVEY_E_HI_MEV)
+
+
 def test_energy_window_clamps_point_count():
     # A huge span at a fine step would exceed 100 points; the step is widened to cap it.
     _, _, _, npts = acq._energy_window(200.0, 0.01)

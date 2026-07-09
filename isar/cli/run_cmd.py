@@ -5,6 +5,7 @@ import sys
 
 from isar.schema import card as card_mod
 from isar.session import driver
+from isar.session.timing import StageTimer
 from isar.session.workspace import Workspace
 
 
@@ -18,21 +19,33 @@ def run(args) -> int:
     for unknown in card_mod.unknown_toml_tables(ws.policy_path):
         print(f"warning: unknown card section [{unknown}] — ignored (typo?)", file=sys.stderr)
 
-    formats = tuple(f.strip() for f in args.formats.split(",") if f.strip())
-    summary = driver.run_batch(
-        ws, args.data, force=args.force, llm=args.llm, M=args.M,
-        detectors=args.detectors, formats=formats,
-        workers=getattr(args, "workers", None), errors_tier=getattr(args, "errors", "full"))
-
-    # Try the rich report (build step 6); the CSV that run_batch always writes is the fallback.
-    report_note = f"results: {ws.report_dir / 'results.csv'}"
+    errors_tier = getattr(args, "errors", "full")
+    timer = StageTimer(errors_tier=errors_tier, M=args.M, argv=list(sys.argv))
     try:
-        from isar.report import run_report
-        card, session = ws.load()
-        run_report.write_run_report(session, card, ws, formats=formats)
-        report_note = f"report: {ws.report_dir}"
-    except Exception:  # noqa: BLE001 — report layer optional until step 6
-        pass
+        formats = tuple(f.strip() for f in args.formats.split(",") if f.strip())
+        summary = driver.run_batch(
+            ws, args.data, force=args.force, llm=args.llm, M=args.M,
+            detectors=args.detectors, formats=formats,
+            workers=getattr(args, "workers", None), errors_tier=errors_tier, timer=timer)
+
+        # Try the rich report (build step 6); the CSV that run_batch always writes is the fallback.
+        report_note = f"results: {ws.report_dir / 'results.csv'}"
+        # --no-render (driver campaigns): skip report.md/.html/.json + figures entirely — nothing
+        # mid-campaign consumes them (drive reads only results.csv / card.state.json) and the report
+        # layer / matplotlib import dominates per-invocation cost. The campaign re-renders once at the
+        # end. Don't emit a zero-length report_render timing stage when skipping.
+        if getattr(args, "render", True):
+            try:
+                with timer.stage("report_render"):
+                    from isar.report import run_report
+                    card, session = ws.load()
+                    run_report.write_run_report(session, card, ws, formats=formats)
+                report_note = f"report: {ws.report_dir}"
+            except Exception:  # noqa: BLE001 — report layer optional until step 6
+                pass
+    finally:
+        # A timing-write failure must never fail the run (StageTimer.write is itself best-effort).
+        timer.write(ws.report_dir / "run_timings.json")
 
     by_status = summary.counts.get("by_status", {})
     by_disp = summary.counts.get("by_disposition", {})

@@ -27,6 +27,21 @@ RUNS_Z = 2.0           # runs-test z <= -RUNS_Z -> structured residual
 DETECT_FLOOR = 3.0     # expected significance (sigma) for the prior phonon to be 'detectable'
 WIDE_REL = 0.5         # freq half-width / omega0 above this, with sparse regime -> unconstrained
 
+# Phase 4a — under-model falsification (the L0 descriptor as a model-free check on the fit).
+FLAG_ALPHA = 0.01      # family-wise false-flag prob (p_value*n_res) a descriptor peak must beat to
+#                        count for/against the model. Stricter than the descriptor's ~0.05 detection
+#                        alpha so a *resolved* fit is not spuriously flagged by a bare detection.
+RESID_Z = 4.0          # a descriptor peak is UNMATCHED when the fitted model leaves a positive
+#                        residual this significant (in σ) in its resolution window — i.e. the model
+#                        under-predicts the observed excess there (real signal the model can't fit).
+#                        Comparing to the model curve (not a fixed Ω_d position) is damping- and
+#                        side-aware by construction (a stokes-only model predicts no anti-Stokes lobe,
+#                        so a real anti-Stokes peak leaves a residual and is unmatched).
+MODEL_FRAC = 0.05      # …AND the model must treat that location as ~background (its peak-normalised
+#                        signal there below this). Together these separate a DISTINCT unmodeled peak
+#                        (real excess where the model predicts background) from a shoulder/broad tail
+#                        of the model's own peak (which stays a model_incomplete, ω₀ still usable).
+
 
 def _excursion_above_bg(ctx, *, k: float = EXCURSION_K) -> bool:
     """Is there a real excursion above background? Poisson floor from the QC layer:
@@ -59,18 +74,32 @@ def _residual_structured(pull, *, z: float = RUNS_Z) -> bool:
     return bool((runs - mu) / np.sqrt(var) <= -z)
 
 
-def _pull(result, ctx):
-    """Pull residual (counts - model)/sqrt(counts) for the winning structure, rebuilt from its
-    label + fitted params. Used only on the GoF-bad branch (junk vs model-incomplete)."""
-    from isar.analyze.structures import enumerate_structures
+def _fitted_model(label, params, ctx):
+    """The winning structure evaluated on ``ctx.x_used`` (counts space), rebuilt from its ``label`` +
+    fitted ``params``. Spans BOTH the 1-mode and 2-mode enumerations: a winning 2-mode label
+    (`stokes2+bg`) must reconstruct here, else a GoF-bad two-branch fit is silently mis-routed to
+    `junk` (and the descriptor falsification is disabled for it). ``None`` if the label is not
+    enumerable here or its params do not pack."""
+    from isar.analyze.structures import enumerate_multimode, enumerate_structures
 
-    hyp = {h.label: h for h in enumerate_structures(ctx)}.get(result.label)
+    hyp = {h.label: h for h in (*enumerate_structures(ctx), *enumerate_multimode(ctx))}.get(label)
     if hyp is None:
         return None
     comp = hyp.build()
-    theta = np.array([result.params[n] for n in comp.param_names()], dtype=float)
+    try:
+        theta = np.array([params[n] for n in comp.param_names()], dtype=float)
+    except (KeyError, TypeError):
+        return None
+    return comp.evaluate(ctx.x_used, theta, ctx)
+
+
+def _pull(result, ctx):
+    """Pull residual (counts - model)/sqrt(counts) for the winning structure, rebuilt from its
+    label + fitted params. Used only on the GoF-bad branch (junk vs model-incomplete)."""
+    model = _fitted_model(result.label, result.params, ctx)
+    if model is None:
+        return None
     y = ctx.counts_used
-    model = comp.evaluate(ctx.x_used, theta, ctx)
     return (y - model) / np.sqrt(np.maximum(y, 1.0))
 
 
@@ -124,6 +153,118 @@ def _prior_breaks_fork(pooled, prior):
     return near[0].location if len(near) == 1 else None
 
 
+# --- Phase 4a: under-model falsification (descriptor vs winning model) -----------------------
+def _safe_descriptor(ctx):
+    """Build the L0 descriptor from the context (self-contained default when the caller does not
+    supply the already-computed one). ``None`` on any failure — the gate then no-ops."""
+    from isar.analyze.descriptor import describe_spectrum
+    try:
+        return describe_spectrum(ctx.x, ctx.counts, center=ctx.center, gauss_fwhm=ctx.gauss_fwhm,
+                                 lorentz_fwhm=ctx.lorentz_fwhm, mask=ctx.mask)
+    except Exception:
+        return None
+
+
+def _significant_peaks(descriptor, *, alpha: float = FLAG_ALPHA):
+    """Descriptor peaks that clear the *family-wise* flag strength ``p_value·n_res < alpha`` — the
+    Bonferroni language of the descriptor's own detection contract, tightened for flagging."""
+    if descriptor is None or not getattr(descriptor, "peaks", None):
+        return []
+    n_res = max(float(getattr(descriptor, "n_res", 1.0)), 1.0)
+    return [p for p in descriptor.peaks if float(p.p_value) * n_res < alpha]
+
+
+def _model_curve(win, ctx):
+    """The winning model evaluated on ``ctx.x_used`` (counts space), rebuilt from its label + fitted
+    params — like :func:`_pull`. ``None`` if the label is not enumerable here."""
+    return _fitted_model(win.label, win.params, ctx)
+
+
+def _residual_z_at(energy, model, ctx) -> float:
+    """Significance (σ) of the model's *under-prediction* in the resolution window around ``energy``:
+    ``Σ(counts − model) / √Σ max(model,1)`` over ±½·gauss_fwhm. Positive ⇒ the model leaves excess
+    counts there (signal it can't fit); ≈0 for a good fit; negative when the model over-predicts."""
+    x = ctx.x_used
+    y = ctx.counts_used
+    half = 0.5 * float(ctx.gauss_fwhm)
+    win = np.abs(x - float(energy)) <= max(half, _grid_dx(x))
+    if not np.any(win):
+        return 0.0
+    resid = float(np.sum(y[win] - model[win]))
+    noise = float(np.sqrt(max(np.sum(np.maximum(model[win], 1.0)), 1.0)))
+    return resid / noise
+
+
+def _grid_dx(x) -> float:
+    x = np.asarray(x, dtype=float)
+    return float(np.median(np.abs(np.diff(x)))) if x.size > 1 else 1.0
+
+
+def _model_bg(win, ctx, model) -> float:
+    """The model's flat background (``bg.BG`` if fit, else the model's own minimum) — the level a
+    'no peak here' region sits at."""
+    bg = (getattr(win, "params", None) or {}).get("bg.BG")
+    if bg is not None:
+        return float(bg)
+    return float(np.min(model)) if np.size(model) else 0.0
+
+
+def _unmatched_descriptor_peaks(descriptor, win, ctx, model, *, z: float = RESID_Z,
+                                frac: float = MODEL_FRAC):
+    """Family-wise-significant descriptor peaks that are DISTINCT unmodeled features: the model both
+    (a) under-predicts them (positive residual ≥ ``z`` σ in the window) and (b) treats their location
+    as ~background (peak-normalised model signal < ``frac``). (b) keeps a shoulder / broad tail of the
+    model's own peak — where the model already has intensity — out (that stays model_incomplete, ω₀
+    usable); only a real peak where the model predicts background is unmatched. Curve-based ⇒ damping-
+    and side-aware without a positional tolerance. ``model`` is the precomputed :func:`_model_curve`
+    (``None`` if not enumerable)."""
+    peaks = _significant_peaks(descriptor)
+    if not peaks:
+        return []
+    if model is None:
+        return []
+    x = ctx.x_used
+    signal = model - _model_bg(win, ctx, model)
+    peak_h = float(np.max(signal)) if np.size(signal) else 0.0
+    out = []
+    for p in peaks:
+        if _residual_z_at(p.energy, model, ctx) < z:
+            continue
+        i = int(np.argmin(np.abs(x - float(p.energy))))
+        mf = (float(signal[i]) / peak_h) if peak_h > 1e-9 else 0.0
+        if mf < frac:                                    # model treats this location as background
+            out.append(p)
+    return out
+
+
+def _has_matched_descriptor_peak(descriptor, win, ctx, model, *, z: float = RESID_Z) -> bool:
+    """Whether a family-wise-significant descriptor peak is *explained* by the model (residual below
+    ``z`` — the model already predicts the excess there). The exact-Poisson confirmation the crude
+    ``_excursion_above_bg`` can miss on a weak high-q Stokes line. ``model`` is the precomputed
+    :func:`_model_curve` (``None`` if not enumerable)."""
+    peaks = _significant_peaks(descriptor)
+    if not peaks:
+        return False
+    if model is None:
+        return False
+    return any(_residual_z_at(p.energy, model, ctx) < z for p in peaks)
+
+
+def _signal_unmodeled(unmatched, reasons, descriptor) -> "ScanVerdict":
+    """The ``signal_unmodeled`` verdict: the descriptor localises real signal the phonon model does
+    not explain. Confidence 0 (the phonon number is not trusted); the descriptor peaks are the
+    deliverable. The driver nulls ω₀ and tags ``fit_kind="descriptor_only"`` (machine contract)."""
+    n_res = max(float(getattr(descriptor, "n_res", 1.0)), 1.0)
+    desc = ", ".join(f"E={float(p.energy):.2f} meV (p_fw={min(float(p.p_value) * n_res, 1.0):.1e})"
+                     for p in unmatched)
+    return ScanVerdict(
+        "signal_unmodeled", 0.0,
+        components={"unmatched_peaks": [{"energy": float(p.energy), "width": float(p.width),
+                                         "significance": float(p.significance)} for p in unmatched]},
+        reasons=reasons + [f"descriptor localises {len(unmatched)} significant peak(s) the model "
+                           f"does not account for: {desc}"])
+
+
 @dataclass
 class ScanVerdict:
     """The per-scan triage outcome Phase 4 acts on: the bucket, a [0,1] confidence (0 when
@@ -144,11 +285,15 @@ def held_for_calibration(reason: str) -> ScanVerdict:
     return ScanVerdict("held_for_calibration", 0.0, reasons=[reason])
 
 
-def classify(results, ctx, selection, *, prior=None) -> ScanVerdict:
+def classify(results, ctx, selection, *, prior=None, descriptor=None) -> ScanVerdict:
     """Classify one scan into a named bucket (§6) with a computed confidence (§9). Deterministic
-    precedence (held → unconstrained → junk/model-incomplete → no-signal/underpowered → resolved);
-    never deletes (D7). When the data is flat, the prior + detection-power test split no-signal from
-    (provisional) underpowered."""
+    precedence (held → unconstrained → junk/model-incomplete/**signal_unmodeled** → no-signal/
+    underpowered → resolved); never deletes (D7). When the data is flat, the prior + detection-power
+    test split no-signal from (provisional) underpowered.
+
+    ``descriptor`` (a :class:`~isar.schema.steering.ScanDescriptor`, Phase 4a) is the model-free
+    peak list; when the winning model leaves a family-wise-significant peak unmatched the verdict is
+    ``signal_unmodeled`` (under-model falsification). Built from ``ctx`` when None (self-contained)."""
     from isar.analyze import confidence as _confidence
 
     def conf(win):
@@ -164,6 +309,15 @@ def classify(results, ctx, selection, *, prior=None) -> ScanVerdict:
     win = {r.label: r for r in results}[selection.best]
     reasons = []
 
+    # Phase 4a — model-free descriptor as an under-model falsification check on the winning fit.
+    if descriptor is None:
+        descriptor = _safe_descriptor(ctx)
+    # Rebuild the winning model once (both descriptor helpers reuse it); skip the rebuild entirely
+    # when there is no significant descriptor peak, matching the helpers' own early-out.
+    model_curve = _model_curve(win, ctx) if _significant_peaks(descriptor) else None
+    unmatched = _unmatched_descriptor_peaks(descriptor, win, ctx, model_curve)
+    matched = _has_matched_descriptor_peak(descriptor, win, ctx, model_curve)
+
     # 3. across-model fork — unconstrained unless the prior breaks the tie.
     if selection.modality == "fork":
         mode = _prior_breaks_fork(selection.pooled, prior)
@@ -177,8 +331,12 @@ def classify(results, ctx, selection, *, prior=None) -> ScanVerdict:
         return ScanVerdict("unconstrained", 0.0,
                            reasons=["sparse regime with a pathologically wide interval"])
 
-    # 5. catastrophic GoF -> junk (structureless residual) or model-incomplete (structured).
+    # 5. catastrophic GoF -> signal_unmodeled (descriptor localises the miss) / model-incomplete
+    #    (structured residual) / junk (structureless).
     if np.isfinite(win.cost_per_dof) and win.cost_per_dof >= GOF_BAD:
+        if unmatched:
+            return _signal_unmodeled(unmatched, reasons + [f"cost/dof={win.cost_per_dof:.1f}"],
+                                     descriptor)
         pull = _pull(win, ctx)
         structured = pull is not None and _residual_structured(pull)
         if structured:
@@ -189,21 +347,30 @@ def classify(results, ctx, selection, *, prior=None) -> ScanVerdict:
         return ScanVerdict("junk", 0.0,
                            reasons=reasons + [f"cost/dof={win.cost_per_dof:.1f}, structureless residual"])
 
-    # 6. no excursion above background -> no-signal / underpowered (the detection-power split).
+    # 6. no excursion above background -> the exact-Poisson descriptor overrides the crude excursion
+    #    test: a matched significant peak rescues toward resolved (weak high-q Stokes), an unmatched
+    #    one is signal_unmodeled; otherwise the no-signal / underpowered (detection-power) split.
     if not _excursion_above_bg(ctx):
-        if _prior_expects_phonon(prior, ctx):
-            dp = detection_power(ctx, prior, win)
-            if dp["detectable"] is True:                 # had the power, saw nothing: genuine absence
-                return ScanVerdict("no_signal", 0.0, detection=dp,
-                                   reasons=reasons + ["no excursion; prior expected a phonon the "
-                                                      "scan had power to see (prior may be wrong)"])
-            # couldn't (or can't confirm) the power -> underpowered, provisional (the §0.4 guard:
-            # prior-conditional, never marks the region confirmed-empty).
-            return ScanVerdict("underpowered", 0.0, detection=dp, provisional=True,
-                               reasons=reasons + ["prior expects a phonon below the detection "
-                                                  "threshold at the achieved statistics"])
-        return ScanVerdict("no_signal", 0.0, reasons=reasons + ["no excursion above background"])
+        if unmatched:
+            return _signal_unmodeled(unmatched, reasons + ["no crude excursion"], descriptor)
+        if not matched:                                  # descriptor confirms nothing -> flat
+            if _prior_expects_phonon(prior, ctx):
+                dp = detection_power(ctx, prior, win)
+                if dp["detectable"] is True:             # had the power, saw nothing: genuine absence
+                    return ScanVerdict("no_signal", 0.0, detection=dp,
+                                       reasons=reasons + ["no excursion; prior expected a phonon the "
+                                                          "scan had power to see (prior may be wrong)"])
+                # couldn't (or can't confirm) the power -> underpowered, provisional (the §0.4 guard:
+                # prior-conditional, never marks the region confirmed-empty).
+                return ScanVerdict("underpowered", 0.0, detection=dp, provisional=True,
+                                   reasons=reasons + ["prior expects a phonon below the detection "
+                                                      "threshold at the achieved statistics"])
+            return ScanVerdict("no_signal", 0.0, reasons=reasons + ["no excursion above background"])
+        # matched significant descriptor peak with no unmatched -> fall through to resolved.
 
-    # 7. resolved.
+    # 7. resolved — unless the descriptor confirms a peak the model missed (under-model falsification).
+    if unmatched:
+        return _signal_unmodeled(unmatched, reasons + ["model resolved fewer peaks than the "
+                                                       "descriptor confirms"], descriptor)
     score, comp = conf(win)
     return ScanVerdict("resolved", score, components=comp, reasons=reasons or ["resolved"])

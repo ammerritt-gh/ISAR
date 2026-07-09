@@ -30,7 +30,7 @@ extension Phase 4 will need first.
 
 **The operating mode that shapes Phase 3.** "Refit everything after every point" is Phase 4's heart —
 reduce wasted beam by watching the error shrink live. This is why Phase 3 must build the fit/error layer
-**growing-point-set-native** (`PHASE_3_DESIGN.md` §11): a re-entrant pure function of points-so-far,
+**growing-point-set-native** (`archive/PHASE_3_DESIGN.md` §11): a re-entrant pure function of points-so-far,
 warm-started per point.
 
 **The one trap to design against (already flagged in Phase 3 §11).** *Peeking / optional-stopping bias.*

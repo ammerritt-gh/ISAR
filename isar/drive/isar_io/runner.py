@@ -10,8 +10,23 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+
+
+@dataclass
+class RunResult:
+    """Structured result of one ``isar run`` invocation (the runner-seam return type).
+
+    ``timings`` carries the subprocess stage-timing dict when a runner has it inline (the persistent
+    worker will); the SubprocessRunner leaves it ``None`` — the loop reads ``report/run_timings.json``
+    off disk instead (see :func:`isar.drive.loop._read_run_timings`)."""
+
+    returncode: int
+    stdout: str
+    stderr: str
+    timings: dict | None = None
 
 
 class IsarRunError(RuntimeError):
@@ -41,21 +56,118 @@ def init_isar(workspace: str | Path, data_path: str | Path, *, timeout: float | 
     return proc
 
 
+def _exec_run(cmd: Sequence[str], timeout: float | None) -> RunResult:
+    """Run ``cmd`` capturing stdout/stderr; raise :class:`IsarRunError` on a nonzero exit.
+
+    The single subprocess-execution point shared by :class:`SubprocessRunner` and the legacy
+    :func:`run_isar` wrapper, so both preserve identical error semantics."""
+    proc = subprocess.run(list(cmd), capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        raise IsarRunError(proc.returncode, proc.stdout, proc.stderr, cmd)
+    return RunResult(proc.returncode, proc.stdout, proc.stderr)
+
+
+class SubprocessRunner:
+    """Run ``isar run`` as a fresh subprocess per job — the cold-start invoker (also the worker's
+    fallback). One instance is reused across a campaign; it holds no state, so :meth:`close` is a no-op.
+
+    Boundary: the child process IS the analysis boundary; nothing here imports a fit internal.
+    """
+
+    def run(self, workspace: str | Path, data_paths: Sequence[str | Path], *, force: bool = False,
+            errors_tier: str = "full", render: bool = True, timeout: float | None = None) -> RunResult:
+        """Run ``isar run <data...> --workspace <workspace> [--force] --errors <tier>``.
+
+        Args:
+            workspace: the ISAR workspace directory (must already be ``isar init``-ialized).
+            data_paths: the scan files (or directories) to feed ISAR (typically the workspace data dir).
+            force: pass ``--force`` to refit every scan, ignoring the ledger.
+            errors_tier: the ``--errors`` tier (``cheap`` | ``fast`` | ``full``).
+            render: whether the run should render human reports. ``False`` appends ``--no-render`` so
+                the child skips report.md/.html/.json + figures (results.csv / card.state.json still
+                written); campaign call sites pass ``render=False`` and re-render once at end.
+            timeout: optional subprocess timeout (seconds).
+
+        Returns a :class:`RunResult`. Raises :class:`IsarRunError` on a nonzero exit.
+        """
+        paths = [str(p) for p in data_paths]
+        if not paths:
+            raise ValueError("SubprocessRunner.run needs at least one data path")
+        cmd = [sys.executable, "-m", "isar.cli.main", "run", *paths, "--workspace", str(workspace)]
+        if force:
+            cmd.append("--force")
+        cmd.extend(["--errors", str(errors_tier)])
+        if not render:
+            cmd.append("--no-render")
+        return _exec_run(cmd, timeout)
+
+    def close(self) -> None:
+        """No-op — the subprocess runner spawns per job and holds nothing to release."""
+
+
+class _CallableRunner:
+    """Adapt a bare ``(workspace, data_paths, extra_args=...) -> Any`` callable to the runner protocol.
+
+    The wrapped callable is invoked EXACTLY as the loop invoked ``run_isar`` before the seam existed —
+    ``obj(workspace, data_paths, extra_args=[...])`` with ``extra_args`` reconstructed from the
+    structured ``(force, errors_tier)`` kwargs — so every existing config-supplied runner and test fake
+    keeps working unchanged. Whatever the callable returns (``None``, an ``int``, a
+    :class:`subprocess.CompletedProcess`, a :class:`RunResult`, ...) is coerced to a :class:`RunResult`.
+    """
+
+    def __init__(self, fn):
+        self._fn = fn
+
+    def run(self, workspace, data_paths, *, force: bool = False, errors_tier: str = "full",
+            render: bool = True, timeout: float | None = None) -> RunResult:
+        # ``render`` is accepted for protocol parity but deliberately NOT reflected into ``extra_args``:
+        # bare callables (config["run_isar"] hooks / test fakes) don't parse argv, and the extra_args
+        # contract was frozen at the Stage-1 shape (--errors <tier> [--force]). Adding --no-render here
+        # would break every fake that asserts on extra_args. A real fake never renders anyway.
+        extra_args = ["--errors", str(errors_tier)]
+        if force:
+            extra_args.append("--force")
+        result = self._fn(workspace, data_paths, extra_args=extra_args)
+        return _coerce_run_result(result)
+
+    def close(self) -> None:
+        """No-op — a bare callable owns no resources to release."""
+
+
+def _coerce_run_result(result) -> RunResult:
+    """Coerce a legacy runner's return value into a :class:`RunResult`."""
+    if isinstance(result, RunResult):
+        return result
+    if result is None:
+        return RunResult(0, "", "")
+    if isinstance(result, int):
+        return RunResult(result, "", "")
+    # subprocess.CompletedProcess or any object exposing returncode/stdout/stderr.
+    rc = getattr(result, "returncode", 0)
+    return RunResult(rc if rc is not None else 0, getattr(result, "stdout", "") or "",
+                     getattr(result, "stderr", "") or "")
+
+
+def as_runner(obj):
+    """Return a runner-protocol object (``.run`` + ``.close``) for ``obj``.
+
+    - Already a runner (has ``.run`` and ``.close``) → returned as-is.
+    - A bare callable (the ``config["run_isar"]`` hook / test fakes) → wrapped in
+      :class:`_CallableRunner`, which invokes it exactly as the loop did before the seam existed.
+    """
+    if hasattr(obj, "run") and hasattr(obj, "close"):
+        return obj
+    if callable(obj):
+        return _CallableRunner(obj)
+    raise TypeError(f"as_runner: expected a runner or a callable, got {type(obj).__name__}")
+
+
 def run_isar(workspace: str | Path, data_paths: Sequence[str | Path], *, force: bool = False,
-             extra_args: Sequence[str] | None = None, timeout: float | None = None):
-    """Run ``isar run <data...> --workspace <workspace>`` in a subprocess.
+             extra_args: Sequence[str] | None = None, timeout: float | None = None) -> RunResult:
+    """Legacy ``isar run`` invoker — thin wrapper preserving the pre-seam signature for back-compat.
 
-    Args:
-        workspace: the ISAR workspace directory (must already be `isar init`-ialized — it needs a
-            ``card.policy.toml``).
-        data_paths: the scan files (or directories) to feed ISAR. Typically the workspace data dir, or
-            the individual ``{job_id}.json`` files written by :func:`save_scan_json`.
-        force: pass ``--force`` to refit every scan, ignoring the ledger.
-        extra_args: additional ``isar run`` flags (e.g. ``["--formats", "json"]``).
-        timeout: optional subprocess timeout (seconds).
-
-    Returns the completed :class:`subprocess.CompletedProcess`. Raises :class:`IsarRunError` on a
-    nonzero exit.
+    New code should use :class:`SubprocessRunner`. This form (with free-form ``extra_args``) is kept for
+    existing importers. Returns a :class:`RunResult`; raises :class:`IsarRunError` on a nonzero exit.
     """
     paths = [str(p) for p in data_paths]
     if not paths:
@@ -65,8 +177,4 @@ def run_isar(workspace: str | Path, data_paths: Sequence[str | Path], *, force: 
         cmd.append("--force")
     if extra_args:
         cmd.extend(str(a) for a in extra_args)
-
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if proc.returncode != 0:
-        raise IsarRunError(proc.returncode, proc.stdout, proc.stderr, cmd)
-    return proc
+    return _exec_run(cmd, timeout)

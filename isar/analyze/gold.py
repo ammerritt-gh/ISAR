@@ -33,6 +33,16 @@ _RESOLVED = ("resolved",)
 _FLAGGED = ("model_incomplete",)
 _REJECT = ("junk", "unconstrained")
 _ABSTAIN = ("held_for_calibration", "underpowered", "no_signal")
+# Phase 4a: under-model falsification. `signal_unmodeled` = real signal the phonon model can't fit;
+# delivered to the human as a flagged-for-attention DESCRIPTOR result, but deliberately NOT an omega0
+# measurement — its own disposition so it stays out of _DELIVERED (gold/truth omega0 count) and
+# stopping.USABLE_DISPOSITIONS (the drive stop rule). The omega0 is nulled upstream (driver).
+_UNMODELED = ("signal_unmodeled",)
+# Phase A: near-Γ branch continuation. The acoustic branch is confidently identified but ω₀ is
+# below the resolvable threshold (~1 FWHM from the elastic origin) and no in-anchor branch yet allows
+# the constrained fit — reported as "consistent with → 0 / branch continuation", NOT an ω₀ delivery.
+# Its own disposition so it stays out of _DELIVERED and stopping.USABLE_DISPOSITIONS (like _UNMODELED).
+_BRANCH_CONTINUATION = ("branch_continuation",)
 _DELIVERED = ("resolved", "flagged")
 
 
@@ -146,6 +156,10 @@ def verdict_disposition(label: str) -> str:
         return "resolved"
     if label in _FLAGGED:
         return "flagged"
+    if label in _UNMODELED:
+        return "unmodeled"
+    if label in _BRANCH_CONTINUATION:
+        return "branch_continuation"
     if label in _REJECT:
         return "reject"
     return "abstain"
@@ -179,7 +193,7 @@ class GoldScore:
     isar_verdict: str
     isar_confidence: float
     isar_omega0: float | None
-    isar_disposition: str              # "resolved" | "flagged" | "reject" | "abstain"
+    isar_disposition: str              # "resolved" | "flagged" | "unmodeled" | "branch_continuation" | "reject" | "abstain"
     modality: str
     agree: bool | None                 # delivered<->OK match; None when ISAR abstains
     safety: bool                       # True iff ISAR cleanly `resolved` a human-REJECT
@@ -227,7 +241,7 @@ def score_row(gold_row: GoldRow, isar: IsarResult) -> GoldScore:
 # --- confusion + aggregate -------------------------------------------------------------------
 
 _GOLD_DISP = ("accept", "reject")
-_ISAR_DISP = ("resolved", "flagged", "reject", "abstain")
+_ISAR_DISP = ("resolved", "flagged", "unmodeled", "branch_continuation", "reject", "abstain")
 
 
 @dataclass
