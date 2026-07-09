@@ -80,6 +80,11 @@ class WorkerRunner:
         ``render`` is accepted for seam parity and ignored — the worker never renders. Returns a
         :class:`RunResult` (with the worker's inline ``timings`` on the fast path); raises
         :class:`IsarRunError` on a clean ``run_batch`` failure."""
+        # The worker process is spawned bound to self._workspace; a different workspace here would
+        # silently analyze the wrong one on the fast path (and the right one on fallback).
+        if Path(workspace).resolve() != self._workspace.resolve():
+            raise ValueError(
+                f"WorkerRunner is bound to workspace {self._workspace}; got {workspace}")
         if self._degraded:
             return self._fallback_run(workspace, data_paths, force, errors_tier, render, timeout)
 

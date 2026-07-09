@@ -150,8 +150,15 @@ class Card:
         p = Path(path)
         text = json.dumps(self.state.to_dict(), indent=2)
         tmp = p.with_name(p.name + f".tmp.{os.getpid()}")
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, p)          # atomic on the same filesystem
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, p)      # atomic on the same filesystem
+        except BaseException:
+            try:                    # best-effort: don't leave a stale .tmp fragment behind
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
         return p
 
     def validate(self) -> list[str]:
