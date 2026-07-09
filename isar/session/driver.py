@@ -611,7 +611,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
         _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                           workspace, force=force, M=M, seed_base=seed_base, errors_tier=errors_tier,
                           master_boot_workers=master_boot_workers, boot_executor=shared_pool,
-                          boot_adaptive=boot_adaptive, timer=timer)
+                          boot_adaptive=boot_adaptive, scan_workers=scan_workers, timer=timer)
     finally:
         if shared_pool is not None:
             shared_pool.shutdown()
@@ -654,7 +654,7 @@ def _store_branch_models(state, t_round: float) -> None:
 
 def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                       workspace, *, force, M, seed_base, errors_tier, master_boot_workers,
-                      boot_executor, boot_adaptive, timer=None):
+                      boot_executor, boot_adaptive, scan_workers=1, timer=None):
     timer = timer or NullTimer()
     """Pass 2 (ledger + prior) → collate → master fits → tally → write. Split out so the shared
     bootstrap pool from :func:`run_batch` stays open across the whole full-tier batch."""
@@ -714,7 +714,8 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
             n_masters = _fit_masters(summary.collation, records, card, runcal, g, session,
                                      M=M, seed_base=seed_base, errors_tier=errors_tier, force=force,
                                      boot_workers=master_boot_workers, boot_executor=boot_executor,
-                                     boot_adaptive=boot_adaptive, per_master=per_master)
+                                     boot_adaptive=boot_adaptive, scan_workers=scan_workers,
+                                     per_master=per_master)
             _m_masters["n_masters"] = n_masters
             _m_masters["per_master"] = per_master
             if n_masters:
@@ -738,9 +739,25 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
 _MASTER_SCAN_BASE = 9_000_000
 
 
+def _fit_master_group_task(args):
+    """Top-level (picklable) entry point for a master-group pool worker: fit one merged group.
+
+    Bootstrap is forced serial inside the child (``boot_workers=1``, no shared pool) — Layer A owns
+    the process workers, the same trade-off as the scan pool in :func:`_run_tasks`, and the seeded
+    bootstrap is invariant to worker count / where the refits run (errors.bootstrap). The returned
+    :class:`ScanEntry` carries its own timings in ``provenance``; the parent applies ``session.put``
+    serially afterward in sorted-group order. Every argument is picklable (ms/grp are plain collation
+    dataclasses, member_rec a ScanRecord, card/g/runcal as the scan pool already ships)."""
+    (ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number, chash,
+     M, seed, errors_tier, boot_adaptive) = args
+    return _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id,
+                             scan_number, chash, M=M, seed=seed, errors_tier=errors_tier,
+                             boot_workers=1, boot_executor=None, boot_adaptive=boot_adaptive)
+
+
 def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
                  errors_tier="full", force=False, boot_workers=1, boot_executor=None,
-                 boot_adaptive=False, per_master=None) -> int:
+                 boot_adaptive=False, scan_workers=1, per_master=None) -> int:
     """Fit the merged master scan for each (Q,T) group; returns how many were (re)fit this run.
 
     Runs only when the card opts in (``collation.merge == "merge"``). Each group's pooled
@@ -750,48 +767,78 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
     when a member scan arrives or drifts (``collate`` re-runs over all records every batch, so masters
     cannot piggyback on the per-scan freshness flags). Never fatal — a bad group yields a
     ``non_result`` entry, never a crash.
+
+    When more than one group needs refitting and the scan-worker budget allows, the group fits run in
+    parallel over an order-preserving ``ProcessPoolExecutor.map`` (bootstrap forced serial in each
+    child, same Layer-A trade-off as the scan pool); ``session.put`` is still applied serially in the
+    original sorted-group order afterward, so the result is bit-identical to the serial path. A single
+    refit (the normal-iteration case) keeps the in-process serial path with the shared bootstrap pool.
     """
     if collation is None or getattr(collation, "merge", "separate") != "merge":
         return 0
     from isar.session.state import canonical_hash
 
     rec_by_scan = {rec.scan_number: rec for rec in records}
-    # Reuse the batch's shared bootstrap pool when given; else open one for the master pass (only the
-    # full tier bootstraps, so a pool is pointless otherwise). Masters fit serially; refits hit the pool.
-    own_pool = None
-    ex = boot_executor
-    if ex is None and errors_tier == "full" and boot_workers > 1:
-        own_pool = ProcessPoolExecutor(max_workers=boot_workers)
-        ex = own_pool
-    n_fit = 0
-    try:
-        for idx, grp in enumerate(sorted(collation.groups, key=lambda gg: str(gg.key))):
-            ms = getattr(grp, "merged", None)
-            if ms is None or ms.n_members < 1:
-                continue
-            master_id = "master:" + "_".join(str(k) for k in grp.key)
-            chash = canonical_hash([list(m) for m in ms.members])
-            prev = session.get(master_id)
-            if not force and prev is not None and prev.content_hash == chash:
-                continue                               # member set unchanged → carry the prior master
-            member_scan, member_det = ms.members[0][1], ms.members[0][2]
-            entry = _fit_master_group(ms, grp, rec_by_scan.get(member_scan), member_det, card, runcal,
-                                      g, master_id, _MASTER_SCAN_BASE + idx, chash,
-                                      M=M, seed=seed_base + _MASTER_SCAN_BASE + idx,
-                                      errors_tier=errors_tier, boot_workers=boot_workers,
-                                      boot_executor=ex, boot_adaptive=boot_adaptive)
-            session.put(entry)
-            n_fit += 1
-            if per_master is not None:
-                per_master.append(
-                    {"master_id": master_id,
-                     "seconds": entry.provenance.get("fit_seconds"),
-                     "two_stage_seconds": entry.provenance.get("two_stage_seconds"),
-                     "errors_attach_seconds": entry.provenance.get("errors_attach_seconds")})
-    finally:
-        if own_pool is not None:
-            own_pool.shutdown()
-    return n_fit
+    # --- Refit list first: apply the membership-hash skip unchanged (carry path untouched). ---
+    # idx is the ORIGINAL sorted-group enumeration position (NOT the refit-list position) so the
+    # per-group seed `seed_base + _MASTER_SCAN_BASE + idx` and synthetic scan_number stay stable.
+    refits = []     # (idx, grp, ms, master_id, chash, member_rec, member_det)
+    for idx, grp in enumerate(sorted(collation.groups, key=lambda gg: str(gg.key))):
+        ms = getattr(grp, "merged", None)
+        if ms is None or ms.n_members < 1:
+            continue
+        master_id = "master:" + "_".join(str(k) for k in grp.key)
+        chash = canonical_hash([list(m) for m in ms.members])
+        prev = session.get(master_id)
+        if not force and prev is not None and prev.content_hash == chash:
+            continue                               # member set unchanged → carry the prior master
+        member_scan, member_det = ms.members[0][1], ms.members[0][2]
+        refits.append((idx, grp, ms, master_id, chash, rec_by_scan.get(member_scan), member_det))
+    if not refits:
+        return 0
+
+    # --- Fit the refits: parallel across groups when it pays, else serial in-process. ---
+    if len(refits) > 1 and scan_workers > 1:
+        # Parallel: bootstrap forced serial in each child (boot_workers=1, no shared pool). map
+        # preserves order → entries[k] aligns with refits[k], keeping the serial ledger order.
+        arg_list = [(ms, grp, member_rec, member_det, card, runcal, g, master_id,
+                     _MASTER_SCAN_BASE + idx, chash, M, seed_base + _MASTER_SCAN_BASE + idx,
+                     errors_tier, boot_adaptive)
+                    for (idx, grp, ms, master_id, chash, member_rec, member_det) in refits]
+        max_workers = min(scan_workers, len(arg_list))
+        with ProcessPoolExecutor(max_workers=max_workers) as ex_pool:
+            entries = list(ex_pool.map(_fit_master_group_task, arg_list))
+    else:
+        # Serial (normal iteration, ≤1 refit, or single worker) — hot path unchanged. Reuse the
+        # batch's shared bootstrap pool when given; else open one for the master pass (only the full
+        # tier bootstraps, so a pool is pointless otherwise).
+        own_pool = None
+        ex = boot_executor
+        if ex is None and errors_tier == "full" and boot_workers > 1:
+            own_pool = ProcessPoolExecutor(max_workers=boot_workers)
+            ex = own_pool
+        try:
+            entries = [
+                _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id,
+                                  _MASTER_SCAN_BASE + idx, chash, M=M,
+                                  seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier,
+                                  boot_workers=boot_workers, boot_executor=ex,
+                                  boot_adaptive=boot_adaptive)
+                for (idx, grp, ms, master_id, chash, member_rec, member_det) in refits]
+        finally:
+            if own_pool is not None:
+                own_pool.shutdown()
+
+    # Apply ledger mutations + timing entries serially, in the original sorted-group order.
+    for (idx, grp, ms, master_id, chash, member_rec, member_det), entry in zip(refits, entries):
+        session.put(entry)
+        if per_master is not None:
+            per_master.append(
+                {"master_id": master_id,
+                 "seconds": entry.provenance.get("fit_seconds"),
+                 "two_stage_seconds": entry.provenance.get("two_stage_seconds"),
+                 "errors_attach_seconds": entry.provenance.get("errors_attach_seconds")})
+    return len(refits)
 
 
 def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number,

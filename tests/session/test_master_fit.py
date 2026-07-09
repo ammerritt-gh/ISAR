@@ -11,7 +11,7 @@ from isar.session import driver
 from isar.session.state import ScanEntry, SessionState
 from isar.session.workspace import Workspace
 from isar.synth_format import run_builder
-from isar.parsers import spec_s30
+from isar.parsers import ill_in8, spec_s30
 
 
 class _MS:
@@ -101,7 +101,141 @@ def test_run_tasks_serial_threads_shared_executor_and_adaptive(monkeypatch):
     assert captured["adaptive"] is True and captured["boot_workers"] == 8
 
 
-def test_s30_separate_card_produces_no_master_rows(tmp_path):
+class _FakePool:
+    """In-process stand-in for ProcessPoolExecutor: runs ``map`` serially so the parallel branch of
+    ``_fit_masters`` can be exercised deterministically (real pool children re-import the module and
+    would not see the stubbed ``_fit_master_group``)."""
+    constructed: list = []
+
+    def __init__(self, max_workers=None):
+        type(self).constructed.append(max_workers)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def map(self, fn, iterable):
+        return [fn(a) for a in iterable]
+
+
+def _two_groups(ms_members_a, ms_members_b):
+    ga = _Grp(("tavi", "42", 200.0), _MS(list(ms_members_a)))
+    gb = _Grp(("tavi", "43", 200.0), _MS(list(ms_members_b)))
+    gb.key_fields = {"sample": "tavi", "q": [2.3, 0.0, 0.0], "T": 200.0}
+    return _Col("merge", [ga, gb])
+
+
+def test_parallel_branch_preserves_order_and_timings(monkeypatch):
+    # >1 group + scan_workers>1 → the parallel branch. Fake pool proves order-preserving map,
+    # serial session.put in sorted-group order, per_master timings carried home, and that the
+    # pool is sized min(scan_workers, n_refits).
+    _FakePool.constructed = []
+    monkeypatch.setattr(driver, "ProcessPoolExecutor", _FakePool)
+    calls = _stub(monkeypatch)
+    col = _two_groups([("tavi", 1, "det"), ("tavi", 2, "det")], [("tavi", 3, "det")])
+    s = SessionState()
+    per = []
+    n = driver._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000,
+                            scan_workers=4, per_master=per)
+    assert n == 2
+    assert _FakePool.constructed == [2]                       # min(scan_workers=4, n_refits=2)
+    assert [c for c in calls] == sorted(calls)                # sorted-group order preserved
+    mids = [k for k in s.scans if k.startswith("master:")]
+    assert len(mids) == 2
+    assert [p["master_id"] for p in per] == sorted(p["master_id"] for p in per)
+
+
+def test_single_refit_does_not_construct_pool(monkeypatch):
+    # ≤1 refit → today's serial in-process path; the pool must never be constructed even with a
+    # generous worker budget. A raising ProcessPoolExecutor makes any construction a hard failure.
+    def _boom(*a, **k):
+        raise AssertionError("ProcessPoolExecutor must not be constructed for a single master refit")
+
+    monkeypatch.setattr(driver, "ProcessPoolExecutor", _boom)
+    _stub(monkeypatch)
+    col = _Col("merge", [_Grp(("tavi", "42", 200.0), _MS([("tavi", 1, "det")]))])
+    s = SessionState()
+    # boot_workers=1 so the serial path never opens its own bootstrap pool either.
+    n = driver._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000,
+                            scan_workers=8, boot_workers=1)
+    assert n == 1
+
+
+def test_two_refits_single_worker_stays_serial(monkeypatch):
+    # >1 group but scan_workers==1 → serial path, no pool.
+    def _boom(*a, **k):
+        raise AssertionError("ProcessPoolExecutor must not be constructed when scan_workers == 1")
+
+    monkeypatch.setattr(driver, "ProcessPoolExecutor", _boom)
+    _stub(monkeypatch)
+    col = _two_groups([("tavi", 1, "det")], [("tavi", 3, "det")])
+    s = SessionState()
+    n = driver._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000,
+                            scan_workers=1, boot_workers=1)
+    assert n == 2
+
+
+def _in8_file(tmp_path, exp_id, first_numor, h):
+    card = ill_in8.card_template()
+    run = run_builder.build_in8_run(exp_id, n_scans=2, seed0=first_numor, first_numor=first_numor,
+                                    q_point=[h, 0.05, 0.0])
+    path = tmp_path / f"{exp_id}.numor"
+    path.write_bytes(ill_in8.emit_file(run, card))
+    return path
+
+
+def _master_entries(session):
+    out = {}
+    for mid, e in session.scans.items():
+        if mid.startswith("master:"):
+            out[mid] = e
+    return out
+
+
+def _prov_no_timing(prov):
+    return {k: v for k, v in (prov or {}).items()
+            if k not in ("fit_seconds", "two_stage_seconds", "errors_attach_seconds")}
+
+
+def test_parallel_masters_match_serial_end_to_end(tmp_path):
+    # Real multiprocessing gate: two IN8 files → two (Q,T) master groups, both refit on a cold run.
+    # Serial (workers=1) vs parallel-masters (workers=4) on fresh workspaces must produce identical
+    # results.csv bytes and identical master entries (modulo *_seconds timings). Uses the `fast`
+    # (HESSE, no bootstrap) tier so the real spawn/pickle/order path is exercised cheaply; the
+    # bootstrap's worker-count invariance is covered by errors.bootstrap + the scan-pool workorder.
+    ill_in8.card_template()
+    f1 = _in8_file(tmp_path, "SIMA", 55000, 2.15)
+    f2 = _in8_file(tmp_path, "SIMB", 56000, 2.55)
+
+    def _run(sub, workers):
+        ws = Workspace.open(tmp_path / sub)
+        ws.root.mkdir(parents=True, exist_ok=True)
+        ws.policy_path.write_text(Path(ill_in8._CARD_PATH).read_text(encoding="utf-8"),
+                                  encoding="utf-8")
+        driver.run_batch(ws, [f1, f2], M=25, detectors="det0", formats=(), workers=workers,
+                         errors_tier="fast")
+        _card, session = ws.load()
+        csv_bytes = (ws.report_dir / "results.csv").read_bytes()
+        return session, csv_bytes
+
+    ser_session, ser_csv = _run("serial", 1)
+    par_session, par_csv = _run("parallel", 4)
+
+    ser_masters = _master_entries(ser_session)
+    par_masters = _master_entries(par_session)
+    assert len(ser_masters) == 2 and set(ser_masters) == set(par_masters)
+
+    for mid in ser_masters:
+        se, pe = ser_masters[mid], par_masters[mid]
+        assert se.status == pe.status
+        assert se.content_hash == pe.content_hash
+        assert se.scan_number == pe.scan_number
+        assert se.detectors == pe.detectors            # omega0, intervals, modes, calib, ...
+        assert _prov_no_timing(se.provenance) == _prov_no_timing(pe.provenance)
+
+    assert ser_csv == par_csv                           # results.csv byte-identical
     # Real S30 batch (held, merge="separate"): the master pass must be a no-op — per-scan path intact.
     ws = Workspace.open(tmp_path / "ws")
     ws.root.mkdir(parents=True, exist_ok=True)
