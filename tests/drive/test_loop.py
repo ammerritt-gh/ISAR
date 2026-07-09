@@ -15,7 +15,8 @@ from isar.drive.acquisition.calibration import Calibration
 import types
 
 import isar.drive.loop as loop_mod
-from isar.drive.loop import _errors_arg_for, _pick_interval, _resume_state, run_campaign
+from isar.drive.loop import (_campaign_config, _errors_arg_for, _pick_interval, _resume_state,
+                             _run_nonce, run_campaign)
 from isar.drive.objective import ObjectiveSpec
 from isar.drive.session_log import log_event, read_log
 from isar.drive.supervisor.stopping import PRODUCTION_NCOUNT, QUICKLOOK_NCOUNT
@@ -477,3 +478,50 @@ def test_restart_recovers_budget_and_does_not_respend(tmp_path):
     assert start["payload"]["resumed"]["scan_counter"] > 0
     assert start["payload"]["resumed"]["spent"] == pytest.approx(spent1)
     assert summary2["stop"]["state"] == "met"           # already converged from the persisted masters
+
+
+# --------------------------------------------------------------------------- idempotency run nonce
+def test_run_nonce_mints_and_persists(tmp_path):
+    ws = tmp_path / "ws"
+    nonce1 = _run_nonce(ws)
+    assert (ws / ".run_nonce").exists()
+    assert (ws / ".run_nonce").read_text(encoding="utf-8").strip() == nonce1
+    # a second call against the SAME workspace returns the identical value
+    nonce2 = _run_nonce(ws)
+    assert nonce2 == nonce1
+    # a call against a fresh (different) workspace mints a different nonce
+    ws2 = tmp_path / "ws2"
+    nonce3 = _run_nonce(ws2)
+    assert nonce3 != nonce1
+
+
+def test_campaign_config_sets_run_nonce_from_workspace_file(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    cfg = _campaign_config(_objective(), {"workspace": ws, "client": MockTavi(lambda h: 0.0),
+                                          "run_isar": lambda *a, **k: None,
+                                          "calibration": _UNITY_CAL})
+    assert cfg.run_nonce == (ws / ".run_nonce").read_text(encoding="utf-8").strip()
+    assert cfg.run_nonce != ""
+    # resolving the config again against the same workspace reuses the persisted nonce
+    cfg2 = _campaign_config(_objective(), {"workspace": ws, "client": MockTavi(lambda h: 0.0),
+                                           "run_isar": lambda *a, **k: None,
+                                           "calibration": _UNITY_CAL})
+    assert cfg2.run_nonce == cfg.run_nonce
+
+
+def test_campaign_submit_idempotency_key_contains_run_nonce(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    client = MockTavi(omega)
+    calls = []
+    orig_submit = client.submit_scan
+
+    def spy_submit(body, idempotency_key=None):
+        calls.append(idempotency_key)
+        return orig_submit(body, idempotency_key=idempotency_key)
+    client.submit_scan = spy_submit
+
+    summary, ws = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+    nonce = (ws / ".run_nonce").read_text(encoding="utf-8").strip()
+    assert calls
+    assert all(nonce in key for key in calls)

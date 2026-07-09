@@ -27,6 +27,7 @@ import json
 import math
 import subprocess
 import sys
+import uuid
 
 import numpy as np
 
@@ -497,6 +498,25 @@ class CampaignConfig:
     floor: float
     worker: bool = True
     run_timeout: float = 900.0
+    run_nonce: str = ""
+
+
+def _run_nonce(workspace: Path) -> str:
+    """The campaign's idempotency nonce — minted once per workspace and persisted, so a crash-resume
+    replays the SAME ``Idempotency-Key`` per scan (dedupe still works) while a fresh campaign can
+    never collide with a previous run's instrument-side idempotency cache (the TAVI cache-poisoning
+    replay: a poisoned/truncated cached result served to every later run that reuses the key)."""
+    path = workspace / ".run_nonce"
+    try:
+        nonce = path.read_text(encoding="utf-8").strip()
+        if nonce:
+            return nonce
+    except OSError:
+        pass
+    nonce = uuid.uuid4().hex[:12]
+    workspace.mkdir(parents=True, exist_ok=True)
+    path.write_text(nonce + "\n", encoding="utf-8")
+    return nonce
 
 
 def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignConfig:
@@ -544,6 +564,7 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
         floor=systematic_floor(calibration, config.get("floor")),
         worker=worker,
         run_timeout=run_timeout,
+        run_nonce=_run_nonce(workspace),
     )
 
 
@@ -590,7 +611,8 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
 
         with timed(log_path, "submit", iteration=it, attempt=attempt) as _m:
             body = _scan_body(proposal, cfg.engine, cfg.base_seed + scan_counter, allow_partial=allow_partial)
-            submit = client.submit_scan(body, idempotency_key=f"{objective.name or 'campaign'}-{scan_counter}")
+            submit = client.submit_scan(
+                body, idempotency_key=f"{objective.name or 'campaign'}-{cfg.run_nonce}-{scan_counter}")
             scan_counter += 1
             job_id = submit.get("job_id")
             _m["job_id"] = job_id
