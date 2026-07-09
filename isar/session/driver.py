@@ -99,6 +99,10 @@ class FitOutcome:
     assignment_entropy: float | None = None
     resolvable: bool | None = None
     branch_weight: float | None = None
+    # Rival-branch anchor candidates from THIS delivered scan's other features (each
+    # {omega0, branch_id, weight}) — banked onto the dispersion prior by the parent so an optic
+    # belief can form and claim its own features at later q. None/empty on abstains + older ledgers.
+    secondary_features: list | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -689,13 +693,31 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
             if _modes and _w0 is not None:
                 _pm = min(_modes, key=lambda m: abs(float(m.get("omega0", 1e18)) - float(_w0)))
                 g_err = _pm.get("gamma_err")
+            # A Phase-A triaged acoustic delivery carries its own hygiene (assignment posterior's
+            # P/dominance/entropy gates), so it may seed from an unpooled quicklook — without this
+            # the acoustic prior only fills from late fold productions while optic banking (below)
+            # fills immediately, and the occupancy prior lets the optic outvote a still-anchorless
+            # acoustic for its own features (the v15 mid-band deadlock). Forks stay excluded.
             session_prior.add_point(card.state, scan_id=entry.scan_id, sample=oc.get("sample"),
                                     T=oc.get("T"), q=oc.get("q"), omega0=oc.get("omega0"),
                                     modality=oc.get("modality"), verdict=oc.get("verdict"),
                                     gamma=oc.get("gamma"), gamma_err=g_err,
                                     intensity=oc.get("intensity"),
                                     fit_kind=oc.get("fit_kind"), branch_id=oc.get("branch_id"),
-                                    weight=oc.get("branch_weight"), t_round=t_round)
+                                    weight=oc.get("branch_weight"), t_round=t_round,
+                                    require_fold=oc.get("branch_id") != "acoustic")
+            # Rival-branch anchors from this DELIVERED scan's other features (optic banking):
+            # stored under suffixed scan_ids; purge first so a refit with fewer secondaries
+            # leaves no stale points behind.
+            card.state.dispersion_prior = [p for p in card.state.dispersion_prior
+                                           if not str(p.get("scan_id", "")).startswith(f"{entry.scan_id}#")]
+            for i, sf in enumerate(oc.get("secondary_features") or []):
+                session_prior.add_point(card.state, scan_id=f"{entry.scan_id}#{sf['branch_id']}{i}",
+                                        sample=oc.get("sample"), T=oc.get("T"), q=oc.get("q"),
+                                        omega0=sf.get("omega0"), modality=oc.get("modality"),
+                                        verdict=oc.get("verdict"), fit_kind=oc.get("fit_kind"),
+                                        branch_id=sf.get("branch_id"), weight=sf.get("weight"),
+                                        t_round=t_round, require_fold=False)
             summary.outcomes.append((scan, FitOutcome(**oc) if not isinstance(oc, FitOutcome) else oc))
 
     # Persist the cross-q branch(es) from the now-complete prior into card.state so the DRIVE — a
@@ -928,6 +950,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
     # and the triage withholds a non-acoustic/unresolvable pool as branch_continuation. Without this a
     # boundary master delivers the optic as the acoustic ω₀.
     branch_id = assignment_entropy = branch_weight = resolvable = None
+    secondary_features = None
     if fit.get("verdict") != "signal_unmodeled":
         triage = _assign_and_triage(fit, descriptor, ctx, card=card, sample=sample, T=T, q=q,
                                     t_round=t_round, near_gamma=near_gamma)
@@ -936,6 +959,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
             assignment_entropy = triage.get("entropy")
             branch_weight = triage.get("weight")
             resolvable = triage.get("resolvable")
+            secondary_features = triage.get("secondary_points") or None
             if triage.get("deliver") is False and fit.get("omega0") is not None:
                 fit["reasons"].append(f"branch triage (master): not a resolvable acoustic delivery "
                                       f"(assigned {branch_id}); reported branch_continuation")
@@ -959,7 +983,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         descriptor=(descriptor.to_dict() if descriptor is not None else None),
         fit_kind=fit.get("fit_kind", "unconstrained"),
         branch_id=branch_id, assignment_entropy=assignment_entropy,
-        resolvable=resolvable, branch_weight=branch_weight)
+        resolvable=resolvable, branch_weight=branch_weight,
+        secondary_features=secondary_features)
     entry = ScanEntry(status="fitted", **base)
     entry.detectors[det] = outcome.to_dict()
     entry.provenance = {"pooled": True, "n_members": int(ms.n_members),
@@ -1034,8 +1059,13 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
                       and fit.get("omega0") is not None and not fit.get("gamma_at_bound")
                       and qoi["p_acoustic"] >= BA.P_ACOUSTIC_MIN)
     if constrained_ok or (BA.deliver_acoustic(qoi) and extrap_ok):
+        # Rival-branch banking: a DELIVERED scan's clearly-non-acoustic higher features seed the
+        # optic belief, so at the next q the optic claims its own kin instead of splitting the
+        # acoustic dominance (the post-Phase-A abstention deadlock at mid-band q).
         return {"deliver": True, "branch_id": "acoustic", "weight": float(qoi["p_acoustic"]),
-                "entropy": ent, "resolvable": bool(qoi["resolvable"])}
+                "entropy": ent, "resolvable": bool(qoi["resolvable"]),
+                "secondary_points": BA.secondary_branch_points(feats, post, qoi,
+                                                               gauss_fwhm=ctx.gauss_fwhm)}
     bid = "optic"
     if fit.get("omega0") is not None:
         bid, _ = BA.assign_label(fit["omega0"], fit.get("omega0_err") or 0.3 * ctx.gauss_fwhm,
@@ -1192,6 +1222,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
     # optic/spurious feature can never seed or be scored as the acoustic branch. Skipped for
     # signal_unmodeled (already a non-ω₀ descriptor result) and when the posterior is off (period None).
     branch_id = assignment_entropy = branch_weight = resolvable = None
+    secondary_features = None
     if fit.get("verdict") != "signal_unmodeled":
         triage = _assign_and_triage(fit, descriptor, ctx, card=card, sample=sample, T=T, q=q,
                                     t_round=t_round, near_gamma=near_gamma)
@@ -1200,6 +1231,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
             assignment_entropy = triage.get("entropy")
             branch_weight = triage.get("weight")
             resolvable = triage.get("resolvable")
+            secondary_features = triage.get("secondary_points") or None
             if triage.get("deliver") is False and fit.get("omega0") is not None:
                 fit["reasons"].append(
                     f"branch triage: not a resolvable acoustic delivery (assigned {branch_id}); "
@@ -1238,7 +1270,8 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         descriptor=(descriptor.to_dict() if descriptor is not None else None),
         fit_kind=fit.get("fit_kind", "unconstrained"),
         branch_id=branch_id, assignment_entropy=assignment_entropy,
-        resolvable=resolvable, branch_weight=branch_weight)
+        resolvable=resolvable, branch_weight=branch_weight,
+        secondary_features=secondary_features)
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is

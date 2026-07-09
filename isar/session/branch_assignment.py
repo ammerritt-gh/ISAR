@@ -86,9 +86,14 @@ def _peak_sigma(width: float, floor: float) -> float:
 
 def features_from(modes, descriptor, *, gauss_fwhm: float) -> list[Feature]:
     """Merge fitted DHO ``modes`` (each ``{omega0, omega0_err, gamma, amplitude}``) and model-free
-    ``descriptor`` peaks into a de-duplicated feature list. A fit mode and a descriptor peak within
-    ½·resolution are the same physical feature; the fit mode wins (it carries an ω₀ error)."""
+    ``descriptor`` peaks into a de-duplicated feature list in PHONON energy ``|ω|``. A fit mode and
+    a descriptor peak within ½·resolution are the same physical feature; the fit mode wins (it
+    carries an ω₀ error). A negative-energy (anti-Stokes) descriptor peak is the detailed-balance
+    mirror of the same phonon, so it is folded to ``|E|`` and merged with its Stokes partner rather
+    than entering as a rival feature — otherwise the mirror splits the branch-assignment weight and
+    the dominance triage abstains on every scan whose anti-Stokes wing is visible."""
     floor = max(0.1 * float(gauss_fwhm), 1e-3)
+    merge_tol = 0.5 * float(gauss_fwhm)
     feats: list[Feature] = []
     for m in modes or []:
         w = m.get("omega0")
@@ -96,14 +101,23 @@ def features_from(modes, descriptor, *, gauss_fwhm: float) -> list[Feature]:
             continue
         err = m.get("omega0_err")
         se = float(err) if (err is not None and np.isfinite(err) and err > 0) else floor
-        feats.append(Feature(float(w), max(se, floor), float(m.get("amplitude", 0.0) or 0.0),
+        feats.append(Feature(abs(float(w)), max(se, floor), float(m.get("amplitude", 0.0) or 0.0),
                              float("inf"), "mode"))
     if descriptor is not None:
-        merge_tol = 0.5 * float(gauss_fwhm)
         for p in getattr(descriptor, "peaks", ()) or ():
-            e = float(p.energy)
+            e = abs(float(p.energy))
             if any(abs(e - f.energy) <= merge_tol for f in feats if f.source == "mode"):
-                continue    # already carried by a fit mode
+                continue    # already carried by a fit mode (or its anti-Stokes mirror)
+            partner = next((i for i, f in enumerate(feats)
+                            if f.source == "descriptor" and abs(e - f.energy) <= merge_tol), None)
+            if partner is not None:    # Stokes/anti-Stokes wings of one phonon: pool the evidence
+                f = feats[partner]
+                inten = f.intensity + float(getattr(p, "integrated_intensity", 0.0) or 0.0)
+                feats[partner] = Feature(f.energy, f.sigma_e, inten,
+                                         max(f.significance,
+                                             float(getattr(p, "significance", 0.0) or 0.0)),
+                                         "descriptor")
+                continue
             feats.append(Feature(e, _peak_sigma(getattr(p, "width", 0.0), floor),
                                  float(getattr(p, "integrated_intensity", 0.0) or 0.0),
                                  float(getattr(p, "significance", 0.0) or 0.0), "descriptor"))
@@ -158,6 +172,13 @@ class BranchBelief:
             return 0.0, 1e3
         if n == 1:
             return float(ys[0]), ACOUSTIC_MAX_SLOPE * abs(u - float(us[0])) + SIGMA_SLACK
+        if not self.zone_anchor and n < 3:
+            # An unanchored (no zone pin) branch with two nearby noisy anchors must not assert a
+            # slope: the 2-point line through banked optic anchors can plunge into the acoustic band
+            # and claim its features. Flat, honest fallback: precision-weighted level, σ growing at
+            # the group-velocity scale with distance to the nearest anchor.
+            mu = float(np.average(ys, weights=np.maximum(prec, 1e-9)))
+            return mu, ACOUSTIC_MAX_SLOPE * float(np.min(np.abs(us - u))) + SIGMA_SLACK
         d = np.abs(us - u)
         k = min(n, self.window_k)
         idx = np.argsort(d, kind="stable")[:k]
@@ -278,6 +299,50 @@ def deliver_acoustic(qoi: dict, *, p_min: float = P_ACOUSTIC_MIN, entropy_max: f
                 and qoi.get("p_acoustic", 0.0) >= p_min
                 and qoi.get("dominance", 0.0) >= dominance_min
                 and qoi.get("entropy", math.inf) <= entropy_max)
+
+
+SECONDARY_P_ACOUSTIC_MAX = 0.3   # a feature this un-acoustic may seed a rival (optic) branch
+SECONDARY_MIN_SIGNIFICANCE = 8.0  # descriptor-source features must be this significant to seed
+
+
+def secondary_branch_points(features, posterior, qoi, *, gauss_fwhm: float,
+                            p_acoustic_max: float = SECONDARY_P_ACOUSTIC_MAX,
+                            min_significance: float = SECONDARY_MIN_SIGNIFICANCE) -> list[dict]:
+    """Non-acoustic anchor candidates from a scan's OTHER features — the rival-branch seeds.
+
+    Phase A stopped an optic feature from seeding "acoustic", but left it unclaimed: with no optic
+    belief, the acoustic occupancy prior makes a mid-band 6–7 meV feature read acoustic wherever the
+    acoustic belief is extrapolating (its inflated σ spans the optic), so ``dominance`` pins at ~0.5
+    and every such q abstains forever. The remedy is for the branches the sample actually has to
+    EXIST in the belief set: when a scan also contains a confidently-detected feature that the
+    posterior clearly rejects as acoustic AND that lies above the acoustic QoI, bank it as an
+    ``optic`` anchor so the optic belief can claim its kin at the next q (assignment_posterior then
+    splits acoustic/optic weight correctly and the acoustic delivery recovers its dominance).
+
+    Guards: the QoI feature itself never banks; P(acoustic) must be ≤ ``p_acoustic_max`` (so an
+    ambiguous feature near the acoustic line is never banked); descriptor-source features need
+    ``significance ≥ min_significance`` (fit modes pass — they carry +inf); the energy must be
+    position-resolvable (≥ 1 FWHM) and above the acoustic QoI (phonon-first: a lower shoulder is not
+    an "optic"). The caller only stores these for scans whose primary acoustic DELIVERED — rival
+    anchors inherit the same certification bar as acoustic ones (contract 4 untouched: these are
+    unconstrained detections, not constrained/demoted fits)."""
+    top = qoi.get("feature")
+    w_acoustic = qoi.get("omega0")
+    if top is None or w_acoustic is None:
+        return []
+    out: list[dict] = []
+    for f, p in zip(features, posterior):
+        if f is top:
+            continue
+        if p.get(ACOUSTIC, 0.0) > p_acoustic_max:
+            continue
+        if f.source == "descriptor" and f.significance < min_significance:
+            continue
+        if f.energy < float(gauss_fwhm) or f.energy <= w_acoustic:
+            continue
+        out.append({"omega0": float(f.energy), "branch_id": "optic",
+                    "weight": float(1.0 - p.get(ACOUSTIC, 0.0))})
+    return out
 
 
 def assign_label(energy: float, sigma_e: float, beliefs, u: float,

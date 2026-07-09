@@ -26,7 +26,8 @@ SAME_T_TOL = 0.5        # K — "same temperature" for pooling (matches predict_
 
 def add_point(state: CardState, *, scan_id, sample, T, q, omega0, modality, verdict,
               gamma=None, gamma_err=None, intensity=None, fit_kind=None,
-              branch_id=None, weight=None, t_round: float = 5.0) -> bool:
+              branch_id=None, weight=None, t_round: float = 5.0,
+              require_fold: bool = True) -> bool:
     """Append/replace a prior point, gated to resolved + fold. Returns True if a point was stored.
 
     ``gamma``/``gamma_err`` and ``intensity`` (a portable :class:`~isar.schema.steering.IntensityMeasure`
@@ -34,8 +35,17 @@ def add_point(state: CardState, *, scan_id, sample, T, q, omega0, modality, verd
     A(q) alongside ω₀(q). ``branch_id`` + ``weight`` are the Phase-A soft branch assignment (which branch
     this point supports, and how strongly) — the assignment posterior consumes them instead of the old
     hard clean-anchor gate. All are optional and omitted when None, so older callers/points are unchanged.
+
+    ``require_fold=False`` relaxes only the fold-modality requirement — for points whose hygiene is
+    carried by the Phase-A triage instead (an acoustic delivery that passed the assignment
+    posterior's P/dominance/entropy gates, or a rival-branch banking anchor that marks a branch's
+    existence rather than a portable primary ω₀ — the scans that actually see the rival are the
+    wide unpooled surveys; a tight folded production window excludes it by construction). A
+    ``fork`` (bimodal across-model ω₀) NEVER enters — a fork averaged into the prior poisons every
+    neighbour — and the resolved-verdict gate always holds.
     """
-    if verdict != "resolved" or modality != "fold" or omega0 is None:
+    if (verdict != "resolved" or omega0 is None or modality == "fork"
+            or (require_fold and modality != "fold")):
         return False
     point = {
         "scan_id": scan_id,
