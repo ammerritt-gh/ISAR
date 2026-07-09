@@ -246,9 +246,11 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                 g.last_prod_cost = cost                 # the next production scan's ΔC proxy
         elif kind == "quicklook":
             g.n_quicklook += 1
-        # Phase A: only ACOUSTIC (or null, older ledger) fits steer the ω(q) model / certify a q. A
-        # non-acoustic (optic) ω₀ can never raise the acoustic window centre — the session already
-        # withholds it (branch_continuation), this is the belt-and-suspenders drive-side guard.
+        # Phase A: only ACOUSTIC fits steer the ω(q) model / certify a q — a non-acoustic (optic) ω₀
+        # can never raise the acoustic window centre. ``None`` counts as acoustic DELIBERATELY: legacy
+        # ledgers and posterior-off mode (no [dispersion] zone_period ⇒ branch_id is None for every
+        # row) carry no branch assignment, and this gate is then fully permissive by design. It only
+        # bites once branch assignment is active (posterior on), rejecting rows tagged non-acoustic.
         acoustic = obs.get("branch_id") in (None, "acoustic")
         if not usable:
             g.n_decline += 1

@@ -51,7 +51,10 @@ def log_event(path: str | Path, kind: str, payload: dict[str, Any], *, ts: float
     with open(p, "a", encoding="utf-8") as f:
         f.write(line + "\n")
         f.flush()
-        os.fsync(f.fileno())
+        # Skip the fsync for advisory "timing" spans (~16/iteration): _resume_state reads only "run"
+        # events, so their durability buys nothing; fsync every other kind for ledger/crash-safety.
+        if kind != "timing":
+            os.fsync(f.fileno())
     return record
 
 

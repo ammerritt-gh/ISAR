@@ -44,6 +44,7 @@ from isar.drive.objective import ObjectiveSpec
 from isar.drive.session_log import log_event, read_log, timed
 from isar.drive.supervisor import exceptions as exc
 from isar.drive.supervisor.stopping import (
+    PRODUCTION_KINDS,
     PRODUCTION_NCOUNT,
     USABLE_DISPOSITIONS as _USABLE,
     evaluate_stop,
@@ -343,14 +344,21 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
     ``budget`` neutrons/seconds, exact from the ``run`` events, so a restart neither re-spends beamtime
     nor reuses a seed / collides an idempotency key), the **folded-row set** (``consumed`` = every
     ``(scan, detector)`` already in ``results.csv``, so old rows are never re-folded as new), and
-    **best-effort per-scan observations** (kind/ncount by hkl from the run ledger; each q's total cost
-    attributed to one representative row so ``counts_spent`` sums to the true per-q spend). A cold
-    workspace (no log / no results.csv) returns the fresh-start tuple."""
+    **best-effort per-scan observations**. Each observation carries its OWN submission's kind (not an
+    hkl-wide lock): a results.csv row cannot be joined back to its run event other than by ``q`` +
+    order, so a q's rows are tail-aligned against its per-q kind ledger — surviving rows take their
+    most-recent matching submission (so a resumed quicklook stays a quicklook and does not inflate
+    ``n_production``); a q whose ledger is shorter than its rows falls back to ``"production"`` for the
+    leading rows, as before. Each q's total cost is
+    lumped onto one representative row so ``counts_spent`` sums to the true per-q spend — a PRODUCTION
+    row when the q has one (``summarize_grid`` reads cost>0 rows to set ``last_prod_cost``), else the
+    first row (quicklook-only q). A cold workspace (no log / no results.csv) returns the fresh-start
+    tuple."""
     runs = [e.get("payload", {}) for e in read_log(log_path) if e.get("kind") == "run"]
     scan_counter = len(runs)                        # one run event per submitted scan
     neutrons = seconds = 0.0
     cost_by_hkl: dict = {}
-    kind_by_hkl: dict = {}
+    kinds_by_hkl: dict = {}                         # per-q kind ledger, in submission order
     ncount_by_hkl: dict = {}
     for r in runs:
         cost = float(r.get("cost")) if r.get("cost") is not None else 0.0
@@ -363,31 +371,49 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
             continue
         key = tuple(round(float(x), 4) for x in hkl)
         cost_by_hkl[key] = cost_by_hkl.get(key, 0.0) + cost
-        k = r.get("kind")
-        if k in ("production", "confirm"):
-            kind_by_hkl[key] = "production"
-        elif key not in kind_by_hkl:
-            kind_by_hkl[key] = k or "production"
+        kinds_by_hkl.setdefault(key, []).append(r.get("kind") or "production")
         ncount_by_hkl[key] = r.get("ncount") or ncount_by_hkl.get(key)
 
-    observations: list[dict] = []
-    consumed: set = set()
-    scan_kind: dict = {}
     try:
         rows = read_results_csv(workspace)
     except FileNotFoundError:
         rows = []
-    stamped: set = set()
-    for row in rows:
-        if row.get("pooled") or _row_hkl(row) is None:
-            continue
+    result_rows = [row for row in rows if not row.get("pooled") and _row_hkl(row) is not None]
+    # Attribute each result row its own submission's kind. In steady single-detector operation a q has
+    # one persisted row per submission, so rows align 1:1 with its ledger; align at the TAIL so when
+    # fewer rows survived than submissions (an older/unpersisted quicklook left no row), each surviving
+    # row takes its most-recent matching submission (a q's rows are its latest results) rather than an
+    # old quicklook. A ledger shorter than the rows defaults the leading rows to "production", as before.
+    count_by_hkl: dict = {}
+    for row in result_rows:
         key = tuple(round(float(x), 4) for x in _row_hkl(row))
-        kind = kind_by_hkl.get(key, "production")
+        count_by_hkl[key] = count_by_hkl.get(key, 0) + 1
+    row_kinds: list = []
+    cursor: dict = {}
+    for row in result_rows:
+        key = tuple(round(float(x), 4) for x in _row_hkl(row))
+        ledger = kinds_by_hkl.get(key, [])
+        i = cursor.get(key, 0)
+        li = (len(ledger) - count_by_hkl[key]) + i     # tail-align rows against the per-q ledger
+        row_kinds.append(ledger[li] if 0 <= li < len(ledger) else "production")
+        cursor[key] = i + 1
+    # Choose the row each q's summed cost lands on: the first PRODUCTION row if the q has one, else its
+    # first row (stamping the full sum onto a quicklook row would mis-set last_prod_cost).
+    cost_target: dict = {}
+    for idx, (row, kind) in enumerate(zip(result_rows, row_kinds)):
+        key = tuple(round(float(x), 4) for x in _row_hkl(row))
+        if key not in cost_target:
+            cost_target[key] = idx
+        elif kind in PRODUCTION_KINDS and row_kinds[cost_target[key]] not in PRODUCTION_KINDS:
+            cost_target[key] = idx                  # prefer a production row over an earlier quicklook
+
+    observations: list[dict] = []
+    consumed: set = set()
+    scan_kind: dict = {}
+    for idx, (row, kind) in enumerate(zip(result_rows, row_kinds)):
+        key = tuple(round(float(x), 4) for x in _row_hkl(row))
         ncount = int(ncount_by_hkl.get(key) or PRODUCTION_NCOUNT)
-        pc = 0.0
-        if key not in stamped:                      # attribute the q's whole spend to one row
-            pc = cost_by_hkl.get(key, 0.0)
-            stamped.add(key)
+        pc = cost_by_hkl.get(key, 0.0) if cost_target.get(key) == idx else 0.0
         observations.append(_observation_from_row(row, kind, ncount, calibration, proposal_cost=pc))
         sd = (row.get("scan"), row.get("detector"))
         consumed.add(sd)

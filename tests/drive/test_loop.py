@@ -369,6 +369,36 @@ def test_resume_state_recovers_ledger_from_log_and_results(tmp_path):
     assert sum(o["proposal_cost"] for o in obs) == pytest.approx(5.0e8 + 6.0e9)  # per-q spend recovered
 
 
+def test_resume_state_attributes_per_row_kinds_not_hkl_lock(tmp_path):
+    # One q submitted as a quick-look then two productions (3 result rows). After resume each
+    # reconstructed observation must carry its OWN submission's kind (drawn from the per-q ledger in
+    # order) — the presence of production rows must NOT relabel the quicklook row as production and
+    # inflate n_production (the bug that ate MAX_PROD_ATTEMPTS early → premature 'stuck').
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    for jid, kind, nc, cost in [("j1", "quicklook", QUICKLOOK_NCOUNT, 5.0e8),
+                                ("j2", "production", PRODUCTION_NCOUNT, 6.0e9),
+                                ("j3", "production", PRODUCTION_NCOUNT, 7.0e9)]:
+        log_event(log, "run", {"job_id": jid, "state": "done", "eta": {"estimated_seconds": 1.0},
+                               "kind": kind, "ncount": nc, "n_points": 50,
+                               "hkl": [2.1, 0.0, 0.0], "cost": cost})
+    base = {"h": 2.1, "k": 0.0, "l": 0.0, "status": "fitted", "verdict": "resolved",
+            "disposition": "resolved", "omega0": 0.2, "interval_lo": 0.05, "interval_hi": 0.35,
+            "interval_reliable": True}
+    _write_results(ws, [{"scan": s, "detector": "det", **base} for s in (1, 2, 3)])
+    r = _resume_state(ws, log, _UNITY_CAL)
+
+    obs = r["observations"]
+    kinds = sorted(o["kind"] for o in obs)
+    assert kinds == ["production", "production", "quicklook"]     # per-row, not hkl-locked
+    assert sum(o["kind"] == "production" for o in obs) == 2       # n_production not inflated
+    # The whole q spend lumped onto exactly one row, and that row is a PRODUCTION row.
+    cost_rows = [o for o in obs if o["proposal_cost"] > 0]
+    assert len(cost_rows) == 1 and cost_rows[0]["kind"] == "production"
+    assert sum(o["proposal_cost"] for o in obs) == pytest.approx(5.0e8 + 6.0e9 + 7.0e9)
+
+
 def test_cold_workspace_resumes_to_fresh(tmp_path):
     ws = tmp_path / "ws"
     (ws / "report").mkdir(parents=True)

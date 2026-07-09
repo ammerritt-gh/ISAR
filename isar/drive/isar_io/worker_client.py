@@ -74,7 +74,7 @@ class WorkerRunner:
 
     # ----------------------------------------------------------------- runner protocol
     def run(self, workspace, data_paths: Sequence, *, force: bool = False, errors_tier: str = "full",
-            render: bool = False, timeout: float | None = None) -> RunResult:
+            render: bool = True, timeout: float | None = None) -> RunResult:
         """Run one analysis job on the worker, falling back to the cold runner on transport failure.
 
         ``render`` is accepted for seam parity and ignored — the worker never renders. Returns a
