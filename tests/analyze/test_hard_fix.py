@@ -5,12 +5,15 @@ the free set (k reduced). Freezing is applied only at the optimiser boundary (lo
 the composite stays full-vector, so the positional per-phonon machinery is untouched, and an
 unconstrained fit is bit-identical. The result is tagged ``branch_conditional``.
 """
+import types
+
 import numpy as np
 
 from isar.analyze import loop
 from isar.analyze.context import ScanContext
 from isar.analyze.structures import enumerate_structures
 from isar.schema.steering import ParamConstraints
+from isar.session import driver
 from isar.synth._ff import convolute_voigt_dho
 
 
@@ -77,6 +80,57 @@ def test_hard_fixed_fit_matches_unconstrained_when_value_is_truth():
     fixed = loop.fit_hypothesis(_hyp(ctx), ctx, minos=False)
     assert abs(fixed.omega0 - free.omega0) < 1e-2
     assert fixed.k == free.k - 1
+
+
+# --------------------------------------------------------------------------- driver escalation guard
+def _escalation_env(monkeypatch):
+    """A branch that would be a valid hard-fix target (in-range, Γ>0) and a fit_one spy — so any
+    escalation attempt is observable as a fit_one call."""
+    monkeypatch.setattr(driver.branch_model, "branch_for",
+                        lambda *a, **k: types.SimpleNamespace(in_anchor_range=True, gamma=0.6))
+    calls = []
+
+    def _spy(*a, **k):
+        calls.append((a, k))
+        return {"omega0": 5.0, "gamma_at_bound": False}
+
+    monkeypatch.setattr(driver, "fit_one", _spy)
+    return calls
+
+
+def test_escalation_skipped_when_gamma_already_hard_fixed(monkeypatch):
+    """A near-Γ branch_conditional fit already hard-fixes phonon.Gamma (and phonon.A). gamma_at_bound
+    is computed from the fitted Γ regardless of constraints, so it can still read True — but re-freezing
+    an already-frozen Γ rescues nothing and would drop the existing hard A. The guard must skip it."""
+    calls = _escalation_env(monkeypatch)
+    ctx = _ctx(ParamConstraints(hard={"phonon.Gamma": 0.6, "phonon.A": 400.0}))
+    fit = {"gamma_at_bound": True, "omega0": 5.0}
+    prior = types.SimpleNamespace(omega0=5.0)
+    region_reasons = []
+    out = driver._hard_fix_escalation(
+        fit, ctx, prior, card=None, sample="s", T=150.0, labels=None, peaks=None,
+        descriptor=None, region_reasons=region_reasons, M=10, seed=0, errors_tier="fast",
+        boot_workers=1, boot_executor=None, boot_adaptive=False)
+    assert out is fit                                      # original fit unchanged
+    assert calls == []                                     # no re-fit attempted
+    assert region_reasons == []                            # no escalation provenance note
+
+
+def test_escalation_fires_when_gamma_only_soft(monkeypatch):
+    """Positive control: with Γ merely soft-constrained (not hard) and railed to bound, the escalation
+    proceeds — proving the new guard keys specifically on an already-hard Γ, not on any constraint."""
+    calls = _escalation_env(monkeypatch)
+    ctx = _ctx(ParamConstraints(soft={"phonon.Gamma": (0.6, 0.2)}))
+    fit = {"gamma_at_bound": True, "omega0": 5.0}
+    prior = types.SimpleNamespace(omega0=5.0)
+    card = types.SimpleNamespace(state=None)               # branch_for is monkeypatched; state unused
+    region_reasons = []
+    driver._hard_fix_escalation(
+        fit, ctx, prior, card=card, sample="s", T=150.0, labels=None, peaks=None,
+        descriptor=None, region_reasons=region_reasons, M=10, seed=0, errors_tier="fast",
+        boot_workers=1, boot_executor=None, boot_adaptive=False)
+    assert len(calls) == 1                                 # escalation attempted a re-fit
+    assert region_reasons and "hard-fix escalation" in region_reasons[0]
 
 
 # --------------------------------------------------------------------------- _minimize_fixed noop

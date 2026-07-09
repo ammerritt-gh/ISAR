@@ -29,6 +29,7 @@ from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
 from isar.schema.card import Card
 from isar.schema.steering import IntensityMeasure, ParamConstraints
+from isar.session import branch_assignment as BA
 from isar.session import branch_model, calibrations, guidelines as guide_mod, ingest, router, session_prior
 
 # Steering Phase 2c: apply the low-q branch soft-constraint when the dispersion prior predicts a
@@ -267,12 +268,6 @@ def _build_descriptor(ctx):
                                  lorentz_fwhm=ctx.lorentz_fwhm, mask=ctx.mask)
     except Exception:  # noqa: BLE001
         return None
-
-
-def _scan_descriptor(ctx) -> dict | None:
-    """`ScanDescriptor.to_dict()` for storage, or None on failure. See :func:`_build_descriptor`."""
-    d = _build_descriptor(ctx)
-    return d.to_dict() if d is not None else None
 
 
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
@@ -667,9 +662,9 @@ def _store_branch_models(state, t_round: float) -> None:
 def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                       workspace, *, force, M, seed_base, errors_tier, master_boot_workers,
                       boot_executor, boot_adaptive, scan_workers=1, timer=None):
-    timer = timer or NullTimer()
     """Pass 2 (ledger + prior) → collate → master fits → tally → write. Split out so the shared
     bootstrap pool from :func:`run_batch` stays open across the whole full-tier batch."""
+    timer = timer or NullTimer()
     # --- Pass 2: apply ledger + prior mutations serially, in submission order (determinism). ---
     # Prior seeding is START-OF-BATCH: a scan is fit against the dispersion prior as of the batch
     # start, never a same-batch neighbour's fresh point (this is what makes serial == parallel).
@@ -934,7 +929,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                       instrument=card.policy.instrument, energy_status=card.policy.energy_status,
                       prior_omega=ic_ao, quasielastic_fwhm=card.policy.quasielastic_fwhm,
                       acoustic_omega=ao)
-    near_gamma = ao is not None and ao < _RESOLVABLE_FWHM_FACTOR * calres.gauss_fwhm
+    near_gamma = ao is not None and ao < BA.RESOLVABLE_FWHM_FACTOR * calres.gauss_fwhm
     descriptor = _build_descriptor(ctx)
     try:
         fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, errors_tier=errors_tier,
@@ -949,24 +944,10 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
     # (ctx.acoustic_omega) makes primary_phonon_index report the acoustic mode (not the brighter optic),
     # and the triage withholds a non-acoustic/unresolvable pool as branch_continuation. Without this a
     # boundary master delivers the optic as the acoustic ω₀.
-    branch_id = assignment_entropy = branch_weight = resolvable = None
-    secondary_features = None
-    if fit.get("verdict") != "signal_unmodeled":
-        triage = _assign_and_triage(fit, descriptor, ctx, card=card, sample=sample, T=T, q=q,
-                                    t_round=t_round, near_gamma=near_gamma)
-        if triage is not None:
-            branch_id = triage.get("branch_id")
-            assignment_entropy = triage.get("entropy")
-            branch_weight = triage.get("weight")
-            resolvable = triage.get("resolvable")
-            secondary_features = triage.get("secondary_points") or None
-            if triage.get("deliver") is False and fit.get("omega0") is not None:
-                fit["reasons"].append(f"branch triage (master): not a resolvable acoustic delivery "
-                                      f"(assigned {branch_id}); reported branch_continuation")
-                fit["verdict"] = "branch_continuation"
-                fit["omega0"] = fit["omega0_err"] = fit["interval"] = None
-                fit["omega0_profile"] = fit["hesse_interval"] = None
-                fit["interval_reliable"] = False
+    (branch_id, assignment_entropy, branch_weight, resolvable,
+     secondary_features) = _apply_branch_triage(
+        fit, descriptor, ctx, card=card, sample=sample, T=T, q=q, t_round=t_round,
+        near_gamma=near_gamma, master=True)
 
     disposition = gold_mod.verdict_disposition(fit["verdict"])
     outcome = FitOutcome(
@@ -997,10 +978,10 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
     return entry
 
 
-# Phase A branch assignment: near a zone centre the acoustic ω₀ is unresolvable BY POSITION (below this
-# × resolution FWHM the merged Stokes/anti-Stokes blob is shape-identical to an elastic peak). There it
-# is measured by the constrained (hard Γ+A / brightness) fit, or reported as branch_continuation.
-_RESOLVABLE_FWHM_FACTOR = 1.0
+# Phase A branch assignment: near a zone centre the acoustic ω₀ is unresolvable BY POSITION (below
+# BA.RESOLVABLE_FWHM_FACTOR × resolution FWHM the merged Stokes/anti-Stokes blob is shape-identical to
+# an elastic peak). There it is measured by the constrained (hard Γ+A / brightness) fit, or reported as
+# branch_continuation.
 # The dispersion prior narrows the Ω_d IC grid to ω₀±1.5 (ic.PRIOR_HALF_WIDTH). A COLD acoustic belief
 # predicts ω₀≈0 with a large σ; narrowing to [0,1.5] there would miss the resolvable acoustic (1.4+) and
 # deadlock the bootstrap. So the prior narrows the IC only when it is CONFIDENT (σ ≤ this); otherwise the
@@ -1032,7 +1013,6 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
     period = _dispersion_period(card)
     if period is None:
         return None
-    from isar.session import branch_assignment as BA
     t_bin = round(float(T) / t_round) * t_round if t_round else float(T)
     beliefs = BA.build_beliefs(card.state.dispersion_prior, sample=sample, t_bin=t_bin,
                                period=period, t_round=t_round)
@@ -1072,6 +1052,42 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
                                  beliefs, u, gauss_fwhm=ctx.gauss_fwhm)
     return {"deliver": False, "branch_id": bid, "weight": 0.0, "entropy": ent,
             "resolvable": bool(qoi["resolvable"])}
+
+
+def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, near_gamma,
+                         master: bool):
+    """Run branch assignment + honest triage over ``fit`` and apply its verdict (Phase A). Shared by
+    the per-scan (:func:`_finish_outcome`) and pooled-master (:func:`_fit_master_group`) paths.
+
+    Returns ``(branch_id, assignment_entropy, branch_weight, resolvable, secondary_features)`` — all
+    None when the posterior is off or the fit is a ``signal_unmodeled`` descriptor result. When the
+    triage declines delivery it mutates ``fit`` in place: flips the verdict to ``branch_continuation``,
+    nulls the ω₀ fields, and appends a reason (worded per ``master``)."""
+    branch_id = assignment_entropy = branch_weight = resolvable = None
+    secondary_features = None
+    if fit.get("verdict") != "signal_unmodeled":
+        triage = _assign_and_triage(fit, descriptor, ctx, card=card, sample=sample, T=T, q=q,
+                                    t_round=t_round, near_gamma=near_gamma)
+        if triage is not None:
+            branch_id = triage.get("branch_id")
+            assignment_entropy = triage.get("entropy")
+            branch_weight = triage.get("weight")
+            resolvable = triage.get("resolvable")
+            secondary_features = triage.get("secondary_points") or None
+            if triage.get("deliver") is False and fit.get("omega0") is not None:
+                if master:
+                    fit["reasons"].append(
+                        f"branch triage (master): not a resolvable acoustic delivery "
+                        f"(assigned {branch_id}); reported branch_continuation")
+                else:
+                    fit["reasons"].append(
+                        f"branch triage: not a resolvable acoustic delivery (assigned {branch_id}); "
+                        f"reported as branch_continuation, ω₀ withheld")
+                fit["verdict"] = "branch_continuation"
+                fit["omega0"] = fit["omega0_err"] = fit["interval"] = None
+                fit["omega0_profile"] = fit["hesse_interval"] = None
+                fit["interval_reliable"] = False
+    return branch_id, assignment_entropy, branch_weight, resolvable, secondary_features
 
 
 def _gate_scan(rec, det, card, g, runcal, exclusions, base) -> tuple:
@@ -1169,7 +1185,7 @@ def _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres,
                       prior_omega=(float(prior.omega0) if confident else None))
 
     near_gamma = (prior is not None and np.isfinite(prior.omega0)
-                  and prior.omega0 < _RESOLVABLE_FWHM_FACTOR * ctx.gauss_fwhm)
+                  and prior.omega0 < BA.RESOLVABLE_FWHM_FACTOR * ctx.gauss_fwhm)
     ctx = _apply_low_q_rescue(ctx, prior, card, sample, T, rec, near_gamma, region_reasons)
 
     # L0 descriptor: built once here (mask/counts are now fixed) and reused for the verdict's
@@ -1189,8 +1205,16 @@ def _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descri
     only if it converges and no longer rails. A soft A constraint, if any, is preserved.
 
     Returns the adopted fit dict (the escalated ``hfit`` when accepted, else the original ``fit``);
-    appends its provenance note to ``region_reasons`` in place."""
-    if fit.get("gamma_at_bound") and prior is not None and np.isfinite(prior.omega0):
+    appends its provenance note to ``region_reasons`` in place.
+
+    Skipped when Γ is ALREADY hard-constrained (the near-Γ branch_conditional path): gamma_at_bound is
+    computed from the fitted Γ value regardless of constraints, so a frozen Γ can still read at-bound —
+    but re-freezing an already-frozen Γ rescues nothing, and rebuilding constraints from soft-only here
+    would silently drop the existing hard phonon.A brightness constraint."""
+    already_hard_gamma = (ctx.constraints is not None
+                          and "phonon.Gamma" in (ctx.constraints.hard or {}))
+    if (fit.get("gamma_at_bound") and prior is not None and np.isfinite(prior.omega0)
+            and not already_hard_gamma):
         pred = branch_model.branch_for(card.state, sample=sample, T=T, omega0=float(prior.omega0))
         if pred is not None and pred.in_anchor_range and pred.gamma > 0:
             soft = dict(ctx.constraints.soft) if ctx.constraints is not None else {}
@@ -1221,25 +1245,10 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
     # deliverable ACOUSTIC measurement or must abstain, and tag the branch it was assigned to so an
     # optic/spurious feature can never seed or be scored as the acoustic branch. Skipped for
     # signal_unmodeled (already a non-ω₀ descriptor result) and when the posterior is off (period None).
-    branch_id = assignment_entropy = branch_weight = resolvable = None
-    secondary_features = None
-    if fit.get("verdict") != "signal_unmodeled":
-        triage = _assign_and_triage(fit, descriptor, ctx, card=card, sample=sample, T=T, q=q,
-                                    t_round=t_round, near_gamma=near_gamma)
-        if triage is not None:
-            branch_id = triage.get("branch_id")
-            assignment_entropy = triage.get("entropy")
-            branch_weight = triage.get("weight")
-            resolvable = triage.get("resolvable")
-            secondary_features = triage.get("secondary_points") or None
-            if triage.get("deliver") is False and fit.get("omega0") is not None:
-                fit["reasons"].append(
-                    f"branch triage: not a resolvable acoustic delivery (assigned {branch_id}); "
-                    f"reported as branch_continuation, ω₀ withheld")
-                fit["verdict"] = "branch_continuation"
-                fit["omega0"] = fit["omega0_err"] = fit["interval"] = None
-                fit["omega0_profile"] = fit["hesse_interval"] = None
-                fit["interval_reliable"] = False
+    (branch_id, assignment_entropy, branch_weight, resolvable,
+     secondary_features) = _apply_branch_triage(
+        fit, descriptor, ctx, card=card, sample=sample, T=T, q=q, t_round=t_round,
+        near_gamma=near_gamma, master=False)
 
     fit["reasons"].extend(region_reasons)
 
