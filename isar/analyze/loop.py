@@ -16,7 +16,9 @@ from typing import Callable
 import numpy as np
 
 from isar.analyze.ic import EPS_OMEGA_D, greedy_multimode_ic, structure_ic
-from isar.analyze.structures import enumerate_multimode, enumerate_structures
+from isar.analyze.structures import (
+    Hypothesis, elastic_admissible, enumerate_multimode, enumerate_structures,
+)
 from isar.synth import backends, estimators
 from isar.synth.backends import BackendResult
 from isar.synth.fit import assess_success, omega0_value_error
@@ -408,19 +410,11 @@ def _offer_multimode(results, ctx) -> bool:
     return bool(pull is not None and _residual_structured(pull))
 
 
-def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors=False,
-                             M=200, seed=12345, peaks=None) -> list[StructureFitResult]:
-    """Two-stage, data-gated structure enumeration (§ multiplicity). Fit the 1-mode set; if the
-    gate (:func:`_offer_multimode`) fires OR ``peaks`` declares ≥2 expected peaks, also fit the
-    2-mode set (:func:`~isar.analyze.structures.enumerate_multimode`) seeded by
-    :func:`~isar.analyze.ic.greedy_multimode_ic`, and return the UNION for a single
-    :func:`~isar.analyze.select.select_models` pass — AIC/BIC then decide whether the second
-    mode earns its parameters. 2-mode hypotheses with no positive dof (``n_used − k ≤ 0``) are
-    skipped. ``peaks`` is threaded through untouched (the driver supplies it later); this
-    function never imports session/guideline code.
-
-    With ``with_errors`` the bootstrap error layer is attached to every returned fit (so the
-    select pass can pool survivors from both stages)."""
+def _enumerate_and_fit(ctx, *, backend="iminuit", minos=False, peaks=None):
+    """The full two-stage enumeration: fit the 1-mode set, escalate to the 2-mode set when the
+    gate fires or ``peaks`` declares ≥2 peaks. Returns ``[(result, hypothesis), ...]`` (both stages
+    unioned). Split out of :func:`fit_structures_two_stage` so the structure-hint shortcut
+    (:func:`fit_structures_two_stage_hinted`) can fall back to it verbatim."""
     one_hyps = enumerate_structures(ctx)
     pairs = [(fit_hypothesis(h, ctx, backend=backend, minos=minos), h) for h in one_hyps]
 
@@ -434,10 +428,97 @@ def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors
             x0 = greedy_multimode_ic(h.build(), ctx, best_one, peaks=peaks)
             r = fit_hypothesis(h, ctx, backend=backend, minos=minos, x0=x0)
             pairs.append((r, h))
+    return pairs
 
+
+def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors=False,
+                             M=200, seed=12345, peaks=None) -> list[StructureFitResult]:
+    """Two-stage, data-gated structure enumeration (§ multiplicity). Fit the 1-mode set; if the
+    gate (:func:`_offer_multimode`) fires OR ``peaks`` declares ≥2 expected peaks, also fit the
+    2-mode set (:func:`~isar.analyze.structures.enumerate_multimode`) seeded by
+    :func:`~isar.analyze.ic.greedy_multimode_ic`, and return the UNION for a single
+    :func:`~isar.analyze.select.select_models` pass — AIC/BIC then decide whether the second
+    mode earns its parameters. 2-mode hypotheses with no positive dof (``n_used − k ≤ 0``) are
+    skipped. ``peaks`` is threaded through untouched (the driver supplies it later); this
+    function never imports session/guideline code.
+
+    With ``with_errors`` the bootstrap error layer is attached to every returned fit (so the
+    select pass can pool survivors from both stages)."""
+    pairs = _enumerate_and_fit(ctx, backend=backend, minos=minos, peaks=peaks)
     results = [r for r, _ in pairs]
     if with_errors:
         from isar.analyze import errors as _errors  # lazy: errors imports loop
         for r, h in pairs:
             _errors.attach(r, h, ctx, M=M, seed=seed, backend=backend)
     return results
+
+
+def _null_aic(ctx, *, backend="iminuit") -> float | None:
+    """AIC of the no-phonon baseline for this context (``elastic+bg`` when the elastic line is
+    admissible, else background-only), or ``None`` when that null does not converge.
+
+    Fit directly (not through :func:`fit_hypothesis`, whose ω₀ extraction assumes a phonon) so the
+    structure-hint shortcut can ask "does the hinted phonon actually earn its parameters over
+    fitting nothing?" without ever admitting a phonon-less result into the selection layer."""
+    from isar.analyze.components import ConstantBackground, Elastic
+
+    comps = (Elastic, ConstantBackground) if elastic_admissible(ctx) else (ConstantBackground,)
+    hyp = Hypothesis("elastic+bg" if len(comps) == 2 else "bg", comps)
+    prob = build_problem(hyp, ctx)
+    be_names = [_sanitize(n) for n in prob.free_names]
+    br = _minimize_fixed(backend, prob.objective, prob.x0, prob.bounds, be_names,
+                         prob.fixed_pos, prob.fixed_vals, minos=False)
+    if not br.success:
+        return None
+    cost = float(prob.costv(np.asarray(br.x, dtype=float)))
+    return cost + 2.0 * prob.k
+
+
+def _try_structure_hint(ctx, structure_hint, *, backend="iminuit", minos=False):
+    """Fit ONLY the hinted structure (cold grid-IC) plus the no-phonon null, and accept the
+    shortcut iff every gate the full enumeration relies on still passes. Returns the one-element
+    result list on acceptance, or ``None`` to signal "fall through to the full enumeration".
+
+    Rejected (→ ``None``) when: the hint label is no longer admissible for this context; the hinted
+    fit does not converge; the two-stage gate (:func:`_offer_multimode`: cost/dof > ``GATE_COST`` or
+    a structured residual) fires, i.e. one structure is not enough; or the no-phonon null is
+    AIC-preferred, i.e. the phonon does not earn its parameters here. On any of these the full
+    enumeration must run — the hint is a computational shortcut, never a correctness override."""
+    by_label = {h.label: h for h in enumerate_structures(ctx)}
+    by_label.update({h.label: h for h in enumerate_multimode(ctx)})
+    hyp = by_label.get(structure_hint)
+    if hyp is None:
+        return None                                    # label no longer in the hypothesis set
+    r = fit_hypothesis(hyp, ctx, backend=backend, minos=minos)   # cold grid-IC, same as full path
+    if not r.optimizer_converged:
+        return None
+    if _offer_multimode([r], ctx):                     # cost/dof or structured-residual gate
+        return None
+    null_aic = _null_aic(ctx, backend=backend)
+    if null_aic is not None and null_aic <= (r.cost + 2.0 * r.k):
+        return None                                    # no-phonon preferred → hint assumption void
+    return [r]
+
+
+def fit_structures_two_stage_hinted(ctx, *, backend="iminuit", minos=False, peaks=None,
+                                    structure_hint=None) -> tuple[list[StructureFitResult], bool]:
+    """:func:`fit_structures_two_stage` with an optional ``structure_hint``. Returns
+    ``(results, structure_skipped)``.
+
+    When ``structure_hint`` is ``None`` (the default, every non-master path) this is bit-for-bit
+    the full enumeration and ``structure_skipped`` is always ``False``. When a label is given
+    (a master refit reusing its previous winner, card policy ``[fitting].reuse_master_structure``)
+    the shortcut in :func:`_try_structure_hint` is attempted first: on acceptance only the hinted
+    structure + the no-phonon null are fit and ``structure_skipped`` is ``True``; on any gate
+    failure the hint is discarded and the full enumeration runs (``structure_skipped`` ``False``).
+
+    **Statistically-equivalent, not bit-identical:** the accepted shortcut hands the selection
+    layer a smaller candidate set (one structure, not the full admissible enumeration), so the
+    AIC comparison, ``modality``, ``confidence`` and ``best_label`` can differ from what the full
+    enumeration would have produced. The gates keep the difference to fits where one structure
+    already explains the data; it is opt-in and excluded from the bit-identity harness."""
+    if structure_hint is not None:
+        hinted = _try_structure_hint(ctx, structure_hint, backend=backend, minos=minos)
+        if hinted is not None:
+            return hinted, True
+    return [r for r, _ in _enumerate_and_fit(ctx, backend=backend, minos=minos, peaks=peaks)], False

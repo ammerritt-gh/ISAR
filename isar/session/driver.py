@@ -273,13 +273,19 @@ def _scan_descriptor(ctx) -> dict | None:
 
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
             errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False,
-            descriptor=None):
+            descriptor=None, structure_hint=None):
     """Two-stage structure fit (§ multiplicity), optionally narrowed by guideline labels, then
     select + verdict. Mirrors docs/phase3_gold*_check.run_pipeline; returns extracted fields.
 
     ``peaks`` (guideline hints, ≥2 forces the 2-mode offer and seeds the greedy IC) are threaded
     into :func:`loop.fit_structures_two_stage`. The whitelist narrows the union of 1- and 2-mode
     labels (``stokes2+bg`` etc. pass through) — an empty match keeps all + warns.
+
+    ``structure_hint`` (a previous best_label, master-refit only; card policy
+    ``[fitting].reuse_master_structure``) offers the structure-skip shortcut: fit only that
+    structure + the no-phonon null instead of the full enumeration when the gates permit
+    (:func:`loop.fit_structures_two_stage_hinted`). ``None`` (every other path) is the unchanged
+    full enumeration. The returned ``structure_skipped`` reports whether the shortcut was taken.
 
     ``errors_tier`` selects the uncertainty depth. ``"full"`` (default, unchanged) runs MINOS +
     parametric bootstrap + ω₀ profile — the authoritative interval the stop rule consumes.
@@ -293,7 +299,8 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     run_full = errors_tier == "full"     # MINOS + bootstrap + ω₀ profile (authoritative interval)
     run_fast = errors_tier == "fast"     # HESSE ω₀ interval + trust flag, no bootstrap (fast loop)
     _t_two_stage = time.perf_counter()
-    results = loop.fit_structures_two_stage(ctx, minos=run_full, peaks=peaks)
+    results, structure_skipped = loop.fit_structures_two_stage_hinted(
+        ctx, minos=run_full, peaks=peaks, structure_hint=structure_hint)
     two_stage_seconds = round(time.perf_counter() - _t_two_stage, 4)
     # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
     by_hyp = {h.label: h for h in enumerate_structures(ctx)}
@@ -399,6 +406,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "gamma_at_bound": bool(getattr(best, "gamma_at_bound", False)) if best else False,
         "two_stage_seconds": two_stage_seconds,
         "errors_attach_seconds": errors_attach_seconds,
+        "structure_skipped": structure_skipped,
     }
 
 
@@ -749,10 +757,14 @@ def _fit_master_group_task(args):
     serially afterward in sorted-group order. Every argument is picklable (ms/grp are plain collation
     dataclasses, member_rec a ScanRecord, card/g/runcal as the scan pool already ships)."""
     (ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number, chash,
-     M, seed, errors_tier, boot_adaptive) = args
+     M, seed, errors_tier, boot_adaptive, structure_hint) = args
+    # Pass structure_hint only when set: with the reuse policy off (default) hint is None and this
+    # call is byte-identical to the pre-B2 call (keeps the "change nothing when off" guarantee).
+    hint_kw = {"structure_hint": structure_hint} if structure_hint is not None else {}
     return _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id,
                              scan_number, chash, M=M, seed=seed, errors_tier=errors_tier,
-                             boot_workers=1, boot_executor=None, boot_adaptive=boot_adaptive)
+                             boot_workers=1, boot_executor=None, boot_adaptive=boot_adaptive,
+                             **hint_kw)
 
 
 def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
@@ -779,21 +791,32 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
     from isar.session.state import canonical_hash
 
     rec_by_scan = {rec.scan_number: rec for rec in records}
+    # Card policy opt-in (default OFF): reuse an invalidated group's previous fitted structure as a
+    # cold-refit hint, skipping the full enumeration when the gates permit. OFF ⇒ hint is always
+    # None ⇒ nothing below the fit call changes (see fit_structures_two_stage_hinted).
+    _pol = getattr(card, "policy", None)
+    reuse_structure = bool((getattr(_pol, "fitting", None) or {}).get("reuse_master_structure", False))
     # --- Refit list first: apply the membership-hash skip unchanged (carry path untouched). ---
     # idx is the ORIGINAL sorted-group enumeration position (NOT the refit-list position) so the
     # per-group seed `seed_base + _MASTER_SCAN_BASE + idx` and synthetic scan_number stay stable.
-    refits = []     # (idx, grp, ms, master_id, chash, member_rec, member_det)
+    refits = []     # (idx, grp, ms, master_id, chash, member_rec, member_det, structure_hint)
     for idx, grp in enumerate(sorted(collation.groups, key=lambda gg: str(gg.key))):
         ms = getattr(grp, "merged", None)
         if ms is None or ms.n_members < 1:
             continue
         master_id = "master:" + "_".join(str(k) for k in grp.key)
         chash = canonical_hash([list(m) for m in ms.members])
-        prev = session.get(master_id)
+        prev = session.get(master_id)               # read BEFORE the refit overwrites the ledger
         if not force and prev is not None and prev.content_hash == chash:
             continue                               # member set unchanged → carry the prior master
         member_scan, member_det = ms.members[0][1], ms.members[0][2]
-        refits.append((idx, grp, ms, master_id, chash, rec_by_scan.get(member_scan), member_det))
+        # Structure hint: the previous entry's best_label, iff it was a completed (fitted) master
+        # and the reuse policy is on. Anything else (cold group, held/non_result, policy off) → None.
+        hint = None
+        if reuse_structure and prev is not None and prev.status == "fitted":
+            hint = (prev.detectors.get(member_det or "merged") or {}).get("best_label")
+        refits.append((idx, grp, ms, master_id, chash, rec_by_scan.get(member_scan), member_det,
+                       hint))
     if not refits:
         return 0
 
@@ -803,8 +826,8 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
         # preserves order → entries[k] aligns with refits[k], keeping the serial ledger order.
         arg_list = [(ms, grp, member_rec, member_det, card, runcal, g, master_id,
                      _MASTER_SCAN_BASE + idx, chash, M, seed_base + _MASTER_SCAN_BASE + idx,
-                     errors_tier, boot_adaptive)
-                    for (idx, grp, ms, master_id, chash, member_rec, member_det) in refits]
+                     errors_tier, boot_adaptive, hint)
+                    for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in refits]
         max_workers = min(scan_workers, len(arg_list))
         with ProcessPoolExecutor(max_workers=max_workers) as ex_pool:
             entries = list(ex_pool.map(_fit_master_group_task, arg_list))
@@ -823,14 +846,16 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
                                   _MASTER_SCAN_BASE + idx, chash, M=M,
                                   seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier,
                                   boot_workers=boot_workers, boot_executor=ex,
-                                  boot_adaptive=boot_adaptive)
-                for (idx, grp, ms, master_id, chash, member_rec, member_det) in refits]
+                                  boot_adaptive=boot_adaptive,
+                                  # hint kwarg only when set → off-path call is byte-identical.
+                                  **({"structure_hint": hint} if hint is not None else {}))
+                for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in refits]
         finally:
             if own_pool is not None:
                 own_pool.shutdown()
 
     # Apply ledger mutations + timing entries serially, in the original sorted-group order.
-    for (idx, grp, ms, master_id, chash, member_rec, member_det), entry in zip(refits, entries):
+    for (idx, grp, ms, master_id, chash, member_rec, member_det, hint), entry in zip(refits, entries):
         session.put(entry)
         if per_master is not None:
             per_master.append(
@@ -843,8 +868,12 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
 
 def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number,
                       chash, *, M, seed, errors_tier="full", boot_workers=1, boot_executor=None,
-                      boot_adaptive=False) -> ScanEntry:
-    """Fit one merged group's pooled spectrum → a ``pooled=True`` ScanEntry (or a non_result)."""
+                      boot_adaptive=False, structure_hint=None) -> ScanEntry:
+    """Fit one merged group's pooled spectrum → a ``pooled=True`` ScanEntry (or a non_result).
+
+    ``structure_hint`` (the group's previous fitted best_label, opt-in via card policy
+    ``[fitting].reuse_master_structure``) offers the structure-skip shortcut; an entry produced via
+    an accepted hint is stamped ``provenance["structure_skipped"] = True``."""
     _t_fit0 = time.perf_counter()
     det = member_det or "merged"
     base = dict(scan_id=master_id, scan_number=int(scan_number), scan_type="measurement",
@@ -888,7 +917,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
     try:
         fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, errors_tier=errors_tier,
                       boot_workers=boot_workers, boot_executor=boot_executor,
-                      boot_adaptive=boot_adaptive, descriptor=descriptor)
+                      boot_adaptive=boot_adaptive, descriptor=descriptor,
+                      structure_hint=structure_hint)
     except Exception as exc:  # noqa: BLE001 — one unfittable pool must not kill the batch (N=16 wrinkle)
         return ScanEntry(status="non_result",
                          reasons=[f"{master_id}: fit error ({type(exc).__name__}): {exc}"], **base)
@@ -937,6 +967,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                         "fit_seconds": round(time.perf_counter() - _t_fit0, 4),
                         "two_stage_seconds": fit.get("two_stage_seconds"),
                         "errors_attach_seconds": fit.get("errors_attach_seconds")}
+    if fit.get("structure_skipped"):
+        entry.provenance["structure_skipped"] = True
     return entry
 
 
