@@ -91,6 +91,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="σ-calibration artifact path (default the repo phonon_dft_deterministic.json)")
     pd.add_argument("--tavi", default=None, help="TAVI API base URL (default http://127.0.0.1:8642/api/v1)")
     pd.add_argument("--seed", type=int, default=0, help="base seed for the scan seed sequence")
+    pd.add_argument("--no-worker", dest="worker", action="store_false", default=True,
+                    help="disable the persistent analysis worker; run a fresh `isar run` subprocess "
+                         "per iteration (the pre-worker cold-start path)")
     return p
 
 
@@ -154,7 +157,7 @@ def main(argv=None) -> int:
         try:
             summary = run_campaign(objective, {
                 "workspace": args.workspace, "calibration": args.calibration,
-                "tavi_url": args.tavi, "seed": args.seed})
+                "tavi_url": args.tavi, "seed": args.seed, "worker": args.worker})
         except Exception as exc:  # noqa: BLE001  (a campaign error is exit 2, not a stack trace)
             print(f"isar drive: campaign failed: {exc}", file=sys.stderr)
             return 2

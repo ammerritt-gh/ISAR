@@ -37,6 +37,7 @@ from isar.drive.instrument.tavi_client import TaviClient
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
 from isar.drive.isar_io.runner import SubprocessRunner, as_runner
 from isar.drive.isar_io.runner import init_isar as _default_init_isar
+from isar.drive.isar_io.worker_client import WorkerRunner
 from isar.drive.isar_io.scan_writer import save_scan_json
 from isar.drive.objective import ObjectiveSpec
 from isar.drive.session_log import log_event, read_log, timed
@@ -457,8 +458,15 @@ class CampaignConfig:
     - ``client`` (TAVI-client-shaped, config keys ``client`` then ``tavi_url``, default
       :class:`TaviClient` at ``tavi_url`` or its own default): the validate/submit/wait/fetch seam.
     - ``runner`` (runner object, config key ``run_isar`` — a bare callable/runner adapted via
-      :func:`as_runner` — default :class:`SubprocessRunner`): runs the ISAR analysis; reused across the
-      campaign and closed in its ``finally``.
+      :func:`as_runner`): runs the ISAR analysis; reused across the campaign and closed in its
+      ``finally``. Resolution: an explicit ``config["run_isar"]`` wins; else the persistent
+      :class:`WorkerRunner` (default, config key ``worker`` — one warm process per campaign, cold
+      :class:`SubprocessRunner` fallback); else a fresh-subprocess :class:`SubprocessRunner` when
+      ``worker`` is off.
+    - ``worker`` (:class:`bool`, config key ``worker``, default ``True``): use the persistent analysis
+      worker (``isar drive --no-worker`` disables it). Ignored when ``run_isar`` is supplied.
+    - ``run_timeout`` (:class:`float`, config key ``run_timeout``, default 900.0): the worker's per-job
+      wall-clock ceiling (seconds) before it falls back cold. Ignored when ``run_isar`` is supplied.
     - ``init_isar`` (:class:`Callable` ``(workspace, probe) -> Any``, config key ``init_isar``, default
       the real ``isar init`` seam): scaffolds the instrument card lazily after the first scan lands.
     - ``resolution_cb`` (:class:`Callable`, built from config key ``resolution`` — a float / dict /
@@ -487,6 +495,8 @@ class CampaignConfig:
     max_iters: int
     wait_timeout: float
     floor: float
+    worker: bool = True
+    run_timeout: float = 900.0
 
 
 def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignConfig:
@@ -496,17 +506,32 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
     callback, systematic floor). See :class:`CampaignConfig` for the per-key documentation."""
     config = dict(config or {})
     workspace = Path(config["workspace"])
+    log_path = Path(config.get("session_log", workspace / "report" / "session_log.jsonl"))
     client = config.get("client")
     if client is None:
         client = TaviClient(config["tavi_url"]) if config.get("tavi_url") else TaviClient()
     # Runner seam: an explicit ``config["run_isar"]`` (callable hook or runner object) is adapted via
-    # ``as_runner``; otherwise a fresh-subprocess SubprocessRunner.
-    runner = as_runner(config["run_isar"]) if config.get("run_isar") is not None else SubprocessRunner()
+    # ``as_runner`` and always wins; otherwise the persistent WorkerRunner (one warm process per
+    # campaign, cold SubprocessRunner fallback) unless ``worker`` is off, in which case a
+    # fresh-subprocess SubprocessRunner per job.
+    worker = bool(config.get("worker", True))
+    run_timeout = float(config.get("run_timeout", 900.0))
+    if config.get("run_isar") is not None:
+        runner = as_runner(config["run_isar"])
+    elif worker:
+        runner = WorkerRunner(
+            workspace, job_timeout=run_timeout, fallback=SubprocessRunner(),
+            on_degraded=lambda: log_event(
+                log_path, "exception",
+                {"action": "worker_degraded",
+                 "note": "persistent analysis worker failed repeatedly; permanent cold-subprocess fallback"}))
+    else:
+        runner = SubprocessRunner()
     calibration = _resolve_calibration(config.get("calibration"))
     return CampaignConfig(
         workspace=workspace,
         data_dir=Path(config.get("data_dir", workspace / "data")),
-        log_path=Path(config.get("session_log", workspace / "report" / "session_log.jsonl")),
+        log_path=log_path,
         calibration=calibration,
         client=client,
         runner=runner,
@@ -517,6 +542,8 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
         max_iters=int(config.get("max_iters", DEFAULT_MAX_ITERS)),
         wait_timeout=float(config.get("wait_timeout", DEFAULT_WAIT_TIMEOUT)),
         floor=systematic_floor(calibration, config.get("floor")),
+        worker=worker,
+        run_timeout=run_timeout,
     )
 
 
