@@ -24,7 +24,7 @@ safety concerns, not analysis concerns — a different discipline bolted onto th
 why they are out of scope until the analysis loop is proven.
 
 **The single load-bearing inheritance.** Everything autonomous rests on the error bar being *right* — the
-spine of `PHASE_3_DESIGN.md` §0.1. If Phase 3's uncertainty is trustworthy across instruments and
+spine of `archive/PHASE_3_DESIGN.md` §0.1. If Phase 3's uncertainty is trustworthy across instruments and
 Phase 4's stopping rule is unbiased, Phase 5 is a control-and-safety problem on top of a sound loop. If it
 isn't, Phase 5 cannot be attempted at all. That dependency is the reason the error layer got the design
 budget it did.

@@ -104,6 +104,8 @@ every call with your own eyes.
 | What is ISAR for / why trust it? | this guide |
 | How will I run it on my own data (the CLI)? | [USING_ISAR.md](USING_ISAR.md) |
 | How does the autonomous loop work (goal → scans → stop)? | [MVP_FIRST_RUN.md](MVP_FIRST_RUN.md), [PHASE_4_NOTES.md](PHASE_4_NOTES.md) |
+| How was the loop's zone fix tested / what still fails? | [MVP_ZONE_RETEST.md](MVP_ZONE_RETEST.md) |
+| Where did a campaign spend its time? | `isar profile` ([USING_ISAR.md](USING_ISAR.md)) |
 | What does a term mean (pull, fold/fork, cost/dof, a verdict)? | [GLOSSARY.md](GLOSSARY.md) |
 | Why these statistics (vs χ² / HESSE / eyeballing models)? | [STATS_PRIMER.md](STATS_PRIMER.md) |
 | What should I *do* with a given verdict? | [INTERPRETING_A_VERDICT.md](INTERPRETING_A_VERDICT.md) |
@@ -111,7 +113,7 @@ every call with your own eyes.
 | Does it agree with a human on real data? | `out/phase3_gold/FINDINGS.md` (gold report) |
 | Does the engine reproduce the trusted fitter + behave? | `out/phase3_step1/FINDINGS.md` |
 | Does the same core work on another instrument (triple-axis)? | `out/in8_phase1/FINDINGS.md` |
-| The full design rationale | [PHASE_1_DESIGN.md](PHASE_1_DESIGN.md), [PHASE_2_DESIGN.md](PHASE_2_DESIGN.md), [PHASE_3_DESIGN.md](PHASE_3_DESIGN.md) |
+| The full design rationale | [archive/PHASE_1_DESIGN.md](archive/PHASE_1_DESIGN.md), [archive/PHASE_2_DESIGN.md](archive/PHASE_2_DESIGN.md), [archive/PHASE_3_DESIGN.md](archive/PHASE_3_DESIGN.md) |
 | How it all assembles into one tool (current phase) | [UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md) |
 | Why steer measurements this way (Bayesian info-gain; prior art; cheap/sim/real tiers) — research foundation | [MEASUREMENT_STEERING.md](MEASUREMENT_STEERING.md) |
 | Build-session handoff briefs (Phase 1/2, Unification, LLMM integration) | archived under [docs/archive/](archive/) |

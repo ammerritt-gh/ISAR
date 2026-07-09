@@ -2,7 +2,7 @@
 """Phase-3 step-8: second-instrument gold-standard scoring on IN8 (TAS) — the generalization guard (§10).
 
 Step 6 scored the full Phase-3 pipeline against 83 curated FeSe IXS fits on ONE instrument (S30).
-`PHASE_3_DESIGN.md` §10 is explicit that this is necessary but not sufficient: the "generalizes across
+`archive/PHASE_3_DESIGN.md` §10 is explicit that this is necessary but not sufficient: the "generalizes across
 instruments" claim is untested for the analysis layer until it is run on a structurally-different
 instrument. This is that test — the SAME pipeline (structure loop → frequentist errors → model selection
 → verdict → confidence) on real ILL IN8 triple-axis numors, scored against a small hand-vetted anchor set.

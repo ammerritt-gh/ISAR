@@ -3,7 +3,7 @@
 
 Empirically checks whether the synthetic core (`isar.synth.fit.fit`, DHO (x) 1-D Voigt,
 Baker-Cousins, iminuit/MINOS) recovers omega0 on a *non-IXS* instrument. The 1-D Voigt omits the TAS
-4-D resolution-ellipsoid focusing effect (PHASE_3_DESIGN.md s8), so on IN8 **omega0 is the pass
+4-D resolution-ellipsoid focusing effect (archive/PHASE_3_DESIGN.md s8), so on IN8 **omega0 is the pass
 condition; Gamma is resolution-contaminated** (only "did it converge"). The S30 control fits the same
 core on the instrument class the 1-D Voigt *was* designed for, with resolution **measured** from the
 in-window elastic line -- so its Gamma is meaningful and the contrast is the product.

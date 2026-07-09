@@ -5,8 +5,8 @@ Written for a scientist at (or preparing for) a beamtime. For what ISAR *is* and
 start with [READING_GUIDE.md](READING_GUIDE.md); for what a verdict means, see
 [INTERPRETING_A_VERDICT.md](INTERPRETING_A_VERDICT.md).
 
-> **Status: the v1 CLI described here is built** (`isar init/run/status/report/score`, plus the
-> autonomous `isar drive`, tested in `tests/session/` and `tests/drive/`). It runs end-to-end on IN8
+> **Status: the v1 CLI described here is built** (`isar init/run/status/report/score/profile`, plus
+> the autonomous `isar drive`, tested in `tests/session/`, `tests/cli/` and `tests/drive/`). It runs end-to-end on IN8
 > today and on S30 once a companion `.spec` supplies the
 > energy zero. One validation is still pending — the full 83-scan S30 statistical comparison at M=200
 > (a multi-minute run) — so treat the S30 accuracy numbers as expected-not-yet-confirmed until that
@@ -80,6 +80,13 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   and a running TAVI instrument. Use `--spec spec.json` for an LLM-free run. **Currently drives the
   TAVI simulator only** (development tier), not a live beamline. See
   [MVP_FIRST_RUN.md](MVP_FIRST_RUN.md).
+- **`isar profile --workspace DIR`** — where an autonomous campaign spent its time. Reads the
+  campaign's `report/session_log.jsonl` timing events and prints a stage breakdown (propose /
+  validate / submit / wait_scan / isar_run / fold / analyze …), the embedded `isar run` subprocess
+  sub-stages (including per-scan interpreter/matplotlib startup overhead), and — with
+  `--iterations` — a per-iteration table. `--log PATH` points at a different log; `--top N` shows
+  only the N slowest stages. Logs written before timing instrumentation degrade to approximate
+  per-kind gap estimates from event timestamps.
 
 ## Telling ISAR what you know — the `[fitting]` guidelines
 

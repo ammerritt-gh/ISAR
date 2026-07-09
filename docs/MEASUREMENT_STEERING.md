@@ -1,11 +1,13 @@
 # Autonomous measurement steering — the research foundation
 
-> **Status: research + design, not yet built.** This document captures *why* ISAR's autonomous
-> loop should steer measurements the way it does, what the literature actually says, and the design
-> options we considered. It is the durable record of the research behind the "R" in ISAR that acts to
-> *resolve a measurement problem* (`DESIGN.md`). The **tactical near-term work** — the immediate fix
-> for the MVP's low-q/high-q trouble zones — is a separate, concrete plan; this document is the core
-> ISAR should grow into, so that plan does not lose the reasoning. Where a claim rests on a paper we
+> **Status: design locked; the core is built.** The model-free descriptor (L0), branch model +
+> Bayesian branch assignment, soft/hard Γ constraints, Stokes-only rescue, under-model
+> falsification, cost-normalised EIG acquisition, and the anti-Stokes fold + rival-branch banking
+> are implemented (`isar/analyze/descriptor.py`, `isar/session/branch_model.py` /
+> `branch_assignment.py`, `isar/drive/acquisition/eig.py`); what ran and what failed is recorded in
+> `MVP_FIRST_RUN.md` and `MVP_ZONE_RETEST.md`. This document remains the durable record of *why*
+> the loop steers the way it does — what the literature actually says and the design options we
+> considered — behind the "R" in ISAR that acts to *resolve a measurement problem* (`DESIGN.md`). Where a claim rests on a paper we
 > give the citation; citation-confidence flags are collected at the end (the reference list is meant
 > to seed a reading library).
 
@@ -35,7 +37,7 @@ three:
 1. **No good model, told to measure a region.** Must survey and report signal *model-free* — "there is
    something at E = X, width W, intensity I" — without asserting what it is.
 2. **Signal that does not match the model.** Must *demote* the model and flag the anomaly, never
-   fit-a-phonon-anyway (`PHASE_3_DESIGN.md` already warns: a sharp non-phonon feature is *flagged, not
+   fit-a-phonon-anyway (`archive/PHASE_3_DESIGN.md` already warns: a sharp non-phonon feature is *flagged, not
    fitted as a phonon*).
 3. **Features stuck together.** Must report the blend honestly and know how to *separate* them (change
    T, change Q, higher resolution) rather than force a fit.

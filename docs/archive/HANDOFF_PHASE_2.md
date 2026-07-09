@@ -5,7 +5,7 @@ Keep it short; the spec lives in the design docs, which are authoritative. **Whe
 design doc disagree, the design doc wins** — tell the human about the conflict.
 
 ## Read first (authoritative, in order)
-- `docs/PHASE_2_DESIGN.md` — **the spec for this build. Follow it.** §10 is the build order, §11 lists
+- `docs/archive/PHASE_2_DESIGN.md` — **the spec for this build. Follow it.** §10 is the build order, §11 lists
   the settled decisions (D1–D7), §0 the five framing corrections that shaped everything.
 - `DESIGN.md` — master design, for context on where Phase 2 sits (it realizes §5 schema, §6 card,
   §7.1–7.3 QC, §7.6 collate, §10 correction channel). Note the §8 refinement on the three-state energy
@@ -13,7 +13,7 @@ design doc disagree, the design doc wins** — tell the human about the conflict
 - `docs/SCHEMA_LANDSCAPE.md` — the field-survey evidence base behind the schema's extension points.
   (Two of its claims were corrected by real files; the corrections are marked inline and consolidated
   in `PHASE_2_DESIGN.md` §6.)
-- `docs/PHASE_1_DESIGN.md` — what the existing synthetic core does, since Phase 2 builds on it.
+- `docs/archive/PHASE_1_DESIGN.md` — what the existing synthetic core does, since Phase 2 builds on it.
 
 ## What already exists (build on it, don't duplicate)
 - `isar/synth/` — **Phase 1, built and working.** The DHO fitter, estimators, scorer, and crucially the
@@ -52,7 +52,7 @@ they slot in as cards).
   `test_data/SP8 BL43LXU/` (SPEC `specixs_*`, Nov 2022).
 
 ## Task
-Build the Phase 2 parsing + reduction pipeline exactly as `docs/PHASE_2_DESIGN.md` lays out: the
+Build the Phase 2 parsing + reduction pipeline exactly as `docs/archive/PHASE_2_DESIGN.md` lays out: the
 generalized `ScanRecord` schema and experiment card, a shared SPEC base reader + S30 and IN8 parsers
 (each with a paired emitter), deterministic QC that flags-and-survives, LLM adjudication via LLMM,
 deterministic collate, Markdown+PNG reports, and the card-as-state correction loop. Output is clean

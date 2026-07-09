@@ -1,4 +1,4 @@
-"""TAS energy resolution by the Cooper-Nathans method (PHASE_3_DESIGN.md §8, D5).
+"""TAS energy resolution by the Cooper-Nathans method (docs/archive/PHASE_3_DESIGN.md §8, D5).
 
 The marginal (vanadium) energy-resolution FWHM at the elastic line, computed from a numor
 header (DM/DA/KFIX/FX/ALF*/BET*/ETA*) — the right width to convolve a constant-Q S(E)

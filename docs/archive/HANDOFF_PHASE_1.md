@@ -4,7 +4,7 @@ This briefs a fresh Claude Code session (full repo access, can run Python) to bu
 Keep it short; the spec lives in the design docs, which are authoritative.
 
 ## Read first (authoritative)
-- `docs/PHASE_1_DESIGN.md` — the spec for this build. Follow it. §13 lists the settled decisions.
+- `docs/archive/PHASE_1_DESIGN.md` — the spec for this build. Follow it. §13 lists the settled decisions.
 - `DESIGN.md` — master design, for context on where Phase 1 sits (this realizes §11 / §14 step 1).
 
 ## Reference code (read; do not modify in Phase 1)

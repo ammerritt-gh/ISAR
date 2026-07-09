@@ -135,6 +135,60 @@ Decisions settled 2026-07-06:
 - [ ] **Objective-aware Γ exclusion** — acoustic ω₀→0 at zone centers is structurally
       unmeasurable; parse-time exclusion beats spending 4 scans discovering it per campaign.
 
+## Deferred findings from the pre-merge branch review (2026-07-09)
+
+Verified by the model-free-foundation review but deliberately NOT fixed pre-merge —
+each changes campaign behavior that the v16 scorecard PASS validated, so they need a
+re-run of the certification campaign (or targeted tests) alongside the change.
+
+- [ ] **Matched-descriptor rescue can deliver confident-wrong** — `verdict.classify()`
+      lets a family-wise-significant descriptor peak that the winning model happens to
+      explain bypass the no-excursion gate straight to `resolved` (the deliberate high-q
+      rescue). Reachable false-positive path (AIC is permissive; confidence has no peak-
+      significance factor); no classify()-level test covers flat-but-matched → resolved.
+      Add a characterization test + consider a minimum peak-significance floor on the rescue.
+- [ ] **`stokes_only` gate is prior-only** — `structures.antistokes_mode()` decides to
+      drop the anti-Stokes side purely from `ctx.prior_omega` (populated only when branch
+      σ ≤ 0.6 meV, so a *confidently wrong* posterior triggers it); no data-driven
+      cross-check once dropped, and no test with a wrong prior.
+- [ ] **`build_beliefs()` doesn't filter by fit_kind** — contract 4 ("constrained fits
+      never seed a branch") is enforced for Γ/A via `_is_clean_anchor` but NOT for the
+      ω₀ assignment belief: a `branch_conditional` delivery (gated only by the weaker
+      `constrained_ok` bar: p_acoustic ≥ 0.6, no dominance/entropy check) feeds later
+      assignment posteriors. Narrow but real self-reinforcement channel.
+- [ ] **`branch_continuation` mislabeling loses the recenter/widen retry** — fit-derived
+      features get `float("inf")` significance in `features_from`, so a garbage fit on an
+      out-of-window scan can be triaged `branch_continuation` (not counted missed) and the
+      q burns its 3-decline budget instead of recentering. Right fix is honest significance
+      for fit-derived features, not re-including branch_continuation in `_rows_missed`.
+- [ ] **`summarize_grid` None→acoustic fallback is untested** — deliberate (posterior-off /
+      legacy ledgers) but nothing locks down either mode; add tests for branch_id=None
+      vs "optic" vs "acoustic" rows.
+- [ ] **Centralize steering string constants** — fit_kind literals ("unconstrained",
+      "soft_prior", "branch_conditional", "stokes_only", "descriptor_only") spread over
+      8 files, and "acoustic"/"optic" duplicated as two independent `BRANCH_ID` constants
+      (branch_model.py, branch_view.py) + literals in 4 more files. Home: `isar/schema/steering.py`.
+      Also: the `f"{scan_id}#{branch}{i}"` banked-anchor convention needs a shared
+      construct/parse helper before anything else consumes `dispersion_prior[*].scan_id`.
+- [ ] **Acquisition hot-path caching** — per iteration: `fisher()` does one blocking TAVI
+      `get_resolution` HTTP call + 11 forward-model evals per candidate with no memoization
+      (~21 candidates); `_grid_state` fully re-reads results.csv + re-scans all observations
+      2×/iteration (`match_grid_index` is a linear scan). Memoize resolution by (hkl, ΔE),
+      cache parsed results.csv by mtime, index the grid path.
+- [ ] **`build_beliefs` O(n²) rebuild** — reconstructed from the full dispersion_prior on
+      every scan and master fit; cache per (sample, t_bin) within a `run_batch`.
+- [ ] **Worker keeps no state resident** — persistent worker still round-trips full
+      card.state.json + session.json per job (O(n²) I/O over a campaign). Residency needs
+      an explicit single-writer contract or a workspace lock first (today's always-reload
+      is what makes mid-campaign human card edits safe).
+- [ ] **`steering.py` dataclasses on the generic `_json` codec** — needs parameterized
+      annotations first (`tuple[DescriptorPeak, ...]`), then drop the hand-rolled
+      to_dict/from_dict.
+- [ ] Minor: share `_linfit` (branch_model) with `session_prior.prior_for`'s inline polyfit;
+      unify `session_log.timed()` / `StageTimer.stage()` if the sink semantics ever converge;
+      `_errors_arg_for` is production-dead (test-only callers); worker `_reconfigure_stdio`
+      duplicates cli/main's (blocked by the worker import boundary — needs a lower-layer home).
+
 ## Platform
 
 - [ ] **Query API for downstream consumers** — the driver currently reads
