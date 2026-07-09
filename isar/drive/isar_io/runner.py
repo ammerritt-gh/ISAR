@@ -83,9 +83,9 @@ class SubprocessRunner:
             data_paths: the scan files (or directories) to feed ISAR (typically the workspace data dir).
             force: pass ``--force`` to refit every scan, ignoring the ledger.
             errors_tier: the ``--errors`` tier (``cheap`` | ``fast`` | ``full``).
-            render: whether the run should render human reports. Accepted but not yet wired to an
-                argv flag — the ``--no-render`` flag lands in Stage 3; kept here so call sites can be
-                written against the final signature now.
+            render: whether the run should render human reports. ``False`` appends ``--no-render`` so
+                the child skips report.md/.html/.json + figures (results.csv / card.state.json still
+                written); campaign call sites pass ``render=False`` and re-render once at end.
             timeout: optional subprocess timeout (seconds).
 
         Returns a :class:`RunResult`. Raises :class:`IsarRunError` on a nonzero exit.
@@ -97,6 +97,8 @@ class SubprocessRunner:
         if force:
             cmd.append("--force")
         cmd.extend(["--errors", str(errors_tier)])
+        if not render:
+            cmd.append("--no-render")
         return _exec_run(cmd, timeout)
 
     def close(self) -> None:
@@ -118,6 +120,10 @@ class _CallableRunner:
 
     def run(self, workspace, data_paths, *, force: bool = False, errors_tier: str = "full",
             render: bool = True, timeout: float | None = None) -> RunResult:
+        # ``render`` is accepted for protocol parity but deliberately NOT reflected into ``extra_args``:
+        # bare callables (config["run_isar"] hooks / test fakes) don't parse argv, and the extra_args
+        # contract was frozen at the Stage-1 shape (--errors <tier> [--force]). Adding --no-render here
+        # would break every fake that asserts on extra_args. A real fake never renders anyway.
         extra_args = ["--errors", str(errors_tier)]
         if force:
             extra_args.append("--force")

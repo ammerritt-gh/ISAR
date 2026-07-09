@@ -25,6 +25,8 @@ from typing import Any, Callable
 
 import json
 import math
+import subprocess
+import sys
 
 import numpy as np
 
@@ -602,7 +604,9 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         # untrusted-HESSE q needs the reliable interval. The bootstrap fires only where needed.
         tier = _errors_tier_for(proposal, workspace)
         with timed(log_path, "isar_run", iteration=it, errors_tier=tier, attempt=attempt):
-            runner.run(workspace, [data_dir], errors_tier=tier)
+            # render=False: skip the per-invocation report (report layer / matplotlib import is the
+            # dominant cost and nothing mid-campaign reads it); the campaign re-renders once at the end.
+            runner.run(workspace, [data_dir], errors_tier=tier, render=False)
 
         with timed(log_path, "fold_rows", iteration=it) as _m:
             rows = _new_rows(workspace, consumed)
@@ -659,7 +663,7 @@ def _certify(*, cfg: CampaignConfig, decision, observations: list[dict],
     log_event(log_path, "decide", {"event": "certify_start", "tier": "full"})
     try:
         with timed(log_path, "certify", iteration=None):
-            cfg.runner.run(workspace, [data_dir], errors_tier="full", force=True)
+            cfg.runner.run(workspace, [data_dir], errors_tier="full", force=True, render=False)
         observations = _recertified_observations(workspace, cfg.calibration, scan_kind)
         # Embed the certification subprocess timings (iter=None — the certify pass is reported
         # separately, never averaged into per-iteration stats).
@@ -676,6 +680,30 @@ def _certify(*, cfg: CampaignConfig, decision, observations: list[dict],
     except Exception as e:   # noqa: BLE001 — never lose a met campaign to a certification hiccup
         log_event(log_path, "exception", {"action": "certify_failed", "error": str(e)})
         return observations, False
+
+
+def _render_campaign_report(cfg: CampaignConfig) -> None:
+    """End-of-campaign report render (Stage 3 report deferral).
+
+    Every ``isar run`` in the loop passes ``render=False`` (report layer / matplotlib import is the
+    dominant per-invocation cost and nothing mid-campaign consumes report.md/.html/.json/figures), so
+    the report is stale on disk. Render it ONCE here from persisted state via ``isar report`` (the same
+    re-render path a human would use), in a subprocess (matplotlib stays out of the driver process, and
+    the analysis boundary is preserved). Uses the runner's own subprocess mechanism directly rather than
+    the runner seam — this is an ``isar report``, not an ``isar run``.
+
+    Best-effort: skipped when no analysis ran (no ``results.csv``); any failure logs an ``exception``
+    event and never fails a completed campaign. The ``report_render`` timing span is always recorded."""
+    if not (cfg.workspace / "report" / "results.csv").exists():
+        return   # no analysis ran (no scans) → nothing to render
+    cmd = [sys.executable, "-m", "isar.cli.main", "report", "--workspace", str(cfg.workspace)]
+    try:
+        with timed(cfg.log_path, "report_render", iteration=None):
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise RuntimeError(f"isar report exited {proc.returncode}: {(proc.stderr or '').strip()}")
+    except Exception as e:   # noqa: BLE001 — a render hiccup never fails an otherwise-complete campaign
+        log_event(cfg.log_path, "exception", {"action": "report_render_failed", "error": str(e)})
 
 
 def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[str, Any]:
@@ -783,10 +811,15 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
 
         summary = _campaign_summary(objective, grid, decision, budget_state, cfg.workspace, cfg.log_path,
                                     len(observations))
-        log_event(cfg.log_path, "stop", {"state": decision.state, "reasons": decision.reasons})
         (cfg.workspace / "report").mkdir(parents=True, exist_ok=True)
         (cfg.workspace / "report" / "campaign_summary.json").write_text(
             json.dumps(summary, indent=2), encoding="utf-8")
+        # Report deferral (Stage 3): the loop ran every `isar run` with --no-render, so refresh the
+        # human report once now from persisted state (incl. any certify pass). Best-effort — reads only
+        # persisted files, which are final here, so it precedes the terminal `stop` event (keeping
+        # `stop` the last logged decision).
+        _render_campaign_report(cfg)
+        log_event(cfg.log_path, "stop", {"state": decision.state, "reasons": decision.reasons})
     finally:
         cfg.runner.close()
     return summary

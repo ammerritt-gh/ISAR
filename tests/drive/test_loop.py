@@ -14,6 +14,7 @@ import pytest
 from isar.drive.acquisition.calibration import Calibration
 import types
 
+import isar.drive.loop as loop_mod
 from isar.drive.loop import _errors_arg_for, _pick_interval, _resume_state, run_campaign
 from isar.drive.objective import ObjectiveSpec
 from isar.drive.session_log import log_event, read_log
@@ -251,6 +252,35 @@ def _run(tmp_path, objective, client, runner, **extra):
     cfg = {"workspace": ws, "client": client, "run_isar": runner, "calibration": _UNITY_CAL,
            "resolution": {"fwhm_dE": 0.8}, "seed": 7, **extra}
     return run_campaign(objective, cfg), ws
+
+
+def test_campaign_end_renders_report_once(tmp_path, monkeypatch):
+    # Stage 3: after the loop (and any certify) the campaign re-renders the report ONCE via an
+    # `isar report` subprocess, wrapped in a `report_render` timing span. The end-render uses
+    # subprocess directly (not the runner seam) — monkeypatch it so the test stays fast and doesn't
+    # depend on a real render succeeding; assert the timing span was recorded regardless.
+    calls = []
+
+    class _CP:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(loop_mod.subprocess, "run",
+                        lambda cmd, **k: (calls.append(list(cmd)), _CP())[1])
+
+    omega = lambda h: (h - 2.0) * 2.0
+    client = MockTavi(omega)
+    summary, ws = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+
+    events = read_log(summary["session_log"])
+    renders = [e for e in events if e["kind"] == "timing"
+               and (e.get("payload") or {}).get("stage") == "report_render"]
+    assert len(renders) == 1                      # rendered exactly once, at the end
+    assert isinstance(renders[0]["payload"]["ok"], bool)
+    # ... and it invoked `isar report --workspace <ws>` (not a per-iteration `isar run`).
+    assert calls and calls[-1][3] == "report"
+    assert "--workspace" in calls[-1]
 
 
 def test_campaign_reaches_met(tmp_path):

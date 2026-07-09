@@ -4,6 +4,10 @@ Built from the session ledger (no refitting): a header of counts, a per-scan tri
 dispersion summary, held/declined explanations, gaps, and a machine-readable JSON sidecar. The
 `results.csv` is written by the driver; this adds the human-readable report.md/.html + report.json
 and the dispersion figure. No gold CSV anywhere (that is `isar score`).
+
+`isar run --no-render` skips this entire step — including the report.json sidecar — because nothing
+mid-campaign consumes it (the driver reads only results.csv / card.state.json). The campaign re-renders
+once at the end via `isar report`, which refreshes report.md/.html/.json + figures from persisted state.
 """
 from __future__ import annotations
 

@@ -41,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="uncertainty depth: 'full' (MINOS+bootstrap+profile, default), "
                          "'fast' (HESSE ω₀ interval + trust flag, no bootstrap), or "
                          "'cheap' (HESSE only — quick-look verdict + rough ω₀, no interval)")
+    pr.add_argument("--no-render", dest="render", action="store_false", default=True,
+                    help="skip the human report (report.md/.html/.json + figures); results.csv and "
+                         "card.state.json are still written. Used by the driver, which re-renders once "
+                         "at end of campaign — most run time savings come from not importing the report "
+                         "layer / matplotlib per invocation")
 
     ps = sub.add_parser("status", help="summarize a workspace's ledger without reprocessing")
     ps.add_argument("--workspace", required=True)

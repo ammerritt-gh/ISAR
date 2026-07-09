@@ -118,3 +118,42 @@ def test_subprocess_runner_argv_force(monkeypatch):
     assert "--force" in cmd
     assert cmd.index("--force") < cmd.index("--errors")
     assert cmd[cmd.index("--errors") + 1] == "full"
+
+
+def _capture_subprocess(monkeypatch):
+    captured = {}
+
+    class _CP:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(runner_mod.subprocess, "run",
+                        lambda cmd, **k: (captured.__setitem__("cmd", list(cmd)), _CP())[1])
+    return captured
+
+
+def test_subprocess_runner_render_false_appends_no_render(monkeypatch):
+    captured = _capture_subprocess(monkeypatch)
+    SubprocessRunner().run("ws", ["d"], errors_tier="fast", render=False)
+    assert "--no-render" in captured["cmd"]
+
+
+def test_subprocess_runner_render_true_default_has_no_flag(monkeypatch):
+    captured = _capture_subprocess(monkeypatch)
+    SubprocessRunner().run("ws", ["d"], errors_tier="fast")   # render defaults True
+    assert "--no-render" not in captured["cmd"]
+
+
+def test_callable_runner_never_gets_no_render(monkeypatch):
+    # The bare-callable shim's extra_args contract is frozen at the Stage-1 shape: render=False must
+    # NOT leak --no-render into extra_args (fakes don't parse argv).
+    calls = []
+
+    def fake(workspace, data_paths, extra_args=None):
+        calls.append(list(extra_args))
+        return None
+
+    as_runner(fake).run("ws", ["d"], errors_tier="fast", render=False)
+    assert calls == [["--errors", "fast"]]
+    assert all("--no-render" not in a for a in calls)

@@ -30,14 +30,19 @@ def run(args) -> int:
 
         # Try the rich report (build step 6); the CSV that run_batch always writes is the fallback.
         report_note = f"results: {ws.report_dir / 'results.csv'}"
-        try:
-            with timer.stage("report_render"):
-                from isar.report import run_report
-                card, session = ws.load()
-                run_report.write_run_report(session, card, ws, formats=formats)
-            report_note = f"report: {ws.report_dir}"
-        except Exception:  # noqa: BLE001 — report layer optional until step 6
-            pass
+        # --no-render (driver campaigns): skip report.md/.html/.json + figures entirely — nothing
+        # mid-campaign consumes them (drive reads only results.csv / card.state.json) and the report
+        # layer / matplotlib import dominates per-invocation cost. The campaign re-renders once at the
+        # end. Don't emit a zero-length report_render timing stage when skipping.
+        if getattr(args, "render", True):
+            try:
+                with timer.stage("report_render"):
+                    from isar.report import run_report
+                    card, session = ws.load()
+                    run_report.write_run_report(session, card, ws, formats=formats)
+                report_note = f"report: {ws.report_dir}"
+            except Exception:  # noqa: BLE001 — report layer optional until step 6
+                pass
     finally:
         # A timing-write failure must never fail the run (StageTimer.write is itself best-effort).
         timer.write(ws.report_dir / "run_timings.json")
