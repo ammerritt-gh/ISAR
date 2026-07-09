@@ -62,7 +62,7 @@ isar run "path\to\data" --workspace my_experiment     # parse -> reduce -> revie
 | The autonomous loop — research foundation & design | [docs/MEASUREMENT_STEERING.md](docs/MEASUREMENT_STEERING.md) |
 | Autonomous campaign results (first run, zone re-test) | [docs/MVP_FIRST_RUN.md](docs/MVP_FIRST_RUN.md), [docs/MVP_ZONE_RETEST.md](docs/MVP_ZONE_RETEST.md) |
 | Where did a campaign spend its time? | `isar profile` in [docs/USING_ISAR.md](docs/USING_ISAR.md) |
-| Phase design rationale | docs/archive/PHASE_1…3_DESIGN.md, docs/PHASE_4/5_NOTES.md |
+| Phase design rationale | [docs/archive/PHASE_1_DESIGN.md](docs/archive/PHASE_1_DESIGN.md), [PHASE_2_DESIGN.md](docs/archive/PHASE_2_DESIGN.md), [PHASE_3_DESIGN.md](docs/archive/PHASE_3_DESIGN.md); forward notes: [docs/PHASE_4_NOTES.md](docs/PHASE_4_NOTES.md), [docs/PHASE_5_NOTES.md](docs/PHASE_5_NOTES.md) |
 
 ## Repository layout
 

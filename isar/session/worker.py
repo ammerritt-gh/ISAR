@@ -104,6 +104,12 @@ def serve(workspace_path, stdin, proto_out) -> int:
             _reply(proto_out, {"id": None, "ok": False, "summary": None, "timings": None,
                                "error": {"type": type(e).__name__, "message": str(e), "traceback": ""}})
             continue
+        if not isinstance(req, dict):   # valid JSON but not an object (a number/array/null) — same deal
+            _reply(proto_out, {"id": None, "ok": False, "summary": None, "timings": None,
+                               "error": {"type": "ValueError",
+                                         "message": f"request must be a JSON object, got {type(req).__name__}",
+                                         "traceback": ""}})
+            continue
 
         cmd = req.get("cmd")
         if cmd == "shutdown":

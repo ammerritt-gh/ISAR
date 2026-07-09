@@ -308,6 +308,6 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
     return ScanProposal(
         h=h, k=k, l=l, e_lo=e_lo, e_hi=e_hi, e_step=e_step, ncount=ncount, kind=kind,
         reason=reason, e_pred=float(e_pred), fwhm_dE=float(fwhm), n_points=n_points,
-        meta={"e_sigma": float(e_sigma), "q": pick.q, "score": score.to_dict(),
+        meta={"e_sigma": _finite_or_none(e_sigma), "q": pick.q, "score": score.to_dict(),
               "budget_state": dict(budget_state) if budget_state else {}},
     )

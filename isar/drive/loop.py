@@ -876,13 +876,15 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
         observations, ran_certify = _certify(cfg=cfg, decision=decision, observations=observations,
                                              scan_kind=scan_kind)
 
+        # Recompute the stop decision on the FINAL grid unconditionally: the in-loop decision is from
+        # the top of the last iteration, so a campaign that exhausts max_iters (or breaks on budget)
+        # would otherwise report a stale pre-scan verdict in the summary.
         master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
-        if decision is None or ran_certify:
-            decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
-            if ran_certify and decision.state != "met":
-                log_event(cfg.log_path, "exception",
-                          {"action": "certify_regression", "state": decision.state,
-                           "note": "a q's bootstrap-certified interval exceeded the fast-tier stop"})
+        decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
+        if ran_certify and decision.state != "met":
+            log_event(cfg.log_path, "exception",
+                      {"action": "certify_regression", "state": decision.state,
+                       "note": "a q's bootstrap-certified interval exceeded the fast-tier stop"})
 
         summary = _campaign_summary(objective, grid, decision, budget_state, cfg.workspace, cfg.log_path,
                                     len(observations))

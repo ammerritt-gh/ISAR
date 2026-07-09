@@ -193,7 +193,7 @@ class GoldScore:
     isar_verdict: str
     isar_confidence: float
     isar_omega0: float | None
-    isar_disposition: str              # "resolved" | "flagged" | "reject" | "abstain"
+    isar_disposition: str              # "resolved" | "flagged" | "unmodeled" | "branch_continuation" | "reject" | "abstain"
     modality: str
     agree: bool | None                 # delivered<->OK match; None when ISAR abstains
     safety: bool                       # True iff ISAR cleanly `resolved` a human-REJECT
@@ -241,7 +241,7 @@ def score_row(gold_row: GoldRow, isar: IsarResult) -> GoldScore:
 # --- confusion + aggregate -------------------------------------------------------------------
 
 _GOLD_DISP = ("accept", "reject")
-_ISAR_DISP = ("resolved", "flagged", "reject", "abstain")
+_ISAR_DISP = ("resolved", "flagged", "unmodeled", "branch_continuation", "reject", "abstain")
 
 
 @dataclass

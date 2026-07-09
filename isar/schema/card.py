@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import tomllib
+import uuid
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
@@ -149,7 +150,7 @@ class Card:
         the restart. On failure the prior file is left intact."""
         p = Path(path)
         text = json.dumps(self.state.to_dict(), indent=2)
-        tmp = p.with_name(p.name + f".tmp.{os.getpid()}")
+        tmp = p.with_name(p.name + f".tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
         try:
             tmp.write_text(text, encoding="utf-8")
             os.replace(tmp, p)      # atomic on the same filesystem

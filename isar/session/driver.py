@@ -710,7 +710,10 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
                 session_prior.add_point(card.state, scan_id=f"{entry.scan_id}#{sf['branch_id']}{i}",
                                         sample=oc.get("sample"), T=oc.get("T"), q=oc.get("q"),
                                         omega0=sf.get("omega0"), modality=oc.get("modality"),
-                                        verdict=oc.get("verdict"), fit_kind=oc.get("fit_kind"),
+                                        # A banked rival anchor is an unconstrained DETECTION of the
+                                        # other branch (secondary_branch_points contract) — it must
+                                        # not inherit the primary fit's constrained fit_kind.
+                                        verdict=oc.get("verdict"), fit_kind="unconstrained",
                                         branch_id=sf.get("branch_id"), weight=sf.get("weight"),
                                         t_round=t_round, require_fold=False)
             summary.outcomes.append((scan, FitOutcome(**oc) if not isinstance(oc, FitOutcome) else oc))
