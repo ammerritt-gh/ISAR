@@ -74,7 +74,14 @@ def test_stage_and_subprocess_tables(tmp_path, capsys):
     # stage names from timing events
     assert "isar_run" in out
     assert "model_fit" in out
-    assert "iteration" in out
+    # the wrapping "iteration" span is reported as a summary line, not a stage row (it would
+    # otherwise double-count against %wall), and %wall of the child rows must not exceed 100%.
+    stage_section = out.split("isar_run: subprocess")[0]
+    assert "Iterations: 2" in stage_section
+    assert "total iteration time" in stage_section
+    pcts = [float(tok.rstrip("%")) for tok in stage_section.split()
+            if tok.endswith("%") and tok.rstrip("%").replace(".", "", 1).isdigit()]
+    assert pcts and sum(pcts) <= 100.0 + 1e-6
     # embedded subprocess sub-stages
     assert "ingest_parse" in out
     assert "report_render" in out
@@ -90,11 +97,12 @@ def test_top_limits_rows(tmp_path, capsys):
     _write_campaign(log)
     profile_cmd.run(_args(tmp_path, top=1))
     out = capsys.readouterr().out
-    # "iteration" (84s, wraps the whole body) is the single largest stage; smaller stages
-    # like model_fit must be dropped from the top-1 stage table. (They can still appear as
-    # sub-stages below, so assert on the stage-table section only.)
+    # "iteration" wraps the whole body and is now a summary line, not a stage peer row, so
+    # "isar_run" (80s) is the single largest stage; smaller stages like model_fit must be
+    # dropped from the top-1 stage table. (They can still appear as sub-stages below, so
+    # assert on the stage-table section only.)
     stage_section = out.split("isar_run: subprocess")[0]
-    assert "iteration" in stage_section
+    assert "isar_run" in stage_section
     assert "model_fit" not in stage_section
 
 

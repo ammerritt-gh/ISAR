@@ -74,21 +74,32 @@ def _residual_structured(pull, *, z: float = RUNS_Z) -> bool:
     return bool((runs - mu) / np.sqrt(var) <= -z)
 
 
-def _pull(result, ctx):
-    """Pull residual (counts - model)/sqrt(counts) for the winning structure, rebuilt from its
-    label + fitted params. Used only on the GoF-bad branch (junk vs model-incomplete)."""
+def _fitted_model(label, params, ctx):
+    """The winning structure evaluated on ``ctx.x_used`` (counts space), rebuilt from its ``label`` +
+    fitted ``params``. Spans BOTH the 1-mode and 2-mode enumerations: a winning 2-mode label
+    (`stokes2+bg`) must reconstruct here, else a GoF-bad two-branch fit is silently mis-routed to
+    `junk` (and the descriptor falsification is disabled for it). ``None`` if the label is not
+    enumerable here or its params do not pack."""
     from isar.analyze.structures import enumerate_multimode, enumerate_structures
 
-    # Span BOTH the 1-mode and 2-mode enumerations: a winning 2-mode label (`stokes2+bg`) must
-    # reconstruct here, else a GoF-bad two-branch fit is silently mis-routed to `junk` (and the
-    # descriptor falsification is disabled for it).
-    hyp = {h.label: h for h in (*enumerate_structures(ctx), *enumerate_multimode(ctx))}.get(result.label)
+    hyp = {h.label: h for h in (*enumerate_structures(ctx), *enumerate_multimode(ctx))}.get(label)
     if hyp is None:
         return None
     comp = hyp.build()
-    theta = np.array([result.params[n] for n in comp.param_names()], dtype=float)
+    try:
+        theta = np.array([params[n] for n in comp.param_names()], dtype=float)
+    except (KeyError, TypeError):
+        return None
+    return comp.evaluate(ctx.x_used, theta, ctx)
+
+
+def _pull(result, ctx):
+    """Pull residual (counts - model)/sqrt(counts) for the winning structure, rebuilt from its
+    label + fitted params. Used only on the GoF-bad branch (junk vs model-incomplete)."""
+    model = _fitted_model(result.label, result.params, ctx)
+    if model is None:
+        return None
     y = ctx.counts_used
-    model = comp.evaluate(ctx.x_used, theta, ctx)
     return (y - model) / np.sqrt(np.maximum(y, 1.0))
 
 
@@ -166,17 +177,7 @@ def _significant_peaks(descriptor, *, alpha: float = FLAG_ALPHA):
 def _model_curve(win, ctx):
     """The winning model evaluated on ``ctx.x_used`` (counts space), rebuilt from its label + fitted
     params — like :func:`_pull`. ``None`` if the label is not enumerable here."""
-    from isar.analyze.structures import enumerate_multimode, enumerate_structures
-
-    hyp = {h.label: h for h in (*enumerate_structures(ctx), *enumerate_multimode(ctx))}.get(win.label)
-    if hyp is None:
-        return None
-    comp = hyp.build()
-    try:
-        theta = np.array([win.params[n] for n in comp.param_names()], dtype=float)
-    except (KeyError, TypeError):
-        return None
-    return comp.evaluate(ctx.x_used, theta, ctx)
+    return _fitted_model(win.label, win.params, ctx)
 
 
 def _residual_z_at(energy, model, ctx) -> float:
@@ -208,18 +209,18 @@ def _model_bg(win, ctx, model) -> float:
     return float(np.min(model)) if np.size(model) else 0.0
 
 
-def _unmatched_descriptor_peaks(descriptor, win, ctx, *, z: float = RESID_Z,
+def _unmatched_descriptor_peaks(descriptor, win, ctx, model, *, z: float = RESID_Z,
                                 frac: float = MODEL_FRAC):
     """Family-wise-significant descriptor peaks that are DISTINCT unmodeled features: the model both
     (a) under-predicts them (positive residual ≥ ``z`` σ in the window) and (b) treats their location
     as ~background (peak-normalised model signal < ``frac``). (b) keeps a shoulder / broad tail of the
     model's own peak — where the model already has intensity — out (that stays model_incomplete, ω₀
     usable); only a real peak where the model predicts background is unmatched. Curve-based ⇒ damping-
-    and side-aware without a positional tolerance."""
+    and side-aware without a positional tolerance. ``model`` is the precomputed :func:`_model_curve`
+    (``None`` if not enumerable)."""
     peaks = _significant_peaks(descriptor)
     if not peaks:
         return []
-    model = _model_curve(win, ctx)
     if model is None:
         return []
     x = ctx.x_used
@@ -236,14 +237,14 @@ def _unmatched_descriptor_peaks(descriptor, win, ctx, *, z: float = RESID_Z,
     return out
 
 
-def _has_matched_descriptor_peak(descriptor, win, ctx, *, z: float = RESID_Z) -> bool:
+def _has_matched_descriptor_peak(descriptor, win, ctx, model, *, z: float = RESID_Z) -> bool:
     """Whether a family-wise-significant descriptor peak is *explained* by the model (residual below
     ``z`` — the model already predicts the excess there). The exact-Poisson confirmation the crude
-    ``_excursion_above_bg`` can miss on a weak high-q Stokes line."""
+    ``_excursion_above_bg`` can miss on a weak high-q Stokes line. ``model`` is the precomputed
+    :func:`_model_curve` (``None`` if not enumerable)."""
     peaks = _significant_peaks(descriptor)
     if not peaks:
         return False
-    model = _model_curve(win, ctx)
     if model is None:
         return False
     return any(_residual_z_at(p.energy, model, ctx) < z for p in peaks)
@@ -311,8 +312,11 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None) -> ScanVer
     # Phase 4a — model-free descriptor as an under-model falsification check on the winning fit.
     if descriptor is None:
         descriptor = _safe_descriptor(ctx)
-    unmatched = _unmatched_descriptor_peaks(descriptor, win, ctx)
-    matched = _has_matched_descriptor_peak(descriptor, win, ctx)
+    # Rebuild the winning model once (both descriptor helpers reuse it); skip the rebuild entirely
+    # when there is no significant descriptor peak, matching the helpers' own early-out.
+    model_curve = _model_curve(win, ctx) if _significant_peaks(descriptor) else None
+    unmatched = _unmatched_descriptor_peaks(descriptor, win, ctx, model_curve)
+    matched = _has_matched_descriptor_peak(descriptor, win, ctx, model_curve)
 
     # 3. across-model fork — unconstrained unless the prior breaks the tie.
     if selection.modality == "fork":

@@ -48,8 +48,9 @@ def test_clean_fit_leaves_no_unmatched_peak():
     ctx = _ctx(counts)
     res, _ = _fit(ctx)
     d = V._safe_descriptor(ctx)
-    assert V._unmatched_descriptor_peaks(d, res, ctx) == []   # model explains every detected peak
-    assert V._has_matched_descriptor_peak(d, res, ctx)        # …and confirms the real one
+    m = V._model_curve(res, ctx)
+    assert V._unmatched_descriptor_peaks(d, res, ctx, m) == []  # model explains every detected peak
+    assert V._has_matched_descriptor_peak(d, res, ctx, m)       # …and confirms the real one
 
 
 def test_planted_second_peak_is_unmatched():
@@ -59,7 +60,7 @@ def test_planted_second_peak_is_unmatched():
     ctx = _ctx(counts)
     res, _ = _fit(ctx)
     d = V._safe_descriptor(ctx)
-    unm = V._unmatched_descriptor_peaks(d, res, ctx)
+    unm = V._unmatched_descriptor_peaks(d, res, ctx, V._model_curve(res, ctx))
     assert unm and any(abs(float(p.energy) - 12.0) < 2.0 for p in unm)   # the 2nd peak is caught
 
 

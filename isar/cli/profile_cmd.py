@@ -187,7 +187,16 @@ def run(args) -> int:
          float((e.get("payload") or {}).get("seconds", 0.0)))
         for e in timing
     ]
-    _print_table(_aggregate(stage_pairs), wall, args.top,
+    # The "iteration" span wraps every child stage, so it double-counts against %wall and
+    # would dominate the table as a bogus peer row. Exclude it from the per-stage breakdown
+    # and report it once as the wrapping total instead.
+    iter_pairs = [(n, s) for n, s in stage_pairs if n == "iteration"]
+    child_pairs = [(n, s) for n, s in stage_pairs if n != "iteration"]
+    if iter_pairs:
+        iter_total = sum(s for _, s in iter_pairs)
+        print(f"Iterations: {len(iter_pairs)}   total iteration time: {iter_total:.3f}s "
+              f"(wraps the per-stage rows below)")
+    _print_table(_aggregate(child_pairs), wall, args.top,
                  "Stage breakdown (driver-side timing events):")
 
     _print_subprocess_breakdown(events, log_path, stage_pairs, wall, args.top)
