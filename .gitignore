@@ -12,6 +12,8 @@ env/
 
 # ISAR synthetic-harness outputs
 /out/
+/objective*.json
+!/objective_v16.json
 test_data/
 ISAR.code-workspace
 examples/
