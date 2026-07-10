@@ -63,6 +63,9 @@ def build_parser() -> argparse.ArgumentParser:
     prp.add_argument("--workspace", required=True)
     prp.add_argument("--formats", default="html,markdown", help="report formats (comma-separated)")
 
+    pdg = sub.add_parser("diagnose", help="render the architect's CAMPAIGN_DIAGNOSTIC.md for a campaign")
+    pdg.add_argument("--workspace", required=True)
+
     psc = sub.add_parser("score", help="score a run against a human gold CSV or known analytic truth")
     psc.add_argument("--workspace", required=True)
     # Mutually exclusive: gold (human-fit CSV) vs truth (σ-calibration against known truth).
@@ -137,6 +140,9 @@ def main(argv=None) -> int:
     if cmd == "report":
         from isar.cli import report_cmd
         return report_cmd.run(args)
+    if cmd == "diagnose":
+        from isar.cli import diagnose_cmd
+        return diagnose_cmd.run(args)
     if cmd == "score":
         from isar.cli import score_cmd
         return score_cmd.run(args)

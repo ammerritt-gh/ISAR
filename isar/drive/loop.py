@@ -883,6 +883,28 @@ def _render_campaign_report(cfg: CampaignConfig) -> None:
         log_event(cfg.log_path, "exception", {"action": "report_render_failed", "error": str(e)})
 
 
+def _render_campaign_diagnostic(cfg: CampaignConfig) -> None:
+    """End-of-campaign CAMPAIGN_DIAGNOSTIC.md render (Part 2).
+
+    The architect's post-mortem — assembled deterministically from the file contract (see
+    ``isar.report.campaign_diagnostic``). Rendered in a subprocess (matplotlib / report layer stays
+    out of the driver process, analysis boundary preserved), right after ``_render_campaign_report``
+    and BEFORE the terminal ``stop`` event so ``stop`` remains the last logged decision.
+
+    Best-effort: skipped when no analysis ran (no ``results.csv``); any failure logs an ``exception``
+    event and never fails a completed campaign. The ``diagnostic_render`` timing span is recorded."""
+    if not (cfg.workspace / "report" / "results.csv").exists():
+        return   # no analysis ran (no scans) → nothing to diagnose
+    cmd = [sys.executable, "-m", "isar.cli.main", "diagnose", "--workspace", str(cfg.workspace)]
+    try:
+        with timed(cfg.log_path, "diagnostic_render", iteration=None):
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise RuntimeError(f"isar diagnose exited {proc.returncode}: {(proc.stderr or '').strip()}")
+    except Exception as e:   # noqa: BLE001 — a render hiccup never fails an otherwise-complete campaign
+        log_event(cfg.log_path, "exception", {"action": "diagnostic_render_failed", "error": str(e)})
+
+
 def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[str, Any]:
     """Run an adaptive measurement campaign to satisfy ``objective`` (LLM_HARNESS_DESIGN §8).
 
@@ -999,6 +1021,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
         # persisted files, which are final here, so it precedes the terminal `stop` event (keeping
         # `stop` the last logged decision).
         _render_campaign_report(cfg)
+        _render_campaign_diagnostic(cfg)
         log_event(cfg.log_path, "stop", {"state": decision.state, "reasons": decision.reasons})
     finally:
         cfg.runner.close()

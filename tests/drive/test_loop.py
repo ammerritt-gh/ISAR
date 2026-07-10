@@ -356,8 +356,34 @@ def test_campaign_end_renders_report_once(tmp_path, monkeypatch):
     assert len(renders) == 1                      # rendered exactly once, at the end
     assert isinstance(renders[0]["payload"]["ok"], bool)
     # ... and it invoked `isar report --workspace <ws>` (not a per-iteration `isar run`).
-    assert calls and calls[-1][3] == "report"
-    assert "--workspace" in calls[-1]
+    report_calls = [c for c in calls if len(c) > 3 and c[3] == "report"]
+    assert report_calls and "--workspace" in report_calls[-1]
+    # The Part-2 diagnostic render fires right after the report render (its own timing span), and the
+    # stop event remains the terminal log event.
+    diags = [e for e in events if e["kind"] == "timing"
+             and (e.get("payload") or {}).get("stage") == "diagnostic_render"]
+    assert len(diags) == 1
+    diag_calls = [c for c in calls if len(c) > 3 and c[3] == "diagnose"]
+    assert diag_calls and "--workspace" in diag_calls[-1]
+    assert events[-1]["kind"] == "stop"
+
+
+def test_campaign_end_renders_campaign_diagnostic(tmp_path):
+    # Part 2 full-stack: after a met campaign (which runs the certify pass → logs an escalate_fit
+    # promote) the diagnostic renders to report/CAMPAIGN_DIAGNOSTIC.md and its §3 narrative reflects
+    # the Part-1 events (escalate_fit promotion count; decide action model-update count).
+    omega = lambda h: (h - 2.0) * 2.0
+    client = MockTavi(omega)
+    summary, ws = _run(tmp_path, _objective(), client, make_mock_runner(omega, hesse_only=True))
+    assert summary["stop"]["state"] == "met", summary["stop"]["reasons"]
+    diag = ws / "report" / "CAMPAIGN_DIAGNOSTIC.md"
+    assert diag.exists()
+    text = diag.read_text(encoding="utf-8")
+    assert "## 3. What the driver did" in text
+    assert "full-tier promotions" in text          # escalate_fit present (certify_pass promote)
+    assert "Model updates." in text                # decide action counter (Part-1 decide.action)
+    # stop remains the terminal log event even with the diagnostic render inserted
+    assert read_log(summary["session_log"])[-1]["kind"] == "stop"
 
 
 def test_campaign_reaches_met(tmp_path):

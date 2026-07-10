@@ -297,4 +297,47 @@ CAPTIONS: dict[str, Caption] = {
         good="points hug the diagonal — ISAR recovers the same energy on a second instrument. NB only "
              "055182 is vetted truth; the other gold values are provisional placeholders.",
         jargon=()),
+
+    # ---- campaign diagnostic (isar/report/campaign_diagnostic.py) ------------------------------
+    "campaign/dispersion_truth": Caption(
+        title="Delivered dispersion vs truth",
+        what="each delivered ω₀ plotted against the dominant Q component, with the analytic truth "
+             "curve; filled circles are converged q (with calibrated halfwidth error bars), open "
+             "diamonds are uncertifiable/fast-tier deliveries (centres shown, no honest bar), and × "
+             "on the bottom rug marks no-signal / infeasible q.",
+        good="filled points sit on the truth line across the reachable path and the open/× markers "
+             "cluster only where the physics is genuinely hard (near Γ, the zone boundary) — the "
+             "campaign mapped what it could and flagged what it couldn't.",
+        jargon=(("calibrated halfwidth", "the σ-calibration-inflated 68% ω₀ interval half-width the "
+                 "stopping rule consumes"),
+                ("uncertifiable", "a delivered centre whose interval flagged interval_reliable=False "
+                 "— usable number, untrustworthy bar"))),
+    "campaign/scan_spend": Caption(
+        title="Where the scans went",
+        what="a stacked bar per grid q counting the scans spent there by kind: quicklook (cheap "
+             "seeding), production/confirm (full fits), and declined (no usable ω₀).",
+        good="cheap quicklooks spread thin to seed the model and the expensive production fits "
+             "concentrate on the q that pay off — little beam burned re-confirming a q that will "
+             "never seat.",
+        jargon=(("quicklook", "a cheap HESSE-only scan used to seed the ω(q) model, not to deliver"),
+                ("confirm", "a repeat production fit to tighten an interval already near tolerance"))),
+    "campaign/budget_timing": Caption(
+        title="Budget & time ledgers",
+        what="left: the neutron ledger (Σ of per-run cost) and the counting-second ledger against the "
+             "budget; right: wall-clock seconds broken down by the slowest driver stages.",
+        good="the two ledgers agree with each other and with the stop reason (a statistics-driven "
+             "stop should show budget barely touched), and the wall split shows where a speed-up "
+             "would actually pay — usually the fitting stage.",
+        jargon=(("counting seconds", "instrument counting time (the deterministic tier's virtual "
+                 "clock); verify its units before trusting a budget-limited stop"),)),
+    "campaign/scan": Caption(
+        title="One scan, reconstructed",
+        what="raw counts (±√N) for one scan/detector with the fit REBUILT from the stored parameters "
+             "(an NNLS amplitude solve, not a refit) drawn as total + components, and a pull-residual "
+             "strip beneath; the title carries the disposition/verdict and the honest interval string.",
+        good="the reconstructed curve overlays the data and the pull is flat noise — the delivered ω₀ "
+             "is supported by the counts; where a scan was declined you can see why in the residual.",
+        jargon=(_J_PULL, _J_RESID,
+                ("reconstructed", "the curve is rebuilt from the reported ω₀/Γ/resolution, not fitted "
+                 "again — presentation only"))),
 }

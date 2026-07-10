@@ -286,7 +286,8 @@ gain against the branch model, with per-q decline budgets, window recentering (g
 recenter onto |ΔE| ≲ the resolution FWHM), tier escalation with logged outcomes, and supervisor
 escalation instead of burning beam on repeated misses. *(Implemented; the elastic recenter guard
 and its `recenter_refused_elastic` refusal logging landed 2026-07-10 — previously claimed here but
-absent — with the remaining logging additions of DECISIONS R4 open.)*
+absent — and the remaining R4 logging additions (escalate_fit outcomes, decide.action) landed the
+same day.)*
 
 **Stop states.** `met` · `unmeetable` (statistics cannot deliver; refuse to spend the rest) ·
 `budget_exhausted` · **`diminishing_returns`** (best available marginal EIG per second below
@@ -362,13 +363,18 @@ uncertifiable," never junk). The **campaign diagnostic** serves the architect: o
 at a glance, loop narrative, failure dossier with per-zone evidence and figures, defect list,
 provenance table — assembled deterministically from the workspace's own artifacts. Spec:
 `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md`. A user-facing campaign report is a later, separate artifact.
-*(Triage Implemented with presentation fixes open; diagnostic Planned per spec.)*
+*(Triage Implemented with presentation fixes open; diagnostic Implemented 2026-07-10 —
+`isar diagnose`, rendered at every campaign end, characterization-pinned against the frozen
+MVP-16 workspace.)*
 
 **Logging is part of the trust contract.** A question the logs cannot answer is a logging
 defect, not a rendering problem. Required events: `escalate_fit` with outcomes, structured
 `decide.action`, recenter guard decisions, the stop-reason enum. Figures are the natural record
 of a run: per-scan fit+residual PNGs at fit time (full set buried; failures always surfaced;
-representative successes only). *(Planned per spec §5.)*
+representative successes only). *(Implemented 2026-07-10, with one deliberate refinement: the
+per-scan PNGs are reconstructed at diagnostic-render time from stored params + a Stage-I re-parse
+(`reconstruct_curve`, no refit) rather than drawn at fit time — same buried artifact, and the
+campaign path stays matplotlib-free.)*
 
 ## 13. Validation & scoring
 
@@ -403,10 +409,11 @@ DECISIONS W1–W3.)*
 | `tas4d` convolution (TAVI-supplied ellipsoids) | Planned |
 | Stage III: per-point objective, EIG acquisition, stop-and-report | Implemented (analytic tier certified) |
 | Wall-clock budget discipline; ledger audit | **Partial** (O2) |
-| `diminishing_returns` stop state; stop-reason enum; log events | **Partial** (per-q reason enum 2026-07-10; rest Planned) |
+| Stop-reason enum (full) + R4 log events (escalate_fit, recenter guard, decide.action) | Implemented (2026-07-10) |
+| `diminishing_returns` stop state | Planned (O4) |
 | Async one-step-stale loop | Planned |
 | TAVI-as-backend campaign (the SVP) | Planned — next milestone |
-| Campaign diagnostic report | Planned (spec final) |
+| Campaign diagnostic report (`isar diagnose`) | Implemented (2026-07-10) |
 | Bayesian interval tier | Planned |
 | Renegotiation protocol | Planned (design door open) |
 | Model-level (ARIANE-style) objective tier | Planned |

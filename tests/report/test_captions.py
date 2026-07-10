@@ -30,6 +30,8 @@ _EXPECTED_IDS = (
     "step1/synthetic_fork", "step1/verdict_confidence", "step1/energy_zero",
     # phase-1 anchor control (docs/in8_phase1_check.py)
     "in8/overlay",
+    # campaign diagnostic (isar/report/campaign_diagnostic.py)
+    "campaign/dispersion_truth", "campaign/scan_spend", "campaign/budget_timing", "campaign/scan",
 )
 
 
