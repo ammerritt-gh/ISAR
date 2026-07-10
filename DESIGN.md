@@ -318,7 +318,9 @@ driver cannot tell it from the instrument) → **instrument** (PUMA/MLZ, IN8/ILL
 certification, TAVI answering scans, and **realistic clocks**: counting time reported as the
 instrument would report it, so the wall-clock budget semantics (§8) are exercised before they
 meet a real night. TAVI will surprise in ways the analytic tier cannot (resolution tails,
-backgrounds, count-rate reality); better simulated than actual. *(Planned — next milestone.)*
+backgrounds, count-rate reality); better simulated than actual. *(Partial — the deterministic rung ran
+2026-07-10 as the S3 re-certification, `docs/campaigns/2026-07-10_SVP_RECERT.md`; realistic
+clocks and the McStas rung remain Planned.)*
 
 **Backend-first integration.** Oracle use (simulate a proposed scan before spending beam) and
 dry runs are the same interface invoked off-path; getting the backend right gets them free.
@@ -412,7 +414,7 @@ DECISIONS W1–W3.)*
 | Stop-reason enum (full) + R4 log events (escalate_fit, recenter guard, decide.action) | Implemented (2026-07-10) |
 | `diminishing_returns` stop state | Planned (O4) |
 | Async one-step-stale loop | Planned |
-| TAVI-as-backend campaign (the SVP) | Planned — next milestone |
+| TAVI-as-backend campaign (the SVP) | **Partial** (deterministic rung 2026-07-10; clocks + McStas Planned) |
 | Campaign diagnostic report (`isar diagnose`) | Implemented (2026-07-10) |
 | Bayesian interval tier | Planned |
 | Renegotiation protocol | Planned (design door open) |

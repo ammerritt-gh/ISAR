@@ -134,21 +134,24 @@ Decisions settled 2026-07-06:
       backup). Fall back automatically down a probed shortlist.
 - [ ] **Objective-aware Γ exclusion** — acoustic ω₀→0 at zone centers is structurally
       unmeasurable; parse-time exclusion beats spending 4 scans discovering it per campaign.
-- [ ] **Re-certify after the S3 convergence change (2026-07-10).** The uniform
-      `interval_reliable` rule alters campaign behavior by design: on the frozen v16 baseline,
-      13 previously profile-laundered deliveries no longer certify (5 legit certifiers remain),
-      so a re-run will converge fewer q and emit the new per-q reasons
-      (`uncertifiable_interval`, `fast_tier_only`). Needs a fresh certification campaign
-      (natural to fold into the SVP below). Two intent-confirmations while there:
-      `n_uncertifiable` never resets on a later good fit (chronic-flaky q gets abandoned —
-      asymmetric with `n_decline`'s consecutive semantics, believed intended); triage still
-      shows confidence for `(unreliable)` rows (report-layer follow-up).
-- [ ] **The SVP: TAVI-as-backend campaign with realistic clocks** (T1/T2; DESIGN.md §9 —
-      "next milestone"). Same objective and driver as the analytic certification, TAVI
-      answering scans, counting time reported as the instrument would report it, so the
-      wall-clock budget semantics (§8, O2) are exercised before a real night. Prereq:
-      verify the counting-seconds accounting first (MVP16 defect: 10.6 s of 28 800 after
-      85 scans looks like a units bug).
+- [x] **Re-certified after the S3 convergence change (2026-07-10).** Full deterministic
+      campaign against TAVI: honest 3/21 (vs v16's 10/21 with fictional precision), centers
+      hold (median 0.046 meV), zero flagged intervals seated convergence, escalation outcomes
+      visible (16 failed / 1 seated → γ-at-bound is the bottleneck). Writeup:
+      `docs/campaigns/2026-07-10_SVP_RECERT.md`; workspace promoted to
+      `ISAR_baselines\svp_recert1`. Intent-confirmations still open: `n_uncertifiable` never
+      resets (chronic-flaky abandon); triage shows confidence beside `(unreliable)`.
+- [ ] **γ-at-bound calibration v2 must cover the HESSE trust gate** (SVP_RECERT Finding 3):
+      q=0.45 mis-certified via `hesse_trusted=True` — certified halfwidth 0.002 meV, truth
+      0.070 meV away (~35 halfwidths). γ=0.0134 passed the at-bound heuristic; the trust gate
+      needs the same calibration scrutiny as the bootstrap flag, and the confident-wrong
+      scorecard check must also test certified-interval coverage, not only pull on unflagged
+      rows.
+- [ ] **The SVP, remaining rungs** (T1/T2; DESIGN.md §9): (a) realistic clocks — counting time
+      reported as the instrument would report it (TAVI-side virtual clock), exercising the
+      wall-clock budget semantics (§8, O2); today `budget.spent` sums TAVI's *compute* eta
+      (root cause of the MVP16 "10.6 of 28 800" — semantics gap, not units); (b) the McStas
+      rung. Deterministic rung ran 2026-07-10 (see above).
 
 ## Docs follow-ups (consolidation drop 2026-07-09)
 
