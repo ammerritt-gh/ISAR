@@ -25,6 +25,9 @@ from typing import Any, Sequence
 MAX_RECENTER_ATTEMPTS = 3
 WIDEN_FACTOR = 1.5
 BUDGET_WARN_FRACTION = 0.9
+# Recentering onto |ΔE| ≲ this many resolution FWHM of the elastic line is refused: on a real
+# instrument that is beam spent pointing at the elastic peak (MVP-16 re-aimed at ΔE = 0.009 meV).
+ELASTIC_GUARD_K = 1.0
 
 # ISAR dispositions/verdicts that mean "no usable peak in this window".
 MISSED_VERDICTS = frozenset({"no_signal", "declined"})
@@ -90,13 +93,21 @@ def _peak_deltaE(counts: Sequence, scan_values: Sequence):
 
 def handle_missed_window(counts: Sequence, scan_values: Sequence, *, e_lo: float, e_hi: float,
                          attempt: int, max_attempts: int = MAX_RECENTER_ATTEMPTS,
-                         widen: float = WIDEN_FACTOR) -> ExceptionAction:
+                         widen: float = WIDEN_FACTOR, resolution_fwhm: float | None = None,
+                         guard_k: float = ELASTIC_GUARD_K) -> ExceptionAction:
     """Recover a missed energy window: re-center on the observed peak and widen; escalate past the cap.
 
     ``attempt`` is the number of recovery attempts already made at this q (0 on the first miss). When it
     reaches ``max_attempts`` the action escalates instead of re-centering. The new window keeps the same
     intent — center on where the intensity actually is, widen by ``widen`` — and is a LOOK: the counts
     steer the next scan, they are never turned into an ω₀.
+
+    **Elastic guard.** When ``resolution_fwhm`` is supplied and the observed peak sits within
+    ``guard_k`` × FWHM of ΔE = 0 (the elastic line), re-centering onto it is *refused*: the peak is the
+    elastic peak, not the phonon, and re-aiming there is beam spent pointing at ΔE ≈ 0. The action is
+    ``recenter_refused_elastic`` — still a bounded retry (the window is widened about the OLD center,
+    never re-aimed at elastic, never an instant abandon). ``resolution_fwhm=None`` restores the exact
+    pre-guard behavior (back-compat).
     """
     if attempt >= max_attempts:
         return ExceptionAction(
@@ -106,16 +117,30 @@ def handle_missed_window(counts: Sequence, scan_values: Sequence, *, e_lo: float
 
     width = float(e_hi) - float(e_lo)
     new_width = width * float(widen)
+    old_center = 0.5 * (float(e_lo) + float(e_hi))
     peak = _peak_deltaE(counts, scan_values)
     if peak is None:
         # Nothing to see — widen symmetrically about the old center and try again.
-        center = 0.5 * (float(e_lo) + float(e_hi))
+        center = old_center
         reason = "no counts to re-center on; widening the window symmetrically and retrying"
     else:
         # Reflect an anti-Stokes peak to the Stokes side: the DHO is two-sided (kT ≫ ħω here, both
         # branches comparable) but the analysis fits the positive-deltaE branch, so a window
         # recentered onto -|ω₀| would carry no Stokes coverage at all.
         center = abs(peak)
+        if resolution_fwhm is not None and center <= guard_k * float(resolution_fwhm):
+            # The observed peak IS the elastic line — refuse to re-aim at it. Widen about the OLD
+            # window center (a bounded retry that keeps some Stokes coverage) rather than chase ΔE ≈ 0.
+            new_lo = old_center - new_width / 2.0
+            new_hi = old_center + new_width / 2.0
+            return ExceptionAction(
+                "recenter_refused_elastic",
+                f"proposed re-center onto deltaE={center:g} meV is within the elastic guard "
+                f"({guard_k:g}× resolution FWHM {float(resolution_fwhm):g} meV) — that is the elastic "
+                f"line, not the phonon; widening about the old center ({old_center:g} meV) instead",
+                {"proposed_center": center, "resolution_fwhm": float(resolution_fwhm),
+                 "guard_k": float(guard_k), "e_lo": new_lo, "e_hi": new_hi, "center": old_center,
+                 "attempt": attempt + 1, "widen": float(widen)})
         reason = (f"peak observed at deltaE={peak:g} meV, outside/near the window edge; "
                   f"re-centering on the Stokes side ({center:g} meV) and widening")
     new_lo = center - new_width / 2.0

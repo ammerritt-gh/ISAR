@@ -145,6 +145,52 @@ def test_fast_tier_only_stuck_reason():
     assert any("fast" in r.lower() for r in d.reasons)
 
 
+def test_all_validation_rejected_declines_is_infeasible():
+    # Every decline was a TAVI validation rejection (verdict validation_rejected) → the point is
+    # unreachable by the instrument, not merely quiet: stuck reason `infeasible`, not `no_signal`.
+    obj = _obj()
+    obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
+           for _ in range(st.MAX_DECLINES)]
+    for o in obs:
+        o["verdict"] = "validation_rejected"
+    masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
+    grid = st.summarize_grid(obj, obs, masters)
+    assert grid[0].n_infeasible == st.MAX_DECLINES and grid[0].n_decline == st.MAX_DECLINES
+    assert grid[0].stuck and grid[0].stuck_reason == "infeasible"
+    d = st.evaluate_stop(obj, grid, _BUDGET)
+    joined = " ".join(d.reasons).lower()
+    assert "unreachable by the instrument" in joined and "no signal" not in joined
+
+
+def test_unmodeled_declines_is_signal_unmodeled():
+    # Signal present but the model cannot fit it (disposition 'unmodeled') → stuck reason
+    # `signal_unmodeled` (a model problem), never `no_signal`.
+    obj = _obj()
+    obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="unmodeled")
+           for _ in range(st.MAX_DECLINES)]
+    masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
+    grid = st.summarize_grid(obj, obs, masters)
+    assert grid[0].n_unmodeled == st.MAX_DECLINES
+    assert grid[0].stuck and grid[0].stuck_reason == "signal_unmodeled"
+    d = st.evaluate_stop(obj, grid, _BUDGET)
+    joined = " ".join(d.reasons).lower()
+    assert "model cannot account for it" in joined and "no signal" not in joined
+
+
+def test_mixed_declines_falls_back_to_no_signal():
+    # A mix of a validation rejection and a plain junk decline is neither ALL-infeasible nor
+    # unmodeled → the terminal reason stays `no_signal`.
+    obj = _obj()
+    obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined"),
+           _obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined"),
+           _obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="junk")]
+    obs[0]["verdict"] = obs[1]["verdict"] = "validation_rejected"
+    masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
+    grid = st.summarize_grid(obj, obs, masters)
+    assert grid[0].n_infeasible == 2 and grid[0].n_decline == 3
+    assert grid[0].stuck and grid[0].stuck_reason == "no_signal"
+
+
 def test_no_usable_fits_is_still_no_signal():
     # Genuine no-usable-fits q → stuck reason no_signal (existing behavior preserved).
     obj = _obj()

@@ -136,6 +136,11 @@ class GridQ:
     n_production: int = 0          # production scans taken at this q (each grows the pool)
     n_quicklook: int = 0
     n_decline: int = 0             # consecutive per-scan fits with no usable ω₀ (junk/no_signal)
+    # Decline sub-labels (subsets of n_decline — abandon-count semantics unchanged, labeling only):
+    # a validation-rejected proposal (unreachable by the instrument) vs a signal the model could not
+    # account for (disposition "unmodeled"). Used only to refine the terminal stuck_reason.
+    n_infeasible: int = 0
+    n_unmodeled: int = 0
     # S3 (DECISIONS): the THIRD state. A production/confirm delivery whose ω₀ interval is
     # interval_reliable=False (γ-at-bound) or never left the untrusted fast tier — it delivers a
     # center but carries no certifiable interval. Counted here, NOT as a no-signal decline (it is not
@@ -226,7 +231,10 @@ class GridQ:
         not stuck. One of: ``interval_floored`` (a certifiable interval sits above tolerance after many
         pooled scans), ``info_saturated`` (VOI diminishing returns), ``uncertifiable_interval``
         (delivered centers, every interval flagged γ-at-bound), ``fast_tier_only`` (delivered centers,
-        no fit ever left the untrusted fast tier), ``no_signal`` (no usable fit ever existed here)."""
+        no fit ever left the untrusted fast tier), ``infeasible`` (every decline was a validation
+        rejection — the point is unreachable by the instrument), ``signal_unmodeled`` (signal present
+        but the model could not fit it, disposition ``unmodeled``), ``no_signal`` (no usable fit ever
+        existed here)."""
         if not self.stuck:
             return None
         # Floored: a genuinely CERTIFIABLE interval exists but cannot shrink below tolerance.
@@ -239,6 +247,13 @@ class GridQ:
             return "uncertifiable_interval" if self.saw_uncertifiable_gamma else "fast_tier_only"
         if self.n_production >= MAX_PROD_ATTEMPTS:
             return "interval_floored"
+        # Terminal no-signal fall-through, refined by decline sub-labels: ALL declines being
+        # validation rejections means the point is instrument-infeasible; an "unmodeled" disposition
+        # means the signal is present but unfit. Otherwise it is a genuine no-signal q.
+        if self.n_infeasible > 0 and self.n_infeasible >= self.n_decline:
+            return "infeasible"
+        if self.n_unmodeled > 0:
+            return "signal_unmodeled"
         return "no_signal"
 
     @property
@@ -294,6 +309,13 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
         # pre-S3 observations behaving as before (additive contract).
         certifiable = obs.get("certifiable", True)
         if not usable:
+            # Sub-label the decline (abandon-count semantics unchanged — both still increment
+            # n_decline): a validation-rejected proposal is instrument-infeasible; an "unmodeled"
+            # disposition is signal the model could not fit. Only refines the terminal stuck_reason.
+            if obs.get("verdict") == "validation_rejected":
+                g.n_infeasible += 1
+            if obs.get("disposition") == "unmodeled":
+                g.n_unmodeled += 1
             g.n_decline += 1
         elif is_prod and not certifiable:
             # THIRD STATE: a delivered production/confirm center whose interval is uncertifiable. It
@@ -380,6 +402,11 @@ def _stuck_why(g: GridQ) -> str:
     if reason == "fast_tier_only":
         return ("delivered ω₀ center(s) but no fit produced a trusted interval (stayed on the "
                 "untrusted fast HESSE tier) — uncertifiable, not no-signal")
+    if reason == "infeasible":
+        return f"unreachable by the instrument: all {g.n_infeasible} proposals validation-rejected"
+    if reason == "signal_unmodeled":
+        return ("signal present but the model cannot account for it (disposition 'unmodeled') — "
+                "model problem, not absence of signal")
     return f"declined {g.n_decline}× (no signal)"
 
 

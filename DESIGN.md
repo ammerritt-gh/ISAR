@@ -284,8 +284,9 @@ verify-units audit are open — DECISIONS O2.)*
 **Acquisition.** Quick-look seeding of unvisited q, then cost-normalized expected information
 gain against the branch model, with per-q decline budgets, window recentering (guarded: never
 recenter onto |ΔE| ≲ the resolution FWHM), tier escalation with logged outcomes, and supervisor
-escalation instead of burning beam on repeated misses. *(Implemented, with the logging additions
-of DECISIONS R4 open.)*
+escalation instead of burning beam on repeated misses. *(Implemented; the elastic recenter guard
+and its `recenter_refused_elastic` refusal logging landed 2026-07-10 — previously claimed here but
+absent — with the remaining logging additions of DECISIONS R4 open.)*
 
 **Stop states.** `met` · `unmeetable` (statistics cannot deliver; refuse to spend the rest) ·
 `budget_exhausted` · **`diminishing_returns`** (best available marginal EIG per second below

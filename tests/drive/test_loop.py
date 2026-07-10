@@ -418,6 +418,100 @@ def test_missed_window_triggers_recenter(tmp_path):
     assert recenters, "a missed window should have logged a recenter action"
 
 
+# --------------------------------------------------------------------------- escalate_fit logging
+def make_untrusted_hesse_runner(omega, *, window_gate=True):
+    """A fake `isar run` whose PRODUCTION fits carry only an UNtrusted HESSE interval (no bootstrap):
+    once a q has one such production row, the next production there is promoted to the full error tier
+    (`_q_needs_full_errors`). Quicklooks carry only an ``omega0_err`` (no interval), so nothing at the q
+    ever looks trustworthy and the promotion keeps firing. Nothing certifies → the q never converges."""
+    assigned: dict[str, int] = {}
+
+    def runner(workspace, data_paths, **kw):
+        data_dir = Path(data_paths[0])
+        rows = []
+        prod_per_h: dict[float, int] = {}
+        for f in sorted(data_dir.glob("*.json")):
+            d = json.loads(f.read_text(encoding="utf-8"))
+            params = d.get("launch", {}).get("parameters", {})
+            h, k, l = params.get("H"), params.get("K"), params.get("L")
+            n = params.get("number_neutrons")
+            if f.stem not in assigned:
+                assigned[f.stem] = len(assigned) + 1
+            scan_id = assigned[f.stem]
+            grid = _parse_grid(params["scan_command1"])
+            true = omega(h)
+            contained = (grid[0] <= true <= grid[-1]) if window_gate else True
+            base = {"scan": scan_id, "detector": "det", "h": h, "k": k, "l": l, "status": "fitted"}
+            if not contained:
+                base.update({"verdict": "no_signal", "disposition": "declined", "omega0": None})
+            elif n <= QUICKLOOK_NCOUNT:
+                base.update({"verdict": "resolved", "disposition": "resolved", "omega0": true,
+                             "omega0_err": 0.6, "confidence": 0.9})
+            else:
+                base.update({"verdict": "resolved", "disposition": "resolved", "omega0": true,
+                             "hesse_lo": true - 0.3, "hesse_hi": true + 0.3, "hesse_trusted": False,
+                             "interval_reliable": False, "confidence": 0.9})
+                prod_per_h[h] = prod_per_h.get(h, 0) + 1
+            rows.append(base)
+        master_scan = 9_000_000
+        for h, npool in sorted(prod_per_h.items()):
+            true = omega(h)
+            rows.append({"scan": master_scan, "detector": "det", "h": h, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "verdict": "resolved", "disposition": "resolved",
+                         "omega0": true, "hesse_lo": true - 0.3, "hesse_hi": true + 0.3,
+                         "hesse_trusted": False, "interval_reliable": False, "pooled": True,
+                         "n_members": npool, "members": ";".join(str(i) for i in range(npool)),
+                         "confidence": 0.9})
+            master_scan += 1
+        report = Path(workspace) / "report"
+        report.mkdir(parents=True, exist_ok=True)
+        cols = ["scan", "detector", "h", "k", "l", "status", "verdict", "disposition", "confidence",
+                "omega0", "omega0_err", "interval_lo", "interval_hi", "interval_reliable",
+                "hesse_lo", "hesse_hi", "hesse_trusted", "pooled", "n_members", "members", "reasons"]
+        with open(report / "results.csv", "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=cols)
+            w.writeheader()
+            for r in rows:
+                w.writerow({c: r.get(c) for c in cols})
+    return runner
+
+
+def test_full_tier_promotion_logs_paired_escalate_fit_events(tmp_path):
+    # A q whose productions only ever get an untrusted HESSE interval promotes to the full tier on the
+    # repeat production. Each promotion must appear as a paired escalate_fit promote/outcome record.
+    omega = lambda h: (h - 2.0) * 2.0
+    client = MockTavi(omega)
+    summary, ws = _run(tmp_path, _objective(), client, make_untrusted_hesse_runner(omega),
+                       max_iters=80)
+    events = read_log(summary["session_log"])
+    esc = [e for e in events if e["kind"] == "escalate_fit"]
+    promotes = [e for e in esc if (e["payload"] or {}).get("phase") == "promote"]
+    outcomes = [e for e in esc if (e["payload"] or {}).get("phase") == "outcome"]
+    assert promotes, "a repeat untrusted-HESSE production should promote to the full tier"
+    assert outcomes, "every promotion should log its outcome"
+    # No escalate_fit event was logged as an unknown kind (the vocabulary now includes it).
+    assert not any(e.get("kind_unknown") for e in esc)
+    # Every in-loop promote (iter not None) is to the full tier with the documented reason.
+    inloop = [p for p in promotes if p["payload"].get("iter") is not None]
+    assert inloop
+    for p in inloop:
+        assert p["payload"]["to_tier"] == "full"
+        assert p["payload"]["reason"] == "untrusted_hesse_no_reliable_interval"
+    # Each in-loop promotion is paired with exactly one outcome at the same iteration, carrying a valid
+    # enum and a job_id that traces back to a real run event.
+    run_job_ids = {(e["payload"] or {}).get("job_id") for e in events if e["kind"] == "run"}
+    assert len(outcomes) == len(inloop)
+    for o in outcomes:
+        assert o["payload"]["outcome"] in ("seated", "failed", "superseded")
+        assert o["payload"]["job_id"] in run_job_ids
+        assert any(p["payload"].get("iter") == o["payload"]["iter"] for p in inloop)
+    # Every decide event carries the additive `action` field mirroring its `event`.
+    decides = [e["payload"] for e in events if e["kind"] == "decide"]
+    assert decides
+    for d in decides:
+        assert d.get("action") == d.get("event")
+
+
 # --------------------------------------------------------------------------- crash-safe resume (Part C)
 def test_resume_state_recovers_ledger_from_log_and_results(tmp_path):
     ws = tmp_path / "ws"

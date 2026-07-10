@@ -199,6 +199,13 @@ def _is_certifiable(row: dict, ok: bool) -> bool:
     return True
 
 
+def _row_certifiable(row: dict) -> bool:
+    """The S3 certifiability predicate a folded row must pass to SEAT convergence — exactly what
+    :func:`_observation_from_row` stamps into its ``certifiable`` field, factored out so the
+    ``escalate_fit`` outcome classifier and the observation builder cannot drift apart."""
+    return _is_certifiable(row, _pick_interval(row)[2])
+
+
 def _uncertifiable_kind(row: dict) -> str:
     """Why a usable-but-uncertifiable delivery has no certifiable interval (S3 stop-state taxonomy):
     ``"fast_tier"`` when the only interval is an untrusted fast-tier HESSE (no bootstrap/profile ever
@@ -238,7 +245,7 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
     usable = disp in _USABLE
     hw = None
     ok = _pick_interval(row)[2]
-    certifiable = _is_certifiable(row, ok)
+    certifiable = _row_certifiable(row)
     # S3 third state: a usable delivery with no certifiable interval. Classify WHY (γ-at-bound vs
     # fast-tier-only) so the stop taxonomy can name it; only meaningful for a usable, uncertifiable fit.
     uncertifiable_kind = _uncertifiable_kind(row) if (usable and not certifiable) else None
@@ -663,6 +670,10 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
     allow_partial = False
     attempt = 0
     rows: list[dict] = []
+    # Tracks an in-flight full-tier promotion whose outcome has not yet been logged (escalate_fit,
+    # spec §5.1): set when a production q is promoted to the full error tier, cleared the moment its
+    # outcome record is written (at the fold, or as `superseded` if the retry declines first).
+    promoted = False
     while True:
         with timed(log_path, "validate", iteration=it, attempt=attempt):
             val = client.validate(_validate_body(proposal, allow_partial=allow_partial))
@@ -675,6 +686,12 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             if v_act.action == "repair" and not allow_partial:
                 allow_partial = True
                 continue
+            if promoted:   # a promoted retry that now declines before folding — supersede the promotion
+                log_event(log_path, "escalate_fit",
+                          {"phase": "outcome", "iter": it, "job_id": None,
+                           "hkl": [proposal.h, proposal.k, proposal.l], "to_tier": "full",
+                           "outcome": "superseded", "n_rows": 0, "dispositions": []})
+                promoted = False
             observations.append(_declined_observation(proposal, "validation_rejected"))
             break
 
@@ -704,6 +721,12 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             log_event(log_path, "exception", {"action": "scan_not_done", "job_id": job_id,
                                               "state": snap.get("state"), "error": snap.get("error"),
                                               "iter": it})
+            if promoted:   # a promoted retry whose scan never reached done — supersede the promotion
+                log_event(log_path, "escalate_fit",
+                          {"phase": "outcome", "iter": it, "job_id": job_id,
+                           "hkl": [proposal.h, proposal.k, proposal.l], "to_tier": "full",
+                           "outcome": "superseded", "n_rows": 0, "dispositions": []})
+                promoted = False
             observations.append(_declined_observation(proposal, str(snap.get("state"))))
             break
 
@@ -715,12 +738,21 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         if not (workspace / "card.policy.toml").exists():
             with timed(log_path, "isar_init", iteration=it):
                 cfg.init_isar(workspace, scan_path)
-            log_event(log_path, "decide", {"event": "workspace_init", "probe": str(scan_path),
-                                           "iter": it})
+            log_event(log_path, "decide", {"event": "workspace_init", "action": "workspace_init",
+                                           "probe": str(scan_path), "iter": it})
         # Error tier per the escalation ladder: quicklook → cheap (steer only), production →
         # fast (HESSE interval + trust flag), escalating to full (bootstrap+profile) only where an
         # untrusted-HESSE q needs the reliable interval. The bootstrap fires only where needed.
         tier = _errors_tier_for(proposal, workspace)
+        # escalate_fit PROMOTE (spec §5.1): a production/confirm q bumped to the full (bootstrap+
+        # profile) tier because its only interval is an untrusted HESSE one. Paired with an OUTCOME
+        # record after the fold so the promotion and its result are both in the log.
+        if proposal.kind in PRODUCTION_KINDS and tier == "full":
+            promoted = True
+            log_event(log_path, "escalate_fit",
+                      {"phase": "promote", "iter": it, "attempt": attempt,
+                       "hkl": [proposal.h, proposal.k, proposal.l], "from_tier": "fast",
+                       "to_tier": "full", "reason": "untrusted_hesse_no_reliable_interval"})
         with timed(log_path, "isar_run", iteration=it, errors_tier=tier, attempt=attempt):
             # render=False: skip the per-invocation report (report layer / matplotlib import is the
             # dominant cost and nothing mid-campaign reads it); the campaign re-renders once at the end.
@@ -746,6 +778,24 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             analyze_payload["timings"] = timings
         log_event(log_path, "analyze", analyze_payload)
 
+        if promoted:
+            # escalate_fit OUTCOME (spec §5.1): did the full-tier promotion seat a certifiable
+            # interval? `seated` (≥1 folded row certifiable), `failed` (rows folded, none certifiable),
+            # `superseded` (no rows folded at all). `_row_certifiable` is the SAME predicate that seats
+            # convergence in `_observation_from_row`, so promotion accounting cannot drift from it.
+            if not rows:
+                outcome = "superseded"
+            elif any(_row_certifiable(r) for r in rows):
+                outcome = "seated"
+            else:
+                outcome = "failed"
+            log_event(log_path, "escalate_fit",
+                      {"phase": "outcome", "iter": it, "job_id": job_id,
+                       "hkl": [proposal.h, proposal.k, proposal.l], "to_tier": "full",
+                       "outcome": outcome, "n_rows": len(rows),
+                       "dispositions": [r.get("disposition") or r.get("verdict") for r in rows]})
+            promoted = False
+
         if not _rows_missed(rows):
             break
         # Missed window: LOOK at the counts to re-center + widen, up to the attempt cap.
@@ -753,9 +803,13 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             result = data.get("result") or {}
             act = exc.handle_missed_window(
                 result.get("counts") or [], result.get("scan_values_1") or [],
-                e_lo=proposal.e_lo, e_hi=proposal.e_hi, attempt=attempt)
+                e_lo=proposal.e_lo, e_hi=proposal.e_hi, attempt=attempt,
+                resolution_fwhm=(proposal.fwhm_dE or None))
         log_event(log_path, "exception", {**act.to_dict(), "iter": it})
-        if act.action != "recenter":
+        # Both `recenter` and `recenter_refused_elastic` mutate the window (act.params carry e_lo/e_hi)
+        # and re-enter the loop; the elastic refusal widens about the OLD center rather than chasing
+        # ΔE ≈ 0. Any other action (escalate) ends the retry loop.
+        if act.action not in ("recenter", "recenter_refused_elastic"):
             break
         proposal.e_lo = act.params["e_lo"]
         proposal.e_hi = act.params["e_hi"]
@@ -778,7 +832,12 @@ def _certify(*, cfg: CampaignConfig, decision, observations: list[dict],
     ran_certify = decision is not None and decision.state == "met"
     if not ran_certify:
         return observations, False
-    log_event(log_path, "decide", {"event": "certify_start", "tier": "full"})
+    log_event(log_path, "decide", {"event": "certify_start", "action": "certify_start", "tier": "full"})
+    # escalate_fit PROMOTE (spec §5.1): the end-of-campaign certify pass forces every q to the full
+    # (bootstrap+profile) tier. Campaign-wide, so no single hkl/attempt — reason names the pass.
+    log_event(log_path, "escalate_fit",
+              {"phase": "promote", "iter": None, "hkl": None, "from_tier": "fast",
+               "to_tier": "full", "reason": "certify_pass"})
     try:
         with timed(log_path, "certify", iteration=None):
             cfg.runner.run(workspace, [data_dir], errors_tier="full", force=True, render=False)
@@ -793,7 +852,7 @@ def _certify(*, cfg: CampaignConfig, decision, observations: list[dict],
         if timings is not None:
             analyze_payload["timings"] = timings
         log_event(log_path, "analyze", analyze_payload)
-        log_event(log_path, "decide", {"event": "certify_done"})
+        log_event(log_path, "decide", {"event": "certify_done", "action": "certify_done"})
         return observations, True
     except Exception as e:   # noqa: BLE001 — never lose a met campaign to a certification hiccup
         log_event(log_path, "exception", {"action": "certify_failed", "error": str(e)})
@@ -846,7 +905,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     scan_kind: dict = resumed["scan_kind"]   # (scan, detector) -> (kind, ncount), to rebuild obs after certify
     scan_counter = resumed["scan_counter"]
 
-    log_event(cfg.log_path, "decide", {"event": "campaign_start", "objective": objective.to_dict(),
+    log_event(cfg.log_path, "decide", {"event": "campaign_start", "action": "campaign_start",
+                                       "objective": objective.to_dict(),
                                        "calibration": {"inflation": cfg.calibration.inflation,
                                                        "floor_meV": cfg.floor},
                                        "resumed": {"scan_counter": scan_counter,
@@ -906,7 +966,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
 
                 with timed(cfg.log_path, "model_update", iteration=it):
                     master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
-                log_event(cfg.log_path, "decide", {"event": "model_update",
+                log_event(cfg.log_path, "decide", {"event": "model_update", "action": "model_update",
                                                    "n_observations": len(observations),
                                                    "converged": sum(1 for g in grid if g.converged),
                                                    "n_grid": len(grid), "iter": it})

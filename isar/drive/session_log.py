@@ -13,10 +13,12 @@ Event ``kind``s (the documented vocabulary):
 - ``validate``  — a TAVI ``POST /validate`` result (would_queue / blockers).
 - ``run``       — a scan was submitted / finished on the instrument (job_id, state).
 - ``analyze``   — ISAR was run and its results/verdicts read.
-- ``decide``    — the supervisor updated the ω(q) model or chose the next action.
-- ``exception`` — a non-routine branch (missed window, flagged/held, budget, validation rejection).
-- ``stop``      — the terminal decision: met / unmeetable, with reasons.
-- ``timing``    — a profiling span: how long a named stage took (``stage``, ``iter``, ``seconds``, ``ok``).
+- ``decide``       — the supervisor updated the ω(q) model or chose the next action.
+- ``escalate_fit`` — a fit was promoted from a cheap error tier to a fuller one (``phase="promote"``),
+  and the promotion's result (``phase="outcome"``: ``seated`` / ``failed`` / ``superseded``).
+- ``exception``    — a non-routine branch (missed window, flagged/held, budget, validation rejection).
+- ``stop``         — the terminal decision: met / unmeetable, with reasons.
+- ``timing``       — a profiling span: how long a named stage took (``stage``, ``iter``, ``seconds``, ``ok``).
 """
 from __future__ import annotations
 
@@ -27,7 +29,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-EVENT_KINDS = ("propose", "validate", "run", "analyze", "decide", "exception", "stop", "timing")
+EVENT_KINDS = ("propose", "validate", "run", "analyze", "decide", "escalate_fit", "exception",
+               "stop", "timing")
 
 
 def log_event(path: str | Path, kind: str, payload: dict[str, Any], *, ts: float | None = None) -> dict[str, Any]:
