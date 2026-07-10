@@ -105,7 +105,13 @@ def write_run_report(session, card, workspace, *, formats=("html", "markdown")) 
     rows = []
     for scan, det, status, oc in _outcomes(session):
         iv = oc.get("interval")
-        ivs = (f"[{_fmt(iv[0],2)}, {_fmt(iv[-1],2)}]" if iv else "—")
+        # S3 / R3 (DECISIONS): an interval_reliable=False fit is a γ-at-bound degenerate spike — its
+        # numeric range (e.g. [3.15, 3.15] conf 1.00) is confident nonsense the flag exists to prevent.
+        # Render "(unreliable)" instead of a range (display-only; the ω₀ center still shows).
+        if oc.get("interval_reliable") is False:
+            ivs = "(unreliable)"
+        else:
+            ivs = (f"[{_fmt(iv[0],2)}, {_fmt(iv[-1],2)}]" if iv else "—")
         pr = oc.get("prior_used") or {}
         cal = oc.get("calib") or {}
         verdict_cell = oc.get("verdict", "")

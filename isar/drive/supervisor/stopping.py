@@ -136,6 +136,13 @@ class GridQ:
     n_production: int = 0          # production scans taken at this q (each grows the pool)
     n_quicklook: int = 0
     n_decline: int = 0             # consecutive per-scan fits with no usable ω₀ (junk/no_signal)
+    # S3 (DECISIONS): the THIRD state. A production/confirm delivery whose ω₀ interval is
+    # interval_reliable=False (γ-at-bound) or never left the untrusted fast tier — it delivers a
+    # center but carries no certifiable interval. Counted here, NOT as a no-signal decline (it is not
+    # evidence of signal absence) and NOT as a convergence (its interval is degenerate, not precise).
+    n_uncertifiable: int = 0
+    saw_uncertifiable_gamma: bool = False   # ≥1 uncertifiable delivery was γ-at-bound (flagged interval)
+    saw_uncertifiable_fast: bool = False    # ≥1 uncertifiable delivery stayed on the untrusted fast tier
     counts_spent: float = 0.0      # accumulated monitor-count budget (Σ proposal_cost) at this q (Phase 5)
     last_prod_cost: float | None = None  # most recent production scan's cost (ΔC proxy for the next)
     last_fit_kind: str | None = None     # provenance of the most recent usable fit (5b grounding gate)
@@ -153,9 +160,16 @@ class GridQ:
     @property
     def _master_hw(self) -> float | None:
         m = self.master
-        if m and m.get("usable") and m.get("reliable") and m.get("halfwidth") is not None:
-            return float(m["halfwidth"])
-        return None
+        if not m or not m.get("usable") or m.get("halfwidth") is None:
+            return None
+        # S3: convergence seats only on a CERTIFIABLE interval. `certifiable` (reliable interval AND
+        # interval_reliable≠False, or a trusted-HESSE fallback) is authoritative; fall back to the
+        # legacy `reliable` flag for pre-S3 master rows that carry no `certifiable` field (additive
+        # contract — old results.csv behaves as before).
+        cert = m.get("certifiable")
+        if cert is None:
+            cert = m.get("reliable")
+        return float(m["halfwidth"]) if cert else None
 
     @property
     def cert_halfwidth(self) -> float | None:
@@ -197,13 +211,35 @@ class GridQ:
 
     @property
     def stuck(self) -> bool:
-        """Abandoned: can't get signal (``MAX_DECLINES`` consecutive junk fits), the master has pooled
-        ``MAX_PROD_ATTEMPTS`` scans without converging (interval floored above tolerance), or the q is
-        value-of-information saturated (:attr:`info_saturated` — another scan barely helps)."""
+        """Abandoned: can't get signal (``MAX_DECLINES`` consecutive junk fits), delivered centers but
+        every calibrated interval is uncertifiable ``MAX_DECLINES``× (S3: γ-at-bound or fast-tier-only),
+        the master has pooled ``MAX_PROD_ATTEMPTS`` scans without converging (interval floored above
+        tolerance), or the q is value-of-information saturated (:attr:`info_saturated`)."""
         if self.converged:
             return False
-        return (self.n_decline >= MAX_DECLINES or self.n_production >= MAX_PROD_ATTEMPTS
-                or self.info_saturated)
+        return (self.n_decline >= MAX_DECLINES or self.n_uncertifiable >= MAX_DECLINES
+                or self.n_production >= MAX_PROD_ATTEMPTS or self.info_saturated)
+
+    @property
+    def stuck_reason(self) -> str | None:
+        """The machine-readable reason this q is stuck (S3 stop-state taxonomy), or ``None`` if it is
+        not stuck. One of: ``interval_floored`` (a certifiable interval sits above tolerance after many
+        pooled scans), ``info_saturated`` (VOI diminishing returns), ``uncertifiable_interval``
+        (delivered centers, every interval flagged γ-at-bound), ``fast_tier_only`` (delivered centers,
+        no fit ever left the untrusted fast tier), ``no_signal`` (no usable fit ever existed here)."""
+        if not self.stuck:
+            return None
+        # Floored: a genuinely CERTIFIABLE interval exists but cannot shrink below tolerance.
+        if self.n_production >= MAX_PROD_ATTEMPTS and self.cert_halfwidth is not None:
+            return "interval_floored"
+        if self.info_saturated:
+            return "info_saturated"
+        # Uncertifiable third state — a usable center was delivered, but no certifiable interval.
+        if self.saw_uncertifiable_gamma or self.saw_uncertifiable_fast or self.n_uncertifiable > 0:
+            return "uncertifiable_interval" if self.saw_uncertifiable_gamma else "fast_tier_only"
+        if self.n_production >= MAX_PROD_ATTEMPTS:
+            return "interval_floored"
+        return "no_signal"
 
     @property
     def deficit(self) -> float:
@@ -252,10 +288,24 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
         # row) carry no branch assignment, and this gate is then fully permissive by design. It only
         # bites once branch assignment is active (posterior on), rejecting rows tagged non-acoustic.
         acoustic = obs.get("branch_id") in (None, "acoustic")
+        is_prod = kind in PRODUCTION_KINDS
+        # S3: `certifiable` (loop._observation_from_row) is True only for a reliable interval
+        # (interval_reliable≠False, or a trusted-HESSE fast fallback). Default True keeps synthetic /
+        # pre-S3 observations behaving as before (additive contract).
+        certifiable = obs.get("certifiable", True)
         if not usable:
             g.n_decline += 1
+        elif is_prod and not certifiable:
+            # THIRD STATE: a delivered production/confirm center whose interval is uncertifiable. It
+            # neither converges (no calibrated interval) NOR declines (a center WAS delivered — not
+            # evidence of signal absence). n_decline is left untouched (not reset, not incremented).
+            g.n_uncertifiable += 1
+            if obs.get("uncertifiable_kind") == "fast_tier":
+                g.saw_uncertifiable_fast = True
+            else:
+                g.saw_uncertifiable_gamma = True
         else:
-            g.n_decline = 0        # a usable fit proves the q CAN deliver — reset the abandon counter
+            g.n_decline = 0        # a certifiable fit (or a steering quicklook) proves the q CAN deliver
             if obs.get("fit_kind"):
                 g.last_fit_kind = obs.get("fit_kind")   # provenance of the most recent usable fit
             if acoustic and obs.get("omega0") is not None and (g.best_halfwidth is None
@@ -263,9 +313,10 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                 g.best_omega0 = float(obs["omega0"])
                 g.best_halfwidth = hw
                 g.best_resolved = True
-            # A usable single PRODUCTION fit with a real (reliable) interval is a convergence
-            # candidate in its own right — it beats the master when pooling degrades a model-limited q.
-            if acoustic and kind in PRODUCTION_KINDS and hw is not None and obs.get("omega0") is not None and (
+            # A usable single PRODUCTION fit with a real (reliable, certifiable) interval is a
+            # convergence candidate in its own right — it beats the master when pooling degrades a
+            # model-limited q. Uncertifiable production fits were routed above and never reach here.
+            if acoustic and is_prod and hw is not None and obs.get("omega0") is not None and (
                     g.best_prod_halfwidth is None or hw < g.best_prod_halfwidth):
                 g.best_prod_halfwidth = hw
                 g.best_prod_omega0 = float(obs["omega0"])
@@ -313,6 +364,25 @@ def systematic_floor(calibration=None, floor: float | None = None) -> float:
     return 0.0
 
 
+def _stuck_why(g: GridQ) -> str:
+    """The human why-string for a stuck q, DERIVED from :attr:`GridQ.stuck_reason` (S3 §6.1: stop
+    messages must be generated from the classification, never canned). One line, no leading q label."""
+    reason = g.stuck_reason
+    if reason == "interval_floored":
+        return f"pooled {g.n_production} scans without converging (interval floored above tolerance)"
+    if reason == "info_saturated":
+        return ("value-of-information saturated (another scan would shrink σ(ω₀) by less than "
+                "the VOI floor — diminishing returns)")
+    if reason == "uncertifiable_interval":
+        return (f"delivered ω₀ center(s) but every calibrated interval is unreliable "
+                f"(γ-at-bound: resolution-limited spike, degenerate bootstrap) — uncertifiable, "
+                f"not no-signal")
+    if reason == "fast_tier_only":
+        return ("delivered ω₀ center(s) but no fit produced a trusted interval (stayed on the "
+                "untrusted fast HESSE tier) — uncertifiable, not no-signal")
+    return f"declined {g.n_decline}× (no signal)"
+
+
 def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                   calibration=None, floor: float | None = None,
                   max_declines: int = MAX_DECLINES) -> StopDecision:
@@ -331,6 +401,9 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
     per_q = []
     for g in grid:
         m = g.master or {}
+        # S3 machine-readable stop-state per q: the stuck reason for a stuck q, "met" when converged,
+        # else None (in progress). Human why-strings below are DERIVED from the same classification.
+        reason = g.stuck_reason if g.stuck else ("met" if g.converged else None)
         per_q.append({"hkl": list(g.hkl), "q": g.q, "converged": g.converged,
                       "calibrated_halfwidth": g.cert_halfwidth, "omega0": g.cert_omega0,
                       "master_halfwidth": m.get("halfwidth"), "master_n_members": m.get("n_members"),
@@ -338,7 +411,8 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                       "single_prod_halfwidth": g.best_prod_halfwidth,
                       "source": ("master" if (g._master_hw is not None and g.cert_halfwidth == g._master_hw)
                                  else "single_production" if g.cert_halfwidth is not None else None),
-                      "n_production": g.n_production, "n_decline": g.n_decline, "stuck": g.stuck})
+                      "n_production": g.n_production, "n_decline": g.n_decline,
+                      "n_uncertifiable": g.n_uncertifiable, "reason": reason, "stuck": g.stuck})
 
     # Tolerance below the systematic floor is unmeetable by construction — check before "met".
     if tol < fl:
@@ -368,15 +442,7 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
         n_conv = sum(1 for g in grid if g.converged)
         reasons.append(f"converged {n_conv}/{len(grid)} grid q; the rest cannot deliver the statistics:")
         for g in stuck:
-            if g.n_production >= MAX_PROD_ATTEMPTS:
-                why = "pooled {0} scans without converging (interval floored above tolerance)".format(
-                    g.n_production)
-            elif g.info_saturated:
-                why = ("value-of-information saturated (another scan would shrink σ(ω₀) by less than "
-                       "the VOI floor — diminishing returns)")
-            else:
-                why = f"declined {g.n_decline}× (no signal)"
-            reasons.append(f"q={g.q:g} (hkl={list(g.hkl)}) {why}")
+            reasons.append(f"q={g.q:g} (hkl={list(g.hkl)}) {_stuck_why(g)}")
         return StopDecision("unmeetable", reasons, per_q)
 
     return StopDecision("continue", [], per_q)

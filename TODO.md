@@ -134,6 +134,15 @@ Decisions settled 2026-07-06:
       backup). Fall back automatically down a probed shortlist.
 - [ ] **Objective-aware Γ exclusion** — acoustic ω₀→0 at zone centers is structurally
       unmeasurable; parse-time exclusion beats spending 4 scans discovering it per campaign.
+- [ ] **Re-certify after the S3 convergence change (2026-07-10).** The uniform
+      `interval_reliable` rule alters campaign behavior by design: on the frozen v16 baseline,
+      13 previously profile-laundered deliveries no longer certify (5 legit certifiers remain),
+      so a re-run will converge fewer q and emit the new per-q reasons
+      (`uncertifiable_interval`, `fast_tier_only`). Needs a fresh certification campaign
+      (natural to fold into the SVP below). Two intent-confirmations while there:
+      `n_uncertifiable` never resets on a later good fit (chronic-flaky q gets abandoned —
+      asymmetric with `n_decline`'s consecutive semantics, believed intended); triage still
+      shows confidence for `(unreliable)` rows (report-layer follow-up).
 - [ ] **The SVP: TAVI-as-backend campaign with realistic clocks** (T1/T2; DESIGN.md §9 —
       "next milestone"). Same objective and driver as the analytic certification, TAVI
       answering scans, counting time reported as the instrument would report it, so the

@@ -182,6 +182,36 @@ def _pick_interval(row: dict) -> tuple:
     return None, None, False
 
 
+def _is_certifiable(row: dict, ok: bool) -> bool:
+    """Whether ``row``'s ω₀ interval may SEAT convergence (S3 / DECISIONS S3).
+
+    A calibrated interval exists (``ok`` from :func:`_pick_interval`) AND it is not a flagged one: an
+    ``interval_reliable=False`` fit (γ-at-bound — the bootstrap/profile is degenerate, zero-width is
+    degeneracy not precision) is uncertifiable EVEN when a profile fallback makes ``_pick_interval``
+    return ``ok`` — the flag is authoritative. The sole carve-out is the fast tier's *trusted* HESSE
+    interval (``hesse_trusted``), which is calibrated-equivalent by construction and is allowed to
+    certify without paying for a bootstrap. ``interval_reliable`` absent (older ledger → None) is
+    treated as reliable (additive contract)."""
+    if not ok:
+        return False
+    if row.get("interval_reliable") is False and not row.get("hesse_trusted"):
+        return False
+    return True
+
+
+def _uncertifiable_kind(row: dict) -> str:
+    """Why a usable-but-uncertifiable delivery has no certifiable interval (S3 stop-state taxonomy):
+    ``"fast_tier"`` when the only interval is an untrusted fast-tier HESSE (no bootstrap/profile ever
+    ran — the q never left the fast tier); ``"gamma_at_bound"`` otherwise (a full-tier bootstrap/
+    profile ran but flagged ``interval_reliable=False``)."""
+    has_boot = row.get("interval_lo") is not None
+    has_prof = row.get("omega0_profile_lo") is not None
+    has_hesse = row.get("hesse_lo") is not None
+    if has_hesse and not row.get("hesse_trusted") and not has_boot and not has_prof:
+        return "fast_tier"
+    return "gamma_at_bound"
+
+
 def _calibrated_hw(row: dict, calibration: Calibration, bucket: str) -> float | None:
     """Shared interval→half-width core of the two observation builders below.
 
@@ -208,6 +238,10 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
     usable = disp in _USABLE
     hw = None
     ok = _pick_interval(row)[2]
+    certifiable = _is_certifiable(row, ok)
+    # S3 third state: a usable delivery with no certifiable interval. Classify WHY (γ-at-bound vs
+    # fast-tier-only) so the stop taxonomy can name it; only meaningful for a usable, uncertifiable fit.
+    uncertifiable_kind = _uncertifiable_kind(row) if (usable and not certifiable) else None
     if usable and ok:
         hw = _calibrated_hw(row, calibration, str(ncount))
     elif usable and kind == "quicklook":
@@ -224,6 +258,8 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
     return {
         "hkl": _row_hkl(row), "kind": kind, "calibrated_halfwidth": hw,
         "resolved": usable, "disposition": disp, "verdict": verdict,
+        # S3: certifiable gates convergence seating; uncertifiable_kind names the third-state reason.
+        "certifiable": certifiable, "uncertifiable_kind": uncertifiable_kind,
         "omega0": row.get("omega0"), "scan": row.get("scan"), "detector": row.get("detector"),
         "proposal_cost": float(proposal_cost), "fit_kind": row.get("fit_kind"),
         "branch_id": row.get("branch_id"),   # Phase A: only acoustic (or null) rows steer ω(q)
@@ -238,7 +274,10 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
     disp = row.get("disposition")
     return {
         "hkl": _row_hkl(row), "omega0": row.get("omega0"), "halfwidth": hw,
-        "reliable": bool(ok), "usable": (disp in _USABLE and row.get("omega0") is not None),
+        # S3: `reliable` (== ok) kept for back-compat; `certifiable` is the convergence gate — a
+        # γ-at-bound master (interval_reliable=False) never seats, even via a profile fallback.
+        "reliable": bool(ok), "certifiable": _is_certifiable(row, ok),
+        "usable": (disp in _USABLE and row.get("omega0") is not None),
         "disposition": disp, "n_members": row.get("n_members"),
         # Chain of custody: the member scan labels behind this pooled value (readers coerce the CSV
         # cell to a list). members_field_present distinguishes "old results.csv lacked the column"

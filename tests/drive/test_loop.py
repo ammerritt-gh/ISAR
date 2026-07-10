@@ -15,7 +15,8 @@ from isar.drive.acquisition.calibration import Calibration
 import types
 
 import isar.drive.loop as loop_mod
-from isar.drive.loop import (_campaign_config, _errors_arg_for, _pick_interval, _resume_state,
+from isar.drive.loop import (_campaign_config, _errors_arg_for, _master_obs_from_row,
+                             _observation_from_row, _pick_interval, _resume_state,
                              _run_nonce, run_campaign)
 from isar.drive.objective import ObjectiveSpec
 from isar.drive.session_log import log_event, read_log
@@ -142,6 +143,54 @@ def make_mock_runner(omega_true, *, window_gate=True, hesse_only=False, blank_me
             for r in rows:
                 w.writerow({c: r.get(c) for c in cols})
     return runner
+
+
+# --------------------------------------------------------------------------- S3 certifiability
+def _urow(**kw):
+    base = {"disposition": "resolved", "omega0": 5.0, "h": 2.1, "k": 0.0, "l": 0.0}
+    base.update(kw)
+    return base
+
+
+def test_observation_reliable_bootstrap_is_certifiable():
+    o = _observation_from_row(
+        _urow(interval_lo=4.9, interval_hi=5.1, interval_reliable=True),
+        "production", PRODUCTION_NCOUNT, _UNITY_CAL)
+    assert o["certifiable"] is True and o["uncertifiable_kind"] is None
+
+
+def test_observation_gamma_at_bound_is_uncertifiable():
+    # interval_reliable=False with a profile fallback: _pick_interval says ok, but the flag makes it
+    # uncertifiable — it must not seat convergence (the mid-zone hole).
+    o = _observation_from_row(
+        _urow(disposition="flagged", interval_lo=4.999, interval_hi=5.001, interval_reliable=False,
+              omega0_profile_lo=4.99, omega0_profile_hi=5.01),
+        "production", PRODUCTION_NCOUNT, _UNITY_CAL)
+    assert o["resolved"] is True and o["certifiable"] is False
+    assert o["uncertifiable_kind"] == "gamma_at_bound"
+
+
+def test_observation_trusted_hesse_is_certifiable():
+    # The fast-tier carve-out: interval_reliable=False but a TRUSTED HESSE interval still certifies.
+    o = _observation_from_row(
+        _urow(interval_reliable=False, hesse_lo=4.95, hesse_hi=5.05, hesse_trusted=True),
+        "production", PRODUCTION_NCOUNT, _UNITY_CAL)
+    assert o["certifiable"] is True and o["uncertifiable_kind"] is None
+
+
+def test_observation_untrusted_fast_tier_is_uncertifiable():
+    o = _observation_from_row(
+        _urow(interval_reliable=False, hesse_lo=4.95, hesse_hi=5.05, hesse_trusted=False),
+        "production", PRODUCTION_NCOUNT, _UNITY_CAL)
+    assert o["certifiable"] is False and o["uncertifiable_kind"] == "fast_tier"
+
+
+def test_master_gamma_at_bound_is_uncertifiable():
+    m = _master_obs_from_row(
+        _urow(disposition="flagged", interval_lo=4.999, interval_hi=5.001, interval_reliable=False,
+              omega0_profile_lo=4.99, omega0_profile_hi=5.01),
+        _UNITY_CAL)
+    assert m["reliable"] is True and m["certifiable"] is False
 
 
 def test_pick_interval_prefers_bootstrap_when_reliable():

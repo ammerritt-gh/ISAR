@@ -245,7 +245,9 @@ distribution collapses; a zero-width interval is degeneracy, not precision). `in
 marks this, and it is enforced **uniformly** in convergence: a flagged interval never seats
 convergence and never counts as a "no signal" decline — it routes to the `uncertifiable_interval`
 state. Escape hatches: the branch-conditional Γ freeze (Implemented), a Γ prior via the Bayesian
-tier (Planned). *(Flag Implemented; uniform enforcement Partial — see `docs/DECISIONS.md` S3.)*
+tier (Planned). *(Flag Implemented; uniform enforcement Implemented 2026-07-10 per S3 — a
+delivered-but-uncertifiable fit is a third state: never seats convergence, never counts as a
+no-signal decline, budgeted toward stuck with reason `uncertifiable_interval`.)*
 
 **Where "Bayesian" is earned.** The branch layer: soft priors from the dispersion model
 (`prior_omega`/`prior_sigma`) make the fit a MAP estimate, and acoustic-vs-optic assignment is a
@@ -290,8 +292,9 @@ of DECISIONS R4 open.)*
 threshold — the morning report states what the remaining budget would have bought) · plus per-q
 reasons from the enum {no_signal, signal_unmodeled, uncertifiable_interval, interval_floored,
 fast_tier_only, infeasible}. Stop messages are generated from the enum, never hand-written
-canned text. *(met/unmeetable/budget Implemented; diminishing_returns and the reason enum
-Planned — DECISIONS O4, R4.)*
+canned text. *(met/unmeetable/budget Implemented; reason enum Partial — no_signal,
+uncertifiable_interval, interval_floored, fast_tier_only + info_saturated implemented as per-q
+`reason` 2026-07-10; signal_unmodeled, infeasible, diminishing_returns Planned — DECISIONS O4, R4.)*
 
 **Contract (v1): stop and report**, best-effort deliveries included. Mid-campaign renegotiation
 ("I can do ±0.15 meV at these four q within budget — accept?") is future work and the design
@@ -393,13 +396,13 @@ DECISIONS W1–W3.)*
 | Adjudication (decide–record–defer) | Implemented (opt-in) |
 | Stage II: Baker–Cousins fit, Akaike selection, branch posterior, verdicts | Implemented |
 | Interval ladder through bootstrap; `interval_reliable` flag | Implemented |
-| Uniform `interval_reliable` convergence rule | **Partial** (S3) |
+| Uniform `interval_reliable` convergence rule | Implemented (2026-07-10) |
 | Pooled-fit member provenance | Implemented (2026-07-10) |
 | γ-at-bound calibration v2; Γ prior | Planned |
 | `tas4d` convolution (TAVI-supplied ellipsoids) | Planned |
 | Stage III: per-point objective, EIG acquisition, stop-and-report | Implemented (analytic tier certified) |
 | Wall-clock budget discipline; ledger audit | **Partial** (O2) |
-| `diminishing_returns` stop state; stop-reason enum; log events | Planned |
+| `diminishing_returns` stop state; stop-reason enum; log events | **Partial** (per-q reason enum 2026-07-10; rest Planned) |
 | Async one-step-stale loop | Planned |
 | TAVI-as-backend campaign (the SVP) | Planned — next milestone |
 | Campaign diagnostic report | Planned (spec final) |

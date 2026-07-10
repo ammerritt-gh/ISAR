@@ -123,6 +123,27 @@ def test_delivered_pooled_without_members_raises(tmp_path):
         run_report.write_run_report(st, _card(), ws, formats=("markdown",))
 
 
+def test_triage_interval_reliable_false_renders_unreliable(tmp_path):
+    # S3 / R3: a γ-at-bound fit (interval_reliable=False) must render "(unreliable)" in the triage
+    # interval cell, never a confident numeric range like [3.15, 3.15].
+    ws = Workspace.open(tmp_path / "ws")
+    ws.root.mkdir(parents=True)
+    st = SessionState()
+    st.put(ScanEntry(
+        scan_id="E:501:ana7", scan_number=501, scan_type="measurement", status="fitted",
+        detectors={"ana7": {
+            "detector_id": "ana7", "verdict": "resolved", "disposition": "resolved",
+            "confidence": 1.0, "omega0": 3.15, "omega0_err": 0.001,
+            "interval": [3.15, 3.15, 3.15], "interval_reliable": False,
+            "modality": "single", "gamma": 0.0, "best_label": "elastic+stokes+bg",
+            "q": [3.0, 0.0, -0.1], "T": 100.0, "sample": "S", "prior_used": None,
+            "calib": {"resolution_source": "measured"}, "reasons": []}}))
+    run_report.write_run_report(st, _card(), ws, formats=("markdown",))
+    md = (ws.report_dir / "report.md").read_text(encoding="utf-8")
+    assert "(unreliable)" in md
+    assert "[3.15, 3.15]" not in md          # the confident nonsense range is suppressed
+
+
 def test_run_report_empty_ledger_ok(tmp_path):
     ws = Workspace.open(tmp_path / "ws")
     ws.root.mkdir(parents=True)

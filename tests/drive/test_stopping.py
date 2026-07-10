@@ -13,14 +13,20 @@ def _obj(tol=0.5):
                                  budget={"kind": "neutrons", "amount": 1e12})
 
 
-def _obs(hkl, kind, hw, resolved=True, disp="resolved"):
+def _obs(hkl, kind, hw, resolved=True, disp="resolved", certifiable=True, uncertifiable_kind=None):
     return {"hkl": hkl, "kind": kind, "calibrated_halfwidth": hw, "resolved": resolved,
-            "disposition": disp, "omega0": 3.0 if resolved else None}
+            "disposition": disp, "omega0": 3.0 if resolved else None,
+            "certifiable": certifiable, "uncertifiable_kind": uncertifiable_kind}
 
 
-def _master(hkl, hw, disp="resolved", reliable=True, n=2, members=None):
-    # A pooled-fit convergence row as loop._master_obs_from_row builds it.
+def _master(hkl, hw, disp="resolved", reliable=True, n=2, members=None, certifiable=None):
+    # A pooled-fit convergence row as loop._master_obs_from_row builds it. `certifiable` defaults to
+    # `reliable` (the pre-S3 equivalence); pass it explicitly to model a γ-at-bound master whose
+    # profile fallback makes it `reliable` but whose flag makes it uncertifiable.
+    if certifiable is None:
+        certifiable = reliable
     return {"hkl": hkl, "omega0": 3.0, "halfwidth": hw, "reliable": reliable,
+            "certifiable": certifiable,
             "usable": disp in st.USABLE_DISPOSITIONS and hw is not None,
             "disposition": disp, "n_members": n,
             "members": (members if members is not None else [str(i) for i in range(n)])}
@@ -71,6 +77,82 @@ def test_single_production_converges_when_master_degraded():
     masters = [_master((h, 0.0, 0.0), 0.001, disp="junk", reliable=False) for h in (2.1, 2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
     assert st.evaluate_stop(obj, grid, _BUDGET).state == "met"
+
+
+# --------------------------------------------------------------------------- S3 uncertifiable state
+def test_unreliable_best_prod_does_not_converge():
+    # The mid-zone hole (§5.3): a usable single-production fit with an UNCERTIFIABLE interval
+    # (γ-at-bound, interval_reliable=False) must never seat convergence, however tiny its half-width.
+    obj = _obj()
+    obs = [_obs((h, 0.0, 0.0), "production", 0.001, disp="flagged",
+                certifiable=False, uncertifiable_kind="gamma_at_bound") for h in (2.1, 2.2, 2.3, 2.4)]
+    grid = st.summarize_grid(obj, obs)
+    assert all(not g.converged for g in grid)
+    assert st.evaluate_stop(obj, grid, _BUDGET).state != "met"
+    assert all(g.best_prod_halfwidth is None for g in grid)
+
+
+def test_flagged_master_with_profile_does_not_converge():
+    # The master-level mirror of the hole: a γ-at-bound master whose profile fallback makes it
+    # `reliable` but whose flag makes it uncertifiable must not certify.
+    obj = _obj()
+    masters = [_master((h, 0.0, 0.0), 0.001, disp="flagged", reliable=True, certifiable=False)
+               for h in (2.1, 2.2, 2.3, 2.4)]
+    grid = st.summarize_grid(obj, [], masters)
+    assert st.evaluate_stop(obj, grid, _BUDGET).state != "met"
+
+
+def test_uncertifiable_delivery_is_third_state_then_stuck():
+    # A delivered-but-uncertifiable production fit: no convergence, decline counter UNTOUCHED,
+    # n_uncertifiable increments; after the budget the q is stuck with reason uncertifiable_interval,
+    # and the why-string names γ-at-bound / uncertifiable, NOT "no signal".
+    obj = _obj()
+    obs = [_obs((2.1, 0.0, 0.0), "production", 0.001, disp="flagged",
+                certifiable=False, uncertifiable_kind="gamma_at_bound") for _ in range(st.MAX_DECLINES)]
+    masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]   # the other three converge
+    grid = st.summarize_grid(obj, obs, masters)
+    g0 = grid[0]
+    assert g0.n_decline == 0 and g0.n_uncertifiable == st.MAX_DECLINES
+    assert not g0.converged and g0.stuck and g0.stuck_reason == "uncertifiable_interval"
+    d = st.evaluate_stop(obj, grid, _BUDGET)
+    assert d.state == "unmeetable"
+    joined = " ".join(d.reasons).lower()
+    assert "uncertifiable" in joined and "no signal" not in joined
+    per_q = {tuple(q["hkl"]): q for q in d.to_dict()["per_q"]}
+    assert per_q[(2.1, 0.0, 0.0)]["reason"] == "uncertifiable_interval"
+
+
+def test_uncertifiable_does_not_reset_declines():
+    # An uncertifiable delivery is NOT evidence of signal absence but also NOT a certifiable delivery:
+    # it must neither increment nor RESET the no-signal decline counter.
+    obj = _obj()
+    obs = ([_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="junk"),
+            _obs((2.1, 0.0, 0.0), "production", 0.001, disp="flagged",
+                 certifiable=False, uncertifiable_kind="gamma_at_bound")])
+    grid = st.summarize_grid(obj, obs)
+    assert grid[0].n_decline == 1 and grid[0].n_uncertifiable == 1
+
+
+def test_fast_tier_only_stuck_reason():
+    # A q whose fits never left the untrusted fast tier → stuck with reason fast_tier_only.
+    obj = _obj()
+    obs = [_obs((2.1, 0.0, 0.0), "production", None, disp="resolved",
+                certifiable=False, uncertifiable_kind="fast_tier") for _ in range(st.MAX_DECLINES)]
+    masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
+    grid = st.summarize_grid(obj, obs, masters)
+    assert grid[0].stuck and grid[0].stuck_reason == "fast_tier_only"
+    d = st.evaluate_stop(obj, grid, _BUDGET)
+    assert any("fast" in r.lower() for r in d.reasons)
+
+
+def test_no_usable_fits_is_still_no_signal():
+    # Genuine no-usable-fits q → stuck reason no_signal (existing behavior preserved).
+    obj = _obj()
+    obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="junk") for _ in range(3)]
+    masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
+    grid = st.summarize_grid(obj, obs, masters)
+    assert grid[0].stuck and grid[0].stuck_reason == "no_signal"
+    assert any("no signal" in r for r in st.evaluate_stop(obj, grid, _BUDGET).reasons)
 
 
 def test_master_over_tolerance_keeps_accumulating():
