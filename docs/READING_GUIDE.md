@@ -9,7 +9,7 @@ how we know it works** — then points you at the right report or document for e
 > built; user workflow in [USING_ISAR.md](USING_ISAR.md)), and the **autonomous driver**
 > (`isar drive`) now closes the loop: from a natural-language goal it proposes scans, drives the
 > TAVI virtual instrument, fits each scan, and decides where to remeasure and when to stop — with
-> no human numbers in the loop ([MVP_FIRST_RUN.md](MVP_FIRST_RUN.md)). This runs on the TAVI
+> no human numbers in the loop ([campaigns/2026-06_MVP_FIRST_RUN.md](campaigns/2026-06_MVP_FIRST_RUN.md)). This runs on the TAVI
 > *simulator* and on *old* data to exercise the workflow, not yet on a live experiment. The goal
 > right now is to make ISAR's behaviour legible — to understand what it does and to show why the
 > approach is worth continuing.
@@ -103,8 +103,8 @@ every call with your own eyes.
 |---|---|
 | What is ISAR for / why trust it? | this guide |
 | How will I run it on my own data (the CLI)? | [USING_ISAR.md](USING_ISAR.md) |
-| How does the autonomous loop work (goal → scans → stop)? | [MVP_FIRST_RUN.md](MVP_FIRST_RUN.md), [PHASE_4_NOTES.md](PHASE_4_NOTES.md) |
-| How was the loop's zone fix tested / what still fails? | [MVP_ZONE_RETEST.md](MVP_ZONE_RETEST.md) |
+| How does the autonomous loop work (goal → scans → stop)? | [campaigns/2026-06_MVP_FIRST_RUN.md](campaigns/2026-06_MVP_FIRST_RUN.md), [campaigns/PHASE_4_NOTES.md](campaigns/PHASE_4_NOTES.md) |
+| How was the loop's zone fix tested / what still fails? | [campaigns/2026-07_MVP_ZONE_RETEST.md](campaigns/2026-07_MVP_ZONE_RETEST.md) |
 | Where did a campaign spend its time? | `isar profile` ([USING_ISAR.md](USING_ISAR.md)) |
 | What does a term mean (pull, fold/fork, cost/dof, a verdict)? | [GLOSSARY.md](GLOSSARY.md) |
 | Why these statistics (vs χ² / HESSE / eyeballing models)? | [STATS_PRIMER.md](STATS_PRIMER.md) |

@@ -12,7 +12,7 @@ decision. The LLM supervisor consumes the decision; it does not compute it.
 2. the disposition is **resolved**;
 3. it is **confirmed on a dedicated production/confirm scan**: the criterion holds on **two
    consecutive production fits**, and the FIRST crossing carries a conservative margin (``k = 1.2`` on
-   the half-width). This is the peeking / optional-stopping-bias guard (ISAR ``PHASE_4_NOTES.md``):
+   the half-width). This is the peeking / optional-stopping-bias guard (ISAR ``docs/campaigns/PHASE_4_NOTES.md``):
    the live shrinking interval preferentially stops on downward fluctuations, so a single lucky
    crossing must be reproduced by a second scan before it counts.
 

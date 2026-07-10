@@ -654,7 +654,7 @@ the focusing-dependent Γ (the full 4-D ellipsoid + local dispersion); ω₀ bef
 
 - **No closing of the measurement loop** — Phase 3 *produces* the confidence and the underpowered/forked
   verdicts a planner would consume, but proposes no next measurement. That is Phase 4 (§11 sets up the
-  inputs; see `PHASE_4_NOTES.md`).
+  inputs; see `../campaigns/PHASE_4_NOTES.md`).
 - **No automated data collection or instrument control** — Phase 5.
 - **No LLM in the path of a fitted number, an ω, an error, a peak count, or a discard** — the LLM proposes
   structures and narrates verdicts, off the critical path (§12, P1).

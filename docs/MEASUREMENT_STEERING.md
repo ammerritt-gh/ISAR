@@ -5,7 +5,7 @@
 > falsification, cost-normalised EIG acquisition, and the anti-Stokes fold + rival-branch banking
 > are implemented (`isar/analyze/descriptor.py`, `isar/session/branch_model.py` /
 > `branch_assignment.py`, `isar/drive/acquisition/eig.py`); what ran and what failed is recorded in
-> `MVP_FIRST_RUN.md` and `MVP_ZONE_RETEST.md`. This document remains the durable record of *why*
+> `campaigns/2026-06_MVP_FIRST_RUN.md` and `campaigns/2026-07_MVP_ZONE_RETEST.md`. This document remains the durable record of *why*
 > the loop steers the way it does — what the literature actually says and the design options we
 > considered — behind the "R" in ISAR that acts to *resolve a measurement problem* (`DESIGN.md`). Where a claim rests on a paper we
 > give the citation; citation-confidence flags are collected at the end (the reference list is meant
@@ -17,7 +17,7 @@
 
 ISAR is a **triage tool** for inelastic neutron / X-ray spectroscopy: fit every scan, report a phonon
 energy with an honest verdict, and flag what needs a human (`docs/READING_GUIDE.md`). The autonomous
-driver (`isar drive`, `docs/MVP_FIRST_RUN.md`) closes the loop — from a goal it proposes scans, drives
+driver (`isar drive`, `docs/campaigns/2026-06_MVP_FIRST_RUN.md`) closes the loop — from a goal it proposes scans, drives
 the instrument, fits, and decides where to remeasure and when to stop.
 
 The first autonomous campaign exposed two failure zones, and thinking about them exposed a deeper risk.

@@ -22,7 +22,7 @@ published numbers. Nothing is ever deleted; a human reviews everything afterward
 > has passed its first certification scorecard on the synthetic zone re-test; two physics zones
 > (near-Γ, zone boundary) remain open. See
 > [docs/MEASUREMENT_STEERING.md](docs/MEASUREMENT_STEERING.md) (why it steers the way it does) and
-> [docs/MVP_ZONE_RETEST.md](docs/MVP_ZONE_RETEST.md) (current test state).
+> [docs/campaigns/2026-07_MVP_ZONE_RETEST.md](docs/campaigns/2026-07_MVP_ZONE_RETEST.md) (current test state).
 
 ## The pipeline
 
@@ -60,9 +60,9 @@ isar run "path\to\data" --workspace my_experiment     # parse -> reduce -> revie
 | Why these statistics | [docs/STATS_PRIMER.md](docs/STATS_PRIMER.md) |
 | One scan, start to finish | [docs/WORKED_EXAMPLE.md](docs/WORKED_EXAMPLE.md) |
 | The autonomous loop — research foundation & design | [docs/MEASUREMENT_STEERING.md](docs/MEASUREMENT_STEERING.md) |
-| Autonomous campaign results (first run, zone re-test) | [docs/MVP_FIRST_RUN.md](docs/MVP_FIRST_RUN.md), [docs/MVP_ZONE_RETEST.md](docs/MVP_ZONE_RETEST.md) |
+| Autonomous campaign results (first run, zone re-test) | [docs/campaigns/2026-06_MVP_FIRST_RUN.md](docs/campaigns/2026-06_MVP_FIRST_RUN.md), [docs/campaigns/2026-07_MVP_ZONE_RETEST.md](docs/campaigns/2026-07_MVP_ZONE_RETEST.md) |
 | Where did a campaign spend its time? | `isar profile` in [docs/USING_ISAR.md](docs/USING_ISAR.md) |
-| Phase design rationale | [docs/archive/PHASE_1_DESIGN.md](docs/archive/PHASE_1_DESIGN.md), [PHASE_2_DESIGN.md](docs/archive/PHASE_2_DESIGN.md), [PHASE_3_DESIGN.md](docs/archive/PHASE_3_DESIGN.md); forward notes: [docs/PHASE_4_NOTES.md](docs/PHASE_4_NOTES.md), [docs/PHASE_5_NOTES.md](docs/PHASE_5_NOTES.md) |
+| Phase design rationale | [docs/archive/PHASE_1_DESIGN.md](docs/archive/PHASE_1_DESIGN.md), [PHASE_2_DESIGN.md](docs/archive/PHASE_2_DESIGN.md), [PHASE_3_DESIGN.md](docs/archive/PHASE_3_DESIGN.md); forward notes: [docs/campaigns/PHASE_4_NOTES.md](docs/campaigns/PHASE_4_NOTES.md), [docs/campaigns/PHASE_5_NOTES.md](docs/campaigns/PHASE_5_NOTES.md) |
 
 ## Repository layout
 

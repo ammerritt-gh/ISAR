@@ -118,7 +118,7 @@ Decisions settled 2026-07-06:
 - [x] **First end-to-end autonomous run (2026-07-07)** — NL goal → 21-point campaign →
       calibrated stop decision, zero human numbers. Five live-run defects found + fixed
       (lazy `isar init`, latin-1 header, anti-Stokes recenter, quicklook HESSE model seed,
-      per-q stuck semantics). Full writeup: `docs/MVP_FIRST_RUN.md`.
+      per-q stuck semantics). Full writeup: `docs/campaigns/2026-06_MVP_FIRST_RUN.md`.
 - [ ] **Production-fit latency — NEXT TEST.** Scans are near-instant on the deterministic
       tier; each production/confirm fit runs the full bootstrap layer (~1–2 min), so a
       campaign (~50+ production-tier fits) is fitting-bound. Two levers, cut fits before
@@ -134,6 +134,20 @@ Decisions settled 2026-07-06:
       backup). Fall back automatically down a probed shortlist.
 - [ ] **Objective-aware Γ exclusion** — acoustic ω₀→0 at zone centers is structurally
       unmeasurable; parse-time exclusion beats spending 4 scans discovering it per campaign.
+- [ ] **The SVP: TAVI-as-backend campaign with realistic clocks** (T1/T2; DESIGN.md §9 —
+      "next milestone"). Same objective and driver as the analytic certification, TAVI
+      answering scans, counting time reported as the instrument would report it, so the
+      wall-clock budget semantics (§8, O2) are exercised before a real night. Prereq:
+      verify the counting-seconds accounting first (MVP16 defect: 10.6 s of 28 800 after
+      85 scans looks like a units bug).
+
+## Docs follow-ups (consolidation drop 2026-07-09)
+
+- [ ] **READING_GUIDE.md refresh + vocabulary sweep** (V1–V4) — review→collate in prose,
+      status tags in USING_ISAR etc., and update the out/-path narrative (gold report now
+      regenerated via `docs/*_check.py`; blessed baselines live outside the repo at
+      `C:\Users\AMM\Documents\ISAR_baselines\`). Pair with whichever agent builds the
+      campaign-diagnostic renderer — the diffs overlap.
 
 ## Deferred findings from the pre-merge branch review (2026-07-09)
 

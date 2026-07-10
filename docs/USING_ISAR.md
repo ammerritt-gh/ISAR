@@ -79,7 +79,7 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   audited `report/session_log.jsonl` and `report/campaign_summary.json`. Needs LLMM (goal-parsing)
   and a running TAVI instrument. Use `--spec spec.json` for an LLM-free run. **Currently drives the
   TAVI simulator only** (development tier), not a live beamline. See
-  [MVP_FIRST_RUN.md](MVP_FIRST_RUN.md).
+  [campaigns/2026-06_MVP_FIRST_RUN.md](campaigns/2026-06_MVP_FIRST_RUN.md).
 - **`isar profile --workspace DIR`** — where an autonomous campaign spent its time. Reads the
   campaign's `report/session_log.jsonl` timing events and prints a stage breakdown (propose /
   validate / submit / wait_scan / isar_run / fold / analyze …), the embedded `isar run` subprocess
