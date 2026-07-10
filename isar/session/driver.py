@@ -14,6 +14,7 @@ from __future__ import annotations
 import csv
 import os
 import time
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -81,6 +82,10 @@ class FitOutcome:
     # n_members = how many scans were summed. Per-scan fits leave these at their defaults.
     pooled: bool = False
     n_members: int | None = None
+    # Member scan labels of a pooled master (chain of custody): bare native scan numbers as strings,
+    # qualified `experiment:scan:detector` ONLY for a scan number that repeats within this member list
+    # (a multi-detector merge). Order preserves ms.members. None on per-scan fits and older ledgers.
+    members: list | None = None
     # Portable, provenance-bearing intensity for the primary phonon (steering contract 2). A dict
     # (IntensityMeasure.to_dict) or None; carried onto the dispersion prior so a later scan can
     # predict expected counts. Absent on masters (no single-record normalization) and older ledgers.
@@ -767,6 +772,15 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
 _MASTER_SCAN_BASE = 9_000_000
 
 
+def _member_labels(members) -> list[str]:
+    """Chain-of-custody labels for a pooled master's members (MergedSpectrum.members tuples
+    ``(experiment_id, scan_number, detector_id)``). A bare native scan number as a string, EXCEPT a
+    scan number that repeats within this member list (multi-detector merge), which is qualified
+    ``experiment:scan:detector`` to stay unambiguous. Preserves ``ms.members`` order."""
+    counts = Counter(m[1] for m in members)
+    return [str(m[1]) if counts[m[1]] == 1 else f"{m[0]}:{m[1]}:{m[2]}" for m in members]
+
+
 def _fit_master_group_task(args):
     """Top-level (picklable) entry point for a master-group pool worker: fit one merged group.
 
@@ -828,7 +842,16 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
         chash = canonical_hash([list(m) for m in ms.members])
         prev = session.get(master_id)               # read BEFORE the refit overwrites the ledger
         if not force and prev is not None and prev.content_hash == chash:
-            continue                               # member set unchanged → carry the prior master
+            # Member set unchanged → carry the prior master. Backfill the member provenance onto an
+            # older ledger entry that predates this field: the content-hash match proves the member
+            # set is byte-identical, so `_member_labels(ms.members)` is exact — pure bookkeeping, no
+            # refit. In-place mutation persists (session.get returns the live ledger ref).
+            for oc in prev.detectors.values():
+                if oc.get("pooled") and "members" not in oc:
+                    oc["members"] = _member_labels(ms.members)
+            if prev.provenance and "members" not in prev.provenance:
+                prev.provenance["members"] = [list(m) for m in ms.members]
+            continue
         member_scan, member_det = ms.members[0][1], ms.members[0][2]
         # Structure hint: the previous entry's best_label, iff it was a completed (fitted) master
         # and the reuse policy is on. Anything else (cold group, held/non_result, policy off) → None.
@@ -963,7 +986,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         calib=calres.summary(), reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
         interval_reliable=fit.get("interval_reliable", True), omega0_profile=fit.get("omega0_profile"),
         hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
-        pooled=True, n_members=int(ms.n_members),
+        pooled=True, n_members=int(ms.n_members), members=_member_labels(ms.members),
         descriptor=(descriptor.to_dict() if descriptor is not None else None),
         fit_kind=fit.get("fit_kind", "unconstrained"),
         branch_id=branch_id, assignment_entropy=assignment_entropy,
@@ -1370,7 +1393,7 @@ _CSV_COLUMNS = [
     "scan", "detector", "sample", "T", "h", "k", "l", "status", "verdict", "disposition",
     "confidence", "omega0", "omega0_err", "interval_lo", "interval_hi", "interval_reliable",
     "omega0_profile_lo", "omega0_profile_hi", "hesse_lo", "hesse_hi", "hesse_trusted",
-    "pooled", "n_members",
+    "pooled", "n_members", "members",
     "gamma", "gamma_provisional", "n_modes", "secondary_omega0", "secondary_omega0_err",
     "best_model", "cost_per_dof", "fit_kind", "branch_id", "assignment_entropy", "resolvable",
     "descriptor_n_peaks", "descriptor_peaks",
@@ -1425,6 +1448,16 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
             hiv = oc.get("hesse_interval")
             cal = oc.get("calib") or {}
             pr = oc.get("prior_used") or {}
+            # Member provenance (chain of custody): pooled masters join their member labels with ";".
+            # Unpooled → empty. A pooled master carrying the field must satisfy n_members == len(members)
+            # (raise otherwise — the invariant is load-bearing for the diagnostic evidence chain). A
+            # pooled master WITHOUT the field (old ledger, group absent from this batch's collation so
+            # the backfill never ran) is tolerated: empty cell, no raise.
+            members = oc.get("members")
+            if oc.get("pooled") and members is not None and len(members) != int(oc.get("n_members") or -1):
+                raise ValueError(
+                    f"master scan {e.scan_number}: n_members={oc.get('n_members')} != "
+                    f"len(members)={len(members)} — member provenance corrupt")
             rows.append({
                 "scan": e.scan_number, "detector": det, "sample": oc.get("sample"),
                 "T": oc.get("T"), "h": q[0], "k": q[1], "l": q[2], "status": e.status,
@@ -1438,6 +1471,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "hesse_lo": (hiv[0] if hiv else None), "hesse_hi": (hiv[-1] if hiv else None),
                 "hesse_trusted": oc.get("hesse_trusted"),
                 "pooled": oc.get("pooled") or None, "n_members": oc.get("n_members"),
+                "members": (";".join(members) if members else None),
                 "gamma": oc.get("gamma"), "gamma_provisional": oc.get("gamma_provisional"),
                 "n_modes": oc.get("n_modes") or 1,
                 "secondary_omega0": _secondary_mode(oc)[0],

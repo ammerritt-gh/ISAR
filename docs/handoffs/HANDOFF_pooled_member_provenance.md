@@ -3,6 +3,10 @@
 **Repo:** `C:\Users\AMM\Documents\GitHub\ISAR` · **Scope:** small, surgical · **Priority:** high
 (blocks the CAMPAIGN_DIAGNOSTIC failure-dossier evidence chain)
 
+**Status: DONE 2026-07-10.** All three acceptance criteria verified against the frozen
+`ISAR_baselines\mvp_zone_test16` baseline (resume backfill idempotent; `--force` refit
+bit-identical modulo the new column; no pooled row in the junk section).
+
 ## Problem (verified 2026-07-09 against `out/mvp_zone_test16`)
 
 Pooled "master" fits (synthetic scan IDs `9000001+`) record `pooled=True` and `n_members=<count>`

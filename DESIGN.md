@@ -256,7 +256,7 @@ coin flip, do not deliver). Nothing else in the pipeline is called Bayesian. *(I
 errors, distance from the running dispersion, provenance-weighted), never LLM-self-reported.
 Each scan gets a verdict and a disposition realizing the review taxonomy (§2). Pooled "master"
 fits carry synthetic scan ids and must enumerate their `members`. *(Confidence Implemented;
-member enumeration Partial — `docs/handoffs/HANDOFF_pooled_member_provenance.md`.)*
+member enumeration Implemented 2026-07-10 — `docs/handoffs/HANDOFF_pooled_member_provenance.md`.)*
 
 **Residual-driven refit (LLM).** On a failed/poor fit, a vision-capable tier reads the fit +
 residual figure and proposes a structural fix — after deterministic attempts, off the critical
@@ -394,7 +394,7 @@ DECISIONS W1–W3.)*
 | Stage II: Baker–Cousins fit, Akaike selection, branch posterior, verdicts | Implemented |
 | Interval ladder through bootstrap; `interval_reliable` flag | Implemented |
 | Uniform `interval_reliable` convergence rule | **Partial** (S3) |
-| Pooled-fit member provenance | **Partial** (handoff open) |
+| Pooled-fit member provenance | Implemented (2026-07-10) |
 | γ-at-bound calibration v2; Γ prior | Planned |
 | `tas4d` convolution (TAVI-supplied ellipsoids) | Planned |
 | Stage III: per-point objective, EIG acquisition, stop-and-report | Implemented (analytic tier certified) |

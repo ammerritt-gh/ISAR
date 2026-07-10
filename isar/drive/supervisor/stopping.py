@@ -334,6 +334,7 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
         per_q.append({"hkl": list(g.hkl), "q": g.q, "converged": g.converged,
                       "calibrated_halfwidth": g.cert_halfwidth, "omega0": g.cert_omega0,
                       "master_halfwidth": m.get("halfwidth"), "master_n_members": m.get("n_members"),
+                      "master_members": m.get("members"),
                       "single_prod_halfwidth": g.best_prod_halfwidth,
                       "source": ("master" if (g._master_hw is not None and g.cert_halfwidth == g._master_hw)
                                  else "single_production" if g.cert_halfwidth is not None else None),

@@ -68,6 +68,61 @@ def test_run_report_tas_gamma_caveat(tmp_path):
     assert "Γ" in md and "statistical-only" in md    # the TAS honesty caveat fires on absolute-axis cards
 
 
+def _master_oc(disposition, verdict, *, members, n_members):
+    oc = {"detector_id": "merged", "verdict": verdict, "disposition": disposition,
+          "confidence": 0.9, "omega0": 1.0, "omega0_err": 0.02, "interval": [0.9, 1.0, 1.1],
+          "modality": "single", "gamma": 0.3, "gamma_provisional": False,
+          "best_label": "elastic+stokes+bg", "cost_per_dof": 1.0, "q": [2.2, 0.0, 0.0],
+          "T": 100.0, "sample": "S", "prior_used": None,
+          "calib": {"resolution_source": "measured"}, "reasons": [],
+          "pooled": True, "n_members": n_members}
+    if members is not None:
+        oc["members"] = members
+    return oc
+
+
+def _session_with_master(oc):
+    st = SessionState()
+    st.put(ScanEntry(scan_id="master:S_2.2_100.0", scan_number=9_000_001, scan_type="measurement",
+                     status="fitted", detectors={"merged": oc}))
+    return st
+
+
+def test_pooled_reject_renders_uncertifiable_not_junk(tmp_path):
+    ws = Workspace.open(tmp_path / "ws")
+    ws.root.mkdir(parents=True)
+    st = _session_with_master(_master_oc("reject", "junk", members=["473", "493"], n_members=2))
+    run_report.write_run_report(st, _card(), ws, formats=("markdown",))
+    md = (ws.report_dir / "report.md").read_text(encoding="utf-8")
+    assert "pooled — uncertifiable" in md
+    assert "junk" not in md                              # the raw reject/junk label is overridden
+
+
+def test_delivered_pooled_renders_member_count_and_chain(tmp_path):
+    ws = Workspace.open(tmp_path / "ws")
+    ws.root.mkdir(parents=True)
+    st = _session_with_master(_master_oc("resolved", "clear_phonon",
+                                         members=["1", "2", "3"], n_members=3))
+    written = run_report.write_run_report(st, _card(), ws, formats=("markdown",))
+    md = (ws.report_dir / "report.md").read_text(encoding="utf-8")
+    assert "pooled (master, 3 members)" in md            # triage display
+    assert "Pooled masters (chain of custody)" in md     # the new section
+    assert "1; 2; 3" in md                               # member list in the chain-of-custody table
+    import json
+    rep = json.loads(written["json"].read_text(encoding="utf-8"))
+    entry = next(s for s in rep["scans"] if s["scan"] == 9_000_001)
+    assert entry["members"] == ["1", "2", "3"] and entry["n_members"] == 3
+
+
+def test_delivered_pooled_without_members_raises(tmp_path):
+    import pytest
+    ws = Workspace.open(tmp_path / "ws")
+    ws.root.mkdir(parents=True)
+    st = _session_with_master(_master_oc("resolved", "clear_phonon", members=None, n_members=3))
+    with pytest.raises(ValueError, match="no member provenance"):
+        run_report.write_run_report(st, _card(), ws, formats=("markdown",))
+
+
 def test_run_report_empty_ledger_ok(tmp_path):
     ws = Workspace.open(tmp_path / "ws")
     ws.root.mkdir(parents=True)

@@ -41,7 +41,8 @@ def _stub(monkeypatch):
         calls.append(master_id)
         e = ScanEntry(scan_id=master_id, scan_number=int(scan_number), scan_type="measurement",
                       content_hash=chash, status="fitted")
-        e.detectors["det"] = {"pooled": True, "n_members": ms.n_members, "omega0": 0.95}
+        e.detectors["det"] = {"pooled": True, "n_members": ms.n_members, "omega0": 0.95,
+                              "members": driver._member_labels(ms.members)}
         return e
 
     monkeypatch.setattr(driver, "_fit_master_group", fake)
@@ -236,6 +237,14 @@ def test_parallel_masters_match_serial_end_to_end(tmp_path):
         assert _prov_no_timing(se.provenance) == _prov_no_timing(pe.provenance)
 
     assert ser_csv == par_csv                           # results.csv byte-identical
+
+    # Chain of custody: every pooled results.csv row names its members, len == n_members.
+    from isar.drive.isar_io.readers import read_results_csv
+    pooled_rows = [r for r in read_results_csv(tmp_path / "serial") if r.get("pooled")]
+    assert len(pooled_rows) == 2
+    for r in pooled_rows:
+        assert r["members"] and len(r["members"]) == r["n_members"]
+
     # Real S30 batch (held, merge="separate"): the master pass must be a no-op — per-scan path intact.
     ws = Workspace.open(tmp_path / "ws")
     ws.root.mkdir(parents=True, exist_ok=True)
@@ -246,3 +255,94 @@ def test_parallel_masters_match_serial_end_to_end(tmp_path):
     driver.run_batch(ws, [data], M=10, detectors="ana5")
     _card, session = ws.load()
     assert not any(k.startswith("master:") for k in session.scans)
+
+
+# ---------------------------------------------------------------------------
+# Member provenance (chain of custody)
+# ---------------------------------------------------------------------------
+def test_member_labels_unique_are_bare_strings():
+    # Distinct scan numbers → bare native scan numbers as strings, in ms.members order.
+    members = [("tavi", 473, "det"), ("tavi", 493, "det"), ("tavi", 494, "det")]
+    assert driver._member_labels(members) == ["473", "493", "494"]
+
+
+def test_member_labels_repeated_scan_is_qualified():
+    # A scan number that repeats within the list (multi-detector merge) is qualified exp:scan:det;
+    # a non-repeating one stays bare.
+    members = [("tavi", 473, "a"), ("tavi", 473, "b"), ("tavi", 500, "a")]
+    assert driver._member_labels(members) == ["tavi:473:a", "tavi:473:b", "500"]
+
+
+def test_carry_backfills_members_without_refit(monkeypatch):
+    # An older ledger master (fit before the members field existed) is backfilled on the carry path:
+    # the content-hash match proves the member set is identical, so labels are recomputed exactly —
+    # no refit (the fit stub must NOT be called again).
+    calls = _stub(monkeypatch)
+    ms = _MS([("tavi", 473, "det"), ("tavi", 493, "det"), ("tavi", 494, "det")])
+    col = _Col("merge", [_Grp(("tavi", "42", 200.0), ms)])
+    s = SessionState()
+    assert driver._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000) == 1
+    mid = next(k for k in s.scans if k.startswith("master:"))
+    assert len(calls) == 1
+
+    # Simulate an old ledger: strip members from the detector dict + a provenance lacking it.
+    del s.scans[mid].detectors["det"]["members"]
+    s.scans[mid].provenance = {"pooled": True, "n_members": 3}
+
+    # Same member set → carry path; the stub is not called again but members are restored.
+    assert driver._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000) == 0
+    assert len(calls) == 1                                     # no refit
+    restored = s.scans[mid].detectors["det"]["members"]
+    assert restored == ["473", "493", "494"]
+    assert len(restored) == s.scans[mid].detectors["det"]["n_members"]
+    assert s.scans[mid].provenance["members"] == [["tavi", 473, "det"], ["tavi", 493, "det"],
+                                                  ["tavi", 494, "det"]]
+
+
+def _master_entry(members, n_members=None):
+    oc = driver.FitOutcome(
+        detector_id="merged", verdict="clear_phonon", disposition="resolved", confidence=0.9,
+        omega0=0.95, omega0_err=0.02, interval=(0.9, 1.0), modality="single", gamma=0.3,
+        gamma_provisional=False, best_label="elastic+stokes+bg", cost_per_dof=1.0,
+        q=[2.1, 0.0, 0.0], T=200.0, sample="tavi", prior_used=None, calib={},
+        pooled=True, n_members=(n_members if n_members is not None else len(members)),
+        members=members)
+    e = ScanEntry(scan_id="master:tavi_42_200.0", scan_number=driver._MASTER_SCAN_BASE + 1,
+                  scan_type="measurement", content_hash="c", status="fitted")
+    e.detectors["merged"] = oc.to_dict()
+    return e
+
+
+def _unpooled_entry():
+    oc = driver.FitOutcome(
+        detector_id="det", verdict="clear_phonon", disposition="resolved", confidence=0.8,
+        omega0=1.2, omega0_err=0.03, interval=(1.1, 1.3), modality="single", gamma=0.2,
+        gamma_provisional=False, best_label="elastic+stokes+bg", cost_per_dof=1.1,
+        q=[1.0, 0.0, 0.0], T=200.0, sample="tavi", prior_used=None, calib={})
+    e = ScanEntry(scan_id="tavi:5:det", scan_number=5, scan_type="measurement",
+                  content_hash="c", status="fitted")
+    e.detectors["det"] = oc.to_dict()
+    return e
+
+
+def test_results_csv_round_trips_members(tmp_path):
+    from isar.drive.isar_io.readers import read_results_csv
+    ws = Workspace.open(tmp_path / "ws")
+    ws.root.mkdir(parents=True, exist_ok=True)
+    s = SessionState()
+    s.put(_master_entry(["473", "493", "494"]))
+    s.put(_unpooled_entry())
+    driver._write_results_csv(ws, s)
+
+    rows = {r["scan"]: r for r in read_results_csv(ws.root)}
+    assert rows[driver._MASTER_SCAN_BASE + 1]["members"] == ["473", "493", "494"]
+    assert rows[5]["members"] is None                          # unpooled → empty cell → None
+
+
+def test_write_results_csv_raises_on_member_count_mismatch(tmp_path):
+    ws = Workspace.open(tmp_path / "ws")
+    ws.root.mkdir(parents=True, exist_ok=True)
+    s = SessionState()
+    s.put(_master_entry(["473", "493"], n_members=3))          # 2 members, claims 3
+    with pytest.raises(ValueError, match="member provenance corrupt"):
+        driver._write_results_csv(ws, s)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from isar.analyze import gold as gold_mod
 from isar.report import fit_figures
 from isar.report.findings import FindingsDoc
 
@@ -29,7 +30,8 @@ def _outcomes(session):
 
 def _scan_json(scan, det, status, oc) -> dict:
     """One report.json `scans` entry. Additive: carries a per-mode `modes` list (mode, omega0,
-    omega0_err, gamma, amplitude) only for multi-mode fits (`n_modes` > 1)."""
+    omega0_err, gamma, amplitude) only for multi-mode fits (`n_modes` > 1); pooled masters carry
+    their member provenance (`pooled`, `n_members`, `members`)."""
     d = {"scan": scan, "detector": det, "status": status,
          **{k: oc.get(k) for k in ("verdict", "disposition", "omega0", "confidence", "best_label")}}
     if (oc.get("n_modes") or 1) > 1 and oc.get("modes"):
@@ -37,6 +39,15 @@ def _scan_json(scan, det, status, oc) -> dict:
         d["modes"] = [{"mode": i, "omega0": m.get("omega0"), "omega0_err": m.get("omega0_err"),
                        "gamma": m.get("gamma"), "amplitude": m.get("amplitude")}
                       for i, m in enumerate(oc.get("modes"))]
+    if oc.get("pooled"):
+        members = oc.get("members")
+        if members is not None and len(members) != int(oc.get("n_members") or -1):
+            raise ValueError(
+                f"master scan {scan}: n_members={oc.get('n_members')} != len(members)="
+                f"{len(members)} — member provenance corrupt")
+        d["pooled"] = True
+        d["n_members"] = oc.get("n_members")
+        d["members"] = members
     return d
 
 
@@ -97,8 +108,23 @@ def write_run_report(session, card, workspace, *, formats=("html", "markdown")) 
         ivs = (f"[{_fmt(iv[0],2)}, {_fmt(iv[-1],2)}]" if iv else "—")
         pr = oc.get("prior_used") or {}
         cal = oc.get("calib") or {}
+        verdict_cell = oc.get("verdict", "")
+        disp_cell = oc.get("disposition", "")
+        if oc.get("pooled"):
+            # Triage-view fix: a pooled master must never render in the junk/reject section beside a
+            # "junk"/"reject" label. Override the DISPLAY cells only (the underlying disposition value
+            # is unchanged — dispositions are not renamed anywhere). A rejected master is
+            # "pooled — uncertifiable", distinct from junk; otherwise "pooled (master, N members)".
+            members = oc.get("members")
+            if gold_mod.delivered(oc.get("disposition")) and not members:
+                raise ValueError(
+                    f"pooled master {scan} is delivered but carries no member provenance — "
+                    f"re-run isar run on this workspace to backfill members")
+            verdict_cell = "pooled"
+            disp_cell = ("pooled — uncertifiable" if oc.get("disposition") == "reject"
+                         else f"pooled (master, {oc.get('n_members')} members)")
         rows.append([
-            scan, det, oc.get("verdict", ""), oc.get("disposition", ""),
+            scan, det, verdict_cell, disp_cell,
             _fmt(oc.get("omega0"), 3), ivs, _fmt(oc.get("confidence"), 2),
             oc.get("best_label") or "—",
             (f"{pr.get('source')}~{_fmt(pr.get('omega0'),2)}" if pr else "—"),
@@ -109,6 +135,20 @@ def write_run_report(session, card, workspace, *, formats=("html", "markdown")) 
                    "model", "prior", "resolution"], rows)
     else:
         doc.para("No fitted scans this run.")
+
+    # Pooled masters (chain of custody): name the member scans behind every pooled ω₀ so the
+    # delivered-value provenance is auditable end to end.
+    pooled = [(scan, oc) for scan, det, status, oc in _outcomes(session) if oc.get("pooled")]
+    if pooled:
+        doc.section("Pooled masters (chain of custody)")
+        crows = []
+        for scan, oc in pooled:
+            members = oc.get("members")
+            q = oc.get("q") or [None, None, None]
+            hkl = ", ".join(_fmt(v, 2) for v in q)
+            crows.append([scan, hkl, _fmt(oc.get("T"), 1), oc.get("best_label") or "—",
+                          oc.get("n_members"), ("; ".join(members) if members else "—")])
+        doc.table(["scan", "hkl", "T", "label", "n_members", "members"], crows)
 
     # Held / declined explanations.
     held = [(e.scan_number, e.status, "; ".join(e.reasons))

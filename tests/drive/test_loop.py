@@ -70,7 +70,7 @@ class MockTavi:
 import math as _math
 
 
-def make_mock_runner(omega_true, *, window_gate=True, hesse_only=False):
+def make_mock_runner(omega_true, *, window_gate=True, hesse_only=False, blank_members=False):
     """A fake `isar run`: writes results.csv from the saved scans, including the master (pooled) row
     per (Q,T) that ISAR now emits. The master's interval shrinks ~1/√N with the pooled production
     count, so a q converges by accumulation. Declines when the window misses the peak.
@@ -120,6 +120,9 @@ def make_mock_runner(omega_true, *, window_gate=True, hesse_only=False):
             mrow = {"scan": master_scan, "detector": "det", "h": h, "k": 0.0, "l": 0.0,
                     "status": "fitted", "verdict": "resolved", "disposition": "resolved",
                     "omega0": true, "interval_reliable": True, "pooled": True, "n_members": npool,
+                    # Chain of custody: member labels (";"-joined). blank_members leaves the cell
+                    # empty while n_members>0 to exercise the summary's evidence-chain guard.
+                    "members": ("" if blank_members else ";".join(str(i) for i in range(npool))),
                     "confidence": 0.9, "reasons": "pooled master"}
             if hesse_only:
                 mrow.update({"hesse_lo": true - hw, "hesse_hi": true + hw, "hesse_trusted": True})
@@ -132,7 +135,7 @@ def make_mock_runner(omega_true, *, window_gate=True, hesse_only=False):
         cols = ["scan", "detector", "h", "k", "l", "status", "verdict", "disposition",
                 "confidence", "omega0", "omega0_err", "interval_lo", "interval_hi",
                 "interval_reliable", "hesse_lo", "hesse_hi", "hesse_trusted",
-                "pooled", "n_members", "reasons"]
+                "pooled", "n_members", "members", "reasons"]
         with open(report / "results.csv", "w", newline="", encoding="utf-8") as fh:
             w = csv.DictWriter(fh, fieldnames=cols)
             w.writeheader()
@@ -253,6 +256,30 @@ def _run(tmp_path, objective, client, runner, **extra):
     cfg = {"workspace": ws, "client": client, "run_isar": runner, "calibration": _UNITY_CAL,
            "resolution": {"fwhm_dE": 0.8}, "seed": 7, **extra}
     return run_campaign(objective, cfg), ws
+
+
+def test_campaign_summary_carries_member_provenance(tmp_path):
+    # Chain of custody: every pooled dispersion + grid entry names its members, len == n_members.
+    omega = lambda h: (h - 2.0) * 2.0
+    client = MockTavi(omega)
+    summary, ws = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+    pooled_disp = [d for d in summary["dispersion"] if d.get("n_members")]
+    assert pooled_disp
+    for d in pooled_disp:
+        assert d["members"] and len(d["members"]) == d["n_members"]
+    pooled_grid = [g for g in summary["grid"] if g.get("n_members")]
+    assert pooled_grid
+    for g in pooled_grid:
+        assert g["members"] and len(g["members"]) == g["n_members"]
+
+
+def test_campaign_summary_raises_on_broken_member_chain(tmp_path):
+    # A pooled value reported with n_members>0 but an empty members cell (the column is present) →
+    # the evidence chain is broken and the summary refuses to certify it.
+    omega = lambda h: (h - 2.0) * 2.0
+    client = MockTavi(omega)
+    with pytest.raises(RuntimeError, match="evidence chain broken"):
+        _run(tmp_path, _objective(), client, make_mock_runner(omega, blank_members=True))
 
 
 def test_campaign_end_renders_report_once(tmp_path, monkeypatch):

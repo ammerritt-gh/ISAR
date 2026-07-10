@@ -35,6 +35,8 @@ _NUMERIC_COLUMNS = frozenset({
 _INT_COLUMNS = frozenset({"scan", "prior_n", "n_modes", "n_members"})
 # Coerced to bool ("True"/"False" → True/False; "" → None). ISAR writes Python bool reprs.
 _BOOL_COLUMNS = frozenset({"interval_reliable", "pooled", "hesse_trusted", "resolvable"})
+# Split on ";" into a list of labels ("" → None; missing column → key absent via DictReader).
+_LIST_COLUMNS = frozenset({"members"})
 
 
 def _report_dir(workspace: str | Path) -> Path:
@@ -44,6 +46,8 @@ def _report_dir(workspace: str | Path) -> Path:
 def _coerce(column: str, value: str | None):
     if value is None or value == "":
         return None
+    if column in _LIST_COLUMNS:
+        return [s for s in value.split(";") if s]
     if column in _BOOL_COLUMNS:
         s = str(value).strip().lower()
         if s in ("true", "1"):

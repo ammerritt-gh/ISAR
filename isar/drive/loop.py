@@ -240,6 +240,10 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         "hkl": _row_hkl(row), "omega0": row.get("omega0"), "halfwidth": hw,
         "reliable": bool(ok), "usable": (disp in _USABLE and row.get("omega0") is not None),
         "disposition": disp, "n_members": row.get("n_members"),
+        # Chain of custody: the member scan labels behind this pooled value (readers coerce the CSV
+        # cell to a list). members_field_present distinguishes "old results.csv lacked the column"
+        # (guard skipped) from "column present but empty" (guard fires).
+        "members": row.get("members"), "members_field_present": ("members" in row),
     }
 
 
@@ -919,10 +923,24 @@ def _campaign_summary(objective, grid, decision, budget_state, workspace, log_pa
     def _hw(g):
         return g.cert_halfwidth if g.cert_halfwidth is not None else g.best_halfwidth
 
-    dispersion = [{"hkl": list(g.hkl), "q": g.q, "omega0": _omega0(g),
-                   "calibrated_halfwidth": _hw(g), "n_members": (g.master or {}).get("n_members"),
-                   "converged": g.converged}
-                  for g in grid if _omega0(g) is not None]
+    dispersion = []
+    for g in grid:
+        if _omega0(g) is None:
+            continue
+        m = g.master or {}
+        n_members = m.get("n_members")
+        members = m.get("members")
+        # Chain-of-custody guard: a pooled dispersion point reported without its member provenance
+        # breaks the evidence chain. Skip only when the results.csv predates the members column
+        # (members_field_present is False) — the transition-tolerance case.
+        if (n_members is not None and m.get("members_field_present")
+                and (not members or len(members) != n_members)):
+            raise RuntimeError(
+                f"dispersion point {list(g.hkl)}: pooled value reported without member provenance "
+                f"(evidence chain broken)")
+        dispersion.append({"hkl": list(g.hkl), "q": g.q, "omega0": _omega0(g),
+                           "calibrated_halfwidth": _hw(g), "n_members": n_members,
+                           "members": members, "converged": g.converged})
     try:
         card = read_card_state(workspace)
         prior_points = card.get("dispersion_prior") or []
@@ -936,6 +954,7 @@ def _campaign_summary(objective, grid, decision, budget_state, workspace, log_pa
                   "master_halfwidth": (g.master or {}).get("halfwidth"),
                   "single_prod_halfwidth": g.best_prod_halfwidth,
                   "n_members": (g.master or {}).get("n_members"),
+                  "members": (g.master or {}).get("members"),
                   "n_production": g.n_production, "n_decline": g.n_decline,
                   "stuck": g.stuck} for g in grid],
         "dispersion": dispersion,

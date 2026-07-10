@@ -71,6 +71,31 @@ def test_empty_cells_become_none(tmp_path):
     assert rows[0]["status"] == "held_for_calibration"
 
 
+def test_members_list_column_coercion(tmp_path):
+    # A pooled master's `members` cell (";"-joined) coerces to a list; empty → None; absent → key absent.
+    _write_results(tmp_path, [
+        {"scan": 9_000_001, "detector": "det", "status": "fitted", "pooled": "True",
+         "n_members": 3, "members": "473;493;494"},
+        {"scan": 5, "detector": "det", "status": "fitted", "members": ""},   # empty → None
+    ])
+    rows = readers.read_results_csv(tmp_path)
+    assert rows[0]["members"] == ["473", "493", "494"]
+    assert rows[1]["members"] is None
+
+
+def test_members_column_absent_key_absent(tmp_path):
+    # A results.csv predating the members column: DictReader never yields the key.
+    rd = tmp_path / "report"
+    rd.mkdir(parents=True, exist_ok=True)
+    cols = [c for c in _CSV_COLUMNS if c != "members"]
+    with open(rd / "results.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        w.writerow({c: {"scan": 5, "status": "fitted"}.get(c) for c in cols})
+    rows = readers.read_results_csv(tmp_path)
+    assert "members" not in rows[0]
+
+
 def test_missing_results_csv_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         readers.read_results_csv(tmp_path)

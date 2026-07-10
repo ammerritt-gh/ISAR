@@ -18,11 +18,24 @@ def _obs(hkl, kind, hw, resolved=True, disp="resolved"):
             "disposition": disp, "omega0": 3.0 if resolved else None}
 
 
-def _master(hkl, hw, disp="resolved", reliable=True, n=2):
+def _master(hkl, hw, disp="resolved", reliable=True, n=2, members=None):
     # A pooled-fit convergence row as loop._master_obs_from_row builds it.
     return {"hkl": hkl, "omega0": 3.0, "halfwidth": hw, "reliable": reliable,
             "usable": disp in st.USABLE_DISPOSITIONS and hw is not None,
-            "disposition": disp, "n_members": n}
+            "disposition": disp, "n_members": n,
+            "members": (members if members is not None else [str(i) for i in range(n)])}
+
+
+# --------------------------------------------------------------------------- master provenance
+def test_per_q_carries_master_members():
+    # evaluate_stop's per_q rollup surfaces the pooled master's member labels (chain of custody).
+    obj = _obj()
+    masters = [_master((h, 0.0, 0.0), 0.30, n=3, members=["473", "493", "494"])
+               for h in (2.1, 2.2, 2.3, 2.4)]
+    grid = st.summarize_grid(obj, [], masters)
+    decision = st.evaluate_stop(obj, grid, _BUDGET)
+    per_q = decision.to_dict()["per_q"]
+    assert all(q["master_members"] == ["473", "493", "494"] for q in per_q)
 
 
 # --------------------------------------------------------------------------- master convergence
