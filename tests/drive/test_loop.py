@@ -18,7 +18,8 @@ import isar.drive.loop as loop_mod
 from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_point_count,
                              _errors_arg_for, _extract_max_points, _guard_point_count,
                              _master_obs_from_row, _observation_from_row, _pick_interval,
-                             _preflight_max_points, _resume_state, _run_nonce, run_campaign)
+                             _preflight_max_points, _resume_state, _run_nonce, _validate_body,
+                             run_campaign)
 from isar.drive.acquisition.acquire import ScanProposal, points_in_window
 from isar.drive.objective import ObjectiveSpec
 from isar.drive.session_log import log_event, read_log
@@ -736,6 +737,20 @@ def test_campaign_config_sets_run_nonce_from_workspace_file(tmp_path):
                                            "run_isar": lambda *a, **k: None,
                                            "calibration": _UNITY_CAL})
     assert cfg2.run_nonce == cfg.run_nonce
+
+
+def test_campaign_config_defaults_sample_and_honors_override(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    base = {"workspace": ws, "client": MockTavi(lambda h: 0.0),
+            "run_isar": lambda *a, **k: None, "calibration": _UNITY_CAL}
+    cfg = _campaign_config(_objective(), dict(base))
+    assert cfg.sample == "Al_phonon_DFT"
+    cfg2 = _campaign_config(_objective(), dict(base, sample="Al_bragg_custom"))
+    assert cfg2.sample == "Al_bragg_custom"
+    # the resolved sample reaches the validate/scan body's parameters
+    body = _validate_body(_scan_proposal(0.0, 1.0, 0.1), sample=cfg2.sample)
+    assert body["parameters"]["sample"] == "Al_bragg_custom"
 
 
 # --------------------------------------------------------------------------- proposal point-count guard

@@ -214,7 +214,7 @@ def _make_fisher_provider(card_state: dict, resolution_cb):
     return provider
 
 
-def _validate_body(proposal, *, allow_partial: bool = False) -> dict[str, Any]:
+def _validate_body(proposal, *, sample: str, allow_partial: bool = False) -> dict[str, Any]:
     """The ``POST /validate`` body — ``parameters`` only (engine/seed/isolated are scan-only fields)."""
     body: dict[str, Any] = {
         "parameters": {
@@ -222,9 +222,16 @@ def _validate_body(proposal, *, allow_partial: bool = False) -> dict[str, Any]:
             "scan_command1": proposal.scan_command(),
             # A stale scan_command2 on the instrument (e.g. TAVI GUI residue)
             # multiplies the point grid and can scan the same axis twice; the
-            # driver owns the scan definition, so clear it explicitly.
+            # driver owns the scan definition, so clear it explicitly. The
+            # instrument-side bleed is fixed (TAVI GUI-independence change); this
+            # stays as belt-and-braces.
             "scan_command2": "",
             "number_neutrons": int(proposal.ncount),
+            # TAVI's API is now GUI-independent: POST /scan|/validate build state from
+            # instrument defaults (Al_bragg) + this request's parameters, no longer
+            # inheriting the operator's GUI sample selection. ISAR measures phonons, so
+            # the campaign's sample must be stamped explicitly.
+            "sample": sample,
         },
     }
     if allow_partial:
@@ -232,9 +239,9 @@ def _validate_body(proposal, *, allow_partial: bool = False) -> dict[str, Any]:
     return body
 
 
-def _scan_body(proposal, engine: str, seed: int, *, allow_partial: bool = False) -> dict[str, Any]:
+def _scan_body(proposal, engine: str, seed: int, *, sample: str, allow_partial: bool = False) -> dict[str, Any]:
     """The ``POST /scan`` body — the validate body plus the isolated/seeded engine selection."""
-    body = _validate_body(proposal, allow_partial=allow_partial)
+    body = _validate_body(proposal, sample=sample, allow_partial=allow_partial)
     body.update({"engine": engine, "seed": int(seed), "isolated": True})
     return body
 
@@ -646,6 +653,9 @@ class CampaignConfig:
       :data:`DEFAULT_WAIT_TIMEOUT`): the per-scan ``wait_scan`` timeout in seconds.
     - ``floor`` (:class:`float`, ``= systematic_floor(calibration, config["floor"])`` — config key
       ``floor`` overrides): the systematic ω₀ floor added to every convergence gate.
+    - ``sample`` (:class:`str`, config key ``sample``, default ``"Al_phonon_DFT"``): stamped into every
+      validate/scan body's ``parameters`` because the instrument API no longer inherits the GUI's
+      sample selection.
     """
     workspace: Path
     data_dir: Path
@@ -666,6 +676,7 @@ class CampaignConfig:
     # Instrument point-count ceiling, read once per campaign (GET /state|/schema), else DEFAULT_MAX_POINTS.
     max_points: int = DEFAULT_MAX_POINTS
     max_points_source: str = "default"
+    sample: str = "Al_phonon_DFT"
 
 
 def _run_nonce(workspace: Path) -> str:
@@ -737,6 +748,7 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
         run_nonce=_run_nonce(workspace),
         max_points=max_points,
         max_points_source=max_points_source,
+        sample=str(config.get("sample", "Al_phonon_DFT")),
     )
 
 
@@ -777,7 +789,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         # full window and fit the limit; a no-op on a proposal that already fits.
         _guard_point_count(proposal, cfg.max_points, cfg.max_points_source, log_path, it)
         with timed(log_path, "validate", iteration=it, attempt=attempt):
-            val = client.validate(_validate_body(proposal, allow_partial=allow_partial))
+            val = client.validate(_validate_body(proposal, sample=cfg.sample, allow_partial=allow_partial))
         log_event(log_path, "validate", {"would_queue": val.get("would_queue"),
                                           "blockers": val.get("blockers"), "eta": val.get("eta"),
                                           "iter": it})
@@ -797,7 +809,8 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             break
 
         with timed(log_path, "submit", iteration=it, attempt=attempt) as _m:
-            body = _scan_body(proposal, cfg.engine, cfg.base_seed + scan_counter, allow_partial=allow_partial)
+            body = _scan_body(proposal, cfg.engine, cfg.base_seed + scan_counter,
+                               sample=cfg.sample, allow_partial=allow_partial)
             submit = client.submit_scan(
                 body, idempotency_key=f"{objective.name or 'campaign'}-{cfg.run_nonce}-{scan_counter}")
             scan_counter += 1
