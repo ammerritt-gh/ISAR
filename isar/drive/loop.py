@@ -55,8 +55,92 @@ from isar.drive.supervisor.stopping import (
 
 DEFAULT_MAX_ITERS = 200
 DEFAULT_WAIT_TIMEOUT = 600.0
+# The instrument point-count ceiling (TAVI enforces max_points=200 on a scan command). An over-limit
+# scan latches TAVI's validator state and blocks all later API calls until restart (see
+# docs/campaigns/2026-07_MVP_ZONE_RETEST.md), so ISAR must never submit/validate one. Used only as the
+# fallback when the live limit cannot be read from the instrument once per campaign.
+DEFAULT_MAX_POINTS = 200
+# Candidate keys a TAVI /state or /schema payload might carry the point-count limit under.
+_MAX_POINTS_KEYS = ("max_points", "maxPoints", "scan_max_points", "max_scan_points", "points_max")
 _DEFAULT_CALIBRATION = (Path(__file__).resolve().parents[2] / "calibration"
                         / "phonon_dft_deterministic.json")
+
+
+def _extract_max_points(payload: Any) -> int | None:
+    """Pull a positive integer point-count limit out of a TAVI /state or /schema body, checking the
+    known key names at the top level and inside a nested ``limits`` dict. Returns ``None`` when no
+    recognizable limit is present (the caller then falls back to :data:`DEFAULT_MAX_POINTS`)."""
+    if not isinstance(payload, dict):
+        return None
+    nested = payload.get("limits")
+    for scope in (payload, nested if isinstance(nested, dict) else {}):
+        for k in _MAX_POINTS_KEYS:
+            v = scope.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+                return int(v)
+    return None
+
+
+def _preflight_max_points(client) -> tuple[int, str]:
+    """Read the instrument's max-points limit ONCE per campaign, returning ``(limit, source)``.
+
+    Tries ``GET /state`` then ``GET /schema`` (whichever first carries a recognizable limit). A
+    preflight failure — endpoint unreachable, method absent on the client seam, or no limit present —
+    must never break the campaign: it falls back silently to :data:`DEFAULT_MAX_POINTS`, recording the
+    fallback via the ``source`` so the eventual clamp event states where the limit came from."""
+    for method in ("get_state", "get_schema"):
+        fn = getattr(client, method, None)
+        if not callable(fn):
+            continue
+        try:
+            payload = fn()
+        except Exception:   # noqa: BLE001 — preflight is best-effort; never fail a campaign on it
+            continue
+        mp = _extract_max_points(payload)
+        if mp is not None:
+            return mp, method
+    return DEFAULT_MAX_POINTS, "default"
+
+
+def _emitted_point_count(e_lo: float, e_hi: float, e_step: float) -> int:
+    """The TRUE (unclamped) number of points TAVI computes from a ``deltaE lo hi step`` command.
+
+    :func:`~isar.drive.acquisition.acquire.points_in_window` clamps to the acquisition budget
+    (``MAX_POINTS``); TAVI does not — it counts the command literally. A missed-window recenter widens
+    ``e_lo``/``e_hi`` without recomputing the (tight) ``e_step``, so the emitted command can carry far
+    more points than the clamped ledger shows (the 594-pt over-limit scan). This is what the guard
+    checks, so a wide-window/tight-step proposal cannot slip past the ledger clamp to TAVI."""
+    step = max(float(e_step), 1e-9)
+    span = max(float(e_hi) - float(e_lo), 0.0)
+    return int(span / step) + 1
+
+
+def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int) -> bool:
+    """Clamp ``proposal`` to the instrument's ``max_points`` limit BEFORE any validate/submit call.
+
+    When the emitted point count exceeds the limit, COARSEN ``e_step`` to keep the FULL energy window
+    (never truncate it) so the scan fits, then recompute ``n_points`` via the acquisition helper. A
+    greppable ``proposal_clamped`` exception event records the old/new step + point counts, the hkl,
+    the limit, and where the limit came from. No-op (returns ``False``) when the proposal already fits.
+    Returns ``True`` when it clamped."""
+    n_emitted = _emitted_point_count(proposal.e_lo, proposal.e_hi, proposal.e_step)
+    if n_emitted <= max_points:
+        return False
+    old_step = float(proposal.e_step)
+    span = max(float(proposal.e_hi) - float(proposal.e_lo), 0.0)
+    new_step = span / max(int(max_points) - 1, 1)   # exactly max_points points across the kept window
+    proposal.e_step = new_step
+    proposal.n_points = points_in_window(proposal.e_lo, proposal.e_hi, new_step)
+    log_event(log_path, "exception", {
+        "action": "proposal_clamped",
+        "hkl": [proposal.h, proposal.k, proposal.l],
+        "limit": int(max_points), "limit_source": source,
+        "old_step": old_step, "new_step": new_step,
+        "old_n_points": int(n_emitted),
+        "new_n_points": _emitted_point_count(proposal.e_lo, proposal.e_hi, new_step),
+        "iter": it,
+    })
+    return True
 
 
 def _resolve_calibration(cfg_value) -> Calibration:
@@ -575,6 +659,9 @@ class CampaignConfig:
     worker: bool = True
     run_timeout: float = 900.0
     run_nonce: str = ""
+    # Instrument point-count ceiling, read once per campaign (GET /state|/schema), else DEFAULT_MAX_POINTS.
+    max_points: int = DEFAULT_MAX_POINTS
+    max_points_source: str = "default"
 
 
 def _run_nonce(workspace: Path) -> str:
@@ -624,6 +711,9 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
     else:
         runner = SubprocessRunner()
     calibration = _resolve_calibration(config.get("calibration"))
+    # Read the instrument's point-count ceiling once per campaign (falls back silently to
+    # DEFAULT_MAX_POINTS if the endpoint is unreachable / carries no limit).
+    max_points, max_points_source = _preflight_max_points(client)
     return CampaignConfig(
         workspace=workspace,
         data_dir=Path(config.get("data_dir", workspace / "data")),
@@ -641,6 +731,8 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
         worker=worker,
         run_timeout=run_timeout,
         run_nonce=_run_nonce(workspace),
+        max_points=max_points,
+        max_points_source=max_points_source,
     )
 
 
@@ -675,6 +767,11 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
     # outcome record is written (at the fold, or as `superseded` if the retry declines first).
     promoted = False
     while True:
+        # Point-count guard (single checkpoint before ANY validate/submit): a missed-window recenter
+        # widens e_lo/e_hi without recomputing the tight e_step, so the emitted `deltaE lo hi step`
+        # command can exceed TAVI's max_points and latch its validator. Coarsen the step to keep the
+        # full window and fit the limit; a no-op on a proposal that already fits.
+        _guard_point_count(proposal, cfg.max_points, cfg.max_points_source, log_path, it)
         with timed(log_path, "validate", iteration=it, attempt=attempt):
             val = client.validate(_validate_body(proposal, allow_partial=allow_partial))
         log_event(log_path, "validate", {"would_queue": val.get("would_queue"),

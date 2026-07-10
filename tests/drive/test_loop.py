@@ -15,9 +15,11 @@ from isar.drive.acquisition.calibration import Calibration
 import types
 
 import isar.drive.loop as loop_mod
-from isar.drive.loop import (_campaign_config, _errors_arg_for, _master_obs_from_row,
-                             _observation_from_row, _pick_interval, _resume_state,
-                             _run_nonce, run_campaign)
+from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_point_count,
+                             _errors_arg_for, _extract_max_points, _guard_point_count,
+                             _master_obs_from_row, _observation_from_row, _pick_interval,
+                             _preflight_max_points, _resume_state, _run_nonce, run_campaign)
+from isar.drive.acquisition.acquire import ScanProposal, points_in_window
 from isar.drive.objective import ObjectiveSpec
 from isar.drive.session_log import log_event, read_log
 from isar.drive.supervisor.stopping import PRODUCTION_NCOUNT, QUICKLOOK_NCOUNT
@@ -734,6 +736,137 @@ def test_campaign_config_sets_run_nonce_from_workspace_file(tmp_path):
                                            "run_isar": lambda *a, **k: None,
                                            "calibration": _UNITY_CAL})
     assert cfg2.run_nonce == cfg.run_nonce
+
+
+# --------------------------------------------------------------------------- proposal point-count guard
+def _scan_proposal(e_lo, e_hi, e_step, kind="production"):
+    nc = QUICKLOOK_NCOUNT if kind == "quicklook" else PRODUCTION_NCOUNT
+    return ScanProposal(h=2.1, k=0.0, l=0.0, e_lo=e_lo, e_hi=e_hi, e_step=e_step, ncount=nc,
+                        kind=kind, reason="test", n_points=points_in_window(e_lo, e_hi, e_step))
+
+
+def test_emitted_point_count_is_unclamped():
+    # The TRUE count TAVI computes from the command — NOT clamped to the acquisition budget (which
+    # points_in_window is): a wide window with a tight step is exactly the over-limit case (the
+    # documented 594-pt scan came from a widened window keeping a ~0.05 meV step).
+    assert _emitted_point_count(-2.0, 27.65, 0.05) > DEFAULT_MAX_POINTS   # ~594, unclamped
+    assert points_in_window(-2.0, 27.65, 0.05) == 100   # ledger clamp hides the true count
+
+
+def test_guard_clamps_over_limit_proposal_keeping_window(tmp_path):
+    # A 594-point proposal (the documented over-limit scan) is coarsened to fit the 200-point limit
+    # WITHOUT moving the window bounds; a proposal_clamped event records the adjustment.
+    log = tmp_path / "log.jsonl"
+    p = _scan_proposal(-2.0, 27.65, 0.05)
+    n_before = _emitted_point_count(p.e_lo, p.e_hi, p.e_step)
+    assert n_before > DEFAULT_MAX_POINTS               # the documented over-limit (~594) scan
+    clamped = _guard_point_count(p, DEFAULT_MAX_POINTS, "get_state", log, it=3)
+    assert clamped is True
+    # Window bounds are UNCHANGED (never truncated) — only the step coarsened.
+    assert (p.e_lo, p.e_hi) == (-2.0, 27.65)
+    assert p.e_step > 0.05
+    # The emitted (TAVI-side) count now fits the limit.
+    assert _emitted_point_count(p.e_lo, p.e_hi, p.e_step) <= DEFAULT_MAX_POINTS
+    # A greppable proposal_clamped exception carries the before/after telemetry + limit provenance.
+    ev = [e for e in read_log(log)
+          if e["kind"] == "exception" and (e["payload"] or {}).get("action") == "proposal_clamped"]
+    assert len(ev) == 1
+    pl = ev[0]["payload"]
+    assert pl["limit"] == 200 and pl["limit_source"] == "get_state"
+    assert pl["old_n_points"] == n_before and pl["old_n_points"] > 200 and pl["new_n_points"] <= 200
+    assert pl["new_step"] > pl["old_step"] and pl["hkl"] == [2.1, 0.0, 0.0] and pl["iter"] == 3
+
+
+def test_guard_leaves_at_limit_proposal_untouched(tmp_path):
+    # A proposal whose emitted count is exactly the limit is left as-is (no clamp, no event).
+    log = tmp_path / "log.jsonl"
+    p = _scan_proposal(0.0, 199.0, 1.0)                 # int(199/1)+1 == 200 == limit
+    assert _emitted_point_count(p.e_lo, p.e_hi, p.e_step) == 200
+    step_before = p.e_step
+    assert _guard_point_count(p, 200, "get_state", log, it=0) is False
+    assert p.e_step == step_before
+    assert not read_log(log)                            # nothing logged for an in-limit proposal
+
+
+def test_preflight_reads_limit_from_state_limits_dict():
+    class _C:
+        def get_state(self):
+            return {"mode": "allow", "busy": False, "limits": {"max_points": 128}}
+    assert _preflight_max_points(_C()) == (128, "get_state")
+
+
+def test_preflight_reads_top_level_limit_key():
+    class _C:
+        def get_state(self):
+            return {"max_points": 150}
+    assert _preflight_max_points(_C()) == (150, "get_state")
+
+
+def test_preflight_falls_back_to_schema_then_default():
+    # /state carries no limit but /schema does → schema is consulted.
+    class _C:
+        def get_state(self):
+            return {"mode": "allow"}
+        def get_schema(self):
+            return {"limits": {"max_points": 64}}
+    assert _preflight_max_points(_C()) == (64, "get_schema")
+
+
+def test_preflight_falls_back_to_default_when_state_missing_or_raises():
+    # Client without a state/schema method → default 200, source "default".
+    assert _preflight_max_points(object()) == (DEFAULT_MAX_POINTS, "default")
+
+    class _Boom:
+        def get_state(self):
+            raise RuntimeError("unreachable")
+    assert _preflight_max_points(_Boom()) == (DEFAULT_MAX_POINTS, "default")
+
+
+def test_extract_max_points_ignores_non_positive_and_bool():
+    assert _extract_max_points({"max_points": 0}) is None
+    assert _extract_max_points({"max_points": True}) is None      # bool is not a real limit
+    assert _extract_max_points({"max_points": 200}) == 200
+    assert _extract_max_points("nope") is None
+
+
+class _StateTavi(MockTavi):
+    """A MockTavi that also advertises a max-points limit via GET /state and records every submitted
+    scan command, so a campaign test can assert nothing over-limit is ever submitted."""
+    def __init__(self, omega, max_points):
+        super().__init__(omega)
+        self._max_points = max_points
+        self.submitted_cmds = []
+
+    def get_state(self):
+        return {"mode": "allow", "busy": False, "limits": {"max_points": self._max_points}}
+
+    def submit_scan(self, body, idempotency_key=None):
+        self.submitted_cmds.append(body["parameters"]["scan_command1"])
+        return super().submit_scan(body, idempotency_key=idempotency_key)
+
+
+def _cmd_points(cmd):
+    _, lo, hi, step = cmd.split()
+    return _emitted_point_count(float(lo), float(hi), float(step))
+
+
+def test_campaign_never_submits_over_limit_scan(tmp_path):
+    # ω beyond the survey ceiling forces missed-window recenters (which widen e_lo/e_hi without
+    # recomputing the tight e_step) — the exact path that produced the 594-pt over-limit scan. With
+    # the guard active every SUBMITTED command must fit the instrument's advertised limit, and the
+    # clamp must have fired at least once (recenter windows exceed the small limit).
+    omega = lambda h: 9.0
+    client = _StateTavi(omega, max_points=50)
+    summary, ws = _run(tmp_path, _objective(), client,
+                       make_mock_runner(omega, window_gate=True), max_iters=40)
+    assert client.submitted_cmds
+    assert all(_cmd_points(c) <= 50 for c in client.submitted_cmds), \
+        [(_cmd_points(c), c) for c in client.submitted_cmds if _cmd_points(c) > 50]
+    clamps = [e for e in read_log(summary["session_log"])
+              if e["kind"] == "exception" and (e["payload"] or {}).get("action") == "proposal_clamped"]
+    assert clamps, "a widening recenter should have tripped the point-count guard"
+    assert all(c["payload"]["limit"] == 50 and c["payload"]["limit_source"] == "get_state"
+               for c in clamps)
 
 
 def test_campaign_submit_idempotency_key_contains_run_nonce(tmp_path):
