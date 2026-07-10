@@ -1,0 +1,24 @@
+{
+  "M": 200,
+  "degenerate": {
+    "cost_per_dof": 2.06755,
+    "gamma": 0.001005,
+    "interval_hi": 3.14999,
+    "interval_lo": 3.147761,
+    "n_samples": 190,
+    "omega0": 3.149494,
+    "scan": 518,
+    "width": 0.002229
+  },
+  "healthy": {
+    "cost_per_dof": 1.840519,
+    "gamma": 0.017797,
+    "interval_hi": 5.125012,
+    "interval_lo": 5.102731,
+    "n_samples": 163,
+    "omega0": 5.112285,
+    "scan": 529,
+    "width": 0.022281
+  },
+  "seed": 20260710
+}

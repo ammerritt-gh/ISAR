@@ -1,0 +1,107 @@
+{
+  "H": 2.5,
+  "N_per_level": 500,
+  "panel_a": {
+    "counts": [
+      4.0,
+      4.0,
+      2.0,
+      4.0,
+      9.0,
+      6.0,
+      6.0,
+      4.0,
+      4.0,
+      3.0
+    ],
+    "minimizers": {
+      "baker_cousins": 4.6,
+      "neyman": 3.956044,
+      "pearson": 4.959839
+    },
+    "mu_true": 4.0
+  },
+  "panel_b": {
+    "100": {
+      "baker_cousins": {
+        "bias_pct": 0.694,
+        "mean_ratio": 1.00694,
+        "n": 500,
+        "se": 0.007215
+      },
+      "neyman": {
+        "bias_pct": -0.492,
+        "mean_ratio": 0.995077,
+        "n": 500,
+        "se": 0.006573
+      },
+      "pearson": {
+        "bias_pct": 0.838,
+        "mean_ratio": 1.008383,
+        "n": 500,
+        "se": 0.007398
+      }
+    },
+    "15": {
+      "baker_cousins": {
+        "bias_pct": -1.469,
+        "mean_ratio": 0.985315,
+        "n": 500,
+        "se": 0.015901
+      },
+      "neyman": {
+        "bias_pct": -39.269,
+        "mean_ratio": 0.60731,
+        "n": 500,
+        "se": 0.011272
+      },
+      "pearson": {
+        "bias_pct": 5.347,
+        "mean_ratio": 1.053473,
+        "n": 500,
+        "se": 0.01922
+      }
+    },
+    "30": {
+      "baker_cousins": {
+        "bias_pct": 0.582,
+        "mean_ratio": 1.005821,
+        "n": 500,
+        "se": 0.012077
+      },
+      "neyman": {
+        "bias_pct": -23.173,
+        "mean_ratio": 0.768268,
+        "n": 500,
+        "se": 0.008677
+      },
+      "pearson": {
+        "bias_pct": 3.036,
+        "mean_ratio": 1.030357,
+        "n": 500,
+        "se": 0.013702
+      }
+    },
+    "5": {
+      "baker_cousins": {
+        "bias_pct": -5.923,
+        "mean_ratio": 0.940772,
+        "n": 500,
+        "se": 0.027229
+      },
+      "neyman": {
+        "bias_pct": -38.835,
+        "mean_ratio": 0.611646,
+        "n": 500,
+        "se": 0.021549
+      },
+      "pearson": {
+        "bias_pct": 25.272,
+        "mean_ratio": 1.252719,
+        "n": 500,
+        "se": 0.047196
+      }
+    }
+  },
+  "seed": 20260710
+}

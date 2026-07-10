@@ -32,6 +32,9 @@ _EXPECTED_IDS = (
     "in8/overlay",
     # campaign diagnostic (isar/report/campaign_diagnostic.py)
     "campaign/dispersion_truth", "campaign/scan_spend", "campaign/budget_timing", "campaign/scan",
+    # statistics primer gallery (docs/stats/make_figures.py)
+    "stats/three_questions", "stats/cost_bias", "stats/coverage_table", "stats/coverage_curve",
+    "stats/coverage_scatter", "stats/wall", "stats/akaike_example", "stats/branch_posterior",
 )
 
 

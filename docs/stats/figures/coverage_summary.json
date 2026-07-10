@@ -1,0 +1,383 @@
+{
+  "cells": {
+    "100": {
+      "gamma": {
+        "bootstrap": {
+          "coverage": 0.675,
+          "n": 200,
+          "n_covered": 135,
+          "se": 0.0331
+        },
+        "hessian": {
+          "coverage": 0.66,
+          "n": 200,
+          "n_covered": 132,
+          "se": 0.0335
+        }
+      },
+      "gamma_incl_bound": {
+        "bootstrap": {
+          "coverage": 0.675,
+          "n": 200,
+          "n_covered": 135,
+          "se": 0.0331
+        },
+        "hessian": {
+          "coverage": 0.66,
+          "n": 200,
+          "n_covered": 132,
+          "se": 0.0335
+        }
+      },
+      "n_at_bound": 0,
+      "n_converged": 200,
+      "omega0": {
+        "bootstrap": {
+          "coverage": 0.61,
+          "n": 200,
+          "n_covered": 122,
+          "se": 0.0345
+        },
+        "hessian": {
+          "coverage": 0.605,
+          "n": 200,
+          "n_covered": 121,
+          "se": 0.0346
+        },
+        "profile": {
+          "coverage": 0.605,
+          "n": 200,
+          "n_covered": 121,
+          "se": 0.0346
+        }
+      }
+    },
+    "15": {
+      "gamma": {
+        "bootstrap": {
+          "coverage": 0.73,
+          "n": 200,
+          "n_covered": 146,
+          "se": 0.0314
+        },
+        "hessian": {
+          "coverage": 0.745,
+          "n": 200,
+          "n_covered": 149,
+          "se": 0.0308
+        }
+      },
+      "gamma_incl_bound": {
+        "bootstrap": {
+          "coverage": 0.73,
+          "n": 200,
+          "n_covered": 146,
+          "se": 0.0314
+        },
+        "hessian": {
+          "coverage": 0.745,
+          "n": 200,
+          "n_covered": 149,
+          "se": 0.0308
+        }
+      },
+      "n_at_bound": 0,
+      "n_converged": 200,
+      "omega0": {
+        "bootstrap": {
+          "coverage": 0.635,
+          "n": 200,
+          "n_covered": 127,
+          "se": 0.034
+        },
+        "hessian": {
+          "coverage": 0.675,
+          "n": 200,
+          "n_covered": 135,
+          "se": 0.0331
+        },
+        "profile": {
+          "coverage": 0.68,
+          "n": 200,
+          "n_covered": 136,
+          "se": 0.033
+        }
+      }
+    },
+    "30": {
+      "gamma": {
+        "bootstrap": {
+          "coverage": 0.69,
+          "n": 200,
+          "n_covered": 138,
+          "se": 0.0327
+        },
+        "hessian": {
+          "coverage": 0.65,
+          "n": 200,
+          "n_covered": 130,
+          "se": 0.0337
+        }
+      },
+      "gamma_incl_bound": {
+        "bootstrap": {
+          "coverage": 0.69,
+          "n": 200,
+          "n_covered": 138,
+          "se": 0.0327
+        },
+        "hessian": {
+          "coverage": 0.65,
+          "n": 200,
+          "n_covered": 130,
+          "se": 0.0337
+        }
+      },
+      "n_at_bound": 0,
+      "n_converged": 200,
+      "omega0": {
+        "bootstrap": {
+          "coverage": 0.63,
+          "n": 200,
+          "n_covered": 126,
+          "se": 0.0341
+        },
+        "hessian": {
+          "coverage": 0.655,
+          "n": 200,
+          "n_covered": 131,
+          "se": 0.0336
+        },
+        "profile": {
+          "coverage": 0.66,
+          "n": 200,
+          "n_covered": 132,
+          "se": 0.0335
+        }
+      }
+    }
+  },
+  "diagnostics": {
+    "100": {
+      "gamma": {
+        "bias_mean": -0.006213,
+        "bias_se": 0.004339,
+        "median_sigma": {
+          "bootstrap": 0.057474,
+          "hessian": 0.059496
+        },
+        "n": 200,
+        "pull_mean": -0.122982,
+        "pull_std": 1.064865,
+        "width_ratio": {
+          "band": [
+            0.8,
+            1.25
+          ],
+          "frac_outside": 0.065,
+          "iqr": 0.1551,
+          "median": 1.0343,
+          "n": 200,
+          "q25": 0.9623,
+          "q75": 1.1174
+        }
+      },
+      "omega0": {
+        "bias_mean": -0.000938,
+        "bias_se": 0.0026,
+        "median_sigma": {
+          "bootstrap": 0.032774,
+          "hessian": 0.033882,
+          "profile": 0.033853
+        },
+        "n": 200,
+        "pull_mean": -0.028075,
+        "pull_std": 1.085078,
+        "width_ratio": {
+          "band": [
+            0.8,
+            1.25
+          ],
+          "frac_outside": 0.045,
+          "iqr": 0.1508,
+          "median": 1.0346,
+          "n": 200,
+          "q25": 0.9695,
+          "q75": 1.1203
+        }
+      }
+    },
+    "15": {
+      "gamma": {
+        "bias_mean": -0.019658,
+        "bias_se": 0.008672,
+        "median_sigma": {
+          "bootstrap": 0.133077,
+          "hessian": 0.140278
+        },
+        "n": 200,
+        "pull_mean": -0.17232,
+        "pull_std": 0.914571,
+        "width_ratio": {
+          "band": [
+            0.8,
+            1.25
+          ],
+          "frac_outside": 0.185,
+          "iqr": 0.2406,
+          "median": 1.0497,
+          "n": 200,
+          "q25": 0.9364,
+          "q75": 1.1771
+        }
+      },
+      "omega0": {
+        "bias_mean": -0.002359,
+        "bias_se": 0.006131,
+        "median_sigma": {
+          "bootstrap": 0.084589,
+          "hessian": 0.08684,
+          "profile": 0.087001
+        },
+        "n": 200,
+        "pull_mean": -0.038379,
+        "pull_std": 1.011118,
+        "width_ratio": {
+          "band": [
+            0.8,
+            1.25
+          ],
+          "frac_outside": 0.02,
+          "iqr": 0.14,
+          "median": 1.0342,
+          "n": 200,
+          "q25": 0.9584,
+          "q75": 1.0984
+        }
+      }
+    },
+    "30": {
+      "gamma": {
+        "bias_mean": -0.002975,
+        "bias_se": 0.00719,
+        "median_sigma": {
+          "bootstrap": 0.097178,
+          "hessian": 0.107981
+        },
+        "n": 200,
+        "pull_mean": -0.04517,
+        "pull_std": 1.055921,
+        "width_ratio": {
+          "band": [
+            0.8,
+            1.25
+          ],
+          "frac_outside": 0.175,
+          "iqr": 0.2142,
+          "median": 1.0581,
+          "n": 200,
+          "q25": 0.9734,
+          "q75": 1.1876
+        }
+      },
+      "omega0": {
+        "bias_mean": 0.001154,
+        "bias_se": 0.004494,
+        "median_sigma": {
+          "bootstrap": 0.060441,
+          "hessian": 0.062345,
+          "profile": 0.06241
+        },
+        "n": 200,
+        "pull_mean": 0.008479,
+        "pull_std": 1.02927,
+        "width_ratio": {
+          "band": [
+            0.8,
+            1.25
+          ],
+          "frac_outside": 0.04,
+          "iqr": 0.1237,
+          "median": 1.02,
+          "n": 200,
+          "q25": 0.9547,
+          "q75": 1.0785
+        }
+      }
+    }
+  },
+  "gamma_skewed": {
+    "M": 100,
+    "N": 200,
+    "bootstrap_asymmetry_median": 1.314912,
+    "diagnostics": {
+      "bias_mean": 0.022099,
+      "bias_se": 0.005769,
+      "median_sigma": {
+        "bootstrap": 0.0883,
+        "hessian": 0.10742
+      },
+      "n": 164,
+      "pull_mean": -0.091393,
+      "pull_std": 1.612267,
+      "width_ratio": {
+        "band": [
+          0.8,
+          1.25
+        ],
+        "frac_outside": 0.5061,
+        "iqr": 0.4041,
+        "median": 1.1843,
+        "n": 164,
+        "q25": 1.0248,
+        "q75": 1.4289
+      }
+    },
+    "gamma": {
+      "bootstrap": {
+        "coverage": 0.8598,
+        "n": 164,
+        "n_covered": 141,
+        "se": 0.0271
+      },
+      "hessian": {
+        "coverage": 0.7744,
+        "n": 164,
+        "n_covered": 127,
+        "se": 0.0326
+      }
+    },
+    "gamma_incl_bound": {
+      "bootstrap": {
+        "coverage": 0.81,
+        "n": 200,
+        "n_covered": 162,
+        "se": 0.0277
+      },
+      "hessian": {
+        "coverage": 0.64,
+        "n": 200,
+        "n_covered": 128,
+        "se": 0.0339
+      }
+    },
+    "gamma_true": 0.1,
+    "level": 15,
+    "n_at_bound": 36,
+    "n_converged": 200
+  },
+  "meta": {
+    "H": 2.5,
+    "M": 100,
+    "N_per_level": 200,
+    "fast": false,
+    "gamma_true": 0.5,
+    "levels": [
+      15,
+      30,
+      100
+    ],
+    "nominal": 0.68,
+    "seed": 20260710
+  }
+}

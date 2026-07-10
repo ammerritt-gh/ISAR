@@ -1,0 +1,16 @@
+{
+  "h_max": 0.6931,
+  "scans": {
+    "477": {
+      "assigned": "acoustic",
+      "entropy": 0.6456,
+      "weight": 0.65303
+    },
+    "505": {
+      "assigned": "acoustic",
+      "entropy": 0.0083,
+      "weight": 0.99903
+    }
+  },
+  "seed": 20260710
+}

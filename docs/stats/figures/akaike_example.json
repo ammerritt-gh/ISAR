@@ -1,0 +1,21 @@
+{
+  "models": {
+    "stokes+bg": {
+      "aic": 85.334,
+      "cost": 77.334,
+      "delta_aic": 18.821,
+      "k": 4,
+      "weight": 8e-05
+    },
+    "stokes2+bg": {
+      "aic": 66.513,
+      "cost": 52.513,
+      "delta_aic": 0.0,
+      "k": 7,
+      "weight": 0.99992
+    }
+  },
+  "scan": 507,
+  "secondary_omega0": 7.122089,
+  "seed": 20260710
+}

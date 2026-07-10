@@ -1,0 +1,15 @@
+{
+  "columns": [
+    "MINIMIZE",
+    "SELECT",
+    "CERTIFY"
+  ],
+  "ladder": [
+    "Hessian (HESSE)",
+    "profile (MINOS)",
+    "parametric bootstrap",
+    "Bayesian credible"
+  ],
+  "planned_rung": "Bayesian credible",
+  "seed": 20260710
+}
