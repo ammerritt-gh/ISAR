@@ -220,6 +220,10 @@ def _validate_body(proposal, *, allow_partial: bool = False) -> dict[str, Any]:
         "parameters": {
             "H": proposal.h, "K": proposal.k, "L": proposal.l,
             "scan_command1": proposal.scan_command(),
+            # A stale scan_command2 on the instrument (e.g. TAVI GUI residue)
+            # multiplies the point grid and can scan the same axis twice; the
+            # driver owns the scan definition, so clear it explicitly.
+            "scan_command2": "",
             "number_neutrons": int(proposal.ncount),
         },
     }
