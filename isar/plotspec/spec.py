@@ -17,6 +17,12 @@ backend can violate them:
 - **Pooled** masters carry :data:`State.POOLED` and enumerate their members in ``PlotSpec.meta``.
 - **Interval-ladder** comparison: tiers rendered side by side are labeled by their :class:`Tier`
   token, and **exactly one** may be ``certifying=True`` (0 or 1 allowed; more is rejected).
+- A :class:`Strip` is **measured** data — one column of intensity at a plane position (the growing
+  ``(q, E)`` plane, GUI_DESIGN item 2, G9 4D-honesty). Renderers MUST NOT interpolate *between*
+  strips: each strip is drawn as its own rectangle over its own measured ``E`` extent, and the empty
+  space between strips (a gap in the plane sampling) stays empty — a gap is shown as a gap, never
+  filled. Interpolation *within* a strip's own measured points is a rendering choice (conservative:
+  nearest, no smoothing across the gap).
 """
 from __future__ import annotations
 
@@ -158,6 +164,23 @@ class Annotation:
 
 
 @dataclass
+class Strip:
+    """One MEASURED column of intensity at a plane position ``x_center`` (the growing ``(q, E)``
+    plane): ``values`` sampled at ``y`` (the scan's own energy axis), drawn as a rectangle of width
+    ``width`` centred on ``x_center`` spanning that scan's measured ``E`` range only. ``meta`` carries
+    provenance (e.g. ``scan_id``). Renderers never interpolate between strips — gaps stay gaps."""
+    x_center: float
+    width: float
+    y: np.ndarray
+    values: np.ndarray
+    meta: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {"x_center": float(self.x_center), "width": float(self.width),
+                "y": _arr(self.y), "values": _arr(self.values), "meta": dict(self.meta)}
+
+
+@dataclass
 class ProjectionLegend:
     """The always-on 4D-honesty declaration (G9): which plane is shown and over what window it is
     integrated, e.g. plane=``"(H, 1, 0) x E"``, integration=``"|L| < 0.02, |K-1| < 0.02"``."""
@@ -179,7 +202,9 @@ class PlotSpec:
     bands: list[Band] = field(default_factory=list)
     markers: list[Marker] = field(default_factory=list)
     annotations: list[Annotation] = field(default_factory=list)
+    strips: list[Strip] = field(default_factory=list)
     projection: ProjectionLegend | None = None
+    value_label: str | None = None   # colorbar meaning for strips, e.g. "counts/monitor"
     meta: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -197,7 +222,9 @@ class PlotSpec:
             "bands": [b.to_dict() for b in self.bands],
             "markers": [m.to_dict() for m in self.markers],
             "annotations": [a.to_dict() for a in self.annotations],
+            "strips": [s.to_dict() for s in self.strips],
             "projection": None if self.projection is None else self.projection.to_dict(),
+            "value_label": self.value_label,
             "meta": self.meta,
         }
 

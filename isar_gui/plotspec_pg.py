@@ -230,6 +230,46 @@ def _draw_marker(rs: RenderedSpec, m, label, legend_entries: list) -> None:
         legend_entries.append((scatter, label))
 
 
+def _strip_levels(strips):
+    """Shared (vmin, vmax) across every strip's finite values (one colour scale for the whole plane),
+    or ``None`` when nothing is finite. Mirrors ``backends/mpl._strip_levels``."""
+    vals = []
+    for s in strips:
+        v = np.asarray(s.values, dtype=float)
+        v = v[np.isfinite(v)]
+        if v.size:
+            vals.append(v)
+    if not vals:
+        return None
+    allv = np.concatenate(vals)
+    return float(np.min(allv)), float(np.max(allv))
+
+
+def _strip_lut():
+    """The viridis lookup table shared by every strip ImageItem (same colour meaning as the mpl
+    backend's ``cmap="viridis"``)."""
+    return pg.colormap.get("viridis").getLookupTable(nPts=256)
+
+
+def _draw_strip(rs: RenderedSpec, s, levels, lut) -> None:
+    """One MEASURED column as a single ``pg.ImageItem`` placed with ``setRect`` over THIS scan's E
+    extent only. Each strip is its own item, so the empty space between strips (a gap in the
+    sampling) is never covered — gaps stay gaps, nothing is interpolated across them."""
+    y = np.asarray(s.y, dtype=float)
+    values = np.asarray(s.values, dtype=float)
+    if y.size == 0 or values.size == 0:
+        return
+    x0 = float(s.x_center) - float(s.width) / 2.0
+    y0, y1 = float(np.min(y)), float(np.max(y))
+    img = pg.ImageItem(values.reshape(1, -1))  # (1 in x, N in y): one column spanning the E extent
+    if levels is not None:
+        img.setLevels(list(levels))
+    img.setLookupTable(lut)
+    img.setRect(QtCore.QRectF(x0, y0, float(s.width), y1 - y0))
+    img.setZValue(-20)  # measured plane sits under bands/series/markers
+    rs._add_data(img)
+
+
 def _draw_annotation(rs: RenderedSpec, a) -> None:
     if a.xy is not None:
         color = "red" if a.role is State.UNRELIABLE else _GREY_025
@@ -271,6 +311,12 @@ def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
 
     rs = RenderedSpec(plot_item)
     legend_entries: list = []
+
+    if spec.strips:  # measured columns underneath everything (the plane background)
+        levels = _strip_levels(spec.strips)
+        lut = _strip_lut()
+        for st in spec.strips:
+            _draw_strip(rs, st, levels, lut)
 
     for b in spec.bands:
         _draw_band(rs, b, legend_entries)

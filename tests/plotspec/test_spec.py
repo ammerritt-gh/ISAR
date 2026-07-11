@@ -96,6 +96,33 @@ def test_more_than_one_certifying_tier_is_rejected():
                                    tier=ps.Tier.BOOTSTRAP, certifying=True)])
 
 
+def test_strip_construction_and_to_dict_round_trip():
+    st = ps.Strip(x_center=2.1, width=0.08, y=np.array([-2.0, 0.0, 2.0]),
+                  values=np.array([10.0, 50.0, 12.0]), meta={"scan_id": "tavi:7"})
+    d = st.to_dict()
+    json.dumps(d)  # must not raise
+    assert d["x_center"] == 2.1 and d["width"] == 0.08
+    assert d["y"] == [-2.0, 0.0, 2.0]
+    assert d["values"] == [10.0, 50.0, 12.0]
+    assert d["meta"] == {"scan_id": "tavi:7"}
+
+
+def test_plotspec_carries_strips_and_value_label_in_to_dict():
+    sp = ps.PlotSpec(
+        title="plane", xlabel="H (rlu)", ylabel="E (meV)",
+        strips=[ps.Strip(x_center=2.0, width=0.08, y=np.array([0.0, 1.0]),
+                         values=np.array([1.0, 2.0]), meta={"scan_id": "a"}),
+                ps.Strip(x_center=2.2, width=0.08, y=np.array([0.0, 1.0]),
+                         values=np.array([3.0, 4.0]), meta={"scan_id": "b"})],
+        value_label="counts/monitor",
+    )
+    d = sp.to_dict()
+    json.dumps(d)
+    assert len(d["strips"]) == 2
+    assert d["value_label"] == "counts/monitor"
+    assert d["strips"][0]["meta"]["scan_id"] == "a"
+
+
 def test_pooled_master_enumerates_members_in_meta():
     sp = ps.PlotSpec(title="t", xlabel="x", ylabel="y",
                      series=[ps.Series(x=np.array([0.0]), y=np.array([1.0]),

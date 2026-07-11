@@ -13,6 +13,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
+import numpy as np  # noqa: E402
+
 from isar.plotspec.spec import MarkerKind, PlotSpec, Role, State, Tier  # noqa: E402
 
 # Role -> line colour. DATA sits on matplotlib's C0; fit/components follow the report palette.
@@ -102,6 +104,37 @@ def _draw_annotation(ax, a) -> None:
                 fontsize=7, color="0.2")
 
 
+def _strip_levels(strips):
+    """Shared (vmin, vmax) across every strip's finite values, so all columns share one colour scale
+    (a strip's brightness is comparable across the plane). ``None`` when no finite value exists."""
+    vals = []
+    for s in strips:
+        v = np.asarray(s.values, dtype=float)
+        v = v[np.isfinite(v)]
+        if v.size:
+            vals.append(v)
+    if not vals:
+        return None
+    allv = np.concatenate(vals)
+    return float(np.min(allv)), float(np.max(allv))
+
+
+def _draw_strip(ax, s, levels) -> None:
+    """One MEASURED column as a single imshow rectangle spanning THIS scan's E extent only. Each
+    strip is its own artist, so the empty space between strips (a gap in the sampling) stays empty —
+    no artist bridges the gap and nothing is interpolated across it."""
+    y = np.asarray(s.y, dtype=float)
+    values = np.asarray(s.values, dtype=float)
+    if y.size == 0 or values.size == 0:
+        return
+    x0 = float(s.x_center) - float(s.width) / 2.0
+    x1 = float(s.x_center) + float(s.width) / 2.0
+    y0, y1 = float(np.min(y)), float(np.max(y))
+    vmin, vmax = (levels if levels is not None else (None, None))
+    ax.imshow(values.reshape(-1, 1), extent=(x0, x1, y0, y1), origin="lower", aspect="auto",
+              interpolation="none", cmap="viridis", vmin=vmin, vmax=vmax, zorder=0)
+
+
 def _draw_projection(ax, pj) -> None:
     # The always-on 4D-honesty declaration, as a persistent text box (G9).
     ax.text(0.01, 0.99, f"plane {pj.plane}\nintegrating {pj.integration}", transform=ax.transAxes,
@@ -111,6 +144,10 @@ def _draw_projection(ax, pj) -> None:
 
 def _render_onto(ax, spec: PlotSpec) -> None:
     """Draw ``spec`` onto an existing Axes (the render core; :func:`render_png` wraps it)."""
+    if spec.strips:  # measured columns sit underneath everything (the plane background)
+        levels = _strip_levels(spec.strips)
+        for st in spec.strips:
+            _draw_strip(ax, st, levels)
     for b in spec.bands:
         _draw_band(ax, b)
     for s in spec.series:

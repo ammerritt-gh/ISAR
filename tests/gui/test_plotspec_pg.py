@@ -25,6 +25,7 @@ from isar.plotspec.spec import (
     Role,
     Series,
     State,
+    Strip,
     Tier,
     mark_unreliable,
 )
@@ -149,6 +150,38 @@ def test_remove_detaches_everything(qtbot):
     assert len(plot.items) == base
     assert rs.legend is None
     assert rs.projection_label is None
+
+
+def test_strips_render_as_separate_imageitems_not_spanning_gap(qtbot):
+    # Two measured columns at H=2.0 and H=2.4 (gap between); each is its own ImageItem placed over its
+    # own E extent, and no item's rect spans the gap (gaps stay gaps; no interpolation across them).
+    glw, plot = _new_plot()
+    qtbot.addWidget(glw)
+    spec = PlotSpec(
+        title="plane", xlabel="H (rlu)", ylabel="E (meV)",
+        strips=[Strip(x_center=2.0, width=0.08, y=np.linspace(-2, 4, 6), values=np.arange(6.0)),
+                Strip(x_center=2.4, width=0.08, y=np.linspace(-2, 4, 6), values=np.arange(6.0) + 10)],
+        value_label="counts/monitor",
+    )
+    rs = render_into(plot, spec)
+    images = [it for it in rs.items if isinstance(it, pg.ImageItem)]
+    assert len(images) == 2
+    for im in images:
+        r = im.mapRectToView(im.boundingRect())
+        assert not (r.left() < 2.2 < r.right()), "an ImageItem spans the gap between strips"
+
+
+def test_strips_removed_on_rerender(qtbot):
+    glw, plot = _new_plot()
+    qtbot.addWidget(glw)
+    spec = PlotSpec(title="p", xlabel="x", ylabel="y",
+                    strips=[Strip(x_center=0.0, width=0.1, y=np.array([0.0, 1.0]),
+                                  values=np.array([1.0, 2.0]))])
+    base = len(plot.items)
+    rs = render_into(plot, spec)
+    assert _count(rs.items, pg.ImageItem) == 1
+    rs.remove()
+    assert len(plot.items) == base
 
 
 def test_unreliable_marker_has_no_errorbar(qtbot):
