@@ -47,6 +47,70 @@ def test_fast_path_leaves_within_model_none():
         assert r.within_model is None
 
 
+def test_method_seconds_plain_attach():
+    ctx = _ctx()
+    hyp, fit = _fitted(ctx)
+    attach(fit, hyp, ctx, M=40, seed=2)
+    ms = fit.within_model["method_seconds"]
+    assert ms["bootstrap"] >= 0
+    assert "bayes" not in ms
+    assert "minos" not in ms
+    assert "profile" not in ms
+
+
+def test_method_seconds_all_methods(monkeypatch):
+    ctx = _ctx()
+    hyp, fit = _fitted(ctx)
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior",
+                        lambda *a, **k: _canned_bayes())
+    attach(fit, hyp, ctx, M=40, seed=2, with_profile=True, with_bayes=True)
+    ms = fit.within_model["method_seconds"]
+    for key in ("bootstrap", "minos", "profile", "bayes"):
+        assert key in ms
+        assert ms[key] >= 0
+
+
+def test_bayes_diagnostics_keys(monkeypatch):
+    ctx = _ctx()
+    hyp, fit = _fitted(ctx)
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior",
+                        lambda *a, **k: _canned_bayes())
+    attach(fit, hyp, ctx, M=40, seed=2, with_bayes=True)
+    wm = fit.within_model
+    assert wm["bayes_ess"] == 500.0
+    assert wm["bayes_fail_reason"] is None
+    assert wm["bayes_n_live"] == 100
+    assert wm["bayes_seed"] == 1
+
+
+def test_bayes_seed_offset(monkeypatch):
+    ctx = _ctx()
+    hyp, fit = _fitted(ctx)
+    captured = {}
+
+    def _capture(*a, **k):
+        captured.update(k)
+        return _canned_bayes()
+
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior", _capture)
+    attach(fit, hyp, ctx, M=40, seed=2, with_bayes=True)
+    assert captured["seed"] == 2 + 1_000_003
+
+
+def test_bayes_opts_forwarding(monkeypatch):
+    ctx = _ctx()
+    hyp, fit = _fitted(ctx)
+    captured = {}
+
+    def _capture(*a, **k):
+        captured.update(k)
+        return _canned_bayes()
+
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior", _capture)
+    attach(fit, hyp, ctx, M=40, seed=2, with_bayes=True, bayes_opts={"n_live": 123})
+    assert captured["n_live"] == 123
+
+
 def test_without_bayes_writes_no_bayes_keys():
     """Backward compat: the default (with_bayes=False) leaves within_model bayes-free."""
     ctx = _ctx()
