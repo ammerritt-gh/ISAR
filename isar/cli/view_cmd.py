@@ -6,30 +6,18 @@ the core ``isar`` CLI stays Qt-free and importable without the extra — the Qt-
 test (tests/test_qt_free_core.py) is the proof. A missing extra fails with a helpful hint, not a
 traceback.
 
-The workspace argument is optional: with none given, :func:`_most_recent_workspace` falls back to
-the most-recent still-existing workspace recorded in the GUI session (``isar_gui/session.py``,
-itself Qt-free — safe to import here without pulling in PySide6). No recent/valid workspace is the
-same class of user error as a bad path, so it exits 2 with a message rather than launching empty.
+The workspace argument is optional. With none given, the GUI (:func:`isar_gui.app.main`) resolves
+the most-recent still-openable workspace from the GUI session and, failing that, opens in
+empty-start (a window with no workspace loaded) — never a console error, since this launcher is
+double-clicked. An *explicit* bad path is still a hard error (stderr + exit 2), handled in the GUI
+bootstrap. This command only gates the [gui] extra and forwards the (optional) path.
 """
 from __future__ import annotations
 
 import importlib.util
 import sys
-from pathlib import Path
 
 _MISSING_MSG = "GUI extra not installed - pip install -e .[gui]"
-_NO_RECENT_MSG = "isar view: no workspace given and no recent workspace found in the GUI session"
-
-
-def _most_recent_workspace() -> str | None:
-    """The most-recent still-existing workspace from the GUI session (Qt-free: ``isar_gui.session``
-    is a plain-data module), or ``None`` when there is no session or every recent path is gone."""
-    from isar_gui.session import load_session
-
-    for path in load_session().recent_workspaces:
-        if Path(path).is_dir():
-            return path
-    return None
 
 
 def run(args) -> int:
@@ -47,10 +35,7 @@ def run(args) -> int:
         print(_MISSING_MSG, file=sys.stderr)
         return 2
 
+    # Forward the (optional) path; a None workspace becomes an empty argv, which gui_main resolves
+    # to the most-recent workspace or empty-start.
     workspace = args.workspace
-    if workspace is None:
-        workspace = _most_recent_workspace()
-        if workspace is None:
-            print(_NO_RECENT_MSG, file=sys.stderr)
-            return 2
-    return gui_main([workspace])
+    return gui_main([] if workspace is None else [workspace])

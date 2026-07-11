@@ -5,6 +5,7 @@ No Qt import here (no importorskip) — these assertions must hold even in an en
 from __future__ import annotations
 
 import importlib.util
+from pathlib import Path
 from types import SimpleNamespace
 
 from isar.cli import view_cmd
@@ -76,13 +77,13 @@ def _make_pyside6_present(monkeypatch):
         lambda name, *a, **k: object() if name == "PySide6" else real_find_spec(name, *a, **k))
 
 
-def test_no_workspace_arg_opens_most_recent(monkeypatch):
-    # No workspace given: run() must resolve the most-recent session workspace and hand it to the
-    # launcher, not fall into the missing-extra branch.
+def test_no_workspace_arg_forwards_empty_argv(monkeypatch):
+    # No workspace given: run() forwards an empty argv. The most-recent/empty-start resolution lives
+    # in isar_gui.app.main (so `python -m isar_gui` and `isar view` behave identically); run() must
+    # not exit or resolve on its own.
     import isar_gui.app as gui_app
 
     _make_pyside6_present(monkeypatch)
-    monkeypatch.setattr(view_cmd, "_most_recent_workspace", lambda: "/ws/recent")
 
     called = {}
 
@@ -93,34 +94,72 @@ def test_no_workspace_arg_opens_most_recent(monkeypatch):
     monkeypatch.setattr(gui_app, "main", fake_main)
     rc = view_cmd.run(SimpleNamespace(workspace=None))
     assert rc == 0
-    assert called["argv"] == ["/ws/recent"]
+    assert called["argv"] == []
 
 
-def test_no_workspace_arg_and_no_recent_exits_2(monkeypatch, capsys):
-    _make_pyside6_present(monkeypatch)
-    monkeypatch.setattr(view_cmd, "_most_recent_workspace", lambda: None)
+# ---- app.main workspace resolution (moved here from view_cmd) ----------------
+def test_explicit_bad_path_exits_2(capsys):
+    # An EXPLICIT nonexistent/invalid workspace stays a hard CLI error (stderr + exit 2). This path
+    # returns before any Qt import, so it needs no QApplication.
+    import isar_gui.app as gui_app
 
-    rc = view_cmd.run(SimpleNamespace(workspace=None))
+    rc = gui_app.main(["/no/such/isar/workspace"])
     assert rc == 2
-    err = capsys.readouterr().err
-    assert "no recent workspace" in err
+    assert "isar view" in capsys.readouterr().err
 
 
-def test_most_recent_workspace_skips_missing_paths(tmp_path, monkeypatch):
+def test_resolve_recent_opens_most_recent(make_ws, monkeypatch):
+    import isar_gui.app as gui_app
+    import isar_gui.session as gui_session
+
+    root = make_ws(rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    monkeypatch.setattr(
+        gui_session, "load_session",
+        lambda *a, **k: gui_session.Session(recent_workspaces=[str(root)]))
+
+    ws = gui_app._resolve_recent_workspace()
+    assert ws is not None
+    assert Path(ws.root) == Path(root)
+
+
+def test_resolve_recent_skips_missing_and_stale(tmp_path, make_ws, monkeypatch):
+    # A removed recent (gone from disk) AND a stale recent (a dir that is no longer a workspace) are
+    # both skipped silently in favor of the next openable one — a stale recent must never error a
+    # no-arg launch.
+    import isar_gui.app as gui_app
     import isar_gui.session as gui_session
 
     missing = tmp_path / "gone"
-    existing = tmp_path / "there"
-    existing.mkdir()
+    stale = tmp_path / "stale"
+    stale.mkdir()  # exists but has no card.policy.toml -> not a workspace
+    good = make_ws(rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
 
     monkeypatch.setattr(
         gui_session, "load_session",
-        lambda *a, **k: gui_session.Session(recent_workspaces=[str(missing), str(existing)]))
-    assert view_cmd._most_recent_workspace() == str(existing)
+        lambda *a, **k: gui_session.Session(
+            recent_workspaces=[str(missing), str(stale), str(good)]))
+
+    ws = gui_app._resolve_recent_workspace()
+    assert ws is not None
+    assert Path(ws.root) == Path(good)
 
 
-def test_most_recent_workspace_none_without_session(monkeypatch):
+def test_resolve_recent_none_when_all_stale(tmp_path, monkeypatch):
+    # No session / every recent removed-or-stale -> None (the caller opens empty-start, never errors).
+    import isar_gui.app as gui_app
+    import isar_gui.session as gui_session
+
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    monkeypatch.setattr(
+        gui_session, "load_session",
+        lambda *a, **k: gui_session.Session(recent_workspaces=[str(tmp_path / "gone"), str(stale)]))
+    assert gui_app._resolve_recent_workspace() is None
+
+
+def test_resolve_recent_none_without_session(monkeypatch):
+    import isar_gui.app as gui_app
     import isar_gui.session as gui_session
 
     monkeypatch.setattr(gui_session, "load_session", lambda *a, **k: gui_session.Session())
-    assert view_cmd._most_recent_workspace() is None
+    assert gui_app._resolve_recent_workspace() is None

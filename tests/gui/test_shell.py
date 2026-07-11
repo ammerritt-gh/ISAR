@@ -27,6 +27,54 @@ def test_main_window_builds(qtbot, make_ws):
     assert w.log_dock.isVisible()
 
 
+def test_empty_start_window(qtbot):
+    """No workspace (empty-start): the window opens with the Open-Workspace hint as its central
+    widget, no watch bridge (even with watch enabled), the docks scaffolded, and 'no workspace' in
+    the status bar."""
+    w = MainWindow(None, session=Session(), watch=True,
+                   watch_kwargs={"poll_interval_s": 0.02, "debounce_ms": 50})
+    qtbot.addWidget(w)
+    assert w.is_empty
+    assert w._bridge is None                       # never watch a workspace that isn't there
+    assert w.centralWidget() is w._empty_hint
+    assert "Open Workspace" in w._empty_hint.text()
+    assert w.windowTitle() == "ISAR — (no workspace)"
+    assert "No workspace" in w.statusBar().currentMessage()
+    # All docks are still present (empty/graceful), so the layout is stable across a later bind.
+    for name in ("Log", "Browser", "Plane (q, E)", "Dispersion ω(q)", "Waterfall / Comparison"):
+        assert name in w._docks
+    # The empty viewmodels render their own honest empty views (no fitted scans / empty tree).
+    assert w.browser_vm.group_rows == []
+    assert w.heatmap_vm.spec.strips == []
+
+
+def test_open_workspace_from_empty_binds(qtbot, make_ws):
+    """Open Workspace… from the empty state does a full bind from None: the inspector becomes the
+    central widget, the title/status update, and the workspace's data reaches the browser."""
+    root = make_ws(rows=[{"scan": 1, "detector": "det", "sample": "s", "T": 100.0,
+                          "h": 2.0, "k": 0.0, "l": 0.0, "status": "fitted", "omega0": 4.0}])
+    w = MainWindow(None, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    assert w.is_empty
+
+    assert w.load_workspace(str(root)) is True
+    assert not w.is_empty
+    assert w.centralWidget() is w.inspector
+    assert w.inspector is not None
+    assert w.windowTitle() == f"ISAR — {root.name}"
+    assert len(w.browser_vm.group_rows) == 1
+
+
+def test_empty_start_autosave_does_not_crash(qtbot):
+    """A dock toggle in the empty state fires the debounced autosave; the snapshot must not choke on
+    the absent workspace root (note_workspace is skipped when empty)."""
+    w = MainWindow(None, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    snap = w._snapshot_session()           # would raise on Path(None) if note_workspace ran
+    assert snap.dock_layout_b64 is not None
+    assert snap.recent_workspaces == []
+
+
 def test_no_qapplication_on_import():
     """In a clean interpreter, importing isar_gui (+ submodules) must not create a QApplication."""
     import subprocess

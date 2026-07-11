@@ -14,10 +14,16 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QTimer
+from PySide6.QtCore import QByteArray, Qt, QTimer
 from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow
 
-from isar.workspace_api import Workspace, WorkspaceNotFound
+from isar.workspace_api import (
+    SCHEMA_VERSION,
+    BranchModelView,
+    CardView,
+    Workspace,
+    WorkspaceNotFound,
+)
 from isar_gui.log_dock import LogDock
 from isar_gui.session import Autosaver, Session, load_session
 from isar_gui.viewmodels import (
@@ -35,6 +41,42 @@ from isar_gui.views.inspector_widget import InspectorWidget
 from isar_gui.views.waterfall_dock import WaterfallDock
 from isar_gui.watch_bridge import WatchBridge
 
+_EMPTY_HINT = "No workspace loaded.\n\nFile ▸ Open Workspace… to begin."
+
+
+class _EmptyWorkspace:
+    """Read-only null-object with the :class:`~isar.workspace_api.Workspace` read surface, all
+    empty. Backs the empty-start state (``python -m isar_gui`` with no arg and no usable recent) so
+    every dock/viewmodel renders its own honest "nothing yet" view — empty tree, "no fitted scans"
+    planes — without threading ``None`` through and None-guarding each accessor. It reports empty
+    models, never fake data: no scans, no card policy, no branch model."""
+
+    root = None
+    schema_version = SCHEMA_VERSION
+    results: list = []
+    groups: list = []
+
+    def __init__(self):
+        self.warnings: list = []
+
+    @property
+    def card(self) -> CardView:
+        # state=None: CardView.lattice_epochs degrades to [] via getattr; no policy, no epochs.
+        return CardView(policy=None, state=None)
+
+    @property
+    def branch_model(self) -> BranchModelView:
+        return BranchModelView()
+
+    def scan_data(self, scan_id):
+        return None, None, None
+
+    def evaluate_model(self, scan_id, detector_id, x_eval=None):
+        raise KeyError(f"no fit for scan_id={scan_id!r} detector={detector_id!r}")
+
+    def refresh(self) -> None:
+        pass
+
 
 class MainWindow(QMainWindow):
     """The shell window over one :class:`~isar.workspace_api.Workspace`."""
@@ -50,10 +92,13 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
 
         self._docks: dict[str, object] = {}
+        self._empty = False           # True while showing the empty-start (no workspace) state
+        self.inspector = None         # the C2 central widget; None in the empty state
         self._init_file_menu()
         self._init_status_bar()
         self._bind_workspace(ws)
-        self._session.note_workspace(ws.root)
+        if ws is not None:
+            self._session.note_workspace(ws.root)
 
         # Session autosave: debounced 500ms, snapshotting the live layout at fire time.
         self._autosaver = Autosaver(self._snapshot_session, parent=self)
@@ -66,9 +111,19 @@ class MainWindow(QMainWindow):
     def _bind_workspace(self, ws) -> None:
         """(Re)bind the window to ``ws``: title, viewmodels, dock scaffold, Docks menu, watch
         bridge. Assumes any previously bound docks/menu/bridge were already torn down by the caller.
+
+        ``ws=None`` binds the EMPTY-START state: an :class:`_EmptyWorkspace` backs the viewmodels
+        (so every dock renders its own empty view), the central widget is an "Open Workspace…" hint
+        instead of the inspector, no watch bridge is started, and the status bar reads "no
+        workspace". A later ``load_workspace`` from this state is a full bind from ``None``.
         """
-        self._ws = ws
-        self.setWindowTitle(f"ISAR — {Path(ws.root).name}")
+        self._empty = ws is None
+        self._ws = _EmptyWorkspace() if self._empty else ws
+        ws = self._ws
+        if self._empty:
+            self.setWindowTitle("ISAR — (no workspace)")
+        else:
+            self.setWindowTitle(f"ISAR — {Path(ws.root).name}")
 
         # A base viewmodel so the watch signal already has a consumer; component viewmodels attach
         # to the same workspace in later tasks.
@@ -82,9 +137,14 @@ class MainWindow(QMainWindow):
         self.heatmap_vm.load_view_state(self._session)
         self.dispersion_vm.load_view_state(self._session)
 
-        # The C2 fit inspector is the central widget; a browser selection drives it.
-        self.inspector = InspectorWidget(self.inspector_vm, parent=self)
-        self.setCentralWidget(self.inspector)
+        # The C2 fit inspector is the central widget; a browser selection drives it. In the empty
+        # state there is nothing to inspect, so the central widget is an Open-Workspace hint instead.
+        if self._empty:
+            self.inspector = None
+            self.setCentralWidget(self._make_empty_hint())
+        else:
+            self.inspector = InspectorWidget(self.inspector_vm, parent=self)
+            self.setCentralWidget(self.inspector)
         self.browser_vm.selection_changed.connect(self.inspector_vm.set_fit)
         # The C3 plane, the C5 dispersion view, and the C4 waterfall/comparison view all route a
         # picked ω̂ point (or waterfall trace) to the same inspector.
@@ -98,18 +158,31 @@ class MainWindow(QMainWindow):
         self._init_docks()
         self._init_docks_menu()
 
-        self.statusBar().showMessage(f"Workspace: {ws.root}")
-        self.log(f"Opened workspace {ws.root}")
+        if self._empty:
+            self.statusBar().showMessage("No workspace loaded")
+            self.log("Started with no workspace — File ▸ Open Workspace… to begin")
+        else:
+            self.statusBar().showMessage(f"Workspace: {ws.root}")
+            self.log(f"Opened workspace {ws.root}")
 
-        # Watch bridge: refresh + fan out on the Qt thread. Optional (tests may disable it).
+        # Watch bridge: refresh + fan out on the Qt thread. Optional (tests may disable it). Never
+        # started in the empty state — there is no workspace on disk to watch.
         self._bridge = None
-        if self._watch_enabled:
+        if self._watch_enabled and not self._empty:
             self._bridge = WatchBridge(ws, parent=self, **self._watch_kwargs)
             self._bridge.changed.connect(self._on_workspace_changed)
             self._bridge.start()
             self._live_label.setText("watching (no changes yet)")
         else:
             self._live_label.setText("")
+
+    def _make_empty_hint(self) -> QLabel:
+        """The empty-start central widget: a centered "Open Workspace…" hint."""
+        hint = QLabel(_EMPTY_HINT, self)
+        hint.setObjectName("empty_hint")
+        hint.setAlignment(Qt.AlignCenter)
+        self._empty_hint = hint
+        return hint
 
     # ---- dock scaffold ----------------------------------------------------
     def _init_docks(self) -> None:
@@ -153,7 +226,8 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self._on_open_workspace)
 
     def _on_open_workspace(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Open Workspace", str(self._ws.root))
+        start_dir = "" if self._ws.root is None else str(self._ws.root)
+        path = QFileDialog.getExistingDirectory(self, "Open Workspace", start_dir)
         if path:
             self.load_workspace(path)
 
@@ -266,7 +340,8 @@ class MainWindow(QMainWindow):
     def _snapshot_session(self) -> Session:
         state = bytes(self.saveState().toBase64().data()).decode("ascii")
         self._session.dock_layout_b64 = state
-        self._session.note_workspace(self._ws.root)
+        if not self._empty:
+            self._session.note_workspace(self._ws.root)
         self.heatmap_vm.save_view_state(self._session)
         self.dispersion_vm.save_view_state(self._session)
         self.waterfall_vm.save_view_state(self._session)
@@ -292,6 +367,11 @@ class MainWindow(QMainWindow):
     @property
     def viewmodel(self) -> ViewModel:
         return self._viewmodel
+
+    @property
+    def is_empty(self) -> bool:
+        """True while the window is in the empty-start (no workspace loaded) state."""
+        return self._empty
 
     # ---- teardown --------------------------------------------------------
     def closeEvent(self, event) -> None:
