@@ -18,17 +18,15 @@ are EXCLUDED from the plane and counted — never silently dropped.
 """
 from __future__ import annotations
 
-from collections import Counter
-
 import numpy as np
 from PySide6.QtCore import Signal
 
 from isar.plotspec import spec as ps
-from isar_gui.viewmodels import certify
+from isar_gui.viewmodels import certify, projection
 from isar_gui.viewmodels.base import ViewModel
 
 _LN2 = float(np.log(2.0))
-_AXIS = {0: "H", 1: "K", 2: "L"}
+_AXIS = projection.AXIS
 _VERDICT_MARKER = {
     "resolved": ps.MarkerKind.VERDICT_RESOLVED,
     "flagged": ps.MarkerKind.VERDICT_FLAGGED,
@@ -108,18 +106,7 @@ class HeatmapViewModel(ViewModel):
             self.point_activated.emit(fv)
 
     def _nearest(self, x, y, tol):
-        if not self._points:
-            return None
-        xs = [p[0] for p in self._points]
-        ys = [p[1] for p in self._points]
-        xr = (max(xs) - min(xs)) or 1.0
-        yr = (max(ys) - min(ys)) or 1.0
-        best, best_d = None, None
-        for px, py, fv in self._points:
-            d = ((px - x) / xr) ** 2 + ((py - y) / yr) ** 2
-            if best_d is None or d < best_d:
-                best_d, best = d, fv
-        return best if (best_d is not None and best_d <= tol * tol) else None
+        return projection.nearest_point(self._points, x, y, tol)
 
     # ---- assembly ---------------------------------------------------------
     def _hkl_round_step(self) -> float:
@@ -133,44 +120,14 @@ class HeatmapViewModel(ViewModel):
 
     def _candidates(self) -> list:
         """Fitted, non-pooled results carrying a full Q and a temperature (the plane's population)."""
-        out = []
-        for fv in self._ws.results:
-            if fv.pooled:
-                continue
-            q = fv.q
-            if q is None or len(q) < 3 or any(v is None for v in q):
-                continue
-            if fv.T is None:
-                continue
-            out.append(fv)
-        return out
-
-    @staticmethod
-    def _choose_axes(fits, step):
-        """(varying_index, [modal0, modal1, modal2]). Varying = the component least concentrated at a
-        single modal (step-rounded) value; ties broken by the largest raw spread. The other two are
-        fixed at their modal values — a robust plane that out-of-window scans cannot hijack."""
-        qs = np.array([[float(v) for v in fv.q[:3]] for fv in fits], dtype=float)
-        modal = [0.0, 0.0, 0.0]
-        conc = [1.0, 1.0, 1.0]
-        spread = [0.0, 0.0, 0.0]
-        n = len(fits)
-        for i in range(3):
-            rounded = np.round(qs[:, i] / step) * step if step else qs[:, i]
-            vals, counts = np.unique(rounded, return_counts=True)
-            m = int(np.argmax(counts))
-            modal[i] = float(vals[m])
-            conc[i] = float(counts[m]) / n
-            spread[i] = float(qs[:, i].max() - qs[:, i].min())
-        varying = sorted(range(3), key=lambda i: (conc[i], -spread[i]))[0]
-        return varying, modal
+        return projection.candidates(self._ws.results)
 
     def _rebuild(self) -> None:
         step = self._hkl_round_step()
         cands = self._candidates()
         self._temperatures = sorted({round(fv.T, 6) for fv in cands})
         if self._temperature is None or self._temperature not in self._temperatures:
-            self._temperature = self._modal_T(cands)
+            self._temperature = projection.modal_T(cands)
 
         at_t = [fv for fv in cands if self._temperature is not None
                 and abs(fv.T - self._temperature) < 1e-6]
@@ -180,24 +137,13 @@ class HeatmapViewModel(ViewModel):
             self._points, self._excluded_count, self._projection = [], 0, None
             return
 
-        varying, modal = self._choose_axes(at_t, step)
+        varying, modal = projection.choose_axes(at_t, step)
         fixed = [i for i in range(3) if i != varying]
-        in_window, excluded = [], []
-        for fv in at_t:
-            if all(abs(fv.q[i] - modal[i]) <= step + 1e-9 for i in fixed):
-                in_window.append(fv)
-            else:
-                excluded.append(fv)
+        in_window, excluded = projection.split_window(at_t, varying, modal, step)
         self._excluded_count = len(excluded)
 
         self._spec = self._build_spec(in_window, varying, modal, fixed, step)
         self._projection = self._spec.projection
-
-    @staticmethod
-    def _modal_T(cands):
-        if not cands:
-            return None
-        return Counter(round(fv.T, 6) for fv in cands).most_common(1)[0][0]
 
     def _empty_spec(self) -> ps.PlotSpec:
         return ps.PlotSpec(title="(q, E) plane — no fitted scans", xlabel="q (rlu)",
@@ -313,43 +259,12 @@ class HeatmapViewModel(ViewModel):
         to ``None`` when there are fewer than two distinct anchors."""
         bm = getattr(self._ws, "branch_model", None)
         pts = list(getattr(bm, "dispersion_prior", None) or []) if bm is not None else []
-        if not pts:
+        curve = projection.prior_curve(pts, varying, sample=projection.modal_sample(fits),
+                                       T=self._temperature, t_round=_T_ROUND)
+        if curve is None:
             return None
-        sample = self._modal_sample(fits)
-        T = self._temperature
-        rows = []
-        for p in pts:
-            if sample is not None and p.get("sample") != sample:
-                continue
-            pt = p.get("t_bin", p.get("T"))
-            if T is not None and pt is not None and abs(float(pt) - float(T)) > _T_ROUND:
-                continue
-            q = p.get("q")
-            w = p.get("omega0")
-            if q is None or len(q) <= varying or w is None:
-                continue
-            rows.append((float(q[varying]), float(w)))
-        if len({round(x, 6) for x, _ in rows}) < 2:
-            return None
-        rows.sort()
-        xs = np.array([x for x, _ in rows])
-        ws = np.array([w for _, w in rows])
+        xs, ws = curve
         return ps.Series(x=xs, y=ws, label="branch model", role=ps.Role.BRANCH)
 
-    @staticmethod
-    def _modal_sample(fits):
-        samples = [fv.sample for fv in fits if fv.sample is not None]
-        if not samples:
-            return None
-        return Counter(samples).most_common(1)[0][0]
-
     def _projection_legend(self, varying, modal, fixed, step) -> ps.ProjectionLegend:
-        plane_parts = [(_AXIS[i] if i == varying else _g(modal[i])) for i in range(3)]
-        plane = f"({', '.join(plane_parts)}) × E"
-        integ = []
-        for i in fixed:
-            s = _AXIS[i]
-            m = modal[i]
-            integ.append(f"|{s}|≤{_g(step)}" if abs(m) < 1e-9
-                         else f"|{s}−{_g(m)}|≤{_g(step)}")
-        return ps.ProjectionLegend(plane=plane, integration=", ".join(integ))
+        return projection.projection_legend(varying, modal, step)
