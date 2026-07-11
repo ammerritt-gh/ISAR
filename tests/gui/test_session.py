@@ -4,6 +4,8 @@ Pure (no Qt): the save/load API is deliberately Qt-free so it can be exercised w
 """
 from __future__ import annotations
 
+import pytest
+
 from isar_gui import session as sess
 
 
@@ -69,3 +71,36 @@ def test_session_path_falls_back_without_appdata(monkeypatch):
     p = sess.session_path()
     assert p.name == "session.json"
     assert ".isar_gui" in p.parts
+
+
+# ---- Autosaver failure handling (Qt: needs the qtbot QApplication) -----------
+def test_autosaver_swallows_save_failure_and_reports(qtbot):
+    """A snapshot/serialize/write failure inside the Qt timer callback must not propagate out of it;
+    the message goes to the on_error callback instead (never silent, never raising)."""
+    pytest.importorskip("PySide6")
+
+    def _snapshot():
+        raise OSError("disk gone")
+
+    errors = []
+    saver = sess.Autosaver(_snapshot, on_error=errors.append)
+    saver.flush_now()  # must not raise
+    assert errors and "disk gone" in errors[0] and "autosave failed" in errors[0]
+
+
+def test_autosaver_save_failure_without_callback_goes_to_stderr(qtbot, capsys, tmp_path):
+    """With no on_error callback, a save failure is written to stderr rather than swallowed silently."""
+    pytest.importorskip("PySide6")
+
+    def _bad_save(*_a, **_k):
+        raise OSError("write blocked")
+
+    import isar_gui.session as s
+    saver = s.Autosaver(lambda: sess.Session(), path=tmp_path / "session.json")
+    orig = s.save_session
+    s.save_session = _bad_save
+    try:
+        saver.flush_now()  # must not raise
+    finally:
+        s.save_session = orig
+    assert "write blocked" in capsys.readouterr().err

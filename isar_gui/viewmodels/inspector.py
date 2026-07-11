@@ -124,7 +124,13 @@ class InspectorViewModel(ViewModel):
         ws = self._ws
         pooled = bool(fit.pooled)
         try:
-            energy, counts, yerr = ws.scan_data(fit.scan_number)
+            # A pooled master's member spectrum is never drawn under its title (honesty law below),
+            # so we never read scan_data for it — a data file whose number happens to collide with
+            # the master's scan_number must not seed the fine grid (it would also be a wasted read).
+            if pooled:
+                energy = counts = yerr = None
+            else:
+                energy, counts, yerr = ws.scan_data(fit.scan_number)
             fine = self._fine_grid(fit, energy)
             if fine is None:
                 st.curve_error = "no energy grid available for this scan"

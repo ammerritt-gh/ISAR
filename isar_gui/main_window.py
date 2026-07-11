@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
 
         self._docks: dict[str, object] = {}
+        self._warn_generation = 0     # per-bridge-tick counter passed to LogDock.sync_warnings
         self._empty = False           # True while showing the empty-start (no workspace) state
         self.inspector = None         # the C2 central widget; None in the empty state
         self._init_file_menu()
@@ -101,7 +102,7 @@ class MainWindow(QMainWindow):
             self._session.note_workspace(ws.root)
 
         # Session autosave: debounced 500ms, snapshotting the live layout at fire time.
-        self._autosaver = Autosaver(self._snapshot_session, parent=self)
+        self._autosaver = Autosaver(self._snapshot_session, parent=self, on_error=self.log)
 
         # Restore the persisted dock layout after the event loop settles (QTimer.singleShot(0, ...)),
         # so all docks exist and their default geometry is applied first.
@@ -120,6 +121,7 @@ class MainWindow(QMainWindow):
         self._empty = ws is None
         self._ws = _EmptyWorkspace() if self._empty else ws
         ws = self._ws
+        self._warn_generation = 0  # a fresh bind starts a new warnings-generation sequence
         if self._empty:
             self.setWindowTitle("ISAR — (no workspace)")
         else:
@@ -311,11 +313,13 @@ class MainWindow(QMainWindow):
     # ---- watch -----------------------------------------------------------
     def _on_workspace_changed(self, changed) -> None:
         # The bridge already refreshed the facade on this (Qt) thread.
-        self.log_dock.sync_warnings(self._ws.warnings)
+        self._warn_generation += 1
+        self.log_dock.sync_warnings(self._ws.warnings, self._warn_generation)
         self._viewmodel.on_workspace_changed(changed)
-        # Only "results"/"snapshot" carry data the component views read; a bare "events"/"report"/
-        # "card_state" tick still updates the log/status but need not re-derive every plot.
-        if changed & {"results", "snapshot"}:
+        # "results"/"snapshot" carry the fit data the plots read; "card_state" carries lattice
+        # epochs / dispersion prior / branch belief that feed the browser HKL, the dispersion prior
+        # curve, and the heatmap overlays — so it must also re-derive the component views.
+        if changed & {"results", "snapshot", "card_state"}:
             self.browser_vm.refresh()
             self.heatmap_vm.refresh()
             self.dispersion_vm.refresh()

@@ -94,6 +94,7 @@ class RenderedSpec:
         self.legend = None            # pg.LegendItem or None
         self.projection_label = None  # pg.LabelItem anchored to the ViewBox, or None
         self.legend_names: set[str] = set()
+        self._corner_notes = 0        # count of un-anchored corner notes placed (for stacking)
 
     def _add_data(self, item) -> None:
         self._plot_item.addItem(item)
@@ -121,6 +122,7 @@ class RenderedSpec:
             self.legend = None
         self.projection_label = None
         self.legend_names = set()
+        self._corner_notes = 0
 
 
 def _detach(item) -> None:
@@ -296,11 +298,14 @@ def _draw_annotation(rs: RenderedSpec, a) -> None:
         text.setPos(float(a.xy[0]), float(a.xy[1]))
         rs._add_data(text)
     else:
-        # Un-anchored notes (exclusion counts, etc.) -> ViewBox bottom-right corner.
+        # Un-anchored notes (exclusion counts, etc.) -> ViewBox bottom-right corner, stacked upward
+        # so multiple notes don't all land on the same point and overlap.
+        i = rs._corner_notes
         lbl = pg.LabelItem(a.text, color=_GREY_025, size="7pt")
         lbl.setParentItem(rs._plot_item.getViewBox())
-        lbl.anchor(itemPos=(1, 1), parentPos=(1, 1), offset=(-8, -8))
+        lbl.anchor(itemPos=(1, 1), parentPos=(1, 1), offset=(-8, -8 - 14 * i))
         rs._add_overlay(lbl)
+        rs._corner_notes += 1
 
 
 def _draw_projection(rs: RenderedSpec, pj) -> None:
@@ -317,6 +322,19 @@ def _draw_projection(rs: RenderedSpec, pj) -> None:
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+def clear_render(plot_item: "pg.PlotItem") -> None:
+    """Detach any :func:`render_into` output from ``plot_item`` and clear its title.
+
+    The shared "there is nothing to show" path: a view whose spec became ``None`` calls this so the
+    previous render doesn't linger as stale data. Never calls ``plot_item.clear()`` — items added by
+    other code are left untouched (same discipline as :func:`render_into`)."""
+    prev = getattr(plot_item, "_isar_rendered", None)
+    if prev is not None:
+        prev.remove()
+        plot_item._isar_rendered = None
+    plot_item.setTitle(None)
+
+
 def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
     """Render ``spec`` into ``plot_item``, returning a :class:`RenderedSpec` handle.
 

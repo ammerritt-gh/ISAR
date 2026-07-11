@@ -221,6 +221,43 @@ def test_inspector_refreshes_selection_still_present(qtbot, make_ws):
     assert w.inspector_vm.current_fit.omega0 == 5.0
 
 
+def test_card_state_change_rebuilds_dispersion_prior(qtbot, make_ws):
+    """A card.state.json change (a new dispersion_prior) must reach the dispersion view: the
+    changed-key gate includes 'card_state', which carries the prior / branch belief / lattice
+    epochs the component views read (not just 'results'/'snapshot')."""
+    from isar.plotspec.spec import Role
+    from synthetic_ws import write_state
+
+    def _oc(h, omega0):
+        return {"detector_id": "det", "verdict": "resolved", "disposition": "resolved",
+                "confidence": 0.9, "omega0": omega0, "gamma": 1.0, "q": [h, 0.0, 0.0], "T": 200.0,
+                "sample": "tavi",
+                "calib": {"center": 0.0, "gauss_fwhm": 1.2, "lorentz_fwhm": 0.0},
+                "interval": [omega0 - 0.4, omega0 + 0.4], "interval_reliable": True}
+
+    grid = [(1, 2.0, 4.0), (2, 2.2, 4.0)]
+    scans = {f"tavi:{n}:det": {"scan_id": f"tavi:{n}:det", "scan_number": n,
+                               "scan_type": "measurement", "status": "fitted",
+                               "detectors": {"det": _oc(h, w0)}, "provenance": {"M": 200}}
+             for n, h, w0 in grid}
+    rows = [{"scan": n, "detector": "det", "sample": "tavi", "T": 200.0,
+             "h": h, "k": 0.0, "l": 0.0, "status": "fitted"} for n, h, w0 in grid]
+    root = make_ws(scans=scans, rows=rows)
+    ws = Workspace.open(root)
+    w = _live_window(qtbot, ws)
+
+    assert not any(s.role is Role.PRIOR for s in w.dispersion_vm.spec.series)
+
+    prior = [
+        {"sample": "tavi", "t_bin": 200.0, "q": [2.0, 0.0, 0.0], "omega0": 4.0, "sigma": 0.2},
+        {"sample": "tavi", "t_bin": 200.0, "q": [2.2, 0.0, 0.0], "omega0": 4.0, "sigma": 0.2},
+    ]
+    with qtbot.waitSignal(w._bridge.changed, timeout=6000):
+        write_state(root, dispersion_prior=prior)
+
+    assert any(s.role is Role.PRIOR for s in w.dispersion_vm.spec.series)
+
+
 def test_inspector_clears_when_selection_removed(qtbot, make_ws):
     from synthetic_ws import write_results
 

@@ -254,6 +254,24 @@ def test_pooled_series_square_glyph_parity(qtbot):
     assert _mpl_series_marker(member) == "o"
 
 
+def test_unanchored_corner_notes_are_stacked_not_overlapping(qtbot):
+    """Multiple un-anchored corner notes must NOT all anchor at the same bottom-right point — each is
+    offset a row higher so they don't overlap (the offsets differ by the per-note step)."""
+    glw, plot = _new_plot()
+    qtbot.addWidget(glw)
+    spec = PlotSpec(
+        title="t", xlabel="x", ylabel="y",
+        annotations=[Annotation(text="note one", xy=None),
+                     Annotation(text="note two", xy=None)],
+    )
+    rs = render_into(plot, spec)
+    labels = [it for it in rs._overlays if isinstance(it, pg.LabelItem)]
+    assert len(labels) == 2
+    offsets = [tuple(lbl._GraphicsWidgetAnchor__offset) for lbl in labels]
+    assert offsets[0] != offsets[1]
+    assert offsets == [(-8, -8), (-8, -22)]
+
+
 def test_unreliable_marker_has_no_errorbar(qtbot):
     """An UNRELIABLE point is a warning marker with NO whiskers; the backend must emit no
     ErrorBarItem for a spec whose only content is the unreliable marker + annotation."""

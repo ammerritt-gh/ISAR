@@ -12,6 +12,8 @@ No matplotlib, no workspace access.
 """
 from __future__ import annotations
 
+import html
+
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
@@ -26,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from isar_gui.plotspec_pg import render_into
+from isar_gui.plotspec_pg import clear_render, render_into
 
 _EMPTY_HINT = "Select a scan in the Browser."
 
@@ -131,11 +133,7 @@ class InspectorWidget(QWidget):
 
     @staticmethod
     def _clear_plot(plot_item) -> None:
-        prev = getattr(plot_item, "_isar_rendered", None)
-        if prev is not None:
-            prev.remove()
-            plot_item._isar_rendered = None
-        plot_item.setTitle(None)
+        clear_render(plot_item)  # shared "nothing to show" clear (same idiom as the docks)
 
     def _render_ladder(self, rows) -> None:
         self._ladder.setRowCount(len(rows))
@@ -184,20 +182,23 @@ class InspectorWidget(QWidget):
                 val = v[k]
                 if isinstance(val, float):
                     val = f"{val:.3g}"
-                parts.append(f"<b>{k}</b>: {val}")
+                # Escape workspace-derived values (best_label/branch_id/…) so markup in the data
+                # can't inject into or corrupt the RichText label.
+                parts.append(f"<b>{k}</b>: {html.escape(str(val))}")
         self._verdict_label.setText("<br>".join(parts))
 
     def _render_provenance(self, p) -> None:
         if not p:
             self._provenance_label.setText("")
             return
+        # Escape workspace-derived values so markup in the data can't inject into the RichText label.
         parts = []
         if "prior_used" in p:
-            parts.append(f"<b>prior</b>: {p['prior_used']}")
+            parts.append(f"<b>prior</b>: {html.escape(str(p['prior_used']))}")
         if "calib" in p:
-            parts.append(f"<b>calib</b>: {p['calib']}")
+            parts.append(f"<b>calib</b>: {html.escape(str(p['calib']))}")
         if "pooled" in p:
-            parts.append(f"<b>{p['pooled']}</b>")
+            parts.append(f"<b>{html.escape(str(p['pooled']))}</b>")
         if "members" in p:
-            parts.append("members: " + ", ".join(p["members"]))
+            parts.append("members: " + ", ".join(html.escape(str(m)) for m in p["members"]))
         self._provenance_label.setText("<br>".join(parts))

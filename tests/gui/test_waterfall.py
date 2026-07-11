@@ -169,6 +169,19 @@ def test_comparison_point_click_activates_fit(qtbot, make_ws):
     assert blocker.args[0].scan_number == 1
 
 
+def test_dock_clears_render_when_spec_becomes_none(qtbot, make_ws):
+    """A None spec must clear the previous render rather than retaining stale data on the plot."""
+    from isar_gui.views.waterfall_dock import WaterfallDock
+    ws = _make(make_ws)
+    vm = WaterfallViewModel(ws)
+    dock = WaterfallDock(vm)
+    qtbot.addWidget(dock)
+    assert getattr(dock._plot, "_isar_rendered", None) is not None
+    vm._spec = None
+    dock.refresh()
+    assert getattr(dock._plot, "_isar_rendered", None) is None
+
+
 def test_view_state_round_trips_through_session(make_ws):
     ws = _make(make_ws)
     vm1 = WaterfallViewModel(ws)

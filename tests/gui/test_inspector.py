@@ -159,6 +159,28 @@ def test_pooled_master_never_overlays_member_data(make_ws):
     assert st.residuals_spec is None  # no residuals without the (unpersisted) pooled spectrum
 
 
+def test_pooled_master_does_not_read_scan_data_and_uses_omega_window(make_ws, monkeypatch):
+    # A pooled master whose scan_number (1) collides with a real member data file on disk must NOT
+    # read that file: it never draws member counts, and the colliding grid must not seed the fine
+    # grid. The curve falls back to the ω₀±10 window instead of the file's [-2, 8] grid.
+    from isar.plotspec.spec import Role
+    ws = _ws_with(make_ws, _outcome(pooled=True, n_members=2, members=["1", "2"], omega0=5.0))
+    calls = []
+    orig = ws.scan_data
+    monkeypatch.setattr(ws, "scan_data", lambda n: (calls.append(n), orig(n))[1])
+    vm = InspectorViewModel(ws)
+    vm.set_fit(_fit(ws))
+    st = vm.state
+    assert calls == []  # the pooled path never reads the (colliding) member data file
+    assert st.main_spec is not None
+    fit_total = [s for s in st.main_spec.series
+                 if s.role is Role.FIT and np.asarray(s.x).size > 1]
+    assert len(fit_total) == 1
+    xs = np.asarray(fit_total[0].x, dtype=float)
+    assert xs.min() == pytest.approx(-5.0)  # ω₀±10 window, not the file grid ([-2, 8])
+    assert xs.max() == pytest.approx(15.0)
+
+
 # ---- Widget rendering -------------------------------------------------------
 def test_widget_renders_reliable_case(qtbot, make_ws):
     ws = _ws_with(make_ws, _outcome())
@@ -203,6 +225,19 @@ def test_widget_candidates_not_recorded_placeholder(qtbot, make_ws):
     qtbot.addWidget(w)
     vm.set_fit(_fit(ws))
     assert w._candidates.item(0, 0).text() == "not recorded"
+
+
+def test_verdict_escapes_markup_in_best_label(qtbot, make_ws):
+    """A workspace-derived value containing markup must be HTML-escaped in the RichText verdict label
+    (no injected bold segment / display corruption)."""
+    ws = _ws_with(make_ws, _outcome(best_label="<b>evil</b>"))
+    vm = InspectorViewModel(ws)
+    w = InspectorWidget(vm)
+    qtbot.addWidget(w)
+    vm.set_fit(_fit(ws))
+    text = w._verdict_label.text()
+    assert "&lt;b&gt;evil&lt;/b&gt;" in text   # escaped, shown literally
+    assert "<b>evil</b>" not in text           # NOT interpreted as markup
 
 
 def test_widget_empty_state_shows_hint(qtbot, make_ws):

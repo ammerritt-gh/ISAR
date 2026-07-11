@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -107,11 +108,13 @@ class Autosaver:
     Qt thread when it fires, so the window can hand back its current :class:`Session` at save time.
     """
 
-    def __init__(self, snapshot, path: Path | None = None, *, delay_ms: int = 500, parent=None):
+    def __init__(self, snapshot, path: Path | None = None, *, delay_ms: int = 500, parent=None,
+                 on_error=None):
         from PySide6.QtCore import QTimer  # lazy: keep module import Qt-free
 
         self._snapshot = snapshot
         self._path = path
+        self._on_error = on_error
         self._timer = QTimer(parent)
         self._timer.setSingleShot(True)
         self._timer.setInterval(delay_ms)
@@ -127,4 +130,13 @@ class Autosaver:
         self._flush()
 
     def _flush(self) -> None:
-        save_session(self._snapshot(), self._path)
+        # A snapshot/serialize/write failure must never propagate out of the Qt timer callback (it
+        # would tear down the event loop). Report it via on_error (else stderr) and swallow it.
+        try:
+            save_session(self._snapshot(), self._path)
+        except Exception as exc:  # noqa: BLE001 — autosave failure is non-fatal, but never silent
+            msg = f"session autosave failed: {exc}"
+            if self._on_error is not None:
+                self._on_error(msg)
+            else:
+                print(msg, file=sys.stderr)

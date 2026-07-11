@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from isar_gui.plotspec_pg import render_into
+from isar_gui.plotspec_pg import clear_render, render_into
 
 
 class DispersionDock(QDockWidget):
@@ -64,6 +64,8 @@ class DispersionDock(QDockWidget):
         self._sync_t_combo()
         if spec is not None:
             render_into(self._plot, spec)
+        else:
+            clear_render(self._plot)  # no spec -> don't retain the previous (stale) render
 
     def _sync_t_combo(self) -> None:
         temps = self._vm.temperatures

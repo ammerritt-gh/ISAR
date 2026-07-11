@@ -195,6 +195,25 @@ def test_dock_renders_and_routes_click(qtbot, make_ws):
     assert blocker.args[0].scan_number == 1
 
 
+def test_colorbar_detaches_when_spec_has_no_strips(qtbot, make_ws):
+    """When a refresh yields a strip-less spec, the colorbar must stop pointing at the previous
+    (now-removed) strip ImageItem — it gets a fresh placeholder instead of a dangling reference."""
+    import pyqtgraph as pg
+
+    from isar.plotspec.spec import PlotSpec
+    from isar_gui.views.heatmap_dock import HeatmapDock
+    ws = _make(make_ws)
+    vm = HeatmapViewModel(ws)
+    dock = HeatmapDock(vm)
+    qtbot.addWidget(dock)
+    old_img = dock._colorbar.imageItem()
+    assert isinstance(old_img, pg.ImageItem)
+    # Refresh with a strip-less (but non-None) spec.
+    vm._spec = PlotSpec(title="empty", xlabel="q", ylabel="E")
+    dock.refresh()
+    assert dock._colorbar.imageItem() is not old_img
+
+
 def test_view_state_round_trips_through_session(make_ws):
     ws = _make(make_ws)
     vm1 = HeatmapViewModel(ws)

@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from isar_gui.plotspec_pg import render_into
+from isar_gui.plotspec_pg import clear_render, render_into
 
 
 class WaterfallDock(QDockWidget):
@@ -84,6 +84,8 @@ class WaterfallDock(QDockWidget):
         self._sync_controls()
         if spec is not None:
             render_into(self._plot, spec)
+        else:
+            clear_render(self._plot)  # no spec -> don't retain the previous (stale) render
 
     def _sync_controls(self) -> None:
         is_waterfall = self._vm.mode == "waterfall"

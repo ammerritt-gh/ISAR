@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from isar_gui.plotspec_pg import render_into
+from isar_gui.plotspec_pg import clear_render, render_into
 
 
 class HeatmapDock(QDockWidget):
@@ -69,6 +69,10 @@ class HeatmapDock(QDockWidget):
         if spec is not None:
             render_into(self._plot, spec)
             self._sync_colorbar(spec)
+        else:
+            clear_render(self._plot)  # no spec -> don't retain the previous (stale) render
+            # …and detach the colorbar from the now-removed ImageItem (a fresh placeholder).
+            self._colorbar.setImageItem(pg.ImageItem())
 
     def _sync_colorbar(self, spec) -> None:
         label = spec.value_label or "counts"
@@ -80,6 +84,10 @@ class HeatmapDock(QDockWidget):
             img = next((it for it in rendered.items if isinstance(it, pg.ImageItem)), None)
         if img is not None:
             self._colorbar.setImageItem(img)
+        else:
+            # No strip in this spec -> the previous strip's ImageItem was just removed; don't leave
+            # the colorbar pointing at a detached item. Reset to a fresh placeholder.
+            self._colorbar.setImageItem(pg.ImageItem())
 
     def _sync_t_combo(self) -> None:
         temps = self._vm.temperatures

@@ -200,9 +200,14 @@ class DispersionViewModel(ViewModel):
         if prior is None:
             return []
         xs_p, ys_p, sig_p = prior
+        # prior_curve sorts its anchors ascending, so xs_p[0]/xs_p[-1] bound the prior's q-domain.
         flagged = []
         for p in points:
             x, y = p["q"], p["omega"]
+            # Outside the prior's q-domain np.interp would clamp to an end anchor, comparing ω̂
+            # against a value the prior never actually asserts there -> a bogus flag. Skip it.
+            if x < xs_p[0] or x > xs_p[-1]:
+                continue
             prior_y = float(np.interp(x, xs_p, ys_p))
             sig_eff = p["yerr"]
             if sig_eff is None:

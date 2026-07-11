@@ -144,13 +144,25 @@ def test_prior_degrades_when_fewer_than_two_points(make_ws):
 
 
 def test_off_curve_flag_fires_on_outlier(make_ws):
-    # Prior is flat ω≈4.0; an added outlier at H=2.3 with ω=9.0 (half-width 0.4) sits ~12σ off.
-    specs = _SPECS + [dict(scan=5, h=2.3, k=0.0, l=0.0, omega0=9.0, reliable=True,
+    # Prior is flat ω≈4.0 across H in [2.0, 2.2]; an added IN-DOMAIN outlier at H=2.15 with ω=9.0
+    # (half-width 0.4) sits ~12σ off the prior and must be flagged.
+    specs = _SPECS + [dict(scan=5, h=2.15, k=0.0, l=0.0, omega0=9.0, reliable=True,
                            entropy=0.0, verdict="resolved")]
     ws = _make(make_ws, prior=_PRIOR, specs=specs)
     vm = DispersionViewModel(ws)
     off = [a for a in vm.spec.annotations if a.xy is not None and "off prior" in a.text]
-    assert any(abs(a.xy[0] - 2.3) < 1e-9 and abs(a.xy[1] - 9.0) < 1e-9 for a in off)
+    assert any(abs(a.xy[0] - 2.15) < 1e-9 and abs(a.xy[1] - 9.0) < 1e-9 for a in off)
+
+
+def test_off_curve_skips_points_outside_prior_domain(make_ws):
+    # Prior spans H in [2.0, 2.2]; a point far OUTSIDE that q-domain (H=5.0, ω=20) must NOT be
+    # flagged — np.interp would clamp to the end anchor and manufacture a bogus off-curve flag.
+    specs = _SPECS + [dict(scan=6, h=5.0, k=0.0, l=0.0, omega0=20.0, reliable=True,
+                           entropy=0.0, verdict="resolved")]
+    ws = _make(make_ws, prior=_PRIOR, specs=specs)
+    vm = DispersionViewModel(ws)
+    off = [a for a in vm.spec.annotations if a.xy is not None and "off prior" in a.text]
+    assert not any(abs(a.xy[0] - 5.0) < 1e-9 for a in off)  # out-of-domain point not flagged
 
 
 def test_no_off_curve_without_prior(make_ws):
@@ -185,6 +197,19 @@ def test_dock_renders_and_routes_click(qtbot, make_ws):
     with qtbot.waitSignal(vm.point_activated, timeout=1000) as blocker:
         vm.activate_at(2.0, 4.0)
     assert blocker.args[0].scan_number == 1
+
+
+def test_dock_clears_render_when_spec_becomes_none(qtbot, make_ws):
+    """A None spec must clear the previous render rather than retaining stale data on the plot."""
+    from isar_gui.views.dispersion_dock import DispersionDock
+    ws = _make(make_ws)
+    vm = DispersionViewModel(ws)
+    dock = DispersionDock(vm)
+    qtbot.addWidget(dock)
+    assert getattr(dock._plot, "_isar_rendered", None) is not None
+    vm._spec = None
+    dock.refresh()
+    assert getattr(dock._plot, "_isar_rendered", None) is None
 
 
 def test_view_state_round_trips_through_session(make_ws):
