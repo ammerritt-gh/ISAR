@@ -96,6 +96,14 @@ class CardState:
     branch_belief: list = field(default_factory=list)        # per-(sample,t_bin,q) acoustic QoI trace
     #   {sample, t_bin, q, hkl, omega0, sigma, entropy, resolvable} — the drive reads this (durable,
     #   boundary-safe) to steer ω(q) by the assignment-inflated σ instead of raw best_omega0 (Phase A).
+    lattice_epochs: list = field(default_factory=list)       # versioned lattice/orientation interpretation
+    #   (isar.geometry.epochs). A lattice/orientation is not static policy: it can change mid-experiment
+    #   (phase transition, realignment, HK0↔H0L swap) and be corrected retroactively. Scans stay in
+    #   absolute instrument coords; each epoch maps absolute Q→HKL, and grouping keys on the derived HKL.
+    #   Append-only: correct by adding a new epoch (with `supersedes`), never by editing scans. Record:
+    #   {version:int, created:iso8601, valid_from:{scan_ref:str|None, ts:str|None}, supersedes:int|None,
+    #    lattice:{a,b,c,alpha,beta,gamma}, orient:{u:[h,k,l], v:[h,k,l]}, method:str, source:str}.
+    #   Resolve with isar.geometry.resolve_epoch; build the sample with sample_state_from_epoch.
 
     def to_dict(self) -> dict:
         return _json.to_jsonable(self)
