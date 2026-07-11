@@ -153,3 +153,82 @@ exactly the decision this handoff exists to discuss.
 - Import boundaries (enforced): `tests/test_import_contract.py`, `tests/test_qt_free_core.py`
 - Launch: `run-isar-gui.bat` · engine entry the GUI would wrap for (a): `isar/cli/main.py`
   (`init_cmd`, `run_cmd` — the wizard shells the same code paths, never reimplements)
+
+---
+
+## 7. DECISIONS (owner ruling, 2026-07-11) — binding for the next round
+
+**Direction: option (a) first, then (b).** Scope and doctrine below.
+
+### D1 — The TAVI seam (dependency doctrine)
+
+Anything in ISAR that touches TAVI requires **TAVI installed on its own** — ISAR
+never bundles, vendors, or manages TAVI. Build cleanly around that seam:
+
+- Separate, explicitly, "runs on data / on a machine without TAVI" (parse, fit,
+  verdict, viewer, reports) from "requires TAVI" (simulations, campaigns,
+  `isar drive`).
+- ISAR owns its own environment spec and rebuild path; it must not depend on
+  `tavi-dev` existing. TAVI-requiring features detect a TAVI installation and
+  degrade to a clear "TAVI not found — these features need TAVI installed"
+  state, never a crash.
+- Health-check indicators + a launch button that invokes TAVI's own `run-*.bat`
+  are in scope; lifecycle ownership of TAVI is not.
+
+### D2 — Who the operator is (Q1)
+
+Both, but the binding constraint is **physics-literate, program-naive**. Training
+is acceptable; hidden mechanics are not — the workflow must be visibly clear in
+the GUI itself. Card stays a commented TOML with a raw editor pane in v1 (a real
+card editor is Phase-C-adjacent, since card edits are the correction channel).
+
+### D3 — Scope of (a) (Q2)
+
+Wizard + Run action (subprocess, live log dock, visible failure state, retained
+logs, "Re-run (only new scans)") + environment-rebuild bat (per D1: ISAR-own,
+micromamba-flavored; steal TAVI's installer bootstrap pattern) + the cheap
+Contract wins: **Open report** button, **export current view as PNG**.
+
+**LLM flexibility is a hard requirement:** other machines most likely will NOT
+run LLMM. Wherever ISAR calls an LLM, route through a configurable
+OpenAI-compatible endpoint; LLMM at `127.0.0.1:8766` is the *default profile*,
+not an assumption. Every feature must declare itself LLM-optional or
+LLM-required and degrade visibly (mirror the D1 seam pattern: absent backend →
+clear status, never a crash).
+
+### D4 — Physicality doctrine (Q3) — promoted, not sugar
+
+The owner's framing, now binding: physicality means **anything that maintains
+persistent state and a relative configuration is an object you can pick up and
+move** — membership, ordering, grouping, placement. Files are the most familiar
+instance, not the definition (Dungeon Weaver's roster — drag a character
+between groups, out, or in — and drag-to-reorder prompts are the house
+reference). The arrangement on screen *is* the state: round-trip honest, read
+back from persistence, never a drifted view. Where state is expressible as
+position/membership/order, prefer manipulating the representation over a config
+field. Concretely for (a):
+
+- Dragging a data folder or raw file onto the ISAR window is the **front door**:
+  the drop invokes the New Experiment wizard, prefilled. The wizard also exists
+  standalone (File → New Experiment…), but the drop is the headline path.
+- "Workspace" must be presented in human terms: *an experiment = your pile of
+  data files, wrapped*. The GUI should never require the operator to already
+  know what a workspace is before they can create one.
+- Study Dungeon Weaver's direct-manipulation patterns before designing the
+  drop/wizard flow.
+- Forward note (not (a)-scope): the doctrine's natural ISAR extensions live in
+  Phase B/C — e.g. dragging scans out of an analysis as the exclusion gesture,
+  or reordering measurement priorities — and should be designed as directives
+  with provenance, not as silent state edits.
+
+### D5 — Landing (Q4)
+
+**PR, not local merge** — owner will put reviewers on it. Tag the pre-PR branch
+point. Next round branches from main after the PR lands.
+
+### D6 — Validation gate (Q5)
+
+The full S30 M=200 validation is **decoupled from (a)** (pure plumbing, never
+touches fitting) but is a **hard gate on Phase C**: no steering autonomy on an
+engine that hasn't passed full validation. Sequence: (a) → validation → (b) → C,
+validation parallel to (a) if machine time permits.
