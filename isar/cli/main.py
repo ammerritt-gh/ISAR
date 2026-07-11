@@ -94,6 +94,9 @@ def build_parser() -> argparse.ArgumentParser:
     psc.add_argument("--json", default=None,
                      help="write the full scoring dict to this path (truth mode)")
 
+    pv = sub.add_parser("view", help="open the desktop GUI on a workspace (needs the [gui] extra)")
+    pv.add_argument("workspace", help="an ISAR workspace directory to open read-only")
+
     pd = sub.add_parser("drive", help="run the measurement driver campaign (LLM_HARNESS_DESIGN §8)")
     src = pd.add_mutually_exclusive_group(required=True)
     src.add_argument("--goal", help="natural-language measurement goal (LLM supervisor; needs LLMM)")
@@ -160,6 +163,9 @@ def main(argv=None) -> int:
     if cmd == "score":
         from isar.cli import score_cmd
         return score_cmd.run(args)
+    if cmd == "view":
+        from isar.cli import view_cmd
+        return view_cmd.run(args)
     if cmd == "drive":
         from isar.drive.loop import run_campaign
         from isar.drive.supervisor.goal_to_spec import GoalParseError, goal_to_spec, spec_from_json
