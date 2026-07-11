@@ -21,7 +21,10 @@ def test_main_window_builds(qtbot, make_ws):
     qtbot.addWidget(w)
     assert w.windowTitle() == f"ISAR — {root.name}"
     assert w.centralWidget() is not None
-    assert w.log_dock.isVisible() or not w.isVisible()  # dock exists; visibility is real once shown
+    # The log dock is scaffolded and registered so the Docks menu can find it.
+    assert "Log" in w._docks and w._docks["Log"] is w.log_dock
+    w.show()
+    assert w.log_dock.isVisible()
 
 
 def test_no_qapplication_on_import():

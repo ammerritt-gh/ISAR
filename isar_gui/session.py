@@ -91,7 +91,9 @@ def save_session(session: Session, path: Path | None = None) -> None:
     """Write the session atomically (temp file + ``os.replace``)."""
     path = Path(path) if path is not None else session_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    # Per-pid tmp name so two GUI instances autosaving concurrently don't clobber each other's
+    # temp file before the atomic replace (the final path is shared, but os.replace is atomic).
+    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.tmp")
     with tmp.open("w", encoding="utf-8") as f:
         json.dump(session.to_dict(), f, indent=2)
     os.replace(tmp, path)

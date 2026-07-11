@@ -8,13 +8,24 @@ traceback.
 """
 from __future__ import annotations
 
+import importlib.util
 import sys
+
+_MISSING_MSG = "GUI extra not installed - pip install -e .[gui]"
 
 
 def run(args) -> int:
+    # isar_gui ships with the core install and its app module is Qt-free at import scope, so the
+    # ImportError guard alone would never fire — the missing dep is PySide6, which app.py imports
+    # lazily *inside* main(). Probe for it up front so a missing [gui] extra prints the hint instead
+    # of a raw ModuleNotFoundError traceback. The ImportError guard stays as belt-and-braces (e.g. a
+    # source checkout without isar_gui on the path).
+    if importlib.util.find_spec("PySide6") is None:
+        print(_MISSING_MSG, file=sys.stderr)
+        return 2
     try:
         from isar_gui.app import main as gui_main
     except ImportError:
-        print("GUI extra not installed - pip install -e .[gui]", file=sys.stderr)
+        print(_MISSING_MSG, file=sys.stderr)
         return 2
     return gui_main([args.workspace])

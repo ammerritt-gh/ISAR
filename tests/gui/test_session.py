@@ -45,7 +45,7 @@ def test_atomic_save_leaves_no_tmp(tmp_path):
     p = tmp_path / "session.json"
     sess.save_session(sess.Session(), p)
     assert p.exists()
-    assert not (tmp_path / "session.json.tmp").exists()
+    assert not list(tmp_path.glob("*.tmp"))  # no leftover temp file (any pid suffix)
 
 
 def test_note_workspace_dedup_and_order():
