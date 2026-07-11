@@ -39,6 +39,15 @@ authority, driver = future). Last updated: 2026-07-07.
       derive per-configuration inflation. Known issue: 2-mode fits with γ at its bound report
       absurdly tight intervals (halfwidth ~1e-3 meV) that dominate the inflation metric —
       interval calibration for γ-at-bound fits is a prerequisite.
+- [ ] **Bayes-interval coverage campaign** — the `--errors bayes` tier (2026-07-11) ships the
+      posterior as diagnostics-only; before it can enter `_pick_interval` precedence it needs
+      its own truth-scored coverage artifact (`isar score --truth-* --interval bayes`).
+      Includes settling nlive: bench (docs/stats/bench_error_methods.py) showed 250≈400 on
+      9/11 scans but 250 markedly narrower on the two very-high-count scans despite ESS>1000.
+- [ ] **Worker path ignores bayes CLI knobs** — `--bayes-nlive/--bayes-dlogz/--bayes-maxiter`
+      thread through direct `isar run` only; the persistent worker resolves
+      `_resolve_bayes_opts(None)` = env/defaults (`ISAR_BAYES_*` env vars still work).
+      Forwarding needs a worker-protocol field; do alongside the next protocol change.
 
 ## TAS resolution
 
