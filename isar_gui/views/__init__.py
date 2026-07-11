@@ -7,5 +7,6 @@ state off a viewmodel and never touch the workspace facade directly.
 from __future__ import annotations
 
 from isar_gui.views.browser_dock import BrowserDock
+from isar_gui.views.inspector_widget import InspectorWidget
 
-__all__ = ["BrowserDock"]
+__all__ = ["BrowserDock", "InspectorWidget"]

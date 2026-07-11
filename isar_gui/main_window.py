@@ -14,16 +14,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QTimer
-from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow
+from PySide6.QtWidgets import QFileDialog, QMainWindow
 
 from isar.workspace_api import Workspace, WorkspaceNotFound
 from isar_gui.log_dock import LogDock
 from isar_gui.session import Autosaver, Session, load_session
-from isar_gui.viewmodels import BrowserViewModel, ViewModel
+from isar_gui.viewmodels import BrowserViewModel, InspectorViewModel, ViewModel
 from isar_gui.views.browser_dock import BrowserDock
+from isar_gui.views.inspector_widget import InspectorWidget
 from isar_gui.watch_bridge import WatchBridge
-
-_PLACEHOLDER = "Select a scan in the Browser."
 
 
 class MainWindow(QMainWindow):
@@ -34,10 +33,6 @@ class MainWindow(QMainWindow):
         self._session = session if session is not None else load_session()
         self._watch_enabled = watch
         self.resize(1200, 800)
-
-        central = QLabel(_PLACEHOLDER)
-        central.setContentsMargins(24, 24, 24, 24)
-        self.setCentralWidget(central)
 
         self._docks: dict[str, object] = {}
         self._init_file_menu()
@@ -63,6 +58,12 @@ class MainWindow(QMainWindow):
         # to the same workspace in later tasks.
         self._viewmodel = ViewModel(ws, parent=self)
         self.browser_vm = BrowserViewModel(ws, parent=self)
+        self.inspector_vm = InspectorViewModel(ws, parent=self)
+
+        # The C2 fit inspector is the central widget; a browser selection drives it.
+        self.inspector = InspectorWidget(self.inspector_vm, parent=self)
+        self.setCentralWidget(self.inspector)
+        self.browser_vm.selection_changed.connect(self.inspector_vm.set_fit)
 
         self._docks = {}
         self._init_docks()
@@ -156,6 +157,13 @@ class MainWindow(QMainWindow):
         # rest of the window's life. Drop them so repeated load_workspace calls don't accumulate.
         self._viewmodel.deleteLater()
         self.browser_vm.deleteLater()
+        self.inspector_vm.deleteLater()
+        # The central inspector widget is rebuilt against the new workspace in _bind_workspace;
+        # setCentralWidget will reparent+delete the old one, but drop it explicitly so its VM
+        # connection is gone before the fresh bind.
+        old_inspector = self.takeCentralWidget()
+        if old_inspector is not None:
+            old_inspector.deleteLater()
 
         self._bind_workspace(new_ws)
         self._session.note_workspace(new_ws.root)

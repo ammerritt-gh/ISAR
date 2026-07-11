@@ -285,6 +285,24 @@ class Workspace:
             qe = getattr(pol, "quasielastic_fwhm", None)
         return _evaluate_model(fit, self._data_dir, quasielastic_fwhm=qe, x_eval=x_eval)
 
+    def scan_data(self, scan_id):
+        """The measured spectrum for one scan as ``(energy, counts, yerr)`` numpy arrays.
+
+        Re-reads the scan's ``data/*.json`` through the same finite/valid masking the fit itself and
+        the ``evaluate_model`` fallback use, so the arrays line up with the delivered curve. ``yerr``
+        is the Poisson ``sqrt(counts)`` whisker (clipped at 0). Returns ``(None, None, None)`` when the
+        scan has no re-parseable data file (never raises). Read-only; used by the C2 fit inspector to
+        draw the data + residuals without hacking at the private evaluator internals.
+        """
+        import numpy as np
+
+        from .evaluate import _load_scan_arrays
+        energy, counts = _load_scan_arrays(self._data_dir, self._scan_number_of(scan_id))
+        if energy is None or counts is None:
+            return None, None, None
+        yerr = np.sqrt(np.clip(counts, 0.0, None))
+        return energy, counts, yerr
+
     def _find_fit(self, scan_id, detector_id) -> FitView | None:
         scan_number = self._scan_number_of(scan_id)
         # Prefer the results.csv-backed FitView (carries the flattened resolution columns).
