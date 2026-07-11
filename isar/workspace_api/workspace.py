@@ -221,29 +221,36 @@ class Workspace:
         return view
 
     # ---- session events ---------------------------------------------------
+    def _session_events(self) -> list:
+        """Parse ``report/session_log.jsonl`` once (through the parse-once cache) into a list of good
+        records. A truncated/invalid line is dropped with a single :attr:`warnings` entry recorded at
+        parse time (not on every read). A missing file degrades to ``[]`` (no warning); any other read
+        error propagates so :meth:`_parse` retries once then degrades with a warning like the rest.
+        """
+        def _load():
+            path = self._report_dir / _SESSION_LOG_NAME
+            text = path.read_text(encoding="utf-8")  # FileNotFoundError -> [] default via _parse
+            records = []
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except ValueError:
+                    self.warnings.append("session_log: dropped a truncated/invalid line")
+            return records
+
+        return self._parse("session_events", _load, [])
+
     def session_events(self, kind=None, since=None):
         """Iterate ``report/session_log.jsonl`` records, filtered by ``kind`` and/or ``since`` (ts).
 
-        Tolerant of a truncated trailing line (a killed run): the bad line is dropped and a
-        :attr:`warnings` entry is recorded; the rest still parse. Missing file -> empty iterator.
+        The file is parsed at most once (cached until :meth:`refresh`); this only filters the cached
+        records in memory, so repeated calls do not re-read the file and the truncated-line warning
+        is recorded exactly once. Missing file -> empty iterator.
         """
-        path = self._report_dir / _SESSION_LOG_NAME
-        if not path.exists():
-            return
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            self.warnings.append(f"session_log: read failed ({exc})")
-            return
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                self.warnings.append("session_log: dropped a truncated/invalid line")
-                continue
+        for rec in self._session_events():
             if kind is not None and rec.get("kind") != kind:
                 continue
             if since is not None:

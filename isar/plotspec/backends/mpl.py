@@ -38,7 +38,6 @@ _TIER_COLOR = {
 def _png_bytes(fig) -> bytes:
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
-    plt.close(fig)
     return buf.getvalue()
 
 
@@ -188,8 +187,15 @@ def _render_onto(ax, spec: PlotSpec) -> None:
 
 
 def render_png(spec: PlotSpec) -> bytes:
-    """Render ``spec`` to PNG bytes (Agg)."""
+    """Render ``spec`` to PNG bytes (Agg).
+
+    Owns the figure lifecycle: whatever raises during rendering, ``tight_layout``, or the PNG
+    encode, the figure is closed in the ``finally`` so a failed render never leaks a live figure.
+    """
     fig, ax = plt.subplots(figsize=(6.0, 3.4))
-    _render_onto(ax, spec)
-    fig.tight_layout()
-    return _png_bytes(fig)
+    try:
+        _render_onto(ax, spec)
+        fig.tight_layout()
+        return _png_bytes(fig)
+    finally:
+        plt.close(fig)

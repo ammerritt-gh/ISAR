@@ -8,6 +8,7 @@ same component model (`isar.analyze.components`) and the same amplitude solve IS
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import SimpleNamespace
 
 import numpy as np
@@ -29,6 +30,9 @@ def assemble_curve(comp, x_eval, *, omega0, gamma, amp, ctx):
     ``FitOutcome.amplitudes``) so a params-only evaluator and the counts-based reconstruction use one
     theta-assembly path.
     """
+    if not isinstance(amp, Mapping):
+        raise ValueError(
+            f"amp must be a mapping of amplitude names to values, got {type(amp).__name__}")
     omega_d = float(np.sqrt(max(float(omega0) ** 2 - float(gamma) ** 2, _OMEGA_D_FLOOR)))
     theta = []
     for pn in comp.param_names():

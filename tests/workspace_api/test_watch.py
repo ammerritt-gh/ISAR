@@ -12,6 +12,7 @@ import time
 import pytest
 
 from isar.workspace_api import Workspace
+from isar.workspace_api.watch import _Debouncer
 
 # Short-but-comfortable timings: poll far below debounce so a burst coalesces; both far below the
 # per-test wait budget.
@@ -159,3 +160,36 @@ def test_poll_backend_selected_by_default(make_ws):
     ws = Workspace.open(root)
     with ws.watch(lambda c: None, backend="poll", poll_interval_s=POLL) as w:
         assert w.backend_name == "poll"
+
+
+# ---------------------------------------------------------------------------
+# _Debouncer quiesce: an in-flight callback re-armed during emit is still joined by cancel()
+# ---------------------------------------------------------------------------
+def test_debouncer_cancel_joins_inflight_and_reports_timeout():
+    entered = threading.Event()
+    release = threading.Event()
+    emits = []
+
+    def emit(names):
+        emits.append(set(names))
+        entered.set()
+        release.wait(WAIT)          # block inside the callback until the test lets go
+
+    d = _Debouncer(debounce_ms=20, emit=emit)
+    d.add({"a"})
+    assert entered.wait(WAIT), "first emit never started"
+    # Re-arm a second timer while the first callback is still blocked mid-emit (this replaces the
+    # _timer slot; a debouncer that tracked only _timer would lose the in-flight flush).
+    d.add({"b"})
+    # cancel() while the first callback is still running -> cannot quiesce within the short budget.
+    assert d.cancel(timeout=0.2) is False
+    release.set()                   # let the first callback finish; its flush thread then joins
+    time.sleep(0.1)                 # settle
+    assert emits == [{"a"}]         # the re-armed timer was cancelled -> it never emitted
+
+
+def test_debouncer_cancel_returns_true_when_idle():
+    d = _Debouncer(debounce_ms=20, emit=lambda names: None)
+    d.add({"a"})
+    time.sleep(0.1)                 # let the single flush complete
+    assert d.cancel(timeout=WAIT) is True

@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from isar.workspace_api import Workspace, WorkspaceNotFound
-from isar.workspace_api.evaluate import evaluate_model
+from isar.workspace_api.evaluate import _load_scan_arrays, evaluate_model
 from isar.workspace_api.views import FitView
 
 from .conftest import OLD_COLUMNS, detector_outcome, scan_entry
@@ -270,6 +271,150 @@ def test_evaluate_pure_quasielastic_branch(make_ws):
     assert np.all(np.isfinite(out.total))
     qe_values = dict(out.components)["qe"]
     assert np.any(qe_values != 0.0)
+
+
+# ---------------------------------------------------------------------------
+# _load_scan_arrays: mask padding + malformed-data tolerance
+# ---------------------------------------------------------------------------
+def _write_raw_data(data_dir: Path, scan_number: int, doc) -> None:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / f"j-{int(scan_number):04d}.json").write_text(json.dumps(doc), encoding="utf-8")
+
+
+def test_load_scan_arrays_short_mask_excludes_uncovered_tail(make_ws):
+    # A valid_mask covering only the first half of the energy points must EXCLUDE the uncovered
+    # tail, not treat it as valid (the omitted positions are points the fit did not keep).
+    energy = list(np.linspace(-2.0, 7.0, 10))
+    counts = [100.0] * 10
+    root = make_ws()
+    _write_raw_data(root / "data", 30, {"job_id": "j-0030", "state": "done",
+                    "result": {"scan_values_1": energy, "counts": counts,
+                               "valid_mask_1": [True] * 5}})   # mask only covers first 5 points
+    e, c = _load_scan_arrays(root / "data", 30)
+    assert e is not None and e.size == 5                     # uncovered tail dropped
+    assert np.allclose(e, np.asarray(energy)[:5])
+
+
+def test_load_scan_arrays_rejects_list_root(make_ws):
+    root = make_ws()
+    _write_raw_data(root / "data", 31, [1, 2, 3])            # non-object JSON root
+    assert _load_scan_arrays(root / "data", 31) == (None, None)
+
+
+def test_load_scan_arrays_rejects_non_numeric_counts(make_ws):
+    root = make_ws()
+    _write_raw_data(root / "data", 32, {"result": {"scan_values_1": [0.0, 1.0, 2.0],
+                                                    "counts": ["a", "b", "c"]}})
+    assert _load_scan_arrays(root / "data", 32) == (None, None)
+
+
+def test_load_scan_arrays_rejects_ragged_counts(make_ws):
+    root = make_ws()
+    _write_raw_data(root / "data", 33, {"result": {"scan_values_1": [0.0, 1.0],
+                                                    "counts": [[1, 2], [3]]}})   # ragged/nested
+    assert _load_scan_arrays(root / "data", 33) == (None, None)
+
+
+def test_load_scan_arrays_rejects_2d_arrays(make_ws):
+    root = make_ws()
+    _write_raw_data(root / "data", 34, {"result": {"scan_values_1": [[0.0, 1.0], [2.0, 3.0]],
+                                                    "counts": [[1.0, 2.0], [3.0, 4.0]]}})
+    assert _load_scan_arrays(root / "data", 34) == (None, None)
+
+
+# ---------------------------------------------------------------------------
+# evaluate_model: a stored quasielastic_fwhm in the resolution context is honoured
+# ---------------------------------------------------------------------------
+class _StubFit:
+    """A FitView-shaped stub whose resolution_context() carries a quasielastic_fwhm (which the real
+    FitView does not surface today) — exercises the pure-path fallback to the ctx-carried qe width."""
+
+    scan_number = 99
+    detector_id = "det"
+    omega0 = 4.0
+    gamma = 0.4
+    amplitudes = {"phonon.A": 5000.0, "elastic.E": 8000.0, "qe.QE": 300.0, "bg.BG": 40.0}
+
+    def __init__(self, res):
+        self._res = res
+
+    def resolution_context(self):
+        return dict(self._res)
+
+
+def test_evaluate_pure_uses_ctx_quasielastic_fwhm_without_override(make_ws):
+    # No explicit override, but the resolution context carries a qe width -> the pure path must use
+    # it (previously the key was stripped and ignored, forcing the fallback/raise).
+    energy = np.linspace(-2.0, 7.0, 40)
+    res = {"center": 0.0, "gauss_fwhm": 1.2, "lorentz_fwhm": 0.0, "T": 200.0,
+           "quasielastic_fwhm": 2.5}
+    fit = _StubFit(res)
+    out = evaluate_model(fit, make_ws() / "data", x_eval=energy)   # no explicit override
+    assert out.pure is True
+    assert "qe" in [name for name, _ in out.components]
+
+
+def test_evaluate_pure_explicit_override_wins_over_ctx(make_ws):
+    # An explicit override must win over the ctx-carried width: a different override changes the QE
+    # component curve.
+    energy = np.linspace(-2.0, 7.0, 40)
+    res = {"center": 0.0, "gauss_fwhm": 1.2, "lorentz_fwhm": 0.0, "T": 200.0,
+           "quasielastic_fwhm": 2.5}
+    from_ctx = evaluate_model(_StubFit(res), make_ws() / "data", x_eval=energy)
+    from_override = evaluate_model(_StubFit(res), make_ws() / "data",
+                                   quasielastic_fwhm=0.5, x_eval=energy)
+    assert from_ctx.pure is from_override.pure is True
+    qe_ctx = dict(from_ctx.components)["qe"]
+    qe_override = dict(from_override.components)["qe"]
+    assert not np.allclose(qe_ctx, qe_override)    # the override actually changed the width
+
+
+# ---------------------------------------------------------------------------
+# interval completeness: a partial CSV row must not shadow a complete outcome interval
+# ---------------------------------------------------------------------------
+def test_partial_row_interval_falls_through_to_outcome():
+    # interval_lo present, interval_hi blank -> the row form is incomplete, so the complete outcome
+    # interval must win (not a half-populated (4.6, None)).
+    row = {"scan": 7, "detector": "det", "interval_lo": 4.6, "interval_hi": ""}
+    fv = FitView.from_row(row, {"interval": [4.6, 5.4]})
+    assert fv.interval == (4.6, 5.4)
+
+
+def test_complete_row_interval_wins_over_outcome():
+    row = {"scan": 7, "detector": "det", "interval_lo": 1.0, "interval_hi": 2.0}
+    fv = FitView.from_row(row, {"interval": [4.6, 5.4]})
+    assert fv.interval == (1.0, 2.0)
+
+
+# ---------------------------------------------------------------------------
+# session_events: parse once, warn once
+# ---------------------------------------------------------------------------
+def test_session_events_parses_file_once(make_ws, monkeypatch):
+    good = [json.dumps({"ts": 1.0, "kind": "propose"}),
+            json.dumps({"ts": 2.0, "kind": "run"})]
+    truncated = '{"ts": 3.0, "kind": "run", "payl'
+    root = make_ws(rows=[{"scan": 1, "detector": "det", "status": "fitted"}],
+                   log_lines=good + [truncated])
+
+    orig_read = Path.read_text
+    reads = {"n": 0}
+
+    def _counting(self, *a, **k):
+        if self.name == "session_log.jsonl":
+            reads["n"] += 1
+        return orig_read(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", _counting)
+
+    ws = Workspace.open(root)
+    assert len(list(ws.session_events())) == 2
+    assert len(list(ws.session_events(kind="propose"))) == 1
+    assert reads["n"] == 1                                  # parsed once, filtered in memory
+    # the truncated line produced exactly one warning, not one per call
+    assert sum("truncated" in w for w in ws.warnings) == 1
+    ws.refresh()
+    assert len(list(ws.session_events())) == 2
+    assert reads["n"] == 2                                  # refresh() re-reads
 
 
 def test_evaluate_via_workspace_fallback(make_ws):

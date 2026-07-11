@@ -58,22 +58,36 @@ def _load_scan_arrays(data_dir: Path, scan_number):
         d = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None, None
-    result = d.get("result") or {}
-    energy, counts = result.get("scan_values_1"), result.get("counts")
-    if energy is None or counts is None:
+    # Everything downstream of the read is wrapped: a non-object JSON root (list/str -> .get
+    # AttributeError), non-numeric arrays (asarray ValueError/TypeError), non-1-D arrays, or a
+    # mask-shape mismatch must all degrade to (None, None), not escape as an exception.
+    try:
+        result = d.get("result") or {}
+        energy, counts = result.get("scan_values_1"), result.get("counts")
+        if energy is None or counts is None:
+            return None, None
+        e = np.asarray(energy, dtype=float)
+        c = np.asarray(counts, dtype=float)
+        if e.ndim != 1 or c.ndim != 1:
+            return None, None
+        if e.shape != c.shape:
+            w = min(e.size, c.size)
+            e, c = e[:w], c[:w]
+        mask = result.get("valid_mask_1")
+        if mask is not None:
+            m = np.asarray(mask, dtype=bool)
+            if m.size >= e.size:
+                m = m[:e.size]
+            else:
+                # A mask shorter than the energy array leaves the tail unspecified: treat those
+                # omitted positions as EXCLUDED (False), never silently valid.
+                m = np.concatenate([m, np.zeros(e.size - m.size, bool)])
+            keep = m & np.isfinite(e) & np.isfinite(c)
+        else:
+            keep = np.isfinite(e) & np.isfinite(c)
+        return e[keep], c[keep]
+    except (AttributeError, TypeError, ValueError):
         return None, None
-    e = np.asarray(energy, dtype=float)
-    c = np.asarray(counts, dtype=float)
-    if e.shape != c.shape:
-        w = min(e.size, c.size)
-        e, c = e[:w], c[:w]
-    mask = result.get("valid_mask_1")
-    if mask is not None:
-        m = np.asarray(mask, dtype=bool)
-        keep = (m[:e.size] if m.size >= e.size else np.ones(e.shape, bool)) & np.isfinite(e) & np.isfinite(c)
-    else:
-        keep = np.isfinite(e) & np.isfinite(c)
-    return e[keep], c[keep]
 
 
 def _compose(amplitudes: dict, quasielastic_fwhm):
@@ -124,11 +138,18 @@ def evaluate_model(fit, data_dir, *, quasielastic_fwhm=None, x_eval=None):
     # --- pure path ---------------------------------------------------------
     amps = fit.amplitudes
     if amps and omega0 is not None and gamma is not None and res is not None and x is not None:
-        comp = _compose(amps, quasielastic_fwhm)
+        # An explicit override wins; otherwise fall back to a width the resolution context itself
+        # carries, so a stored quasielastic_fwhm is not lost (which would make _compose refuse a qe
+        # component present in the amplitudes).
+        effective_qe = quasielastic_fwhm if quasielastic_fwhm is not None \
+            else res.get("quasielastic_fwhm")
+        comp = _compose(amps, effective_qe)
         if comp is not None:
             from isar.report.audit import assemble_curve
-            res = {k: v for k, v in res.items() if k != "quasielastic_fwhm"}  # explicit arg wins if res ever carries this key
-            ctx = SimpleNamespace(quasielastic_fwhm=quasielastic_fwhm, **res)
+            # Strip the key from res before building ctx so the resolved width (explicit precedence)
+            # is the single source, never a duplicate keyword.
+            res = {k: v for k, v in res.items() if k != "quasielastic_fwhm"}
+            ctx = SimpleNamespace(quasielastic_fwhm=effective_qe, **res)
             rc = assemble_curve(comp, x, omega0=omega0, gamma=gamma, amp=amps, ctx=ctx)
             return SimpleNamespace(x=rc.x, total=rc.total, components=rc.components, pure=True)
 

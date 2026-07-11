@@ -1,6 +1,7 @@
 """The matplotlib backend renders valid PNGs for representative specs (we assert PNG magic bytes and
 non-emptiness, not pixels — pin the spec, not the render)."""
 import matplotlib
+import pytest
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -130,3 +131,16 @@ def test_render_png_on_minimal_spec():
                                      series=[ps.Series(x=np.array([0.0, 1.0]),
                                                        y=np.array([0.0, 1.0]))]))
     assert png.startswith(_PNG)
+
+
+def test_render_png_closes_figure_when_render_raises(monkeypatch):
+    # A failure anywhere in the render workflow must not leak a live figure: render_png owns the
+    # figure lifecycle and closes it in a finally.
+    def _boom(ax, spec):
+        raise RuntimeError("render blew up")
+
+    monkeypatch.setattr(mpl, "_render_onto", _boom)
+    before = len(plt.get_fignums())
+    with pytest.raises(RuntimeError):
+        mpl.render_png(_rich_spec())
+    assert len(plt.get_fignums()) == before  # no figure left open

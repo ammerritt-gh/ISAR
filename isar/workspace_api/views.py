@@ -39,9 +39,13 @@ def _b(v) -> bool | None:
     return None
 
 
-def _tuple_or_none(*vals):
-    """A tuple of the given values, or ``None`` when every component is ``None``."""
-    if all(v is None for v in vals):
+def _complete_tuple(*vals):
+    """A tuple of the given values only when EVERY component is non-``None``; else ``None``.
+
+    A partially-populated CSV row (e.g. ``interval_lo`` set, ``interval_hi`` blank) must NOT shadow a
+    complete interval carried on the outcome — so a partial row yields ``None`` and the property
+    falls through to the ledger form."""
+    if any(v is None for v in vals):
         return None
     return tuple(vals)
 
@@ -192,7 +196,7 @@ class FitView:
     @property
     def interval(self):
         if self._row:
-            t = _tuple_or_none(_f(self._row.get("interval_lo")), _f(self._row.get("interval_hi")))
+            t = _complete_tuple(_f(self._row.get("interval_lo")), _f(self._row.get("interval_hi")))
             if t is not None:
                 return t
         return _seq_or_none(self._outcome.get("interval"))
@@ -204,8 +208,8 @@ class FitView:
     @property
     def omega0_profile(self):
         if self._row:
-            t = _tuple_or_none(_f(self._row.get("omega0_profile_lo")),
-                               _f(self._row.get("omega0_profile_hi")))
+            t = _complete_tuple(_f(self._row.get("omega0_profile_lo")),
+                                _f(self._row.get("omega0_profile_hi")))
             if t is not None:
                 return t
         return _seq_or_none(self._outcome.get("omega0_profile"))
@@ -213,7 +217,7 @@ class FitView:
     @property
     def hesse_interval(self):
         if self._row:
-            t = _tuple_or_none(_f(self._row.get("hesse_lo")), _f(self._row.get("hesse_hi")))
+            t = _complete_tuple(_f(self._row.get("hesse_lo")), _f(self._row.get("hesse_hi")))
             if t is not None:
                 return t
         return _seq_or_none(self._outcome.get("hesse_interval"))
@@ -225,8 +229,8 @@ class FitView:
     @property
     def bayes_interval(self):
         if self._row:
-            t = _tuple_or_none(_f(self._row.get("bayes_lo")), _f(self._row.get("bayes_med")),
-                               _f(self._row.get("bayes_hi")))
+            t = _complete_tuple(_f(self._row.get("bayes_lo")), _f(self._row.get("bayes_med")),
+                                _f(self._row.get("bayes_hi")))
             if t is not None:
                 return t
         return _seq_or_none(self._outcome.get("bayes_interval"))
