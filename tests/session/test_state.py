@@ -147,7 +147,7 @@ def test_session_load_missing_is_empty(tmp_path):
     st = SessionState.load(tmp_path / "nope.json")
     assert st.scans == {}
     assert st.files == {}
-    assert st.schema_version == "isar.session/1"
+    assert st.schema_version == "isar.session/2"
 
 
 def test_session_save_is_atomic_no_tmp_left(tmp_path):

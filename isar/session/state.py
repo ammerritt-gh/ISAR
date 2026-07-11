@@ -20,7 +20,10 @@ from pathlib import Path
 
 from isar.schema import _json
 
-SCHEMA_VERSION = "isar.session/1"
+# Bumped to /2 for the GUI Phase 0 additive fields (FitOutcome.amplitudes + .candidates in each
+# ScanEntry.detectors payload). Purely a label — not fed into any content/drift hash — so a bump
+# never forces a refit; from_dict still defaults it for older ledgers, which load unchanged.
+SCHEMA_VERSION = "isar.session/2"
 
 # Ledger status vocabulary (UNIFICATION_DESIGN §2.3). "held_*" statuses always re-enter the fit
 # queue on a later run (the bootstrap-gate re-examination).
