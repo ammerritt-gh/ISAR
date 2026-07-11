@@ -1,9 +1,13 @@
 """The matplotlib backend renders valid PNGs for representative specs (we assert PNG magic bytes and
 non-emptiness, not pixels — pin the spec, not the render)."""
-import numpy as np
+import matplotlib
 
-from isar.plotspec import spec as ps
-from isar.plotspec.backends import mpl
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+
+from isar.plotspec import spec as ps  # noqa: E402
+from isar.plotspec.backends import mpl  # noqa: E402
 
 _PNG = b"\x89PNG\r\n\x1a\n"
 
@@ -29,6 +33,31 @@ def _rich_spec():
 def test_render_png_returns_a_valid_png():
     png = mpl.render_png(_rich_spec())
     assert png.startswith(_PNG) and len(png) > 1000
+
+
+def test_marker_labels_reach_the_legend_once_per_group():
+    # Two masked + two cosmic markers sharing a label each; the legend must show each label exactly
+    # once (not once per point) alongside the data/fit series.
+    x = np.linspace(0.0, 5.0, 6)
+    spec = ps.PlotSpec(
+        title="t", xlabel="x", ylabel="y",
+        series=[ps.Series(x=x, y=x, label="kept", role=ps.Role.DATA)],
+        markers=[
+            ps.Marker(x=1.0, y=1.0, kind=ps.MarkerKind.MASKED, label="masked"),
+            ps.Marker(x=2.0, y=2.0, kind=ps.MarkerKind.MASKED, label="masked"),
+            ps.Marker(x=3.0, y=3.0, kind=ps.MarkerKind.COSMIC_RAY, label="cosmic"),
+            ps.Marker(x=4.0, y=4.0, kind=ps.MarkerKind.COSMIC_RAY, label="cosmic"),
+        ],
+    )
+    fig, ax = plt.subplots()
+    try:
+        mpl._render_onto(ax, spec)
+        labels = [t.get_text() for t in ax.get_legend().get_texts()]
+    finally:
+        plt.close(fig)
+    assert labels.count("masked") == 1
+    assert labels.count("cosmic") == 1
+    assert "kept" in labels
 
 
 def test_render_png_on_minimal_spec():

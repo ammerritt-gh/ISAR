@@ -68,24 +68,27 @@ def _draw_band(ax, b) -> None:
 
 
 # Marker kind -> matplotlib scatter style. UNRELIABLE points render as a hollow warning glyph with
-# NO whiskers (the spec layer already forbids whiskers on them).
-def _draw_marker(ax, m) -> None:
+# NO whiskers (the spec layer already forbids whiskers on them). ``label`` is forwarded to the
+# scatter for the legend; the caller deduplicates so only the first marker of each (kind, label)
+# carries a label (the builder emits one Marker per point).
+def _draw_marker(ax, m, label=None) -> None:
     if m.kind is MarkerKind.MASKED:
-        ax.scatter([m.x], [m.y], marker="x", color="red", zorder=5)
+        ax.scatter([m.x], [m.y], marker="x", color="red", zorder=5, label=label)
     elif m.kind is MarkerKind.COSMIC_RAY:
         ax.scatter([m.x], [m.y], s=90, facecolors="none", edgecolors="darkorange",
-                   linewidths=1.5, zorder=4)
+                   linewidths=1.5, zorder=4, label=label)
     elif m.kind is MarkerKind.WARNING:
         ax.scatter([m.x], [m.y], marker="D", s=70, facecolors="none", edgecolors="red",
-                   linewidths=1.6, zorder=6)
+                   linewidths=1.6, zorder=6, label=label)
     elif m.kind is MarkerKind.VERDICT_RESOLVED:
-        ax.scatter([m.x], [m.y], marker="o", s=60, color="green", zorder=6)
+        ax.scatter([m.x], [m.y], marker="o", s=60, color="green", zorder=6, label=label)
     elif m.kind is MarkerKind.VERDICT_FLAGGED:
-        ax.scatter([m.x], [m.y], marker="^", s=70, color="orange", zorder=6)
+        ax.scatter([m.x], [m.y], marker="^", s=70, color="orange", zorder=6, label=label)
     elif m.kind is MarkerKind.VERDICT_HELD:
-        ax.scatter([m.x], [m.y], marker="s", s=60, facecolors="none", edgecolors="0.3", zorder=6)
+        ax.scatter([m.x], [m.y], marker="s", s=60, facecolors="none", edgecolors="0.3", zorder=6,
+                   label=label)
     else:
-        ax.scatter([m.x], [m.y], marker="o", s=40, color="0.3", zorder=6)
+        ax.scatter([m.x], [m.y], marker="o", s=40, color="0.3", zorder=6, label=label)
 
 
 def _draw_annotation(ax, a) -> None:
@@ -106,15 +109,18 @@ def _draw_projection(ax, pj) -> None:
             bbox=dict(boxstyle="round", fc="white", ec="0.7", alpha=0.85))
 
 
-def render_png(spec: PlotSpec) -> bytes:
-    """Render ``spec`` to PNG bytes (Agg)."""
-    fig, ax = plt.subplots(figsize=(6.0, 3.4))
+def _render_onto(ax, spec: PlotSpec) -> None:
+    """Draw ``spec`` onto an existing Axes (the render core; :func:`render_png` wraps it)."""
     for b in spec.bands:
         _draw_band(ax, b)
     for s in spec.series:
         _draw_series(ax, s)
+    seen_marker_keys = set()  # (kind, label) already in the legend — dedup one entry per group
     for m in spec.markers:
-        _draw_marker(ax, m)
+        key = (m.kind, m.label)
+        label = m.label if (m.label is not None and key not in seen_marker_keys) else None
+        seen_marker_keys.add(key)
+        _draw_marker(ax, m, label=label)
     for a in spec.annotations:
         _draw_annotation(ax, a)
     if spec.projection is not None:
@@ -122,8 +128,14 @@ def render_png(spec: PlotSpec) -> bytes:
     ax.set_xlabel(spec.xlabel)
     ax.set_ylabel(spec.ylabel)
     ax.set_title(spec.title, fontsize=9)
-    handles, labels = ax.get_legend_handles_labels()
+    _, labels = ax.get_legend_handles_labels()
     if labels:
         ax.legend(fontsize=7, framealpha=0.9)
+
+
+def render_png(spec: PlotSpec) -> bytes:
+    """Render ``spec`` to PNG bytes (Agg)."""
+    fig, ax = plt.subplots(figsize=(6.0, 3.4))
+    _render_onto(ax, spec)
     fig.tight_layout()
     return _png_bytes(fig)
