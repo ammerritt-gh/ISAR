@@ -257,7 +257,7 @@ class HeatmapViewModel(ViewModel):
         """ω̂ scatter (whisker only where a tier certifies), warning markers for uncertified ω̂,
         verdict glyphs, and the per-point assignment-entropy channel (kept in meta; 0→calm, ln2→
         undecided). Returns (series, markers, annotations, points, entropy)."""
-        rel_x, rel_y, rel_err = [], [], []
+        rel_x, rel_y, rel_err, rel_ent = [], [], [], []
         markers: list[ps.Marker] = []
         annotations: list[ps.Annotation] = []
         points: list = []
@@ -270,12 +270,14 @@ class HeatmapViewModel(ViewModel):
             y = float(fv.omega0)
             points.append((x, y, fv))
             ent = fv.assignment_entropy
-            entropy.append(None if ent is None else float(ent))
+            ent = None if ent is None else float(ent)
+            entropy.append(ent)
             cert = certify.certifying_interval(fv)
             if cert is not None and len(cert) >= 2:
                 rel_x.append(x)
                 rel_y.append(y)
                 rel_err.append(abs(float(cert[-1]) - float(cert[0])) / 2.0)
+                rel_ent.append(ent)
             else:
                 any_unreliable = True
                 markers.append(ps.Marker(x=x, y=y, kind=ps.MarkerKind.WARNING,
@@ -284,16 +286,23 @@ class HeatmapViewModel(ViewModel):
             if kind is not None:
                 markers.append(ps.Marker(x=x, y=y, kind=kind, label=f"verdict: {fv.verdict}"))
 
+        # The entropy colour channel only rides on the certifying-ω̂ scatter (the whiskered points);
+        # attach it — and the legend note explaining it — ONLY when at least one such point carries an
+        # entropy value, so the note never asserts an encoding that isn't on screen.
+        colored = bool(rel_x) and any(e is not None for e in rel_ent)
         series: list[ps.Series] = []
         if rel_x:
             series.append(ps.Series(
                 x=np.array(rel_x), y=np.array(rel_y), yerr=np.array(rel_err),
-                label="ω̂ (certifying interval)", role=ps.Role.DATA, state=ps.State.ENTROPY))
+                label="ω̂ (certifying interval)", role=ps.Role.DATA,
+                state=(ps.State.ENTROPY if colored else None),
+                color_values=(list(rel_ent) if colored else None),
+                color_norm=(ps.LN2 if colored else None)))
         if any_unreliable:
             # One legend-area note, NOT one per point.
             annotations.append(ps.Annotation(text="(unreliable)", xy=None,
                                              role=ps.State.UNRELIABLE))
-        if any(e is not None for e in entropy):
+        if colored:
             annotations.append(ps.Annotation(
                 text="color = assignment entropy (ln 2 = undecided)", xy=None))
         return series, markers, annotations, points, entropy

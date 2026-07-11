@@ -86,6 +86,25 @@ def _tok(t) -> str | None:
     return None if t is None else str(t.value if isinstance(t, Enum) else t)
 
 
+# The assignment-entropy colour ramp (State.ENTROPY): 0 -> calm, the reference (ln 2, "undecided")
+# -> alarm. Defined once here so both backends colour identically (semantics live in the spec).
+LN2 = float(np.log(2.0))
+_CALM_RGB = (0.13, 0.47, 0.71)     # muted blue
+_ALARM_RGB = (0.84, 0.15, 0.16)    # red
+
+
+def entropy_rgb(values, norm: float | None = None) -> np.ndarray:
+    """Map per-point ``values`` (e.g. assignment entropy) to ``(N, 3)`` RGB in ``[0, 1]``, linearly
+    from calm at 0 to alarm at ``norm`` (default :data:`LN2`, the undecided reference). Non-finite /
+    ``None`` entries read as calm (0). Clipped outside ``[0, norm]``."""
+    v = np.asarray([np.nan if x is None else float(x) for x in values], dtype=float)
+    n = float(norm) if norm else LN2
+    t = np.clip(np.where(np.isfinite(v), v, 0.0) / (n if n > 0 else 1.0), 0.0, 1.0)
+    calm = np.asarray(_CALM_RGB, dtype=float)
+    alarm = np.asarray(_ALARM_RGB, dtype=float)
+    return calm[None, :] * (1.0 - t[:, None]) + alarm[None, :] * t[:, None]
+
+
 # ---------------------------------------------------------------------------
 # Spec primitives
 # ---------------------------------------------------------------------------
@@ -102,6 +121,12 @@ class Series:
     tier: Tier | None = None
     certifying: bool = False
     state: State | None = None
+    # Optional per-point colour channel (honesty overlay, e.g. State.ENTROPY): ``color_values`` is one
+    # scalar per point, mapped calm->alarm through :func:`entropy_rgb` at reference ``color_norm``
+    # (default ln 2). Both backends colour each marker by it; when None the series takes its role/tier
+    # colour. Only a scatter (``yerr`` present, DATA-like) is per-point coloured.
+    color_values: np.ndarray | None = None
+    color_norm: float | None = None
 
     def __post_init__(self):
         if self.state is State.UNRELIABLE and self.yerr is not None:
@@ -112,7 +137,8 @@ class Series:
         return {"x": _arr(self.x), "y": _arr(self.y), "yerr": _arr(self.yerr),
                 "label": self.label, "role": _tok(self.role), "style": self.style,
                 "tier": _tok(self.tier), "certifying": bool(self.certifying),
-                "state": _tok(self.state)}
+                "state": _tok(self.state), "color_values": _arr(self.color_values),
+                "color_norm": None if self.color_norm is None else float(self.color_norm)}
 
 
 @dataclass

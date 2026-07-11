@@ -15,7 +15,14 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 import numpy as np  # noqa: E402
 
-from isar.plotspec.spec import MarkerKind, PlotSpec, Role, State, Tier  # noqa: E402
+from isar.plotspec.spec import (  # noqa: E402
+    MarkerKind,
+    PlotSpec,
+    Role,
+    State,
+    Tier,
+    entropy_rgb,
+)
 
 # Role -> line colour. DATA sits on matplotlib's C0; fit/components follow the report palette.
 _ROLE_COLOR = {
@@ -52,6 +59,13 @@ def _draw_series(ax, s) -> None:
     if s.role is Role.SANDBOX:
         # Sandbox results are ephemeral and unmistakably marked (G7): dashed.
         ax.plot(s.x, s.y, ls="--", lw=lw, color=color, zorder=z, label=label)
+    elif s.yerr is not None and s.color_values is not None:
+        # Per-point honesty colour channel (e.g. assignment entropy): neutral whiskers, and each
+        # point coloured calm->alarm by its own value (the legend note explains the encoding).
+        rgb = entropy_rgb(s.color_values, s.color_norm)
+        ax.errorbar(s.x, s.y, yerr=s.yerr, fmt="none", ecolor="0.5", lw=lw, zorder=z)
+        ax.scatter(s.x, s.y, c=rgb, s=36, edgecolors="0.2", linewidths=0.5,
+                   zorder=z + 1, label=label)
     elif s.yerr is not None:
         ax.errorbar(s.x, s.y, yerr=s.yerr, fmt="o-", ms=3, lw=lw, color=color,
                     zorder=z, label=label)

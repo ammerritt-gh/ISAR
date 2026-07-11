@@ -101,6 +101,30 @@ def test_strips_share_one_colour_scale():
         plt.close(fig)
 
 
+def test_per_point_entropy_colours_the_scatter():
+    # A DATA scatter with a per-point colour channel renders each point a different colour
+    # (calm->alarm), so the legend's "color = assignment entropy" note is not a lie.
+    x = np.array([0.0, 1.0, 2.0])
+    spec = ps.PlotSpec(
+        title="t", xlabel="x", ylabel="y",
+        series=[ps.Series(x=x, y=x, yerr=np.full_like(x, 0.1),
+                          color_values=np.array([0.0, ps.LN2 / 2, ps.LN2]), color_norm=ps.LN2,
+                          role=ps.Role.DATA, state=ps.State.ENTROPY, label="ω̂")],
+    )
+    from matplotlib.collections import PathCollection
+    fig, ax = plt.subplots()
+    try:
+        mpl._render_onto(ax, spec)
+        scatters = [c for c in ax.collections if isinstance(c, PathCollection)]
+        assert len(scatters) == 1  # the coloured scatter (whiskers are a separate errorbar)
+        faces = scatters[0].get_facecolors()
+        assert len(faces) == 3
+        # three distinct per-point colours
+        assert len({tuple(np.round(c, 4)) for c in faces}) == 3
+    finally:
+        plt.close(fig)
+
+
 def test_render_png_on_minimal_spec():
     png = mpl.render_png(ps.PlotSpec(title="t", xlabel="x", ylabel="y",
                                      series=[ps.Series(x=np.array([0.0, 1.0]),

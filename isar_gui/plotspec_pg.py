@@ -19,7 +19,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui
 
-from isar.plotspec.spec import MarkerKind, PlotSpec, Role, State, Tier
+from isar.plotspec.spec import MarkerKind, PlotSpec, Role, State, Tier, entropy_rgb
 
 # Matplotlib default colour cycle (C0..C9) as concrete hex, so tier/role colours mean the same thing
 # as they do in the mpl backend. Greys mirror mpl's "0.4"/"0.3"/"0.25" string levels.
@@ -155,6 +155,22 @@ def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
         rs._add_data(item)
         if label is not None:
             legend_entries.append((item, label))
+    elif s.yerr is not None and s.color_values is not None:
+        # Per-point honesty colour channel (e.g. assignment entropy): neutral whiskers + a scatter
+        # whose brushes are per-point calm->alarm (mirrors the mpl backend).
+        yerr = np.asarray(s.yerr, dtype=float)
+        rgb = entropy_rgb(s.color_values, s.color_norm)
+        brushes = [pg.mkBrush(int(round(r * 255)), int(round(g * 255)), int(round(b * 255)))
+                   for r, g, b in rgb]
+        err = pg.ErrorBarItem(x=x, y=y, top=yerr, bottom=yerr, pen=_pen(_GREY_04, width), beam=0.0)
+        err.setZValue(z)
+        scat = pg.ScatterPlotItem(x=x, y=y, symbol="o", size=10, brush=brushes,
+                                  pen=pg.mkPen(_GREY_03, width=0.5))
+        scat.setZValue(z + 1)
+        rs._add_data(err)
+        rs._add_data(scat)
+        if label is not None:
+            legend_entries.append((scat, label))
     elif s.yerr is not None:
         yerr = np.asarray(s.yerr, dtype=float)
         line = pg.PlotDataItem(

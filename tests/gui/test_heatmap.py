@@ -104,6 +104,9 @@ def test_omega_hat_whiskers_only_where_certifying(make_ws):
     # Two reliable in-window scans -> two whiskered points; the unreliable one is NOT here.
     assert len(data_series[0].x) == 2
     assert data_series[0].state is State.ENTROPY
+    # entropy is WIRED onto the scatter as a per-point colour channel (not just meta).
+    assert data_series[0].color_values is not None and len(data_series[0].color_values) == 2
+    assert data_series[0].color_norm is not None
 
 
 def test_unreliable_omega_hat_is_warning_marker_without_whiskers(make_ws):

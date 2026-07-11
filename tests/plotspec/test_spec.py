@@ -123,6 +123,27 @@ def test_plotspec_carries_strips_and_value_label_in_to_dict():
     assert d["strips"][0]["meta"]["scan_id"] == "a"
 
 
+def test_entropy_rgb_maps_calm_to_alarm():
+    rgb = ps.entropy_rgb([0.0, ps.LN2], norm=ps.LN2)
+    assert rgb.shape == (2, 3)
+    # 0 -> calm, ln2 -> alarm: the two endpoints are distinct colours.
+    assert not np.allclose(rgb[0], rgb[1])
+    # calm is bluer (more blue than red); alarm is redder.
+    assert rgb[0][2] > rgb[0][0]
+    assert rgb[1][0] > rgb[1][2]
+    # None / non-finite reads as calm.
+    assert np.allclose(ps.entropy_rgb([None])[0], rgb[0])
+
+
+def test_series_carries_per_point_colour_channel_in_to_dict():
+    s = ps.Series(x=np.array([0.0, 1.0]), y=np.array([2.0, 3.0]), yerr=np.array([0.1, 0.1]),
+                  color_values=np.array([0.0, 0.6]), color_norm=ps.LN2, state=ps.State.ENTROPY)
+    d = s.to_dict()
+    json.dumps(d)
+    assert d["color_values"] == [0.0, 0.6]
+    assert d["color_norm"] == pytest.approx(ps.LN2)
+
+
 def test_pooled_master_enumerates_members_in_meta():
     sp = ps.PlotSpec(title="t", xlabel="x", ylabel="y",
                      series=[ps.Series(x=np.array([0.0]), y=np.array([1.0]),

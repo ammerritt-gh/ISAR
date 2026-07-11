@@ -184,6 +184,28 @@ def test_strips_removed_on_rerender(qtbot):
     assert len(plot.items) == base
 
 
+def test_per_point_entropy_colours_the_scatter_brushes(qtbot):
+    # A DATA scatter with a per-point colour channel produces per-point brushes (calm->alarm), so the
+    # live view actually renders the encoding the legend note advertises.
+    from isar.plotspec.spec import LN2
+    glw, plot = _new_plot()
+    qtbot.addWidget(glw)
+    x = np.array([0.0, 1.0, 2.0])
+    spec = PlotSpec(
+        title="t", xlabel="x", ylabel="y",
+        series=[Series(x=x, y=x, yerr=np.full_like(x, 0.1),
+                       color_values=np.array([0.0, LN2 / 2, LN2]), color_norm=LN2,
+                       role=Role.DATA, state=State.ENTROPY, label="ω̂")],
+    )
+    rs = render_into(plot, spec)
+    scatters = [it for it in rs.items if isinstance(it, pg.ScatterPlotItem)]
+    assert len(scatters) == 1
+    colors = {tuple(sp.brush().color().getRgb()) for sp in scatters[0].points()}
+    assert len(colors) == 3  # three distinct per-point brush colours
+    # whiskers still present, drawn neutral (a separate ErrorBarItem)
+    assert _count(rs.items, pg.ErrorBarItem) == 1
+
+
 def test_unreliable_marker_has_no_errorbar(qtbot):
     """An UNRELIABLE point is a warning marker with NO whiskers; the backend must emit no
     ErrorBarItem for a spec whose only content is the unreliable marker + annotation."""
