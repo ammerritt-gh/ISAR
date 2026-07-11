@@ -7,5 +7,6 @@ here. Component viewmodels land in later tasks on top of :class:`~isar_gui.viewm
 from __future__ import annotations
 
 from isar_gui.viewmodels.base import ViewModel
+from isar_gui.viewmodels.browser import BrowserViewModel, GroupRow
 
-__all__ = ["ViewModel"]
+__all__ = ["ViewModel", "BrowserViewModel", "GroupRow"]

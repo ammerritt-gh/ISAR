@@ -6,4 +6,6 @@ state off a viewmodel and never touch the workspace facade directly.
 """
 from __future__ import annotations
 
-__all__: list[str] = []
+from isar_gui.views.browser_dock import BrowserDock
+
+__all__ = ["BrowserDock"]
