@@ -104,10 +104,15 @@ def run_truth(args) -> int:
         source = f"csv:{args.truth_csv}"
 
     bucket_by = getattr(args, "bucket_by", None)
+    interval_source = getattr(args, "interval", None) or "bootstrap"
     rows = truth_mod.load_results(results_csv, bucket_by=bucket_by)
-    rep = truth_mod.score_results(rows, truth_lookup, bucket_by=bucket_by, truth_source=source)
+    rep = truth_mod.score_results(rows, truth_lookup, bucket_by=bucket_by, truth_source=source,
+                                  interval_source=interval_source)
 
+    _iv_label = ("bayes (posterior credible)" if interval_source == "bayes"
+                 else "bootstrap (68% bar)")
     print(f"σ-calibration: scored {rep.n_scored} delivered rows against {source}")
+    print(f"  interval source: {_iv_label}")
     if rep.n_not_delivered or rep.n_delivered_no_truth:
         print(f"  skipped: {rep.n_not_delivered} not-delivered, "
               f"{rep.n_delivered_no_truth} delivered without a truth match")
@@ -115,7 +120,7 @@ def run_truth(args) -> int:
         print("  nothing to score.")
     else:
         print(f"  68% interval coverage: {_f(rep.coverage68)}  "
-              f"(target 0.68; only the 68% bootstrap interval exists — no 95% is reported)")
+              f"(target 0.68; scored against the {_iv_label} interval)")
         print(f"  ω₀ pull: mean {_pm(rep.pull_mean)}"
               + (f", sd {rep.pull_std:.2f}" if rep.pull_std is not None else ""))
         print(f"  median |Δω₀|: {_f(rep.median_abs_delta)} meV")

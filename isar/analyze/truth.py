@@ -127,6 +127,10 @@ class ResultRow:
     interval_hi: float | None
     interval_reliable: bool = True   # False → interval degenerate (γ-at-bound); excluded from
                                      # coverage/inflation but still scored for center pull
+    bayes_lo: float | None = None    # posterior credible-interval bounds (bayes errors tier). Scored
+    bayes_hi: float | None = None    # only under interval_source="bayes"; gated by bayes_ok is True.
+    bayes_ok: bool | None = None     # None/absent (no posterior) OR False (failed) → no bayes interval:
+                                     # excluded from bayes coverage/inflation, center pull still scored.
     branch_id: str | None = None     # Phase A: dispersion branch this ω₀ was assigned to. Only
                                      # acoustic (or null, older ledgers) rows are scored against the
                                      # acoustic truth — an optic ω₀ can never register as confident-wrong.
@@ -151,6 +155,15 @@ def _fbool(v, *, default: bool = True) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes")
 
 
+def _obool(v) -> bool | None:
+    """Parse an OPTIONAL results.csv boolean cell; absent/blank → ``None`` (no such flag written).
+    Unlike `_fbool`, there is no back-compat default: a missing `bayes_ok` means no posterior interval
+    exists at all, which must read as None (excluded) rather than a silently-trusted True."""
+    if v in (None, ""):
+        return None
+    return str(v).strip().lower() in ("1", "true", "yes")
+
+
 def load_results(path: str | Path, *, bucket_by: str | None = None) -> list[ResultRow]:
     """Parse the run's `report/results.csv` into `ResultRow`s (one per fitted detector row)."""
     rows: list[ResultRow] = []
@@ -170,6 +183,9 @@ def load_results(path: str | Path, *, bucket_by: str | None = None) -> list[Resu
                 interval_lo=_fnum(r.get("interval_lo")),
                 interval_hi=_fnum(r.get("interval_hi")),
                 interval_reliable=_fbool(r.get("interval_reliable")),
+                bayes_lo=_fnum(r.get("bayes_lo")),
+                bayes_hi=_fnum(r.get("bayes_hi")),
+                bayes_ok=_obool(r.get("bayes_ok")),
                 branch_id=((r.get("branch_id") or None)),
                 resolvable=_fbool(r.get("resolvable")),
                 bucket=((r.get(bucket_by) or None) if bucket_by else None)))
@@ -192,16 +208,26 @@ class TruthScore:
     bucket: str | None = None
 
 
-def score_row(row: ResultRow, omega_true: float) -> TruthScore:
+def _row_interval(row: ResultRow, interval_source: str) -> tuple[float | None, float | None, bool]:
+    """(lo, hi, reliable) for the requested interval source. `bootstrap` = the bootstrap interval
+    gated by `interval_reliable`; `bayes` = the posterior credible interval gated by `bayes_ok is
+    True`. A failed/absent posterior (`bayes_ok` None or False) is treated as *no* interval —
+    exactly mirroring an unreliable bootstrap bar (excluded from coverage/inflation, Δ still scored)."""
+    if interval_source == "bayes":
+        return row.bayes_lo, row.bayes_hi, (row.bayes_ok is True)
+    return row.interval_lo, row.interval_hi, row.interval_reliable
+
+
+def score_row(row: ResultRow, omega_true: float, *, interval_source: str = "bootstrap") -> TruthScore:
     delta = row.omega0 - omega_true
-    # A flagged-unreliable interval (γ-at-bound degenerate bootstrap) is treated as *no*
-    # interval: it must not poison coverage or the inflation factor. The center pull (Δ) is
-    # still scored — the reported ω₀ is a real point estimate even when its bar is untrustworthy.
-    have_interval = (row.interval_lo is not None and row.interval_hi is not None
-                     and row.interval_reliable)
-    hw = 0.5 * (row.interval_hi - row.interval_lo) if have_interval else None
+    lo, hi, reliable = _row_interval(row, interval_source)
+    # A flagged-unreliable interval (γ-at-bound degenerate bootstrap, or a failed/absent posterior)
+    # is treated as *no* interval: it must not poison coverage or the inflation factor. The center
+    # pull (Δ) is still scored — the reported ω₀ is a real point estimate even when its bar is absent.
+    have_interval = (lo is not None and hi is not None and reliable)
+    hw = 0.5 * (hi - lo) if have_interval else None
     pull = (delta / hw) if (hw is not None and hw > 0) else None
-    in_interval = bool(row.interval_lo <= omega_true <= row.interval_hi) if have_interval else None
+    in_interval = bool(lo <= omega_true <= hi) if have_interval else None
     return TruthScore(scan=row.scan, detector=row.detector, hkl=row.hkl, omega0=row.omega0,
                       omega_true=omega_true, delta=delta, halfwidth=hw, pull=pull,
                       in_interval=in_interval, bucket=row.bucket)
@@ -296,12 +322,13 @@ def aggregate(scores, *, n_delivered_no_truth=0, n_not_delivered=0,
 # --- driver: results.csv + truth -> report ---------------------------------------------------
 
 def score_results(rows, truth_lookup, *, bucket_by=None, truth_source="",
-                  csv_tol: float = 1e-3) -> TruthReport:
+                  interval_source: str = "bootstrap", csv_tol: float = 1e-3) -> TruthReport:
     """Score delivered `ResultRow`s against a truth lookup.
 
     `truth_lookup` is a callable(hkl) -> ω_true or None (both the truth-fn and truth-csv paths
     reduce to this). Non-delivered rows and delivered rows with no truth match are counted, not
-    scored."""
+    scored. `interval_source` selects which reported interval is coverage-scored: `bootstrap`
+    (default, the bootstrap 68% bar) or `bayes` (the posterior credible interval)."""
     scores, no_truth, not_delivered = [], 0, 0
     for row in rows:
         if not gold_mod.delivered(row.disposition) or row.omega0 is None:
@@ -317,7 +344,7 @@ def score_results(rows, truth_lookup, *, bucket_by=None, truth_source="",
         if omega_true is None:
             no_truth += 1
             continue
-        scores.append(score_row(row, omega_true))
+        scores.append(score_row(row, omega_true, interval_source=interval_source))
     return aggregate(scores, n_delivered_no_truth=no_truth, n_not_delivered=not_delivered,
                      bucket_by=bucket_by, truth_source=truth_source)
 

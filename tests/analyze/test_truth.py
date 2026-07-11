@@ -183,6 +183,79 @@ def test_bucketing_by_column():
     assert labels["high"].coverage68 < 1.0               # tight bars miss the tails
 
 
+## --- bayes interval source (posterior credible-interval coverage) -------------------------
+
+def _row(scan, o, *, boot=None, bayes=None, bayes_ok=None, hkl=(3.0, 0.0, 0.0)):
+    """A delivered ResultRow with an optional bootstrap (lo,hi) and/or bayes (lo,hi) interval."""
+    blo, bhi = (boot if boot else (None, None))
+    ylo, yhi = (bayes if bayes else (None, None))
+    return truth.ResultRow(
+        scan=scan, detector="a", hkl=hkl, verdict="resolved", disposition="resolved", omega0=o,
+        interval_lo=blo, interval_hi=bhi, bayes_lo=ylo, bayes_hi=yhi, bayes_ok=bayes_ok)
+
+
+def test_interval_source_scores_bootstrap_vs_bayes_independently():
+    # Truth 6.0. Bootstrap bar [5.5,6.5] COVERS it; the (tighter) bayes bar [6.4,6.6] does NOT.
+    rows = [_row(1, 6.5, boot=(5.5, 6.5), bayes=(6.4, 6.6), bayes_ok=True)]
+    boot = truth.score_results(rows, lambda hkl: 6.0)                       # default = bootstrap
+    bays = truth.score_results(rows, lambda hkl: 6.0, interval_source="bayes")
+    assert boot.n_scored == bays.n_scored == 1
+    assert boot.coverage68 == 1.0 and bays.coverage68 == 0.0               # numbers differ by source
+    # bootstrap halfwidth 0.5 (|Δ|=0.5 → ratio 1.0); bayes halfwidth 0.1 (|Δ|=0.5 → ratio 5.0).
+    assert bays.inflation > boot.inflation
+
+
+def test_bayes_failed_or_absent_excluded_from_coverage_but_center_pull_kept():
+    rows = [
+        _row(1, 6.5, bayes=(6.0, 7.0), bayes_ok=True),     # good posterior: truth 6.0 ∈ [6,7]
+        _row(2, 6.9, bayes=(6.85, 6.95), bayes_ok=False),  # failed posterior: excluded from cov/infl
+        _row(3, 7.0, bayes=(6.95, 7.05), bayes_ok=None),   # absent posterior: excluded from cov/infl
+    ]
+    rep = truth.score_results(rows, lambda hkl: 6.0, interval_source="bayes")
+    assert rep.n_scored == 3                                # all three scored for center pull
+    assert rep.n_zero_halfwidth == 2                        # rows 2 & 3 have no usable bayes interval
+    assert rep.coverage68 == 1.0                            # coverage over the one good posterior row
+    # center pull sees all three Δ (+0.5, +0.9, +1.0) → mean 0.8, not just the good row.
+    assert abs(rep.center_pull_mean - 0.8) < 1e-9
+
+
+def test_bayes_source_ignores_bootstrap_reliability_flag():
+    # A row with an UNreliable bootstrap bar but a fine posterior is fully scored under bayes.
+    row = truth.ResultRow(scan=1, detector="a", hkl=(3, 0, 0), verdict="resolved",
+                          disposition="resolved", omega0=6.0,
+                          interval_lo=5.999, interval_hi=6.001, interval_reliable=False,
+                          bayes_lo=5.5, bayes_hi=6.5, bayes_ok=True)
+    rep = truth.score_results([row], lambda hkl: 6.0, interval_source="bayes")
+    assert rep.n_scored == 1 and rep.n_zero_halfwidth == 0
+    assert rep.coverage68 == 1.0
+
+
+def test_default_interval_source_matches_explicit_bootstrap():
+    rng = np.random.default_rng(7)
+    deltas = rng.standard_normal(500)
+    rows = _rows_from_deltas(deltas, halfwidth=0.7)
+    a = truth.report_to_dict(truth.score_results(rows, lambda hkl: 5.0))
+    b = truth.report_to_dict(truth.score_results(rows, lambda hkl: 5.0, interval_source="bootstrap"))
+    assert a == b                                           # omitting the source == "bootstrap"
+
+
+def test_load_results_parses_bayes_columns(tmp_path):
+    p = tmp_path / "results.csv"
+    p.write_text(
+        "scan,detector,h,k,l,verdict,omega0,interval_lo,interval_hi,bayes_lo,bayes_hi,bayes_ok\n"
+        "1,a,3,0,0,resolved,6.0,5.5,6.5,5.8,6.2,True\n"      # bool arrives as the string "True"
+        "2,a,3,0,0,resolved,6.1,5.6,6.6,,,False\n",           # failed posterior, no bounds
+        encoding="utf-8")
+    rows = truth.load_results(p)
+    assert rows[0].bayes_lo == 5.8 and rows[0].bayes_hi == 6.2 and rows[0].bayes_ok is True
+    assert rows[1].bayes_lo is None and rows[1].bayes_ok is False
+    # absent column → None (no posterior written), not a silently-trusted True.
+    p2 = tmp_path / "old.csv"
+    p2.write_text("scan,detector,h,k,l,verdict,omega0,interval_lo,interval_hi\n"
+                  "1,a,3,0,0,resolved,6.0,5.5,6.5\n", encoding="utf-8")
+    assert truth.load_results(p2)[0].bayes_ok is None
+
+
 def test_report_to_dict_is_json_shaped():
     rep = truth.score_results(_rows_from_deltas([0.1, -0.1], halfwidth=1.0),
                               lambda hkl: 5.0, truth_source="fn:phonon_dft")
