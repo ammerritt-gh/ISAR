@@ -252,6 +252,22 @@ class Workspace:
                     continue
             yield rec
 
+    # ---- change notifications ---------------------------------------------
+    def watch(self, callback, *, debounce_ms: float = 200,
+              poll_interval_s: float = 1.0, backend: str | None = None):
+        """Start watching the workspace artifacts and return a running :class:`~.watch.Watcher`.
+
+        ``callback(changed: set[str])`` is invoked (coalesced within ``debounce_ms``) with the
+        logical names that changed — a subset of ``{"results", "events", "report", "card_state",
+        "snapshot"}``. It runs on a background daemon thread owned by the watcher (never this thread
+        or a GUI thread), so a GUI must marshal it onto its own loop. The watcher does not refresh
+        this ``Workspace``; call ``ws.refresh()`` inside the callback before re-reading. Supports
+        ``with ws.watch(cb) as w:``. See :mod:`isar.workspace_api.watch` for the full thread model.
+        """
+        from .watch import Watcher
+        return Watcher(self, callback, debounce_ms=debounce_ms,
+                       poll_interval_s=poll_interval_s, backend=backend).start()
+
     # ---- curve evaluation -------------------------------------------------
     def evaluate_model(self, scan_id, detector_id, x_eval=None):
         """Evaluate the delivered model curve for one scan x detector.
