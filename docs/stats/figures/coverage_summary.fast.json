@@ -1,0 +1,383 @@
+{
+  "cells": {
+    "100": {
+      "gamma": {
+        "bootstrap": {
+          "coverage": 0.7,
+          "n": 40,
+          "n_covered": 28,
+          "se": 0.0725
+        },
+        "hessian": {
+          "coverage": 0.775,
+          "n": 40,
+          "n_covered": 31,
+          "se": 0.066
+        }
+      },
+      "gamma_incl_bound": {
+        "bootstrap": {
+          "coverage": 0.7,
+          "n": 40,
+          "n_covered": 28,
+          "se": 0.0725
+        },
+        "hessian": {
+          "coverage": 0.775,
+          "n": 40,
+          "n_covered": 31,
+          "se": 0.066
+        }
+      },
+      "n_at_bound": 0,
+      "n_converged": 40,
+      "omega0": {
+        "bootstrap": {
+          "coverage": 0.6,
+          "n": 40,
+          "n_covered": 24,
+          "se": 0.0775
+        },
+        "hessian": {
+          "coverage": 0.575,
+          "n": 40,
+          "n_covered": 23,
+          "se": 0.0782
+        },
+        "profile": {
+          "coverage": 0.575,
+          "n": 40,
+          "n_covered": 23,
+          "se": 0.0782
+        }
+      }
+    },
+    "15": {
+      "gamma": {
+        "bootstrap": {
+          "coverage": 0.725,
+          "n": 40,
+          "n_covered": 29,
+          "se": 0.0706
+        },
+        "hessian": {
+          "coverage": 0.725,
+          "n": 40,
+          "n_covered": 29,
+          "se": 0.0706
+        }
+      },
+      "gamma_incl_bound": {
+        "bootstrap": {
+          "coverage": 0.725,
+          "n": 40,
+          "n_covered": 29,
+          "se": 0.0706
+        },
+        "hessian": {
+          "coverage": 0.725,
+          "n": 40,
+          "n_covered": 29,
+          "se": 0.0706
+        }
+      },
+      "n_at_bound": 0,
+      "n_converged": 40,
+      "omega0": {
+        "bootstrap": {
+          "coverage": 0.625,
+          "n": 40,
+          "n_covered": 25,
+          "se": 0.0765
+        },
+        "hessian": {
+          "coverage": 0.7,
+          "n": 40,
+          "n_covered": 28,
+          "se": 0.0725
+        },
+        "profile": {
+          "coverage": 0.7,
+          "n": 40,
+          "n_covered": 28,
+          "se": 0.0725
+        }
+      }
+    },
+    "30": {
+      "gamma": {
+        "bootstrap": {
+          "coverage": 0.725,
+          "n": 40,
+          "n_covered": 29,
+          "se": 0.0706
+        },
+        "hessian": {
+          "coverage": 0.675,
+          "n": 40,
+          "n_covered": 27,
+          "se": 0.0741
+        }
+      },
+      "gamma_incl_bound": {
+        "bootstrap": {
+          "coverage": 0.725,
+          "n": 40,
+          "n_covered": 29,
+          "se": 0.0706
+        },
+        "hessian": {
+          "coverage": 0.675,
+          "n": 40,
+          "n_covered": 27,
+          "se": 0.0741
+        }
+      },
+      "n_at_bound": 0,
+      "n_converged": 40,
+      "omega0": {
+        "bootstrap": {
+          "coverage": 0.65,
+          "n": 40,
+          "n_covered": 26,
+          "se": 0.0754
+        },
+        "hessian": {
+          "coverage": 0.675,
+          "n": 40,
+          "n_covered": 27,
+          "se": 0.0741
+        },
+        "profile": {
+          "coverage": 0.675,
+          "n": 40,
+          "n_covered": 27,
+          "se": 0.0741
+        }
+      }
+    }
+  },
+  "diagnostics": {
+    "100": {
+      "gamma": {
+        "bias_mean": -0.004597,
+        "bias_se": 0.008791,
+        "median_sigma": {
+          "bootstrap": 0.05978,
+          "hessian": 0.059888
+        },
+        "n": 40,
+        "pull_mean": -0.088869,
+        "pull_std": 0.978334,
+        "width_ratio": {
+          "band": [
+            0.8,
+            1.25
+          ],
+          "frac_outside": 0.1,
+          "iqr": 0.1235,
+          "median": 1.0093,
+          "n": 40,
+          "q25": 0.9384,
+          "q75": 1.0619
+        }
+      },
+      "omega0": {
+        "bias_mean": -0.010217,
+        "bias_se": 0.005279,
+        "median_sigma": {
+          "bootstrap": 0.031148,
+          "hessian": 0.034036,
+          "profile": 0.034005
+        },
+        "n": 40,
+        "pull_mean": -0.299433,
+        "pull_std": 0.985337,
+        "width_ratio": {
+          "band": [
+            0.8,
+            1.25
+          ],
+          "frac_outside": 0.125,
+          "iqr": 0.1842,
+          "median": 1.0739,
+          "n": 40,
+          "q25": 0.9913,
+          "q75": 1.1755
+        }
+      }
+    },
+    "15": {
+      "gamma": {
+        "bias_mean": -0.022444,
+        "bias_se": 0.01985,
+        "median_sigma": {
+          "bootstrap": 0.135985,
+          "hessian": 0.146391
+        },
+        "n": 40,
+        "pull_mean": -0.21358,
+        "pull_std": 0.834518,
+        "width_ratio": {
+          "band": [
+            0.8,
+            1.25
+          ],
+          "frac_outside": 0.275,
+          "iqr": 0.2115,
+          "median": 1.0679,
+          "n": 40,
+          "q25": 0.9698,
+          "q75": 1.1813
+        }
+      },
+      "omega0": {
+        "bias_mean": 0.005252,
+        "bias_se": 0.012743,
+        "median_sigma": {
+          "bootstrap": 0.083836,
+          "hessian": 0.087329,
+          "profile": 0.08751
+        },
+        "n": 40,
+        "pull_mean": 0.050685,
+        "pull_std": 0.907616,
+        "width_ratio": {
+          "band": [
+            0.8,
+            1.25
+          ],
+          "frac_outside": 0.15,
+          "iqr": 0.2359,
+          "median": 1.0705,
+          "n": 40,
+          "q25": 0.9441,
+          "q75": 1.18
+        }
+      }
+    },
+    "30": {
+      "gamma": {
+        "bias_mean": 0.004621,
+        "bias_se": 0.016698,
+        "median_sigma": {
+          "bootstrap": 0.093007,
+          "hessian": 0.104782
+        },
+        "n": 40,
+        "pull_mean": 0.054734,
+        "pull_std": 1.119865,
+        "width_ratio": {
+          "band": [
+            0.8,
+            1.25
+          ],
+          "frac_outside": 0.275,
+          "iqr": 0.2577,
+          "median": 1.0283,
+          "n": 40,
+          "q25": 0.9374,
+          "q75": 1.1951
+        }
+      },
+      "omega0": {
+        "bias_mean": 0.003895,
+        "bias_se": 0.010028,
+        "median_sigma": {
+          "bootstrap": 0.059999,
+          "hessian": 0.061885,
+          "profile": 0.061937
+        },
+        "n": 40,
+        "pull_mean": 0.060746,
+        "pull_std": 1.023518,
+        "width_ratio": {
+          "band": [
+            0.8,
+            1.25
+          ],
+          "frac_outside": 0.05,
+          "iqr": 0.1737,
+          "median": 1.0227,
+          "n": 40,
+          "q25": 0.9209,
+          "q75": 1.0945
+        }
+      }
+    }
+  },
+  "gamma_skewed": {
+    "M": 50,
+    "N": 40,
+    "bootstrap_asymmetry_median": 1.387114,
+    "diagnostics": {
+      "bias_mean": 0.019775,
+      "bias_se": 0.013163,
+      "median_sigma": {
+        "bootstrap": 0.087138,
+        "hessian": 0.10686
+      },
+      "n": 32,
+      "pull_mean": -0.035887,
+      "pull_std": 1.091267,
+      "width_ratio": {
+        "band": [
+          0.8,
+          1.25
+        ],
+        "frac_outside": 0.5312,
+        "iqr": 0.3516,
+        "median": 1.2382,
+        "n": 32,
+        "q25": 1.0495,
+        "q75": 1.4011
+      }
+    },
+    "gamma": {
+      "bootstrap": {
+        "coverage": 0.8125,
+        "n": 32,
+        "n_covered": 26,
+        "se": 0.069
+      },
+      "hessian": {
+        "coverage": 0.8438,
+        "n": 32,
+        "n_covered": 27,
+        "se": 0.0642
+      }
+    },
+    "gamma_incl_bound": {
+      "bootstrap": {
+        "coverage": 0.775,
+        "n": 40,
+        "n_covered": 31,
+        "se": 0.066
+      },
+      "hessian": {
+        "coverage": 0.7,
+        "n": 40,
+        "n_covered": 28,
+        "se": 0.0725
+      }
+    },
+    "gamma_true": 0.1,
+    "level": 15,
+    "n_at_bound": 8,
+    "n_converged": 40
+  },
+  "meta": {
+    "H": 2.5,
+    "M": 50,
+    "N_per_level": 40,
+    "fast": true,
+    "gamma_true": 0.5,
+    "levels": [
+      15,
+      30,
+      100
+    ],
+    "nominal": 0.68,
+    "seed": 20260710
+  }
+}
