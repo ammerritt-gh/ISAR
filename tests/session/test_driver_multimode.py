@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from isar.analyze.context import ScanContext
+from isar.analyze.errors.bayes import BayesResult
 from isar.report import run_report
 from isar.schema import card as card_mod
 from isar.session import driver
@@ -269,6 +270,84 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
     row = readers.read_results_csv(ws.root)[0]
     assert isinstance(row["hesse_lo"], float) and isinstance(row["hesse_hi"], float)
     assert row["hesse_trusted"] is True
+
+
+# --------------------------------------------------------------------------- results.csv bayes columns
+def _canned_bayes_for_csv():
+    return BayesResult(omega0_interval=(4.9, 5.0, 5.1), gamma_interval=(0.30, 0.40, 0.50),
+                       omega0_samples=np.array([4.9, 5.0, 5.1]), gamma_samples=np.array([0.4]),
+                       log_evidence=-85.0, log_evidence_err=0.5, ess=500.0, bimodal=False,
+                       converged=True, n_live=250, seed=777, prior_used=False, fail_reason=None)
+
+
+def _single_peak_ctx_for_csv():
+    x = np.linspace(-8.0, 16.0, 81)
+    counts = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
+                                 peak="stokes+astokes") + 8.0
+    return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
+                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                       energy_status="needs_zero")
+
+
+def _outcome_from_fit(fit, scan_number, det="ana7"):
+    return driver.FitOutcome(
+        detector_id=det, verdict=fit["verdict"], disposition="resolved",
+        confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
+        interval=fit["interval"], modality=fit["modality"], gamma=fit["gamma"],
+        gamma_provisional=False, best_label=fit["best_label"], cost_per_dof=fit["cost_per_dof"],
+        q=[3.0, 0.2, 0.0], T=50.0, sample="S", prior_used=None, calib={},
+        reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
+        hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
+        bayes_interval=fit.get("bayes_interval"), bayes_ok=fit.get("bayes_ok"),
+        bayes_ess=fit.get("bayes_ess"), bayes_fail_reason=fit.get("bayes_fail_reason"),
+        log_evidence=fit.get("log_evidence"), log_evidence_err=fit.get("log_evidence_err"),
+        bayes_freq_ratio=fit.get("bayes_freq_ratio"), hesse_freq_ratio=fit.get("hesse_freq_ratio"),
+        bayes_prior_driven=fit.get("bayes_prior_driven", False),
+        bayes_fork_suspected=fit.get("bayes_fork_suspected", False),
+        bayes_unconstrained=fit.get("bayes_unconstrained", False))
+
+
+@pytest.mark.slow
+def test_bayes_tier_populates_csv_bayes_columns(tmp_path, monkeypatch):
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior",
+                        lambda *a, **k: _canned_bayes_for_csv())
+    fit = driver.fit_one(_single_peak_ctx_for_csv(), _card_with_fitting({}), prior=None, M=20,
+                         seed=1, errors_tier="bayes",
+                         bayes_opts={"n_live": 250, "dlogz": 0.5, "max_iter": 30_000})
+    outcome = _outcome_from_fit(fit, 10)
+    st = SessionState()
+    st.put(ScanEntry(scan_id="E:10:ana7", scan_number=10, scan_type="measurement",
+                     status="fitted", detectors={"ana7": outcome.to_dict()}))
+    ws = Workspace.open(tmp_path / "ws")
+    ws.root.mkdir(parents=True)
+    driver._write_results_csv(ws, st)
+    row = readers.read_results_csv(ws.root)[0]
+    assert row["bayes_lo"] == pytest.approx(4.9)
+    assert row["bayes_med"] == pytest.approx(5.0)
+    assert row["bayes_hi"] == pytest.approx(5.1)
+    assert str(row["bayes_ok"]).lower() == "true"
+    assert row["bayes_ess"] == pytest.approx(500.0)
+    assert row["log_evidence"] == pytest.approx(-85.0)
+    assert row["log_evidence_err"] == pytest.approx(0.5)
+
+
+@pytest.mark.slow
+def test_full_tier_leaves_csv_bayes_columns_empty(tmp_path):
+    fit = driver.fit_one(_single_peak_ctx_for_csv(), _card_with_fitting({}), prior=None, M=20,
+                         seed=1, errors_tier="full")
+    outcome = _outcome_from_fit(fit, 11)
+    st = SessionState()
+    st.put(ScanEntry(scan_id="E:11:ana7", scan_number=11, scan_type="measurement",
+                     status="fitted", detectors={"ana7": outcome.to_dict()}))
+    ws = Workspace.open(tmp_path / "ws")
+    ws.root.mkdir(parents=True)
+    driver._write_results_csv(ws, st)
+    row = readers.read_results_csv(ws.root)[0]
+    for key in ("bayes_lo", "bayes_med", "bayes_hi", "bayes_ok", "bayes_ess",
+               "bayes_fail_reason", "bayes_freq_ratio", "hesse_freq_ratio",
+               "log_evidence", "log_evidence_err"):
+        assert key in row
+        assert row[key] is None, key
 
 
 # --------------------------------------------------------------------------- report.json modes

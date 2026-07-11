@@ -49,6 +49,74 @@ def _write_campaign(log_path):
     log_event(log_path, "stop", {"state": "met", "reasons": ["sigma <= tol"], "iter": None}, ts=t)
 
 
+def _write_campaign_with_error_methods(log_path):
+    """A single-iteration campaign whose embedded ``fit_scans`` stage carries ``per_task`` entries
+    with the four error-method *_seconds keys (Stage 4 instrumentation)."""
+    t = 1_000_000.0
+    log_event(log_path, "timing",
+              {"stage": "isar_run", "iter": 0, "seconds": 10.0, "ok": True,
+               "errors_tier": "full", "attempt": 0}, ts=t)
+    t += 10.0
+    log_event(log_path, "analyze",
+              {"job_id": "j-0", "errors_tier": "full", "n_rows": 2,
+               "dispositions": {"ok": 2}, "iter": 0,
+               "timings": {"total_seconds": 9.0, "argv": ["isar", "run"],
+                           "errors_tier": "full",
+                           "stages": [
+                               {"stage": "fit_scans", "seconds": 6.0,
+                                "per_task": [
+                                    {"scan_id": "E:1:ana7", "seconds": 3.0,
+                                     "bootstrap_seconds": 1.0, "minos_seconds": 0.5,
+                                     "profile_seconds": 0.5, "bayes_seconds": 0.0},
+                                    {"scan_id": "E:2:ana7", "seconds": 3.0,
+                                     "bootstrap_seconds": 2.0, "minos_seconds": 0.3,
+                                     "profile_seconds": 0.2, "bayes_seconds": 0.0},
+                                ]},
+                               {"stage": "fit_masters", "seconds": 3.0,
+                                "per_master": [
+                                    {"master_id": "m-1", "seconds": 3.0,
+                                     "bootstrap_seconds": 1.5, "minos_seconds": 0.4,
+                                     "profile_seconds": 0.1, "bayes_seconds": 1.0},
+                                ]},
+                           ]}}, ts=t)
+    t += 0.1
+    log_event(log_path, "timing",
+              {"stage": "iteration", "iter": 0, "seconds": 10.1, "ok": True}, ts=t)
+    t += 0.1
+    log_event(log_path, "stop", {"state": "met", "reasons": ["done"], "iter": None}, ts=t)
+
+
+def test_error_method_breakdown_renders_with_keys(tmp_path, capsys):
+    log = tmp_path / "report" / "session_log.jsonl"
+    _write_campaign_with_error_methods(log)
+    rc = profile_cmd.run(_args(tmp_path))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "error-method breakdown" in out
+    assert "bootstrap_seconds" in out
+    assert "minos_seconds" in out
+    assert "profile_seconds" in out
+    assert "bayes_seconds" in out
+    # bootstrap_seconds: 1.0 + 2.0 + 1.5 = 4.5 total over 3 entries
+    section = out.split("error-method breakdown")[1]
+    lines = [ln for ln in section.splitlines() if "bootstrap_seconds" in ln]
+    assert lines
+    toks = lines[0].split()
+    assert int(toks[1]) == 3           # count
+    assert float(toks[2]) == pytest.approx(4.5)   # total_s
+    assert "HESSE cost is inside the MIGRAD fit" in out
+
+
+def test_error_method_breakdown_skipped_without_keys(tmp_path, capsys):
+    log = tmp_path / "report" / "session_log.jsonl"
+    _write_campaign(log)
+    rc = profile_cmd.run(_args(tmp_path))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "error-method breakdown" not in out
+    assert "HESSE cost is inside the MIGRAD fit" not in out
+
+
 def test_missing_log_exits_2(tmp_path, capsys):
     rc = profile_cmd.run(_args(tmp_path / "no_ws"))
     assert rc == 2

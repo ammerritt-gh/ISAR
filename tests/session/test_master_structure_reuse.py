@@ -43,7 +43,7 @@ def _capturing_stub(monkeypatch, *, best_label=None):
 
     def fake(ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number, chash,
              *, M, seed, errors_tier="full", boot_workers=1, boot_executor=None,
-             boot_adaptive=False, structure_hint=None):
+             boot_adaptive=False, structure_hint=None, bayes_opts=None):
         seen.append((master_id, structure_hint))
         e = ScanEntry(scan_id=master_id, scan_number=int(scan_number), scan_type="measurement",
                       content_hash=chash, status="fitted")

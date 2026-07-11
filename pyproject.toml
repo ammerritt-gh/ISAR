@@ -13,7 +13,7 @@ dependencies = [
     "matplotlib>=3.8",
     "iminuit>=2.25",
     "lmfit>=1.2",
-    "dynesty>=2.1",
+    "dynesty>=3,<4",  # rwalk draws are seeded-deterministic per major version only; validated on 3.0.0
 ]
 
 [project.optional-dependencies]

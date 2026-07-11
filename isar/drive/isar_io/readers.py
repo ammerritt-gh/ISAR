@@ -28,6 +28,8 @@ _NUMERIC_COLUMNS = frozenset({
     "T", "h", "k", "l", "confidence", "omega0", "omega0_err",
     "interval_lo", "interval_hi", "omega0_profile_lo", "omega0_profile_hi",
     "hesse_lo", "hesse_hi",
+    "bayes_lo", "bayes_med", "bayes_hi", "bayes_ess", "bayes_freq_ratio", "hesse_freq_ratio",
+    "log_evidence", "log_evidence_err",
     "gamma", "cost_per_dof",
     "zero", "gauss_fwhm", "lorentz_fwhm", "prior_omega", "prior_sigma",
     "secondary_omega0", "secondary_omega0_err",

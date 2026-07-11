@@ -88,6 +88,57 @@ def _print_subprocess_breakdown(events, log_path, stage_pairs, wall, top):
           f"{overhead:.3f}s over {len(embedded)} embedded run(s)")
 
 
+_ERROR_METHOD_SECONDS_KEYS = (
+    "bootstrap_seconds", "minos_seconds", "profile_seconds", "bayes_seconds")
+
+
+def _print_error_method_breakdown(events, log_path, wall, top):
+    """Aggregate per-method error-attach timings (bootstrap/MINOS/profile/bayes) from the
+    embedded ``run_timings.json`` ``per_task``/``per_master`` entries. Silently skipped when the
+    embedded timings predate this instrumentation (no entries carry the keys)."""
+    embedded = []
+    for e in events:
+        if e.get("kind") == "analyze":
+            t = (e.get("payload") or {}).get("timings")
+            if isinstance(t, dict):
+                embedded.append(t)
+    if not embedded:
+        rt_path = log_path.parent / "run_timings.json"
+        if rt_path.exists():
+            try:
+                embedded = [json.loads(rt_path.read_text(encoding="utf-8"))]
+            except (ValueError, OSError):
+                embedded = []
+    if not embedded:
+        return
+
+    items = []
+    for t in embedded:
+        for st in (t.get("stages") or []):
+            items.extend(st.get("per_task") or [])
+            items.extend(st.get("per_master") or [])
+
+    has_keys = any(k in item for item in items for k in _ERROR_METHOD_SECONDS_KEYS)
+    if not has_keys:
+        return
+
+    pairs = []
+    for item in items:
+        for k in _ERROR_METHOD_SECONDS_KEYS:
+            sec = item.get(k)
+            if sec is not None:
+                pairs.append((k, float(sec)))
+
+    if not pairs:
+        return
+
+    print()
+    _print_table(_aggregate(pairs), wall, top, "  error-method breakdown:", key_label="method")
+    print()
+    print("  Note: HESSE cost is inside the MIGRAD fit (two_stage_seconds); the comparable "
+          "fast-tier number is mean fit_seconds on fast-tier iterations.")
+
+
 def _print_iterations(events):
     iters: dict[int, dict] = {}
     for e in events:
@@ -200,6 +251,8 @@ def run(args) -> int:
                  "Stage breakdown (driver-side timing events):")
 
     _print_subprocess_breakdown(events, log_path, stage_pairs, wall, args.top)
+
+    _print_error_method_breakdown(events, log_path, wall, args.top)
 
     if getattr(args, "iterations", False):
         _print_iterations(events)

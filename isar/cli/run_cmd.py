@@ -20,13 +20,20 @@ def run(args) -> int:
         print(f"warning: unknown card section [{unknown}] — ignored (typo?)", file=sys.stderr)
 
     errors_tier = getattr(args, "errors", "full")
+    # Bayes-tier sampler knobs: pass only the explicitly-set (non-None) CLI overrides; the driver
+    # merges CLI > env > defaults. Empty dict on every other tier / when no override was given.
+    bayes_cli = {k: v for k, v in (("n_live", getattr(args, "bayes_nlive", None)),
+                                   ("dlogz", getattr(args, "bayes_dlogz", None)),
+                                   ("max_iter", getattr(args, "bayes_maxiter", None)))
+                 if v is not None}
     timer = StageTimer(errors_tier=errors_tier, M=args.M, argv=list(sys.argv))
     try:
         formats = tuple(f.strip() for f in args.formats.split(",") if f.strip())
         summary = driver.run_batch(
             ws, args.data, force=args.force, llm=args.llm, M=args.M,
             detectors=args.detectors, formats=formats,
-            workers=getattr(args, "workers", None), errors_tier=errors_tier, timer=timer)
+            workers=getattr(args, "workers", None), errors_tier=errors_tier,
+            bayes_cli=bayes_cli, timer=timer)
 
         # Try the rich report (build step 6); the CSV that run_batch always writes is the fallback.
         report_note = f"results: {ws.report_dir / 'results.csv'}"

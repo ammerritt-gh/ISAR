@@ -37,7 +37,8 @@ def _stub(monkeypatch):
     calls = []
 
     def fake(ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number, chash,
-             *, M, seed, errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False):
+             *, M, seed, errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False,
+             bayes_opts=None):
         calls.append(master_id)
         e = ScanEntry(scan_id=master_id, scan_number=int(scan_number), scan_type="measurement",
                       content_hash=chash, status="fitted")
@@ -86,7 +87,7 @@ def test_run_tasks_serial_threads_shared_executor_and_adaptive(monkeypatch):
 
     def fake_process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                          chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
-                         boot_executor=None, boot_adaptive=False):
+                         boot_executor=None, boot_adaptive=False, bayes_opts=None):
         captured.update(executor=boot_executor, adaptive=boot_adaptive, boot_workers=boot_workers)
         return ScanEntry(scan_id=scan_id, scan_number=1, scan_type="measurement",
                          content_hash=chash, status="fitted")

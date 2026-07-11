@@ -37,10 +37,21 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--workers", type=int, default=None,
                     help="parallel fit workers across scans (default min(30, cpu-2); "
                          "env ISAR_WORKERS; 1 = serial)")
-    pr.add_argument("--errors", default="full", choices=["full", "fast", "cheap"],
+    pr.add_argument("--errors", default="full", choices=["full", "fast", "cheap", "bayes"],
                     help="uncertainty depth: 'full' (MINOS+bootstrap+profile, default), "
-                         "'fast' (HESSE ω₀ interval + trust flag, no bootstrap), or "
-                         "'cheap' (HESSE only — quick-look verdict + rough ω₀, no interval)")
+                         "'fast' (HESSE ω₀ interval + trust flag, no bootstrap), "
+                         "'cheap' (HESSE only — quick-look verdict + rough ω₀, no interval), or "
+                         "'bayes' = full + nested-sampling posterior interval (slow; three-method "
+                         "cross-check)")
+    pr.add_argument("--bayes-nlive", dest="bayes_nlive", type=int, default=None,
+                    help="bayes tier: dynesty live-point budget (default 250; env ISAR_BAYES_NLIVE). "
+                         "Benchmark caveat: on very-high-count scans 250 can give narrower credible "
+                         "intervals than the step-7-validated 400 despite passing the ESS gate — "
+                         "use 400 when the posterior width itself is the deliverable")
+    pr.add_argument("--bayes-dlogz", dest="bayes_dlogz", type=float, default=None,
+                    help="bayes tier: nested-sampling dlogz stop target (default 0.5; env ISAR_BAYES_DLOGZ)")
+    pr.add_argument("--bayes-maxiter", dest="bayes_maxiter", type=int, default=None,
+                    help="bayes tier: nested-sampling max iterations (default 30000; env ISAR_BAYES_MAXITER)")
     pr.add_argument("--no-render", dest="render", action="store_false", default=True,
                     help="skip the human report (report.md/.html/.json + figures); results.csv and "
                          "card.state.json are still written. Used by the driver, which re-renders once "
@@ -77,6 +88,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="truth table CSV (h,k,l,omega_true) or (q,omega_true) for coverage scoring")
     psc.add_argument("--bucket-by", dest="bucket_by", default=None,
                      help="results.csv column to bucket σ-calibration coverage by (truth mode)")
+    psc.add_argument("--interval", choices=("bootstrap", "bayes"), default="bootstrap",
+                     help="which reported interval to coverage-score in truth mode: 'bootstrap' "
+                          "(default, the 68%% bar) or 'bayes' (posterior credible interval)")
     psc.add_argument("--json", default=None,
                      help="write the full scoring dict to this path (truth mode)")
 

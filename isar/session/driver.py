@@ -37,6 +37,10 @@ from isar.session import branch_model, calibrations, guidelines as guide_mod, in
 # phonon within this many resolution FWHM of the elastic line (the merging regime where Γ/A go
 # unidentifiable). Above it the peak is well separated and the fit is left unconstrained.
 LOW_Q_FWHM_FACTOR = 2.0
+# Error tiers that run the authoritative frequentist interval (MINOS + parametric bootstrap + ω₀
+# profile). "bayes" is a strict superset of "full" — everything full does, plus the nested-sampling
+# posterior on the prelim-best label (diagnostics-only; the bootstrap interval stays authoritative).
+FULL_TIERS = ("full", "bayes")
 from isar.session.state import ScanEntry, SessionState, content_hash
 from isar.session.timing import NullTimer
 from isar.session.workspace import Workspace
@@ -109,12 +113,28 @@ class FitOutcome:
     # {omega0, branch_id, weight}) — banked onto the dispersion prior by the parent so an optic
     # belief can form and claim its own features at later q. None/empty on abstains + older ledgers.
     secondary_features: list | None = None
+    # Bayes-errors tier (--errors bayes): the nested-sampling posterior on ω₀ + its §5.5
+    # three-method (HESSE / bootstrap / posterior) cross-check. Diagnostics-only — the bootstrap
+    # `interval` stays authoritative; certification/confidence never read these. All defaulted for
+    # back-compat with older ledgers and the non-bayes tiers.
+    bayes_interval: tuple | None = None   # (lo, median, hi) 68% credible, diagnostics-only
+    bayes_ok: bool | None = None          # None = tier didn't run bayes; False = ran, failed gate
+    bayes_ess: float | None = None
+    bayes_fail_reason: str | None = None
+    log_evidence: float | None = None
+    log_evidence_err: float | None = None
+    bayes_freq_ratio: float | None = None
+    hesse_freq_ratio: float | None = None
+    bayes_prior_driven: bool = False
+    bayes_fork_suspected: bool = False
+    bayes_unconstrained: bool = False
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
         d["interval"] = list(self.interval) if self.interval is not None else None
         d["omega0_profile"] = list(self.omega0_profile) if self.omega0_profile is not None else None
         d["hesse_interval"] = list(self.hesse_interval) if self.hesse_interval is not None else None
+        d["bayes_interval"] = list(self.bayes_interval) if self.bayes_interval is not None else None
         return d
 
 
@@ -275,9 +295,31 @@ def _build_descriptor(ctx):
         return None
 
 
+def _bayes_prior_for(prior, card):
+    # Production posterior is deliberately uninformative (bounds-only): posterior≈likelihood,
+    # so bayes-vs-bootstrap disagreement diagnoses the methods, not the prior. Campaign-
+    # prediction priors are future steering work; this seam is where they plug in.
+    return None
+
+
+def _timing_provenance(fit) -> dict:
+    """Per-method wall-time + (bayes tier only) sampler-config provenance from a fit dict. The
+    ``bayes_*``/``dynesty_version`` keys are added only when the bayes tier ran (``dynesty_version``
+    is set only there). Kept alongside — not replacing — the ``errors_attach_seconds`` lump."""
+    prov = {"bootstrap_seconds": fit.get("bootstrap_seconds"),
+            "minos_seconds": fit.get("minos_seconds"),
+            "profile_seconds": fit.get("profile_seconds"),
+            "bayes_seconds": fit.get("bayes_seconds")}
+    if fit.get("dynesty_version") is not None:
+        prov["bayes_n_live"] = fit.get("bayes_n_live")
+        prov["bayes_seed"] = fit.get("bayes_seed")
+        prov["dynesty_version"] = fit.get("dynesty_version")
+    return prov
+
+
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
             errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False,
-            descriptor=None, structure_hint=None):
+            descriptor=None, structure_hint=None, bayes_opts=None):
     """Two-stage structure fit (§ multiplicity), optionally narrowed by guideline labels, then
     select + verdict. Mirrors docs/phase3_gold*_check.run_pipeline; returns extracted fields.
 
@@ -300,8 +342,9 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     ``"cheap"`` is the quick-look tier: HESSE only, no interval at all (verdict + rough ω₀ to steer
     acquisition, ~an order of magnitude faster). ``boot_workers`` sets the parametric-bootstrap
     process-pool size (1 = serial; see :func:`run_batch`)."""
-    run_full = errors_tier == "full"     # MINOS + bootstrap + ω₀ profile (authoritative interval)
+    run_full = errors_tier in FULL_TIERS  # MINOS + bootstrap + ω₀ profile (authoritative interval)
     run_fast = errors_tier == "fast"     # HESSE ω₀ interval + trust flag, no bootstrap (fast loop)
+    run_bayes = errors_tier == "bayes"   # full + nested-sampling posterior on the prelim-best label
     _t_two_stage = time.perf_counter()
     results, structure_skipped = loop.fit_structures_two_stage_hinted(
         ctx, minos=run_full, peaks=peaks, structure_hint=structure_hint)
@@ -329,8 +372,10 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
             r = fits.get(label)
             if r is not None and r.optimizer_converged and label in by_hyp:
                 errors.attach(r, by_hyp[label], ctx, M=M, seed=seed, with_profile=True,
+                              with_bayes=(run_bayes and label == prelim.best),
+                              prior=_bayes_prior_for(prior, card),
                               boot_workers=boot_workers, boot_executor=boot_executor,
-                              boot_adaptive=boot_adaptive)
+                              boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
         errors_attach_seconds = round(time.perf_counter() - _t_errors, 4)
     sel = select.select_models(results)
     sv = verdict.classify(results, ctx, sel, prior=prior, descriptor=descriptor)
@@ -380,6 +425,76 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         reasons.append("cheap-errors quick-look: verdict + rough HESSE ω₀ only "
                        "(no bootstrap/profile interval)")
 
+    # Bayes-errors tier: the posterior was attached only to the prelim-best label (to bound cost).
+    # Diagnostics-only — the bootstrap `interval` above stays authoritative and nothing here touches
+    # it. Extract the credible interval, evidence, and the §5.5 three-method agreement from the final
+    # best's within_model. If the final selection moved off the prelim-best label the posterior was
+    # sampled on the wrong (or an absent) model → report it as not-sampled rather than mislabel it.
+    bayes_interval = None
+    bayes_ok = None
+    bayes_ess = None
+    bayes_fail_reason = None
+    log_evidence = None
+    log_evidence_err = None
+    bayes_freq_ratio = None
+    hesse_freq_ratio = None
+    bayes_prior_driven = False
+    bayes_fork_suspected = False
+    bayes_unconstrained = False
+    bayes_n_live = None
+    bayes_seed = None
+    dynesty_version = None
+    if run_bayes:
+        try:
+            import dynesty as _dynesty
+            dynesty_version = str(_dynesty.__version__)
+        except Exception:  # noqa: BLE001 — a missing dynesty just leaves the version unrecorded
+            dynesty_version = None
+        bayes_n_live = (bayes_opts or {}).get("n_live")
+        wm = best.within_model if (best is not None and best.within_model) else None
+        if sel.best != prelim.best:
+            bayes_ok = False
+            bayes_fail_reason = "not sampled (best changed after error attach)"
+        elif wm is not None and "bayes_ok" in wm:
+            bayes_interval = tuple(wm["bayes_interval"]) if wm.get("bayes_interval") is not None else None
+            bayes_ok = bool(wm.get("bayes_ok"))
+            bayes_ess = wm.get("bayes_ess")
+            bayes_fail_reason = wm.get("bayes_fail_reason")
+            log_evidence = wm.get("log_evidence")
+            log_evidence_err = wm.get("log_evidence_err")
+            bayes_seed = wm.get("bayes_seed")
+            ag = wm.get("agreement")
+            if ag is not None:
+                bayes_freq_ratio = (float(ag.bayes_freq_ratio)
+                                    if np.isfinite(ag.bayes_freq_ratio) else None)
+                hesse_freq_ratio = (float(ag.hesse_freq_ratio)
+                                    if np.isfinite(ag.hesse_freq_ratio) else None)
+                bayes_prior_driven = bool(ag.prior_driven)
+                bayes_fork_suspected = bool(ag.fork_suspected)
+                bayes_unconstrained = bool(ag.unconstrained)
+        if bayes_ok:
+            reasons.append(f"bayes-errors tier: posterior converged (ess={float(bayes_ess):.0f})")
+        else:
+            reasons.append("bayes-errors tier: posterior failed → frequentist fallback "
+                           f"({bayes_fail_reason or 'not sampled'})")
+
+    # Per-method wall time, summed across the error-attach survivors (each result's
+    # within_model["method_seconds"]). Populated on the full/bayes tiers; 0.0 elsewhere
+    # (no attach ran). The existing errors_attach_seconds lump is kept untouched.
+    bootstrap_seconds = minos_seconds = profile_seconds = bayes_seconds = 0.0
+    for label in prelim.survivors:
+        r = fits.get(label)
+        wm_r = getattr(r, "within_model", None) if r is not None else None
+        msec = (wm_r or {}).get("method_seconds") or {}
+        bootstrap_seconds += float(msec.get("bootstrap", 0.0))
+        minos_seconds += float(msec.get("minos", 0.0))
+        profile_seconds += float(msec.get("profile", 0.0))
+        bayes_seconds += float(msec.get("bayes", 0.0))
+    bootstrap_seconds = round(bootstrap_seconds, 4)
+    minos_seconds = round(minos_seconds, 4)
+    profile_seconds = round(profile_seconds, 4)
+    bayes_seconds = round(bayes_seconds, 4)
+
     n_modes = int(best.n_modes) if best is not None else 1
     modes = list(best.modes) if (best is not None and best.modes) else None
 
@@ -393,6 +508,10 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         omega0 = omega0_err = interval = omega0_profile = hesse_interval = None
         interval_reliable = False
         fit_kind = "descriptor_only"
+        # Not an ω₀ measurement → null the bayes interval/diagnostics too, same as the other intervals.
+        bayes_interval = bayes_ess = None
+        log_evidence = log_evidence_err = None
+        bayes_freq_ratio = hesse_freq_ratio = None
 
     return {
         "verdict": sv.verdict, "confidence": sv.confidence, "reasons": reasons,
@@ -411,6 +530,26 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "two_stage_seconds": two_stage_seconds,
         "errors_attach_seconds": errors_attach_seconds,
         "structure_skipped": structure_skipped,
+        # Bayes-errors tier diagnostics (None/False/0.0 on the other tiers).
+        "bayes_interval": (tuple(bayes_interval) if bayes_interval is not None else None),
+        "bayes_ok": bayes_ok,
+        "bayes_ess": bayes_ess,
+        "bayes_fail_reason": bayes_fail_reason,
+        "log_evidence": log_evidence,
+        "log_evidence_err": log_evidence_err,
+        "bayes_freq_ratio": bayes_freq_ratio,
+        "hesse_freq_ratio": hesse_freq_ratio,
+        "bayes_prior_driven": bayes_prior_driven,
+        "bayes_fork_suspected": bayes_fork_suspected,
+        "bayes_unconstrained": bayes_unconstrained,
+        "bootstrap_seconds": bootstrap_seconds,
+        "minos_seconds": minos_seconds,
+        "profile_seconds": profile_seconds,
+        "bayes_seconds": bayes_seconds,
+        # Provenance-only (not FitOutcome fields): the sampler config for the run record.
+        "bayes_n_live": bayes_n_live,
+        "bayes_seed": bayes_seed,
+        "dynesty_version": dynesty_version,
     }
 
 
@@ -463,6 +602,38 @@ def _resolve_boot_workers(default_n) -> int:
     return max(1, int(default_n))
 
 
+# Bayes-tier (--errors bayes) nested-sampling knobs. Production defaults are deliberately modest to
+# bound the per-scan cost of the posterior; overridable per-run via CLI (--bayes-nlive etc.) or env.
+# n_live=250 caveat (2026-07-11 bench, docs/stats/bench_error_methods.py): on very-high-count scans
+# 250 gave narrower credible intervals than the step-7-validated 400 despite passing the ESS gate
+# (mvp_zone_test16 scans 469/470); elsewhere 250≈400 at ~1.6x less cost. Acceptable while the
+# posterior is diagnostics-only — a coverage campaign (score --truth --interval bayes) must gate any
+# promotion of this interval beyond diagnostics.
+_BAYES_DEFAULTS = {"n_live": 250, "dlogz": 0.5, "max_iter": 30_000}
+_BAYES_ENV = {"n_live": "ISAR_BAYES_NLIVE", "dlogz": "ISAR_BAYES_DLOGZ", "max_iter": "ISAR_BAYES_MAXITER"}
+_BAYES_CASTS = {"n_live": int, "dlogz": float, "max_iter": int}
+
+
+def _resolve_bayes_opts(cli_opts=None) -> dict:
+    """Resolve the bayes-tier sampler options with precedence CLI > env > defaults. Returns a plain
+    picklable dict ``{n_live, dlogz, max_iter}`` threaded through the fit task tuples to
+    ``errors.attach(..., bayes_opts=…)``. Mirrors :func:`_resolve_boot_workers`'s env/override style."""
+    cli_opts = cli_opts or {}
+    out = dict(_BAYES_DEFAULTS)
+    for key, env_name in _BAYES_ENV.items():
+        env = os.environ.get(env_name)
+        if env not in (None, ""):
+            try:
+                out[key] = _BAYES_CASTS[key](env)
+            except (TypeError, ValueError):
+                pass
+    for key, cast in _BAYES_CASTS.items():
+        v = cli_opts.get(key)
+        if v is not None:
+            out[key] = cast(v)
+    return out
+
+
 def _process_one_task(args):
     """Top-level (picklable) entry point for a scan-pool worker: unpack plain data and fit.
 
@@ -471,14 +642,16 @@ def _process_one_task(args):
     the returned :class:`ScanEntry` carries everything; the parent applies ledger + prior mutations
     serially in submission order."""
     (rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
-     M, errors_tier, seed, boot_workers, boot_adaptive) = args
+     M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts) = args
     return _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                         chash, ghash, M=M, seed=seed, errors_tier=errors_tier,
-                        boot_workers=boot_workers, boot_adaptive=boot_adaptive)
+                        boot_workers=boot_workers, boot_adaptive=boot_adaptive,
+                        bayes_opts=bayes_opts)
 
 
 def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_workers,
-               use_pool, scan_workers, boot_executor=None, boot_adaptive=False) -> list:
+               use_pool, scan_workers, boot_executor=None, boot_adaptive=False,
+               bayes_opts=None) -> list:
     """Fit the fresh scan-detectors, serially or over a process pool, preserving submission order.
 
     ``boot_executor`` (a shared bootstrap pool) is threaded only through the SERIAL path — an
@@ -486,7 +659,7 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
     only runs when ``boot_workers == 1`` (Layer A owns the workers), so it never wants a shared pool.
     """
     arg_list = [(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
-                 M, errors_tier, seed, boot_workers, boot_adaptive)
+                 M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts)
                 for (rec, det, q, T, sample, scan_id, chash, ghash, seed) in tasks]
     if not arg_list:
         return []
@@ -494,11 +667,11 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
         out = []
         for a in arg_list:
             (rec, det, q, T, sample, scan_id, card_, g_, runcal_, exclusions_, chash, ghash,
-             M_, tier_, seed, bw, adaptive_) = a
+             M_, tier_, seed, bw, adaptive_, bopts_) = a
             out.append(_process_one(rec, det, q, T, sample, scan_id, card_, g_, runcal_,
                                     exclusions_, chash, ghash, M=M_, seed=seed, errors_tier=tier_,
                                     boot_workers=bw, boot_executor=boot_executor,
-                                    boot_adaptive=adaptive_))
+                                    boot_adaptive=adaptive_, bayes_opts=bopts_))
         return out
     max_workers = min(scan_workers, len(arg_list))
     # map preserves order → results align with `tasks`, keeping prior-seeding + row order deterministic.
@@ -508,7 +681,7 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
 
 def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200,
               detectors=None, formats=("html", "markdown"), workers=None,
-              errors_tier="full", timer=None) -> RunSummary:
+              errors_tier="full", bayes_cli=None, timer=None) -> RunSummary:
     timer = timer or NullTimer()
     with timer.stage("workspace_load"):
         card, session = workspace.load()
@@ -593,7 +766,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
     # (the workorder — one spawn, not N). Large full reprocess batches (tasks > workers, where Layer
     # A already saturates) and the fast/cheap tiers (no bootstrap) keep the Layer-A parallel-fit path.
     scan_workers = _resolve_workers(workers)
-    is_full = errors_tier == "full"
+    is_full = errors_tier in FULL_TIERS
+    bayes_opts = _resolve_bayes_opts(bayes_cli)
     use_workorder = is_full and len(tasks) <= scan_workers
     if use_workorder:
         use_pool = False
@@ -613,17 +787,22 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
             entries = _run_tasks(tasks, card, g, runcal, exclusions, M=M, errors_tier=errors_tier,
                                  boot_workers=boot_workers, use_pool=use_pool,
                                  scan_workers=scan_workers, boot_executor=shared_pool,
-                                 boot_adaptive=boot_adaptive)
+                                 boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
             _m_fit["per_task"] = [
                 {"scan_id": e.scan_id,
                  "seconds": e.provenance.get("fit_seconds"),
                  "two_stage_seconds": e.provenance.get("two_stage_seconds"),
-                 "errors_attach_seconds": e.provenance.get("errors_attach_seconds")}
+                 "errors_attach_seconds": e.provenance.get("errors_attach_seconds"),
+                 "bootstrap_seconds": e.provenance.get("bootstrap_seconds"),
+                 "minos_seconds": e.provenance.get("minos_seconds"),
+                 "profile_seconds": e.provenance.get("profile_seconds"),
+                 "bayes_seconds": e.provenance.get("bayes_seconds")}
                 for e in entries if e.provenance.get("fit_seconds") is not None]
         _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                           workspace, force=force, M=M, seed_base=seed_base, errors_tier=errors_tier,
                           master_boot_workers=master_boot_workers, boot_executor=shared_pool,
-                          boot_adaptive=boot_adaptive, scan_workers=scan_workers, timer=timer)
+                          boot_adaptive=boot_adaptive, scan_workers=scan_workers,
+                          bayes_opts=bayes_opts, timer=timer)
     finally:
         if shared_pool is not None:
             shared_pool.shutdown()
@@ -666,7 +845,7 @@ def _store_branch_models(state, t_round: float) -> None:
 
 def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                       workspace, *, force, M, seed_base, errors_tier, master_boot_workers,
-                      boot_executor, boot_adaptive, scan_workers=1, timer=None):
+                      boot_executor, boot_adaptive, scan_workers=1, bayes_opts=None, timer=None):
     """Pass 2 (ledger + prior) → collate → master fits → tally → write. Split out so the shared
     bootstrap pool from :func:`run_batch` stays open across the whole full-tier batch."""
     timer = timer or NullTimer()
@@ -748,7 +927,7 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
                                      M=M, seed_base=seed_base, errors_tier=errors_tier, force=force,
                                      boot_workers=master_boot_workers, boot_executor=boot_executor,
                                      boot_adaptive=boot_adaptive, scan_workers=scan_workers,
-                                     per_master=per_master)
+                                     bayes_opts=bayes_opts, per_master=per_master)
             _m_masters["n_masters"] = n_masters
             _m_masters["per_master"] = per_master
             if n_masters:
@@ -791,19 +970,19 @@ def _fit_master_group_task(args):
     serially afterward in sorted-group order. Every argument is picklable (ms/grp are plain collation
     dataclasses, member_rec a ScanRecord, card/g/runcal as the scan pool already ships)."""
     (ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number, chash,
-     M, seed, errors_tier, boot_adaptive, structure_hint) = args
+     M, seed, errors_tier, boot_adaptive, structure_hint, bayes_opts) = args
     # Pass structure_hint only when set: with the reuse policy off (default) hint is None and this
     # call is byte-identical to the pre-B2 call (keeps the "change nothing when off" guarantee).
     hint_kw = {"structure_hint": structure_hint} if structure_hint is not None else {}
     return _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id,
                              scan_number, chash, M=M, seed=seed, errors_tier=errors_tier,
                              boot_workers=1, boot_executor=None, boot_adaptive=boot_adaptive,
-                             **hint_kw)
+                             bayes_opts=bayes_opts, **hint_kw)
 
 
 def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
                  errors_tier="full", force=False, boot_workers=1, boot_executor=None,
-                 boot_adaptive=False, scan_workers=1, per_master=None) -> int:
+                 boot_adaptive=False, scan_workers=1, bayes_opts=None, per_master=None) -> int:
     """Fit the merged master scan for each (Q,T) group; returns how many were (re)fit this run.
 
     Runs only when the card opts in (``collation.merge == "merge"``). Each group's pooled
@@ -869,7 +1048,7 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
         # preserves order → entries[k] aligns with refits[k], keeping the serial ledger order.
         arg_list = [(ms, grp, member_rec, member_det, card, runcal, g, master_id,
                      _MASTER_SCAN_BASE + idx, chash, M, seed_base + _MASTER_SCAN_BASE + idx,
-                     errors_tier, boot_adaptive, hint)
+                     errors_tier, boot_adaptive, hint, bayes_opts)
                     for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in refits]
         max_workers = min(scan_workers, len(arg_list))
         with ProcessPoolExecutor(max_workers=max_workers) as ex_pool:
@@ -880,7 +1059,7 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
         # tier bootstraps, so a pool is pointless otherwise).
         own_pool = None
         ex = boot_executor
-        if ex is None and errors_tier == "full" and boot_workers > 1:
+        if ex is None and errors_tier in FULL_TIERS and boot_workers > 1:
             own_pool = ProcessPoolExecutor(max_workers=boot_workers)
             ex = own_pool
         try:
@@ -889,7 +1068,7 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
                                   _MASTER_SCAN_BASE + idx, chash, M=M,
                                   seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier,
                                   boot_workers=boot_workers, boot_executor=ex,
-                                  boot_adaptive=boot_adaptive,
+                                  boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
                                   # hint kwarg only when set → off-path call is byte-identical.
                                   **({"structure_hint": hint} if hint is not None else {}))
                 for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in refits]
@@ -905,13 +1084,17 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
                 {"master_id": master_id,
                  "seconds": entry.provenance.get("fit_seconds"),
                  "two_stage_seconds": entry.provenance.get("two_stage_seconds"),
-                 "errors_attach_seconds": entry.provenance.get("errors_attach_seconds")})
+                 "errors_attach_seconds": entry.provenance.get("errors_attach_seconds"),
+                 "bootstrap_seconds": entry.provenance.get("bootstrap_seconds"),
+                 "minos_seconds": entry.provenance.get("minos_seconds"),
+                 "profile_seconds": entry.provenance.get("profile_seconds"),
+                 "bayes_seconds": entry.provenance.get("bayes_seconds")})
     return len(refits)
 
 
 def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number,
                       chash, *, M, seed, errors_tier="full", boot_workers=1, boot_executor=None,
-                      boot_adaptive=False, structure_hint=None) -> ScanEntry:
+                      boot_adaptive=False, structure_hint=None, bayes_opts=None) -> ScanEntry:
     """Fit one merged group's pooled spectrum → a ``pooled=True`` ScanEntry (or a non_result).
 
     ``structure_hint`` (the group's previous fitted best_label, opt-in via card policy
@@ -961,7 +1144,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, errors_tier=errors_tier,
                       boot_workers=boot_workers, boot_executor=boot_executor,
                       boot_adaptive=boot_adaptive, descriptor=descriptor,
-                      structure_hint=structure_hint)
+                      structure_hint=structure_hint, bayes_opts=bayes_opts)
     except Exception as exc:  # noqa: BLE001 — one unfittable pool must not kill the batch (N=16 wrinkle)
         return ScanEntry(status="non_result",
                          reasons=[f"{master_id}: fit error ({type(exc).__name__}): {exc}"], **base)
@@ -991,14 +1174,22 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         fit_kind=fit.get("fit_kind", "unconstrained"),
         branch_id=branch_id, assignment_entropy=assignment_entropy,
         resolvable=resolvable, branch_weight=branch_weight,
-        secondary_features=secondary_features)
+        secondary_features=secondary_features,
+        bayes_interval=fit.get("bayes_interval"), bayes_ok=fit.get("bayes_ok"),
+        bayes_ess=fit.get("bayes_ess"), bayes_fail_reason=fit.get("bayes_fail_reason"),
+        log_evidence=fit.get("log_evidence"), log_evidence_err=fit.get("log_evidence_err"),
+        bayes_freq_ratio=fit.get("bayes_freq_ratio"), hesse_freq_ratio=fit.get("hesse_freq_ratio"),
+        bayes_prior_driven=fit.get("bayes_prior_driven", False),
+        bayes_fork_suspected=fit.get("bayes_fork_suspected", False),
+        bayes_unconstrained=fit.get("bayes_unconstrained", False))
     entry = ScanEntry(status="fitted", **base)
     entry.detectors[det] = outcome.to_dict()
     entry.provenance = {"pooled": True, "n_members": int(ms.n_members),
                         "members": [list(m) for m in ms.members],
                         "fit_seconds": round(time.perf_counter() - _t_fit0, 4),
                         "two_stage_seconds": fit.get("two_stage_seconds"),
-                        "errors_attach_seconds": fit.get("errors_attach_seconds")}
+                        "errors_attach_seconds": fit.get("errors_attach_seconds"),
+                        **_timing_provenance(fit)}
     if fit.get("structure_skipped"):
         entry.provenance["structure_skipped"] = True
     return entry
@@ -1112,6 +1303,7 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
                 fit["verdict"] = "branch_continuation"
                 fit["omega0"] = fit["omega0_err"] = fit["interval"] = None
                 fit["omega0_profile"] = fit["hesse_interval"] = None
+                fit["bayes_interval"] = None
                 fit["interval_reliable"] = False
     return branch_id, assignment_entropy, branch_weight, resolvable, secondary_features
 
@@ -1223,7 +1415,7 @@ def _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres,
 
 def _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descriptor,
                          region_reasons, *, M, seed, errors_tier, boot_workers, boot_executor,
-                         boot_adaptive):
+                         boot_adaptive, bayes_opts=None):
     """Steering Phase 3b — hard-fix escalation: if the (soft / Stokes-only) fit STILL rails Γ to its
     bound (true low-count degeneracy — Γ un-identifiable even under the soft prior) and the branch
     predicts Γ within its anchor range, re-fit with Γ frozen to the branch value (k reduced,
@@ -1251,7 +1443,7 @@ def _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descri
                 hfit = fit_one(hctx, card, prior=prior, M=M, seed=seed, structure_labels=labels,
                                peaks=peaks, errors_tier=errors_tier, boot_workers=boot_workers,
                                boot_executor=boot_executor, boot_adaptive=boot_adaptive,
-                               descriptor=descriptor)
+                               descriptor=descriptor, bayes_opts=bayes_opts)
             except Exception:  # noqa: BLE001 — escalation is best-effort; keep the original fit
                 hfit = None
             if hfit is not None and hfit.get("omega0") is not None \
@@ -1306,7 +1498,14 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         fit_kind=fit.get("fit_kind", "unconstrained"),
         branch_id=branch_id, assignment_entropy=assignment_entropy,
         resolvable=resolvable, branch_weight=branch_weight,
-        secondary_features=secondary_features)
+        secondary_features=secondary_features,
+        bayes_interval=fit.get("bayes_interval"), bayes_ok=fit.get("bayes_ok"),
+        bayes_ess=fit.get("bayes_ess"), bayes_fail_reason=fit.get("bayes_fail_reason"),
+        log_evidence=fit.get("log_evidence"), log_evidence_err=fit.get("log_evidence_err"),
+        bayes_freq_ratio=fit.get("bayes_freq_ratio"), hesse_freq_ratio=fit.get("hesse_freq_ratio"),
+        bayes_prior_driven=fit.get("bayes_prior_driven", False),
+        bayes_fork_suspected=fit.get("bayes_fork_suspected", False),
+        bayes_unconstrained=fit.get("bayes_unconstrained", False))
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is
@@ -1317,12 +1516,13 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
                                  "M": M, "seed": seed, "prior_source": prior_source,
                                  "fit_seconds": round(time.perf_counter() - t_fit0, 4),
                                  "two_stage_seconds": fit.get("two_stage_seconds"),
-                                 "errors_attach_seconds": fit.get("errors_attach_seconds")}, **base)
+                                 "errors_attach_seconds": fit.get("errors_attach_seconds"),
+                                 **_timing_provenance(fit)}, **base)
 
 
 def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                  chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
-                 boot_executor=None, boot_adaptive=False) -> ScanEntry:
+                 boot_executor=None, boot_adaptive=False, bayes_opts=None) -> ScanEntry:
     _t_fit0 = time.perf_counter()
     base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
                 content_hash=chash, guidelines_hash=ghash)
@@ -1340,7 +1540,8 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
     try:
         fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
                       errors_tier=errors_tier, boot_workers=boot_workers,
-                      boot_executor=boot_executor, boot_adaptive=boot_adaptive, descriptor=descriptor)
+                      boot_executor=boot_executor, boot_adaptive=boot_adaptive, descriptor=descriptor,
+                      bayes_opts=bayes_opts)
     except Exception as exc:  # noqa: BLE001 — one unfittable scan must not kill the batch
         return ScanEntry(status="non_result",
                          reasons=[f"fit error ({type(exc).__name__}): {exc}"] + region_reasons,
@@ -1349,7 +1550,7 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
     fit = _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descriptor,
                                region_reasons, M=M, seed=seed, errors_tier=errors_tier,
                                boot_workers=boot_workers, boot_executor=boot_executor,
-                               boot_adaptive=boot_adaptive)
+                               boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
 
     return _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calres, prior,
                            prior_source, n_neighbors, near_gamma, t_round, region_reasons, base,
@@ -1393,6 +1594,9 @@ _CSV_COLUMNS = [
     "scan", "detector", "sample", "T", "h", "k", "l", "status", "verdict", "disposition",
     "confidence", "omega0", "omega0_err", "interval_lo", "interval_hi", "interval_reliable",
     "omega0_profile_lo", "omega0_profile_hi", "hesse_lo", "hesse_hi", "hesse_trusted",
+    "bayes_lo", "bayes_med", "bayes_hi", "bayes_ok", "bayes_ess", "bayes_fail_reason",
+    "bayes_freq_ratio", "hesse_freq_ratio", "bayes_prior_driven", "bayes_fork_suspected",
+    "bayes_unconstrained", "log_evidence", "log_evidence_err",
     "pooled", "n_members", "members",
     "gamma", "gamma_provisional", "n_modes", "secondary_omega0", "secondary_omega0_err",
     "best_model", "cost_per_dof", "fit_kind", "branch_id", "assignment_entropy", "resolvable",
@@ -1446,6 +1650,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
             iv = oc.get("interval")
             piv = oc.get("omega0_profile")
             hiv = oc.get("hesse_interval")
+            biv = oc.get("bayes_interval")
             cal = oc.get("calib") or {}
             pr = oc.get("prior_used") or {}
             # Member provenance (chain of custody): pooled masters join their member labels with ";".
@@ -1470,6 +1675,18 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "omega0_profile_hi": (piv[-1] if piv else None),
                 "hesse_lo": (hiv[0] if hiv else None), "hesse_hi": (hiv[-1] if hiv else None),
                 "hesse_trusted": oc.get("hesse_trusted"),
+                "bayes_lo": (biv[0] if biv else None),
+                "bayes_med": (biv[1] if biv else None),
+                "bayes_hi": (biv[-1] if biv else None),
+                "bayes_ok": oc.get("bayes_ok"), "bayes_ess": oc.get("bayes_ess"),
+                "bayes_fail_reason": oc.get("bayes_fail_reason"),
+                "bayes_freq_ratio": oc.get("bayes_freq_ratio"),
+                "hesse_freq_ratio": oc.get("hesse_freq_ratio"),
+                "bayes_prior_driven": oc.get("bayes_prior_driven"),
+                "bayes_fork_suspected": oc.get("bayes_fork_suspected"),
+                "bayes_unconstrained": oc.get("bayes_unconstrained"),
+                "log_evidence": oc.get("log_evidence"),
+                "log_evidence_err": oc.get("log_evidence_err"),
                 "pooled": oc.get("pooled") or None, "n_members": oc.get("n_members"),
                 "members": (";".join(members) if members else None),
                 "gamma": oc.get("gamma"), "gamma_provisional": oc.get("gamma_provisional"),
