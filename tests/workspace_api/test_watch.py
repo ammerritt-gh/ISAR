@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import threading
+import time
 
 import pytest
 
@@ -15,7 +16,7 @@ from isar.workspace_api import Workspace
 # Short-but-comfortable timings: poll far below debounce so a burst coalesces; both far below the
 # per-test wait budget.
 POLL = 0.02
-DEBOUNCE = 60
+DEBOUNCE = 150
 WAIT = 3.0
 
 
@@ -52,6 +53,10 @@ def test_two_rapid_changes_coalesce(make_ws):
 
     with ws.watch(cb, debounce_ms=DEBOUNCE, poll_interval_s=POLL):
         _append(root / "report" / "results.csv", "2,det\n")
+        # Sleep > poll_interval but < debounce so the backend delivers the two changes as TWO
+        # separate add() calls that the debouncer must merge (exercises the timer re-arm path),
+        # rather than one pre-merged poll tick.
+        time.sleep(POLL * 3)
         _append(root / "session.json", " ")
         assert fired.wait(WAIT), "callback never fired"
     assert len(seen) == 1

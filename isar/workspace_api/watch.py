@@ -84,27 +84,45 @@ class _Debouncer:
             self._pending |= set(names)
             if self._timer is not None:
                 self._timer.cancel()
-            self._timer = threading.Timer(self._delay, self._flush)
-            self._timer.daemon = True
-            self._timer.start()
+            timer = threading.Timer(self._delay, self._flush)
+            timer.args = (timer,)  # pass self-identity so _flush can null only the timer that fired
+            timer.daemon = True
+            self._timer = timer
+            timer.start()
 
-    def _flush(self) -> None:
+    def _flush(self, timer) -> None:
         with self._lock:
             if self._cancelled:
                 return
+            # A concurrent add() may have re-armed a newer timer; that one owns the slot and the
+            # merged pending names, so this stale firing must no-op.
+            if self._timer is not timer:
+                return
             names = self._pending
             self._pending = set()
-            self._timer = None
+        # Keep self._timer pointing at us across the emit so cancel() can capture and join it —
+        # guaranteeing no callback outlives cancel(). Null the slot only after emit, and only if
+        # still ours (an add() during emit may have re-armed).
         if names:
             self._emit(names)
+        with self._lock:
+            if self._timer is timer:
+                self._timer = None
 
-    def cancel(self) -> None:
+    def cancel(self, timeout: float = 5.0) -> None:
+        """Disarm, drop pending names, and join any in-flight timer so no ``emit`` outlives the call.
+
+        A timer that has already passed its wait may be mid-``_flush``; we capture it under the lock
+        and join it (bounded) after releasing, so an in-progress callback completes before return.
+        """
         with self._lock:
             self._cancelled = True
-            if self._timer is not None:
-                self._timer.cancel()
-                self._timer = None
+            timer = self._timer
+            self._timer = None
             self._pending = set()
+        if timer is not None:
+            timer.cancel()
+            timer.join(timeout)
 
 
 class _PollBackend:
@@ -243,10 +261,11 @@ class Watcher:
         """Stop the backend (join its thread, bounded by ``timeout``) and drop pending callbacks.
 
         Ordered so no callback can fire after return: stop+join the backend first (no further
-        ``add``), then cancel the debouncer (disarm any armed timer).
+        ``add``), then cancel the debouncer, which disarms the armed timer AND joins any in-flight
+        one so a callback already en route completes before this returns.
         """
         self._backend.stop(timeout)
-        self._debouncer.cancel()
+        self._debouncer.cancel(timeout)
 
     # ---- introspection (also used by tests) -------------------------------
     @property
