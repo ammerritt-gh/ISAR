@@ -140,6 +140,43 @@ def test_groups_reuse_canonical_key_function():
     assert "isar.reduce.collate" in src and "_group_component" in src
 
 
+def test_groups_membership_equals_real_collate(make_ws):
+    """Behavioural upgrade of the source-string guard above: the facade's group partition must equal
+    what the REAL ``isar.reduce.collate.collate()`` produces on records with the same (sample, q, T),
+    under the same card policy — not merely reuse the key helpers, but agree on the outcome."""
+    from isar.reduce.collate import collate
+
+    rows = [
+        {"scan": 1, "detector": "det", "sample": "tavi", "T": 200.0, "h": 2.0, "k": 0.0, "l": 0.0,
+         "status": "fitted", "omega0": 5.0, "gamma": 0.3},
+        {"scan": 2, "detector": "det", "sample": "tavi", "T": 200.0, "h": 2.02, "k": 0.0, "l": 0.0,
+         "status": "fitted", "omega0": 5.1, "gamma": 0.3},   # same q-bin as scan 1 (step 0.05)
+        {"scan": 3, "detector": "det", "sample": "tavi", "T": 200.0, "h": 3.0, "k": 0.0, "l": 0.0,
+         "status": "fitted", "omega0": 6.0, "gamma": 0.3},   # different q-bin -> 2nd group
+        {"scan": 9000001, "detector": "det", "sample": "tavi", "T": 200.0, "h": 2.0, "k": 0.0,
+         "l": 0.0, "status": "fitted", "omega0": 5.05, "gamma": 0.3, "pooled": "True"},  # master
+    ]
+    ws = Workspace.open(make_ws(rows=rows))
+    facade_partition = frozenset(frozenset(m.scan_number for m in g.members) for g in ws.groups)
+
+    # Build the reducer's record shape for the same MEASUREMENT scans (the pooled master is a fit OF a
+    # group, not a member — collate groups measurement spectra, exactly what the facade excludes).
+    def _rec(scan, h):
+        sp = SimpleNamespace(q=[h, 0.0, 0.0], point_flags=[], spectrum_flags=[],
+                             miniscan_reject=None, miniscan_counts=None)
+        return SimpleNamespace(experiment_id="tavi", scan_number=scan, scan_type="measurement",
+                               scan_axes=[], spectra={"det": sp},
+                               temperature=SimpleNamespace(setpoint=[200.0]),
+                               normalization=None, scan_flags=[])
+
+    records = [_rec(1, 2.0), _rec(2, 2.02), _rec(3, 3.0)]
+    collation = collate(records, SimpleNamespace(policy=ws.card.policy))
+    collate_partition = frozenset(
+        frozenset(m.scan_number for m in g.members) for g in collation.groups)
+
+    assert facade_partition == collate_partition == frozenset({frozenset({1, 2}), frozenset({3})})
+
+
 # ---------------------------------------------------------------------------
 # session_events: kind / since filter, truncation tolerance
 # ---------------------------------------------------------------------------
