@@ -50,6 +50,12 @@ def _root_of(name: str) -> str:
     return name.split(".", 1)[0]
 
 
+def test_core_packages_exist_and_have_modules():
+    for name, base in CORE_DIRS.items():
+        mods = sorted(base.rglob("*.py"))
+        assert mods, f"no modules found under isar/{name}/ (renamed or removed?)"
+
+
 @pytest.mark.parametrize("py", _modules(), ids=lambda p: str(p.relative_to(ISAR_DIR)))
 def test_no_forbidden_imports_ast(py):
     forbidden = _forbidden_roots_for(py)
