@@ -30,6 +30,7 @@ class HeatmapDock(QDockWidget):
 
     def __init__(self, vm, parent=None):
         super().__init__("Plane (q, E)", parent)
+        self.setObjectName("heatmap_dock")  # stable name for saveState()/restoreState()
         self._vm = vm
 
         body = QWidget()

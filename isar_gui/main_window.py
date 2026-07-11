@@ -11,10 +11,11 @@ The Docks-menu two-way sync (checkable action <-> dock ``visibilityChanged``) fo
 """
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QTimer
-from PySide6.QtWidgets import QFileDialog, QMainWindow
+from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow
 
 from isar.workspace_api import Workspace, WorkspaceNotFound
 from isar_gui.log_dock import LogDock
@@ -38,14 +39,19 @@ from isar_gui.watch_bridge import WatchBridge
 class MainWindow(QMainWindow):
     """The shell window over one :class:`~isar.workspace_api.Workspace`."""
 
-    def __init__(self, ws, *, session: Session | None = None, watch: bool = True, parent=None):
+    def __init__(self, ws, *, session: Session | None = None, watch: bool = True,
+                 watch_kwargs: dict | None = None, parent=None):
         super().__init__(parent)
         self._session = session if session is not None else load_session()
         self._watch_enabled = watch
+        # Forwarded verbatim to WatchBridge -> Workspace.watch (debounce_ms/poll_interval_s/backend);
+        # lets tests use a fast poll instead of the 1s production default.
+        self._watch_kwargs = watch_kwargs or {}
         self.resize(1200, 800)
 
         self._docks: dict[str, object] = {}
         self._init_file_menu()
+        self._init_status_bar()
         self._bind_workspace(ws)
         self._session.note_workspace(ws.root)
 
@@ -73,6 +79,8 @@ class MainWindow(QMainWindow):
         self.dispersion_vm = DispersionViewModel(ws, parent=self)
         self.waterfall_vm = WaterfallViewModel(ws, parent=self)
         self.waterfall_vm.load_view_state(self._session)
+        self.heatmap_vm.load_view_state(self._session)
+        self.dispersion_vm.load_view_state(self._session)
 
         # The C2 fit inspector is the central widget; a browser selection drives it.
         self.inspector = InspectorWidget(self.inspector_vm, parent=self)
@@ -96,9 +104,12 @@ class MainWindow(QMainWindow):
         # Watch bridge: refresh + fan out on the Qt thread. Optional (tests may disable it).
         self._bridge = None
         if self._watch_enabled:
-            self._bridge = WatchBridge(ws, parent=self)
+            self._bridge = WatchBridge(ws, parent=self, **self._watch_kwargs)
             self._bridge.changed.connect(self._on_workspace_changed)
             self._bridge.start()
+            self._live_label.setText("watching (no changes yet)")
+        else:
+            self._live_label.setText("")
 
     # ---- dock scaffold ----------------------------------------------------
     def _init_docks(self) -> None:
@@ -131,6 +142,9 @@ class MainWindow(QMainWindow):
     def _register_dock(self, name: str, dock) -> None:
         """Track a dock so the Docks menu and layout autosave pick it up (call before menu build)."""
         self._docks[name] = dock
+        # A user dragging a dock to a new area/float changes the layout saveState() would capture;
+        # autosave (debounced) so that move survives a restart without waiting for an explicit toggle.
+        dock.dockLocationChanged.connect(lambda _area: self._autosave())
 
     # ---- File menu (built once; Open Workspace… persists across reloads) --
     def _init_file_menu(self) -> None:
@@ -142,6 +156,13 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Open Workspace", str(self._ws.root))
         if path:
             self.load_workspace(path)
+
+    # ---- status bar: persistent live indicator ----------------------------
+    def _init_status_bar(self) -> None:
+        """A permanent status-bar label (distinct from the transient ``showMessage`` text) so "is it
+        live" stays visible even after the transient "Updated: ..." message expires."""
+        self._live_label = QLabel()
+        self.statusBar().addPermanentWidget(self._live_label)
 
     # ---- Docks menu (PUFFIN two-way-sync pattern) -------------------------
     def _init_docks_menu(self) -> None:
@@ -195,7 +216,9 @@ class MainWindow(QMainWindow):
         self._viewmodel.deleteLater()
         self.browser_vm.deleteLater()
         self.inspector_vm.deleteLater()
+        self.heatmap_vm.save_view_state(self._session)
         self.heatmap_vm.deleteLater()
+        self.dispersion_vm.save_view_state(self._session)
         self.dispersion_vm.deleteLater()
         self.waterfall_vm.save_view_state(self._session)
         self.waterfall_vm.deleteLater()
@@ -216,13 +239,36 @@ class MainWindow(QMainWindow):
         # The bridge already refreshed the facade on this (Qt) thread.
         self.log_dock.sync_warnings(self._ws.warnings)
         self._viewmodel.on_workspace_changed(changed)
+        # Only "results"/"snapshot" carry data the component views read; a bare "events"/"report"/
+        # "card_state" tick still updates the log/status but need not re-derive every plot.
+        if changed & {"results", "snapshot"}:
+            self.browser_vm.refresh()
+            self.heatmap_vm.refresh()
+            self.dispersion_vm.refresh()
+            self.waterfall_vm.refresh()
+            self._refresh_inspector_selection()
+        self._live_label.setText(f"live — last update {datetime.now():%H:%M:%S}")
         self.statusBar().showMessage(f"Updated: {', '.join(sorted(changed)) or '(none)'}")
+
+    def _refresh_inspector_selection(self) -> None:
+        """Re-find the currently-inspected fit (by scan_number+detector_id — a FitView carries no
+        stable identity across a rebuild) in the just-refreshed ``ws.results``; re-select it if it
+        still exists, else drop the inspector to its empty state."""
+        fit = self.inspector_vm.current_fit
+        if fit is None:
+            return
+        fresh = next((fv for fv in self._ws.results
+                     if fv.scan_number == fit.scan_number and fv.detector_id == fit.detector_id),
+                    None)
+        self.inspector_vm.set_fit(fresh)
 
     # ---- session layout --------------------------------------------------
     def _snapshot_session(self) -> Session:
         state = bytes(self.saveState().toBase64().data()).decode("ascii")
         self._session.dock_layout_b64 = state
         self._session.note_workspace(self._ws.root)
+        self.heatmap_vm.save_view_state(self._session)
+        self.dispersion_vm.save_view_state(self._session)
         self.waterfall_vm.save_view_state(self._session)
         return self._session
 

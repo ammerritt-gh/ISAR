@@ -50,6 +50,11 @@ class WatchBridge(QObject):
     @Slot(set)
     def _on_tick(self, changed) -> None:
         # Runs on the Qt thread: refresh first so slots just re-read views, then fan out.
+        # Guard: stop() clears _watcher synchronously, but a tick already queued before stop() ran
+        # is still delivered (QueuedConnection just posts an event) — drop it here rather than
+        # refreshing/emitting after the bridge was told to stop.
+        if self._watcher is None:
+            return
         self._ws.refresh()
         self.changed.emit(set(changed))
 

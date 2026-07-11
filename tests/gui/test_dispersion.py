@@ -187,6 +187,22 @@ def test_dock_renders_and_routes_click(qtbot, make_ws):
     assert blocker.args[0].scan_number == 1
 
 
+def test_view_state_round_trips_through_session(make_ws):
+    from isar_gui.session import Session
+
+    ws = _make(make_ws)
+    vm1 = DispersionViewModel(ws)
+    vm1.set_temperature(200.0)
+    session = Session()
+    vm1.save_view_state(session)
+    assert session.view_state["dispersion"] == {"temperature": 200.0}
+
+    ws2 = _make(make_ws)
+    vm2 = DispersionViewModel(ws2)
+    vm2.load_view_state(session)
+    assert vm2.temperature == pytest.approx(200.0)
+
+
 def test_mainwindow_registers_dispersion_dock_and_routes(qtbot, make_ws):
     from isar_gui.main_window import MainWindow
     from isar_gui.session import Session

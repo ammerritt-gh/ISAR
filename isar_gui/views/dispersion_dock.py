@@ -29,6 +29,7 @@ class DispersionDock(QDockWidget):
 
     def __init__(self, vm, parent=None):
         super().__init__("Dispersion ω(q)", parent)
+        self.setObjectName("dispersion_dock")  # stable name for saveState()/restoreState()
         self._vm = vm
 
         body = QWidget()

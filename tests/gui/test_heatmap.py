@@ -15,6 +15,7 @@ pytest.importorskip("pyqtgraph")
 
 from isar.plotspec.spec import MarkerKind, Role, State
 from isar.workspace_api import Workspace
+from isar_gui.session import Session
 from isar_gui.viewmodels.heatmap import HeatmapViewModel
 
 _MVP16 = Path(r"C:\Users\AMM\Documents\ISAR_baselines\mvp_zone_test16")
@@ -192,6 +193,20 @@ def test_dock_renders_and_routes_click(qtbot, make_ws):
     with qtbot.waitSignal(vm.point_activated, timeout=1000) as blocker:
         vm.activate_at(2.0, 4.0)
     assert blocker.args[0].scan_number == 1
+
+
+def test_view_state_round_trips_through_session(make_ws):
+    ws = _make(make_ws)
+    vm1 = HeatmapViewModel(ws)
+    vm1.set_temperature(200.0)
+    session = Session()
+    vm1.save_view_state(session)
+    assert session.view_state["heatmap"] == {"temperature": 200.0}
+
+    ws2 = _make(make_ws)
+    vm2 = HeatmapViewModel(ws2)
+    vm2.load_view_state(session)
+    assert vm2.temperature == pytest.approx(200.0)
 
 
 def test_mainwindow_registers_plane_dock_and_routes(qtbot, make_ws):

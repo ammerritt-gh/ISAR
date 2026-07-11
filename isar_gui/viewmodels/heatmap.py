@@ -33,6 +33,7 @@ _VERDICT_MARKER = {
     "held": ps.MarkerKind.VERDICT_HELD,
 }
 _T_ROUND = 5.0   # K bin for matching branch-model / prior points to the viewed temperature
+_STATE_KEY = "heatmap"
 
 
 def _g(v) -> str:
@@ -107,6 +108,18 @@ class HeatmapViewModel(ViewModel):
 
     def _nearest(self, x, y, tol):
         return projection.nearest_point(self._points, x, y, tol)
+
+    # ---- view-state round trip (G10: view state only, never the workspace) --
+    def save_view_state(self, session) -> None:
+        session.view_state[_STATE_KEY] = {"temperature": self._temperature}
+
+    def load_view_state(self, session) -> None:
+        st = (getattr(session, "view_state", None) or {}).get(_STATE_KEY)
+        if not isinstance(st, dict):
+            return
+        t = st.get("temperature")
+        self._temperature = None if t is None else float(t)
+        self.refresh()
 
     # ---- assembly ---------------------------------------------------------
     def _hkl_round_step(self) -> float:

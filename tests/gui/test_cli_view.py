@@ -21,6 +21,12 @@ def test_view_parses_workspace_arg():
     assert args.workspace == "/some/ws"
 
 
+def test_view_workspace_arg_is_optional():
+    args = build_parser().parse_args(["view"])
+    assert args.command == "view"
+    assert args.workspace is None
+
+
 def test_missing_gui_extra_reports_helpful_message(monkeypatch, capsys):
     # Exercise the REAL decision path: the [gui] extra is missing == PySide6 not importable, which
     # view_cmd probes with importlib.util.find_spec BEFORE touching isar_gui.app. Make find_spec
@@ -61,3 +67,60 @@ def test_present_gui_extra_launches(monkeypatch):
     rc = view_cmd.run(SimpleNamespace(workspace="/some/ws"))
     assert rc == 0
     assert called["argv"] == ["/some/ws"]
+
+
+def _make_pyside6_present(monkeypatch):
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        view_cmd.importlib.util, "find_spec",
+        lambda name, *a, **k: object() if name == "PySide6" else real_find_spec(name, *a, **k))
+
+
+def test_no_workspace_arg_opens_most_recent(monkeypatch):
+    # No workspace given: run() must resolve the most-recent session workspace and hand it to the
+    # launcher, not fall into the missing-extra branch.
+    import isar_gui.app as gui_app
+
+    _make_pyside6_present(monkeypatch)
+    monkeypatch.setattr(view_cmd, "_most_recent_workspace", lambda: "/ws/recent")
+
+    called = {}
+
+    def fake_main(argv):
+        called["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(gui_app, "main", fake_main)
+    rc = view_cmd.run(SimpleNamespace(workspace=None))
+    assert rc == 0
+    assert called["argv"] == ["/ws/recent"]
+
+
+def test_no_workspace_arg_and_no_recent_exits_2(monkeypatch, capsys):
+    _make_pyside6_present(monkeypatch)
+    monkeypatch.setattr(view_cmd, "_most_recent_workspace", lambda: None)
+
+    rc = view_cmd.run(SimpleNamespace(workspace=None))
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "no recent workspace" in err
+
+
+def test_most_recent_workspace_skips_missing_paths(tmp_path, monkeypatch):
+    import isar_gui.session as gui_session
+
+    missing = tmp_path / "gone"
+    existing = tmp_path / "there"
+    existing.mkdir()
+
+    monkeypatch.setattr(
+        gui_session, "load_session",
+        lambda *a, **k: gui_session.Session(recent_workspaces=[str(missing), str(existing)]))
+    assert view_cmd._most_recent_workspace() == str(existing)
+
+
+def test_most_recent_workspace_none_without_session(monkeypatch):
+    import isar_gui.session as gui_session
+
+    monkeypatch.setattr(gui_session, "load_session", lambda *a, **k: gui_session.Session())
+    assert view_cmd._most_recent_workspace() is None

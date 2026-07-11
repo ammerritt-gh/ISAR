@@ -67,3 +67,22 @@ def test_stop_is_idempotent(qtbot, make_ws):
     bridge.stop()
     bridge.stop()  # no error on double-stop
     assert bridge._watcher is None
+
+
+def test_no_emit_after_stop(qtbot, make_ws):
+    """A file change made after stop() must never surface as a ``changed`` emission — including a
+    tick already queued (on the watcher's daemon thread) before stop() ran on the Qt thread."""
+    root = make_ws(rows=[{"scan": 1, "detector": "det"}])
+    ws = Workspace.open(root)
+
+    seen = {"count": 0}
+    bridge = WatchBridge(ws, debounce_ms=50, poll_interval_s=0.02)
+    bridge.changed.connect(lambda changed: seen.__setitem__("count", seen["count"] + 1))
+    bridge.start()
+    bridge.stop()
+
+    _append(root / "report" / "results.csv", "2,det\n")
+    # Event-driven wait: give the (now-stopped) watcher's poll loop several intervals to have
+    # noticed and posted a tick, if it still could. No signal is expected.
+    qtbot.wait(400)
+    assert seen["count"] == 0

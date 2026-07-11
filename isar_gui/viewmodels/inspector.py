@@ -80,6 +80,12 @@ class InspectorViewModel(ViewModel):
     def is_empty(self) -> bool:
         return self._state.empty
 
+    @property
+    def current_fit(self):
+        """The currently-inspected ``FitView`` (``None`` in the empty state). Read by the window's
+        watch slot to re-look-up the fit by identity after a workspace change."""
+        return self._fit
+
     # ---- selection slot ---------------------------------------------------
     def set_fit(self, fit_view) -> None:
         """Slot wired to ``BrowserViewModel.selection_changed``. ``None`` resets to the empty state."""

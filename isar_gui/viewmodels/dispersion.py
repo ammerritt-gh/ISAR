@@ -25,6 +25,7 @@ _T_ROUND = 5.0        # K bin for matching prior / branch anchors to the viewed 
 _OFF_CURVE_K = 3.0    # a 3σ gate: flag ω̂ only when it is grossly off the prior (a ~0.3% two-sided
 #                       tail under Gaussian noise), so the flag reads as "the model and the number
 #                       genuinely disagree", not as ordinary scatter.
+_STATE_KEY = "dispersion"
 
 
 def _g(v) -> str:
@@ -95,6 +96,18 @@ class DispersionViewModel(ViewModel):
         fv = projection.nearest_point(self._points, x, y, tol)
         if fv is not None:
             self.point_activated.emit(fv)
+
+    # ---- view-state round trip (G10: view state only, never the workspace) --
+    def save_view_state(self, session) -> None:
+        session.view_state[_STATE_KEY] = {"temperature": self._temperature}
+
+    def load_view_state(self, session) -> None:
+        st = (getattr(session, "view_state", None) or {}).get(_STATE_KEY)
+        if not isinstance(st, dict):
+            return
+        t = st.get("temperature")
+        self._temperature = None if t is None else float(t)
+        self.refresh()
 
     # ---- assembly ---------------------------------------------------------
     def _hkl_round_step(self) -> float:
