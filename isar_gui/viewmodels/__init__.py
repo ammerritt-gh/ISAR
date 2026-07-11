@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from isar_gui.viewmodels.base import ViewModel
 from isar_gui.viewmodels.browser import BrowserViewModel, GroupRow
+from isar_gui.viewmodels.heatmap import HeatmapViewModel
 from isar_gui.viewmodels.inspector import InspectorViewModel
 
-__all__ = ["ViewModel", "BrowserViewModel", "GroupRow", "InspectorViewModel"]
+__all__ = ["ViewModel", "BrowserViewModel", "GroupRow", "InspectorViewModel",
+           "HeatmapViewModel"]

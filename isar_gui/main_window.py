@@ -19,8 +19,14 @@ from PySide6.QtWidgets import QFileDialog, QMainWindow
 from isar.workspace_api import Workspace, WorkspaceNotFound
 from isar_gui.log_dock import LogDock
 from isar_gui.session import Autosaver, Session, load_session
-from isar_gui.viewmodels import BrowserViewModel, InspectorViewModel, ViewModel
+from isar_gui.viewmodels import (
+    BrowserViewModel,
+    HeatmapViewModel,
+    InspectorViewModel,
+    ViewModel,
+)
 from isar_gui.views.browser_dock import BrowserDock
+from isar_gui.views.heatmap_dock import HeatmapDock
 from isar_gui.views.inspector_widget import InspectorWidget
 from isar_gui.watch_bridge import WatchBridge
 
@@ -59,11 +65,14 @@ class MainWindow(QMainWindow):
         self._viewmodel = ViewModel(ws, parent=self)
         self.browser_vm = BrowserViewModel(ws, parent=self)
         self.inspector_vm = InspectorViewModel(ws, parent=self)
+        self.heatmap_vm = HeatmapViewModel(ws, parent=self)
 
         # The C2 fit inspector is the central widget; a browser selection drives it.
         self.inspector = InspectorWidget(self.inspector_vm, parent=self)
         self.setCentralWidget(self.inspector)
         self.browser_vm.selection_changed.connect(self.inspector_vm.set_fit)
+        # The C3 plane routes a picked ω̂ point to the same inspector.
+        self.heatmap_vm.point_activated.connect(self.inspector_vm.set_fit)
 
         self._docks = {}
         self._init_docks()
@@ -90,6 +99,10 @@ class MainWindow(QMainWindow):
         self.browser_dock = BrowserDock(self.browser_vm, self)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.browser_dock)
         self._register_dock("Browser", self.browser_dock)
+
+        self.heatmap_dock = HeatmapDock(self.heatmap_vm, self)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.heatmap_dock)
+        self._register_dock("Plane (q, E)", self.heatmap_dock)
 
     def _register_dock(self, name: str, dock) -> None:
         """Track a dock so the Docks menu and layout autosave pick it up (call before menu build)."""
@@ -158,6 +171,7 @@ class MainWindow(QMainWindow):
         self._viewmodel.deleteLater()
         self.browser_vm.deleteLater()
         self.inspector_vm.deleteLater()
+        self.heatmap_vm.deleteLater()
         # The central inspector widget is rebuilt against the new workspace in _bind_workspace;
         # setCentralWidget will reparent+delete the old one, but drop it explicitly so its VM
         # connection is gone before the fresh bind.

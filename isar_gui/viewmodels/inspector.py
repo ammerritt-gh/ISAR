@@ -26,27 +26,13 @@ import numpy as np
 from PySide6.QtCore import Signal
 
 from isar.plotspec import builders
+from isar_gui.viewmodels import certify
 from isar_gui.viewmodels.base import ViewModel
+# Re-exported for backwards compatibility: the ladder derivation now lives in certify.py (shared with
+# the heatmap/dispersion views), but LadderRow's public location historically was this module.
+from isar_gui.viewmodels.certify import LadderRow  # noqa: F401
 
 _FINE_N = 400
-
-
-def _fmt_interval(iv) -> str:
-    lo, hi = float(iv[0]), float(iv[-1])
-    return f"[{lo:.3f}, {hi:.3f}]"
-
-
-@dataclass
-class LadderRow:
-    """One interval-ladder tier as display-ready state. ``certifying`` is set on at most one row
-    (bayes never). ``interval_text`` is the honest text — ``"(unreliable)"`` or ``"—"``, never
-    numbers, when the tier does not carry a usable numeric range."""
-
-    tier: str
-    interval_text: str
-    certifying: bool = False
-    annotation: str = ""
-    diagnostics_only: bool = False
 
 
 @dataclass
@@ -112,7 +98,7 @@ class InspectorViewModel(ViewModel):
     def _build(self, fit) -> InspectorState:
         if fit is None:
             return InspectorState(empty=True)
-        ladder = self._ladder_rows(fit)
+        ladder = certify.ladder_rows(fit)
         certifying = next((r.tier for r in ladder if r.certifying), None)
         cand_rows, recorded = self._candidate_rows(fit)
         st = InspectorState(
@@ -144,7 +130,7 @@ class InspectorViewModel(ViewModel):
 
         # The ω₀ whisker in the plot shows the CERTIFYING tier's interval (None => warning marker),
         # not bootstrap-regardless — so an uncertified ω₀ never draws a numeric whisker.
-        cert_interval = self._certifying_interval(fit, st.certifying_tier)
+        cert_interval = certify.certifying_interval(fit)
 
         # Honesty law: a pooled master's true spectrum is not persisted, so we NEVER draw a member's
         # data/*.json counts under a "pooled" title. Render curve-only + a "member data not shown"
@@ -177,56 +163,6 @@ class InspectorViewModel(ViewModel):
             c = float(fit.omega0)
             return np.linspace(c - 10.0, c + 10.0, _FINE_N)
         return None
-
-    @staticmethod
-    def _certifying_interval(fit, certifying_tier):
-        """The numeric interval of the certifying tier (bayes never certifies), or ``None``."""
-        if certifying_tier == "bootstrap":
-            return fit.interval
-        if certifying_tier == "profile":
-            return fit.omega0_profile
-        if certifying_tier == "hesse":
-            return fit.hesse_interval
-        return None
-
-    # -- interval ladder --
-    def _ladder_rows(self, fit) -> list:
-        boot = fit.interval
-        reliable = fit.interval_reliable is not False
-        prof = fit.omega0_profile
-        hesse = fit.hesse_interval
-        hesse_trusted = bool(fit.hesse_trusted)
-        bayes = fit.bayes_interval
-
-        boot_certifies = reliable and boot is not None
-        prof_certifies = (not boot_certifies) and prof is not None
-        hesse_certifies = (not boot_certifies and not prof_certifies
-                           and hesse_trusted and hesse is not None)
-
-        # bootstrap: never numbers when unreliable
-        if boot is None:
-            boot_text = "—"
-        elif not reliable:
-            boot_text = "(unreliable)"
-        else:
-            boot_text = _fmt_interval(boot)
-        rows = [LadderRow("bootstrap", boot_text, certifying=boot_certifies,
-                          annotation=("authoritative" if boot_certifies else ""))]
-
-        rows.append(LadderRow("profile", _fmt_interval(prof) if prof is not None else "—",
-                              certifying=prof_certifies))
-
-        hesse_note = "trusted" if hesse_trusted else ("not trusted" if hesse is not None else "")
-        rows.append(LadderRow("hesse", _fmt_interval(hesse) if hesse is not None else "—",
-                              certifying=hesse_certifies, annotation=hesse_note))
-
-        ess = fit.bayes_ess
-        bayes_note = "diagnostics-only"
-        if ess is not None:
-            bayes_note += f"; ESS={ess:.0f}"
-        rows.append(LadderRow("bayes", _fmt_interval(bayes) if bayes is not None else "—",
-                              certifying=False, annotation=bayes_note, diagnostics_only=True))
-        return rows
 
     # -- AIC candidates --
     @staticmethod
