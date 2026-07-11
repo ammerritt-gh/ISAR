@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from isar.geometry.epochs import resolve_epoch, sample_state_from_epoch
+from isar.geometry.tas_geometry import component_q_to_instrument_q
 
 
 def _epoch(version, *, scan_ref=None, ts=None, supersedes=None,
@@ -66,6 +67,26 @@ def test_ts_resolution_independent_of_scan_ref():
     assert resolve_epoch(epochs, ts="2026-03-06T00:00:00") is e2
 
 
+def test_ts_aware_offsets_order_as_instants():
+    # 2026-03-01T06:00:00+05:00 == 2026-03-01T01:00:00Z as instants. Strings do NOT order
+    # lexicographically ("06..." > "01..."), so only instant-aware comparison is correct.
+    e1 = _epoch(1, ts="2026-03-01T00:00:00+00:00")
+    e2 = _epoch(2, ts="2026-03-01T06:00:00+05:00")   # == 01:00:00Z
+    epochs = [e1, e2]
+    # 00:30Z is after e1 (00:00Z) but before e2 (01:00Z) -> e1 governs.
+    assert resolve_epoch(epochs, ts="2026-03-01T00:30:00Z") is e1
+    # At/after e2's instant -> e2 governs (lexicographic string order would wrongly pick e1).
+    assert resolve_epoch(epochs, ts="2026-03-01T01:00:00Z") is e2
+    assert resolve_epoch(epochs, ts="2026-03-01T02:00:00Z") is e2
+
+
+def test_ts_mixed_aware_and_naive_raises():
+    e1 = _epoch(1, ts="2026-03-01T00:00:00")          # naive
+    e2 = _epoch(2, ts="2026-03-05T12:00:00+00:00")    # aware
+    with pytest.raises(ValueError):
+        resolve_epoch([e1, e2], ts="2026-03-06T00:00:00Z")
+
+
 def test_no_applicable_epoch_returns_none():
     # Only a bounded epoch that starts after the query -> nothing governs yet.
     e = _epoch(2, scan_ref="055182")
@@ -82,8 +103,8 @@ def test_sample_state_from_epoch_oriented_from_uv():
     e = _epoch(1, orient={"u": [1, 0, 0], "v": [0, 0, 1]})
     s = sample_state_from_epoch(e)
     assert s.oriented is True
-    # The u vector [1,0,0] lies in the horizontal scattering plane; its Q has ~0
-    # out-of-plane (instrument-z) component.
-    q = s.ub().hkl_to_q(1, 0, 0)
-    q_out_of_plane = q[1]  # component frame: y is out of plane
-    assert abs(q_out_of_plane) < 1e-9
+    # The u vector [1,0,0] lies in the horizontal scattering plane, so its Q has ~0
+    # out-of-plane component. hkl_to_q returns component-frame Q; convert to the package's
+    # instrument frame (+z out of plane) and assert the instrument-z component vanishes.
+    q_inst = component_q_to_instrument_q(np.asarray(s.ub().hkl_to_q(1, 0, 0)))
+    assert abs(q_inst[2]) < 1e-9  # instrument-frame out-of-plane (z) component

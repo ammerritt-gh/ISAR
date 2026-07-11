@@ -1,7 +1,8 @@
 # Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\TAVI),
 # original path tavi/sample_mount.py.  License: GPL-3.0 (TAVI). ISAR is GPL-3.0, compatible.
 # Vendored 2026-07-11, adapted: import of mccode_euler_from_matrix rewritten from
-# tavi.tas_geometry to the vendored .tas_geometry.
+# tavi.tas_geometry to the vendored .tas_geometry; 2026-07-12 `reciprocal_basis_tas`
+# validates a/b/c are finite and positive before building the cell.
 """Component-agnostic sample mounting and HKL conversion helpers."""
 from __future__ import annotations
 
@@ -23,6 +24,9 @@ def reciprocal_basis_tas(a, b, c, alpha, beta, gamma) -> np.ndarray:
     a = float(a)
     b = float(b)
     c = float(c)
+    for name, value in (("a", a), ("b", b), ("c", c)):
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"Lattice length {name} must be finite and positive; got {value}.")
     aa = math.radians(float(alpha))
     bb = math.radians(float(beta))
     cc = math.radians(float(gamma))

@@ -2,6 +2,7 @@
 # original path tas_mcp/session.py.  Vendored 2026-07-11, adapted: only the SampleState value
 # object is kept — the stateful TASSession, the instrument/fixed-k session config, and the MCP
 # server layer are dropped. Sample orientation still delegates to the vendored UBMatrix.
+# 2026-07-12: `ub()` cache invalidates when the lattice is mutated (rebuilds B, preserves U).
 """Sample value object: lattice parameters plus an optional UB orientation.
 
 ``SampleState`` is the per-call value object the stateless geometry functions
@@ -15,7 +16,7 @@ mounted crystal uses exactly the same Busing-Levy math as TAVI itself.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from .ub_matrix import UBMatrix
@@ -33,11 +34,30 @@ class SampleState:
     gamma: float
     _ub: Optional[UBMatrix] = None
     orientation_set: bool = False
+    # The lattice tuple the cached ``_ub`` was built from; used to detect stale caches when
+    # the lattice fields are mutated after ``ub()`` first built the UBMatrix. Not part of the
+    # value-object identity (compare/repr off).
+    _ub_lattice: Optional[tuple] = field(default=None, compare=False, repr=False)
 
     def ub(self) -> UBMatrix:
-        """Return a UBMatrix for this sample, constructing one if needed."""
+        """Return a UBMatrix for this sample, constructing one if needed.
+
+        The UBMatrix is cached, but the cache is keyed on the lattice it was built from. If
+        the lattice fields are mutated after the first build the old B is invalid, so a fresh
+        UBMatrix is rebuilt from the new lattice. The mount rotation U is lattice-independent,
+        so an established orientation is carried over onto the rebuilt matrix — an oriented
+        sample stays oriented across a lattice change.
+        """
         if self._ub is None:
             self._ub = UBMatrix(self.a, self.b, self.c, self.alpha, self.beta, self.gamma)
+            self._ub_lattice = self.lattice
+        elif self.lattice != self._ub_lattice:
+            old_u = self._ub.U
+            rebuilt = UBMatrix(self.a, self.b, self.c, self.alpha, self.beta, self.gamma)
+            if self.orientation_set:
+                rebuilt.set_U(old_u)
+            self._ub = rebuilt
+            self._ub_lattice = self.lattice
         return self._ub
 
     @property

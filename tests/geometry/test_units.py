@@ -53,3 +53,9 @@ def test_q_is_not_a_wavevector_guard():
     # neutron_units rejects unknown quantities; there is no Q->energy path.
     with pytest.raises(ValueError):
         units.neutron_units(3.14, "q_inv_angstrom", "energy_meV")
+
+
+def test_negative_energy_input_rejected():
+    # The direct energy_meV input branch must reject negatives like the k/wavelength branches.
+    with pytest.raises(ValueError):
+        units.neutron_units(-1, "energy_meV", "k_inv_angstrom")

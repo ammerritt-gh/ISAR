@@ -1,6 +1,8 @@
 # Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\TAVI),
 # original path tavi/reciprocal_space.py.  License: GPL-3.0 (TAVI). ISAR is GPL-3.0, compatible.
-# Vendored 2026-07-11, adapted: none (numpy/stdlib only; no TAVI imports to rewrite).
+# Vendored 2026-07-11, adapted: 2026-07-12 factored the unit-cell volume + validity guard into
+# a shared `_cell_volume` helper so BOTH the forward (HKL->Q) and inverse (Q->HKL) functions
+# reject degenerate/invalid cells (NaN-safe `not (V > 0)`); previously only Q->HKL checked.
 """Reciprocal space calculations for TAVI.
 
 This module contains functions for converting between HKL reciprocal lattice
@@ -8,6 +10,25 @@ coordinates and Cartesian Q-space coordinates.
 """
 import math
 import numpy as np
+
+
+def _cell_volume(a, b, c, alpha_rad, beta_rad, gamma_rad):
+    """Unit-cell volume from lattice params (angles in radians); reject invalid cells.
+
+    For an impossible angle combination the radicand goes negative, which would make the
+    volume undefined (NaN). The guard uses ``not (V > 0)`` so a NaN, zero, or negative
+    volume all raise rather than propagating a math-domain error into the reciprocal math.
+    """
+    radicand = (
+        1 - math.cos(alpha_rad) ** 2 - math.cos(beta_rad) ** 2 - math.cos(gamma_rad) ** 2
+        + 2 * math.cos(alpha_rad) * math.cos(beta_rad) * math.cos(gamma_rad)
+    )
+    V = a * b * c * math.sqrt(radicand) if radicand > 0 else float("nan")
+    if not (V > 0):
+        raise ValueError(
+            "Invalid lattice parameters: unit cell volume is zero, negative, or undefined."
+        )
+    return V
 
 
 def update_Q_from_HKL_direct(H, K, L, a, b, c, alpha, beta, gamma):
@@ -26,11 +47,8 @@ def update_Q_from_HKL_direct(H, K, L, a, b, c, alpha, beta, gamma):
     beta_rad = math.radians(beta)
     gamma_rad = math.radians(gamma)
 
-    # Calculate unit cell volume
-    V = a * b * c * math.sqrt(
-        1 - math.cos(alpha_rad)**2 - math.cos(beta_rad)**2 - math.cos(gamma_rad)**2
-        + 2 * math.cos(alpha_rad) * math.cos(beta_rad) * math.cos(gamma_rad)
-    )
+    # Calculate unit cell volume (guards degenerate/invalid cells)
+    V = _cell_volume(a, b, c, alpha_rad, beta_rad, gamma_rad)
 
     # Calculate reciprocal lattice parameters
     a_star = 2 * math.pi * b * c * math.sin(alpha_rad) / V
@@ -92,13 +110,8 @@ def update_HKL_from_Q_direct(qx, qy, qz, a, b, c, alpha, beta, gamma):
     beta_rad = math.radians(beta)
     gamma_rad = math.radians(gamma)
 
-    # Calculate unit cell volume
-    V = a * b * c * math.sqrt(
-        1 - math.cos(alpha_rad)**2 - math.cos(beta_rad)**2 - math.cos(gamma_rad)**2
-        + 2 * math.cos(alpha_rad) * math.cos(beta_rad) * math.cos(gamma_rad)
-    )
-    if V <= 0:
-        raise ValueError("Invalid lattice parameters: unit cell volume is zero or negative.")
+    # Calculate unit cell volume (guards degenerate/invalid cells)
+    V = _cell_volume(a, b, c, alpha_rad, beta_rad, gamma_rad)
 
     # Calculate reciprocal lattice parameters
     a_star = 2 * math.pi * b * c * math.sin(alpha_rad) / V

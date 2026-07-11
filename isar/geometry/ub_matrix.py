@@ -4,7 +4,10 @@
 # instrument_q_to_component_q / q_instrument_from_angles rewritten from tavi.* to the
 # vendored .sample_mount / .tas_geometry; (2) the "Training Mode" section (random-rotation
 # exercise generator + XOR/base64 hash encode/decode + check_training_quality) dropped — it
-# is a GUI teaching aid unused by the metric/UB layer.
+# is a GUI teaching aid unused by the metric/UB layer; (3) 2026-07-12 `refine_lattice_from_peaks`
+# replaced the single global-scale fit with a per-system constrained linear least-squares on
+# |Q|^2 in the reciprocal metric (recovers anisotropic error for cubic/tetragonal/orthorhombic/
+# hexagonal), falling back to the old uniform scale when under-determined; adds a `method` key.
 """UB Matrix calculations for TAVI.
 
 Implements the Busing-Levy (1967) UB matrix formalism for crystal orientation
@@ -243,12 +246,132 @@ def refine_U_matrix(peaks: list, B: np.ndarray) -> np.ndarray:
     return U
 
 
+# Systems whose fixed angles make the reciprocal metric tensor known up to the free
+# lengths, so |Q(hkl)|^2 is LINEAR in a small set of reciprocal-metric parameters and can be
+# fit with a constrained linear least-squares (rather than a single global scale factor).
+_METRIC_SYSTEMS = ("cubic", "tetragonal", "orthorhombic", "hexagonal")
+
+_SYSTEM_ANGLES = {
+    "cubic": (90.0, 90.0, 90.0),
+    "tetragonal": (90.0, 90.0, 90.0),
+    "orthorhombic": (90.0, 90.0, 90.0),
+    "hexagonal": (90.0, 90.0, 120.0),
+}
+
+_SYSTEM_N_PARAMS = {"cubic": 1, "tetragonal": 2, "orthorhombic": 3, "hexagonal": 2}
+
+
+def _metric_design_row(system: str, h, k, l) -> list:
+    """Row of the |Q|^2 design matrix for one reflection, per crystal system.
+
+    Coefficients multiply the reciprocal-metric parameters (squared reciprocal lengths).
+    Derived from |Q(hkl)|^2 = (2*pi)^2 * [hkl] G^{-1} [hkl]^T with the system's fixed angles:
+      * orthogonal (cubic/tetragonal/orthorhombic): G^{-1} diagonal -> h^2/a^2 etc.
+      * hexagonal (gamma=120): the a-b block gives (h^2 + k^2 + hk) sharing one parameter.
+    """
+    h, k, l = float(h), float(k), float(l)
+    if system == "cubic":
+        return [h * h + k * k + l * l]
+    if system == "tetragonal":
+        return [h * h + k * k, l * l]
+    if system == "orthorhombic":
+        return [h * h, k * k, l * l]
+    # hexagonal
+    return [h * h + k * k + h * k, l * l]
+
+
+def _lengths_from_metric_params(system: str, params) -> tuple:
+    """Recover direct-lattice lengths from the fitted reciprocal-metric parameters.
+
+    Each parameter is the coefficient of its design column. For the orthogonal systems that
+    coefficient is (2*pi/length)^2 so length = 2*pi/sqrt(param). For hexagonal the shared
+    a-b parameter is 4*(2*pi)^2/(3 a^2), so a = 2*(2*pi)/sqrt(3*param); c is orthogonal.
+    """
+    two_pi = 2.0 * math.pi
+    if system == "cubic":
+        a = two_pi / math.sqrt(params[0])
+        return (a, a, a)
+    if system == "tetragonal":
+        a = two_pi / math.sqrt(params[0])
+        c = two_pi / math.sqrt(params[1])
+        return (a, a, c)
+    if system == "orthorhombic":
+        a = two_pi / math.sqrt(params[0])
+        b = two_pi / math.sqrt(params[1])
+        c = two_pi / math.sqrt(params[2])
+        return (a, b, c)
+    # hexagonal
+    a = 2.0 * two_pi / math.sqrt(3.0 * params[0])
+    c = two_pi / math.sqrt(params[1])
+    return (a, a, c)
+
+
+def _metric_lsq_refine(observed: list, crystal_system: str):
+    """Constrained linear LSQ of |Q|^2 in reciprocal-metric parameters.
+
+    Returns the refined ``(a, b, c, alpha, beta, gamma)`` tuple, or ``None`` to signal that
+    the fit was under-determined (too few peaks / rank-deficient design, e.g. only (h,k,0)
+    peaks for a tetragonal cell) or unphysical (a non-positive fitted parameter), so the
+    caller should fall back to the uniform-scale path.
+    """
+    n_params = _SYSTEM_N_PARAMS[crystal_system]
+    rows = [_metric_design_row(crystal_system, *hkl) for hkl, _ in observed]
+    A = np.array(rows, dtype=float)
+    y = np.array([q_obs * q_obs for _, q_obs in observed], dtype=float)
+    if A.shape[0] < n_params or np.linalg.matrix_rank(A) < n_params:
+        return None
+    params, *_ = np.linalg.lstsq(A, y, rcond=None)
+    if not np.all(np.isfinite(params)) or np.any(params <= 0):
+        return None
+    lengths = _lengths_from_metric_params(crystal_system, params)
+    return (*lengths, *_SYSTEM_ANGLES[crystal_system])
+
+
+def _uniform_scale_refine(observed: list, initial_lattice: tuple, crystal_system: str):
+    """Legacy single-global-scale refinement (isotropic |Q| scaling).
+
+    Returns the refined lattice tuple, or ``None`` when no peak has a usable calculated |Q|.
+    Cannot capture genuinely anisotropic error (e.g. tetragonal a vs c); it is the fallback
+    for under-determined metric fits and the only option for general/monoclinic/triclinic.
+    """
+    a0, b0, c0, al0, be0, ga0 = initial_lattice
+    B0 = compute_B_matrix(a0, b0, c0, al0, be0, ga0)
+    scale_ratios = []
+    for hkl, q_obs in observed:
+        q_calc = np.linalg.norm(B0 @ np.array(hkl, dtype=float))
+        if q_calc > 1e-8:
+            scale_ratios.append(q_obs / q_calc)
+    if not scale_ratios:
+        return None
+    # |Q| ∝ 1/a, so avg_scale = mean(q_obs/q_calc) > 1 means observed |Q| is larger →
+    # real-space lattice constants are smaller → divide by avg_scale.
+    avg_scale = float(np.mean(scale_ratios))
+    if crystal_system == "cubic":
+        a_new = a0 / avg_scale
+        return (a_new, a_new, a_new, 90.0, 90.0, 90.0)
+    if crystal_system == "tetragonal":
+        return (a0 / avg_scale, a0 / avg_scale, c0 / avg_scale, 90.0, 90.0, 90.0)
+    if crystal_system == "hexagonal":
+        return (a0 / avg_scale, a0 / avg_scale, c0 / avg_scale, 90.0, 90.0, 120.0)
+    if crystal_system == "orthorhombic":
+        return (a0 / avg_scale, b0 / avg_scale, c0 / avg_scale, 90.0, 90.0, 90.0)
+    # General: uniform scaling of lengths, angles left untouched.
+    return (a0 / avg_scale, b0 / avg_scale, c0 / avg_scale, al0, be0, ga0)
+
+
 def refine_lattice_from_peaks(peaks: list, initial_lattice: tuple,
                               crystal_system: str = None) -> dict:
-    """Refine lattice parameters from observed peak positions.
+    """Refine lattice parameters from observed peak |Q| magnitudes.
 
-    Compares observed d-spacings with calculated ones and adjusts lattice parameters.
-    Uses simple least-squares fitting.
+    For the right-angled and hexagonal systems (cubic/tetragonal/orthorhombic/hexagonal)
+    the fixed angles make |Q(hkl)|^2 linear in a few reciprocal-metric parameters, so a
+    constrained linear least-squares recovers genuinely anisotropic error (e.g. tetragonal
+    a vs c) that a single global scale factor cannot — ``method`` = ``"metric_lsq"``. If that
+    fit is under-determined or unphysical it falls back to the isotropic single-scale path
+    (``method`` = ``"uniform_scale_fallback"``). For ``crystal_system`` None or any other
+    value (monoclinic/triclinic/general) the isotropic single-scale path is used directly
+    (``method`` = ``"uniform_scale"``); note angles cannot be refined from |Q| magnitudes
+    alone, so they are carried through unchanged in that case.
 
     Args:
         peaks: List of ObservedPeak instances.
@@ -256,75 +379,43 @@ def refine_lattice_from_peaks(peaks: list, initial_lattice: tuple,
         crystal_system: Optional crystal system name to constrain refinement.
 
     Returns:
-        dict with 'lattice' (refined params), 'residuals' (per-peak), 'rms_error'.
+        dict with 'lattice' (refined params), 'residuals' (per-peak), 'rms_error', and the
+        additive 'method' key naming which path produced the result.
     """
     valid_peaks = [p for p in peaks if p.is_valid]
     if len(valid_peaks) < 1:
         raise ValueError("Need at least 1 valid peak for lattice refinement.")
 
-    a0, b0, c0, al0, be0, ga0 = initial_lattice
-
-    # Collect observed |Q| for each peak
+    # Collect observed |Q| for each peak.
     observed = []
     for peak in valid_peaks:
         q_obs = np.linalg.norm(peak.q_lab)
-        observed.append((peak.hkl, q_obs))
+        observed.append((tuple(peak.hkl), q_obs))
 
-    # Simple refinement: scale lattice parameters to match observed d-spacings
-    # For each peak: |Q_calc| = |B @ hkl|, |Q_obs| from angles
-    # Minimize sum of (|Q_calc| - |Q_obs|)^2 by scaling
+    refined = None
+    method = None
+    if crystal_system in _METRIC_SYSTEMS:
+        refined = _metric_lsq_refine(observed, crystal_system)
+        if refined is not None:
+            method = "metric_lsq"
+    if refined is None:
+        refined = _uniform_scale_refine(observed, initial_lattice, crystal_system)
+        method = ("uniform_scale_fallback" if crystal_system in _METRIC_SYSTEMS
+                  else "uniform_scale")
+        if refined is None:
+            # No peak yields a usable calculated |Q| — nothing to refine against.
+            return {
+                'lattice': initial_lattice,
+                'residuals': [],
+                'rms_error': float('inf'),
+                'method': method,
+            }
 
-    B0 = compute_B_matrix(a0, b0, c0, al0, be0, ga0)
-
-    residuals = []
-    scale_ratios = []
-    for hkl, q_obs in observed:
-        q_calc = np.linalg.norm(B0 @ np.array(hkl))
-        if q_calc > 1e-8:
-            residuals.append(q_obs - q_calc)
-            scale_ratios.append(q_obs / q_calc)
-
-    if not scale_ratios:
-        return {
-            'lattice': initial_lattice,
-            'residuals': [],
-            'rms_error': float('inf'),
-        }
-
-    # Average scale factor
-    avg_scale = np.mean(scale_ratios)
-
-    # Apply constraints based on crystal system.
-    # |Q| ∝ 1/a, so avg_scale = mean(q_obs/q_calc) > 1 means observed |Q| is
-    # larger → real-space lattice constants are smaller → divide by avg_scale.
-    if crystal_system in ("cubic",):
-        a_new = a0 / avg_scale
-        refined = (a_new, a_new, a_new, 90.0, 90.0, 90.0)
-    elif crystal_system in ("tetragonal",):
-        a_new = a0 / avg_scale
-        c_new = c0 / avg_scale
-        refined = (a_new, a_new, c_new, 90.0, 90.0, 90.0)
-    elif crystal_system in ("hexagonal",):
-        a_new = a0 / avg_scale
-        c_new = c0 / avg_scale
-        refined = (a_new, a_new, c_new, 90.0, 90.0, 120.0)
-    elif crystal_system in ("orthorhombic",):
-        a_new = a0 / avg_scale
-        b_new = b0 / avg_scale
-        c_new = c0 / avg_scale
-        refined = (a_new, b_new, c_new, 90.0, 90.0, 90.0)
-    else:
-        # General: uniform scaling of lengths
-        a_new = a0 / avg_scale
-        b_new = b0 / avg_scale
-        c_new = c0 / avg_scale
-        refined = (a_new, b_new, c_new, al0, be0, ga0)
-
-    # Compute residuals with refined lattice
+    # Compute residuals with the refined lattice (recomputed from `refined`, as before).
     B_new = compute_B_matrix(*refined)
     final_residuals = []
     for hkl, q_obs in observed:
-        q_calc = np.linalg.norm(B_new @ np.array(hkl))
+        q_calc = np.linalg.norm(B_new @ np.array(hkl, dtype=float))
         final_residuals.append({
             'hkl': hkl,
             'q_obs': q_obs,
@@ -340,6 +431,7 @@ def refine_lattice_from_peaks(peaks: list, initial_lattice: tuple,
         'lattice': refined,
         'residuals': final_residuals,
         'rms_error': rms,
+        'method': method,
     }
 
 

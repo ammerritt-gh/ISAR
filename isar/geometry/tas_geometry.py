@@ -1,6 +1,8 @@
 # Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\TAVI),
 # original path tavi/tas_geometry.py.  License: GPL-3.0 (TAVI). ISAR is GPL-3.0, compatible.
-# Vendored 2026-07-11, adapted: none (numpy/stdlib only; no TAVI imports to rewrite).
+# Vendored 2026-07-11, adapted: 2026-07-12 `stt_from_q_norm`, `solve_sample_angles`, and
+# `solve_instrument_angles` reject any `sense_sample` other than -1 or +1 (previously any
+# nonzero value silently selected the flipped branch and 0 gave a zero-angle result).
 """Triple-axis spectrometer geometry helpers.
 
 The functions in this module work in the mounted sample/cradle frame used by
@@ -111,6 +113,8 @@ def stt_from_q_norm(q_norm: float, ki: float, kf: float, sense_sample: int = -1)
     ``sense_sample`` selects the scattering branch: the returned angle carries
     its sign (vTAS ss convention; the historical baked value is -1).
     """
+    if sense_sample not in (-1, 1):
+        raise ValueError("sense_sample must be -1 or +1.")
     if ki <= 0 or kf <= 0:
         raise ValueError("ki and kf must be positive.")
     cos_stt = (q_norm * q_norm - ki * ki - kf * kf) / (-2.0 * ki * kf)
@@ -147,6 +151,8 @@ def solve_sample_angles(
     sample rotation near the mirror of the baked branch instead of 180 deg
     away. Physically identical Bragg planes; readouts match vTAS.
     """
+    if sense_sample not in (-1, 1):
+        raise ValueError("sense_sample must be -1 or +1.")
     q = np.asarray(q_sample, dtype=float)
     if q.shape != (3,):
         raise ValueError("q_sample must be a 3-vector.")
@@ -188,6 +194,8 @@ def solve_instrument_angles(
     ``q_instrument_from_angles``; instrument-level callers negate it back
     (``TAS_Instrument.calculate_q_and_deltaE``).
     """
+    if sense_sample not in (-1, 1):
+        raise ValueError("sense_sample must be -1 or +1.")
     q = np.asarray(q_instrument, dtype=float)
     if q.shape != (3,):
         raise ValueError("q_instrument must be a 3-vector.")

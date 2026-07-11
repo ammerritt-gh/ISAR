@@ -39,3 +39,22 @@ def test_q_to_hkl_roundtrip_unoriented():
 def test_d_spacing_zero_hkl_raises():
     with pytest.raises(ValueError):
         convert.d_spacing(cubic_sample(4.0), 0, 0, 0)
+
+
+def test_bragg_two_theta_at_ewald_boundary_is_180_no_raise():
+    # Pick k so that |Q(100)| == 2k exactly: |Q| = 2*pi/a, so k = pi/a lands the ratio at
+    # (or a few ULP above) 1.0. Must give two-theta = 180 deg without raising.
+    s = cubic_sample(4.0)
+    qmag = 2 * math.pi / 4.0
+    k_boundary = qmag / 2.0
+    out = convert.bragg_two_theta(s, 1, 0, 0, k_inv_angstrom=k_boundary)
+    assert out["sample_two_theta_deg"] == pytest.approx(180.0, abs=1e-6)
+
+
+def test_bragg_two_theta_unreachable_reflection_raises():
+    # A genuinely unreachable reflection (ratio ~1.1) still raises.
+    s = cubic_sample(4.0)
+    qmag = 2 * math.pi / 4.0
+    k_small = qmag / 2.2  # ratio = qmag/(2k) = 1.1 > 1 + 1e-9
+    with pytest.raises(ValueError):
+        convert.bragg_two_theta(s, 1, 0, 0, k_inv_angstrom=k_small)

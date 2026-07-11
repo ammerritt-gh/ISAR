@@ -1,5 +1,7 @@
 # Vendored from TAS_MCP (user's own repo, no LICENSE file; same author as ISAR),
-# original path tas_mcp/units.py.  Vendored 2026-07-11, adapted: none (stdlib only).
+# original path tas_mcp/units.py.  Vendored 2026-07-11, adapted: 2026-07-12 the direct
+# "energy_meV" input branch of `_to_energy_meV` rejects negative energies (matching the
+# k/wavelength/velocity branches) instead of passing them through.
 """Neutron kinematic unit conversions and physical constants.
 
 This is new (non-TAVI) code, but deliberately tiny and pinned to values that are
@@ -84,6 +86,8 @@ def energy_from_wavelength(wavelength_angstrom: float) -> float:
 def _to_energy_meV(value: float, quantity: str) -> float:
     """Convert any supported quantity to energy in meV (internal hub)."""
     if quantity == "energy_meV":
+        if value < 0:
+            raise ValueError("Neutron energy must be non-negative.")
         return float(value)
     if quantity == "k_inv_angstrom":
         return energy_from_k(value)

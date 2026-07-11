@@ -1,6 +1,8 @@
 # Vendored from TAS_MCP (user's own repo, no LICENSE file; same author as ISAR),
 # original path tas_mcp/instruments/puma.py.  Vendored 2026-07-11, adapted: flattened from the
-# tas_mcp/instruments/ package into a single module (stdlib only; no import changes).
+# tas_mcp/instruments/ package into a single module (stdlib only; no import changes);
+# 2026-07-12 `bragg_two_theta_deg` rejects any `which` other than "mono"/"analyzer"
+# (previously anything non-"mono" silently selected the analyzer).
 """PUMA instrument profile.
 
 Phase 1 hardcodes a single PUMA profile. Operating defaults (crystals, default kf,
@@ -86,7 +88,12 @@ class InstrumentProfile:
         """
         if k_inv_angstrom <= 0:
             raise ValueError("k must be positive.")
-        crystal = self.monochromator if which == "mono" else self.analyzer
+        if which == "mono":
+            crystal = self.monochromator
+        elif which == "analyzer":
+            crystal = self.analyzer
+        else:
+            raise ValueError(f"which must be 'mono' or 'analyzer'; got {which!r}.")
         sin_theta = math.pi / (crystal.d_angstrom * k_inv_angstrom)
         if sin_theta > 1.0:
             raise ValueError(

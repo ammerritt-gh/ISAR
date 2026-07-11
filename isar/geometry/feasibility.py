@@ -3,7 +3,11 @@
 # replaced with the vendored `.reciprocal_space` / `.tas_geometry` primitives; (2) made
 # stateless — `check_feasibility` / `accessible_range` take a `SampleState` plus explicit
 # fixed-mode / fixed-k / instrument arguments (default = PUMA) instead of resolving a mutable
-# `TASSession`; the `session.resolve(...)` transient-copy step is dropped.
+# `TASSession`; the `session.resolve(...)` transient-copy step is dropped; (3) 2026-07-12
+# `accessible_range` hardened — energy grid never overshoots e_max (and e_max<e_min raises),
+# scalar `q_inv_angstrom` serializes safely, and feasibility is reported as contiguous runs
+# (`feasible_bands_meV`; `feasible_band_meV` set only for a single run) instead of a min/max
+# span that merged disjoint runs across an infeasible gap.
 """Kinematic feasibility PREVIEW.
 
 check_feasibility answers: for a target (Q, E) in a given fixed-k mode, does the
@@ -188,13 +192,25 @@ def accessible_range(sample: Optional[SampleState], *, hkl=None, q_inv_angstrom=
     """Scan energy transfer at a fixed Q and report the reachable window.
 
     Walks e_min..e_max in steps and records, for each point, whether it is feasible and
-    (if not) why. Returns the contiguous feasible band plus the per-point verdicts so the
-    caller can see exactly where (and why) coverage runs out along, e.g., a dispersion.
+    (if not) why. ``feasible_band_meV`` is the single contiguous feasible band when there is
+    exactly one, else None; ``feasible_bands_meV`` always lists every contiguous feasible run
+    (empty when nothing is feasible), so a dispersion that dips out of range and back is not
+    silently merged across the gap. The per-point verdicts show exactly where (and why)
+    coverage runs out.
     """
     if e_step_meV <= 0:
         raise ValueError("e_step_meV must be positive.")
-    n = int(math.floor((e_max_meV - e_min_meV) / e_step_meV + 0.5)) + 1
-    energies = [round(e_min_meV + i * e_step_meV, 6) for i in range(max(n, 1))]
+    if e_max_meV < e_min_meV:
+        raise ValueError("e_max_meV must be >= e_min_meV.")
+    # Generate e_min, e_min+step, ... up to (and including) e_max; never overshoot e_max.
+    energies = []
+    i = 0
+    while True:
+        e = e_min_meV + i * e_step_meV
+        if e > e_max_meV + 1e-9:
+            break
+        energies.append(round(e, 6))
+        i += 1
 
     points = []
     feasible_energies = []
@@ -215,14 +231,31 @@ def accessible_range(sample: Optional[SampleState], *, hkl=None, q_inv_angstrom=
         if verdict["feasible"]:
             feasible_energies.append(e)
 
-    band = None
-    if feasible_energies:
-        band = {"e_min_meV": min(feasible_energies), "e_max_meV": max(feasible_energies)}
+    # Contiguous feasible runs over the energy grid: a feasible-infeasible-feasible
+    # pattern yields two runs and must NOT be merged into one band across the gap.
+    runs = []
+    current = None
+    for pt in points:
+        if pt["feasible"]:
+            if current is None:
+                current = {"e_min_meV": pt["e_transfer_meV"], "e_max_meV": pt["e_transfer_meV"]}
+            else:
+                current["e_max_meV"] = pt["e_transfer_meV"]
+        elif current is not None:
+            runs.append(current)
+            current = None
+    if current is not None:
+        runs.append(current)
+
+    # The single-band contract: set only when there is exactly one contiguous run.
+    band = runs[0] if len(runs) == 1 else None
 
     return {
         "hkl_rlu": [float(x) for x in hkl] if hkl is not None else None,
-        "q_inv_angstrom": list(q_inv_angstrom) if q_inv_angstrom is not None else None,
+        "q_inv_angstrom": ([float(v) for v in np.atleast_1d(np.asarray(q_inv_angstrom, dtype=float))]
+                           if q_inv_angstrom is not None else None),
         "feasible_band_meV": band,
+        "feasible_bands_meV": runs,
         "n_feasible": len(feasible_energies),
         "n_total": len(energies),
         "points": points,

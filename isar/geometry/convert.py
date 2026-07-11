@@ -3,7 +3,9 @@
 # (`from . import _tavi`; `from tavi...`) replaced with the vendored `.reciprocal_space` /
 # `.tas_geometry` primitives; (2) made stateless — every function takes a `SampleState` per
 # call instead of reading a mutable `TASSession.sample`; `bragg_two_theta` takes an explicit k
-# (default = PUMA fixed kf) instead of `session.fixed_k_inv_angstrom`.
+# (default = PUMA fixed kf) instead of `session.fixed_k_inv_angstrom`; (3) 2026-07-12
+# `bragg_two_theta` tolerates float overshoot at the Ewald boundary (raise only when
+# ratio > 1+1e-9, then clamp into [0,1]) so |Q|==2k gives two-theta=180 without raising.
 """HKL <-> Q conversions, d-spacing, and Bragg angle.
 
 Thin wrappers over the vendored TAVI primitives. Orientation-independent magnitudes (|Q|,
@@ -97,11 +99,14 @@ def bragg_two_theta(sample: SampleState, h: float, k: float, l: float,
         raise ValueError("k must be positive.")
     qmag = float(np.linalg.norm(update_Q_from_HKL_direct(h, k, l, *sample.lattice)))
     ratio = qmag / (2.0 * kk)
-    if ratio > 1.0:
+    # A tiny floating-point overshoot at the Ewald-sphere boundary (|Q| == 2k, i.e.
+    # two-theta == 180) must not raise; only a genuinely unreachable reflection does.
+    if ratio > 1.0 + 1e-9:
         raise ValueError(
             f"(hkl) unreachable elastically at k={kk:.4f} A^-1: |Q|={qmag:.4f} > 2k="
             f"{2 * kk:.4f}. The Bragg peak is outside the Ewald sphere."
         )
+    ratio = min(1.0, max(0.0, ratio))
     two_theta = 2.0 * math.degrees(math.asin(ratio))
     return {
         "hkl_rlu": [float(h), float(k), float(l)],
