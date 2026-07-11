@@ -53,6 +53,9 @@ def _draw_series(ax, s) -> None:
     # Certifying tier is visually primary (heavier, on top); non-certifying tiers recede.
     lw = 2.2 if s.certifying else 1.0
     z = 6 if s.certifying else 2
+    # A pooled (combine-before-divide) master gets a distinct SQUARE glyph so it stays visually
+    # separable from per-scan member points even in the degenerate no-entropy case (both backends).
+    marker = "s" if s.state is State.POOLED else "o"
     label = s.label
     if s.tier is not None and label is None:
         label = f"{s.tier.value}{' (certifying)' if s.certifying else ''}"
@@ -64,10 +67,10 @@ def _draw_series(ax, s) -> None:
         # point coloured calm->alarm by its own value (the legend note explains the encoding).
         rgb = entropy_rgb(s.color_values, s.color_norm)
         ax.errorbar(s.x, s.y, yerr=s.yerr, fmt="none", ecolor="0.5", lw=lw, zorder=z)
-        ax.scatter(s.x, s.y, c=rgb, s=36, edgecolors="0.2", linewidths=0.5,
+        ax.scatter(s.x, s.y, c=rgb, s=36, marker=marker, edgecolors="0.2", linewidths=0.5,
                    zorder=z + 1, label=label)
     elif s.yerr is not None:
-        ax.errorbar(s.x, s.y, yerr=s.yerr, fmt="o-", ms=3, lw=lw, color=color,
+        ax.errorbar(s.x, s.y, yerr=s.yerr, fmt=f"{marker}-", ms=3, lw=lw, color=color,
                     zorder=z, label=label)
     else:
         ax.plot(s.x, s.y, lw=lw, color=color, zorder=z, label=label)

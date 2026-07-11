@@ -28,17 +28,16 @@ def _g(v) -> str:
     return f"{v:g}"
 
 
-def candidates(results, include_pooled: bool = True) -> list:
+def candidates(results) -> list:
     """Fitted results carrying a full 3-component Q and a temperature — the plane's population.
 
-    Pooled masters ARE on the plane by default (they are the DELIVERED per-q answer and belong on the
-    ω̂ overlay, marked): pass ``include_pooled=False`` only where the population must be per-scan (the
-    heatmap's measured STRIPS — a master has no persisted spectrum, Task 10's honesty rule). Partial /
-    absent Q and missing T are always off the plane."""
+    Pooled masters ARE on the plane (they are the DELIVERED per-q answer and belong on the ω̂ overlay,
+    marked). The one place a master must be dropped — the heatmap's measured STRIPS, since a master
+    has no persisted spectrum (Task 10's honesty rule) — filters pooled inline at that call site, so
+    there is a single definition of "on the plane" here. Partial / absent Q and missing T are always
+    off the plane."""
     out = []
     for fv in results:
-        if not include_pooled and fv.pooled:
-            continue
         q = fv.q
         if q is None or len(q) < 3 or any(v is None for v in q):
             continue

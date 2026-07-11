@@ -186,6 +186,8 @@ class HeatmapViewModel(ViewModel):
             meta={"varying": varying, "modal": modal, "temperature": T,
                   "excluded_count": self._excluded_count,
                   "omega_hat_entropy_all": entropy,   # every plotted ω̂ (members + masters); a
+                  #                        diagnostics list kept in meta even when the colour channel
+                  #                        is not shown (so downstream tools can read entropy per ω̂)
                   "scan_ids": [s.meta.get("scan_id") for s in strips]},
         )
 

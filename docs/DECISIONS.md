@@ -174,7 +174,7 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   (donor lifts with attribution).
 - **G13.** Phasing: Phase 0 workspace read API → Phase A read-only viewer → Phase B planner →
   Phase C directives/sandbox/live dashboard. In progress (Phase 0 + Phase A done).
-- **G14.** Geometry vendored (resolves GUI_DESIGN.md §15.2 open item 2). TAVI primitives and
+- **G14.** Geometry vendored (resolves GUI_DESIGN.md §15 open item 2). TAVI primitives and
   TAS_MCP assembly logic are copied into `isar/geometry/` with GPL-3 notices; the module is
   stateless; the instrument frame (z out-of-plane) is pinned by test. TAVI's HTTP `/validate`
   remains the sole feasibility authority; the vendored local feasibility check is preview-only

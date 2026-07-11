@@ -361,13 +361,16 @@ def _candidate_rows(scores, fits) -> list | None:
     for s in scores:
         r = fits.get(s.label)
         ndof = int(s.n - s.k)
+        cpd = (float(r.cost_per_dof) if r is not None
+               else (float(s.cost) / ndof if ndof > 0 else float("nan")))
         rows.append({
             "label": str(s.label),
             "k": int(s.k),
             "ndof": ndof,
             "cost": float(s.cost),
-            "cost_per_dof": (float(r.cost_per_dof) if r is not None
-                             else (float(s.cost) / ndof if ndof > 0 else float("nan"))),
+            # Guard non-finite cost/dof (ndof==0, or a blown-up fit) to None so the candidates JSON
+            # never carries a nonstandard NaN token that a strict-JSON reader would reject.
+            "cost_per_dof": (cpd if np.isfinite(cpd) else None),
             "n_modes": int(r.n_modes) if r is not None else 1,
             "delta_aic": float(s.delta_aic),
             "akaike_weight": float(s.weight),

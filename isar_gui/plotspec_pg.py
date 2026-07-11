@@ -144,6 +144,9 @@ def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
     color = _series_color(s)
     width = 2.2 if s.certifying else 1.0
     z = 6 if s.certifying else 2
+    # A pooled (combine-before-divide) master gets a distinct SQUARE glyph so it stays visually
+    # separable from per-scan member points even in the degenerate no-entropy case (mirrors mpl).
+    symbol = "s" if s.state is State.POOLED else "o"
     label = _series_label(s)
     x = np.asarray(s.x, dtype=float)
     y = np.asarray(s.y, dtype=float)
@@ -164,7 +167,7 @@ def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
                    for r, g, b in rgb]
         err = pg.ErrorBarItem(x=x, y=y, top=yerr, bottom=yerr, pen=_pen(_GREY_04, width), beam=0.0)
         err.setZValue(z)
-        scat = pg.ScatterPlotItem(x=x, y=y, symbol="o", size=10, brush=brushes,
+        scat = pg.ScatterPlotItem(x=x, y=y, symbol=symbol, size=10, brush=brushes,
                                   pen=pg.mkPen(_GREY_03, width=0.5))
         scat.setZValue(z + 1)
         rs._add_data(err)
@@ -174,7 +177,7 @@ def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
     elif s.yerr is not None:
         yerr = np.asarray(s.yerr, dtype=float)
         line = pg.PlotDataItem(
-            x, y, pen=_pen(color, width), symbol="o", symbolSize=5,
+            x, y, pen=_pen(color, width), symbol=symbol, symbolSize=5,
             symbolBrush=color, symbolPen=color,
         )
         line.setZValue(z)

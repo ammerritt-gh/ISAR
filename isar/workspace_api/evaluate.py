@@ -4,7 +4,9 @@ Two paths, one return shape (``SimpleNamespace(x, total, components, pure)``):
 
 * **pure** — when the fit stored its linear ``amplitudes``: rebuild the curve directly from
   ``(omega0, gamma, resolution-context, amplitudes)`` with no NNLS and no counts, using the shared
-  theta-assembly helper :func:`isar.report.audit.assemble_curve`. Scipy-free.
+  theta-assembly helper :func:`isar.report.audit.assemble_curve`. No NNLS solve on this path (but
+  note ``assemble_curve`` is imported from ``isar.report.audit``, which transitively imports scipy —
+  so even the pure path is not scipy-free once evaluation runs; only ``Workspace.open`` stays lazy).
 * **fallback** — no amplitudes (e.g. the frozen MVP-16 fixture predates them): re-parse the scan's
   counts from ``data/*.json`` and call :func:`isar.report.audit.reconstruct_curve` (an NNLS amplitude
   solve — the same call the report's visual-audit path makes). ``reconstruct_curve`` is imported

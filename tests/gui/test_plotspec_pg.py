@@ -206,6 +206,54 @@ def test_per_point_entropy_colours_the_scatter_brushes(qtbot):
     assert _count(rs.items, pg.ErrorBarItem) == 1
 
 
+def _one_data_series_spec(*, pooled: bool) -> PlotSpec:
+    """A single whiskered DATA scatter, no entropy — POOLED or plain member. The degenerate case
+    where only the glyph distinguishes a pooled master from a per-scan member point."""
+    return PlotSpec(
+        title="plane", xlabel="q", ylabel="E",
+        series=[Series(x=np.array([2.0]), y=np.array([5.0]), yerr=np.array([0.2]),
+                       role=Role.DATA, state=(State.POOLED if pooled else None),
+                       label=("pooled (3)" if pooled else "member"))],
+    )
+
+
+def _pg_series_symbol(qtbot, spec: PlotSpec) -> str:
+    glw, plot = _new_plot()
+    qtbot.addWidget(glw)
+    rs = render_into(plot, spec)
+    lines = [it for it in rs.items if isinstance(it, pg.PlotDataItem) and it.opts.get("symbol")]
+    assert len(lines) == 1
+    return lines[0].opts["symbol"]
+
+
+def _mpl_series_marker(spec: PlotSpec) -> str:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from isar.plotspec.backends.mpl import _render_onto
+
+    fig, ax = plt.subplots()
+    _render_onto(ax, spec)
+    markers = [c.lines[0].get_marker() for c in ax.containers if getattr(c, "lines", None)]
+    plt.close(fig)
+    assert len(markers) == 1
+    return markers[0]
+
+
+def test_pooled_series_square_glyph_parity(qtbot):
+    """POOLED masters get a distinct SQUARE glyph while member DATA points stay circles — in BOTH
+    backends (closes the degenerate no-entropy indistinguishability)."""
+    pooled = _one_data_series_spec(pooled=True)
+    member = _one_data_series_spec(pooled=False)
+
+    assert _pg_series_symbol(qtbot, pooled) == "s"
+    assert _pg_series_symbol(qtbot, member) == "o"
+    assert _mpl_series_marker(pooled) == "s"
+    assert _mpl_series_marker(member) == "o"
+
+
 def test_unreliable_marker_has_no_errorbar(qtbot):
     """An UNRELIABLE point is a warning marker with NO whiskers; the backend must emit no
     ErrorBarItem for a spec whose only content is the unreliable marker + annotation."""

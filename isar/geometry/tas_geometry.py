@@ -1,4 +1,4 @@
-# Vendored from TAVI (https://github.com/… sibling checkout C:\Users\AMM\Documents\Github\TAVI),
+# Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\TAVI),
 # original path tavi/tas_geometry.py.  License: GPL-3.0 (TAVI). ISAR is GPL-3.0, compatible.
 # Vendored 2026-07-11, adapted: none (numpy/stdlib only; no TAVI imports to rewrite).
 """Triple-axis spectrometer geometry helpers.
