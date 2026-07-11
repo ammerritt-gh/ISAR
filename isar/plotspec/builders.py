@@ -166,7 +166,8 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
 
     ``points`` is a list of per-ω̂ dicts: ``q`` and ``omega`` (required); ``yerr`` — the certifying
     half-width (symmetric, from the interval ladder) or ``None`` when NO tier certifies; ``entropy``
-    (assignment entropy or None); ``verdict`` (resolved/flagged/held or None); ``pooled`` (bool).
+    (assignment entropy or None); ``verdict`` (resolved/flagged/held or None); ``pooled`` (bool) and
+    ``n_members`` for a combine-before-divide master.
 
     Binding rendering discipline:
 
@@ -176,8 +177,10 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
     * the assignment-entropy colour channel rides ONLY on the whiskered scatter (values aligned to
       that subset) and its legend note appears ONLY when at least one whiskered point carries an
       entropy value — the note never asserts an encoding that isn't on screen;
-    * a pooled master carries no per-member whisker (its true spectrum is not persisted): it is a
-      labeled :data:`~isar.plotspec.spec.State.POOLED` scatter point, never a certifying whisker;
+    * a POOLED master is the delivered per-q answer: it is drawn on its own DATA scatter tagged
+      :data:`~isar.plotspec.spec.State.POOLED` and labeled ``"pooled (N)"``, carrying a whisker per
+      the same certify law (a master owns its own interval; ``yerr is None`` → a warning marker), so
+      it is visible AND distinguishable from the per-scan member points, which stay shown;
     * ``prior`` (``(xs, ys)``) draws as a :data:`~isar.plotspec.spec.Role.PRIOR` curve; ``branches``
       (list of ``(label, xs, ys)``) as :data:`~isar.plotspec.spec.Role.BRANCH` curves — both optional;
     * ``off_curve`` (list of ``{q, omega, n_sigma}``) annotates points that sit >kσ off the prior;
@@ -192,7 +195,7 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
     annotations: list[ps.Annotation] = []
 
     rel_x, rel_y, rel_err, rel_ent = [], [], [], []
-    pool_x, pool_y = [], []
+    pool_x, pool_y, pool_err, pool_ent, pool_n = [], [], [], [], []
     any_unreliable = False
     for p in points or []:
         x = float(p["q"])
@@ -201,9 +204,18 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
         ent = None if ent is None else float(ent)
         yerr = p.get("yerr")
         if p.get("pooled"):
-            # Pooled master: no per-member whisker (member spectrum not persisted), a labeled point.
-            pool_x.append(x)
-            pool_y.append(y)
+            # Pooled master: its OWN interval (not a member's) whiskers it, per certify law; no
+            # certifying interval → the same warning-marker form as any uncertified ω̂.
+            if yerr is not None:
+                pool_x.append(x)
+                pool_y.append(y)
+                pool_err.append(float(yerr))
+                pool_ent.append(ent)
+                pool_n.append(p.get("n_members"))
+            else:
+                any_unreliable = True
+                markers.append(ps.Marker(x=x, y=y, kind=ps.MarkerKind.WARNING,
+                                         label="pooled ω̂ (unreliable)"))
         elif yerr is not None:
             rel_x.append(x)
             rel_y.append(y)
@@ -237,8 +249,22 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
             color_values=(list(rel_ent) if colored else None),
             color_norm=((color_norm if color_norm is not None else ps.LN2) if colored else None)))
     if pool_x:
-        series.append(ps.Series(x=np.asarray(pool_x, float), y=np.asarray(pool_y, float),
-                                label="ω̂ (pooled master)", role=ps.Role.DATA, state=ps.State.POOLED))
+        # Masters usually carry no assignment entropy (n/a); colour the pooled scatter only when at
+        # least one master actually has one — same truth-gating as the member channel.
+        p_colored = any(e is not None for e in pool_ent)
+        ns = [n for n in pool_n if n is not None]
+        if len(pool_x) == 1 and ns:
+            plabel = f"pooled ({int(ns[0])})"
+        elif ns:
+            plabel = f"pooled masters ({len(pool_x)})"
+        else:
+            plabel = "pooled master"
+        series.append(ps.Series(
+            x=np.asarray(pool_x, float), y=np.asarray(pool_y, float),
+            yerr=np.asarray(pool_err, float), label=plabel, role=ps.Role.DATA, state=ps.State.POOLED,
+            color_values=(list(pool_ent) if p_colored else None),
+            color_norm=((color_norm if color_norm is not None else ps.LN2) if p_colored else None)))
+        colored = colored or p_colored
 
     if any_unreliable:
         annotations.append(ps.Annotation(text="(unreliable)", xy=None, role=ps.State.UNRELIABLE))

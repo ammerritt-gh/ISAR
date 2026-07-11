@@ -158,7 +158,8 @@ class DispersionViewModel(ViewModel):
             half = (abs(float(cert[-1]) - float(cert[0])) / 2.0
                     if cert is not None and len(cert) >= 2 else None)
             points.append({"q": x, "omega": y, "yerr": half, "entropy": ent,
-                           "verdict": fv.verdict, "pooled": bool(fv.pooled)})
+                           "verdict": fv.verdict, "pooled": bool(fv.pooled),
+                           "n_members": fv.n_members})
 
         prior_xy = None if prior is None else (prior[0], prior[1])
         off_curve = self._off_curve(points, prior)
@@ -171,7 +172,9 @@ class DispersionViewModel(ViewModel):
             branches=branches, off_curve=off_curve, title=title,
             xlabel=f"{projection.AXIS[varying]} (rlu)",
             meta={"varying": varying, "modal": modal, "temperature": T,
-                  "excluded_count": self._excluded_count, "omega_hat_entropy": entropy},
+                  "excluded_count": self._excluded_count,
+                  # every plotted ω̂ (members + pooled masters), aligned to the full population.
+                  "omega_hat_entropy_all": entropy},
         )
 
     @staticmethod

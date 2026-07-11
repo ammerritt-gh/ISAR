@@ -53,7 +53,7 @@ _PRIOR = [
 ]
 
 
-def _make(make_ws, *, prior=None, branch=None, specs=_SPECS) -> Workspace:
+def _make(make_ws, *, prior=None, branch=None, specs=_SPECS, with_master=False) -> Workspace:
     scans, rows, data = {}, [], []
     for s in specs:
         oc = _outcome(h=s["h"], k=s["k"], l=s["l"], omega0=s["omega0"],
@@ -65,6 +65,18 @@ def _make(make_ws, *, prior=None, branch=None, specs=_SPECS) -> Workspace:
         rows.append({"scan": s["scan"], "detector": "det", "sample": "tavi", "T": s.get("T", 200.0),
                      "h": s["h"], "k": s["k"], "l": s["l"], "status": "fitted"})
         data.append({"scan_number": s["scan"], "energy": list(_X), "counts": _counts(s["omega0"])})
+    if with_master:
+        # A pooled master (delivered per-q answer) at H=2.1 with its own interval + 3 members; no
+        # data file (masters have no persisted spectrum), but it belongs on the ω̂ overlay.
+        moc = _outcome(h=2.1, k=0.0, l=0.0, omega0=5.0, reliable=True, entropy=0.0, verdict="resolved")
+        moc["pooled"] = True
+        moc["n_members"] = 3
+        scans["tavi:10:det"] = {"scan_id": "tavi:10:det", "scan_number": 10,
+                                "scan_type": "measurement", "status": "fitted",
+                                "detectors": {"det": moc}, "provenance": {"M": 600}}
+        rows.append({"scan": 10, "detector": "det", "sample": "tavi", "T": 200.0,
+                     "h": 2.1, "k": 0.0, "l": 0.0, "status": "fitted",
+                     "pooled": True, "n_members": 3})
     state = {}
     if prior is not None:
         state["dispersion_prior"] = prior
@@ -98,6 +110,20 @@ def test_whiskers_only_where_certifying_entropy_aligned(make_ws):
     assert len(warn) == 1 and abs(warn[0].x - 2.2) < 1e-9
     unrel = [a for a in vm.spec.annotations if a.role is State.UNRELIABLE]
     assert len(unrel) == 1
+
+
+def test_pooled_master_marked_and_members_still_shown(make_ws):
+    ws = _make(make_ws, with_master=True)
+    vm = DispersionViewModel(ws)
+    pooled = [s for s in vm.spec.series if s.state is State.POOLED]
+    assert len(pooled) == 1 and pooled[0].yerr is not None  # its own certifying whisker
+    assert pooled[0].label == "pooled (3)"
+    members = [s for s in vm.spec.series
+               if s.role is Role.DATA and s.yerr is not None and s.state is not State.POOLED]
+    assert len(members) == 1 and len(members[0].x) == 2      # per-scan members still visible
+    # the master is clickable -> routes to its own FitView
+    with_master_scan = [fv for _, _, fv in vm._points if fv.scan_number == 10]
+    assert with_master_scan and with_master_scan[0].pooled
 
 
 def test_prior_and_branch_curves(make_ws):

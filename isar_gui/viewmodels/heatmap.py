@@ -172,7 +172,7 @@ class HeatmapViewModel(ViewModel):
             projection=projection, value_label=self._value_label(),
             meta={"varying": varying, "modal": modal, "temperature": T,
                   "excluded_count": self._excluded_count,
-                  "omega_hat_entropy": entropy,
+                  "omega_hat_entropy_all": entropy,   # every plotted ω̂ (members + masters); a
                   "scan_ids": [s.meta.get("scan_id") for s in strips]},
         )
 
@@ -181,6 +181,8 @@ class HeatmapViewModel(ViewModel):
         0.8 x the median spacing between distinct varying-q positions (cosmetic; never overlaps)."""
         rows = []
         for fv in fits:
+            if fv.pooled:
+                continue  # a pooled master has NO persisted spectrum — no strip (Task 10 honesty rule)
             energy, counts, _yerr = self._ws.scan_data(fv.scan_number)
             if energy is None or counts is None or len(energy) == 0:
                 continue
@@ -204,6 +206,7 @@ class HeatmapViewModel(ViewModel):
         verdict glyphs, and the per-point assignment-entropy channel (kept in meta; 0→calm, ln2→
         undecided). Returns (series, markers, annotations, points, entropy)."""
         rel_x, rel_y, rel_err, rel_ent = [], [], [], []
+        pool_x, pool_y, pool_err, pool_ent, pool_n = [], [], [], [], []
         markers: list[ps.Marker] = []
         annotations: list[ps.Annotation] = []
         points: list = []
@@ -219,10 +222,25 @@ class HeatmapViewModel(ViewModel):
             ent = None if ent is None else float(ent)
             entropy.append(ent)
             cert = certify.certifying_interval(fv)
-            if cert is not None and len(cert) >= 2:
+            half = (abs(float(cert[-1]) - float(cert[0])) / 2.0
+                    if cert is not None and len(cert) >= 2 else None)
+            if fv.pooled:
+                # The delivered per-q master: shown on its OWN whiskered scatter (its own interval,
+                # certify law), marked POOLED, so it is visible AND distinct from the member points.
+                if half is not None:
+                    pool_x.append(x)
+                    pool_y.append(y)
+                    pool_err.append(half)
+                    pool_ent.append(ent)
+                    pool_n.append(fv.n_members)
+                else:
+                    any_unreliable = True
+                    markers.append(ps.Marker(x=x, y=y, kind=ps.MarkerKind.WARNING,
+                                             label="pooled ω̂ (unreliable)"))
+            elif half is not None:
                 rel_x.append(x)
                 rel_y.append(y)
-                rel_err.append(abs(float(cert[-1]) - float(cert[0])) / 2.0)
+                rel_err.append(half)
                 rel_ent.append(ent)
             else:
                 any_unreliable = True
@@ -244,6 +262,21 @@ class HeatmapViewModel(ViewModel):
                 state=(ps.State.ENTROPY if colored else None),
                 color_values=(list(rel_ent) if colored else None),
                 color_norm=(ps.LN2 if colored else None)))
+        if pool_x:
+            p_colored = any(e is not None for e in pool_ent)  # masters: entropy n/a unless present
+            ns = [n for n in pool_n if n is not None]
+            if len(pool_x) == 1 and ns:
+                plabel = f"pooled ({int(ns[0])})"
+            elif ns:
+                plabel = f"pooled masters ({len(pool_x)})"
+            else:
+                plabel = "pooled master"
+            series.append(ps.Series(
+                x=np.array(pool_x), y=np.array(pool_y), yerr=np.array(pool_err),
+                label=plabel, role=ps.Role.DATA, state=ps.State.POOLED,
+                color_values=(list(pool_ent) if p_colored else None),
+                color_norm=(ps.LN2 if p_colored else None)))
+            colored = colored or p_colored
         if any_unreliable:
             # One legend-area note, NOT one per point.
             annotations.append(ps.Annotation(text="(unreliable)", xy=None,

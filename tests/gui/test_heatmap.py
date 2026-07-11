@@ -52,7 +52,7 @@ _SPECS = [
 ]
 
 
-def _make(make_ws) -> Workspace:
+def _make(make_ws, *, with_master: bool = False) -> Workspace:
     scans, rows, data = {}, [], []
     for s in _SPECS:
         oc = _outcome(s["scan"], s["h"], s["k"], s["l"], omega0=s["omega0"],
@@ -63,6 +63,18 @@ def _make(make_ws) -> Workspace:
         rows.append({"scan": s["scan"], "detector": "det", "sample": "tavi", "T": 200.0,
                      "h": s["h"], "k": s["k"], "l": s["l"], "status": "fitted"})
         data.append({"scan_number": s["scan"], "energy": list(_X), "counts": _counts(s["omega0"])})
+    if with_master:
+        # A pooled master at H=2.1 (in-window) with its OWN interval and 3 members; NO data file, so
+        # it contributes no strip (masters have no persisted spectrum) but IS on the ω̂ overlay.
+        moc = _outcome(10, 2.1, 0.0, 0.0, omega0=5.0, reliable=True, entropy=0.0, verdict="resolved")
+        moc["pooled"] = True
+        moc["n_members"] = 3
+        scans["tavi:10:det"] = {"scan_id": "tavi:10:det", "scan_number": 10,
+                                "scan_type": "measurement", "status": "fitted",
+                                "detectors": {"det": moc}, "provenance": {"M": 600}}
+        rows.append({"scan": 10, "detector": "det", "sample": "tavi", "T": 200.0,
+                     "h": 2.1, "k": 0.0, "l": 0.0, "status": "fitted",
+                     "pooled": True, "n_members": 3})
     root = make_ws(scans=scans, rows=rows, data_files=data)
     return Workspace.open(root)
 
@@ -122,10 +134,25 @@ def test_unreliable_omega_hat_is_warning_marker_without_whiskers(make_ws):
 def test_entropy_channel_populated(make_ws):
     ws = _make(make_ws)
     vm = HeatmapViewModel(ws)
-    ent = vm.spec.meta.get("omega_hat_entropy")
+    ent = vm.spec.meta.get("omega_hat_entropy_all")
     assert ent is not None and len(ent) == 3  # one per in-window ω̂ point
     assert all(e is not None for e in ent)
     assert any("assignment entropy" in a.text for a in vm.spec.annotations)
+
+
+def test_pooled_master_on_overlay_but_not_strips(make_ws):
+    ws = _make(make_ws, with_master=True)
+    vm = HeatmapViewModel(ws)
+    # The master is a marked POOLED scatter with its own whisker + "pooled (3)" label...
+    pooled = [s for s in vm.spec.series if s.state is State.POOLED]
+    assert len(pooled) == 1 and pooled[0].yerr is not None
+    assert pooled[0].label == "pooled (3)"
+    # ...the per-scan member scatter still shows (masters not mixed in)...
+    members = [s for s in vm.spec.series
+               if s.role is Role.DATA and s.yerr is not None and s.state is not State.POOLED]
+    assert len(members) == 1 and len(members[0].x) == 2
+    # ...and the master contributes NO strip (no persisted spectrum): still 3 strips.
+    assert len(vm.spec.strips) == 3
 
 
 def test_verdict_glyphs_present(make_ws):

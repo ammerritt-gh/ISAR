@@ -93,15 +93,25 @@ def test_off_curve_annotations_rendered():
     assert "4.5" in off[0].text
 
 
-def test_pooled_point_is_labeled_without_whisker():
+def test_pooled_master_is_marked_and_whiskered_separately_from_members():
+    # A pooled master (delivered per-q answer) with its OWN certifying interval + n_members.
     pts = [{"q": 2.0, "omega": 4.0, "yerr": 0.4},
            {"q": 2.1, "omega": 5.0, "yerr": 0.4},
-           {"q": 2.15, "omega": 5.2, "yerr": 0.3, "pooled": True}]
+           {"q": 2.15, "omega": 5.2, "yerr": 0.3, "pooled": True, "n_members": 3}]
     spec = builders.dispersion_spec(points=pts, projection=_PROJ)
     pooled = [s for s in spec.series if s.state is ps.State.POOLED]
     assert len(pooled) == 1
-    assert pooled[0].yerr is None            # no per-member whisker
-    assert "pooled" in (pooled[0].label or "").lower()
-    # the pooled point is NOT in the certifying scatter
-    data = next(s for s in spec.series if s.role is ps.Role.DATA and s.yerr is not None)
+    assert pooled[0].yerr is not None and pooled[0].yerr[0] == pytest.approx(0.3)  # its own whisker
+    assert pooled[0].label == "pooled (3)"
+    # members stay shown on their own certifying scatter (the master is NOT mixed in)
+    data = next(s for s in spec.series if s.role is ps.Role.DATA and s.state is not ps.State.POOLED)
     assert len(data.x) == 2
+
+
+def test_pooled_master_without_certifying_interval_is_a_warning():
+    pts = [{"q": 2.0, "omega": 4.0, "yerr": 0.4},
+           {"q": 2.1, "omega": 5.0, "yerr": 0.4},
+           {"q": 2.15, "omega": 5.2, "yerr": None, "pooled": True, "n_members": 3}]
+    spec = builders.dispersion_spec(points=pts, projection=_PROJ)
+    assert not any(s.state is ps.State.POOLED for s in spec.series)  # no whiskered pooled series
+    assert any(m.kind is ps.MarkerKind.WARNING and "pooled" in (m.label or "") for m in spec.markers)
