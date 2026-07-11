@@ -46,6 +46,9 @@ def test_empty_start_window(qtbot):
     # The empty viewmodels render their own honest empty views (no fitted scans / empty tree).
     assert w.browser_vm.group_rows == []
     assert w.heatmap_vm.spec.strips == []
+    # workspace_path stays None (not the string "None") so the Browser summary renders blank.
+    assert w.browser_vm.card_summary["workspace_path"] is None
+    assert w.browser_dock._summary_labels["workspace_path"].text() == ""
 
 
 def test_open_workspace_from_empty_binds(qtbot, make_ws):

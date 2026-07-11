@@ -71,7 +71,8 @@ class BrowserViewModel(ViewModel):
             "collation_keys": list((card.collation or {}).get("key", []) or []),
             "schema_version": self.workspace.schema_version,
             "lattice_epochs": len(card.lattice_epochs),
-            "workspace_path": str(self.workspace.root),
+            # None (empty-start) stays None so the view's _fmt blanks it — never the string "None".
+            "workspace_path": None if self.workspace.root is None else str(self.workspace.root),
         }
 
     # ---- group tree -----------------------------------------------------------

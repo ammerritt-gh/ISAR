@@ -96,8 +96,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     pv = sub.add_parser("view", help="open the desktop GUI on a workspace (needs the [gui] extra)")
     pv.add_argument("workspace", nargs="?", default=None,
-                    help="an ISAR workspace directory to open read-only "
-                         "(default: the most recent workspace from the GUI session)")
+                    help="an ISAR workspace directory to open read-only (default: the most recent "
+                         "workspace from the GUI session, or an empty window if none is openable)")
 
     pd = sub.add_parser("drive", help="run the measurement driver campaign (LLM_HARNESS_DESIGN §8)")
     src = pd.add_mutually_exclusive_group(required=True)

@@ -16,6 +16,17 @@ def test_help_lists_view():
     assert "view" in build_parser().format_help()
 
 
+def test_view_help_mentions_recent_and_empty(capsys):
+    # `isar view -h` documents both the most-recent default and the empty-window fallback.
+    import pytest as _pytest
+
+    with _pytest.raises(SystemExit):
+        build_parser().parse_args(["view", "-h"])
+    out = " ".join(capsys.readouterr().out.split())  # collapse argparse line-wrapping
+    assert "most recent workspace" in out
+    assert "empty window if none is openable" in out
+
+
 def test_view_parses_workspace_arg():
     args = build_parser().parse_args(["view", "/some/ws"])
     assert args.command == "view"
