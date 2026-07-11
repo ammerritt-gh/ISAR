@@ -76,6 +76,37 @@ class _RawWorker:
                 pass
 
 
+def test_run_job_passes_errors_tier_verbatim_to_run_batch(tmp_path, monkeypatch):
+    # Fast unit-level check (no worker subprocess, no real fit): _run_job must forward the requested
+    # errors_tier string unchanged into driver.run_batch — including the new "bayes" tier, which the
+    # worker itself does not validate (isar.session.driver decides what each tier means).
+    from isar.session import worker as worker_mod
+    from isar.session import driver as driver_mod
+
+    ws, data = _scaffold_ws(tmp_path / "ws", tmp_path)
+
+    captured = {}
+
+    class _FakeSummary:
+        n_reprocessed = 0
+        n_fitted_this_run = 0
+        counts = {}
+        outcomes = []
+        gaps = []
+        context_lines = []
+
+    def fake_run_batch(ws_, data_paths, *, force, M, workers, errors_tier, formats, timer):
+        captured["errors_tier"] = errors_tier
+        return _FakeSummary()
+
+    monkeypatch.setattr(driver_mod, "run_batch", fake_run_batch)
+
+    summary, timings = worker_mod._run_job(
+        ws.root, {"id": 1, "data_paths": [str(data)], "M": 10, "errors_tier": "bayes"})
+
+    assert captured["errors_tier"] == "bayes"
+
+
 # --------------------------------------------------------------------------- fast protocol tests
 def test_ping_round_trip(tmp_path):
     ws, _ = _scaffold_ws(tmp_path / "ws", tmp_path)

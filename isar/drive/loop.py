@@ -440,27 +440,37 @@ def _q_needs_full_errors(workspace, hkl) -> bool:
     return saw_untrusted
 
 
-def _errors_tier_for(proposal, workspace) -> str:
+def _full_tier(cfg) -> str:
+    """The tier standing in for "full" (bootstrap+profile) errors: ``bayes`` (superset of ``full`` —
+    adds MINOS + posterior as CSV diagnostics, bootstrap stays the authoritative interval) when the
+    campaign opted in via ``cfg.bayes_errors``, else ``full`` itself. ``cfg`` may be a
+    :class:`CampaignConfig` or anything exposing a ``bayes_errors`` attribute (falls back to ``full``
+    when absent, e.g. ``None``)."""
+    return "bayes" if getattr(cfg, "bayes_errors", False) else "full"
+
+
+def _errors_tier_for(proposal, workspace, cfg=None) -> str:
     """The ``isar run --errors`` tier for this proposal (LLM_HARNESS_DESIGN §8 escalation ladder):
 
     - quicklook → ``cheap`` (HESSE only, no interval — steers the ω(q) model);
     - production → ``fast`` (HESSE interval + trust flag, no bootstrap) by default, escalating to
-      ``full`` (bootstrap+profile) once the q shows an untrusted-HESSE fit that needs the reliable
-      interval. The bootstrap thus fires only where the fast HESSE approximation cannot be trusted.
+      ``full`` (bootstrap+profile) — or ``bayes`` when ``cfg.bayes_errors`` is set, see
+      :func:`_full_tier` — once the q shows an untrusted-HESSE fit that needs the reliable interval.
+      The bootstrap thus fires only where the fast HESSE approximation cannot be trusted.
 
-    Returns the bare tier string (``cheap`` | ``fast`` | ``full``) — the runner seam takes it as a
-    structured ``errors_tier`` kwarg.
+    Returns the bare tier string (``cheap`` | ``fast`` | ``full`` | ``bayes``) — the runner seam takes
+    it as a structured ``errors_tier`` kwarg.
     """
     if proposal.kind == "quicklook":
         return "cheap"
     if _q_needs_full_errors(workspace, (proposal.h, proposal.k, proposal.l)):
-        return "full"
+        return _full_tier(cfg)
     return "fast"
 
 
-def _errors_arg_for(proposal, workspace) -> list[str]:
+def _errors_arg_for(proposal, workspace, cfg=None) -> list[str]:
     """Back-compat wrapper: the tier from :func:`_errors_tier_for` as ``["--errors", <tier>]`` argv."""
-    return ["--errors", _errors_tier_for(proposal, workspace)]
+    return ["--errors", _errors_tier_for(proposal, workspace, cfg)]
 
 
 def _recertified_observations(workspace, calibration: Calibration, scan_kind: dict) -> list[dict]:
@@ -656,6 +666,12 @@ class CampaignConfig:
     - ``sample`` (:class:`str`, config key ``sample``, default ``"Al_phonon_DFT"``): stamped into every
       validate/scan body's ``parameters`` because the instrument API no longer inherits the GUI's
       sample selection.
+    - ``bayes_errors`` (:class:`bool`, config key ``bayes_errors``, default ``False``): campaign-level
+      opt-in for the ``bayes`` errors tier (superset of ``full``: bootstrap + MINOS + profile +
+      posterior). When set, every place that would otherwise use the ``full`` tier (escalation in
+      :func:`_errors_tier_for`, the certify pass) uses ``bayes`` instead — see :func:`_full_tier`. The
+      bootstrap/profile intervals ``full`` produces are unchanged; the posterior rides along as CSV
+      diagnostics only and never feeds ``_pick_interval``/``_is_certifiable``/certification.
     """
     workspace: Path
     data_dir: Path
@@ -677,6 +693,7 @@ class CampaignConfig:
     max_points: int = DEFAULT_MAX_POINTS
     max_points_source: str = "default"
     sample: str = "Al_phonon_DFT"
+    bayes_errors: bool = False
 
 
 def _run_nonce(workspace: Path) -> str:
@@ -749,6 +766,7 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
         max_points=max_points,
         max_points_source=max_points_source,
         sample=str(config.get("sample", "Al_phonon_DFT")),
+        bayes_errors=bool(config.get("bayes_errors", False)),
     )
 
 
@@ -857,7 +875,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         # Error tier per the escalation ladder: quicklook → cheap (steer only), production →
         # fast (HESSE interval + trust flag), escalating to full (bootstrap+profile) only where an
         # untrusted-HESSE q needs the reliable interval. The bootstrap fires only where needed.
-        tier = _errors_tier_for(proposal, workspace)
+        tier = _errors_tier_for(proposal, workspace, cfg)
         # escalate_fit PROMOTE (spec §5.1): a production/confirm q bumped to the full (bootstrap+
         # profile) tier because its only interval is an untrusted HESSE one. Paired with an OUTCOME
         # record after the fold so the promotion and its result are both in the log.
@@ -946,20 +964,22 @@ def _certify(*, cfg: CampaignConfig, decision, observations: list[dict],
     ran_certify = decision is not None and decision.state == "met"
     if not ran_certify:
         return observations, False
-    log_event(log_path, "decide", {"event": "certify_start", "action": "certify_start", "tier": "full"})
+    full_tier = _full_tier(cfg)
+    log_event(log_path, "decide", {"event": "certify_start", "action": "certify_start", "tier": full_tier})
     # escalate_fit PROMOTE (spec §5.1): the end-of-campaign certify pass forces every q to the full
-    # (bootstrap+profile) tier. Campaign-wide, so no single hkl/attempt — reason names the pass.
+    # (bootstrap+profile) tier — or `bayes` when the campaign opted in, see _full_tier. Campaign-wide,
+    # so no single hkl/attempt — reason names the pass.
     log_event(log_path, "escalate_fit",
               {"phase": "promote", "iter": None, "hkl": None, "from_tier": "fast",
-               "to_tier": "full", "reason": "certify_pass"})
+               "to_tier": full_tier, "reason": "certify_pass"})
     try:
         with timed(log_path, "certify", iteration=None):
-            cfg.runner.run(workspace, [data_dir], errors_tier="full", force=True, render=False)
+            cfg.runner.run(workspace, [data_dir], errors_tier=full_tier, force=True, render=False)
         observations = _recertified_observations(workspace, cfg.calibration, scan_kind)
         # Embed the certification subprocess timings (iter=None — the certify pass is reported
         # separately, never averaged into per-iteration stats).
         timings = _read_run_timings(workspace)
-        analyze_payload = {"job_id": None, "errors_tier": "full", "iter": None,
+        analyze_payload = {"job_id": None, "errors_tier": full_tier, "iter": None,
                            "n_rows": len(observations),
                            "dispositions": [o.get("disposition") or o.get("verdict")
                                             for o in observations]}

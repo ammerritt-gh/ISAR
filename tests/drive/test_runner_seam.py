@@ -120,6 +120,24 @@ def test_subprocess_runner_argv_force(monkeypatch):
     assert cmd[cmd.index("--errors") + 1] == "full"
 
 
+def test_subprocess_runner_argv_bayes_tier(monkeypatch):
+    # The new "bayes" tier (Stage 6 campaign opt-in) round-trips verbatim to `--errors bayes`, exactly
+    # like every other tier string — SubprocessRunner does not validate tier membership.
+    captured = {}
+
+    class _CP:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(runner_mod.subprocess, "run",
+                        lambda cmd, **k: (captured.__setitem__("cmd", list(cmd)), _CP())[1])
+
+    SubprocessRunner().run("ws", ["d"], errors_tier="bayes")
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--errors") + 1] == "bayes"
+
+
 def _capture_subprocess(monkeypatch):
     captured = {}
 

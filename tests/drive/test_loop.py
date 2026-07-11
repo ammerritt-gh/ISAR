@@ -16,7 +16,8 @@ import types
 
 import isar.drive.loop as loop_mod
 from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_point_count,
-                             _errors_arg_for, _extract_max_points, _guard_point_count,
+                             _errors_arg_for, _errors_tier_for, _extract_max_points, _full_tier,
+                             _guard_point_count,
                              _master_obs_from_row, _observation_from_row, _pick_interval,
                              _preflight_max_points, _resume_state, _run_nonce, _validate_body,
                              run_campaign)
@@ -284,6 +285,56 @@ def test_errors_tier_ladder_fast_by_default_escalates_on_untrusted_hesse(tmp_pat
     assert _errors_arg_for(_prop(2.2), ws) == ["--errors", "fast"]
 
 
+def test_full_tier_helper():
+    assert _full_tier(None) == "full"
+    assert _full_tier(types.SimpleNamespace(bayes_errors=False)) == "full"
+    assert _full_tier(types.SimpleNamespace(bayes_errors=True)) == "bayes"
+
+
+def test_errors_tier_ladder_with_bayes_errors_flag_escalates_to_bayes(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    cfg = types.SimpleNamespace(bayes_errors=True)
+    # Quick-looks stay cheap regardless of the flag.
+    assert _errors_tier_for(_prop(2.1, "quicklook"), ws, cfg) == "cheap"
+    # No prior fit at this q → production still runs fast.
+    assert _errors_tier_for(_prop(2.1), ws, cfg) == "fast"
+    # A usable fit whose only error is an untrusted HESSE → escalate to "bayes" (not "full") when opted in.
+    _write_results(ws, [{"scan": 1, "detector": "det", "h": 2.1, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "disposition": "flagged", "omega0": 0.95,
+                         "hesse_lo": 0.94, "hesse_hi": 0.96, "hesse_trusted": False}])
+    assert _errors_tier_for(_prop(2.1), ws, cfg) == "bayes"
+    assert _errors_arg_for(_prop(2.1), ws, cfg) == ["--errors", "bayes"]
+    # A trusted-HESSE q stays on the cheap fast tier, same as without the flag.
+    _write_results(ws, [{"scan": 2, "detector": "det", "h": 2.2, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "disposition": "resolved", "omega0": 1.1,
+                         "hesse_lo": 1.09, "hesse_hi": 1.11, "hesse_trusted": True}])
+    assert _errors_tier_for(_prop(2.2), ws, cfg) == "fast"
+
+
+def test_errors_tier_ladder_flag_off_is_byte_identical_to_no_cfg(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    cfg_off = types.SimpleNamespace(bayes_errors=False)
+    assert _errors_tier_for(_prop(2.1, "quicklook"), ws, cfg_off) == \
+        _errors_tier_for(_prop(2.1, "quicklook"), ws, None) == "cheap"
+    assert _errors_tier_for(_prop(2.1), ws, cfg_off) == _errors_tier_for(_prop(2.1), ws, None) == "fast"
+    _write_results(ws, [{"scan": 1, "detector": "det", "h": 2.1, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "disposition": "flagged", "omega0": 0.95,
+                         "hesse_lo": 0.94, "hesse_hi": 0.96, "hesse_trusted": False}])
+    assert _errors_tier_for(_prop(2.1), ws, cfg_off) == _errors_tier_for(_prop(2.1), ws, None) == "full"
+
+
+def test_campaign_config_bayes_errors_flag_default_and_override(tmp_path):
+    ws1, ws2 = tmp_path / "ws1", tmp_path / "ws2"
+    (ws1 / "report").mkdir(parents=True)
+    (ws2 / "report").mkdir(parents=True)
+    base = {"client": MockTavi(lambda h: 0.0), "run_isar": lambda *a, **k: None,
+            "calibration": _UNITY_CAL}
+    assert _campaign_config(_objective(), dict(base, workspace=ws1)).bayes_errors is False
+    assert _campaign_config(_objective(), dict(base, workspace=ws2, bayes_errors=True)).bayes_errors is True
+
+
 def test_campaign_reaches_met_via_hesse_then_certifies(tmp_path):
     # Production/master fits carry only a trusted HESSE interval (fast tier); the campaign converges
     # on it and then runs its bootstrap certification pass (logged).
@@ -295,6 +346,38 @@ def test_campaign_reaches_met_via_hesse_then_certifies(tmp_path):
     events = [(e["kind"], (e.get("payload") or {}).get("event")) for e in read_log(summary["session_log"])]
     assert ("decide", "certify_start") in events
     assert ("decide", "certify_done") in events
+
+
+def test_campaign_certify_pass_uses_bayes_tier_when_flag_set(tmp_path):
+    # Same convergence path as test_campaign_reaches_met_via_hesse_then_certifies, but with the
+    # bayes_errors campaign flag on: the certify pass (and any in-loop full-tier escalation) must run
+    # with errors_tier="bayes", not "full".
+    omega = lambda h: (h - 2.0) * 2.0
+    client = MockTavi(omega)
+    tiers_seen = []
+    base_runner = make_mock_runner(omega, hesse_only=True)
+
+    def recording_runner(workspace, data_paths, extra_args=None, **kw):
+        # run_isar is a bare callable: the runner seam (as_runner) reconstructs the structured
+        # errors_tier into `--errors <tier>` extra_args, same shape isar_io.runner.SubprocessRunner
+        # emits — see test_as_runner_wraps_bare_callable_reconstructs_fast_tier.
+        extra_args = list(extra_args or [])
+        if "--errors" in extra_args:
+            tiers_seen.append(extra_args[extra_args.index("--errors") + 1])
+        return base_runner(workspace, data_paths, **kw)
+
+    summary, ws = _run(tmp_path, _objective(), client, recording_runner, bayes_errors=True)
+    assert summary["stop"]["state"] == "met", summary["stop"]["reasons"]
+    events = read_log(summary["session_log"])
+    esc = [(e.get("payload") or {}) for e in events if e["kind"] == "escalate_fit"]
+    certify_start = [(e.get("payload") or {}) for e in events
+                     if e["kind"] == "decide" and (e.get("payload") or {}).get("event") == "certify_start"]
+    assert certify_start and certify_start[0]["tier"] == "bayes"
+    for p in esc:
+        if p.get("to_tier") is not None:
+            assert p["to_tier"] != "full"
+    assert "bayes" in tiers_seen
+    assert "full" not in tiers_seen
 
 
 def _objective(tol=0.5, amount=1e13):
