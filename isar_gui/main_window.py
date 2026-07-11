@@ -25,11 +25,13 @@ from isar_gui.viewmodels import (
     HeatmapViewModel,
     InspectorViewModel,
     ViewModel,
+    WaterfallViewModel,
 )
 from isar_gui.views.browser_dock import BrowserDock
 from isar_gui.views.dispersion_dock import DispersionDock
 from isar_gui.views.heatmap_dock import HeatmapDock
 from isar_gui.views.inspector_widget import InspectorWidget
+from isar_gui.views.waterfall_dock import WaterfallDock
 from isar_gui.watch_bridge import WatchBridge
 
 
@@ -69,14 +71,20 @@ class MainWindow(QMainWindow):
         self.inspector_vm = InspectorViewModel(ws, parent=self)
         self.heatmap_vm = HeatmapViewModel(ws, parent=self)
         self.dispersion_vm = DispersionViewModel(ws, parent=self)
+        self.waterfall_vm = WaterfallViewModel(ws, parent=self)
+        self.waterfall_vm.load_view_state(self._session)
 
         # The C2 fit inspector is the central widget; a browser selection drives it.
         self.inspector = InspectorWidget(self.inspector_vm, parent=self)
         self.setCentralWidget(self.inspector)
         self.browser_vm.selection_changed.connect(self.inspector_vm.set_fit)
-        # The C3 plane and the C5 dispersion view both route a picked ω̂ point to the same inspector.
+        # The C3 plane, the C5 dispersion view, and the C4 waterfall/comparison view all route a
+        # picked ω̂ point (or waterfall trace) to the same inspector.
         self.heatmap_vm.point_activated.connect(self.inspector_vm.set_fit)
         self.dispersion_vm.point_activated.connect(self.inspector_vm.set_fit)
+        self.waterfall_vm.point_activated.connect(self.inspector_vm.set_fit)
+        # A browser selection also nominates its q as the waterfall/comparison view's default q.
+        self.browser_vm.selection_changed.connect(self.waterfall_vm.default_q_from_selection)
 
         self._docks = {}
         self._init_docks()
@@ -113,6 +121,12 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.dispersion_dock)
         self.tabifyDockWidget(self.heatmap_dock, self.dispersion_dock)
         self._register_dock("Dispersion ω(q)", self.dispersion_dock)
+
+        # The C4 waterfall/comparison view is a third tabified sibling in the same area.
+        self.waterfall_dock = WaterfallDock(self.waterfall_vm, self)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.waterfall_dock)
+        self.tabifyDockWidget(self.heatmap_dock, self.waterfall_dock)
+        self._register_dock("Waterfall / Comparison", self.waterfall_dock)
 
     def _register_dock(self, name: str, dock) -> None:
         """Track a dock so the Docks menu and layout autosave pick it up (call before menu build)."""
@@ -183,6 +197,8 @@ class MainWindow(QMainWindow):
         self.inspector_vm.deleteLater()
         self.heatmap_vm.deleteLater()
         self.dispersion_vm.deleteLater()
+        self.waterfall_vm.save_view_state(self._session)
+        self.waterfall_vm.deleteLater()
         # The central inspector widget is rebuilt against the new workspace in _bind_workspace;
         # setCentralWidget will reparent+delete the old one, but drop it explicitly so its VM
         # connection is gone before the fresh bind.
@@ -207,6 +223,7 @@ class MainWindow(QMainWindow):
         state = bytes(self.saveState().toBase64().data()).decode("ascii")
         self._session.dock_layout_b64 = state
         self._session.note_workspace(self._ws.root)
+        self.waterfall_vm.save_view_state(self._session)
         return self._session
 
     def _restore_layout(self) -> None:

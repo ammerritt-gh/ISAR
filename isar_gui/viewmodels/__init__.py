@@ -11,6 +11,7 @@ from isar_gui.viewmodels.browser import BrowserViewModel, GroupRow
 from isar_gui.viewmodels.dispersion import DispersionViewModel
 from isar_gui.viewmodels.heatmap import HeatmapViewModel
 from isar_gui.viewmodels.inspector import InspectorViewModel
+from isar_gui.viewmodels.waterfall import WaterfallViewModel
 
 __all__ = ["ViewModel", "BrowserViewModel", "GroupRow", "InspectorViewModel",
-           "HeatmapViewModel", "DispersionViewModel"]
+           "HeatmapViewModel", "DispersionViewModel", "WaterfallViewModel"]
