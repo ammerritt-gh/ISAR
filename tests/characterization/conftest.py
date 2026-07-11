@@ -8,5 +8,7 @@ from __future__ import annotations
 
 import os
 
-# Must precede any PySide6 import (the view models pull PySide6 at module scope).
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Must precede any PySide6 import (the view models pull PySide6 at module scope). Unconditional (not
+# setdefault): an inherited windowed value from the caller's environment must never leak into a
+# golden run.
+os.environ["QT_QPA_PLATFORM"] = "offscreen"

@@ -194,6 +194,16 @@ def test_watch_grows_browser_and_heatmap(qtbot, make_ws):
         ])
         write_data_file(root, 2, x, counts1)
 
+    # The two file writes above may debounce into separate ticks rather than one — wait until both
+    # have actually landed across all four views instead of asserting right after a single signal.
+    qtbot.waitUntil(
+        lambda: len(w.browser_vm.group_rows) == 2
+        and len(w.heatmap_vm.spec.strips) == 2
+        and len(w.dispersion_vm.spec.meta["omega_hat_entropy_all"]) == 2
+        and len(w.waterfall_vm.q_values) == 2,
+        timeout=6000,
+    )
+
     assert len(w.browser_vm.group_rows) == 2
     assert len(w.heatmap_vm.spec.strips) == 2
     # The dispersion + waterfall views read the same refreshed facade.

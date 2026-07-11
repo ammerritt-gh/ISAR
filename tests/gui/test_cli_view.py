@@ -40,9 +40,9 @@ def test_view_workspace_arg_is_optional():
 
 
 def test_missing_gui_extra_reports_helpful_message(monkeypatch, capsys):
-    # Exercise the REAL decision path: the [gui] extra is missing == PySide6 not importable, which
-    # view_cmd probes with importlib.util.find_spec BEFORE touching isar_gui.app. Make find_spec
-    # report PySide6 absent (passing others through) and assert the hint + nonzero exit.
+    # Exercise the REAL decision path: the [gui] extra is missing == one of PySide6/pyqtgraph/watchdog
+    # not importable, which view_cmd probes with importlib.util.find_spec BEFORE touching isar_gui.app.
+    # Make find_spec report PySide6 absent (passing others through) and assert the hint + nonzero exit.
     real_find_spec = importlib.util.find_spec
 
     def fake_find_spec(name, *a, **k):
@@ -55,6 +55,59 @@ def test_missing_gui_extra_reports_helpful_message(monkeypatch, capsys):
     assert rc == 2
     err = capsys.readouterr().err
     assert "GUI extra not installed - pip install -e .[gui]" in err
+
+
+def test_missing_gui_extra_reports_helpful_message_for_pyqtgraph(monkeypatch, capsys):
+    # Same contract, but the missing dep is pyqtgraph rather than PySide6 — all three gui-extra deps
+    # are probed, not just PySide6.
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, *a, **k):
+        if name == "pyqtgraph":
+            return None
+        return real_find_spec(name, *a, **k)
+
+    monkeypatch.setattr(view_cmd.importlib.util, "find_spec", fake_find_spec)
+    rc = view_cmd.run(SimpleNamespace(workspace="/some/ws"))
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "GUI extra not installed - pip install -e .[gui]" in err
+
+
+def test_missing_gui_extra_reports_helpful_message_for_watchdog(monkeypatch, capsys):
+    # Same contract again, missing dep is watchdog.
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, *a, **k):
+        if name == "watchdog":
+            return None
+        return real_find_spec(name, *a, **k)
+
+    monkeypatch.setattr(view_cmd.importlib.util, "find_spec", fake_find_spec)
+    rc = view_cmd.run(SimpleNamespace(workspace="/some/ws"))
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "GUI extra not installed - pip install -e .[gui]" in err
+
+
+def test_genuine_import_failure_inside_isar_gui_app_propagates(monkeypatch):
+    # All three gui-extra deps report present, but importing isar_gui.app itself fails for a real
+    # reason (a genuine bug, not a missing extra) — this must traceback, not be swallowed into the
+    # "GUI extra not installed" exit-2 path. Force the import to fail via sys.modules poisoning, which
+    # makes `from isar_gui.app import main` raise a real ImportError.
+    import sys
+
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        view_cmd.importlib.util, "find_spec",
+        lambda name, *a, **k: object() if name in ("PySide6", "pyqtgraph", "watchdog")
+        else real_find_spec(name, *a, **k))
+
+    monkeypatch.setitem(sys.modules, "isar_gui.app", None)
+
+    import pytest as _pytest
+    with _pytest.raises(ImportError):
+        view_cmd.run(SimpleNamespace(workspace="/some/ws"))
 
 
 def test_present_gui_extra_launches(monkeypatch):

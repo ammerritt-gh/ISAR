@@ -116,6 +116,7 @@ def test_per_point_entropy_colours_the_scatter():
     fig, ax = plt.subplots()
     try:
         mpl._render_onto(ax, spec)
+        fig.canvas.draw()  # force the deferred scalar-to-RGBA colour mapping to resolve
         scatters = [c for c in ax.collections if isinstance(c, PathCollection)]
         assert len(scatters) == 1  # the coloured scatter (whiskers are a separate errorbar)
         faces = scatters[0].get_facecolors()

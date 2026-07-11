@@ -44,14 +44,15 @@ import pytest
 pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 
+from baselines import mvp16_path
 from isar.workspace_api import Workspace
 from isar_gui.viewmodels.dispersion import DispersionViewModel
 from isar_gui.viewmodels.heatmap import HeatmapViewModel
 from isar_gui.viewmodels.inspector import InspectorViewModel
 
-_MVP16 = Path(r"C:\Users\AMM\Documents\ISAR_baselines\mvp_zone_test16")
+_MVP16 = mvp16_path()
 _GOLDENS = Path(__file__).resolve().parent / "goldens"
-_UPDATE = bool(os.environ.get("UPDATE_GOLDENS"))
+_UPDATE = os.environ.get("UPDATE_GOLDENS", "").strip().lower() in {"1", "true", "yes"}
 
 _X = [-2.0 + 0.5 * i for i in range(21)]  # a 21-point energy grid for the synthetic pooled fixture
 
@@ -179,10 +180,10 @@ def _baseline_specs():
         "c3_heatmap": _reduce_strips(HeatmapViewModel(ws).spec.to_dict()),
         "c5_dispersion": DispersionViewModel(ws).spec.to_dict(),
     }
-    if rel_st.residuals_spec is not None:
-        specs["c2_inspector_reliable_residuals"] = rel_st.residuals_spec.to_dict()
-    if unrel_st.residuals_spec is not None:
-        specs["c2_inspector_unreliable_residuals"] = unrel_st.residuals_spec.to_dict()
+    assert rel_st.residuals_spec is not None, "reliable scan produced no residuals spec"
+    assert unrel_st.residuals_spec is not None, "unreliable scan produced no residuals spec"
+    specs["c2_inspector_reliable_residuals"] = rel_st.residuals_spec.to_dict()
+    specs["c2_inspector_unreliable_residuals"] = unrel_st.residuals_spec.to_dict()
     return specs
 
 

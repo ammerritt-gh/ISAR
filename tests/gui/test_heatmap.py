@@ -5,20 +5,19 @@ verdict glyphs); a plot click routes to the inspector. Offscreen (conftest force
 importorskip, xdist-safe (each test stamps its own workspace)."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 
 pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 
+from baselines import mvp16_path
 from isar.plotspec.spec import MarkerKind, Role, State
 from isar.workspace_api import Workspace
 from isar_gui.session import Session
 from isar_gui.viewmodels.heatmap import HeatmapViewModel
 
-_MVP16 = Path(r"C:\Users\AMM\Documents\ISAR_baselines\mvp_zone_test16")
+_MVP16 = mvp16_path()
 
 _X = np.linspace(-2.0, 8.0, 21)
 
@@ -53,15 +52,16 @@ _SPECS = [
 ]
 
 
-def _make(make_ws, *, with_master: bool = False) -> Workspace:
+def _make(make_ws, *, with_master: bool = False, specs=_SPECS) -> Workspace:
     scans, rows, data = {}, [], []
-    for s in _SPECS:
+    for s in specs:
+        T = s.get("T", 200.0)
         oc = _outcome(s["scan"], s["h"], s["k"], s["l"], omega0=s["omega0"],
-                      reliable=s["reliable"], entropy=s["entropy"], verdict=s["verdict"])
+                      reliable=s["reliable"], entropy=s["entropy"], verdict=s["verdict"], T=T)
         sid = f"tavi:{s['scan']}:det"
         scans[sid] = {"scan_id": sid, "scan_number": s["scan"], "scan_type": "measurement",
                       "status": "fitted", "detectors": {"det": oc}, "provenance": {"M": 200}}
-        rows.append({"scan": s["scan"], "detector": "det", "sample": "tavi", "T": 200.0,
+        rows.append({"scan": s["scan"], "detector": "det", "sample": "tavi", "T": T,
                      "h": s["h"], "k": s["k"], "l": s["l"], "status": "fitted"})
         data.append({"scan_number": s["scan"], "energy": list(_X), "counts": _counts(s["omega0"])})
     if with_master:
@@ -175,13 +175,22 @@ def test_point_click_activates_fit(qtbot, make_ws):
 
 
 def test_temperature_switch_rebuilds(qtbot, make_ws):
-    # Add a second-temperature scan so the T selector is meaningful.
-    ws = _make(make_ws)
+    # Two scans at T=300 alongside the (modal) T=200 set, so the switch actually rebuilds against a
+    # different scan population rather than "switching" to the temperature already in effect.
+    specs = _SPECS + [
+        dict(scan=7, h=2.0, k=0.0, l=0.0, omega0=4.0, reliable=True, entropy=0.0,
+             verdict="resolved", T=300.0),
+        dict(scan=8, h=2.1, k=0.0, l=0.0, omega0=5.0, reliable=True, entropy=0.0,
+             verdict="resolved", T=300.0),
+    ]
+    ws = _make(make_ws, specs=specs)
     vm = HeatmapViewModel(ws)
-    assert vm.temperature == 200.0  # modal T
+    assert vm.temperature == 200.0  # modal T (4 scans at 200 vs 2 at 300)
     with qtbot.waitSignal(vm.spec_changed, timeout=1000):
-        vm.set_temperature(200.0)
+        vm.set_temperature(300.0)
+    assert vm.temperature == 300.0
     assert vm.spec is not None
+    assert len(vm.spec.strips) == 2  # the two T=300 scans only
 
 
 def test_dock_renders_and_routes_click(qtbot, make_ws):

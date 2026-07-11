@@ -5,14 +5,13 @@ tests/report/test_campaign_diagnostic_characterization.py).
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 
+from baselines import mvp16_path
 from isar.workspace_api import Workspace
 
-_BASELINE = Path(r"C:\Users\AMM\Documents\ISAR_baselines\mvp_zone_test16")
+_BASELINE = mvp16_path()
 
 
 @pytest.fixture(scope="module")

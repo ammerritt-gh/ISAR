@@ -20,20 +20,21 @@ import sys
 _MISSING_MSG = "GUI extra not installed - pip install -e .[gui]"
 
 
+_GUI_EXTRA_DEPS = ("PySide6", "pyqtgraph", "watchdog")
+
+
 def run(args) -> int:
-    # isar_gui ships with the core install and its app module is Qt-free at import scope, so the
-    # ImportError guard alone would never fire — the missing dep is PySide6, which app.py imports
-    # lazily *inside* main(). Probe for it up front so a missing [gui] extra prints the hint instead
-    # of a raw ModuleNotFoundError traceback. The ImportError guard stays as belt-and-braces (e.g. a
-    # source checkout without isar_gui on the path).
-    if importlib.util.find_spec("PySide6") is None:
+    # isar_gui ships with the core install and its app module is Qt-free at import scope, so an
+    # ImportError from `import isar_gui.app` alone would never fire on a missing extra — the actual
+    # missing deps (PySide6, pyqtgraph, watchdog) are imported lazily *inside* isar_gui.app / its
+    # viewmodels. Probe all three up front so a missing [gui] extra prints the hint instead of a raw
+    # ModuleNotFoundError traceback. Once all three are present, import isar_gui.app with NO
+    # try/except: a failure at that point is a genuine bug inside isar_gui, not a missing extra, and
+    # must traceback rather than being swallowed as "GUI extra not installed".
+    if any(importlib.util.find_spec(dep) is None for dep in _GUI_EXTRA_DEPS):
         print(_MISSING_MSG, file=sys.stderr)
         return 2
-    try:
-        from isar_gui.app import main as gui_main
-    except ImportError:
-        print(_MISSING_MSG, file=sys.stderr)
-        return 2
+    from isar_gui.app import main as gui_main
 
     # Forward the (optional) path; a None workspace becomes an empty argv, which gui_main resolves
     # to the most-recent workspace or empty-start.

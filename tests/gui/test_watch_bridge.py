@@ -70,19 +70,32 @@ def test_stop_is_idempotent(qtbot, make_ws):
 
 
 def test_no_emit_after_stop(qtbot, make_ws):
-    """A file change made after stop() must never surface as a ``changed`` emission — including a
-    tick already queued (on the watcher's daemon thread) before stop() ran on the Qt thread."""
+    """A file change made BEFORE stop() — and deterministically confirmed seen by the poll backend
+    — must never surface as a ``changed`` emission once stop() has run, including the tick already
+    queued (on the watcher's daemon thread) before stop() ran on the Qt thread.
+
+    Uses a long debounce (2000ms) so the pending tick is still queued (not yet flushed) when stop()
+    is called, and the poll backend explicitly (not watchdog) so the change can be deterministically
+    confirmed via its internal ``_state`` snapshot before racing stop() against it.
+    """
     root = make_ws(rows=[{"scan": 1, "detector": "det"}])
     ws = Workspace.open(root)
 
     seen = {"count": 0}
-    bridge = WatchBridge(ws, debounce_ms=50, poll_interval_s=0.02)
+    bridge = WatchBridge(ws, debounce_ms=2000, poll_interval_s=0.02, backend="poll")
     bridge.changed.connect(lambda changed: seen.__setitem__("count", seen["count"] + 1))
     bridge.start()
+    watcher = bridge._watcher  # capture before stop() clears the bridge's reference
+
+    before = dict(watcher._backend._state)
+    _append(root / "report" / "results.csv", "2,det\n")
+    # Confirm the poll backend actually registered the file change (its _state advanced) before
+    # stopping — this guarantees a debounce tick is now pending, not merely hoped-for.
+    qtbot.waitUntil(lambda: watcher._backend._state["results"] != before["results"], timeout=3000)
+
     bridge.stop()
 
-    _append(root / "report" / "results.csv", "2,det\n")
-    # Event-driven wait: give the (now-stopped) watcher's poll loop several intervals to have
-    # noticed and posted a tick, if it still could. No signal is expected.
+    # The 2000ms debounce window has not elapsed, so the pending tick (if delivered at all) would
+    # land here. It must not.
     qtbot.wait(400)
     assert seen["count"] == 0

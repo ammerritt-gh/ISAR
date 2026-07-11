@@ -84,14 +84,18 @@ def test_importing_core_does_not_pull_in_qt_or_scipy():
     evaluate_model's audit fallback). matplotlib is NOT asserted on here — it's a hard dependency
     of isar (plotspec has an mpl backend) and is expected to be present.
     """
+    qt_checks = "\n".join(
+        f"assert not [m for m in sys.modules if m == {root!r} or m.startswith({root!r} + '.')], "
+        f"'{root} leaked into isar core import'"
+        for root in sorted(FORBIDDEN_QT)
+    )
     script = (
         "import sys\n"
         "import isar\n"
         "import isar.workspace_api\n"
         "import isar.geometry\n"
         "import isar.plotspec.spec\n"
-        "assert 'PySide6' not in sys.modules, 'PySide6 leaked into isar core import'\n"
-        "assert 'pyqtgraph' not in sys.modules, 'pyqtgraph leaked into isar core import'\n"
+        f"{qt_checks}\n"
         "assert 'scipy' not in sys.modules, "
         "'scipy leaked into isar.workspace_api open (should be lazy)'\n"
         "print('QT_FREE_CORE_OK')\n"

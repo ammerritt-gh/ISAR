@@ -5,19 +5,18 @@ flags points that sit >3σ off the prior, and routes a plot click to the inspect
 importorskip, xdist-safe."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 
 pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 
+from baselines import mvp16_path
 from isar.plotspec.spec import MarkerKind, Role, State
 from isar.workspace_api import Workspace
 from isar_gui.viewmodels.dispersion import DispersionViewModel
 
-_MVP16 = Path(r"C:\Users\AMM\Documents\ISAR_baselines\mvp_zone_test16")
+_MVP16 = mvp16_path()
 
 _X = np.linspace(-2.0, 8.0, 21)
 
@@ -172,12 +171,22 @@ def test_no_off_curve_without_prior(make_ws):
 
 
 def test_temperature_switch_rebuilds(qtbot, make_ws):
-    ws = _make(make_ws)
+    # Two scans at T=300 alongside the (modal) T=200 set, so the switch actually changes the
+    # rebuilt projection rather than "switching" to the temperature already in effect.
+    specs = _SPECS + [
+        dict(scan=7, h=2.0, k=0.0, l=0.0, omega0=4.0, reliable=True, entropy=0.0,
+             verdict="resolved", T=300.0),
+        dict(scan=8, h=2.1, k=0.0, l=0.0, omega0=5.0, reliable=True, entropy=0.0,
+             verdict="resolved", T=300.0),
+    ]
+    ws = _make(make_ws, specs=specs)
     vm = DispersionViewModel(ws)
-    assert vm.temperature == 200.0
+    assert vm.temperature == 200.0  # modal temperature (4 scans at 200 vs 2 at 300)
     with qtbot.waitSignal(vm.spec_changed, timeout=1000):
-        vm.set_temperature(200.0)
+        vm.set_temperature(300.0)
+    assert vm.temperature == 300.0
     assert vm.spec is not None
+    assert vm.spec.meta["temperature"] == 300.0
 
 
 def test_point_click_activates_fit(qtbot, make_ws):
