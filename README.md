@@ -68,20 +68,27 @@ isar run "path\to\data" --workspace my_experiment     # parse -> reduce -> revie
 
 ```
 isar/
-  schema/     # ScanRecord + experiment card (policy TOML + state JSON)
-  parsers/    # registry + plugins (S30 SPEC supplementary/raw, IN8 numor) + card templates
-  reduce/     # QC (mask-not-delete), combine, collate, LLM adjudication (opt-in)
-  calibrate/  # elastic fits, time-keyed energy-zero series, Bragg reader
-  analyze/    # structure enumeration, ICs, fitting loop, errors, selection, verdict, confidence
-  session/    # workspace/session assembly: driver, priors, branch model, worker, timing
-  cli/        # the isar command (init/run/status/report/score/profile/drive)
-  drive/      # autonomous loop: acquisition (EIG), TAVI I/O, supervisor, session log
-  report/     # figures, findings, markdown/html renderers
-  synth/      # Phase-1 synthetic core: generator, DHO fitter, estimators, MC scoring
-docs/         # design docs, guides, and the *_check.py validation drivers
-test_data/    # real facility files (S30, IN8, ID28, BL43LXU) — LOCAL-ONLY, gitignored
-tests/        # unit + real-data smoke tests (real-data tests need the local test_data/)
-out/          # generated reports (gitignored; run a docs/*_check.py to produce one)
+  schema/         # ScanRecord + experiment card (policy TOML + state JSON)
+  parsers/        # registry + plugins (S30 SPEC supplementary/raw, IN8 numor) + card templates
+  reduce/         # QC (mask-not-delete), combine, collate, LLM adjudication (opt-in)
+  calibrate/      # elastic fits, time-keyed energy-zero series, Bragg reader
+  analyze/        # structure enumeration, ICs, fitting loop, errors, selection, verdict, confidence
+  session/        # workspace/session assembly: driver, priors, branch model, worker, timing
+  cli/            # the isar command (init/run/status/report/score/profile/drive)
+  drive/          # autonomous loop: acquisition (EIG), TAVI I/O, supervisor, session log
+  report/         # figures, findings, markdown/html renderers
+  synth/          # Phase-1 synthetic core: generator, DHO fitter, estimators, MC scoring
+  workspace_api/  # read-only facade over a workspace (fits, scans, ledger, evaluate_model,
+                  #   watch) — the GUI's data layer and the notebook interface, Qt-free
+  geometry/       # metric/UB + feasibility layer vendored from TAVI/TAS_MCP, Qt-free
+  plotspec/       # shared plot-spec layer (matplotlib + pyqtgraph backends) so report figures
+                  #   and GUI views share rendering semantics
+isar_gui/         # optional GUI package (`pip install -e .[gui]`, `isar view <workspace>`) —
+                  #   read-only viewer against isar/workspace_api, isar/geometry, isar/plotspec
+docs/             # design docs, guides, and the *_check.py validation drivers
+test_data/        # real facility files (S30, IN8, ID28, BL43LXU) — LOCAL-ONLY, gitignored
+tests/            # unit + real-data smoke tests (real-data tests need the local test_data/)
+out/              # generated reports (gitignored; run a docs/*_check.py to produce one)
 ```
 
 ## Validation
