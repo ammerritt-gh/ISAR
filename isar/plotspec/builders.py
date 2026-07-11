@@ -150,6 +150,113 @@ def fit_overlay_spec(*, x, counts, yerr, x_fit, total, components,
     )
 
 
+_VERDICT_MARKER = {
+    "resolved": ps.MarkerKind.VERDICT_RESOLVED,
+    "flagged": ps.MarkerKind.VERDICT_FLAGGED,
+    "held": ps.MarkerKind.VERDICT_HELD,
+}
+
+
+def dispersion_spec(*, points, projection, prior=None, branches=None,
+                    off_curve=None, color_norm=None,
+                    title="dispersion ω̂(q)", xlabel="q (rlu)",
+                    ylabel="energy transfer (meV)", value_label=None, meta=None):
+    """The C5 dispersion view (ω̂ vs q) as a :class:`~isar.plotspec.spec.PlotSpec` — the heatmap's
+    1-D sibling, same honesty law, plain data only (no workspace_api).
+
+    ``points`` is a list of per-ω̂ dicts: ``q`` and ``omega`` (required); ``yerr`` — the certifying
+    half-width (symmetric, from the interval ladder) or ``None`` when NO tier certifies; ``entropy``
+    (assignment entropy or None); ``verdict`` (resolved/flagged/held or None); ``pooled`` (bool).
+
+    Binding rendering discipline:
+
+    * a point with a ``yerr`` is a certifying ω̂ — it joins the DATA scatter with that whisker; a
+      point with ``yerr is None`` is uncertified — a WARNING :class:`~isar.plotspec.spec.Marker`
+      and a SINGLE ``"(unreliable)"`` note, never a numeric whisker;
+    * the assignment-entropy colour channel rides ONLY on the whiskered scatter (values aligned to
+      that subset) and its legend note appears ONLY when at least one whiskered point carries an
+      entropy value — the note never asserts an encoding that isn't on screen;
+    * a pooled master carries no per-member whisker (its true spectrum is not persisted): it is a
+      labeled :data:`~isar.plotspec.spec.State.POOLED` scatter point, never a certifying whisker;
+    * ``prior`` (``(xs, ys)``) draws as a :data:`~isar.plotspec.spec.Role.PRIOR` curve; ``branches``
+      (list of ``(label, xs, ys)``) as :data:`~isar.plotspec.spec.Role.BRANCH` curves — both optional;
+    * ``off_curve`` (list of ``{q, omega, n_sigma}``) annotates points that sit >kσ off the prior;
+    * the :class:`~isar.plotspec.spec.ProjectionLegend` is MANDATORY (G9 4D-honesty) — ``None`` raises.
+    """
+    if projection is None:
+        raise ValueError("dispersion_spec requires a ProjectionLegend (declared projection "
+                         "is always on screen; G9 4D-honesty)")
+
+    series: list[ps.Series] = []
+    markers: list[ps.Marker] = []
+    annotations: list[ps.Annotation] = []
+
+    rel_x, rel_y, rel_err, rel_ent = [], [], [], []
+    pool_x, pool_y = [], []
+    any_unreliable = False
+    for p in points or []:
+        x = float(p["q"])
+        y = float(p["omega"])
+        ent = p.get("entropy")
+        ent = None if ent is None else float(ent)
+        yerr = p.get("yerr")
+        if p.get("pooled"):
+            # Pooled master: no per-member whisker (member spectrum not persisted), a labeled point.
+            pool_x.append(x)
+            pool_y.append(y)
+        elif yerr is not None:
+            rel_x.append(x)
+            rel_y.append(y)
+            rel_err.append(float(yerr))
+            rel_ent.append(ent)
+        else:
+            any_unreliable = True
+            markers.append(ps.Marker(x=x, y=y, kind=ps.MarkerKind.WARNING,
+                                     label="ω̂ (unreliable)"))
+        kind = _VERDICT_MARKER.get((p.get("verdict") or "").lower())
+        if kind is not None:
+            markers.append(ps.Marker(x=x, y=y, kind=kind, label=f"verdict: {p['verdict']}"))
+
+    # Prior + branch overlays first (drawn under the scatter).
+    if prior is not None:
+        px, py = prior
+        series.append(ps.Series(x=np.asarray(px, float), y=np.asarray(py, float),
+                                label="dispersion prior", role=ps.Role.PRIOR))
+    for label, bx, by in (branches or []):
+        series.append(ps.Series(x=np.asarray(bx, float), y=np.asarray(by, float),
+                                label=str(label), role=ps.Role.BRANCH))
+
+    # The entropy colour channel rides ONLY on the certifying (whiskered) scatter; attach it — and
+    # its legend note — ONLY when at least one such point carries an entropy value.
+    colored = bool(rel_x) and any(e is not None for e in rel_ent)
+    if rel_x:
+        series.append(ps.Series(
+            x=np.asarray(rel_x, float), y=np.asarray(rel_y, float), yerr=np.asarray(rel_err, float),
+            label="ω̂ (certifying interval)", role=ps.Role.DATA,
+            state=(ps.State.ENTROPY if colored else None),
+            color_values=(list(rel_ent) if colored else None),
+            color_norm=((color_norm if color_norm is not None else ps.LN2) if colored else None)))
+    if pool_x:
+        series.append(ps.Series(x=np.asarray(pool_x, float), y=np.asarray(pool_y, float),
+                                label="ω̂ (pooled master)", role=ps.Role.DATA, state=ps.State.POOLED))
+
+    if any_unreliable:
+        annotations.append(ps.Annotation(text="(unreliable)", xy=None, role=ps.State.UNRELIABLE))
+    if colored:
+        annotations.append(ps.Annotation(
+            text="color = assignment entropy (ln 2 = undecided)", xy=None))
+
+    for oc in (off_curve or []):
+        nσ = oc.get("n_sigma")
+        note = "off prior" if nσ is None else f"off prior ({float(nσ):.1f}σ)"
+        annotations.append(ps.Annotation(text=note, xy=(float(oc["q"]), float(oc["omega"]))))
+
+    return ps.PlotSpec(
+        title=title, xlabel=xlabel, ylabel=ylabel,
+        series=series, markers=markers, annotations=annotations,
+        projection=projection, value_label=value_label, meta=dict(meta or {}))
+
+
 def residuals_spec(*, x, residuals, yerr=None, xlabel="energy transfer (meV)",
                    ylabel="data - fit (counts)", title="residuals"):
     """Residuals (measured - delivered curve, on the measured grid) as a RESIDUAL-role PlotSpec.
