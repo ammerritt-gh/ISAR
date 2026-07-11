@@ -159,6 +159,33 @@ def test_load_workspace_swaps_tree(qtbot, make_ws):
     assert str(root2) in w._session.recent_workspaces
 
 
+def test_load_workspace_twice_no_menu_leak(qtbot, make_ws):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QApplication, QMenu
+
+    ws1, _ = _open(make_ws, rows=_ROWS[:1])
+    w = MainWindow(ws1, session=Session(), watch=False)
+    qtbot.addWidget(w)
+
+    def _menu_count() -> int:
+        # Flush deferred deletes (deleteLater) so torn-down menus are actually gone before counting.
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        return len(w.menuBar().findChildren(QMenu))
+
+    baseline = _menu_count()  # File + Docks
+    w.load_workspace(make_ws(rows=_ROWS))
+    after_first = _menu_count()
+    w.load_workspace(make_ws(rows=_ROWS[:2]))
+    after_second = _menu_count()
+
+    # A leak would grow the QMenu count by one per load; the count must be stable instead.
+    assert after_first == baseline
+    assert after_second == baseline
+    # And the tree reflects the LAST workspace (2 rows -> 2 members across its groups).
+    assert sum(w.browser_dock._tree.topLevelItem(i).childCount()
+               for i in range(w.browser_dock._tree.topLevelItemCount())) == 2
+
+
 def test_load_workspace_invalid_path_keeps_old_and_reports_status(qtbot, make_ws, tmp_path):
     ws1, root1 = _open(make_ws, rows=_ROWS[:1])
     w = MainWindow(ws1, session=Session(), watch=False)

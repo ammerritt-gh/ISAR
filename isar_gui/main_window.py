@@ -143,6 +143,10 @@ class MainWindow(QMainWindow):
             self._bridge = None
 
         self.menuBar().removeAction(self._docks_menu.menuAction())
+        # removeAction() only detaches the menu; the QMenu (and its per-dock QActions, whose closures
+        # capture the now-deleted docks) stay parented to the menu bar. Delete it so repeated
+        # load_workspace calls don't leak one Docks menu per load.
+        self._docks_menu.deleteLater()
         for dock in list(self._docks.values()):
             self.removeDockWidget(dock)
             dock.deleteLater()
