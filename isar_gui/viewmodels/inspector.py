@@ -130,16 +130,14 @@ class InspectorViewModel(ViewModel):
     # -- specs (data + fit + residuals) --
     def _attach_specs(self, fit, st: InspectorState) -> None:
         ws = self._ws
+        pooled = bool(fit.pooled)
         try:
             energy, counts, yerr = ws.scan_data(fit.scan_number)
-            if energy is None or energy.size == 0:
-                st.curve_error = "no measured data file for this scan"
+            fine = self._fine_grid(fit, energy)
+            if fine is None:
+                st.curve_error = "no energy grid available for this scan"
                 return
-            fine = np.linspace(float(np.min(energy)), float(np.max(energy)), _FINE_N)
             curve = ws.evaluate_model(fit.scan_number, fit.detector_id, x_eval=fine)
-            total_on_data = np.interp(energy, np.asarray(curve.x, float),
-                                      np.asarray(curve.total, float))
-            residuals = counts - total_on_data
         except (KeyError, ValueError, OSError) as exc:
             st.curve_error = str(exc)
             return
@@ -147,15 +145,38 @@ class InspectorViewModel(ViewModel):
         # The ω₀ whisker in the plot shows the CERTIFYING tier's interval (None => warning marker),
         # not bootstrap-regardless — so an uncertified ω₀ never draws a numeric whisker.
         cert_interval = self._certifying_interval(fit, st.certifying_tier)
+
+        # Honesty law: a pooled master's true spectrum is not persisted, so we NEVER draw a member's
+        # data/*.json counts under a "pooled" title. Render curve-only + a "member data not shown"
+        # annotation (the builder enforces this); no residuals without the pooled data.
+        data_x = None if pooled else energy
+        data_counts = None if pooled else counts
+        data_yerr = None if pooled else yerr
         st.main_spec = builders.fit_overlay_spec(
-            x=energy, counts=counts, yerr=yerr,
+            x=data_x, counts=data_counts, yerr=data_yerr,
             x_fit=curve.x, total=curve.total, components=curve.components,
             omega0=fit.omega0, interval=cert_interval,
             interval_reliable=(cert_interval is not None),
             scan_number=fit.scan_number, det_id=fit.detector_id, q=fit.q,
-            pooled=bool(fit.pooled), members=fit.members, n_members=fit.n_members,
+            pooled=pooled, members=fit.members, n_members=fit.n_members,
         )
-        st.residuals_spec = builders.residuals_spec(x=energy, residuals=residuals, yerr=yerr)
+        if not pooled and energy is not None and energy.size:
+            total_on_data = np.interp(energy, np.asarray(curve.x, float),
+                                      np.asarray(curve.total, float))
+            st.residuals_spec = builders.residuals_spec(
+                x=energy, residuals=counts - total_on_data, yerr=yerr)
+
+    @staticmethod
+    def _fine_grid(fit, energy):
+        """A fine x-grid for the delivered curve: the measured energy span when a data file exists,
+        else a symmetric window around ω₀ (so a pooled master with no member file still plots a
+        curve). ``None`` when neither is available."""
+        if energy is not None and energy.size:
+            return np.linspace(float(np.min(energy)), float(np.max(energy)), _FINE_N)
+        if fit.omega0 is not None:
+            c = float(fit.omega0)
+            return np.linspace(c - 10.0, c + 10.0, _FINE_N)
+        return None
 
     @staticmethod
     def _certifying_interval(fit, certifying_tier):

@@ -67,7 +67,9 @@ def test_fit_overlay_unreliable_no_omega0_whisker_and_annotation():
     assert len(unreliable) == 1 and "(unreliable)" in unreliable[0].text
 
 
-def test_fit_overlay_pooled_labels_and_enumerates_members():
+def test_fit_overlay_pooled_draws_no_member_data_and_annotates():
+    # Honesty law: a pooled master must NOT draw any member's counts under a "pooled" title, even
+    # when counts are handed in — curve-only + a "member data not shown" annotation.
     x, counts, yerr, x_fit, total, components = _data()
     members = ["101", "102", "103"]
     spec = builders.fit_overlay_spec(
@@ -76,8 +78,10 @@ def test_fit_overlay_pooled_labels_and_enumerates_members():
         scan_number=None, det_id="det", q=[2.0, 0.0, 0.0],
         pooled=True, members=members, n_members=3)
 
-    data = next(s for s in spec.series if s.role is ps.Role.DATA)
-    assert data.state is ps.State.POOLED
+    assert all(s.role is not ps.Role.DATA for s in spec.series)  # no raw-data overlay
+    assert any(s.role is ps.Role.FIT for s in spec.series)       # curve still drawn
+    notes = [a.text for a in spec.annotations if a.role is ps.State.POOLED]
+    assert notes == ["pooled master — member data not shown (3 members)"]
     assert "pooled" in spec.title.lower()
     assert spec.meta["pooled"] is True
     assert spec.meta["members"] == members

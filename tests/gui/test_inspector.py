@@ -144,6 +144,21 @@ def test_provenance_rejected_master_is_uncertifiable(make_ws):
     assert vm.state.provenance["pooled"] == "pooled — uncertifiable"
 
 
+def test_pooled_master_never_overlays_member_data(make_ws):
+    # scan_number 1 resolves to a real member data/*.json in this workspace; the honesty law says
+    # the pooled master must NOT draw those member counts under a pooled title. Curve-only + note.
+    from isar.plotspec.spec import Role, State
+    ws = _ws_with(make_ws, _outcome(pooled=True, n_members=2, members=["1", "2"]))
+    vm = InspectorViewModel(ws)
+    vm.set_fit(_fit(ws))
+    st = vm.state
+    assert st.main_spec is not None
+    assert all(s.role is not Role.DATA for s in st.main_spec.series)
+    assert any(a.role is State.POOLED and "member data not shown" in a.text
+               for a in st.main_spec.annotations)
+    assert st.residuals_spec is None  # no residuals without the (unpersisted) pooled spectrum
+
+
 # ---- Widget rendering -------------------------------------------------------
 def test_widget_renders_reliable_case(qtbot, make_ws):
     ws = _ws_with(make_ws, _outcome())

@@ -78,18 +78,28 @@ def fit_overlay_spec(*, x, counts, yerr, x_fit, total, components,
     ``(x_fit, total)`` and its ``components`` (a list of ``(name, values)`` over ``x_fit``); ω₀ with
     its interval + reliability flag; pooled/members provenance for the honesty channel.
 
-    Rendering discipline (binding): a pooled master's data series carries :data:`State.POOLED` and
-    its members are enumerated in ``meta``; the ω₀ marker shows an interval whisker ONLY when the
+    Rendering discipline (binding): a **pooled master** NEVER draws a raw-data overlay — the true
+    pooled spectrum is not persisted, so drawing any single member's counts under a "pooled" title
+    would mislead. A pooled spec is curve-only and carries a "member data not shown" annotation; its
+    members are still enumerated in ``meta``. The ω₀ marker shows an interval whisker ONLY when the
     interval is reliable — an unreliable ω₀ is the sanctioned warning-marker + ``"(unreliable)"``
     annotation (via :func:`~isar.plotspec.spec.mark_unreliable`), never a numeric whisker.
     """
-    x = np.asarray(x, dtype=float)
-    counts = np.asarray(counts, dtype=float)
-    yerr = None if yerr is None else np.asarray(yerr, dtype=float)
     series: list[ps.Series] = []
-    data_label = f"pooled data ({n_members} members)" if pooled and n_members else "data (+/-sqrt N)"
-    series.append(ps.Series(x=x, y=counts, yerr=yerr, label=data_label, role=ps.Role.DATA,
-                            state=ps.State.POOLED if pooled else None))
+    annotations: list[ps.Annotation] = []
+    # Honesty law: a pooled master shows no member counts (curve-only + a note). Per-scan fits draw
+    # their measured data with Poisson whiskers.
+    if pooled:
+        n = n_members if n_members else "?"
+        annotations.append(ps.Annotation(
+            text=f"pooled master — member data not shown ({n} members)", xy=None,
+            role=ps.State.POOLED))
+    elif counts is not None:
+        x = np.asarray(x, dtype=float)
+        counts = np.asarray(counts, dtype=float)
+        yerr = None if yerr is None else np.asarray(yerr, dtype=float)
+        series.append(ps.Series(x=x, y=counts, yerr=yerr, label="data (+/-sqrt N)",
+                                role=ps.Role.DATA))
 
     if x_fit is not None and total is not None:
         xf = np.asarray(x_fit, dtype=float)
@@ -101,11 +111,10 @@ def fit_overlay_spec(*, x, counts, yerr, x_fit, total, components,
                                     role=ps.Role.COMPONENT))
 
     markers: list[ps.Marker] = []
-    annotations: list[ps.Annotation] = []
     # ω₀ marker — reliable interval => a whisker; unreliable => warning-marker + annotation only.
-    if omega0 is not None:
-        grid_x = x_fit if (x_fit is not None and total is not None) else x
-        grid_y = total if (x_fit is not None and total is not None) else counts
+    grid_x = x_fit if (x_fit is not None and total is not None) else x
+    grid_y = total if (x_fit is not None and total is not None) else counts
+    if omega0 is not None and grid_y is not None:
         y0 = _interval_at(grid_x, grid_y, omega0)
         if interval_reliable and interval is not None and len(interval) >= 2:
             lo, hi = float(interval[0]), float(interval[-1])
