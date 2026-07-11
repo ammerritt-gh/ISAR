@@ -250,6 +250,28 @@ def test_evaluate_pure_vs_fallback_equivalence(make_ws):
     assert np.all(np.isfinite(out_pure.total)) and np.all(np.isfinite(out_fb.total))
 
 
+def test_evaluate_pure_quasielastic_branch(make_ws):
+    # QE composition path: amplitudes include a "qe.*" prefix and quasielastic_fwhm is supplied,
+    # so _compose builds phonon+elastic+qe+bg and assemble_curve must include the QE component.
+    energy = np.linspace(-2.0, 7.0, 40)
+    root = make_ws(data_files=[{"scan_number": 21, "energy": energy, "counts": np.zeros_like(energy)}])
+    data_dir = root / "data"
+
+    amps = {"phonon.A": 5000.0, "elastic.E": 8000.0, "qe.QE": 300.0, "bg.BG": 40.0}
+    res_row = {"scan": 21, "detector": "det", "omega0": 4.0, "gamma": 0.4,
+               "zero": 0.0, "gauss_fwhm": 1.2, "lorentz_fwhm": 0.0, "T": 200.0}
+    fit_pure = FitView.from_row({**res_row, "amplitudes": amps})
+
+    out = evaluate_model(fit_pure, data_dir, quasielastic_fwhm=2.5)
+
+    assert out.pure is True
+    names = [name for name, _ in out.components]
+    assert "qe" in names
+    assert np.all(np.isfinite(out.total))
+    qe_values = dict(out.components)["qe"]
+    assert np.any(qe_values != 0.0)
+
+
 def test_evaluate_via_workspace_fallback(make_ws):
     energy = np.linspace(-2.0, 7.0, 50)
     ctx = SimpleNamespace(center=0.0, gauss_fwhm=1.2, lorentz_fwhm=0.0, T=200.0)

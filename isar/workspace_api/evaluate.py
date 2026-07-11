@@ -127,6 +127,7 @@ def evaluate_model(fit, data_dir, *, quasielastic_fwhm=None, x_eval=None):
         comp = _compose(amps, quasielastic_fwhm)
         if comp is not None:
             from isar.report.audit import assemble_curve
+            res = {k: v for k, v in res.items() if k != "quasielastic_fwhm"}  # explicit arg wins if res ever carries this key
             ctx = SimpleNamespace(quasielastic_fwhm=quasielastic_fwhm, **res)
             rc = assemble_curve(comp, x, omega0=omega0, gamma=gamma, amp=amps, ctx=ctx)
             return SimpleNamespace(x=rc.x, total=rc.total, components=rc.components, pure=True)

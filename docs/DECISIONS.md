@@ -189,10 +189,12 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   `isar/geometry/epochs.py` (identity-through-acquisition-epoch until absolute coordinates land
   in Phase B).
 - **G16.** `isar_gui` sanctioned imports: `isar_gui` may import only `isar.workspace_api`,
-  `isar.geometry`, `isar.plotspec`; `isar.workspace_api` may additionally use
-  `isar.reduce.collate` (the canonical collation key — one definition of "a dataset").
-  Enforced by tests (`tests/test_qt_free_core.py` now; an AST import-contract test is future
-  work, task A-11). Implemented (Phase 0/A).
+  `isar.geometry`, `isar.plotspec`; `isar.workspace_api` may additionally use `isar.schema.card`,
+  `isar.session.state`, `isar.session.workspace`, `isar.drive.session_log`,
+  `isar.drive.isar_io.readers`, `isar.report.audit`, `isar.analyze.components`, `isar.geometry`,
+  `isar.reduce.collate` (the canonical collation key — one definition of "a dataset"). Enforced
+  by an AST import-contract test, `tests/test_import_contract.py` (task A-11; allow-lists kept in
+  sync with this entry). Implemented (Phase 0/A).
 - **G17.** Rendering semantics live in the spec layer: `isar/plotspec` spec objects carry the
   binding semantics (unreliable-never-whiskers, pooled labeling + members, tier labeling,
   certifying-primary, truth-gated legend notes, strip = measured/no interpolation, per-point
