@@ -416,6 +416,7 @@ DECISIONS W1–W3.)*
 | Async one-step-stale loop | Planned |
 | TAVI-as-backend campaign (the SVP) | **Partial** (deterministic rung 2026-07-10; clocks + McStas Planned) |
 | Campaign diagnostic report (`isar diagnose`) | Implemented (2026-07-10) |
+| Fit-free ingest to the ledger (`isar ingest`, `ingested` status) | Implemented (2026-07-12) |
 | Bayesian interval tier | Planned |
 | Renegotiation protocol | Planned (design door open) |
 | Model-level (ARIANE-style) objective tier | Planned |

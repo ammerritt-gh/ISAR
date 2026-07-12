@@ -391,6 +391,31 @@ class ScanView:
         parts = str(self.scan_id).split(":")
         return parts[0] if parts and parts[0] else None
 
+    @property
+    def T(self) -> float | None:
+        """Sample temperature stamped at ingest/fit (``provenance["T"]``); ``None`` if absent."""
+        return _f((self.provenance or {}).get("T"))
+
+    @property
+    def source_file(self) -> str | None:
+        """The data file this scan was parsed from (``provenance["source_file"]``); ``None`` if absent."""
+        v = (self.provenance or {}).get("source_file")
+        return str(v) if v else None
+
+
+# ---------------------------------------------------------------------------
+# FileView — one ingest-manifest row (session.files)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class FileView:
+    """One classified data file from the session manifest (read-only)."""
+    path: str
+    size: int | None
+    mtime: float | None
+    classification: str | None      # "measurement" | "companion" | "foreign" | "unrecognized"
+    n_scans: int | None
+    scan_ids: tuple = ()
+
 
 # ---------------------------------------------------------------------------
 # CardView / GroupView / BranchModelView / CampaignView

@@ -9,11 +9,15 @@ scan-number sequence — the file-level gap detection `collate.detect_gaps` (val
 from __future__ import annotations
 
 import fnmatch
+import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from isar.parsers import registry
 from isar.schema.card import Card
+
+log = logging.getLogger(__name__)
 
 # Suffixes that are never instrument data — skip without opening (binaries, logs, our own output,
 # and the `.UNUSED` relabel marker for retired datasets). `.json` is NOT skipped: TAVI simulator
@@ -21,7 +25,9 @@ from isar.schema.card import Card
 # excluded by name below, and unrelated JSON fails detection and lands in `unrecognized`.
 SKIP_SUFFIXES = {".nxs", ".log", ".md", ".png", ".csv", ".tmp", ".unused"}
 # Our own workspace files — never ingest them even if a data path points at a workspace.
-WORKSPACE_NAMES = {"card.policy.toml", "card.state.json", "session.json", "report.json"}
+# `gui.state.json` is a GUI-owned per-workspace file (Phase E) — it must never be classified as data.
+WORKSPACE_NAMES = {"card.policy.toml", "card.state.json", "session.json", "report.json",
+                   "gui.state.json"}
 
 
 @dataclass
@@ -90,6 +96,155 @@ def parse_all(plan: IngestPlan, card: Card) -> list:
         for rec in plugin.parse_file(f, card):
             by_key[(rec.experiment_id, rec.scan_number)] = rec   # last wins
     return [by_key[k] for k in sorted(by_key, key=lambda k: (str(k[0]), k[1]))]
+
+
+@dataclass
+class IngestReport:
+    """The result of :func:`ingest_batch` — what was seen and how the ledger changed.
+
+    Scan-level ids in ``added``/``updated``/``unchanged`` are the ``"exp:scan"`` form (each scan
+    appears in exactly one list, precedence added > updated > unchanged); the ledger itself is keyed
+    per-detector (``exp:scan:det``). This is the GUI's parse-preview feed (Phase E consumes it via
+    ``--json``). ``dirty`` is False iff nothing changed on the session — the caller SKIPs ``save()``
+    then, so a re-ingest no-op does not tick the workspace watch.
+    """
+    files: list = field(default_factory=list)       # {"path","class","n_scans","scan_ids"}
+    added: list = field(default_factory=list)        # scan-level ids "exp:scan" newly entered
+    updated: list = field(default_factory=list)      # existing entries whose content_hash drifted
+    unchanged: list = field(default_factory=list)    # re-ingest no-ops
+    deduped: list = field(default_factory=list)      # {"scan","kept","superseded":[...]}
+    gaps: list = field(default_factory=list)         # file_gaps output
+    dirty: bool = False
+
+    def to_jsonable(self) -> dict:
+        return {"files": [dict(f) for f in self.files],
+                "added": list(self.added), "updated": list(self.updated),
+                "unchanged": list(self.unchanged),
+                "deduped": [dict(d) for d in self.deduped],
+                "gaps": [list(g) for g in self.gaps]}
+
+
+def ingest_batch(card: Card, session, data_paths) -> IngestReport:
+    """Parse ``data_paths`` into the session ledger WITHOUT fitting (UNIFICATION_DESIGN §2.3).
+
+    Discovers/classifies files (reusing :func:`discover`), parses the measurement files with the
+    card-pinned plugin, dedups by ``(experiment_id, scan_number)`` last-wins, and upserts one ledger
+    entry per ``(experiment_id, scan_number, detector)`` at status ``"ingested"``. Never fits, never
+    deletes, never writes ``card.policy.toml``. Precedence contract (the load-bearing part): an
+    unchanged re-ingest leaves a fitted/held/excluded entry COMPLETELY untouched — status is only
+    ever driven up to ``"ingested"`` when the parsed content actually drifted.
+
+    Mutates ``session`` in place; the caller persists it (skip ``save()`` when ``report.dirty`` is
+    False). Returns an :class:`IngestReport`.
+    """
+    from isar.reduce import combine, qc
+    from isar.session.state import ScanEntry, content_hash
+
+    report = IngestReport()
+    plan = discover(data_paths, card)
+
+    # --- parse measurement files, tracking record -> source file(s) for dedup reporting ---
+    plugin = registry.plugin_by_name(card.policy.plugin)
+    by_key: dict[tuple, object] = {}                 # (exp, scan) -> record (last wins)
+    sources: dict[tuple, list[str]] = {}             # (exp, scan) -> ordered distinct source paths
+    file_scan_ids: dict[str, list[str]] = {}         # resolved measurement path -> ["exp:scan", ...]
+    for f in plan.measurement_files:
+        rp = str(Path(f).resolve())
+        seen_here: set[tuple] = set()
+        for rec in plugin.parse_file(f, card):
+            key = (rec.experiment_id, rec.scan_number)
+            by_key[key] = rec                        # last occurrence wins (growing-file resend)
+            paths = sources.setdefault(key, [])
+            if rp not in paths:
+                paths.append(rp)
+            if key not in seen_here:
+                seen_here.add(key)
+                file_scan_ids.setdefault(rp, []).append(f"{rec.experiment_id}:{rec.scan_number}")
+
+    records = [by_key[k] for k in sorted(by_key, key=lambda k: (str(k[0]), k[1]))]
+
+    # Dedup alerts: any scan whose surviving record was sourced from more than one file.
+    for key in sorted(sources, key=lambda k: (str(k[0]), k[1])):
+        paths = sources[key]
+        if len(paths) > 1:
+            report.deduped.append({"scan": f"{key[0]}:{key[1]}",
+                                   "kept": paths[-1], "superseded": paths[:-1]})
+
+    # --- upsert one ledger entry per (exp, scan, det) ---
+    import numpy as np
+    now_iso = datetime.now(timezone.utc).isoformat()
+    _RANK = {"unchanged": 0, "updated": 1, "added": 2}
+    for rec in records:
+        scan_short = f"{rec.experiment_id}:{rec.scan_number}"
+        # Hash the SAME canonical form the driver hashes (reduced + QC'd, both in-place no-ops where
+        # not applicable and neither raises) so a re-ingest after `isar run` reads as "unchanged" and
+        # never downgrades a fitted/held/excluded entry. content_hash on the raw record would drift
+        # from the fit's stored hash and silently re-queue the whole workspace on every parse-preview.
+        combine.reduce_record(rec, card)
+        qc.qc_record(rec, card)
+        chash = content_hash(rec)
+        T = float(np.median(np.asarray(rec.temperature.setpoint, dtype=float)))
+        src = sources[(rec.experiment_id, rec.scan_number)][-1]   # the kept (last-wins) source file
+        scan_rank = 0                                             # collapse per-detector states
+        for det, sp in rec.spectra.items():
+            key = f"{rec.experiment_id}:{rec.scan_number}:{det}"
+            q = [float(v) for v in sp.q] if sp.q is not None else None
+            prov_add = {"source_file": src, "T": T, "q": q, "ingested_at": now_iso}
+            prev = session.get(key)
+            if prev is None:
+                session.put(ScanEntry(
+                    scan_id=key, scan_number=rec.scan_number, scan_type=rec.scan_type,
+                    status="ingested", content_hash=chash, guidelines_hash="",
+                    detectors={}, provenance=dict(prov_add)))
+                det_state = "added"
+                report.dirty = True
+            elif prev.content_hash == chash:
+                # Same content: leave the entry COMPLETELY untouched — never downgrade a
+                # fitted/held/excluded status, never re-stamp provenance.
+                det_state = "unchanged"
+            else:
+                # Content drifted: re-queue for fitting. Keep the (now stale) detectors payload so
+                # the old fit stays visible until `isar run` supersedes it; merge provenance.
+                prev.content_hash = chash
+                prev.status = "ingested"
+                prev.provenance = {**(prev.provenance or {}), **prov_add}
+                det_state = "updated"
+                report.dirty = True
+            scan_rank = max(scan_rank, _RANK[det_state])
+        {2: report.added, 1: report.updated, 0: report.unchanged}[scan_rank].append(scan_short)
+
+    # --- file manifest for ALL classified files (merge, never replace) ---
+    _classes = [(plan.measurement_files, "measurement"), (plan.companion_files, "companion"),
+                (plan.foreign, "foreign"), (plan.unrecognized, "unrecognized")]
+    for files, klass in _classes:
+        for f in files:
+            rp = str(Path(f).resolve())
+            try:
+                stat = Path(f).stat()
+            except OSError as exc:
+                log.warning("ingest: could not stat %s (%s); manifest row skipped", f, exc)
+                continue
+            row = {"size": stat.st_size, "mtime": stat.st_mtime, "format": klass}
+            scan_ids = file_scan_ids.get(rp, []) if klass == "measurement" else []
+            if klass == "measurement":
+                row["n_scans"] = len(scan_ids)
+                row["scan_ids"] = list(scan_ids)
+            target = session.files.setdefault(rp, {})
+            before = dict(target)
+            target.update(row)
+            if target != before:
+                report.dirty = True
+            report.files.append({"path": rp, "class": klass,
+                                 "n_scans": len(scan_ids), "scan_ids": list(scan_ids)})
+
+    # --- remember new data locations (mirror run_batch) ---
+    for p in map(str, data_paths):
+        if p not in session.data_paths:
+            session.data_paths.append(p)
+            report.dirty = True
+
+    report.gaps = file_gaps(records)
+    return report
 
 
 def file_gaps(records) -> list[tuple[str, int, int]]:

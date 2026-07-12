@@ -773,8 +773,11 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
         rp = str(Path(f).resolve())
         try:
             stat = Path(f).stat()
-            session.files[rp] = {"size": stat.st_size, "mtime": stat.st_mtime,
-                                 "format": "companion" if f in plan.companion_files else "measurement"}
+            # Merge, not replace: ingest may have written richer rows (n_scans/scan_ids) for these
+            # keys — preserve them so an `isar ingest` before an `isar run` survives the run.
+            session.files.setdefault(rp, {}).update(
+                {"size": stat.st_size, "mtime": stat.st_mtime,
+                 "format": "companion" if f in plan.companion_files else "measurement"})
         except OSError:
             pass
 
@@ -817,7 +820,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
 
             prev = session.get(scan_id)
             fresh = (prev is None or prev.content_hash != chash
-                     or prev.guidelines_hash != ghash or prev.status.startswith("held") or force)
+                     or prev.guidelines_hash != ghash or prev.status.startswith("held")
+                     or prev.status == "ingested" or force)
             if not fresh:
                 # Unchanged & already resolved: keep the ledger entry, re-list its outcome for the report.
                 if prev.detectors.get(det):

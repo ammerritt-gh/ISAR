@@ -28,6 +28,7 @@ SCHEMA_VERSION = "isar.session/2"
 # Ledger status vocabulary (UNIFICATION_DESIGN §2.3). "held_*" statuses always re-enter the fit
 # queue on a later run (the bootstrap-gate re-examination).
 STATUSES = (
+    "ingested",             # parsed into the ledger, not yet routed/fitted — always re-enters the fit queue
     "fitted",               # produced a FitOutcome (any verdict, including declined non-results)
     "held_for_calibration",  # measurement arrived before a usable energy zero/resolution existed
     "held_for_sample",       # measurement with no established sample context (require_alignment)
@@ -39,7 +40,9 @@ STATUSES = (
 
 @dataclass
 class ScanEntry:
-    """One ledger row, keyed by `scan_id = f"{experiment_id}:{scan_number}"`."""
+    """One ledger row, keyed by `scan_id = f"{experiment_id}:{scan_number}:{detector_id}"` (the
+    per-detector identity the driver and ingest both write). The scan-level `exp:scan` form appears
+    only in reports (ingest's added/updated/unchanged lists), never as a ledger key."""
     scan_id: str
     scan_number: int
     scan_type: str

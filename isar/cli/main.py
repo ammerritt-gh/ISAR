@@ -1,7 +1,7 @@
 """`isar` CLI entry point (UNIFICATION_DESIGN §5).
 
-Subcommands: init, run, status, report, score. Built incrementally; unimplemented commands raise a
-clear message rather than a stack trace.
+Subcommands: init, detect, ingest, run, status, report, score, profile, diagnose, view, drive.
+Built incrementally; unimplemented commands raise a clear message rather than a stack trace.
 """
 from __future__ import annotations
 
@@ -25,10 +25,16 @@ def build_parser() -> argparse.ArgumentParser:
     pi = sub.add_parser("init", help="detect the instrument and scaffold an experiment workspace")
     pi.add_argument("data", help="a data file, or a directory containing one")
     pi.add_argument("--out", default=None, help="workspace directory (default ./isar_<instr>_<date>)")
+    pi.add_argument("--json", action="store_true", help="emit a machine-readable JSON object")
 
     pdt = sub.add_parser("detect", help="report the instrument detected from a data path (no writes)")
     pdt.add_argument("data", help="a data file, or a directory containing one")
     pdt.add_argument("--json", action="store_true", help="emit a machine-readable JSON object")
+
+    pin = sub.add_parser("ingest", help="parse data into the ledger without fitting (for the GUI/preview)")
+    pin.add_argument("data", nargs="+")
+    pin.add_argument("--workspace", required=True)
+    pin.add_argument("--json", action="store_true", help="emit a single machine-readable JSON object")
 
     pr = sub.add_parser("run", help="run the pipeline on a batch of data (idempotent)")
     pr.add_argument("data", nargs="+")
@@ -154,6 +160,9 @@ def main(argv=None) -> int:
     if cmd == "detect":
         from isar.cli import detect_cmd
         return detect_cmd.run(args)
+    if cmd == "ingest":
+        from isar.cli import ingest_cmd
+        return ingest_cmd.run(args)
     if cmd == "run":
         from isar.cli import run_cmd
         return run_cmd.run(args)

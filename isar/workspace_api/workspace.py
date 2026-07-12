@@ -23,7 +23,7 @@ from isar.session.state import SessionState
 from isar.session.workspace import (POLICY_NAME, SESSION_NAME, STATE_NAME, REPORT_DIRNAME)
 
 from .evaluate import evaluate_model as _evaluate_model
-from .views import (BranchModelView, CampaignView, CardView, FitView, GroupView, ScanView)
+from .views import (BranchModelView, CampaignView, CardView, FileView, FitView, GroupView, ScanView)
 
 # The read-surface contract version. Bump when the FitView/ScanView/etc. surface changes in a way
 # a consumer must branch on (additive fields do NOT require a bump).
@@ -171,6 +171,27 @@ class Workspace:
                 provenance=dict(entry.provenance or {}), detectors=detectors,
                 hkl=self._resolve_hkl(entry, detectors, epochs)))
         self._views["scans"] = out
+        return out
+
+    @property
+    def files(self) -> list:
+        """The ingest manifest as :class:`FileView` rows (``session.files``), parsed once and cached.
+
+        Degrades per the module contract: a malformed manifest row is skipped (never raises), and a
+        session that fails to parse serves the last-good/empty session via :meth:`_parse`.
+        """
+        if "files" in self._views:
+            return self._views["files"]
+        out = []
+        for path, row in (self._session().files or {}).items():
+            row = row or {}
+            scan_ids = row.get("scan_ids") or []
+            out.append(FileView(
+                path=str(path), size=row.get("size"), mtime=row.get("mtime"),
+                classification=row.get("format"),
+                n_scans=row.get("n_scans"),
+                scan_ids=tuple(scan_ids) if isinstance(scan_ids, (list, tuple)) else ()))
+        self._views["files"] = out
         return out
 
     @property
@@ -343,7 +364,7 @@ class Workspace:
         record carries ``provenance['q_instrument']``; without it this is identity through the
         acquisition epoch, i.e. the stored HKL.
         """
-        acq = self._acquisition_hkl(detectors)
+        acq = self._acquisition_hkl(detectors, entry.provenance)
         if not epochs:
             return acq
         qxyz = (entry.provenance or {}).get("q_instrument")
@@ -362,10 +383,16 @@ class Workspace:
             return acq
 
     @staticmethod
-    def _acquisition_hkl(detectors):
+    def _acquisition_hkl(detectors, provenance=None):
+        """Acquisition-time HKL: a detector FitView's Q when a fit carries one, else the ledger
+        entry's ``provenance["q"]`` (the ingest-stamped Q — the only source for an ingested-only,
+        not-yet-fitted scan). ``None`` when neither is present."""
         for fv in detectors.values():
             if fv.q is not None:
                 return list(fv.q)
+        q = (provenance or {}).get("q")
+        if isinstance(q, (list, tuple)) and q and not any(v is None for v in q):
+            return list(q)
         return None
 
     # ---- groups (reuse the canonical collation key) -----------------------
