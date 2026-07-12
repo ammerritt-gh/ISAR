@@ -66,3 +66,76 @@ def test_unknown_keys_preserved_on_round_trip(tmp_path):
     raw = json.loads(path.read_text(encoding="utf-8"))
     assert raw["groups"] == {"custom": [1, 2, 3]}          # untouched
     assert "/data/b" in raw["watched_folders"]
+
+
+# --------------------------------------------------------------------------
+# Phase E: manual groups slice
+# --------------------------------------------------------------------------
+def test_group_crud_and_membership_round_trip(tmp_path):
+    store = GuiStore.load(tmp_path)
+    gid = store.create_group("Cold sweep")
+    assert isinstance(gid, str) and gid
+    store.add_member(gid, "tavi:469")
+    store.add_member(gid, "tavi:470")
+    store.add_member(gid, "tavi:469")   # dedup, order-preserving
+    store.rename_group(gid, "300 K")
+    store.save()
+
+    reloaded = GuiStore.load(tmp_path)
+    groups = reloaded.groups()
+    assert len(groups) == 1
+    g = groups[0]
+    assert g.id == gid
+    assert g.name == "300 K"
+    assert g.members == ["tavi:469", "tavi:470"]
+    assert reloaded.memberships_of("tavi:469") == [gid]
+    assert reloaded.memberships_of("tavi:999") == []
+
+    reloaded.remove_member(gid, "tavi:469")
+    assert reloaded.groups()[0].members == ["tavi:470"]
+
+
+def test_delete_group_removes_memberships_order_and_collapsed(tmp_path):
+    store = GuiStore.load(tmp_path)
+    gid = store.create_group("A")
+    other = store.create_group("B")
+    store.add_member(gid, "tavi:1")
+    store.set_collapsed(gid, True)
+    assert gid in store.group_order()
+    assert gid in store.collapsed()
+
+    store.delete_group(gid)
+    assert store.groups() == [] or all(g.id != gid for g in store.groups())
+    assert store.memberships_of("tavi:1") == []
+    assert gid not in store.group_order()
+    assert gid not in store.collapsed()
+    # The untouched group survives.
+    assert any(g.id == other for g in store.groups())
+
+
+def test_group_order_and_collapsed_round_trip(tmp_path):
+    store = GuiStore.load(tmp_path)
+    a = store.create_group("A")
+    b = store.create_group("B")
+    store.set_group_order([b, a])
+    store.set_collapsed(a, True)
+    store.set_collapsed("auto:T:300", True)   # auto-group ids are allowed as ui scraps
+    store.save()
+
+    reloaded = GuiStore.load(tmp_path)
+    assert reloaded.group_order() == [b, a]
+    assert reloaded.collapsed() == {a, "auto:T:300"}
+    reloaded.set_collapsed(a, False)
+    assert a not in reloaded.collapsed()
+
+
+def test_groups_coexist_with_watched_folders(tmp_path):
+    store = GuiStore.load(tmp_path)
+    store.add_watched(r"D:\beam")
+    gid = store.create_group("G")
+    store.add_member(gid, "s:1")
+    store.save()
+
+    reloaded = GuiStore.load(tmp_path)
+    assert reloaded.watched_folders() == [str(__import__("pathlib").Path(r"D:\beam"))]
+    assert reloaded.groups()[0].members == ["s:1"]

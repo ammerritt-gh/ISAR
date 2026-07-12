@@ -19,11 +19,25 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
 STORE_NAME = "gui.state.json"
+
+
+@dataclass
+class GroupRec:
+    """One manual scan group: a stable id, a human name, and an ordered/deduped member list.
+
+    ``members`` are scan *keys* in the scan-level ``"exp:scan"`` form (never per-detector), so one
+    membership pins every detector row of that physical scan at once.
+    """
+    id: str
+    name: str
+    members: list = field(default_factory=list)
 
 
 class GuiStore:
@@ -42,6 +56,13 @@ class GuiStore:
             self._data["watched_folders"] = []
         if not isinstance(self._data.get("watch_paused"), bool):
             self._data["watch_paused"] = False
+        # ---- Phase E: manual groups + ui scraps (order, collapsed) ----
+        if not isinstance(self._data.get("groups"), list):
+            self._data["groups"] = []
+        if not isinstance(self._data.get("group_order"), list):
+            self._data["group_order"] = []
+        if not isinstance(self._data.get("collapsed"), list):
+            self._data["collapsed"] = []
 
     # ---- path ------------------------------------------------------------
     @classmethod
@@ -105,3 +126,97 @@ class GuiStore:
 
     def set_watch_paused(self, flag: bool) -> None:
         self._data["watch_paused"] = bool(flag)
+
+    # ---- manual groups (Phase E) -----------------------------------------
+    # Storage stays JSON (single writer, tiny data, Save-As copytree safety). The API below is
+    # storage-agnostic — nothing outside this module touches ``self._data["groups"]`` — so swapping
+    # the backing store for sqlite later stays a one-module change.
+    def _raw_groups(self) -> list:
+        groups = self._data.get("groups")
+        return groups if isinstance(groups, list) else []
+
+    def _find(self, gid: str) -> dict | None:
+        for g in self._raw_groups():
+            if isinstance(g, dict) and g.get("id") == gid:
+                return g
+        return None
+
+    @staticmethod
+    def _dedup(seq) -> list:
+        """Order-preserving de-duplication of a member sequence."""
+        out: list = []
+        for x in seq or []:
+            s = str(x)
+            if s not in out:
+                out.append(s)
+        return out
+
+    def create_group(self, name: str) -> str:
+        """Create a new empty manual group and return its ``uuid4`` hex id (also appended to order)."""
+        gid = uuid.uuid4().hex
+        self._data.setdefault("groups", []).append(
+            {"id": gid, "name": str(name), "members": []})
+        self._data.setdefault("group_order", []).append(gid)
+        return gid
+
+    def rename_group(self, gid: str, name: str) -> None:
+        g = self._find(gid)
+        if g is not None:
+            g["name"] = str(name)
+
+    def delete_group(self, gid: str) -> None:
+        """Remove the group and every trace of it (its members go with it, plus order/collapsed)."""
+        self._data["groups"] = [g for g in self._raw_groups()
+                                if not (isinstance(g, dict) and g.get("id") == gid)]
+        self._data["group_order"] = [x for x in self.group_order() if x != gid]
+        self._data["collapsed"] = [x for x in self._collapsed_raw() if x != gid]
+
+    def add_member(self, gid: str, scan_key: str) -> None:
+        g = self._find(gid)
+        if g is None:
+            return
+        g["members"] = self._dedup(list(g.get("members") or []) + [scan_key])
+
+    def remove_member(self, gid: str, scan_key: str) -> None:
+        g = self._find(gid)
+        if g is None:
+            return
+        g["members"] = [m for m in self._dedup(g.get("members")) if m != str(scan_key)]
+
+    def groups(self) -> list[GroupRec]:
+        """All manual groups as :class:`GroupRec` (members ordered + deduped). Malformed rows skipped."""
+        out: list[GroupRec] = []
+        for g in self._raw_groups():
+            if not isinstance(g, dict) or not g.get("id"):
+                continue
+            out.append(GroupRec(id=str(g["id"]), name=str(g.get("name") or ""),
+                                members=self._dedup(g.get("members"))))
+        return out
+
+    def memberships_of(self, scan_key: str) -> list[str]:
+        """Ids of the manual groups that contain ``scan_key`` (order follows :meth:`groups`)."""
+        key = str(scan_key)
+        return [g.id for g in self.groups() if key in g.members]
+
+    def group_order(self) -> list[str]:
+        order = self._data.get("group_order")
+        return [str(x) for x in order] if isinstance(order, list) else []
+
+    def set_group_order(self, order) -> None:
+        self._data["group_order"] = [str(x) for x in (order or [])]
+
+    # ---- ui scraps: collapsed set (auto-group ids are allowed here too) ---
+    def _collapsed_raw(self) -> list:
+        c = self._data.get("collapsed")
+        return c if isinstance(c, list) else []
+
+    def collapsed(self) -> set[str]:
+        return {str(x) for x in self._collapsed_raw()}
+
+    def set_collapsed(self, gid: str, flag: bool) -> None:
+        current = self.collapsed()
+        if flag:
+            current.add(str(gid))
+        else:
+            current.discard(str(gid))
+        self._data["collapsed"] = sorted(current)
