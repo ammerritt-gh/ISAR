@@ -1,9 +1,10 @@
-"""ScansDock interaction tests (Phase E).
+"""ScansDock interaction tests (Pass 2b — dimension tabs + sibling cues).
 
-The physical dock renders boxes (ungrouped / auto / manual) from a fake ws + a real GuiStore, mutates
-the store when scans are dropped on a MANUAL box, IGNORES the identical drop on an AUTO box (derived
-membership), and keeps chip selection in lockstep with the shared selection model — a scan selected
-anywhere lights up in every box it appears in.
+The dock renders a QTabWidget of dimension pages (All | Scans | T | q | Analyzer | B | Manual) built
+lazily from a fake ws + a real GuiStore. Covers: per-dimension filtering, the Analyzer tab hidden on a
+single-detector workspace, cross-tab selection lighting, drops writing new-form unit keys onto a
+MANUAL box (and auto boxes rejecting the same drop), the active tab persisted as a ui-scrap, and the
+sibling soft-highlight on hover.
 """
 from __future__ import annotations
 
@@ -21,15 +22,37 @@ from isar_gui.viewmodels.scans import ScansViewModel
 from isar_gui.views.scans_dock import ScansDock
 
 
-def _sv(exp, num, det, *, T=300.0, hkl=(1.0, 0.0, 0.0)):
+def _sv(exp, num, det, *, T=300.0, hkl=(1.0, 0.0, 0.0), q_target=None, B=None):
+    prov = {}
+    if q_target is not None:
+        prov["q_target"] = list(q_target)
+    if B is not None:
+        prov["B"] = B
     return SimpleNamespace(
-        experiment_id=exp, scan_number=num, scan_type="measurement", status="ingested",
-        source_file=r"D:\d\scan.dat", T=T, hkl=list(hkl),
+        scan_id=f"{exp}:{num}:{det}", experiment_id=exp, scan_number=num, scan_type="measurement",
+        status="ingested", source_file=r"D:\d\scan.dat", T=T, hkl=list(hkl), provenance=prov,
         detectors={det: SimpleNamespace(detector_id=det)})
 
 
 def _ws(scan_views):
     return SimpleNamespace(scans=list(scan_views))
+
+
+def _nine(exp="s30", num=12):
+    return [_sv(exp, num, f"ana{i}", hkl=(1.5 + 0.01 * i, 0, 0), q_target=(1.5, 0, 0))
+            for i in range(1, 10)]
+
+
+def _tab_names(dock):
+    return [dock._tabs.tabText(i) for i in range(dock._tabs.count())]
+
+
+def _show_tab(dock, name):
+    dock._tabs.setCurrentIndex(_tab_names(dock).index(name))
+
+
+def _box(dock, box_id):
+    return next(b for b in dock._boxes if b.box_id == box_id)
 
 
 class _Drop:
@@ -48,68 +71,144 @@ class _Drop:
         self.accepted = True
 
 
-def _box(dock, box_id):
-    return next(b for b in dock._boxes if b.box_id == box_id)
+def test_tabs_present_for_multi_detector(qtbot, tmp_path):
+    vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+    names = _tab_names(dock)
+    assert names == ["All", "Scans", "T", "q", "Analyzer", "Manual"]  # no B (no field data)
 
 
-def test_boxes_render_ungrouped_and_auto(qtbot, tmp_path):
-    vm = ScansViewModel(_ws([_sv("tavi", 1, "d1", T=300.0), _sv("tavi", 2, "d1", T=310.0)]),
+def test_analyzer_tab_hidden_for_single_detector(qtbot, tmp_path):
+    vm = ScansViewModel(_ws([_sv("in8", 1, "det"), _sv("in8", 2, "det", T=310.0)]),
                         store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    ids = {b.box_id for b in dock._boxes}
-    assert "ungrouped" in ids
-    # Two distinct T-bins -> two auto T-groups.
-    assert any(str(b.box_id).startswith("auto:T:") for b in dock._boxes)
-    # Every scan appears in Ungrouped (nothing manually grouped yet).
-    assert len(_box(dock, "ungrouped").chips) == 2
+    assert "Analyzer" not in _tab_names(dock)
 
 
-def test_drop_on_manual_box_calls_add_to_group(qtbot, tmp_path):
-    store = GuiStore.load(tmp_path)
-    vm = ScansViewModel(_ws([_sv("tavi", 1, "d1")]), store=store)
+def test_b_tab_present_only_with_field_data(qtbot, tmp_path):
+    vm = ScansViewModel(_ws([_sv("s30", 1, "ana1", B=2.0), _sv("s30", 1, "ana2", B=2.0)]),
+                        store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    gid = vm.create_group("Cold")           # emits groups_changed -> dock rebuilds
-    manual = _box(dock, gid)
+    assert "B" in _tab_names(dock)
 
-    manual.dropEvent(_Drop(["tavi:1"]))
-    assert store.memberships_of("tavi:1") == [gid]
-    # And the scan now also shows in the manual box after the rebuild.
-    assert any(c.key == "tavi:1" for c in _box(dock, gid).chips)
+
+def test_all_tab_lists_every_unit(qtbot, tmp_path):
+    vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+    _show_tab(dock, "All")
+    all_box = _box(dock, "all")
+    assert len(all_box.chips) == 9
+
+
+def test_scans_tab_groups_by_source_scan(qtbot, tmp_path):
+    vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+    _show_tab(dock, "Scans")
+    scan_box = _box(dock, "auto:scan:s30:12")
+    assert len(scan_box.chips) == 9
+    assert "scan 12" in scan_box._title.text() and "#Q" in scan_box._title.text()
+
+
+def test_analyzer_tab_one_box_per_analyzer(qtbot, tmp_path):
+    vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+    _show_tab(dock, "Analyzer")
+    ana_boxes = [b for b in dock._boxes if str(b.box_id).startswith("auto:ana:")]
+    assert len(ana_boxes) == 9
+    assert all(len(b.chips) == 1 for b in ana_boxes)
+
+
+def test_drop_on_manual_box_writes_unit_keys(qtbot, tmp_path):
+    store = GuiStore.load(tmp_path)
+    vm = ScansViewModel(_ws(_nine()), store=store)
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+    gid = vm.create_group("Cold")          # rebuilds; switches to Manual tab
+    _show_tab(dock, "Manual")
+    manual = _box(dock, gid)
+    manual.dropEvent(_Drop(["s30:12:ana1", "s30:12:ana2"]))
+    assert store.groups()[0].members == ["s30:12:ana1", "s30:12:ana2"]   # new-form unit keys
+    assert {c.key for c in _box(dock, gid).chips} == {"s30:12:ana1", "s30:12:ana2"}
 
 
 def test_auto_box_rejects_the_same_drop(qtbot, tmp_path):
     store = GuiStore.load(tmp_path)
-    vm = ScansViewModel(_ws([_sv("tavi", 1, "d1", T=300.0)]), store=store)
+    vm = ScansViewModel(_ws(_nine()), store=store)
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    auto = next(b for b in dock._boxes if str(b.box_id).startswith("auto:"))
+    _show_tab(dock, "Scans")
+    auto = _box(dock, "auto:scan:s30:12")
+    auto.dropEvent(_Drop(["s30:12:ana1"]))
+    assert store.groups() == []            # dropping on a derived box mutates nothing
 
-    auto.dropEvent(_Drop(["tavi:1"]))
-    # No manual group was created or mutated by dropping on a derived box.
-    assert store.groups() == []
+
+def test_cross_tab_selection_lights_every_chip(qtbot, tmp_path):
+    vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+    # Build two pages so the unit appears in more than one box.
+    _show_tab(dock, "All")
+    _show_tab(dock, "Analyzer")
+    chips = dock._chips_by_key["s30:12:ana1"]
+    assert len(chips) >= 2                  # one on All, one on Analyzer
+    vm.select_keys(["s30:12:ana1"], clear=True)
+    assert all(c._selected for c in chips)
 
 
 def test_chip_click_updates_shared_selection(qtbot, tmp_path):
-    vm = ScansViewModel(_ws([_sv("tavi", 1, "d1"), _sv("tavi", 2, "d1")]),
-                        store=GuiStore.load(tmp_path))
+    vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    chip = dock._chips_by_key["tavi:1"][0]
+    _show_tab(dock, "All")
+    chip = dock._chips_by_key["s30:12:ana1"][0]
+    chip.clicked.emit("s30:12:ana1", Qt.KeyboardModifier.NoModifier)
+    assert vm.selected_keys() == ["s30:12:ana1"]
 
-    chip.clicked.emit("tavi:1", Qt.KeyboardModifier.NoModifier)
-    assert vm.selected_keys() == ["tavi:1"]
+
+def test_hover_soft_highlights_siblings(qtbot, tmp_path):
+    vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+    _show_tab(dock, "All")
+    dock._on_chip_hovered("s30:12:ana1", True)
+    # Every sibling chip is soft-highlighted while hovering one.
+    assert all(dock._chips_by_key[f"s30:12:ana{i}"][0]._sibling for i in range(1, 10))
+    dock._on_chip_hovered("s30:12:ana1", False)
+    assert not any(dock._chips_by_key[f"s30:12:ana{i}"][0]._sibling for i in range(1, 10))
 
 
-def test_selection_lights_chip_in_every_box(qtbot, tmp_path):
+def test_active_tab_persisted_as_scrap(qtbot, tmp_path):
     store = GuiStore.load(tmp_path)
-    vm = ScansViewModel(_ws([_sv("tavi", 1, "d1", T=300.0)]), store=store)
+    vm = ScansViewModel(_ws(_nine()), store=store)
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    # tavi:1 shows in Ungrouped AND its auto T-group -> at least two chip instances.
-    chips = dock._chips_by_key["tavi:1"]
-    assert len(chips) >= 2
+    _show_tab(dock, "T")
+    assert store.scans_tab() == "T"
+    # A fresh dock over the same store restores the persisted tab.
+    dock2 = ScansDock(vm)
+    qtbot.addWidget(dock2)
+    assert _tab_names(dock2)[dock2._tabs.currentIndex()] == "T"
 
-    vm.select_keys(["tavi:1"], clear=True)
-    assert all(c._selected for c in chips)   # every box's chip lit
+
+def test_multi_detector_chip_shows_analyzer_suffix(qtbot, tmp_path):
+    vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+    _show_tab(dock, "All")
+    chip = dock._chips_by_key["s30:12:ana3"][0]
+    assert chip._num_label.text() == "12·ana3"
+
+
+def test_single_detector_chip_shows_scan_only(qtbot, tmp_path):
+    vm = ScansViewModel(_ws([_sv("in8", 5, "det")]), store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+    _show_tab(dock, "All")
+    chip = dock._chips_by_key["in8:5:det"][0]
+    assert chip._num_label.text() == "5"

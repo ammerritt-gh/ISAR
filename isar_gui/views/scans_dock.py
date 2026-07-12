@@ -1,21 +1,21 @@
-"""ScansDock — scans as physical, draggable chips inside collapsible group boxes (Phase E).
+"""ScansDock — atomic scan-units as draggable chips, split across dimension tabs (Pass 2b).
 
-The chip is the fundamental visible unit: a small card showing a scan's number + ``T | q``, coloured
-at its left edge by ledger status. Chips are draggable (``MIME_SCAN_IDS``) so future targets accept
-them unchanged, and a chip lights up in EVERY box it appears in when its scan is selected — the same
-scan is one physical thing shown in many containers (Ungrouped, auto T/q groups, manual groups).
+The chip is the fundamental visible unit: one *scan × analyzer* (a ledger entry). A chip shows what is
+truly per-unit — the analyzer, its OWN q, and status — coloured at its left edge by ledger status and
+carrying a top accent shared by every analyzer of the same source scan (a sibling cue: siblings share
+monitor/timing/environment systematics, so correlated units stay visible). Chips are draggable
+(``MIME_SCAN_IDS``); a chip lights up in EVERY box it appears in when its unit is selected, and hovering
+a chip soft-highlights its siblings everywhere.
 
-Layout (top to bottom):
-  * an **Ungrouped** box — scans in no manual group. Together with the manual boxes this guarantees
-    every scan is visible somewhere: a scan is either in a manual group (shown there) or ungrouped
-    (shown here). Auto-groups are an additional cross-cut, not a coverage guarantee, so a dedicated
-    "All scans" box is deliberately omitted — Ungrouped + manual already cover every scan.
-  * the **auto-groups** section — T-bins then q-bins, derived from metadata, drops rejected;
-  * the **manual groups** — persisted in the GuiStore, drops mutate membership, drag/rename/delete.
+Layout is a :class:`~PySide6.QtWidgets.QTabWidget` of dimension pages, each a scroll of group boxes:
+  * **All** — every unit as flat chips (the coverage guarantee: nothing is hidden).
+  * **Scans** — source-scan groups (``scan NN — #Q [...]``; scan-level metadata lives on the header).
+  * **T** / **q** / **Analyzer** / **B** — auto-groups over each dimension. Analyzer is hidden on a
+    single-detector workspace; B appears only when field data exists.
+  * **Manual** — an Ungrouped box plus the persisted manual groups (drops mutate the GuiStore).
 
 All derivation is in :class:`~isar_gui.viewmodels.scans.ScansViewModel`; this is presentation +
-interaction only. Rebuild-on-change is acceptable at hundreds of chips (v1); highlight uses the one
-shared model timer, never per-chip timers.
+interaction only. The active tab is persisted as a GuiStore ui-scrap.
 """
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -45,11 +46,25 @@ from isar_gui.mime import (
     encode_group_ref,
     encode_scan_ids,
 )
-from isar_gui.viewmodels.scans import status_color
+from isar_gui.viewmodels.scans import sibling_hue, status_color
 
 log = logging.getLogger(__name__)
 
 _DRAG_THRESHOLD = 12
+
+# The dimension tabs, in fixed order. Each carries the auto-group ``dim`` it renders (or a sentinel
+# for the two structural pages). Analyzer/B are filtered out at build time when they do not apply.
+_TAB_ALL = "All"
+_TAB_MANUAL = "Manual"
+_DIM_TABS = [
+    (_TAB_ALL, None),
+    ("Scans", "scan"),
+    ("T", "T"),
+    ("q", "q"),
+    ("Analyzer", "ana"),
+    ("B", "B"),
+    (_TAB_MANUAL, None),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +89,13 @@ class _FlowLayout(QVBoxLayout):
             parent.installEventFilter(self)
 
     def add_chip(self, widget: QWidget) -> None:
+        # Append only; the actual row-packing is deferred to :meth:`flush` so a box of N chips is
+        # laid out ONCE (O(N)), not once per chip (O(N^2) — seconds at ~300 chips). A Show/Resize
+        # event also triggers a relayout, so a box shown before flush still renders.
         self._widgets.append(widget)
+
+    def flush(self) -> None:
+        """Pack all appended chips into wrapping rows in a single pass (call after bulk add_chip)."""
         self._relayout()
 
     def clear_widgets(self) -> None:
@@ -126,55 +147,67 @@ class _FlowLayout(QVBoxLayout):
 
 
 # ---------------------------------------------------------------------------
-# Draggable scan chip
+# Draggable scan-unit chip
 # ---------------------------------------------------------------------------
 class _ScanChip(QFrame):
-    """A single physical scan as a draggable chip. Selection is external (the shared selection model);
-    the chip only paints it. Drag payload is the current multi-selection when this chip is selected,
-    else just this chip."""
+    """A single atomic *scan × analyzer* unit as a draggable chip. Selection is external (the shared
+    selection model); the chip only paints it. Drag payload is the current multi-selection when this
+    chip is selected, else just this chip."""
 
-    clicked = Signal(str, object)         # (scan_key, Qt.KeyboardModifiers)
-    context_menu = Signal(str, object)    # (scan_key, global QPoint)
+    clicked = Signal(str, object)         # (unit_key, Qt.KeyboardModifiers)
+    context_menu = Signal(str, object)    # (unit_key, global QPoint)
+    hovered = Signal(str, bool)           # (unit_key, entered) — drives sibling soft-highlight
 
-    def __init__(self, ps, vm, parent=None):
+    def __init__(self, unit, vm, *, multi, parent=None):
         super().__init__(parent)
-        self._key = ps.key
+        self._key = unit.key
+        self._scan_key = unit.scan_key
         self._vm = vm
-        self._status = ps.status
+        self._status = unit.status
+        self._scan_number = unit.scan_number
         self._selected = False
         self._highlight = False
+        self._sibling = False
         self._drag_start: QPoint | None = None
         self.setObjectName("scanChip")
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setFixedSize(QSize(94, 46))
-        num = ps.scan_number if ps.scan_number is not None else "?"
-        tparts = []
-        if ps.T is not None:
-            tparts.append(f"{ps.T:g}K")
-        if ps.hkl:
-            try:
-                tparts.append("[" + " ".join(f"{float(v):.2g}" for v in ps.hkl) + "]")
-            except (TypeError, ValueError):
-                pass
-        subtitle = " | ".join(tparts) if tparts else "—"
+
+        num = unit.scan_number if unit.scan_number is not None else "?"
+        # Multi-detector workspaces disambiguate analyzers on the face; single-detector show the scan.
+        title = f"{num}·{unit.det}" if (multi and unit.det) else str(num)
+        subtitle = _q_compact(unit.q)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 6, 4)
         layout.setSpacing(1)
-        self._num_label = QLabel(str(num), self)
+        self._num_label = QLabel(title, self)
         self._sub_label = QLabel(subtitle, self)
         self._sub_label.setStyleSheet("color: #888; font-size: 9px; background: transparent;")
         layout.addWidget(self._num_label)
         layout.addWidget(self._sub_label)
 
-        det_txt = ", ".join(str(d) for d in ps.detectors) if ps.detectors else ""
-        self.setToolTip(f"{ps.key}\n{ps.file_name}"
-                        + (f"\ndetectors: {det_txt}" if det_txt else ""))
+        tip = [unit.key]
+        if unit.file_name:
+            tip.append(unit.file_name)
+        if unit.det:
+            tip.append(f"analyzer: {unit.det}")
+        if unit.q_target:
+            tip.append("target #Q: [" + ", ".join(f"{float(v):.3g}" for v in unit.q_target) + "]")
+        if unit.T is not None:
+            tip.append(f"T = {unit.T:g} K")
+        if unit.B is not None:
+            tip.append(f"B = {unit.B:g} T")
+        self.setToolTip("\n".join(tip))
         self._apply_style()
 
     @property
     def key(self) -> str:
         return self._key
+
+    @property
+    def scan_key(self) -> str:
+        return self._scan_key
 
     def set_selected(self, flag: bool) -> None:
         if self._selected != flag:
@@ -186,22 +219,39 @@ class _ScanChip(QFrame):
             self._highlight = flag
             self._apply_style()
 
+    def set_sibling(self, flag: bool) -> None:
+        if self._sibling != flag:
+            self._sibling = flag
+            self._apply_style()
+
     def _apply_style(self) -> None:
         edge = status_color(self._status)
+        accent = sibling_hue(self._scan_number).name()
         strike = "text-decoration: line-through;" if self._status == "excluded" else ""
-        weight = "bold"
         self._num_label.setStyleSheet(
-            f"font-weight: {weight}; font-size: 12px; background: transparent; {strike}")
+            f"font-weight: bold; font-size: 12px; background: transparent; {strike}")
         if self._highlight:
             bg = "#fff3b0"
         elif self._selected:
             bg = "rgba(91, 155, 213, 60)"
+        elif self._sibling:
+            bg = "rgba(158, 158, 158, 40)"
         else:
             bg = "palette(base)"
         border = "#5b9bd5" if self._selected else "palette(mid)"
         self.setStyleSheet(
             f"#scanChip {{ background: {bg}; border: 1px solid {border};"
-            f" border-left: 4px solid {edge}; border-radius: 6px; }}")
+            f" border-left: 4px solid {edge}; border-top: 3px solid {accent};"
+            f" border-radius: 6px; }}")
+
+    # ---- sibling hover ----
+    def enterEvent(self, event):  # noqa: N802
+        self.hovered.emit(self._key, True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):  # noqa: N802
+        self.hovered.emit(self._key, False)
+        super().leaveEvent(event)
 
     # ---- drag source ----
     def mousePressEvent(self, event):  # noqa: N802
@@ -250,16 +300,17 @@ class _ScanChip(QFrame):
 # Group box (collapsible container of chips)
 # ---------------------------------------------------------------------------
 class _GroupBox(QFrame):
-    """One collapsible container. ``manual`` boxes accept scan drops (mutate the store) and offer
+    """One collapsible container. ``manual`` boxes accept unit drops (mutate the store) and offer
     rename/delete + a group-drag header; ``auto`` boxes are muted, reject drops, but still drag as a
-    unit. The Ungrouped box is neither (no drops, no drag)."""
+    unit. ``all``/``ungrouped`` boxes are neither (no drops, no drag)."""
 
     def __init__(self, box_id, title, vm, *, kind, parent=None):
         super().__init__(parent)
         self._id = box_id
         self._vm = vm
-        self._kind = kind             # "ungrouped" | "auto" | "manual"
+        self._kind = kind             # "all" | "ungrouped" | "auto" | "manual"
         self._manual = kind == "manual"
+        self._draggable = kind in ("auto", "manual")
         self._chips: list[_ScanChip] = []
         self._anchor: str | None = None
         self._drag_start: QPoint | None = None
@@ -279,7 +330,7 @@ class _GroupBox(QFrame):
         header.addWidget(self._arrow)
 
         self._title = QLabel(title, self)
-        muted = "color: #999;" if kind == "auto" else ""
+        muted = "color: #999;" if kind in ("auto", "all") else ""
         self._title.setStyleSheet(f"font-weight: bold; background: transparent; {muted}")
         if self._manual:
             self._title.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -329,6 +380,7 @@ class _GroupBox(QFrame):
         self._count.setText(str(len(self._chips)))
 
     def finalize(self) -> None:
+        self._flow.flush()          # single O(N) layout pass for the whole box (see _FlowLayout)
         self._empty.setVisible(not self._chips)
         self._count.setText(str(len(self._chips)))
 
@@ -379,6 +431,13 @@ class _GroupBox(QFrame):
     def _on_chip_context(self, key: str, global_pos) -> None:
         menu = QMenu(self)
         remove_act = menu.addAction("Remove from this group") if self._manual else None
+        _sib_num = None
+        for c in self._chips:
+            if c.key == key:
+                _sib_num = c._scan_number
+                break
+        sib_label = "Select siblings" if _sib_num is None else f"Select siblings (scan {_sib_num})"
+        siblings_act = menu.addAction(sib_label)
         select_act = menu.addAction("Select in table")
         copy_act = menu.addAction("Copy scan id")
         chosen = menu.exec(global_pos)
@@ -388,6 +447,8 @@ class _GroupBox(QFrame):
             keys = set(self._vm.selected_keys())
             targets = keys if key in keys else {key}
             self._vm.remove_from_group(self._id, targets)
+        elif chosen is siblings_act:
+            self._vm.select_siblings(key, clear=True)
         elif chosen is select_act:
             self._vm.select_keys([key], clear=True)
         elif chosen is copy_act:
@@ -416,20 +477,20 @@ class _GroupBox(QFrame):
         if hover:
             self.setStyleSheet("#groupBox { border: 1px dashed #5b9bd5; border-radius: 6px;"
                                " background: rgba(91,155,213,20); }")
-        elif self._kind == "auto":
+        elif self._kind in ("auto", "all"):
             self.setStyleSheet("#groupBox { border: 1px dashed palette(mid); border-radius: 6px; }")
         else:
             self.setStyleSheet("#groupBox { border: 1px solid palette(mid); border-radius: 6px; }")
 
     # ---- header drag source (group drags as a unit; auto + manual only) ----
     def mousePressEvent(self, event):  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton and self._kind in ("auto", "manual"):
+        if event.button() == Qt.MouseButton.LeftButton and self._draggable:
             self._drag_start = event.pos()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):  # noqa: N802
         if (self._drag_start is None or not (event.buttons() & Qt.MouseButton.LeftButton)
-                or self._kind not in ("auto", "manual")):
+                or not self._draggable):
             return super().mouseMoveEvent(event)
         if (event.pos() - self._drag_start).manhattanLength() < _DRAG_THRESHOLD:
             return super().mouseMoveEvent(event)
@@ -448,17 +509,30 @@ class _GroupBox(QFrame):
         super().mouseReleaseEvent(event)
 
 
+def _q_compact(hkl) -> str:
+    if not hkl:
+        return "—"
+    try:
+        return "[" + " ".join(f"{float(v):.2g}" for v in hkl) + "]"
+    except (TypeError, ValueError):
+        return "—"
+
+
 # ---------------------------------------------------------------------------
 # Dock
 # ---------------------------------------------------------------------------
 class ScansDock(QDockWidget):
-    """The physical scan view: a scroll of collapsible group boxes full of draggable chips."""
+    """The atomic scan-unit view: a tab per dimension, each a scroll of collapsible chip boxes."""
 
     def __init__(self, vm, parent=None):
         super().__init__("Scans", parent)
         self.setObjectName("scans_dock")
         self._vm = vm
-        self._boxes: list[_GroupBox] = []
+        self._boxes: list[_GroupBox] = []           # all boxes across all built pages
+        self._page_boxes: dict[str, list[_GroupBox]] = {}
+        self._pages: dict[str, QWidget] = {}         # tab name -> content layout host
+        self._page_layouts: dict[str, QVBoxLayout] = {}
+        self._built: set[str] = set()                # names of pages whose chips are populated
         self._chips_by_key: dict[str, list[_ScanChip]] = {}
 
         body = QWidget(self)
@@ -478,15 +552,9 @@ class ScansDock(QDockWidget):
         toolbar.addWidget(collapse_btn)
         root.addLayout(toolbar)
 
-        self._scroll = QScrollArea(body)
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._content = QWidget()
-        self._content_layout = QVBoxLayout(self._content)
-        self._content_layout.setContentsMargins(2, 2, 2, 2)
-        self._content_layout.setSpacing(8)
-        self._scroll.setWidget(self._content)
-        root.addWidget(self._scroll, 1)
+        self._tabs = QTabWidget(body)
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        root.addWidget(self._tabs, 1)
 
         self.setWidget(body)
 
@@ -496,63 +564,136 @@ class ScansDock(QDockWidget):
         vm.selection_model.selectionChanged.connect(self._sync_selection)
         self._rebuild()
 
-    # ---- rebuild ----
+    # ---- tab scaffolding -------------------------------------------------
+    def _visible_tabs(self) -> list[tuple[str, str | None]]:
+        tabs = []
+        for name, dim in _DIM_TABS:
+            if name == "Analyzer" and not self._vm.multi_detector:
+                continue
+            if name == "B" and not self._vm.has_field():
+                continue
+            tabs.append((name, dim))
+        return tabs
+
+    def _make_scroll_page(self) -> tuple[QScrollArea, QVBoxLayout, QWidget]:
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(8)
+        scroll.setWidget(content)
+        return scroll, layout, content
+
+    # ---- rebuild ---------------------------------------------------------
     def _rebuild(self) -> None:
-        while self._content_layout.count():
-            item = self._content_layout.takeAt(0)
-            w = item.widget() if item is not None else None
-            if w is not None:
-                w.setParent(None)
-                w.deleteLater()
+        want = self._visible_tabs()
+        prev = self._tabs.currentIndex()
+        prev_name = self._tabs.tabText(prev) if prev >= 0 else self._vm.active_tab()
+
+        self._tabs.blockSignals(True)
+        while self._tabs.count():
+            w = self._tabs.widget(0)
+            self._tabs.removeTab(0)
+            w.setParent(None)
+            w.deleteLater()
         self._boxes = []
+        self._page_boxes = {}
+        self._pages = {}
+        self._page_layouts = {}
+        self._built = set()
         self._chips_by_key = {}
 
+        self._tab_dims: dict[str, str | None] = {}
+        for name, dim in want:
+            scroll, layout, _content = self._make_scroll_page()
+            self._tabs.addTab(scroll, name)
+            self._pages[name] = scroll
+            self._page_layouts[name] = layout
+            self._page_boxes[name] = []
+            self._tab_dims[name] = dim
+        self._tabs.blockSignals(False)
+
+        # Restore the persisted / previously-active tab if it still exists.
+        target = prev_name if prev_name in self._pages else self._vm.active_tab()
+        idx = 0
+        if target in self._pages:
+            idx = list(self._pages).index(target)
+        self._tabs.setCurrentIndex(idx)
+        self._build_page(self._tabs.tabText(idx))
+
+    def _build_page(self, name: str) -> None:
+        if name in self._built or name not in self._page_layouts:
+            return
+        self._built.add(name)
+        layout = self._page_layouts[name]
+        dim = self._tab_dims.get(name)
         rows = self._vm.rows()
-        by_key = {ps.key: ps for ps in rows}
+        by_key = {u.key: u for u in rows}
 
-        # Ungrouped: scans in no manual group (the visibility guarantee, with the manual boxes).
-        manual = self._vm.manual_groups()
-        grouped_keys = {m for g in manual for m in g.members}
-        ungrouped = _GroupBox("ungrouped", "Ungrouped", self._vm, kind="ungrouped")
-        self._populate(ungrouped, [ps for ps in rows if ps.key not in grouped_keys])
-        self._add_box(ungrouped)
-
-        autos = self._vm.auto_groups()
-        if autos:
-            self._add_section_label("Auto-groups")
-            for ag in autos:
+        if name == _TAB_ALL:
+            box = _GroupBox("all", "All units", self._vm, kind="ungrouped")
+            self._populate(name, box, rows)
+            self._add_box(name, layout, box)
+        elif name == _TAB_MANUAL:
+            manual = self._vm.manual_groups()
+            ungrouped = _GroupBox("ungrouped", "Ungrouped", self._vm, kind="ungrouped")
+            self._populate(name, ungrouped,
+                           [u for u in rows if not self._vm.is_unit_grouped(u.key)])
+            self._add_box(name, layout, ungrouped)
+            if manual:
+                self._add_section_label(layout, "Manual groups")
+                for g in manual:
+                    box = _GroupBox(g.id, g.name or "(unnamed)", self._vm, kind="manual")
+                    self._populate(name, box, self._vm.units_in_group(g))
+                    self._add_box(name, layout, box)
+            else:
+                hint = QLabel("Create a group, then drag scans in.", self._pages[name].widget())
+                hint.setStyleSheet("color: #999; font-style: italic; padding: 6px;")
+                layout.addWidget(hint)
+        else:
+            groups = self._vm.auto_groups(dim)
+            for ag in groups:
                 box = _GroupBox(ag.id, ag.label, self._vm, kind="auto")
-                self._populate(box, [by_key[k] for k in ag.scan_keys if k in by_key])
-                self._add_box(box)
+                self._populate(name, box, [by_key[k] for k in ag.scan_keys if k in by_key])
+                self._add_box(name, layout, box)
+            if not groups:
+                empty = QLabel("(no groups on this dimension)", self._pages[name].widget())
+                empty.setStyleSheet("color: #999; font-style: italic; padding: 6px;")
+                layout.addWidget(empty)
 
-        if manual:
-            self._add_section_label("Manual groups")
-            for g in manual:
-                box = _GroupBox(g.id, g.name or "(unnamed)", self._vm, kind="manual")
-                self._populate(box, [by_key[k] for k in g.members if k in by_key])
-                self._add_box(box)
-
-        self._content_layout.addStretch(1)
+        layout.addStretch(1)
         self._sync_selection()
         self._sync_highlight()
 
-    def _add_section_label(self, text: str) -> None:
-        lbl = QLabel(text, self._content)
-        lbl.setStyleSheet("color: #888; font-size: 10px; font-weight: bold; padding-top: 4px;")
-        self._content_layout.addWidget(lbl)
+    def _on_tab_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        name = self._tabs.tabText(index)
+        self._build_page(name)          # lazy: populate on first show
+        self._vm.set_active_tab(name)   # persist the active dimension
 
-    def _add_box(self, box: _GroupBox) -> None:
+    def _add_section_label(self, layout, text: str) -> None:
+        lbl = QLabel(text)
+        lbl.setStyleSheet("color: #888; font-size: 10px; font-weight: bold; padding-top: 4px;")
+        layout.addWidget(lbl)
+
+    def _add_box(self, name: str, layout, box: _GroupBox) -> None:
         box.finalize()
         self._boxes.append(box)
-        self._content_layout.addWidget(box)
+        self._page_boxes[name].append(box)
+        layout.addWidget(box)
 
-    def _populate(self, box: _GroupBox, scans) -> None:
-        for ps in scans:
-            chip = _ScanChip(ps, self._vm)
+    def _populate(self, name: str, box: _GroupBox, units) -> None:
+        multi = self._vm.multi_detector
+        for u in units:
+            chip = _ScanChip(u, self._vm, multi=multi)
+            chip.hovered.connect(self._on_chip_hovered)
             box.add_chip(chip)
-            self._chips_by_key.setdefault(ps.key, []).append(chip)
+            self._chips_by_key.setdefault(u.key, []).append(chip)
 
-    # ---- selection + highlight sync (a scan lights up in every box) ----
+    # ---- selection + highlight sync (a unit lights up in every box) ----
     def _sync_selection(self, *_args) -> None:
         selected = set(self._vm.selected_keys())
         for key, chips in self._chips_by_key.items():
@@ -567,13 +708,28 @@ class ScansDock(QDockWidget):
             for chip in chips:
                 chip.set_highlight(on)
 
+    def _on_chip_hovered(self, unit_key: str, entered: bool) -> None:
+        """Soft-highlight the hovered unit's siblings in every visible box (correlation cue)."""
+        sibs = set(self._vm.siblings_of(unit_key)) if entered else set()
+        for key, chips in self._chips_by_key.items():
+            on = key in sibs
+            for chip in chips:
+                chip.set_sibling(on)
+
     # ---- toolbar ----
     def _new_group(self) -> None:
         name, ok = QInputDialog.getText(self, "New group", "Group name:")
         if ok and name.strip():
-            self._vm.create_group(name.strip())
+            gid = self._vm.create_group(name.strip())
+            if gid is not None and _TAB_MANUAL in self._pages:
+                self._tabs.setCurrentIndex(list(self._pages).index(_TAB_MANUAL))
+
+    def _current_boxes(self) -> list[_GroupBox]:
+        idx = self._tabs.currentIndex()
+        name = self._tabs.tabText(idx) if idx >= 0 else None
+        return self._page_boxes.get(name, [])
 
     def _set_all_collapsed(self, flag: bool) -> None:
-        for box in self._boxes:
+        for box in self._current_boxes():
             box._set_body_visible(not flag)
             self._vm.set_collapsed(box.box_id, flag)
