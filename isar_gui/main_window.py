@@ -56,6 +56,7 @@ from isar_gui.viewmodels import (
     FilesViewModel,
     HeatmapViewModel,
     InspectorViewModel,
+    ScansViewModel,
     ViewModel,
     WaterfallViewModel,
 )
@@ -65,6 +66,8 @@ from isar_gui.views.dispersion_dock import DispersionDock
 from isar_gui.views.files_dock import FilesDock
 from isar_gui.views.heatmap_dock import HeatmapDock
 from isar_gui.views.inspector_widget import InspectorWidget
+from isar_gui.views.scan_table_dock import ScanTableDock
+from isar_gui.views.scans_dock import ScansDock
 from isar_gui.views.waterfall_dock import WaterfallDock
 from isar_gui.watch_bridge import WatchBridge
 
@@ -211,6 +214,14 @@ class MainWindow(QMainWindow):
         # GuiStore below and calls set_store (empty/pending has no workspace file to persist into).
         self.files_vm = FilesViewModel(ws, store=None, parent=self)
         self.files_vm.watch_config_changed.connect(self._on_watch_config_changed)
+        # The Scans viewmodel (physical chips + table) shares the same GuiStore for manual groups; it
+        # binds store=None now and gets set_store on a ready bind like the Files VM. Group mutations
+        # persist (debounced) through the same store save timer; a double-clicked fitted scan routes
+        # to the C2 inspector.
+        self.scans_vm = ScansViewModel(ws, store=None, parent=self)
+        self.scans_vm.inspect_requested.connect(self.inspector_vm.set_fit)
+        self.scans_vm.groups_changed.connect(self._on_groups_changed)
+        self.scans_vm.store_dirty.connect(self._on_groups_changed)
         self.waterfall_vm.load_view_state(self._session)
         self.heatmap_vm.load_view_state(self._session)
         self.dispersion_vm.load_view_state(self._session)
@@ -252,6 +263,7 @@ class MainWindow(QMainWindow):
         if not self._empty:
             self._gui_store = GuiStore.load(ws.root)
             self.files_vm.set_store(self._gui_store)
+            self.scans_vm.set_store(self._gui_store)
             # Seed the watcher from the persisted config directly (a bind is not a user mutation, so
             # it must not re-persist the store; user add/remove/pause go through watch_config_changed).
             self._folder_watcher.set_folders(self.files_vm.watched())
@@ -318,6 +330,17 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self.browser_dock, self.card_dock)
         self._register_dock("Card", self.card_dock)
 
+        # The Phase-E physical scan view + its tabular twin, tabified together in the right area (they
+        # share one model + selection, so a chip and a row light up together). Placed before the plane
+        # so the scan-centric views lead the right column.
+        self.scans_dock = ScansDock(self.scans_vm, self)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.scans_dock)
+        self._register_dock("Scans", self.scans_dock)
+        self.scan_table_dock = ScanTableDock(self.scans_vm, self)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.scan_table_dock)
+        self.tabifyDockWidget(self.scans_dock, self.scan_table_dock)
+        self._register_dock("Scan Table", self.scan_table_dock)
+
         self.heatmap_dock = HeatmapDock(self.heatmap_vm, self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.heatmap_dock)
         self._register_dock("Plane (q, E)", self.heatmap_dock)
@@ -350,10 +373,6 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self._on_open_workspace)
         self._save_as_menu_action = file_menu.addAction("Save Workspace As…")
         self._save_as_menu_action.triggered.connect(self.save_workspace_as)
-        # The advanced wizard (explicit init with detector preview) is still available; it is the
-        # deliberate front door, distinct from the drop-a-file temp-workspace fast path.
-        adv_action = file_menu.addAction("New Experiment (advanced)…")
-        adv_action.triggered.connect(lambda: self.open_new_experiment())
 
         file_menu.addSeparator()
         report_action = file_menu.addAction("Open Report")
@@ -436,17 +455,6 @@ class MainWindow(QMainWindow):
         self.log(f"Save As failed for {dest}: {reason}")
         return False
 
-    # ---- New Experiment front door (wizard + drag-drop, D4) ---------------
-    def open_new_experiment(self, prefill: str | None = None) -> None:
-        """Open the New Experiment dialog (optionally pre-filled with a dropped data path). On a
-        successful ``isar init`` the freshly-scaffolded workspace is loaded."""
-        from isar_gui.new_experiment import NewExperimentDialog
-
-        dlg = NewExperimentDialog(prefill, parent=self)
-        if dlg.exec() and dlg.workspace_path:
-            self.log(f"Created experiment {dlg.workspace_path}")
-            self.load_workspace(dlg.workspace_path)
-
     @staticmethod
     def _is_workspace_dir(path: Path) -> bool:
         return path.is_dir() and (path / "card.policy.toml").exists()
@@ -510,6 +518,12 @@ class MainWindow(QMainWindow):
         NOT route through here, so opening a workspace never re-persists an unchanged store.)"""
         self._folder_watcher.set_folders(self.files_vm.watched())
         self._folder_watcher.set_paused(self.files_vm.watch_paused())
+        if self._gui_store is not None:
+            self._store_save_timer.start()
+
+    def _on_groups_changed(self) -> None:
+        """A manual-group mutation or ui-scrap change (order/collapsed) from the Scans dock:
+        debounce-persist the GUI store (the same store the watched folders live in)."""
         if self._gui_store is not None:
             self._store_save_timer.start()
 
@@ -844,6 +858,7 @@ class MainWindow(QMainWindow):
         self._viewmodel.deleteLater()
         self.browser_vm.deleteLater()
         self.files_vm.deleteLater()
+        self.scans_vm.deleteLater()
         self.inspector_vm.deleteLater()
         self.heatmap_vm.save_view_state(self._session)
         self.heatmap_vm.deleteLater()
@@ -868,6 +883,7 @@ class MainWindow(QMainWindow):
         # dock so a finished ingest's new files appear without a manual re-read.
         if changed & {"snapshot"}:
             self.files_vm.refresh()
+            self.scans_vm.refresh()
         # "results"/"snapshot" carry the fit data the plots read; "card_state" carries lattice
         # epochs / dispersion prior / branch belief that feed the browser HKL, the dispersion prior
         # curve, and the heatmap overlays — so it must also re-derive the component views.
