@@ -91,7 +91,8 @@ def default_workspace_dir(data: str, instrument: str, today: str | None = None) 
 
 def last_error_line(lines: list[str]) -> str | None:
     """The cause text from the last streamed line that starts with ``error:`` (after stripping),
-    or ``None`` if no such line was seen.
+    or ``None`` if no such line was seen — including when the ``error:`` prefix has no cause text
+    after it, which is treated the same as no match.
 
     The engine prints a distinct ``error: ...`` line to stderr for each ``isar init`` exit-2 path;
     ``ProcessRunner`` merges stderr into the same line stream as stdout, so this picks the cause back
@@ -100,7 +101,7 @@ def last_error_line(lines: list[str]) -> str | None:
     for line in reversed(lines):
         stripped = line.strip()
         if stripped.startswith("error:"):
-            return stripped[len("error:"):].strip()
+            return stripped[len("error:"):].strip() or None
     return None
 
 

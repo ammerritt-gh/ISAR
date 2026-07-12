@@ -80,6 +80,19 @@ def test_init_failure_shows_captured_cause(qtbot):
     assert "exit 2" in dlg._detect_label.text()
 
 
+def test_init_failure_without_cause_falls_back_to_see_log_above(qtbot):
+    dlg = NewExperimentDialog()
+    qtbot.addWidget(dlg)
+    dlg._pending_out = r"D:\ws\exp1"
+    for line in ["scaffolding...", "aborting"]:
+        dlg._on_init_line(line)
+    dlg._on_init_finished(2)
+    assert dlg.workspace_path is None
+    assert "see log above" in dlg._detect_label.text()
+    assert "see log above" in dlg._log.toPlainText()
+    assert "exit 2" in dlg._detect_label.text()
+
+
 def test_init_success_path_unchanged(qtbot):
     dlg = NewExperimentDialog()
     qtbot.addWidget(dlg)

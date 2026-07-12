@@ -120,3 +120,8 @@ def test_last_error_line_none_when_no_error_line():
 def test_last_error_line_leading_whitespace_tolerated():
     lines = ["  error: indented cause  "]
     assert commands.last_error_line(lines) == "indented cause"
+
+
+def test_last_error_line_bare_prefix_with_no_cause_is_none():
+    lines = ["starting init...", "error:", "aborting"]
+    assert commands.last_error_line(lines) is None

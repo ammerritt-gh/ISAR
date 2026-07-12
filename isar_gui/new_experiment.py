@@ -185,6 +185,7 @@ class NewExperimentDialog(QDialog):
             return
         self._pending_out = self._ws_edit.text().strip()
         self._init_lines = []
+        self._apply_detect(self._detect)  # clear a stale failure message from a previous attempt
         self._log.setVisible(True)
         self._log.appendPlainText("$ " + " ".join(cmd))
         self._create_btn.setEnabled(False)
