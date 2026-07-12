@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+import traceback
 
 from isar.schema import card as card_mod
 from isar.session import ingest
@@ -33,7 +34,18 @@ def run(args) -> int:
         print(f"warning: unknown card section [{unknown}] — ignored (typo?)", file=sys.stderr)
 
     card, session = ws.load()
-    report = ingest.ingest_batch(card, session, args.data)
+    try:
+        report = ingest.ingest_batch(card, session, args.data)
+    except Exception as exc:
+        # Per-file isolation (ingest_batch) makes this a rare backstop, but the GUI's cause-extractor
+        # must ALWAYS find a clean `error:` line rather than a raw traceback. Print the traceback for
+        # diagnosis, then a machine-readable cause, and exit 2 (internal, distinct from exit-1 crashes).
+        traceback.print_exc()
+        msg = f"{type(exc).__name__}: {exc}"
+        if as_json:
+            print(json.dumps({"error": {"kind": "internal", "message": msg}}))
+        print(f"error: {msg}", file=sys.stderr)
+        return 2
     if report.dirty:
         session.save(ws.session_path)   # only the machine-owned ledger; never card.policy.toml
 

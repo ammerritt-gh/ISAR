@@ -78,6 +78,67 @@ def test_join_multiword_collapses_multi_word_column_names():
     assert labels == ["HerixE", "Foo", "Heat_Stage_T1", "Heat_Stage_T2", "ICO-C", "Seconds"]
 
 
+def _mini_spec(rows: list[str]) -> list[str]:
+    return ["#F raw.spec", "#E 1", "#S 7  fscan herixE", "#N 3",
+            "#L HerixE ICO-C Seconds", *rows, ""]
+
+
+def test_rectangular_block_unchanged(tmp_path):
+    p = tmp_path / "rect.spec"
+    p.write_text("\n".join(_mini_spec(["0.0 1.0 2.0", "0.1 1.1 2.1", "0.2 1.2 2.2"])),
+                 encoding="utf-8")
+    _, blocks = spec_base.read_spec(p)
+    assert len(blocks) == 1
+    assert blocks[0].data.shape == (3, 3)
+
+
+def test_truncated_final_row_dropped_with_warning(tmp_path, caplog):
+    """A scan aborted mid-write leaves one SHORT final row (the FeSeS scan-173 artifact): drop just
+    that row, keep the scan, and warn naming the scan + line — never crash, never pad."""
+    p = tmp_path / "trunc.spec"
+    p.write_text("\n".join(_mini_spec(["0.0 1.0 2.0", "0.1 1.1 2.1", "0.2 1.2"])),  # last row short
+                 encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        _, blocks = spec_base.read_spec(p)
+    assert len(blocks) == 1
+    assert blocks[0].scan_number == 7
+    assert blocks[0].data.shape == (2, 3)          # the good rows kept, the truncated row dropped
+    msg = caplog.text
+    assert "scan 7" in msg and "truncated final row" in msg
+    assert "2 of 3 columns" in msg
+
+
+def test_midblock_ragged_skips_whole_scan_with_warning(tmp_path, caplog):
+    """A short/over-wide row that is NOT the final one is corruption: skip the whole scan (warned),
+    do not append a partial block."""
+    text = "\n".join([
+        "#F raw.spec", "#E 1",
+        "#S 5  fscan herixE", "#N 3", "#L HerixE ICO-C Seconds",
+        "0.0 1.0 2.0", "0.1 1.1", "0.2 1.2 2.2",           # bad row in the MIDDLE
+        "#S 6  fscan herixE", "#N 3", "#L HerixE ICO-C Seconds",
+        "0.0 1.0 2.0", "0.1 1.1 2.1",                       # clean neighbor
+        "",
+    ])
+    p = tmp_path / "ragged.spec"
+    p.write_text(text, encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        _, blocks = spec_base.read_spec(p)
+    nums = [b.scan_number for b in blocks]
+    assert nums == [6]                                     # scan 5 skipped, scan 6 survives
+    assert "scan 5" in caplog.text and "ragged data block" in caplog.text
+
+
+def test_over_wide_final_row_skips_scan(tmp_path, caplog):
+    """An over-wide final row is not the truncation artifact — it is corruption, so skip the scan."""
+    p = tmp_path / "wide.spec"
+    p.write_text("\n".join(_mini_spec(["0.0 1.0 2.0", "0.1 1.1 2.1 9.9"])),  # last row too wide
+                 encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        _, blocks = spec_base.read_spec(p)
+    assert blocks == []
+    assert "scan 7" in caplog.text and "ragged data block" in caplog.text
+
+
 def test_read_spec_multiword_columns_resolves_true_column_count(tmp_path):
     # A minimal SPEC block whose #L carries a 3-word column name: a naive split over-counts.
     text = "\n".join([

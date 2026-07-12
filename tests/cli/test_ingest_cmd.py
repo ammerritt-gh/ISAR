@@ -59,6 +59,32 @@ def test_ingest_no_workspace_json_error(tmp_path, capsys):
     assert "no workspace" in out.err
 
 
+def test_ingest_internal_error_exits_2_with_clean_cause(tmp_path, capsys, monkeypatch):
+    """The backstop: if ingest_batch itself raises, the CLI must not exit with a bare traceback on
+    stdout. Exit 2, a machine-readable ``{"error": {"kind": "internal", ...}}`` on stdout under
+    --json, and an ``error:`` cause line on stderr for the GUI's extractor."""
+    data, ws = _init_ws(tmp_path)
+    capsys.readouterr()
+    monkeypatch.setattr(ingest_cmd.ingest, "ingest_batch",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("kaboom")))
+
+    code = ingest_cmd.run(argparse.Namespace(data=[str(data)], workspace=str(ws), json=True))
+    out = capsys.readouterr()
+
+    assert code == 2
+    # the JSON error object is the last JSON line on stdout (traceback text may precede it)
+    obj = None
+    for line in reversed([ln for ln in out.out.splitlines() if ln.strip()]):
+        try:
+            obj = json.loads(line)
+            break
+        except ValueError:
+            continue
+    assert obj is not None and obj["error"]["kind"] == "internal"
+    assert "kaboom" in obj["error"]["message"]
+    assert "error: RuntimeError: kaboom" in out.err
+
+
 def test_ingest_no_workspace_human(tmp_path, capsys):
     empty = tmp_path / "not_a_ws"
     empty.mkdir()

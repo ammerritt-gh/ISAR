@@ -149,10 +149,20 @@ def ingest_batch(card: Card, session, data_paths) -> IngestReport:
     by_key: dict[tuple, object] = {}                 # (exp, scan) -> record (last wins)
     sources: dict[tuple, list[str]] = {}             # (exp, scan) -> ordered distinct source paths
     file_scan_keys: dict[str, list[tuple]] = {}      # resolved measurement path -> [(exp, scan), ...]
+    file_errors: dict[str, str] = {}                 # resolved path -> "ExcType: msg" for a bad file
     for f in plan.measurement_files:
         rp = str(Path(f).resolve())
         seen_here: set[tuple] = set()
-        for rec in plugin.parse_file(f, card):
+        try:
+            parsed = plugin.parse_file(f, card)
+        except Exception as exc:
+            # One unparseable file must never abort the batch (or the operator loses every good file
+            # behind it). Isolate it: log, stamp the manifest row with the cause (fix below), continue.
+            file_errors[rp] = f"{type(exc).__name__}: {exc}"
+            log.warning("ingest: failed to parse %s (%s); file skipped, batch continues",
+                        f, file_errors[rp])
+            continue
+        for rec in parsed:
             key = (rec.experiment_id, rec.scan_number)
             by_key[key] = rec                        # last occurrence wins (growing-file resend)
             paths = sources.setdefault(key, [])
@@ -245,18 +255,27 @@ def ingest_batch(card: Card, session, data_paths) -> IngestReport:
             keys = file_scan_keys.get(rp, []) if klass == "measurement" else []
             scan_ids = [f"{e}:{s}" for (e, s) in keys if (e, s) in ledgered_keys]
             n_context = sum(1 for k in keys if k not in measurement_keys)
+            err = file_errors.get(rp)                # a measurement file that failed to parse
             row = {"size": stat.st_size, "mtime": stat.st_mtime, "format": klass}
             if klass == "measurement":
                 row["n_scans"] = len(scan_ids)
                 row["scan_ids"] = list(scan_ids)
                 row["n_context"] = n_context
+                if err is not None:
+                    row["error"] = err               # additive key; class stays "measurement"
             target = session.files.setdefault(rp, {})
             before = dict(target)
             target.update(row)
+            # A file that once errored and now parses clean must lose its stale error key.
+            if err is None and "error" in target:
+                del target["error"]
             if target != before:
                 report.dirty = True
-            report.files.append({"path": rp, "class": klass, "n_scans": len(scan_ids),
-                                 "scan_ids": list(scan_ids), "n_context": n_context})
+            entry = {"path": rp, "class": klass, "n_scans": len(scan_ids),
+                     "scan_ids": list(scan_ids), "n_context": n_context}
+            if err is not None:
+                entry["error"] = err
+            report.files.append(entry)
 
     # --- remember new data locations (mirror run_batch) ---
     for p in map(str, data_paths):

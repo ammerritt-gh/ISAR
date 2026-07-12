@@ -12,11 +12,14 @@ reference, this keeps every analyzer and every column — selection is the card'
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 # Header markers that carry an integer group index, e.g. "#H12", "#O3", "#V8", "#P0", "#G1".
 _NUMBERED = re.compile(r"^#([HOVPG])(\d+)\b")
@@ -54,6 +57,37 @@ def _floats(tokens: list[str]) -> list[float]:
     return [float(t) for t in tokens]
 
 
+def _resolve_block_rows(scan_number: int, rows: list, row_lines: list):
+    """Reconcile a scan block's data rows against ragged (unequal-width) rows without ever raising.
+
+    A real SPEC scan aborted mid-write leaves exactly ONE truncated final row (scan 173 of the FeSeS
+    campaign: 38 of 73 columns at line 62468). The block's expected width is the width of its first
+    data row (the acquisition writes complete rows until the very last). The user-locked policy:
+
+    - all rows the same width -> rectangular, keep every row (the normal path);
+    - a single SHORT final row -> the aborted-scan artifact; DROP just that row (warned), keep the rest;
+    - any other raggedness (a short/over-wide row that is not the final one, an over-wide final row) ->
+      mid-block corruption; return ``None`` so the caller SKIPS the whole scan block (warned).
+
+    Never invents data (no NaN padding) and never raises for shape — genuinely non-numeric text still
+    raises earlier, at float() parse time, and is caught per-file by the ingest layer.
+    """
+    if not rows:
+        return rows
+    widths = [len(r) for r in rows]
+    w0 = widths[0]
+    if all(w == w0 for w in widths):
+        return rows
+    if all(w == w0 for w in widths[:-1]) and widths[-1] < w0:
+        log.warning("scan %s: dropped truncated final row at line %d (%d of %d columns)",
+                    scan_number, row_lines[-1], widths[-1], w0)
+        return rows[:-1]
+    bad = next(i for i, w in enumerate(widths) if w != w0)
+    log.warning("scan %s: skipped — ragged data block at line %d (%d columns, expected %d)",
+                scan_number, row_lines[bad], widths[bad], w0)
+    return None
+
+
 def _join_multiword(label_line: str, multiword: list[str]) -> list[str]:
     """Tokenize a `#L` line, first collapsing known multi-word column names to single tokens.
 
@@ -80,16 +114,20 @@ def read_spec(path: str | Path, *,
 
     cur: SpecScanBlock | None = None
     rows: list[list[float]] = []
+    row_lines: list[int] = []          # source line number for each appended row (for warnings)
     collecting = False
     start_line = 0
 
     def close(end_line: int) -> None:
-        nonlocal cur, rows, collecting
+        nonlocal cur, rows, row_lines, collecting
         if cur is not None:
-            cur.data = np.asarray(rows, dtype="float64") if rows else np.empty((0, cur.n_columns))
-            cur.line_range = (start_line, end_line)
-            blocks.append(cur)
-        cur, rows, collecting = None, [], False
+            kept = _resolve_block_rows(cur.scan_number, rows, row_lines)
+            if kept is not None:       # None => mid-block corruption; skip the whole block (warned)
+                cur.data = (np.asarray(kept, dtype="float64") if kept
+                            else np.empty((0, cur.n_columns)))
+                cur.line_range = (start_line, end_line)
+                blocks.append(cur)
+        cur, rows, row_lines, collecting = None, [], [], False
 
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         lineno = 0
@@ -152,6 +190,7 @@ def read_spec(path: str | Path, *,
                 collecting = True
             elif not s.startswith("#") and collecting and cur is not None:
                 rows.append([float(t) for t in s.split()])
+                row_lines.append(lineno)
 
         close(lineno)
 

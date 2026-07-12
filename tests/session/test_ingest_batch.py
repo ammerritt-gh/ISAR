@@ -186,6 +186,61 @@ def test_in_file_context_scan_is_not_ledgered(tmp_path):
     assert session.files[str(p.resolve())]["n_context"] == 1
 
 
+def test_one_bad_file_isolated_good_files_ingested(tmp_path, monkeypatch, caplog):
+    """Per-file isolation: a file whose parse raises must not abort the batch. The good file's scans
+    land in the ledger; the bad file gets a manifest row carrying an ``error`` (class still
+    "measurement"), and the batch continues."""
+    good = tmp_path / "good.spec_supplementary.dat"
+    bad = tmp_path / "bad.spec_supplementary.dat"
+    card = _emit_s30(good, n_scans=2)
+    _emit_s30(bad, n_scans=2)                         # valid bytes; we force the PARSE to raise below
+
+    real_parse = spec_s30.parse_file
+    bad_rp = str(bad.resolve())
+
+    def flaky_parse(path, card):
+        if str(Path(path).resolve()) == bad_rp:
+            raise ValueError("simulated corrupt block")
+        return real_parse(path, card)
+
+    monkeypatch.setattr(spec_s30, "parse_file", flaky_parse)
+    session = SessionState()
+
+    with caplog.at_level("WARNING"):
+        report = ingest.ingest_batch(card, session, [good, bad])
+
+    # good file's scans are in the ledger
+    good_shorts = {":".join(k.split(":")[:2]) for k in session.scans}
+    assert good_shorts == {"good.spec_supplementary.dat:1", "good.spec_supplementary.dat:2"}
+    # bad file has a manifest row with an error, still classified measurement
+    bad_row = [f for f in report.files if f["path"] == bad_rp]
+    assert len(bad_row) == 1
+    assert bad_row[0]["class"] == "measurement"
+    assert "ValueError: simulated corrupt block" in bad_row[0]["error"]
+    assert session.files[bad_rp]["error"] == "ValueError: simulated corrupt block"
+    assert report.dirty is True
+    assert "failed to parse" in caplog.text
+
+
+def test_bad_file_error_cleared_when_it_later_parses(tmp_path, monkeypatch):
+    """A file that errored once must lose its stale ``error`` key once it parses clean."""
+    data = tmp_path / "run.spec_supplementary.dat"
+    card = _emit_s30(data, n_scans=1)
+    rp = str(data.resolve())
+    session = SessionState()
+
+    real_parse = spec_s30.parse_file
+    monkeypatch.setattr(spec_s30, "parse_file",
+                        lambda p, c: (_ for _ in ()).throw(ValueError("boom")))
+    ingest.ingest_batch(card, session, [data])
+    assert session.files[rp].get("error")
+
+    monkeypatch.setattr(spec_s30, "parse_file", real_parse)   # now it parses
+    report = ingest.ingest_batch(card, session, [data])
+    assert "error" not in session.files[rp]
+    assert not any(f.get("error") for f in report.files)
+
+
 def test_ingest_then_run_preserves_manifest_and_requeues(tmp_path):
     """Driver interplay: after `isar ingest`, a later `run_batch` re-queues the ingested entries and
     its manifest write preserves ingest's n_scans/scan_ids (setdefault(...).update merge)."""
