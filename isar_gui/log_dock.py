@@ -28,6 +28,18 @@ class LogDock(QDockWidget):
     def append(self, msg: str) -> None:
         self._view.appendPlainText(str(msg))
 
+    def reset_warnings(self) -> None:
+        """Clear the per-tick warning high-water bookkeeping.
+
+        The dock now persists across workspace rebinds (its scrollback is kept), so its
+        generation/seen/batch state must be reset explicitly on each rebind — otherwise a stale
+        ``_last_generation`` or ``_last_batch`` from the previous workspace could suppress the new
+        workspace's first warnings batch.
+        """
+        self._warnings_seen = 0
+        self._last_generation = None
+        self._last_batch = None
+
     def sync_warnings(self, warnings, generation=None) -> None:
         """Append only the warnings not shown yet.
 

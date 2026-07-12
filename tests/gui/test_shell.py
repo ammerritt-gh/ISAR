@@ -131,9 +131,11 @@ def test_docks_menu_toggles_log_dock(qtbot, make_ws):
     assert action.isCheckable()
     assert action.isChecked()  # dock starts visible -> action checked
 
-    # Menu -> dock: unchecking hides the dock.
-    action.setChecked(False)
-    action.toggled.emit(False)
+    # Menu -> dock: a real user click (trigger() flips checked then emits triggered) hides the dock.
+    # Uses trigger()/`triggered`, not `toggled`, because _toggle is now wired to triggered so the
+    # programmatic visibility sync can't hide docks — see test_docks_menu.py for why.
+    assert action.isChecked()
+    action.trigger()
     assert not w.log_dock.isVisible()
 
     # Dock -> menu: hiding/showing the dock updates the action (visibilityChanged sync).
@@ -545,3 +547,48 @@ def test_dock_layout_round_trips_through_session(qtbot, make_ws):
     # the test doesn't depend on pumping the event loop.
     w2._restore_layout()
     assert not w2.log_dock.isVisible()
+
+
+# ---- persistent log dock across rebinds -------------------------------------
+def test_log_dock_persists_across_rebind(qtbot, make_ws):
+    """The Log dock is created once and survives a workspace rebind: same object, scrollback kept,
+    and a `── HH:MM:SS workspace: <name> ──` separator appended for the new workspace. (Regression:
+    _teardown_binding used to delete every dock incl. Log, wiping the log on the drop-to-ingest
+    rebind.)"""
+    ws_a, _ = _open(make_ws)
+    w = MainWindow(ws_a, session=Session(), watch=False)
+    qtbot.addWidget(w)
+
+    log = w.log_dock
+    w.log("MARKER-BEFORE-REBIND")
+    assert "MARKER-BEFORE-REBIND" in log._view.toPlainText()
+
+    root_b = make_ws(rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    assert w.load_workspace(str(root_b)) is True
+
+    # Same object (never recreated), and the pre-rebind line is still there.
+    assert w.log_dock is log
+    text = log._view.toPlainText()
+    assert "MARKER-BEFORE-REBIND" in text
+    # A boundary separator for the new workspace was appended.
+    assert f"workspace: {root_b.name}" in text
+    assert text.count("workspace:") >= 2   # one at first bind, one after the rebind
+
+
+def test_rebind_does_not_duplicate_log_dock_autosave_wiring(qtbot, make_ws):
+    """The persistent Log dock is re-registered on every rebind; its dockLocationChanged autosave
+    connection must be wired exactly once, not once per bind (a double-wire fires _autosave twice
+    per drag)."""
+    from PySide6.QtCore import Qt
+
+    ws_a, _ = _open(make_ws)
+    w = MainWindow(ws_a, session=Session(), watch=False)
+    qtbot.addWidget(w)
+
+    root_b = make_ws(rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    assert w.load_workspace(str(root_b)) is True
+
+    calls = {"n": 0}
+    w._autosave = lambda: calls.__setitem__("n", calls["n"] + 1)
+    w.log_dock.dockLocationChanged.emit(Qt.BottomDockWidgetArea)
+    assert calls["n"] == 1

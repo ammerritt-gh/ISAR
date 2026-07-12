@@ -16,6 +16,7 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
+from weakref import WeakSet
 
 from PySide6.QtCore import QByteArray, QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -178,6 +179,15 @@ class MainWindow(QMainWindow):
         self._init_backends_menu()
         self._init_status_bar()
         self._init_health()
+        # The Log dock is created once and PERSISTS across workspace rebinds — _teardown_binding
+        # tears down every other dock, but wiping the log would lose the operator's scrollback, and
+        # the drop-to-ingest bootstrap ends in a rebind (that was the "log clears on load" bug).
+        # _init_docks only re-registers it into each fresh binding. Tracks docks whose
+        # dockLocationChanged is already wired (WeakSet auto-drops deleted transient docks) so the
+        # persistent log dock isn't double-connected on every rebind.
+        self._loc_wired: WeakSet = WeakSet()
+        self.log_dock = LogDock(self)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
         self._bind_workspace(ws)
         self._bound = True
         if ws is not None and not self._wsm.is_temporary():
@@ -206,6 +216,11 @@ class MainWindow(QMainWindow):
         ws = self._ws
         self._warn_generation = 0  # a fresh bind starts a new warnings-generation sequence
         self._update_title()
+        # The Log dock persists across rebinds, so mark the workspace boundary in its scrollback and
+        # reset the (now stale) per-tick warning bookkeeping carried over from the previous binding.
+        self.log_dock.reset_warnings()
+        _ws_label = "(no workspace)" if self._empty else Path(self._ws.root).name
+        self.log_dock.append(f"── {datetime.now():%H:%M:%S} workspace: {_ws_label} ──")
 
         # A base viewmodel so the watch signal already has a consumer; component viewmodels attach
         # to the same workspace in later tasks.
@@ -318,8 +333,8 @@ class MainWindow(QMainWindow):
     def _init_docks(self) -> None:
         from PySide6.QtCore import Qt
 
-        self.log_dock = LogDock(self)
-        self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
+        # The Log dock is created once in __init__ and survives rebinds; only re-register it into
+        # this binding's docks map + Docks menu (do NOT recreate it — that wiped the scrollback).
         self._register_dock("Log", self.log_dock)
 
         # The Files dock is the data entry point (drop target + manifest + watched folders); it leads
@@ -371,7 +386,11 @@ class MainWindow(QMainWindow):
         self._docks[name] = dock
         # A user dragging a dock to a new area/float changes the layout saveState() would capture;
         # autosave (debounced) so that move survives a restart without waiting for an explicit toggle.
-        dock.dockLocationChanged.connect(lambda _area: self._autosave())
+        # Guard against double-wiring: the persistent Log dock is re-registered on every rebind, and
+        # a second connection would fire _autosave twice per move.
+        if dock not in self._loc_wired:
+            dock.dockLocationChanged.connect(lambda _area: self._autosave())
+            self._loc_wired.add(dock)
 
     # ---- File menu (built once; actions persist across workspace reloads) --
     def _init_file_menu(self) -> None:
@@ -870,7 +889,12 @@ class MainWindow(QMainWindow):
                     d.hide()
                 self._autosave()
 
-            action.toggled.connect(_toggle)
+            # `triggered` (user interaction only), NOT `toggled`: a tabified dock going behind its
+            # sibling fires visibilityChanged(False) -> action.setChecked(False), which under
+            # `toggled` would re-enter _toggle and *hide* the dock — permanently losing the buried
+            # tab. `triggered` fires only on an actual menu click, so the programmatic setChecked
+            # from the visibility sync no longer hides anything.
+            action.triggered.connect(_toggle)
             # Bind the action's own setChecked so Qt auto-drops the connection when the QAction is
             # destroyed (a Python closure capturing the action would outlive it and fire on a dead
             # C++ object during teardown). Same intent as PUFFIN's visibility handler, leak-safe.
@@ -904,6 +928,8 @@ class MainWindow(QMainWindow):
         # rebinds don't leak one Docks menu per load.
         self._docks_menu.deleteLater()
         for dock in list(self._docks.values()):
+            if dock is self.log_dock:
+                continue  # persists across rebinds (created in __init__); keep its scrollback
             self.removeDockWidget(dock)
             dock.deleteLater()
         self._docks.clear()
