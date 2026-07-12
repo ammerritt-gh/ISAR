@@ -43,6 +43,7 @@ LOW_Q_FWHM_FACTOR = 2.0
 # profile). "bayes" is a strict superset of "full" — everything full does, plus the nested-sampling
 # posterior on the prelim-best label (diagnostics-only; the bootstrap interval stays authoritative).
 FULL_TIERS = ("full", "bayes")
+from isar.session import unit_data
 from isar.session.state import ScanEntry, SessionState, content_hash
 from isar.session.timing import NullTimer
 from isar.session.workspace import Workspace
@@ -764,6 +765,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
         plan = ingest.discover(data_paths, card)
         records = ingest.parse_all(plan, card)
         _m_ingest["n_records"] = len(records)
+    # Basename -> resolved absolute source path, so run's provenance source_file matches ingest's.
+    source_by_name = {Path(f).name: str(Path(f).resolve()) for f in plan.measurement_files}
 
     # Reduce (both no-ops where not applicable; QC never raises).
     with timer.stage("reduce_qc"):
@@ -793,6 +796,20 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
         # Optional LLM adjudication (off critical path; degrade, never stall).
         if llm or (card.policy.adjudication or {}).get("enabled"):
             ctx_lines += _maybe_adjudicate(routed.measurements, card)
+
+    # Per-unit data files for the GUI inspector, exactly as `isar ingest` writes them — so a run-only
+    # workspace (never ingested) still has a counts plot per unit. Reduced+QC'd records; failures are
+    # logged and skipped, never fatal. (unit_data.write_unit_data mirrors the ingest contract.)
+    _unit_data_dir = getattr(workspace, "root", None)
+    if _unit_data_dir is not None:
+        _unit_data_dir = Path(_unit_data_dir) / "data"
+        for rec in routed.measurements:
+            for det_id in rec.spectra:
+                try:
+                    unit_data.write_unit_data(rec, det_id, _unit_data_dir)
+                except Exception as exc:  # noqa: BLE001 — one bad unit must never fail the run
+                    log.warning("run: failed to write unit data for %s:%s:%s (%s); continuing",
+                                rec.experiment_id, rec.scan_number, det_id, exc)
 
     runcal = calibrations.calibration_view(card)
     g = guide_mod.resolve(card)
@@ -877,7 +894,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
                           workspace, force=force, M=M, seed_base=seed_base, errors_tier=errors_tier,
                           master_boot_workers=master_boot_workers, boot_executor=shared_pool,
                           boot_adaptive=boot_adaptive, scan_workers=scan_workers,
-                          bayes_opts=bayes_opts, timer=timer)
+                          bayes_opts=bayes_opts, timer=timer, source_by_name=source_by_name)
     finally:
         if shared_pool is not None:
             shared_pool.shutdown()
@@ -918,9 +935,32 @@ def _store_branch_models(state, t_round: float) -> None:
         state.branch_models.append(bm)
 
 
+def _core_provenance(rec, det, source_by_name=None) -> dict:
+    """The ingest-parity core provenance keys for one (record, detector), reused from the Phase-2
+    helper so `isar run` on a workspace that was never `isar ingest`-ed still carries per-unit q, T,
+    the target #Q, command, calibration state, etc. — the same keys the GUI's per-unit q display and
+    scan-group #Q labels read. Absent an ingest, this is the ONLY place those keys get stamped.
+
+    ``source_by_name`` maps a record's source basename → its resolved absolute path (so run's
+    source_file matches ingest's absolute form); missing → the parser's recorded name."""
+    sp = rec.spectra.get(det)
+    q = [float(v) for v in sp.q] if sp is not None and sp.q is not None else None
+    T = float(np.median(np.asarray(rec.temperature.setpoint, dtype=float)))
+    core = {"T": T, "q": q, **unit_data._provenance_extras(rec)}
+    fname = getattr(getattr(rec, "source", None), "file", None)
+    src = None
+    if source_by_name and fname:
+        src = source_by_name.get(fname) or source_by_name.get(Path(fname).name)
+    src = src or fname
+    if src is not None:
+        core["source_file"] = src
+    return core
+
+
 def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                       workspace, *, force, M, seed_base, errors_tier, master_boot_workers,
-                      boot_executor, boot_adaptive, scan_workers=1, bayes_opts=None, timer=None):
+                      boot_executor, boot_adaptive, scan_workers=1, bayes_opts=None, timer=None,
+                      source_by_name=None):
     """Pass 2 (ledger + prior) → collate → master fits → tally → write. Split out so the shared
     bootstrap pool from :func:`run_batch` stays open across the whole full-tier batch."""
     timer = timer or NullTimer()
@@ -930,6 +970,11 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
     # The re-fit idempotency makes it self-healing across runs — a later `isar run` re-seeds from
     # the now-complete prior only for scans that actually drifted.
     t_round = float((card.policy.collation or {}).get("t_round", 5.0))
+    # scan_id -> (record, detector) for stamping ingest-parity core provenance onto fitted entries.
+    rec_by_scan_id: dict[str, tuple] = {}
+    for rec in records:
+        for det_id in rec.spectra:
+            rec_by_scan_id[f"{rec.experiment_id}:{rec.scan_number}:{det_id}"] = (rec, det_id)
     for item in plan:
         if item[0] == "carry":
             _, scan, outcome = item
@@ -937,6 +982,17 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
             continue
         _, scan, det, task_idx = item
         entry = entries[task_idx]
+        # Stamp per-unit core provenance (q/T/source_file/q_target/…) the fitter never sets, and
+        # MERGE under any existing (e.g. ingest-stamped) provenance so an ingest-then-run workspace
+        # keeps ingest-only keys (ingested_at) while run values win where both are set. Absent an
+        # ingest, this is what gives the GUI its per-unit q and scan-group #Q labels in the fit path.
+        rd = rec_by_scan_id.get(entry.scan_id)
+        if rd is not None:
+            core = _core_provenance(rd[0], rd[1], source_by_name)
+            entry.provenance = {**core, **(entry.provenance or {})}
+        prev = session.get(entry.scan_id)
+        if prev is not None and prev.provenance:
+            entry.provenance = {**prev.provenance, **(entry.provenance or {})}
         session.put(entry)
         summary.n_reprocessed += 1
         summary.n_fitted_this_run += 1 if entry.status in ("fitted", "non_result") else 0

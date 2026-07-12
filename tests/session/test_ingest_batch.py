@@ -339,6 +339,14 @@ def test_ingest_then_run_preserves_manifest_and_requeues(tmp_path):
     assert all(e.status != "ingested" for e in session2.scans.values())  # run consumed them
     assert session2.files[rp].get("scan_ids"), "run must preserve ingest's scan_ids (merge, not replace)"
 
+    # The run MERGES provenance onto the ingested entry: ingest-only keys survive AND the run's core
+    # per-unit keys are present (so the GUI's q display / #Q labels work in the fit path too).
+    e2 = next(iter(session2.scans.values()))
+    assert "ingested_at" in e2.provenance                    # ingest-only key survived the run
+    assert "resolution_version" in e2.provenance             # run-only key present
+    assert e2.provenance.get("q") is not None and e2.provenance.get("T") is not None
+    assert e2.provenance.get("q_target") and len(e2.provenance["q_target"]) == 3
+
     # Re-ingest AFTER the run: the fitted/held entries must read as "unchanged" — this pins driver-vs-
     # ingest content_hash parity end-to-end (both hash the reduced+QC'd record). A hash mismatch would
     # re-queue the whole workspace on every parse-preview.
@@ -346,3 +354,38 @@ def test_ingest_then_run_preserves_manifest_and_requeues(tmp_path):
     assert report3.added == [] and report3.updated == []
     assert report3.unchanged and report3.dirty is False
     assert all(e.status != "ingested" for e in session2.scans.values())  # nothing downgraded
+
+
+def test_run_only_workspace_stamps_core_provenance_and_unit_files(tmp_path):
+    """A run WITHOUT a prior `isar ingest` still stamps the ingest-parity per-unit provenance
+    (q/T/q_target/source_file/…) and writes the per-unit data files — so the GUI's per-unit q
+    display, scan-group #Q labels, and counts plot all work in the plain fit path."""
+    from isar.session import driver
+
+    ws_dir = tmp_path / "ws"
+    ws_dir.mkdir()
+    p = tmp_path / "run.spec_supplementary.dat"
+    card = _emit_s30(p, n_scans=1)
+    (ws_dir / "card.policy.toml").write_text(
+        Path(spec_s30._CARD_PATH).read_text(encoding="utf-8"), encoding="utf-8")
+    (ws_dir / "card.state.json").write_text("{}", encoding="utf-8")
+    SessionState().save(ws_dir / "session.json")
+    ws = Workspace.open(ws_dir)
+
+    driver.run_batch(ws, [p], formats=(), M=8, errors_tier="cheap")
+
+    _card, session = ws.load()
+    assert session.scans                                # entries were created
+    for e in session.scans.values():
+        assert e.provenance.get("q") is not None        # per-unit analyzer q
+        assert e.provenance.get("T") is not None
+        assert e.provenance.get("q_target") and len(e.provenance["q_target"]) == 3   # target #Q
+        assert e.provenance.get("source_file")          # absolute source path (ingest-consistent)
+        assert e.provenance.get("energy_status")        # 3-state calibration, verbatim
+    # per-unit q is each analyzer's OWN q — most differ from the scan's single target #Q (one
+    # analyzer may legitimately sit at the target), proving q is not just copied from #Q.
+    provs = list(session.scans.values())
+    assert any(e.provenance["q"] != e.provenance["q_target"] for e in provs)
+    # one unit data file per ledger entry, matching `isar ingest`
+    unit_files = sorted((ws_dir / "data" / "ingest").glob("*.json"))
+    assert len(unit_files) == len(session.scans)
