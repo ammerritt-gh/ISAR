@@ -48,6 +48,20 @@ def test_ingest_json_shape(tmp_path, capsys):
     assert "gaps" in obj and "deduped" in obj
 
 
+def test_ingest_writes_unit_files_under_workspace_data_dir(tmp_path):
+    """The CLI passes ``data_dir = <ws>/data``: per-unit files land under ``<ws>/data/ingest/``,
+    one per ledger entry (9 S30 analyzers × scans), never colliding with drive ``data/j-*.json``."""
+    from isar.session.state import SessionState
+
+    data, ws = _init_ws(tmp_path)
+    code = ingest_cmd.run(argparse.Namespace(data=[str(data)], workspace=str(ws), json=False))
+    assert code == 0
+    unit_files = sorted((ws / "data" / "ingest").glob("*.json"))
+    assert unit_files and all(f.name.startswith("ingest-") for f in unit_files)
+    session = SessionState.load(ws / "session.json")
+    assert len(unit_files) == len(session.scans)
+
+
 def test_ingest_no_workspace_json_error(tmp_path, capsys):
     empty = tmp_path / "not_a_ws"
     empty.mkdir()

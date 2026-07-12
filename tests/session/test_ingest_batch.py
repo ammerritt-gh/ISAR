@@ -241,6 +241,77 @@ def test_bad_file_error_cleared_when_it_later_parses(tmp_path, monkeypatch):
     assert not any(f.get("error") for f in report.files)
 
 
+def test_writes_one_unit_file_per_ledger_entry(tmp_path):
+    """With ``data_dir``, ingest writes one ``data/ingest/`` file per ledger entry (9 analyzers ×
+    scans), and every unit file carries the S30 target #Q as ``q_target`` provenance."""
+    from isar.session import unit_data
+
+    p = tmp_path / "run.spec_supplementary.dat"
+    card = _emit_s30(p, n_scans=2)
+    data_dir = tmp_path / "ws" / "data"
+    session = SessionState()
+
+    ingest.ingest_batch(card, session, [p], data_dir=data_dir)
+
+    unit_files = sorted((data_dir / "ingest").glob("*.json"))
+    assert len(unit_files) == len(session.scans) == 18          # 2 scans × 9 analyzers
+    # a spot-checked entry's provenance carries q_target (S30 target #Q), distinct from its own q
+    entry = next(iter(session.scans.values()))
+    assert entry.provenance["q_target"] and len(entry.provenance["q_target"]) == 3
+    assert entry.provenance["q_target"] != entry.provenance["q"]
+    assert "command" in entry.provenance and "n_points" in entry.provenance
+    d = unit_data.read_unit_data(unit_files[0])
+    assert d["schema"] == "isar.unit_data/1"
+
+
+def test_unchanged_reingest_writes_no_unit_files(tmp_path):
+    """Idempotency: a re-ingest with every unit file already present writes nothing and stays clean
+    (dirty False → caller skips save; no workspace tick)."""
+    p = tmp_path / "run.spec_supplementary.dat"
+    card = _emit_s30(p, n_scans=1)
+    data_dir = tmp_path / "ws" / "data"
+    session = SessionState()
+    ingest.ingest_batch(card, session, [p], data_dir=data_dir)
+    ingest_dir = data_dir / "ingest"
+    mtimes = {f: f.stat().st_mtime_ns for f in ingest_dir.glob("*.json")}
+
+    report = ingest.ingest_batch(card, session, [p], data_dir=data_dir)
+
+    assert report.dirty is False and not report.added and not report.updated
+    assert {f: f.stat().st_mtime_ns for f in ingest_dir.glob("*.json")} == mtimes  # untouched
+
+
+def test_backfill_missing_unit_file_on_unchanged_without_ticking_dirty(tmp_path):
+    """A pre-Phase-2 workspace (ledger present, unit files missing) is repaired by a re-ingest: the
+    missing file is rewritten even though the entry is ``unchanged`` — and dirty stays False."""
+    p = tmp_path / "run.spec_supplementary.dat"
+    card = _emit_s30(p, n_scans=1)
+    data_dir = tmp_path / "ws" / "data"
+    session = SessionState()
+    ingest.ingest_batch(card, session, [p], data_dir=data_dir)
+    victim = sorted((data_dir / "ingest").glob("*.json"))[0]
+    victim.unlink()
+
+    report = ingest.ingest_batch(card, session, [p], data_dir=data_dir)
+
+    assert victim.exists()                      # backfilled
+    assert report.dirty is False                # ledger untouched — backfill is not a mutation
+    assert report.unchanged and not report.added and not report.updated
+
+
+def test_no_data_dir_writes_no_unit_files_and_still_stamps_provenance(tmp_path):
+    """``data_dir`` is optional: omitting it writes no unit files but still enriches provenance."""
+    p = tmp_path / "run.spec_supplementary.dat"
+    card = _emit_s30(p, n_scans=1)
+    session = SessionState()
+
+    ingest.ingest_batch(card, session, [p])       # no data_dir
+
+    assert not (tmp_path / "data").exists()
+    entry = next(iter(session.scans.values()))
+    assert "q_target" in entry.provenance and "energy_status" in entry.provenance
+
+
 def test_ingest_then_run_preserves_manifest_and_requeues(tmp_path):
     """Driver interplay: after `isar ingest`, a later `run_batch` re-queues the ingested entries and
     its manifest write preserves ingest's n_scans/scan_ids (setdefault(...).update merge)."""
