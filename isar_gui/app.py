@@ -43,10 +43,37 @@ def _resolve_recent_workspace() -> "Workspace | None":
     return None
 
 
+def _maybe_recover_workspace() -> "Workspace | None":
+    """Offer any leftover temporary workspaces for recovery (Phase C). Returns the recovered
+    :class:`Workspace` if the operator opened one, else ``None`` (nothing to recover, or they chose
+    Discard/Later). A modal recovery prompt is suppressed under the offscreen smoke hook so CI never
+    blocks. Built lazily so the common no-candidates path adds no Qt latency.
+    """
+    if os.environ.get("ISAR_GUI_SMOKE_MS"):
+        return None
+    from isar_gui.workspace_manager import recovery_candidates
+
+    candidates = recovery_candidates()
+    if not candidates:
+        return None
+    from isar_gui.recovery_dialog import RecoveryDialog
+
+    dlg = RecoveryDialog(candidates)
+    dlg.exec()
+    if dlg.chosen is None:
+        return None
+    try:
+        return Workspace.open(dlg.chosen)
+    except (WorkspaceNotFound, OSError):
+        return None
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    explicit = bool(argv)
 
-    if argv:
+    ws = None
+    if explicit:
         ws_path = argv[0]
         try:
             ws = Workspace.open(ws_path)
@@ -56,9 +83,6 @@ def main(argv=None) -> int:
         except OSError as exc:
             print(f"isar view: cannot open workspace {ws_path!r}: {exc}", file=sys.stderr)
             return 2
-    else:
-        # No path given: most-recent still-openable workspace, else empty-start (ws=None).
-        ws = _resolve_recent_workspace()
 
     # Import Qt only now — never at module import time, so `import isar_gui` stays QApplication-free.
     from PySide6.QtWidgets import QApplication
@@ -66,6 +90,13 @@ def main(argv=None) -> int:
     from isar_gui.main_window import MainWindow
 
     app = QApplication.instance() or QApplication(argv)
+
+    if not explicit:
+        # No path given: most-recent still-openable workspace; if none, offer crash-recovery of a
+        # leftover temp workspace; else empty-start (ws=None). An explicit CLI arg suppresses both.
+        ws = _resolve_recent_workspace()
+        if ws is None:
+            ws = _maybe_recover_workspace()
 
     window = MainWindow(ws)  # ws may be None -> empty-start
     window.show()

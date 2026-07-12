@@ -137,7 +137,9 @@ def test_drop_existing_workspace_opens_it(qtbot, make_ws, monkeypatch):
     assert loaded == [str(root)] and newexp == []
 
 
-def test_drop_raw_data_opens_new_experiment(qtbot, tmp_path, monkeypatch):
+def test_drop_raw_data_from_none_bootstraps_temp_workspace(qtbot, tmp_path, monkeypatch):
+    """Phase C: dropping raw data with no workspace bound reserves a temporary workspace and
+    bootstraps it from the dropped path (init + inline ingest) — it no longer prefills the wizard."""
     from isar_gui.main_window import MainWindow
     from isar_gui.session import Session
 
@@ -146,12 +148,16 @@ def test_drop_raw_data_opens_new_experiment(qtbot, tmp_path, monkeypatch):
     (data / "scan_1.dat").write_text("#F scan_1\n", encoding="utf-8")
     w = MainWindow(None, session=Session(), watch=False)
     qtbot.addWidget(w)
+    assert w._wsm.state() == "none"
 
-    loaded, newexp = [], []
-    monkeypatch.setattr(w, "load_workspace", lambda p: loaded.append(p))
+    new_temp_calls, bootstrap_calls, newexp = [], [], []
+    monkeypatch.setattr(w._wsm, "new_temp", lambda: new_temp_calls.append(1))
+    monkeypatch.setattr(w._wsm, "bootstrap_from_data", lambda p: bootstrap_calls.append(p))
     monkeypatch.setattr(w, "open_new_experiment", lambda prefill=None: newexp.append(prefill))
     w.dropEvent(_FakeDropEvent(_md_for(str(data))))
-    assert newexp == [str(data)] and loaded == []
+    assert new_temp_calls == [1]
+    assert bootstrap_calls == [str(data)]
+    assert newexp == []
 
 
 def _today():

@@ -17,11 +17,20 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QObject, Qt, QTimer, Signal
-from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QToolBar,
+    QToolButton,
+)
 
-from isar_gui.commands import RunOptions, build_run_command
+from isar_gui.commands import RunOptions, build_ingest_command, build_run_command
 from isar_gui.health import LLM_DEFAULT_ENDPOINT, TAVI_DEFAULT_URL, find_tavi_bat, ping_http
 from isar_gui.process import ProcessRunner
+from isar_gui.workspace_manager import WorkspaceManager
 
 
 class _HealthSignals(QObject):
@@ -34,8 +43,6 @@ from isar.workspace_api import (
     SCHEMA_VERSION,
     BranchModelView,
     CardView,
-    Workspace,
-    WorkspaceNotFound,
 )
 from isar_gui.log_dock import LogDock
 from isar_gui.session import Autosaver, Session, load_session
@@ -56,6 +63,7 @@ from isar_gui.views.waterfall_dock import WaterfallDock
 from isar_gui.watch_bridge import WatchBridge
 
 _EMPTY_HINT = "No workspace loaded.\n\nFile ▸ Open Workspace… to begin."
+_PENDING_HINT = "Drop data files to begin — they'll land in a temporary workspace."
 
 
 class _EmptyWorkspace:
@@ -69,6 +77,10 @@ class _EmptyWorkspace:
     schema_version = SCHEMA_VERSION
     results: list = []
     groups: list = []
+    # Phase D/E viewmodels read a scan ledger and a file list off the workspace; expose them empty
+    # now (harmless) so a pending/empty bind never AttributeErrors when those consumers land.
+    scans: list = []
+    files: list = []
 
     def __init__(self):
         self.warnings: list = []
@@ -111,14 +123,31 @@ class MainWindow(QMainWindow):
         self.inspector = None         # the C2 central widget; None in the empty state
         self.setAcceptDrops(True)      # drop a data folder/numor onto the window -> New Experiment (D4)
         self._run_runner: ProcessRunner | None = None  # the live `isar run` subprocess, if any
+        self._ingest_runner: ProcessRunner | None = None  # the live inline `isar ingest`, if any
+        self._bound = False           # True once a first workspace binding exists (rebind guard)
+
+        # The workspace lifecycle owner (none/pending/ready + temp/save-as/bootstrap). MainWindow is
+        # the view: it reflects the manager's signals and never reaches into a workspace directory
+        # itself. `ws` passed at construction is adopted directly (no re-open, no signal); every
+        # later transition flows through the manager's emitting methods.
+        self._wsm = WorkspaceManager(self)
+        self._wsm.workspace_changed.connect(self._on_wsm_workspace_changed)
+        self._wsm.state_changed.connect(self._on_wsm_state_changed)
+        self._wsm.bootstrap_failed.connect(self._on_bootstrap_failed)
+        if ws is not None:
+            self._wsm.adopt(ws)
+
         self._init_file_menu()
+        self._init_workspace_toolbar()
         self._init_run_menu()
         self._init_backends_menu()
         self._init_status_bar()
         self._init_health()
         self._bind_workspace(ws)
-        if ws is not None:
+        self._bound = True
+        if ws is not None and not self._wsm.is_temporary():
             self._session.note_workspace(ws.root)
+        self._sync_workspace_actions()
 
         # Session autosave: debounced 500ms, snapshotting the live layout at fire time.
         self._autosaver = Autosaver(self._snapshot_session, parent=self, on_error=self.log)
@@ -141,10 +170,7 @@ class MainWindow(QMainWindow):
         self._ws = _EmptyWorkspace() if self._empty else ws
         ws = self._ws
         self._warn_generation = 0  # a fresh bind starts a new warnings-generation sequence
-        if self._empty:
-            self.setWindowTitle("ISAR — (no workspace)")
-        else:
-            self.setWindowTitle(f"ISAR — {Path(ws.root).name}")
+        self._update_title()
 
         # A base viewmodel so the watch signal already has a consumer; component viewmodels attach
         # to the same workspace in later tasks.
@@ -180,8 +206,12 @@ class MainWindow(QMainWindow):
         self._init_docks_menu()
 
         if self._empty:
-            self.statusBar().showMessage("No workspace loaded")
-            self.log("Started with no workspace — File ▸ Open Workspace… to begin")
+            if self._wsm.state() == "pending":
+                self.statusBar().showMessage("Temporary workspace — drop data files to begin")
+                self.log(f"Reserved temporary workspace {self._wsm.root()} — drop data to begin")
+            else:
+                self.statusBar().showMessage("No workspace loaded")
+                self.log("Started with no workspace — File ▸ Open Workspace… to begin")
         else:
             self.statusBar().showMessage(f"Workspace: {ws.root}")
             self.log(f"Opened workspace {ws.root}")
@@ -200,12 +230,24 @@ class MainWindow(QMainWindow):
         self._sync_run_actions()  # Run/Re-run enablement depends on empty-state + remembered runs
 
     def _make_empty_hint(self) -> QLabel:
-        """The empty-start central widget: a centered "Open Workspace…" hint."""
-        hint = QLabel(_EMPTY_HINT, self)
+        """The empty central widget: a centered hint. Pending (a temp workspace is reserved) invites
+        a drop; a true none-state points at Open Workspace…."""
+        text = _PENDING_HINT if self._wsm.state() == "pending" else _EMPTY_HINT
+        hint = QLabel(text, self)
         hint.setObjectName("empty_hint")
         hint.setAlignment(Qt.AlignCenter)
         self._empty_hint = hint
         return hint
+
+    def _update_title(self) -> None:
+        """``ISAR — <name>`` for a saved workspace; ``ISAR — Unsaved workspace ●`` while temporary
+        (pending or a not-yet-saved temp); ``ISAR — (no workspace)`` for the none-state."""
+        if self._wsm.is_temporary():
+            self.setWindowTitle("ISAR — Unsaved workspace ●")
+        elif self._empty:
+            self.setWindowTitle("ISAR — (no workspace)")
+        else:
+            self.setWindowTitle(f"ISAR — {Path(self._ws.root).name}")
 
     # ---- dock scaffold ----------------------------------------------------
     def _init_docks(self) -> None:
@@ -251,10 +293,16 @@ class MainWindow(QMainWindow):
     # ---- File menu (built once; actions persist across workspace reloads) --
     def _init_file_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
-        new_action = file_menu.addAction("New Experiment…")
-        new_action.triggered.connect(lambda: self.open_new_experiment())
+        new_ws_action = file_menu.addAction("New Workspace")
+        new_ws_action.triggered.connect(self.new_workspace)
         open_action = file_menu.addAction("Open Workspace…")
         open_action.triggered.connect(self._on_open_workspace)
+        self._save_as_menu_action = file_menu.addAction("Save Workspace As…")
+        self._save_as_menu_action.triggered.connect(self.save_workspace_as)
+        # The advanced wizard (explicit init with detector preview) is still available; it is the
+        # deliberate front door, distinct from the drop-a-file temp-workspace fast path.
+        adv_action = file_menu.addAction("New Experiment (advanced)…")
+        adv_action.triggered.connect(lambda: self.open_new_experiment())
 
         file_menu.addSeparator()
         report_action = file_menu.addAction("Open Report")
@@ -270,6 +318,71 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Open Workspace", start_dir)
         if path:
             self.load_workspace(path)
+
+    # ---- Workspace toolbar (New / Open / Save As / Recent, Phase C) --------
+    def _init_workspace_toolbar(self) -> None:
+        """The always-present Workspace toolbar. ``objectName`` is set so ``QMainWindow.saveState``
+        round-trips it in the session layout."""
+        tb = QToolBar("Workspace", self)
+        tb.setObjectName("workspace_toolbar")
+        self.addToolBar(tb)
+
+        new_action = tb.addAction("New")
+        new_action.triggered.connect(self.new_workspace)
+        open_action = tb.addAction("Open…")
+        open_action.triggered.connect(self._on_open_workspace)
+        self._save_as_action = tb.addAction("Save As…")
+        self._save_as_action.triggered.connect(self.save_workspace_as)
+
+        self._recents_button = QToolButton(self)
+        self._recents_button.setText("Recent ▾")
+        self._recents_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._recents_menu = QMenu(self._recents_button)
+        self._recents_button.setMenu(self._recents_menu)
+        tb.addWidget(self._recents_button)
+        self._refresh_recents_menu()
+
+    def _refresh_recents_menu(self) -> None:
+        """Rebuild the recents dropdown from the GUI session's recent-workspaces list."""
+        self._recents_menu.clear()
+        recents = self._session.recent_workspaces
+        if not recents:
+            act = self._recents_menu.addAction("(no recent workspaces)")
+            act.setEnabled(False)
+            return
+        for path in recents:
+            act = self._recents_menu.addAction(path)
+            act.triggered.connect(lambda _checked=False, p=path: self.load_workspace(p))
+
+    def _sync_workspace_actions(self) -> None:
+        """Save As is meaningful only for a temporary workspace with a card already scaffolded
+        (state ready). A saved workspace has nothing to Save As; a pending/none one has no card."""
+        can_save_as = self._wsm.state() == "ready" and self._wsm.is_temporary()
+        for action in (getattr(self, "_save_as_action", None),
+                       getattr(self, "_save_as_menu_action", None)):
+            if action is not None:
+                action.setEnabled(can_save_as)
+
+    # ---- workspace lifecycle actions (delegate to the manager) ------------
+    def new_workspace(self) -> None:
+        """Reserve a fresh temporary workspace and bind it (pending state)."""
+        self._wsm.new_temp()
+
+    def save_workspace_as(self) -> bool:
+        """Copy the current temporary workspace to a chosen directory and open it there. Returns
+        whether a save actually happened (dialog cancelled or the copy failing yields ``False``)."""
+        if not (self._wsm.state() == "ready" and self._wsm.is_temporary()):
+            self.statusBar().showMessage("Save As is only for an unsaved temporary workspace")
+            return False
+        dest = QFileDialog.getExistingDirectory(self, "Save Workspace As (choose an empty folder)")
+        if not dest:
+            return False
+        if self._wsm.save_as(dest):
+            self.statusBar().showMessage(f"Saved workspace to {dest}")
+            return True
+        self.statusBar().showMessage(f"Could not save to {dest} — see the log")
+        self.log(f"Save As failed for {dest} (folder must be empty and writable)")
+        return False
 
     # ---- New Experiment front door (wizard + drag-drop, D4) ---------------
     def open_new_experiment(self, prefill: str | None = None) -> None:
@@ -297,11 +410,70 @@ class MainWindow(QMainWindow):
             return
         event.acceptProposedAction()
         path = Path(urls[0].toLocalFile())
-        # A dropped existing workspace opens directly; anything else is raw data -> New Experiment.
+        # A dropped existing workspace opens directly. Anything else is raw data, routed by state:
+        #   none    -> reserve a temp workspace, then bootstrap (init + inline ingest) from it;
+        #   pending -> bootstrap the reserved temp workspace from it;
+        #   ready   -> minimal inline `isar ingest` into the open workspace (Phase D lifts this into
+        #              an IngestController; a temp workspace is just as valid an ingest target).
         if self._is_workspace_dir(path):
             self.load_workspace(str(path))
+            return
+        state = self._wsm.state()
+        if state == "none":
+            self._wsm.new_temp()
+            self._wsm.bootstrap_from_data(str(path))
+        elif state == "pending":
+            self._wsm.bootstrap_from_data(str(path))
         else:
-            self.open_new_experiment(prefill=str(path))
+            self._ingest_into_current(str(path))
+
+    def _ingest_into_current(self, data_path: str) -> None:
+        """Minimal inline ``isar ingest <data> --workspace <root> --json`` for a drop onto an
+        already-ready workspace: log the streamed output and the exit status, no queueing. This is
+        the deliberately-small interim replaced by the Phase-D IngestController."""
+        if self._empty:
+            return
+        root = str(self._ws.root)
+        cmd = build_ingest_command(sys.executable, [data_path], root, json=True)
+        log_path = Path(root) / "report" / "gui-runs" / f"ingest-{datetime.now():%Y%m%d-%H%M%S}.log"
+        self.log("$ " + " ".join(cmd))
+        self.statusBar().showMessage("Ingesting dropped data…")
+        self._ingest_runner = ProcessRunner(self)
+        self._ingest_runner.line.connect(self.log)
+        self._ingest_runner.finished.connect(self._on_ingest_finished)
+        self._ingest_runner.start(cmd, log_path=str(log_path))
+
+    def _on_ingest_finished(self, code: int) -> None:
+        if code == 0:
+            self.statusBar().showMessage("Ingest finished — ledger updated")
+        else:
+            self.statusBar().showMessage(f"Ingest failed (exit {code}) — see log")
+
+    # ---- workspace-manager signal slots (the window reflects the manager) --
+    def _on_wsm_workspace_changed(self, ws) -> None:
+        """The bound workspace changed (open / new_temp / bootstrap / save_as). Rebind the docks to
+        it (``None`` for the empty/pending state), refresh recents (saved workspaces only), and
+        re-sync the action enablement."""
+        self._rebind(ws)
+        if ws is not None and not self._wsm.is_temporary():
+            self._session.note_workspace(ws.root)
+            self._refresh_recents_menu()
+        self._autosave()
+
+    def _on_wsm_state_changed(self, _state: str) -> None:
+        self._update_title()
+        self._sync_workspace_actions()
+
+    def _on_bootstrap_failed(self, cause: str) -> None:
+        self.statusBar().showMessage(f"Could not create workspace from dropped data: {cause}")
+        self.log(f"bootstrap failed: {cause}")
+
+    def _rebind(self, ws) -> None:
+        """Tear down the current binding (if any) and bind ``ws`` (``None`` = empty/pending)."""
+        if self._bound:
+            self._teardown_binding()
+        self._bind_workspace(ws)
+        self._bound = True
 
     # ---- Run menu (shell `isar run` as a subprocess, D3) ------------------
     def _init_run_menu(self) -> None:
@@ -557,15 +729,18 @@ class MainWindow(QMainWindow):
 
     # ---- load a different workspace ---------------------------------------
     def load_workspace(self, path) -> bool:
-        """Swap the whole app to the workspace at ``path``: tear down the old VM/docks/bridge and
-        rebuild fresh against the new one (no partial rebind). Returns ``True`` on success; an
-        invalid path leaves the current workspace untouched and reports a status-bar message."""
-        try:
-            new_ws = Workspace.open(path)
-        except WorkspaceNotFound as exc:
-            self.statusBar().showMessage(f"Not a workspace: {path} ({exc})")
-            return False
+        """Open the workspace at ``path`` through the manager, which emits ``workspace_changed`` and
+        drives the full teardown+rebind in :meth:`_on_wsm_workspace_changed`. Returns ``True`` on
+        success; an invalid path leaves the current workspace untouched and reports a status message.
+        """
+        if self._wsm.open(path):
+            return True
+        self.statusBar().showMessage(f"Not a workspace: {path}")
+        return False
 
+    def _teardown_binding(self) -> None:
+        """Tear down the current VM/docks/bridge/central-widget so :meth:`_bind_workspace` can build
+        a fresh binding (no partial rebind). Assumes a binding exists (guarded by ``self._bound``)."""
         if self._bridge is not None:
             self._bridge.stop()
             self._bridge = None
@@ -573,7 +748,7 @@ class MainWindow(QMainWindow):
         self.menuBar().removeAction(self._docks_menu.menuAction())
         # removeAction() only detaches the menu; the QMenu (and its per-dock QActions, whose closures
         # capture the now-deleted docks) stay parented to the menu bar. Delete it so repeated
-        # load_workspace calls don't leak one Docks menu per load.
+        # rebinds don't leak one Docks menu per load.
         self._docks_menu.deleteLater()
         for dock in list(self._docks.values()):
             self.removeDockWidget(dock)
@@ -581,7 +756,7 @@ class MainWindow(QMainWindow):
         self._docks.clear()
         # The old viewmodels are QObjects parented to self; without an explicit deleteLater() they
         # would linger as inert children (their dock's connections already dropped above) for the
-        # rest of the window's life. Drop them so repeated load_workspace calls don't accumulate.
+        # rest of the window's life. Drop them so repeated rebinds don't accumulate.
         self._viewmodel.deleteLater()
         self.browser_vm.deleteLater()
         self.inspector_vm.deleteLater()
@@ -597,11 +772,6 @@ class MainWindow(QMainWindow):
         old_inspector = self.takeCentralWidget()
         if old_inspector is not None:
             old_inspector.deleteLater()
-
-        self._bind_workspace(new_ws)
-        self._session.note_workspace(new_ws.root)
-        self._autosave()
-        return True
 
     # ---- watch -----------------------------------------------------------
     def _on_workspace_changed(self, changed) -> None:
@@ -637,7 +807,9 @@ class MainWindow(QMainWindow):
     def _snapshot_session(self) -> Session:
         state = bytes(self.saveState().toBase64().data()).decode("ascii")
         self._session.dock_layout_b64 = state
-        if not self._empty:
+        # Only saved workspaces belong in recents — a temporary (pending/unsaved) workspace must
+        # never pollute the recent-workspaces list (it may be discarded moments later).
+        if not self._empty and not self._wsm.is_temporary():
             self._session.note_workspace(self._ws.root)
         self.heatmap_vm.save_view_state(self._session)
         self.dispersion_vm.save_view_state(self._session)
@@ -672,6 +844,11 @@ class MainWindow(QMainWindow):
 
     # ---- teardown --------------------------------------------------------
     def closeEvent(self, event) -> None:
+        # A content-bearing temporary workspace is unsaved analysis — prompt before it is lost. If
+        # the operator cancels (or backs out of the Save As dialog), abort the close entirely.
+        if not self._resolve_unsaved_temp_on_close():
+            event.ignore()
+            return
         if getattr(self, "_health_timer", None) is not None:
             self._health_timer.stop()
         if self._bridge is not None:
@@ -679,3 +856,29 @@ class MainWindow(QMainWindow):
         if getattr(self, "_autosaver", None) is not None:
             self._autosaver.flush_now()
         super().closeEvent(event)
+
+    def _resolve_unsaved_temp_on_close(self) -> bool:
+        """Prompt Save As… / Discard / Cancel for an unsaved temporary workspace. Returns whether the
+        window may proceed to close (``False`` = the operator cancelled)."""
+        if not (self._wsm.is_temporary() and self._wsm.has_content()):
+            return True
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Unsaved workspace")
+        box.setText("This workspace is temporary and has not been saved.")
+        box.setInformativeText(
+            "Save it to a folder, or discard it? Discarding removes only the analysis in the "
+            "temporary workspace — your source data files on disk are untouched.")
+        save_btn = box.addButton("Save As…", QMessageBox.ButtonRole.AcceptRole)
+        discard_btn = box.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(save_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is cancel_btn:
+            return False
+        if clicked is discard_btn:
+            self._wsm.discard_temp()
+            return True
+        # Save As…: a cancelled/failed save must not silently drop the workspace — back out.
+        return self.save_workspace_as()

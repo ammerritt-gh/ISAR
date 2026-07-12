@@ -8,6 +8,7 @@ pytest.importorskip("PySide6")
 from isar.workspace_api import Workspace
 from isar_gui.main_window import MainWindow
 from isar_gui.session import Session
+from synthetic_ws import stamp_ws
 
 
 def _open(make_ws):
@@ -297,6 +298,150 @@ def test_dock_location_change_triggers_autosave(qtbot, make_ws, monkeypatch):
     monkeypatch.setattr(w._autosaver, "request", lambda: calls.append(1))
     w.log_dock.dockLocationChanged.emit(Qt.DockWidgetArea.BottomDockWidgetArea)
     assert calls == [1]
+
+
+# ---- Phase C: workspace-first shell (temp / title / close / recents) --------
+def _stamp_temp_ws(temproot, name="ws-1"):
+    root = temproot / name
+    root.mkdir(parents=True)
+    return stamp_ws(root, rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+
+
+def _install_fake_msgbox(monkeypatch, choice):
+    """Replace main_window.QMessageBox with a fake that auto-clicks ``choice`` on exec and counts
+    instantiations, so a closeEvent prompt can be asserted without a real modal dialog."""
+    from PySide6.QtWidgets import QMessageBox as RealMB
+
+    state = {"count": 0}
+
+    class FakeMB:
+        Icon = RealMB.Icon
+        ButtonRole = RealMB.ButtonRole
+
+        def __init__(self, parent=None):
+            self._btns = {}
+            self._clicked = None
+            state["count"] += 1
+
+        def setIcon(self, *a):
+            pass
+
+        def setWindowTitle(self, *a):
+            pass
+
+        def setText(self, *a):
+            pass
+
+        def setInformativeText(self, *a):
+            pass
+
+        def addButton(self, label, role):
+            btn = object()
+            self._btns[label] = btn
+            return btn
+
+        def setDefaultButton(self, *a):
+            pass
+
+        def exec(self):
+            self._clicked = self._btns[choice]
+
+        def clickedButton(self):
+            return self._clicked
+
+    monkeypatch.setattr("isar_gui.main_window.QMessageBox", FakeMB)
+    return state
+
+
+def test_new_workspace_pending_title_is_unsaved(qtbot, tmp_path, monkeypatch):
+    import isar_gui.workspace_manager as wm
+
+    monkeypatch.setattr(wm, "temp_root", lambda: tmp_path / "temp")
+    w = MainWindow(None, session=Session(), watch=False)
+    qtbot.addWidget(w)
+
+    w.new_workspace()
+    assert w._wsm.state() == "pending"
+    assert w._wsm.is_temporary()
+    assert "Unsaved" in w.windowTitle()
+    assert w.is_empty                                   # pending is an empty bind (docks show empty)
+    assert "temporary workspace" in w._empty_hint.text().lower()
+
+
+def test_close_prompts_and_discards_content_bearing_temp(qtbot, tmp_path, monkeypatch):
+    import isar_gui.workspace_manager as wm
+    from PySide6.QtGui import QCloseEvent
+
+    temproot = tmp_path / "temp"
+    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
+    root = _stamp_temp_ws(temproot)
+    w = MainWindow(None, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    assert w.load_workspace(str(root)) is True
+    assert w._wsm.is_temporary() and w._wsm.has_content()
+
+    counter = _install_fake_msgbox(monkeypatch, choice="Discard")
+    monkeypatch.setattr(w._autosaver, "flush_now", lambda: None)  # don't touch the real session file
+    w.closeEvent(QCloseEvent())
+    assert counter["count"] == 1                        # a content-bearing temp workspace prompts
+    assert not root.exists()                            # Discard removed the temp analysis
+
+
+def test_close_does_not_prompt_for_saved_workspace(qtbot, tmp_path, monkeypatch, make_ws):
+    import isar_gui.workspace_manager as wm
+    from PySide6.QtGui import QCloseEvent
+
+    monkeypatch.setattr(wm, "temp_root", lambda: tmp_path / "temp")  # make_ws roots elsewhere
+    ws, _ = _open(make_ws)
+    w = MainWindow(ws, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    assert not w._wsm.is_temporary()
+
+    counter = _install_fake_msgbox(monkeypatch, choice="Discard")
+    monkeypatch.setattr(w._autosaver, "flush_now", lambda: None)
+    w.closeEvent(QCloseEvent())
+    assert counter["count"] == 0                        # a saved workspace closes without a prompt
+
+
+def test_temp_workspace_not_added_to_recents(qtbot, tmp_path, monkeypatch):
+    import isar_gui.workspace_manager as wm
+
+    temproot = tmp_path / "temp"
+    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
+    root = _stamp_temp_ws(temproot)
+    session = Session()
+    w = MainWindow(None, session=session, watch=False)
+    qtbot.addWidget(w)
+
+    assert w.load_workspace(str(root)) is True
+    assert w._wsm.is_temporary()
+    assert session.recent_workspaces == []              # binding a temp workspace never notes recents
+    w._snapshot_session()                               # nor does an autosave snapshot
+    assert session.recent_workspaces == []
+
+
+def test_save_as_notes_dest_in_recents(qtbot, tmp_path, monkeypatch):
+    import isar_gui.workspace_manager as wm
+
+    temproot = tmp_path / "temp"
+    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
+    root = _stamp_temp_ws(temproot)
+    session = Session()
+    w = MainWindow(None, session=session, watch=False)
+    qtbot.addWidget(w)
+    assert w.load_workspace(str(root)) is True
+
+    dest = tmp_path / "kept"
+
+    class _FakeDialog:
+        @staticmethod
+        def getExistingDirectory(*a, **k):
+            return str(dest)
+
+    monkeypatch.setattr("isar_gui.main_window.QFileDialog", _FakeDialog)
+    assert w.save_workspace_as() is True
+    assert not w._wsm.is_temporary()
+    assert str(dest) in session.recent_workspaces       # the saved copy IS noted in recents
 
 
 def test_dock_layout_round_trips_through_session(qtbot, make_ws):
