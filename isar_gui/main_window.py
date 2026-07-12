@@ -380,8 +380,9 @@ class MainWindow(QMainWindow):
         if self._wsm.save_as(dest):
             self.statusBar().showMessage(f"Saved workspace to {dest}")
             return True
-        self.statusBar().showMessage(f"Could not save to {dest} — see the log")
-        self.log(f"Save As failed for {dest} (folder must be empty and writable)")
+        reason = self._wsm.last_error() or "folder must be empty and writable"
+        self.statusBar().showMessage(f"Could not save to {dest}: {reason}")
+        self.log(f"Save As failed for {dest}: {reason}")
         return False
 
     # ---- New Experiment front door (wizard + drag-drop, D4) ---------------
@@ -418,6 +419,10 @@ class MainWindow(QMainWindow):
         if self._is_workspace_dir(path):
             self.load_workspace(str(path))
             return
+        if self._wsm.is_bootstrapping():
+            self.statusBar().showMessage("Still creating the last workspace — drop again in a moment")
+            self.log("drop ignored — a workspace bootstrap is already in flight")
+            return
         state = self._wsm.state()
         if state == "none":
             self._wsm.new_temp()
@@ -432,6 +437,14 @@ class MainWindow(QMainWindow):
         already-ready workspace: log the streamed output and the exit status, no queueing. This is
         the deliberately-small interim replaced by the Phase-D IngestController."""
         if self._empty:
+            return
+        # Single-flight for this interim: the real queue is the Phase-D IngestController. A second
+        # drop while an ingest is running is refused (not silently dropped or racing the runner ref).
+        if self._ingest_runner is not None and self._ingest_runner.is_running():
+            self.statusBar().showMessage(
+                "ingest already running — queued ingest arrives in the next phase")
+            self.log("ingest already in flight; this dropped-data ingest was skipped "
+                     "(a proper queue arrives in Phase D)")
             return
         root = str(self._ws.root)
         cmd = build_ingest_command(sys.executable, [data_path], root, json=True)
@@ -448,6 +461,10 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Ingest finished — ledger updated")
         else:
             self.statusBar().showMessage(f"Ingest failed (exit {code}) — see log")
+        # Release the single-flight slot so the next drop can ingest.
+        runner, self._ingest_runner = self._ingest_runner, None
+        if runner is not None:
+            runner.deleteLater()
 
     # ---- workspace-manager signal slots (the window reflects the manager) --
     def _on_wsm_workspace_changed(self, ws) -> None:

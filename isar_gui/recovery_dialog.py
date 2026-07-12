@@ -82,11 +82,15 @@ class RecoveryDialog(QDialog):
         self.accept()
 
     def _on_discard(self) -> None:
+        item = self._list.currentItem()
         path = self._selected_path()
-        if path is None:
+        if item is None or path is None:
             return
-        discard_dir(path)                 # temp-only guard lives in the manager helper
-        row = self._list.currentRow()
-        self._list.takeItem(row)
+        if not discard_dir(path):         # temp-only guard lives in the manager helper
+            # Removal failed (permission / in use) — keep the row and mark it, never drop an entry
+            # for a directory that is still on disk.
+            item.setText(f"{path.name}  (could not discard — still on disk)")
+            return
+        self._list.takeItem(self._list.row(item))
         if self._list.count() == 0:
             self.reject()                 # nothing left to recover — close

@@ -39,14 +39,20 @@ def test_reserve_temp_dir_naming(temproot):
     assert wm.is_under(d, temproot)
 
 
-def test_reserve_temp_dir_no_collision(temproot, monkeypatch):
-    # Freeze the timestamp so both reservations would collide on the same second; the second must
-    # still get its own directory (numeric suffix), never reuse the first.
-    monkeypatch.setattr(wm, "datetime", _FrozenDatetime)
-    a = wm.reserve_temp_dir()
-    b = wm.reserve_temp_dir()
+def test_reserve_temp_dir_no_collision(temproot):
+    # Freeze ONLY the timestamp used for the directory name (scoped to this block) so both
+    # reservations collide on the same second; the second must still get its own directory (numeric
+    # suffix), never reuse the first. Other datetime users in the module are left untouched.
+    from unittest import mock
+
+    with mock.patch.object(wm, "datetime") as md:
+        md.now.return_value.strftime.return_value = "20260101-000000"
+        a = wm.reserve_temp_dir()
+        b = wm.reserve_temp_dir()
     assert a != b
     assert a.is_dir() and b.is_dir()
+    assert a.name == "ws-20260101-000000"
+    assert b.name == "ws-20260101-000000-1"
 
 
 def test_has_content(tmp_path):
@@ -186,12 +192,48 @@ def test_discard_temp_only_under_temp_root(qtbot, temproot, tmp_path):
     assert not temp.exists()
 
 
-class _FrozenDatetime:
-    """A datetime stand-in whose ``now().strftime`` is constant (collision test)."""
+def test_bootstrap_guard_refuses_concurrent(qtbot, temproot):
+    """A second bootstrap while one is in flight must be refused — the live ProcessRunner (and its
+    finished callback) is never orphaned by an overwrite."""
+    m = WorkspaceManager()
+    m.new_temp()                              # -> pending
+    spawned = []
+    monkeypatch_spawn = lambda *a, **k: spawned.append(a) or None  # noqa: E731
+    m._spawn = monkeypatch_spawn              # spy: record calls, never launch a subprocess
 
-    @staticmethod
-    def now():
-        return _FrozenDatetime()
+    m.bootstrap_from_data("data-a")
+    assert m.is_bootstrapping()
+    assert len(spawned) == 1                  # first bootstrap launched init
 
-    def strftime(self, _fmt):
-        return "20260101-000000"
+    m.bootstrap_from_data("data-b")           # second drop mid-flight
+    assert len(spawned) == 1                  # refused — no second launch
+
+
+def test_discard_temp_resets_to_none(qtbot, temproot):
+    root = _temp_ws(temproot, name="ws-reset",
+                    rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    m = WorkspaceManager()
+    assert m.open(root) is True
+    states, workspaces = [], []
+    m.state_changed.connect(states.append)
+    m.workspace_changed.connect(workspaces.append)
+
+    m.discard_temp()
+    assert not root.exists()
+    assert m.state() == "none"
+    assert m.root() is None
+    assert m.workspace() is None
+    assert states == ["none"]                 # emitted the reset
+    assert workspaces == [None]
+
+
+def test_save_as_records_failure_reason(qtbot, temproot, tmp_path):
+    root = _temp_ws(temproot, name="ws-reason",
+                    rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    m = WorkspaceManager()
+    assert m.open(root) is True
+    dest = tmp_path / "occupied"
+    dest.mkdir()
+    (dest / "x.txt").write_text("busy", encoding="utf-8")
+    assert m.save_as(dest) is False
+    assert "not empty" in (m.last_error() or "")

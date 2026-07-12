@@ -444,6 +444,24 @@ def test_save_as_notes_dest_in_recents(qtbot, tmp_path, monkeypatch):
     assert str(dest) in session.recent_workspaces       # the saved copy IS noted in recents
 
 
+def test_ready_drop_ingest_is_single_flight(qtbot, make_ws):
+    """Dropping data onto a ready workspace while an ingest is already running is refused (no new
+    runner, a status message), so the interim inline ingest never races its runner reference."""
+    ws, _ = _open(make_ws)
+    w = MainWindow(ws, session=Session(), watch=False)
+    qtbot.addWidget(w)
+
+    class _FakeRunning:
+        def is_running(self):
+            return True
+
+    fake = _FakeRunning()
+    w._ingest_runner = fake
+    w._ingest_into_current("some/data/path")
+    assert w._ingest_runner is fake                     # unchanged — no second runner created
+    assert "already running" in w.statusBar().currentMessage()
+
+
 def test_dock_layout_round_trips_through_session(qtbot, make_ws):
     ws1, _ = _open(make_ws)
     w1 = MainWindow(ws1, session=Session(), watch=False)

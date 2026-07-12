@@ -151,6 +151,8 @@ class WorkspaceManager(QObject):
         self._root: Path | None = None
         self._ws: Workspace | None = None
         self._runner: ProcessRunner | None = None  # the live bootstrap subprocess, if any
+        self._bootstrapping = False   # True while an init(->ingest->open) sequence is in flight
+        self._last_error: str | None = None  # cause of the last open/save_as failure, for the UI
 
     # ---- introspection ----------------------------------------------------
     def state(self) -> str:
@@ -169,6 +171,14 @@ class WorkspaceManager(QObject):
     def has_content(self) -> bool:
         """True when the bound root holds real analysis (card/session written)."""
         return self._root is not None and has_content(self._root)
+
+    def is_bootstrapping(self) -> bool:
+        """True while an ``init(->ingest->open)`` sequence is in flight (drops are refused)."""
+        return self._bootstrapping
+
+    def last_error(self) -> str | None:
+        """The cause of the most recent ``open``/``save_as`` failure, or ``None``."""
+        return self._last_error
 
     # ---- state transitions ------------------------------------------------
     def _set_state(self, state: str) -> None:
@@ -209,6 +219,7 @@ class WorkspaceManager(QObject):
             ws = Workspace.open(path)
         except (WorkspaceNotFound, OSError) as exc:
             log.warning("cannot open workspace %s: %s", path, exc)
+            self._last_error = f"cannot open {path}: {exc}"
             return False
         self._ws = ws
         self._root = Path(ws.root)
@@ -230,6 +241,12 @@ class WorkspaceManager(QObject):
             log.warning("bootstrap_from_data ignored — not in the pending state (state=%s)",
                         self._state)
             return
+        if self._bootstrapping:
+            # A second drop mid-bootstrap would orphan the live ProcessRunner (its finished callback
+            # still connected) — refuse until the in-flight sequence reaches a terminal state.
+            log.warning("bootstrap_from_data ignored — a bootstrap is already in flight")
+            return
+        self._bootstrapping = True
         root = str(self._root)
         data = str(data_path)
         cmd = build_init_command(self._python, data, root, json=True)
@@ -240,6 +257,7 @@ class WorkspaceManager(QObject):
 
     def _after_init(self, code: int, lines, data: str) -> None:
         if code != 0:
+            self._bootstrapping = False   # terminal: init failed
             cause = init_failure_cause(lines)
             log.warning("bootstrap init failed (exit %s): %s", code, cause)
             self.bootstrap_failed.emit(cause)
@@ -254,6 +272,7 @@ class WorkspaceManager(QObject):
             log_path=self._boot_log("ingest"))
 
     def _after_ingest(self, code: int, root: str) -> None:
+        self._bootstrapping = False       # terminal: ingest done (open follows regardless of code)
         if code != 0:
             log.warning("bootstrap ingest returned exit %s — opening the workspace anyway", code)
         if not self.open(root):
@@ -262,13 +281,31 @@ class WorkspaceManager(QObject):
 
     def _spawn(self, cmd, on_done, *, log_path: str | None = None) -> ProcessRunner:
         """Run ``cmd`` via a fresh :class:`ProcessRunner` (parented to self so it outlives this
-        call), buffering its lines; call ``on_done(exit_code, lines)`` when it finishes."""
+        call), buffering its lines; call ``on_done(exit_code, lines)`` when it finishes.
+
+        Belt-and-braces: any prior runner is disconnected and scheduled for deletion before the
+        replacement is created, so a stale finished-callback can never fire against the new sequence
+        (the #1 guard already prevents concurrent bootstraps; this covers the sequential handoff)."""
+        self._dispose_runner()
         lines: list[str] = []
         runner = ProcessRunner(self)
         runner.line.connect(lambda ln: lines.append(ln))
         runner.finished.connect(lambda code: on_done(code, lines))
+        self._runner = runner
         runner.start(cmd, log_path=log_path)
         return runner
+
+    def _dispose_runner(self) -> None:
+        """Disconnect and schedule deletion of the current bootstrap runner, if any."""
+        if self._runner is None:
+            return
+        try:
+            self._runner.line.disconnect()
+            self._runner.finished.disconnect()
+        except (RuntimeError, TypeError):
+            pass  # already disconnected / C++ side gone — nothing to detach
+        self._runner.deleteLater()
+        self._runner = None
 
     def _boot_log(self, phase: str) -> str | None:
         """A retained bootstrap log next to the workspace (best-effort; None if root is gone)."""
@@ -285,20 +322,28 @@ class WorkspaceManager(QObject):
         On any failure (dest non-empty, copy error, or the copied tree not opening) the temp
         workspace is left untouched so nothing is lost, and ``False`` is returned.
         """
+        self._last_error = None
         if self._root is None:
+            self._last_error = "no workspace to save"
             log.warning("save_as with no workspace bound")
             return False
         dest = Path(dest)
         if dest.exists() and any(dest.iterdir()):
+            self._last_error = f"destination is not empty: {dest}"
             log.warning("save_as refused — destination exists and is not empty: %s", dest)
             return False
         source = self._root
+        # The emptiness pre-check above is advisory, not atomic; the copy is the real gate. Any IO
+        # error (a dest that filled between the check and now, a permission fault) surfaces here as
+        # the failure reason rather than being masked.
         try:
             shutil.copytree(source, dest, dirs_exist_ok=True)
         except OSError as exc:
+            self._last_error = f"copy to {dest} failed: {exc}"
             log.warning("save_as copy %s -> %s failed: %s", source, dest, exc)
             return False
         if not self.open(dest):
+            # open() sets its own _last_error; keep it as the surfaced reason.
             log.warning("save_as copied to %s but the tree did not open as a workspace", dest)
             return False
         # The copy is now the live workspace; drop the throwaway source.
@@ -312,7 +357,14 @@ class WorkspaceManager(QObject):
         """
         if self._root is None:
             return
-        discard_dir(self._root)
+        if discard_dir(self._root):
+            # The directory is gone — the manager must not keep pointing at it. Fall back to the
+            # none-state and tell the window (docks return to the empty-start view).
+            self._root = None
+            self._ws = None
+            self._state = "none"
+            self.workspace_changed.emit(None)
+            self.state_changed.emit("none")
 
     # ---- static conveniences (delegate to the Qt-free helpers) ------------
     @staticmethod
