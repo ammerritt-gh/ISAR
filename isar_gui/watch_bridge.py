@@ -22,11 +22,13 @@ class WatchBridge(QObject):
     """
 
     #: Emitted on the Qt thread after ``ws.refresh()``; payload is the set of changed logical names.
-    changed = Signal(set)
+    changed = Signal(object)
 
     # Internal hop: the watcher's background thread emits this; a queued connection to the private
     # slot moves execution onto the Qt thread before we refresh + re-emit.
-    _tick = Signal(set)
+    # object (not set): set is not a Qt metatype and can't marshal reliably across a queued
+    # cross-thread connection.
+    _tick = Signal(object)
 
     def __init__(self, ws, parent=None, **watch_kwargs):
         super().__init__(parent)
@@ -47,7 +49,7 @@ class WatchBridge(QObject):
             self._watcher.stop()
             self._watcher = None
 
-    @Slot(set)
+    @Slot(object)
     def _on_tick(self, changed) -> None:
         # Runs on the Qt thread: refresh first so slots just re-read views, then fan out.
         # Guard: stop() clears _watcher synchronously, but a tick already queued before stop() ran
