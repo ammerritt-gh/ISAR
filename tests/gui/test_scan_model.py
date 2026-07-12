@@ -75,6 +75,28 @@ def test_groups_column_shows_auto_label(qtbot):
     assert "T = 300 K" in text
 
 
+def test_selection_survives_refresh(qtbot):
+    """An ingest tick rebuilds the model (beginResetModel clears selection); a still-present selected
+    scan must be re-selected afterward so the operator's selection isn't dropped under them."""
+    ws = _ws([_sv("tavi", 1, "d1"), _sv("tavi", 2, "d1")])
+    vm = ScansViewModel(ws)
+    vm.select_keys(["tavi:1"])
+    assert vm.selected_keys() == ["tavi:1"]
+    ws.scans.append(_sv("tavi", 3, "d1"))
+    vm.refresh()
+    assert vm.selected_keys() == ["tavi:1"]
+
+
+def test_selection_of_vanished_key_is_not_restored(qtbot):
+    ws = _ws([_sv("tavi", 1, "d1"), _sv("tavi", 2, "d1")])
+    vm = ScansViewModel(ws)
+    vm.select_keys(["tavi:2"])
+    assert vm.selected_keys() == ["tavi:2"]
+    ws.scans[:] = [_sv("tavi", 1, "d1")]        # the selected scan is gone after this rebuild
+    vm.refresh()
+    assert vm.selected_keys() == []
+
+
 def test_new_key_highlight_diff_on_refresh(qtbot):
     views = [_sv("tavi", 1, "d1")]
     ws = _ws(views)

@@ -3,8 +3,6 @@
 The load-bearing contract is precedence: an unchanged re-ingest never downgrades a fitted/held/
 excluded entry, and drifted content re-queues (status back to "ingested") while keeping the stale
 detectors payload visible. Built on the synthetic S30 emitter so it needs no gitignored data.
-
-NOTE: authored-not-run — no `isar` env exists on the build machine (AGENTS.md). py_compile only.
 """
 from __future__ import annotations
 

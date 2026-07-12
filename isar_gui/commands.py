@@ -1,14 +1,16 @@
 """Qt-free, ISAR-free command assembly for the operator on-ramp.
 
-The New Experiment wizard and the Run action *shell the same engine* (``isar init`` / ``isar run`` /
-``isar detect``) rather than import it — the GUI is a thin front door onto the ``isar`` CLI, and the
-G16 import contract forbids ``isar_gui`` from importing engine internals (cli, parsers, …). So this
-module builds argument vectors and parses the JSON the engine prints; it imports neither Qt nor
-``isar``, which keeps it trivially unit-testable and boundary-clean.
+The Files-dock bootstrap flow (drop data → ``isar init`` + ``isar ingest``) and the Run action
+*shell the same engine* (``isar init`` / ``isar run`` / ``isar ingest`` / ``isar detect``) rather than
+import it — the GUI is a thin front door onto the ``isar`` CLI, and the G16 import contract forbids
+``isar_gui`` from importing engine internals (cli, parsers, …). So this module builds argument vectors
+and parses the JSON the engine prints; it imports neither Qt nor ``isar``, which keeps it trivially
+unit-testable and boundary-clean.
 
 Instrument detection is a subprocess (``isar detect --json``) whose output :func:`parse_detect_json`
-turns into a :class:`DetectResult`, so the wizard preview is exactly what ``isar init`` will scaffold
-— one detector, no drift.
+turns into a :class:`DetectResult`. It has no production caller today (the New-Experiment wizard that
+drove it was removed in favour of the drop-onto-Files-dock bootstrap); it is retained for a planned
+detect-preview in the Files dock — one detector, no drift, exactly what ``isar init`` will scaffold.
 """
 from __future__ import annotations
 
@@ -32,7 +34,11 @@ class RunOptions:
 
 @dataclass(frozen=True)
 class DetectResult:
-    """What ``isar detect`` reported for a data path (the wizard preview). Pure data — no isar types."""
+    """What ``isar detect`` reported for a data path. Pure data — no isar types.
+
+    Retained (with :func:`build_detect_command` / :func:`parse_detect_json` / :func:`default_workspace_dir`)
+    for a planned detect-preview in the Files dock; it lost its production caller when the New-Experiment
+    wizard was replaced by the drop-onto-Files-dock bootstrap. Deliberately kept, not dead code."""
 
     facility: str
     instrument: str
@@ -61,9 +67,9 @@ def build_init_command(python: str, data: str, out: str, *, json: bool = False) 
 def build_ingest_command(python: str, data_paths, workspace: str, *, json: bool = False) -> list[str]:
     """The argv for ``isar ingest <data>... --workspace <ws>`` run as ``<python> -m isar ...``.
 
-    Parses data into the ledger (status ``ingested``) without fitting. Phase C uses this for the
-    minimal inline ingest after a bootstrap and for a drop onto an already-ready workspace; a proper
-    IngestController replaces the inline callers in Phase D.
+    Parses data into the ledger (status ``ingested``) without fitting. Used by
+    :class:`~isar_gui.ingest_controller.IngestController` for the ingest step of the bootstrap
+    sequence and for a drop/watched-folder ingest onto an already-ready workspace.
     """
     cmd = [python, "-m", "isar", "ingest", *[str(p) for p in data_paths],
            "--workspace", str(workspace)]
@@ -73,7 +79,8 @@ def build_ingest_command(python: str, data_paths, workspace: str, *, json: bool 
 
 
 def build_detect_command(python: str, data: str) -> list[str]:
-    """The argv for ``isar detect <data> --json`` (the wizard's instrument preview)."""
+    """The argv for ``isar detect <data> --json``. Retained for a planned Files-dock detect-preview
+    (no production caller today — see :class:`DetectResult`)."""
     return [python, "-m", "isar", "detect", str(data), "--json"]
 
 
@@ -101,8 +108,8 @@ def default_workspace_dir(data: str, instrument: str, today: str | None = None) 
     """A suggested workspace directory next to the data: ``<data-parent>/isar_<instr>_<YYYYMMDD>``.
 
     Mirrors ``isar init``'s default name (``isar_<instr>_<date>``) but roots it beside the data
-    rather than in the process CWD — friendlier for a mouse operator who dropped a folder. The
-    wizard always passes an explicit ``--out``, so this is only the pre-filled suggestion.
+    rather than in the process CWD — friendlier for a mouse operator who dropped a folder. Retained
+    for a planned Files-dock detect-preview (no production caller today — see :class:`DetectResult`).
     """
     today = today or f"{date.today():%Y%m%d}"
     p = Path(data)
@@ -126,12 +133,13 @@ def last_error_line(lines: list[str]) -> str | None:
     return None
 
 
-def parse_init_json(lines) -> dict | None:
-    """The last JSON object emitted by ``isar init --json`` (a success object with ``workspace`` or
-    an ``{"error": {...}}`` object), scraped from a list of streamed output lines, or ``None``.
+def parse_last_json_object(lines) -> dict | None:
+    """The last JSON *object* on a stream of output lines, or ``None``.
 
-    Tolerant like :func:`parse_detect_json`: non-JSON lines (progress text, banners) are skipped so
-    a stray print never masks the real result object.
+    Shared by both ``isar init`` and ``isar ingest`` result parsing: each emits its result (a success
+    object, or an ``{"error": {...}}`` object) as the last JSON line on stdout. Tolerant like
+    :func:`parse_detect_json` — non-JSON lines (progress text, banners) are skipped so a stray print
+    never masks the real result object.
     """
     for line in reversed([str(ln).strip() for ln in lines if str(ln).strip()]):
         try:
@@ -146,7 +154,7 @@ def parse_init_json(lines) -> dict | None:
 def init_failure_cause(lines) -> str:
     """A human-readable cause for a failed ``isar init``: the JSON ``error.kind: error.message`` if
     the engine emitted one, else the last ``error:`` stderr line, else a generic fallback."""
-    obj = parse_init_json(lines)
+    obj = parse_last_json_object(lines)
     if isinstance(obj, dict) and isinstance(obj.get("error"), dict):
         err = obj["error"]
         kind = str(err.get("kind", "")).strip()
@@ -207,7 +215,7 @@ def ingest_failure_cause(lines) -> str:
     """A human cause for a failed ``isar ingest``: the JSON ``error.kind: error.message`` if the
     engine emitted one (e.g. ``no_workspace``), else the last ``error:`` stderr line, else a generic
     fallback. Mirrors :func:`init_failure_cause` for the ingest error shape."""
-    obj = parse_init_json(lines)
+    obj = parse_last_json_object(lines)
     if isinstance(obj, dict) and isinstance(obj.get("error"), dict):
         err = obj["error"]
         kind = str(err.get("kind", "")).strip()
@@ -222,7 +230,7 @@ def parse_detect_json(text: str) -> DetectResult | None:
     """Parse the JSON ``isar detect --json`` prints (the last JSON object on stdout), or ``None``.
 
     Tolerant: a non-JSON stream, an empty object (``{}`` = nothing detected), or a missing field all
-    yield ``None`` so the wizard shows a "couldn't detect" state instead of raising.
+    yield ``None`` so the caller shows a "couldn't detect" state instead of raising.
     """
     obj = None
     for line in reversed([ln.strip() for ln in text.splitlines() if ln.strip()]):

@@ -390,7 +390,15 @@ class ScansViewModel(ViewModel):
             for key in ag.scan_keys:
                 labels.setdefault(key, []).append(ag.label)
         self._auto_labels_by_key = labels
+        # set_rows resets the model, which clears the shared selection. Capture the live selection
+        # first and re-select the keys that survived the rebuild, so an ingest tick that merely adds
+        # rows does not drop the operator's current selection out from under them.
+        selected = self.selected_keys()
         self._model.set_rows(self._rows)
+        if selected:
+            survivors = [k for k in selected if self._model.row_of_key(k) >= 0]
+            if survivors:
+                self.select_keys(survivors)
 
     # ---- group derivation ----
     def _derive_auto_groups(self) -> list[AutoGroup]:

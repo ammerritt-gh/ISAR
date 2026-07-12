@@ -1,4 +1,4 @@
-"""`isar detect` — JSON + human output, and the not-found path (used by the GUI wizard preview)."""
+"""`isar detect` — JSON + human output, and the not-found path (retained for a planned GUI Files-dock detect-preview)."""
 from __future__ import annotations
 
 import argparse

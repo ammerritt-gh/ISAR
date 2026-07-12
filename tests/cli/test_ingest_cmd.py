@@ -1,7 +1,4 @@
-"""`isar ingest` CLI — exit codes, --json shape, no-workspace error JSON (Phase B).
-
-authored-not-run: no `isar` env on the build machine (AGENTS.md). py_compile only.
-"""
+"""`isar ingest` CLI — exit codes, --json shape, no-workspace error JSON (Phase B)."""
 from __future__ import annotations
 
 import argparse

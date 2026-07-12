@@ -42,7 +42,8 @@ class CardDock(QDockWidget):
         self._editor = QPlainTextEdit()
         self._editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self._editor.setReadOnly(True)
-        # A file dropped over the dock must reach MainWindow.dropEvent (open/New Experiment), not be
+        # A file dropped over the dock must reach MainWindow.dropEvent (open workspace / bootstrap-
+        # ingest via the Files dock), not be
         # pasted as text into the editor — QPlainTextEdit accepts drops by default.
         self._editor.setAcceptDrops(False)
         outer.addWidget(self._editor)

@@ -1,7 +1,5 @@
 """Phase B additive workspace_api surfaces: ws.files, ScanView.T/source_file, and ingested-only
 scans whose HKL falls back to provenance["q"] (no detector fit carries a Q yet).
-
-authored-not-run (no `isar` env on the build machine).
 """
 from __future__ import annotations
 

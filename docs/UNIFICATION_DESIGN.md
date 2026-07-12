@@ -73,9 +73,9 @@ that cost once.
 ## 1. Product shape
 
 One new console entry point (`pyproject.toml`: project renamed `isar-synth` → `isar`,
-`[project.scripts] isar = "isar.cli.main:main"`) with five subcommands. No more; partial-stage
-debugging is served by the persisted intermediates and `--formats`, not by an `isar fit`/`isar
-reduce` split.
+`[project.scripts] isar = "isar.cli.main:main"`) with the focused set of subcommands below. No more
+than these; partial-stage debugging is served by the persisted intermediates and `--formats`, not by
+an `isar fit`/`isar reduce` split.
 
 | Command | What it does |
 |---|---|

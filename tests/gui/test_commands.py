@@ -1,8 +1,8 @@
 """Qt-free command-builder + instrument-preview tests.
 
-The New Experiment wizard and the Run action both shell the same engine (``isar init`` / ``isar
-run``) via subprocess; the argument assembly and the instrument preview live in ``isar_gui.commands``
-so they are unit-tested here with no Qt and no QApplication.
+The Files-dock bootstrap flow and the Run action both shell the same engine (``isar init`` /
+``isar ingest`` / ``isar run``) via subprocess; the argument assembly and the instrument preview live
+in ``isar_gui.commands`` so they are unit-tested here with no Qt and no QApplication.
 """
 from __future__ import annotations
 

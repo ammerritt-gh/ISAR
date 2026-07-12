@@ -1,7 +1,7 @@
 """`isar detect <data>` — report the instrument ISAR detects from a data path.
 
-The GUI's New Experiment wizard shells this (``--json``) to preview the instrument before creating a
-workspace, so it never imports the parser registry itself (G16). Detection reuses ``isar init``'s
+The GUI shells this (``--json``) to preview the instrument without importing the parser registry
+itself (G16) — retained for a planned Files-dock detect-preview. Detection reuses ``isar init``'s
 own ``_first_recognizable`` + the registry, so the preview matches exactly what ``isar init`` would
 scaffold — one detector, no drift.
 """

@@ -1,7 +1,7 @@
 """`isar init --json` — success shape and all four exit-2 error kinds (Phase B).
 
 The stderr line and exit code are unchanged from the non-JSON path; --json only adds the machine
-object on stdout. authored-not-run (no `isar` env on the build machine).
+object on stdout.
 """
 from __future__ import annotations
 
