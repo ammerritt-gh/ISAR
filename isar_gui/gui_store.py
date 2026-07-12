@@ -69,6 +69,11 @@ class GuiStore:
         return []
 
     # ---- path ------------------------------------------------------------
+    @property
+    def root(self) -> Path:
+        """The workspace directory this store lives in (``<root>/gui.state.json``)."""
+        return self._root
+
     @classmethod
     def path_for(cls, workspace_root) -> Path:
         return Path(workspace_root) / STORE_NAME

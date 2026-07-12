@@ -65,7 +65,11 @@ class IngestController(QObject):
         self._wsm = workspace_manager
         self._log = log_sink or (lambda _msg: None)
         self._runner: ProcessRunner | None = None
-        self._queue: list[list[str]] = []        # FIFO of pending path batches
+        # FIFO of (path batch, pinned root). The root is stamped at ENQUEUE time (see request_ingest)
+        # so a batch queued against workspace A is never ingested into workspace B if the operator
+        # switches before it dequeues. ``None`` = queued in the none-state (no workspace yet), which
+        # bootstraps a fresh temp at dequeue and so carries no pin to check.
+        self._queue: list[tuple[list[str], str | None]] = []
         # Per-job scratch (valid only while a job is in flight):
         self._current: list[str] | None = None   # the batch being processed
         self._steps: list[tuple[str, list[str]]] = []  # [(kind, argv), ...] for this job
@@ -74,6 +78,7 @@ class IngestController(QObject):
         self._report = None                       # GuiIngestReport from the ingest step, if any
         self._lines: list[str] = []               # buffered output of the current step
         self._current_root: str | None = None     # workspace root this job's argv is pinned to
+        self._draining = False                    # re-entrancy guard for _start_next's drain loop
 
     # ---- public API ------------------------------------------------------
     def request_ingest(self, paths) -> None:
@@ -81,11 +86,18 @@ class IngestController(QObject):
 
         A batch dropped/gathered while another is running is never refused — it waits its turn, so a
         watched-folder burst is naturally serialized instead of racing on ``session.json``.
+
+        The batch is stamped with the workspace root current *now* (at enqueue). If the operator
+        switches to a different workspace before this batch dequeues, :meth:`_start_next` drops it
+        rather than ingesting workspace A's files into workspace B's ledger. A batch enqueued in the
+        none-state (no root yet) carries no pin and bootstraps a fresh temp when it dequeues.
         """
         batch = [str(p) for p in paths if str(p)]
         if not batch:
             return
-        self._queue.append(batch)
+        root = self._wsm.root()
+        pinned = str(root) if root is not None else None
+        self._queue.append((batch, pinned))
         if self._runner is None:
             self._start_next()
 
@@ -95,9 +107,36 @@ class IngestController(QObject):
 
     # ---- job scheduling --------------------------------------------------
     def _start_next(self) -> None:
-        if self._runner is not None or not self._queue:
+        # ``_draining`` guards re-entry: the ingest_failed.emit below runs slots synchronously, and a
+        # slot that re-queued a batch would otherwise call back into _start_next mid-drain (runner not
+        # yet set) and pop the same queue. The guard makes a re-entrant request_ingest simply enqueue;
+        # the current drain picks it up (or the next _finish_job does).
+        if self._runner is not None or self._draining:
             return
-        paths = self._queue.pop(0)
+        self._draining = True
+        try:
+            # Drain (and drop) any queued batches whose pinned root no longer matches the live
+            # workspace, so a burst queued for workspace A never spills into workspace B after a
+            # mid-queue switch. ``pop(0)`` shrinks the queue each turn, so this always terminates.
+            paths = None
+            while self._queue:
+                batch, pinned = self._queue.pop(0)
+                if pinned is not None:
+                    live = self._wsm.root()
+                    if live is None or str(live) != pinned:
+                        log.warning("dropping queued ingest batch pinned to %s — workspace is now %s",
+                                    pinned, live)
+                        # Informational (status bar + log dock via the failed slot); never modal.
+                        # Exit code 0 marks "not an engine failure — dropped before it ran".
+                        self.ingest_failed.emit(
+                            0, f"queued ingest dropped — workspace changed away from {pinned}")
+                        continue
+                paths = batch
+                break
+            if paths is None:
+                return
+        finally:
+            self._draining = False
         self._current = paths
         self._report = None
         self._step_i = 0

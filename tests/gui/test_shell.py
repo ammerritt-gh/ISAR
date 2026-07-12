@@ -478,6 +478,56 @@ def test_ready_drop_routes_to_ingest_controller(qtbot, make_ws, monkeypatch):
     assert requested == [[r"some/data/path"]]
 
 
+def test_pending_gui_store_write_flushes_to_old_workspace_on_load(qtbot, make_ws):
+    """A watched-folder mutation made just before loading another workspace must persist into the OLD
+    workspace's gui.state.json (the debounced timer would otherwise re-save into the NEW store)."""
+    import json
+
+    ws_a, root_a = _open(make_ws)
+    root_b = make_ws(rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    w = MainWindow(ws_a, session=Session(), watch=False)
+    qtbot.addWidget(w)
+
+    watched = str(root_a / "incoming")
+    w.files_vm.add_watch(watched)                  # mutates A's store + arms the debounced save timer
+    assert w._store_save_timer.isActive()
+
+    assert w.load_workspace(str(root_b)) is True    # rebind flushes the pending write into A first
+    assert not w._store_save_timer.isActive()       # timer disarmed, cannot fire into B's store
+
+    saved = json.loads((root_a / "gui.state.json").read_text(encoding="utf-8"))
+    assert watched in saved.get("watched_folders", [])
+    # The freshly-bound B store is untouched by A's pending mutation.
+    assert w._gui_store.watched_folders() == []
+    assert not (root_b / "gui.state.json").exists()
+
+
+def test_is_file_known_uses_cached_manifest_index(qtbot, tmp_path, make_ws):
+    """The folder-watcher is_known guard is an O(1) lookup into a prebuilt {resolved: (size,mtime)}
+    cache — it never resolves the manifest per call (the beamtime-scale poll-freeze fix)."""
+    from pathlib import Path
+
+    data = tmp_path / "numor_1.dat"
+    data.write_bytes(b"counts")
+    st = data.stat()
+    root = make_ws(
+        rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}],
+        files={str(data): {"size": st.st_size, "mtime": st.st_mtime, "format": "measurement",
+                           "n_scans": 1, "scan_ids": ["exp:1"], "n_context": 0}},
+    )
+    w = MainWindow(Workspace.open(root), session=Session(), watch=False)
+    qtbot.addWidget(w)
+
+    rp = str(Path(str(data)).resolve())
+    assert w._known_files_cache.get(rp) == (st.st_size, st.st_mtime)
+    assert w._is_file_known(str(data), st.st_size, st.st_mtime) is True
+    assert w._is_file_known(str(data), st.st_size + 10, st.st_mtime) is False   # a resend re-queues
+    # The guard reads only the prebuilt cache: emptying it makes everything unknown though ws.files
+    # is unchanged — proof it does not resolve the manifest on each poll.
+    w._known_files_cache = {}
+    assert w._is_file_known(str(data), st.st_size, st.st_mtime) is False
+
+
 def test_dock_layout_round_trips_through_session(qtbot, make_ws):
     ws1, _ = _open(make_ws)
     w1 = MainWindow(ws1, session=Session(), watch=False)

@@ -200,6 +200,27 @@ def test_failure_mid_queue_keeps_remaining_batches(qtbot, patched_runner):
     assert "b" in patched_runner.instances[1].argv
 
 
+def test_queued_batch_dropped_when_workspace_switched_before_dequeue(qtbot, patched_runner):
+    """A batch queued against workspace A must NOT ingest into workspace B if the operator switches
+    before it dequeues — the pin is stamped at enqueue, and a dequeue-time root mismatch drops it."""
+    mgr = _FakeManager(state="ready", root=r"D:\A")
+    failed = []
+    ctrl = IngestController("py", mgr, log_sink=lambda _m: None)
+    ctrl.ingest_failed.connect(lambda c, m: failed.append((c, m)))
+
+    ctrl.request_ingest(["a"])          # starts immediately, pinned to D:\A
+    ctrl.request_ingest(["b"])          # queued behind "a", ALSO pinned to D:\A (root now)
+    assert len(patched_runner.instances) == 1
+
+    # Operator switches to a different workspace while "a" is still running.
+    mgr._root = r"D:\B"
+
+    patched_runner.instances[0].complete(0, [_success_line(added=["exp:1"])])
+    # "b" dequeues, sees the live root is D:\B not its pinned D:\A, and is dropped — no second process.
+    assert len(patched_runner.instances) == 1
+    assert failed and failed[0][0] == 0 and "D:\\A" in failed[0][1]
+
+
 def test_bootstrap_init_failure_does_not_open(qtbot, patched_runner):
     """If bootstrap `isar init` fails, the controller reports failure and never opens/ingests —
     the pending workspace is left intact for a retry."""

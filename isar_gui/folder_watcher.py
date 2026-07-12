@@ -33,8 +33,16 @@ from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, Signal
 
 log = logging.getLogger(__name__)
 
-# Transient/partial-write extensions the engine ignores; mirror only this trivially-known set.
-_SKIP_SUFFIXES = {".tmp", ".part", ".swp", ".swx", ".crdownload", ".partial", ".lock"}
+# Extensions never worth queuing. Two sources, unioned:
+#   * the engine's own ingest skip set — mirror of isar.session.ingest.SKIP_SUFFIXES (kept as a
+#     GUI-side copy, not imported: G16 forbids isar_gui reaching into engine internals). Queuing one
+#     of these only makes the engine skip it again a second later.
+#   * partial-write / editor-scratch extensions the engine set does not carry, so a half-written
+#     download or swap file never even reaches the stability counter.
+# If the engine set changes, update this copy to match (isar/session/ingest.py).
+_ENGINE_SKIP_SUFFIXES = {".nxs", ".log", ".md", ".png", ".csv", ".tmp", ".unused"}
+_PARTIAL_WRITE_SUFFIXES = {".part", ".swp", ".swx", ".crdownload", ".partial", ".lock"}
+_SKIP_SUFFIXES = _ENGINE_SKIP_SUFFIXES | _PARTIAL_WRITE_SUFFIXES
 
 
 def _should_skip_name(name: str) -> bool:
@@ -90,6 +98,13 @@ class FolderWatcher(QObject):
         # Forget tracked files that fell out of the watched set.
         self._tracked = {p: st for p, st in self._tracked.items()
                          if any(_is_within(p, f) for f in new)}
+        # Drop any files that settled-while-paused under the PREVIOUS folder set: a workspace switch
+        # re-seeds the watcher through here, and those deferred files belong to the old workspace —
+        # flushing them on the next unpause would ingest them into the newly-bound one.
+        if self._deferred:
+            log.info("watched-folder set changed — dropping %d deferred file(s) from the previous set",
+                     len(self._deferred))
+            self._deferred = []
         self.poll()
 
     def set_paused(self, flag: bool) -> None:

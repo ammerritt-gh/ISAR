@@ -136,6 +136,11 @@ class MainWindow(QMainWindow):
         self._run_runner: ProcessRunner | None = None  # the live `isar run` subprocess, if any
         self._bound = False           # True once a first workspace binding exists (rebind guard)
         self._gui_store: GuiStore | None = None   # per-workspace GUI-only state (watched folders)
+        # {resolved_path: (size, mtime)} of manifest files, rebuilt once per facade refresh (bind +
+        # each "snapshot" watch tick). Lets the folder watcher's per-second is_known guard be an O(1)
+        # dict lookup instead of resolving every manifest row every poll — the beamtime-scale freeze
+        # fix. None until the first bind builds it.
+        self._known_files_cache: dict[str, tuple] | None = None
 
         # The workspace lifecycle owner (none/pending/ready + temp/save-as). MainWindow is the view:
         # it reflects the manager's signals and never reaches into a workspace directory itself. `ws`
@@ -257,6 +262,10 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(f"Workspace: {ws.root}")
             self.log(f"Opened workspace {ws.root}")
+
+        # Index the manifest for the folder watcher's is_known guard before seeding the watcher (its
+        # set_folders triggers a poll that consults the guard).
+        self._rebuild_known_files_cache()
 
         # Per-workspace GUI store (watched folders) — only for a ready workspace (the file lives in
         # the workspace dir). An empty/pending bind clears any watcher folders from the last binding.
@@ -447,6 +456,9 @@ class MainWindow(QMainWindow):
         dest = QFileDialog.getExistingDirectory(self, "Save Workspace As (choose an empty folder)")
         if not dest:
             return False
+        # Flush a pending GUI-store write into the temp workspace BEFORE it is copied, so the saved
+        # copy carries the operator's latest watched-folders/groups rather than a stale snapshot.
+        self._flush_gui_store_if_pending()
         if self._wsm.save_as(dest):
             self.statusBar().showMessage(f"Saved workspace to {dest}")
             return True
@@ -531,25 +543,54 @@ class MainWindow(QMainWindow):
         if self._gui_store is not None:
             self._gui_store.save()
 
+    def _flush_gui_store_if_pending(self) -> None:
+        """Flush a pending debounced GUI-store write NOW and disarm the save timer.
+
+        Called before any store swap (a rebind/load/Save As) and on close, so a mutation made <500 ms
+        earlier is not lost when ``_gui_store`` is replaced and the armed timer would otherwise re-save
+        into the *new* store. Guarded against the discard path: after ``discard_temp`` rmtree's the
+        temp dir, ``GuiStore.save``'s ``mkdir(parents=True)`` would resurrect it — so only write when
+        the outgoing store's root still exists. The timer is stopped unconditionally.
+        """
+        timer = getattr(self, "_store_save_timer", None)
+        if timer is None:
+            return
+        pending = timer.isActive()
+        timer.stop()
+        if pending and self._gui_store is not None and Path(self._gui_store.root).exists():
+            self._save_gui_store()
+
+    def _rebuild_known_files_cache(self) -> None:
+        """Rebuild the ``{resolved_path: (size, mtime)}`` index the folder watcher's ``is_known`` guard
+        consults. Built once per facade refresh (a bind and each "snapshot" watch tick) so the guard
+        never resolves every manifest row on every poll — resolving the manifest at beamtime scale on
+        the Qt thread every second is the freeze this avoids."""
+        cache: dict[str, tuple] = {}
+        if not self._empty:
+            for fv in self._ws.files:
+                try:
+                    cache[str(Path(fv.path).resolve())] = (fv.size, fv.mtime)
+                except (OSError, AttributeError) as exc:
+                    log.debug("skipping manifest row while indexing known files: %s", exc)
+                    continue
+        self._known_files_cache = cache
+
     def _is_file_known(self, path: str, size, mtime) -> bool:
-        """Cheap no-op guard for the folder watcher: True if ``path`` is already in the manifest with
-        the same (size, mtime) — a file unchanged since ingest. Engine idempotency is the real
-        guarantee; this just avoids re-queuing a file the ledger already holds identically."""
-        if getattr(self, "_empty", True):
+        """Cheap O(1) guard for the folder watcher: True if ``path`` is already in the manifest with
+        the same (size, mtime) — a file unchanged since ingest. Reads the cached manifest index (built
+        once per facade refresh); only the single candidate ``path`` is resolved here, never the
+        manifest. Engine idempotency is the real guarantee; this just avoids re-queuing a file the
+        ledger already holds identically."""
+        cache = self._known_files_cache
+        if not cache:
             return False
         try:
             rp = str(Path(path).resolve())
         except OSError as exc:
             log.debug("could not resolve watched path %s: %s", path, exc)
             return False
-        for fv in self._ws.files:
-            try:
-                if str(Path(fv.path).resolve()) == rp and fv.size == size and fv.mtime == mtime:
-                    return True
-            except (OSError, AttributeError) as exc:
-                log.debug("skipping manifest row while matching %s: %s", rp, exc)
-                continue
-        return False
+        known = cache.get(rp)
+        return known is not None and known == (size, mtime)
 
     # ---- workspace-manager signal slots (the window reflects the manager) --
     def _on_wsm_workspace_changed(self, ws) -> None:
@@ -839,6 +880,10 @@ class MainWindow(QMainWindow):
     def _teardown_binding(self) -> None:
         """Tear down the current VM/docks/bridge/central-widget so :meth:`_bind_workspace` can build
         a fresh binding (no partial rebind). Assumes a binding exists (guarded by ``self._bound``)."""
+        # Flush any pending GUI-store write into the OUTGOING store before it is swapped out — a
+        # watched-folder/group mutation made just before this rebind must land in the old workspace,
+        # not silently follow the timer into the new one (or be dropped entirely).
+        self._flush_gui_store_if_pending()
         if self._bridge is not None:
             self._bridge.stop()
             self._bridge = None
@@ -880,8 +925,10 @@ class MainWindow(QMainWindow):
         self.log_dock.sync_warnings(self._ws.warnings, self._warn_generation)
         self._viewmodel.on_workspace_changed(changed)
         # "snapshot" (session.json) carries the ingest manifest + scan ledger — refresh the Files
-        # dock so a finished ingest's new files appear without a manual re-read.
+        # dock so a finished ingest's new files appear without a manual re-read, and re-index the
+        # manifest for the folder watcher's is_known guard off the just-refreshed facade.
         if changed & {"snapshot"}:
+            self._rebuild_known_files_cache()
             self.files_vm.refresh()
             self.scans_vm.refresh()
         # "results"/"snapshot" carry the fit data the plots read; "card_state" carries lattice
@@ -893,6 +940,10 @@ class MainWindow(QMainWindow):
             self.dispersion_vm.refresh()
             self.waterfall_vm.refresh()
             self._refresh_inspector_selection()
+            # The scan rows' q/HKL cells and the auto-q-groups derive from the lattice epochs carried
+            # by card_state; a card_state-only tick (no snapshot) still needs them re-derived.
+            if changed & {"card_state"} and not (changed & {"snapshot"}):
+                self.scans_vm.refresh()
         self._live_label.setText(f"live — last update {datetime.now():%H:%M:%S}")
         self.statusBar().showMessage(f"Updated: {', '.join(sorted(changed)) or '(none)'}")
 
@@ -962,10 +1013,15 @@ class MainWindow(QMainWindow):
             self._bridge.stop()
         if getattr(self, "_autosaver", None) is not None:
             self._autosaver.flush_now()
-        # Flush any pending debounced GUI-store write (watched folders) before the window goes.
-        if getattr(self, "_store_save_timer", None) is not None and self._store_save_timer.isActive():
-            self._store_save_timer.stop()
-            self._save_gui_store()
+        # Flush any pending debounced GUI-store write (watched folders / groups) before the window
+        # goes — guarded so a just-discarded temp dir is not resurrected by the save's mkdir.
+        self._flush_gui_store_if_pending()
+        if getattr(self, "_ingest_controller", None) is not None and \
+                self._ingest_controller.is_busy():
+            # Non-blocking notice only (writes are atomic per-scan, so a cut-off ingest never
+            # corrupts the ledger — the worst case is a scan that simply wasn't reached).
+            self.log("closing while an ingest is running — it will be cut off; data writes are atomic")
+            self.statusBar().showMessage("closing — an in-flight ingest will be cut off")
         super().closeEvent(event)
 
     def _resolve_unsaved_temp_on_close(self) -> bool:

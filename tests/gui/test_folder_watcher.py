@@ -92,6 +92,27 @@ def test_known_file_is_skipped(qtbot, tmp_path):
     assert emitted == []                        # known-with-matching-size -> never emitted
 
 
+def test_set_folders_drops_files_deferred_while_paused(qtbot, tmp_path):
+    """A file that settled while paused under one folder set must NOT flush on the next unpause after
+    set_folders re-seeded the watcher (a workspace switch) — its deferred entry is cleared."""
+    folder = tmp_path / "data"
+    folder.mkdir()
+    emitted = []
+    fw = FolderWatcher(poll_ms=5, stable_polls=2)
+    fw.files_stable.connect(lambda paths: emitted.append(list(paths)))
+    fw.set_folders([str(folder)])
+    fw.set_paused(True)
+
+    (folder / "s.dat").write_bytes(b"done")
+    fw.poll()
+    fw.poll()                                   # crosses the threshold, but paused -> deferred
+    assert emitted == []
+
+    fw.set_folders([])                          # a switch re-seeds the watcher -> deferred cleared
+    fw.set_paused(False)                        # unpause has nothing to flush now
+    assert emitted == []
+
+
 def test_hidden_and_transient_files_are_ignored(qtbot, tmp_path):
     folder = tmp_path / "data"
     folder.mkdir()
