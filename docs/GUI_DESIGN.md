@@ -1,8 +1,10 @@
 # ISAR GUI — Design
 
-**Status:** Design draft, 2026-07-11. Every capability in this document is **Planned** unless
-explicitly marked otherwise. This document follows the discipline of `DESIGN.md`: nothing is
-described in the implemented voice unless it is.
+**Status:** Design draft, 2026-07-11; Phase 0 + Phase A implemented on branch
+`ISAR-initial-GUI` as of 2026-07-11 (see §0bis for corrections found during that work). Every
+capability in this document is **Planned** unless explicitly marked otherwise — Phase B and
+Phase C remain entirely in the Planned voice. This document follows the discipline of
+`DESIGN.md`: nothing is described in the implemented voice unless it is.
 
 **Audience.** This document is a self-contained handoff. It assumes the reader knows `DESIGN.md`
 (the master design) but has **no access to the design conversation** that produced this document.
@@ -36,6 +38,46 @@ in the referenced section.
 | G11 | Coordinate math: a **metric/UB layer** (lattice + orientation vectors u, v → scattering plane, r.l.u. ↔ Å⁻¹, non-rectilinear axes) lives in **core, Qt-free**, sourced from the TAS_MCP / TAVI math. TAVI stays the sole resolution authority; the GUI grows **no third opinion** on scattering triangles — feasibility is consulted, not reimplemented. | §10 |
 | G12 | Donor repositories: **ACIDD** (cut gesture, coordinate-layer-under-image-view, templates, session persistence), **PUFFIN** (live-parameter fitting grammar, MVVM + worker threads), **ISAR** (everything that thinks). All three are GPL-3; code may be lifted with copyright notices. The GUI is **assembly, not invention**. | §11 |
 | G13 | Phasing: Phase 0 workspace read API → Phase A read-only viewer → Phase B planner → Phase C directives/sandbox/live dashboard. Read-only first so nothing destabilizes the pending TAVI SVP. | §13 |
+
+---
+
+## 0bis. Corrections from Phase 0/A implementation (2026-07-11)
+
+Phase 0 + Phase A implementation surfaced five points where the design record above needed
+correction. These layer on top of the original text (a design record is not rewritten); each
+affected § carries a one-line pointer back here.
+
+1. **The ledger is two artifacts, not one** (§4.4, §5.1, §7.1). `session.json` is the analysis
+   **snapshot** (`SessionState`, rebuildable from re-runs). The append-only event stream is a
+   separate file, `report/session_log.jsonl` (driver events); `ws.session_events()` reads the
+   JSONL, not `session.json`. The future `directive.consumed` event (Phase C) is a new event
+   kind in the JSONL stream, not a field added to `session.json`.
+2. **Lattice/orientation is a versioned epoch series, not card policy** (§10). This supersedes
+   "from the card's lattice": scans stay in absolute instrument coordinates, immutable.
+   `CardState.lattice_epochs` (a class-two artifact, precedent: `resolution_versions`) maps
+   absolute → HKL. Epochs change mid-experiment (transition, realignment, plane swap) and can be
+   corrected retroactively — append a new epoch, re-derive HKL, never edit the scans — and
+   analysis/grouping keys on HKL, not the acquisition-time orientation. Implemented: schema +
+   stateless resolver in `isar/geometry/epochs.py` (identity-through-acquisition-epoch until
+   absolute coordinates land in Phase B). See G15.
+3. **`evaluate_model`/`reconstruct_curve` reality** (§7.2). `reconstruct_curve` re-solves
+   amplitudes by NNLS against counts — it is not a pure evaluator of stored parameters.
+   Resolution: `FitOutcome.amplitudes` is now persisted additively; `ws.evaluate_model` is pure
+   (stored-params → curve, no refit) when amplitudes exist on the fit outcome, and falls back to
+   the counts-based `reconstruct_curve` path on older ledgers that predate the field. Both share
+   `assemble_curve` (`isar/report/audit.py`) so the two paths cannot diverge in math.
+4. **matplotlib is a hard dependency, not Qt-free-by-extension** (§2, §14). The campaign path is
+   matplotlib-free at import time only. `tests/test_qt_free_core.py` enforces Qt-freeness
+   (`PySide6`/`pyqtgraph` never load on `import isar`) and a scipy-free `isar.workspace_api`
+   import (scipy loads lazily, only on the `evaluate_model` audit fallback) — it does not assert
+   matplotlib-freeness, since `isar/plotspec/backends/mpl.py` is explicitly allowed to import
+   matplotlib.
+5. **Dark angles / mechanical limits have no numeric data source yet** (§10). TAS_MCP's PUMA
+   limits are `None`/soft placeholders; TAVI has no dark-angle configuration; TAVI's assembled
+   `/validate` verdict is Qt-entangled (HTTP-only, not importable in-process). Consequence:
+   planner forbidden-zone previews (Phase B) will be kinematics-only (triangle closure / Ewald
+   sphere) until a per-instrument config is authored TAVI-side — the HTTP `/validate` call stays
+   the sole authority for the real go/no-go, exactly as G11 already ruled.
 
 ---
 
@@ -97,6 +139,9 @@ acceptance narrative; §12 maps them to components.
 ---
 
 ## 2. Placement & packaging (G1)
+
+> Corrected — see §0bis item 4: the Qt-free-core test does not assert matplotlib-freeness;
+> matplotlib is a hard dependency and only the campaign path is matplotlib-free at import time.
 
 **Decision: same repo, separate package, contract-coupled.**
 
@@ -209,6 +254,9 @@ do not invent parallel ones**):
 
 ### 4.4 Acknowledgement
 
+> Corrected — see §0bis item 1: the ledger is two artifacts (`session.json` snapshot +
+> `report/session_log.jsonl` event stream); `directive.consumed` lands in the JSONL stream.
+
 Directives are fire-and-forget at the file level, but the GUI needs feedback. The driver, on
 draining a directive, appends a structured ledger event (`directive.consumed`, with
 `directive_id`, outcome `accepted | rejected_validate | deferred`, and reason). The GUI watches
@@ -221,6 +269,9 @@ angle) renders with the driver's reason — the same refusal logging discipline 
 ## 5. The inbox & ownership (G5, G6)
 
 ### 5.1 Transport
+
+> Corrected — see §0bis item 1: `session.json` is the snapshot; the ledger events referenced
+> below live in `report/session_log.jsonl`, a separate file.
 
 ```
 workspace/
@@ -291,6 +342,9 @@ interface as much as the GUI's data layer).
 
 ### 7.1 Surface (sketch)
 
+> Corrected — see §0bis item 1: `session_events` reads `report/session_log.jsonl`, not
+> `session.json`.
+
 ```python
 ws = Workspace.open(path)                    # read-only handle
 ws.card                                      # policy (TOML, parsed) + state (JSON)
@@ -313,6 +367,10 @@ ws.watch(callback)                           # file-watcher: change notification
 ```
 
 ### 7.2 Notes
+
+> Corrected — see §0bis item 3: `reconstruct_curve` re-solves amplitudes by NNLS against counts;
+> `evaluate_model` is pure only when `FitOutcome.amplitudes` exist, else it falls back to
+> `reconstruct_curve`. Both share `assemble_curve` (`isar/report/audit.py`).
 
 - `evaluate_model` and `reconstruct_curve` must be the same math; the existing
   reconstruct-at-render-time decision (`DESIGN.md` §12) already established stored-params →
@@ -381,6 +439,12 @@ a persistent legend like `plane (H, 1, 0) × E — integrating |L| < 0.02, |K−
 ---
 
 ## 10. Coordinate & feasibility layer (G11)
+
+> Corrected — see §0bis item 2: lattice/orientation is a versioned epoch series
+> (`CardState.lattice_epochs`), not fixed card policy; scans stay in absolute instrument
+> coordinates and epochs re-derive HKL retroactively. See §0bis item 5 and G14 on feasibility
+> wiring: dark angles/limits have no numeric data source yet, so forbidden-zone previews will be
+> kinematics-only until TAVI-side config exists.
 
 A **metric/UB module in core** (Qt-free; suggested `isar/geometry/` or inside the schema
 package next to the card, since lattice is card policy):
@@ -491,6 +555,10 @@ journey (§1.3) against TAVI-as-backend.
 ---
 
 ## 14. Testing
+
+> Corrected — see §0bis item 4: the Qt-free core test also asserts a scipy-free
+> `isar.workspace_api` import; it does not assert matplotlib-freeness (matplotlib is a hard
+> dependency of the shared plotspec layer).
 
 - **Qt-free core:** `import isar` never imports PySide6/pyqtgraph (unit test, Phase 0).
 - **Import contract:** `isar_gui` imports only the sanctioned `isar` surfaces (lint/grep test).

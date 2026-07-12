@@ -1,0 +1,136 @@
+"""BrowserDock — the workspace browser: card summary + group/member tree (Task 9, C1).
+
+Purely presentational: all derivation (labels, tree data, verdict text) lives in
+:class:`~isar_gui.viewmodels.browser.BrowserViewModel`; this widget only lays out and renders what
+the viewmodel already computed, and forwards a member-fit selection to the viewmodel's ``select()``
+(the ``selection_changed`` hook later views subscribe to).
+
+Rendering-rules discipline applies to text: a member whose ``interval_reliable`` is ``False`` gets an
+``(unreliable)`` suffix on its verdict cell — never a numeric interval rendered anywhere in the tree.
+"""
+from __future__ import annotations
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QDockWidget,
+    QFormLayout,
+    QLabel,
+    QPlainTextEdit,
+    QPushButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+_SUMMARY_FIELDS = (
+    "facility", "instrument", "plugin", "counting_mode", "collation_keys",
+    "schema_version", "lattice_epochs", "workspace_path",
+)
+
+
+def _fmt(v) -> str:
+    return "" if v is None else str(v)
+
+
+def _member_verdict_text(fv) -> str:
+    """Verdict cell text — a suffix, never a numeric interval (rendering-rules discipline)."""
+    verdict = fv.verdict or ""
+    if fv.interval_reliable is False:
+        return f"{verdict} (unreliable)".strip()
+    return verdict
+
+
+def _group_label_text(row) -> str:
+    marker = " [pooled]" if row.pooled else ""
+    return f"{row.label} ({len(row.members)} members){marker}"
+
+
+class BrowserDock(QDockWidget):
+    """Card summary header + group/member tree over a :class:`BrowserViewModel`."""
+
+    def __init__(self, vm, parent=None):
+        super().__init__("Browser", parent)
+        self.setObjectName("browser_dock")  # stable name for saveState()/restoreState()
+        self._vm = vm
+
+        container = QWidget(self)
+        layout = QVBoxLayout(container)
+
+        self._form = QFormLayout()
+        self._summary_labels: dict[str, QLabel] = {}
+        layout.addLayout(self._form)
+
+        self._tree = QTreeWidget(container)
+        self._tree.setHeaderLabels(["Group / Scan", "Detector", "Verdict", "q", "T"])
+        self._tree.itemSelectionChanged.connect(self._on_selection_changed)
+        layout.addWidget(self._tree)
+
+        self._warnings_button = QPushButton(container)
+        self._warnings_button.setCheckable(True)
+        self._warnings_button.toggled.connect(self._on_warnings_toggled)
+        layout.addWidget(self._warnings_button)
+
+        self._warnings_view = QPlainTextEdit(container)
+        self._warnings_view.setReadOnly(True)
+        self._warnings_view.setVisible(False)
+        layout.addWidget(self._warnings_view)
+
+        self.setWidget(container)
+
+        vm.refreshed.connect(self.refresh)
+        self.refresh()
+
+    # ---- rendering ------------------------------------------------------------
+    def refresh(self) -> None:
+        self._render_summary()
+        self._render_tree()
+        self._render_warnings()
+
+    def _render_summary(self) -> None:
+        summary = self._vm.card_summary
+        if not self._summary_labels:
+            for key in _SUMMARY_FIELDS:
+                label = QLabel()
+                self._form.addRow(key, label)
+                self._summary_labels[key] = label
+        for key, label in self._summary_labels.items():
+            label.setText(_fmt(summary.get(key)))
+
+    def _render_tree(self) -> None:
+        # Block signals while rebuilding so clearing/repopulating the tree does not spuriously fire
+        # itemSelectionChanged (and re-emit a stale selection through the viewmodel).
+        self._tree.blockSignals(True)
+        try:
+            self._tree.clear()
+            for row in self._vm.group_rows:
+                group_item = QTreeWidgetItem([_group_label_text(row), "", "", "", ""])
+                group_item.setData(0, Qt.ItemDataRole.UserRole, None)
+                self._tree.addTopLevelItem(group_item)
+                for fv in row.members:
+                    child = QTreeWidgetItem([
+                        _fmt(fv.scan_number), _fmt(fv.detector_id), _member_verdict_text(fv),
+                        _fmt(fv.q), _fmt(fv.T),
+                    ])
+                    child.setData(0, Qt.ItemDataRole.UserRole, fv)
+                    group_item.addChild(child)
+            self._tree.expandAll()
+        finally:
+            self._tree.blockSignals(False)
+
+    def _render_warnings(self) -> None:
+        warnings = self._vm.warnings
+        self._warnings_button.setText(f"Warnings ({len(warnings)})")
+        self._warnings_view.setPlainText("\n".join(warnings))
+
+    # ---- interaction ------------------------------------------------------------
+    def _on_selection_changed(self) -> None:
+        items = self._tree.selectedItems()
+        if not items:
+            return
+        fv = items[0].data(0, Qt.ItemDataRole.UserRole)
+        if fv is not None:  # a group header carries no FitView; only a member selection counts
+            self._vm.select(fv)
+
+    def _on_warnings_toggled(self, checked: bool) -> None:
+        self._warnings_view.setVisible(checked)

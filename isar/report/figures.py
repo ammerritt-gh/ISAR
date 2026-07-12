@@ -16,6 +16,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
+from isar.plotspec.backends import mpl as plotspec_mpl  # noqa: E402
+from isar.plotspec.builders import spectrum_spec  # noqa: E402
 from isar.report import model as _model  # noqa: E402  (id helpers only; no cycle — model has no figures)
 from isar.schema import axes  # noqa: E402
 
@@ -35,29 +37,11 @@ def _rejected_points(sp) -> np.ndarray:
 
 
 def spectrum_figure(record, det_id: str) -> bytes:
-    """Rate vs energy for one analyzer: kept points, masked points (red x), cosmic-ray-cleaned rings."""
-    sp = record.spectra[det_id]
-    energy = axes.scanned_axes(record)[0].values
-    mask = sp.mask.astype(bool)
-    yerr = np.sqrt(np.clip(sp.variance, 0.0, None))
+    """Rate vs energy for one analyzer: kept points, masked points (red x), cosmic-ray-cleaned rings.
 
-    fig, ax = plt.subplots(figsize=(6.0, 3.4))
-    ax.errorbar(energy[mask], sp.intensity[mask], yerr=yerr[mask], fmt="o-", ms=3, lw=1,
-                color="C0", label="kept (±√N)")
-    if np.any(~mask):
-        ax.scatter(energy[~mask], sp.intensity[~mask], marker="x", color="red", zorder=5,
-                   label="masked (shown, not deleted)")
-    cr = _rejected_points(sp)
-    if len(cr):
-        ax.scatter(energy[cr], sp.intensity[cr], s=90, facecolors="none", edgecolors="darkorange",
-                   linewidths=1.5, zorder=4, label="cosmic-ray cleaned")
-    ax.set_xlabel("energy transfer (meV)")
-    ax.set_ylabel("counts (raw; Poisson √N errors)")
-    ax.set_title(f"scan {record.scan_number}  {det_id}   Q={[round(float(v), 3) for v in sp.q]}",
-                 fontsize=9)
-    ax.legend(fontsize=7, framealpha=0.9)
-    fig.tight_layout()
-    return _png_bytes(fig)
+    Pilot migration (G8): built as a shared :class:`~isar.plotspec.spec.PlotSpec` and rendered by the
+    matplotlib backend, so the GUI and the report draw this from one definition."""
+    return plotspec_mpl.render_png(spectrum_spec(record, det_id))
 
 
 def miniscan_figure(record, det_id: str, point: int) -> bytes:

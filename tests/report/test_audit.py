@@ -5,6 +5,7 @@ solve ISAR uses. This tests that pure reconstruction recovers a model it was bui
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from isar.analyze.components import CompositeModel, ConstantBackground, Elastic, PhononDHO
 from isar.report import audit
@@ -54,3 +55,12 @@ def test_reconstruct_curve_handles_overdamped_omega0_below_gamma():
     rc = audit.reconstruct_curve(x, np.full_like(x, 5.0), omega0=1.0, gamma=3.0,
                                  center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.5, T=100.0)
     assert np.all(np.isfinite(rc.total))
+
+
+def test_assemble_curve_rejects_non_mapping_amp():
+    # A malformed persisted amplitudes value (a raw string, not a mapping) must raise a clean
+    # ValueError, not an AttributeError from `amp.get` — downstream GUI callers catch ValueError.
+    comp = CompositeModel([PhononDHO(), Elastic(), ConstantBackground()])
+    x = np.linspace(-4.0, 6.0, 20)
+    with pytest.raises(ValueError, match="amp must be a mapping"):
+        audit.assemble_curve(comp, x, omega0=5.0, gamma=1.0, amp="junk", ctx=_ctx())

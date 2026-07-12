@@ -39,6 +39,9 @@ _INT_COLUMNS = frozenset({"scan", "prior_n", "n_modes", "n_members"})
 _BOOL_COLUMNS = frozenset({"interval_reliable", "pooled", "hesse_trusted", "resolvable"})
 # Split on ";" into a list of labels ("" → None; missing column → key absent via DictReader).
 _LIST_COLUMNS = frozenset({"members"})
+# JSON-encoded structured columns (GUI Phase 0): the amplitudes dict and candidate table. Parsed
+# with json.loads; "" / None → None; a malformed cell is left as the raw string (never raises).
+_JSON_COLUMNS = frozenset({"amplitudes", "candidates"})
 
 
 def _report_dir(workspace: str | Path) -> Path:
@@ -48,6 +51,11 @@ def _report_dir(workspace: str | Path) -> Path:
 def _coerce(column: str, value: str | None):
     if value is None or value == "":
         return None
+    if column in _JSON_COLUMNS:
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return value
     if column in _LIST_COLUMNS:
         return [s for s in value.split(";") if s]
     if column in _BOOL_COLUMNS:

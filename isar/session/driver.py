@@ -12,6 +12,7 @@ state instead of hardcoded. Nothing in `isar/analyze/` is modified (§4).
 from __future__ import annotations
 
 import csv
+import json
 import os
 import time
 from collections import Counter
@@ -128,6 +129,18 @@ class FitOutcome:
     bayes_prior_driven: bool = False
     bayes_fork_suspected: bool = False
     bayes_unconstrained: bool = False
+    # GUI Phase 0 (P0-3 / P0-4), additive. ``amplitudes``: the DELIVERED fit's linear amplitudes
+    # ({linear_param_name: value} for the winning structure — phonon area(s) ``…A``, elastic
+    # ``elastic.E``, quasi-elastic ``qe.QE``, background ``bg.BG``), the same linear params the
+    # fitter solved, kept so a params-only curve evaluator can rebuild the model without re-solving
+    # NNLS against counts (report.audit.reconstruct_curve does the latter today). ``candidates``: one
+    # compact row per SCORED structure ({label, k, ndof, cost, cost_per_dof, n_modes, delta_aic,
+    # akaike_weight, usable}) — the fit inspector's standing answer to "what did ISAR choose and
+    # why". Rows come straight from ``select.score_models`` (AIC = cost + 2k; Akaike weights), so the
+    # winner (delta_aic == 0) is exactly ``best_label``; non-converged fits are absent. Both None on
+    # older ledgers, when there is no delivered fit, or when nothing converged.
+    amplitudes: dict | None = None
+    candidates: list | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -317,6 +330,55 @@ def _timing_provenance(fit) -> dict:
     return prov
 
 
+def _amplitudes_of(best, by_hyp) -> dict | None:
+    """The delivered fit's linear amplitudes (P0-3): ``{linear_param_name: value}`` for the winning
+    structure, in ``CompositeModel.linear_names()`` order. Rebuilt from the winner's own composite
+    (``by_hyp[best.label].build()``) so the keys are exactly its linear params (phonon area(s), the
+    elastic/quasi-elastic area, background) and nothing non-linear (Ω_d/Γ) leaks in. Values are the
+    fitted amplitudes already stored on ``best.params`` (plain Python floats). ``None`` when there is
+    no delivered fit or its hypothesis is not in ``by_hyp`` (never expected — every returned label is
+    an enumerated hypothesis)."""
+    if best is None:
+        return None
+    hyp = by_hyp.get(best.label)
+    if hyp is None:
+        return None
+    return {n: float(best.params[n]) for n in hyp.build().linear_names() if n in best.params}
+
+
+def _candidate_rows(scores, fits) -> list | None:
+    """The model-selection candidate table (P0-4): one compact row per SCORED structure. ``scores``
+    is ``select.score_models``'s output (the exact ranking the driver selects on — AIC = cost + 2k,
+    Akaike weights ``w_i = exp(-Δ_i/2)/Σ exp(-Δ_j/2)``); this only reshapes it, never re-ranks, so
+    the winner (``delta_aic == 0``) equals ``Selection.best`` / ``FitOutcome.best_label``.
+    Non-converged fits are already excluded by ``score_models``, so every row is a usable candidate.
+    ``fits`` (label → ``StructureFitResult``) supplies ``cost_per_dof``/``n_modes``/``analysis_usable``
+    that ``ModelScore`` does not carry. All values are coerced to plain Python scalars so the row
+    JSON-serialises cleanly. ``None`` when nothing converged (empty ``scores``)."""
+    if not scores:
+        return None
+    rows = []
+    for s in scores:
+        r = fits.get(s.label)
+        ndof = int(s.n - s.k)
+        cpd = (float(r.cost_per_dof) if r is not None
+               else (float(s.cost) / ndof if ndof > 0 else float("nan")))
+        rows.append({
+            "label": str(s.label),
+            "k": int(s.k),
+            "ndof": ndof,
+            "cost": float(s.cost),
+            # Guard non-finite cost/dof (ndof==0, or a blown-up fit) to None so the candidates JSON
+            # never carries a nonstandard NaN token that a strict-JSON reader would reject.
+            "cost_per_dof": (cpd if np.isfinite(cpd) else None),
+            "n_modes": int(r.n_modes) if r is not None else 1,
+            "delta_aic": float(s.delta_aic),
+            "akaike_weight": float(s.weight),
+            "usable": bool(r.analysis_usable) if r is not None else True,
+        })
+    return rows
+
+
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
             errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False,
             descriptor=None, structure_hint=None, bayes_opts=None):
@@ -497,6 +559,11 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
 
     n_modes = int(best.n_modes) if best is not None else 1
     modes = list(best.modes) if (best is not None and best.modes) else None
+    # GUI Phase 0 (additive, no fitting/selection logic touched): the delivered fit's linear
+    # amplitudes and the model-selection candidate table. Built from the FINAL selection (``sel``)
+    # and the delivered ``best`` — so an escalated re-fit (its own fit_one call) carries its own.
+    amplitudes = _amplitudes_of(best, by_hyp)
+    candidates = _candidate_rows(sel.scores, fits)
 
     # Phase 4a — under-model falsification: the descriptor localised real signal the phonon model
     # can't fit. This is NOT an ω₀ measurement (machine contract): null the number/intervals and
@@ -525,6 +592,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "gamma": (best.gamma if best else None),
         "cost_per_dof": (best.cost_per_dof if best else None),
         "n_modes": n_modes, "modes": modes,
+        "amplitudes": amplitudes, "candidates": candidates,
         "fit_kind": fit_kind,
         "gamma_at_bound": bool(getattr(best, "gamma_at_bound", False)) if best else False,
         "two_stage_seconds": two_stage_seconds,
@@ -1167,6 +1235,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         best_label=fit["best_label"], cost_per_dof=fit["cost_per_dof"],
         q=q, T=T, sample=str(grp.key_fields.get("sample", "")), prior_used=None,
         calib=calres.summary(), reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
+        amplitudes=fit.get("amplitudes"), candidates=fit.get("candidates"),
         interval_reliable=fit.get("interval_reliable", True), omega0_profile=fit.get("omega0_profile"),
         hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
         pooled=True, n_members=int(ms.n_members), members=_member_labels(ms.members),
@@ -1490,6 +1559,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         best_label=fit["best_label"], cost_per_dof=fit["cost_per_dof"],
         q=q, T=T, sample=sample, prior_used=prior_used, calib=calres.summary(),
         reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
+        amplitudes=fit.get("amplitudes"), candidates=fit.get("candidates"),
         interval_reliable=fit.get("interval_reliable", True),
         omega0_profile=fit.get("omega0_profile"),
         hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
@@ -1604,6 +1674,9 @@ _CSV_COLUMNS = [
     "zero", "zero_source", "gauss_fwhm",
     "lorentz_fwhm", "resolution_source", "resolution_version", "prior_omega", "prior_sigma",
     "prior_n", "prior_source", "reasons",
+    # GUI Phase 0 (P0-3/P0-4), appended so older readers/CSVs are unaffected. JSON-encoded strings:
+    # the amplitudes dict and the model-selection candidate table.
+    "amplitudes", "candidates",
 ]
 
 
@@ -1707,6 +1780,12 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "prior_omega": pr.get("omega0"), "prior_sigma": pr.get("sigma"),
                 "prior_n": pr.get("n_neighbors"), "prior_source": pr.get("source"),
                 "reasons": "; ".join(oc.get("reasons") or []),
+                # JSON-encoded (or None when absent) so the flat CSV can carry the structured fields;
+                # readers.read_results_csv json.loads them back. sort_keys keeps the cell stable.
+                "amplitudes": (json.dumps(oc.get("amplitudes"), sort_keys=True)
+                               if oc.get("amplitudes") is not None else None),
+                "candidates": (json.dumps(oc.get("candidates"))
+                               if oc.get("candidates") is not None else None),
             })
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=_CSV_COLUMNS)

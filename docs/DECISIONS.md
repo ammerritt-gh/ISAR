@@ -129,6 +129,79 @@ explicitly reopened; "future" means designed-for but not v1.
 - **D4.** This ledger (`docs/DECISIONS.md`) is append-only and continues beyond this session;
   future rulings get the next ID in their series.
 
+## GUI (Topic 8, G-series)
+
+Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding branch
+`ISAR-initial-GUI`); status notes reflect Phase 0/A implementation as of that branch.
+
+- **G1.** GUI lives in the ISAR repo as a separate package (`isar_gui/`), optional install extra
+  (`.[gui]`), launched `isar view`. Boundary enforced in imports, not repo topology.
+  Implemented (Phase 0/A).
+- **G2.** The GUI is a viewer and a proposer, never a third source of truth: reads workspace
+  artifacts, writes only append-only directives through the existing correction/mutation
+  channel. Implemented (Phase 0/A) as far as read-only views go; the directive-write half is
+  Phase C.
+- **G3.** Three artifact classes — immutable observations, versioned interpretations,
+  append-only directives — with the GUI writing only class three. Implemented (Phase 0/A) as
+  far as read-only views go.
+- **G4.** Every GUI write compiles to exactly one of four directive types (objective edit, prior
+  edit, fit-structure correction, direct proposal); natural language is an input device, not a
+  fifth type. Planned (Phase C).
+- **G5.** Transport is a directive inbox (`workspace/inbox/`), drained by the driver at the top
+  of each decide step, atomic write-temp-then-rename. Planned (Phase C).
+- **G6.** The driver remains the sole owner of the instrument; human directives are queue
+  entries with priority `human` that still pass the driver's validate step. Planned (Phase C).
+- **G7.** Sandbox exception: the GUI may import the deterministic fit engine's frozen-config
+  entry point in-process for live preview; sandbox results are ephemeral and marked; commit
+  writes a directive. Planned (Phase C sandbox).
+- **G8.** GUI snapshot rendering and report/diagnostic figure rendering are the same code at two
+  zoom levels — one figure module (`isar/plotspec`), two consumers. Implemented (Phase 0/A) as
+  far as read-only views go.
+- **G9.** 4D honesty: every 2D view is an explicit, on-screen-declared projection; measured
+  strips render as strips, gaps as gaps; interpolated/modeled surfaces are labeled as models.
+  Implemented (Phase 0/A) as far as read-only views go.
+- **G10.** Semantic grouping is the card's collation policy; display-side overlays (e.g.
+  waterfall by T) are pure view state and never touch the card. Implemented (Phase 0/A) as far
+  as read-only views go.
+- **G11.** Coordinate math: a metric/UB layer lives in core, Qt-free, sourced from the TAS_MCP /
+  TAVI math; TAVI stays the sole resolution authority; the GUI grows no third opinion on
+  scattering triangles. Partially implemented — geometry vendored (see G14), preview-only
+  feasibility; the wiring question in GUI_DESIGN.md §15 open item 2 is resolved: **vendored**
+  (G14).
+- **G12.** Donor repositories ACIDD (cut gesture, coordinate-layer-under-image-view, templates,
+  session persistence), PUFFIN (live-parameter fitting grammar, MVVM + worker threads), ISAR
+  (everything that thinks) — all GPL-3, code may be lifted with copyright notices. Applied
+  (donor lifts with attribution).
+- **G13.** Phasing: Phase 0 workspace read API → Phase A read-only viewer → Phase B planner →
+  Phase C directives/sandbox/live dashboard. In progress (Phase 0 + Phase A done).
+- **G14.** Geometry vendored (resolves GUI_DESIGN.md §15 open item 2). TAVI primitives and
+  TAS_MCP assembly logic are copied into `isar/geometry/` with GPL-3 notices; the module is
+  stateless; the instrument frame (z out-of-plane) is pinned by test. TAVI's HTTP `/validate`
+  remains the sole feasibility authority; the vendored local feasibility check is preview-only
+  (kinematics/triangle-closure), never a second opinion that overrides TAVI. Implemented
+  (Phase 0/A).
+- **G15.** Lattice epochs (see GUI_DESIGN.md §0bis item 2). Lattice/orientation is a versioned
+  epoch series, not fixed card policy: scans stay in absolute instrument coordinates,
+  immutable; `CardState.lattice_epochs` (class-two artifact, precedent `resolution_versions`)
+  maps absolute → HKL; epochs change mid-experiment (transition, realignment, plane swap) and
+  can be corrected retroactively by appending a new epoch and re-deriving HKL, never editing
+  scans; analysis/grouping keys on HKL. Implemented: schema + stateless resolver in
+  `isar/geometry/epochs.py` (identity-through-acquisition-epoch until absolute coordinates land
+  in Phase B).
+- **G16.** `isar_gui` sanctioned imports: `isar_gui` may import only `isar.workspace_api`,
+  `isar.geometry`, `isar.plotspec`; `isar.workspace_api` may additionally use `isar.schema.card`,
+  `isar.session.state`, `isar.session.workspace`, `isar.drive.session_log`,
+  `isar.drive.isar_io.readers`, `isar.report.audit`, `isar.analyze.components`, `isar.geometry`,
+  `isar.reduce.collate` (the canonical collation key — one definition of "a dataset"). Enforced
+  by an AST import-contract test, `tests/test_import_contract.py` (task A-11; allow-lists kept in
+  sync with this entry). Implemented (Phase 0/A).
+- **G17.** Rendering semantics live in the spec layer: `isar/plotspec` spec objects carry the
+  binding semantics (unreliable-never-whiskers, pooled labeling + members, tier labeling,
+  certifying-primary, truth-gated legend notes, strip = measured/no interpolation, per-point
+  color channel); backends map tokens only. Certifying-tier derivation is canonical in
+  `isar_gui/viewmodels/certify.py`; pooled masters never overlay member data and appear in ω̂
+  overlays as marked points (strips excluded). Implemented (Phase 0/A).
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:

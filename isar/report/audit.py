@@ -8,6 +8,7 @@ same component model (`isar.analyze.components`) and the same amplitude solve IS
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import SimpleNamespace
 
 import numpy as np
@@ -16,6 +17,37 @@ from scipy.optimize import nnls
 from isar.analyze.components import CompositeModel, ConstantBackground, Elastic, PhononDHO
 
 _OMEGA_D_FLOOR = 1e-6  # keep Ω_d real when a reported ω₀ < Γ (an overdamped/blown-up expert fit)
+
+
+def assemble_curve(comp, x_eval, *, omega0, gamma, amp, ctx):
+    """Assemble ``theta`` from fixed nonlinear (ω₀, Γ) + a linear-amplitude dict, then evaluate.
+
+    The nonlinear phonon values are fixed to the reported ω₀/Γ (Ω_d = √max(ω₀²−Γ², floor)); every
+    linear amplitude is taken from ``amp`` (``{global_param_name: value}``, default 0.0 when absent).
+    Returns the same ``SimpleNamespace`` (``x``, ``theta``, ``total``, ``components``, ``omega0``,
+    ``gamma``) that :func:`reconstruct_curve` returns. Shared by :func:`reconstruct_curve` (``amp``
+    solved by NNLS against counts) and ``isar.workspace_api`` (``amp`` read from a stored
+    ``FitOutcome.amplitudes``) so a params-only evaluator and the counts-based reconstruction use one
+    theta-assembly path.
+    """
+    if not isinstance(amp, Mapping):
+        raise ValueError(
+            f"amp must be a mapping of amplitude names to values, got {type(amp).__name__}")
+    omega_d = float(np.sqrt(max(float(omega0) ** 2 - float(gamma) ** 2, _OMEGA_D_FLOOR)))
+    theta = []
+    for pn in comp.param_names():
+        if pn.endswith(".Omega_d"):
+            theta.append(omega_d)
+        elif pn.endswith(".Gamma"):
+            theta.append(float(gamma))
+        else:
+            theta.append(float(amp.get(pn, 0.0)))
+    xe = np.asarray(x_eval, dtype=float)
+    return SimpleNamespace(
+        x=xe, theta=theta,
+        total=comp.evaluate(xe, theta, ctx),
+        components=comp.evaluate_components(xe, theta, ctx),
+        omega0=float(omega0), gamma=float(gamma))
 
 
 def reconstruct_curve(x, counts, *, omega0, gamma, center, gauss_fwhm, lorentz_fwhm, T,
@@ -39,18 +71,5 @@ def reconstruct_curve(x, counts, *, omega0, gamma, center, gauss_fwhm, lorentz_f
     amps, _ = nnls(phi, counts)
     amp = dict(zip(names, amps))
 
-    theta = []
-    for pn in comp.param_names():
-        if pn == "phonon.Omega_d":
-            theta.append(omega_d)
-        elif pn == "phonon.Gamma":
-            theta.append(float(gamma))
-        else:
-            theta.append(float(amp.get(pn, 0.0)))
-
     xe = x if x_eval is None else np.asarray(x_eval, dtype=float)
-    return SimpleNamespace(
-        x=xe, theta=theta,
-        total=comp.evaluate(xe, theta, ctx),
-        components=comp.evaluate_components(xe, theta, ctx),
-        omega0=float(omega0), gamma=float(gamma))
+    return assemble_curve(comp, xe, omega0=omega0, gamma=gamma, amp=amp, ctx=ctx)
