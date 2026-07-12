@@ -32,8 +32,10 @@ STORE_NAME = "gui.state.json"
 class GroupRec:
     """One manual scan group: a stable id, a human name, and an ordered/deduped member list.
 
-    ``members`` are scan *keys* in the scan-level ``"exp:scan"`` form (never per-detector), so one
-    membership pins every detector row of that physical scan at once.
+    ``members`` are scan-unit *keys*. New-form memberships are the atomic ``"exp:scan:det"`` unit key
+    (one analyzer of a source scan); legacy v1 stores hold scan-level ``"exp:scan"`` keys, which
+    :func:`isar_gui.scan_keys.member_matches` still resolves to every analyzer unit of that scan (no
+    key is rewritten on load — nothing is deleted).
     """
     id: str
     name: str
@@ -213,9 +215,14 @@ class GuiStore:
         return out
 
     def memberships_of(self, scan_key: str) -> list[str]:
-        """Ids of the manual groups that contain ``scan_key`` (order follows :meth:`groups`)."""
-        key = str(scan_key)
-        return [g.id for g in self.groups() if key in g.members]
+        """Ids of the manual groups that contain ``scan_key`` (order follows :meth:`groups`).
+
+        Matching is via :func:`isar_gui.scan_keys.member_matches`, so a legacy scan-level membership
+        resolves to every analyzer unit of that scan, while a new-form unit membership matches only
+        that unit."""
+        from isar_gui.scan_keys import member_matches
+        return [g.id for g in self.groups()
+                if any(member_matches(m, scan_key) for m in g.members)]
 
     def group_order(self) -> list[str]:
         return [str(x) for x in self._list_or_empty("group_order")]
@@ -237,3 +244,12 @@ class GuiStore:
         else:
             current.discard(str(gid))
         self._data["collapsed"] = sorted(current)
+
+    # ---- ui scraps: active scans-dock dimension tab ----------------------
+    def scans_tab(self) -> str | None:
+        """The last-active scans-dock dimension tab name (``"All"`` / ``"T"`` / ...), or ``None``."""
+        val = self._data.get("scans_tab")
+        return val if isinstance(val, str) and val else None
+
+    def set_scans_tab(self, name: str) -> None:
+        self._data["scans_tab"] = str(name)

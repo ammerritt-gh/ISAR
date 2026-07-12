@@ -21,9 +21,9 @@ from isar_gui.views.scan_table_dock import ScanTableDock
 
 def _sv(exp, num, det):
     return SimpleNamespace(
-        experiment_id=exp, scan_number=num, scan_type="measurement", status="fitted",
-        source_file=r"D:\d\scan.dat", T=300.0, hkl=[1.0, 0.0, 0.0],
-        detectors={det: SimpleNamespace(detector_id=det)})
+        scan_id=f"{exp}:{num}:{det}", experiment_id=exp, scan_number=num, scan_type="measurement",
+        status="fitted", source_file=r"D:\d\scan.dat", T=300.0, hkl=[1.0, 0.0, 0.0],
+        provenance={}, detectors={det: SimpleNamespace(detector_id=det)})
 
 
 def _ws(scan_views):
@@ -43,8 +43,8 @@ def test_selecting_a_row_is_visible_through_the_vm(qtbot, tmp_path):
                         store=GuiStore.load(tmp_path))
     dock = ScanTableDock(vm)
     qtbot.addWidget(dock)
-    vm.select_keys(["tavi:2"], clear=True)
-    assert vm.selected_keys() == ["tavi:2"]
+    vm.select_keys(["tavi:2:d1"], clear=True)
+    assert vm.selected_keys() == ["tavi:2:d1"]
 
 
 def test_model_mimedata_for_selected_rows(qtbot, tmp_path):
@@ -52,10 +52,10 @@ def test_model_mimedata_for_selected_rows(qtbot, tmp_path):
                         store=GuiStore.load(tmp_path))
     dock = ScanTableDock(vm)
     qtbot.addWidget(dock)
-    idx = vm.model.index(1, 0)   # row for tavi:2
+    idx = vm.model.index(1, 0)   # row for tavi:2:d1
     md = vm.model.mimeData([idx])
     assert md.hasFormat(MIME_SCAN_IDS)
-    assert decode_scan_ids(md.data(MIME_SCAN_IDS).data()) == ["tavi:2"]
+    assert decode_scan_ids(md.data(MIME_SCAN_IDS).data()) == ["tavi:2:d1"]
 
 
 def test_double_click_fitted_scan_requests_inspect(qtbot, tmp_path):

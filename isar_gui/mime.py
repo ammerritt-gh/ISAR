@@ -3,8 +3,9 @@
 Two custom MIME types carry ISAR's draggable units so any future drop target (the waterfall/
 comparison view, an analysis basket) can accept a scan or a whole group *unchanged*:
 
-* :data:`MIME_SCAN_IDS` — a flat list of scan keys (scan-level ``"exp:scan"`` form). Both scan chips
-  and table rows emit this, so every scan-consuming target only has to understand one type.
+* :data:`MIME_SCAN_IDS` — a flat list of scan-unit keys (the atomic ``"exp:scan:det"`` form; see
+  :mod:`isar_gui.scan_keys`). Both scan chips and table rows emit this, so every scan-consuming
+  target only has to understand one type.
 * :data:`MIME_GROUP_REF` — a reference to a group (manual or derived auto-group). A group header
   drag sets BOTH types — the group ref *and* the flattened member scan ids — so a scan-only drop
   target still works when handed a group.

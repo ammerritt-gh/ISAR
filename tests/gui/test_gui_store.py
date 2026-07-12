@@ -130,6 +130,36 @@ def test_group_order_and_collapsed_round_trip(tmp_path):
     assert a not in reloaded.collapsed()
 
 
+def test_legacy_scan_level_membership_matches_every_unit(tmp_path):
+    """A v1 store holds scan-level ``exp:scan`` members; memberships_of must resolve them to every
+    analyzer unit of that scan (via scan_keys.member_matches) while a foreign scan stays unmatched."""
+    store = GuiStore.load(tmp_path)
+    gid = store.create_group("Cold")
+    store.add_member(gid, "s30:12")            # legacy scan-level key
+    assert store.memberships_of("s30:12:ana1") == [gid]
+    assert store.memberships_of("s30:12:ana9") == [gid]
+    assert store.memberships_of("s30:13:ana1") == []   # different scan: unmatched
+    # An exact scan-level query still matches the scan-level member.
+    assert store.memberships_of("s30:12") == [gid]
+
+
+def test_unit_membership_matches_only_its_unit(tmp_path):
+    store = GuiStore.load(tmp_path)
+    gid = store.create_group("G")
+    store.add_member(gid, "s30:12:ana1")       # new-form unit key
+    assert store.memberships_of("s30:12:ana1") == [gid]
+    assert store.memberships_of("s30:12:ana2") == []   # a sibling is NOT covered
+
+
+def test_scans_tab_scrap_round_trip(tmp_path):
+    store = GuiStore.load(tmp_path)
+    assert store.scans_tab() is None
+    store.set_scans_tab("Analyzer")
+    store.save()
+    reloaded = GuiStore.load(tmp_path)
+    assert reloaded.scans_tab() == "Analyzer"
+
+
 def test_groups_coexist_with_watched_folders(tmp_path):
     store = GuiStore.load(tmp_path)
     store.add_watched(r"D:\beam")
