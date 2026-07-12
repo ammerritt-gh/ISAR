@@ -4,8 +4,10 @@ ISAR always works "in a workspace". If the operator has not opened one, they wor
 workspace: a real directory under a per-user recovery root that can be ``Save As``-d later, is
 prompted-about on close, and is offered for recovery at next startup. This module owns that lifecycle
 so :class:`~isar_gui.main_window.MainWindow` stays a wiring shell: the manager reserves/opens/copies/
-discards directories and drives the ``isar init`` (+ minimal inline ``isar ingest``) bootstrap, and
-emits signals the window merely reflects.
+discards directories and emits signals the window merely reflects. Scaffolding a pending workspace
+from dropped data (``isar init`` + ``isar ingest``) is driven by
+:class:`~isar_gui.ingest_controller.IngestController`, which calls back into :meth:`new_temp` /
+:meth:`open` here — see the ownership-split note below.
 
 Three states:
   * ``"none"``    — nothing bound (empty-start).
@@ -17,9 +19,13 @@ The pure path/copy/scan helpers are module-level functions (Qt-free) so tests co
 QApplication; the :class:`WorkspaceManager` QObject wraps them. All file I/O is utf-8, and every
 caught exception is logged (never silently swallowed).
 
-Seam note (Phase D): :meth:`bootstrap_from_data` owns the init -> ingest -> open sequence end-to-end.
-The **ingest** half is a deliberately small, obviously-replaceable inline ``ProcessRunner`` call;
-Phase D lifts it (and the ready-state drop ingest in MainWindow) into a dedicated IngestController.
+Ownership split (Phase D): the manager owns *pure lifecycle* — reserve (:meth:`new_temp`),
+:meth:`open`, :meth:`save_as`, :meth:`discard_temp`, :meth:`adopt` — and the none/pending/ready state
+machine. It no longer drives any ``isar`` subprocess. The bootstrap sequence that Phase C had here
+(``init`` -> ``ingest`` -> ``open``) moved wholesale into
+:class:`~isar_gui.ingest_controller.IngestController`, which consults this manager's state and calls
+back into :meth:`new_temp` / :meth:`open` — so there is exactly one serialization point for engine
+ingest processes and one owner of the FIFO queue.
 """
 from __future__ import annotations
 
@@ -32,12 +38,6 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from isar.workspace_api import Workspace, WorkspaceNotFound
-from isar_gui.commands import (
-    build_ingest_command,
-    build_init_command,
-    init_failure_cause,
-)
-from isar_gui.process import ProcessRunner
 
 log = logging.getLogger(__name__)
 
@@ -129,29 +129,22 @@ def discard_dir(root) -> bool:
 
 # ---- the QObject lifecycle owner --------------------------------------------
 class WorkspaceManager(QObject):
-    """Owns the workspace lifecycle (none / pending / ready) and the bootstrap sequence.
+    """Owns the workspace lifecycle (none / pending / ready): reserve / open / save-as / discard.
 
     Signals:
       * ``workspace_changed(object)`` — the bound :class:`Workspace` facade, or ``None`` for the
         none/pending states (the window rebinds its docks to whatever it receives).
       * ``state_changed(str)`` — the new state string (``"none" | "pending" | "ready"``).
-      * ``bootstrap_failed(str)`` — an ``isar init`` bootstrap failed; the arg is a human cause.
     """
 
     workspace_changed = Signal(object)
     state_changed = Signal(str)
-    bootstrap_failed = Signal(str)
 
-    def __init__(self, parent=None, *, python: str | None = None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        import sys
-
-        self._python = python or sys.executable
         self._state = "none"
         self._root: Path | None = None
         self._ws: Workspace | None = None
-        self._runner: ProcessRunner | None = None  # the live bootstrap subprocess, if any
-        self._bootstrapping = False   # True while an init(->ingest->open) sequence is in flight
         self._last_error: str | None = None  # cause of the last open/save_as failure, for the UI
 
     # ---- introspection ----------------------------------------------------
@@ -171,10 +164,6 @@ class WorkspaceManager(QObject):
     def has_content(self) -> bool:
         """True when the bound root holds real analysis (card/session written)."""
         return self._root is not None and has_content(self._root)
-
-    def is_bootstrapping(self) -> bool:
-        """True while an ``init(->ingest->open)`` sequence is in flight (drops are refused)."""
-        return self._bootstrapping
 
     def last_error(self) -> str | None:
         """The cause of the most recent ``open``/``save_as`` failure, or ``None``."""
@@ -227,92 +216,6 @@ class WorkspaceManager(QObject):
         self.workspace_changed.emit(ws)
         self._set_state("ready")
         return True
-
-    # ---- bootstrap: init -> ingest -> open (pending only) -----------------
-    def bootstrap_from_data(self, data_path) -> None:
-        """Scaffold the pending workspace from a dropped data path and open it.
-
-        Sequence (owned here so the window only reflects it): shell ``isar init <data> --out <root>
-        --json``; on success shell the minimal inline ``isar ingest`` for the same data (so the very
-        first bind already shows the scan ledger); then :meth:`open` the root. On an ``init`` failure
-        it emits ``bootstrap_failed(cause)`` and leaves the pending state intact for a retry.
-        """
-        if self._state != "pending" or self._root is None:
-            log.warning("bootstrap_from_data ignored — not in the pending state (state=%s)",
-                        self._state)
-            return
-        if self._bootstrapping:
-            # A second drop mid-bootstrap would orphan the live ProcessRunner (its finished callback
-            # still connected) — refuse until the in-flight sequence reaches a terminal state.
-            log.warning("bootstrap_from_data ignored — a bootstrap is already in flight")
-            return
-        self._bootstrapping = True
-        root = str(self._root)
-        data = str(data_path)
-        cmd = build_init_command(self._python, data, root, json=True)
-        log.info("bootstrap init: %s", " ".join(cmd))
-        self._runner = self._spawn(
-            cmd, lambda code, lines: self._after_init(code, lines, data),
-            log_path=self._boot_log("init"))
-
-    def _after_init(self, code: int, lines, data: str) -> None:
-        if code != 0:
-            self._bootstrapping = False   # terminal: init failed
-            cause = init_failure_cause(lines)
-            log.warning("bootstrap init failed (exit %s): %s", code, cause)
-            self.bootstrap_failed.emit(cause)
-            return
-        # init succeeded — the card exists. Run the minimal inline ingest, then open regardless of
-        # the ingest outcome (an ingest hiccup must not strand a scaffolded workspace unopened).
-        root = str(self._root)
-        cmd = build_ingest_command(self._python, [data], root, json=True)
-        log.info("bootstrap ingest: %s", " ".join(cmd))
-        self._runner = self._spawn(
-            cmd, lambda c, _l: self._after_ingest(c, root),
-            log_path=self._boot_log("ingest"))
-
-    def _after_ingest(self, code: int, root: str) -> None:
-        self._bootstrapping = False       # terminal: ingest done (open follows regardless of code)
-        if code != 0:
-            log.warning("bootstrap ingest returned exit %s — opening the workspace anyway", code)
-        if not self.open(root):
-            # init wrote a card, so open should succeed; if it somehow doesn't, surface it.
-            self.bootstrap_failed.emit(f"scaffolded {root} but could not open it")
-
-    def _spawn(self, cmd, on_done, *, log_path: str | None = None) -> ProcessRunner:
-        """Run ``cmd`` via a fresh :class:`ProcessRunner` (parented to self so it outlives this
-        call), buffering its lines; call ``on_done(exit_code, lines)`` when it finishes.
-
-        Belt-and-braces: any prior runner is disconnected and scheduled for deletion before the
-        replacement is created, so a stale finished-callback can never fire against the new sequence
-        (the #1 guard already prevents concurrent bootstraps; this covers the sequential handoff)."""
-        self._dispose_runner()
-        lines: list[str] = []
-        runner = ProcessRunner(self)
-        runner.line.connect(lambda ln: lines.append(ln))
-        runner.finished.connect(lambda code: on_done(code, lines))
-        self._runner = runner
-        runner.start(cmd, log_path=log_path)
-        return runner
-
-    def _dispose_runner(self) -> None:
-        """Disconnect and schedule deletion of the current bootstrap runner, if any."""
-        if self._runner is None:
-            return
-        try:
-            self._runner.line.disconnect()
-            self._runner.finished.disconnect()
-        except (RuntimeError, TypeError):
-            pass  # already disconnected / C++ side gone — nothing to detach
-        self._runner.deleteLater()
-        self._runner = None
-
-    def _boot_log(self, phase: str) -> str | None:
-        """A retained bootstrap log next to the workspace (best-effort; None if root is gone)."""
-        if self._root is None:
-            return None
-        return str(self._root / "report" / "gui-runs"
-                   / f"bootstrap-{phase}-{datetime.now():%Y%m%d-%H%M%S}.log")
 
     # ---- save / discard ---------------------------------------------------
     def save_as(self, dest) -> bool:

@@ -16,6 +16,24 @@ def _open(make_ws):
     return Workspace.open(root), root
 
 
+class _FakeDrop:
+    """A minimal drop event carrying local-file URLs for MainWindow.dropEvent."""
+
+    def __init__(self, paths):
+        from PySide6.QtCore import QMimeData, QUrl
+
+        md = QMimeData()
+        md.setUrls([QUrl.fromLocalFile(p) for p in paths])
+        self._md = md
+        self.accepted = False
+
+    def mimeData(self):
+        return self._md
+
+    def acceptProposedAction(self):
+        self.accepted = True
+
+
 def test_main_window_builds(qtbot, make_ws):
     ws, root = _open(make_ws)
     w = MainWindow(ws, session=Session(), watch=False)
@@ -444,22 +462,17 @@ def test_save_as_notes_dest_in_recents(qtbot, tmp_path, monkeypatch):
     assert str(dest) in session.recent_workspaces       # the saved copy IS noted in recents
 
 
-def test_ready_drop_ingest_is_single_flight(qtbot, make_ws):
-    """Dropping data onto a ready workspace while an ingest is already running is refused (no new
-    runner, a status message), so the interim inline ingest never races its runner reference."""
+def test_ready_drop_routes_to_ingest_controller(qtbot, make_ws, monkeypatch):
+    """Dropping raw data onto a ready workspace hands it to the IngestController (which queues rather
+    than refuses a concurrent drop) — the window no longer runs the inline single-flight ingest."""
     ws, _ = _open(make_ws)
     w = MainWindow(ws, session=Session(), watch=False)
     qtbot.addWidget(w)
 
-    class _FakeRunning:
-        def is_running(self):
-            return True
-
-    fake = _FakeRunning()
-    w._ingest_runner = fake
-    w._ingest_into_current("some/data/path")
-    assert w._ingest_runner is fake                     # unchanged — no second runner created
-    assert "already running" in w.statusBar().currentMessage()
+    requested = []
+    monkeypatch.setattr(w._ingest_controller, "request_ingest", lambda p: requested.append(list(p)))
+    w.dropEvent(_FakeDrop([r"some/data/path"]))
+    assert requested == [[r"some/data/path"]]
 
 
 def test_dock_layout_round_trips_through_session(qtbot, make_ws):

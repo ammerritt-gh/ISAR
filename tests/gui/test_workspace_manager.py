@@ -192,21 +192,13 @@ def test_discard_temp_only_under_temp_root(qtbot, temproot, tmp_path):
     assert not temp.exists()
 
 
-def test_bootstrap_guard_refuses_concurrent(qtbot, temproot):
-    """A second bootstrap while one is in flight must be refused — the live ProcessRunner (and its
-    finished callback) is never orphaned by an overwrite."""
+def test_manager_no_longer_owns_bootstrap(qtbot, temproot):
+    """Phase D moved the init->ingest->open bootstrap out of the manager into the IngestController;
+    the manager keeps only pure lifecycle (reserve/open/save/discard) and no subprocess API."""
     m = WorkspaceManager()
-    m.new_temp()                              # -> pending
-    spawned = []
-    monkeypatch_spawn = lambda *a, **k: spawned.append(a) or None  # noqa: E731
-    m._spawn = monkeypatch_spawn              # spy: record calls, never launch a subprocess
-
-    m.bootstrap_from_data("data-a")
-    assert m.is_bootstrapping()
-    assert len(spawned) == 1                  # first bootstrap launched init
-
-    m.bootstrap_from_data("data-b")           # second drop mid-flight
-    assert len(spawned) == 1                  # refused — no second launch
+    assert not hasattr(m, "bootstrap_from_data")
+    assert not hasattr(m, "is_bootstrapping")
+    assert not hasattr(m, "_spawn")
 
 
 def test_discard_temp_resets_to_none(qtbot, temproot):

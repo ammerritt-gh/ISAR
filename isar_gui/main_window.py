@@ -27,8 +27,11 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
-from isar_gui.commands import RunOptions, build_ingest_command, build_run_command
+from isar_gui.commands import RunOptions, build_run_command
+from isar_gui.folder_watcher import FolderWatcher
+from isar_gui.gui_store import GuiStore
 from isar_gui.health import LLM_DEFAULT_ENDPOINT, TAVI_DEFAULT_URL, find_tavi_bat, ping_http
+from isar_gui.ingest_controller import IngestController
 from isar_gui.process import ProcessRunner
 from isar_gui.workspace_manager import WorkspaceManager
 
@@ -49,6 +52,7 @@ from isar_gui.session import Autosaver, Session, load_session
 from isar_gui.viewmodels import (
     BrowserViewModel,
     DispersionViewModel,
+    FilesViewModel,
     HeatmapViewModel,
     InspectorViewModel,
     ViewModel,
@@ -57,6 +61,7 @@ from isar_gui.viewmodels import (
 from isar_gui.views.browser_dock import BrowserDock
 from isar_gui.views.card_dock import CardDock
 from isar_gui.views.dispersion_dock import DispersionDock
+from isar_gui.views.files_dock import FilesDock
 from isar_gui.views.heatmap_dock import HeatmapDock
 from isar_gui.views.inspector_widget import InspectorWidget
 from isar_gui.views.waterfall_dock import WaterfallDock
@@ -121,21 +126,40 @@ class MainWindow(QMainWindow):
         self._warn_generation = 0     # per-bridge-tick counter passed to LogDock.sync_warnings
         self._empty = False           # True while showing the empty-start (no workspace) state
         self.inspector = None         # the C2 central widget; None in the empty state
-        self.setAcceptDrops(True)      # drop a data folder/numor onto the window -> New Experiment (D4)
+        self.setAcceptDrops(True)      # drop a data folder/numor onto the window -> ingest (D2/D5)
         self._run_runner: ProcessRunner | None = None  # the live `isar run` subprocess, if any
-        self._ingest_runner: ProcessRunner | None = None  # the live inline `isar ingest`, if any
         self._bound = False           # True once a first workspace binding exists (rebind guard)
+        self._gui_store: GuiStore | None = None   # per-workspace GUI-only state (watched folders)
 
-        # The workspace lifecycle owner (none/pending/ready + temp/save-as/bootstrap). MainWindow is
-        # the view: it reflects the manager's signals and never reaches into a workspace directory
-        # itself. `ws` passed at construction is adopted directly (no re-open, no signal); every
-        # later transition flows through the manager's emitting methods.
+        # The workspace lifecycle owner (none/pending/ready + temp/save-as). MainWindow is the view:
+        # it reflects the manager's signals and never reaches into a workspace directory itself. `ws`
+        # passed at construction is adopted directly (no re-open, no signal); every later transition
+        # flows through the manager's emitting methods.
         self._wsm = WorkspaceManager(self)
         self._wsm.workspace_changed.connect(self._on_wsm_workspace_changed)
         self._wsm.state_changed.connect(self._on_wsm_state_changed)
-        self._wsm.bootstrap_failed.connect(self._on_bootstrap_failed)
         if ws is not None:
             self._wsm.adopt(ws)
+
+        # The single serialization point for engine ingest subprocesses (drops, browse, watched
+        # folders). Lives across workspace switches — it consults the manager for the none/pending/
+        # ready routing and drives the init->ingest->open bootstrap the manager used to own (Phase D).
+        self._ingest_controller = IngestController(sys.executable, self._wsm, self.log, parent=self)
+        self._ingest_controller.ingest_started.connect(self._on_ingest_started)
+        self._ingest_controller.ingest_finished.connect(self._on_ingest_report)
+        self._ingest_controller.ingest_failed.connect(self._on_ingest_failed)
+
+        # Watched-folder poller: settled new files feed the same controller queue. Lives across
+        # switches; its folder set is re-seeded from each ready workspace's GuiStore.
+        self._folder_watcher = FolderWatcher(is_known=self._is_file_known, parent=self)
+        self._folder_watcher.files_stable.connect(self._on_watched_files_stable)
+        if self._watch_enabled:
+            self._folder_watcher.start()
+        # Debounced save of the per-workspace GUI store (mirrors the session Autosaver, 500 ms).
+        self._store_save_timer = QTimer(self)
+        self._store_save_timer.setSingleShot(True)
+        self._store_save_timer.setInterval(500)
+        self._store_save_timer.timeout.connect(self._save_gui_store)
 
         self._init_file_menu()
         self._init_workspace_toolbar()
@@ -180,6 +204,10 @@ class MainWindow(QMainWindow):
         self.heatmap_vm = HeatmapViewModel(ws, parent=self)
         self.dispersion_vm = DispersionViewModel(ws, parent=self)
         self.waterfall_vm = WaterfallViewModel(ws, parent=self)
+        # The Files viewmodel is bound with no store yet; a ready bind loads the per-workspace
+        # GuiStore below and calls set_store (empty/pending has no workspace file to persist into).
+        self.files_vm = FilesViewModel(ws, store=None, parent=self)
+        self.files_vm.watch_config_changed.connect(self._on_watch_config_changed)
         self.waterfall_vm.load_view_state(self._session)
         self.heatmap_vm.load_view_state(self._session)
         self.dispersion_vm.load_view_state(self._session)
@@ -215,6 +243,19 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(f"Workspace: {ws.root}")
             self.log(f"Opened workspace {ws.root}")
+
+        # Per-workspace GUI store (watched folders) — only for a ready workspace (the file lives in
+        # the workspace dir). An empty/pending bind clears any watcher folders from the last binding.
+        if not self._empty:
+            self._gui_store = GuiStore.load(ws.root)
+            self.files_vm.set_store(self._gui_store)
+            # Seed the watcher from the persisted config directly (a bind is not a user mutation, so
+            # it must not re-persist the store; user add/remove/pause go through watch_config_changed).
+            self._folder_watcher.set_folders(self.files_vm.watched())
+            self._folder_watcher.set_paused(self.files_vm.watch_paused())
+        else:
+            self._gui_store = None
+            self._folder_watcher.set_folders([])
 
         # Watch bridge: refresh + fan out on the Qt thread. Optional (tests may disable it). Never
         # started in the empty state — there is no workspace on disk to watch.
@@ -257,8 +298,15 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
         self._register_dock("Log", self.log_dock)
 
+        # The Files dock is the data entry point (drop target + manifest + watched folders); it leads
+        # the left area so it is the first thing an operator sees on an empty/pending workspace.
+        self.files_dock = FilesDock(self.files_vm, self._ingest_controller, self)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.files_dock)
+        self._register_dock("Files", self.files_dock)
+
         self.browser_dock = BrowserDock(self.browser_vm, self)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.browser_dock)
+        self.tabifyDockWidget(self.files_dock, self.browser_dock)
         self._register_dock("Browser", self.browser_dock)
 
         # The card editor (raw TOML, D2) shares the left area with the browser as a tabified sibling.
@@ -410,61 +458,78 @@ class MainWindow(QMainWindow):
         if not urls:
             return
         event.acceptProposedAction()
-        path = Path(urls[0].toLocalFile())
-        # A dropped existing workspace opens directly. Anything else is raw data, routed by state:
-        #   none    -> reserve a temp workspace, then bootstrap (init + inline ingest) from it;
-        #   pending -> bootstrap the reserved temp workspace from it;
-        #   ready   -> minimal inline `isar ingest` into the open workspace (Phase D lifts this into
-        #              an IngestController; a temp workspace is just as valid an ingest target).
-        if self._is_workspace_dir(path):
-            self.load_workspace(str(path))
+        paths = [u.toLocalFile() for u in urls]
+        # A single dropped existing workspace opens directly. Anything else is raw data handed to the
+        # IngestController, which routes by workspace state (none -> reserve temp + bootstrap;
+        # pending -> bootstrap; ready -> ingest) and serializes everything behind one FIFO queue.
+        first = Path(paths[0])
+        if len(paths) == 1 and self._is_workspace_dir(first):
+            self.load_workspace(str(first))
             return
-        if self._wsm.is_bootstrapping():
-            self.statusBar().showMessage("Still creating the last workspace — drop again in a moment")
-            self.log("drop ignored — a workspace bootstrap is already in flight")
-            return
-        state = self._wsm.state()
-        if state == "none":
-            self._wsm.new_temp()
-            self._wsm.bootstrap_from_data(str(path))
-        elif state == "pending":
-            self._wsm.bootstrap_from_data(str(path))
-        else:
-            self._ingest_into_current(str(path))
+        self._ingest_controller.request_ingest(paths)
 
-    def _ingest_into_current(self, data_path: str) -> None:
-        """Minimal inline ``isar ingest <data> --workspace <root> --json`` for a drop onto an
-        already-ready workspace: log the streamed output and the exit status, no queueing. This is
-        the deliberately-small interim replaced by the Phase-D IngestController."""
-        if self._empty:
-            return
-        # Single-flight for this interim: the real queue is the Phase-D IngestController. A second
-        # drop while an ingest is running is refused (not silently dropped or racing the runner ref).
-        if self._ingest_runner is not None and self._ingest_runner.is_running():
-            self.statusBar().showMessage(
-                "ingest already running — queued ingest arrives in the next phase")
-            self.log("ingest already in flight; this dropped-data ingest was skipped "
-                     "(a proper queue arrives in Phase D)")
-            return
-        root = str(self._ws.root)
-        cmd = build_ingest_command(sys.executable, [data_path], root, json=True)
-        log_path = Path(root) / "report" / "gui-runs" / f"ingest-{datetime.now():%Y%m%d-%H%M%S}.log"
-        self.log("$ " + " ".join(cmd))
-        self.statusBar().showMessage("Ingesting dropped data…")
-        self._ingest_runner = ProcessRunner(self)
-        self._ingest_runner.line.connect(self.log)
-        self._ingest_runner.finished.connect(self._on_ingest_finished)
-        self._ingest_runner.start(cmd, log_path=str(log_path))
+    # ---- ingest-controller signal slots -----------------------------------
+    def _on_ingest_started(self, paths) -> None:
+        n = len(paths)
+        self.statusBar().showMessage(f"Ingesting {n} path{'s' if n != 1 else ''}…")
 
-    def _on_ingest_finished(self, code: int) -> None:
-        if code == 0:
-            self.statusBar().showMessage("Ingest finished — ledger updated")
-        else:
-            self.statusBar().showMessage(f"Ingest failed (exit {code}) — see log")
-        # Release the single-flight slot so the next drop can ingest.
-        runner, self._ingest_runner = self._ingest_runner, None
-        if runner is not None:
-            runner.deleteLater()
+    def _on_ingest_report(self, report) -> None:
+        """A completed ingest: informational status + log (deduped is a cue, never modal), and a
+        transient highlight of the files that produced added/updated scans."""
+        n_files = len(report.files)
+        a, u, d = len(report.added), len(report.updated), len(report.deduped)
+        self.statusBar().showMessage(
+            f"Ingested {n_files} files: +{a} scans, ~{u} updated ({d} duplicates)")
+        for dedup in report.deduped:
+            self.log(f"dedup: {dedup.get('scan')} kept {dedup.get('kept')} "
+                     f"(superseded {', '.join(dedup.get('superseded') or [])})")
+        # Highlight the files whose scans were newly added/updated by this ingest.
+        changed_ids = set(report.added) | set(report.updated)
+        added_paths = [f.get("path") for f in report.files
+                       if set(f.get("scan_ids") or []) & changed_ids]
+        dock = self._docks.get("Files")
+        if dock is not None and added_paths:
+            dock.highlight_added(added_paths)
+
+    def _on_ingest_failed(self, code: int, cause: str) -> None:
+        self.statusBar().showMessage(f"Could not ingest data: {cause}")
+        self.log(f"ingest failed (exit {code}): {cause}")
+
+    def _on_watched_files_stable(self, paths) -> None:
+        """A watched folder settled some new files — enqueue them for ingest (serialized)."""
+        if paths:
+            self.log(f"watched folder: {len(paths)} new file(s) settled — queuing ingest")
+            self._ingest_controller.request_ingest(list(paths))
+
+    def _on_watch_config_changed(self) -> None:
+        """A watched-folder mutation (add/remove/pause) from the dock: re-seed the folder watcher
+        immediately and debounce-persist the GUI store. (A bind seeds the watcher directly and does
+        NOT route through here, so opening a workspace never re-persists an unchanged store.)"""
+        self._folder_watcher.set_folders(self.files_vm.watched())
+        self._folder_watcher.set_paused(self.files_vm.watch_paused())
+        if self._gui_store is not None:
+            self._store_save_timer.start()
+
+    def _save_gui_store(self) -> None:
+        if self._gui_store is not None:
+            self._gui_store.save()
+
+    def _is_file_known(self, path: str, size, _mtime) -> bool:
+        """Cheap no-op guard for the folder watcher: True if ``path`` is already in the manifest with
+        the same size (engine idempotency is the real guarantee; this just avoids needless churn)."""
+        if getattr(self, "_empty", True):
+            return False
+        try:
+            rp = str(Path(path).resolve())
+        except OSError:
+            return False
+        for fv in self._ws.files:
+            try:
+                if str(Path(fv.path).resolve()) == rp and fv.size == size:
+                    return True
+            except (OSError, AttributeError):
+                continue
+        return False
 
     # ---- workspace-manager signal slots (the window reflects the manager) --
     def _on_wsm_workspace_changed(self, ws) -> None:
@@ -480,10 +545,6 @@ class MainWindow(QMainWindow):
     def _on_wsm_state_changed(self, _state: str) -> None:
         self._update_title()
         self._sync_workspace_actions()
-
-    def _on_bootstrap_failed(self, cause: str) -> None:
-        self.statusBar().showMessage(f"Could not create workspace from dropped data: {cause}")
-        self.log(f"bootstrap failed: {cause}")
 
     def _rebind(self, ws) -> None:
         """Tear down the current binding (if any) and bind ``ws`` (``None`` = empty/pending)."""
@@ -776,6 +837,7 @@ class MainWindow(QMainWindow):
         # rest of the window's life. Drop them so repeated rebinds don't accumulate.
         self._viewmodel.deleteLater()
         self.browser_vm.deleteLater()
+        self.files_vm.deleteLater()
         self.inspector_vm.deleteLater()
         self.heatmap_vm.save_view_state(self._session)
         self.heatmap_vm.deleteLater()
@@ -796,6 +858,10 @@ class MainWindow(QMainWindow):
         self._warn_generation += 1
         self.log_dock.sync_warnings(self._ws.warnings, self._warn_generation)
         self._viewmodel.on_workspace_changed(changed)
+        # "snapshot" (session.json) carries the ingest manifest + scan ledger — refresh the Files
+        # dock so a finished ingest's new files appear without a manual re-read.
+        if changed & {"snapshot"}:
+            self.files_vm.refresh()
         # "results"/"snapshot" carry the fit data the plots read; "card_state" carries lattice
         # epochs / dispersion prior / branch belief that feed the browser HKL, the dispersion prior
         # curve, and the heatmap overlays — so it must also re-derive the component views.
@@ -868,10 +934,16 @@ class MainWindow(QMainWindow):
             return
         if getattr(self, "_health_timer", None) is not None:
             self._health_timer.stop()
+        if getattr(self, "_folder_watcher", None) is not None:
+            self._folder_watcher.stop()
         if self._bridge is not None:
             self._bridge.stop()
         if getattr(self, "_autosaver", None) is not None:
             self._autosaver.flush_now()
+        # Flush any pending debounced GUI-store write (watched folders) before the window goes.
+        if getattr(self, "_store_save_timer", None) is not None and self._store_save_timer.isActive():
+            self._store_save_timer.stop()
+            self._save_gui_store()
         super().closeEvent(event)
 
     def _resolve_unsaved_temp_on_close(self) -> bool:
