@@ -26,6 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("data", help="a data file, or a directory containing one")
     pi.add_argument("--out", default=None, help="workspace directory (default ./isar_<instr>_<date>)")
 
+    pdt = sub.add_parser("detect", help="report the instrument detected from a data path (no writes)")
+    pdt.add_argument("data", help="a data file, or a directory containing one")
+    pdt.add_argument("--json", action="store_true", help="emit a machine-readable JSON object")
+
     pr = sub.add_parser("run", help="run the pipeline on a batch of data (idempotent)")
     pr.add_argument("data", nargs="+")
     pr.add_argument("--workspace", required=True)
@@ -147,6 +151,9 @@ def main(argv=None) -> int:
     if cmd == "init":
         from isar.cli import init_cmd
         return init_cmd.run(args)
+    if cmd == "detect":
+        from isar.cli import detect_cmd
+        return detect_cmd.run(args)
     if cmd == "run":
         from isar.cli import run_cmd
         return run_cmd.run(args)

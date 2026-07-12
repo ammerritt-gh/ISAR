@@ -11,11 +11,15 @@ The Docks-menu two-way sync (checkable action <-> dock ``visibilityChanged``) fo
 """
 from __future__ import annotations
 
+import sys
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, Qt, QTimer
 from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow
+
+from isar_gui.commands import RunOptions, build_run_command
+from isar_gui.process import ProcessRunner
 
 from isar.workspace_api import (
     SCHEMA_VERSION,
@@ -35,6 +39,7 @@ from isar_gui.viewmodels import (
     WaterfallViewModel,
 )
 from isar_gui.views.browser_dock import BrowserDock
+from isar_gui.views.card_dock import CardDock
 from isar_gui.views.dispersion_dock import DispersionDock
 from isar_gui.views.heatmap_dock import HeatmapDock
 from isar_gui.views.inspector_widget import InspectorWidget
@@ -95,7 +100,10 @@ class MainWindow(QMainWindow):
         self._warn_generation = 0     # per-bridge-tick counter passed to LogDock.sync_warnings
         self._empty = False           # True while showing the empty-start (no workspace) state
         self.inspector = None         # the C2 central widget; None in the empty state
+        self.setAcceptDrops(True)      # drop a data folder/numor onto the window -> New Experiment (D4)
+        self._run_runner: ProcessRunner | None = None  # the live `isar run` subprocess, if any
         self._init_file_menu()
+        self._init_run_menu()
         self._init_status_bar()
         self._bind_workspace(ws)
         if ws is not None:
@@ -178,6 +186,8 @@ class MainWindow(QMainWindow):
         else:
             self._live_label.setText("")
 
+        self._sync_run_actions()  # Run/Re-run enablement depends on empty-state + remembered runs
+
     def _make_empty_hint(self) -> QLabel:
         """The empty-start central widget: a centered "Open Workspace…" hint."""
         hint = QLabel(_EMPTY_HINT, self)
@@ -197,6 +207,12 @@ class MainWindow(QMainWindow):
         self.browser_dock = BrowserDock(self.browser_vm, self)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.browser_dock)
         self._register_dock("Browser", self.browser_dock)
+
+        # The card editor (raw TOML, D2) shares the left area with the browser as a tabified sibling.
+        self.card_dock = CardDock(self._ws, self)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.card_dock)
+        self.tabifyDockWidget(self.browser_dock, self.card_dock)
+        self._register_dock("Card", self.card_dock)
 
         self.heatmap_dock = HeatmapDock(self.heatmap_vm, self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.heatmap_dock)
@@ -221,11 +237,22 @@ class MainWindow(QMainWindow):
         # autosave (debounced) so that move survives a restart without waiting for an explicit toggle.
         dock.dockLocationChanged.connect(lambda _area: self._autosave())
 
-    # ---- File menu (built once; Open Workspace… persists across reloads) --
+    # ---- File menu (built once; actions persist across workspace reloads) --
     def _init_file_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
+        new_action = file_menu.addAction("New Experiment…")
+        new_action.triggered.connect(lambda: self.open_new_experiment())
         open_action = file_menu.addAction("Open Workspace…")
         open_action.triggered.connect(self._on_open_workspace)
+
+        file_menu.addSeparator()
+        report_action = file_menu.addAction("Open Report")
+        report_action.triggered.connect(self._open_report)
+        export_menu = file_menu.addMenu("Export View as PNG")
+        for label, key in (("Plane (q, E)", "Plane (q, E)"), ("Dispersion", "Dispersion ω(q)"),
+                           ("Waterfall", "Waterfall / Comparison"), ("Inspector", "Inspector")):
+            act = export_menu.addAction(label)
+            act.triggered.connect(lambda _checked=False, k=key: self._export_view(k))
 
     def _on_open_workspace(self) -> None:
         start_dir = "" if self._ws.root is None else str(self._ws.root)
@@ -233,12 +260,171 @@ class MainWindow(QMainWindow):
         if path:
             self.load_workspace(path)
 
+    # ---- New Experiment front door (wizard + drag-drop, D4) ---------------
+    def open_new_experiment(self, prefill: str | None = None) -> None:
+        """Open the New Experiment dialog (optionally pre-filled with a dropped data path). On a
+        successful ``isar init`` the freshly-scaffolded workspace is loaded."""
+        from isar_gui.new_experiment import NewExperimentDialog
+
+        dlg = NewExperimentDialog(prefill, parent=self)
+        if dlg.exec() and dlg.workspace_path:
+            self.log(f"Created experiment {dlg.workspace_path}")
+            self.load_workspace(dlg.workspace_path)
+
+    @staticmethod
+    def _is_workspace_dir(path: Path) -> bool:
+        return path.is_dir() and (path / "card.policy.toml").exists()
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        md = event.mimeData()
+        if md.hasUrls() and any(u.isLocalFile() for u in md.urls()):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        urls = [u for u in event.mimeData().urls() if u.isLocalFile()]
+        if not urls:
+            return
+        event.acceptProposedAction()
+        path = Path(urls[0].toLocalFile())
+        # A dropped existing workspace opens directly; anything else is raw data -> New Experiment.
+        if self._is_workspace_dir(path):
+            self.load_workspace(str(path))
+        else:
+            self.open_new_experiment(prefill=str(path))
+
+    # ---- Run menu (shell `isar run` as a subprocess, D3) ------------------
+    def _init_run_menu(self) -> None:
+        run_menu = self.menuBar().addMenu("&Run")
+        self._run_action = run_menu.addAction("Run analysis…")
+        self._run_action.triggered.connect(lambda: self.run_analysis())
+        self._rerun_action = run_menu.addAction("Re-run (only new scans)")
+        self._rerun_action.triggered.connect(self.rerun)
+
+    def _sync_run_actions(self) -> None:
+        """Runs need a real workspace and no run already in flight."""
+        busy = self._run_runner is not None and self._run_runner.is_running()
+        can_run = (not self._empty) and (not busy)
+        self._run_action.setEnabled(can_run)
+        # Re-run additionally needs a remembered previous invocation for this workspace.
+        self._rerun_action.setEnabled(can_run and self._run_state() is not None)
+
+    def run_analysis(self) -> None:
+        """Open the Run dialog (pre-filled from the last run) and launch ``isar run`` on accept."""
+        if self._empty or (self._run_runner is not None and self._run_runner.is_running()):
+            return
+        from isar_gui.run_dialog import RunDialog
+
+        prev = self._run_state() or {}
+        data = (prev.get("data") or [""])[0]
+        opts = RunOptions(**prev["opts"]) if prev.get("opts") else RunOptions()
+        dlg = RunDialog(data=data, opts=opts, parent=self)
+        if not dlg.exec() or not dlg.data_paths:
+            return
+        self._launch_run(dlg.data_paths, dlg.options)
+
+    def rerun(self) -> None:
+        """Re-run the last invocation verbatim (idempotent — the engine only fits new scans)."""
+        if self._empty or (self._run_runner is not None and self._run_runner.is_running()):
+            return
+        state = self._run_state()
+        if state is None:
+            return
+        self._launch_run(state["data"], RunOptions(**state["opts"]))
+
+    def _launch_run(self, data_paths, opts: RunOptions) -> None:
+        ws_root = str(self._ws.root)
+        cmd = build_run_command(sys.executable, data_paths, ws_root, opts)
+        self._remember_run(data_paths, opts)
+        # Retain each run's log next to the report so a finished/failed run is inspectable later.
+        log_path = Path(ws_root) / "report" / "gui-runs" / f"run-{datetime.now():%Y%m%d-%H%M%S}.log"
+        self.log("$ " + " ".join(cmd))
+        self._set_run_status("running…", "#b8860b")
+        self._run_runner = ProcessRunner(self)
+        self._run_runner.line.connect(self.log)
+        self._run_runner.finished.connect(self._on_run_finished)
+        self._run_runner.start(cmd, log_path=str(log_path))
+        self._sync_run_actions()
+
+    def _on_run_finished(self, code: int) -> None:
+        if code == 0:
+            self._set_run_status(f"run finished OK ({datetime.now():%H:%M:%S})", "#2e7d32")
+            self.statusBar().showMessage("Run finished — results updated below")
+        else:
+            self._set_run_status(f"run FAILED (exit {code}) — see log", "#c62828")
+            self.statusBar().showMessage(f"Run failed (exit {code})")
+        self._sync_run_actions()
+
+    def _set_run_status(self, text: str, color: str) -> None:
+        self._run_status.setText(text)
+        self._run_status.setStyleSheet(f"color: {color};")
+
+    # ---- remembered run state (per workspace, in the GUI session) ----------
+    def _run_state(self) -> dict | None:
+        if self._empty:
+            return None
+        return self._session.view_state.get("run", {}).get(str(self._ws.root))
+
+    def _remember_run(self, data_paths, opts: RunOptions) -> None:
+        from dataclasses import asdict
+
+        runs = self._session.view_state.setdefault("run", {})
+        runs[str(self._ws.root)] = {"data": list(data_paths), "opts": asdict(opts)}
+        self._autosave()
+
+    # ---- Open report / Export view (Operator-Contract wins, D3) -----------
+    def _open_report(self) -> bool:
+        """Open ``<workspace>/report/report.html`` in the default browser. Returns success."""
+        import webbrowser
+
+        if self._empty:
+            self.statusBar().showMessage("No workspace — nothing to open")
+            return False
+        report = Path(self._ws.root) / "report" / "report.html"
+        if not report.exists():
+            self.statusBar().showMessage("No report yet — run analysis first")
+            return False
+        webbrowser.open(report.as_uri())
+        return True
+
+    def _export_view(self, dock_key: str, path: str | None = None) -> bool:
+        """Save the named plot view to a PNG (grabs exactly what is on screen). ``path`` bypasses the
+        file dialog (tests). Returns success."""
+        from isar_gui.plotspec_pg import save_widget_png
+
+        if self._empty:
+            self.statusBar().showMessage("No workspace — nothing to export")
+            return False
+        glw = self._glw_for(dock_key)
+        if glw is None:
+            self.statusBar().showMessage(f"No '{dock_key}' view to export")
+            return False
+        if path is None:
+            default = f"{Path(self._ws.root).name}_{dock_key.split()[0].lower()}.png"
+            path, _ = QFileDialog.getSaveFileName(self, "Export view as PNG", default,
+                                                  "PNG image (*.png)")
+            if not path:
+                return False
+        ok = save_widget_png(glw, path)
+        self.statusBar().showMessage(f"Exported {path}" if ok else f"Export failed: {path}")
+        return ok
+
+    def _glw_for(self, dock_key: str):
+        """The pyqtgraph graphics widget backing a named view, or ``None``."""
+        if dock_key == "Inspector":
+            return None if self.inspector is None else self.inspector._glw
+        dock = self._docks.get(dock_key)
+        return getattr(dock, "_glw", None) if dock is not None else None
+
     # ---- status bar: persistent live indicator ----------------------------
     def _init_status_bar(self) -> None:
         """A permanent status-bar label (distinct from the transient ``showMessage`` text) so "is it
         live" stays visible even after the transient "Updated: ..." message expires."""
         self._live_label = QLabel()
         self.statusBar().addPermanentWidget(self._live_label)
+        # A persistent run-state indicator (colour-coded): survives the transient showMessage text so
+        # a finished/failed run stays visible. Empty until the first run.
+        self._run_status = QLabel()
+        self.statusBar().addPermanentWidget(self._run_status)
 
     # ---- Docks menu (PUFFIN two-way-sync pattern) -------------------------
     def _init_docks_menu(self) -> None:

@@ -335,6 +335,16 @@ def clear_render(plot_item: "pg.PlotItem") -> None:
     plot_item.setTitle(None)
 
 
+def save_widget_png(widget, path) -> bool:
+    """Grab ``widget`` (a rendered graphics widget) to a PNG file. Returns success.
+
+    Used by the "Export view as PNG" action — a ``QWidget.grab()`` of the pyqtgraph
+    ``GraphicsLayoutWidget`` captures exactly what the operator sees, so the export needs no separate
+    render path (it is honest to the on-screen view, projection legend and all)."""
+    pixmap = widget.grab()
+    return bool(pixmap.save(str(path), "PNG"))
+
+
 def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
     """Render ``spec`` into ``plot_item``, returning a :class:`RenderedSpec` handle.
 

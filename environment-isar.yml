@@ -1,0 +1,12 @@
+# ISAR's own environment (D1). The analysis + viewer half — parse, fit, verdict, the desktop
+# viewer, reports, and the operator on-ramp — runs entirely in here, with NO TAVI present.
+#
+# Campaigns and `isar drive` additionally require TAVI installed SEPARATELY (its own installer +
+# McStas env); ISAR never bundles or manages TAVI. This file is only the conda side (interpreter +
+# pip); ISAR itself is pip-installed editable by setup-isar-env.bat via the [gui] extra.
+name: isar
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
