@@ -18,6 +18,8 @@ class LogDock(QDockWidget):
         self._view = QPlainTextEdit(self)
         self._view.setReadOnly(True)
         self._view.setMaximumBlockCount(5000)  # bound memory on a long-running campaign view
+        # A dropped file must reach MainWindow.dropEvent, not be pasted as text into the log.
+        self._view.setAcceptDrops(False)
         self.setWidget(self._view)
         self._warnings_seen = 0
         self._last_generation = None   # last per-tick generation seen (None => none yet)

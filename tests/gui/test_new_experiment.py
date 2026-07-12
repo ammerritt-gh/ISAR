@@ -67,6 +67,28 @@ def test_workspace_path_none_until_success(qtbot):
     assert dlg.workspace_path is None
 
 
+def test_init_failure_shows_captured_cause(qtbot):
+    dlg = NewExperimentDialog()
+    qtbot.addWidget(dlg)
+    dlg._pending_out = r"D:\ws\exp1"
+    for line in ["scaffolding...", "error: destination is not empty", "aborting"]:
+        dlg._on_init_line(line)
+    dlg._on_init_finished(2)
+    assert dlg.workspace_path is None
+    assert "destination is not empty" in dlg._detect_label.text()
+    assert "destination is not empty" in dlg._log.toPlainText()
+    assert "exit 2" in dlg._detect_label.text()
+
+
+def test_init_success_path_unchanged(qtbot):
+    dlg = NewExperimentDialog()
+    qtbot.addWidget(dlg)
+    dlg._pending_out = r"D:\ws\exp1"
+    dlg._on_init_line("scaffolding...")
+    dlg._on_init_finished(0)
+    assert dlg.workspace_path == r"D:\ws\exp1"
+
+
 # ---- MainWindow drop routing -----------------------------------------------
 class _FakeDropEvent:
     def __init__(self, md):

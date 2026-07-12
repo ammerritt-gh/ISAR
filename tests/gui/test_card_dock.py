@@ -54,6 +54,12 @@ def test_empty_workspace_disables_editor(qtbot):
     assert dock.save() is False
 
 
+def test_editor_rejects_drops_so_mainwindow_sees_them(qtbot):
+    dock = CardDock(_EmptyWorkspace())
+    qtbot.addWidget(dock)
+    assert dock._editor.acceptDrops() is False
+
+
 def test_set_workspace_rebinds_to_new_card(qtbot, make_ws):
     ws1, _ = _ws_with_card(make_ws)
     dock = CardDock(_EmptyWorkspace())

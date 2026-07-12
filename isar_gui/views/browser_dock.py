@@ -74,6 +74,8 @@ class BrowserDock(QDockWidget):
         self._warnings_view = QPlainTextEdit(container)
         self._warnings_view.setReadOnly(True)
         self._warnings_view.setVisible(False)
+        # A dropped file must reach MainWindow.dropEvent, not be pasted as text into this pane.
+        self._warnings_view.setAcceptDrops(False)
         layout.addWidget(self._warnings_view)
 
         self.setWidget(container)

@@ -100,3 +100,23 @@ def test_parse_detect_json_none_on_empty_or_garbage():
     assert commands.parse_detect_json("{}") is None
     assert commands.parse_detect_json("not json at all") is None
     assert commands.parse_detect_json("") is None
+
+
+def test_last_error_line_typical_stderr_tail():
+    lines = ["starting init...", "error: workspace already exists", "cleaning up"]
+    assert commands.last_error_line(lines) == "workspace already exists"
+
+
+def test_last_error_line_multiple_error_lines_last_wins():
+    lines = ["error: first problem", "retrying...", "error: second problem"]
+    assert commands.last_error_line(lines) == "second problem"
+
+
+def test_last_error_line_none_when_no_error_line():
+    lines = ["starting init...", "scaffolding workspace", "done"]
+    assert commands.last_error_line(lines) is None
+
+
+def test_last_error_line_leading_whitespace_tolerated():
+    lines = ["  error: indented cause  "]
+    assert commands.last_error_line(lines) == "indented cause"

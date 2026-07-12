@@ -48,6 +48,7 @@ class NewExperimentDialog(QDialog):
         self._init_runner: ProcessRunner | None = None
         self._detect_runner: ProcessRunner | None = None
         self._detect_buf: list[str] = []
+        self._init_lines: list[str] = []  # streamed init output, buffered to find the failure cause
 
         outer = QVBoxLayout(self)
         intro = QLabel(_INTRO)
@@ -81,6 +82,8 @@ class NewExperimentDialog(QDialog):
         self._log.setReadOnly(True)
         self._log.setMaximumBlockCount(2000)
         self._log.setVisible(False)
+        # This dialog has its own path fields; a dropped file must never be pasted into the log.
+        self._log.setAcceptDrops(False)
         outer.addWidget(self._log)
 
         # --- buttons --------------------------------------------------------
@@ -181,20 +184,29 @@ class NewExperimentDialog(QDialog):
         if cmd is None:
             return
         self._pending_out = self._ws_edit.text().strip()
+        self._init_lines = []
         self._log.setVisible(True)
         self._log.appendPlainText("$ " + " ".join(cmd))
         self._create_btn.setEnabled(False)
         self._init_runner = ProcessRunner(self)
-        self._init_runner.line.connect(self._log.appendPlainText)
+        self._init_runner.line.connect(self._on_init_line)
         self._init_runner.finished.connect(self._on_init_finished)
         self._init_runner.start(cmd)
+
+    def _on_init_line(self, line: str) -> None:
+        self._init_lines.append(line)
+        self._log.appendPlainText(line)
 
     def _on_init_finished(self, code: int) -> None:
         if code == 0:
             self._workspace_path = self._pending_out
             self.accept()
         else:
-            self._log.appendPlainText(f"\nisar init failed (exit {code}). Fix the path and retry.")
+            cause = commands.last_error_line(self._init_lines)
+            detail = cause if cause else "see log above"
+            msg = f"isar init failed (exit {code}): {detail}"
+            self._log.appendPlainText("\n" + msg)
+            self._detect_label.setText(msg)
             self._sync_create_enabled()
 
 

@@ -89,6 +89,21 @@ def default_workspace_dir(data: str, instrument: str, today: str | None = None) 
     return str(parent / f"isar_{instrument}_{today}")
 
 
+def last_error_line(lines: list[str]) -> str | None:
+    """The cause text from the last streamed line that starts with ``error:`` (after stripping),
+    or ``None`` if no such line was seen.
+
+    The engine prints a distinct ``error: ...`` line to stderr for each ``isar init`` exit-2 path;
+    ``ProcessRunner`` merges stderr into the same line stream as stdout, so this picks the cause back
+    out of the buffered lines for display in the dialog's failure message.
+    """
+    for line in reversed(lines):
+        stripped = line.strip()
+        if stripped.startswith("error:"):
+            return stripped[len("error:"):].strip()
+    return None
+
+
 def parse_detect_json(text: str) -> DetectResult | None:
     """Parse the JSON ``isar detect --json`` prints (the last JSON object on stdout), or ``None``.
 
