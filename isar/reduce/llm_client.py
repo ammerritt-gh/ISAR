@@ -104,3 +104,88 @@ def _to_result(data: dict) -> DispatchResult:
         model_id=data.get("model_id"),
         usage=data.get("usage") or {},
     )
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible client (D3): route the SAME structured request to any server
+# speaking the OpenAI Chat Completions API, so a machine without LLMM can still
+# run `isar run --llm`. LLMM stays the default profile; this is the portable one.
+# ---------------------------------------------------------------------------
+OpenAITransport = Callable[[str, bytes, dict, float], bytes]  # (url, body, headers, timeout) -> bytes
+
+
+def _default_openai_transport(url: str, data: bytes, headers: dict, timeout: float) -> bytes:
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:   # nosec B310 (operator-configured)
+        return resp.read()
+
+
+class OpenAIClient:
+    """Dispatch a structured QC request to an OpenAI-compatible ``/v1/chat/completions`` endpoint.
+
+    The schema is carried in the system prompt (as it already is for LLMM), and ``response_format``
+    asks for a JSON object; the adjudicator validates/repairs/holds exactly as on the LLMM path, so a
+    server that only loosely honours the format still degrades safely. Same :class:`Dispatcher`
+    surface as :class:`LLMMClient`, so the caller is transport-agnostic.
+    """
+
+    def __init__(
+        self, endpoint: str, model: str, *, api_key: str | None = None,
+        timeout: float = 60.0, transport: OpenAITransport | None = None,
+    ) -> None:
+        self._endpoint = endpoint.rstrip("/")
+        self._model = model
+        self._api_key = api_key
+        self._timeout = timeout
+        self._transport = transport or _default_openai_transport
+
+    def dispatch(
+        self, *, system: str, user: str, schema: dict,
+        temperature: float, max_tokens: int,
+    ) -> DispatchResult:
+        body = {
+            "model": self._model,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        # OpenAI base_url convention includes the /v1 segment; tolerate a bare base too.
+        base = self._endpoint
+        url = (f"{base}/chat/completions" if base.endswith("/v1")
+               else f"{base}/v1/chat/completions")
+        try:
+            raw = self._transport(url, json.dumps(body).encode("utf-8"), headers, self._timeout)
+            data: dict[str, Any] = json.loads(raw)
+        except Exception as exc:   # transport / decode failure → a clean error result, never a raise
+            return DispatchResult(error=f"transport_error: {exc}")
+        return _openai_to_result(data)
+
+
+def _openai_to_result(data: dict) -> DispatchResult:
+    err = data.get("error")
+    if err:
+        if isinstance(err, dict):
+            error = f"{err.get('code', 'error')}: {err.get('message', '')}".strip()
+        else:
+            error = str(err)
+        return DispatchResult(error=error, model_id=data.get("model"))
+    choices = data.get("choices") or []
+    content = (choices[0].get("message") or {}).get("content") if choices else None
+    structured = None
+    if content:
+        try:
+            structured = json.loads(content)
+        except ValueError:
+            structured = None   # schema-miss: adjudicator re-parses/retries/holds on the raw text
+    return DispatchResult(
+        structured=structured,
+        output=content,
+        error=None,
+        model_id=data.get("model"),
+        usage=data.get("usage") or {},
+    )

@@ -20,7 +20,7 @@ import os
 from dataclasses import dataclass
 
 from isar.reduce import compact_view
-from isar.reduce.llm_client import Dispatcher, LLMMClient
+from isar.reduce.llm_client import Dispatcher, LLMMClient, OpenAIClient
 from isar.schema import scan as _scan
 
 DECISIONS = ("mask", "keep", "drop_detector", "hold_for_human")
@@ -79,30 +79,47 @@ _REPAIR_SUFFIX = (
 class AdjudicationConfig:
     """Resolved adjudication settings (card ``[adjudication]`` block + env overrides)."""
     enabled: bool = False
+    profile: str = "llmm"                                # "llmm" (default) | "openai" (D3)
     model_pin: str = "local_desktop/qwen3p5-9b"          # offline/privacy-first local default
-    fallback_pin: str | None = "nanogpt/openai/gpt-oss-120b"   # proven cloud comparator
+    fallback_pin: str | None = "nanogpt/openai/gpt-oss-120b"   # proven cloud comparator (LLMM only)
     endpoint: str = "http://127.0.0.1:8766"
+    api_key: str | None = None                           # OpenAI-compatible bearer token, if any
     temperature: float = 0.2
     max_tokens: int = 1500
+
+
+def _resolve_api_key(block: dict) -> str | None:
+    """Resolve the OpenAI-compatible key: ``ISAR_LLM_API_KEY`` env, then the env named by
+    ``api_key_env``, then a literal ``api_key`` in the card (discouraged — keys don't belong in a
+    committed card)."""
+    if os.environ.get("ISAR_LLM_API_KEY"):
+        return os.environ["ISAR_LLM_API_KEY"]
+    named = block.get("api_key_env")
+    if named and os.environ.get(named):
+        return os.environ[named]
+    return block.get("api_key")
 
 
 def adjudication_config(card) -> AdjudicationConfig:
     """Read ``card.policy.adjudication`` over the defaults, then apply env overrides.
 
-    ``ISAR_LLM_ENDPOINT`` / ``ISAR_LLM_MODEL`` let the beamline flip offline↔cloud without editing
-    the card.
+    ``ISAR_LLM_ENDPOINT`` / ``ISAR_LLM_MODEL`` / ``ISAR_LLM_PROFILE`` let the beamline flip
+    offline↔cloud↔OpenAI-compatible without editing the card (D3); LLMM stays the default profile.
     """
     block = dict(getattr(card.policy, "adjudication", {}) or {})
     cfg = AdjudicationConfig(
         enabled=bool(block.get("enabled", AdjudicationConfig.enabled)),
+        profile=str(block.get("profile", AdjudicationConfig.profile)),
         model_pin=block.get("model_pin", AdjudicationConfig.model_pin),
         fallback_pin=block.get("fallback_pin", AdjudicationConfig.fallback_pin),
         endpoint=block.get("endpoint", AdjudicationConfig.endpoint),
+        api_key=_resolve_api_key(block),
         temperature=float(block.get("temperature", AdjudicationConfig.temperature)),
         max_tokens=int(block.get("max_tokens", AdjudicationConfig.max_tokens)),
     )
     cfg.endpoint = os.environ.get("ISAR_LLM_ENDPOINT", cfg.endpoint)
     cfg.model_pin = os.environ.get("ISAR_LLM_MODEL", cfg.model_pin)
+    cfg.profile = os.environ.get("ISAR_LLM_PROFILE", cfg.profile)
     return cfg
 
 
@@ -124,7 +141,15 @@ class FallbackDispatcher:
 
 
 def make_client(cfg: AdjudicationConfig) -> FallbackDispatcher:
-    """Build the dispatcher for a config: primary pin, with the cloud fallback when distinct."""
+    """Build the dispatcher for a config, honouring the profile (D3).
+
+    ``llmm`` (default): pin the primary model with the distinct cloud pin as a fallback. ``openai``:
+    an OpenAI-compatible client with the bearer key and no automatic fallback (the LLMM dual-pin
+    concept doesn't map — a single portable model is configured instead).
+    """
+    if cfg.profile == "openai":
+        primary = OpenAIClient(cfg.endpoint, cfg.model_pin, api_key=cfg.api_key)
+        return FallbackDispatcher(primary, None)
     primary = LLMMClient(cfg.endpoint, cfg.model_pin)
     fallback = (LLMMClient(cfg.endpoint, cfg.fallback_pin)
                 if cfg.fallback_pin and cfg.fallback_pin != cfg.model_pin else None)

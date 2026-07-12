@@ -12,14 +12,23 @@ The Docks-menu two-way sync (checkable action <-> dock ``visibilityChanged``) fo
 from __future__ import annotations
 
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, Qt, QTimer
+from PySide6.QtCore import QByteArray, QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow
 
 from isar_gui.commands import RunOptions, build_run_command
+from isar_gui.health import LLM_DEFAULT_ENDPOINT, TAVI_DEFAULT_URL, find_tavi_bat, ping_http
 from isar_gui.process import ProcessRunner
+
+
+class _HealthSignals(QObject):
+    """Marshals a background reachability probe's result back onto the Qt thread (queued delivery,
+    same pattern as :class:`~isar_gui.watch_bridge.WatchBridge`)."""
+
+    done = Signal(dict)
 
 from isar.workspace_api import (
     SCHEMA_VERSION,
@@ -104,7 +113,9 @@ class MainWindow(QMainWindow):
         self._run_runner: ProcessRunner | None = None  # the live `isar run` subprocess, if any
         self._init_file_menu()
         self._init_run_menu()
+        self._init_backends_menu()
         self._init_status_bar()
+        self._init_health()
         self._bind_workspace(ws)
         if ws is not None:
             self._session.note_workspace(ws.root)
@@ -342,7 +353,8 @@ class MainWindow(QMainWindow):
         self._run_runner = ProcessRunner(self)
         self._run_runner.line.connect(self.log)
         self._run_runner.finished.connect(self._on_run_finished)
-        self._run_runner.start(cmd, log_path=str(log_path))
+        # Pass the LLM profile/endpoint/model/key so `isar run --llm` uses the configured backend (D3).
+        self._run_runner.start(cmd, log_path=str(log_path), env=self._llm_env())
         self._sync_run_actions()
 
     def _on_run_finished(self, code: int) -> None:
@@ -415,6 +427,95 @@ class MainWindow(QMainWindow):
         dock = self._docks.get(dock_key)
         return getattr(dock, "_glw", None) if dock is not None else None
 
+    # ---- Backends: LLM settings + TAVI launch + health (D1/D3) ------------
+    def _init_backends_menu(self) -> None:
+        menu = self.menuBar().addMenu("&Backends")
+        settings_action = menu.addAction("Settings…")
+        settings_action.triggered.connect(self._open_settings)
+        self._launch_tavi_action = menu.addAction("Launch TAVI")
+        self._launch_tavi_action.triggered.connect(self._launch_tavi)
+
+    def _settings(self) -> dict:
+        """GUI-owned backend settings (LLM profile/endpoint/model/key + TAVI bat), persisted in the
+        session. Defaults keep LLMM as the default profile — never assumed reachable."""
+        defaults = {"profile": "llmm", "llm_endpoint": LLM_DEFAULT_ENDPOINT, "llm_model": "",
+                    "llm_api_key": "", "tavi_bat": ""}
+        return {**defaults, **self._session.view_state.get("settings", {})}
+
+    def _open_settings(self) -> None:
+        from isar_gui.settings_dialog import SettingsDialog
+
+        dlg = SettingsDialog(self._settings(), parent=self)
+        if dlg.exec():
+            self._session.view_state["settings"] = dlg.settings
+            self._autosave()
+            self.log("Backend settings updated")
+            self._refresh_health()
+
+    def _llm_env(self) -> dict:
+        """The ``ISAR_LLM_*`` env overrides for ``isar run``, from the current settings (D3). Only
+        set keys are exported, so an unconfigured field keeps the engine/card default."""
+        s = self._settings()
+        env = {}
+        if s.get("profile"):
+            env["ISAR_LLM_PROFILE"] = s["profile"]
+        if s.get("llm_endpoint"):
+            env["ISAR_LLM_ENDPOINT"] = s["llm_endpoint"]
+        if s.get("llm_model"):
+            env["ISAR_LLM_MODEL"] = s["llm_model"]
+        if s.get("llm_api_key"):
+            env["ISAR_LLM_API_KEY"] = s["llm_api_key"]
+        return env
+
+    def _launch_tavi(self) -> bool:
+        """Start TAVI's own ``run-tavi-dev.bat`` detached (ISAR does not own TAVI's lifecycle, D1).
+        Returns whether a launcher was found and started."""
+        from PySide6.QtCore import QProcess
+
+        bat = find_tavi_bat(self._settings().get("tavi_bat"))
+        if not bat:
+            self.statusBar().showMessage("TAVI not found — set run-tavi-dev.bat in Backends ▸ Settings")
+            return False
+        QProcess.startDetached("cmd.exe", ["/c", "start", "", bat])
+        self.statusBar().showMessage(f"Launched TAVI: {bat}")
+        QTimer.singleShot(4000, self._refresh_health)  # give the server a moment, then re-probe
+        return True
+
+    # ---- health probe (threaded; never blocks the UI) ---------------------
+    def _init_health(self) -> None:
+        self._health_signals = _HealthSignals(self)
+        self._health_signals.done.connect(self._apply_health)
+        self._health_timer = QTimer(self)
+        self._health_timer.setInterval(30000)  # a slow heartbeat; explicit refresh on settings/launch
+        self._health_timer.timeout.connect(self._refresh_health)
+        self._health_timer.start()
+        QTimer.singleShot(0, self._refresh_health)  # first probe once the loop settles (test-safe)
+
+    def _refresh_health(self) -> None:
+        llm_url = self._settings().get("llm_endpoint") or LLM_DEFAULT_ENDPOINT
+        signals = self._health_signals
+
+        def work():
+            try:
+                llm = ping_http(llm_url)
+                tavi = ping_http(TAVI_DEFAULT_URL)
+                signals.done.emit({"llm": (llm.ok, llm.detail, llm_url),
+                                   "tavi": (tavi.ok, tavi.detail, TAVI_DEFAULT_URL)})
+            except Exception as exc:  # noqa: BLE001 — a probe failure must never kill the daemon
+                signals.done.emit({"error": str(exc)})
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_health(self, res: dict) -> None:
+        if "error" in res:
+            return
+        for key, label in (("llm", self._llm_health), ("tavi", self._tavi_health)):
+            ok, detail, url = res[key]
+            name = "LLM" if key == "llm" else "TAVI"
+            label.setText(f"{name} ●")
+            label.setStyleSheet(f"color: {'#2e7d32' if ok else '#c62828'};")
+            label.setToolTip(f"{url} — {detail}")
+
     # ---- status bar: persistent live indicator ----------------------------
     def _init_status_bar(self) -> None:
         """A permanent status-bar label (distinct from the transient ``showMessage`` text) so "is it
@@ -425,6 +526,12 @@ class MainWindow(QMainWindow):
         # a finished/failed run stays visible. Empty until the first run.
         self._run_status = QLabel()
         self.statusBar().addPermanentWidget(self._run_status)
+        # Backend reachability indicators (LLM + TAVI): grey until the first probe returns.
+        self._llm_health = QLabel("LLM ●")
+        self._tavi_health = QLabel("TAVI ●")
+        for lbl in (self._llm_health, self._tavi_health):
+            lbl.setStyleSheet("color: #888;")
+            self.statusBar().addPermanentWidget(lbl)
 
     # ---- Docks menu (PUFFIN two-way-sync pattern) -------------------------
     def _init_docks_menu(self) -> None:
@@ -565,6 +672,8 @@ class MainWindow(QMainWindow):
 
     # ---- teardown --------------------------------------------------------
     def closeEvent(self, event) -> None:
+        if getattr(self, "_health_timer", None) is not None:
+            self._health_timer.stop()
         if self._bridge is not None:
             self._bridge.stop()
         if getattr(self, "_autosaver", None) is not None:

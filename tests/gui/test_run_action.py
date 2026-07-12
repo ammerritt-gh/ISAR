@@ -24,9 +24,10 @@ class _FakeRunner(mw.ProcessRunner):
         self.started_cmd = None
         self.started_log = None
 
-    def start(self, argv, *, cwd=None, log_path=None):
+    def start(self, argv, *, cwd=None, log_path=None, env=None):
         self.started_cmd = argv
         self.started_log = log_path
+        self.started_env = env
 
     def is_running(self):
         return False
@@ -71,6 +72,8 @@ def test_launch_builds_command_remembers_and_sets_status(qtbot, make_ws, monkeyp
     assert "running" in w._run_status.text()
     # The retained-log path lands under the workspace report dir.
     assert "gui-runs" in w._run_runner.started_log
+    # The LLM backend settings ride along as env overrides (default profile = llmm).
+    assert w._run_runner.started_env["ISAR_LLM_PROFILE"] == "llmm"
 
 
 def test_rerun_replays_remembered_invocation(qtbot, make_ws, monkeypatch):

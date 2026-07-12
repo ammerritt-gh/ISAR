@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QProcess, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
 
 class ProcessRunner(QObject):
@@ -42,10 +42,13 @@ class ProcessRunner(QObject):
         self._emitted_finish = False
 
     # ---- lifecycle --------------------------------------------------------
-    def start(self, argv: list[str], *, cwd: str | None = None, log_path: str | None = None) -> None:
-        """Launch ``argv``. Optionally set the working dir and a retained-log path.
+    def start(self, argv: list[str], *, cwd: str | None = None, log_path: str | None = None,
+              env: dict | None = None) -> None:
+        """Launch ``argv``. Optionally set the working dir, a retained-log path, and env overrides.
 
-        A previous still-running process is killed first (the Run button is single-flight per runner).
+        ``env`` overrides are merged onto the inherited system environment (used to pass the LLM
+        profile/endpoint/key to ``isar run``). A previous still-running process is killed first (the
+        Run button is single-flight per runner).
         """
         if self.is_running():
             self.stop()
@@ -57,6 +60,11 @@ class ProcessRunner(QObject):
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         if cwd:
             proc.setWorkingDirectory(cwd)
+        if env:
+            pe = QProcessEnvironment.systemEnvironment()
+            for k, v in env.items():
+                pe.insert(str(k), str(v))
+            proc.setProcessEnvironment(pe)
         proc.readyReadStandardOutput.connect(self._on_ready_read)
         proc.finished.connect(self._on_finished)
         proc.errorOccurred.connect(self._on_error)
