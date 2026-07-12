@@ -15,17 +15,20 @@ area.
   micromamba lives at `%USERPROFILE%\AppData\Local\micromamba\micromamba.exe`; envs under
   `…\Local\micromamba\envs\` **or** `%USERPROFILE%\AppData\Roaming\mamba\envs\`.
 - **Setup (operator):** double-click `setup-isar-env.bat` (creates env, `pip install -e ".[gui]"`).
-- **CLI entrypoint:** `isar` → `isar.cli.main:main`. Subcommands: `init detect run status report score
-  profile drive view diagnose`.
+- **CLI entrypoint:** `isar` → `isar.cli.main:main`. Subcommands: `init detect ingest run status
+  report score profile drive view diagnose`.
 - **GUI:** `run-isar-gui.bat` → `micromamba run -n isar python -m isar_gui`; falls back to env
   `tavi-dev` when `isar` isn't built yet.
 - **Tests:** `pytest -m "not slow"` (markers `slow`, `live`; `testpaths` = `isar/synth/tests`, `tests`
   in `pyproject.toml`). `live` needs a running TAVI at `127.0.0.1:8642`. `tests/real_data/` needs the
   gitignored local `test_data/`. `isar/synth/tests/` = Phase-1 synthetic core; `tests/` = Phase 2+.
-- **Verification status (this session, 2026-07-12):** no `isar` env exists yet. Fallback `tavi-dev`
-  has pytest + all sci-deps but **not** `isar` installed; running the suite against the repo-root
-  package crashed at collection (native fault). So the test command is **defined-in-`pyproject`,
-  unverified this session** — do not claim a green run you didn't see. Do not build a new env to test.
+- **Verification status (2026-07-12, evening):** the **base Python** (`C:\Utilities\Python\Python312`)
+  has every dependency (PySide6 6.11, pytest-qt, numpy/scipy/iminuit/lmfit/dynesty) and imports the
+  repo-root `isar` package directly — `python -m pytest -m "not slow"` from the repo root RUNS and
+  was green this session (1494 passed / 3 skipped; GUI subset 277). No `isar` micromamba env exists
+  yet; do not build one just to test. Offscreen GUI runs: pytest sets the platform via
+  `tests/gui/conftest.py`; a test that leaves a modal path unmocked will hang the suite silently —
+  use `-o faulthandler_timeout=60` when debugging a stall.
 
 ## Hard Rules (each names the silent failure it prevents)
 

@@ -39,6 +39,7 @@ def test_ingest_human_success(tmp_path, capsys):
 
 def test_ingest_json_shape(tmp_path, capsys):
     data, ws = _init_ws(tmp_path)
+    capsys.readouterr()                          # drain `isar init`'s human output first
     code = ingest_cmd.run(argparse.Namespace(data=[str(data)], workspace=str(ws), json=True))
     out = capsys.readouterr()
     assert code == 0

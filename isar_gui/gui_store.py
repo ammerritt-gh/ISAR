@@ -48,21 +48,25 @@ class GuiStore:
 
     def __init__(self, root, data: dict | None = None):
         self._root = Path(root)
-        # Keep the full raw dict so unknown keys (future sections) round-trip untouched; the typed
-        # accessors below read/write only the keys this slice owns.
+        # Keep the full raw dict verbatim so EVERY key round-trips untouched — including a value under
+        # a key this build owns but cannot read (e.g. a newer schema wrote a dict where this build
+        # expects a list). Normalization is READ-ONLY: the accessors below treat a wrong-typed owned
+        # value as empty (with a one-time log) but never rewrite ``_data`` on load, so nothing is
+        # silently clobbered on open. Only an explicit user mutation of a section replaces its value.
         self._data: dict = dict(data) if isinstance(data, dict) else {}
         self._data.setdefault("version", self.VERSION)
-        if not isinstance(self._data.get("watched_folders"), list):
-            self._data["watched_folders"] = []
-        if not isinstance(self._data.get("watch_paused"), bool):
-            self._data["watch_paused"] = False
-        # ---- Phase E: manual groups + ui scraps (order, collapsed) ----
-        if not isinstance(self._data.get("groups"), list):
-            self._data["groups"] = []
-        if not isinstance(self._data.get("group_order"), list):
-            self._data["group_order"] = []
-        if not isinstance(self._data.get("collapsed"), list):
-            self._data["collapsed"] = []
+        self._warned: set[str] = set()   # owned keys already flagged as wrong-typed (log once each)
+
+    def _list_or_empty(self, key: str) -> list:
+        """Value stored under ``key`` when it is a list, else ``[]`` (logged once, ``_data`` untouched)."""
+        val = self._data.get(key)
+        if isinstance(val, list):
+            return val
+        if val is not None and key not in self._warned:
+            self._warned.add(key)
+            log.warning("gui.state.json key %r is %s, not a list — treating as empty (value kept on "
+                        "disk for round-trip)", key, type(val).__name__)
+        return []
 
     # ---- path ------------------------------------------------------------
     @classmethod
@@ -101,7 +105,7 @@ class GuiStore:
 
     # ---- watched folders -------------------------------------------------
     def watched_folders(self) -> list[str]:
-        return [str(p) for p in self._data.get("watched_folders", [])]
+        return [str(p) for p in self._list_or_empty("watched_folders")]
 
     def add_watched(self, path: str) -> bool:
         """Add ``path`` to the watched set (deduped, order-preserving). Returns whether it changed."""
@@ -122,7 +126,8 @@ class GuiStore:
         return True
 
     def watch_paused(self) -> bool:
-        return bool(self._data.get("watch_paused", False))
+        val = self._data.get("watch_paused")
+        return val if isinstance(val, bool) else False
 
     def set_watch_paused(self, flag: bool) -> None:
         self._data["watch_paused"] = bool(flag)
@@ -132,8 +137,17 @@ class GuiStore:
     # storage-agnostic — nothing outside this module touches ``self._data["groups"]`` — so swapping
     # the backing store for sqlite later stays a one-module change.
     def _raw_groups(self) -> list:
-        groups = self._data.get("groups")
-        return groups if isinstance(groups, list) else []
+        return self._list_or_empty("groups")
+
+    def _owned_list_for_write(self, key: str) -> list:
+        """Return the list stored under ``key``, coercing a wrong-typed value to a fresh list IN
+        PLACE. Only mutators call this — replacing an unreadable value is deliberate at the moment the
+        user edits that section, unlike a passive load (which must preserve it)."""
+        val = self._data.get(key)
+        if not isinstance(val, list):
+            val = []
+            self._data[key] = val
+        return val
 
     def _find(self, gid: str) -> dict | None:
         for g in self._raw_groups():
@@ -154,9 +168,9 @@ class GuiStore:
     def create_group(self, name: str) -> str:
         """Create a new empty manual group and return its ``uuid4`` hex id (also appended to order)."""
         gid = uuid.uuid4().hex
-        self._data.setdefault("groups", []).append(
+        self._owned_list_for_write("groups").append(
             {"id": gid, "name": str(name), "members": []})
-        self._data.setdefault("group_order", []).append(gid)
+        self._owned_list_for_write("group_order").append(gid)
         return gid
 
     def rename_group(self, gid: str, name: str) -> None:
@@ -199,16 +213,14 @@ class GuiStore:
         return [g.id for g in self.groups() if key in g.members]
 
     def group_order(self) -> list[str]:
-        order = self._data.get("group_order")
-        return [str(x) for x in order] if isinstance(order, list) else []
+        return [str(x) for x in self._list_or_empty("group_order")]
 
     def set_group_order(self, order) -> None:
         self._data["group_order"] = [str(x) for x in (order or [])]
 
     # ---- ui scraps: collapsed set (auto-group ids are allowed here too) ---
     def _collapsed_raw(self) -> list:
-        c = self._data.get("collapsed")
-        return c if isinstance(c, list) else []
+        return self._list_or_empty("collapsed")
 
     def collapsed(self) -> set[str]:
         return {str(x) for x in self._collapsed_raw()}

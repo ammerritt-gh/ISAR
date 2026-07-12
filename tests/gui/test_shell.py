@@ -436,6 +436,9 @@ def test_temp_workspace_not_added_to_recents(qtbot, tmp_path, monkeypatch):
     assert session.recent_workspaces == []              # binding a temp workspace never notes recents
     w._snapshot_session()                               # nor does an autosave snapshot
     assert session.recent_workspaces == []
+    # The window still holds a content-bearing temp workspace here; qtbot's teardown close would
+    # otherwise raise the real (modal) Save/Discard prompt and hang the offscreen run.
+    monkeypatch.setattr(w, "_resolve_unsaved_temp_on_close", lambda: True)
 
 
 def test_save_as_notes_dest_in_recents(qtbot, tmp_path, monkeypatch):

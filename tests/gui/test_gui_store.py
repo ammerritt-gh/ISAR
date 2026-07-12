@@ -7,6 +7,7 @@ Phase-E ``groups`` section written by a newer build survives an older one).
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from isar_gui.gui_store import GuiStore
 
@@ -65,7 +66,7 @@ def test_unknown_keys_preserved_on_round_trip(tmp_path):
 
     raw = json.loads(path.read_text(encoding="utf-8"))
     assert raw["groups"] == {"custom": [1, 2, 3]}          # untouched
-    assert "/data/b" in raw["watched_folders"]
+    assert str(Path("/data/b")) in raw["watched_folders"]   # stored OS-native (add_watched normalizes)
 
 
 # --------------------------------------------------------------------------

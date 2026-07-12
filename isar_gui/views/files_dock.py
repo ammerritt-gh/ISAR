@@ -139,7 +139,9 @@ class FilesDock(QDockWidget):
             return
         self._highlight |= paths
         self._render_files()
-        QTimer.singleShot(_HIGHLIGHT_MS, lambda: self._clear_highlight(paths))
+        # Context-object form: the callback dies with the dock, so a rebind/close during the 2 s
+        # window cannot fire into a deleted C++ widget.
+        QTimer.singleShot(_HIGHLIGHT_MS, self, lambda: self._clear_highlight(paths))
 
     def _clear_highlight(self, paths) -> None:
         self._highlight -= set(paths)
@@ -179,7 +181,9 @@ class FilesDock(QDockWidget):
             event.acceptProposedAction()
 
     def dropEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        paths = [u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()]
+        # str(Path(...)) gives OS-native separators — QUrl always yields forward slashes, which
+        # would otherwise diverge from the resolved paths in the session manifest on Windows.
+        paths = [str(Path(u.toLocalFile())) for u in event.mimeData().urls() if u.isLocalFile()]
         if not paths:
             return
         event.acceptProposedAction()
