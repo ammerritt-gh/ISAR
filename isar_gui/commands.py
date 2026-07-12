@@ -15,9 +15,14 @@ detect-preview in the Files dock — one detector, no drift, exactly what ``isar
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+
+# A Python exception's final traceback line: "ValueError: bad", "isar.foo.MyError: x", etc. Matches a
+# dotted-qualified type name ending in Error/Exception, followed by an optional ": message".
+_EXC_LINE = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception))\b(.*)$")
 
 
 @dataclass(frozen=True)
@@ -133,6 +138,22 @@ def last_error_line(lines: list[str]) -> str | None:
     return None
 
 
+def last_exception_line(lines) -> str | None:
+    """The last line that looks like a Python exception's traceback tail
+    (``ValueError: could not convert string to float: 'da3p'``), or ``None``.
+
+    A subprocess that dies with a bare traceback (no ``error:`` line, no JSON) would otherwise fall
+    through to the generic "see log above". This lifts the actual exception line out of the buffered
+    output so the operator sees the real cause. ``error:``-prefixed lines are left to
+    :func:`last_error_line`; only unqualified exception lines are matched here."""
+    for line in reversed([str(ln).strip() for ln in lines if str(ln).strip()]):
+        if line.startswith("error:"):
+            continue
+        if _EXC_LINE.match(line):
+            return line
+    return None
+
+
 def parse_last_json_object(lines) -> dict | None:
     """The last JSON *object* on a stream of output lines, or ``None``.
 
@@ -223,7 +244,10 @@ def ingest_failure_cause(lines) -> str:
         if kind and message:
             return f"{kind}: {message}"
         return message or kind or "ingest failed"
-    return last_error_line(list(lines)) or "ingest failed (see log above)"
+    lines = list(lines)
+    return (last_error_line(lines)
+            or last_exception_line(lines)
+            or "ingest failed (see log above)")
 
 
 def parse_detect_json(text: str) -> DetectResult | None:

@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 _HINT = "Drop data files here to begin."
 _HIGHLIGHT_MS = 2000
 _HIGHLIGHT_COLOR = QColor(255, 243, 176)  # a soft amber; fades after ~2 s
+_ERROR_COLOR = QColor(200, 40, 40)        # a muted red for a file that failed to parse
 
 
 class FilesDock(QDockWidget):
@@ -116,7 +117,13 @@ class FilesDock(QDockWidget):
         for row in rows:
             item = QTreeWidgetItem([row["name"], row["status_text"]])
             item.setToolTip(0, row["path"])
-            item.setToolTip(1, row["path"])
+            error = row.get("error")
+            # A parse failure: the message is the Status tooltip (the path stays on the Name column),
+            # and the row is tinted in the warning style so a failed file is visible at a glance.
+            item.setToolTip(1, error if error else row["path"])
+            if error:
+                for col in (0, 1):
+                    item.setForeground(col, QBrush(_ERROR_COLOR))
             if row["path"] in self._highlight:
                 for col in (0, 1):
                     item.setBackground(col, QBrush(_HIGHLIGHT_COLOR))

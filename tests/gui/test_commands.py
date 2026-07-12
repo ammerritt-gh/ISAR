@@ -189,3 +189,39 @@ def test_ingest_failure_cause_falls_back_to_error_line():
 
 def test_ingest_failure_cause_generic_fallback():
     assert commands.ingest_failure_cause(["nothing useful"]).startswith("ingest failed")
+
+
+def test_last_exception_line_lifts_traceback_tail():
+    lines = [
+        "Traceback (most recent call last):",
+        '  File "ill_in8.py", line 58, in _bs_q_and_deltas',
+        "    q = (float(toks[2]), float(toks[3]), float(toks[4]))",
+        "ValueError: could not convert string to float: 'da3p'",
+    ]
+    assert commands.last_exception_line(lines) == \
+        "ValueError: could not convert string to float: 'da3p'"
+
+
+def test_last_exception_line_matches_dotted_custom_exception():
+    lines = ["some noise", "isar.schema.card.CardError: bad section"]
+    assert commands.last_exception_line(lines) == "isar.schema.card.CardError: bad section"
+
+
+def test_last_exception_line_none_when_no_exception_shape():
+    assert commands.last_exception_line(["just progress", "done"]) is None
+
+
+def test_last_exception_line_skips_error_prefixed_lines():
+    # `error:`-prefixed lines are last_error_line's job; this must not claim them.
+    assert commands.last_exception_line(["error: ValueError: x"]) is None
+
+
+def test_ingest_failure_cause_falls_through_to_traceback_tail():
+    """No JSON, no `error:` line — a bare traceback: the tail exception line is the cause."""
+    lines = [
+        "$ isar ingest ...",
+        "Traceback (most recent call last):",
+        "ValueError: could not convert string to float: 'da3p'",
+    ]
+    assert commands.ingest_failure_cause(lines) == \
+        "ValueError: could not convert string to float: 'da3p'"

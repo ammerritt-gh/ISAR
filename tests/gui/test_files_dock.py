@@ -98,6 +98,29 @@ def test_watched_folder_add_remove_round_trips_through_store(qtbot, tmp_path):
     assert dock._watch_list.count() == 0
 
 
+def test_failed_file_row_shows_parse_failed_with_tooltip(qtbot, tmp_path):
+    """A manifest row carrying an ``error`` renders 'parse failed' with the message as the Status
+    tooltip and a non-default (warning) foreground so it is visible at a glance."""
+    files = [
+        SimpleNamespace(path=r"D:\d\bad.numor", size=5, mtime=1.0,
+                        classification="measurement", n_scans=0,
+                        error="ValueError: could not convert string to float: 'da3p'"),
+        SimpleNamespace(path=r"D:\d\ok.dat", size=5, mtime=1.0,
+                        classification="measurement", n_scans=3, error=None),
+    ]
+    vm = FilesViewModel(_fake_ws(files), store=GuiStore.load(tmp_path))
+    dock = FilesDock(vm, _SpyController())
+    qtbot.addWidget(dock)
+
+    bad = dock._tree.topLevelItem(0)
+    assert bad.text(1) == "parse failed"
+    assert "da3p" in bad.toolTip(1)
+    assert bad.foreground(1).style() != 0                # tinted, not the default brush
+    ok = dock._tree.topLevelItem(1)
+    assert ok.text(1) == "parsed 3 scans"
+    assert ok.toolTip(1) == r"D:\d\ok.dat"              # no error -> path tooltip, default color
+
+
 def test_highlight_added_marks_rows(qtbot, tmp_path):
     files = [SimpleNamespace(path=r"D:\d\scan_1.dat", size=1, mtime=1.0,
                              classification="measurement", n_scans=1)]

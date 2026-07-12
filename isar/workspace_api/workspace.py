@@ -191,7 +191,8 @@ class Workspace:
                 classification=row.get("format"),
                 n_scans=row.get("n_scans"),
                 scan_ids=tuple(scan_ids) if isinstance(scan_ids, (list, tuple)) else (),
-                n_context=row.get("n_context")))
+                n_context=row.get("n_context"),
+                error=row.get("error")))
         self._views["files"] = out
         return out
 

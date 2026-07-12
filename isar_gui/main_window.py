@@ -501,11 +501,15 @@ class MainWindow(QMainWindow):
         transient highlight of the files that produced added/updated scans."""
         n_files = len(report.files)
         a, u, d = len(report.added), len(report.updated), len(report.deduped)
+        failed = [f for f in report.files if f.get("error")]
+        note = f" — {len(failed)} file(s) failed to parse" if failed else ""
         self.statusBar().showMessage(
-            f"Ingested {n_files} files: +{a} scans, ~{u} updated ({d} duplicates)")
+            f"Ingested {n_files} files: +{a} scans, ~{u} updated ({d} duplicates){note}")
         for dedup in report.deduped:
             self.log(f"dedup: {dedup.get('scan')} kept {dedup.get('kept')} "
                      f"(superseded {', '.join(dedup.get('superseded') or [])})")
+        for f in failed:
+            self.log(f"parse failed: {f.get('path')} — {f.get('error')}")
         # Highlight the files whose scans were newly added/updated by this ingest.
         changed_ids = set(report.added) | set(report.updated)
         added_paths = [f.get("path") for f in report.files
@@ -517,6 +521,12 @@ class MainWindow(QMainWindow):
     def _on_ingest_failed(self, code: int, cause: str) -> None:
         self.statusBar().showMessage(f"Could not ingest data: {cause}")
         self.log(f"ingest failed (exit {code}): {cause}")
+        # A real failure (exit != 0) must be visible on screen, never buried in a hidden dock
+        # (operator contract). Code 0 is the informational "queued batch dropped" note — not a
+        # failure, so it does not force the dock up.
+        if code != 0:
+            self.log_dock.show()
+            self.log_dock.raise_()
 
     def _on_watched_files_stable(self, paths) -> None:
         """A watched folder settled some new files — enqueue them for ingest (serialized)."""

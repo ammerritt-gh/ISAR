@@ -20,8 +20,10 @@ from PySide6.QtCore import Signal
 from isar_gui.viewmodels.base import ViewModel
 
 
-def _status_text(classification, n_scans) -> str:
-    """Human one-liner for a file row from its classification and scan count."""
+def _status_text(classification, n_scans, error=None) -> str:
+    """Human one-liner for a file row from its classification, scan count, and parse error."""
+    if error:
+        return "parse failed"
     cls = (classification or "").lower()
     if cls == "measurement":
         n = n_scans or 0
@@ -56,18 +58,21 @@ class FilesViewModel(ViewModel):
     # ---- file rows -------------------------------------------------------
     @property
     def rows(self) -> list:
-        """One display dict per manifest file: ``{path, name, classification, n_scans, status_text}``."""
+        """One display dict per manifest file:
+        ``{path, name, classification, n_scans, status_text, error}``."""
         out = []
         for fv in self.workspace.files:
             path = str(getattr(fv, "path", "") or "")
             classification = getattr(fv, "classification", None)
             n_scans = getattr(fv, "n_scans", None)
+            error = getattr(fv, "error", None)
             out.append({
                 "path": path,
                 "name": Path(path).name or path,
                 "classification": classification,
                 "n_scans": n_scans,
-                "status_text": _status_text(classification, n_scans),
+                "error": error,
+                "status_text": _status_text(classification, n_scans, error),
             })
         return out
 

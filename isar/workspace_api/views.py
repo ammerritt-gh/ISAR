@@ -416,6 +416,7 @@ class FileView:
     n_scans: int | None             # measurement scans that produced ledger entries (== len(scan_ids))
     scan_ids: tuple = ()
     n_context: int | None = None    # in-file context scans (calibration/alignment/environment), not ledgered
+    error: str | None = None        # "ExcType: msg" if this measurement file failed to parse (additive)
 
 
 # ---------------------------------------------------------------------------

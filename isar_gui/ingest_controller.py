@@ -217,7 +217,9 @@ class IngestController(QObject):
             if code != 0:
                 cause = ingest_failure_cause(lines)
                 log.warning("ingest failed (exit %s): %s", code, cause)
-                self._log(f"ingest failed (exit {code}): {cause}")
+                # "ingest step failed" (not "ingest failed") so a generic cause of "ingest failed …"
+                # does not stutter into "ingest failed (exit 1): ingest failed …".
+                self._log(f"ingest step failed (exit {code}): {cause}")
                 # A bootstrap whose ingest hiccuped still gets opened — init already wrote the card,
                 # so the scaffolded workspace must not be stranded unopened.
                 if self._open_after:
