@@ -1,4 +1,8 @@
-"""BrowserDock — the workspace browser: card summary + group/member tree (Task 9, C1).
+"""BrowserDock — the Results browser: card summary + fit-result group/member tree (Task 9, C1).
+
+Titled "Results" in the UI: it browses fit-result collation buckets and feeds the C2 inspector — a
+different axis from the Phase-E Scans dock, which shows physical scans grouped by metadata/manual
+membership. Same read-only viewmodel and structure as before; only the window title changed.
 
 Purely presentational: all derivation (labels, tree data, verdict text) lives in
 :class:`~isar_gui.viewmodels.browser.BrowserViewModel`; this widget only lays out and renders what
@@ -50,7 +54,10 @@ class BrowserDock(QDockWidget):
     """Card summary header + group/member tree over a :class:`BrowserViewModel`."""
 
     def __init__(self, vm, parent=None):
-        super().__init__("Browser", parent)
+        # "Results": this dock browses fit-result collation buckets and feeds the C2 inspector — a
+        # different axis from the Phase-E Scans dock (physical scans by group). Retitled to keep the
+        # two straight; objectName stays "browser_dock" so saved layouts still resolve it.
+        super().__init__("Results", parent)
         self.setObjectName("browser_dock")  # stable name for saveState()/restoreState()
         self._vm = vm
 

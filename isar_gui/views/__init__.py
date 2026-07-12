@@ -8,5 +8,7 @@ from __future__ import annotations
 
 from isar_gui.views.browser_dock import BrowserDock
 from isar_gui.views.inspector_widget import InspectorWidget
+from isar_gui.views.scan_table_dock import ScanTableDock
+from isar_gui.views.scans_dock import ScansDock
 
-__all__ = ["BrowserDock", "InspectorWidget"]
+__all__ = ["BrowserDock", "InspectorWidget", "ScansDock", "ScanTableDock"]
