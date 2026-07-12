@@ -46,9 +46,30 @@ class DetectResult:
         return self.plugin_name is not None
 
 
-def build_init_command(python: str, data: str, out: str) -> list[str]:
-    """The argv for ``isar init <data> --out <out>`` run as ``<python> -m isar ...``."""
-    return [python, "-m", "isar", "init", str(data), "--out", str(out)]
+def build_init_command(python: str, data: str, out: str, *, json: bool = False) -> list[str]:
+    """The argv for ``isar init <data> --out <out>`` run as ``<python> -m isar ...``.
+
+    ``json=True`` appends ``--json`` so the engine emits one machine-readable object on stdout
+    (used by :class:`~isar_gui.workspace_manager.WorkspaceManager.bootstrap_from_data`).
+    """
+    cmd = [python, "-m", "isar", "init", str(data), "--out", str(out)]
+    if json:
+        cmd.append("--json")
+    return cmd
+
+
+def build_ingest_command(python: str, data_paths, workspace: str, *, json: bool = False) -> list[str]:
+    """The argv for ``isar ingest <data>... --workspace <ws>`` run as ``<python> -m isar ...``.
+
+    Parses data into the ledger (status ``ingested``) without fitting. Phase C uses this for the
+    minimal inline ingest after a bootstrap and for a drop onto an already-ready workspace; a proper
+    IngestController replaces the inline callers in Phase D.
+    """
+    cmd = [python, "-m", "isar", "ingest", *[str(p) for p in data_paths],
+           "--workspace", str(workspace)]
+    if json:
+        cmd.append("--json")
+    return cmd
 
 
 def build_detect_command(python: str, data: str) -> list[str]:
@@ -103,6 +124,37 @@ def last_error_line(lines: list[str]) -> str | None:
         if stripped.startswith("error:"):
             return stripped[len("error:"):].strip() or None
     return None
+
+
+def parse_init_json(lines) -> dict | None:
+    """The last JSON object emitted by ``isar init --json`` (a success object with ``workspace`` or
+    an ``{"error": {...}}`` object), scraped from a list of streamed output lines, or ``None``.
+
+    Tolerant like :func:`parse_detect_json`: non-JSON lines (progress text, banners) are skipped so
+    a stray print never masks the real result object.
+    """
+    for line in reversed([str(ln).strip() for ln in lines if str(ln).strip()]):
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
+
+
+def init_failure_cause(lines) -> str:
+    """A human-readable cause for a failed ``isar init``: the JSON ``error.kind: error.message`` if
+    the engine emitted one, else the last ``error:`` stderr line, else a generic fallback."""
+    obj = parse_init_json(lines)
+    if isinstance(obj, dict) and isinstance(obj.get("error"), dict):
+        err = obj["error"]
+        kind = str(err.get("kind", "")).strip()
+        message = str(err.get("message", "")).strip()
+        if kind and message:
+            return f"{kind}: {message}"
+        return message or kind or "init failed"
+    return last_error_line(list(lines)) or "init failed (see log above)"
 
 
 def parse_detect_json(text: str) -> DetectResult | None:
