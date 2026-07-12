@@ -389,7 +389,8 @@ class ScansViewModel(ViewModel):
     groups_changed = Signal()
     #: A ui-scrap mutation (collapsed/order/active tab) the window should debounce-persist without rebuild.
     store_dirty = Signal()
-    #: A single-clicked unit asked for the C2 inspector (payload: FitView | None; Phase 4 re-routes).
+    #: A single-clicked unit asked for the C2 inspector. Payload is the unit's ``FitView`` when the
+    #: entry is fitted, else the unit-key ``str`` (the raw-unit metadata view); ``None`` when unknown.
     inspect_requested = Signal(object)
 
     def __init__(self, ws, store=None, parent=None):
@@ -695,11 +696,13 @@ class ScansViewModel(ViewModel):
     def request_inspect(self, unit_key: str) -> None:
         """A click on ``unit_key`` asks the C2 inspector to show it.
 
-        Phase 4 will re-route this to a unit-metadata view; today it hands the unit's FitView (when
-        the entry is fitted) to the fit inspector, matching prior behavior, and emits ``None`` for a
-        not-yet-fitted unit."""
+        A fitted entry hands its ``FitView`` to the fit inspector (interval ladder / candidates /
+        verdict); a not-yet-fitted unit hands its unit-key ``str`` so the inspector shows the raw
+        parsed counts + metadata instead. An unknown key emits ``None`` (the empty state). The window
+        routes by payload type (``str`` -> ``set_unit``, else ``set_fit``)."""
         for u in self._rows:
             if u.key == unit_key:
-                self.inspect_requested.emit(u.fit if u.status == "fitted" else None)
+                self.inspect_requested.emit(u.fit if (u.status == "fitted" and u.fit is not None)
+                                            else u.key)
                 return
         self.inspect_requested.emit(None)

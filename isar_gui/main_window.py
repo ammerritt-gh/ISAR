@@ -239,7 +239,7 @@ class MainWindow(QMainWindow):
         # persist (debounced) through the same store save timer; a double-clicked fitted scan routes
         # to the C2 inspector.
         self.scans_vm = ScansViewModel(ws, store=None, parent=self)
-        self.scans_vm.inspect_requested.connect(self.inspector_vm.set_fit)
+        self.scans_vm.inspect_requested.connect(self._route_inspect)
         self.scans_vm.groups_changed.connect(self._on_groups_changed)
         self.scans_vm.store_dirty.connect(self._on_groups_changed)
         self.waterfall_vm.load_view_state(self._session)
@@ -983,10 +983,24 @@ class MainWindow(QMainWindow):
         self._live_label.setText(f"live — last update {datetime.now():%H:%M:%S}")
         self.statusBar().showMessage(f"Updated: {', '.join(sorted(changed)) or '(none)'}")
 
+    def _route_inspect(self, payload) -> None:
+        """Route a ``ScansViewModel.inspect_requested`` payload to the inspector: a unit-key ``str``
+        shows the raw parsed unit (metadata + counts); anything else (a ``FitView`` or ``None``)
+        drives the fit inspector as before."""
+        if isinstance(payload, str):
+            self.inspector_vm.set_unit(payload)
+        else:
+            self.inspector_vm.set_fit(payload)
+
     def _refresh_inspector_selection(self) -> None:
         """Re-find the currently-inspected fit (by scan_number+detector_id — a FitView carries no
         stable identity across a rebuild) in the just-refreshed ``ws.results``; re-select it if it
-        still exists, else drop the inspector to its empty state."""
+        still exists, else drop the inspector to its empty state. A raw-unit view re-assembles by its
+        (stable) unit key."""
+        unit_key = self.inspector_vm.current_unit
+        if unit_key is not None:
+            self.inspector_vm.set_unit(unit_key)
+            return
         fit = self.inspector_vm.current_fit
         if fit is None:
             return

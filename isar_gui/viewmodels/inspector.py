@@ -21,11 +21,13 @@ no matplotlib). Curve/data come through the read-only ``Workspace`` facade (``ev
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Signal
 
 from isar.plotspec import builders
+from isar_gui.scan_keys import scan_prefix, split_key
 from isar_gui.viewmodels import certify
 from isar_gui.viewmodels.base import ViewModel
 # Re-exported for backwards compatibility: the ladder derivation now lives in certify.py (shared with
@@ -33,6 +35,16 @@ from isar_gui.viewmodels.base import ViewModel
 from isar_gui.viewmodels.certify import LadderRow  # noqa: F401
 
 _FINE_N = 400
+
+
+def _fmt_q(hkl) -> str:
+    """A ``[h, k, l]`` display string, or ``""`` for a missing/non-numeric q."""
+    if not hkl:
+        return ""
+    try:
+        return "[" + ", ".join(f"{float(v):.3g}" for v in hkl) + "]"
+    except (TypeError, ValueError):
+        return ""
 
 
 @dataclass
@@ -46,9 +58,14 @@ class CandidateRow:
 
 @dataclass
 class InspectorState:
-    """The whole assembled view-state (empty when no fit is selected)."""
+    """The whole assembled view-state (empty when no fit/unit is selected).
+
+    ``kind`` is ``"fit"`` for a fitted-detector view (interval ladder / candidates / verdict) and
+    ``"unit"`` for a raw parsed *scan × analyzer* unit (metadata panel + raw counts plot, no fit
+    tables). ``metadata`` carries the unit-mode provenance panel (empty in fit mode)."""
 
     empty: bool = True
+    kind: str = "fit"                # "fit" | "unit"
     main_spec: object | None = None
     residuals_spec: object | None = None
     ladder_rows: list = field(default_factory=list)
@@ -56,6 +73,7 @@ class InspectorState:
     candidates_recorded: bool = False
     verdict: dict = field(default_factory=dict)
     provenance: dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)   # unit-mode scan metadata (label -> display string)
     certifying_tier: str | None = None
     curve_error: str | None = None   # set when the specs could not be built (tables still shown)
 
@@ -69,6 +87,7 @@ class InspectorViewModel(ViewModel):
     def __init__(self, ws, parent=None):
         super().__init__(ws, parent)
         self._fit = None
+        self._unit_key = None
         self._state = InspectorState()
 
     # ---- public state -----------------------------------------------------
@@ -82,20 +101,38 @@ class InspectorViewModel(ViewModel):
 
     @property
     def current_fit(self):
-        """The currently-inspected ``FitView`` (``None`` in the empty state). Read by the window's
+        """The currently-inspected ``FitView`` (``None`` in the empty/unit state). Read by the window's
         watch slot to re-look-up the fit by identity after a workspace change."""
         return self._fit
+
+    @property
+    def current_unit(self):
+        """The currently-inspected unit key (``None`` unless a raw unit is shown). Read by the window's
+        watch slot to re-assemble the unit view after a workspace change (a unit key IS stable)."""
+        return self._unit_key
 
     # ---- selection slot ---------------------------------------------------
     def set_fit(self, fit_view) -> None:
         """Slot wired to ``BrowserViewModel.selection_changed``. ``None`` resets to the empty state."""
         self._fit = fit_view
+        self._unit_key = None
         self._state = self._build(fit_view)
         self.spec_changed.emit()
 
+    def set_unit(self, unit_key) -> None:
+        """Show a raw parsed *scan × analyzer* unit: metadata panel + a data-only counts plot with an
+        honest 3-state axis label (hard rule 4 — never labels uncalibrated x as energy transfer, never
+        shifts x). ``None`` resets to the empty state. Missing unit file -> a curve_error, no crash."""
+        self._fit = None
+        self._unit_key = unit_key
+        self._state = self._build_unit(unit_key)
+        self.spec_changed.emit()
+
     def on_workspace_changed(self, changed=None) -> None:
-        # Re-assemble against the refreshed facade if a fit is selected, then re-emit.
-        if self._fit is not None:
+        # Re-assemble against the refreshed facade if a fit or unit is selected, then re-emit.
+        if self._unit_key is not None:
+            self._state = self._build_unit(self._unit_key)
+        elif self._fit is not None:
             self._state = self._build(self._fit)
         self.spec_changed.emit()
         super().on_workspace_changed(changed)
@@ -118,6 +155,122 @@ class InspectorViewModel(ViewModel):
         )
         self._attach_specs(fit, st)
         return st
+
+    # -- unit (raw parsed scan x analyzer) assembly ------------------------
+    def _build_unit(self, unit_key) -> InspectorState:
+        if unit_key is None:
+            return InspectorState(empty=True, kind="unit")
+        _exp, scan_number, det = split_key(unit_key)
+        sv = self._find_scan_view(unit_key)
+        # A ScanView's scan_id key carries no detector when a single-detector legacy entry split it
+        # off; recover the analyzer from the view's sole detector so the title/metadata still name it.
+        if det is None and sv is not None:
+            det = next(iter(getattr(sv, "detectors", None) or {}), None)
+        st = InspectorState(empty=False, kind="unit",
+                            metadata=self._unit_metadata(sv, unit_key, scan_number, det))
+        try:
+            unit = self._ws.unit_data(unit_key)
+        except (KeyError, ValueError, OSError) as exc:  # a read surface should not raise; guard anyway
+            st.curve_error = str(exc)
+            return st
+        if unit is None:
+            st.curve_error = "no parsed counts for this unit (re-ingest to backfill)"
+            return st
+        axis = dict(getattr(unit, "axis", None) or {})
+        st.main_spec = builders.fit_overlay_spec(
+            x=unit.x, counts=unit.counts, yerr=unit.yerr,
+            x_fit=None, total=None, components=None,
+            scan_number=scan_number, det_id=det,
+            title=self._unit_title(scan_number, det),
+            xlabel=self._axis_label(axis))
+        return st
+
+    def _find_scan_view(self, unit_key):
+        pref = scan_prefix(unit_key)
+        try:
+            scans = list(getattr(self._ws, "scans", None) or [])
+        except Exception:  # noqa: BLE001 — the facade degrades; metadata is best-effort
+            return None
+        for sv in scans:
+            if getattr(sv, "scan_id", None) == unit_key:
+                return sv
+        for sv in scans:  # legacy: a scan-level key covers the sole unit of that scan
+            if scan_prefix(getattr(sv, "scan_id", "") or "") == pref:
+                return sv
+        return None
+
+    @staticmethod
+    def _unit_title(scan_number, det) -> str:
+        num = "?" if scan_number is None else scan_number
+        base = f"scan {num}" if det is None else f"scan {num}  {det}"
+        return f"{base}  (parsed, not fitted)"
+
+    @staticmethod
+    def _axis_label(axis) -> str:
+        """Rule-4-honest x-axis label for a raw unit. The x values are the RAW scanned abscissa (never
+        energy-zero-shifted), so a non-``absolute`` calibration is NEVER labeled "energy transfer" and
+        NEVER implies E0=0 — the label says out loud that the zero is pending / conversion is needed."""
+        axis = axis or {}
+        status = axis.get("calibration_status")
+        units = axis.get("units") or "meV"
+        kind = axis.get("raw_abscissa_kind") or axis.get("kind") or "scan axis"
+        if status == "absolute":
+            return f"energy transfer ({units})"
+        if status == "needs_zero":
+            return f"raw energy ({units}) — uncalibrated: elastic zero pending"
+        if status == "needs_conversion_and_zero":
+            return f"raw {kind} ({units}) — uncalibrated"
+        return "scan axis (uncalibrated?)"
+
+    @staticmethod
+    def _unit_metadata(sv, unit_key, scan_number, det) -> dict:
+        """Ordered display metadata for the unit panel, tolerant of pre-Phase-2 workspaces (every key
+        is best-effort; an absent provenance field is simply omitted, never a placeholder)."""
+        md: dict = {"unit": str(unit_key)}
+        if sv is None:
+            return md
+        prov = getattr(sv, "provenance", None) or {}
+        scan_type = getattr(sv, "scan_type", None)
+        if scan_type:
+            md["type"] = str(scan_type)
+        status = getattr(sv, "status", None)
+        if status:
+            md["status"] = str(status)
+        if det:
+            md["analyzer"] = str(det)
+        hkl = getattr(sv, "hkl", None)
+        q = _fmt_q(hkl)
+        if q:
+            md["q"] = q
+        qt = _fmt_q(prov.get("q_target"))
+        if qt:
+            md["target #Q"] = qt
+        t = getattr(sv, "T", None)
+        if t is not None:
+            md["T"] = f"{float(t):g} K"
+        if prov.get("command"):
+            md["command"] = str(prov["command"])
+        if prov.get("counting_mode"):
+            md["counting mode"] = str(prov["counting_mode"])
+        if prov.get("preset") is not None:
+            try:
+                md["preset"] = f"{float(prov['preset']):g}"
+            except (TypeError, ValueError):
+                pass
+        if prov.get("n_points") is not None:
+            md["points"] = str(prov["n_points"])
+        if prov.get("energy_status"):
+            md["energy status"] = str(prov["energy_status"])
+        b = prov.get("B")
+        if b is not None:
+            try:
+                md["B"] = f"{float(b):g} T"
+            except (TypeError, ValueError):
+                pass
+        src = getattr(sv, "source_file", None)
+        if src:
+            md["file"] = Path(src).name
+        return md
 
     # -- specs (data + fit + residuals) --
     def _attach_specs(self, fit, st: InspectorState) -> None:

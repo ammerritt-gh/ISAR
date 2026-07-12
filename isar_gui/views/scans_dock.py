@@ -427,6 +427,11 @@ class _GroupBox(QFrame):
         else:
             self._vm.select_keys([key], clear=True)
             self._anchor = key
+            # A plain (unmodified) single click also opens the unit in the inspector; ctrl/shift
+            # multi-select must NOT steal the inspector (the operator is building a set). A shift-click
+            # with no anchor lands here too, so gate on the modifiers, not the branch.
+            if not ctrl and not shift:
+                self._vm.request_inspect(key)
 
     def _on_chip_context(self, key: str, global_pos) -> None:
         menu = QMenu(self)
