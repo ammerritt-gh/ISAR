@@ -161,6 +161,45 @@ def test_failure_emits_ingest_failed_with_json_cause(qtbot, patched_runner):
     assert failures == [(2, "no_workspace: run init first")]
 
 
+def test_workspace_switch_mid_run_discards_stale_result(qtbot, patched_runner):
+    """If the operator opens a different workspace while a bootstrap runs, the finished callback must
+    NOT open the captured root or emit its report into the now-current workspace — data on disk is
+    already correct (argv-pinned), only the UI-facing effects are discarded."""
+    mgr = _FakeManager(state="pending", root=r"D:\T")
+    finished, failed = [], []
+    ctrl = IngestController("py", mgr, log_sink=lambda _m: None)
+    ctrl.ingest_finished.connect(lambda r: finished.append(r))
+    ctrl.ingest_failed.connect(lambda c, m: failed.append((c, m)))
+
+    ctrl.request_ingest(["d1"])                       # pins the job to D:\T (init step)
+    patched_runner.instances[0].complete(0)           # init OK -> ingest step (still on D:\T)
+
+    # Operator switches to another workspace mid-run.
+    mgr._root = r"D:\W2"
+    mgr._state = "ready"
+
+    patched_runner.instances[1].complete(0, [_success_line(added=["exp:1"])])
+    assert mgr.opened == []                            # never opened T into the switched-away UI
+    assert finished == [] and failed == []             # no report/failure emitted into W2
+
+
+def test_failure_mid_queue_keeps_remaining_batches(qtbot, patched_runner):
+    """A batch that fails must not drop the batches queued behind it — the FIFO keeps draining."""
+    mgr = _FakeManager(state="ready")
+    failed = []
+    ctrl = IngestController("py", mgr, log_sink=lambda _m: None)
+    ctrl.ingest_failed.connect(lambda c, m: failed.append((c, m)))
+
+    ctrl.request_ingest(["a"])
+    ctrl.request_ingest(["b"])                         # queued behind "a"
+
+    err = json.dumps({"error": {"kind": "bad", "message": "boom"}})
+    patched_runner.instances[0].complete(2, [err])     # first batch fails
+    assert failed and failed[0][0] == 2
+    assert len(patched_runner.instances) == 2          # second batch still started
+    assert "b" in patched_runner.instances[1].argv
+
+
 def test_bootstrap_init_failure_does_not_open(qtbot, patched_runner):
     """If bootstrap `isar init` fails, the controller reports failure and never opens/ingests —
     the pending workspace is left intact for a retry."""

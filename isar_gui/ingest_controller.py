@@ -73,6 +73,7 @@ class IngestController(QObject):
         self._open_after = False                  # bootstrap job: open the root after the last step
         self._report = None                       # GuiIngestReport from the ingest step, if any
         self._lines: list[str] = []               # buffered output of the current step
+        self._current_root: str | None = None     # workspace root this job's argv is pinned to
 
     # ---- public API ------------------------------------------------------
     def request_ingest(self, paths) -> None:
@@ -114,6 +115,10 @@ class IngestController(QObject):
             self._finish_job()
             return
         root = str(root)
+        # Pin the job to THIS root: the argv below embeds it, and every finished-callback compares it
+        # against the live manager root so a workspace switch mid-run can't fire this job's result
+        # (open / report / highlight) into a different workspace.
+        self._current_root = root
 
         if state == "pending":
             self._open_after = True
@@ -147,6 +152,18 @@ class IngestController(QObject):
         lines = self._lines
         kind, _argv = self._steps[self._step_i]
         self._dispose_runner()
+
+        # Workspace-identity guard: if the manager no longer points at the root this job was pinned
+        # to (the operator opened/switched a workspace mid-run), the subprocess already wrote to the
+        # captured root on disk, but every UI-facing effect — opening, the finished report, the
+        # highlight, even a failure notice — would land in the WRONG workspace. Discard them all.
+        if not self._job_root_is_current():
+            log.warning("stale ingest result for %s discarded (workspace changed mid-run)",
+                        self._current_root)
+            self._log(f"stale ingest result for {self._current_root} discarded "
+                      "(workspace changed mid-run)")
+            self._finish_job()
+            return
 
         if kind == "init" and code != 0:
             # Bootstrap init failed: nothing scaffolded, leave the pending state for a retry.
@@ -183,13 +200,22 @@ class IngestController(QObject):
             self.ingest_finished.emit(self._report)
         self._finish_job()
 
+    def _job_root_is_current(self) -> bool:
+        """True while the manager still points at the root this job was pinned to (or is still
+        pending on it). False once the operator switched to a different workspace mid-run."""
+        live = self._wsm.root()
+        return live is not None and self._current_root is not None \
+            and str(live) == self._current_root
+
     def _open_root(self) -> None:
-        root = self._wsm.root()
-        if root is not None and not self._wsm.open(str(root)):
+        # Open the CAPTURED root (guaranteed == the live root here by the _job_root_is_current gate).
+        root = self._current_root
+        if root is not None and not self._wsm.open(root):
             self._log(f"scaffolded {root} but could not open it as a workspace")
 
     def _finish_job(self) -> None:
         self._current = None
+        self._current_root = None
         self._steps = []
         self._step_i = 0
         self._open_after = False
@@ -205,8 +231,8 @@ class IngestController(QObject):
         try:
             self._runner.line.disconnect()
             self._runner.finished.disconnect()
-        except (RuntimeError, TypeError):
-            pass  # already detached / C++ side gone
+        except (RuntimeError, TypeError) as exc:
+            log.debug("runner signals already detached / C++ side gone: %s", exc)
         self._runner.deleteLater()
         self._runner = None
 

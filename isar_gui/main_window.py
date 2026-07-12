@@ -11,6 +11,7 @@ The Docks-menu two-way sync (checkable action <-> dock ``visibilityChanged``) fo
 """
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 from datetime import datetime
@@ -66,6 +67,8 @@ from isar_gui.views.heatmap_dock import HeatmapDock
 from isar_gui.views.inspector_widget import InspectorWidget
 from isar_gui.views.waterfall_dock import WaterfallDock
 from isar_gui.watch_bridge import WatchBridge
+
+log = logging.getLogger(__name__)
 
 _EMPTY_HINT = "No workspace loaded.\n\nFile ▸ Open Workspace… to begin."
 _PENDING_HINT = "Drop data files to begin — they'll land in a temporary workspace."
@@ -514,20 +517,23 @@ class MainWindow(QMainWindow):
         if self._gui_store is not None:
             self._gui_store.save()
 
-    def _is_file_known(self, path: str, size, _mtime) -> bool:
+    def _is_file_known(self, path: str, size, mtime) -> bool:
         """Cheap no-op guard for the folder watcher: True if ``path`` is already in the manifest with
-        the same size (engine idempotency is the real guarantee; this just avoids needless churn)."""
+        the same (size, mtime) — a file unchanged since ingest. Engine idempotency is the real
+        guarantee; this just avoids re-queuing a file the ledger already holds identically."""
         if getattr(self, "_empty", True):
             return False
         try:
             rp = str(Path(path).resolve())
-        except OSError:
+        except OSError as exc:
+            log.debug("could not resolve watched path %s: %s", path, exc)
             return False
         for fv in self._ws.files:
             try:
-                if str(Path(fv.path).resolve()) == rp and fv.size == size:
+                if str(Path(fv.path).resolve()) == rp and fv.size == size and fv.mtime == mtime:
                     return True
-            except (OSError, AttributeError):
+            except (OSError, AttributeError) as exc:
+                log.debug("skipping manifest row while matching %s: %s", rp, exc)
                 continue
         return False
 

@@ -164,5 +164,6 @@ def _is_within(path: str, base: str) -> bool:
     try:
         Path(path).resolve().relative_to(Path(base).resolve())
         return True
-    except (ValueError, OSError):
+    except (ValueError, OSError) as exc:
+        log.debug("path %s not within %s: %s", path, base, exc)
         return False
