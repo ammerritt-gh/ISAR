@@ -190,7 +190,8 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   in Phase B).
 - **G16.** `isar_gui` sanctioned imports: `isar_gui` may import only `isar.workspace_api`,
   `isar.geometry`, `isar.plotspec`; `isar.workspace_api` may additionally use `isar.schema.card`,
-  `isar.session.state`, `isar.session.workspace`, `isar.drive.session_log`,
+  `isar.session.state`, `isar.session.workspace`, `isar.session.unit_data` (the per-unit ingest
+  data reader behind `ws.unit_data`; Qt-free, scipy-free), `isar.drive.session_log`,
   `isar.drive.isar_io.readers`, `isar.report.audit`, `isar.analyze.components`, `isar.geometry`,
   `isar.reduce.collate` (the canonical collation key — one definition of "a dataset"). Enforced
   by an AST import-contract test, `tests/test_import_contract.py` (task A-11; allow-lists kept in

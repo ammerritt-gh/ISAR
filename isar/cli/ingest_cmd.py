@@ -35,7 +35,7 @@ def run(args) -> int:
 
     card, session = ws.load()
     try:
-        report = ingest.ingest_batch(card, session, args.data)
+        report = ingest.ingest_batch(card, session, args.data, data_dir=ws.root / "data")
     except Exception as exc:
         # Per-file isolation (ingest_batch) makes this a rare backstop, but the GUI's cause-extractor
         # must ALWAYS find a clean `error:` line rather than a raw traceback. Print the traceback for

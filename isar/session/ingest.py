@@ -124,7 +124,7 @@ class IngestReport:
                 "gaps": [list(g) for g in self.gaps]}
 
 
-def ingest_batch(card: Card, session, data_paths) -> IngestReport:
+def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestReport:
     """Parse ``data_paths`` into the session ledger WITHOUT fitting (UNIFICATION_DESIGN §2.3).
 
     Discovers/classifies files (reusing :func:`discover`), parses the measurement files with the
@@ -134,12 +134,33 @@ def ingest_batch(card: Card, session, data_paths) -> IngestReport:
     unchanged re-ingest leaves a fitted/held/excluded entry COMPLETELY untouched — status is only
     ever driven up to ``"ingested"`` when the parsed content actually drifted.
 
+    When ``data_dir`` is given, a per-unit data file (``isar.unit_data/1``, see
+    :mod:`isar.session.unit_data`) is written under ``data_dir/ingest/`` for every added/updated
+    entry, AND backfilled for any ``unchanged`` entry whose file is missing (cheap, no ledger
+    mutation — lets a re-ingest repair a pre-Phase-2 workspace without ticking ``dirty``). A unit
+    write failure is logged and skipped; it never aborts the batch.
+
     Mutates ``session`` in place; the caller persists it (skip ``save()`` when ``report.dirty`` is
     False). Returns an :class:`IngestReport`.
     """
     from isar.reduce import combine, qc
-    from isar.session import router
+    from isar.session import router, unit_data
     from isar.session.state import ScanEntry, content_hash
+
+    def _write_unit(rec, det, det_state):
+        """Write (added/updated) or backfill-if-missing (unchanged) one unit file; isolate failures."""
+        if data_dir is None:
+            return
+        try:
+            if det_state in ("added", "updated"):
+                unit_data.write_unit_data(rec, det, data_dir)
+            else:  # unchanged: only write if the file is absent (backfill; no ledger mutation)
+                path = unit_data.unit_data_path(data_dir, rec.experiment_id, rec.scan_number, det)
+                if not path.exists():
+                    unit_data.write_unit_data(rec, det, data_dir)
+        except Exception as exc:  # noqa: BLE001 — one bad unit must never abort the batch
+            log.warning("ingest: failed to write unit data for %s:%s:%s (%s); continuing",
+                        rec.experiment_id, rec.scan_number, det, exc)
 
     report = IngestReport()
     plan = discover(data_paths, card)
@@ -204,13 +225,14 @@ def ingest_batch(card: Card, session, data_paths) -> IngestReport:
         chash = content_hash(rec)
         T = float(np.median(np.asarray(rec.temperature.setpoint, dtype=float)))
         src = sources[(rec.experiment_id, rec.scan_number)][-1]   # the kept (last-wins) source file
+        extras = unit_data._provenance_extras(rec)               # scan-level, additive + tolerant
         scan_rank = 0                                             # collapse per-detector states
         touched = False                                          # any detector entry produced?
         for det, sp in rec.spectra.items():
             touched = True
             key = f"{rec.experiment_id}:{rec.scan_number}:{det}"
             q = [float(v) for v in sp.q] if sp.q is not None else None
-            prov_add = {"source_file": src, "T": T, "q": q, "ingested_at": now_iso}
+            prov_add = {"source_file": src, "T": T, "q": q, "ingested_at": now_iso, **extras}
             prev = session.get(key)
             if prev is None:
                 session.put(ScanEntry(
@@ -231,6 +253,7 @@ def ingest_batch(card: Card, session, data_paths) -> IngestReport:
                 prev.provenance = {**(prev.provenance or {}), **prov_add}
                 det_state = "updated"
                 report.dirty = True
+            _write_unit(rec, det, det_state)
             scan_rank = max(scan_rank, _RANK[det_state])
         if touched:
             # A no-spectra measurement produces no ledger entry — keep it out of all three lists.

@@ -91,6 +91,11 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
 
   (No workspace at `DIR` prints `{"error": {"kind": "no_workspace", "message": "..."}}` and exits
   non-zero.) The GUI shells exactly this verb for its drop-to-ingest and watched-folder flows.
+  Alongside the ledger, ingest writes one per-unit data file (`data/ingest/ingest-<exp>-<scan>-<det>.json`,
+  schema `isar.unit_data/1`) for every `(exp, scan, detector)` — raw abscissa, honest counts/variance
+  (σ²=0 kept, never energy-zero-shifted) and the 3-state calibration — so the GUI inspector can draw a
+  parsed-not-fitted unit before any `isar run`. Re-ingesting also backfills a missing unit file for an
+  otherwise-unchanged entry (repairs a pre-Phase-2 workspace) without ticking the ledger.
 - **`isar status --workspace DIR`** — where things stand, without reprocessing: how many scans
   fitted / held / excluded, *why* each held scan is held, gaps in the scan-number sequence and in
   Q coverage, current calibration versions.

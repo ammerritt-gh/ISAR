@@ -333,6 +333,74 @@ class Workspace:
         yerr = np.sqrt(np.clip(counts, 0.0, None))
         return energy, counts, yerr
 
+    def unit_data(self, scan_id, detector_id=None):
+        """The measured spectrum for one atomic *scan × detector* unit, or ``None``.
+
+        Reads the per-unit ingest file (``data/ingest/ingest-*.json``, ``isar.unit_data/1``) written
+        at ingest, returning ``SimpleNamespace(x, counts, yerr, mask, axis)`` — ``x`` the RAW scanned
+        abscissa (never energy-zero-shifted; the ``axis`` block carries the 3-state calibration so a
+        caller labels honestly), ``yerr`` the Poisson ``sqrt(clip(variance, 0, None))`` whisker (σ=0
+        stays 0, D3). ``scan_id`` may be a full ``exp:scan:det`` ledger id (``detector_id`` then
+        redundant) or an ``exp:scan``/bare scan with ``detector_id`` supplied.
+
+        Falls back to the drive loop's legacy single-detector ``data/j-*.json`` (axis defaults to
+        absolute — correct for TAVI) when no per-unit file exists. ``None`` when neither is present.
+        Read-only; never raises.
+        """
+        import numpy as np
+        from types import SimpleNamespace
+
+        from isar.session.unit_data import read_unit_data, unit_data_path
+
+        exp, scan_number, det = self._split_unit_id(scan_id, detector_id)
+        if exp is not None and scan_number is not None and det is not None:
+            rec = read_unit_data(unit_data_path(self._data_dir, exp, scan_number, det))
+            if rec is not None:
+                counts = np.asarray(rec.get("counts") or [], dtype=float)
+                var = np.asarray(rec.get("variance") or [], dtype=float)
+                yerr = np.sqrt(np.clip(var, 0.0, None)) if var.size else np.zeros(counts.shape)
+                mask = rec.get("mask")
+                mask = (np.asarray(mask, dtype=bool) if mask is not None
+                        else np.ones(counts.shape, dtype=bool))
+                return SimpleNamespace(
+                    x=np.asarray(rec.get("x") or [], dtype=float), counts=counts,
+                    yerr=yerr, mask=mask, axis=dict(rec.get("axis") or {}))
+
+        # Fallback: legacy single-detector drive file; axis defaults absolute (TAVI is calibrated).
+        from .evaluate import _load_scan_arrays
+        energy, counts = _load_scan_arrays(self._data_dir, scan_number)
+        if energy is None or counts is None:
+            return None
+        counts = np.asarray(counts, dtype=float)
+        return SimpleNamespace(
+            x=np.asarray(energy, dtype=float), counts=counts,
+            yerr=np.sqrt(np.clip(counts, 0.0, None)),
+            mask=np.ones(counts.shape, dtype=bool),
+            axis={"name": "energy", "kind": "energy", "units": "meV",
+                  "raw_abscissa_kind": "energy", "calibration_status": "absolute"})
+
+    def _split_unit_id(self, scan_id, detector_id=None):
+        """``(experiment_id, scan_number, detector_id)`` from a unit id in any accepted form.
+
+        The scan number is the first all-digit ``:``-token; everything before it joins as the
+        experiment id, the token after it (if any) is the detector, else ``detector_id`` is used.
+        A bare number resolves scan_number only (exp/det unknown -> legacy fallback).
+        """
+        exp, det, scan_number = None, detector_id, None
+        if isinstance(scan_id, int):
+            return None, scan_id, det
+        parts = str(scan_id).split(":")
+        idx = next((i for i, p in enumerate(parts) if p.isdigit()), None)
+        if idx is not None:
+            scan_number = int(parts[idx])
+            if idx > 0:
+                exp = ":".join(parts[:idx])
+            if idx + 1 < len(parts):
+                det = parts[idx + 1]
+        else:
+            scan_number = self._scan_number_of(scan_id)
+        return exp, scan_number, det
+
     def _find_fit(self, scan_id, detector_id) -> FitView | None:
         scan_number = self._scan_number_of(scan_id)
         # Prefer the results.csv-backed FitView (carries the flattened resolution columns).

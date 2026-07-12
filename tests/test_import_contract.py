@@ -34,6 +34,7 @@ WORKSPACE_API_ALLOWED = {
     "isar.schema.card",
     "isar.session.state",
     "isar.session.workspace",
+    "isar.session.unit_data",
     "isar.drive.session_log",
     "isar.drive.isar_io.readers",
     "isar.report.audit",
