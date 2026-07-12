@@ -471,7 +471,7 @@ All three donors and ISAR are **GPL-3** (verified 2026-07-11), so code may be li
 them freely with copyright/attribution notices. Strategy: copy patterns shamelessly, lift small
 widgets where they fit, factor a shared widget library later **only if it hurts**.
 
-### ACIDD (`C:\Users\AMM\Documents\Github\ACIDD-Arbitrary-Cuts-in-Diffraction-Data`)
+### ACIDD (`C:\Users\AMM\Documents\Github\Science\ACIDD`)
 Donates the **cut/plan gesture** and the image-view scaffolding:
 - Make Cut interaction: click start → live crosshair + dashed preview → click end → draggable
   endpoint markers → live-updating profile. This **is** the planner's "click two points" (item
@@ -494,7 +494,7 @@ two artifact outputs, mode explicit on screen — the user must always know whet
 browsing or authoring beamtime. Draw through measured region → view (side-effect-free); draw
 through terra incognita + approve → `objective_edit` directive to the inbox.
 
-### PUFFIN (`C:\Users\AMM\Documents\Github\PUFFIN`)
+### PUFFIN (`C:\Users\AMM\Documents\Github\Science\PUFFIN`)
 Donates the **live fitting grammar** and app skeleton:
 - MVVM layering (`view/` docks + `viewmodel/` + `worker/` threads) — adopt wholesale.
 - Parameter docks with live preview; exclusion mode (click/box-drag to toggle points);

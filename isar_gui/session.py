@@ -6,7 +6,7 @@ corruption-tolerant: a missing or unreadable/garbage file yields a default :clas
 than raising, so a bad file never blocks startup.
 
 Lifted from ACIDD's ``acidd/session.py`` (atomic save + tolerant load; C:/Users/AMM/Documents/
-Github/ACIDD/acidd/session.py), trimmed to what the ISAR shell needs and given a debounced autosave
+Github/Science/ACIDD/acidd/session.py), trimmed to what the ISAR shell needs and given a debounced autosave
 timer for the Qt side.
 
 File location (platformdirs-free): ``%APPDATA%/isar_gui/session.json`` on Windows via

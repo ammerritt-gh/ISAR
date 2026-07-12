@@ -7,7 +7,7 @@ session-layout restore/autosave. It *wires*, it does not compute — anything sm
 viewmodel (:mod:`isar_gui.viewmodels`).
 
 The Docks-menu two-way sync (checkable action <-> dock ``visibilityChanged``) follows PUFFIN's
-``view/main_window.py`` ``_init_menu_bar`` pattern (C:/Users/AMM/Documents/Github/PUFFIN).
+``view/main_window.py`` ``_init_menu_bar`` pattern (C:/Users/AMM/Documents/Github/Science/PUFFIN).
 """
 from __future__ import annotations
 

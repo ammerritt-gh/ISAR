@@ -1,4 +1,4 @@
-# Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\TAVI),
+# Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\Science\TAVI),
 # original path tavi/tas_geometry.py.  License: GPL-3.0 (TAVI). ISAR is GPL-3.0, compatible.
 # Vendored 2026-07-11, adapted: 2026-07-12 `stt_from_q_norm`, `solve_sample_angles`, and
 # `solve_instrument_angles` reject any `sense_sample` other than -1 or +1 (previously any

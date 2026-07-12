@@ -1,4 +1,4 @@
-# Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\TAVI),
+# Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\Science\TAVI),
 # original path tavi/reciprocal_space.py.  License: GPL-3.0 (TAVI). ISAR is GPL-3.0, compatible.
 # Vendored 2026-07-11, adapted: 2026-07-12 factored the unit-cell volume + validity guard into
 # a shared `_cell_volume` helper so BOTH the forward (HKL->Q) and inverse (Q->HKL) functions

@@ -1,4 +1,4 @@
-# Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\TAVI),
+# Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\Science\TAVI),
 # original path tavi/sample_mount.py.  License: GPL-3.0 (TAVI). ISAR is GPL-3.0, compatible.
 # Vendored 2026-07-11, adapted: import of mccode_euler_from_matrix rewritten from
 # tavi.tas_geometry to the vendored .tas_geometry; 2026-07-12 `reciprocal_basis_tas`

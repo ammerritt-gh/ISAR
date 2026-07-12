@@ -1,4 +1,4 @@
-# Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\TAVI),
+# Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\Science\TAVI),
 # original path tavi/ub_matrix.py.  License: GPL-3.0 (TAVI). ISAR is GPL-3.0, compatible.
 # Vendored 2026-07-11, adapted: (1) imports of reciprocal_basis_tas /
 # instrument_q_to_component_q / q_instrument_from_angles rewritten from tavi.* to the
