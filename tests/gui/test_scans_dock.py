@@ -79,6 +79,32 @@ def test_tabs_present_for_multi_detector(qtbot, tmp_path):
     assert names == ["All", "Scans", "T", "q", "Analyzer", "Manual"]  # no B (no field data)
 
 
+def test_plain_chip_click_routes_to_inspector(qtbot, tmp_path):
+    # A plain (unmodified) single click both selects the unit AND asks the inspector to open it.
+    vm = ScansViewModel(_ws([_sv("in8", 1, "det")]), store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+    got = []
+    vm.inspect_requested.connect(got.append)
+    chip = dock._chips_by_key["in8:1:det"][0]
+    chip.clicked.emit("in8:1:det", Qt.KeyboardModifier.NoModifier)
+    assert got == ["in8:1:det"]                       # ingested -> routes the unit key
+
+
+def test_modified_chip_click_does_not_route_to_inspector(qtbot, tmp_path):
+    # Ctrl/shift multi-select builds a set — it must NOT steal the inspector focus.
+    vm = ScansViewModel(_ws([_sv("in8", 1, "det"), _sv("in8", 2, "det")]),
+                        store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+    got = []
+    vm.inspect_requested.connect(got.append)
+    chip = dock._chips_by_key["in8:1:det"][0]
+    chip.clicked.emit("in8:1:det", Qt.KeyboardModifier.ControlModifier)
+    chip.clicked.emit("in8:1:det", Qt.KeyboardModifier.ShiftModifier)
+    assert got == []
+
+
 def test_analyzer_tab_hidden_for_single_detector(qtbot, tmp_path):
     vm = ScansViewModel(_ws([_sv("in8", 1, "det"), _sv("in8", 2, "det", T=310.0)]),
                         store=GuiStore.load(tmp_path))

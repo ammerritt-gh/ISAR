@@ -262,6 +262,157 @@ def test_browser_selection_updates_inspector(qtbot, make_ws):
     assert w.inspector_vm.state.main_spec is not None
 
 
+# ---- Phase 4: raw-unit metadata + counts view (set_unit) --------------------
+_UNIT_X = [-2.0, 0.0, 2.0, 4.0]
+_UNIT_COUNTS = [0.0, 10.0, 40.0, 5.0]   # counts[0]=0 exercises the σ=0 whisker (D3)
+
+
+def _unit_ws(make_ws, *, status="ingested", axis=None, with_file=True, prov_over=None) -> Workspace:
+    """A workspace carrying one not-yet-fitted S30 unit (``s30:12:ana3``) with rich provenance and,
+    unless ``with_file`` is False, its per-unit ``isar.unit_data/1`` file."""
+    prov = {"source_file": r"C:\data\FeSeS_1.spec", "T": 300.0, "q": [1.5, 0.0, 0.0],
+            "q_target": [1.5, 0.0, 0.0], "command": "scan deltaE -2 4 200",
+            "counting_mode": "monitor", "preset": 200.0, "n_points": 4,
+            "energy_status": (axis or {}).get("calibration_status", "absolute")}
+    if prov_over:
+        prov.update(prov_over)
+    scans = {"s30:12:ana3": {"scan_id": "s30:12:ana3", "scan_number": 12,
+                             "scan_type": "measurement", "status": status,
+                             "detectors": {}, "provenance": prov}}
+    parts = {"scans": scans}
+    if with_file:
+        parts["unit_files"] = [{"exp": "s30", "scan_number": 12, "det": "ana3",
+                                "x": _UNIT_X, "counts": _UNIT_COUNTS, "axis": axis}]
+    return Workspace.open(make_ws(**parts))
+
+
+def test_set_unit_is_data_only_and_sigma_zero_stays_zero(make_ws):
+    from isar.plotspec.spec import Role
+    ws = _unit_ws(make_ws)
+    vm = InspectorViewModel(ws)
+    vm.set_unit("s30:12:ana3")
+    st = vm.state
+    assert not st.empty and st.kind == "unit"
+    data = [s for s in st.main_spec.series if s.role is Role.DATA]
+    assert len(data) == 1                                   # exactly one measured series
+    assert all(s.role is not Role.FIT for s in st.main_spec.series)   # no fit curve
+    assert not any(s.role is Role.COMPONENT for s in st.main_spec.series)
+    assert st.residuals_spec is None                        # no residuals without a fit
+    assert float(np.asarray(data[0].y)[0]) == 0.0
+    assert float(np.asarray(data[0].yerr)[0]) == 0.0        # σ=0 for 0 counts (D3), not floored
+
+
+@pytest.mark.parametrize("status,has_energy_transfer,needle", [
+    ("absolute", True, "energy transfer"),
+    ("needs_zero", False, "uncalibrated"),
+    ("needs_conversion_and_zero", False, "uncalibrated"),
+    (None, False, "uncalibrated"),
+])
+def test_unit_axis_label_is_three_state_honest(make_ws, status, has_energy_transfer, needle):
+    """Hard rule 4: uncalibrated x is NEVER labeled 'energy transfer' — a non-absolute status says so
+    out loud (the x values are the raw abscissa, never shifted to imply E0=0)."""
+    axis = {"name": "deltaE", "kind": "energy", "units": "meV",
+            "raw_abscissa_kind": "energy", "calibration_status": status}
+    ws = _unit_ws(make_ws, axis=axis)
+    vm = InspectorViewModel(ws)
+    vm.set_unit("s30:12:ana3")
+    xlabel = vm.state.main_spec.xlabel
+    assert ("energy transfer" in xlabel) is has_energy_transfer
+    assert needle in xlabel
+
+
+def test_unit_metadata_carries_command_qtarget_and_T(make_ws):
+    ws = _unit_ws(make_ws)
+    vm = InspectorViewModel(ws)
+    vm.set_unit("s30:12:ana3")
+    md = vm.state.metadata
+    assert md["command"] == "scan deltaE -2 4 200"
+    assert md["target #Q"] == "[1.5, 0, 0]"
+    assert md["T"].startswith("300")
+    assert md["analyzer"] == "ana3"
+
+
+def test_unit_metadata_tolerant_of_pre_phase2_provenance(make_ws):
+    # A pre-Phase-2 workspace has only the old ingest keys — no command/q_target/n_points. The panel
+    # degrades to what's present (never a placeholder, never a crash), and the unit still plots.
+    ws = _unit_ws(make_ws, prov_over={"command": None, "q_target": None, "counting_mode": None,
+                                      "preset": None, "n_points": None, "energy_status": None})
+    vm = InspectorViewModel(ws)
+    vm.set_unit("s30:12:ana3")
+    md = vm.state.metadata
+    assert "command" not in md and "target #Q" not in md
+    assert md["T"].startswith("300")                # the surviving old keys still show
+    assert vm.state.main_spec is not None           # the counts file still drives the plot
+
+
+def test_missing_unit_file_sets_curve_error_without_crashing(make_ws):
+    ws = _unit_ws(make_ws, with_file=False)
+    vm = InspectorViewModel(ws)
+    vm.set_unit("s30:12:ana3")
+    st = vm.state
+    assert st.kind == "unit" and not st.empty
+    assert st.main_spec is None and st.curve_error
+    assert st.metadata                              # metadata still renders (short view)
+
+
+def test_request_inspect_routes_fitview_or_unit_key():
+    from types import SimpleNamespace
+    from isar_gui.viewmodels.scans import ScansViewModel
+
+    fit_obj = SimpleNamespace(detector_id="det")
+    fitted = SimpleNamespace(scan_id="s30:1:det", experiment_id="s30", scan_number=1,
+                             scan_type="measurement", status="fitted", source_file=None, T=300.0,
+                             hkl=[1, 0, 0], provenance={}, detectors={"det": fit_obj})
+    raw = SimpleNamespace(scan_id="s30:2:det", experiment_id="s30", scan_number=2,
+                          scan_type="measurement", status="ingested", source_file=None, T=300.0,
+                          hkl=[1, 0, 0], provenance={}, detectors={"det": SimpleNamespace()})
+    vm = ScansViewModel(SimpleNamespace(scans=[fitted, raw]), store=None)
+    got = []
+    vm.inspect_requested.connect(got.append)
+    vm.request_inspect("s30:1:det")
+    vm.request_inspect("s30:2:det")
+    vm.request_inspect("s30:9:det")                 # unknown -> None (empty state)
+    assert got[0] is fit_obj                         # fitted -> FitView
+    assert got[1] == "s30:2:det"                     # not fitted -> unit-key str
+    assert got[2] is None
+
+
+def test_main_window_routes_unit_key_to_set_unit(qtbot, make_ws):
+    ws = _unit_ws(make_ws)
+    w = MainWindow(ws, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    w._route_inspect("s30:12:ana3")
+    assert not w.inspector_vm.is_empty and w.inspector_vm.state.kind == "unit"
+    w._route_inspect(None)                           # a non-str routes to set_fit (empty here)
+    assert w.inspector_vm.is_empty
+
+
+def test_widget_unit_mode_hides_fit_sections_shows_metadata(qtbot, make_ws):
+    ws = _unit_ws(make_ws)
+    vm = InspectorViewModel(ws)
+    w = InspectorWidget(vm)
+    qtbot.addWidget(w)
+    vm.set_unit("s30:12:ana3")
+    assert w._metadata_label.isVisibleTo(w)
+    assert "command" in w._metadata_label.text()
+    for hidden in (w._ladder, w._ladder_header, w._candidates, w._verdict_header,
+                   w._provenance_header):
+        assert not hidden.isVisibleTo(w)
+
+
+def test_widget_unit_then_fit_restores_fit_sections(qtbot, make_ws):
+    # Switching from a unit view back to a fit view re-shows the ladder/verdict (no orphan hiding).
+    ws = _unit_ws(make_ws)
+    vm = InspectorViewModel(ws)
+    w = InspectorWidget(vm)
+    qtbot.addWidget(w)
+    vm.set_unit("s30:12:ana3")
+    fit_ws = _ws_with(make_ws, _outcome())
+    vm.set_fit(_fit(fit_ws))
+    assert w._ladder.isVisibleTo(w) and w._verdict_header.isVisibleTo(w)
+    assert not w._metadata_label.isVisibleTo(w)
+
+
 # ---- MVP-16 smoke (read-only) ------------------------------------------------
 @pytest.mark.skipif(not _MVP16.exists(), reason="frozen baseline not present")
 def test_mvp16_inspector_smoke():
