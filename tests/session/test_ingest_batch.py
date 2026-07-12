@@ -24,6 +24,26 @@ def _emit_s30(path: Path, n_scans=3, seed0=1000) -> "object":
     return card
 
 
+def _emit_s30_with_alignment(path: Path) -> "object":
+    """Two fscan measurements + one ascan (motor scan). The parser classifies scan_type from the
+    command (`_classify`: fscan→measurement, ascan→alignment), so the ascan is a CONTEXT scan that
+    `router.route` partitions out — it must never become a ledger entry."""
+    from isar.synth import config, generate
+    from isar.synth_format.run_builder import (_DEFAULT_H_FAN, _DEFAULT_QK, _DEFAULT_QL,
+                                               build_scan_from_truths)
+
+    card = spec_s30.card_template()
+    run = run_builder.build_s30_run("SYN", n_scans=2)     # scans 1, 2 are fscan measurements
+    cfg = config.default_run_config()
+    q_list = [[float(h), _DEFAULT_QK, _DEFAULT_QL] for h in _DEFAULT_H_FAN]
+    gts = [generate.make_ground_truth(cfg, H=h, target_peak_counts=100.0, seed=5000 + i)
+           for i, h in enumerate(_DEFAULT_H_FAN)]
+    run.scans.append(build_scan_from_truths(q_list=q_list, gts=gts, scan_number=3,
+                                            command="ascan omega 1 2 3"))
+    path.write_bytes(spec_s30.emit_file(run, card))
+    return card
+
+
 def test_fresh_ingest_populates_ledger(tmp_path):
     p1 = tmp_path / "runA.spec_supplementary.dat"
     p2 = tmp_path / "runB.spec_supplementary.dat"
@@ -150,6 +170,24 @@ def test_foreign_and_unrecognized_make_manifest_rows_not_ledger(tmp_path):
     assert all(k.startswith("run.spec_supplementary.dat:") for k in session.scans)
 
 
+def test_in_file_context_scan_is_not_ledgered(tmp_path):
+    """D1: an in-file alignment (ascan) scan is context, not a result — no ledger entry, counted as
+    n_context on the file's manifest row."""
+    p = tmp_path / "run.spec_supplementary.dat"
+    card = _emit_s30_with_alignment(p)
+    session = SessionState()
+
+    report = ingest.ingest_batch(card, session, [p])
+
+    scan_shorts = {":".join(k.split(":")[:2]) for k in session.scans}
+    assert scan_shorts == {"run.spec_supplementary.dat:1", "run.spec_supplementary.dat:2"}
+    assert not any(k.split(":")[1] == "3" for k in session.scans)   # scan 3 (ascan) never ledgered
+    meas = [f for f in report.files if f["class"] == "measurement"][0]
+    assert meas["n_scans"] == 2 and len(meas["scan_ids"]) == 2
+    assert meas["n_context"] == 1                                    # the ascan counted, not ledgered
+    assert session.files[str(p.resolve())]["n_context"] == 1
+
+
 def test_ingest_then_run_preserves_manifest_and_requeues(tmp_path):
     """Driver interplay: after `isar ingest`, a later `run_batch` re-queues the ingested entries and
     its manifest write preserves ingest's n_scans/scan_ids (setdefault(...).update merge)."""
@@ -176,3 +214,11 @@ def test_ingest_then_run_preserves_manifest_and_requeues(tmp_path):
     _card2, session2 = ws.load()
     assert all(e.status != "ingested" for e in session2.scans.values())  # run consumed them
     assert session2.files[rp].get("scan_ids"), "run must preserve ingest's scan_ids (merge, not replace)"
+
+    # Re-ingest AFTER the run: the fitted/held entries must read as "unchanged" — this pins driver-vs-
+    # ingest content_hash parity end-to-end (both hash the reduced+QC'd record). A hash mismatch would
+    # re-queue the whole workspace on every parse-preview.
+    report3 = ingest.ingest_batch(_card2, session2, [p])
+    assert report3.added == [] and report3.updated == []
+    assert report3.unchanged and report3.dirty is False
+    assert all(e.status != "ingested" for e in session2.scans.values())  # nothing downgraded

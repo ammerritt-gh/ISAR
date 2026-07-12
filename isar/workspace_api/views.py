@@ -413,8 +413,9 @@ class FileView:
     size: int | None
     mtime: float | None
     classification: str | None      # "measurement" | "companion" | "foreign" | "unrecognized"
-    n_scans: int | None
+    n_scans: int | None             # measurement scans that produced ledger entries (== len(scan_ids))
     scan_ids: tuple = ()
+    n_context: int | None = None    # in-file context scans (calibration/alignment/environment), not ledgered
 
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import time
 from collections import Counter
@@ -45,6 +46,8 @@ FULL_TIERS = ("full", "bayes")
 from isar.session.state import ScanEntry, SessionState, content_hash
 from isar.session.timing import NullTimer
 from isar.session.workspace import Workspace
+
+log = logging.getLogger(__name__)
 
 
 # ===========================================================================
@@ -778,8 +781,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
             session.files.setdefault(rp, {}).update(
                 {"size": stat.st_size, "mtime": stat.st_mtime,
                  "format": "companion" if f in plan.companion_files else "measurement"})
-        except OSError:
-            pass
+        except OSError as exc:
+            log.warning("run: could not stat %s (%s); manifest row skipped", f, exc)
 
     # Context updates BEFORE measurements (calibration/alignment/environment).
     with timer.stage("route_context"):

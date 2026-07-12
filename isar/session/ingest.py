@@ -108,7 +108,7 @@ class IngestReport:
     ``--json``). ``dirty`` is False iff nothing changed on the session — the caller SKIPs ``save()``
     then, so a re-ingest no-op does not tick the workspace watch.
     """
-    files: list = field(default_factory=list)       # {"path","class","n_scans","scan_ids"}
+    files: list = field(default_factory=list)       # {"path","class","n_scans","scan_ids","n_context"}
     added: list = field(default_factory=list)        # scan-level ids "exp:scan" newly entered
     updated: list = field(default_factory=list)      # existing entries whose content_hash drifted
     unchanged: list = field(default_factory=list)    # re-ingest no-ops
@@ -138,6 +138,7 @@ def ingest_batch(card: Card, session, data_paths) -> IngestReport:
     False). Returns an :class:`IngestReport`.
     """
     from isar.reduce import combine, qc
+    from isar.session import router
     from isar.session.state import ScanEntry, content_hash
 
     report = IngestReport()
@@ -147,7 +148,7 @@ def ingest_batch(card: Card, session, data_paths) -> IngestReport:
     plugin = registry.plugin_by_name(card.policy.plugin)
     by_key: dict[tuple, object] = {}                 # (exp, scan) -> record (last wins)
     sources: dict[tuple, list[str]] = {}             # (exp, scan) -> ordered distinct source paths
-    file_scan_ids: dict[str, list[str]] = {}         # resolved measurement path -> ["exp:scan", ...]
+    file_scan_keys: dict[str, list[tuple]] = {}      # resolved measurement path -> [(exp, scan), ...]
     for f in plan.measurement_files:
         rp = str(Path(f).resolve())
         seen_here: set[tuple] = set()
@@ -159,9 +160,16 @@ def ingest_batch(card: Card, session, data_paths) -> IngestReport:
                 paths.append(rp)
             if key not in seen_here:
                 seen_here.add(key)
-                file_scan_ids.setdefault(rp, []).append(f"{rec.experiment_id}:{rec.scan_number}")
+                file_scan_keys.setdefault(rp, []).append(key)
 
     records = [by_key[k] for k in sorted(by_key, key=lambda k: (str(k[0]), k[1]))]
+
+    # Partition exactly like the driver (driver.py: `router.route` then ledger only
+    # `routed.measurements`): calibration/alignment/environment/unknown scans are CONTEXT, not
+    # results — ledgering them would strand phantom `ingested` entries that never fit and re-queue
+    # every run. We do NOT apply context updates here (that mutates card.state — a run-time job).
+    routed = router.route(records)
+    measurement_keys = {(r.experiment_id, r.scan_number) for r in routed.measurements}
 
     # Dedup alerts: any scan whose surviving record was sourced from more than one file.
     for key in sorted(sources, key=lambda k: (str(k[0]), k[1])):
@@ -170,11 +178,12 @@ def ingest_batch(card: Card, session, data_paths) -> IngestReport:
             report.deduped.append({"scan": f"{key[0]}:{key[1]}",
                                    "kept": paths[-1], "superseded": paths[:-1]})
 
-    # --- upsert one ledger entry per (exp, scan, det) ---
+    # --- upsert one ledger entry per (exp, scan, det), MEASUREMENTS ONLY ---
     import numpy as np
     now_iso = datetime.now(timezone.utc).isoformat()
     _RANK = {"unchanged": 0, "updated": 1, "added": 2}
-    for rec in records:
+    ledgered_keys: set[tuple] = set()                # measurement scans that produced ≥1 entry
+    for rec in routed.measurements:
         scan_short = f"{rec.experiment_id}:{rec.scan_number}"
         # Hash the SAME canonical form the driver hashes (reduced + QC'd, both in-place no-ops where
         # not applicable and neither raises) so a re-ingest after `isar run` reads as "unchanged" and
@@ -186,7 +195,9 @@ def ingest_batch(card: Card, session, data_paths) -> IngestReport:
         T = float(np.median(np.asarray(rec.temperature.setpoint, dtype=float)))
         src = sources[(rec.experiment_id, rec.scan_number)][-1]   # the kept (last-wins) source file
         scan_rank = 0                                             # collapse per-detector states
+        touched = False                                          # any detector entry produced?
         for det, sp in rec.spectra.items():
+            touched = True
             key = f"{rec.experiment_id}:{rec.scan_number}:{det}"
             q = [float(v) for v in sp.q] if sp.q is not None else None
             prov_add = {"source_file": src, "T": T, "q": q, "ingested_at": now_iso}
@@ -211,9 +222,16 @@ def ingest_batch(card: Card, session, data_paths) -> IngestReport:
                 det_state = "updated"
                 report.dirty = True
             scan_rank = max(scan_rank, _RANK[det_state])
-        {2: report.added, 1: report.updated, 0: report.unchanged}[scan_rank].append(scan_short)
+        if touched:
+            # A no-spectra measurement produces no ledger entry — keep it out of all three lists.
+            ledgered_keys.add((rec.experiment_id, rec.scan_number))
+            {2: report.added, 1: report.updated, 0: report.unchanged}[scan_rank].append(scan_short)
 
     # --- file manifest for ALL classified files (merge, never replace) ---
+    # For a measurement-class FILE, its scans still split into measurement scans (ledgered, listed
+    # in scan_ids) and CONTEXT scans routed out (counted as n_context, never ledgered). scan_ids
+    # therefore maps 1:1 to ledger entries; n_scans == len(scan_ids); n_context is the honest home
+    # for the in-file calibration/alignment/environment scans a run would consume as context.
     _classes = [(plan.measurement_files, "measurement"), (plan.companion_files, "companion"),
                 (plan.foreign, "foreign"), (plan.unrecognized, "unrecognized")]
     for files, klass in _classes:
@@ -224,18 +242,21 @@ def ingest_batch(card: Card, session, data_paths) -> IngestReport:
             except OSError as exc:
                 log.warning("ingest: could not stat %s (%s); manifest row skipped", f, exc)
                 continue
+            keys = file_scan_keys.get(rp, []) if klass == "measurement" else []
+            scan_ids = [f"{e}:{s}" for (e, s) in keys if (e, s) in ledgered_keys]
+            n_context = sum(1 for k in keys if k not in measurement_keys)
             row = {"size": stat.st_size, "mtime": stat.st_mtime, "format": klass}
-            scan_ids = file_scan_ids.get(rp, []) if klass == "measurement" else []
             if klass == "measurement":
                 row["n_scans"] = len(scan_ids)
                 row["scan_ids"] = list(scan_ids)
+                row["n_context"] = n_context
             target = session.files.setdefault(rp, {})
             before = dict(target)
             target.update(row)
             if target != before:
                 report.dirty = True
-            report.files.append({"path": rp, "class": klass,
-                                 "n_scans": len(scan_ids), "scan_ids": list(scan_ids)})
+            report.files.append({"path": rp, "class": klass, "n_scans": len(scan_ids),
+                                 "scan_ids": list(scan_ids), "n_context": n_context})
 
     # --- remember new data locations (mirror run_batch) ---
     for p in map(str, data_paths):

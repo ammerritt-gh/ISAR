@@ -190,7 +190,8 @@ class Workspace:
                 path=str(path), size=row.get("size"), mtime=row.get("mtime"),
                 classification=row.get("format"),
                 n_scans=row.get("n_scans"),
-                scan_ids=tuple(scan_ids) if isinstance(scan_ids, (list, tuple)) else ()))
+                scan_ids=tuple(scan_ids) if isinstance(scan_ids, (list, tuple)) else (),
+                n_context=row.get("n_context")))
         self._views["files"] = out
         return out
 
