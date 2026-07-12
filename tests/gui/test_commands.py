@@ -125,3 +125,67 @@ def test_last_error_line_leading_whitespace_tolerated():
 def test_last_error_line_bare_prefix_with_no_cause_is_none():
     lines = ["starting init...", "error:", "aborting"]
     assert commands.last_error_line(lines) is None
+
+
+# ---- ingest command + JSON parse (D1) --------------------------------------
+def test_build_ingest_command_json():
+    cmd = commands.build_ingest_command("py.exe", [r"D:\a", r"D:\b"], r"D:\ws", json=True)
+    assert cmd == ["py.exe", "-m", "isar", "ingest", r"D:\a", r"D:\b", "--workspace", r"D:\ws",
+                   "--json"]
+
+
+def test_build_ingest_command_without_json_omits_flag():
+    cmd = commands.build_ingest_command("py", ["d"], "ws")
+    assert "--json" not in cmd and cmd[3] == "ingest"
+
+
+def _ingest_success_line():
+    import json
+    return json.dumps({
+        "workspace": r"D:\ws",
+        "files": [{"path": r"D:\ws\s1.dat", "class": "measurement", "n_scans": 2,
+                   "scan_ids": ["exp:1", "exp:2"], "n_context": 0}],
+        "scans": {"added": ["exp:1", "exp:2"], "updated": [], "unchanged": []},
+        "deduped": [{"scan": "exp:1", "kept": "b.dat", "superseded": ["a.dat"]}],
+        "gaps": [["exp", 3, 5]]})
+
+
+def test_parse_ingest_json_valid():
+    rep = commands.parse_ingest_json("progress banner\n" + _ingest_success_line() + "\n")
+    assert rep is not None
+    assert len(rep.files) == 1 and rep.files[0]["class"] == "measurement"
+    assert rep.added == ("exp:1", "exp:2")
+    assert rep.updated == () and rep.unchanged == ()
+    assert rep.deduped[0]["kept"] == "b.dat"
+    assert rep.gaps == (("exp", 3, 5),)
+
+
+def test_parse_ingest_json_accepts_line_iterable():
+    rep = commands.parse_ingest_json(["noise", _ingest_success_line()])
+    assert rep is not None and rep.added == ("exp:1", "exp:2")
+
+
+def test_parse_ingest_json_ignores_log_noise_around_the_object():
+    text = "reducing...\nqc pass\n" + _ingest_success_line() + "\n(done)\n"
+    assert commands.parse_ingest_json(text) is not None
+
+
+def test_parse_ingest_json_none_on_garbage_or_error_object():
+    assert commands.parse_ingest_json("not json") is None
+    assert commands.parse_ingest_json("") is None
+    # An error object is not a success object (no "files" key) — parse yields None.
+    assert commands.parse_ingest_json('{"error": {"kind": "no_workspace", "message": "x"}}') is None
+
+
+def test_ingest_failure_cause_from_json_error():
+    lines = ['{"error": {"kind": "no_workspace", "message": "run init first"}}']
+    assert commands.ingest_failure_cause(lines) == "no_workspace: run init first"
+
+
+def test_ingest_failure_cause_falls_back_to_error_line():
+    lines = ["parsing...", "error: could not read numor"]
+    assert commands.ingest_failure_cause(lines) == "could not read numor"
+
+
+def test_ingest_failure_cause_generic_fallback():
+    assert commands.ingest_failure_cause(["nothing useful"]).startswith("ingest failed")

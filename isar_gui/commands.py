@@ -50,7 +50,7 @@ def build_init_command(python: str, data: str, out: str, *, json: bool = False) 
     """The argv for ``isar init <data> --out <out>`` run as ``<python> -m isar ...``.
 
     ``json=True`` appends ``--json`` so the engine emits one machine-readable object on stdout
-    (used by :class:`~isar_gui.workspace_manager.WorkspaceManager.bootstrap_from_data`).
+    (used by :class:`~isar_gui.ingest_controller.IngestController` for the bootstrap ``init`` step).
     """
     cmd = [python, "-m", "isar", "init", str(data), "--out", str(out)]
     if json:
@@ -155,6 +155,67 @@ def init_failure_cause(lines) -> str:
             return f"{kind}: {message}"
         return message or kind or "init failed"
     return last_error_line(list(lines)) or "init failed (see log above)"
+
+
+@dataclass(frozen=True)
+class GuiIngestReport:
+    """Pure-data mirror of the ``isar ingest --json`` success object (no isar types, no Qt).
+
+    Named ``GuiIngestReport`` to avoid clashing with the engine's :class:`isar.session.ingest.
+    IngestReport`; the GUI never imports the engine one (G16). Each ``files`` entry is a dict
+    ``{"path","class","n_scans","scan_ids","n_context"}``; ``added``/``updated``/``unchanged`` are
+    ``"exp:scan"`` id strings; ``deduped`` are ``{"scan","kept","superseded"}`` dicts; ``gaps`` are
+    ``(exp, a, b)`` tuples.
+    """
+
+    files: tuple = ()
+    added: tuple = ()
+    updated: tuple = ()
+    unchanged: tuple = ()
+    deduped: tuple = ()
+    gaps: tuple = ()
+
+
+def parse_ingest_json(text) -> "GuiIngestReport | None":
+    """The last ``isar ingest --json`` SUCCESS object, parsed into a :class:`GuiIngestReport`.
+
+    Tolerant like :func:`parse_detect_json`: ``text`` may be a string or an iterable of lines; non-
+    JSON lines (streamed progress/banners) are skipped so a stray print never masks the result. An
+    ``{"error": {...}}`` object is NOT a success object (it has no ``files`` key) and yields ``None``
+    — callers surface the failure through :func:`ingest_failure_cause` instead.
+    """
+    lines = text.splitlines() if isinstance(text, str) else list(text)
+    for line in reversed([str(ln).strip() for ln in lines if str(ln).strip()]):
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and "files" in obj:
+            scans = obj.get("scans") or {}
+            return GuiIngestReport(
+                files=tuple(obj.get("files") or ()),
+                added=tuple(scans.get("added") or ()),
+                updated=tuple(scans.get("updated") or ()),
+                unchanged=tuple(scans.get("unchanged") or ()),
+                deduped=tuple(obj.get("deduped") or ()),
+                gaps=tuple(tuple(g) for g in (obj.get("gaps") or ())),
+            )
+    return None
+
+
+def ingest_failure_cause(lines) -> str:
+    """A human cause for a failed ``isar ingest``: the JSON ``error.kind: error.message`` if the
+    engine emitted one (e.g. ``no_workspace``), else the last ``error:`` stderr line, else a generic
+    fallback. Mirrors :func:`init_failure_cause` for the ingest error shape."""
+    obj = parse_init_json(lines)
+    if isinstance(obj, dict) and isinstance(obj.get("error"), dict):
+        err = obj["error"]
+        kind = str(err.get("kind", "")).strip()
+        message = str(err.get("message", "")).strip()
+        if kind and message:
+            return f"{kind}: {message}"
+        return message or kind or "ingest failed"
+    return last_error_line(list(lines)) or "ingest failed (see log above)"
 
 
 def parse_detect_json(text: str) -> DetectResult | None:
