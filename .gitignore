@@ -17,3 +17,4 @@ env/
 test_data/
 ISAR.code-workspace
 examples/
+.isar-local/
