@@ -27,6 +27,7 @@ import numpy as np
 from PySide6.QtCore import Signal
 
 from isar.plotspec import builders
+from isar.plotspec import spec as ps
 from isar_gui.scan_keys import scan_prefix, split_key
 from isar_gui.viewmodels import certify
 from isar_gui.viewmodels.base import ViewModel
@@ -177,12 +178,15 @@ class InspectorViewModel(ViewModel):
             st.curve_error = "no parsed counts for this unit (re-ingest to backfill)"
             return st
         axis = dict(getattr(unit, "axis", None) or {})
-        st.main_spec = builders.fit_overlay_spec(
-            x=unit.x, counts=unit.counts, yerr=unit.yerr,
-            x_fit=None, total=None, components=None,
-            scan_number=scan_number, det_id=det,
-            title=self._unit_title(scan_number, det),
-            xlabel=self._axis_label(axis))
+        try:
+            st.main_spec = builders.fit_overlay_spec(
+                x=unit.x, counts=unit.counts, yerr=unit.yerr, mask=unit.mask,
+                x_fit=None, total=None, components=None,
+                scan_number=scan_number, det_id=det,
+                title=self._unit_title(scan_number, det),
+                xlabel=self._axis_label(axis))
+        except ValueError as exc:
+            st.curve_error = f"invalid parsed unit data: {exc}"
         return st
 
     def _find_scan_view(self, unit_key):
@@ -281,14 +285,40 @@ class InspectorViewModel(ViewModel):
             # so we never read scan_data for it — a data file whose number happens to collide with
             # the master's scan_number must not seed the fine grid (it would also be a wasted read).
             if pooled:
-                energy = counts = yerr = None
+                energy = counts = yerr = mask = axis = None
             else:
-                energy, counts, yerr = ws.scan_data(fit.scan_number)
+                unit = ws.unit_data(fit.unit_id) if fit.unit_id else None
+                if unit is not None:
+                    energy, counts, yerr = unit.x, unit.counts, unit.yerr
+                    mask, axis = unit.mask, dict(getattr(unit, "axis", None) or {})
+                else:
+                    # Legacy workspaces have no per-unit ingest data. Their drive data are absolute
+                    # TAVI energies, so retain the existing scan-number fallback only in this case.
+                    energy, counts, yerr = ws.scan_data(fit.scan_number)
+                    mask, axis = None, None
+            # The delivered model is in calibrated energy-transfer coordinates. A raw scan axis
+            # (including the explicit 3-state "needs zero" forms) must never be used as its input:
+            # it would produce a plausible-looking but physically false curve. Keep the measured
+            # points visible, including QC-masked ones, and state why the overlay is withheld.
+            if axis is not None and axis.get("calibration_status") != "absolute":
+                try:
+                    st.main_spec = builders.fit_overlay_spec(
+                        x=energy, counts=counts, yerr=yerr, mask=mask,
+                        x_fit=None, total=None, components=None,
+                        scan_number=fit.scan_number, det_id=fit.detector_id, q=fit.q,
+                        xlabel=self._axis_label(axis))
+                    st.main_spec.annotations.append(ps.Annotation(
+                        text="fit curve withheld — calibration pending; raw counts shown", xy=None,
+                        role=ps.State.UNRELIABLE))
+                    st.curve_error = "fit overlay withheld until the scan axis is calibrated"
+                except ValueError as exc:
+                    st.curve_error = f"invalid fitted unit data: {exc}"
+                return
             fine = self._fine_grid(fit, energy)
             if fine is None:
                 st.curve_error = "no energy grid available for this scan"
                 return
-            curve = ws.evaluate_model(fit.scan_number, fit.detector_id, x_eval=fine)
+            curve = ws.evaluate_model(fit.unit_id or fit.scan_number, fit.detector_id, x_eval=fine)
         except (KeyError, ValueError, OSError) as exc:
             st.curve_error = str(exc)
             return
@@ -303,19 +333,27 @@ class InspectorViewModel(ViewModel):
         data_x = None if pooled else energy
         data_counts = None if pooled else counts
         data_yerr = None if pooled else yerr
-        st.main_spec = builders.fit_overlay_spec(
-            x=data_x, counts=data_counts, yerr=data_yerr,
-            x_fit=curve.x, total=curve.total, components=curve.components,
-            omega0=fit.omega0, interval=cert_interval,
-            interval_reliable=(cert_interval is not None),
-            scan_number=fit.scan_number, det_id=fit.detector_id, q=fit.q,
-            pooled=pooled, members=fit.members, n_members=fit.n_members,
-        )
+        data_mask = None if pooled else mask
+        xlabel = self._axis_label(axis) if axis else "energy transfer (meV)"
+        try:
+            st.main_spec = builders.fit_overlay_spec(
+                x=data_x, counts=data_counts, yerr=data_yerr, mask=data_mask,
+                x_fit=curve.x, total=curve.total, components=curve.components,
+                omega0=fit.omega0, interval=cert_interval,
+                interval_reliable=(cert_interval is not None),
+                scan_number=fit.scan_number, det_id=fit.detector_id, q=fit.q,
+                pooled=pooled, members=fit.members, n_members=fit.n_members,
+                xlabel=xlabel,
+            )
+        except ValueError as exc:
+            st.curve_error = f"invalid fitted unit data: {exc}"
+            return
         if not pooled and energy is not None and energy.size:
             total_on_data = np.interp(energy, np.asarray(curve.x, float),
                                       np.asarray(curve.total, float))
             st.residuals_spec = builders.residuals_spec(
-                x=energy, residuals=counts - total_on_data, yerr=yerr)
+                x=energy, residuals=counts - total_on_data, yerr=yerr, mask=mask,
+                xlabel=xlabel)
 
     @staticmethod
     def _fine_grid(fit, energy):

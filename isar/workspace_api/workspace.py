@@ -23,6 +23,7 @@ from isar.session.state import SessionState
 from isar.session.workspace import (POLICY_NAME, SESSION_NAME, STATE_NAME, REPORT_DIRNAME)
 
 from .evaluate import evaluate_model as _evaluate_model
+from .scan_keys import split_key
 from .views import (BranchModelView, CampaignView, CardView, FileView, FitView, GroupView, ScanView)
 
 # The read-surface contract version. Bump when the FitView/ScanView/etc. surface changes in a way
@@ -130,19 +131,33 @@ class Workspace:
             return json.loads(p.read_text(encoding="utf-8"))
         return self._parse("campaign", _load, None)
 
-    # ---- derived index (scan_number, detector_id) -> FitOutcome dict ------
+    # ---- derived identity indexes -----------------------------------------
     def _outcome_index(self) -> dict:
+        """Exact ``scan_id -> FitOutcome`` index. Never collapse experiment identities."""
         if "outcome_index" in self._views:
             return self._views["outcome_index"]
         idx: dict = {}
-        scan_types: dict = {}
         for entry in self._session().scans.values():
-            scan_types[entry.scan_number] = entry.scan_type
             for det_id, oc in (entry.detectors or {}).items():
-                idx[(entry.scan_number, det_id)] = oc
+                idx[entry.scan_id] = oc
         self._views["outcome_index"] = idx
-        self._views["scan_types"] = scan_types
         return idx
+
+    def _outcome_pair_index(self) -> dict:
+        """Legacy ``(scan, detector) -> [(unit_id, outcome)]`` candidates.
+
+        Bare results produced before ``scan_id`` was added remain enrichable only when that pair is
+        unique. Multiple experiments with the same scan number must stay ambiguous, never select a
+        plausible-but-wrong detector outcome.
+        """
+        if "outcome_pair_index" in self._views:
+            return self._views["outcome_pair_index"]
+        pairs: dict = {}
+        for entry in self._session().scans.values():
+            for det_id, oc in (entry.detectors or {}).items():
+                pairs.setdefault((entry.scan_number, det_id), []).append((entry.scan_id, oc))
+        self._views["outcome_pair_index"] = pairs
+        return pairs
 
     # ---- public surfaces --------------------------------------------------
     @property
@@ -163,7 +178,8 @@ class Workspace:
         epochs = list(getattr(self._state(), "lattice_epochs", None) or [])
         out = []
         for entry in self._session().scans.values():
-            detectors = {det_id: FitView.from_outcome(oc, scan_number=entry.scan_number)
+            detectors = {det_id: FitView.from_outcome(oc, scan_number=entry.scan_number,
+                                                      unit_id=entry.scan_id)
                          for det_id, oc in (entry.detectors or {}).items()}
             out.append(ScanView(
                 scan_id=entry.scan_id, scan_number=entry.scan_number,
@@ -201,6 +217,7 @@ class Workspace:
         if "results" in self._views:
             return self._views["results"]
         idx = self._outcome_index()
+        pairs = self._outcome_pair_index()
         out = []
         for row in self._results_rows():
             scan = row.get("scan")
@@ -209,8 +226,19 @@ class Workspace:
                 scan_i = int(scan) if scan is not None and scan != "" else None
             except (TypeError, ValueError):
                 scan_i = None
-            outcome = idx.get((scan_i, det)) if scan_i is not None else None
-            out.append(FitView.from_row(row, outcome))
+            unit_id = row.get("scan_id") or None
+            outcome = idx.get(unit_id) if unit_id else None
+            if unit_id is not None and outcome is None:
+                self.warnings.append(
+                    f"results: no ledger outcome for atomic scan_id {unit_id!r}; row left unresolved")
+            elif scan_i is not None:
+                candidates = pairs.get((scan_i, det), [])
+                if len(candidates) == 1:
+                    unit_id, outcome = candidates[0]
+            view = FitView.from_row(row, outcome)
+            if view.unit_id is None and unit_id is not None:
+                view.unit_id = unit_id
+            out.append(view)
         self._views["results"] = out
         return out
 
@@ -382,49 +410,54 @@ class Workspace:
     def _split_unit_id(self, scan_id, detector_id=None):
         """``(experiment_id, scan_number, detector_id)`` from a unit id in any accepted form.
 
-        The scan number is the first all-digit ``:``-token; everything before it joins as the
-        experiment id, the token after it (if any) is the detector, else ``detector_id`` is used.
-        A bare number resolves scan_number only (exp/det unknown -> legacy fallback).
+        Delegates to the shared, right-anchored Qt-free codec. A supplied ``detector_id`` overrides
+        a legacy scan-level key's missing detector, but never changes a full atomic identity.
         """
-        exp, det, scan_number = None, detector_id, None
-        if isinstance(scan_id, int):
-            return None, scan_id, det
-        parts = str(scan_id).split(":")
-        idx = next((i for i, p in enumerate(parts) if p.isdigit()), None)
-        if idx is not None:
-            scan_number = int(parts[idx])
-            if idx > 0:
-                exp = ":".join(parts[:idx])
-            if idx + 1 < len(parts):
-                det = parts[idx + 1]
-        else:
-            scan_number = self._scan_number_of(scan_id)
-        return exp, scan_number, det
+        exp, scan_number, parsed_det = split_key(scan_id)
+        det = parsed_det if parsed_det is not None else detector_id
+        return exp, scan_number if isinstance(scan_number, int) else None, det
 
     def _find_fit(self, scan_id, detector_id) -> FitView | None:
-        scan_number = self._scan_number_of(scan_id)
-        # Prefer the results.csv-backed FitView (carries the flattened resolution columns).
-        for fv in self.results:
-            if fv.scan_number == scan_number and fv.detector_id == detector_id:
-                return fv
-        # Fall back to the ledger detector directly.
-        oc = self._outcome_index().get((scan_number, detector_id))
-        if oc is not None:
-            return FitView.from_outcome(oc, scan_number=scan_number)
+        # Use the raw codec result here (rather than _split_unit_id): that helper fills a missing
+        # detector from ``detector_id`` for legacy prefixes, which must not make a prefix look like
+        # a caller-supplied full atomic identity.
+        exp, scan_number, parsed_det = split_key(scan_id)
+        scan_number = scan_number if isinstance(scan_number, int) else None
+        det = parsed_det or detector_id
+        unit_id = str(scan_id) if exp is not None and scan_number is not None and parsed_det else None
+        # Prefer the results.csv-backed FitView (carries flattened resolution columns) by exact
+        # identity. This is the normal fitted-inspector path.
+        if unit_id is not None:
+            for fv in self.results:
+                if fv.unit_id == unit_id and fv.detector_id == det:
+                    return fv
+            oc = self._outcome_index().get(unit_id)
+            if oc is not None:
+                return FitView.from_outcome(oc, scan_number=scan_number, unit_id=unit_id)
+            self.warnings.append(
+                f"evaluate_model: no fit for atomic scan_id {unit_id!r} detector {det!r}")
+            return None
+
+        # Legacy bare/prefix lookup only succeeds when the pair identifies exactly one unit.
+        candidates = self._outcome_pair_index().get((scan_number, det), [])
+        if len(candidates) == 1:
+            candidate_id, oc = candidates[0]
+            for fv in self.results:
+                if fv.unit_id == candidate_id:
+                    return fv
+            return FitView.from_outcome(oc, scan_number=scan_number, unit_id=candidate_id)
+        # A pre-scan_id CSV with no ledger is still usable only when it has one matching row. This
+        # preserves old drive workspaces without reviving the unsafe first-match behavior.
+        legacy = [fv for fv in self.results
+                  if fv.unit_id is None and fv.scan_number == scan_number and fv.detector_id == det]
+        if len(legacy) == 1:
+            return legacy[0]
         return None
 
     @staticmethod
     def _scan_number_of(scan_id):
-        if isinstance(scan_id, int):
-            return scan_id
-        s = str(scan_id)
-        for part in s.split(":"):
-            if part.isdigit():
-                return int(part)
-        try:
-            return int(s)
-        except (TypeError, ValueError):
-            return None
+        _exp, scan_number, _det = split_key(scan_id)
+        return scan_number if isinstance(scan_number, int) else None
 
     # ---- HKL resolution ---------------------------------------------------
     def _resolve_hkl(self, entry, detectors, epochs):

@@ -258,6 +258,8 @@ def parse_file(path: str | Path, card: Card) -> list[scan.ScanRecord]:
             # so one odd miniscan can never abort the whole growing file.
             log.warning("scan %s (%s): skipped — not a parseable S30 scan (%s)",
                         block.scan_number, (block.command.split() or ["?"])[0], exc)
+    if not records:
+        raise ValueError(f"parsed 0 of {len(blocks)} SPEC blocks")
     return records
 
 

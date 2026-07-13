@@ -73,14 +73,15 @@ class FitView:
     normalizes them to one contract. Missing fields are ``None``.
     """
 
-    __slots__ = ("_row", "_outcome", "scan_number", "detector_id")
+    __slots__ = ("_row", "_outcome", "scan_number", "detector_id", "unit_id")
 
     def __init__(self, *, row: dict | None, outcome: dict | None,
-                 scan_number: int | None, detector_id: str | None):
+                 scan_number: int | None, detector_id: str | None, unit_id: str | None = None):
         self._row = row or {}
         self._outcome = outcome or {}
         self.scan_number = scan_number
         self.detector_id = detector_id
+        self.unit_id = unit_id
 
     # -- constructors --------------------------------------------------------
     @classmethod
@@ -91,12 +92,14 @@ class FitView:
         except (TypeError, ValueError):
             scan = None
         return cls(row=row, outcome=outcome, scan_number=scan,
-                   detector_id=row.get("detector") or (outcome or {}).get("detector_id"))
+                   detector_id=row.get("detector") or (outcome or {}).get("detector_id"),
+                   unit_id=row.get("scan_id") or None)
 
     @classmethod
-    def from_outcome(cls, outcome: dict, *, scan_number: int | None) -> "FitView":
+    def from_outcome(cls, outcome: dict, *, scan_number: int | None,
+                     unit_id: str | None = None) -> "FitView":
         return cls(row=None, outcome=outcome, scan_number=scan_number,
-                   detector_id=outcome.get("detector_id"))
+                   detector_id=outcome.get("detector_id"), unit_id=unit_id)
 
     # -- internal source picking --------------------------------------------
     def _pick(self, row_key: str | None, out_key: str | None):
@@ -369,7 +372,7 @@ class FitView:
                 "T": T if T is not None else 0.0}
 
     def __repr__(self) -> str:
-        return (f"FitView(scan={self.scan_number}, det={self.detector_id!r}, "
+        return (f"FitView(unit={self.unit_id!r}, scan={self.scan_number}, det={self.detector_id!r}, "
                 f"verdict={self.verdict!r}, omega0={self.omega0})")
 
 

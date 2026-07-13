@@ -8,6 +8,8 @@ the shipped numor format and asserts the parser yields a clean alignment record,
 """
 from __future__ import annotations
 
+import pytest
+
 from isar.parsers import ill_in8
 
 # One numor block in the ILL ASCII format numor_base reads: RRRR banner, keyword header, DATA_ table.
@@ -54,17 +56,15 @@ def test_bs_motor_scan_classifies_as_alignment_not_measurement(tmp_path):
     assert rec.scan_axes[0].kind == "angle"
 
 
-def test_unrecognized_comnd_skips_block_with_warning(tmp_path, caplog):
-    """A genuinely broken measurement COMND (`bs qh` shape but non-numeric h) hits the backstop:
-    the block is skipped with a warning naming the numor + command, never a crash."""
+def test_unrecognized_only_block_is_visible_file_failure(tmp_path, caplog):
+    """A wholly unparseable recognized file must not look like a successful zero-scan ingest."""
     text = _BS_A3P_NUMOR.replace("COMND: bs a3p 15 da3p 1 np 31 ti 1",
                                  "COMND: bs qh X 0 1 dqh 0 0 0 0.5 np 3 ti 1")
     p = tmp_path / "055999"
     p.write_text(text, encoding="utf-8")
     card = ill_in8.card_template()
 
-    with caplog.at_level("WARNING"):
-        records = ill_in8.parse_file(p, card)
+    with caplog.at_level("WARNING"), pytest.raises(ValueError, match="parsed 0 of 1"):
+        ill_in8.parse_file(p, card)
 
-    assert records == []                                 # the single bad block skipped
     assert "055189" in caplog.text or "unrecognized COMND" in caplog.text

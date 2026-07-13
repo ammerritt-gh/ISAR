@@ -96,3 +96,28 @@ def test_residuals_spec_single_residual_series():
     assert spec.series[0].role is ps.Role.RESIDUAL
     np.testing.assert_allclose(spec.series[0].y, resid)
     assert json.loads(json.dumps(spec.to_dict())) == spec.to_dict()
+
+
+def test_fit_and_residual_masks_remain_visible_as_masked_markers():
+    x, counts, yerr, x_fit, total, components = _data()
+    mask = np.ones(x.shape, dtype=bool)
+    mask[[2, 7]] = False
+    overlay = builders.fit_overlay_spec(
+        x=x, counts=counts, yerr=yerr, mask=mask, x_fit=x_fit, total=total,
+        components=components)
+    data = next(s for s in overlay.series if s.role is ps.Role.DATA)
+    assert data.x.size == x.size - 2
+    masked = [m for m in overlay.markers if m.kind is ps.MarkerKind.MASKED]
+    assert [(m.x, m.y) for m in masked] == [(x[2], counts[2]), (x[7], counts[7])]
+
+    residuals = builders.residuals_spec(x=x, residuals=counts - 1.0, yerr=yerr, mask=mask)
+    assert residuals.series[0].x.size == x.size - 2
+    assert len(residuals.markers) == 2
+
+
+def test_mask_shape_mismatch_is_not_silently_misaligned():
+    x, counts, yerr, x_fit, total, components = _data()
+    with pytest.raises(ValueError, match="mask"):
+        builders.fit_overlay_spec(
+            x=x, counts=counts, yerr=yerr, mask=[True], x_fit=x_fit, total=total,
+            components=components)

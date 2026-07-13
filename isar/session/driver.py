@@ -1740,6 +1740,10 @@ _CSV_COLUMNS = [
     # GUI Phase 0 (P0-3/P0-4), appended so older readers/CSVs are unaffected. JSON-encoded strings:
     # the amplitudes dict and the model-selection candidate table.
     "amplitudes", "candidates",
+    # Additive atomic identity: scan numbers are not globally unique across experiments, so new
+    # consumers must route detector data using this full ledger key. Appended for old positional CSV
+    # consumers, which continue seeing every existing column in its original order.
+    "scan_id",
 ]
 
 
@@ -1778,7 +1782,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
     rows = []
     for e in sorted(session.scans.values(), key=lambda e: e.scan_number):
         if not e.detectors:
-            rows.append({"scan": e.scan_number, "status": e.status,
+            rows.append({"scan_id": e.scan_id, "scan": e.scan_number, "status": e.status,
                          "reasons": "; ".join(e.reasons)})
             continue
         for det, oc in e.detectors.items():
@@ -1800,7 +1804,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                     f"master scan {e.scan_number}: n_members={oc.get('n_members')} != "
                     f"len(members)={len(members)} — member provenance corrupt")
             rows.append({
-                "scan": e.scan_number, "detector": det, "sample": oc.get("sample"),
+                "scan_id": e.scan_id, "scan": e.scan_number, "detector": det, "sample": oc.get("sample"),
                 "T": oc.get("T"), "h": q[0], "k": q[1], "l": q[2], "status": e.status,
                 "verdict": oc.get("verdict"), "disposition": oc.get("disposition"),
                 "confidence": oc.get("confidence"), "omega0": oc.get("omega0"),

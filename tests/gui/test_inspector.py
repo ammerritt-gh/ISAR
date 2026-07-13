@@ -321,6 +321,39 @@ def test_unit_axis_label_is_three_state_honest(make_ws, status, has_energy_trans
     assert needle in xlabel
 
 
+def test_fitted_inspector_withholds_energy_fit_for_raw_unit_axis(make_ws, monkeypatch):
+    """A fitted S30 unit must not fall back to a scan-number-only TAVI data file."""
+    axis = {"name": "HerixE", "kind": "angle", "units": "deg",
+            "raw_abscissa_kind": "angle", "calibration_status": "needs_conversion_and_zero"}
+    outcome = _outcome(detector_id="ana3")
+    scans = {"s30:12:ana3": {"scan_id": "s30:12:ana3", "scan_number": 12,
+                              "scan_type": "measurement", "status": "fitted",
+                              "detectors": {"ana3": outcome}, "provenance": {"M": 200}}}
+    ws = Workspace.open(make_ws(
+        scans=scans,
+        unit_files=[{"exp": "s30", "scan_number": 12, "det": "ana3", "x": _UNIT_X,
+                     "counts": _UNIT_COUNTS, "mask": [True, False, True, True], "axis": axis}],
+    ))
+    calls = []
+    original_evaluate = ws.evaluate_model
+    monkeypatch.setattr(ws, "evaluate_model",
+                        lambda *args, **kwargs: (calls.append((args, kwargs)),
+                                                 original_evaluate(*args, **kwargs))[1])
+    vm = InspectorViewModel(ws)
+    vm.set_fit(ws.scans[0].detectors["ana3"])
+    st = vm.state
+    assert st.main_spec.xlabel == "raw angle (deg) — uncalibrated"
+    data = next(s for s in st.main_spec.series if s.role.value == "data")
+    assert data.x.size == 3
+    assert len(st.main_spec.markers) >= 1
+    assert any(m.kind.value == "masked" for m in st.main_spec.markers)
+    assert calls == []
+    assert not any(s.role.value == "fit" for s in st.main_spec.series)
+    assert st.residuals_spec is None
+    assert "withheld" in st.curve_error
+    assert any("calibration pending" in a.text for a in st.main_spec.annotations)
+
+
 def test_unit_metadata_carries_command_qtarget_and_T(make_ws):
     ws = _unit_ws(make_ws)
     vm = InspectorViewModel(ws)

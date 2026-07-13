@@ -66,7 +66,7 @@ def _interval_at(x, y, x0):
     return float(np.interp(float(x0), x, y))
 
 
-def fit_overlay_spec(*, x, counts, yerr, x_fit, total, components,
+def fit_overlay_spec(*, x, counts, yerr, x_fit, total, components, mask=None,
                      omega0=None, interval=None, interval_reliable=True,
                      scan_number=None, det_id=None, q=None, pooled=False,
                      members=None, n_members=None, title=None,
@@ -98,7 +98,16 @@ def fit_overlay_spec(*, x, counts, yerr, x_fit, total, components,
         x = np.asarray(x, dtype=float)
         counts = np.asarray(counts, dtype=float)
         yerr = None if yerr is None else np.asarray(yerr, dtype=float)
-        series.append(ps.Series(x=x, y=counts, yerr=yerr, label="data (+/-sqrt N)",
+        if x.shape != counts.shape:
+            raise ValueError("fit overlay x and counts must have the same shape")
+        if yerr is not None and yerr.shape != counts.shape:
+            raise ValueError("fit overlay yerr and counts must have the same shape")
+        shown = _shown_mask(mask, counts, "fit overlay")
+        # QC is mask-not-delete: accepted values retain their Poisson whiskers; rejected values
+        # remain in the spec as distinct hollow markers below.
+        series.append(ps.Series(x=x[shown], y=counts[shown],
+                                yerr=None if yerr is None else yerr[shown],
+                                label="data (+/-sqrt N)",
                                 role=ps.Role.DATA))
 
     if x_fit is not None and total is not None:
@@ -111,6 +120,10 @@ def fit_overlay_spec(*, x, counts, yerr, x_fit, total, components,
                                     role=ps.Role.COMPONENT))
 
     markers: list[ps.Marker] = []
+    if not pooled and counts is not None:
+        markers.extend(ps.Marker(x=float(px), y=float(py), kind=ps.MarkerKind.MASKED,
+                                 label="masked (shown, not used in fit)")
+                       for px, py in zip(x[~shown], counts[~shown]))
     # ω₀ marker — reliable interval => a whisker; unreliable => warning-marker + annotation only.
     grid_x = x_fit if (x_fit is not None and total is not None) else x
     grid_y = total if (x_fit is not None and total is not None) else counts
@@ -346,7 +359,7 @@ def waterfall_spec(*, traces, offset_step, q=None, axis_label=None,
     )
 
 
-def residuals_spec(*, x, residuals, yerr=None, xlabel="energy transfer (meV)",
+def residuals_spec(*, x, residuals, yerr=None, mask=None, xlabel="energy transfer (meV)",
                    ylabel="data - fit (counts)", title="residuals"):
     """Residuals (measured - delivered curve, on the measured grid) as a RESIDUAL-role PlotSpec.
 
@@ -356,7 +369,31 @@ def residuals_spec(*, x, residuals, yerr=None, xlabel="energy transfer (meV)",
     x = np.asarray(x, dtype=float)
     r = np.asarray(residuals, dtype=float)
     yerr = None if yerr is None else np.asarray(yerr, dtype=float)
+    if x.shape != r.shape:
+        raise ValueError("residual x and values must have the same shape")
+    if yerr is not None and yerr.shape != r.shape:
+        raise ValueError("residual yerr and values must have the same shape")
+    shown = _shown_mask(mask, r, "residual")
     return ps.PlotSpec(
         title=title, xlabel=xlabel, ylabel=ylabel,
-        series=[ps.Series(x=x, y=r, yerr=yerr, label="residual", role=ps.Role.RESIDUAL)],
+        series=[ps.Series(x=x[shown], y=r[shown],
+                          yerr=None if yerr is None else yerr[shown],
+                          label="residual", role=ps.Role.RESIDUAL)],
+        markers=[ps.Marker(x=float(px), y=float(py), kind=ps.MarkerKind.MASKED,
+                           label="masked residual (shown, not used in fit)")
+                 for px, py in zip(x[~shown], r[~shown])],
     )
+
+
+def _shown_mask(mask, values, context: str) -> np.ndarray:
+    """Validate and return a boolean fit/QC mask without changing data values.
+
+    ``True`` means the point participated in fitting.  A missing mask preserves legacy behavior;
+    a malformed mask is a visible caller error rather than silently misaligning scientific points.
+    """
+    if mask is None:
+        return np.ones(values.shape, dtype=bool)
+    out = np.asarray(mask, dtype=bool)
+    if out.shape != values.shape:
+        raise ValueError(f"{context} mask and values must have the same shape")
+    return out

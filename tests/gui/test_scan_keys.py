@@ -6,6 +6,7 @@ and the legacy-bridge :func:`member_matches` semantics (an ``exp:scan`` v1 membe
 """
 from __future__ import annotations
 
+from isar.workspace_api.scan_keys import split_key as facade_split_key
 from isar_gui.scan_keys import member_matches, scan_prefix, split_key, unit_key
 
 
@@ -26,13 +27,20 @@ def test_split_bare_scan_number():
 
 
 def test_split_experiment_id_with_colon():
-    # The scan number is the first all-digit token, so a colon-bearing exp id still splits right.
+    # Right anchoring keeps colon-bearing experiment ids intact.
     assert split_key("beam:run:88:d1") == ("beam:run", 88, "d1")
 
 
 def test_split_numeric_detector_not_mistaken_for_scan():
-    # First digit token is the scan; a numeric detector after it stays the detector.
+    # The detector can itself be numeric because the scan is immediately before it.
     assert split_key("tavi:469:5") == ("tavi", 469, "5")
+
+
+def test_right_anchoring_preserves_numeric_experiment_components():
+    key = "IN8:2026:17:4"
+    assert split_key(key) == ("IN8:2026", 17, "4")
+    # The GUI is only a compatibility re-export; the Qt-free facade must agree exactly.
+    assert facade_split_key(key) == split_key(key)
 
 
 def test_scan_prefix_drops_detector():

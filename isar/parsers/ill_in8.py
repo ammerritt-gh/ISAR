@@ -289,7 +289,8 @@ def parse_file(path: str | Path, card: Card) -> list[scan.ScanRecord]:
     pol = card.policy
     fname = Path(path).name
     records: list[scan.ScanRecord] = []
-    for block in numor_base.read_numor(path):
+    blocks = list(numor_base.read_numor(path))
+    for block in blocks:
         comnd = block.keywords.get("COMND", "").strip()
         numor = block.keywords.get("FILE_", "?")
         try:
@@ -302,4 +303,6 @@ def parse_file(path: str | Path, card: Card) -> list[scan.ScanRecord]:
             # this skips just that scan; the synthetic emitter's blocks are controlled). Never crash
             # the file — the operator sees the numor + command in the log.
             log.warning("numor %s: unrecognized COMND %r — block skipped (%s)", numor, comnd, exc)
+    if not records:
+        raise ValueError(f"parsed 0 of {len(blocks)} numor blocks")
     return records

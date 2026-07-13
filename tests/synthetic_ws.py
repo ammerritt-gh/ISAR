@@ -56,6 +56,7 @@ FULL_COLUMNS = [
     "pooled", "n_members", "members", "gamma", "gamma_provisional", "n_modes",
     "best_model", "cost_per_dof", "fit_kind", "branch_id", "resolvable",
     "zero", "gauss_fwhm", "lorentz_fwhm", "reasons", "amplitudes", "candidates",
+    "scan_id",
 ]
 
 # The old MVP-16-era header: no bayes / members / amplitudes / candidates columns.
