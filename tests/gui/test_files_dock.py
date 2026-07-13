@@ -43,7 +43,7 @@ class _FakeDrop:
 
 
 def _fake_ws(files):
-    return SimpleNamespace(files=files)
+    return SimpleNamespace(files=files, last_ingest=None)
 
 
 def test_rows_render_from_ws_files(qtbot, tmp_path):
@@ -148,3 +148,18 @@ def test_watcher_attention_is_persistent_and_plain(qtbot, tmp_path):
     assert "unavailable" in dock._watch_notice.text().lower()
     assert "automatic retries" in dock._watch_notice.text()
     assert "top-level files only" in dock.widget().findChild(type(dock._hint), "watch_heading").text()
+
+
+def test_last_ingest_attention_stays_visible_with_operation_scoped_counts(qtbot, tmp_path):
+    summary = SimpleNamespace(logical_scan_count=2, analyzer_unit_count=18,
+                              failed_file_count=1, gaps=(("SYN", 4, 7),))
+    vm = FilesViewModel(SimpleNamespace(files=[], last_ingest=summary), store=GuiStore.load(tmp_path))
+    dock = FilesDock(vm, _SpyController())
+    qtbot.addWidget(dock)
+
+    assert dock._ingest_notice.isVisible() or dock._ingest_notice.text()
+    text = dock._ingest_notice.text().lower()
+    assert "2 logical scans" in text
+    assert "18 analyzer units" in text
+    assert "failed to parse" in text and "gap" in text
+    assert "last ingest" in text

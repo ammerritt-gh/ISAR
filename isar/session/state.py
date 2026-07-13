@@ -61,6 +61,8 @@ class SessionState:
     scans: dict = field(default_factory=dict)        # scan_id -> ScanEntry
     data_paths: list = field(default_factory=list)   # data locations, remembered for status/report reparse
     last_run: dict = field(default_factory=dict)     # summary counts, gaps snapshot, timestamps
+    # Additive operator-facing evidence for the most recent ingest. This remains machine-owned.
+    last_ingest: dict = field(default_factory=dict)
 
     # ---- persistence -------------------------------------------------------
     def to_dict(self) -> dict:
@@ -77,6 +79,8 @@ class SessionState:
             scans=scans,
             data_paths=list(d.get("data_paths") or []),
             last_run=dict(d.get("last_run") or {}),
+            last_ingest=(dict(d.get("last_ingest") or {})
+                         if isinstance(d.get("last_ingest"), dict) else {}),
         )
 
     @classmethod

@@ -203,6 +203,7 @@ class GuiIngestReport:
     unchanged: tuple = ()
     deduped: tuple = ()
     gaps: tuple = ()
+    last_ingest: dict | None = None
 
 
 def parse_ingest_json(text) -> "GuiIngestReport | None":
@@ -228,6 +229,8 @@ def parse_ingest_json(text) -> "GuiIngestReport | None":
                 unchanged=tuple(scans.get("unchanged") or ()),
                 deduped=tuple(obj.get("deduped") or ()),
                 gaps=tuple(tuple(g) for g in (obj.get("gaps") or ())),
+                last_ingest=(dict(obj["last_ingest"])
+                             if isinstance(obj.get("last_ingest"), dict) else None),
             )
     return None
 

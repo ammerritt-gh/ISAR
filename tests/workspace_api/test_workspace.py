@@ -170,6 +170,28 @@ def test_results_writer_keeps_identity_for_no_detector_rows(tmp_path):
     assert {row["scan_id"] for row in rows} == {"first:9:det", "second:9:det"}
 
 
+def test_last_ingest_view_is_immutable_and_tolerates_old_workspaces(make_ws):
+    root = make_ws()
+    session_path = root / "session.json"
+    payload = json.loads(session_path.read_text(encoding="utf-8"))
+    payload["last_ingest"] = {
+        "completed_at": "2026-07-13T12:00:00+00:00", "logical_scan_count": "2",
+        "analyzer_unit_count": 18, "failed_file_count": 1,
+        "gaps": [["SYN", 4, 7], ["bad"], ["SYN", "not-a-number", 8]],
+    }
+    session_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    view = Workspace.open(root).last_ingest
+    assert view.logical_scan_count == 2
+    assert view.analyzer_unit_count == 18
+    assert view.gaps == (("SYN", 4, 7),)
+    with pytest.raises(Exception):
+        view.failed_file_count = 0
+
+    old_root = make_ws()
+    assert Workspace.open(old_root).last_ingest is None
+
+
 # ---------------------------------------------------------------------------
 # groups: same membership as the collation key
 # ---------------------------------------------------------------------------

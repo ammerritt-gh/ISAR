@@ -80,6 +80,13 @@ class FilesDock(QDockWidget):
         self._watch_notice.hide()
         layout.addWidget(self._watch_notice)
 
+        self._ingest_notice = QLabel(body)
+        self._ingest_notice.setObjectName("last_ingest_notice")
+        self._ingest_notice.setWordWrap(True)
+        self._ingest_notice.setStyleSheet(f"color: {_NOTICE_COLOR}; padding: 3px 0;")
+        self._ingest_notice.hide()
+        layout.addWidget(self._ingest_notice)
+
         # ---- file manifest ----
         self._tree = QTreeWidget(body)
         self._tree.setHeaderLabels(["Name", "Status"])
@@ -133,6 +140,7 @@ class FilesDock(QDockWidget):
     # ---- rendering -------------------------------------------------------
     def refresh(self) -> None:
         self._render_files()
+        self._render_last_ingest_notice()
         self._render_watch()
 
     def _render_files(self) -> None:
@@ -153,6 +161,37 @@ class FilesDock(QDockWidget):
                 for col in (0, 1):
                     item.setBackground(col, QBrush(_HIGHLIGHT_COLOR))
             self._tree.addTopLevelItem(item)
+
+    def _render_last_ingest_notice(self) -> None:
+        """Keep incomplete last-ingest evidence visible until a later clean ingest replaces it."""
+        summary = self._vm.last_ingest
+        if summary is None:
+            self._ingest_notice.hide()
+            return
+        failed = getattr(summary, "failed_file_count", None) or 0
+        gaps = tuple(getattr(summary, "gaps", ()) or ())
+        if not failed and not gaps:
+            self._ingest_notice.hide()
+            return
+        logical = getattr(summary, "logical_scan_count", None)
+        units = getattr(summary, "analyzer_unit_count", None)
+        counts = []
+        if logical is not None:
+            counts.append(f"{logical} logical scan{'s' if logical != 1 else ''}")
+        if units is not None:
+            counts.append(f"{units} analyzer unit{'s' if units != 1 else ''}")
+        attention = []
+        if failed:
+            attention.append(f"{failed} file{'s' if failed != 1 else ''} failed to parse")
+        if gaps:
+            attention.append(f"{len(gaps)} scan-number gap{'s' if len(gaps) != 1 else ''}")
+        prefix = "Last ingest"
+        if counts:
+            prefix += " (" + ", ".join(counts) + ")"
+        self._ingest_notice.setText(
+            prefix + ": attention needed — " + "; ".join(attention)
+            + ". Counts apply to the last ingest.")
+        self._ingest_notice.show()
 
     def _render_watch(self) -> None:
         self._watch_list.clear()

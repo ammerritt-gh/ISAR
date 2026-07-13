@@ -46,6 +46,12 @@ def test_ingest_json_shape(tmp_path, capsys):
     assert obj["scans"]["added"]                 # a fresh ingest added scans
     assert any(f["class"] == "measurement" for f in obj["files"])
     assert "gaps" in obj and "deduped" in obj
+    assert obj["last_ingest"]["logical_scan_count"] == len(obj["scans"]["added"])
+    assert obj["last_ingest"]["analyzer_unit_count"] > 0
+
+    from isar.session.state import SessionState
+    persisted = SessionState.load(ws / "session.json").last_ingest
+    assert persisted["failed_file_count"] == 0
 
 
 def test_ingest_writes_unit_files_under_workspace_data_dir(tmp_path):

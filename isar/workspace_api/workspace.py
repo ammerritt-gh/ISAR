@@ -24,7 +24,8 @@ from isar.session.workspace import (POLICY_NAME, SESSION_NAME, STATE_NAME, REPOR
 
 from .evaluate import evaluate_model as _evaluate_model
 from .scan_keys import split_key
-from .views import (BranchModelView, CampaignView, CardView, FileView, FitView, GroupView, ScanView)
+from .views import (BranchModelView, CampaignView, CardView, FileView, FitView, GroupView,
+                    LastIngestView, ScanView)
 
 # The read-surface contract version. Bump when the FitView/ScanView/etc. surface changes in a way
 # a consumer must branch on (additive fields do NOT require a bump).
@@ -170,6 +171,45 @@ class Workspace:
     def snapshot(self) -> SessionState | None:
         sess = self._session()
         return sess if sess.scans or sess.files else None
+
+    @property
+    def last_ingest(self) -> LastIngestView | None:
+        """Read-only evidence for the latest completed ingest, or ``None`` for older workspaces.
+
+        Coercion is deliberately local and tolerant: malformed optional summary data must not
+        prevent the normal file and scan surfaces from loading.
+        """
+        if "last_ingest" in self._views:
+            return self._views["last_ingest"]
+        raw = getattr(self._session(), "last_ingest", None)
+        if not isinstance(raw, dict) or not raw:
+            self._views["last_ingest"] = None
+            return None
+
+        def _count(name):
+            value = raw.get(name)
+            try:
+                return int(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        gaps = []
+        for gap in raw.get("gaps") or []:
+            if not isinstance(gap, (list, tuple)) or len(gap) != 3:
+                continue
+            try:
+                gaps.append((str(gap[0]), int(gap[1]), int(gap[2])))
+            except (TypeError, ValueError):
+                continue
+        completed = raw.get("completed_at")
+        view = LastIngestView(
+            completed_at=str(completed) if completed else None,
+            logical_scan_count=_count("logical_scan_count"),
+            analyzer_unit_count=_count("analyzer_unit_count"),
+            failed_file_count=_count("failed_file_count"),
+            gaps=tuple(gaps))
+        self._views["last_ingest"] = view
+        return view
 
     @property
     def scans(self) -> list:

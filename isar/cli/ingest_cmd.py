@@ -56,7 +56,8 @@ def run(args) -> int:
             "scans": {"added": report.added, "updated": report.updated,
                       "unchanged": report.unchanged},
             "deduped": report.to_jsonable()["deduped"],
-            "gaps": report.to_jsonable()["gaps"]}))
+            "gaps": report.to_jsonable()["gaps"],
+            "last_ingest": report.to_jsonable()["last_ingest"]}))
         return 0
 
     # Human summary.

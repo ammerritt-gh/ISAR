@@ -80,6 +80,11 @@ class FilesViewModel(ViewModel):
             })
         return out
 
+    @property
+    def last_ingest(self):
+        """The facade's immutable latest-ingest evidence, if this workspace predates it."""
+        return getattr(self.workspace, "last_ingest", None)
+
     # ---- watched-folder config (delegates to the GuiStore) ---------------
     def watched(self) -> list[str]:
         return self._store.watched_folders() if self._store is not None else []

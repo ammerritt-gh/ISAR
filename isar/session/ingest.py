@@ -114,6 +114,7 @@ class IngestReport:
     unchanged: list = field(default_factory=list)    # re-ingest no-ops
     deduped: list = field(default_factory=list)      # {"scan","kept","superseded":[...]}
     gaps: list = field(default_factory=list)         # file_gaps output
+    last_ingest: dict = field(default_factory=dict)  # persisted, additive operator summary
     dirty: bool = False
 
     def to_jsonable(self) -> dict:
@@ -121,7 +122,8 @@ class IngestReport:
                 "added": list(self.added), "updated": list(self.updated),
                 "unchanged": list(self.unchanged),
                 "deduped": [dict(d) for d in self.deduped],
-                "gaps": [list(g) for g in self.gaps]}
+                "gaps": [list(g) for g in self.gaps],
+                "last_ingest": dict(self.last_ingest)}
 
 
 def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestReport:
@@ -141,8 +143,9 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
     pre-Phase-2 workspace without ticking ``dirty``). A unit
     write failure is logged and skipped; it never aborts the batch.
 
-    Mutates ``session`` in place; the caller persists it (skip ``save()`` when ``report.dirty`` is
-    False). Returns an :class:`IngestReport`.
+    Mutates ``session`` in place; the caller persists it when ``report.dirty`` is true. A completed
+    ingest always updates additive ``last_ingest`` evidence, even when every scan was already
+    current, so an operator can distinguish a successful no-op from no ingest at all.
     """
     from isar.reduce import combine, qc
     from isar.session import router, unit_data
@@ -216,6 +219,7 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
     now_iso = datetime.now(timezone.utc).isoformat()
     _RANK = {"unchanged": 0, "updated": 1, "added": 2}
     ledgered_keys: set[tuple] = set()                # measurement scans that produced ≥1 entry
+    analyzer_unit_count = 0                           # atomic scan × analyzer units in this ingest
     for rec in routed.measurements:
         scan_short = f"{rec.experiment_id}:{rec.scan_number}"
         # Hash the SAME canonical form the driver hashes (reduced + QC'd, both in-place no-ops where
@@ -232,6 +236,7 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
         touched = False                                          # any detector entry produced?
         for det, sp in rec.spectra.items():
             touched = True
+            analyzer_unit_count += 1
             key = f"{rec.experiment_id}:{rec.scan_number}:{det}"
             q = [float(v) for v in sp.q] if sp.q is not None else None
             prov_add = {"source_file": src, "T": T, "q": q, "ingested_at": now_iso, **extras}
@@ -309,6 +314,18 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
             report.dirty = True
 
     report.gaps = file_gaps(records)
+    # This is a snapshot of *this* operation, not a count reconstructed from the whole ledger.
+    # Incremental and watched ingest must not imply old scans arrived just now.
+    report.last_ingest = {
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "logical_scan_count": len(ledgered_keys),
+        "analyzer_unit_count": analyzer_unit_count,
+        "failed_file_count": len(file_errors),
+        "gaps": [list(gap) for gap in report.gaps],
+    }
+    session.last_ingest = dict(report.last_ingest)
+    # Persist successful-operation evidence even for an otherwise idempotent ingest.
+    report.dirty = True
     return report
 
 

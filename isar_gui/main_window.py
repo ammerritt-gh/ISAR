@@ -17,7 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from weakref import WeakSet
 
-from PySide6.QtCore import QByteArray, Qt, QTimer
+from PySide6.QtCore import QByteArray, Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
@@ -45,6 +46,7 @@ from isar.workspace_api import (
     WorkspaceNotFound,
 )
 from isar_gui.log_dock import LogDock
+from isar_gui.logging_setup import configure_gui_logging
 from isar_gui.session import Autosaver, Session, load_session
 from isar_gui.viewmodels import (
     BrowserViewModel,
@@ -91,6 +93,7 @@ class _EmptyWorkspace:
     # now (harmless) so a pending/empty bind never AttributeErrors when those consumers land.
     scans: list = []
     files: list = []
+    last_ingest = None
 
     def __init__(self):
         self.warnings: list = []
@@ -121,6 +124,9 @@ class MainWindow(QMainWindow):
                  watch_kwargs: dict | None = None, parent=None):
         super().__init__(parent)
         self._session = session if session is not None else load_session()
+        # MainWindow is also created directly in GUI tests and embedded use, bypassing app.main.
+        # Ensure the durable operator log exists in those entry paths too; setup is idempotent.
+        self._gui_log_path = configure_gui_logging()
         self._watch_enabled = watch
         # Forwarded verbatim to WatchBridge -> Workspace.watch (debounce_ms/poll_interval_s/backend);
         # lets tests use a fast poll instead of the 1s production default.
@@ -476,6 +482,26 @@ class MainWindow(QMainWindow):
             act = export_menu.addAction(label)
             act.triggered.connect(lambda _checked=False, k=key: self._export_view(k))
 
+        help_menu = self.menuBar().addMenu("&Help")
+        open_log_action = help_menu.addAction("Open GUI Log Folder")
+        open_log_action.triggered.connect(self._open_gui_log_folder)
+
+    def _open_gui_log_folder(self) -> None:
+        """Open the durable log directory and say explicitly if the shell cannot do so."""
+        if self._gui_log_path is None:
+            message = "GUI log location is unavailable; see the Log dock for this session"
+            self.statusBar().showMessage(message)
+            self.log(message)
+            return
+        folder = self._gui_log_path.parent
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        if opened:
+            self.statusBar().showMessage(f"Opened GUI log folder: {folder}")
+        else:
+            message = f"Could not open GUI log folder: {folder}"
+            self.statusBar().showMessage(message)
+            self.log(message)
+
     def _on_open_workspace(self) -> None:
         start_dir = "" if self._ws.root is None else str(self._ws.root)
         path = QFileDialog.getExistingDirectory(self, "Open Workspace", start_dir)
@@ -624,15 +650,27 @@ class MainWindow(QMainWindow):
         a, u, d = len(report.added), len(report.updated), len(report.deduped)
         failed = [f for f in report.files if f.get("error")]
         note = f" — {len(failed)} file(s) failed to parse" if failed else ""
+        summary = getattr(report, "last_ingest", None) or {}
+        logical_count = summary.get("logical_scan_count")
+        unit_count = summary.get("analyzer_unit_count")
+        count_text = ""
+        if logical_count is not None and unit_count is not None:
+            count_text = f"{logical_count} logical scans / {unit_count} analyzer units"
         scan_rows = self.scans_vm.rows() if not self._empty else []
         parsed_waiting = sum(1 for unit in scan_rows if unit.status == "ingested")
         if parsed_waiting:
+            prefix = f"Ingested {n_files} file(s)"
+            if count_text:
+                prefix += f" ({count_text})"
             self.statusBar().showMessage(
-                f"Ingested {n_files} file(s): {parsed_waiting} parsed scan(s) awaiting analysis "
+                f"{prefix}: {parsed_waiting} analyzer unit(s) awaiting analysis "
                 f"; open Scans or choose Run > Run analysis...{note}")
         else:
+            prefix = f"Ingested {n_files} files"
+            if count_text:
+                prefix += f" ({count_text})"
             self.statusBar().showMessage(
-                f"Ingested {n_files} files: +{a} scans, ~{u} updated ({d} duplicates){note}")
+                f"{prefix}: +{a} logical scans, ~{u} updated ({d} duplicates){note}")
         if parsed_waiting:
             # A pending bootstrap has just rebuilt the full dock set and queued restoration of the
             # operator's saved layout. Promote Scans on the following Qt turn so that restoration
@@ -1372,6 +1410,7 @@ class MainWindow(QMainWindow):
     # ---- public helpers ---------------------------------------------------
     def log(self, msg: str) -> None:
         self.log_dock.append(msg)
+        log.info("%s", msg)
 
     @property
     def viewmodel(self) -> ViewModel:

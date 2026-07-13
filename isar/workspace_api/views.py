@@ -422,6 +422,21 @@ class FileView:
     error: str | None = None        # "ExcType: msg" if this measurement file failed to parse (additive)
 
 
+@dataclass(frozen=True)
+class LastIngestView:
+    """Read-only evidence for one completed ingest operation.
+
+    Counts are deliberately scoped to that operation, not reconstructed from the whole workspace.
+    The immutable tuple form prevents a GUI or notebook consumer from changing machine-owned state
+    through this read-only facade.
+    """
+    completed_at: str | None = None
+    logical_scan_count: int | None = None
+    analyzer_unit_count: int | None = None
+    failed_file_count: int | None = None
+    gaps: tuple = ()
+
+
 # ---------------------------------------------------------------------------
 # CardView / GroupView / BranchModelView / CampaignView
 # ---------------------------------------------------------------------------
