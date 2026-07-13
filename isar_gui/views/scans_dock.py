@@ -46,7 +46,7 @@ from isar_gui.mime import (
     encode_group_ref,
     encode_scan_ids,
 )
-from isar_gui.viewmodels.scans import sibling_hue, status_color
+from isar_gui.viewmodels.scans import sibling_hue, status_color, status_text
 
 log = logging.getLogger(__name__)
 
@@ -166,17 +166,18 @@ class _ScanChip(QFrame):
         self._status = unit.status
         self._scan_number = unit.scan_number
         self._selected = False
+        self._active = False
         self._highlight = False
         self._sibling = False
         self._drag_start: QPoint | None = None
         self.setObjectName("scanChip")
         self.setCursor(Qt.CursorShape.OpenHandCursor)
-        self.setFixedSize(QSize(94, 46))
+        self.setFixedSize(QSize(112, 62))
 
         num = unit.scan_number if unit.scan_number is not None else "?"
         # Multi-detector workspaces disambiguate analyzers on the face; single-detector show the scan.
         title = f"{num}·{unit.det}" if (multi and unit.det) else str(num)
-        subtitle = _q_compact(unit.q)
+        subtitle = f"{_q_compact(unit.q)} · {status_text(unit.status) or 'unknown'}"
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 6, 4)
@@ -184,10 +185,15 @@ class _ScanChip(QFrame):
         self._num_label = QLabel(title, self)
         self._sub_label = QLabel(subtitle, self)
         self._sub_label.setStyleSheet("color: #888; font-size: 9px; background: transparent;")
+        self._active_label = QLabel("Inspecting", self)
+        self._active_label.setStyleSheet(
+            "color: #174f80; font-size: 9px; font-weight: bold; background: transparent;")
+        self._active_label.setVisible(False)
         layout.addWidget(self._num_label)
         layout.addWidget(self._sub_label)
+        layout.addWidget(self._active_label)
 
-        tip = [unit.key]
+        tip = [unit.key, f"status: {status_text(unit.status) or 'unknown'}"]
         if unit.file_name:
             tip.append(unit.file_name)
         if unit.det:
@@ -214,6 +220,12 @@ class _ScanChip(QFrame):
             self._selected = flag
             self._apply_style()
 
+    def set_active(self, flag: bool) -> None:
+        if self._active != flag:
+            self._active = flag
+            self._active_label.setVisible(flag)
+            self._apply_style()
+
     def set_highlight(self, flag: bool) -> None:
         if self._highlight != flag:
             self._highlight = flag
@@ -238,9 +250,12 @@ class _ScanChip(QFrame):
             bg = "rgba(158, 158, 158, 40)"
         else:
             bg = "palette(base)"
-        border = "#5b9bd5" if self._selected else "palette(mid)"
+        # Active inspection is deliberately stronger than multi-selection: a whole group may be
+        # selected for manipulation while only one detector is shown in the central inspector.
+        border = "#174f80" if self._active else ("#5b9bd5" if self._selected else "palette(mid)")
+        border_width = "3px" if self._active else "1px"
         self.setStyleSheet(
-            f"#scanChip {{ background: {bg}; border: 1px solid {border};"
+            f"#scanChip {{ background: {bg}; border: {border_width} solid {border};"
             f" border-left: 4px solid {edge}; border-top: 3px solid {accent};"
             f" border-radius: 6px; }}")
 
@@ -598,6 +613,7 @@ class ScansDock(QDockWidget):
         self._page_layouts: dict[str, QVBoxLayout] = {}
         self._built: set[str] = set()                # names of pages whose chips are populated
         self._chips_by_key: dict[str, list[_ScanChip]] = {}
+        self._active_key: str | None = None          # inspected unit; not the multi-selection
 
         body = QWidget(self)
         root = QVBoxLayout(body)
@@ -703,7 +719,8 @@ class ScansDock(QDockWidget):
         elif name == _TAB_MANUAL:
             # A persistent hint (not only when empty) keeps grouping discoverable — the operator's
             # first-session complaint was "no way to make a group" (user issue 2).
-            hint = QLabel("Create a group (toolbar or right-click a scan), then drag scans in.",
+            hint = QLabel("Display-only groups: create one here, then drag scans in. They do not "
+                          "change fitting or collation.",
                           self._pages[name].widget())
             hint.setObjectName("manualHint")
             hint.setStyleSheet("color: #999; font-style: italic; padding: 6px;")
@@ -714,7 +731,7 @@ class ScansDock(QDockWidget):
                            [u for u in rows if not self._vm.is_unit_grouped(u.key)])
             self._add_box(name, layout, ungrouped)
             if manual:
-                self._add_section_label(layout, "Manual groups")
+                self._add_section_label(layout, "Manual groups — display only")
                 for g in manual:
                     box = _GroupBox(g.id, g.name or "(unnamed)", self._vm, kind="manual")
                     self._populate(name, box, self._vm.units_in_group(g))
@@ -733,6 +750,7 @@ class ScansDock(QDockWidget):
         layout.addStretch(1)
         self._sync_selection()
         self._sync_highlight()
+        self._sync_active()
 
     def _on_tab_changed(self, index: int) -> None:
         if index < 0:
@@ -774,6 +792,16 @@ class ScansDock(QDockWidget):
             on = key in hot
             for chip in chips:
                 chip.set_highlight(on)
+
+    def set_active_key(self, key: str | None) -> None:
+        """Reflect the central inspector's unit without changing multi-selection."""
+        self._active_key = str(key) if key else None
+        self._sync_active()
+
+    def _sync_active(self) -> None:
+        for key, chips in self._chips_by_key.items():
+            for chip in chips:
+                chip.set_active(key == self._active_key)
 
     def _on_chip_hovered(self, unit_key: str, entered: bool) -> None:
         """Soft-highlight the hovered unit's siblings in every visible box (correlation cue)."""

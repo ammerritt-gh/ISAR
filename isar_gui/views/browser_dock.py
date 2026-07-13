@@ -53,13 +53,18 @@ def _group_label_text(row) -> str:
 class BrowserDock(QDockWidget):
     """Card summary header + group/member tree over a :class:`BrowserViewModel`."""
 
-    def __init__(self, vm, parent=None):
+    def __init__(self, vm, parent=None, *, unit_key_for_fit=None):
         # "Results": this dock browses fit-result collation buckets and feeds the C2 inspector — a
         # different axis from the Phase-E Scans dock (physical scans by group). Retitled to keep the
         # two straight; objectName stays "browser_dock" so saved layouts still resolve it.
         super().__init__("Results", parent)
         self.setObjectName("browser_dock")  # stable name for saveState()/restoreState()
         self._vm = vm
+        self._active_key: str | None = None
+        # Legacy results omit experiment/unit identity.  The window supplies the only authoritative
+        # resolver: it checks the current ledger and returns a key only when the match is unique.
+        # The Results tree itself must never infer identity from its own child count.
+        self._unit_key_for_fit = unit_key_for_fit
 
         container = QWidget(self)
         layout = QVBoxLayout(container)
@@ -124,8 +129,44 @@ class BrowserDock(QDockWidget):
                     child.setData(0, Qt.ItemDataRole.UserRole, fv)
                     group_item.addChild(child)
             self._tree.expandAll()
+            self._restore_active_item()
         finally:
             self._tree.blockSignals(False)
+
+    def set_active_key(self, key: str | None) -> None:
+        """Show the inspected detector in the results tree without re-emitting a selection."""
+        self._active_key = str(key) if key else None
+        self._tree.blockSignals(True)
+        try:
+            self._restore_active_item()
+        finally:
+            self._tree.blockSignals(False)
+
+    def _restore_active_item(self) -> None:
+        """Restore the child matching the canonical unit id after a tree rebuild.
+
+        A pooled aggregate has no atomic unit identity; in that case the tree deliberately has no
+        current child rather than pretending one of its members is being inspected.
+        """
+        target = self._active_key
+        found = None
+        if target is not None:
+            for i in range(self._tree.topLevelItemCount()):
+                group = self._tree.topLevelItem(i)
+                for j in range(group.childCount()):
+                    child = group.child(j)
+                    fv = child.data(0, Qt.ItemDataRole.UserRole)
+                    if getattr(fv, "unit_id", None) == target:
+                        found = child
+                        break
+                    if (getattr(fv, "unit_id", None) is None
+                            and self._unit_key_for_fit is not None
+                            and self._unit_key_for_fit(fv) == target):
+                        found = child
+                        break
+                if found is not None:
+                    break
+        self._tree.setCurrentItem(found)
 
     def _render_warnings(self) -> None:
         warnings = self._vm.warnings

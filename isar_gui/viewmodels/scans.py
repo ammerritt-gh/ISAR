@@ -47,6 +47,10 @@ _HEADERS = ["#", "File", "Type", "T", "Analyzer", "q / HKL", "Status", "Groups"]
 
 _HIGHLIGHT_MS = 2000
 _HIGHLIGHT_COLOR = QColor(255, 243, 176)  # soft amber, matches the Files dock new-row tint
+_ACTIVE_COLOR = QColor(207, 229, 255)     # persistent inspected-unit cue, distinct from selection
+# A public model role lets delegates and tests identify the inspected unit without conflating it
+# with QItemSelectionModel's intentionally independent multi-selection.
+ACTIVE_UNIT_ROLE = Qt.UserRole + 1
 
 # Ledger status -> chip edge colour. Grey = not-yet-a-number; green fitted; amber held; red excluded.
 _STATUS_COLOR = {
@@ -246,6 +250,7 @@ class ScanTableModel(QAbstractTableModel):
         self._rows: list[ScanUnit] = []
         self._prev_keys: set[str] = set()
         self._highlight: set[str] = set()
+        self._active_key: str | None = None
         # Injected by the VM: unit_key -> list[str] of group labels (manual names + auto labels).
         self._group_labels_for = group_labels_for or (lambda _key: [])
         self._hl_timer = QTimer(self)
@@ -276,6 +281,25 @@ class ScanTableModel(QAbstractTableModel):
 
     def highlighted_keys(self) -> set[str]:
         return set(self._highlight)
+
+    @property
+    def active_key(self) -> str | None:
+        return self._active_key
+
+    def set_active_key(self, key: str | None) -> None:
+        """Mark one row as inspected without altering the shared multi-selection."""
+        key = str(key) if key else None
+        if key == self._active_key:
+            return
+        old, self._active_key = self._active_key, key
+        for changed in (old, key):
+            row = self.row_of_key(changed) if changed is not None else -1
+            if row >= 0:
+                left = self.index(row, 0)
+                right = self.index(row, self.columnCount() - 1)
+                self.dataChanged.emit(
+                    left, right,
+                    [Qt.BackgroundRole, Qt.FontRole, Qt.ToolTipRole, ACTIVE_UNIT_ROLE])
 
     def set_group_labels_provider(self, fn) -> None:
         self._group_labels_for = fn or (lambda _key: [])
@@ -325,9 +349,20 @@ class ScanTableModel(QAbstractTableModel):
         col = index.column()
         if role == Qt.UserRole:
             return row.key
+        if role == ACTIVE_UNIT_ROLE:
+            return row.key == self._active_key
         if role == Qt.BackgroundRole:
+            if row.key == self._active_key:
+                return _ACTIVE_COLOR
             return _HIGHLIGHT_COLOR if row.key in self._highlight else None
+        if role == Qt.FontRole and row.key == self._active_key:
+            from PySide6.QtGui import QFont
+            font = QFont()
+            font.setBold(True)
+            return font
         if role == Qt.ToolTipRole:
+            if row.key == self._active_key:
+                return "Inspecting this unit"
             if col == COL_FILE:
                 return row.source_file or ""
             if col == COL_STATUS:
@@ -488,7 +523,9 @@ class ScansViewModel(ViewModel):
             if u.q and all(v is not None for v in u.q):
                 try:
                     gkey = tuple(int(round(float(v) / q_step)) for v in u.q)
-                    disp = [round(float(v), 4) for v in u.q]
+                    # The grouping is by rounded bins, not by the first member's exact q.  Display
+                    # the bin centre and its width so the header does not claim false precision.
+                    disp = [round(i * q_step, 6) for i in gkey]
                 except (TypeError, ValueError) as exc:
                     log.debug("auto-group q-bin: non-numeric q %r for %s (%s)", u.q, u.key, exc)
                 else:
@@ -519,7 +556,8 @@ class ScansViewModel(ViewModel):
         for gkey in sorted(q_groups):
             disp, keys = q_groups[gkey]
             out.append(AutoGroup(id=f"auto:q:{','.join(str(v) for v in gkey)}",
-                                 label=f"q = {disp}", dim="q", scan_keys=keys))
+                                 label=f"q bin = {disp} (step {q_step:g} rlu)", dim="q",
+                                 scan_keys=keys))
         for det in sorted(ana_groups, key=str):
             out.append(AutoGroup(id=f"auto:ana:{det}", label=f"analyzer {det}", dim="ana",
                                  scan_keys=ana_groups[det]))
@@ -563,6 +601,10 @@ class ScansViewModel(ViewModel):
 
     def rows(self) -> list[ScanUnit]:
         return list(self._rows)
+
+    def available_keys(self) -> set[str]:
+        """Stable unit identities currently present in the ledger-backed table."""
+        return {u.key for u in self._rows}
 
     # ---- manual membership resolution (via scan_keys.member_matches) ----
     def is_unit_grouped(self, unit_key: str) -> bool:

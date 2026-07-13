@@ -23,6 +23,7 @@ from isar_gui.viewmodels.scans import (
     COL_NUM,
     COL_Q,
     COL_STATUS,
+    ACTIVE_UNIT_ROLE,
     ScansViewModel,
     unit_rows,
 )
@@ -154,6 +155,25 @@ def test_selection_of_vanished_key_is_not_restored(qtbot):
     ws.scans[:] = [_sv("tavi", 1, "d1")]
     vm.refresh()
     assert vm.selected_keys() == []
+
+
+def test_active_row_role_is_independent_of_multi_selection(qtbot):
+    vm = ScansViewModel(_ws([_sv("tavi", 1, "d1"), _sv("tavi", 2, "d1")]))
+    vm.select_keys(["tavi:1:d1", "tavi:2:d1"])
+    vm.model.set_active_key("tavi:1:d1")
+    assert vm.selected_keys() == ["tavi:1:d1", "tavi:2:d1"]
+    assert vm.model.index(0, COL_NUM).data(ACTIVE_UNIT_ROLE) is True
+    assert vm.model.index(1, COL_NUM).data(ACTIVE_UNIT_ROLE) is False
+    assert "Inspecting" in vm.model.index(0, COL_NUM).data(Qt.ToolTipRole)
+
+
+def test_q_auto_group_label_names_bin_and_step(qtbot):
+    vm = ScansViewModel(_ws([_sv("s30", 1, "ana1", hkl=(0.5004, 0, 0)),
+                             _sv("s30", 1, "ana2", hkl=(0.50049, 0, 0))]))
+    label = vm.auto_groups("q")[0].label
+    assert "q bin" in label
+    assert "step" in label
+    assert "0.5004" not in label  # do not report one member's exact q as the group value
 
 
 def test_new_key_highlight_diff_on_refresh(qtbot):

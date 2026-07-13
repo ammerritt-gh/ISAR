@@ -15,6 +15,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt, QMimeData
+from PySide6.QtWidgets import QLabel
 
 from isar_gui.gui_store import GuiStore
 from isar_gui.mime import MIME_SCAN_IDS, encode_scan_ids
@@ -187,6 +188,31 @@ def test_cross_tab_selection_lights_every_chip(qtbot, tmp_path):
     assert all(c._selected for c in chips)
 
 
+def test_active_chip_is_distinct_from_selected_group(qtbot, tmp_path):
+    vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+    _show_tab(dock, "All")
+    # Group/multi-selection is intentionally independent from the one detector in the inspector.
+    vm.select_keys(["s30:12:ana1", "s30:12:ana2"], clear=True)
+    dock.set_active_key("s30:12:ana1")
+    first = dock._chips_by_key["s30:12:ana1"][0]
+    second = dock._chips_by_key["s30:12:ana2"][0]
+    assert first._selected and second._selected
+    assert first._active and not second._active
+    assert not first._active_label.isHidden()
+    assert first._active_label.text() == "Inspecting"
+
+
+def test_chip_status_is_not_colour_only(qtbot, tmp_path):
+    vm = ScansViewModel(_ws([_sv("in8", 1, "det")]), store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+    chip = dock._chips_by_key["in8:1:det"][0]
+    assert "parsed" in chip._sub_label.text()
+    assert "status: parsed" in chip.toolTip()
+
+
 def test_chip_click_updates_shared_selection(qtbot, tmp_path):
     vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
@@ -238,3 +264,13 @@ def test_single_detector_chip_shows_scan_only(qtbot, tmp_path):
     _show_tab(dock, "All")
     chip = dock._chips_by_key["in8:5:det"][0]
     assert chip._num_label.text() == "5"
+
+
+def test_manual_groups_are_explicitly_display_only(qtbot, tmp_path):
+    vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+    _show_tab(dock, "Manual")
+    texts = [w.text() for w in dock.findChildren(QLabel)
+             if w.objectName() == "manualHint"]
+    assert texts and "do not change fitting or collation" in texts[0]

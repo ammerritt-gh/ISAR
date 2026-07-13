@@ -3,6 +3,7 @@ selection; MainWindow wires it in and can swap the whole workspace via load_work
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -143,6 +144,48 @@ def test_main_window_browser_selection_available(qtbot, make_ws):
     target = ws.results[0]
     with qtbot.waitSignal(w.browser_vm.selection_changed, timeout=1000):
         w.browser_vm.select(target)
+
+
+def _legacy_unit(exp, scan, det):
+    return SimpleNamespace(key=f"{exp}:{scan}:{det}", scan_number=scan, det=det)
+
+
+def test_legacy_fit_browser_highlight_restores_after_rebuild_when_ledger_is_unique(
+        qtbot, make_ws, monkeypatch):
+    ws, _ = _open(make_ws)
+    w = MainWindow(ws, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    target = ws.results[0]
+    assert target.unit_id is None  # frozen legacy fixture deliberately exercises the fallback
+    monkeypatch.setattr(w.scans_vm, "rows",
+                        lambda: [_legacy_unit("tavi", target.scan_number, target.detector_id)])
+
+    w._inspect_fit(target)
+    expected = f"tavi:{target.scan_number}:{target.detector_id}"
+    assert w.active_units.key == expected
+    assert w.browser_dock._tree.currentItem() is not None
+
+    # Results-tree rendering must restore the same active row without emitting a recursive selection.
+    w.browser_vm.refresh()
+    current = w.browser_dock._tree.currentItem()
+    assert current is not None
+    assert current.data(0, Qt.ItemDataRole.UserRole).scan_number == target.scan_number
+
+
+def test_legacy_fit_never_maps_ambiguous_scan_detector_to_browser_or_active_unit(
+        qtbot, make_ws, monkeypatch):
+    ws, _ = _open(make_ws)
+    w = MainWindow(ws, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    target = ws.results[0]
+    monkeypatch.setattr(
+        w.scans_vm, "rows",
+        lambda: [_legacy_unit("run_a", target.scan_number, target.detector_id),
+                 _legacy_unit("run_b", target.scan_number, target.detector_id)])
+
+    w._inspect_fit(target)
+    assert w.active_units.key is None
+    assert w.browser_dock._tree.currentItem() is None
 
 
 # ---- load_workspace ----------------------------------------------------------

@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from isar_gui.commands import RunOptions, build_run_command
+from isar_gui.active_unit import ActiveUnitController
 from isar_gui.folder_watcher import FolderWatcher
 from isar_gui.gui_store import GuiStore
 from isar_gui.health import LLM_DEFAULT_ENDPOINT, TAVI_DEFAULT_URL, find_tavi_bat, ping_http
@@ -141,6 +142,9 @@ class MainWindow(QMainWindow):
         # dict lookup instead of resolving every manifest row every poll — the beamtime-scale freeze
         # fix. None until the first bind builds it.
         self._known_files_cache: dict[str, tuple] | None = None
+        # One inspected atomic unit, deliberately separate from the table/chip multi-selection.
+        # It survives ordinary workspace refreshes only while the same unit remains in the ledger.
+        self.active_units = ActiveUnitController(self)
 
         # The workspace lifecycle owner (none/pending/ready + temp/save-as). MainWindow is the view:
         # it reflects the manager's signals and never reaches into a workspace directory itself. `ws`
@@ -256,12 +260,15 @@ class MainWindow(QMainWindow):
         else:
             self.inspector = InspectorWidget(self.inspector_vm, parent=self)
             self.setCentralWidget(self.inspector)
-        self.browser_vm.selection_changed.connect(self.inspector_vm.set_fit)
+        # Every route that changes what is being inspected passes through the active-unit controller.
+        # This keeps the Results tree, physical chips, and table honest about the one detector in the
+        # central inspector, without treating a multi-selection as an inspection request.
+        self.browser_vm.selection_changed.connect(self._inspect_fit)
         # The C3 plane, the C5 dispersion view, and the C4 waterfall/comparison view all route a
         # picked ω̂ point (or waterfall trace) to the same inspector.
-        self.heatmap_vm.point_activated.connect(self.inspector_vm.set_fit)
-        self.dispersion_vm.point_activated.connect(self.inspector_vm.set_fit)
-        self.waterfall_vm.point_activated.connect(self.inspector_vm.set_fit)
+        self.heatmap_vm.point_activated.connect(self._inspect_fit)
+        self.dispersion_vm.point_activated.connect(self._inspect_fit)
+        self.waterfall_vm.point_activated.connect(self._inspect_fit)
         # A browser selection also nominates its q as the waterfall/comparison view's default q.
         self.browser_vm.selection_changed.connect(self.waterfall_vm.default_q_from_selection)
 
@@ -345,7 +352,10 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.LeftDockWidgetArea, self.files_dock)
         self._register_dock("Files", self.files_dock)
 
-        self.browser_dock = BrowserDock(self.browser_vm, self)
+        self.browser_dock = BrowserDock(
+            self.browser_vm, self, unit_key_for_fit=self._unit_key_for_fit)
+        self.active_units.active_changed.connect(self.browser_dock.set_active_key)
+        self.browser_dock.set_active_key(self.active_units.key)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.browser_dock)
         self.tabifyDockWidget(self.files_dock, self.browser_dock)
         self._register_dock("Browser", self.browser_dock)
@@ -360,9 +370,13 @@ class MainWindow(QMainWindow):
         # share one model + selection, so a chip and a row light up together). Placed before the plane
         # so the scan-centric views lead the right column.
         self.scans_dock = ScansDock(self.scans_vm, self)
+        self.active_units.active_changed.connect(self.scans_dock.set_active_key)
+        self.scans_dock.set_active_key(self.active_units.key)
         self.addDockWidget(Qt.RightDockWidgetArea, self.scans_dock)
         self._register_dock("Scans", self.scans_dock)
         self.scan_table_dock = ScanTableDock(self.scans_vm, self)
+        self.active_units.active_changed.connect(self.scans_vm.model.set_active_key)
+        self.scans_vm.model.set_active_key(self.active_units.key)
         self.addDockWidget(Qt.RightDockWidgetArea, self.scan_table_dock)
         self.tabifyDockWidget(self.scans_dock, self.scan_table_dock)
         self._register_dock("Scan Table", self.scan_table_dock)
@@ -656,6 +670,9 @@ class MainWindow(QMainWindow):
     def _rebind(self, ws) -> None:
         """Tear down the current binding (if any) and bind ``ws`` (``None`` = empty/pending)."""
         if self._bound:
+            # Unit keys are workspace-local.  Clear before the old dock QObject instances disappear
+            # so every visible surface is reset rather than carrying an old workspace's inspection.
+            self.active_units.set_active(None)
             self._teardown_binding()
         self._bind_workspace(ws)
         self._bound = True
@@ -1007,6 +1024,7 @@ class MainWindow(QMainWindow):
             self._rebuild_known_files_cache()
             self.files_vm.refresh()
             self.scans_vm.refresh()
+            self.active_units.retain(self.scans_vm.available_keys())
         # "results"/"snapshot" carry the fit data the plots read; "card_state" carries lattice
         # epochs / dispersion prior / branch belief that feed the browser HKL, the dispersion prior
         # curve, and the heatmap overlays — so it must also re-derive the component views.
@@ -1020,6 +1038,7 @@ class MainWindow(QMainWindow):
             # by card_state; a card_state-only tick (no snapshot) still needs them re-derived.
             if changed & {"card_state"} and not (changed & {"snapshot"}):
                 self.scans_vm.refresh()
+                self.active_units.retain(self.scans_vm.available_keys())
         self._live_label.setText(f"live — last update {datetime.now():%H:%M:%S}")
         self.statusBar().showMessage(f"Updated: {', '.join(sorted(changed)) or '(none)'}")
 
@@ -1028,26 +1047,47 @@ class MainWindow(QMainWindow):
         shows the raw parsed unit (metadata + counts); anything else (a ``FitView`` or ``None``)
         drives the fit inspector as before."""
         if isinstance(payload, str):
+            self.active_units.set_active(payload)
             self.inspector_vm.set_unit(payload)
         else:
-            self.inspector_vm.set_fit(payload)
+            self._inspect_fit(payload)
+
+    def _inspect_fit(self, fit) -> None:
+        """Inspect a fit selected by Results or one of the plot views, retaining its unit identity."""
+        self.active_units.set_active(self._unit_key_for_fit(fit))
+        self.inspector_vm.set_fit(fit)
+
+    def _unit_key_for_fit(self, fit) -> str | None:
+        """Return a fit's exact unit id, with a conservative legacy-results fallback.
+
+        Older results files predate ``FitView.unit_id``.  They can still synchronize only when their
+        scan number and detector identify exactly one current ledger unit; ambiguity is represented
+        by no active chip rather than a plausible but wrong experiment.
+        """
+        if fit is None:
+            return None
+        unit_id = getattr(fit, "unit_id", None)
+        if unit_id:
+            return str(unit_id)
+        candidates = [u.key for u in self.scans_vm.rows()
+                      if u.scan_number == getattr(fit, "scan_number", None)
+                      and u.det == getattr(fit, "detector_id", None)]
+        return candidates[0] if len(candidates) == 1 else None
 
     def _refresh_inspector_selection(self) -> None:
-        """Re-find the currently-inspected fit (by scan_number+detector_id — a FitView carries no
-        stable identity across a rebuild) in the just-refreshed ``ws.results``; re-select it if it
-        still exists, else drop the inspector to its empty state. A raw-unit view re-assembles by its
-        (stable) unit key."""
-        unit_key = self.inspector_vm.current_unit
-        if unit_key is not None:
-            self.inspector_vm.set_unit(unit_key)
-            return
-        fit = self.inspector_vm.current_fit
-        if fit is None:
+        """Rebuild inspection from the canonical full unit key after a facade refresh."""
+        unit_key = self.active_units.key
+        if unit_key is None:
             return
         fresh = next((fv for fv in self._ws.results
-                     if fv.scan_number == fit.scan_number and fv.detector_id == fit.detector_id),
-                    None)
-        self.inspector_vm.set_fit(fresh)
+                      if self._unit_key_for_fit(fv) == unit_key), None)
+        if fresh is not None:
+            self.inspector_vm.set_fit(fresh)
+        elif unit_key in self.scans_vm.available_keys():
+            self.inspector_vm.set_unit(unit_key)
+        else:
+            self.active_units.set_active(None)
+            self.inspector_vm.set_fit(None)
 
     # ---- session layout --------------------------------------------------
     def _snapshot_session(self) -> Session:
