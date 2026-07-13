@@ -72,6 +72,15 @@ def test_apply_health_colours_and_tooltips(qtbot, make_ws):
     assert "unreachable" in w._tavi_health.toolTip()
 
 
+def test_apply_health_marks_reachable_http_error_amber(qtbot, make_ws):
+    w = _win(qtbot, make_ws)
+    w._apply_health({"llm": (False, True, "reachable (HTTP 401)", "http://llm"),
+                     "tavi": (False, False, "unreachable (URLError)", "http://tavi")})
+    assert "b26a00" in w._llm_health.styleSheet()
+    assert "c62828" in w._tavi_health.styleSheet()
+    assert "TAVI backend unreachable" in w.statusBar().currentMessage()
+
+
 def test_apply_health_ignores_error(qtbot, make_ws):
     w = _win(qtbot, make_ws)
     before = w._llm_health.styleSheet()
@@ -80,7 +89,7 @@ def test_apply_health_ignores_error(qtbot, make_ws):
 
 
 def test_refresh_health_threaded_updates_labels(qtbot, make_ws, monkeypatch):
-    """The real threaded probe: worker thread -> queued signal -> label update on the Qt thread."""
+    """The worker result is queue-polled and updates labels only on the Qt thread."""
     from isar_gui import main_window as mw
     from isar_gui.health import Health
 
@@ -89,3 +98,55 @@ def test_refresh_health_threaded_updates_labels(qtbot, make_ws, monkeypatch):
     w._refresh_health()
     qtbot.waitUntil(lambda: "2e7d32" in w._llm_health.styleSheet(), timeout=4000)
     assert "2e7d32" in w._tavi_health.styleSheet()
+
+
+def test_health_poll_ignores_stale_result(qtbot, make_ws):
+    from isar_gui.health import Health, HealthProbeResult
+
+    class StaleProbe:
+        in_flight = False
+
+        @staticmethod
+        def request(urls):
+            return 2
+
+        @staticmethod
+        def shutdown():
+            pass
+
+        @staticmethod
+        def poll():
+            return [HealthProbeResult(1, {"llm": "http://old", "tavi": "http://tavi"},
+                                      health={"llm": Health(True, "reachable"),
+                                              "tavi": Health(True, "reachable")})]
+
+    w = _win(qtbot, make_ws)
+    w._health_probe = StaleProbe()
+    w._health_generation = 2
+    before = w._llm_health.styleSheet()
+    w._poll_health_results()
+    assert w._llm_health.styleSheet() == before
+
+
+def test_blocked_health_worker_is_inert_after_window_close(qtbot, make_ws, monkeypatch):
+    """Closing must not leave a worker able to emit through a deleted Qt signal."""
+    from threading import Event
+    from isar_gui import main_window as mw
+    from isar_gui.health import Health
+
+    started = Event()
+    release = Event()
+
+    def blocked(url, **kwargs):
+        started.set()
+        assert release.wait(2)
+        return Health(True, "reachable")
+
+    monkeypatch.setattr(mw, "ping_http", blocked)
+    w = _win(qtbot, make_ws)
+    qtbot.waitUntil(started.is_set, timeout=2000)
+    w.close()
+    assert w._health_closed
+    assert not w._health_poll_timer.isActive()
+    release.set()
+    qtbot.wait(100)

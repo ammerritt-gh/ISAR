@@ -13,12 +13,11 @@ from __future__ import annotations
 
 import logging
 import sys
-import threading
 from datetime import datetime
 from pathlib import Path
 from weakref import WeakSet
 
-from PySide6.QtCore import QByteArray, QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, Qt, QTimer
 from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
@@ -33,16 +32,10 @@ from isar_gui.commands import RunOptions, build_run_command
 from isar_gui.active_unit import ActiveUnitController
 from isar_gui.folder_watcher import FolderWatcher
 from isar_gui.gui_store import GuiStore
-from isar_gui.health import LLM_DEFAULT_ENDPOINT, TAVI_DEFAULT_URL, find_tavi_bat, ping_http
+from isar_gui.health import HealthProbe, LLM_DEFAULT_ENDPOINT, TAVI_DEFAULT_URL, find_tavi_bat, ping_http
 from isar_gui.operation_coordinator import WorkspaceOperationCoordinator
 from isar_gui.workspace_manager import WorkspaceManager
 
-
-class _HealthSignals(QObject):
-    """Marshals a background reachability probe's result back onto the Qt thread (queued delivery,
-    same pattern as :class:`~isar_gui.watch_bridge.WatchBridge`)."""
-
-    done = Signal(dict)
 
 from isar.workspace_api import (
     SCHEMA_VERSION,
@@ -981,43 +974,87 @@ class MainWindow(QMainWindow):
             return False
         QProcess.startDetached("cmd.exe", ["/c", "start", "", bat])
         self.statusBar().showMessage(f"Launched TAVI: {bat}")
-        QTimer.singleShot(4000, self._refresh_health)  # give the server a moment, then re-probe
+        self._health_start_timer.start(4000)  # give the server a moment, then re-probe
         return True
 
     # ---- health probe (threaded; never blocks the UI) ---------------------
     def _init_health(self) -> None:
-        self._health_signals = _HealthSignals(self)
-        self._health_signals.done.connect(self._apply_health)
+        # The worker owns no Qt objects. A timer on this thread polls its Python queue instead, so a
+        # late daemon result after the window is deleted is harmless.
+        self._health_probe = HealthProbe(lambda url: ping_http(url))
+        self._health_generation = 0
+        self._health_closed = False
+        self._health_statuses: dict[str, str] = {}
         self._health_timer = QTimer(self)
-        self._health_timer.setInterval(30000)  # a slow heartbeat; explicit refresh on settings/launch
+        self._health_timer.setInterval(30000)
         self._health_timer.timeout.connect(self._refresh_health)
         self._health_timer.start()
-        QTimer.singleShot(0, self._refresh_health)  # first probe once the loop settles (test-safe)
+        self._health_poll_timer = QTimer(self)
+        self._health_poll_timer.setInterval(50)
+        self._health_poll_timer.timeout.connect(self._poll_health_results)
+        self._health_start_timer = QTimer(self)
+        self._health_start_timer.setSingleShot(True)
+        self._health_start_timer.timeout.connect(self._refresh_health)
+        self._health_start_timer.start(0)
 
     def _refresh_health(self) -> None:
+        if self._health_closed:
+            return
         llm_url = self._settings().get("llm_endpoint") or LLM_DEFAULT_ENDPOINT
-        signals = self._health_signals
+        self._health_generation = self._health_probe.request({"llm": llm_url,
+                                                               "tavi": TAVI_DEFAULT_URL})
+        if not self._health_poll_timer.isActive():
+            self._health_poll_timer.start()
 
-        def work():
-            try:
-                llm = ping_http(llm_url)
-                tavi = ping_http(TAVI_DEFAULT_URL)
-                signals.done.emit({"llm": (llm.ok, llm.detail, llm_url),
-                                   "tavi": (tavi.ok, tavi.detail, TAVI_DEFAULT_URL)})
-            except Exception as exc:  # noqa: BLE001 — a probe failure must never kill the daemon
-                signals.done.emit({"error": str(exc)})
+    def _poll_health_results(self) -> None:
+        """Apply only the latest endpoint snapshot, on the GUI thread."""
+        if self._health_closed:
+            return
+        for result in self._health_probe.poll():
+            if result.generation != self._health_generation:
+                log.debug("ignored stale health probe generation %s", result.generation)
+                continue
+            if result.error:
+                self._show_health_error(result.error)
+                continue
+            assert result.health is not None
+            self._apply_health({name: (item.ok, item.reachable, item.detail, result.urls[name])
+                                for name, item in result.health.items()})
+        if not self._health_probe.in_flight:
+            self._health_poll_timer.stop()
 
-        threading.Thread(target=work, daemon=True).start()
+    def _show_health_error(self, detail: str) -> None:
+        message = f"Backend health check failed: {detail}"
+        self.log(message)
+        self.statusBar().showMessage(message)
 
     def _apply_health(self, res: dict) -> None:
         if "error" in res:
+            self._show_health_error(str(res["error"]))
             return
         for key, label in (("llm", self._llm_health), ("tavi", self._tavi_health)):
-            ok, detail, url = res[key]
+            item = res[key]
+            # Accept the pre-HealthProbe 3-tuple used by a few external/plugin callers.
+            if len(item) == 3:
+                ok, detail, url = item
+                reachable = ok
+            else:
+                ok, reachable, detail, url = item
             name = "LLM" if key == "llm" else "TAVI"
             label.setText(f"{name} ●")
-            label.setStyleSheet(f"color: {'#2e7d32' if ok else '#c62828'};")
+            color = "#2e7d32" if ok else ("#b26a00" if reachable else "#c62828")
+            label.setStyleSheet(f"color: {color};")
             label.setToolTip(f"{url} — {detail}")
+            status = "ok" if ok else ("reachable_error" if reachable else "down")
+            previous = self._health_statuses.get(key)
+            if status != previous:
+                self._health_statuses[key] = status
+                if status == "ok" and previous is not None:
+                    self.log(f"{name} backend recovered: {url}")
+                elif status != "ok":
+                    message = f"{name} backend {detail}: {url}"
+                    self.log(message)
+                    self.statusBar().showMessage(message)
 
     # ---- status bar: persistent live indicator ----------------------------
     def _init_status_bar(self) -> None:
@@ -1358,6 +1395,13 @@ class MainWindow(QMainWindow):
             return
         if getattr(self, "_health_timer", None) is not None:
             self._health_timer.stop()
+        if getattr(self, "_health_start_timer", None) is not None:
+            self._health_start_timer.stop()
+        if getattr(self, "_health_poll_timer", None) is not None:
+            self._health_poll_timer.stop()
+        self._health_closed = True
+        if getattr(self, "_health_probe", None) is not None:
+            self._health_probe.shutdown()
         if getattr(self, "_folder_watcher", None) is not None:
             self._folder_watcher.stop()
         if self._bridge is not None:

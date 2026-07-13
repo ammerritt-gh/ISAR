@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import urllib.error
+from threading import Event
 
 from isar_gui import health
 
@@ -15,14 +16,79 @@ def test_ping_reachable_on_http_error_status():
     def opener(url, timeout):
         raise urllib.error.HTTPError(url, 401, "Unauthorized", {}, None)
     h = health.ping_http("http://x", opener=opener)
-    assert h.ok and "401" in h.detail          # a server that answers 401 is up
+    assert not h.ok and h.reachable and h.status == "reachable_error" and "401" in h.detail
 
 
 def test_ping_down_on_connection_failure():
     def opener(url, timeout):
         raise OSError("connection refused")
     h = health.ping_http("http://x", opener=opener)
-    assert not h.ok and "unreachable" in h.detail
+    assert not h.ok and not h.reachable and h.status == "down" and "unreachable" in h.detail
+
+
+def test_health_probe_coalesces_without_overlapping_workers():
+    started = Event()
+    release = Event()
+    calls: list[str] = []
+
+    def prober(url: str) -> health.Health:
+        calls.append(url)
+        if url == "first":
+            started.set()
+            assert release.wait(2)
+        return health.Health(True, "reachable")
+
+    probe = health.HealthProbe(prober)
+    first = probe.request({"llm": "first"})
+    assert started.wait(2)
+    probe.request({"llm": "second"})
+    latest = probe.request({"llm": "latest"})
+    assert calls == ["first"]
+    release.set()
+
+    def completed_generation():
+        results = probe.poll()
+        return results[0].generation if results else None
+
+    import time
+    deadline = time.monotonic() + 2
+    while completed_generation() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    deadline = time.monotonic() + 2
+    while calls != ["first", "latest"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls == ["first", "latest"]
+    deadline = time.monotonic() + 2
+    results = []
+    while not results and time.monotonic() < deadline:
+        results = probe.poll()
+        time.sleep(0.01)
+    assert first < latest
+    assert results and results[0].generation == latest
+
+
+def test_health_probe_shutdown_does_not_schedule_pending_work():
+    started = Event()
+    release = Event()
+
+    def prober(url: str) -> health.Health:
+        started.set()
+        assert release.wait(2)
+        return health.Health(True, "reachable")
+
+    probe = health.HealthProbe(prober)
+    probe.request({"llm": "first"})
+    assert started.wait(2)
+    probe.request({"llm": "pending"})
+    probe.shutdown()
+    release.set()
+
+    import time
+    deadline = time.monotonic() + 2
+    while probe.in_flight and time.monotonic() < deadline:
+        probe.poll()
+        time.sleep(0.01)
+    assert not probe.in_flight
 
 
 def test_find_tavi_bat_prefers_configured(tmp_path):

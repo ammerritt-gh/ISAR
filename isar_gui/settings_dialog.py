@@ -105,6 +105,9 @@ class SettingsDialog(QDialog):
         if h.ok:
             self._test_label.setText(f"✓ {endpoint} — {h.detail}")
             self._test_label.setStyleSheet("color: #2e7d32;")
+        elif h.reachable:
+            self._test_label.setText(f"! {endpoint} — {h.detail}")
+            self._test_label.setStyleSheet("color: #b26a00;")
         else:
             self._test_label.setText(f"✗ {endpoint} — {h.detail}")
             self._test_label.setStyleSheet("color: #c62828;")
