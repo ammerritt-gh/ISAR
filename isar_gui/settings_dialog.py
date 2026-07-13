@@ -24,8 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from isar_gui.health import LLM_DEFAULT_ENDPOINT, ping_http
-from isar.reduce.adjudicate import DEFAULT_CLOUD_FALLBACK_MODEL
-from isar.reduce.llm_client import validate_endpoint
+from isar.workspace_api import DEFAULT_CLOUD_FALLBACK_MODEL, validate_endpoint
 
 _PROFILES = ["llmm", "openai"]
 

@@ -44,15 +44,13 @@ from isar_gui.gui_store import GuiStore
 from isar_gui.health import HealthProbe, LLM_DEFAULT_ENDPOINT, TAVI_DEFAULT_URL, find_tavi_bat, ping_http
 from isar_gui.operation_coordinator import WorkspaceOperationCoordinator
 from isar_gui.workspace_manager import WorkspaceManager
-from isar.reduce.llm_client import validate_endpoint
-
-
 from isar.workspace_api import (
     SCHEMA_VERSION,
     BranchModelView,
     CardView,
     Workspace,
     WorkspaceNotFound,
+    validate_endpoint,
 )
 from isar_gui.log_dock import LogDock
 from isar_gui.logging_setup import configure_gui_logging
@@ -223,6 +221,14 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._restore_layout)
         QTimer.singleShot(0, self._apply_empty_start_dock_geometry)
         QTimer.singleShot(0, self._surface_session_security_warnings)
+        # Cold launch: _bind_workspace queued its file-less-workspace Files raise while self._bound
+        # was still False, so the restore branch there did NOT run — instead _restore_layout is
+        # queued just above, AFTER that raise. A saved layout with a different front tab would then
+        # re-bury Files. Re-queue the raise here so it runs after the restore on the construction path
+        # too (idempotent with the bind's queue). The rebind path queues its restore inside
+        # _bind_workspace, before its own raise, so it needs no repeat.
+        if ws is not None and not self._empty and not self.files_vm.rows:
+            QTimer.singleShot(0, self._raise_files_dock_for_empty_data)
         # Recovery adopts a temporary workspace directly, so there is no ingest-finished signal to
         # promote its raw scans. If it contains parsed rows but no fit results, treat Scans as the
         # next operator surface after the saved layout is restored. Saved workspaces and analyzed
@@ -350,6 +356,27 @@ class MainWindow(QMainWindow):
             self._live_label.setText("")
 
         self._sync_run_actions()  # Run/Re-run enablement depends on empty-state + remembered runs
+
+        # A ready workspace with no ingested files still needs a data-entry surface: without this the
+        # Files dock is buried behind its tabified siblings (Browser/Card) or a restored layout, so
+        # the "Drop data files here to begin." hint is invisible and the operator's first action has
+        # no home — mirroring the empty/pending state (_init_docks raises Files there). Queue the
+        # raise so it runs AFTER the _restore_layout queued at the top of a ready bind (both are
+        # singleShot(0, ...), FIFO), otherwise restoreState would immediately re-bury Files. A
+        # workspace that already has files keeps its saved layout untouched.
+        if not self._empty and not self.files_vm.rows:
+            QTimer.singleShot(0, self._raise_files_dock_for_empty_data)
+
+    def _raise_files_dock_for_empty_data(self) -> None:
+        """Surface the Files dock as the data-entry point for a ready-but-data-less workspace.
+
+        Guarded against a rebind that happened before this queued call fires: _teardown_binding nulls
+        files_dock, and a workspace that gained files in the interim no longer needs the raise.
+        """
+        if self._empty or self.files_dock is None or self.files_vm.rows:
+            return
+        self.files_dock.show()
+        self.files_dock.raise_()
 
     def _make_empty_hint(self) -> QLabel:
         """The empty central widget: a centered hint. Pending (a temp workspace is reserved) invites
@@ -1363,6 +1390,20 @@ class MainWindow(QMainWindow):
             self.removeDockWidget(dock)
             dock.deleteLater()
         self._docks.clear()
+        # deleteLater() leaves the Python attributes pointing at now-dead C++ widgets. An
+        # empty/pending rebind returns early from _init_docks without recreating the analysis docks,
+        # so a slot firing between binds (e.g. _on_operation_activity_changed reaching card_dock)
+        # would touch a deleted widget and raise "Internal C++ object already deleted". Null every
+        # transient dock attribute so those sites see None (their getattr default) instead. log_dock
+        # is intentionally not touched — it survives the rebind.
+        self.card_dock = None
+        self.browser_dock = None
+        self.files_dock = None
+        self.scans_dock = None
+        self.scan_table_dock = None
+        self.heatmap_dock = None
+        self.dispersion_dock = None
+        self.waterfall_dock = None
         # The old viewmodels are QObjects parented to self; without an explicit deleteLater() they
         # would linger as inert children (their dock's connections already dropped above) for the
         # rest of the window's life. Drop them so repeated rebinds don't accumulate.
@@ -1455,19 +1496,34 @@ class MainWindow(QMainWindow):
         return candidates[0] if len(candidates) == 1 else None
 
     def _refresh_inspector_selection(self) -> None:
-        """Rebuild inspection from the canonical full unit key after a facade refresh."""
-        unit_key = self.active_units.key
-        if unit_key is None:
+        """Re-resolve the inspected fit/unit against the just-refreshed facade after a workspace
+        change, then keep the active chip in sync.
+
+        Anchored on the inspector's OWN current selection, never on the derived ``active_units.key``:
+        a FitView with no resolvable ledger unit (legacy results, or results written before any
+        ingest) still carries a scan_number/detector_id identity that must survive a refresh —
+        keying off the chip would strand such a selection so it never updates or clears."""
+        unit_key = self.inspector_vm.current_unit
+        if unit_key is not None:
+            if unit_key in self.scans_vm.available_keys():
+                self.inspector_vm.set_unit(unit_key)
+            else:
+                self.active_units.set_active(None)
+                self.inspector_vm.set_fit(None)
             return
-        fresh = next((fv for fv in self._ws.results
-                      if self._unit_key_for_fit(fv) == unit_key), None)
-        if fresh is not None:
-            self.inspector_vm.set_fit(fresh)
-        elif unit_key in self.scans_vm.available_keys():
-            self.inspector_vm.set_unit(unit_key)
-        else:
-            self.active_units.set_active(None)
-            self.inspector_vm.set_fit(None)
+        fit = self.inspector_vm.current_fit
+        if fit is None:
+            return
+        want_unit = getattr(fit, "unit_id", None)
+
+        def _matches(fv) -> bool:
+            fv_unit = getattr(fv, "unit_id", None)
+            if want_unit and fv_unit:
+                return fv_unit == want_unit          # exact unit identity when both carry it
+            return fv.scan_number == fit.scan_number and fv.detector_id == fit.detector_id
+        fresh = next((fv for fv in self._ws.results if _matches(fv)), None)
+        self.inspector_vm.set_fit(fresh)             # None clears the inspector to its empty state
+        self.active_units.set_active(self._unit_key_for_fit(fresh))
 
     # ---- session layout --------------------------------------------------
     def _snapshot_session(self) -> Session:

@@ -193,7 +193,10 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   `isar.session.state`, `isar.session.workspace`, `isar.session.unit_data` (the per-unit ingest
   data reader behind `ws.unit_data`; Qt-free, scipy-free), `isar.drive.session_log`,
   `isar.drive.isar_io.readers`, `isar.report.audit`, `isar.analyze.components`, `isar.geometry`,
-  `isar.reduce.collate` (the canonical collation key — one definition of "a dataset"). Enforced
+  `isar.reduce.collate` (the canonical collation key — one definition of "a dataset"),
+  `isar.reduce.llm_client` + `isar.reduce.adjudicate` (Qt-free/scipy-free config validators the GUI
+  settings/credential editors reach through the facade — LLM endpoint safety + cloud-fallback
+  default; re-exported by `isar/workspace_api/config_gates.py`). Enforced
   by an AST import-contract test, `tests/test_import_contract.py` (task A-11; allow-lists kept in
   sync with this entry). Implemented (Phase 0/A).
 - **G17.** Rendering semantics live in the spec layer: `isar/plotspec` spec objects carry the

@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -62,8 +63,22 @@ class Session:
         return data
 
     def note_workspace(self, path) -> None:
-        """Record ``path`` as the most-recent workspace (dedup, capped at ``_MAX_RECENT``)."""
+        """Record ``path`` as the most-recent workspace (dedup, capped at ``_MAX_RECENT``).
+
+        A path under the system temp directory is a transient scratch/test workspace and is refused:
+        recording it would let a later no-arg launch auto-open a dead scratch directory instead of
+        the empty-start surface (the class of bug where a pytest ``tmp_path`` bind polluted the real
+        recents list). The skip is logged rather than silent.
+        """
         p = str(Path(path))
+        try:
+            if Path(path).resolve().is_relative_to(Path(tempfile.gettempdir()).resolve()):
+                log.info("not recording transient workspace under temp dir as a recent: %s", p)
+                return
+        except OSError as exc:
+            # An unresolvable path is not worth failing the record over; log and fall through to
+            # store the literal path (a later launch will skip it if it is still unopenable).
+            log.warning("could not resolve workspace path %s for temp-dir check: %s", p, exc)
         self.recent_workspaces = [p] + [q for q in self.recent_workspaces if q != p]
         del self.recent_workspaces[_MAX_RECENT:]
 

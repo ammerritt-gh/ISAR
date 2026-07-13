@@ -173,9 +173,15 @@ def test_explicit_bad_path_exits_2(capsys):
     assert "isar view" in capsys.readouterr().err
 
 
-def test_resolve_recent_opens_most_recent(make_ws, monkeypatch):
+def test_resolve_recent_opens_most_recent(make_ws, tmp_path, monkeypatch):
+    import tempfile
+
     import isar_gui.app as gui_app
     import isar_gui.session as gui_session
+
+    # _resolve_recent_workspace skips recents under the OS temp dir; the synthetic workspace lives
+    # under tmp_path, so point the perceived temp dir elsewhere to model a real saved recent.
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "_not_temp"))
 
     root = make_ws(rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
     monkeypatch.setattr(
@@ -187,12 +193,38 @@ def test_resolve_recent_opens_most_recent(make_ws, monkeypatch):
     assert Path(ws.root) == Path(root)
 
 
+def test_resolve_recent_skips_temp_dir_recent(make_ws, monkeypatch, caplog):
+    # Defense in depth: a recent under the OS temp dir (e.g. a leaked pytest tmp_path workspace) is
+    # skipped even though it opens cleanly, so a polluted recents list can't auto-open a scratch
+    # workspace over the empty-start surface. make_ws roots live under tmp_path (== the OS temp dir
+    # here), so this is a real openable workspace that must still be skipped.
+    import logging
+
+    import isar_gui.app as gui_app
+    import isar_gui.session as gui_session
+
+    root = make_ws(rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    monkeypatch.setattr(
+        gui_session, "load_session",
+        lambda *a, **k: gui_session.Session(recent_workspaces=[str(root)]))
+
+    with caplog.at_level(logging.INFO, logger="isar_gui.app"):
+        assert gui_app._resolve_recent_workspace() is None
+    assert any("transient recent" in r.getMessage() for r in caplog.records)
+
+
 def test_resolve_recent_skips_missing_and_stale(tmp_path, make_ws, monkeypatch):
     # A removed recent (gone from disk) AND a stale recent (a dir that is no longer a workspace) are
     # both skipped silently in favor of the next openable one — a stale recent must never error a
     # no-arg launch.
+    import tempfile
+
     import isar_gui.app as gui_app
     import isar_gui.session as gui_session
+
+    # This test exercises the missing/stale skip, not the temp-dir skip; point the perceived temp dir
+    # away from tmp_path so `good` (a synthetic workspace under tmp_path) is treated as a real recent.
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "_not_temp"))
 
     missing = tmp_path / "gone"
     stale = tmp_path / "stale"

@@ -204,7 +204,7 @@ def test_successful_ingest_refreshes_scans_and_keeps_results_fit_only(qtbot, mak
     assert not w.browser_dock._no_results.isHidden()
     assert "No displayable Results yet" in w.browser_dock._no_results.text()
     assert w.scans_dock.isVisible()
-    assert "1 parsed scan(s) awaiting analysis" in w.statusBar().currentMessage()
+    assert "1 analyzer unit(s) awaiting analysis" in w.statusBar().currentMessage()
 
 
 def _legacy_unit(exp, scan, det):
@@ -250,7 +250,14 @@ def test_legacy_fit_never_maps_ambiguous_scan_detector_to_browser_or_active_unit
 
 
 # ---- load_workspace ----------------------------------------------------------
-def test_load_workspace_swaps_tree(qtbot, make_ws):
+def test_load_workspace_swaps_tree(qtbot, make_ws, tmp_path, monkeypatch):
+    import tempfile
+
+    # note_workspace now refuses recents under the OS temp dir (defense against a leaked pytest
+    # tmp_path polluting the real session). These synthetic workspaces live under tmp_path, so point
+    # the perceived temp dir elsewhere to let root2 stand in for a real, recordable workspace.
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "_not_temp"))
+
     ws1, root1 = _open(make_ws, rows=_ROWS[:1])
     w = MainWindow(ws1, session=Session(), watch=False)
     qtbot.addWidget(w)

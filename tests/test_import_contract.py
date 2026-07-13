@@ -41,6 +41,10 @@ WORKSPACE_API_ALLOWED = {
     "isar.analyze.components",
     "isar.geometry",
     "isar.reduce.collate",
+    # config/consent validators the GUI reaches through the facade (config_gates.py): the LLM
+    # endpoint safety check + cloud-fallback default, both Qt-free/scipy-free.
+    "isar.reduce.llm_client",
+    "isar.reduce.adjudicate",
 }
 
 

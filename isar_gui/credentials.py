@@ -14,7 +14,7 @@ import logging
 import sys
 from ctypes import wintypes
 
-from isar.reduce.llm_client import validate_endpoint
+from isar.workspace_api import validate_endpoint
 
 log = logging.getLogger(__name__)
 

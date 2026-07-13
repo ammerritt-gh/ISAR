@@ -143,9 +143,10 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
     pre-Phase-2 workspace without ticking ``dirty``). A unit
     write failure is logged and skipped; it never aborts the batch.
 
-    Mutates ``session`` in place; the caller persists it when ``report.dirty`` is true. A completed
-    ingest always updates additive ``last_ingest`` evidence, even when every scan was already
-    current, so an operator can distinguish a successful no-op from no ingest at all.
+    Mutates ``session`` in place; the caller persists it when ``report.dirty`` is true. Every call
+    returns additive ``last_ingest`` evidence on the report (so an operator can distinguish a
+    successful no-op from no ingest at all), but that evidence is only written onto ``session`` on a
+    changing ingest — an idempotent re-ingest leaves ``session`` byte-identical and ``dirty`` False.
     """
     from isar.reduce import combine, qc
     from isar.session import router, unit_data
@@ -323,9 +324,13 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
         "failed_file_count": len(file_errors),
         "gaps": [list(gap) for gap in report.gaps],
     }
-    session.last_ingest = dict(report.last_ingest)
-    # Persist successful-operation evidence even for an otherwise idempotent ingest.
-    report.dirty = True
+    # ``last_ingest`` is operation evidence carried on the report (--json / GUI parse-preview) for
+    # THIS call regardless. Persist it onto the session only when the ingest actually changed the
+    # ledger: an idempotent re-ingest must stay a true no-op (``dirty`` False, session byte-identical)
+    # so the watched loop never ticks the workspace on unchanged data — see the ``IngestReport.dirty``
+    # contract above and tests/session/test_ingest_batch.py.
+    if report.dirty:
+        session.last_ingest = dict(report.last_ingest)
     return report
 
 

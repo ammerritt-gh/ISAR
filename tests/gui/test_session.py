@@ -59,6 +59,23 @@ def test_note_workspace_dedup_and_order():
     assert s.recent_workspaces.count(str(__import__("pathlib").Path("/ws/a"))) == 1
 
 
+def test_note_workspace_refuses_temp_dir_path(tmp_path, monkeypatch):
+    """A workspace under the system temp dir (e.g. a leaked pytest tmp_path) must not be recorded as
+    a recent: a later no-arg launch would auto-open a dead scratch dir instead of the empty-start
+    surface. tmp_path is itself under the OS temp dir, so use it directly as the transient path."""
+    import tempfile
+
+    # tmp_path lives under gettempdir() on the runner; assert that assumption so the test is honest.
+    assert __import__("pathlib").Path(tmp_path).resolve().is_relative_to(
+        __import__("pathlib").Path(tempfile.gettempdir()).resolve())
+    s = sess.Session()
+    s.note_workspace(tmp_path / "ws1")
+    assert s.recent_workspaces == []
+    # A non-temp path is still recorded normally.
+    s.note_workspace("/persistent/ws")
+    assert len(s.recent_workspaces) == 1
+
+
 def test_session_path_uses_appdata(monkeypatch, tmp_path):
     monkeypatch.setenv("APPDATA", str(tmp_path))
     p = sess.session_path()

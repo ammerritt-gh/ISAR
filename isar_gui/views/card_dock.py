@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from isar.schema.card import PolicyValidation, validate_policy_text
+from isar.workspace_api import PolicyValidation, validate_policy_text
 
 _CARD_NAME = "card.policy.toml"
 

@@ -54,11 +54,28 @@ def _resolve_recent_workspace() -> "Workspace | None":
     Iterates the session recents (``isar_gui.session`` is Qt-free — safe to import here) newest
     first, skipping any that no longer exist on disk or no longer open as a workspace. A stale/
     removed/not-a-workspace recent must never error a no-arg launch, so it is skipped, not raised.
+
+    A recent under the system temp directory is a transient scratch/test workspace (e.g. a pytest
+    ``tmp_path`` bind that leaked into the real session file); auto-opening it on launch buries the
+    empty-start "drop data here" surface behind a dead workspace, so such paths are skipped here as a
+    defense in depth even though :meth:`Session.note_workspace` also refuses to record them.
     """
+    import tempfile
+
     from isar_gui.session import load_session
 
+    tmp_root = Path(tempfile.gettempdir()).resolve()
     for path in load_session().recent_workspaces:
         if not Path(path).is_dir():
+            continue
+        try:
+            if Path(path).resolve().is_relative_to(tmp_root):
+                logging.getLogger(__name__).info(
+                    "skipping transient recent workspace under temp dir: %s", path)
+                continue
+        except OSError:
+            # A path that cannot be resolved (permissions, gone mid-iteration) is treated like any
+            # other unopenable recent: skip it rather than error the launch.
             continue
         try:
             return Workspace.open(path)

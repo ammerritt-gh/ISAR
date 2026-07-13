@@ -540,7 +540,13 @@ def test_temp_workspace_not_added_to_recents(qtbot, tmp_path, monkeypatch):
 
 
 def test_save_as_notes_dest_in_recents(qtbot, tmp_path, monkeypatch):
+    import tempfile
+
     import isar_gui.workspace_manager as wm
+
+    # note_workspace refuses recents under the OS temp dir; the Save-As destination here lives under
+    # tmp_path, so point the perceived temp dir elsewhere to model a real (recordable) saved location.
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "_not_temp"))
 
     temproot = tmp_path / "temp"
     monkeypatch.setattr(wm, "temp_root", lambda: temproot)
@@ -857,6 +863,34 @@ def test_log_dock_persists_across_rebind(qtbot, make_ws):
     # A boundary separator for the new workspace was appended.
     assert f"workspace: {root_b.name}" in text
     assert text.count("workspace:") >= 2   # one at first bind, one after the rebind
+
+
+def test_activity_signal_after_pending_rebind_does_not_touch_dead_card_dock(
+        qtbot, make_ws, tmp_path, monkeypatch):
+    """An operation-activity signal that arrives after a rebind to the pending/empty state must not
+    reach the previous binding's Card dock. (Regression: _teardown_binding deleteLater()'d the docks
+    but left ``self.card_dock`` pointing at the dead C++ widget; the empty rebind returns early from
+    _init_docks without recreating it, so _on_operation_activity_changed called
+    ``card_dock.set_operation_busy`` on a deleted QPlainTextEdit and raised RuntimeError
+    'Internal C++ object already deleted' — surfaced as the modal unexpected-error dialog during a
+    drop-to-ingest.)"""
+    import isar_gui.workspace_manager as wm
+
+    monkeypatch.setattr(wm, "temp_root", lambda: tmp_path / "temp")
+
+    ws, _ = _open(make_ws)
+    w = MainWindow(ws, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    assert w.card_dock is not None                 # ready bind builds the Card dock
+
+    w.new_workspace()                              # rebind to pending: analysis docks are torn down
+    assert w._wsm.state() == "pending"
+    assert w.is_empty
+    assert w.card_dock is None                     # nulled by _teardown_binding, not a dead wrapper
+
+    # The signal that used to crash: an ingest start arriving while bound to the pending state.
+    w._on_operation_activity_changed({"kind": "ingest", "queued": 0, "cancelling": False})
+    w._on_operation_activity_changed({"kind": None, "queued": 0, "cancelling": False})
 
 
 def test_rebind_does_not_duplicate_log_dock_autosave_wiring(qtbot, make_ws):
