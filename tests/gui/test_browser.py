@@ -12,10 +12,12 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import Qt
 
 from isar.workspace_api import Workspace
+from isar_gui.commands import GuiIngestReport
 from isar_gui.main_window import MainWindow
 from isar_gui.session import Session
 from isar_gui.viewmodels.browser import BrowserViewModel
 from isar_gui.views.browser_dock import BrowserDock
+from synthetic_ws import scan_entry, write_session
 
 _MVP16 = Path(r"C:\Users\AMM\Documents\ISAR_baselines\mvp_zone_test16")
 
@@ -98,6 +100,29 @@ def test_dock_selecting_child_fires_vm_signal(qtbot, make_ws):
         tree.setCurrentItem(child)
 
 
+def test_dock_explains_that_parsed_scans_need_analysis(qtbot, make_ws):
+    """An empty Results tree must not look like a failed first ingest.
+
+    Results deliberately remains a fit-only tree; raw ledger scans belong in Scans/Scan Table.
+    """
+    root = make_ws(rows=[])
+    vm = BrowserViewModel(Workspace.open(root))
+    dock = BrowserDock(vm)
+    qtbot.addWidget(dock)
+
+    assert dock._tree.topLevelItemCount() == 0
+    assert not dock._tree.isVisible()
+    assert not dock._no_results.isHidden()
+    assert "No displayable Results yet" in dock._no_results.text()
+    assert "Scans" in dock._no_results.text()
+    assert "Run" in dock._no_results.text()
+
+    # An empty display tree is not proof that the reducer made no records: keep that distinction
+    # explicit when records exist but cannot be represented as browser group rows.
+    vm._ws = SimpleNamespace(results=[object()], scans=[])
+    assert "Analysis records exist" in dock._no_results_text()
+
+
 def test_dock_unreliable_member_shows_suffix_no_numeric_interval(qtbot, make_ws):
     ws, _ = _open(make_ws)
     vm = BrowserViewModel(ws)
@@ -144,6 +169,42 @@ def test_main_window_browser_selection_available(qtbot, make_ws):
     target = ws.results[0]
     with qtbot.waitSignal(w.browser_vm.selection_changed, timeout=1000):
         w.browser_vm.select(target)
+
+
+def test_successful_ingest_refreshes_scans_and_keeps_results_fit_only(qtbot, make_ws):
+    """A new workspace must immediately expose parsed scans even without WatchBridge.
+
+    This exercises the real post-ingest slot after a facade cache was populated while the workspace
+    was empty.  The Results tree remains empty until analysis writes fit results.
+    """
+    root = make_ws(rows=[])
+    ws = Workspace.open(root)
+    w = MainWindow(ws, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    w.show()
+    assert w.scans_vm.rows() == []  # populate the old empty facade cache before the write
+
+    scan_id = "tavi:41:det"
+    write_session(
+        root,
+        scans={scan_id: scan_entry(41, status="ingested")},
+        files={"C:/incoming/scan41.dat": {
+            "format": "measurement", "n_scans": 1, "scan_ids": [scan_id], "n_context": 0,
+        }},
+    )
+    report = GuiIngestReport(
+        files=({"path": "C:/incoming/scan41.dat", "scan_ids": [scan_id]},),
+        added=(scan_id,),
+    )
+
+    w._on_ingest_report(report)
+
+    assert [unit.key for unit in w.scans_vm.rows()] == [scan_id]
+    assert w.browser_dock._tree.topLevelItemCount() == 0
+    assert not w.browser_dock._no_results.isHidden()
+    assert "No displayable Results yet" in w.browser_dock._no_results.text()
+    assert w.scans_dock.isVisible()
+    assert "1 parsed scan(s) awaiting analysis" in w.statusBar().currentMessage()
 
 
 def _legacy_unit(exp, scan, det):

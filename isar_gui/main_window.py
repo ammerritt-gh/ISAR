@@ -588,12 +588,31 @@ class MainWindow(QMainWindow):
     def _on_ingest_report(self, report) -> None:
         """A completed ingest: informational status + log (deduped is a cue, never modal), and a
         transient highlight of the files that produced added/updated scans."""
+        # Do not wait for WatchBridge to notice the just-written snapshot.  In particular a window
+        # constructed with watch=False otherwise keeps its cached empty ledger after a successful
+        # ingest, making the new workspace appear to contain no scans.  The facade is read-only;
+        # refreshing merely drops its cache before the ordinary viewmodel fan-out.
+        if not self._empty:
+            self._ws.refresh()
+            self._on_workspace_changed({"snapshot"})
+
         n_files = len(report.files)
         a, u, d = len(report.added), len(report.updated), len(report.deduped)
         failed = [f for f in report.files if f.get("error")]
         note = f" — {len(failed)} file(s) failed to parse" if failed else ""
-        self.statusBar().showMessage(
-            f"Ingested {n_files} files: +{a} scans, ~{u} updated ({d} duplicates){note}")
+        parsed_waiting = sum(1 for unit in self.scans_vm.rows() if unit.status == "ingested") \
+            if not self._empty else 0
+        if parsed_waiting:
+            self.statusBar().showMessage(
+                f"Ingested {n_files} file(s): {parsed_waiting} parsed scan(s) awaiting analysis "
+                f"; open Scans or choose Run > Run analysis...{note}")
+            # Parsed scans are the next useful operator surface. Results remains fit-only and gives
+            # its own explanation until analysis creates result rows.
+            self.scans_dock.show()
+            self.scans_dock.raise_()
+        else:
+            self.statusBar().showMessage(
+                f"Ingested {n_files} files: +{a} scans, ~{u} updated ({d} duplicates){note}")
         for dedup in report.deduped:
             self.log(f"dedup: {dedup.get('scan')} kept {dedup.get('kept')} "
                      f"(superseded {', '.join(dedup.get('superseded') or [])})")
