@@ -48,6 +48,8 @@ from isar.workspace_api import (
     SCHEMA_VERSION,
     BranchModelView,
     CardView,
+    Workspace,
+    WorkspaceNotFound,
 )
 from isar_gui.log_dock import LogDock
 from isar_gui.session import Autosaver, Session, load_session
@@ -393,6 +395,13 @@ class MainWindow(QMainWindow):
 
         # The card editor (raw TOML, D2) shares the left area with the browser as a tabified sibling.
         self.card_dock = CardDock(self._ws, self)
+        # The card remains editable during a run/ingest, but saving/reloading it must not race the
+        # engine's on-disk policy read.  The dock owns the precise button state.
+        self.card_dock.set_operation_busy(self._operations.is_busy())
+        generation = self._wsm.generation()
+        root = self._wsm.root()
+        self.card_dock.saved.connect(
+            lambda path, g=generation, r=root: self._on_card_saved(path, g, r))
         self.addDockWidget(Qt.LeftDockWidgetArea, self.card_dock)
         self.tabifyDockWidget(self.browser_dock, self.card_dock)
         self._register_dock("Card", self.card_dock)
@@ -537,6 +546,8 @@ class MainWindow(QMainWindow):
         if self._operations.is_busy():
             self.statusBar().showMessage("Workspace is busy — cancel or wait for the current operation")
             return
+        if not self._resolve_dirty_card("start a new workspace"):
+            return
         self._wsm.new_temp()
 
     def save_workspace_as(self) -> bool:
@@ -544,6 +555,8 @@ class MainWindow(QMainWindow):
         whether a save actually happened (dialog cancelled or the copy failing yields ``False``)."""
         if self._operations.is_busy():
             self.statusBar().showMessage("Workspace is busy — Save As is unavailable during analysis or ingest")
+            return False
+        if not self._resolve_dirty_card("save this workspace elsewhere"):
             return False
         if not (self._wsm.state() == "ready" and self._wsm.is_temporary()):
             self.statusBar().showMessage("Save As is only for an unsaved temporary workspace")
@@ -590,6 +603,11 @@ class MainWindow(QMainWindow):
     def _on_ingest_started(self, paths) -> None:
         n = len(paths)
         self.statusBar().showMessage(f"Ingesting {n} path{'s' if n != 1 else ''}…")
+        dock = getattr(self, "card_dock", None)
+        if dock is not None and dock.is_dirty:
+            self.log(
+                "Ingest started while the Card has unsaved edits — parsing uses the on-disk "
+                "card.policy.toml, not the visible draft")
 
     def _on_ingest_report(self, report) -> None:
         """A completed ingest: informational status + log (deduped is a cue, never modal), and a
@@ -804,6 +822,10 @@ class MainWindow(QMainWindow):
         self._launch_run(state["data"], RunOptions(**state["opts"]))
 
     def _launch_run(self, data_paths, opts: RunOptions) -> None:
+        # A run reads the on-disk card.  Do not let a scientist believe their visible draft was
+        # used; Save / Discard / Cancel makes that boundary explicit.
+        if not self._resolve_dirty_card("start analysis"):
+            return
         self._remember_run(data_paths, opts)
         self._operations.request_run(data_paths, opts, env=self._llm_env())
         self._sync_run_actions()
@@ -839,6 +861,9 @@ class MainWindow(QMainWindow):
             verb = "Cancelling" if state["cancelling"] else ("Ingesting" if kind == "ingest" else "Analysing")
             suffix = f" + {queued} queued" if queued else ""
             self._operation_status.setText(f"{verb}{suffix}")
+        dock = getattr(self, "card_dock", None)
+        if dock is not None:
+            dock.set_operation_busy(kind is not None)
         self._sync_run_actions()
         self._sync_workspace_actions()
 
@@ -1047,10 +1072,41 @@ class MainWindow(QMainWindow):
         if self._operations.is_busy():
             self.statusBar().showMessage("Workspace is busy — cancel or wait before opening another workspace")
             return False
+        # Validate before resolving the current draft.  The manager still performs the actual bind,
+        # but a failed candidate must not cause a Save/Discard prompt for the workspace being kept.
+        try:
+            Workspace.open(path)
+        except (WorkspaceNotFound, OSError) as exc:
+            self.statusBar().showMessage(f"Not a workspace: {path}")
+            self.log(f"Not opening {path}: {exc}")
+            return False
+        if not self._resolve_dirty_card("open another workspace"):
+            return False
         if self._wsm.open(path):
             return True
         self.statusBar().showMessage(f"Not a workspace: {path}")
         return False
+
+    def _resolve_dirty_card(self, action: str) -> bool:
+        """Resolve the current card draft before an action changes its meaning or binding."""
+        dock = getattr(self, "card_dock", None)
+        return True if dock is None else dock.resolve_dirty(action)
+
+    def _on_card_saved(self, path: str, generation: int, root: Path | None) -> None:
+        """Refresh card-derived views only for the workspace that produced the save signal."""
+        if generation != self._wsm.generation() or root != self._wsm.root() or self._empty:
+            return
+        if Path(path) != Path(root) / "card.policy.toml":
+            self.log(f"ignored card-save notification for unexpected path: {path}")
+            return
+        self._ws.refresh()
+        self._on_workspace_changed({"card"})
+        if self._ws.results:
+            self.statusBar().showMessage(
+                "Card saved — existing results used the previous policy; re-run analysis to apply it")
+            self.log("Card policy changed after results existed — re-run analysis to apply it")
+        else:
+            self.statusBar().showMessage("Card saved — new analysis will use this policy")
 
     def _teardown_binding(self) -> None:
         """Tear down the current VM/docks/bridge/central-widget so :meth:`_bind_workspace` can build
@@ -1109,10 +1165,17 @@ class MainWindow(QMainWindow):
             self.files_vm.refresh()
             self.scans_vm.refresh()
             self.active_units.retain(self.scans_vm.available_keys())
+        # A saved human policy changes detector/card summaries and can change grouping/display
+        # interpretation.  The facade cache was refreshed by _on_card_saved; rebuild every
+        # card-derived surface from that one coherent policy rather than leaving mixed old/new UI.
+        if changed & {"card"}:
+            self.files_vm.refresh()
+            self.scans_vm.refresh()
+            self.active_units.retain(self.scans_vm.available_keys())
         # "results"/"snapshot" carry the fit data the plots read; "card_state" carries lattice
         # epochs / dispersion prior / branch belief that feed the browser HKL, the dispersion prior
         # curve, and the heatmap overlays — so it must also re-derive the component views.
-        if changed & {"results", "snapshot", "card_state"}:
+        if changed & {"results", "snapshot", "card_state", "card"}:
             self.browser_vm.refresh()
             self.heatmap_vm.refresh()
             self.dispersion_vm.refresh()
@@ -1225,6 +1288,9 @@ class MainWindow(QMainWindow):
             self._close_when_operations_finish = True
             self._operations.cancel()
             self.statusBar().showMessage("Cancelling workspace operation before closing…")
+            event.ignore()
+            return
+        if not self._resolve_dirty_card("close ISAR"):
             event.ignore()
             return
         # A content-bearing temporary workspace is unsaved analysis — prompt before it is lost. If
