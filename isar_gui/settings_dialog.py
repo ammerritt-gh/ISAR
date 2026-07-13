@@ -11,6 +11,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QComboBox,
+    QCheckBox,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -23,14 +24,21 @@ from PySide6.QtWidgets import (
 )
 
 from isar_gui.health import LLM_DEFAULT_ENDPOINT, ping_http
+from isar.reduce.adjudicate import DEFAULT_CLOUD_FALLBACK_MODEL
+from isar.reduce.llm_client import validate_endpoint
 
 _PROFILES = ["llmm", "openai"]
 
 
 class SettingsDialog(QDialog):
-    """Edit the LLM profile/endpoint/model/key and the TAVI launcher path. Exposes :attr:`settings`."""
+    """Edit non-secret backend settings and request a credential-store key change.
 
-    def __init__(self, settings: dict | None = None, parent=None):
+    ``settings`` never contains an API key.  A blank password field means no credential change;
+    the parent owns the native credential operation after the dialog validates its endpoint.
+    """
+
+    def __init__(self, settings: dict | None = None, *, api_key_present: bool = False,
+                 credential_storage_available: bool = True, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Backend Settings")
         self.setMinimumWidth(560)
@@ -54,10 +62,40 @@ class SettingsDialog(QDialog):
         self._model = QLineEdit(s.get("llm_model", ""))
         self._model.setPlaceholderText("card default — or e.g. gpt-oss-120b")
         form.addRow("LLM model:", self._model)
-        self._api_key = QLineEdit(s.get("llm_api_key", ""))
+        self._api_key = QLineEdit()
         self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._api_key.setPlaceholderText("only for openai-compatible endpoints that require a key")
-        form.addRow("API key:", self._api_key)
+        self._api_key.setPlaceholderText("enter a new key to replace the stored key")
+        self._clear_api_key = False
+        self._clear_key = QPushButton("Clear stored key")
+        self._clear_key.clicked.connect(self._request_key_clear)
+        key_row = QWidget()
+        key_layout = QHBoxLayout(key_row)
+        key_layout.setContentsMargins(0, 0, 0, 0)
+        key_layout.addWidget(self._api_key)
+        key_layout.addWidget(self._clear_key)
+        key_state = "stored securely" if api_key_present else "not stored"
+        if not credential_storage_available:
+            key_state = "not persisted (Windows Credential Manager is unavailable)"
+            self._api_key.setEnabled(False)
+            self._clear_key.setEnabled(False)
+        self._key_status = QLabel(key_state)
+        form.addRow("API key:", key_row)
+        form.addRow("Key status:", self._key_status)
+
+        self._cloud_fallback = QCheckBox(
+            "Allow cloud fallback: nanogpt/openai/gpt-oss-120b"
+        )
+        self._cloud_fallback.setChecked(bool(s.get("cloud_fallback_enabled", False)))
+        self._cloud_fallback.setToolTip(
+            "When enabled, adjudication data may leave this computer for the named cloud service."
+        )
+        form.addRow("Cloud fallback:", self._cloud_fallback)
+        cloud_note = QLabel(
+            "Off by default. Enabling this sends adjudication context to "
+            "nanogpt/openai/gpt-oss-120b."
+        )
+        cloud_note.setWordWrap(True)
+        form.addRow("", cloud_note)
 
         tavi_row = QWidget()
         tl = QHBoxLayout(tavi_row)
@@ -99,7 +137,12 @@ class SettingsDialog(QDialog):
             self._tavi_bat.setText(path)
 
     def _test(self) -> None:
-        endpoint = self._endpoint.text().strip() or LLM_DEFAULT_ENDPOINT
+        try:
+            endpoint = validate_endpoint(self._endpoint.text().strip() or LLM_DEFAULT_ENDPOINT)
+        except ValueError as exc:
+            self._test_label.setText(f"✗ {exc}")
+            self._test_label.setStyleSheet("color: #c62828;")
+            return
         self._test_label.setText("testing…")
         h = ping_http(endpoint)
         if h.ok:
@@ -112,12 +155,36 @@ class SettingsDialog(QDialog):
             self._test_label.setText(f"✗ {endpoint} — {h.detail}")
             self._test_label.setStyleSheet("color: #c62828;")
 
+    def _request_key_clear(self) -> None:
+        self._api_key.clear()
+        self._clear_api_key = True
+        self._key_status.setText("will be cleared when settings are saved")
+
+    def accept(self) -> None:
+        try:
+            endpoint = validate_endpoint(self._endpoint.text().strip() or LLM_DEFAULT_ENDPOINT)
+        except ValueError as exc:
+            self._test_label.setText(f"✗ {exc}")
+            self._test_label.setStyleSheet("color: #c62828;")
+            return
+        self._endpoint.setText(endpoint)
+        super().accept()
+
+    @property
+    def api_key_change(self) -> str | None:
+        """A replacement key, ``""`` for Clear, or ``None`` for a blank/no-op field."""
+        replacement = self._api_key.text()
+        if replacement:
+            return replacement
+        return "" if self._clear_api_key else None
+
     @property
     def settings(self) -> dict:
         return {
             "profile": self._profile.currentText(),
             "llm_endpoint": self._endpoint.text().strip(),
             "llm_model": self._model.text().strip(),
-            "llm_api_key": self._api_key.text(),
+            "cloud_fallback_enabled": self._cloud_fallback.isChecked(),
+            "cloud_fallback_model": DEFAULT_CLOUD_FALLBACK_MODEL,
             "tavi_bat": self._tavi_bat.text().strip(),
         }

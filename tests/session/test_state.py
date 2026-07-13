@@ -143,6 +143,20 @@ def test_session_state_roundtrip(tmp_path):
     assert e.provenance["M"] == 200
 
 
+def test_session_last_ingest_is_additive_and_old_ledgers_default_empty(tmp_path):
+    old = {"schema_version": "isar.session/2", "files": {}, "scans": {}, "data_paths": []}
+    path = tmp_path / "old-session.json"
+    path.write_text(json.dumps(old), encoding="utf-8")
+    assert SessionState.load(path).last_ingest == {}
+
+    state = SessionState(last_ingest={
+        "completed_at": "2026-07-13T12:00:00+00:00", "logical_scan_count": 2,
+        "analyzer_unit_count": 18, "failed_file_count": 1, "gaps": [["SYN", 4, 7]],
+    })
+    state.save(path)
+    assert SessionState.load(path).last_ingest["analyzer_unit_count"] == 18
+
+
 def test_session_load_missing_is_empty(tmp_path):
     st = SessionState.load(tmp_path / "nope.json")
     assert st.scans == {}

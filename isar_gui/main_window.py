@@ -31,11 +31,20 @@ from PySide6.QtWidgets import (
 
 from isar_gui.commands import RunOptions, build_run_command
 from isar_gui.active_unit import ActiveUnitController
+from isar_gui.credentials import (
+    CredentialError,
+    api_key_present,
+    delete_api_key,
+    load_api_key,
+    store_api_key,
+    supported as credential_storage_supported,
+)
 from isar_gui.folder_watcher import FolderWatcher
 from isar_gui.gui_store import GuiStore
 from isar_gui.health import HealthProbe, LLM_DEFAULT_ENDPOINT, TAVI_DEFAULT_URL, find_tavi_bat, ping_http
 from isar_gui.operation_coordinator import WorkspaceOperationCoordinator
 from isar_gui.workspace_manager import WorkspaceManager
+from isar.reduce.llm_client import validate_endpoint
 
 
 from isar.workspace_api import (
@@ -213,6 +222,7 @@ class MainWindow(QMainWindow):
         # cannot make Log dominate a first-time screen.
         QTimer.singleShot(0, self._restore_layout)
         QTimer.singleShot(0, self._apply_empty_start_dock_geometry)
+        QTimer.singleShot(0, self._surface_session_security_warnings)
         # Recovery adopts a temporary workspace directly, so there is no ingest-finished signal to
         # promote its raw scans. If it contains parsed rows but no fit results, treat Scans as the
         # next operator surface after the saved layout is restored. Saved workspaces and analyzed
@@ -978,18 +988,61 @@ class MainWindow(QMainWindow):
         self._launch_tavi_action.triggered.connect(self._launch_tavi)
 
     def _settings(self) -> dict:
-        """GUI-owned backend settings (LLM profile/endpoint/model/key + TAVI bat), persisted in the
-        session. Defaults keep LLMM as the default profile — never assumed reachable."""
+        """Return GUI-owned non-secret backend settings.
+
+        API keys live only in Windows Credential Manager; this return value is intentionally safe to
+        hand to dialogs and future session serialization.
+        """
         defaults = {"profile": "llmm", "llm_endpoint": LLM_DEFAULT_ENDPOINT, "llm_model": "",
-                    "llm_api_key": "", "tavi_bat": ""}
-        return {**defaults, **self._session.view_state.get("settings", {})}
+                    "cloud_fallback_enabled": False, "cloud_fallback_model":
+                    "nanogpt/openai/gpt-oss-120b", "tavi_bat": ""}
+        saved = dict(self._session.view_state.get("settings", {}))
+        saved.pop("llm_api_key", None)
+        return {**defaults, **saved}
 
     def _open_settings(self) -> None:
         from isar_gui.settings_dialog import SettingsDialog
 
-        dlg = SettingsDialog(self._settings(), parent=self)
+        current = self._settings()
+        endpoint = current.get("llm_endpoint") or LLM_DEFAULT_ENDPOINT
+        present = False
+        if credential_storage_supported():
+            try:
+                present = api_key_present(endpoint)
+            except (CredentialError, ValueError) as exc:
+                self.log(f"could not check Windows Credential Manager: {exc}")
+        # A failed legacy migration is still usable for this session, but never displayed or copied
+        # into the editor.  The status says a key is present without revealing it.
+        present = present or bool(self._legacy_llm_api_key())
+        dlg = SettingsDialog(current, api_key_present=present,
+                             credential_storage_available=credential_storage_supported(), parent=self)
         if dlg.exec():
-            self._session.view_state["settings"] = dlg.settings
+            new_settings = dlg.settings
+            change = dlg.api_key_change
+            endpoint = new_settings["llm_endpoint"] or LLM_DEFAULT_ENDPOINT
+            if change is not None:
+                try:
+                    if not credential_storage_supported():
+                        raise CredentialError("Windows Credential Manager is unavailable on this platform")
+                    if change:
+                        store_api_key(endpoint, change)
+                    else:
+                        delete_api_key(endpoint)
+                except (CredentialError, ValueError) as exc:
+                    message = f"Backend settings were not saved because the API key could not be updated: {exc}"
+                    self.log(message)
+                    QMessageBox.warning(self, "Could not update API key", message)
+                    return
+            old_settings = self._session.view_state.get("settings", {})
+            legacy_key = old_settings.get("llm_api_key") if isinstance(old_settings, dict) else None
+            # Preserve a failed migration until it is explicitly repaired; otherwise saving a model
+            # field would silently drop the only copy of an operator's key.
+            if (self._session._retain_legacy_llm_key and isinstance(legacy_key, str)
+                    and change is None):
+                new_settings["llm_api_key"] = legacy_key
+            else:
+                self._session._retain_legacy_llm_key = False
+            self._session.view_state["settings"] = new_settings
             self._autosave()
             self.log("Backend settings updated")
             self._refresh_health()
@@ -1001,13 +1054,52 @@ class MainWindow(QMainWindow):
         env = {}
         if s.get("profile"):
             env["ISAR_LLM_PROFILE"] = s["profile"]
-        if s.get("llm_endpoint"):
-            env["ISAR_LLM_ENDPOINT"] = s["llm_endpoint"]
+        endpoint = s.get("llm_endpoint")
+        if endpoint:
+            try:
+                env["ISAR_LLM_ENDPOINT"] = validate_endpoint(endpoint)
+            except ValueError as exc:
+                self.log(f"LLM endpoint is invalid and was not passed to analysis: {exc}")
         if s.get("llm_model"):
             env["ISAR_LLM_MODEL"] = s["llm_model"]
-        if s.get("llm_api_key"):
-            env["ISAR_LLM_API_KEY"] = s["llm_api_key"]
+        key = self._credential_llm_api_key(endpoint or LLM_DEFAULT_ENDPOINT)
+        if key:
+            env["ISAR_LLM_API_KEY"] = key
+        # Presence-sensitive in the engine: an explicit empty value means a card fallback may not
+        # override this GUI choice.  Cloud use remains opt-in and visibly named in Settings.
+        if s.get("cloud_fallback_enabled"):
+            env["ISAR_LLM_FALLBACK_MODEL"] = s.get("cloud_fallback_model") or \
+                "nanogpt/openai/gpt-oss-120b"
+        else:
+            env["ISAR_LLM_FALLBACK_MODEL"] = ""
         return env
+
+    def _legacy_llm_api_key(self) -> str | None:
+        """Return a retained failed-migration key only inside this process, never to a view."""
+        settings = self._session.view_state.get("settings")
+        key = settings.get("llm_api_key") if isinstance(settings, dict) else None
+        return key if self._session._retain_legacy_llm_key and isinstance(key, str) and key else None
+
+    def _credential_llm_api_key(self, endpoint: str) -> str | None:
+        if credential_storage_supported():
+            try:
+                stored = load_api_key(endpoint)
+            except (CredentialError, ValueError) as exc:
+                self.log(f"could not read Windows Credential Manager for LLM API key: {exc}")
+            else:
+                if stored:
+                    return stored
+        return self._legacy_llm_api_key()
+
+    def _surface_session_security_warnings(self) -> None:
+        """Make failed plaintext-key migration visible on screen as well as in the durable log."""
+        warnings = list(getattr(self._session, "migration_warnings", []))
+        if not warnings:
+            return
+        message = "\n\n".join(warnings)
+        self.log(f"SECURITY WARNING: {message}")
+        self.statusBar().showMessage("LLM credential migration needs attention — see the warning dialog")
+        QMessageBox.warning(self, "LLM credential migration needs attention", message)
 
     def _launch_tavi(self) -> bool:
         """Start TAVI's own ``run-tavi-dev.bat`` detached (ISAR does not own TAVI's lifecycle, D1).

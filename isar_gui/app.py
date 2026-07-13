@@ -19,9 +19,33 @@ from __future__ import annotations
 
 import os
 import sys
+import logging
 from pathlib import Path
 
 from isar.workspace_api import Workspace, WorkspaceNotFound
+from isar_gui.logging_setup import configure_gui_logging
+
+
+def _install_exception_hook(log_path) -> None:
+    """Log uncaught GUI exceptions and give the operator a durable-path prompt on screen."""
+    previous = sys.excepthook
+
+    def _hook(exc_type, exc, traceback):
+        logging.getLogger(__name__).critical(
+            "uncaught GUI exception", exc_info=(exc_type, exc, traceback))
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            location = str(log_path) if log_path is not None else "the Log dock and stderr"
+            QMessageBox.critical(
+                None, "ISAR encountered an unexpected error",
+                "ISAR encountered an unexpected error. The details were recorded in " + location
+                + ". You can also open the GUI log folder from Help.")
+        except Exception as dialog_exc:  # noqa: BLE001 — preserve the original exception path
+            logging.getLogger(__name__).error(
+                "could not show uncaught-error dialog: %s", dialog_exc)
+        previous(exc_type, exc, traceback)
+
+    sys.excepthook = _hook
 
 
 def _resolve_recent_workspace() -> "Workspace | None":
@@ -95,12 +119,17 @@ def main(argv=None) -> int:
             print(f"isar view: cannot open workspace {ws_path!r}: {exc}", file=sys.stderr)
             return 2
 
+    # Configure durable logging before opening any Qt surface. A fatal construction error therefore
+    # still has an operator-readable trace rather than only a vanished GUI process.
+    log_path = configure_gui_logging()
+
     # Import Qt only now — never at module import time, so `import isar_gui` stays QApplication-free.
     from PySide6.QtWidgets import QApplication
 
     from isar_gui.main_window import MainWindow
 
     app = QApplication.instance() or QApplication(argv)
+    _install_exception_hook(log_path)
 
     if not explicit:
         # No path given: unfinished temporary work takes precedence over the generic recents list.
@@ -108,6 +137,9 @@ def main(argv=None) -> int:
         ws = _resolve_default_workspace()
 
     window = MainWindow(ws)  # ws may be None -> empty-start
+    if log_path is not None:
+        window.log(f"GUI log: {log_path} (Help ▸ Open GUI Log Folder)")
+        window.statusBar().showMessage("GUI log ready — Help ▸ Open GUI Log Folder")
     window.show()
 
     smoke_ms = os.environ.get("ISAR_GUI_SMOKE_MS")

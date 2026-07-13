@@ -33,15 +33,21 @@ def test_llm_env_only_exports_set_fields(qtbot, make_ws):
     assert env["ISAR_LLM_PROFILE"] == "llmm"
     assert "ISAR_LLM_ENDPOINT" in env
     assert "ISAR_LLM_MODEL" not in env and "ISAR_LLM_API_KEY" not in env
+    assert env["ISAR_LLM_FALLBACK_MODEL"] == ""
 
 
-def test_llm_env_openai_profile(qtbot, make_ws):
+def test_llm_env_reads_credential_just_in_time(qtbot, make_ws, monkeypatch):
+    import isar_gui.main_window as mw
+
     w = _win(qtbot, make_ws)
-    w._session.view_state["settings"] = {"profile": "openai", "llm_endpoint": "http://h/v1",
-                                         "llm_model": "gpt-oss", "llm_api_key": "sk-1"}
+    w._session.view_state["settings"] = {"profile": "openai", "llm_endpoint": "https://example.test/v1",
+                                         "llm_model": "gpt-oss", "cloud_fallback_enabled": True}
+    monkeypatch.setattr(mw, "credential_storage_supported", lambda: True)
+    monkeypatch.setattr(mw, "load_api_key", lambda endpoint: "sk-1")
     env = w._llm_env()
-    assert env == {"ISAR_LLM_PROFILE": "openai", "ISAR_LLM_ENDPOINT": "http://h/v1",
-                   "ISAR_LLM_MODEL": "gpt-oss", "ISAR_LLM_API_KEY": "sk-1"}
+    assert env == {"ISAR_LLM_PROFILE": "openai", "ISAR_LLM_ENDPOINT": "https://example.test/v1",
+                   "ISAR_LLM_MODEL": "gpt-oss", "ISAR_LLM_API_KEY": "sk-1",
+                   "ISAR_LLM_FALLBACK_MODEL": "nanogpt/openai/gpt-oss-120b"}
 
 
 def test_launch_tavi_missing_sets_status(qtbot, make_ws, monkeypatch):
