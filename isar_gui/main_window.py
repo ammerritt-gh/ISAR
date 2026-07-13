@@ -548,6 +548,8 @@ class MainWindow(QMainWindow):
             return
         if not self._resolve_dirty_card("start a new workspace"):
             return
+        if not self._resolve_temporary_workspace("start a new workspace"):
+            return
         self._wsm.new_temp()
 
     def save_workspace_as(self) -> bool:
@@ -1082,6 +1084,14 @@ class MainWindow(QMainWindow):
             return False
         if not self._resolve_dirty_card("open another workspace"):
             return False
+        if self._wsm.root() is not None:
+            try:
+                if Path(path).resolve() == self._wsm.root().resolve():
+                    return True
+            except OSError as exc:
+                self.log(f"could not compare current workspace to {path}: {exc}")
+        if not self._resolve_temporary_workspace("open another workspace"):
+            return False
         if self._wsm.open(path):
             return True
         self.statusBar().showMessage(f"Not a workspace: {path}")
@@ -1091,6 +1101,54 @@ class MainWindow(QMainWindow):
         """Resolve the current card draft before an action changes its meaning or binding."""
         dock = getattr(self, "card_dock", None)
         return True if dock is None else dock.resolve_dirty(action)
+
+    def _resolve_temporary_workspace(self, action: str) -> bool:
+        """Resolve temporary work before leaving it, without silently losing analysis.
+
+        Content-bearing temporary work has four deliberate outcomes: Save As, leave it available
+        for startup recovery, discard it, or cancel the transition.  Empty pending reservations are
+        not analysis; remove them on the way out so cancelled setup does not accumulate directories.
+        """
+        if not self._wsm.is_temporary():
+            return True
+        if not self._wsm.has_content():
+            if self._wsm.discard_empty_temp():
+                return True
+            self.statusBar().showMessage("Could not clean up the empty temporary workspace")
+            self.log("Could not clean up empty temporary workspace before " + action)
+            return False
+
+        root = self._wsm.root()
+        label = root.name if root is not None else "temporary workspace"
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Temporary workspace has unsaved analysis")
+        box.setText(f"{label} has not been saved.")
+        box.setInformativeText(
+            f"Before you {action}, save it, keep it for recovery at the next launch, or discard "
+            "only the temporary analysis. Source data files are never removed.")
+        save_btn = box.addButton("Save As…", QMessageBox.ButtonRole.AcceptRole)
+        keep_btn = box.addButton("Keep for Recovery", QMessageBox.ButtonRole.ActionRole)
+        discard_btn = box.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(save_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is cancel_btn:
+            return False
+        if clicked is keep_btn:
+            self.log(f"Keeping temporary workspace for recovery: {root}")
+            return True
+        if clicked is discard_btn:
+            before = self._wsm.root()
+            self._wsm.discard_temp()
+            if before is not None and not before.exists():
+                return True
+            self.statusBar().showMessage("Could not discard the temporary workspace")
+            self.log(f"Could not discard temporary workspace: {before}")
+            return False
+        # Save As…: a cancelled/failed save must not silently drop the workspace — back out.
+        return self.save_workspace_as()
 
     def _on_card_saved(self, path: str, generation: int, root: Path | None) -> None:
         """Refresh card-derived views only for the workspace that produced the save signal."""
@@ -1312,27 +1370,5 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _resolve_unsaved_temp_on_close(self) -> bool:
-        """Prompt Save As… / Discard / Cancel for an unsaved temporary workspace. Returns whether the
-        window may proceed to close (``False`` = the operator cancelled)."""
-        if not (self._wsm.is_temporary() and self._wsm.has_content()):
-            return True
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("Unsaved workspace")
-        box.setText("This workspace is temporary and has not been saved.")
-        box.setInformativeText(
-            "Save it to a folder, or discard it? Discarding removes only the analysis in the "
-            "temporary workspace — your source data files on disk are untouched.")
-        save_btn = box.addButton("Save As…", QMessageBox.ButtonRole.AcceptRole)
-        discard_btn = box.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
-        cancel_btn = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(save_btn)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is cancel_btn:
-            return False
-        if clicked is discard_btn:
-            self._wsm.discard_temp()
-            return True
-        # Save As…: a cancelled/failed save must not silently drop the workspace — back out.
-        return self.save_workspace_as()
+        """Resolve temporary analysis before close; kept work remains a recovery candidate."""
+        return self._resolve_temporary_workspace("close ISAR")

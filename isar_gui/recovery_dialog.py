@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
 )
@@ -85,6 +86,16 @@ class RecoveryDialog(QDialog):
         item = self._list.currentItem()
         path = self._selected_path()
         if item is None or path is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Discard temporary workspace?",
+            f"Discard temporary workspace '{path.name}'?\n\n"
+            "This removes only ISAR's temporary analysis, not the original source data files.",
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Discard:
             return
         if not discard_dir(path):         # temp-only guard lives in the manager helper
             # Removal failed (permission / in use) — keep the row and mark it, never drop an entry

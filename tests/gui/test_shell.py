@@ -444,6 +444,81 @@ def test_close_does_not_prompt_for_saved_workspace(qtbot, tmp_path, monkeypatch,
     assert counter["count"] == 0                        # a saved workspace closes without a prompt
 
 
+def test_open_valid_workspace_can_keep_temporary_work_for_recovery(
+        qtbot, tmp_path, monkeypatch, make_ws):
+    """Keeping is a real fourth choice: opening another workspace leaves recoverable temp work."""
+    import isar_gui.workspace_manager as wm
+
+    temproot = tmp_path / "temp"
+    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
+    temp = _stamp_temp_ws(temproot)
+    target = make_ws(rows=[])
+    w = MainWindow(None, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    assert w.load_workspace(temp)
+
+    counter = _install_fake_msgbox(monkeypatch, choice="Keep for Recovery")
+    assert w.load_workspace(target)
+    assert counter["count"] == 1
+    assert w._wsm.root() == target
+    assert temp.exists()                                 # left for the startup recovery dialog
+
+
+def test_invalid_open_does_not_prompt_or_discard_temporary_work(qtbot, tmp_path, monkeypatch):
+    """Candidate validation happens before asking the operator what to do with current analysis."""
+    import isar_gui.workspace_manager as wm
+
+    temproot = tmp_path / "temp"
+    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
+    temp = _stamp_temp_ws(temproot)
+    w = MainWindow(None, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    assert w.load_workspace(temp)
+
+    counter = _install_fake_msgbox(monkeypatch, choice="Discard")
+    assert not w.load_workspace(tmp_path / "not-a-workspace")
+    assert counter["count"] == 0
+    assert temp.exists() and w._wsm.root() == temp
+    monkeypatch.setattr(w, "_resolve_unsaved_temp_on_close", lambda: True)
+
+
+def test_new_resolves_temporary_work_and_cleans_empty_reservation(qtbot, tmp_path, monkeypatch):
+    import isar_gui.workspace_manager as wm
+
+    temproot = tmp_path / "temp"
+    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
+    w = MainWindow(None, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    w.new_workspace()
+    first = w._wsm.root()
+    assert first is not None and first.exists()
+
+    # A second New leaves no dead pending directory behind.
+    w.new_workspace()
+    second = w._wsm.root()
+    assert second is not None and second.exists()
+    # The allocator may reuse the same timestamped name after the empty reservation was removed;
+    # either way exactly one pending directory remains.
+    assert list(temproot.iterdir()) == [second]
+
+
+def test_new_cancel_keeps_current_temporary_analysis(qtbot, tmp_path, monkeypatch):
+    import isar_gui.workspace_manager as wm
+
+    temproot = tmp_path / "temp"
+    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
+    temp = _stamp_temp_ws(temproot)
+    w = MainWindow(None, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    assert w.load_workspace(temp)
+    counter = _install_fake_msgbox(monkeypatch, choice="Cancel")
+
+    w.new_workspace()
+    assert counter["count"] == 1
+    assert w._wsm.root() == temp and temp.exists()
+    monkeypatch.setattr(w, "_resolve_unsaved_temp_on_close", lambda: True)
+
+
 def test_temp_workspace_not_added_to_recents(qtbot, tmp_path, monkeypatch):
     import isar_gui.workspace_manager as wm
 

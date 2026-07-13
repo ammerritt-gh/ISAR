@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -125,6 +126,23 @@ def discard_dir(root) -> bool:
     except OSError as exc:
         log.warning("could not discard temp workspace %s: %s", root, exc)
         return False
+
+
+def _unique_stage_path(destination: Path) -> Path:
+    """Return a non-existent sibling staging path for a Save As operation."""
+    # A sibling is deliberate: ``os.replace`` is atomic only within one filesystem.  The random
+    # suffix also means a stale staging directory can never be mistaken for this operation's work.
+    return destination.parent / f".{destination.name}.isar-saving-{uuid.uuid4().hex}"
+
+
+def _clean_stage(stage: Path) -> None:
+    """Best-effort cleanup of a staging directory created by :meth:`save_as`."""
+    if not stage.exists():
+        return
+    try:
+        shutil.rmtree(stage)
+    except OSError as exc:
+        log.warning("could not clean Save As staging directory %s: %s", stage, exc)
 
 
 # ---- the QObject lifecycle owner --------------------------------------------
@@ -234,39 +252,107 @@ class WorkspaceManager(QObject):
 
     # ---- save / discard ---------------------------------------------------
     def save_as(self, dest) -> bool:
-        """Copy the current (temporary) workspace tree to ``dest`` and open it there; the temp dir is
-        then discarded. ``dest`` must not exist or must be empty. Returns success.
+        """Transactionally save the current temporary workspace at ``dest``.
 
-        On any failure (dest non-empty, copy error, or the copied tree not opening) the temp
-        workspace is left untouched so nothing is lost, and ``False`` is returned.
+        The source is copied into a unique sibling staging directory, validated as a workspace,
+        then atomically promoted into an absent/empty destination.  The original temporary work is
+        discarded *only after* the promoted destination has opened.  Thus an interrupted copy,
+        collision, validation failure, or open failure always leaves the source recoverable.
         """
         self._last_error = None
         if self._root is None:
             self._last_error = "no workspace to save"
             log.warning("save_as with no workspace bound")
             return False
+        if not self.is_temporary():
+            self._last_error = "Save As is only available for a temporary workspace"
+            log.warning("save_as refused for saved workspace %s", self._root)
+            return False
+        source = self._root.resolve()
         dest = Path(dest)
-        if dest.exists() and any(dest.iterdir()):
-            self._last_error = f"destination is not empty: {dest}"
-            log.warning("save_as refused — destination exists and is not empty: %s", dest)
-            return False
-        source = self._root
-        # The emptiness pre-check above is advisory, not atomic; the copy is the real gate. Any IO
-        # error (a dest that filled between the check and now, a permission fault) surfaces here as
-        # the failure reason rather than being masked.
         try:
-            shutil.copytree(source, dest, dirs_exist_ok=True)
+            resolved_dest = dest.resolve()
         except OSError as exc:
-            self._last_error = f"copy to {dest} failed: {exc}"
-            log.warning("save_as copy %s -> %s failed: %s", source, dest, exc)
+            self._last_error = f"cannot resolve destination {dest}: {exc}"
+            log.warning("save_as could not resolve destination %s: %s", dest, exc)
             return False
-        if not self.open(dest):
-            # open() sets its own _last_error; keep it as the surfaced reason.
-            log.warning("save_as copied to %s but the tree did not open as a workspace", dest)
+        if resolved_dest == source or is_under(resolved_dest, source):
+            self._last_error = "destination must not be this temporary workspace or a folder inside it"
+            log.warning("save_as refused nested destination %s for source %s", dest, source)
             return False
-        # The copy is now the live workspace; drop the throwaway source.
+        if is_under(resolved_dest, temp_root()):
+            self._last_error = "destination must be outside the temporary-workspace recovery folder"
+            log.warning("save_as refused temporary destination %s", dest)
+            return False
+        parent = resolved_dest.parent
+        if not parent.is_dir():
+            self._last_error = f"destination parent does not exist: {parent}"
+            log.warning("save_as refused destination with missing parent %s", parent)
+            return False
+        try:
+            if resolved_dest.exists() and (not resolved_dest.is_dir() or any(resolved_dest.iterdir())):
+                self._last_error = f"destination is not empty: {resolved_dest}"
+                log.warning("save_as refused — destination exists and is not empty: %s", resolved_dest)
+                return False
+        except OSError as exc:
+            self._last_error = f"cannot inspect destination {resolved_dest}: {exc}"
+            log.warning("save_as could not inspect destination %s: %s", resolved_dest, exc)
+            return False
+
+        stage = _unique_stage_path(resolved_dest)
+        try:
+            shutil.copytree(source, stage)
+        except OSError as exc:
+            _clean_stage(stage)
+            self._last_error = f"copy to {resolved_dest} failed: {exc}"
+            log.warning("save_as copy %s -> %s failed: %s", source, stage, exc)
+            return False
+
+        # Validate without rebinding.  A partial/corrupt copy must not become the live workspace.
+        try:
+            Workspace.open(stage)
+        except (WorkspaceNotFound, OSError) as exc:
+            _clean_stage(stage)
+            self._last_error = f"saved copy is not a workspace: {exc}"
+            log.warning("save_as staged copy %s did not open: %s", stage, exc)
+            return False
+
+        # Recheck immediately before promotion.  The initial check was advisory: a different
+        # process may have created or populated the destination while this copy was running.
+        try:
+            if resolved_dest.exists():
+                if not resolved_dest.is_dir() or any(resolved_dest.iterdir()):
+                    self._last_error = f"destination changed and is not empty: {resolved_dest}"
+                    log.warning("save_as promotion refused changed destination %s", resolved_dest)
+                    _clean_stage(stage)
+                    return False
+                resolved_dest.rmdir()
+            os.replace(stage, resolved_dest)
+        except OSError as exc:
+            _clean_stage(stage)
+            self._last_error = f"could not promote saved workspace to {resolved_dest}: {exc}"
+            log.warning("save_as promotion %s -> %s failed: %s", stage, resolved_dest, exc)
+            return False
+
+        if not self.open(resolved_dest):
+            # The promoted destination is retained for manual recovery; the temporary source stays
+            # bound and untouched because losing either would turn an open failure into data loss.
+            log.warning("save_as promoted %s but it did not open; source %s retained", resolved_dest, source)
+            return False
         discard_dir(source)
         return True
+
+    def discard_empty_temp(self) -> bool:
+        """Discard a bound *empty* temporary reservation before a lifecycle transition.
+
+        Empty pending reservations are implementation scaffolding, not recoverable analysis.  This
+        avoids accumulating one dead directory for every cancelled New/Open sequence.
+        """
+        if not self.is_temporary() or self.has_content():
+            return False
+        before = self._root
+        self.discard_temp()
+        return before is not None and not before.exists()
 
     def discard_temp(self) -> None:
         """Discard the temporary workspace directory (rmtree), ONLY when it is under

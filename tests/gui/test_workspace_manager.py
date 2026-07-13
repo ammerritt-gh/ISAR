@@ -6,6 +6,8 @@ touches the real per-user recovery root. Offscreen platform is forced by tests/g
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("PySide6")
@@ -229,3 +231,100 @@ def test_save_as_records_failure_reason(qtbot, temproot, tmp_path):
     (dest / "x.txt").write_text("busy", encoding="utf-8")
     assert m.save_as(dest) is False
     assert "not empty" in (m.last_error() or "")
+
+
+def test_save_as_refuses_source_descendant_and_recovery_root(qtbot, temproot, tmp_path):
+    root = _temp_ws(temproot, name="ws-nested",
+                    rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    m = WorkspaceManager()
+    assert m.open(root)
+
+    assert not m.save_as(root)
+    assert "must not" in (m.last_error() or "")
+    assert not m.save_as(root / "saved-inside-source")
+    assert "must not" in (m.last_error() or "")
+    assert not m.save_as(temproot / "another-recovery-workspace")
+    assert "temporary-workspace" in (m.last_error() or "")
+    assert root.exists() and m.root() == root
+
+
+def test_save_as_copy_failure_keeps_source_and_cleans_stage(qtbot, temproot, tmp_path, monkeypatch):
+    root = _temp_ws(temproot, name="ws-copy-failure",
+                    rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    m = WorkspaceManager()
+    assert m.open(root)
+    dest = tmp_path / "kept"
+
+    def fail_copy(source, stage):
+        Path(stage).mkdir()
+        raise OSError("copy boom")
+
+    monkeypatch.setattr(wm.shutil, "copytree", fail_copy)
+    assert not m.save_as(dest)
+    assert root.exists() and m.root() == root
+    assert not dest.exists()
+    assert not list(tmp_path.glob(".kept.isar-saving-*"))
+
+
+def test_save_as_validation_failure_keeps_source_and_cleans_stage(qtbot, temproot, tmp_path, monkeypatch):
+    root = _temp_ws(temproot, name="ws-invalid-stage",
+                    rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    m = WorkspaceManager()
+    assert m.open(root)
+    dest = tmp_path / "kept"
+
+    def fail_open(path):
+        raise OSError("cannot validate staged workspace")
+
+    monkeypatch.setattr(wm.Workspace, "open", staticmethod(fail_open))
+    assert not m.save_as(dest)
+    assert root.exists() and m.root() == root
+    assert not dest.exists()
+    assert not list(tmp_path.glob(".kept.isar-saving-*"))
+
+
+def test_save_as_promotion_failure_keeps_source_and_cleans_stage(qtbot, temproot, tmp_path, monkeypatch):
+    root = _temp_ws(temproot, name="ws-promote-failure",
+                    rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    m = WorkspaceManager()
+    assert m.open(root)
+    dest = tmp_path / "kept"
+
+    def fail_replace(source, target):
+        raise OSError("rename boom")
+
+    monkeypatch.setattr(wm.os, "replace", fail_replace)
+    assert not m.save_as(dest)
+    assert root.exists() and m.root() == root
+    assert not dest.exists()
+    assert not list(tmp_path.glob(".kept.isar-saving-*"))
+
+
+def test_save_as_final_open_failure_retains_source_and_promoted_copy(
+        qtbot, temproot, tmp_path, monkeypatch):
+    root = _temp_ws(temproot, name="ws-final-open-failure",
+                    rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    m = WorkspaceManager()
+    assert m.open(root)
+    dest = tmp_path / "kept"
+    real_open = wm.Workspace.open
+
+    def fail_only_final_open(path):
+        if Path(path).resolve() == dest.resolve():
+            raise OSError("cannot bind promoted workspace")
+        return real_open(path)
+
+    monkeypatch.setattr(wm.Workspace, "open", staticmethod(fail_only_final_open))
+    assert not m.save_as(dest)
+    assert root.exists() and m.root() == root
+    assert dest.exists()                              # never delete the promoted copy on uncertainty
+    assert not list(tmp_path.glob(".kept.isar-saving-*"))
+
+
+def test_discard_empty_temp_removes_pending_reservation(qtbot, temproot):
+    m = WorkspaceManager()
+    root = m.new_temp()
+    assert root.exists() and not m.has_content()
+    assert m.discard_empty_temp()
+    assert not root.exists()
+    assert m.state() == "none"
