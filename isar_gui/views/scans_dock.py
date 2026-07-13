@@ -434,31 +434,75 @@ class _GroupBox(QFrame):
                 self._vm.request_inspect(key)
 
     def _on_chip_context(self, key: str, global_pos) -> None:
+        # Each action carries a stable string id in its data() so the dispatch (:meth:`_apply_chip_
+        # action`) is decoupled from menu identity — that dispatch is what the tests exercise, since
+        # QMenu.exec is a real modal that can't be safely driven in the offscreen suite.
         menu = QMenu(self)
-        remove_act = menu.addAction("Remove from this group") if self._manual else None
-        _sib_num = None
-        for c in self._chips:
-            if c.key == key:
-                _sib_num = c._scan_number
-                break
+        if self._manual:
+            menu.addAction("Remove from this group").setData("remove")
+        _sib_num = next((c._scan_number for c in self._chips if c.key == key), None)
         sib_label = "Select siblings" if _sib_num is None else f"Select siblings (scan {_sib_num})"
-        siblings_act = menu.addAction(sib_label)
-        select_act = menu.addAction("Select in table")
-        copy_act = menu.addAction("Copy scan id")
+        menu.addAction(sib_label).setData("siblings")
+        menu.addAction("Select in table").setData("select")
+        menu.addAction("Copy scan id").setData("copy")
+        menu.addSeparator()
+        menu.addAction("New group from selection…").setData("new_group")
         chosen = menu.exec(global_pos)
-        if chosen is None:
-            return
-        if chosen is remove_act:
+        self._apply_chip_action(chosen.data() if chosen is not None else None, key)
+
+    def _apply_chip_action(self, action, key: str) -> None:
+        """Dispatch a chip context-menu action id for ``key`` (the tested seam; see :meth:`_on_chip_context`)."""
+        if action == "remove":
             keys = set(self._vm.selected_keys())
             targets = keys if key in keys else {key}
             self._vm.remove_from_group(self._id, targets)
-        elif chosen is siblings_act:
+        elif action == "new_group":
+            self._new_group_from(key)
+        elif action == "siblings":
             self._vm.select_siblings(key, clear=True)
-        elif chosen is select_act:
+        elif action == "select":
             self._vm.select_keys([key], clear=True)
-        elif chosen is copy_act:
+        elif action == "copy":
             from PySide6.QtWidgets import QApplication
             QApplication.clipboard().setText(key)
+
+    def _new_group_from(self, key: str) -> None:
+        """Create a manual group from the current selection (or this chip), name pre-suggested.
+
+        The dialog is pre-filled from :meth:`ScansViewModel.suggest_group_name`; tests MOCK
+        ``QInputDialog.getText`` (a live modal would hang the offscreen suite)."""
+        selected = set(self._vm.selected_keys())
+        keys = sorted(selected) if key in selected else [key]
+        suggested = self._vm.suggest_group_name(keys)
+        name, ok = QInputDialog.getText(self, "New group from selection", "Group name:",
+                                        text=suggested)
+        if ok and name.strip():
+            self._vm.create_group_from(name.strip(), keys)
+
+    # ---- header context menu (freeze auto / rename+delete manual) ----
+    def contextMenuEvent(self, event):  # noqa: N802
+        """Right-click on the header: an auto box offers "Make this a manual group" (freeze); a
+        manual box offers Rename/Delete parity with the double-click / ✕ affordances. all/ungrouped
+        boxes have no header menu. Chip right-clicks are consumed by the chip, not here."""
+        menu = QMenu(self)
+        if self._kind == "auto":
+            menu.addAction("Make this a manual group").setData("freeze")
+        elif self._manual:
+            menu.addAction("Rename group…").setData("rename")
+            menu.addAction("Delete group").setData("delete")
+        else:
+            return
+        chosen = menu.exec(event.globalPos())
+        self._apply_header_action(chosen.data() if chosen is not None else None)
+
+    def _apply_header_action(self, action) -> None:
+        """Dispatch a header context-menu action id (the tested seam; see :meth:`contextMenuEvent`)."""
+        if action == "freeze":
+            self._vm.freeze_auto_group(self._id)
+        elif action == "rename":
+            self._on_rename(None)
+        elif action == "delete":
+            self._on_delete()
 
     # ---- drop target (manual only) ----
     def dragEnterEvent(self, event):  # noqa: N802
@@ -489,7 +533,10 @@ class _GroupBox(QFrame):
 
     # ---- header drag source (group drags as a unit; auto + manual only) ----
     def mousePressEvent(self, event):  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton and self._draggable:
+        # Record the press for BOTH the drag source (draggable boxes) and the header-click select
+        # (any box with chips). mouseMoveEvent clears it once a real drag begins, so the release
+        # path can tell "plain click" from "the press became a drag".
+        if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = event.pos()
         super().mousePressEvent(event)
 
@@ -510,8 +557,19 @@ class _GroupBox(QFrame):
         drag.exec(Qt.DropAction.CopyAction)
 
     def mouseReleaseEvent(self, event):  # noqa: N802
+        # A left press that never became a drag is a header click: select all member chips
+        # (iPhone-folder manipulation). Ctrl extends the current selection; plain replaces it.
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_start is not None:
+            self._select_members(event.modifiers())
         self._drag_start = None
         super().mouseReleaseEvent(event)
+
+    def _select_members(self, modifiers) -> None:
+        keys = [c.key for c in self._chips]
+        if not keys:
+            return
+        ctrl = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+        self._vm.select_keys(keys, clear=not ctrl)
 
 
 def _q_compact(hkl) -> str:
@@ -519,7 +577,8 @@ def _q_compact(hkl) -> str:
         return "—"
     try:
         return "[" + " ".join(f"{float(v):.2g}" for v in hkl) + "]"
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        log.debug("_q_compact: non-numeric hkl %r (%s)", hkl, exc)
         return "—"
 
 
@@ -642,6 +701,13 @@ class ScansDock(QDockWidget):
             self._populate(name, box, rows)
             self._add_box(name, layout, box)
         elif name == _TAB_MANUAL:
+            # A persistent hint (not only when empty) keeps grouping discoverable — the operator's
+            # first-session complaint was "no way to make a group" (user issue 2).
+            hint = QLabel("Create a group (toolbar or right-click a scan), then drag scans in.",
+                          self._pages[name].widget())
+            hint.setObjectName("manualHint")
+            hint.setStyleSheet("color: #999; font-style: italic; padding: 6px;")
+            layout.addWidget(hint)
             manual = self._vm.manual_groups()
             ungrouped = _GroupBox("ungrouped", "Ungrouped", self._vm, kind="ungrouped")
             self._populate(name, ungrouped,
@@ -653,10 +719,6 @@ class ScansDock(QDockWidget):
                     box = _GroupBox(g.id, g.name or "(unnamed)", self._vm, kind="manual")
                     self._populate(name, box, self._vm.units_in_group(g))
                     self._add_box(name, layout, box)
-            else:
-                hint = QLabel("Create a group, then drag scans in.", self._pages[name].widget())
-                hint.setStyleSheet("color: #999; font-style: italic; padding: 6px;")
-                layout.addWidget(hint)
         else:
             groups = self._vm.auto_groups(dim)
             for ag in groups:

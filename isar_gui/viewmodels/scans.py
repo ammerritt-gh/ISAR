@@ -82,7 +82,8 @@ def _fmt_q(hkl) -> str:
         return ""
     try:
         return "[" + ", ".join(f"{float(v):.3g}" for v in hkl) + "]"
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        log.debug("_fmt_q: non-numeric hkl %r (%s)", hkl, exc)
         return ""
 
 
@@ -95,7 +96,8 @@ def sibling_hue(scan_number) -> QColor:
     not an alarm. Non-numeric/absent scan numbers fold to a neutral grey."""
     try:
         n = int(scan_number)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        log.debug("sibling_hue: non-numeric scan_number %r (%s)", scan_number, exc)
         return QColor("#9e9e9e")
     # Golden-angle stepping spreads adjacent scan numbers to visibly different hues.
     hue = int((n * 137) % 360)
@@ -142,7 +144,8 @@ def _finite_list(v) -> list | None:
     if isinstance(v, (list, tuple)) and v and not any(x is None for x in v):
         try:
             return [float(x) for x in v]
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            log.debug("_finite_list: non-numeric element in %r (%s)", v, exc)
             return None
     return None
 
@@ -178,7 +181,8 @@ def unit_rows(scan_views) -> list[ScanUnit]:
         B = prov.get("B")
         try:
             B = float(B) if B is not None else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            log.debug("unit_rows: non-numeric B %r for %s (%s)", B, key, exc)
             B = None
         out.append(ScanUnit(
             key=str(key), exp=exp,
@@ -485,8 +489,8 @@ class ScansViewModel(ViewModel):
                 try:
                     gkey = tuple(int(round(float(v) / q_step)) for v in u.q)
                     disp = [round(float(v), 4) for v in u.q]
-                except (TypeError, ValueError):
-                    pass
+                except (TypeError, ValueError) as exc:
+                    log.debug("auto-group q-bin: non-numeric q %r for %s (%s)", u.q, u.key, exc)
                 else:
                     q_groups.setdefault(gkey, (disp, []))[1].append(u.key)
             if u.det is not None:
@@ -657,6 +661,74 @@ class ScansViewModel(ViewModel):
         self._store.delete_group(gid)
         self._model.groups_updated()
         self.groups_changed.emit()
+
+    # ---- grouping UX (Phase 5): name suggestion + create-from + freeze ----
+    def suggest_group_name(self, unit_keys) -> str:
+        """A pre-filled name for a group of ``unit_keys``, from the strongest shared dimension.
+
+        Precedence (first that holds for EVERY unit): a shared T-bin -> ``"T = 300 K"``; a shared
+        q-bin -> ``"q = [...]"``; a shared analyzer -> ``"analyzer NN"``; a shared source scan ->
+        the scan-group label; else ``"Group of N"``. Binning matches the auto-groups' rounding so a
+        suggestion means the same thing the derived groups do."""
+        want = {str(k) for k in unit_keys}
+        units = [u for u in self._rows if u.key in want]
+        if not units:
+            return f"Group of {len(want)}"
+        t_round, q_step = _rounding(self._ws)
+        # shared T-bin
+        if all(u.T is not None for u in units):
+            t_bins = {round(round(u.T / t_round) * t_round, 6) for u in units}
+            if len(t_bins) == 1:
+                return f"T = {next(iter(t_bins)):g} K"
+        # shared q-bin
+        if all(u.q and all(v is not None for v in u.q) for u in units):
+            try:
+                q_bins = {tuple(int(round(float(v) / q_step)) for v in u.q) for u in units}
+            except (TypeError, ValueError) as exc:
+                log.debug("suggest_group_name: non-numeric q, skipping q-bin (%s)", exc)
+                q_bins = set()
+            if len(q_bins) == 1:
+                disp = [round(float(v), 4) for v in units[0].q]
+                return f"q = {disp}"
+        # shared analyzer
+        if all(u.det is not None for u in units):
+            dets = {u.det for u in units}
+            if len(dets) == 1:
+                return f"analyzer {next(iter(dets))}"
+        # shared source scan
+        scans = {u.scan_key for u in units}
+        if len(scans) == 1:
+            return self._scan_label(units[0])
+        return f"Group of {len(units)}"
+
+    def create_group_from(self, name: str, unit_keys) -> str | None:
+        """Create a manual group ``name`` pre-populated with ``unit_keys`` (one structural signal)."""
+        if self._store is None:
+            return None
+        gid = self._store.create_group(name)
+        for key in unit_keys:
+            self._store.add_member(gid, key)
+        self._model.groups_updated()
+        self.groups_changed.emit()
+        return gid
+
+    def freeze_auto_group(self, auto_id: str) -> str | None:
+        """Snapshot an auto-group into a manual group (copy of its members + label).
+
+        The derived auto-group is untouched — it stays a function of the data — so this is a *fork*:
+        the manual copy pins today's membership even as the underlying data shifts. An unknown
+        ``auto_id`` is a no-op returning ``None``."""
+        if self._store is None:
+            return None
+        ag = next((g for g in self._auto if g.id == auto_id), None)
+        if ag is None:
+            return None
+        gid = self._store.create_group(ag.label)
+        for key in ag.scan_keys:
+            self._store.add_member(gid, key)
+        self._model.groups_updated()
+        self.groups_changed.emit()
+        return gid
 
     # ---- selection helpers (shared selection model) ----
     def select_keys(self, keys, clear: bool = True) -> None:
