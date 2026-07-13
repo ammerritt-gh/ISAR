@@ -16,15 +16,16 @@ def test_help_lists_view():
     assert "view" in build_parser().format_help()
 
 
-def test_view_help_mentions_recent_and_empty(capsys):
-    # `isar view -h` documents both the most-recent default and the empty-window fallback.
+def test_view_help_mentions_recovery_recent_and_empty(capsys):
+    # `isar view -h` documents the no-argument precedence and the empty-window fallback.
     import pytest as _pytest
 
     with _pytest.raises(SystemExit):
         build_parser().parse_args(["view", "-h"])
     out = " ".join(capsys.readouterr().out.split())  # collapse argparse line-wrapping
+    assert "offer recovery of unfinished temporary work" in out
     assert "most recent workspace" in out
-    assert "empty window if none is openable" in out
+    assert "empty window if neither is openable" in out
 
 
 def test_view_parses_workspace_arg():
@@ -142,7 +143,7 @@ def _make_pyside6_present(monkeypatch):
 
 
 def test_no_workspace_arg_forwards_empty_argv(monkeypatch):
-    # No workspace given: run() forwards an empty argv. The most-recent/empty-start resolution lives
+    # No workspace given: run() forwards an empty argv. Recovery/recent/empty-start resolution lives
     # in isar_gui.app.main (so `python -m isar_gui` and `isar view` behave identically); run() must
     # not exit or resolve on its own.
     import isar_gui.app as gui_app
@@ -227,3 +228,26 @@ def test_resolve_recent_none_without_session(monkeypatch):
 
     monkeypatch.setattr(gui_session, "load_session", lambda *a, **k: gui_session.Session())
     assert gui_app._resolve_recent_workspace() is None
+
+
+def test_default_startup_offers_recovery_before_generic_recent(monkeypatch):
+    """Unfinished temporary work must not be silently replaced by an unrelated saved recent."""
+    import isar_gui.app as gui_app
+
+    recovered = object()
+    monkeypatch.setattr(gui_app, "_maybe_recover_workspace", lambda: recovered)
+
+    def recent_must_not_run():
+        raise AssertionError("recent resolution ran before an available recovery")
+
+    monkeypatch.setattr(gui_app, "_resolve_recent_workspace", recent_must_not_run)
+    assert gui_app._resolve_default_workspace() is recovered
+
+
+def test_default_startup_falls_through_to_recent_when_recovery_not_opened(monkeypatch):
+    import isar_gui.app as gui_app
+
+    recent = object()
+    monkeypatch.setattr(gui_app, "_maybe_recover_workspace", lambda: None)
+    monkeypatch.setattr(gui_app, "_resolve_recent_workspace", lambda: recent)
+    assert gui_app._resolve_default_workspace() is recent

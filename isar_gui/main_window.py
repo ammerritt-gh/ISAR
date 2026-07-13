@@ -212,6 +212,12 @@ class MainWindow(QMainWindow):
         # cannot make Log dominate a first-time screen.
         QTimer.singleShot(0, self._restore_layout)
         QTimer.singleShot(0, self._apply_empty_start_dock_geometry)
+        # Recovery adopts a temporary workspace directly, so there is no ingest-finished signal to
+        # promote its raw scans. If it contains parsed rows but no fit results, treat Scans as the
+        # next operator surface after the saved layout is restored. Saved workspaces and analyzed
+        # temporary workspaces keep their layout exactly as the operator left it.
+        if ws is not None and self._wsm.is_temporary() and self.scans_vm.rows() and not ws.results:
+            self._queue_scans_promotion()
 
     # ---- workspace binding (shared by __init__ and load_workspace) --------
     def _bind_workspace(self, ws) -> None:
@@ -600,19 +606,21 @@ class MainWindow(QMainWindow):
         a, u, d = len(report.added), len(report.updated), len(report.deduped)
         failed = [f for f in report.files if f.get("error")]
         note = f" — {len(failed)} file(s) failed to parse" if failed else ""
-        parsed_waiting = sum(1 for unit in self.scans_vm.rows() if unit.status == "ingested") \
-            if not self._empty else 0
+        scan_rows = self.scans_vm.rows() if not self._empty else []
+        parsed_waiting = sum(1 for unit in scan_rows if unit.status == "ingested")
         if parsed_waiting:
             self.statusBar().showMessage(
                 f"Ingested {n_files} file(s): {parsed_waiting} parsed scan(s) awaiting analysis "
                 f"; open Scans or choose Run > Run analysis...{note}")
-            # Parsed scans are the next useful operator surface. Results remains fit-only and gives
-            # its own explanation until analysis creates result rows.
-            self.scans_dock.show()
-            self.scans_dock.raise_()
         else:
             self.statusBar().showMessage(
                 f"Ingested {n_files} files: +{a} scans, ~{u} updated ({d} duplicates){note}")
+        if parsed_waiting:
+            # A pending bootstrap has just rebuilt the full dock set and queued restoration of the
+            # operator's saved layout. Promote Scans on the following Qt turn so that restoration
+            # cannot bury the newly-loaded data. Capture the lifecycle generation/root: if the user
+            # opens another workspace before this callback runs, it must not touch the new binding.
+            self._queue_scans_promotion()
         for dedup in report.deduped:
             self.log(f"dedup: {dedup.get('scan')} kept {dedup.get('kept')} "
                      f"(superseded {', '.join(dedup.get('superseded') or [])})")
@@ -625,6 +633,24 @@ class MainWindow(QMainWindow):
         dock = self._docks.get("Files")
         if dock is not None and added_paths:
             dock.highlight_added(added_paths)
+
+    def _queue_scans_promotion(self) -> None:
+        """Queue Scans promotion behind any layout restore for the current workspace binding."""
+        generation = self._wsm.generation()
+        root = self._wsm.root()
+        QTimer.singleShot(
+            0, lambda g=generation, r=root: self._promote_scans_if_current(g, r))
+
+    def _promote_scans_if_current(self, generation: int, root: Path | None) -> None:
+        """Show parsed scans after layout restoration, if still on the captured workspace."""
+        if generation != self._wsm.generation() or root != self._wsm.root() or self._empty:
+            return
+        if not self.scans_vm.rows():
+            return
+        dock = self._docks.get("Scans")
+        if dock is not None:
+            dock.show()
+            dock.raise_()
 
     def _on_ingest_failed(self, code: int, cause: str) -> None:
         self.statusBar().showMessage(f"Could not ingest data: {cause}")
@@ -1149,8 +1175,12 @@ class MainWindow(QMainWindow):
 
     # ---- session layout --------------------------------------------------
     def _snapshot_session(self) -> Session:
-        state = bytes(self.saveState().toBase64().data()).decode("ascii")
-        self._session.dock_layout_b64 = state
+        # The empty/pending screen intentionally owns only Files + Log. Serializing that sparse
+        # scaffold would overwrite the operator's complete workspace layout while New is waiting
+        # for its first ingest, so retain the last full layout until a ready workspace is bound.
+        if not self._empty:
+            state = bytes(self.saveState().toBase64().data()).decode("ascii")
+            self._session.dock_layout_b64 = state
         # Only saved workspaces belong in recents — a temporary (pending/unsaved) workspace must
         # never pollute the recent-workspaces list (it may be discarded moments later).
         if not self._empty and not self._wsm.is_temporary():

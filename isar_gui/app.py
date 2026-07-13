@@ -6,10 +6,10 @@ the Qt event loop, returning a process exit code.
 Workspace resolution:
   * an **explicit** path argument is opened read-only; a nonexistent/invalid one is a hard CLI error
     (stderr + exit 2 — no dialog yet; GUI error dialogs come later);
-  * with **no argument**, :func:`_resolve_recent_workspace` opens the most-recent still-openable
-    workspace from the GUI session; if there is none (no session, every recent removed, or a stale
-    recent no longer a workspace) the window opens in EMPTY-START — no console error. A double-click
-    launch must never fail on a stale recent, so an unopenable recent falls back silently.
+  * with **no argument**, leftover temporary work is offered for recovery before a generic recent
+    workspace is opened. If neither is available, the window opens in EMPTY-START — no console
+    error. A double-click launch must never fail on a stale recent, so an unopenable recent falls
+    back silently.
 
 Smoke hook: set ``ISAR_GUI_SMOKE_MS=<ms>`` to auto-quit the app after that many milliseconds with
 exit 0 (a ``QTimer.singleShot`` posted after ``exec`` starts). Used by the offscreen live smoke
@@ -68,6 +68,17 @@ def _maybe_recover_workspace() -> "Workspace | None":
         return None
 
 
+def _resolve_default_workspace() -> "Workspace | None":
+    """Resolve a no-argument launch without hiding unfinished temporary work.
+
+    A saved recent workspace is merely a convenience. A recovery candidate may contain the data
+    from the operator's immediately preceding session, so it must be offered first. Choosing Later
+    (or having no candidate) falls through to the most-recent openable saved workspace.
+    """
+    recovered = _maybe_recover_workspace()
+    return recovered if recovered is not None else _resolve_recent_workspace()
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     explicit = bool(argv)
@@ -92,11 +103,9 @@ def main(argv=None) -> int:
     app = QApplication.instance() or QApplication(argv)
 
     if not explicit:
-        # No path given: most-recent still-openable workspace; if none, offer crash-recovery of a
-        # leftover temp workspace; else empty-start (ws=None). An explicit CLI arg suppresses both.
-        ws = _resolve_recent_workspace()
-        if ws is None:
-            ws = _maybe_recover_workspace()
+        # No path given: unfinished temporary work takes precedence over the generic recents list.
+        # An explicit CLI arg suppresses both recovery and recent-workspace resolution.
+        ws = _resolve_default_workspace()
 
     window = MainWindow(ws)  # ws may be None -> empty-start
     window.show()

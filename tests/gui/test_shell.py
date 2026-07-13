@@ -6,9 +6,10 @@ import pytest
 pytest.importorskip("PySide6")
 
 from isar.workspace_api import Workspace
+from isar_gui.commands import GuiIngestReport
 from isar_gui.main_window import MainWindow
 from isar_gui.session import Session
-from synthetic_ws import stamp_ws
+from synthetic_ws import scan_entry, stamp_ws
 
 
 def _open(make_ws):
@@ -107,13 +108,13 @@ def test_open_workspace_from_empty_binds(qtbot, make_ws):
         assert name in w._docks
 
 
-def test_empty_start_autosave_does_not_crash(qtbot):
-    """A dock toggle in the empty state fires the debounced autosave; the snapshot must not choke on
-    the absent workspace root (note_workspace is skipped when empty)."""
-    w = MainWindow(None, session=Session(), watch=False)
+def test_empty_start_autosave_preserves_full_workspace_layout(qtbot):
+    """The sparse welcome scaffold must never replace a previously saved full dock layout."""
+    saved_layout = "persisted-full-layout"
+    w = MainWindow(None, session=Session(dock_layout_b64=saved_layout), watch=False)
     qtbot.addWidget(w)
     snap = w._snapshot_session()           # would raise on Path(None) if note_workspace ran
-    assert snap.dock_layout_b64 is not None
+    assert snap.dock_layout_b64 == saved_layout
     assert snap.recent_workspaces == []
 
 
@@ -611,6 +612,134 @@ def test_new_pending_reapplies_compact_empty_log_geometry(qtbot, tmp_path, monke
     qtbot.waitUntil(lambda: w._wsm.state() == "pending")
     qtbot.waitUntil(lambda: w.log_dock.height() <= 240)
     assert w.files_dock.height() > w.log_dock.height()
+
+
+def test_pending_autosave_preserves_layout_then_ingest_promotes_scans(
+        qtbot, tmp_path, monkeypatch, make_ws):
+    """New may sit pending beyond the autosave debounce without losing the full dock layout.
+
+    When bootstrap subsequently binds the ready workspace, its queued layout restoration may hide
+    Scans. The queued post-ingest promotion must run afterward and expose the parsed rows.
+    """
+    import isar_gui.workspace_manager as wm
+
+    # Build a real full layout in which Scans was hidden, matching a prior operator session.
+    source_root = make_ws(rows=[{"scan": 1, "detector": "det", "status": "fitted",
+                                 "omega0": 5.0}])
+    source = MainWindow(Workspace.open(source_root), session=Session(), watch=False)
+    qtbot.addWidget(source)
+    source.show()
+    source.scans_dock.hide()
+    saved_layout = source._snapshot_session().dock_layout_b64
+    assert saved_layout
+
+    temproot = tmp_path / "temp"
+    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
+    session = Session(dock_layout_b64=saved_layout)
+    w = MainWindow(None, session=session, watch=False)
+    qtbot.addWidget(w)
+    monkeypatch.setattr(w, "_resolve_unsaved_temp_on_close", lambda: True)
+    # Keep the debounce proof isolated from the real per-user GUI session.
+    w._autosaver._path = tmp_path / "session.json"
+    w.show()
+    w.new_workspace()
+    pending_root = w._wsm.root()
+    assert pending_root is not None
+
+    qtbot.wait(650)  # exceed the production 500 ms session-autosave debounce
+    assert session.dock_layout_b64 == saved_layout
+
+    scan_id = "tavi:41:det"
+    stamp_ws(
+        pending_root,
+        scans={scan_id: scan_entry(41, status="ingested")},
+        files={"C:/incoming/scan41.dat": {
+            "format": "measurement", "n_scans": 1, "scan_ids": [scan_id], "n_context": 0,
+        }},
+        rows=[],
+    )
+    assert w._wsm.open(pending_root)
+    w._on_ingest_report(GuiIngestReport(
+        files=({"path": "C:/incoming/scan41.dat", "scan_ids": [scan_id]},),
+        added=(scan_id,),
+    ))
+
+    # Pump both queued callbacks: restore the old layout first, then make parsed Scans prominent.
+    qtbot.wait(50)
+    assert [row.key for row in w.scans_vm.rows()] == [scan_id]
+    assert w.scans_dock.isVisible()
+
+
+def test_recovered_raw_temp_promotes_scans_after_layout_restore(
+        qtbot, tmp_path, monkeypatch, make_ws):
+    """Relaunch recovery has no ingest signal, but raw parsed rows must still be made visible."""
+    import isar_gui.workspace_manager as wm
+
+    source_root = make_ws(rows=[{"scan": 1, "detector": "det", "status": "fitted",
+                                 "omega0": 5.0}])
+    source = MainWindow(Workspace.open(source_root), session=Session(), watch=False)
+    qtbot.addWidget(source)
+    source.show()
+    source.scans_dock.hide()
+    saved_layout = source._snapshot_session().dock_layout_b64
+    assert saved_layout
+
+    temproot = tmp_path / "recovery"
+    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
+    recovered_root = temproot / "ws-recovered"
+    recovered_root.mkdir(parents=True)
+    scan_id = "tavi:52:det"
+    stamp_ws(
+        recovered_root,
+        scans={scan_id: scan_entry(52, status="ingested")},
+        files={"C:/incoming/scan52.dat": {
+            "format": "measurement", "n_scans": 1, "scan_ids": [scan_id], "n_context": 0,
+        }},
+        rows=[],
+    )
+
+    w = MainWindow(
+        Workspace.open(recovered_root), session=Session(dock_layout_b64=saved_layout), watch=False)
+    qtbot.addWidget(w)
+    monkeypatch.setattr(w, "_resolve_unsaved_temp_on_close", lambda: True)
+    w.show()
+    qtbot.wait(50)  # restore the hidden layout, then run the recovery promotion
+
+    assert w._wsm.is_temporary()
+    assert [row.key for row in w.scans_vm.rows()] == [scan_id]
+    assert w._ws.results == []
+    assert w.scans_dock.isVisible()
+
+
+def test_fitted_only_ingest_does_not_promote_scans(qtbot, make_ws):
+    """A context/dedup ingest into analyzed work must not steal focus from the operator's view."""
+    root = make_ws(rows=[{"scan": 7, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    w = MainWindow(Workspace.open(root), session=Session(), watch=False)
+    qtbot.addWidget(w)
+    w.show()
+    w.scans_dock.hide()
+
+    w._on_ingest_report(GuiIngestReport(files=({"path": "C:/incoming/context.log"},)))
+    qtbot.wait(50)
+
+    assert all(row.status == "fitted" for row in w.scans_vm.rows())
+    assert not w.scans_dock.isVisible()
+
+
+def test_stale_ingest_promotion_cannot_touch_new_workspace(qtbot, make_ws):
+    old_root = make_ws(
+        scans={"tavi:41:det": scan_entry(41, status="ingested")}, rows=[])
+    new_root = make_ws(rows=[])
+    w = MainWindow(Workspace.open(old_root), session=Session(), watch=False)
+    qtbot.addWidget(w)
+    w.show()
+    old_generation = w._wsm.generation()
+
+    assert w.load_workspace(new_root)
+    w.scans_dock.hide()
+    w._promote_scans_if_current(old_generation, old_root)
+
+    assert not w.scans_dock.isVisible()
 
 
 # ---- persistent log dock across rebinds -------------------------------------
