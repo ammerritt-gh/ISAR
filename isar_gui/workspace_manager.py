@@ -139,6 +139,7 @@ class WorkspaceManager(QObject):
 
     workspace_changed = Signal(object)
     state_changed = Signal(str)
+    generation_changed = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -146,6 +147,9 @@ class WorkspaceManager(QObject):
         self._root: Path | None = None
         self._ws: Workspace | None = None
         self._last_error: str | None = None  # cause of the last open/save_as failure, for the UI
+        # A monotonically increasing binding token.  Long-running GUI work captures this alongside
+        # its root and must not update a subsequently opened workspace when it completes.
+        self._generation = 0
 
     # ---- introspection ----------------------------------------------------
     def state(self) -> str:
@@ -169,6 +173,14 @@ class WorkspaceManager(QObject):
         """The cause of the most recent ``open``/``save_as`` failure, or ``None``."""
         return self._last_error
 
+    def generation(self) -> int:
+        """Identity token for the currently bound workspace lifecycle state."""
+        return self._generation
+
+    def _bump_generation(self) -> None:
+        self._generation += 1
+        self.generation_changed.emit(self._generation)
+
     # ---- state transitions ------------------------------------------------
     def _set_state(self, state: str) -> None:
         self._state = state
@@ -180,6 +192,7 @@ class WorkspaceManager(QObject):
         self._ws = ws
         self._root = Path(ws.root)
         self._state = "ready"
+        self._bump_generation()
 
     def new_temp(self) -> Path:
         """Reserve a fresh temporary workspace directory and enter the ``pending`` state.
@@ -193,6 +206,7 @@ class WorkspaceManager(QObject):
         # Set state BEFORE the bind so the window's pending hint / unsaved title read the right state
         # while it rebinds on workspace_changed; state_changed then fires for the action/title sync.
         self._state = "pending"
+        self._bump_generation()
         log.info("reserved temporary workspace %s", root)
         self.workspace_changed.emit(None)
         self._set_state("pending")
@@ -213,6 +227,7 @@ class WorkspaceManager(QObject):
         self._ws = ws
         self._root = Path(ws.root)
         self._state = "ready"      # set before the bind (see new_temp); state_changed re-syncs after
+        self._bump_generation()
         self.workspace_changed.emit(ws)
         self._set_state("ready")
         return True
@@ -266,6 +281,7 @@ class WorkspaceManager(QObject):
             self._root = None
             self._ws = None
             self._state = "none"
+            self._bump_generation()
             self.workspace_changed.emit(None)
             self.state_changed.emit("none")
 

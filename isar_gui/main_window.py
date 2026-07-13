@@ -33,8 +33,7 @@ from isar_gui.commands import RunOptions, build_run_command
 from isar_gui.folder_watcher import FolderWatcher
 from isar_gui.gui_store import GuiStore
 from isar_gui.health import LLM_DEFAULT_ENDPOINT, TAVI_DEFAULT_URL, find_tavi_bat, ping_http
-from isar_gui.ingest_controller import IngestController
-from isar_gui.process import ProcessRunner
+from isar_gui.operation_coordinator import WorkspaceOperationCoordinator
 from isar_gui.workspace_manager import WorkspaceManager
 
 
@@ -134,7 +133,7 @@ class MainWindow(QMainWindow):
         self._empty = False           # True while showing the empty-start (no workspace) state
         self.inspector = None         # the C2 central widget; None in the empty state
         self.setAcceptDrops(True)      # drop a data folder/numor onto the window -> ingest (D2/D5)
-        self._run_runner: ProcessRunner | None = None  # the live `isar run` subprocess, if any
+        self._close_when_operations_finish = False
         self._bound = False           # True once a first workspace binding exists (rebind guard)
         self._gui_store: GuiStore | None = None   # per-workspace GUI-only state (watched folders)
         # {resolved_path: (size, mtime)} of manifest files, rebuilt once per facade refresh (bind +
@@ -153,13 +152,16 @@ class MainWindow(QMainWindow):
         if ws is not None:
             self._wsm.adopt(ws)
 
-        # The single serialization point for engine ingest subprocesses (drops, browse, watched
-        # folders). Lives across workspace switches — it consults the manager for the none/pending/
-        # ready routing and drives the init->ingest->open bootstrap the manager used to own (Phase D).
-        self._ingest_controller = IngestController(sys.executable, self._wsm, self.log, parent=self)
-        self._ingest_controller.ingest_started.connect(self._on_ingest_started)
-        self._ingest_controller.ingest_finished.connect(self._on_ingest_report)
-        self._ingest_controller.ingest_failed.connect(self._on_ingest_failed)
+        # One workspace-wide writer gate for init/ingest/run.  Keep the historical attribute alias
+        # because FilesDock consumes a controller-shaped object; it now points at the coordinator.
+        self._operations = WorkspaceOperationCoordinator(sys.executable, self._wsm, self.log, parent=self)
+        self._ingest_controller = self._operations
+        self._operations.ingest_started.connect(self._on_ingest_started)
+        self._operations.ingest_finished.connect(self._on_ingest_report)
+        self._operations.ingest_failed.connect(self._on_ingest_failed)
+        self._operations.run_started.connect(self._on_run_started)
+        self._operations.run_finished.connect(self._on_run_finished)
+        self._operations.activity_changed.connect(self._on_operation_activity_changed)
 
         # Watched-folder poller: settled new files feed the same controller queue. Lives across
         # switches; its folder set is re-seeded from each ready workspace's GuiStore.
@@ -395,10 +397,10 @@ class MainWindow(QMainWindow):
     # ---- File menu (built once; actions persist across workspace reloads) --
     def _init_file_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
-        new_ws_action = file_menu.addAction("New Workspace")
-        new_ws_action.triggered.connect(self.new_workspace)
-        open_action = file_menu.addAction("Open Workspace…")
-        open_action.triggered.connect(self._on_open_workspace)
+        self._new_workspace_menu_action = file_menu.addAction("New Workspace")
+        self._new_workspace_menu_action.triggered.connect(self.new_workspace)
+        self._open_workspace_menu_action = file_menu.addAction("Open Workspace…")
+        self._open_workspace_menu_action.triggered.connect(self._on_open_workspace)
         self._save_as_menu_action = file_menu.addAction("Save Workspace As…")
         self._save_as_menu_action.triggered.connect(self.save_workspace_as)
 
@@ -425,10 +427,10 @@ class MainWindow(QMainWindow):
         tb.setObjectName("workspace_toolbar")
         self.addToolBar(tb)
 
-        new_action = tb.addAction("New")
-        new_action.triggered.connect(self.new_workspace)
-        open_action = tb.addAction("Open…")
-        open_action.triggered.connect(self._on_open_workspace)
+        self._new_workspace_action = tb.addAction("New")
+        self._new_workspace_action.triggered.connect(self.new_workspace)
+        self._open_workspace_action = tb.addAction("Open…")
+        self._open_workspace_action.triggered.connect(self._on_open_workspace)
         self._save_as_action = tb.addAction("Save As…")
         self._save_as_action.triggered.connect(self.save_workspace_as)
 
@@ -455,20 +457,35 @@ class MainWindow(QMainWindow):
     def _sync_workspace_actions(self) -> None:
         """Save As is meaningful only for a temporary workspace with a card already scaffolded
         (state ready). A saved workspace has nothing to Save As; a pending/none one has no card."""
-        can_save_as = self._wsm.state() == "ready" and self._wsm.is_temporary()
+        busy = getattr(self, "_operations", None) is not None and self._operations.is_busy()
+        can_save_as = self._wsm.state() == "ready" and self._wsm.is_temporary() and not busy
         for action in (getattr(self, "_save_as_action", None),
                        getattr(self, "_save_as_menu_action", None)):
             if action is not None:
                 action.setEnabled(can_save_as)
+        for action in (getattr(self, "_new_workspace_action", None),
+                       getattr(self, "_open_workspace_action", None),
+                       getattr(self, "_new_workspace_menu_action", None),
+                       getattr(self, "_open_workspace_menu_action", None)):
+            if action is not None:
+                action.setEnabled(not busy)
+        if getattr(self, "_recents_button", None) is not None:
+            self._recents_button.setEnabled(not busy)
 
     # ---- workspace lifecycle actions (delegate to the manager) ------------
     def new_workspace(self) -> None:
         """Reserve a fresh temporary workspace and bind it (pending state)."""
+        if self._operations.is_busy():
+            self.statusBar().showMessage("Workspace is busy — cancel or wait for the current operation")
+            return
         self._wsm.new_temp()
 
     def save_workspace_as(self) -> bool:
         """Copy the current temporary workspace to a chosen directory and open it there. Returns
         whether a save actually happened (dialog cancelled or the copy failing yields ``False``)."""
+        if self._operations.is_busy():
+            self.statusBar().showMessage("Workspace is busy — Save As is unavailable during analysis or ingest")
+            return False
         if not (self._wsm.state() == "ready" and self._wsm.is_temporary()):
             self.statusBar().showMessage("Save As is only for an unsaved temporary workspace")
             return False
@@ -650,18 +667,21 @@ class MainWindow(QMainWindow):
         self._run_action.triggered.connect(lambda: self.run_analysis())
         self._rerun_action = run_menu.addAction("Re-run (only new scans)")
         self._rerun_action.triggered.connect(self.rerun)
+        self._cancel_operation_action = run_menu.addAction("Cancel active operation")
+        self._cancel_operation_action.triggered.connect(self._cancel_active_operation)
 
     def _sync_run_actions(self) -> None:
-        """Runs need a real workspace and no run already in flight."""
-        busy = self._run_runner is not None and self._run_runner.is_running()
+        """Runs need a real workspace and the workspace-wide writer gate to be idle."""
+        busy = self._operations.is_busy()
         can_run = (not self._empty) and (not busy)
         self._run_action.setEnabled(can_run)
         # Re-run additionally needs a remembered previous invocation for this workspace.
         self._rerun_action.setEnabled(can_run and self._run_state() is not None)
+        self._cancel_operation_action.setEnabled(busy)
 
     def run_analysis(self) -> None:
         """Open the Run dialog (pre-filled from the last run) and launch ``isar run`` on accept."""
-        if self._empty or (self._run_runner is not None and self._run_runner.is_running()):
+        if self._empty or self._operations.is_busy():
             return
         from isar_gui.run_dialog import RunDialog
 
@@ -675,7 +695,7 @@ class MainWindow(QMainWindow):
 
     def rerun(self) -> None:
         """Re-run the last invocation verbatim (idempotent — the engine only fits new scans)."""
-        if self._empty or (self._run_runner is not None and self._run_runner.is_running()):
+        if self._empty or self._operations.is_busy():
             return
         state = self._run_state()
         if state is None:
@@ -683,21 +703,17 @@ class MainWindow(QMainWindow):
         self._launch_run(state["data"], RunOptions(**state["opts"]))
 
     def _launch_run(self, data_paths, opts: RunOptions) -> None:
-        ws_root = str(self._ws.root)
-        cmd = build_run_command(sys.executable, data_paths, ws_root, opts)
         self._remember_run(data_paths, opts)
-        # Retain each run's log next to the report so a finished/failed run is inspectable later.
-        log_path = Path(ws_root) / "report" / "gui-runs" / f"run-{datetime.now():%Y%m%d-%H%M%S}.log"
-        self.log("$ " + " ".join(cmd))
-        self._set_run_status("running…", "#b8860b")
-        self._run_runner = ProcessRunner(self)
-        self._run_runner.line.connect(self.log)
-        self._run_runner.finished.connect(self._on_run_finished)
-        # Pass the LLM profile/endpoint/model/key so `isar run --llm` uses the configured backend (D3).
-        self._run_runner.start(cmd, log_path=str(log_path), env=self._llm_env())
+        self._operations.request_run(data_paths, opts, env=self._llm_env())
         self._sync_run_actions()
 
-    def _on_run_finished(self, code: int) -> None:
+    def _on_run_started(self) -> None:
+        self._set_run_status("running…", "#b8860b")
+
+    def _on_run_finished(self, code: int, live_workspace: bool) -> None:
+        if not live_workspace:
+            self.log("stale run completion ignored — workspace changed")
+            return
         if code == 0:
             self._set_run_status(f"run finished OK ({datetime.now():%H:%M:%S})", "#2e7d32")
             self.statusBar().showMessage("Run finished — results updated below")
@@ -705,6 +721,25 @@ class MainWindow(QMainWindow):
             self._set_run_status(f"run FAILED (exit {code}) — see log", "#c62828")
             self.statusBar().showMessage(f"Run failed (exit {code})")
         self._sync_run_actions()
+
+    def _cancel_active_operation(self) -> None:
+        if self._operations.cancel():
+            self.statusBar().showMessage("Cancelling active workspace operation…")
+
+    def _on_operation_activity_changed(self, state: dict) -> None:
+        kind = state["kind"]
+        queued = state["queued"]
+        if kind is None:
+            self._operation_status.setText("")
+            if self._close_when_operations_finish:
+                self._close_when_operations_finish = False
+                QTimer.singleShot(0, self.close)
+        else:
+            verb = "Cancelling" if state["cancelling"] else ("Ingesting" if kind == "ingest" else "Analysing")
+            suffix = f" + {queued} queued" if queued else ""
+            self._operation_status.setText(f"{verb}{suffix}")
+        self._sync_run_actions()
+        self._sync_workspace_actions()
 
     def _set_run_status(self, text: str, color: str) -> None:
         self._run_status.setText(text)
@@ -866,6 +901,8 @@ class MainWindow(QMainWindow):
         # a finished/failed run stays visible. Empty until the first run.
         self._run_status = QLabel()
         self.statusBar().addPermanentWidget(self._run_status)
+        self._operation_status = QLabel()
+        self.statusBar().addPermanentWidget(self._operation_status)
         # Backend reachability indicators (LLM + TAVI): grey until the first probe returns.
         self._llm_health = QLabel("LLM ●")
         self._tavi_health = QLabel("TAVI ●")
@@ -906,6 +943,9 @@ class MainWindow(QMainWindow):
         drives the full teardown+rebind in :meth:`_on_wsm_workspace_changed`. Returns ``True`` on
         success; an invalid path leaves the current workspace untouched and reports a status message.
         """
+        if self._operations.is_busy():
+            self.statusBar().showMessage("Workspace is busy — cancel or wait before opening another workspace")
+            return False
         if self._wsm.open(path):
             return True
         self.statusBar().showMessage(f"Not a workspace: {path}")
@@ -1050,6 +1090,15 @@ class MainWindow(QMainWindow):
 
     # ---- teardown --------------------------------------------------------
     def closeEvent(self, event) -> None:
+        # Do not save, discard, or tear down a workspace while an engine process can still be
+        # writing it.  Request graceful termination, then re-enter close once its terminal callback
+        # has fired (the coordinator escalates to kill after three seconds).
+        if getattr(self, "_operations", None) is not None and self._operations.is_busy():
+            self._close_when_operations_finish = True
+            self._operations.cancel()
+            self.statusBar().showMessage("Cancelling workspace operation before closing…")
+            event.ignore()
+            return
         # A content-bearing temporary workspace is unsaved analysis — prompt before it is lost. If
         # the operator cancels (or backs out of the Save As dialog), abort the close entirely.
         if not self._resolve_unsaved_temp_on_close():
@@ -1066,12 +1115,6 @@ class MainWindow(QMainWindow):
         # Flush any pending debounced GUI-store write (watched folders / groups) before the window
         # goes — guarded so a just-discarded temp dir is not resurrected by the save's mkdir.
         self._flush_gui_store_if_pending()
-        if getattr(self, "_ingest_controller", None) is not None and \
-                self._ingest_controller.is_busy():
-            # Non-blocking notice only (writes are atomic per-scan, so a cut-off ingest never
-            # corrupts the ledger — the worst case is a scan that simply wasn't reached).
-            self.log("closing while an ingest is running — it will be cut off; data writes are atomic")
-            self.statusBar().showMessage("closing — an in-flight ingest will be cut off")
         super().closeEvent(event)
 
     def _resolve_unsaved_temp_on_close(self) -> bool:

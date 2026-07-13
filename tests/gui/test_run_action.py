@@ -9,14 +9,15 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-import isar_gui.main_window as mw
+import isar_gui.operation_coordinator as operations
+from isar_gui.process import ProcessRunner
 from isar.workspace_api import Workspace
 from isar_gui.commands import RunOptions
 from isar_gui.main_window import MainWindow
 from isar_gui.session import Session
 
 
-class _FakeRunner(mw.ProcessRunner):
+class _FakeRunner(ProcessRunner):
     """A ProcessRunner that records the argv but never launches a subprocess."""
 
     def __init__(self, parent=None):
@@ -55,25 +56,25 @@ def test_run_enabled_but_rerun_needs_history(qtbot, make_ws):
 
 def test_launch_builds_command_remembers_and_sets_status(qtbot, make_ws, monkeypatch):
     w, root = _win(qtbot, make_ws)
-    monkeypatch.setattr(mw, "ProcessRunner", _FakeRunner)
+    monkeypatch.setattr(operations, "ProcessRunner", _FakeRunner)
     opts = RunOptions(errors="fast", M=200)
     w._launch_run([r"D:\data"], opts)
 
-    cmd = w._run_runner.started_cmd
+    cmd = w._operations._run_runner.started_cmd
     assert cmd[1:4] == ["-m", "isar", "run"]
     assert r"D:\data" in cmd
     assert cmd[cmd.index("--workspace") + 1] == str(root)
     assert "--errors" in cmd  # non-default tier propagated
-    # Remembered for this workspace, so Re-run is now enabled.
+    # The invocation is remembered, but Re-run remains disabled until this single-writer run ends.
     assert w._run_state() == {"data": [r"D:\data"], "opts": {"llm": False, "force": False,
                                                              "M": 200, "errors": "fast",
                                                              "detectors": None}}
-    assert w._rerun_action.isEnabled()
+    assert not w._rerun_action.isEnabled()
     assert "running" in w._run_status.text()
     # The retained-log path lands under the workspace report dir.
-    assert "gui-runs" in w._run_runner.started_log
+    assert "gui-runs" in w._operations._run_runner.started_log
     # The LLM backend settings ride along as env overrides (default profile = llmm).
-    assert w._run_runner.started_env["ISAR_LLM_PROFILE"] == "llmm"
+    assert w._operations._run_runner.started_env["ISAR_LLM_PROFILE"] == "llmm"
 
 
 def test_rerun_replays_remembered_invocation(qtbot, make_ws, monkeypatch):
@@ -88,9 +89,9 @@ def test_rerun_replays_remembered_invocation(qtbot, make_ws, monkeypatch):
 
 def test_finish_status_success_and_failure(qtbot, make_ws):
     w, _ = _win(qtbot, make_ws)
-    w._on_run_finished(0)
+    w._on_run_finished(0, True)
     assert "OK" in w._run_status.text()
     assert "2e7d32" in w._run_status.styleSheet()
-    w._on_run_finished(2)
+    w._on_run_finished(2, True)
     assert "FAILED" in w._run_status.text()
     assert "c62828" in w._run_status.styleSheet()

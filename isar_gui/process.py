@@ -78,9 +78,19 @@ class ProcessRunner(QObject):
 
     def stop(self) -> None:
         """Kill the running process (if any). ``finished`` still fires with its (non-zero) code."""
+        self.kill()
+        if self._proc is not None:
+            self._proc.waitForFinished(2000)
+
+    def terminate(self) -> None:
+        """Request graceful process termination without blocking the GUI event loop."""
+        if self._proc is not None and self.is_running():
+            self._proc.terminate()
+
+    def kill(self) -> None:
+        """Force process termination without blocking; ``finished`` remains the terminal signal."""
         if self._proc is not None and self.is_running():
             self._proc.kill()
-            self._proc.waitForFinished(2000)
 
     # ---- retained log -----------------------------------------------------
     def _open_log(self, log_path: str | None, argv: list[str]) -> None:

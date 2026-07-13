@@ -58,6 +58,13 @@ class IngestController(QObject):
     ingest_started = Signal(list)
     ingest_finished = Signal(object)
     ingest_failed = Signal(int, str)
+    # Terminal notification for the coordinator.  Unlike the UI-facing report/failure signals this
+    # is emitted even when a stale root guard intentionally suppresses those signals.
+    job_finished = Signal()
+    # Emitted only for the controller's own none->pending and pending->ready transitions.  The
+    # workspace-wide coordinator uses it to adopt the resulting root/generation without treating
+    # that expected bootstrap bind as an operator-initiated workspace switch.
+    bootstrap_bound = Signal(str, int)
 
     def __init__(self, python_exe, workspace_manager, log_sink, parent=None):
         super().__init__(parent)
@@ -101,9 +108,29 @@ class IngestController(QObject):
         if self._runner is None:
             self._start_next()
 
+    def start_ingest(self, paths) -> None:
+        """Start exactly one batch supplied by ``WorkspaceOperationCoordinator``.
+
+        New GUI code uses this single-job entrypoint: the cross-operation FIFO lives in the
+        coordinator so ingest and analysis share one writer gate.  ``request_ingest`` remains a
+        compatibility wrapper for older callers/tests until they are migrated.
+        """
+        if self.is_busy():
+            raise RuntimeError("cannot start ingest while another ingest job is active")
+        batch = [str(p) for p in paths if str(p)]
+        if not batch:
+            return
+        root = self._wsm.root()
+        self._queue.append((batch, str(root) if root is not None else None))
+        self._start_next()
+
     def is_busy(self) -> bool:
         """True while a job is in flight or queued (used by teardown; drops never consult it)."""
         return self._runner is not None or bool(self._queue) or self._current is not None
+
+    def runner(self) -> ProcessRunner | None:
+        """The active process for cooperative cancellation by the operation coordinator."""
+        return self._runner
 
     # ---- job scheduling --------------------------------------------------
     def _start_next(self) -> None:
@@ -146,6 +173,9 @@ class IngestController(QObject):
             # Reserve a throwaway workspace and drop into the pending bootstrap path.
             self._wsm.new_temp()
             state = self._wsm.state()
+            root_after_reserve = self._wsm.root()
+            if root_after_reserve is not None:
+                self.bootstrap_bound.emit(str(root_after_reserve), self._wsm.generation())
 
         root = self._wsm.root()
         if root is None:
@@ -251,8 +281,11 @@ class IngestController(QObject):
     def _open_root(self) -> None:
         # Open the CAPTURED root (guaranteed == the live root here by the _job_root_is_current gate).
         root = self._current_root
-        if root is not None and not self._wsm.open(root):
-            self._log(f"scaffolded {root} but could not open it as a workspace")
+        if root is not None:
+            if not self._wsm.open(root):
+                self._log(f"scaffolded {root} but could not open it as a workspace")
+            else:
+                self.bootstrap_bound.emit(str(root), self._wsm.generation())
 
     def _finish_job(self) -> None:
         self._current = None
@@ -262,6 +295,7 @@ class IngestController(QObject):
         self._open_after = False
         self._report = None
         self._lines = []
+        self.job_finished.emit()
         # Drain the next queued batch (re-reads manager state, so a workspace that became ready mid-
         # queue routes the follow-on batch straight to ingest).
         self._start_next()

@@ -61,6 +61,7 @@ class _FakeManager:
     def __init__(self, state="ready", root=r"D:\ws"):
         self._state = state
         self._root = root
+        self._generation = 1
         self.opened = []
         self.new_temp_calls = 0
 
@@ -70,15 +71,20 @@ class _FakeManager:
     def root(self):
         return self._root
 
+    def generation(self):
+        return self._generation
+
     def new_temp(self):
         self.new_temp_calls += 1
         self._state = "pending"
         self._root = r"D:\tmp\ws"
+        self._generation += 1
         return self._root
 
     def open(self, root):
         self.opened.append(root)
         self._state = "ready"
+        self._generation += 1
         return True
 
 
