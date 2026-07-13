@@ -15,6 +15,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QMimeData, QUrl
 
 from isar_gui.gui_store import GuiStore
+from isar_gui.folder_watcher import WatchStatus
 from isar_gui.viewmodels.files import FilesViewModel
 from isar_gui.views.files_dock import FilesDock
 
@@ -61,7 +62,7 @@ def test_rows_render_from_ws_files(qtbot, tmp_path):
     assert first.text(0) == "scan_1.dat"
     assert first.text(1) == "parsed 12 scans"
     assert first.toolTip(0) == r"D:\d\scan_1.dat"
-    assert dock._tree.topLevelItem(1).text(1) == "foreign"
+    assert dock._tree.topLevelItem(1).text(1) == "belongs to a different experiment"
 
 
 def test_empty_manifest_shows_hint(qtbot, tmp_path):
@@ -132,3 +133,18 @@ def test_highlight_added_marks_rows(qtbot, tmp_path):
     item = dock._tree.topLevelItem(0)
     # A highlighted row carries a non-default background brush.
     assert item.background(0).style() != 0
+
+
+def test_watcher_attention_is_persistent_and_plain(qtbot, tmp_path):
+    vm = FilesViewModel(_fake_ws([]), store=GuiStore.load(tmp_path))
+    dock = FilesDock(vm, _SpyController())
+    qtbot.addWidget(dock)
+
+    dock.set_watch_status(WatchStatus(
+        unavailable=(r"D:\beam\offline",), retrying=(r"D:\beam\bad.dat",),
+        exhausted=(r"D:\beam\still-bad.dat",),
+    ))
+    assert dock._watch_notice.isVisible() or dock._watch_notice.text()
+    assert "unavailable" in dock._watch_notice.text().lower()
+    assert "automatic retries" in dock._watch_notice.text()
+    assert "top-level files only" in dock.widget().findChild(type(dock._hint), "watch_heading").text()

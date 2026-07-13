@@ -28,8 +28,12 @@ def _status_text(classification, n_scans, error=None) -> str:
     if cls == "measurement":
         n = n_scans or 0
         return f"parsed {n} scan{'s' if n != 1 else ''}"
-    if cls in ("companion", "foreign", "unrecognized"):
-        return cls
+    if cls == "companion":
+        return "supporting file (not a measurement)"
+    if cls == "foreign":
+        return "belongs to a different experiment"
+    if cls == "unrecognized":
+        return "not recognised as measurement data"
     if not cls:
         return "pending"
     return cls

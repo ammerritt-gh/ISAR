@@ -316,11 +316,11 @@ class MainWindow(QMainWindow):
             self.scans_vm.set_store(self._gui_store)
             # Seed the watcher from the persisted config directly (a bind is not a user mutation, so
             # it must not re-persist the store; user add/remove/pause go through watch_config_changed).
-            self._folder_watcher.set_folders(self.files_vm.watched())
-            self._folder_watcher.set_paused(self.files_vm.watch_paused())
+            self._folder_watcher.configure(
+                self.files_vm.watched(), self.files_vm.watch_paused(), reset_binding=True)
         else:
             self._gui_store = None
-            self._folder_watcher.set_folders([])
+            self._folder_watcher.configure([], False, reset_binding=True)
 
         # Watch bridge: refresh + fan out on the Qt thread. Optional (tests may disable it). Never
         # started in the empty state — there is no workspace on disk to watch.
@@ -366,6 +366,8 @@ class MainWindow(QMainWindow):
         # The Files dock is the data entry point (drop target + manifest + watched folders); it leads
         # the left area so it is the first thing an operator sees on an empty/pending workspace.
         self.files_dock = FilesDock(self.files_vm, self._ingest_controller, self)
+        self._folder_watcher.status_changed.connect(self.files_dock.set_watch_status)
+        self.files_dock.set_watch_status(self._folder_watcher.status())
         self.addDockWidget(Qt.LeftDockWidgetArea, self.files_dock)
         self._register_dock("Files", self.files_dock)
 
@@ -607,6 +609,9 @@ class MainWindow(QMainWindow):
     def _on_ingest_report(self, report) -> None:
         """A completed ingest: informational status + log (deduped is a cue, never modal), and a
         transient highlight of the files that produced added/updated scans."""
+        # Parse errors are a non-terminal ingest outcome: preserve the manifest evidence, but let
+        # the watched-folder policy retry the unchanged physical file on its bounded backoff.
+        self._folder_watcher.record_ingest_report(report)
         # Do not wait for WatchBridge to notice the just-written snapshot.  In particular a window
         # constructed with watch=False otherwise keeps its cached empty ledger after a successful
         # ingest, making the new workspace appear to contain no scans.  The facade is read-only;
@@ -685,8 +690,7 @@ class MainWindow(QMainWindow):
         """A watched-folder mutation (add/remove/pause) from the dock: re-seed the folder watcher
         immediately and debounce-persist the GUI store. (A bind seeds the watcher directly and does
         NOT route through here, so opening a workspace never re-persists an unchanged store.)"""
-        self._folder_watcher.set_folders(self.files_vm.watched())
-        self._folder_watcher.set_paused(self.files_vm.watch_paused())
+        self._folder_watcher.configure(self.files_vm.watched(), self.files_vm.watch_paused())
         if self._gui_store is not None:
             self._store_save_timer.start()
 
@@ -725,6 +729,10 @@ class MainWindow(QMainWindow):
         cache: dict[str, tuple] = {}
         if not self._empty:
             for fv in self._ws.files:
+                if getattr(fv, "error", None):
+                    # A failed manifest row is deliberately *not* known: the watcher owns a bounded
+                    # retry loop for unchanged files, while successful rows suppress duplicate work.
+                    continue
                 try:
                     cache[str(Path(fv.path).resolve())] = (fv.size, fv.mtime)
                 except (OSError, AttributeError) as exc:

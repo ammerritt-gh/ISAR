@@ -35,6 +35,7 @@ _HINT = "Drop data files here to begin."
 _HIGHLIGHT_MS = 2000
 _HIGHLIGHT_COLOR = QColor(255, 243, 176)  # a soft amber; fades after ~2 s
 _ERROR_COLOR = QColor(200, 40, 40)        # a muted red for a file that failed to parse
+_NOTICE_COLOR = "#9a5a00"
 
 
 class FilesDock(QDockWidget):
@@ -72,6 +73,13 @@ class FilesDock(QDockWidget):
         self._hint.setStyleSheet("color: #888; padding: 6px;")
         layout.addWidget(self._hint)
 
+        self._watch_notice = QLabel(body)
+        self._watch_notice.setObjectName("watch_notice")
+        self._watch_notice.setWordWrap(True)
+        self._watch_notice.setStyleSheet(f"color: {_NOTICE_COLOR}; padding: 3px 0;")
+        self._watch_notice.hide()
+        layout.addWidget(self._watch_notice)
+
         # ---- file manifest ----
         self._tree = QTreeWidget(body)
         self._tree.setHeaderLabels(["Name", "Status"])
@@ -80,7 +88,9 @@ class FilesDock(QDockWidget):
         layout.addWidget(self._tree, 1)
 
         # ---- watched folders ----
-        layout.addWidget(QLabel("Watched folders", body))
+        watch_heading = QLabel("Watched folders (top-level files only)", body)
+        watch_heading.setObjectName("watch_heading")
+        layout.addWidget(watch_heading)
         self._watch_list = QListWidget(body)
         self._watch_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._watch_list.setMaximumHeight(110)
@@ -104,6 +114,21 @@ class FilesDock(QDockWidget):
         vm.refreshed.connect(self.refresh)
         vm.watch_config_changed.connect(self._render_watch)
         self.refresh()
+
+    def set_watch_status(self, status) -> None:
+        """Render durable watcher attention; it stays until the watcher reports recovery."""
+        messages: list[str] = []
+        if getattr(status, "paused", False) and getattr(status, "deferred", ()):
+            messages.append(f"Watching is paused; {len(status.deferred)} settled file(s) waiting")
+        if getattr(status, "unavailable", ()):
+            messages.append("Watched folder unavailable: " + ", ".join(status.unavailable))
+        if getattr(status, "retrying", ()):
+            messages.append(f"Retrying {len(status.retrying)} file(s) that could not be parsed")
+        if getattr(status, "exhausted", ()):
+            messages.append(
+                f"{len(status.exhausted)} file(s) still could not be parsed after automatic retries; inspect them")
+        self._watch_notice.setText("\n".join(messages))
+        self._watch_notice.setVisible(bool(messages))
 
     # ---- rendering -------------------------------------------------------
     def refresh(self) -> None:

@@ -1,81 +1,78 @@
-"""FolderWatcher — detect *settled* new data files in watched folders (Phase D).
+"""Watch top-level data files and only hand settled, retryable files to ingest.
 
-A beamtime folder fills as the instrument writes numors. We want to auto-ingest a file only once it
-has stopped growing — ingesting a half-written numor would parse garbage. So this watcher combines
-two signals (belt and braces, because ``QFileSystemWatcher`` is unreliable on some Windows network
-shares):
-
-  * a :class:`QFileSystemWatcher` on the watched folders (``directoryChanged`` → poll now), and
-  * a :class:`QTimer` that polls the candidate files every ``poll_ms``.
-
-Stability algorithm (per candidate file): track its ``(size, mtime)``. Each poll that observes the
-SAME ``(size, mtime)`` as the previous poll increments a run-length counter; any change resets it to
-1 and re-records the pair. After ``stable_polls`` consecutive equal observations the file is declared
-stable and emitted **once** via :attr:`files_stable`. It is then marked done and only re-armed if it
-changes again later (a growing-file resend). With the defaults (``poll_ms=1000``, ``stable_polls=3``)
-that is roughly three seconds of quiescence. Both are injectable so tests run at ms scale.
-
-Skips (never emitted): files the workspace already knows with a matching ``(size, mtime)`` (an
-injected ``is_known`` cheap no-op guard — engine idempotency is the real guarantee), and hidden or
-transient-extension files the engine would skip anyway (``.tmp``/``.part``/…). Everything else is
-handed to the controller, which lets the engine classify it.
-
-Pause: while paused the watcher keeps observing (so a file that settles during a pause is remembered)
-but emits nothing; on unpause the accumulated stable set is emitted in one batch.
+The watcher deliberately keeps its own bookkeeping small and visible.  It does not decide whether a
+file is scientific data; it waits for a file to stop changing, then lets the engine classify it.  A
+parse failure is not treated as success: the unchanged file is retried after 5, 15, and 30 seconds
+and then remains visibly marked for an operator to inspect.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
+from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
+import stat as stat_module
+import time
 
 from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, Signal
 
 log = logging.getLogger(__name__)
 
-# Extensions never worth queuing. Two sources, unioned:
-#   * the engine's own ingest skip set — mirror of isar.session.ingest.SKIP_SUFFIXES (kept as a
-#     GUI-side copy, not imported: G16 forbids isar_gui reaching into engine internals). Queuing one
-#     of these only makes the engine skip it again a second later.
-#   * partial-write / editor-scratch extensions the engine set does not carry, so a half-written
-#     download or swap file never even reaches the stability counter.
-# If the engine set changes, update this copy to match (isar/session/ingest.py).
 _ENGINE_SKIP_SUFFIXES = {".nxs", ".log", ".md", ".png", ".csv", ".tmp", ".unused"}
 _PARTIAL_WRITE_SUFFIXES = {".part", ".swp", ".swx", ".crdownload", ".partial", ".lock"}
 _SKIP_SUFFIXES = _ENGINE_SKIP_SUFFIXES | _PARTIAL_WRITE_SUFFIXES
+_RETRY_DELAYS = (5.0, 15.0, 30.0)
 
 
 def _should_skip_name(name: str) -> bool:
     """True for hidden dotfiles and known transient/partial-write extensions."""
-    if name.startswith(".") or name.startswith("~"):
-        return True
-    return Path(name).suffix.lower() in _SKIP_SUFFIXES
+    return name.startswith((".", "~")) or Path(name).suffix.lower() in _SKIP_SUFFIXES
+
+
+@dataclass(frozen=True)
+class WatchStatus:
+    """Operator-facing watcher state.  All lists contain absolute paths/folders."""
+
+    paused: bool = False
+    deferred: tuple[str, ...] = ()
+    unavailable: tuple[str, ...] = ()
+    retrying: tuple[str, ...] = ()
+    exhausted: tuple[str, ...] = ()
+
+    @property
+    def needs_attention(self) -> bool:
+        return bool(self.unavailable or self.retrying or self.exhausted)
 
 
 class FolderWatcher(QObject):
-    """Emit :attr:`files_stable` once a newly-appeared file in a watched folder stops changing."""
+    """Emit settled top-level files once; retain failures for bounded automatic retry."""
 
-    #: Emitted with a list of absolute file paths that have settled (never while paused).
     files_stable = Signal(list)
+    status_changed = Signal(object)
 
-    def __init__(self, poll_ms: int = 1000, stable_polls: int = 3, is_known=None, parent=None):
+    def __init__(self, poll_ms: int = 1000, stable_polls: int = 3, is_known=None,
+                 clock=None, parent=None):
         super().__init__(parent)
         self._stable_polls = max(1, int(stable_polls))
         self._is_known = is_known or (lambda _p, _s, _m: False)
+        self._clock = clock or time.monotonic
         self._folders: list[str] = []
         self._paused = False
-        # path -> {"size", "mtime", "count", "emitted"}
+        # path -> size, mtime, count, emitted, awaiting_ingest, retry_attempt, retry_due, exhausted
         self._tracked: dict[str, dict] = {}
-        self._deferred: list[str] = []   # stable files accumulated while paused, emitted on unpause
+        self._deferred: OrderedDict[str, None] = OrderedDict()
+        self._unavailable: set[str] = set()
+        self._listed_folders: set[str] = set()
+        self._listed_paths: set[str] = set()
+        self._last_status: WatchStatus | None = None
 
         self._fs_watcher = QFileSystemWatcher(self)
         self._fs_watcher.directoryChanged.connect(lambda _p: self.poll())
-
         self._timer = QTimer(self)
         self._timer.setInterval(max(1, int(poll_ms)))
         self._timer.timeout.connect(self.poll)
 
-    # ---- lifecycle -------------------------------------------------------
     def start(self) -> "FolderWatcher":
         self._timer.start()
         return self
@@ -84,95 +81,270 @@ class FolderWatcher(QObject):
         self._timer.stop()
 
     # ---- configuration ---------------------------------------------------
-    def set_folders(self, folders) -> None:
-        """Reconcile the watched-folder set with ``folders`` (absolute paths). Drops tracking for
-        files no longer under any watched folder, and (re)subscribes the QFileSystemWatcher."""
-        new = [str(Path(f)) for f in folders if str(f)]
-        old_paths = self._fs_watcher.directories()
-        if old_paths:
-            self._fs_watcher.removePaths(old_paths)
-        existing = [f for f in new if Path(f).is_dir()]
-        if existing:
-            self._fs_watcher.addPaths(existing)
+    def configure(self, folders, paused: bool, *, reset_binding: bool = False) -> None:
+        """Apply folders and pause state as one atomic observation boundary.
+
+        A normal edit keeps entries still covered by the new folders.  ``reset_binding`` is only
+        for a workspace rebind and discards every old entry, preventing a same-folder rebind from
+        delivering data into the new workspace.
+        """
+        new = _normalise_folders(folders)
+        self._paused = bool(paused)
         self._folders = new
-        # Forget tracked files that fell out of the watched set.
-        self._tracked = {p: st for p, st in self._tracked.items()
-                         if any(_is_within(p, f) for f in new)}
-        # Drop any files that settled-while-paused under the PREVIOUS folder set: a workspace switch
-        # re-seeds the watcher through here, and those deferred files belong to the old workspace —
-        # flushing them on the next unpause would ingest them into the newly-bound one.
-        if self._deferred:
-            log.info("watched-folder set changed — dropping %d deferred file(s) from the previous set",
-                     len(self._deferred))
-            self._deferred = []
+        if reset_binding:
+            self._tracked.clear()
+            self._deferred.clear()
+            self._unavailable.clear()
+        else:
+            self._tracked = {p: st for p, st in self._tracked.items()
+                             if any(_is_within(p, f) for f in new)}
+            self._deferred = OrderedDict((p, None) for p in self._deferred
+                                         if any(_is_within(p, f) for f in new))
+            self._unavailable.intersection_update(new)
+        self._sync_filesystem_watcher()
+        # Poll only after *both* fields have been committed.  This fixes the old set_folders /
+        # set_paused ordering hole where a file could be emitted during a pause configuration edit.
+        # Flush the older paused batch first, so arrival order remains meaningful if the same poll
+        # also finds a newly settled file.
+        self._flush_deferred_if_running()
         self.poll()
+        self._emit_status()
+
+    def set_folders(self, folders) -> None:
+        """Compatibility wrapper: legacy callers meant a fresh workspace binding."""
+        self.configure(folders, self._paused, reset_binding=True)
 
     def set_paused(self, flag: bool) -> None:
-        """Pause/resume emission. Observation continues while paused; on unpause the accumulated
-        stable set is emitted in one batch."""
-        was_paused = self._paused
-        self._paused = bool(flag)
-        if was_paused and not self._paused and self._deferred:
-            batch, self._deferred = self._deferred, []
-            self.files_stable.emit(batch)
+        """Compatibility wrapper for the atomic :meth:`configure` API."""
+        self.configure(self._folders, flag)
 
     def is_paused(self) -> bool:
         return self._paused
 
-    # ---- the poll --------------------------------------------------------
-    def poll(self) -> None:
-        """Scan the watched folders once; advance each candidate's stability counter; emit the set
-        that just crossed the stability threshold (deferred while paused)."""
-        newly_stable: list[str] = []
-        for path, size, mtime in self._candidates():
-            if self._is_known(path, size, mtime):
-                # Already in the ledger with matching size+mtime — nothing to do.
+    def status(self) -> WatchStatus:
+        """Return the latest operator-facing state without requiring a signal turn."""
+        if self._last_status is None:
+            self._emit_status()
+        assert self._last_status is not None
+        return self._last_status
+
+    # ---- ingest outcomes -------------------------------------------------
+    def record_ingest_report(self, report) -> None:
+        """Record per-file parse outcomes from a completed GUI ingest report.
+
+        Only report rows carrying ``error`` are retried.  A clean row clears any former retry state;
+        files classified as supporting/not-recognised data are successful observations, not errors.
+        """
+        now = self._clock()
+        for item in getattr(report, "files", ()) or ():
+            if not isinstance(item, dict):
+                log.warning("ignoring malformed ingest report file row: %r", item)
+                continue
+            raw_path = item.get("path")
+            if not raw_path:
+                log.warning("ignoring ingest report file row without a path: %r", item)
+                continue
+            path = str(Path(raw_path))
+            if not self._is_current_top_level_path(path):
+                log.debug("ignoring ingest result for file outside the current watcher binding: %s", path)
+                continue
+            error = item.get("error")
+            state = self._tracked.get(path)
+            # A report can also come from Add Files/Add Folder.  Only an emission this watcher made
+            # may advance its retry state; otherwise a manual failure would create a retry that can
+            # never be attributed to the current workspace binding.
+            if state is None or not state.get("awaiting_ingest"):
+                log.debug("ignoring ingest result not emitted by this watcher: %s", path)
+                continue
+            if not error:
                 self._tracked.pop(path, None)
+                self._deferred.pop(path, None)
                 continue
-            st = self._tracked.get(path)
-            if st is None:
-                self._tracked[path] = {"size": size, "mtime": mtime, "count": 1, "emitted": False}
-                continue
-            changed = st["size"] != size or st["mtime"] != mtime
-            if st["emitted"]:
-                if changed:  # a resend/append after we already emitted — re-arm from scratch
-                    st.update(size=size, mtime=mtime, count=1, emitted=False)
-                continue
-            if changed:
-                st.update(size=size, mtime=mtime, count=1)
+            attempt = int(state.get("retry_attempt", 0))
+            if attempt >= len(_RETRY_DELAYS):
+                state.update(exhausted=True, retry_due=None, emitted=True, awaiting_ingest=False)
+                log.warning("watched file exhausted automatic parse retries: %s (%s)", path, error)
             else:
-                st["count"] += 1
-                if st["count"] >= self._stable_polls:
-                    st["emitted"] = True
-                    newly_stable.append(path)
-        if not newly_stable:
-            return
-        if self._paused:
-            self._deferred.extend(newly_stable)
-        else:
-            self.files_stable.emit(newly_stable)
+                delay = _RETRY_DELAYS[attempt]
+                state.update(retry_attempt=attempt + 1, retry_due=now + delay,
+                             exhausted=False, emitted=True, awaiting_ingest=False)
+                log.warning("watched file parse failed; retry %d of %d in %.0f s: %s (%s)",
+                            attempt + 1, len(_RETRY_DELAYS), delay, path, error)
+        self._emit_status()
+
+    # ---- poll ------------------------------------------------------------
+    def poll(self) -> None:
+        """Advance stable-file state, prune only confirmed-absent paths, and emit due retries."""
+        newly_stable: list[str] = []
+        observed: set[str] = set()
+        for path, size, mtime, folder in self._candidates():
+            observed.add(path)
+            if self._is_known(path, size, mtime):
+                self._tracked.pop(path, None)
+                self._deferred.pop(path, None)
+                continue
+            state = self._tracked.get(path)
+            if state is None:
+                self._tracked[path] = _state(size, mtime)
+                continue
+            changed = state["size"] != size or state["mtime"] != mtime
+            if changed:
+                # A changed file is new evidence: a previously exhausted parser failure may now be
+                # complete/fixed, so re-arm all retry bookkeeping rather than silently ignoring it.
+                state.update(_state(size, mtime))
+                self._deferred.pop(path, None)
+                continue
+            if state.get("exhausted") or state.get("retry_due") is not None:
+                continue
+            if state["emitted"]:
+                continue
+            state["count"] += 1
+            if state["count"] >= self._stable_polls:
+                state["emitted"] = True
+                newly_stable.append(path)
+
+        # A successful directory listing is authoritative for absence; an individual stat failure
+        # is not.  Preserve prior retry/deferred state while a transient access problem clears.
+        self._prune_confirmed_absent(observed | self._listed_paths, self._listed_folders)
+        due = self._due_retries(observed)
+        for path in newly_stable + due:
+            self._queue_or_emit(path)
+        self._flush_deferred_if_running()
+        self._emit_status()
 
     def _candidates(self):
-        """Yield ``(abs_path, size, mtime)`` for non-hidden, non-transient files directly inside the
-        watched folders. Stat failures and un-listable folders are skipped (logged), never raised."""
+        """Yield files from folders successfully listed; unavailable folders remain observable."""
+        unavailable: set[str] = set()
+        self._listed_folders = set()
+        self._listed_paths: set[str] = set()
         for folder in self._folders:
-            d = Path(folder)
-            if not d.is_dir():
+            directory = Path(folder)
+            if not directory.is_dir():
+                unavailable.add(folder)
                 continue
             try:
-                entries = list(d.iterdir())
+                entries = list(directory.iterdir())
             except OSError as exc:
+                unavailable.add(folder)
                 log.warning("could not list watched folder %s: %s", folder, exc)
                 continue
+            self._listed_folders.add(folder)
             for child in entries:
-                if not child.is_file() or _should_skip_name(child.name):
+                if _should_skip_name(child.name):
                     continue
+                # Remember every visible entry before stat/is_file.  If a network share denies a
+                # transient stat, it is still present and must not lose retry/deferred state.
+                self._listed_paths.add(str(child))
                 try:
-                    stt = child.stat()
+                    stat = child.stat()
                 except OSError as exc:
                     log.warning("could not stat watched file %s: %s", child, exc)
                     continue
-                yield str(child), stt.st_size, stt.st_mtime
+                if not stat_module.S_ISREG(stat.st_mode):
+                    continue
+                yield str(child), stat.st_size, stat.st_mtime, folder
+        if unavailable != self._unavailable:
+            newly_unavailable = unavailable - self._unavailable
+            if newly_unavailable:
+                log.warning("watched folder(s) unavailable: %s", ", ".join(sorted(newly_unavailable)))
+            returned = self._unavailable - unavailable
+            if returned:
+                log.info("watched folder(s) available again: %s", ", ".join(sorted(returned)))
+                self._sync_filesystem_watcher()
+            self._unavailable = unavailable
+
+    def _due_retries(self, observed: set[str]) -> list[str]:
+        now = self._clock()
+        due: list[str] = []
+        for path, state in self._tracked.items():
+            retry_due = state.get("retry_due")
+            if retry_due is not None and now >= retry_due and path in observed:
+                state["retry_due"] = None
+                state["emitted"] = True
+                due.append(path)
+        return due
+
+    def _prune_confirmed_absent(self, observed: set[str], listed_folders: set[str]) -> None:
+        """Remove paths only if their own top-level folder was listed successfully this poll."""
+        stale = [path for path in self._tracked
+                 if path not in observed and any(_is_direct_child(path, folder) for folder in listed_folders)]
+        for path in stale:
+            self._tracked.pop(path, None)
+            self._deferred.pop(path, None)
+
+    def _queue_or_emit(self, path: str) -> None:
+        if self._paused:
+            self._deferred[path] = None
+        else:
+            state = self._tracked.get(path)
+            if state is not None:
+                state["awaiting_ingest"] = True
+            self.files_stable.emit([path])
+
+    def _flush_deferred_if_running(self) -> None:
+        if self._paused or not self._deferred:
+            return
+        batch = list(self._deferred)
+        self._deferred.clear()
+        for path in batch:
+            state = self._tracked.get(path)
+            if state is not None:
+                state["awaiting_ingest"] = True
+        self.files_stable.emit(batch)
+
+    def _sync_filesystem_watcher(self) -> None:
+        old_paths = self._fs_watcher.directories()
+        if old_paths:
+            self._fs_watcher.removePaths(old_paths)
+        existing = [folder for folder in self._folders if Path(folder).is_dir()]
+        if existing:
+            failed = self._fs_watcher.addPaths(existing)
+            if failed:
+                log.warning("could not attach folder-change watches: %s", ", ".join(failed))
+
+    def _is_current_top_level_path(self, path: str) -> bool:
+        return any(_is_direct_child(path, folder) for folder in self._folders)
+
+    def _emit_status(self) -> None:
+        retrying = tuple(sorted(path for path, state in self._tracked.items()
+                               if state.get("retry_due") is not None))
+        exhausted = tuple(sorted(path for path, state in self._tracked.items()
+                               if state.get("exhausted")))
+        status = WatchStatus(
+            paused=self._paused,
+            deferred=tuple(self._deferred),
+            unavailable=tuple(sorted(self._unavailable)),
+            retrying=retrying,
+            exhausted=exhausted,
+        )
+        if status != self._last_status:
+            self._last_status = status
+            self.status_changed.emit(status)
+
+
+def _state(size, mtime, *, emitted: bool = False) -> dict:
+    return {"size": size, "mtime": mtime, "count": 1, "emitted": emitted,
+            "awaiting_ingest": False,
+            "retry_attempt": 0, "retry_due": None, "exhausted": False}
+
+
+def _normalise_folders(folders) -> list[str]:
+    out: list[str] = []
+    for folder in folders:
+        if not str(folder):
+            continue
+        text = str(Path(folder))
+        if text not in out:
+            out.append(text)
+    return out
+
+
+def _is_direct_child(path: str, folder: str) -> bool:
+    try:
+        return Path(path).resolve().parent == Path(folder).resolve()
+    except OSError as exc:
+        log.debug("could not compare watched path %s to %s: %s", path, folder, exc)
+        return False
 
 
 def _is_within(path: str, base: str) -> bool:

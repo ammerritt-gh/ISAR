@@ -626,6 +626,22 @@ def test_is_file_known_uses_cached_manifest_index(qtbot, tmp_path, make_ws):
     assert w._is_file_known(str(data), st.st_size, st.st_mtime) is False
 
 
+def test_failed_manifest_file_is_not_known_to_watcher(qtbot, tmp_path, make_ws):
+    data = tmp_path / "bad.dat"
+    data.write_bytes(b"bad")
+    st = data.stat()
+    root = make_ws(
+        files={str(data): {"size": st.st_size, "mtime": st.st_mtime, "format": "measurement",
+                           "n_scans": 0, "scan_ids": [], "n_context": 0,
+                           "error": "ValueError: bad header"}},
+    )
+    w = MainWindow(Workspace.open(root), session=Session(), watch=False)
+    qtbot.addWidget(w)
+
+    assert not w._known_files_cache
+    assert w._is_file_known(str(data), st.st_size, st.st_mtime) is False
+
+
 def test_dock_layout_round_trips_through_session(qtbot, make_ws):
     ws1, _ = _open(make_ws)
     w1 = MainWindow(ws1, session=Session(), watch=False)
