@@ -12,9 +12,12 @@ consumer can label honestly and never assumes ``E0=0``).
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import math
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,10 +36,39 @@ def _sanitize(part) -> str:
     return s or "x"
 
 
-def unit_data_path(data_dir, exp, scan, det) -> Path:
-    """``<data_dir>/ingest/ingest-<exp>-<scan:04d>-<det>.json`` (each component sanitized)."""
+def legacy_unit_data_path(data_dir, exp, scan, det) -> Path:
+    """Return the original lossy filename used by early Phase-2 workspaces.
+
+    This is deliberately retained only for reads/backfills.  Sanitising identity components is not
+    injective (``a/b`` and ``a:b`` both become ``a_b``), so new writes must never use this path.
+    """
     fname = f"ingest-{_sanitize(exp)}-{int(scan):04d}-{_sanitize(det)}.json"
     return Path(data_dir) / INGEST_SUBDIR / fname
+
+
+def _encode_component(value) -> str:
+    """Injective, Windows-safe encoding for one persisted identity component."""
+    raw = str(value).encode("utf-8")
+    # URL-safe base64 has no path separators or Windows-reserved characters.  A non-empty source
+    # produces a non-empty encoding; represent the unlikely empty identity explicitly as ``x``.
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=") or "x"
+
+
+def unit_data_path(data_dir, exp, scan, det) -> Path:
+    """Return the canonical v2 per-unit path with lossless complete identity encoding.
+
+    ``isar.unit_data/1`` remains the payload schema; only its filename is upgraded.  Legacy
+    sanitized paths are still read through :func:`unit_data_paths_for_read`.
+    """
+    fname = f"ingest-v2-e{_encode_component(exp)}-s{int(scan)}-d{_encode_component(det)}.json"
+    return Path(data_dir) / INGEST_SUBDIR / fname
+
+
+def unit_data_paths_for_read(data_dir, exp, scan, det) -> tuple[Path, ...]:
+    """Canonical then legacy candidate paths for one atomic unit, without duplicate paths."""
+    canonical = unit_data_path(data_dir, exp, scan, det)
+    legacy = legacy_unit_data_path(data_dir, exp, scan, det)
+    return (canonical,) if legacy == canonical else (canonical, legacy)
 
 
 def _tolist(arr) -> list:
@@ -79,19 +111,119 @@ def write_unit_data(rec, det, data_dir) -> Path:
     }
     path = unit_data_path(data_dir, rec.experiment_id, rec.scan_number, det)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload), encoding="utf-8")
+    # A unit file is a small immutable snapshot.  Write a sibling temporary file and replace it so
+    # an interrupted ingest cannot turn a valid previous file into a truncated JSON document.
+    tmp_name = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as handle:
+            tmp_name = handle.name
+            json.dump(payload, handle, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+        tmp_name = None
+    finally:
+        if tmp_name is not None:
+            try:
+                Path(tmp_name).unlink(missing_ok=True)
+            except OSError as exc:
+                log.warning("unit data: could not remove failed temporary write %s (%s)", tmp_name, exc)
     return path
 
 
-def read_unit_data(path) -> dict | None:
+def _valid_identity(d: dict, expected_identity: tuple | None) -> bool:
+    """Validate the additive identity fields, optionally against the requested atomic unit."""
+    exp = d.get("experiment_id")
+    scan = d.get("scan_number")
+    det = d.get("detector_id")
+    if not isinstance(exp, str) or not exp or isinstance(scan, bool) or not isinstance(scan, int):
+        return False
+    if not isinstance(det, str) or not det:
+        return False
+    if d.get("scan_id") != f"{exp}:{scan}:{det}":
+        return False
+    return expected_identity is None or (exp, scan, det) == expected_identity
+
+
+def _valid_payload(d: dict, expected_identity: tuple | None = None) -> bool:
+    """Conservative validation for a read-only surface; invalid data degrades to missing.
+
+    The validator intentionally does not adjust values: zero variance stays zero, masks are kept
+    verbatim, and raw axes are never shifted.  It establishes only the schema and aligned-vector
+    invariants needed for a reliable plot.
+    """
+    if not isinstance(d, dict) or d.get("schema") != SCHEMA or not _valid_identity(d, expected_identity):
+        return False
+    if not isinstance(d.get("axis"), dict):
+        return False
+    arrays = []
+    for name in ("x", "counts", "variance"):
+        value = d.get(name)
+        if not isinstance(value, list):
+            return False
+        try:
+            arr = np.asarray(value, dtype=float)
+        except (TypeError, ValueError):
+            return False
+        if arr.ndim != 1:
+            return False
+        arrays.append(arr)
+    mask = d.get("mask")
+    if not isinstance(mask, list):
+        return False
+    try:
+        mask_array = np.asarray(mask)
+    except (TypeError, ValueError):
+        return False
+    if (mask_array.ndim != 1
+            or not all(isinstance(value, (bool, np.bool_)) for value in mask)):
+        return False
+    size = arrays[0].size
+    return all(arr.size == size for arr in arrays[1:]) and len(mask) == size
+
+
+def read_unit_data(path, *, expected_identity: tuple | None = None) -> dict | None:
     """Tolerant read of a unit-data JSON: the parsed dict, or ``None`` on any missing/parse problem
-    (a read surface must never raise; a torn or pre-Phase-2 workspace simply has no unit file)."""
+    (a read surface must never raise; a torn or pre-Phase-2 workspace simply has no unit file).
+    When ``expected_identity`` is supplied, a payload that belongs to another unit is also treated
+    as missing.  This closes collisions from the legacy lossy filename scheme without making the
+    viewer raise on a damaged workspace.
+    """
     p = Path(path)
     try:
         d = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return d if isinstance(d, dict) else None
+    return d if _valid_payload(d, expected_identity) else None
+
+
+def read_unit_data_for_unit(data_dir, exp, scan, det) -> dict | None:
+    """Read the canonical file, then an older sanitized path, for exactly one requested unit."""
+    identity = (str(exp), int(scan), str(det))
+    for path in unit_data_paths_for_read(data_dir, *identity):
+        rec = read_unit_data(path, expected_identity=identity)
+        if rec is not None:
+            return rec
+    return None
+
+
+def canonical_unit_data_is_valid(data_dir, exp, scan, det) -> bool:
+    """Whether the current lossless path holds valid data for this exact identity."""
+    identity = (str(exp), int(scan), str(det))
+    return read_unit_data(unit_data_path(data_dir, *identity), expected_identity=identity) is not None
+
+
+def unit_data_artifact_exists(data_dir, exp, scan, det) -> bool:
+    """Whether either supported per-unit filename exists, even if its contents are invalid.
+
+    Callers use this to distinguish an old drive-only workspace (where scan-level fallback is safe)
+    from a damaged atomic-unit artifact (which must remain visibly missing rather than borrowing a
+    potentially different detector's legacy scan-level file).
+    """
+    return any(path.is_file() for path in unit_data_paths_for_read(data_dir, exp, scan, det))
 
 
 def _provenance_extras(rec) -> dict:

@@ -63,6 +63,22 @@ def test_unit_data_missing_returns_none(make_ws):
     assert ws.unit_data("FeSeS:9:ana2") is None       # no file written, no legacy file → None
 
 
+def test_unit_data_rejects_corrupt_or_identity_mismatched_canonical_file(make_ws):
+    root = make_ws(
+        scans={"FeSeS:9:ana2": scan_entry(9, status="ingested", detectors={})},
+        data_files=[{"scan_number": 9, "energy": [0.0], "counts": [99.0]}],
+    )
+    p = ud.unit_data_path(root / "data", "FeSeS", 9, "ana2")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({
+        "schema": ud.SCHEMA, "scan_id": "other:9:ana2",
+        "experiment_id": "other", "scan_number": 9, "detector_id": "ana2",
+        "x": [0.0], "counts": [5.0], "variance": [5.0], "mask": [True], "axis": {},
+    }), encoding="utf-8")
+    ws = Workspace.open(root)
+    assert ws.unit_data("FeSeS:9:ana2") is None  # must not borrow the legacy scan-level 99-count file
+
+
 def test_unit_data_legacy_fallback_absolute_axis(make_ws):
     """No per-unit file, but a drive ``data/j-0007.json`` exists → fallback with an absolute axis."""
     root = make_ws(

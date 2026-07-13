@@ -299,6 +299,35 @@ def test_backfill_missing_unit_file_on_unchanged_without_ticking_dirty(tmp_path)
     assert report.unchanged and not report.added and not report.updated
 
 
+def test_unchanged_reingest_repairs_corrupt_and_legacy_only_unit_files(tmp_path):
+    """A no-op ingest repairs durable-viewer artifacts without changing the scientific ledger."""
+    from isar.session import unit_data
+
+    p = tmp_path / "run.spec_supplementary.dat"
+    card = _emit_s30(p, n_scans=1)
+    data_dir = tmp_path / "ws" / "data"
+    session = SessionState()
+    ingest.ingest_batch(card, session, [p], data_dir=data_dir)
+    entry = next(iter(session.scans.values()))
+    exp, scan, det = entry.scan_id.rsplit(":", 2)
+    canonical = unit_data.unit_data_path(data_dir, exp, int(scan), det)
+    legacy = unit_data.legacy_unit_data_path(data_dir, exp, int(scan), det)
+    original = canonical.read_text(encoding="utf-8")
+
+    # A collision/mismatch or torn canonical file must be replaced on an unchanged re-ingest.
+    canonical.write_text("{ torn", encoding="utf-8")
+    report = ingest.ingest_batch(card, session, [p], data_dir=data_dir)
+    assert report.dirty is False and report.unchanged
+    assert unit_data.canonical_unit_data_is_valid(data_dir, exp, int(scan), det)
+
+    # A valid old filename remains readable, but a no-op re-ingest promotes it back to canonical.
+    canonical.unlink()
+    legacy.write_text(original, encoding="utf-8")
+    report = ingest.ingest_batch(card, session, [p], data_dir=data_dir)
+    assert report.dirty is False and report.unchanged
+    assert canonical.exists() and legacy.exists()       # old scientific artifacts are never deleted
+
+
 def test_no_data_dir_writes_no_unit_files_and_still_stamps_provenance(tmp_path):
     """``data_dir`` is optional: omitting it writes no unit files but still enriches provenance."""
     p = tmp_path / "run.spec_supplementary.dat"

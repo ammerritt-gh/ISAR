@@ -378,11 +378,14 @@ class Workspace:
         import numpy as np
         from types import SimpleNamespace
 
-        from isar.session.unit_data import read_unit_data, unit_data_path
+        from isar.session.unit_data import read_unit_data_for_unit, unit_data_artifact_exists
 
         exp, scan_number, det = self._split_unit_id(scan_id, detector_id)
         if exp is not None and scan_number is not None and det is not None:
-            rec = read_unit_data(unit_data_path(self._data_dir, exp, scan_number, det))
+            # This validates schema, aligned arrays, and payload identity.  A corrupt or legacy
+            # collision file is therefore treated as missing rather than plotted as a plausible
+            # neighbour; the helper still reads a valid legacy filename for migration continuity.
+            rec = read_unit_data_for_unit(self._data_dir, exp, scan_number, det)
             if rec is not None:
                 counts = np.asarray(rec.get("counts") or [], dtype=float)
                 var = np.asarray(rec.get("variance") or [], dtype=float)
@@ -393,6 +396,11 @@ class Workspace:
                 return SimpleNamespace(
                     x=np.asarray(rec.get("x") or [], dtype=float), counts=counts,
                     yerr=yerr, mask=mask, axis=dict(rec.get("axis") or {}))
+            # A present but invalid/mismatched atomic artifact needs repair.  Do not conceal it by
+            # falling through to the scan-level drive file: that file has no detector identity and
+            # can silently display a neighbouring analyzer's counts.
+            if unit_data_artifact_exists(self._data_dir, exp, scan_number, det):
+                return None
 
         # Fallback: legacy single-detector drive file; axis defaults absolute (TAVI is calibrated).
         from .evaluate import _load_scan_arrays

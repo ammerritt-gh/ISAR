@@ -1,12 +1,13 @@
 """`isar.session.unit_data` — per-unit data files + provenance extras (Pass 2b Phase 2).
 
-Contracts pinned here: the ``data/ingest/`` path shape and sanitization; a verbatim round-trip
+Contracts pinned here: the lossless ``data/ingest/`` identity path and legacy readability; a verbatim round-trip
 (counts/variance/mask/x unshifted, σ²=0 kept — D3); the axis block carries the honest 3-state
 calibration (never a defaulted E0); and ``_provenance_extras`` is additive + strictly tolerant
 (q_target present for an S30 target #Q, absent when no #Q line exists).
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -28,13 +29,18 @@ def _s30_record(seed0=1000, status="needs_zero"):
     return rec
 
 
-def test_unit_data_path_shape_and_sanitize(tmp_path):
+def test_unit_data_path_is_lossless_and_legacy_path_remains_addressable(tmp_path):
     p = unit_data.unit_data_path(tmp_path / "data", "FeSeS_1.spec", 12, "ana3")
-    assert p == tmp_path / "data" / "ingest" / "ingest-FeSeS_1.spec-0012-ana3.json"
-    # a slash / colon in an id never escapes into another path component
-    dirty = unit_data.unit_data_path(tmp_path / "data", "a/b:c", 7, "d e")
-    assert dirty.name == "ingest-a_b_c-0007-d_e.json"
-    assert dirty.parent.name == "ingest"
+    assert p.parent == tmp_path / "data" / "ingest"
+    assert p.name.startswith("ingest-v2-e") and p.suffix == ".json"
+    # The old sanitiser collided for these distinct identities; v2 must not.
+    first = unit_data.unit_data_path(tmp_path / "data", "a/b:c", 7, "d e")
+    second = unit_data.unit_data_path(tmp_path / "data", "a:b/c", 7, "d_e")
+    assert first != second
+    assert all(c not in first.name for c in "\\/:*?\"<>")
+    legacy = unit_data.legacy_unit_data_path(tmp_path / "data", "a/b:c", 7, "d e")
+    assert legacy.name == "ingest-a_b_c-0007-d_e.json"
+    assert unit_data.unit_data_paths_for_read(tmp_path / "data", "a/b:c", 7, "d e") == (first, legacy)
 
 
 def test_round_trip_verbatim(tmp_path):
@@ -87,6 +93,41 @@ def test_read_unit_data_tolerant(tmp_path):
     arr = tmp_path / "arr.json"
     arr.write_text("[1, 2, 3]", encoding="utf-8")   # valid JSON, wrong root type
     assert unit_data.read_unit_data(arr) is None
+
+
+def test_read_unit_data_validates_schema_identity_and_aligned_vectors(tmp_path):
+    payload = {
+        "schema": unit_data.SCHEMA, "scan_id": "exp:4:det",
+        "experiment_id": "exp", "scan_number": 4, "detector_id": "det",
+        "x": [0.0, 1.0], "counts": [1.0, 0.0], "variance": [1.0, 0.0],
+        "mask": [True, False], "axis": {},
+    }
+    path = tmp_path / "unit.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert unit_data.read_unit_data(path, expected_identity=("exp", 4, "det")) == payload
+    assert unit_data.read_unit_data(path, expected_identity=("other", 4, "det")) is None
+    payload["variance"] = [1.0]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert unit_data.read_unit_data(path) is None
+    payload["variance"] = [1.0, 0.0]
+    payload["mask"] = [[True], [False]]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert unit_data.read_unit_data(path) is None  # malformed nested/ragged masks are tolerant-missing
+
+
+def test_read_unit_data_for_unit_reads_valid_legacy_after_bad_canonical(tmp_path):
+    data = tmp_path / "data"
+    canonical = unit_data.unit_data_path(data, "exp", 4, "det")
+    legacy = unit_data.legacy_unit_data_path(data, "exp", 4, "det")
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text("{ torn", encoding="utf-8")
+    legacy.write_text(json.dumps({
+        "schema": unit_data.SCHEMA, "scan_id": "exp:4:det",
+        "experiment_id": "exp", "scan_number": 4, "detector_id": "det",
+        "x": [0.0], "counts": [0.0], "variance": [0.0], "mask": [True], "axis": {},
+    }), encoding="utf-8")
+    assert unit_data.read_unit_data_for_unit(data, "exp", 4, "det")["scan_id"] == "exp:4:det"
+    assert not unit_data.canonical_unit_data_is_valid(data, "exp", 4, "det")
 
 
 def test_provenance_extras_s30_has_q_target():

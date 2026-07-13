@@ -136,8 +136,9 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
 
     When ``data_dir`` is given, a per-unit data file (``isar.unit_data/1``, see
     :mod:`isar.session.unit_data`) is written under ``data_dir/ingest/`` for every added/updated
-    entry, AND backfilled for any ``unchanged`` entry whose file is missing (cheap, no ledger
-    mutation — lets a re-ingest repair a pre-Phase-2 workspace without ticking ``dirty``). A unit
+    entry, AND backfilled for any ``unchanged`` entry whose canonical file is missing, corrupt,
+    identity-mismatched, or legacy-only (cheap, no ledger mutation — lets a re-ingest repair a
+    pre-Phase-2 workspace without ticking ``dirty``). A unit
     write failure is logged and skipped; it never aborts the batch.
 
     Mutates ``session`` in place; the caller persists it (skip ``save()`` when ``report.dirty`` is
@@ -148,15 +149,16 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
     from isar.session.state import ScanEntry, content_hash
 
     def _write_unit(rec, det, det_state):
-        """Write (added/updated) or backfill-if-missing (unchanged) one unit file; isolate failures."""
+        """Write changed data, or repair a non-canonical unchanged unit; isolate failures."""
         if data_dir is None:
             return
         try:
             if det_state in ("added", "updated"):
                 unit_data.write_unit_data(rec, det, data_dir)
-            else:  # unchanged: only write if the file is absent (backfill; no ledger mutation)
-                path = unit_data.unit_data_path(data_dir, rec.experiment_id, rec.scan_number, det)
-                if not path.exists():
+            else:  # unchanged: repair absent/torn/mismatched/legacy-only canonical data
+                if not unit_data.canonical_unit_data_is_valid(
+                    data_dir, rec.experiment_id, rec.scan_number, det,
+                ):
                     unit_data.write_unit_data(rec, det, data_dir)
         except Exception as exc:  # noqa: BLE001 — one bad unit must never abort the batch
             log.warning("ingest: failed to write unit data for %s:%s:%s (%s); continuing",
