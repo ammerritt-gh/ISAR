@@ -48,8 +48,8 @@ def test_main_window_builds(qtbot, make_ws):
 
 def test_empty_start_window(qtbot):
     """No workspace (empty-start): the window opens with the Open-Workspace hint as its central
-    widget, no watch bridge (even with watch enabled), the docks scaffolded, and 'no workspace' in
-    the status bar."""
+    widget, no watch bridge (even with watch enabled), only data-entry/diagnostic docks, and 'no
+    workspace' in the status bar."""
     w = MainWindow(None, session=Session(), watch=True,
                    watch_kwargs={"poll_interval_s": 0.02, "debounce_ms": 50})
     qtbot.addWidget(w)
@@ -59,15 +59,31 @@ def test_empty_start_window(qtbot):
     assert "Open Workspace" in w._empty_hint.text()
     assert w.windowTitle() == "ISAR — (no workspace)"
     assert "No workspace" in w.statusBar().currentMessage()
-    # All docks are still present (empty/graceful), so the layout is stable across a later bind.
-    for name in ("Log", "Browser", "Plane (q, E)", "Dispersion ω(q)", "Waterfall / Comparison"):
-        assert name in w._docks
-    # The empty viewmodels render their own honest empty views (no fitted scans / empty tree).
+    # Workspace-specific docks are withheld until data has a workspace.  Files is the useful
+    # first-time surface for adding/dropping data; Log remains available for visible failures.
+    assert set(w._docks) == {"Log", "Files"}
+    assert w.files_dock.isVisible() is False  # the window itself has not been shown yet
+    assert not hasattr(w, "browser_dock")
+    assert not hasattr(w, "card_dock")
+    assert not hasattr(w, "scans_dock")
+    # The empty viewmodels remain honest and available to the shell, even though their docks are
+    # intentionally not presented before a workspace binds.
     assert w.browser_vm.group_rows == []
     assert w.heatmap_vm.spec.strips == []
-    # workspace_path stays None (not the string "None") so the Browser summary renders blank.
+    # workspace_path stays None (not the string "None") in the hidden browser model.
     assert w.browser_vm.card_summary["workspace_path"] is None
-    assert w.browser_dock._summary_labels["workspace_path"].text() == ""
+
+
+def test_empty_start_keeps_log_compact_and_files_prominent(qtbot):
+    """A first-time window must lead with data entry, not a giant mostly-empty log."""
+    w = MainWindow(None, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    w.show()
+    qtbot.waitUntil(lambda: w.files_dock.isVisible())
+    # The queued empty-start layout runs after any restored state.  On the 800px default window the
+    # requested 180px log height leaves the useful Files dock with the clear majority of the space.
+    qtbot.waitUntil(lambda: w.log_dock.height() <= 240)
+    assert w.files_dock.height() > w.log_dock.height()
 
 
 def test_open_workspace_from_empty_binds(qtbot, make_ws):
@@ -85,6 +101,10 @@ def test_open_workspace_from_empty_binds(qtbot, make_ws):
     assert w.inspector is not None
     assert w.windowTitle() == f"ISAR — {root.name}"
     assert len(w.browser_vm.group_rows) == 1
+    # A ready workspace restores the full normal view; the sparse welcome scaffold is not sticky.
+    for name in ("Browser", "Card", "Scans", "Plane (q, E)", "Dispersion ω(q)",
+                 "Waterfall / Comparison"):
+        assert name in w._docks
 
 
 def test_empty_start_autosave_does_not_crash(qtbot):
@@ -547,6 +567,50 @@ def test_dock_layout_round_trips_through_session(qtbot, make_ws):
     # the test doesn't depend on pumping the event loop.
     w2._restore_layout()
     assert not w2.log_dock.isVisible()
+
+
+def test_empty_start_then_open_reapplies_saved_full_dock_layout(qtbot, make_ws):
+    """A sparse welcome scaffold must not consume the saved layout for the later full workspace.
+
+    ``restoreState`` ignores dock ids that do not exist yet.  Opening a workspace after the empty
+    start must therefore restore the same full-layout preference that a direct workspace launch
+    would have used.
+    """
+    ws, _ = _open(make_ws)
+    source = MainWindow(ws, session=Session(), watch=False)
+    qtbot.addWidget(source)
+    source.show()
+    source.browser_dock.show()
+    source.browser_dock.raise_()
+    qtbot.waitUntil(source.browser_dock.isVisible)
+    saved = source._snapshot_session()
+
+    root = make_ws(rows=[{"scan": 2, "detector": "det", "status": "fitted", "omega0": 6.0}])
+    w = MainWindow(None, session=Session(dock_layout_b64=saved.dock_layout_b64), watch=False)
+    qtbot.addWidget(w)
+    w.show()
+    assert "Browser" not in w._docks                  # sparse start cannot restore it yet
+
+    assert w.load_workspace(str(root)) is True
+    qtbot.waitUntil(w.browser_dock.isVisible)
+
+
+def test_new_pending_reapplies_compact_empty_log_geometry(qtbot, tmp_path, monkeypatch):
+    """The compact welcome geometry also applies to a later New -> pending transition."""
+    import isar_gui.workspace_manager as wm
+    from PySide6.QtCore import Qt
+
+    monkeypatch.setattr(wm, "temp_root", lambda: tmp_path / "temp")
+    w = MainWindow(None, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    w.show()
+    # Make the initial dock obviously large, then make a fresh pending workspace.  The queued
+    # welcome layout must shrink it again rather than leaving the old allocation in place.
+    w.resizeDocks([w.log_dock], [500], Qt.Vertical)
+    w.new_workspace()
+    qtbot.waitUntil(lambda: w._wsm.state() == "pending")
+    qtbot.waitUntil(lambda: w.log_dock.height() <= 240)
+    assert w.files_dock.height() > w.log_dock.height()
 
 
 # ---- persistent log dock across rebinds -------------------------------------

@@ -76,6 +76,9 @@ log = logging.getLogger(__name__)
 
 _EMPTY_HINT = "No workspace loaded.\n\nFile ▸ Open Workspace… to begin."
 _PENDING_HINT = "Drop data files to begin — they'll land in a temporary workspace."
+# The log is useful context, not the primary empty-start surface.  Qt gives a lone bottom dock a
+# surprisingly generous share of the window unless we establish a deliberate starting size.
+_EMPTY_START_LOG_HEIGHT = 180
 
 
 class _EmptyWorkspace:
@@ -204,8 +207,11 @@ class MainWindow(QMainWindow):
         self._autosaver = Autosaver(self._snapshot_session, parent=self, on_error=self.log)
 
         # Restore the persisted dock layout after the event loop settles (QTimer.singleShot(0, ...)),
-        # so all docks exist and their default geometry is applied first.
+        # so all docks exist and their default geometry is applied first.  An empty start has a
+        # deliberately simpler layout; apply that after restoration so an old full-workspace layout
+        # cannot make Log dominate a first-time screen.
         QTimer.singleShot(0, self._restore_layout)
+        QTimer.singleShot(0, self._apply_empty_start_dock_geometry)
 
     # ---- workspace binding (shared by __init__ and load_workspace) --------
     def _bind_workspace(self, ws) -> None:
@@ -275,6 +281,16 @@ class MainWindow(QMainWindow):
         self._docks = {}
         self._init_docks()
         self._init_docks_menu()
+
+        # ``restoreState`` can only restore docks which exist at the time it runs.  A first launch
+        # may deliberately bind the sparse empty-start scaffold, then open a real workspace later
+        # in the same session.  Reapply the saved layout after that ready bind creates the complete
+        # dock set.  Conversely, every none/pending rebind gets its compact data-entry geometry,
+        # not just the constructor's initial bind.
+        if self._empty:
+            QTimer.singleShot(0, self._apply_empty_start_dock_geometry)
+        elif self._bound and self._session.dock_layout_b64:
+            QTimer.singleShot(0, self._restore_layout)
 
         if self._empty:
             if self._wsm.state() == "pending":
@@ -352,6 +368,15 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.LeftDockWidgetArea, self.files_dock)
         self._register_dock("Files", self.files_dock)
 
+        if self._empty:
+            # Before a workspace exists, results, card, scan, and plot docks are not merely empty:
+            # they describe concepts the operator cannot act on yet.  Keep just the data-entry dock
+            # visible, matching the useful New Workspace pending state.  A ready bind rebuilds the
+            # complete normal dock scaffold below.
+            self.files_dock.show()
+            self.files_dock.raise_()
+            return
+
         self.browser_dock = BrowserDock(
             self.browser_vm, self, unit_key_for_fit=self._unit_key_for_fit)
         self.active_units.active_changed.connect(self.browser_dock.set_active_key)
@@ -396,6 +421,20 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.waterfall_dock)
         self.tabifyDockWidget(self.heatmap_dock, self.waterfall_dock)
         self._register_dock("Waterfall / Comparison", self.waterfall_dock)
+
+    def _apply_empty_start_dock_geometry(self) -> None:
+        """Give the no-workspace/start-new screen a compact Log dock.
+
+        This is intentionally conditional: a scientist who has opened a real workspace retains
+        their saved layout.  In the none/pending state the useful first action is adding data, so
+        Files remains raised and Log gets a modest diagnostic height rather than most of the window.
+        The queued call runs after ``restoreState`` at startup and also covers later ``New`` binds.
+        """
+        if not self._empty:
+            return
+        self.files_dock.show()
+        self.files_dock.raise_()
+        self.resizeDocks([self.log_dock], [_EMPTY_START_LOG_HEIGHT], Qt.Vertical)
 
     def _register_dock(self, name: str, dock) -> None:
         """Track a dock so the Docks menu and layout autosave pick it up (call before menu build)."""
