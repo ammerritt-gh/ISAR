@@ -23,7 +23,7 @@ def test_adjudication_config_defaults():
     cfg = adjudicate.adjudication_config(card)
     assert cfg.enabled is False
     assert cfg.model_pin == "local_desktop/qwen3p5-9b"
-    assert cfg.fallback_pin == "nanogpt/openai/gpt-oss-120b"
+    assert cfg.fallback_pin is None
     assert cfg.endpoint == "http://127.0.0.1:8766"
     assert cfg.temperature == 0.2
     assert cfg.max_tokens == 1500
@@ -41,12 +41,25 @@ def test_adjudication_config_reads_policy_block():
 
 
 def test_env_overrides_endpoint_and_model(monkeypatch):
-    monkeypatch.setenv("ISAR_LLM_ENDPOINT", "http://beamline:9000")
+    monkeypatch.setenv("ISAR_LLM_ENDPOINT", "https://beamline.example.test:9000")
     monkeypatch.setenv("ISAR_LLM_MODEL", "local_desktop/qwen3p5-2b")
     card = spec_s30.card_template()
     cfg = adjudicate.adjudication_config(card)
-    assert cfg.endpoint == "http://beamline:9000"
+    assert cfg.endpoint == "https://beamline.example.test:9000"
     assert cfg.model_pin == "local_desktop/qwen3p5-2b"
+
+
+def test_fallback_env_is_explicit_and_empty_disables_card_fallback(monkeypatch):
+    card = spec_s30.card_template()
+    card.policy.adjudication = {"fallback_pin": adjudicate.DEFAULT_CLOUD_FALLBACK_MODEL}
+
+    assert adjudicate.adjudication_config(card).fallback_pin == adjudicate.DEFAULT_CLOUD_FALLBACK_MODEL
+
+    monkeypatch.setenv("ISAR_LLM_FALLBACK_MODEL", "")
+    assert adjudicate.adjudication_config(card).fallback_pin is None
+
+    monkeypatch.setenv("ISAR_LLM_FALLBACK_MODEL", "nanogpt/example/explicit")
+    assert adjudicate.adjudication_config(card).fallback_pin == "nanogpt/example/explicit"
 
 
 def test_fallback_dispatcher_uses_fallback_on_primary_error():

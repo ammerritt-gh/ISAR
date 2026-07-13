@@ -18,7 +18,9 @@ and an optional ``error`` (``{code,message,...}``).
 from __future__ import annotations
 
 import json
+import ipaddress
 import urllib.request
+import urllib.parse
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
@@ -45,11 +47,54 @@ class Dispatcher(Protocol):
 Transport = Callable[[str, bytes, float], bytes]   # (url, json-bytes, timeout) -> response-bytes
 
 
+def validate_endpoint(endpoint: str) -> str:
+    """Return a safe LLM service base URL, or raise :class:`ValueError`.
+
+    LLM prompts can contain experimental context, so plaintext HTTP is deliberately limited to the
+    literal loopback service.  A remote endpoint must use HTTPS; credentials in a URL are rejected
+    rather than accidentally logged or sent as part of a copied configuration value.  ``localhost``
+    is deliberately not accepted for HTTP because name resolution is configurable.
+    """
+    if not isinstance(endpoint, str) or not endpoint:
+        raise ValueError("LLM endpoint must be a non-empty URL")
+    if any(char.isspace() for char in endpoint):
+        raise ValueError("LLM endpoint must not contain whitespace")
+    try:
+        parsed = urllib.parse.urlsplit(endpoint)
+        # Accessing port deliberately validates values such as ``:not-a-port``.
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"invalid LLM endpoint {endpoint!r}: {exc}") from exc
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("LLM endpoint must use http or https")
+    if not parsed.netloc or not parsed.hostname:
+        raise ValueError("LLM endpoint must include a host")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("LLM endpoint must not include URL credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("LLM endpoint must not include a query or fragment")
+
+    host = parsed.hostname.lower()
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    is_local = (
+        isinstance(address, ipaddress.IPv4Address)
+        and address in ipaddress.IPv4Network("127.0.0.0/8")
+    ) or address == ipaddress.IPv6Address("::1")
+    if parsed.scheme == "http" and not is_local:
+        raise ValueError(
+            "LLM endpoint must use HTTPS unless its host is literal 127.0.0.0/8 or ::1"
+        )
+    return endpoint.rstrip("/")
+
+
 def _default_transport(url: str, data: bytes, timeout: float) -> bytes:
     req = urllib.request.Request(
         url, data=data, headers={"Content-Type": "application/json"}, method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:   # nosec B310 (localhost http)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:   # nosec B310 (validated endpoint)
         return resp.read()
 
 
@@ -60,7 +105,7 @@ class LLMMClient:
         self, endpoint: str, model_pin: str, *,
         timeout: float = 60.0, transport: Transport | None = None,
     ) -> None:
-        self._endpoint = endpoint.rstrip("/")
+        self._endpoint = validate_endpoint(endpoint)
         self._model_pin = model_pin
         self._timeout = timeout
         self._transport = transport or _default_transport
@@ -133,7 +178,7 @@ class OpenAIClient:
         self, endpoint: str, model: str, *, api_key: str | None = None,
         timeout: float = 60.0, transport: OpenAITransport | None = None,
     ) -> None:
-        self._endpoint = endpoint.rstrip("/")
+        self._endpoint = validate_endpoint(endpoint)
         self._model = model
         self._api_key = api_key
         self._timeout = timeout

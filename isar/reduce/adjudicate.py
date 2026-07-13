@@ -25,6 +25,8 @@ from isar.schema import scan as _scan
 
 DECISIONS = ("mask", "keep", "drop_detector", "hold_for_human")
 SHAPES = ("whole_peak", "clipped_peak", "no_peak", "not_applicable")
+DEFAULT_CLOUD_FALLBACK_MODEL = "nanogpt/openai/gpt-oss-120b"
+_API_KEY_ENV = "ISAR_LLM_API_KEY"
 
 DECISION_SCHEMA = {
     "type": "object",
@@ -81,7 +83,7 @@ class AdjudicationConfig:
     enabled: bool = False
     profile: str = "llmm"                                # "llmm" (default) | "openai" (D3)
     model_pin: str = "local_desktop/qwen3p5-9b"          # offline/privacy-first local default
-    fallback_pin: str | None = "nanogpt/openai/gpt-oss-120b"   # proven cloud comparator (LLMM only)
+    fallback_pin: str | None = None                             # cloud fallback is explicit opt-in
     endpoint: str = "http://127.0.0.1:8766"
     api_key: str | None = None                           # OpenAI-compatible bearer token, if any
     temperature: float = 0.2
@@ -89,15 +91,20 @@ class AdjudicationConfig:
 
 
 def _resolve_api_key(block: dict) -> str | None:
-    """Resolve the OpenAI-compatible key: ``ISAR_LLM_API_KEY`` env, then the env named by
-    ``api_key_env``, then a literal ``api_key`` in the card (discouraged — keys don't belong in a
-    committed card)."""
-    if os.environ.get("ISAR_LLM_API_KEY"):
-        return os.environ["ISAR_LLM_API_KEY"]
-    named = block.get("api_key_env")
-    if named and os.environ.get(named):
-        return os.environ[named]
-    return block.get("api_key")
+    """Resolve only the fixed process environment key, never a card secret.
+
+    Cards are routinely shared with a run, so accepting a literal key or an arbitrary environment
+    variable name risks both committing the secret and leaking unrelated process credentials.
+    """
+    if "api_key" in block:
+        raise ValueError(
+            "adjudication.api_key is not allowed in card.policy.toml; use ISAR_LLM_API_KEY instead"
+        )
+    if "api_key_env" in block and block["api_key_env"] != _API_KEY_ENV:
+        raise ValueError(
+            "adjudication.api_key_env must be ISAR_LLM_API_KEY; arbitrary environment names are not allowed"
+        )
+    return os.environ.get(_API_KEY_ENV) or None
 
 
 def adjudication_config(card) -> AdjudicationConfig:
@@ -105,6 +112,8 @@ def adjudication_config(card) -> AdjudicationConfig:
 
     ``ISAR_LLM_ENDPOINT`` / ``ISAR_LLM_MODEL`` / ``ISAR_LLM_PROFILE`` let the beamline flip
     offline↔cloud↔OpenAI-compatible without editing the card (D3); LLMM stays the default profile.
+    ``ISAR_LLM_FALLBACK_MODEL`` is presence-sensitive: a non-empty value opts into fallback and an
+    empty value disables any card fallback.
     """
     block = dict(getattr(card.policy, "adjudication", {}) or {})
     cfg = AdjudicationConfig(
@@ -120,6 +129,8 @@ def adjudication_config(card) -> AdjudicationConfig:
     cfg.endpoint = os.environ.get("ISAR_LLM_ENDPOINT", cfg.endpoint)
     cfg.model_pin = os.environ.get("ISAR_LLM_MODEL", cfg.model_pin)
     cfg.profile = os.environ.get("ISAR_LLM_PROFILE", cfg.profile)
+    if "ISAR_LLM_FALLBACK_MODEL" in os.environ:
+        cfg.fallback_pin = os.environ["ISAR_LLM_FALLBACK_MODEL"] or None
     return cfg
 
 
@@ -143,9 +154,9 @@ class FallbackDispatcher:
 def make_client(cfg: AdjudicationConfig) -> FallbackDispatcher:
     """Build the dispatcher for a config, honouring the profile (D3).
 
-    ``llmm`` (default): pin the primary model with the distinct cloud pin as a fallback. ``openai``:
-    an OpenAI-compatible client with the bearer key and no automatic fallback (the LLMM dual-pin
-    concept doesn't map — a single portable model is configured instead).
+    ``llmm`` (default): pin the primary model and, only when explicitly configured, a distinct
+    fallback. ``openai``: an OpenAI-compatible client with the bearer key and no automatic fallback
+    (the LLMM dual-pin concept doesn't map — a single portable model is configured instead).
     """
     if cfg.profile == "openai":
         primary = OpenAIClient(cfg.endpoint, cfg.model_pin, api_key=cfg.api_key)

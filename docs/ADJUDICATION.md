@@ -127,14 +127,19 @@ The card `[adjudication]` policy block (read by `adjudication_config(card)`; all
 [adjudication]
 enabled      = false                          # opt-in
 model_pin    = "local_desktop/qwen3p5-9b"     # offline/privacy-first default
-fallback_pin = "nanogpt/openai/gpt-oss-120b"  # cloud comparator/fallback
+# fallback_pin = "nanogpt/openai/gpt-oss-120b" # optional cloud comparator/fallback
 endpoint     = "http://127.0.0.1:8766"
 temperature  = 0.2
 max_tokens   = 1500
 ```
 
-Env overrides `ISAR_LLM_ENDPOINT` / `ISAR_LLM_MODEL` flip offline↔cloud at the beamline without editing
-the card.
+Cloud fallback is off by default. Set `fallback_pin` or a non-empty `ISAR_LLM_FALLBACK_MODEL` only when
+the operator explicitly accepts that flagged-scan context may leave the machine; an explicitly empty
+`ISAR_LLM_FALLBACK_MODEL` disables a card fallback. Env overrides `ISAR_LLM_ENDPOINT` /
+`ISAR_LLM_MODEL` / `ISAR_LLM_PROFILE` configure the primary service. Remote endpoints must be HTTPS;
+plain HTTP is limited to literal `127.0.0.0/8` or `::1` addresses; `localhost` is excluded because its
+name resolution can be changed. For OpenAI-compatible services, provide the bearer token only through
+`ISAR_LLM_API_KEY`; cards may not contain `api_key` or arbitrary `api_key_env` names.
 
 ## 9. Scoring vs synthetic truth
 
@@ -169,6 +174,7 @@ LLMM must be running (`http://127.0.0.1:8766`) with the model launched.
   library call today.
 - **9B scan-level recall** — prompt nudge to always emit a scan-level decision would close the 0.80→1.0
   gap.
-- **Local serviceability** — the local pin needs the model *launched*; the cloud `fallback_pin` covers
-  unattended runs. (Probe timeouts during selection were just the un-launched models.)
+- **Local serviceability** — the local pin needs the model *launched*. A cloud fallback is an explicit
+  operator choice, not an unattended default. (Probe timeouts during selection were just the
+  un-launched models.)
 - **Not committed** — built in the working tree; commit on a branch when ready.

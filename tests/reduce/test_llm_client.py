@@ -60,7 +60,7 @@ def test_dispatch_parses_structured_success():
         structured={"decisions": [{"target": "scan"}], "scan_narrative": "n"},
         output="raw text",
     ))
-    client = llm_client.LLMMClient("http://x", "pin", transport=tr)
+    client = llm_client.LLMMClient("http://127.0.0.1", "pin", transport=tr)
 
     res = client.dispatch(system="s", user="u", schema={}, temperature=0.2, max_tokens=10)
 
@@ -73,7 +73,7 @@ def test_dispatch_parses_structured_success():
 
 def test_dispatch_schema_miss_yields_null_structured_with_output():
     tr = _FakeTransport(_ok_response(structured=None, output="not valid json"))
-    client = llm_client.LLMMClient("http://x", "pin", transport=tr)
+    client = llm_client.LLMMClient("http://127.0.0.1", "pin", transport=tr)
 
     res = client.dispatch(system="s", user="u", schema={}, temperature=0.2, max_tokens=10)
 
@@ -87,7 +87,7 @@ def test_dispatch_surfaces_dispatch_error():
         error={"code": "no_model_available", "message": "model offline"},
         structured=None, output=None,
     ))
-    client = llm_client.LLMMClient("http://x", "pin", transport=tr)
+    client = llm_client.LLMMClient("http://127.0.0.1", "pin", transport=tr)
 
     res = client.dispatch(system="s", user="u", schema={}, temperature=0.2, max_tokens=10)
 
@@ -100,7 +100,7 @@ def test_dispatch_transport_error_returns_error_result():
     def boom(url, data, timeout):
         raise OSError("connection refused")
 
-    client = llm_client.LLMMClient("http://x", "pin", transport=boom)
+    client = llm_client.LLMMClient("http://127.0.0.1", "pin", transport=boom)
 
     res = client.dispatch(system="s", user="u", schema={}, temperature=0.2, max_tokens=10)
 
@@ -108,3 +108,26 @@ def test_dispatch_transport_error_returns_error_result():
     assert res.output is None
     assert res.error is not None
     assert "connection refused" in res.error
+
+
+def test_validate_endpoint_allows_only_literal_loopback_plain_http():
+    assert llm_client.validate_endpoint("http://127.42.0.1") == "http://127.42.0.1"
+    assert llm_client.validate_endpoint("http://[::1]:8766") == "http://[::1]:8766"
+
+
+def test_validate_endpoint_requires_https_away_from_loopback():
+    import pytest
+
+    assert llm_client.validate_endpoint("https://llm.example.test/v1") == "https://llm.example.test/v1"
+    with pytest.raises(ValueError, match="must use HTTPS"):
+        llm_client.LLMMClient("http://llm.example.test", "pin")
+    with pytest.raises(ValueError, match="must use HTTPS"):
+        llm_client.LLMMClient("http://localhost:8766", "pin")
+
+
+def test_validate_endpoint_rejects_malformed_urls_and_url_credentials():
+    import pytest
+
+    for endpoint in ("", "not-a-url", "ftp://localhost", "https://", "https://user:pass@host"):
+        with pytest.raises(ValueError):
+            llm_client.validate_endpoint(endpoint)
