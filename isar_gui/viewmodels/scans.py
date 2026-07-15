@@ -36,6 +36,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor
 
+from isar_gui.scan_filter import ScanFilter, parse_query
 from isar_gui.scan_keys import member_matches, scan_prefix, split_key
 from isar_gui.viewmodels.base import ViewModel
 
@@ -428,6 +429,8 @@ class ScansViewModel(ViewModel):
     groups_changed = Signal()
     #: A ui-scrap mutation (collapsed/order/active tab) the window should debounce-persist without rebuild.
     store_dirty = Signal()
+    #: The orthogonal filter changed — the dock rebuilds and the filter controls re-sync from the VM.
+    filter_changed = Signal()
     #: A single-clicked unit asked for the C2 inspector. Payload is the unit's ``FitView`` when the
     #: entry is fitted, else the unit-key ``str`` (the raw-unit metadata view); ``None`` when unknown.
     inspect_requested = Signal(object)
@@ -435,7 +438,9 @@ class ScansViewModel(ViewModel):
     def __init__(self, ws, store=None, parent=None):
         super().__init__(ws, parent)
         self._store = store  # GuiStore | None (None in the empty/pending state)
-        self._rows: list[ScanUnit] = []
+        self._all_rows: list[ScanUnit] = []   # every ledger unit, before the orthogonal filter
+        self._filter = ScanFilter()           # the active narrowing predicate (empty = show all)
+        self._rows: list[ScanUnit] = []       # _all_rows survivors of _filter — the VISIBLE set
         self._auto: list[AutoGroup] = []
         self._auto_labels_by_key: dict[str, list[str]] = {}
         self._model = ScanTableModel(self.group_labels_for_key, parent=self)
@@ -455,6 +460,13 @@ class ScansViewModel(ViewModel):
         """Bind the per-workspace GuiStore (a bind, not a user mutation — no persist signal emitted;
         the dock rebuilds on ``refreshed``, which also re-reads the now-present manual groups)."""
         self._store = store
+        # Hydrate the persisted filter (a bind, not a mutation — do NOT re-persist or emit store_dirty).
+        if store is not None:
+            try:
+                self._filter = ScanFilter.from_dict(store.scan_filter())
+            except Exception as exc:  # noqa: BLE001 — a corrupt stored filter must never block the bind
+                log.warning("stored scan filter unreadable, ignoring: %s", exc)
+                self._filter = ScanFilter()
         self._rebuild()
         self.refreshed.emit()
 
@@ -472,7 +484,17 @@ class ScansViewModel(ViewModel):
         except Exception as exc:  # noqa: BLE001 — the facade degrades; never crash the VM
             log.warning("scans facade read failed: %s", exc)
             scan_views = []
-        self._rows = unit_rows(scan_views)
+        self._all_rows = unit_rows(scan_views)
+        self._reapply_filter()
+
+    def _reapply_filter(self) -> None:
+        """Recompute the visible rows + derived groups from ``_all_rows`` under the active filter.
+
+        Auto-groups derive from the FILTERED rows, so a group with no surviving member simply vanishes
+        (the dock shows an empty-state instead). Structural predicates (``multi_detector``/``has_field``)
+        read ``_all_rows`` so the set of dimension tabs never shifts under a filter."""
+        q_step = _rounding(self._ws)[1]
+        self._rows = [u for u in self._all_rows if self._filter.matches(u, q_step=q_step)]
         self._auto = self._derive_auto_groups()
         labels: dict[str, list[str]] = {}
         for ag in self._auto:
@@ -481,7 +503,7 @@ class ScansViewModel(ViewModel):
         self._auto_labels_by_key = labels
         # set_rows resets the model, which clears the shared selection. Capture the live selection
         # first and re-select the keys that survived the rebuild, so an ingest tick that merely adds
-        # rows does not drop the operator's current selection out from under them.
+        # rows (or a filter that keeps them) does not drop the operator's current selection.
         selected = self.selected_keys()
         self._model.set_rows(self._rows)
         if selected:
@@ -489,18 +511,91 @@ class ScansViewModel(ViewModel):
             if survivors:
                 self.select_keys(survivors)
 
+    # ---- orthogonal filter (shared state; bar + query box are dumb) ----
+    def filter(self) -> ScanFilter:
+        """The active narrowing predicate (the value object itself is frozen — safe to hand out)."""
+        return self._filter
+
+    def set_filter(self, new: ScanFilter) -> None:
+        """Replace the filter, re-derive the visible set, persist it, and announce the change."""
+        self._filter = new if isinstance(new, ScanFilter) else ScanFilter()
+        self._reapply_filter()
+        if self._store is not None:
+            self._store.set_scan_filter(self._filter.to_dict())
+            self.store_dirty.emit()
+        self.filter_changed.emit()
+
+    def apply_query(self, text: str) -> str | None:
+        """Parse ``text`` into a filter and apply it; returns a human error string or ``None``.
+
+        A malformed token still applies the best-effort parse (so the box narrows on the good tokens)
+        and returns the error for the box to surface — it never raises."""
+        new, err = parse_query(text)
+        self.set_filter(new)
+        return err
+
+    def clear_filter(self) -> None:
+        if self._filter.is_active():
+            self.set_filter(ScanFilter())
+
+    def filtered_count(self) -> tuple[int, int]:
+        """``(visible, total)`` — the "showing N of M" the bar/banner reports."""
+        return len(self._rows), len(self._all_rows)
+
+    # ---- filter option providers (populate the bar's dropdowns) ----
+    def available_analyzers(self) -> list[str]:
+        return sorted({str(u.det) for u in self._all_rows if u.det is not None}, key=str)
+
+    def available_statuses(self) -> list[str]:
+        return sorted({u.status for u in self._all_rows if u.status})
+
+    def available_scan_types(self) -> list[str]:
+        return sorted({u.scan_type for u in self._all_rows if u.scan_type})
+
+    def available_verdicts(self) -> list[str]:
+        out = set()
+        for u in self._all_rows:
+            v = getattr(u.fit, "verdict", None) if u.fit is not None else None
+            if v:
+                out.add(str(v))
+        return sorted(out)
+
+    def t_extent(self) -> tuple[float | None, float | None]:
+        temps = [u.T for u in self._all_rows if isinstance(u.T, (int, float))]
+        return (min(temps), max(temps)) if temps else (None, None)
+
+    def q_options(self) -> list[tuple[str, tuple]]:
+        """Distinct q bins present as ``(display_label, center_tuple)`` — the bar's q selector.
+
+        Bins on the same ``q_step`` the q auto-groups and the filter predicate use, so selecting an
+        option filters to exactly that auto-group's members."""
+        q_step = _rounding(self._ws)[1]
+        seen: dict[tuple, list] = {}
+        for u in self._all_rows:
+            if not u.q or any(v is None for v in u.q):
+                continue
+            try:
+                gkey = tuple(int(round(float(v) / q_step)) for v in u.q)
+            except (TypeError, ValueError):
+                continue
+            seen.setdefault(gkey, [round(i * q_step, 6) for i in gkey])
+        return [(_fmt_q(center), tuple(center)) for _gkey, center in sorted(seen.items())]
+
     # ---- multi-detector predicate (drives Analyzer tab + chip label form) ----
     @property
     def multi_detector(self) -> bool:
         """True when the workspace spans more than one analyzer/detector.
 
         Single-detector instruments (IN8) then read unchanged: no Analyzer tab, no detector suffix on
-        chips, and 1-unit scan-groups are suppressed."""
-        return len({u.det for u in self._rows if u.det}) > 1
+        chips, and 1-unit scan-groups are suppressed. Reads ``_all_rows`` so an active filter never
+        removes the Analyzer tab (the tabs are a property of the workspace, not the current view)."""
+        return len({u.det for u in self._all_rows if u.det}) > 1
 
     def has_field(self) -> bool:
-        """True when any unit carries a sample field setpoint (gates the B dimension tab)."""
-        return any(u.B is not None for u in self._rows)
+        """True when any unit carries a sample field setpoint (gates the B dimension tab).
+
+        Reads ``_all_rows`` so the B tab's presence does not flicker as the filter narrows the view."""
+        return any(u.B is not None for u in self._all_rows)
 
     # ---- group derivation ----
     def _derive_auto_groups(self) -> list[AutoGroup]:
@@ -603,8 +698,8 @@ class ScansViewModel(ViewModel):
         return list(self._rows)
 
     def available_keys(self) -> set[str]:
-        """Stable unit identities currently present in the ledger-backed table."""
-        return {u.key for u in self._rows}
+        """Stable unit identities present in the ledger (independent of the active filter)."""
+        return {u.key for u in self._all_rows}
 
     # ---- manual membership resolution (via scan_keys.member_matches) ----
     def is_unit_grouped(self, unit_key: str) -> bool:
@@ -617,9 +712,11 @@ class ScansViewModel(ViewModel):
         return [u for u in self._rows if any(member_matches(m, u.key) for m in members)]
 
     def siblings_of(self, unit_key: str) -> list[str]:
-        """Unit keys of every analyzer sharing this unit's source scan (includes the unit itself)."""
+        """Unit keys of every analyzer sharing this unit's source scan (includes the unit itself).
+
+        Reads ``_all_rows`` so sibling identity is the true scan structure, not the filtered view."""
         pref = scan_prefix(unit_key)
-        return [u.key for u in self._rows if u.scan_key == pref]
+        return [u.key for u in self._all_rows if u.scan_key == pref]
 
     # ---- collapsed / order / active-tab ui scraps ----
     def is_collapsed(self, gid: str) -> bool:

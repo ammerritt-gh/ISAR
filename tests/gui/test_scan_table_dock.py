@@ -66,3 +66,16 @@ def test_double_click_fitted_scan_requests_inspect(qtbot, tmp_path):
     vm.inspect_requested.connect(lambda fit: seen.append(fit))
     dock._on_double_clicked(vm.model.index(0, 0))
     assert len(seen) == 1   # a FitView (fitted scan) was handed to the inspector hook
+
+
+def test_table_honours_filter_via_shrunk_source_rows(qtbot, tmp_path):
+    from isar_gui.scan_filter import parse_query
+    vm = ScansViewModel(_ws([_sv("tavi", 1, "d1"), _sv("tavi", 2, "d2")]),
+                        store=GuiStore.load(tmp_path))
+    dock = ScanTableDock(vm)
+    qtbot.addWidget(dock)
+    assert vm.model.rowCount() == 2
+    vm.set_filter(parse_query("ana:d1")[0])
+    assert vm.model.rowCount() == 1          # table follows the filter — no proxy, shrunk source
+    vm.clear_filter()
+    assert vm.model.rowCount() == 2

@@ -21,14 +21,16 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QEvent, QMimeData, QPoint, QSize, Qt, Signal
-from PySide6.QtGui import QDrag, QPainter, QPixmap
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QDrag, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
+    QComboBox,
     QDockWidget,
     QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -46,6 +48,7 @@ from isar_gui.mime import (
     encode_group_ref,
     encode_scan_ids,
 )
+from isar_gui.scan_filter import ScanFilter, describe
 from isar_gui.viewmodels.scans import sibling_hue, status_color, status_text
 
 log = logging.getLogger(__name__)
@@ -597,6 +600,225 @@ def _q_compact(hkl) -> str:
         return "—"
 
 
+def _parse_float(text):
+    """``float(text)`` or ``None`` for a blank/garbage field — the T-bound line edits never raise."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Filter controls (dumb widgets over the VM's shared ScanFilter)
+# ---------------------------------------------------------------------------
+class _MultiSelectButton(QToolButton):
+    """A drop-down of checkable options; the button label carries the active count."""
+
+    changed = Signal()
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self._title = title
+        self.setPopupMode(QToolButton.InstantPopup)
+        self.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self._menu = QMenu(self)
+        self.setMenu(self._menu)
+        self._actions: dict = {}
+        self._refresh_text(set())
+
+    def set_options(self, values, checked) -> None:
+        """Populate (or re-check) the menu. Rebuilds only when the option set actually changed, so
+        toggling a box does not tear the open menu out from under the pointer."""
+        values = list(values)
+        if list(self._actions) == values:
+            for v, a in self._actions.items():
+                a.blockSignals(True)
+                a.setChecked(v in checked)
+                a.blockSignals(False)
+        else:
+            self._menu.clear()
+            self._actions = {}
+            for v in values:
+                a = self._menu.addAction(str(v))
+                a.setCheckable(True)
+                a.blockSignals(True)
+                a.setChecked(v in checked)
+                a.blockSignals(False)
+                a.toggled.connect(self._on_toggled)
+                self._actions[v] = a
+        self._refresh_text(self.checked_values())
+
+    def checked_values(self) -> set:
+        return {v for v, a in self._actions.items() if a.isChecked()}
+
+    def _on_toggled(self, _checked) -> None:
+        self._refresh_text(self.checked_values())
+        self.changed.emit()
+
+    def _refresh_text(self, checked) -> None:
+        n = len(checked)
+        self.setText(self._title if not n else f"{self._title} ({n})")
+
+
+class _FilterBar(QWidget):
+    """A compact orthogonal filter over scan units — Analyzer/Status/Verdict/Type/T/q, ANDed.
+
+    The bar is dumb: every control edit rebuilds a :class:`ScanFilter` and hands it to the VM via
+    ``set_filter``; ``filter_changed`` calls :meth:`sync_from_vm` to reflect VM state back onto the
+    controls (the bidirectional link with the query box). A ``_syncing`` guard breaks the feedback
+    loop. The free-text clause (set through the query box) is preserved verbatim on every bar edit.
+    """
+
+    def __init__(self, vm, parent=None):
+        super().__init__(parent)
+        self._vm = vm
+        self._syncing = False
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(2, 0, 2, 0)
+        lay.setSpacing(4)
+
+        self._ana = _MultiSelectButton("Analyzer", self)
+        self._status = _MultiSelectButton("Status", self)
+        self._verdict = _MultiSelectButton("Verdict", self)
+        self._type = _MultiSelectButton("Type", self)
+        for b in (self._ana, self._status, self._verdict, self._type):
+            b.changed.connect(self._on_changed)
+            lay.addWidget(b)
+
+        lay.addWidget(QLabel("T", self))
+        self._t_min = QLineEdit(self)
+        self._t_min.setPlaceholderText("min")
+        self._t_min.setFixedWidth(52)
+        self._t_max = QLineEdit(self)
+        self._t_max.setPlaceholderText("max")
+        self._t_max.setFixedWidth(52)
+        self._t_min.editingFinished.connect(self._on_changed)
+        self._t_max.editingFinished.connect(self._on_changed)
+        lay.addWidget(self._t_min)
+        lay.addWidget(QLabel("–", self))
+        lay.addWidget(self._t_max)
+
+        self._q = QComboBox(self)
+        self._q.setToolTip("Filter to one q / HKL bin")
+        self._q.currentIndexChanged.connect(self._on_changed)
+        lay.addWidget(QLabel("q", self))
+        lay.addWidget(self._q)
+
+        lay.addStretch(1)
+        self._count = QLabel("", self)
+        self._count.setStyleSheet("color: #888;")
+        lay.addWidget(self._count)
+        self._reset = QPushButton("Reset", self)
+        self._reset.clicked.connect(self._vm.clear_filter)
+        lay.addWidget(self._reset)
+
+        vm.filter_changed.connect(self.sync_from_vm)
+        self.sync_from_vm()
+
+    def sync_from_vm(self) -> None:
+        self._syncing = True
+        try:
+            f = self._vm.filter()
+            self._ana.set_options(self._vm.available_analyzers(), f.analyzers)
+            self._status.set_options([status_text(s) for s in self._vm.available_statuses()],
+                                     {status_text(s) for s in f.statuses})
+            verdicts = self._vm.available_verdicts()
+            self._verdict.set_options(verdicts, f.verdicts)
+            self._verdict.setVisible(bool(verdicts))
+            types = self._vm.available_scan_types()
+            self._type.set_options(types, f.scan_types)
+            self._type.setVisible(len(types) > 1)
+            self._t_min.setText("" if f.t_min is None else f"{f.t_min:g}")
+            self._t_max.setText("" if f.t_max is None else f"{f.t_max:g}")
+            self._rebuild_q(f)
+            vis, total = self._vm.filtered_count()
+            self._count.setText(f"showing {vis} of {total}" if f.is_active() else f"{total} units")
+            self._reset.setVisible(f.is_active())
+        finally:
+            self._syncing = False
+
+    def _rebuild_q(self, f) -> None:
+        opts = self._vm.q_options()
+        self._q.blockSignals(True)
+        self._q.clear()
+        self._q.addItem("any q", None)
+        sel = 0
+        for i, (label, center) in enumerate(opts, start=1):
+            self._q.addItem(label, center)
+            if f.q_target is not None and tuple(f.q_target) == tuple(center):
+                sel = i
+        self._q.setCurrentIndex(sel)
+        self._q.setVisible(bool(opts))
+        self._q.blockSignals(False)
+
+    def _on_changed(self, *_args) -> None:
+        if self._syncing:
+            return
+        cur = self._vm.filter()
+        # Status labels are the display form (parsed↔ingested); map back to raw ledger tokens so the
+        # predicate's prefix/alias matching still bites. The raw available list is the source of truth.
+        raw_by_display = {status_text(s): s for s in self._vm.available_statuses()}
+        statuses = {raw_by_display.get(v, v) for v in self._status.checked_values()}
+        f = ScanFilter(
+            analyzers=frozenset(str(v) for v in self._ana.checked_values()),
+            statuses=frozenset(statuses),
+            scan_types=frozenset(self._type.checked_values()),
+            verdicts=frozenset(self._verdict.checked_values()),
+            t_min=_parse_float(self._t_min.text()),
+            t_max=_parse_float(self._t_max.text()),
+            q_target=self._q.currentData(),
+            text=cur.text,   # preserve the free-text clause owned by the query box
+        )
+        self._vm.set_filter(f)
+
+
+class _QueryBox(QLineEdit):
+    """A terse search/query line — bare text is an ambiguous match, typed prefixes narrow (see
+    :func:`isar_gui.scan_filter.parse_query`). Ctrl+F focuses it; an invalid token reddens the border
+    and shows the error as a tooltip without crashing. Kept in sync with the bar via the VM."""
+
+    _OK_STYLE = ""
+    _ERR_STYLE = "QLineEdit { border: 1px solid #c62828; }"
+
+    def __init__(self, vm, parent=None):
+        super().__init__(parent)
+        self._vm = vm
+        self._syncing = False
+        self.setPlaceholderText("search:  372 · ana:9 · T>100 · status:held · q:1.5,0,0")
+        self.setClearButtonEnabled(True)
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(250)
+        self._debounce.timeout.connect(self._apply)
+        self.textEdited.connect(lambda _t: self._debounce.start())
+        self.returnPressed.connect(self._apply)
+        vm.filter_changed.connect(self._sync_from_vm)
+
+    def _apply(self) -> None:
+        self._debounce.stop()
+        err = self._vm.apply_query(self.text())
+        if err:
+            self.setStyleSheet(self._ERR_STYLE)
+            self.setToolTip(err)
+        else:
+            self.setStyleSheet(self._OK_STYLE)
+            self.setToolTip("")
+
+    def _sync_from_vm(self) -> None:
+        # A bar edit changed the filter; reflect its description so the box mirrors the active state
+        # without clobbering what the user is mid-typing (only update when not focused).
+        if self.hasFocus():
+            return
+        self._syncing = True
+        try:
+            self.setToolTip(describe(self._vm.filter()))
+        finally:
+            self._syncing = False
+
+
 # ---------------------------------------------------------------------------
 # Dock
 # ---------------------------------------------------------------------------
@@ -626,11 +848,29 @@ class ScansDock(QDockWidget):
         expand_btn.clicked.connect(lambda: self._set_all_collapsed(False))
         collapse_btn = QPushButton("Collapse all", body)
         collapse_btn.clicked.connect(lambda: self._set_all_collapsed(True))
+        query_box = _QueryBox(vm, body)
         toolbar.addWidget(new_btn)
-        toolbar.addStretch(1)
+        toolbar.addWidget(query_box, 1)
         toolbar.addWidget(expand_btn)
         toolbar.addWidget(collapse_btn)
         root.addLayout(toolbar)
+        self._query_box = query_box
+
+        # Loud persisted-filter banner: a filter restored from gui.state.json must never hide data
+        # silently, so it announces itself at the top of the dock until cleared (user decision).
+        self._banner = QLabel(body)
+        self._banner.setObjectName("filterBanner")
+        self._banner.setWordWrap(True)
+        self._banner.setStyleSheet(
+            "QLabel#filterBanner { background: #fff3b0; color: #5b4a00; border: 1px solid #e0c95a;"
+            " border-radius: 3px; padding: 4px 6px; }")
+        self._banner.linkActivated.connect(lambda _l: self._vm.clear_filter())
+        self._banner.setVisible(False)
+        root.addWidget(self._banner)
+
+        # The orthogonal filter bar sits above the tabs, so it persists across tab rebuilds.
+        self._filter_bar = _FilterBar(vm, body)
+        root.addWidget(self._filter_bar)
 
         self._tabs = QTabWidget(body)
         self._tabs.currentChanged.connect(self._on_tab_changed)
@@ -638,11 +878,36 @@ class ScansDock(QDockWidget):
 
         self.setWidget(body)
 
+        # Ctrl+F (the platform Find sequence) drops focus into the query box.
+        find = QShortcut(QKeySequence.Find, self)
+        find.setContext(Qt.WidgetWithChildrenShortcut)
+        find.activated.connect(self._focus_query)
+
         vm.refreshed.connect(self._rebuild)
         vm.groups_changed.connect(self._rebuild)
+        vm.filter_changed.connect(self._rebuild)
+        vm.filter_changed.connect(self._sync_banner)
         vm.model.highlight_changed.connect(self._sync_highlight)
         vm.selection_model.selectionChanged.connect(self._sync_selection)
         self._rebuild()
+        self._sync_banner()
+
+    def _focus_query(self) -> None:
+        self._query_box.setFocus()
+        self._query_box.selectAll()
+
+    def _sync_banner(self) -> None:
+        f = self._vm.filter()
+        if f.is_active():
+            vis, total = self._vm.filtered_count()
+            desc = describe(f)
+            self._banner.setText(
+                f"<b>Filter active</b> — showing {vis} of {total} scans"
+                + (f" · {desc}" if desc else "")
+                + '  <a href="#clear">Clear</a>')
+            self._banner.setVisible(True)
+        else:
+            self._banner.setVisible(False)
 
     # ---- tab scaffolding -------------------------------------------------
     def _visible_tabs(self) -> list[tuple[str, str | None]]:
@@ -742,15 +1007,35 @@ class ScansDock(QDockWidget):
                 box = _GroupBox(ag.id, ag.label, self._vm, kind="auto")
                 self._populate(name, box, [by_key[k] for k in ag.scan_keys if k in by_key])
                 self._add_box(name, layout, box)
-            if not groups:
+            if not groups and not self._vm.filter().is_active():
                 empty = QLabel("(no groups on this dimension)", self._pages[name].widget())
                 empty.setStyleSheet("color: #999; font-style: italic; padding: 6px;")
                 layout.addWidget(empty)
+
+        # A filter that narrows the whole view to nothing must say so — and offer a one-click way out
+        # — instead of showing a blank pane (council pitfall: the empty-state trap).
+        if self._vm.filter().is_active() and not rows:
+            self._add_filter_empty(name, layout)
 
         layout.addStretch(1)
         self._sync_selection()
         self._sync_highlight()
         self._sync_active()
+
+    def _add_filter_empty(self, name: str, layout) -> None:
+        holder = QWidget(self._pages[name].widget())
+        row = QVBoxLayout(holder)
+        row.setContentsMargins(6, 6, 6, 6)
+        msg = QLabel("No scans match the current filter.", holder)
+        msg.setStyleSheet("color: #999; font-style: italic;")
+        reset = QPushButton("Reset filter", holder)
+        reset.clicked.connect(self._vm.clear_filter)
+        row.addWidget(msg)
+        reset_row = QHBoxLayout()
+        reset_row.addWidget(reset)
+        reset_row.addStretch(1)
+        row.addLayout(reset_row)
+        layout.addWidget(holder)
 
     def _on_tab_changed(self, index: int) -> None:
         if index < 0:

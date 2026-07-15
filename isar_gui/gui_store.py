@@ -253,3 +253,21 @@ class GuiStore:
 
     def set_scans_tab(self, name: str) -> None:
         self._data["scans_tab"] = str(name)
+
+    # ---- orthogonal scan filter (Pass 2c) --------------------------------
+    # The filter is a view pref, not machine bookkeeping — it lives here, never in card.state.json.
+    # Storage is the serialised ScanFilter.to_dict(); this store stays schema-agnostic about its keys.
+    def scan_filter(self) -> dict:
+        """The persisted filter dict (``ScanFilter.to_dict()`` shape), or ``{}`` when absent/garbage."""
+        val = self._data.get("scan_filter")
+        if isinstance(val, dict):
+            return val
+        if val is not None and "scan_filter" not in self._warned:
+            self._warned.add("scan_filter")
+            log.warning("gui.state.json key 'scan_filter' is %s, not an object — treating as empty "
+                        "(value kept on disk for round-trip)", type(val).__name__)
+        return {}
+
+    def set_scan_filter(self, d) -> None:
+        """Replace the persisted filter with ``d`` (a ``ScanFilter.to_dict()`` result, JSON-safe)."""
+        self._data["scan_filter"] = dict(d) if isinstance(d, dict) else {}
