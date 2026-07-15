@@ -24,6 +24,10 @@ log = logging.getLogger(__name__)
 
 MIME_SCAN_IDS = "application/x-isar-scan-ids"
 MIME_GROUP_REF = "application/x-isar-group-ref"
+#: The manual-group a chip drag STARTED from, so a drag-out target can remove from the ORIGIN group
+#: only (overlap-safe; see the plan R2). A loose/preset chip stamps the empty string — a drag-out
+#: from it is a no-op because there is no folder to leave.
+MIME_DRAG_ORIGIN = "application/x-isar-drag-origin"
 
 
 def encode_scan_ids(keys: Iterable[str]) -> bytes:
@@ -49,6 +53,20 @@ def encode_group_ref(kind: str, group_id: str, label: str) -> bytes:
     """Serialize a group reference (``kind`` = ``"manual"`` | ``"auto"``) to a utf-8 JSON payload."""
     return json.dumps({"kind": str(kind), "group_id": str(group_id),
                        "label": str(label)}).encode("utf-8")
+
+
+def encode_drag_origin(group_id: str) -> bytes:
+    """Serialize a chip drag's origin manual-group id (``""`` when the chip is loose/preset)."""
+    return str(group_id or "").encode("utf-8")
+
+
+def decode_drag_origin(data) -> str:
+    """Parse a :data:`MIME_DRAG_ORIGIN` payload to the origin group id; ``""`` on anything malformed."""
+    try:
+        return bytes(data).decode("utf-8")
+    except (ValueError, TypeError, UnicodeDecodeError) as exc:
+        log.debug("decode_drag_origin: ignoring malformed payload (%s)", exc)
+        return ""
 
 
 def decode_group_ref(data) -> dict | None:

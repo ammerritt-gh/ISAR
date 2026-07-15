@@ -153,7 +153,9 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   entries with priority `human` that still pass the driver's validate step. Planned (Phase C).
 - **G7.** Sandbox exception: the GUI may import the deterministic fit engine's frozen-config
   entry point in-process for live preview; sandbox results are ephemeral and marked; commit
-  writes a directive. Planned (Phase C sandbox).
+  writes a directive. **Partial:** the Qt-free `isar.sandbox_api` preview entry point, serialized
+  GUI worker, manual E₀ placement, and marked fast-tier overlay are implemented; structure/prior
+  editing and Commit-to-directive remain Planned (Phase C).
 - **G8.** GUI snapshot rendering and report/diagnostic figure rendering are the same code at two
   zoom levels — one figure module (`isar/plotspec`), two consumers. Implemented (Phase 0/A) as
   far as read-only views go.
@@ -189,7 +191,8 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   `isar/geometry/epochs.py` (identity-through-acquisition-epoch until absolute coordinates land
   in Phase B).
 - **G16.** `isar_gui` sanctioned imports: `isar_gui` may import only `isar.workspace_api`,
-  `isar.geometry`, `isar.plotspec`; `isar.workspace_api` may additionally use `isar.schema.card`,
+  `isar.geometry`, `isar.plotspec`; G7 additionally permits only the sandbox viewmodel to import
+  the Qt-free `isar.sandbox_api` frozen-config entry point. `isar.workspace_api` may use `isar.schema.card`,
   `isar.session.state`, `isar.session.workspace`, `isar.session.unit_data` (the per-unit ingest
   data reader behind `ws.unit_data`; Qt-free, scipy-free), `isar.drive.session_log`,
   `isar.drive.isar_io.readers`, `isar.report.audit`, `isar.analyze.components`, `isar.geometry`,

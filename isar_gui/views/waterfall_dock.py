@@ -24,11 +24,12 @@ from PySide6.QtWidgets import (
 )
 
 from isar_gui.plotspec_pg import clear_render, render_into
+from isar_gui.views.group_drop import GroupDropMixin
 
 
-class WaterfallDock(QDockWidget):
+class WaterfallDock(GroupDropMixin, QDockWidget):
     """Waterfall/comparison over a :class:`WaterfallViewModel`: mode toggle, q selector, offset
-    spinbox (waterfall mode only), and click -> ``VM.activate_at``."""
+    spinbox (waterfall mode only), click -> ``VM.activate_at``, and a group-drop restriction (2A)."""
 
     def __init__(self, vm, parent=None):
         super().__init__("Waterfall / Comparison", parent)
@@ -73,6 +74,7 @@ class WaterfallDock(QDockWidget):
         outer.addWidget(self._glw)
 
         self.setWidget(body)
+        self._init_group_drop(outer)   # group-drop restriction + Show-all banner (2A)
 
         self._plot.scene().sigMouseClicked.connect(self._on_click)
         vm.spec_changed.connect(self.refresh)

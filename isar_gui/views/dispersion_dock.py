@@ -21,11 +21,12 @@ from PySide6.QtWidgets import (
 )
 
 from isar_gui.plotspec_pg import clear_render, render_into
+from isar_gui.views.group_drop import GroupDropMixin
 
 
-class DispersionDock(QDockWidget):
+class DispersionDock(GroupDropMixin, QDockWidget):
     """ω̂(q) over a :class:`DispersionViewModel`: scatter + overlays + projection legend, a T
-    selector, and click -> ``VM.activate_at``."""
+    selector, click -> ``VM.activate_at``, and a group-drop restriction (2A, refuses multi-T)."""
 
     def __init__(self, vm, parent=None):
         super().__init__("Dispersion ω(q)", parent)
@@ -53,6 +54,7 @@ class DispersionDock(QDockWidget):
         outer.addWidget(self._glw)
 
         self.setWidget(body)
+        self._init_group_drop(outer)   # group-drop restriction + Show-all banner (2A)
 
         self._plot.scene().sigMouseClicked.connect(self._on_click)
         vm.spec_changed.connect(self.refresh)

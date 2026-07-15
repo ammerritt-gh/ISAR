@@ -31,6 +31,22 @@ _GREY_04 = "#666666"   # mpl "0.4"
 _GREY_03 = "#4d4d4d"   # mpl "0.3"
 _GREY_025 = "#404040"  # mpl "0.25"
 
+
+def disable_view_drops(view) -> None:
+    """Turn OFF drag-and-drop on a pyqtgraph ``GraphicsLayoutWidget`` (a ``QGraphicsView``) AND its
+    viewport. pyqtgraph enables ``acceptDrops`` on both by default; a QGraphicsView with drops on
+    logs ``QGraphicsView::dragLeaveEvent: drag leave received before drag enter`` whenever a scan
+    chip is dragged over it, and fights the dock's own drop handling (R17). The dock body owns drops.
+    """
+    try:
+        view.setAcceptDrops(False)
+        vp = view.viewport()
+        if vp is not None:
+            vp.setAcceptDrops(False)
+    except (AttributeError, RuntimeError) as exc:   # not a QGraphicsView / already torn down
+        import logging
+        logging.getLogger(__name__).debug("disable_view_drops skipped: %s", exc)
+
 _ROLE_COLOR = {
     Role.DATA: _C["C0"], Role.FIT: _C["C1"], Role.COMPONENT: _C["C3"], Role.RESIDUAL: _GREY_04,
     Role.PRIOR: _C["C4"], Role.BRANCH: _C["C2"], Role.SANDBOX: _C["C5"],

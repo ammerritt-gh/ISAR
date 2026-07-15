@@ -706,10 +706,48 @@ class ScansViewModel(ViewModel):
         """True when some manual group covers this unit (legacy scan-level members included)."""
         return bool(self._store is not None and self._store.memberships_of(unit_key))
 
+    def membership_count(self, unit_key: str) -> int:
+        """How many manual groups a unit belongs to — the Pool chip's badge (plan R9). 0 when the
+        unit is loose or there is no store."""
+        if self._store is None:
+            return 0
+        return len(self._store.memberships_of(unit_key))
+
     def units_in_group(self, group) -> list[ScanUnit]:
-        """The current :class:`ScanUnit` rows a manual group's members cover, in row order."""
+        """The current *visible* :class:`ScanUnit` rows a manual group's members cover, in row order."""
         members = list(getattr(group, "members", None) or [])
         return [u for u in self._rows if any(member_matches(m, u.key) for m in members)]
+
+    def member_keys(self, gid: str) -> list[str]:
+        """ALL persisted member unit-keys of a manual group, resolved against the UNFILTERED ledger.
+
+        This is the "carry this group" payload (plan R8): a drag of a folder header carries every
+        stored member regardless of the active filter, so a narrowed view never silently truncates the
+        group. Legacy scan-level members expand to every analyzer unit of that scan via
+        :func:`~isar_gui.scan_keys.member_matches`; order follows ``_all_rows``."""
+        if self._store is None:
+            return []
+        group = next((g for g in self._store.groups() if g.id == gid), None)
+        if group is None:
+            return []
+        members = list(group.members)
+        return [u.key for u in self._all_rows if any(member_matches(m, u.key) for m in members)]
+
+    def can_target(self, target: str, keys) -> tuple[bool, str]:
+        """``(ok, reason)`` for sending ``keys`` to a plot ``target`` (waterfall/dispersion/heatmap).
+
+        Same pure validation the destination dock uses, so the "Send to" menu can grey a verb the
+        group can't satisfy (plan R-route). Reads the read-only results off the facade; writes nothing."""
+        from isar_gui import group_targets
+        return group_targets.accepts(target, getattr(self._ws, "results", []) or [], keys)
+
+    def lens_bins(self, dim: str) -> list[tuple[str, set]]:
+        """``[(bin_label, {unit_key, ...}), ...]`` for the ambient lens over dimension ``dim``.
+
+        A thin wrapper over the SAME :meth:`auto_groups` derivation the dimension tabs use, so a lens
+        bin means exactly what the corresponding auto-group means. Bins over the FILTERED rows (the
+        lens dims within the currently-visible home grid)."""
+        return [(g.label, set(g.scan_keys)) for g in self.auto_groups(dim)]
 
     def siblings_of(self, unit_key: str) -> list[str]:
         """Unit keys of every analyzer sharing this unit's source scan (includes the unit itself).
@@ -839,6 +877,23 @@ class ScansViewModel(ViewModel):
         if len(scans) == 1:
             return self._scan_label(units[0])
         return f"Group of {len(units)}"
+
+    def create_group_from_merge(self, target_key: str, dragged_keys) -> str | None:
+        """iPhone folder birth: drop chip(s) ``dragged_keys`` onto a loose chip ``target_key``.
+
+        The new folder holds ``{target_key} ∪ dragged_keys`` (deduped, target included once), named
+        by :meth:`suggest_group_name` so the dock can open it straight into inline-rename. A drop of a
+        chip onto itself with no other dragged keys is a no-op (returns ``None``)."""
+        if self._store is None:
+            return None
+        keys: list[str] = [str(target_key)]
+        for k in dragged_keys or []:
+            k = str(k)
+            if k not in keys:
+                keys.append(k)
+        if len(keys) < 2:
+            return None   # self-only merge: nothing to group
+        return self.create_group_from(self.suggest_group_name(keys), keys)
 
     def create_group_from(self, name: str, unit_keys) -> str | None:
         """Create a manual group ``name`` pre-populated with ``unit_keys`` (one structural signal)."""

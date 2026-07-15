@@ -22,11 +22,13 @@ from PySide6.QtWidgets import (
 )
 
 from isar_gui.plotspec_pg import clear_render, render_into
+from isar_gui.views.group_drop import GroupDropMixin
 
 
-class HeatmapDock(QDockWidget):
+class HeatmapDock(GroupDropMixin, QDockWidget):
     """(q, E) plane over a :class:`HeatmapViewModel`: strips + overlays + projection legend, a T
-    selector, a colorbar, and click -> ``VM.activate_at``."""
+    selector, a colorbar, click -> ``VM.activate_at``, and a group-drop restriction (2A, refuses
+    multi-T)."""
 
     def __init__(self, vm, parent=None):
         super().__init__("Plane (q, E)", parent)
@@ -57,6 +59,7 @@ class HeatmapDock(QDockWidget):
         outer.addWidget(self._glw)
 
         self.setWidget(body)
+        self._init_group_drop(outer)   # group-drop restriction + Show-all banner (2A)
 
         self._plot.scene().sigMouseClicked.connect(self._on_click)
         vm.spec_changed.connect(self.refresh)

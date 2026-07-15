@@ -520,7 +520,7 @@ model selection, branch model, verdicts, the driver, the ledger. The GUI adds no
 | C5 | Dispersion view: ω vs q with certifying-tier error bars, prior curve, off-curve flags | 3, 4 (view) | branch_model, results | — | A |
 | C6 | Planner: RS map from card lattice/space group, oriented plane, forbidden zones, two-click line, spacing spinbox, scan-series preview, approve | 1 | card, geometry, feasibility | `objective_edit` | B |
 | C7 | Directive composer + inbox monitor: pending/consumed/rejected with driver reasons | 1, 3, 4, 5 | session_events | all four types | C |
-| C8 | Sandbox refit panel (PUFFIN-grammar): structure editor, prior sliders, live fast-tier fit, SANDBOX banner, Commit → directive | 3 (interactive) | sandbox entry point | `prior_edit`, `fit_correction` | C |
+| C8 | Sandbox refit panel — **Partial:** live fast-tier preview, manual E₀, SANDBOX banner implemented; structure editor, prior sliders, Commit → directive planned | 3 (interactive) | `isar.sandbox_api` | `prior_edit`, `fit_correction` (planned) | C |
 | C9 | NL command bar: text → compiled directive(s) via LLMM → user confirms artifact → inbox | 5 | — | any (via compiler) | C |
 | C10 | Drive dashboard: EIG landscape over q, per-q state machine (met / declined / uncertifiable_interval / …), budget clock (labeled wall vs virtual), tier escalations, refusal log, proposal queue w/ human entries marked | 4 | campaign, session_events, watch | — | C |
 | C11 | Dispersion-guess editor: drag the prior curve / control points → `prior_edit` scoped to line/model | 4 | branch_model | `prior_edit` | C |

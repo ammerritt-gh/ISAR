@@ -45,7 +45,8 @@ def _nine(exp="s30", num=12):
 
 
 def _tab_names(dock):
-    return [dock._tabs.tabText(i) for i in range(dock._tabs.count())]
+    # Tabs are keyed by a stable id (page dict), independent of the display label ("Manual"->"Home").
+    return list(dock._pages)
 
 
 def _show_tab(dock, name):
@@ -77,7 +78,8 @@ def test_tabs_present_for_multi_detector(qtbot, tmp_path):
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
     names = _tab_names(dock)
-    assert names == ["All", "Scans", "T", "q", "Analyzer", "Manual"]  # no B (no field data)
+    # Home (id "Manual") leads; the flat "All" tab is retired (the Pool subsumes it). No B (no field).
+    assert names == ["Manual", "Scans", "T", "q", "Analyzer"]
 
 
 def test_plain_chip_click_routes_to_inspector(qtbot, tmp_path):
@@ -126,8 +128,8 @@ def test_all_tab_lists_every_unit(qtbot, tmp_path):
     vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    _show_tab(dock, "All")
-    all_box = _box(dock, "all")
+    _show_tab(dock, "Manual")
+    all_box = _box(dock, "ungrouped")
     assert len(all_box.chips) == 9
 
 
@@ -180,7 +182,7 @@ def test_cross_tab_selection_lights_every_chip(qtbot, tmp_path):
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
     # Build two pages so the unit appears in more than one box.
-    _show_tab(dock, "All")
+    _show_tab(dock, "Manual")
     _show_tab(dock, "Analyzer")
     chips = dock._chips_by_key["s30:12:ana1"]
     assert len(chips) >= 2                  # one on All, one on Analyzer
@@ -192,7 +194,7 @@ def test_active_chip_is_distinct_from_selected_group(qtbot, tmp_path):
     vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    _show_tab(dock, "All")
+    _show_tab(dock, "Manual")
     # Group/multi-selection is intentionally independent from the one detector in the inspector.
     vm.select_keys(["s30:12:ana1", "s30:12:ana2"], clear=True)
     dock.set_active_key("s30:12:ana1")
@@ -217,7 +219,7 @@ def test_chip_click_updates_shared_selection(qtbot, tmp_path):
     vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    _show_tab(dock, "All")
+    _show_tab(dock, "Manual")
     chip = dock._chips_by_key["s30:12:ana1"][0]
     chip.clicked.emit("s30:12:ana1", Qt.KeyboardModifier.NoModifier)
     assert vm.selected_keys() == ["s30:12:ana1"]
@@ -227,7 +229,7 @@ def test_hover_soft_highlights_siblings(qtbot, tmp_path):
     vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    _show_tab(dock, "All")
+    _show_tab(dock, "Manual")
     dock._on_chip_hovered("s30:12:ana1", True)
     # Every sibling chip is soft-highlighted while hovering one.
     assert all(dock._chips_by_key[f"s30:12:ana{i}"][0]._sibling for i in range(1, 10))
@@ -252,7 +254,7 @@ def test_multi_detector_chip_shows_analyzer_suffix(qtbot, tmp_path):
     vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    _show_tab(dock, "All")
+    _show_tab(dock, "Manual")
     chip = dock._chips_by_key["s30:12:ana3"][0]
     assert chip._num_label.text() == "12·ana3"
 
@@ -261,16 +263,20 @@ def test_single_detector_chip_shows_scan_only(qtbot, tmp_path):
     vm = ScansViewModel(_ws([_sv("in8", 5, "det")]), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    _show_tab(dock, "All")
+    _show_tab(dock, "Manual")
     chip = dock._chips_by_key["in8:5:det"][0]
     assert chip._num_label.text() == "5"
 
 
-def test_manual_groups_are_explicitly_display_only(qtbot, tmp_path):
+def test_home_has_pool_and_new_box_tile(qtbot, tmp_path):
+    # The Home tab is the Pool (all scans) + the always-visible "+ new box" affordance (R9/R11);
+    # the old paragraph hint is gone (grouping is shown graphically, not spelled out).
+    from isar_gui.views.scans_dock import _NewBoxTile
     vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
     _show_tab(dock, "Manual")
-    texts = [w.text() for w in dock.findChildren(QLabel)
-             if w.objectName() == "manualHint"]
-    assert texts and "do not change fitting or collation" in texts[0]
+    pool = _box(dock, "ungrouped")
+    assert pool._title.text() == "Pool" and len(pool.chips) == 9   # every scan is in the pool
+    assert dock.findChildren(_NewBoxTile)                          # the make-a-group tile exists
+    assert not dock.findChildren(QLabel, "manualHint")             # no instructional paragraph

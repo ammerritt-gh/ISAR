@@ -51,9 +51,14 @@ class HeatmapViewModel(ViewModel):
     #: the inspector).
     point_activated = Signal(object)
 
+    #: Group-drop target kind (plan Part 2A). One displayed T, so a multi-T group is refused.
+    TARGET = "heatmap"
+
     def __init__(self, ws, parent=None):
         super().__init__(ws, parent)
         self._temperature: float | None = None
+        self._restriction: set | None = None   # None = all fitted scans; else covered unit ids
+        self._restriction_stale = False        # set when a refresh auto-cleared a now-stale restriction
         self._spec: ps.PlotSpec | None = None
         self._points: list = []          # [(x, omega0, FitView)] for click hit-testing
         self._excluded_count = 0
@@ -99,6 +104,27 @@ class HeatmapViewModel(ViewModel):
         self._temperature = None if T is None else round(float(T), 6)
         self.refresh()
 
+    # ---- group-drop restriction (plan Part 2A) ------------------------------
+    def set_scan_restriction(self, keys) -> None:
+        """Restrict the plane to a manual group's covered unit ids; ``None`` restores all fitted
+        scans. Pure view filter — no re-fit, no workspace write (G10)."""
+        self._restriction = {str(k) for k in keys} if keys is not None else None
+        self.refresh()
+
+    @property
+    def restriction_active(self) -> bool:
+        return self._restriction is not None
+
+    def take_restriction_stale(self) -> bool:
+        """True once after a refresh auto-cleared a now-stale restriction (consumed by the dock)."""
+        stale, self._restriction_stale = self._restriction_stale, False
+        return stale
+
+    def can_accept(self, scan_ids) -> tuple[bool, str]:
+        """``(ok, reason)`` for dropping ``scan_ids`` here — refuses a group spanning >1 temperature."""
+        from isar_gui import group_targets
+        return group_targets.accepts(self.TARGET, self._ws.results, scan_ids)
+
     def activate_at(self, x, y, tol: float = 0.2) -> None:
         """Emit ``point_activated`` for the ω̂ point nearest ``(x, y)`` (in scale-normalised data
         units) when within ``tol``. The dock calls this on a plot click."""
@@ -132,8 +158,15 @@ class HeatmapViewModel(ViewModel):
         return f"counts/{mode}" if mode else "counts"
 
     def _candidates(self) -> list:
-        """Fitted, non-pooled results carrying a full Q and a temperature (the plane's population)."""
-        return projection.candidates(self._ws.results)
+        """Fitted results carrying a full Q and a temperature (the plane's population), narrowed to
+        the active group restriction when one is set (plan Part 2A). Auto-clears a now-stale
+        restriction (all ids gone on this refresh) so a stale banner never lingers over an empty plane."""
+        cands, stale = projection.restrict_or_clear(
+            projection.candidates(self._ws.results), self._restriction)
+        if stale:
+            self._restriction = None
+            self._restriction_stale = True
+        return cands
 
     def _rebuild(self) -> None:
         step = self._hkl_round_step()

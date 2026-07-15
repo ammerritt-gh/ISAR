@@ -13,13 +13,14 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QInputDialog
 
 from isar_gui.gui_store import GuiStore
+from isar_gui.mime import MIME_SCAN_IDS, decode_scan_ids
 from isar_gui.viewmodels.scans import ScansViewModel
-from isar_gui.views.scans_dock import ScansDock
+from isar_gui.views.scans_dock import ScansDock, _GroupBox
 
 
 def _sv(exp, num, det, *, T=300.0, hkl=(1.0, 0.0, 0.0), q_target=None, B=None):
@@ -49,7 +50,8 @@ def _box(dock, box_id):
 
 
 def _tab_names(dock):
-    return [dock._tabs.tabText(i) for i in range(dock._tabs.count())]
+    # Address tabs by stable page id (the display label "Manual" now reads "Home").
+    return list(dock._pages)
 
 
 def _show_tab(dock, name):
@@ -152,7 +154,7 @@ def test_chip_menu_new_group_from_selection(qtbot, tmp_path, monkeypatch):
     vm = ScansViewModel(_ws(_nine()), store=store)
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    _show_tab(dock, "All")
+    _show_tab(dock, "Manual")
     vm.select_keys(["s30:12:ana1", "s30:12:ana2"], clear=True)
     seen = {}
 
@@ -161,7 +163,7 @@ def test_chip_menu_new_group_from_selection(qtbot, tmp_path, monkeypatch):
         return "My cold set", True
 
     monkeypatch.setattr(QInputDialog, "getText", staticmethod(_fake_get_text))
-    _box(dock, "all")._apply_chip_action("new_group", "s30:12:ana1")
+    _box(dock, "ungrouped")._apply_chip_action("new_group", "s30:12:ana1")
     assert seen["text"] == "T = 300 K"                 # dialog pre-filled from the suggestion
     g = store.groups()[0]
     assert g.name == "My cold set"
@@ -173,10 +175,10 @@ def test_chip_menu_new_group_cancelled_creates_nothing(qtbot, tmp_path, monkeypa
     vm = ScansViewModel(_ws(_nine()), store=store)
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    _show_tab(dock, "All")
+    _show_tab(dock, "Manual")
     monkeypatch.setattr(QInputDialog, "getText",
                         staticmethod(lambda *a, **k: ("", False)))   # user hit Cancel
-    _box(dock, "all")._apply_chip_action("new_group", "s30:12:ana1")
+    _box(dock, "ungrouped")._apply_chip_action("new_group", "s30:12:ana1")
     assert store.groups() == []
 
 
@@ -186,10 +188,10 @@ def test_chip_new_group_from_single_chip_when_unselected(qtbot, tmp_path, monkey
     vm = ScansViewModel(_ws(_nine()), store=store)
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    _show_tab(dock, "All")
+    _show_tab(dock, "Manual")
     monkeypatch.setattr(QInputDialog, "getText",
                         staticmethod(lambda *a, **k: ("Solo", True)))
-    _box(dock, "all")._apply_chip_action("new_group", "s30:12:ana5")
+    _box(dock, "ungrouped")._apply_chip_action("new_group", "s30:12:ana5")
     assert store.groups()[0].members == ["s30:12:ana5"]
 
 
@@ -278,17 +280,75 @@ def test_header_press_that_became_a_drag_does_not_select(qtbot, tmp_path):
     assert vm.selected_keys() == []   # a completed drag must not also select the members
 
 
+def test_filtered_manual_header_drag_carries_full_persisted_membership(
+        qtbot, tmp_path, monkeypatch):
+    vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
+    members = ["s30:12:ana1", "s30:12:ana2", "s30:12:ana3"]
+    gid = vm.create_group_from("Filtered", members)
+    vm.apply_query("ana:ana1")
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+    _show_tab(dock, "Manual")
+    box = _box(dock, gid)
+    assert [chip.key for chip in box.chips] == ["s30:12:ana1"]
+
+    payloads = []
+
+    class _Drag:
+        def __init__(self, _parent):
+            self._md = None
+
+        def setMimeData(self, md):
+            self._md = md
+
+        def exec(self, _action):
+            payloads.append(decode_scan_ids(self._md.data(MIME_SCAN_IDS).data()))
+
+    monkeypatch.setattr("isar_gui.views.scans_dock.QDrag", _Drag)
+    box._drag_start = QPoint(0, 0)
+    move = QMouseEvent(QEvent.Type.MouseMove, QPointF(30, 0), Qt.MouseButton.NoButton,
+                       Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    box.mouseMoveEvent(move)
+    assert set(payloads[0]) == set(members)
+
+
+def test_auto_header_drag_carries_visible_members_only(qtbot, tmp_path, monkeypatch):
+    vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
+    box = _GroupBox("auto:test", "computed", vm, kind="auto")
+    qtbot.addWidget(box)
+    box._chips = [SimpleNamespace(key="s30:12:ana1")]
+
+    payloads = []
+
+    class _Drag:
+        def __init__(self, _parent):
+            self._md = None
+
+        def setMimeData(self, md):
+            self._md = md
+
+        def exec(self, _action):
+            payloads.append(decode_scan_ids(self._md.data(MIME_SCAN_IDS).data()))
+
+    monkeypatch.setattr("isar_gui.views.scans_dock.QDrag", _Drag)
+    box._drag_start = QPoint(0, 0)
+    move = QMouseEvent(QEvent.Type.MouseMove, QPointF(30, 0), Qt.MouseButton.NoButton,
+                       Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    box.mouseMoveEvent(move)
+    assert payloads == [["s30:12:ana1"]]
+
+
 # ---------------------------------------------------------------------------
 # Dock: Manual-tab hint is always present (discoverability)
 # ---------------------------------------------------------------------------
-def test_manual_tab_hint_present_even_with_groups(qtbot, tmp_path):
+def test_home_new_box_tile_present_even_with_groups(qtbot, tmp_path):
+    # Grouping stays discoverable graphically (the "+ new box" tile), not via an instructional hint.
+    from isar_gui.views.scans_dock import _NewBoxTile
     store = GuiStore.load(tmp_path)
     vm = ScansViewModel(_ws(_nine()), store=store)
     vm.create_group_from("Cold", ["s30:12:ana1"])
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
     _show_tab(dock, "Manual")
-    from PySide6.QtWidgets import QLabel
-    hints = [w for w in dock._pages["Manual"].widget().findChildren(QLabel)
-             if w.objectName() == "manualHint"]
-    assert hints and "drag scans in" in hints[0].text()
+    # The Home page is now a splitter host widget (not a QScrollArea) — search it directly.
+    assert dock._pages["Manual"].findChildren(_NewBoxTile)

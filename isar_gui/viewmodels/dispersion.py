@@ -43,9 +43,14 @@ class DispersionViewModel(ViewModel):
     #: the inspector).
     point_activated = Signal(object)
 
+    #: Group-drop target kind (plan Part 2A). One displayed T, so a multi-T group is refused.
+    TARGET = "dispersion"
+
     def __init__(self, ws, parent=None):
         super().__init__(ws, parent)
         self._temperature: float | None = None
+        self._restriction: set | None = None   # None = all fitted scans; else covered unit ids
+        self._restriction_stale = False        # set when a refresh auto-cleared a now-stale restriction
         self._spec = None
         self._points: list = []          # [(x, omega0, FitView)] for click hit-testing
         self._excluded_count = 0
@@ -90,6 +95,27 @@ class DispersionViewModel(ViewModel):
         self._temperature = None if T is None else round(float(T), 6)
         self.refresh()
 
+    # ---- group-drop restriction (plan Part 2A) ------------------------------
+    def set_scan_restriction(self, keys) -> None:
+        """Restrict the view to a manual group's covered unit ids; ``None`` restores all fitted scans.
+        Pure view filter — no re-fit, no workspace write (G10)."""
+        self._restriction = {str(k) for k in keys} if keys is not None else None
+        self.refresh()
+
+    @property
+    def restriction_active(self) -> bool:
+        return self._restriction is not None
+
+    def take_restriction_stale(self) -> bool:
+        """True once after a refresh auto-cleared a now-stale restriction (consumed by the dock)."""
+        stale, self._restriction_stale = self._restriction_stale, False
+        return stale
+
+    def can_accept(self, scan_ids) -> tuple[bool, str]:
+        """``(ok, reason)`` for dropping ``scan_ids`` here — refuses a group spanning >1 temperature."""
+        from isar_gui import group_targets
+        return group_targets.accepts(self.TARGET, self._ws.results, scan_ids)
+
     def activate_at(self, x, y, tol: float = 0.2) -> None:
         """Emit ``point_activated`` for the ω̂ point nearest ``(x, y)`` (scale-normalised) within
         ``tol``. The dock calls this on a plot click."""
@@ -116,7 +142,11 @@ class DispersionViewModel(ViewModel):
 
     def _rebuild(self) -> None:
         step = self._hkl_round_step()
-        cands = projection.candidates(self._ws.results)
+        cands, stale = projection.restrict_or_clear(
+            projection.candidates(self._ws.results), self._restriction)
+        if stale:
+            self._restriction = None
+            self._restriction_stale = True
         self._temperatures = sorted({round(fv.T, 6) for fv in cands})
         if self._temperature is None or self._temperature not in self._temperatures:
             self._temperature = projection.modal_T(cands)

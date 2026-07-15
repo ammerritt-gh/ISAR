@@ -65,6 +65,8 @@ from isar_gui.viewmodels import (
     ViewModel,
     WaterfallViewModel,
 )
+from isar_gui.viewmodels.sandbox import SandboxViewModel
+from isar_gui.views.sandbox_dock import SandboxDock
 from isar_gui.views.browser_dock import BrowserDock
 from isar_gui.views.card_dock import CardDock
 from isar_gui.views.dispersion_dock import DispersionDock
@@ -265,6 +267,8 @@ class MainWindow(QMainWindow):
         self.heatmap_vm = HeatmapViewModel(ws, parent=self)
         self.dispersion_vm = DispersionViewModel(ws, parent=self)
         self.waterfall_vm = WaterfallViewModel(ws, parent=self)
+        # The G7 sandbox preview-fit worker; keyed on the workspace ROOT (it re-parses in-process).
+        self.sandbox_vm = SandboxViewModel(None if self._empty else self._ws.root, parent=self)
         # The Files viewmodel is bound with no store yet; a ready bind loads the per-workspace
         # GuiStore below and calls set_store (empty/pending has no workspace file to persist into).
         self.files_vm = FilesViewModel(ws, store=None, parent=self)
@@ -450,6 +454,9 @@ class MainWindow(QMainWindow):
         self.scans_dock = ScansDock(self.scans_vm, self)
         self.active_units.active_changed.connect(self.scans_dock.set_active_key)
         self.scans_dock.set_active_key(self.active_units.key)
+        self.scans_dock.send_group_requested.connect(self._on_send_group)   # "Send to" routing (2A)
+        self.scans_dock.scan_drag_active.connect(self._on_scan_drag)        # drag-reveal on plots (R12)
+        self.scans_dock.fit_requested.connect(self._on_fit_requested)       # sandbox preview fit (2B)
         self.addDockWidget(Qt.RightDockWidgetArea, self.scans_dock)
         self._register_dock("Scans", self.scans_dock)
         self.scan_table_dock = ScanTableDock(self.scans_vm, self)
@@ -474,6 +481,12 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.waterfall_dock)
         self.tabifyDockWidget(self.heatmap_dock, self.waterfall_dock)
         self._register_dock("Waterfall / Comparison", self.waterfall_dock)
+
+        # The G7 sandbox preview-fit panel — a fourth tabified sibling (2B).
+        self.sandbox_dock = SandboxDock(self.sandbox_vm, self)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.sandbox_dock)
+        self.tabifyDockWidget(self.heatmap_dock, self.sandbox_dock)
+        self._register_dock("Sandbox (preview fit)", self.sandbox_dock)
 
     def _apply_empty_start_dock_geometry(self) -> None:
         """Give the no-workspace/start-new screen a compact Log dock.
@@ -774,6 +787,55 @@ class MainWindow(QMainWindow):
         debounce-persist the GUI store (the same store the watched folders live in)."""
         if self._gui_store is not None:
             self._store_save_timer.start()
+
+    def _on_send_group(self, keys, target: str, label: str) -> None:
+        """Route a folder's "Send to <plot>" to the destination dock: validate, restrict, raise (2A).
+
+        The engine is never handed a "group" — only the unit ids in ``keys`` reach the view VM. A
+        refusal (e.g. a multi-T group on a single-T plane) is surfaced loudly on the status bar."""
+        mapping = {"waterfall": (getattr(self, "waterfall_vm", None), "Waterfall / Comparison"),
+                   "dispersion": (getattr(self, "dispersion_vm", None), "Dispersion ω(q)"),
+                   "heatmap": (getattr(self, "heatmap_vm", None), "Plane (q, E)")}
+        vm, dock_name = mapping.get(target, (None, None))
+        keys = list(keys or [])
+        if vm is None or not keys:
+            return
+        ok, reason = vm.can_accept(keys)
+        if not ok:
+            self.statusBar().showMessage(reason)
+            return
+        dock = self._docks.get(dock_name)
+        if dock is None:
+            return
+        dock.apply_group(keys, label or "selection")
+        dock.show()
+        dock.raise_()
+
+    def _on_scan_drag(self, active: bool, keys) -> None:
+        """Arm the VISIBLE plot dock as a drop target while a scan drag is in flight (R12). Hidden
+        tabbed docks are deliberately NOT surfaced — only whichever plot is currently shown glows,
+        and only if it can accept the scans."""
+        for name in ("Plane (q, E)", "Dispersion ω(q)", "Waterfall / Comparison"):
+            dock = self._docks.get(name)
+            arm = getattr(dock, "arm_group_drop", None)
+            if not callable(arm):
+                continue
+            on = bool(active) and not dock.visibleRegion().isEmpty()   # empty region => hidden tab
+            arm(on, keys)
+
+    def _on_fit_requested(self, unit_key: str) -> None:
+        """Run a G7 sandbox preview fit for ``unit_key`` and surface the Sandbox dock (2B). The fit
+        runs off-thread; the dock updates when it finishes. Nothing is written to the workspace."""
+        if self._empty:
+            self.statusBar().showMessage("No workspace — nothing to fit")
+            return
+        self.sandbox_vm.set_workspace_root(self._ws.root)
+        dock = getattr(self, "sandbox_dock", None)
+        if dock is not None:
+            dock.show()
+            dock.raise_()
+        self.statusBar().showMessage(f"Sandbox preview fit for {unit_key}…")
+        self.sandbox_vm.request_fit(unit_key)
 
     def _save_gui_store(self) -> None:
         if self._gui_store is not None:

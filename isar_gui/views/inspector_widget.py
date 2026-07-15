@@ -54,6 +54,8 @@ class InspectorWidget(QWidget):
 
         # --- left: plots -------------------------------------------------
         self._glw = pg.GraphicsLayoutWidget()
+        from isar_gui.plotspec_pg import disable_view_drops
+        disable_view_drops(self._glw)   # no drops on the plot view (silence the dragLeave warning)
         self._main_plot = self._glw.addPlot(row=0, col=0)
         self._resid_plot = self._glw.addPlot(row=1, col=0)
         self._resid_plot.setXLink(self._main_plot)
