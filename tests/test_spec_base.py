@@ -153,12 +153,80 @@ def test_read_spec_multiword_columns_resolves_true_column_count(tmp_path):
     ])
     p = tmp_path / "mini.spec"
     p.write_text(text, encoding="utf-8")
-    # Without the hint, the 3-word name over-tokenizes to 6 labels but there are only 4 data columns.
+    # Without the hint, the 3-word name over-tokenizes to 6 labels against #N 4 — a structural
+    # inconsistency (every by-name lookup would misalign), so the block is skipped, not exposed.
     _, naive = spec_base.read_spec(p)
-    assert len(naive[0].column_labels) == 6
+    assert naive == []
     # With the hint, the labels collapse to the true 4 columns aligned to the data.
     _, blocks = spec_base.read_spec(p, multiword_columns=["Heat Stage T1"])
     b = blocks[0]
     assert b.column_labels == ["HerixE", "Heat_Stage_T1", "ICO-C", "Seconds"]
     assert spec_base.column_index(b, "ICO-C") == 2
     assert b.data.shape == (2, 4)
+
+
+# ---------------------------------------------------------------------------
+# Declared-width authority (#N, reconciled against #L): a truncated-but-uniform
+# block must never be silently accepted — by-name column access past the data's
+# edge raises IndexError downstream and the ingest layer then skips the FILE.
+# ---------------------------------------------------------------------------
+def test_uniformly_truncated_block_is_skipped_not_accepted(tmp_path, caplog):
+    """The review reproducer: #N 3, three labels, uniform 2-wide rows -> skip the block (warned)."""
+    p = tmp_path / "uniform_short.spec"
+    p.write_text("\n".join(_mini_spec(["0.0 1.0", "0.1 1.1"])), encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        _, blocks = spec_base.read_spec(p)
+    assert blocks == []
+    assert "scan 7" in caplog.text and "header declares 3" in caplog.text
+
+
+def test_uniformly_wide_block_is_skipped(tmp_path, caplog):
+    p = tmp_path / "uniform_wide.spec"
+    p.write_text("\n".join(_mini_spec(["0.0 1.0 2.0 9.9", "0.1 1.1 2.1 9.9"])), encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        _, blocks = spec_base.read_spec(p)
+    assert blocks == []
+    assert "scan 7" in caplog.text
+
+
+def test_first_row_truncated_then_full_rows_skips_block(tmp_path, caplog):
+    """A short FIRST row must not become the block's width (the old first-row anchor did that)."""
+    p = tmp_path / "first_short.spec"
+    p.write_text("\n".join(_mini_spec(["0.0 1.0", "0.1 1.1 2.1", "0.2 1.2 2.2"])), encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        _, blocks = spec_base.read_spec(p)
+    assert blocks == []
+    assert "scan 7" in caplog.text and "first data row" in caplog.text
+
+
+def test_missing_hash_n_falls_back_to_labels(tmp_path):
+    """No #N line: the resolved #L labels are the remaining declaration; a clean table parses."""
+    text = "\n".join(["#F raw.spec", "#E 1", "#S 9  fscan herixE",
+                      "#L HerixE ICO-C Seconds", "0.0 1.0 2.0", "0.1 1.1 2.1", ""])
+    p = tmp_path / "no_n.spec"
+    p.write_text(text, encoding="utf-8")
+    _, blocks = spec_base.read_spec(p)
+    assert len(blocks) == 1 and blocks[0].data.shape == (2, 3)
+
+
+def test_missing_hash_n_still_rejects_short_rows_against_labels(tmp_path, caplog):
+    text = "\n".join(["#F raw.spec", "#E 1", "#S 9  fscan herixE",
+                      "#L HerixE ICO-C Seconds", "0.0 1.0", "0.1 1.1", ""])
+    p = tmp_path / "no_n_short.spec"
+    p.write_text(text, encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        _, blocks = spec_base.read_spec(p)
+    assert blocks == []
+    assert "scan 9" in caplog.text
+
+
+def test_n_l_disagreement_skips_block_with_warning(tmp_path, caplog):
+    """#N 3 but only two labels: a malformed header (or an unlisted multi-word name) — skip."""
+    text = "\n".join(["#F raw.spec", "#E 1", "#S 4  fscan herixE", "#N 3",
+                      "#L HerixE Seconds", "0.0 1.0 2.0", ""])
+    p = tmp_path / "n_l_mismatch.spec"
+    p.write_text(text, encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        _, blocks = spec_base.read_spec(p)
+    assert blocks == []
+    assert "scan 4" in caplog.text and "#N declares 3" in caplog.text and "resolves 2" in caplog.text
