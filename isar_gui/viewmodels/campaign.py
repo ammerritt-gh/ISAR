@@ -55,7 +55,9 @@ class CampaignState:
     n_grid: int | None = None
     stop_state: str | None = None
     stop_reasons: tuple[str, ...] = ()
-    grid_state: str | None = None         # honest grid snapshot behind an operator stop
+    #: The honest grid snapshot behind an operator stop — the loop writes StopDecision.to_dict()
+    #: ({state, reasons, per_q}), never a bare string (isar/drive/loop.py's stop payload).
+    grid_state: dict | None = None
     exception_count: int = 0
     stage_seconds: dict = field(default_factory=dict)
     # Whole-log spend (all segments — the engine's resume accounting reads the same way).

@@ -83,11 +83,11 @@ def test_reducer_empty_log_and_operator_stop(make_ws):
                                "iter": 2, "token": "t" * 32})
     log_event(path, "stop", {"state": "operator_stopped",
                              "reasons": ["operator stop request honored at iteration 2"],
-                             "grid_state": "continue"})
+                             "grid_state": {"state": "continue", "reasons": [], "per_q": []}})
     ws = Workspace.open(root)
     state = reduce_campaign(list(ws.session_events()))
     assert state.stop_state == "operator_stopped"
-    assert state.grid_state == "continue"
+    assert state.grid_state == {"state": "continue", "reasons": [], "per_q": []}
     assert any("iteration 2" in r for r in state.stop_reasons)
 
 

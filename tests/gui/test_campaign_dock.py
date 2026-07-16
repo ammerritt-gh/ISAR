@@ -164,7 +164,7 @@ def test_status_lines_for_terminal_states(dock_env, make_ws):
     log_event(path, "decide", {"event": "campaign_start", "action": "campaign_start",
                                "objective": {}, "source": {"kind": "goal", "sha256": "x"}})
     log_event(path, "stop", {"state": "operator_stopped", "reasons": ["operator stop"],
-                             "grid_state": "continue"})
+                             "grid_state": {"state": "continue", "reasons": [], "per_q": []}})
     ws.refresh()
     vm.on_workspace_changed({"events"})
     assert "press Resume" in dock._status_line.text()
