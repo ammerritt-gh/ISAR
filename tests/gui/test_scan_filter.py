@@ -94,9 +94,21 @@ def test_empty_filter_matches_everything():
     assert _match(ScanFilter(), _u()) is True
 
 def test_analyzer_filter():
+    """Real detector ids are ``anaN`` (the S30 cards) — the numeric shorthand must reach them."""
     f = parse_query("ana:9")[0]
-    assert _match(f, _u(det="9")) is True
-    assert _match(f, _u(det="3")) is False
+    assert _match(f, _u(det="ana9")) is True
+    assert _match(f, _u(det="9")) is True       # a bare-numeric id still matches
+    assert _match(f, _u(det="det9")) is True    # any prefix, same trailing number
+    assert _match(f, _u(det="ana3")) is False
+    assert _match(f, _u(det="ana19")) is False  # 19 is not 9 — no substring matching
+
+def test_analyzer_exact_form_and_non_numeric_queries():
+    f = parse_query("ana:ana9")[0]
+    assert _match(f, _u(det="ana9")) is True
+    assert _match(f, _u(det="9")) is False      # exact token, no normalization
+    f = parse_query("ana:foo")[0]
+    assert _match(f, _u(det="foo")) is True
+    assert _match(f, _u(det="ana9")) is False
 
 def test_status_prefix_covers_held_family():
     f = parse_query("status:held")[0]
@@ -135,13 +147,50 @@ def test_q_binning_tolerance():
 
 def test_typed_clauses_and_combine():
     f = parse_query("ana:9 T>100")[0]
-    assert _match(f, _u(det="9", T=300)) is True
-    assert _match(f, _u(det="9", T=50)) is False
-    assert _match(f, _u(det="3", T=300)) is False
+    assert _match(f, _u(det="ana9", T=300)) is True
+    assert _match(f, _u(det="ana9", T=50)) is False
+    assert _match(f, _u(det="ana3", T=300)) is False
 
 def test_non_numeric_t_is_tolerated():
     f = parse_query("T>100")[0]
     assert _match(f, _u(T="warm")) is False   # unparseable T never crashes, just fails the clause
+
+
+# ---------------------------------------------------------------------------
+# strict vs inclusive temperature operators
+# ---------------------------------------------------------------------------
+def test_strict_lower_bound_excludes_the_bound():
+    f = parse_query("T>100")[0]
+    assert f.t_min == 100 and f.t_min_exclusive is True
+    assert _match(f, _u(T=100.0)) is False
+    assert _match(f, _u(T=100.1)) is True
+
+def test_inclusive_lower_bound_includes_the_bound():
+    f = parse_query("T>=100")[0]
+    assert f.t_min_exclusive is False
+    assert _match(f, _u(T=100.0)) is True
+
+def test_strict_upper_bound_excludes_the_bound():
+    f = parse_query("T<100")[0]
+    assert f.t_max == 100 and f.t_max_exclusive is True
+    assert _match(f, _u(T=100.0)) is False
+    assert _match(f, _u(T=99.9)) is True
+
+def test_inclusive_upper_bound_includes_the_bound():
+    f = parse_query("T<=100")[0]
+    assert f.t_max_exclusive is False
+    assert _match(f, _u(T=100.0)) is True
+
+def test_repeated_bounds_are_last_token_wins_including_the_flag():
+    f = parse_query("T>=100 T>50")[0]
+    assert f.t_min == 50 and f.t_min_exclusive is True    # the strict clause replaced both parts
+    f = parse_query("T>100 T>=50")[0]
+    assert f.t_min == 50 and f.t_min_exclusive is False   # no stale strictness left behind
+
+def test_contradictory_bounds_match_nothing():
+    f = parse_query("T>200 T<100")[0]
+    for t in (50, 100, 150, 200, 300):
+        assert _match(f, _u(T=t)) is False
 
 
 # ---------------------------------------------------------------------------
@@ -167,8 +216,8 @@ def test_free_text_multiple_tokens_and_combine():
 
 def test_free_text_and_typed_combine():
     f = parse_query("ana:9 cold")[0]
-    assert _match(f, _u(det="9", file_name="cold.dat")) is True
-    assert _match(f, _u(det="3", file_name="cold.dat")) is False
+    assert _match(f, _u(det="ana9", file_name="cold.dat")) is True
+    assert _match(f, _u(det="ana3", file_name="cold.dat")) is False
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +239,30 @@ def test_to_dict_only_emits_active_fields():
 
 def test_describe_mentions_active_clauses():
     s = describe(parse_query("ana:9 T>100 status:held")[0])
-    assert "analyzer 9" in s and "T ≥ 100" in s and "held" in s
+    assert "analyzer 9" in s and "T > 100" in s and "held" in s
+
+def test_describe_keeps_strictness_single_sided():
+    assert "T > 100" in describe(parse_query("T>100")[0])
+    assert "T ≥ 100" in describe(parse_query("T>=100")[0])
+    assert "T < 100" in describe(parse_query("T<100")[0])
+    assert "T ≤ 100" in describe(parse_query("T<=100")[0])
+
+def test_describe_keeps_strictness_in_two_sided_ranges():
+    assert "100 < T ≤ 200" in describe(parse_query("T>100 T<=200")[0])
+    assert "100 ≤ T < 200" in describe(parse_query("T>=100 T<200")[0])
+    assert "T = 300" in describe(parse_query("T=300")[0])
+
+def test_exclusive_flags_round_trip_and_old_payloads_stay_inclusive():
+    f = parse_query("T>100 T<200")[0]
+    d = f.to_dict()
+    assert d["t_min_exclusive"] is True and d["t_max_exclusive"] is True
+    assert ScanFilter.from_dict(d) == f
+    # An OLD persisted payload (no flags) must load as the historical inclusive bounds.
+    old = ScanFilter.from_dict({"t_min": 100, "t_max": 200})
+    assert old.t_min_exclusive is False and old.t_max_exclusive is False
+    assert old.matches(_u(T=100.0), q_step=Q_STEP) is True
+    # Inclusive filters emit no flag keys at all (payloads stay minimal).
+    assert "t_min_exclusive" not in parse_query("T>=100")[0].to_dict()
 
 def test_describe_empty_is_blank():
     assert describe(ScanFilter()) == ""

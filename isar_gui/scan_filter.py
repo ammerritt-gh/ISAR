@@ -19,8 +19,13 @@ Two entry points:
     human error string the query box can surface, so the box degrades rather than crashing.
 
 Query grammar (whitespace-separated tokens, all AND-combined):
-  * ``ana:9`` / ``analyzer:9``       -> analyzer/detector id (matched as string)
-  * ``T>100`` ``T<50`` ``T>=4.2`` ``T<=300`` ``T=300``  -> temperature bound(s)
+  * ``ana:9`` / ``analyzer:9``       -> analyzer/detector id. A purely numeric value matches by
+                                        the TRAILING number of the real id (``ana:9`` matches
+                                        ``ana9``, ``det9`` and bare ``9`` — but not ``ana19``);
+                                        a non-numeric value matches exactly (``ana:ana9``).
+  * ``T>100`` ``T<50`` ``T>=4.2`` ``T<=300`` ``T=300``  -> temperature bound(s). ``>``/``<`` are
+                                        strict (exclusive); repeated same-side bounds are
+                                        last-token-wins.
   * ``status:held``                  -> ledger status prefix (``held`` covers ``held_for_*``; the
                                         display alias ``parsed`` maps back to ``ingested``)
   * ``type:measurement``             -> scan_type
@@ -95,6 +100,8 @@ class ScanFilter:
     verdicts: frozenset = field(default_factory=frozenset)
     t_min: float | None = None
     t_max: float | None = None
+    t_min_exclusive: bool = False   # True when parsed from strict ``>`` (default keeps old payloads inclusive)
+    t_max_exclusive: bool = False   # True when parsed from strict ``<``
     q_target: tuple | None = None
     text: str = ""
 
@@ -107,7 +114,7 @@ class ScanFilter:
     # ---- predicate ----
     def matches(self, unit, *, q_step: float) -> bool:
         """True when ``unit`` satisfies every active clause. Never raises."""
-        if self.analyzers and str(getattr(unit, "det", None)) not in self.analyzers:
+        if self.analyzers and not _analyzer_matches(getattr(unit, "det", None), self.analyzers):
             return False
         if self.statuses and not _status_matches(getattr(unit, "status", None), self.statuses):
             return False
@@ -119,10 +126,18 @@ class ScanFilter:
             t = _num(getattr(unit, "T", None))
             if t is None:
                 return False
-            if self.t_min is not None and t < self.t_min - _T_EPS:
-                return False
-            if self.t_max is not None and t > self.t_max + _T_EPS:
-                return False
+            if self.t_min is not None:
+                if self.t_min_exclusive:
+                    if t <= self.t_min + _T_EPS:    # strict >: the bound itself (± noise) fails
+                        return False
+                elif t < self.t_min - _T_EPS:
+                    return False
+            if self.t_max is not None:
+                if self.t_max_exclusive:
+                    if t >= self.t_max - _T_EPS:    # strict <: the bound itself (± noise) fails
+                        return False
+                elif t > self.t_max + _T_EPS:
+                    return False
         if self.q_target is not None:
             want = _q_bin(self.q_target, q_step)
             got = _q_bin(getattr(unit, "q", None), q_step)
@@ -149,8 +164,12 @@ class ScanFilter:
             d["verdicts"] = sorted(self.verdicts)
         if self.t_min is not None:
             d["t_min"] = self.t_min
+            if self.t_min_exclusive:
+                d["t_min_exclusive"] = True
         if self.t_max is not None:
             d["t_max"] = self.t_max
+            if self.t_max_exclusive:
+                d["t_max_exclusive"] = True
         if self.q_target is not None:
             d["q_target"] = list(self.q_target)
         if self.text.strip():
@@ -177,12 +196,33 @@ class ScanFilter:
             analyzers=_strset("analyzers"), statuses=_strset("statuses"),
             scan_types=_strset("scan_types"), verdicts=_strset("verdicts"),
             t_min=_num(d.get("t_min")), t_max=_num(d.get("t_max")),
+            # Absent flags load as False: old persisted payloads keep their inclusive meaning.
+            t_min_exclusive=bool(d.get("t_min_exclusive", False)),
+            t_max_exclusive=bool(d.get("t_max_exclusive", False)),
             q_target=q_target, text=str(d.get("text") or ""))
 
 
 # ---------------------------------------------------------------------------
 # Match helpers
 # ---------------------------------------------------------------------------
+def _analyzer_matches(det, wanted: frozenset) -> bool:
+    """True when the unit's detector id matches any wanted token.
+
+    A purely numeric token matches by numeric normalization against the TRAILING number of the
+    real id — real detector ids are strings like ``ana9`` (the S30 cards), so ``ana:9`` must reach
+    them without the operator typing the prefix; comparing as ints keeps ``ana:9`` from matching
+    ``ana19``. Non-numeric tokens (or ids with no trailing number) fall back to exact string match.
+    """
+    s = str(det) if det is not None else ""
+    tail = re.search(r"(\d+)$", s)
+    for w in wanted:
+        if s == w:
+            return True
+        if w.isdigit() and tail is not None and int(tail.group(1)) == int(w):
+            return True
+    return False
+
+
 def _verdict_of(unit) -> str:
     fit = getattr(unit, "fit", None)
     v = getattr(fit, "verdict", None) if fit is not None else None
@@ -256,6 +296,8 @@ def parse_query(text: str) -> tuple[ScanFilter, str | None]:
     verdicts: set = set()
     t_min: float | None = None
     t_max: float | None = None
+    t_min_exclusive = False
+    t_max_exclusive = False
     q_target: tuple | None = None
     free: list[str] = []
     error: str | None = None
@@ -267,16 +309,19 @@ def parse_query(text: str) -> tuple[ScanFilter, str | None]:
             if val is None:
                 error = error or f"bad temperature value in '{tok}'"
                 continue
+            # Each comparison sets its bound AND its exclusivity flag (repeated same-side bounds
+            # are last-token-wins, so a later inclusive clause clears an earlier strict one).
             if op == ">":
-                t_min = val  # exclusive intent, but bounds are inclusive; _T_EPS keeps it forgiving
+                t_min, t_min_exclusive = val, True
             elif op == ">=":
-                t_min = val
+                t_min, t_min_exclusive = val, False
             elif op == "<":
-                t_max = val
+                t_max, t_max_exclusive = val, True
             elif op == "<=":
-                t_max = val
+                t_max, t_max_exclusive = val, False
             elif op == "=":
                 t_min = t_max = val
+                t_min_exclusive = t_max_exclusive = False
             continue
 
         if ":" in tok:
@@ -310,7 +355,9 @@ def parse_query(text: str) -> tuple[ScanFilter, str | None]:
     filt = ScanFilter(
         analyzers=frozenset(analyzers), statuses=frozenset(statuses),
         scan_types=frozenset(scan_types), verdicts=frozenset(verdicts),
-        t_min=t_min, t_max=t_max, q_target=q_target, text=" ".join(free))
+        t_min=t_min, t_max=t_max,
+        t_min_exclusive=t_min_exclusive, t_max_exclusive=t_max_exclusive,
+        q_target=q_target, text=" ".join(free))
     return filt, error
 
 
@@ -328,11 +375,17 @@ def describe(f: ScanFilter) -> str:
     if f.verdicts:
         bits.append("verdict " + "/".join(sorted(f.verdicts)))
     if f.t_min is not None and f.t_max is not None:
-        bits.append(f"T {f.t_min:g}–{f.t_max:g} K" if f.t_min != f.t_max else f"T = {f.t_min:g} K")
+        if f.t_min == f.t_max and not (f.t_min_exclusive or f.t_max_exclusive):
+            bits.append(f"T = {f.t_min:g} K")
+        else:
+            # Strictness must survive into two-sided ranges: 100 < T ≤ 200, not a bare dash.
+            lo = "<" if f.t_min_exclusive else "≤"
+            hi = "<" if f.t_max_exclusive else "≤"
+            bits.append(f"{f.t_min:g} {lo} T {hi} {f.t_max:g} K")
     elif f.t_min is not None:
-        bits.append(f"T ≥ {f.t_min:g} K")
+        bits.append(f"T {'>' if f.t_min_exclusive else '≥'} {f.t_min:g} K")
     elif f.t_max is not None:
-        bits.append(f"T ≤ {f.t_max:g} K")
+        bits.append(f"T {'<' if f.t_max_exclusive else '≤'} {f.t_max:g} K")
     if f.q_target is not None:
         bits.append("q " + _fmt_q(f.q_target))
     if f.text.strip():

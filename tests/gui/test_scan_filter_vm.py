@@ -125,7 +125,8 @@ def test_filter_persists_through_store(qtbot, tmp_path):
 
     # A fresh store + VM hydrates the persisted filter on bind.
     reloaded = GuiStore.load(tmp_path)
-    assert reloaded.scan_filter() == {"analyzers": ["ana9"], "t_min": 200.0}
+    assert reloaded.scan_filter() == {"analyzers": ["ana9"], "t_min": 200.0,
+                                      "t_min_exclusive": True}   # strict `>` survives persistence
     vm2 = ScansViewModel(_ws(_mixed()))
     vm2.set_store(reloaded)
     assert vm2.filter().analyzers == frozenset({"ana9"})
