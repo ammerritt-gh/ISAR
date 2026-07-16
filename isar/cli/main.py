@@ -18,6 +18,14 @@ def _reconfigure_stdio() -> None:
             pass
 
 
+def _positive_int(text: str) -> int:
+    """argparse ``type`` for ``--max-iters``: a strictly-positive integer (>= 1)."""
+    value = int(text)   # a non-integer raises ValueError, which argparse reports as an invalid value
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {value}")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="isar", description="ISAR — inelastic-scattering triage pipeline")
     sub = p.add_subparsers(dest="command", required=True)
@@ -114,8 +122,19 @@ def build_parser() -> argparse.ArgumentParser:
     src = pd.add_mutually_exclusive_group(required=True)
     src.add_argument("--goal", help="natural-language measurement goal (LLM supervisor; needs LLMM)")
     src.add_argument("--spec", help="objective spec JSON file (LLM-free path)")
+    src.add_argument("--resume-latest", dest="resume_latest", action="store_true",
+                     help="resume the last campaign in --workspace using its frozen objective from the "
+                          "session log (LLM-free — never re-compiles a goal); --budget may still override")
     pd.add_argument("--workspace", required=True,
                     help="ISAR workspace the driver drives (auto-init'd after the first scan)")
+    pd.add_argument("--max-iters", dest="max_iters", type=_positive_int, default=None,
+                    help="cap the adaptive-loop iterations for THIS invocation (>= 1). Applies per "
+                         "invocation: each run_campaign restarts iteration numbering at zero, so a "
+                         "restart grants a fresh cap. Default: the built-in cap")
+    pd.add_argument("--control-token", dest="control_token", default=None,
+                    help="opaque token enabling a cooperative operator stop: writing "
+                         "<workspace>/report/control/stop-<token>.json makes the loop finish the current "
+                         "iteration and exit with an operator_stopped state (exit code 4)")
     pd.add_argument("--tier", default="deterministic", choices=["deterministic", "mcstas"],
                     help="fidelity tier (LLM_HARNESS_DESIGN §6)")
     pd.add_argument("--budget", default=None,
@@ -186,29 +205,57 @@ def main(argv=None) -> int:
         from isar.cli import view_cmd
         return view_cmd.run(args)
     if cmd == "drive":
+        import hashlib
+        from pathlib import Path
         from isar.drive.loop import run_campaign
-        from isar.drive.supervisor.goal_to_spec import GoalParseError, goal_to_spec, spec_from_json
+        from isar.drive.session_log import read_log
+        from isar.drive.supervisor.goal_to_spec import (
+            GoalParseError, goal_to_spec, spec_from_dict, spec_from_json)
         try:
-            if args.spec:
+            if args.resume_latest:
+                # LLM-free resume: rebuild the FROZEN objective from the last campaign_start event; a
+                # goal is NEVER re-compiled through the LLM (spec_from_dict is a pure dict path).
+                log_path = Path(args.workspace) / "report" / "session_log.jsonl"
+                starts = [e for e in read_log(log_path)
+                          if e.get("kind") == "decide"
+                          and (e.get("payload") or {}).get("action") == "campaign_start"]
+                if not starts:
+                    print(f"isar drive: no campaign to resume in {log_path} "
+                          "(no campaign_start event in the session log)", file=sys.stderr)
+                    return 2
+                payload = starts[-1]["payload"]
+                objective = spec_from_dict(payload["objective"], defaults={"tier": args.tier},
+                                           where="resume")
+                # Carry the resumed campaign's fingerprint over so it stays comparable across resumes.
+                prev_source = payload.get("source") or {}
+                source = {"kind": "resume", "sha256": prev_source.get("sha256")}
+            elif args.spec:
                 objective = spec_from_json(args.spec, defaults={"tier": args.tier})
+                source = {"kind": "spec",
+                          "sha256": hashlib.sha256(Path(args.spec).read_bytes()).hexdigest()}
             else:
                 objective = goal_to_spec(args.goal, defaults={"tier": args.tier})
+                source = {"kind": "goal",
+                          "sha256": hashlib.sha256(args.goal.encode("utf-8")).hexdigest()}
             if args.budget:
                 objective.budget = _parse_budget(args.budget)
                 objective.__post_init__()
-        except (GoalParseError, ValueError, OSError) as exc:
+        except (GoalParseError, ValueError, OSError, KeyError) as exc:
             print(f"isar drive: {exc}", file=sys.stderr)
             return 2
+        config = {"workspace": args.workspace, "calibration": args.calibration,
+                  "tavi_url": args.tavi, "seed": args.seed, "worker": args.worker,
+                  "control_token": args.control_token, "source": source}
+        if args.max_iters is not None:
+            config["max_iters"] = args.max_iters      # per-invocation cap; else the loop's built-in default
         try:
-            summary = run_campaign(objective, {
-                "workspace": args.workspace, "calibration": args.calibration,
-                "tavi_url": args.tavi, "seed": args.seed, "worker": args.worker})
+            summary = run_campaign(objective, config)
         except Exception as exc:  # noqa: BLE001  (a campaign error is exit 2, not a stack trace)
             print(f"isar drive: campaign failed: {exc}", file=sys.stderr)
             return 2
         state = summary["stop"]["state"]
         print(f"isar drive: {state} — {'; '.join(summary['stop']['reasons'])}")
-        return {"met": 0, "unmeetable": 3}.get(state, 2)
+        return {"met": 0, "unmeetable": 3, "operator_stopped": 4}.get(state, 2)
     print(f"unknown command: {cmd}", file=sys.stderr)
     return 2
 

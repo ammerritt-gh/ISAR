@@ -128,6 +128,27 @@ def goal_to_spec(goal: str, *, dispatcher: Dispatcher | None = None, defaults: d
 
 
 # --------------------------------------------------------------------------- LLM-free path
+def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec") -> ObjectiveSpec:
+    """Build an :class:`ObjectiveSpec` from an already-parsed dict — no LLM, no file I/O.
+
+    Accepts either the goal schema (``{"path": {"h_start", …}, "step_h", "tolerance_meV", …}``) or a
+    full ``ObjectiveSpec.to_dict()`` (``path`` is a list of triples). This is the shared dict path that
+    both :func:`spec_from_json` (file → dict) and the ``isar drive --resume-latest`` path (frozen
+    campaign_start objective → dict) route through, so a resume never re-compiles a goal via the LLM.
+
+    ``where`` is a short label (a file path, or ``"resume"``) used in error messages only.
+    """
+    if not isinstance(d, dict):
+        raise GoalParseError(f"{where}: spec must be an object, got {type(d).__name__}")
+    if isinstance(d.get("path"), list):
+        return ObjectiveSpec.from_dict(d)         # already a full ObjectiveSpec
+    if not _conforms(d, GOAL_SCHEMA):
+        raise GoalParseError(f"{where}: not a valid goal spec (needs path{{h_start,h_end,k,l}}, step_h, "
+                             "tolerance_meV, and a budget)")
+    merged = {**DEFAULTS, **(defaults or {})}
+    return _build_spec(d, merged)
+
+
 def spec_from_json(path: str | Path, *, defaults: dict | None = None) -> ObjectiveSpec:
     """Build an :class:`ObjectiveSpec` from a JSON file — no LLM.
 
@@ -135,15 +156,7 @@ def spec_from_json(path: str | Path, *, defaults: dict | None = None) -> Objecti
     full ``ObjectiveSpec.to_dict()`` (``path`` is a list of triples).
     """
     d = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(d, dict):
-        raise GoalParseError(f"{path}: spec JSON must be an object, got {type(d).__name__}")
-    if isinstance(d.get("path"), list):
-        return ObjectiveSpec.from_dict(d)         # already a full ObjectiveSpec
-    if not _conforms(d, GOAL_SCHEMA):
-        raise GoalParseError(f"{path}: not a valid goal spec (needs path{{h_start,h_end,k,l}}, step_h, "
-                             "tolerance_meV, and a budget)")
-    merged = {**DEFAULTS, **(defaults or {})}
-    return _build_spec(d, merged)
+    return spec_from_dict(d, defaults=defaults, where=str(path))
 
 
 # --------------------------------------------------------------------------- shared
