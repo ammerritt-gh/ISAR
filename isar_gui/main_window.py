@@ -1533,6 +1533,10 @@ class MainWindow(QMainWindow):
         # panes (deleteLater'd here) and the VMs (deleteLater'd just above) are torn down.
         if self._center_host is not None:
             self._center_host.view_changed.disconnect(self._on_center_view_changed)
+            # Park the stack on the persistent hint page BEFORE removing the host: removeWidget on
+            # the current page leaves the stack at index -1 (a grey flash) until the rebind adds
+            # the next host.
+            self._center_stack.setCurrentWidget(self._empty_hint)
             self._center_stack.removeWidget(self._center_host)
             self._center_host.dispose()
             self._center_host.deleteLater()
