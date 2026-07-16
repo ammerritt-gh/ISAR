@@ -1110,6 +1110,36 @@ def test_operator_stop_disabled_by_default_ignores_stop_file(tmp_path):
     assert summary["stop"]["state"] == "met", summary["stop"]["reasons"]
 
 
+def test_operator_stop_during_final_allowed_iteration_is_honored(tmp_path, monkeypatch):
+    # The final-boundary case: with --max-iters 1 the stop file is written DURING the only allowed
+    # iteration's scan, so no top-of-iteration check will ever see it. The boundary after the last
+    # allowed iteration is still a boundary — the loop must honour the stop there (operator_stopped,
+    # no certification) instead of falling through to normal termination.
+    _no_subprocess(monkeypatch)
+    omega = lambda h: (h - 2.0) * 2.0
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    token = "final-boundary"
+    client = _StopFileTavi(omega, ws, token)
+    cfg = {"workspace": ws, "client": client, "run_isar": make_mock_runner(omega),
+           "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7,
+           "control_token": token, "max_iters": 1}
+    summary = run_campaign(_objective(), cfg)
+
+    assert summary["stop"]["state"] == "operator_stopped"
+    events = read_log(summary["session_log"])
+    assert any(e["kind"] == "run" for e in events)              # the final iteration completed its scan
+    acks = [e for e in events if e["kind"] == "decide"
+            and (e.get("payload") or {}).get("event") == "operator_stop"]
+    assert len(acks) == 1 and acks[0]["payload"]["iter"] == 1   # the post-exhaustion boundary (== max_iters)
+    # Certification must not run on an operator stop, even on this path.
+    assert not any((e.get("payload") or {}).get("event") == "certify_start"
+                   for e in events if e["kind"] == "decide")
+    stops = [e for e in events if e["kind"] == "stop"]
+    assert len(stops) == 1 and events[-1]["kind"] == "stop"
+    assert stops[0]["payload"]["state"] == "operator_stopped"
+
+
 # --------------------------------------------------------------------------- per-invocation max_iters
 def test_max_iters_restart_grants_fresh_cap(tmp_path):
     # --max-iters is per invocation: each run_campaign restarts iteration numbering at zero (range over

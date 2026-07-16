@@ -1176,6 +1176,22 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                                    "n_observations": len(observations),
                                                    "converged": sum(1 for g in grid if g.converged),
                                                    "n_grid": len(grid), "iter": it})
+        else:
+            # The loop exhausted max_iters without a break, so the top-of-iteration check will never
+            # run again — but the boundary AFTER the final allowed iteration is still an iteration
+            # boundary, and a stop requested during that last scan must be honoured there (with
+            # --max-iters 1 it is the ONLY boundary that can see it). Same ordering rule as in-loop:
+            # the stop wins before any terminal bookkeeping (certification must not run). The break
+            # paths (met/unmeetable/no-proposal/budget) deliberately get no post-check — their
+            # boundary check already ran before the decision, and a campaign that ended on its own
+            # reports its true state. ``iter`` is cfg.max_iters, the would-be next iteration (the
+            # loop variable is unbound when max_iters == 0, so it is never referenced here).
+            if _operator_stop_requested(cfg, cfg.max_iters):
+                log_event(cfg.log_path, "decide",
+                          {"event": "operator_stop", "action": "operator_stop",
+                           "iter": cfg.max_iters, "token": cfg.control_token})
+                operator_stop = True
+                op_stop_iter = cfg.max_iters
 
         if operator_stop:
             # Operator-stop terminal state (part B): an honest snapshot WITHOUT certification — a stop

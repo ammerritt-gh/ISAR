@@ -26,6 +26,19 @@ def _positive_int(text: str) -> int:
     return value
 
 
+def _control_token(text: str) -> str:
+    """argparse ``type`` for ``--control-token``: a bounded opaque-token alphabet.
+
+    The token is interpolated directly into a stop-file name (``report/control/stop-<token>.json``),
+    so path separators or other special filename characters would silently break stop detection or
+    create unintended paths. The GUI's uuid4 tokens fit this alphabet."""
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", text):
+        raise argparse.ArgumentTypeError(
+            "must be 1-64 characters from [A-Za-z0-9_-] (it names a control file)")
+    return text
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="isar", description="ISAR — inelastic-scattering triage pipeline")
     sub = p.add_subparsers(dest="command", required=True)
@@ -131,12 +144,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="cap the adaptive-loop iterations for THIS invocation (>= 1). Applies per "
                          "invocation: each run_campaign restarts iteration numbering at zero, so a "
                          "restart grants a fresh cap. Default: the built-in cap")
-    pd.add_argument("--control-token", dest="control_token", default=None,
-                    help="opaque token enabling a cooperative operator stop: writing "
-                         "<workspace>/report/control/stop-<token>.json makes the loop finish the current "
-                         "iteration and exit with an operator_stopped state (exit code 4)")
-    pd.add_argument("--tier", default="deterministic", choices=["deterministic", "mcstas"],
-                    help="fidelity tier (LLM_HARNESS_DESIGN §6)")
+    pd.add_argument("--control-token", dest="control_token", default=None, type=_control_token,
+                    help="opaque token ([A-Za-z0-9_-], max 64) enabling a cooperative operator stop: "
+                         "writing <workspace>/report/control/stop-<token>.json makes the loop finish "
+                         "the current iteration and exit with an operator_stopped state (exit code 4)")
+    pd.add_argument("--tier", default=None, choices=["deterministic", "mcstas"],
+                    help="fidelity tier (LLM_HARNESS_DESIGN §6; default deterministic). Ignored with "
+                         "--resume-latest: the tier is frozen with the resumed objective")
     pd.add_argument("--budget", default=None,
                     help="override budget as '<amount><unit>' e.g. '8h', '1e10n' (else from the spec/goal)")
     pd.add_argument("--calibration", default=None,
@@ -224,17 +238,24 @@ def main(argv=None) -> int:
                           "(no campaign_start event in the session log)", file=sys.stderr)
                     return 2
                 payload = starts[-1]["payload"]
-                objective = spec_from_dict(payload["objective"], defaults={"tier": args.tier},
+                objective = spec_from_dict(payload["objective"],
+                                           defaults={"tier": args.tier or "deterministic"},
                                            where="resume")
+                # The frozen objective carries its own tier; an explicit --tier cannot override it
+                # (a full ObjectiveSpec dict bypasses the defaults). Say so instead of silently ignoring.
+                if args.tier is not None and objective.tier != args.tier:
+                    print(f"isar drive: note — --tier is frozen with the resumed objective "
+                          f"({objective.tier}); the requested '{args.tier}' is ignored",
+                          file=sys.stderr)
                 # Carry the resumed campaign's fingerprint over so it stays comparable across resumes.
                 prev_source = payload.get("source") or {}
                 source = {"kind": "resume", "sha256": prev_source.get("sha256")}
             elif args.spec:
-                objective = spec_from_json(args.spec, defaults={"tier": args.tier})
+                objective = spec_from_json(args.spec, defaults={"tier": args.tier or "deterministic"})
                 source = {"kind": "spec",
                           "sha256": hashlib.sha256(Path(args.spec).read_bytes()).hexdigest()}
             else:
-                objective = goal_to_spec(args.goal, defaults={"tier": args.tier})
+                objective = goal_to_spec(args.goal, defaults={"tier": args.tier or "deterministic"})
                 source = {"kind": "goal",
                           "sha256": hashlib.sha256(args.goal.encode("utf-8")).hexdigest()}
             if args.budget:

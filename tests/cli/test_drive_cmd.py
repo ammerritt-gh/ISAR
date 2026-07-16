@@ -70,6 +70,20 @@ def test_control_token_lands_in_config(tmp_path, monkeypatch):
     assert captured[0][1]["control_token"] == "abc"
 
 
+def test_control_token_rejects_filename_hostile_values():
+    # The token is interpolated into report/control/stop-<token>.json — separators, spaces, or an
+    # unbounded length would silently break stop detection or escape the control directory.
+    parser = build_parser()
+    for bad in ("bad/token", "..", "a b", "x" * 65, ""):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["drive", "--spec", "s.json", "--workspace", "w",
+                               "--control-token", bad])
+    # the GUI's uuid4-style tokens fit the alphabet
+    ns = parser.parse_args(["drive", "--spec", "s.json", "--workspace", "w",
+                            "--control-token", "3f2a9c1e-77aa-4a5b-9c3d-2b1e0f4d5a6b"])
+    assert ns.control_token == "3f2a9c1e-77aa-4a5b-9c3d-2b1e0f4d5a6b"
+
+
 # --------------------------------------------------------------------------- --resume-latest
 def test_resume_latest_is_mutually_exclusive_with_goal_and_spec():
     parser = build_parser()
@@ -99,6 +113,28 @@ def test_resume_latest_rebuilds_frozen_objective_without_llm(tmp_path, monkeypat
     assert resumed_obj.to_dict() == obj.to_dict()               # equivalent, round-trip
     # The fingerprint is kind=resume with the sha256 carried over so it stays comparable across resumes.
     assert config["source"] == {"kind": "resume", "sha256": "abc123"}
+
+
+def test_resume_latest_keeps_frozen_tier_and_notes_an_explicit_override(tmp_path, monkeypatch, capsys):
+    # The frozen objective's tier cannot be overridden on resume (a full ObjectiveSpec dict bypasses
+    # the tier default) — an explicitly requested different --tier gets an honest stderr note instead
+    # of being silently ignored; the plain resume stays quiet.
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.4, step=0.1, tolerance_meV=0.5,
+                                budget={"kind": "neutrons", "amount": 1e13})
+    log_event(ws / "report" / "session_log.jsonl", "decide",
+              {"event": "campaign_start", "action": "campaign_start", "objective": obj.to_dict(),
+               "source": {"kind": "goal", "sha256": "abc123"}})
+    captured = _stub_run_campaign(monkeypatch)
+    rc = main(["drive", "--resume-latest", "--workspace", str(ws), "--tier", "mcstas"])
+    assert rc == 0
+    assert captured[0][0].tier == obj.tier                       # the frozen tier won
+    assert "frozen" in capsys.readouterr().err
+
+    rc = main(["drive", "--resume-latest", "--workspace", str(ws)])
+    assert rc == 0
+    assert "frozen" not in capsys.readouterr().err               # no note without an explicit --tier
 
 
 def test_resume_latest_errors_cleanly_when_no_log(tmp_path, monkeypatch, capsys):

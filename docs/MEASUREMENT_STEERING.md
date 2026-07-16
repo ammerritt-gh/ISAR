@@ -399,20 +399,26 @@ offline as ground truth).
 
 The loop gained a small, additive operator-control contract (GUI_DESIGN.md G19 has the ruling):
 
-- **Cooperative stop.** `isar drive --control-token <t>` makes the loop check
-  `report/control/stop-<t>.json` at the top of each iteration. Present → one acknowledgement
-  `decide` event (`action="operator_stop"`), the in-flight iteration having already completed
-  (wait → persist → analyze), then a clean exit with the first-class terminal state
-  **`operator_stopped`** (CLI exit **4**; met 0 / unmeetable 3 / error 2 unchanged):
+- **Cooperative stop.** `isar drive --control-token <t>` (token alphabet `[A-Za-z0-9_-]`, max
+  64 — it names the control file) makes the loop check `report/control/stop-<t>.json` at every
+  iteration boundary: the top of each iteration **and once more after the final allowed
+  iteration** (so a stop written during the last `--max-iters` scan is still honored — with
+  `--max-iters 1` that post-exhaustion boundary is the only one that can see it). Present → one
+  acknowledgement `decide` event (`action="operator_stop"`), the in-flight iteration having
+  already completed (wait → persist → analyze), then a clean exit with the first-class terminal
+  state **`operator_stopped`** (CLI exit **4**; met 0 / unmeetable 3 / error 2 unchanged):
   certification is skipped, the final grid is still evaluated honestly and recorded as
   `stop["grid_state"]`, exactly one terminal `stop` event stays last in the log, and the control
   file is retained (nothing is ever deleted; other tokens' files are inert). No token → no
-  checks, byte-identical behavior.
+  checks, byte-identical behavior. A campaign that ends on its own (met/unmeetable/budget) at a
+  boundary where no stop was yet visible reports its true state — the stop check always runs
+  before, never after, that decision.
 - **`--max-iters` is a per-invocation cap.** `run_campaign` restarts iteration numbering at zero
   each invocation; a resume gets a fresh cap. Spend does not reset — the ledger is whole-log.
 - **LLM-free resume.** `--resume-latest` (mutually exclusive with `--goal`/`--spec`) rebuilds
   the objective from the last `campaign_start` event's frozen `objective` dict — a goal is never
-  re-compiled through the LLM on resume. `--budget` may still override explicitly.
+  re-compiled through the LLM on resume. `--budget` may still override explicitly; **`--tier` is
+  frozen with the objective** (an explicit different `--tier` gets a stderr note and is ignored).
 - **Start fingerprints.** `campaign_start` payloads carry `source: {kind: goal|spec|resume,
   sha256}` (goal text / spec file bytes / inherited), so a consumer can tell "same objective
   resumed" from "new objective over the same workspace spend ledger".
