@@ -28,4 +28,3 @@ def test_configure_gui_logging_is_utf8_rotating_and_idempotent(monkeypatch, tmp_
                 handler.close()
         for handler in prior:
             root.addHandler(handler)
-
