@@ -20,6 +20,7 @@ from weakref import WeakSet
 from PySide6.QtCore import QByteArray, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QDockWidget,
     QFileDialog,
     QLabel,
     QMainWindow,
@@ -69,6 +70,7 @@ from isar_gui.viewmodels import (
 from isar_gui.viewmodels.campaign import CampaignViewModel
 from isar_gui.viewmodels.sandbox import SandboxViewModel
 from isar_gui.views.campaign_dock import CampaignDock
+from isar_gui.views.campaign_monitor import CampaignMonitor
 from isar_gui.views.sandbox_pane import SandboxPane
 from isar_gui.views.browser_dock import BrowserDock
 from isar_gui.views.card_dock import CardDock
@@ -190,6 +192,12 @@ class MainWindow(QMainWindow):
         self._empty_hint.setObjectName("empty_hint")
         self._empty_hint.setAlignment(Qt.AlignCenter)
         self._center_stack.addWidget(self._empty_hint)   # stack index 0
+        # Compact campaign-monitor mode (M3-1): the monitor is a per-binding stack page built
+        # lazily on first toggle; the stash holds the full window state to restore on expand.
+        self._compact_active = False
+        self._compact_stash: tuple | None = None
+        self._campaign_monitor = None
+        self._compact_hint_shown = False
         self._close_when_operations_finish = False
         self._bound = False           # True once a first workspace binding exists (rebind guard)
         self._gui_store: GuiStore | None = None   # per-workspace GUI-only state (watched folders)
@@ -612,6 +620,86 @@ class MainWindow(QMainWindow):
                          [_DEFAULT_LEFT_WIDTH, _DEFAULT_LEFT_WIDTH], Qt.Horizontal)
         self.resizeDocks([self.log_dock], [_DEFAULT_LOG_HEIGHT], Qt.Vertical)
 
+    # ---- compact campaign-monitor mode (M3-1) ------------------------------
+    def toggle_compact_mode(self, *_a) -> None:
+        """Swap between the full workspace and the glanceable campaign monitor (AD-14).
+
+        Enter: stash ``saveState``+geometry, hide every dock, flip the central stack to the
+        monitor page, shrink to a corner-of-the-screen card. Leave: restore the stash wholesale.
+        The stash lives only in memory — ``_snapshot_session`` is guarded while compact, so the
+        session file always carries the FULL layout (close-while-compact expands first)."""
+        if not self._compact_active:
+            if self._empty:
+                self.statusBar().showMessage("Compact mode needs an open workspace")
+                self._compact_mode_action.setChecked(False)
+                return
+            if self._campaign_monitor is None:
+                self._campaign_monitor = CampaignMonitor(
+                    self.campaign_vm, self.heatmap_vm, self._operations, parent=self)
+                self._campaign_monitor.expand_requested.connect(self.toggle_compact_mode)
+                self.log_dock.appended.connect(self._campaign_monitor.append_log_line)
+                self._center_stack.addWidget(self._campaign_monitor)
+            self._compact_stash = (self.saveState(_LAYOUT_VERSION), self.saveGeometry())
+            for dock in self.findChildren(QDockWidget):
+                dock.hide()
+            self._workspace_toolbar.hide()   # its buttons would pin the minimum width
+            self._center_stack.setCurrentWidget(self._campaign_monitor)
+            # QStackedLayout's minimum size spans ALL pages, visible or not — detach the big
+            # CenterHost page while compact or the window cannot shrink (re-added on expand;
+            # the widget stays parented to the stack, just out of the layout).
+            if self._center_host is not None:
+                self._center_stack.removeWidget(self._center_host)
+                self._center_host.hide()   # already hidden as a non-current page; keep it that
+                # way explicitly so the enter-order (switch, then detach) is not load-bearing
+            self._compact_active = True
+            self._compact_mode_action.setChecked(True)
+            # Queued: the dock-hide/page-detach layout invalidation must land first, or this
+            # resize is clamped by the STALE minimum width and silently ignored.
+            QTimer.singleShot(0, self._apply_compact_size)
+        else:
+            self._compact_active = False
+            self._compact_mode_action.setChecked(False)
+            self._workspace_toolbar.show()   # explicit — never depend on the restore for it
+            if self._center_host is not None:
+                self._center_stack.addWidget(self._center_host)   # re-attach the detached page
+                self._center_stack.setCurrentWidget(self._center_host)
+            else:
+                self._center_stack.setCurrentWidget(self._empty_hint)
+            if self._compact_stash is not None:
+                state, geometry = self._compact_stash
+                self._compact_stash = None
+                self.restoreGeometry(geometry)
+                if not self.restoreState(state, _LAYOUT_VERSION):
+                    self._apply_default_layout()   # a stash can't be stale, but never half-apply
+        self._sync_run_actions()
+
+    def _apply_compact_size(self) -> None:
+        if self._compact_active:   # the operator may have expanded before the queued call landed
+            self.resize(430, 340)
+
+    def _dispose_campaign_monitor(self) -> None:
+        """Per-binding teardown: leave compact first so the full layout is what persists."""
+        if self._compact_active:
+            self.toggle_compact_mode()
+        if self._campaign_monitor is not None:
+            try:
+                self.log_dock.appended.disconnect(self._campaign_monitor.append_log_line)
+            except (RuntimeError, TypeError) as exc:
+                log.debug("monitor ticker already detached: %s", exc)
+            self._center_stack.removeWidget(self._campaign_monitor)
+            self._campaign_monitor.deleteLater()
+            self._campaign_monitor = None
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        # Auto-OFFER (never auto-switch): a small window during a live campaign probably wants
+        # the monitor. One hint per session; the operator stays in charge.
+        if (not self._compact_active and not self._compact_hint_shown and event.size().width() < 700
+                and getattr(self, "_operations", None) is not None
+                and self._operations.is_running_campaign()):
+            self._compact_hint_shown = True
+            self.statusBar().showMessage("Tip: View ▸ Compact mode is a glanceable campaign monitor")
+
     def _register_dock(self, name: str, dock) -> None:
         """Track a dock so the Docks menu and layout autosave pick it up (call before menu build)."""
         self._docks[name] = dock
@@ -675,6 +763,7 @@ class MainWindow(QMainWindow):
         tb = QToolBar("Workspace", self)
         tb.setObjectName("workspace_toolbar")
         self.addToolBar(tb)
+        self._workspace_toolbar = tb   # compact mode hides it (saveState restores it on expand)
 
         self._new_workspace_action = tb.addAction("New")
         self._new_workspace_action.triggered.connect(self.new_workspace)
@@ -1226,9 +1315,10 @@ class MainWindow(QMainWindow):
             act = menu.addAction(label)
             act.triggered.connect(lambda _checked=False, k=key: self._show_center_view(k, user=True))
         menu.addSeparator()
-        # Compact mode is a later task's page; the placeholder is present but disabled.
+        # Compact campaign-monitor mode (M3-1): same window, docks stashed, stack page swapped.
         self._compact_mode_action = menu.addAction("Compact mode")
-        self._compact_mode_action.setEnabled(False)
+        self._compact_mode_action.setCheckable(True)
+        self._compact_mode_action.triggered.connect(self.toggle_compact_mode)
 
     def _settings(self) -> dict:
         """Return GUI-owned non-secret backend settings.
@@ -1635,6 +1725,9 @@ class MainWindow(QMainWindow):
         self.dispersion_vm.deleteLater()
         self.waterfall_vm.save_view_state(self._session)
         self.waterfall_vm.deleteLater()
+        # The compact monitor projects the outgoing binding's VMs; leave compact and drop it
+        # before those VMs are torn down.
+        self._dispose_campaign_monitor()
         # The five display surfaces live inside the CenterHost (stack page 1). Dispose it — detaching
         # and deleting every page (incl. the inspector) — drop its view_changed connection, remove it
         # from the stack, and delete it, so the fresh bind rebuilds a clean host. The permanent stack
@@ -1771,7 +1864,9 @@ class MainWindow(QMainWindow):
         # The empty/pending screen intentionally owns only Files + Log. Serializing that sparse
         # scaffold would overwrite the operator's complete workspace layout while New is waiting
         # for its first ingest, so retain the last full layout until a ready workspace is bound.
-        if not self._empty:
+        # Compact mode is likewise never serialized: the stash holds the real layout in memory
+        # and closeEvent expands before the final snapshot.
+        if not self._empty and not self._compact_active:
             state = bytes(self.saveState(_LAYOUT_VERSION).toBase64().data()).decode("ascii")
             self._session.dock_layout_b64 = state
         # Only saved workspaces belong in recents — a temporary (pending/unsaved) workspace must
@@ -1828,6 +1923,10 @@ class MainWindow(QMainWindow):
 
     # ---- teardown --------------------------------------------------------
     def closeEvent(self, event) -> None:
+        # Leave compact mode FIRST so the session snapshot below captures the full dock layout,
+        # not a hidden-everything scaffold (the compact stash is memory-only by design).
+        if self._compact_active:
+            self.toggle_compact_mode()
         # Do not save, discard, or tear down a workspace while an engine process can still be
         # writing it.  Request graceful termination, then re-enter close once its terminal callback
         # has fired (the coordinator escalates to kill after three seconds).

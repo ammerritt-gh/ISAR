@@ -6,11 +6,15 @@ since the last tick is shown, so a warning is not repeated every refresh.
 """
 from __future__ import annotations
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QDockWidget, QPlainTextEdit
 
 
 class LogDock(QDockWidget):
     """A dock wrapping a read-only :class:`QPlainTextEdit`; ``append(str)`` adds a line."""
+
+    #: Every appended line, for lightweight mirrors (the compact monitor's ticker).
+    appended = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__("Log", parent)
@@ -27,6 +31,7 @@ class LogDock(QDockWidget):
 
     def append(self, msg: str) -> None:
         self._view.appendPlainText(str(msg))
+        self.appended.emit(str(msg))
 
     def reset_warnings(self) -> None:
         """Clear the per-tick warning high-water bookkeeping.

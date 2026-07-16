@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from isar_gui.commands import DriveOptions, source_fingerprint
+from isar_gui.viewmodels.campaign import budget_readout
 
 log = logging.getLogger(__name__)
 
@@ -370,19 +371,9 @@ class CampaignDock(QDockWidget):
         self._iter_label.setText(
             f"iteration: {it if it is not None else '—'}   scans: {state.scan_count}   "
             f"observations: {state.n_observations if state.n_observations is not None else '—'}")
-        if state.budget_amount and state.budget_kind == "neutrons":
-            frac = min(state.spent_neutrons / float(state.budget_amount), 1.0)
-            self._budget_bar.setValue(int(frac * 1000))
-            self._budget_bar.setFormat(
-                f"budget: {state.spent_neutrons:.3g} / {state.budget_amount:.3g} n")
-        elif state.budget_amount and state.budget_kind in ("seconds", "hours", "time"):
-            amount_s = float(state.budget_amount)
-            frac = min(state.spent_seconds / amount_s, 1.0) if amount_s else 0.0
-            self._budget_bar.setValue(int(frac * 1000))
-            self._budget_bar.setFormat(f"budget: {state.spent_seconds:.0f}s / {amount_s:.0f}s")
-        else:
-            self._budget_bar.setValue(0)
-            self._budget_bar.setFormat("budget: —")
+        permille, text = budget_readout(state)
+        self._budget_bar.setValue(permille)
+        self._budget_bar.setFormat(text)
         verdicts = getattr(self._vm, "scan_verdicts", {}) or {}
         conv = (f"converged {state.converged}/{state.n_grid}"
                 if state.converged is not None and state.n_grid else "convergence: —")

@@ -217,6 +217,18 @@ def render_feed_item(rec: dict) -> FeedItem | None:
     return FeedItem(ts, kind, str(kind), "info")   # unknown kinds surface, never vanish silently
 
 
+def budget_readout(state: CampaignState) -> tuple[int, str]:
+    """(permille filled, bar text) for a budget progress bar — shared by dock and monitor."""
+    if state.budget_amount and state.budget_kind == "neutrons":
+        frac = min(state.spent_neutrons / float(state.budget_amount), 1.0)
+        return int(frac * 1000), f"budget: {state.spent_neutrons:.3g} / {state.budget_amount:.3g} n"
+    if state.budget_amount and state.budget_kind in ("seconds", "hours", "time"):
+        amount_s = float(state.budget_amount)
+        frac = min(state.spent_seconds / amount_s, 1.0) if amount_s else 0.0
+        return int(frac * 1000), f"budget: {state.spent_seconds:.0f}s / {amount_s:.0f}s"
+    return 0, "budget: —"
+
+
 class CampaignViewModel(ViewModel):
     """Feed + status over the workspace's campaign event log (read-only, facade-backed)."""
 
