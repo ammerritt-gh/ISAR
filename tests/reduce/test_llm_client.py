@@ -46,7 +46,10 @@ def test_dispatch_builds_pinned_request_body():
     call = tr.calls[0]
     assert call["url"] == "http://127.0.0.1:8766/v1/dispatch"
     body = call["body"]
-    assert body["routing"] == {"mode": "pinned", "pinned": {"ref": "local_desktop/qwen3p5-9b"}}
+    # Current llm-contracts DispatchRequest: a direct request pins via the top-level `model` field;
+    # the legacy `routing` block is rejected (422 extra_forbidden) and must never be sent.
+    assert body["model"] == "local_desktop/qwen3p5-9b"
+    assert "routing" not in body
     assert body["generation_params"] == {"temperature": 0.2, "max_tokens": 1500}
     assert body["input"]["system"] == "SYS"
     assert body["input"]["messages"] == [{"role": "user", "content": "USER"}]

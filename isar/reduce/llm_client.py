@@ -8,12 +8,13 @@ The only thing the rest of ISAR depends on is the :class:`Dispatcher` protocol, 
 fake and never hit the network. :class:`LLMMClient` is the real implementation; its HTTP transport is
 injectable too, which is how this module's own tests stay offline.
 
-Contract (captured from ``llm-contracts``): pin one model via
-``routing={"mode":"pinned","pinned":{"ref": <pin>}}``; generation params use ``max_tokens`` (not
-``max_output_tokens``); ``input.structured_output_schema`` is a raw JSON-Schema dict; ``thinking`` is
-False to keep Qwen3 reasoning models from emitting reasoning instead of content. The response carries
-``structured`` (the schema-valid object, or ``null`` on a schema-miss with ``output`` still present)
-and an optional ``error`` (``{code,message,...}``).
+Contract (captured from ``llm-contracts`` ``DispatchRequest``): pin one model via the top-level
+``model: <ref>`` field (a direct request, no fallback chain — the older
+``routing={"mode":"pinned",...}`` block is rejected with 422 ``extra_forbidden`` by current LLMM);
+generation params use ``max_tokens`` (not ``max_output_tokens``); ``input.structured_output_schema``
+is a raw JSON-Schema dict; ``thinking`` is False to keep reasoning models from emitting reasoning
+instead of content. The response carries ``structured`` (the schema-valid object, or ``null`` on a
+schema-miss with ``output`` still present) and an optional ``error`` (``{code,message,...}``).
 """
 from __future__ import annotations
 
@@ -116,7 +117,7 @@ class LLMMClient:
     ) -> DispatchResult:
         body = {
             "id": uuid.uuid4().hex,
-            "routing": {"mode": "pinned", "pinned": {"ref": self._model_pin}},
+            "model": self._model_pin,
             "generation_params": {"temperature": temperature, "max_tokens": max_tokens},
             "input": {
                 "system": system,

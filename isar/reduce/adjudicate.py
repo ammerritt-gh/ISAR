@@ -25,7 +25,11 @@ from isar.schema import scan as _scan
 
 DECISIONS = ("mask", "keep", "drop_detector", "hold_for_human")
 SHAPES = ("whole_peak", "clipped_peak", "no_peak", "not_applicable")
-DEFAULT_CLOUD_FALLBACK_MODEL = "nanogpt/openai/gpt-oss-120b"
+# deepseek-v4-flash replaced gpt-oss-120b (2026-07-16): gpt-oss's NanoGPT serving returns empty
+# plain-text replies (reasoning-channel issue) and swings 3-8s; v4-flash measured 3/3 schema-valid
+# at ~3.5s on the real DECISION_SCHEMA contract, and is deliberately a different family from the
+# drive supervisor's glm-5.2 so one serving outage cannot take down both LLM roles.
+DEFAULT_CLOUD_FALLBACK_MODEL = "nanogpt/deepseek/deepseek-v4-flash"
 _API_KEY_ENV = "ISAR_LLM_API_KEY"
 
 DECISION_SCHEMA = {

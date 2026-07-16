@@ -59,7 +59,7 @@ class SettingsDialog(QDialog):
         self._endpoint = QLineEdit(s.get("llm_endpoint", LLM_DEFAULT_ENDPOINT))
         form.addRow("LLM endpoint:", self._endpoint)
         self._model = QLineEdit(s.get("llm_model", ""))
-        self._model.setPlaceholderText("card default — or e.g. gpt-oss-120b")
+        self._model.setPlaceholderText("card default — or e.g. deepseek/deepseek-v4-flash")
         form.addRow("LLM model:", self._model)
         self._api_key = QLineEdit()
         self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -82,7 +82,7 @@ class SettingsDialog(QDialog):
         form.addRow("Key status:", self._key_status)
 
         self._cloud_fallback = QCheckBox(
-            "Allow cloud fallback: nanogpt/openai/gpt-oss-120b"
+            f"Allow cloud fallback: {DEFAULT_CLOUD_FALLBACK_MODEL}"
         )
         self._cloud_fallback.setChecked(bool(s.get("cloud_fallback_enabled", False)))
         self._cloud_fallback.setToolTip(
@@ -91,7 +91,7 @@ class SettingsDialog(QDialog):
         form.addRow("Cloud fallback:", self._cloud_fallback)
         cloud_note = QLabel(
             "Off by default. Enabling this sends adjudication context to "
-            "nanogpt/openai/gpt-oss-120b."
+            f"{DEFAULT_CLOUD_FALLBACK_MODEL}."
         )
         cloud_note.setWordWrap(True)
         form.addRow("", cloud_note)

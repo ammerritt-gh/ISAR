@@ -20,13 +20,14 @@ LLM_DEFAULT_ENDPOINT = "http://127.0.0.1:8766"
 TAVI_DEFAULT_URL = "http://127.0.0.1:8642/api/v1"
 
 
-def tavi_health_url(base: str) -> str:
-    """The liveness URL for a TAVI API base: ``<base>/health``.
+def health_url(base: str) -> str:
+    """The liveness URL for a backend base: ``<base>/health``.
 
-    TAVI routes only subpaths — its bare API root returns 404 — so probing the base itself
-    reports a perfectly healthy server as ``reachable_error`` (amber dot) and blocks campaign
-    launch. ``/api/v1/health`` is the designed liveness endpoint (200 with
-    ``{"status": "ok", "instrument": ...}``)."""
+    Both backends route only subpaths — a bare base returns 404 by design (TAVI's
+    ``/api/v1``, LLMM's root) — so probing the base itself reports a perfectly healthy
+    server as ``reachable_error`` (amber dot) and, for TAVI, blocks campaign launch. Each
+    serves a designed liveness endpoint at ``<base>/health``: TAVI answers 200 with
+    ``{"status": "ok", "instrument": ...}``, LLMM with ``{"status": "ok", ...}``."""
     return base.rstrip("/") + "/health"
 
 

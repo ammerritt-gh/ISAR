@@ -91,12 +91,13 @@ def test_health_probe_shutdown_does_not_schedule_pending_work():
     assert not probe.in_flight
 
 
-def test_tavi_health_url_targets_the_liveness_endpoint():
-    # TAVI's bare API base 404s by design; only <base>/health answers 200. Probing the base
-    # rendered a running TAVI amber and blocked campaign launch.
-    assert health.tavi_health_url("http://127.0.0.1:8642/api/v1") == \
+def test_health_url_targets_the_liveness_endpoint():
+    # Both backends 404 on their bare base by design; only <base>/health answers 200. Probing
+    # the base rendered a running backend amber (and, for TAVI, blocked campaign launch).
+    assert health.health_url("http://127.0.0.1:8642/api/v1") == \
         "http://127.0.0.1:8642/api/v1/health"
-    assert health.tavi_health_url("http://host:9000/api/v1/") == "http://host:9000/api/v1/health"
+    assert health.health_url("http://host:9000/api/v1/") == "http://host:9000/api/v1/health"
+    assert health.health_url("http://127.0.0.1:8766") == "http://127.0.0.1:8766/health"
 
 
 def test_find_tavi_bat_prefers_configured(tmp_path):

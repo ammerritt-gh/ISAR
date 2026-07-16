@@ -22,8 +22,10 @@ def test_round_trips_provided_non_secret_settings(qtbot):
              "cloud_fallback_enabled": True, "tavi_bat": r"C:\tavi\run-tavi-dev.bat"}
     dlg = SettingsDialog(given, api_key_present=True)
     qtbot.addWidget(dlg)
+    from isar.workspace_api import DEFAULT_CLOUD_FALLBACK_MODEL
+
     assert {key: dlg.settings[key] for key in given} == given
-    assert dlg.settings["cloud_fallback_model"] == "nanogpt/openai/gpt-oss-120b"
+    assert dlg.settings["cloud_fallback_model"] == DEFAULT_CLOUD_FALLBACK_MODEL
     assert dlg.api_key_change is None
     assert "stored securely" in dlg._key_status.text()
 

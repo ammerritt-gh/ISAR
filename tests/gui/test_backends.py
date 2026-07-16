@@ -45,9 +45,11 @@ def test_llm_env_reads_credential_just_in_time(qtbot, make_ws, monkeypatch):
     monkeypatch.setattr(mw, "credential_storage_supported", lambda: True)
     monkeypatch.setattr(mw, "load_api_key", lambda endpoint: "sk-1")
     env = w._llm_env()
+    from isar.workspace_api import DEFAULT_CLOUD_FALLBACK_MODEL
+
     assert env == {"ISAR_LLM_PROFILE": "openai", "ISAR_LLM_ENDPOINT": "https://example.test/v1",
                    "ISAR_LLM_MODEL": "gpt-oss", "ISAR_LLM_API_KEY": "sk-1",
-                   "ISAR_LLM_FALLBACK_MODEL": "nanogpt/openai/gpt-oss-120b"}
+                   "ISAR_LLM_FALLBACK_MODEL": DEFAULT_CLOUD_FALLBACK_MODEL}
 
 
 def test_launch_tavi_missing_sets_status(qtbot, make_ws, monkeypatch):
@@ -106,14 +108,15 @@ def test_refresh_health_threaded_updates_labels(qtbot, make_ws, monkeypatch):
     assert "2e7d32" in w._tavi_health.styleSheet()
 
 
-def test_refresh_health_probes_the_tavi_liveness_endpoint(qtbot, make_ws, monkeypatch):
-    # TAVI's bare API base 404s by design — probing it rendered a RUNNING TAVI amber
-    # (reachable_error) and blocked campaign launch. The window must probe <base>/health.
+def test_refresh_health_probes_the_liveness_endpoints(qtbot, make_ws, monkeypatch):
+    # Both backends 404 on their bare base by design — probing it rendered a RUNNING backend
+    # amber (reachable_error) and, for TAVI, blocked campaign launch. Probe <base>/health.
     w = _win(qtbot, make_ws)
     captured = {}
     monkeypatch.setattr(w._health_probe, "request", lambda urls: captured.update(urls) or 1)
     w._refresh_health()
     assert captured["tavi"].endswith("/api/v1/health")
+    assert captured["llm"].endswith("/health") and "//health" not in captured["llm"]
 
 
 def test_health_poll_ignores_stale_result(qtbot, make_ws):

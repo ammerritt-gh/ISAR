@@ -14,12 +14,13 @@ import pytest
 
 from isar.parsers import spec_s30
 from isar.reduce import adjudicate_score, qc
+from isar.reduce.adjudicate import DEFAULT_CLOUD_FALLBACK_MODEL
 from isar.reduce.llm_client import LLMMClient
 from isar.synth_format import quirks, run_builder
 
 ENDPOINT = "http://127.0.0.1:8766"
 LOCAL = "local_desktop/qwen3p5-9b"
-CLOUD = "nanogpt/openai/gpt-oss-120b"
+CLOUD = DEFAULT_CLOUD_FALLBACK_MODEL   # the comparator is whatever the adjudicator would fall back to
 
 
 def _llmm_up() -> bool:

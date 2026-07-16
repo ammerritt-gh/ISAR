@@ -44,10 +44,11 @@ from isar_gui.credentials import (
 from isar_gui.folder_watcher import FolderWatcher
 from isar_gui.gui_store import GuiStore
 from isar_gui.health import (
-    HealthProbe, LLM_DEFAULT_ENDPOINT, TAVI_DEFAULT_URL, find_tavi_bat, ping_http, tavi_health_url)
+    HealthProbe, LLM_DEFAULT_ENDPOINT, TAVI_DEFAULT_URL, find_tavi_bat, health_url, ping_http)
 from isar_gui.operation_coordinator import WorkspaceOperationCoordinator
 from isar_gui.workspace_manager import WorkspaceManager
 from isar.workspace_api import (
+    DEFAULT_CLOUD_FALLBACK_MODEL,
     SCHEMA_VERSION,
     BranchModelView,
     CardView,
@@ -1328,7 +1329,7 @@ class MainWindow(QMainWindow):
         """
         defaults = {"profile": "llmm", "llm_endpoint": LLM_DEFAULT_ENDPOINT, "llm_model": "",
                     "cloud_fallback_enabled": False, "cloud_fallback_model":
-                    "nanogpt/openai/gpt-oss-120b", "tavi_bat": ""}
+                    DEFAULT_CLOUD_FALLBACK_MODEL, "tavi_bat": ""}
         saved = dict(self._session.view_state.get("settings", {}))
         saved.pop("llm_api_key", None)
         return {**defaults, **saved}
@@ -1402,7 +1403,7 @@ class MainWindow(QMainWindow):
         # override this GUI choice.  Cloud use remains opt-in and visibly named in Settings.
         if s.get("cloud_fallback_enabled"):
             env["ISAR_LLM_FALLBACK_MODEL"] = s.get("cloud_fallback_model") or \
-                "nanogpt/openai/gpt-oss-120b"
+                DEFAULT_CLOUD_FALLBACK_MODEL
         else:
             env["ISAR_LLM_FALLBACK_MODEL"] = ""
         return env
@@ -1472,10 +1473,10 @@ class MainWindow(QMainWindow):
         if self._health_closed:
             return
         llm_url = self._settings().get("llm_endpoint") or LLM_DEFAULT_ENDPOINT
-        # Probe TAVI's liveness endpoint, not the bare API base — the base 404s by design, which
-        # would render a running TAVI amber and block campaign launch (see tavi_health_url).
-        self._health_generation = self._health_probe.request({"llm": llm_url,
-                                                               "tavi": tavi_health_url(TAVI_DEFAULT_URL)})
+        # Probe each backend's liveness endpoint, never its bare base — both bases 404 by design,
+        # which would render a running backend amber (and block campaign launch) — see health_url.
+        self._health_generation = self._health_probe.request({"llm": health_url(llm_url),
+                                                               "tavi": health_url(TAVI_DEFAULT_URL)})
         if not self._health_poll_timer.isActive():
             self._health_poll_timer.start()
 
