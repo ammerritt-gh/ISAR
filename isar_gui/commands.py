@@ -14,6 +14,7 @@ detect-preview in the Files dock — one detector, no drift, exactly what ``isar
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -107,6 +108,94 @@ def build_run_command(python: str, data_paths, workspace: str, opts: RunOptions)
     if opts.detectors:
         cmd += ["--detectors", opts.detectors]
     return cmd
+
+
+@dataclass(frozen=True)
+class DriveOptions:
+    """The subset of ``isar drive`` knobs the Drive dock exposes. Defaults mirror the CLI defaults, so
+    a default option adds no flag to the command (``build_drive_command`` stays minimal).
+
+    Exactly one campaign *source* must be chosen — a natural-language ``goal``, a ``spec_path`` JSON
+    file, or ``resume_latest`` (rebuild the frozen objective from the workspace session log). The
+    three are mutually exclusive; :func:`build_drive_command` enforces that (matching the CLI's
+    ``required=True`` mutually-exclusive group).
+    """
+
+    goal: str | None = None
+    spec_path: str | None = None
+    resume_latest: bool = False
+    tier: str = "deterministic"       # deterministic | mcstas
+    budget: str | None = None         # '<amount><unit>' e.g. '8h', '1e10n'; None => from spec/goal
+    seed: int = 0
+    max_iters: int | None = None      # per-invocation loop cap (>= 1); None => the loop's built-in cap
+    tavi_url: str | None = None
+    calibration: str | None = None
+    worker: bool = True               # False => --no-worker (fresh subprocess per iteration)
+    control_token: str | None = None
+
+
+def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list[str]:
+    """The argv for ``isar drive --<source> --workspace <ws> [opts]`` run as ``<python> -m isar ...``.
+
+    Validates (raising ``ValueError`` — unit-testable without Qt) that exactly ONE campaign source is
+    set (``goal`` / ``spec_path`` / ``resume_latest``) and that ``max_iters`` is either ``None`` or
+    ``>= 1``, matching the CLI's mutually-exclusive source group and its ``_positive_int`` type. Only
+    non-default options add flags, so the command stays legible in the log dock.
+    """
+    sources = [opts.goal is not None, opts.spec_path is not None, opts.resume_latest]
+    n_sources = sum(1 for s in sources if s)
+    if n_sources != 1:
+        raise ValueError(
+            "exactly one campaign source must be set (goal, spec_path, or resume_latest); "
+            f"got {n_sources}")
+    if opts.max_iters is not None and opts.max_iters < 1:
+        raise ValueError(f"max_iters must be >= 1 (or None); got {opts.max_iters}")
+
+    cmd = [python, "-m", "isar", "drive"]
+    if opts.goal is not None:
+        cmd += ["--goal", opts.goal]
+    elif opts.spec_path is not None:
+        cmd += ["--spec", str(opts.spec_path)]
+    else:
+        cmd.append("--resume-latest")
+    cmd += ["--workspace", str(workspace)]
+    if opts.tier != "deterministic":
+        cmd += ["--tier", opts.tier]
+    if opts.budget:
+        cmd += ["--budget", opts.budget]
+    if opts.calibration:
+        cmd += ["--calibration", str(opts.calibration)]
+    if opts.tavi_url:
+        cmd += ["--tavi", opts.tavi_url]
+    if opts.seed != 0:
+        cmd += ["--seed", str(opts.seed)]
+    if opts.max_iters is not None:
+        cmd += ["--max-iters", str(opts.max_iters)]
+    if opts.control_token:
+        cmd += ["--control-token", opts.control_token]
+    if not opts.worker:
+        cmd.append("--no-worker")
+    return cmd
+
+
+def source_fingerprint(*, goal: str | None = None, spec_path: str | None = None) -> str:
+    """The sha256 hexdigest identifying a campaign source, for Resume-vs-Start comparison in the dock.
+
+    Exactly one of ``goal`` / ``spec_path`` must be given (``ValueError`` otherwise). For a goal it is
+    the sha256 of the goal TEXT encoded utf-8; for a spec it is the sha256 of the file's raw BYTES
+    (never decoded — a spec with non-ASCII content hashes its bytes, not its text).
+
+    CONTRACT: this must match the ``source.sha256`` the CLI freezes into the ``campaign_start`` event
+    byte-for-byte (``isar/cli/main.py``: ``sha256(goal.encode("utf-8"))`` for a goal,
+    ``sha256(Path(spec).read_bytes())`` for a spec). The dock compares this against a resumed
+    campaign's stored fingerprint to tell the operator whether a Resume would continue the same
+    objective or a Start would launch a different one; a drift here silently breaks that comparison.
+    """
+    if (goal is None) == (spec_path is None):
+        raise ValueError("exactly one of goal or spec_path must be given")
+    if goal is not None:
+        return hashlib.sha256(goal.encode("utf-8")).hexdigest()
+    return hashlib.sha256(Path(spec_path).read_bytes()).hexdigest()
 
 
 def default_workspace_dir(data: str, instrument: str, today: str | None = None) -> str:

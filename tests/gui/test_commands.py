@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from isar_gui import commands
-from isar_gui.commands import DetectResult, RunOptions
+from isar_gui.commands import DetectResult, DriveOptions, RunOptions
 
 
 def test_module_is_qt_and_isar_free():
@@ -225,3 +225,96 @@ def test_ingest_failure_cause_falls_through_to_traceback_tail():
     ]
     assert commands.ingest_failure_cause(lines) == \
         "ValueError: could not convert string to float: 'da3p'"
+
+
+# ---- drive command (M2) -----------------------------------------------------
+def test_build_drive_command_goal_only_defaults_are_minimal():
+    """A goal source with engine-default options adds only --goal and --workspace."""
+    cmd = commands.build_drive_command("py.exe", r"D:\ws\exp1",
+                                       DriveOptions(goal="map the LA branch near (2 0 0)"))
+    assert cmd == ["py.exe", "-m", "isar", "drive",
+                   "--goal", "map the LA branch near (2 0 0)",
+                   "--workspace", r"D:\ws\exp1"]
+
+
+def test_build_drive_command_spec_with_budget_seed_maxiters_token():
+    opts = DriveOptions(spec_path=r"D:\obj\spec.json", budget="8h", seed=7, max_iters=25,
+                        control_token="abc123")
+    cmd = commands.build_drive_command("py", "ws", opts)
+    assert cmd[:6] == ["py", "-m", "isar", "drive", "--spec", r"D:\obj\spec.json"]
+    assert cmd[cmd.index("--workspace") + 1] == "ws"
+    assert cmd[cmd.index("--budget") + 1] == "8h"
+    assert cmd[cmd.index("--seed") + 1] == "7"
+    assert cmd[cmd.index("--max-iters") + 1] == "25"
+    assert cmd[cmd.index("--control-token") + 1] == "abc123"
+    assert "--goal" not in cmd and "--resume-latest" not in cmd
+
+
+def test_build_drive_command_resume_latest():
+    cmd = commands.build_drive_command("py", "ws", DriveOptions(resume_latest=True))
+    assert cmd == ["py", "-m", "isar", "drive", "--resume-latest", "--workspace", "ws"]
+
+
+def test_build_drive_command_no_worker_flag():
+    cmd = commands.build_drive_command("py", "ws", DriveOptions(goal="g", worker=False))
+    assert "--no-worker" in cmd
+
+
+def test_build_drive_command_tavi_and_calibration_flags():
+    opts = DriveOptions(goal="g", tavi_url="http://host:9000/api/v1",
+                        calibration=r"D:\cal\phonon.json", tier="mcstas")
+    cmd = commands.build_drive_command("py", "ws", opts)
+    assert cmd[cmd.index("--tavi") + 1] == "http://host:9000/api/v1"
+    assert cmd[cmd.index("--calibration") + 1] == r"D:\cal\phonon.json"
+    assert cmd[cmd.index("--tier") + 1] == "mcstas"
+
+
+def test_build_drive_command_defaults_omit_optional_flags():
+    cmd = commands.build_drive_command("py", "ws", DriveOptions(goal="g"))
+    for flag in ("--tier", "--budget", "--calibration", "--tavi", "--seed", "--max-iters",
+                 "--control-token", "--no-worker"):
+        assert flag not in cmd
+
+
+def test_build_drive_command_requires_exactly_one_source():
+    import pytest
+    # Zero sources → ValueError.
+    with pytest.raises(ValueError):
+        commands.build_drive_command("py", "ws", DriveOptions())
+    # Two sources → ValueError.
+    with pytest.raises(ValueError):
+        commands.build_drive_command("py", "ws", DriveOptions(goal="g", resume_latest=True))
+    with pytest.raises(ValueError):
+        commands.build_drive_command("py", "ws", DriveOptions(goal="g", spec_path="s.json"))
+
+
+def test_build_drive_command_max_iters_zero_is_rejected():
+    import pytest
+    with pytest.raises(ValueError):
+        commands.build_drive_command("py", "ws", DriveOptions(goal="g", max_iters=0))
+
+
+# ---- source fingerprint (must match the CLI's campaign_start sha256) ---------
+def test_source_fingerprint_goal_text_vector():
+    import hashlib
+    goal = "map the LA branch near (2 0 0)"
+    expected = hashlib.sha256(goal.encode("utf-8")).hexdigest()
+    assert commands.source_fingerprint(goal=goal) == expected
+
+
+def test_source_fingerprint_spec_bytes_vector_non_ascii(tmp_path):
+    """A spec's fingerprint is over its raw BYTES, not decoded text — non-ASCII proves it."""
+    import hashlib
+    spec = tmp_path / "spec.json"
+    raw = '{"goal": "phonon α→β at 2Å⁻¹"}'.encode("utf-8")
+    spec.write_bytes(raw)
+    expected = hashlib.sha256(raw).hexdigest()
+    assert commands.source_fingerprint(spec_path=str(spec)) == expected
+
+
+def test_source_fingerprint_requires_exactly_one_arg():
+    import pytest
+    with pytest.raises(ValueError):
+        commands.source_fingerprint()
+    with pytest.raises(ValueError):
+        commands.source_fingerprint(goal="g", spec_path="s.json")
