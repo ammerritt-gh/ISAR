@@ -43,7 +43,8 @@ from isar_gui.credentials import (
 )
 from isar_gui.folder_watcher import FolderWatcher
 from isar_gui.gui_store import GuiStore
-from isar_gui.health import HealthProbe, LLM_DEFAULT_ENDPOINT, TAVI_DEFAULT_URL, find_tavi_bat, ping_http
+from isar_gui.health import (
+    HealthProbe, LLM_DEFAULT_ENDPOINT, TAVI_DEFAULT_URL, find_tavi_bat, ping_http, tavi_health_url)
 from isar_gui.operation_coordinator import WorkspaceOperationCoordinator
 from isar_gui.workspace_manager import WorkspaceManager
 from isar.workspace_api import (
@@ -1471,8 +1472,10 @@ class MainWindow(QMainWindow):
         if self._health_closed:
             return
         llm_url = self._settings().get("llm_endpoint") or LLM_DEFAULT_ENDPOINT
+        # Probe TAVI's liveness endpoint, not the bare API base — the base 404s by design, which
+        # would render a running TAVI amber and block campaign launch (see tavi_health_url).
         self._health_generation = self._health_probe.request({"llm": llm_url,
-                                                               "tavi": TAVI_DEFAULT_URL})
+                                                               "tavi": tavi_health_url(TAVI_DEFAULT_URL)})
         if not self._health_poll_timer.isActive():
             self._health_poll_timer.start()
 

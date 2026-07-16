@@ -106,6 +106,16 @@ def test_refresh_health_threaded_updates_labels(qtbot, make_ws, monkeypatch):
     assert "2e7d32" in w._tavi_health.styleSheet()
 
 
+def test_refresh_health_probes_the_tavi_liveness_endpoint(qtbot, make_ws, monkeypatch):
+    # TAVI's bare API base 404s by design — probing it rendered a RUNNING TAVI amber
+    # (reachable_error) and blocked campaign launch. The window must probe <base>/health.
+    w = _win(qtbot, make_ws)
+    captured = {}
+    monkeypatch.setattr(w._health_probe, "request", lambda urls: captured.update(urls) or 1)
+    w._refresh_health()
+    assert captured["tavi"].endswith("/api/v1/health")
+
+
 def test_health_poll_ignores_stale_result(qtbot, make_ws):
     from isar_gui.health import Health, HealthProbeResult
 
