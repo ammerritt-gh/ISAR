@@ -982,3 +982,224 @@ def test_campaign_submit_idempotency_key_contains_run_nonce(tmp_path):
     nonce = (ws / ".run_nonce").read_text(encoding="utf-8").strip()
     assert calls
     assert all(nonce in key for key in calls)
+
+
+# --------------------------------------------------------------------------- cooperative operator stop
+class _StopFileTavi(MockTavi):
+    """A MockTavi whose FIRST wait_scan writes the operator stop-file mid-wait — simulating an operator
+    click during a long scan wait. The current iteration still completes; the loop exits at the next
+    iteration boundary."""
+    def __init__(self, omega, workspace, token):
+        super().__init__(omega)
+        self._control = Path(workspace) / "report" / "control"
+        self._token = token
+        self._armed = True
+
+    def wait_scan(self, job_id, timeout=0.0, **kw):
+        if self._armed:
+            self._armed = False
+            self._control.mkdir(parents=True, exist_ok=True)
+            (self._control / f"stop-{self._token}.json").write_text(
+                json.dumps({"requested_by": "gui", "reason": "operator click"}), encoding="utf-8")
+        return super().wait_scan(job_id, timeout=timeout, **kw)
+
+
+def _no_subprocess(monkeypatch):
+    """Stub the end-of-campaign report/diagnostic subprocess renders (keep operator-stop tests fast)."""
+    class _CP:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+    monkeypatch.setattr(loop_mod.subprocess, "run", lambda cmd, **k: _CP())
+
+
+def test_operator_stop_completes_iteration_then_exits_cleanly(tmp_path, monkeypatch):
+    # A stop-file written during the first wait_scan: the current iteration COMPLETES (scan persisted,
+    # analysis ran), then the loop exits at the next boundary with an operator_stopped terminal state.
+    _no_subprocess(monkeypatch)
+    omega = lambda h: (h - 2.0) * 2.0
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    token = "tok-abc123"
+    client = _StopFileTavi(omega, ws, token)
+    cfg = {"workspace": ws, "client": client, "run_isar": make_mock_runner(omega),
+           "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7,
+           "control_token": token}
+    summary = run_campaign(_objective(), cfg)
+
+    assert summary["stop"]["state"] == "operator_stopped"
+    assert "grid_state" in summary["stop"] and summary["stop"]["grid_state"]["state"] in (
+        "continue", "met", "unmeetable")
+    reasons = summary["stop"]["reasons"]
+    assert any("iteration" in r for r in reasons) and any(token in r for r in reasons)
+
+    events = read_log(summary["session_log"])
+    # The interrupted iteration ran to completion: data persisted + analysis happened.
+    assert any(e["kind"] == "run" for e in events)
+    assert any(e["kind"] == "analyze" for e in events)
+    # Exactly one operator_stop acknowledgement decide.
+    acks = [e for e in events if e["kind"] == "decide"
+            and (e.get("payload") or {}).get("event") == "operator_stop"]
+    assert len(acks) == 1 and acks[0]["payload"]["token"] == token
+    assert acks[0]["payload"]["action"] == "operator_stop"     # action mirrors event
+    # Certification was skipped entirely — a stop must never trigger the certify bootstrap.
+    assert not any((e.get("payload") or {}).get("event") == "certify_start"
+                   for e in events if e["kind"] == "decide")
+    # Exactly ONE stop event and it is THE last event; it carries the cause + grid_state.
+    stops = [e for e in events if e["kind"] == "stop"]
+    assert len(stops) == 1 and events[-1]["kind"] == "stop"
+    assert stops[0]["payload"]["state"] == "operator_stopped"
+    assert "grid_state" in stops[0]["payload"]
+    # Nothing is ever deleted: the control file is still there afterward.
+    assert (ws / "report" / "control" / f"stop-{token}.json").exists()
+
+
+def test_operator_stop_ignores_a_different_token(tmp_path):
+    # A stale stop-file for a DIFFERENT token, present from the start, is inert — the campaign runs to
+    # its natural (met) end.
+    omega = lambda h: (h - 2.0) * 2.0
+    ws = tmp_path / "ws"
+    ctl = ws / "report" / "control"
+    ctl.mkdir(parents=True)
+    (ctl / "stop-SOMEONE_ELSE.json").write_text("{}", encoding="utf-8")
+    cfg = {"workspace": ws, "client": MockTavi(omega), "run_isar": make_mock_runner(omega),
+           "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7,
+           "control_token": "MY_TOKEN"}
+    summary = run_campaign(_objective(), cfg)
+    assert summary["stop"]["state"] == "met", summary["stop"]["reasons"]
+    events = read_log(summary["session_log"])
+    assert not any((e.get("payload") or {}).get("event") == "operator_stop"
+                   for e in events if e["kind"] == "decide")
+
+
+def test_operator_stop_before_first_iteration_is_clean(tmp_path, monkeypatch):
+    # Stop-file present before iteration 0 completes: clean operator_stopped, no crash on the
+    # decision-None path (no iteration ever finished, so no scan was submitted).
+    _no_subprocess(monkeypatch)
+    omega = lambda h: (h - 2.0) * 2.0
+    ws = tmp_path / "ws"
+    ctl = ws / "report" / "control"
+    ctl.mkdir(parents=True)
+    token = "pre-start"
+    (ctl / f"stop-{token}.json").write_text("{}", encoding="utf-8")
+    cfg = {"workspace": ws, "client": MockTavi(omega), "run_isar": make_mock_runner(omega),
+           "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7,
+           "control_token": token}
+    summary = run_campaign(_objective(), cfg)
+    assert summary["stop"]["state"] == "operator_stopped"
+    assert "grid_state" in summary["stop"]
+    events = read_log(summary["session_log"])
+    assert not any(e["kind"] == "run" for e in events)          # never submitted a scan
+    acks = [e for e in events if e["kind"] == "decide"
+            and (e.get("payload") or {}).get("event") == "operator_stop"]
+    assert len(acks) == 1 and acks[0]["payload"]["iter"] == 0
+    assert read_log(summary["session_log"])[-1]["kind"] == "stop"
+
+
+def test_operator_stop_disabled_by_default_ignores_stop_file(tmp_path):
+    # control_token unset (None default): a stop-file lying around is completely ignored — behaviour is
+    # identical to today.
+    omega = lambda h: (h - 2.0) * 2.0
+    ws = tmp_path / "ws"
+    ctl = ws / "report" / "control"
+    ctl.mkdir(parents=True)
+    (ctl / "stop-whatever.json").write_text("{}", encoding="utf-8")
+    cfg = {"workspace": ws, "client": MockTavi(omega), "run_isar": make_mock_runner(omega),
+           "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7}
+    summary = run_campaign(_objective(), cfg)
+    assert summary["stop"]["state"] == "met", summary["stop"]["reasons"]
+
+
+def test_operator_stop_during_final_allowed_iteration_is_honored(tmp_path, monkeypatch):
+    # The final-boundary case: with --max-iters 1 the stop file is written DURING the only allowed
+    # iteration's scan, so no top-of-iteration check will ever see it. The boundary after the last
+    # allowed iteration is still a boundary — the loop must honour the stop there (operator_stopped,
+    # no certification) instead of falling through to normal termination.
+    _no_subprocess(monkeypatch)
+    omega = lambda h: (h - 2.0) * 2.0
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    token = "final-boundary"
+    client = _StopFileTavi(omega, ws, token)
+    cfg = {"workspace": ws, "client": client, "run_isar": make_mock_runner(omega),
+           "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7,
+           "control_token": token, "max_iters": 1}
+    summary = run_campaign(_objective(), cfg)
+
+    assert summary["stop"]["state"] == "operator_stopped"
+    events = read_log(summary["session_log"])
+    assert any(e["kind"] == "run" for e in events)              # the final iteration completed its scan
+    acks = [e for e in events if e["kind"] == "decide"
+            and (e.get("payload") or {}).get("event") == "operator_stop"]
+    assert len(acks) == 1 and acks[0]["payload"]["iter"] == 1   # the post-exhaustion boundary (== max_iters)
+    # Certification must not run on an operator stop, even on this path.
+    assert not any((e.get("payload") or {}).get("event") == "certify_start"
+                   for e in events if e["kind"] == "decide")
+    stops = [e for e in events if e["kind"] == "stop"]
+    assert len(stops) == 1 and events[-1]["kind"] == "stop"
+    assert stops[0]["payload"]["state"] == "operator_stopped"
+
+
+# --------------------------------------------------------------------------- per-invocation max_iters
+def test_max_iters_restart_grants_fresh_cap(tmp_path):
+    # --max-iters is per invocation: each run_campaign restarts iteration numbering at zero (range over
+    # cfg.max_iters), so a second run with the same cap does MORE work rather than treating the cap as
+    # already exhausted. (Not "one run event per invocation" — a single iteration may submit several
+    # scans via recenter/widen retries.)
+    omega = lambda h: (h - 2.0) * 2.0
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    base = {"workspace": ws, "run_isar": make_mock_runner(omega), "calibration": _UNITY_CAL,
+            "resolution": {"fwhm_dE": 0.8}, "seed": 7, "max_iters": 1}
+    s1 = run_campaign(_objective(), dict(base, client=MockTavi(omega)))
+    runs1 = [e for e in read_log(s1["session_log"]) if e["kind"] == "run"]
+    assert runs1                                               # the first capped invocation did work
+    s2 = run_campaign(_objective(), dict(base, client=MockTavi(omega)))
+    runs2 = [e for e in read_log(s2["session_log"]) if e["kind"] == "run"]
+    assert len(runs2) > len(runs1)                            # the restart's fresh cap submitted more scans
+    # The restart resumed the prior spend ledger (didn't reset) and started a fresh campaign.
+    starts = [e for e in read_log(s2["session_log"])
+              if (e.get("payload") or {}).get("action") == "campaign_start"]
+    assert starts[-1]["payload"]["resumed"]["scan_counter"] == len(runs1)
+
+
+# --------------------------------------------------------------------------- campaign_start fingerprint
+def test_campaign_start_stamps_source_fingerprint_when_provided(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    src = {"kind": "goal", "sha256": "deadbeefcafe"}
+    cfg = {"workspace": ws, "client": MockTavi(omega), "run_isar": make_mock_runner(omega),
+           "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7, "source": src}
+    summary = run_campaign(_objective(), cfg)
+    starts = [e for e in read_log(summary["session_log"])
+              if (e.get("payload") or {}).get("action") == "campaign_start"]
+    assert starts and starts[-1]["payload"]["source"] == src
+
+
+def test_campaign_start_omits_source_when_absent(tmp_path):
+    # Backward compatible: no `source` config → the field is omitted from campaign_start.
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, ws = _run(tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega))
+    starts = [e for e in read_log(summary["session_log"])
+              if (e.get("payload") or {}).get("action") == "campaign_start"]
+    assert starts and "source" not in starts[-1]["payload"]
+
+
+# --------------------------------------------------------------------------- force-kill characterization
+def test_force_kill_run_without_results_row_counts_spend(tmp_path):
+    # Documents the KNOWN cost of a hard kill (the reason the cooperative stop exists): a `run` event
+    # whose scan never produced a results.csv row (killed mid-analysis) still counts toward the resumed
+    # spend ledger, but leaves no folded observation — so the next invocation re-proposes for that q and
+    # double-spends. The cooperative operator stop avoids this by finishing the iteration first.
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    log_event(log, "run", {"job_id": "j1", "state": "done", "eta": {"estimated_seconds": 5.0},
+                           "kind": "production", "ncount": PRODUCTION_NCOUNT, "n_points": 60,
+                           "hkl": [2.1, 0.0, 0.0], "cost": 6.0e9})
+    # No results.csv written at all — the analysis never landed a row for that scan.
+    r = _resume_state(ws, log, _UNITY_CAL)
+    assert r["scan_counter"] == 1                               # the submitted scan is on the ledger
+    assert r["neutrons"] == pytest.approx(6.0e9)                # its spend is counted (no free re-do)
+    assert r["observations"] == []                             # but nothing folded → the q looks unmeasured

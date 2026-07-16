@@ -16,6 +16,24 @@ import pytest
 from synthetic_ws import stamp_ws
 
 
+@pytest.fixture(autouse=True)
+def _isolated_user_dirs(tmp_path, monkeypatch):
+    """Redirect the per-user directories the GUI writes into so tests never touch the operator's real
+    profile. Without this, MainWindow's session Autosaver writes ``%APPDATA%/isar_gui/session.json``
+    and workspace_manager reserves temp workspaces under ``%LOCALAPPDATA%/isar_gui/temp_workspaces``
+    — GUI tests were polluting the live session's recents (a stale pytest ``tmp_path`` workspace even
+    got auto-opened on the next real launch) and leaving temp dirs in the real AppData tree.
+
+    ``APPDATA`` covers ``session_path()`` (isar_gui.session) and ``gui_log_dir()``
+    (isar_gui.logging_setup); ``LOCALAPPDATA`` covers ``temp_workspaces_root()``
+    (isar_gui.workspace_manager). Both are set to fresh per-test subdirs. Autouse so every GUI test is
+    isolated by default; a test that sets/deletes these envs itself (e.g. the session_path tests)
+    still wins because its own monkeypatch runs after this fixture.
+    """
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+
+
 @pytest.fixture
 def make_ws(tmp_path):
     """Return a factory that stamps a synthetic workspace under a fresh subdir and returns its path."""

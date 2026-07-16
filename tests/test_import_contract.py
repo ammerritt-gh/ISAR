@@ -1,7 +1,8 @@
 """A-11 import-contract lint (design ruling G16): the GUI's dependency surface, enforced statically.
 
-``isar_gui`` is Qt land and may lean on ISAR's *thinking* only through the sanctioned read facade —
-never by importing a fit internal, the driver, the reducer, a parser, etc. Symmetrically,
+``isar_gui`` is Qt land and may lean on ISAR's *thinking* only through the sanctioned read facade,
+apart from the one G7 sandbox viewmodel → ``isar.sandbox_api`` seam — never by importing a fit
+internal, the driver, the reducer, a parser, etc. Symmetrically,
 ``isar.workspace_api`` (the read facade) is allowed a fixed, enumerated set of ISAR modules and
 nothing more: the canonical collation key, the schema/session state readers, the params-only curve
 evaluator's dependencies, and the vendored geometry.
@@ -28,18 +29,27 @@ WORKSPACE_API_DIR = REPO_ROOT / "isar" / "workspace_api"
 # schema, cli, parsers … — is forbidden.
 GUI_ALLOWED = {"isar.workspace_api", "isar.geometry", "isar.plotspec"}
 
+# G7: only the sandbox viewmodel may cross from Qt land to the one frozen-config preview API.
+SANDBOX_VIEWMODEL = GUI_DIR / "viewmodels" / "sandbox.py"
+SANDBOX_VM_ALLOWED = GUI_ALLOWED | {"isar.sandbox_api"}
+
 # G16: the read facade's own sanctioned imports (the one definition of "a dataset" plus the exact
 # schema/session/report/analyze pieces it reads through, and the vendored geometry).
 WORKSPACE_API_ALLOWED = {
     "isar.schema.card",
     "isar.session.state",
     "isar.session.workspace",
+    "isar.session.unit_data",
     "isar.drive.session_log",
     "isar.drive.isar_io.readers",
     "isar.report.audit",
     "isar.analyze.components",
     "isar.geometry",
     "isar.reduce.collate",
+    # config/consent validators the GUI reaches through the facade (config_gates.py): the LLM
+    # endpoint safety check + cloud-fallback default, both Qt-free/scipy-free.
+    "isar.reduce.llm_client",
+    "isar.reduce.adjudicate",
 }
 
 
@@ -78,7 +88,7 @@ def _offenders(py: Path, allowlist: set) -> list:
 
 
 def _gui_modules():
-    return sorted(GUI_DIR.rglob("*.py"))
+    return [p for p in sorted(GUI_DIR.rglob("*.py")) if p != SANDBOX_VIEWMODEL]
 
 
 def _workspace_api_modules():
@@ -101,6 +111,14 @@ def test_isar_gui_import_contract(py):
     assert not offenders, (
         f"{py.relative_to(GUI_DIR)} imports isar.* outside the G16 GUI allow-list "
         f"(workspace_api / geometry / plotspec only): {offenders}")
+
+
+def test_sandbox_import_contract():
+    """Only the sandbox viewmodel may import the single Qt-free G7 entry point."""
+    assert SANDBOX_VIEWMODEL.exists(), "sandbox viewmodel missing (the G7 GUI entry point)"
+    offenders = _offenders(SANDBOX_VIEWMODEL, SANDBOX_VM_ALLOWED)
+    assert not offenders, (
+        f"sandbox viewmodel imports outside the sanctioned G7 API: {offenders}")
 
 
 @pytest.mark.parametrize("py", _workspace_api_modules(),

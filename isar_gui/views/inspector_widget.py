@@ -54,6 +54,8 @@ class InspectorWidget(QWidget):
 
         # --- left: plots -------------------------------------------------
         self._glw = pg.GraphicsLayoutWidget()
+        from isar_gui.plotspec_pg import disable_view_drops
+        disable_view_drops(self._glw)   # no drops on the plot view (silence the dragLeave warning)
         self._main_plot = self._glw.addPlot(row=0, col=0)
         self._resid_plot = self._glw.addPlot(row=1, col=0)
         self._resid_plot.setXLink(self._main_plot)
@@ -68,21 +70,34 @@ class InspectorWidget(QWidget):
         self._empty_label.setContentsMargins(12, 12, 12, 12)
         side_l.addWidget(self._empty_label)
 
-        side_l.addWidget(QLabel("<b>Interval ladder</b>"))
+        # Unit-mode metadata panel (a raw parsed scan × analyzer): shown only in "unit" kind, hidden
+        # in "fit" kind where the ladder/candidates/verdict tell the story instead.
+        self._metadata_header = QLabel("<b>Scan metadata</b>")
+        side_l.addWidget(self._metadata_header)
+        self._metadata_label = QLabel()
+        self._metadata_label.setWordWrap(True)
+        self._metadata_label.setTextFormat(Qt.RichText)
+        side_l.addWidget(self._metadata_label)
+
+        self._ladder_header = QLabel("<b>Interval ladder</b>")
+        side_l.addWidget(self._ladder_header)
         self._ladder = self._make_table(["Tier", "Interval", "Notes"])
         side_l.addWidget(self._ladder)
 
-        side_l.addWidget(QLabel("<b>AIC candidates</b>"))
+        self._candidates_header = QLabel("<b>AIC candidates</b>")
+        side_l.addWidget(self._candidates_header)
         self._candidates = self._make_table(["Model", "ΔAIC", "Weight", "n_modes"])
         side_l.addWidget(self._candidates)
 
-        side_l.addWidget(QLabel("<b>Verdict</b>"))
+        self._verdict_header = QLabel("<b>Verdict</b>")
+        side_l.addWidget(self._verdict_header)
         self._verdict_label = QLabel()
         self._verdict_label.setWordWrap(True)
         self._verdict_label.setTextFormat(Qt.RichText)
         side_l.addWidget(self._verdict_label)
 
-        side_l.addWidget(QLabel("<b>Provenance</b>"))
+        self._provenance_header = QLabel("<b>Provenance</b>")
+        side_l.addWidget(self._provenance_header)
         self._provenance_label = QLabel()
         self._provenance_label.setWordWrap(True)
         self._provenance_label.setTextFormat(Qt.RichText)
@@ -110,14 +125,23 @@ class InspectorWidget(QWidget):
     def refresh(self) -> None:
         st = self._vm.state
         empty = st.empty
+        unit = (not empty) and st.kind == "unit"
         self._empty_label.setVisible(empty)
-        for w in (self._ladder, self._candidates):
-            w.setVisible(not empty)
+        # Unit mode shows only the metadata panel; fit mode shows the ladder/candidates/verdict/
+        # provenance. Header labels are toggled alongside their widgets so a hidden section leaves no
+        # orphan heading.
+        for w in (self._metadata_header, self._metadata_label):
+            w.setVisible(unit)
+        for w in (self._ladder_header, self._ladder, self._candidates_header, self._candidates,
+                  self._verdict_header, self._verdict_label,
+                  self._provenance_header, self._provenance_label):
+            w.setVisible((not empty) and not unit)
         self._render_plots(st)
+        self._render_metadata(st.metadata if unit else {})
         self._render_ladder(st.ladder_rows)
         self._render_candidates(st)
-        self._render_verdict(st.verdict if not empty else {})
-        self._render_provenance(st.provenance if not empty else {})
+        self._render_verdict({} if (empty or unit) else st.verdict)
+        self._render_provenance({} if (empty or unit) else st.provenance)
 
     def _render_plots(self, st) -> None:
         if st.main_spec is not None:
@@ -169,6 +193,15 @@ class InspectorWidget(QWidget):
                 if r.winner:
                     _bold(cell)
                 self._candidates.setItem(i, c, cell)
+
+    def _render_metadata(self, md) -> None:
+        if not md:
+            self._metadata_label.setText("")
+            return
+        # Escape workspace-derived values (command / file / q …) so markup in the data can't inject
+        # into the RichText label — same discipline as the verdict/provenance panels.
+        parts = [f"<b>{html.escape(str(k))}</b>: {html.escape(str(v))}" for k, v in md.items()]
+        self._metadata_label.setText("<br>".join(parts))
 
     def _render_verdict(self, v) -> None:
         if not v:

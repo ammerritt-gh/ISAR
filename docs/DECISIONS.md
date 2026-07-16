@@ -153,7 +153,9 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   entries with priority `human` that still pass the driver's validate step. Planned (Phase C).
 - **G7.** Sandbox exception: the GUI may import the deterministic fit engine's frozen-config
   entry point in-process for live preview; sandbox results are ephemeral and marked; commit
-  writes a directive. Planned (Phase C sandbox).
+  writes a directive. **Partial:** the Qt-free `isar.sandbox_api` preview entry point, serialized
+  GUI worker, manual E₀ placement, and marked fast-tier overlay are implemented; structure/prior
+  editing and Commit-to-directive remain Planned (Phase C).
 - **G8.** GUI snapshot rendering and report/diagnostic figure rendering are the same code at two
   zoom levels — one figure module (`isar/plotspec`), two consumers. Implemented (Phase 0/A) as
   far as read-only views go.
@@ -189,10 +191,15 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   `isar/geometry/epochs.py` (identity-through-acquisition-epoch until absolute coordinates land
   in Phase B).
 - **G16.** `isar_gui` sanctioned imports: `isar_gui` may import only `isar.workspace_api`,
-  `isar.geometry`, `isar.plotspec`; `isar.workspace_api` may additionally use `isar.schema.card`,
-  `isar.session.state`, `isar.session.workspace`, `isar.drive.session_log`,
+  `isar.geometry`, `isar.plotspec`; G7 additionally permits only the sandbox viewmodel to import
+  the Qt-free `isar.sandbox_api` frozen-config entry point. `isar.workspace_api` may use `isar.schema.card`,
+  `isar.session.state`, `isar.session.workspace`, `isar.session.unit_data` (the per-unit ingest
+  data reader behind `ws.unit_data`; Qt-free, scipy-free), `isar.drive.session_log`,
   `isar.drive.isar_io.readers`, `isar.report.audit`, `isar.analyze.components`, `isar.geometry`,
-  `isar.reduce.collate` (the canonical collation key — one definition of "a dataset"). Enforced
+  `isar.reduce.collate` (the canonical collation key — one definition of "a dataset"),
+  `isar.reduce.llm_client` + `isar.reduce.adjudicate` (Qt-free/scipy-free config validators the GUI
+  settings/credential editors reach through the facade — LLM endpoint safety + cloud-fallback
+  default; re-exported by `isar/workspace_api/config_gates.py`). Enforced
   by an AST import-contract test, `tests/test_import_contract.py` (task A-11; allow-lists kept in
   sync with this entry). Implemented (Phase 0/A).
 - **G17.** Rendering semantics live in the spec layer: `isar/plotspec` spec objects carry the
@@ -201,6 +208,31 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   color channel); backends map tokens only. Certifying-tier derivation is canonical in
   `isar_gui/viewmodels/certify.py`; pooled masters never overlay member data and appear in ω̂
   overlays as marked points (strips excluded). Implemented (Phase 0/A).
+- **G18.** Center view host (GUI Pass 3): the five display surfaces (fit inspector, waterfall,
+  plane, dispersion, sandbox) are switchable pages of one central host; docks are tool panels
+  only. Auto-follow (selection → scan page, campaign start → plane page) is user-overridable;
+  display switching is pure view state (G10 unchanged). Dock layouts are version-gated via
+  `saveState(_LAYOUT_VERSION)` — an old/unreadable blob fails restore atomically and the window
+  falls back to the programmatic default, never a binary migration. Implemented (Pass 3).
+- **G19.** Campaign observation and control (GUI Pass 3): the GUI observes a campaign only
+  through workspace artifacts (`ws.session_events()` over `report/session_log.jsonl`; the
+  terminal `campaign_summary.json` only after the loop ends) and controls it only as the
+  sole-writer `isar drive` subprocess behind the single-writer coordinator. Stop is a
+  cooperative, token-scoped, append-only **control request** (`--control-token`; immutable
+  `report/control/stop-<token>.json`; honored at the iteration boundary; first-class
+  `operator_stopped` state, CLI exit 4; certification skipped; nothing deleted) — distinct from
+  the Phase-C directive system, whose inbox/schema it deliberately does not use. Tree-kill
+  (Job Object, best-effort, synchronous-taskkill fallback) is operator-fired escalation only.
+  Resume never re-compiles a goal through the LLM: `--resume-latest` reuses the frozen
+  objective from the last `campaign_start`; start fingerprints (`source: {kind, sha256}`) make
+  the Resume-vs-Start decision comparable. Live UI state is ledger-honest: aggregates only
+  (per-q live state needs an additive event-contract change first — GUI_DESIGN §16.6).
+  Implemented (Pass 3).
+- **G20.** Compact campaign monitor (GUI Pass 3): the small window is an explicit mode — same
+  window, dock layout stashed in memory, central stack swapped to a glanceable read-only card
+  (status, current scan, budget, mini plane, log ticker, cooperative Stop). The session file
+  always carries the full layout (snapshots guarded while compact; close expands first).
+  Implemented (Pass 3).
 
 ## Session status update
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import time
 from collections import Counter
@@ -42,9 +43,12 @@ LOW_Q_FWHM_FACTOR = 2.0
 # profile). "bayes" is a strict superset of "full" — everything full does, plus the nested-sampling
 # posterior on the prelim-best label (diagnostics-only; the bootstrap interval stays authoritative).
 FULL_TIERS = ("full", "bayes")
+from isar.session import unit_data
 from isar.session.state import ScanEntry, SessionState, content_hash
 from isar.session.timing import NullTimer
 from isar.session.workspace import Workspace
+
+log = logging.getLogger(__name__)
 
 
 # ===========================================================================
@@ -761,6 +765,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
         plan = ingest.discover(data_paths, card)
         records = ingest.parse_all(plan, card)
         _m_ingest["n_records"] = len(records)
+    # Basename -> resolved absolute source path, so run's provenance source_file matches ingest's.
+    source_by_name = {Path(f).name: str(Path(f).resolve()) for f in plan.measurement_files}
 
     # Reduce (both no-ops where not applicable; QC never raises).
     with timer.stage("reduce_qc"):
@@ -773,10 +779,13 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
         rp = str(Path(f).resolve())
         try:
             stat = Path(f).stat()
-            session.files[rp] = {"size": stat.st_size, "mtime": stat.st_mtime,
-                                 "format": "companion" if f in plan.companion_files else "measurement"}
-        except OSError:
-            pass
+            # Merge, not replace: ingest may have written richer rows (n_scans/scan_ids) for these
+            # keys — preserve them so an `isar ingest` before an `isar run` survives the run.
+            session.files.setdefault(rp, {}).update(
+                {"size": stat.st_size, "mtime": stat.st_mtime,
+                 "format": "companion" if f in plan.companion_files else "measurement"})
+        except OSError as exc:
+            log.warning("run: could not stat %s (%s); manifest row skipped", f, exc)
 
     # Context updates BEFORE measurements (calibration/alignment/environment).
     with timer.stage("route_context"):
@@ -787,6 +796,20 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
         # Optional LLM adjudication (off critical path; degrade, never stall).
         if llm or (card.policy.adjudication or {}).get("enabled"):
             ctx_lines += _maybe_adjudicate(routed.measurements, card)
+
+    # Per-unit data files for the GUI inspector, exactly as `isar ingest` writes them — so a run-only
+    # workspace (never ingested) still has a counts plot per unit. Reduced+QC'd records; failures are
+    # logged and skipped, never fatal. (unit_data.write_unit_data mirrors the ingest contract.)
+    _unit_data_dir = getattr(workspace, "root", None)
+    if _unit_data_dir is not None:
+        _unit_data_dir = Path(_unit_data_dir) / "data"
+        for rec in routed.measurements:
+            for det_id in rec.spectra:
+                try:
+                    unit_data.write_unit_data(rec, det_id, _unit_data_dir)
+                except Exception as exc:  # noqa: BLE001 — one bad unit must never fail the run
+                    log.warning("run: failed to write unit data for %s:%s:%s (%s); continuing",
+                                rec.experiment_id, rec.scan_number, det_id, exc)
 
     runcal = calibrations.calibration_view(card)
     g = guide_mod.resolve(card)
@@ -817,7 +840,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
 
             prev = session.get(scan_id)
             fresh = (prev is None or prev.content_hash != chash
-                     or prev.guidelines_hash != ghash or prev.status.startswith("held") or force)
+                     or prev.guidelines_hash != ghash or prev.status.startswith("held")
+                     or prev.status == "ingested" or force)
             if not fresh:
                 # Unchanged & already resolved: keep the ledger entry, re-list its outcome for the report.
                 if prev.detectors.get(det):
@@ -870,7 +894,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
                           workspace, force=force, M=M, seed_base=seed_base, errors_tier=errors_tier,
                           master_boot_workers=master_boot_workers, boot_executor=shared_pool,
                           boot_adaptive=boot_adaptive, scan_workers=scan_workers,
-                          bayes_opts=bayes_opts, timer=timer)
+                          bayes_opts=bayes_opts, timer=timer, source_by_name=source_by_name)
     finally:
         if shared_pool is not None:
             shared_pool.shutdown()
@@ -911,9 +935,32 @@ def _store_branch_models(state, t_round: float) -> None:
         state.branch_models.append(bm)
 
 
+def _core_provenance(rec, det, source_by_name=None) -> dict:
+    """The ingest-parity core provenance keys for one (record, detector), reused from the Phase-2
+    helper so `isar run` on a workspace that was never `isar ingest`-ed still carries per-unit q, T,
+    the target #Q, command, calibration state, etc. — the same keys the GUI's per-unit q display and
+    scan-group #Q labels read. Absent an ingest, this is the ONLY place those keys get stamped.
+
+    ``source_by_name`` maps a record's source basename → its resolved absolute path (so run's
+    source_file matches ingest's absolute form); missing → the parser's recorded name."""
+    sp = rec.spectra.get(det)
+    q = [float(v) for v in sp.q] if sp is not None and sp.q is not None else None
+    T = float(np.median(np.asarray(rec.temperature.setpoint, dtype=float)))
+    core = {"T": T, "q": q, **unit_data._provenance_extras(rec)}
+    fname = getattr(getattr(rec, "source", None), "file", None)
+    src = None
+    if source_by_name and fname:
+        src = source_by_name.get(fname) or source_by_name.get(Path(fname).name)
+    src = src or fname
+    if src is not None:
+        core["source_file"] = src
+    return core
+
+
 def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                       workspace, *, force, M, seed_base, errors_tier, master_boot_workers,
-                      boot_executor, boot_adaptive, scan_workers=1, bayes_opts=None, timer=None):
+                      boot_executor, boot_adaptive, scan_workers=1, bayes_opts=None, timer=None,
+                      source_by_name=None):
     """Pass 2 (ledger + prior) → collate → master fits → tally → write. Split out so the shared
     bootstrap pool from :func:`run_batch` stays open across the whole full-tier batch."""
     timer = timer or NullTimer()
@@ -923,6 +970,11 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
     # The re-fit idempotency makes it self-healing across runs — a later `isar run` re-seeds from
     # the now-complete prior only for scans that actually drifted.
     t_round = float((card.policy.collation or {}).get("t_round", 5.0))
+    # scan_id -> (record, detector) for stamping ingest-parity core provenance onto fitted entries.
+    rec_by_scan_id: dict[str, tuple] = {}
+    for rec in records:
+        for det_id in rec.spectra:
+            rec_by_scan_id[f"{rec.experiment_id}:{rec.scan_number}:{det_id}"] = (rec, det_id)
     for item in plan:
         if item[0] == "carry":
             _, scan, outcome = item
@@ -930,6 +982,17 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
             continue
         _, scan, det, task_idx = item
         entry = entries[task_idx]
+        # Stamp per-unit core provenance (q/T/source_file/q_target/…) the fitter never sets, and
+        # MERGE under any existing (e.g. ingest-stamped) provenance so an ingest-then-run workspace
+        # keeps ingest-only keys (ingested_at) while run values win where both are set. Absent an
+        # ingest, this is what gives the GUI its per-unit q and scan-group #Q labels in the fit path.
+        rd = rec_by_scan_id.get(entry.scan_id)
+        if rd is not None:
+            core = _core_provenance(rd[0], rd[1], source_by_name)
+            entry.provenance = {**core, **(entry.provenance or {})}
+        prev = session.get(entry.scan_id)
+        if prev is not None and prev.provenance:
+            entry.provenance = {**prev.provenance, **(entry.provenance or {})}
         session.put(entry)
         summary.n_reprocessed += 1
         summary.n_fitted_this_run += 1 if entry.status in ("fitted", "non_result") else 0
@@ -1677,6 +1740,10 @@ _CSV_COLUMNS = [
     # GUI Phase 0 (P0-3/P0-4), appended so older readers/CSVs are unaffected. JSON-encoded strings:
     # the amplitudes dict and the model-selection candidate table.
     "amplitudes", "candidates",
+    # Additive atomic identity: scan numbers are not globally unique across experiments, so new
+    # consumers must route detector data using this full ledger key. Appended for old positional CSV
+    # consumers, which continue seeing every existing column in its original order.
+    "scan_id",
 ]
 
 
@@ -1715,7 +1782,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
     rows = []
     for e in sorted(session.scans.values(), key=lambda e: e.scan_number):
         if not e.detectors:
-            rows.append({"scan": e.scan_number, "status": e.status,
+            rows.append({"scan_id": e.scan_id, "scan": e.scan_number, "status": e.status,
                          "reasons": "; ".join(e.reasons)})
             continue
         for det, oc in e.detectors.items():
@@ -1737,7 +1804,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                     f"master scan {e.scan_number}: n_members={oc.get('n_members')} != "
                     f"len(members)={len(members)} — member provenance corrupt")
             rows.append({
-                "scan": e.scan_number, "detector": det, "sample": oc.get("sample"),
+                "scan_id": e.scan_id, "scan": e.scan_number, "detector": det, "sample": oc.get("sample"),
                 "T": oc.get("T"), "h": q[0], "k": q[1], "l": q[2], "status": e.status,
                 "verdict": oc.get("verdict"), "disposition": oc.get("disposition"),
                 "confidence": oc.get("confidence"), "omega0": oc.get("omega0"),

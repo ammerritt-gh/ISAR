@@ -19,6 +19,7 @@ from collections import Counter
 import numpy as np
 
 from isar.plotspec import spec as ps
+from isar.workspace_api.scan_keys import split_key
 
 #: Index -> reciprocal-lattice axis label.
 AXIS = {0: "H", 1: "K", 2: "L"}
@@ -45,6 +46,59 @@ def candidates(results) -> list:
             continue
         out.append(fv)
     return out
+
+
+def restrict(cands, keys):
+    """Keep only candidates a manual group covers (plan Part 2A). ``keys`` is a set of unit ids.
+
+    A candidate is kept when its ``unit_id`` is in ``keys`` OR it is a pooled master whose members
+    intersect ``keys`` — the pooled clause preserves the DELIVERED per-q answer when the group covers
+    its members (``candidates`` deliberately includes masters). ``keys is None`` -> unchanged."""
+    if keys is None:
+        return cands
+    keyset = {str(k) for k in keys}
+    selected_scans = {split_key(k)[1] for k in keyset}
+    out = []
+    for fv in cands:
+        uid = getattr(fv, "unit_id", None)
+        if uid is not None and str(uid) in keyset:
+            out.append(fv)
+        elif getattr(fv, "pooled", False):
+            members = getattr(fv, "members", None) or []
+            if any(_persisted_member_covered(member, keyset, selected_scans)
+                   for member in members):
+                out.append(fv)
+    return out
+
+
+def _persisted_member_covered(member, keyset: set[str], selected_scans: set) -> bool:
+    """Whether one persisted pooled-member label is covered by selected unit keys.
+
+    Production ``FitView.members`` contains strings. A qualified label is an atomic identity and
+    therefore matches exactly; a bare decimal scan label intentionally covers any selected analyzer
+    unit with that scan number, matching the compact chain-of-custody form written by the engine.
+    """
+    label = str(member)
+    if label in keyset:
+        return True
+    experiment_id, scan_number, detector_id = split_key(label)
+    return experiment_id is None and detector_id is None and isinstance(scan_number, int) \
+        and scan_number in selected_scans
+
+
+def restrict_or_clear(cands_all, keys):
+    """``(cands, stale)`` for a view rebuild (plan R-lifecycle self-healing).
+
+    Applies :func:`restrict`; but if a restriction is active and every id went stale (``cands_all`` is
+    non-empty yet nothing survives the filter), returns the FULL population with ``stale=True`` so the
+    caller auto-clears its restriction and notes it — rather than leaving a stale banner over an empty
+    plot. An empty ``cands_all`` (no fits yet) is NOT stale: the ids may simply not be fitted yet."""
+    if keys is None:
+        return cands_all, False
+    cands = restrict(cands_all, keys)
+    if cands_all and not cands:
+        return cands_all, True
+    return cands, False
 
 
 def modal_T(cands):

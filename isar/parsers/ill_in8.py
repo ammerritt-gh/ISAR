@@ -13,6 +13,7 @@ sensor-divergence check catches the disconnected sensor (055177: TT≈299 vs RT=
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -21,8 +22,17 @@ from isar.parsers import numor_base, registry
 from isar.schema import axes, scan
 from isar.schema.card import Card
 
+log = logging.getLogger(__name__)
+
 name = "ill_in8"
 version = "0.1.0"
+
+# A constant-Q energy MEASUREMENT scans a reciprocal-lattice component: `bs qh|qk|ql h k l E …`.
+# The same `bs` batch-scan driver also drives motor/alignment scans (`bs a3p 15 da3p 1 np 31 ti 1`,
+# numor 055189) — those are context, NOT results, and must never reach `_bs_q_and_deltas`
+# (which would `float("da3p")` and crash). Classification keys on the scanned variable, not just the
+# `bs` driver token.
+_Q_SCAN_VARS = ("qh", "qk", "ql")
 
 _CARD_PATH = Path(__file__).parent / "cards" / "in8.policy.toml"
 
@@ -50,6 +60,19 @@ def _counting(comnd: str):
     if "ti" in toks:
         return "time", float(toks[toks.index("ti") + 1])
     return "monitor", 0.0
+
+
+def _is_measurement(comnd: str, pol) -> bool:
+    """True iff ``comnd`` is a constant-Q energy measurement (``bs qh|qk|ql …``).
+
+    A `bs`-driver scan over an angle (`bs a3p …`) shares the measurement pattern token but scans a
+    motor, so it is an alignment/context scan, not a result. Keying on the scanned variable keeps a
+    non-Q `bs` scan out of ``_parse_measurement`` (and off ``_bs_q_and_deltas``'s float() assumption).
+    """
+    toks = comnd.split()
+    if not toks or toks[0] != pol.measurement_pattern:
+        return False
+    return len(toks) > 1 and toks[1].lower() in _Q_SCAN_VARS
 
 
 def _bs_q_and_deltas(comnd: str):
@@ -266,10 +289,20 @@ def parse_file(path: str | Path, card: Card) -> list[scan.ScanRecord]:
     pol = card.policy
     fname = Path(path).name
     records: list[scan.ScanRecord] = []
-    for block in numor_base.read_numor(path):
+    blocks = list(numor_base.read_numor(path))
+    for block in blocks:
         comnd = block.keywords.get("COMND", "").strip()
-        if comnd.startswith(pol.measurement_pattern):
-            records.append(_parse_measurement(block, pol, fname))
-        else:
-            records.append(_parse_alignment(block, pol, fname))
+        numor = block.keywords.get("FILE_", "?")
+        try:
+            if _is_measurement(comnd, pol):
+                records.append(_parse_measurement(block, pol, fname))
+            else:
+                records.append(_parse_alignment(block, pol, fname))
+        except Exception as exc:
+            # Backstop for a genuinely unrecognized COMND shape (real numor files carry one block, so
+            # this skips just that scan; the synthetic emitter's blocks are controlled). Never crash
+            # the file — the operator sees the numor + command in the log.
+            log.warning("numor %s: unrecognized COMND %r — block skipped (%s)", numor, comnd, exc)
+    if not records:
+        raise ValueError(f"parsed 0 of {len(blocks)} numor blocks")
     return records

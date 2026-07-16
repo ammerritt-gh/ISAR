@@ -50,9 +50,15 @@ class WaterfallViewModel(ViewModel):
     spec_changed = Signal()
     point_activated = Signal(object)
 
+    #: The group-drop target kind (plan Part 2A). Waterfall accepts any fitted group (both modes
+    #: handle multiple temperatures); it reports a hidden-q count rather than refusing on T.
+    TARGET = "waterfall"
+
     def __init__(self, ws, parent=None):
         super().__init__(ws, parent)
         self._mode = "waterfall"
+        self._restriction: set | None = None   # None = all fitted scans; else the covered unit ids
+        self._restriction_stale = False        # set when a refresh auto-cleared a now-stale restriction
         self._selected_q: float | None = None
         self._offset_step: float | None = None   # None => auto heuristic (see _auto_offset_step)
         self._spec = None
@@ -97,6 +103,31 @@ class WaterfallViewModel(ViewModel):
     def set_selected_q(self, q) -> None:
         self._selected_q = None if q is None else float(q)
         self.refresh()
+
+    # ---- group-drop restriction (plan Part 2A) ------------------------------
+    def set_scan_restriction(self, keys) -> None:
+        """Restrict the view to a manual group's covered unit ids; ``None`` restores all fitted scans.
+        Pure view filter — no re-fit, no workspace write (G10)."""
+        self._restriction = {str(k) for k in keys} if keys is not None else None
+        self.refresh()
+
+    @property
+    def restriction_active(self) -> bool:
+        return self._restriction is not None
+
+    def take_restriction_stale(self) -> bool:
+        """True once after a refresh auto-cleared a now-stale restriction (consumed by the dock)."""
+        stale, self._restriction_stale = self._restriction_stale, False
+        return stale
+
+    def can_accept(self, scan_ids) -> tuple[bool, str]:
+        """``(ok, reason)`` for dropping ``scan_ids`` here — waterfall accepts any fitted group."""
+        from isar_gui import group_targets
+        return group_targets.accepts(self.TARGET, self._ws.results, scan_ids)
+
+    def other_q_count(self) -> int:
+        """Waterfall mode fixes one q; the number of OTHER q bins present (for a status note)."""
+        return max(0, len(self._q_values) - 1) if self._mode == "waterfall" else 0
 
     def set_offset_step(self, step) -> None:
         """``None`` reverts to the auto heuristic; any other value is the user's explicit override."""
@@ -167,7 +198,12 @@ class WaterfallViewModel(ViewModel):
 
     def _rebuild(self) -> None:
         step = self._hkl_round_step()
-        cands = projection.candidates(self._ws.results)  # pooled masters included (delivered answer)
+        cands, stale = projection.restrict_or_clear(
+            projection.candidates(self._ws.results),   # pooled masters included (delivered answer)
+            self._restriction)
+        if stale:
+            self._restriction = None
+            self._restriction_stale = True
         if not cands:
             self._reset_empty("waterfall — no fitted scans")
             return

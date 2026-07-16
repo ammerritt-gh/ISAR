@@ -18,6 +18,9 @@ from __future__ import annotations
 
 from .views import (BranchModelView, CampaignView, CardView, FitView, GroupView, ScanView)
 from .workspace import SCHEMA_VERSION, Workspace, WorkspaceNotFound
+from .scan_keys import scan_prefix, split_key, unit_key
+from .config_gates import (DEFAULT_CLOUD_FALLBACK_MODEL, PolicyValidation, validate_endpoint,
+                           validate_policy_text)
 
 __all__ = [
     "Workspace",
@@ -29,4 +32,11 @@ __all__ = [
     "GroupView",
     "BranchModelView",
     "CampaignView",
+    "unit_key",
+    "split_key",
+    "scan_prefix",
+    "validate_endpoint",
+    "DEFAULT_CLOUD_FALLBACK_MODEL",
+    "validate_policy_text",
+    "PolicyValidation",
 ]

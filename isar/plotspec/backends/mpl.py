@@ -91,7 +91,8 @@ def _draw_band(ax, b) -> None:
 # carries a label (the builder emits one Marker per point).
 def _draw_marker(ax, m, label=None) -> None:
     if m.kind is MarkerKind.MASKED:
-        ax.scatter([m.x], [m.y], marker="x", color="red", zorder=5, label=label)
+        ax.scatter([m.x], [m.y], marker="o", s=45, facecolors="none", edgecolors="0.5",
+                   linewidths=1.4, zorder=5, label=label)
     elif m.kind is MarkerKind.COSMIC_RAY:
         ax.scatter([m.x], [m.y], s=90, facecolors="none", edgecolors="darkorange",
                    linewidths=1.5, zorder=4, label=label)

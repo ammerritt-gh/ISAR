@@ -22,6 +22,7 @@ CORE_DIRS = {
     "plotspec": ISAR_DIR / "plotspec",
     "workspace_api": ISAR_DIR / "workspace_api",
 }
+CORE_FILES = {"sandbox_api": ISAR_DIR / "sandbox_api.py"}
 
 # plotspec/backends/mpl.py is explicitly allowed to import matplotlib; it is not part of the
 # Qt-free surface being enforced here.
@@ -36,6 +37,7 @@ def _modules():
     mods = []
     for base in CORE_DIRS.values():
         mods.extend(sorted(base.rglob("*.py")))
+    mods.extend(CORE_FILES.values())
     return [m for m in mods if m not in EXCLUDED]
 
 
@@ -54,6 +56,8 @@ def test_core_packages_exist_and_have_modules():
     for name, base in CORE_DIRS.items():
         mods = sorted(base.rglob("*.py"))
         assert mods, f"no modules found under isar/{name}/ (renamed or removed?)"
+    for name, path in CORE_FILES.items():
+        assert path.is_file(), f"Qt-free core module isar/{name}.py is missing"
 
 
 @pytest.mark.parametrize("py", _modules(), ids=lambda p: str(p.relative_to(ISAR_DIR)))
@@ -106,3 +110,16 @@ def test_importing_core_does_not_pull_in_qt_or_scipy():
         f"clean-interpreter Qt-free-core import failed:\nstdout={out.stdout}\nstderr={out.stderr}")
     assert "QT_FREE_CORE_OK" in out.stdout, (
         f"sentinel missing from subprocess output:\nstdout={out.stdout}\nstderr={out.stderr}")
+
+
+def test_sandbox_compute_module_is_qt_free():
+    """The G7 API runs on a worker thread, so importing it must pull in no Qt (G7/§6)."""
+    qt_checks = "\n".join(
+        f"assert not [m for m in sys.modules if m == {root!r} or m.startswith({root!r} + '.')], "
+        f"'{root} leaked into isar.sandbox_api import'"
+        for root in sorted(FORBIDDEN_QT)
+    )
+    script = "import sys\nimport isar.sandbox_api\n" + qt_checks + "\nprint('SANDBOX_QT_FREE_OK')\n"
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert out.returncode == 0 and "SANDBOX_QT_FREE_OK" in out.stdout, (
+        f"isar.sandbox_api is not Qt-free:\nstdout={out.stdout}\nstderr={out.stderr}")

@@ -17,6 +17,7 @@ by their scanned motor, with that motor recorded as the single scanned axis (§5
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +27,8 @@ from isar.parsers.spec_s30 import _meta_value, _raw_header, _raw_signal
 from isar.schema import axes, scan
 from isar.schema.card import Card
 from isar.schema.scan import RAW_ABSCISSA_KINDS
+
+log = logging.getLogger(__name__)
 
 name = "spec_s30_raw"
 version = "0.1.0"
@@ -239,10 +242,24 @@ def parse_file(path: str | Path, card: Card) -> list[scan.ScanRecord]:
     records: list[scan.ScanRecord] = []
     for block in blocks:
         scan_type, _motor = _classify(block.command, card)
-        if scan_type == "measurement":
-            records.append(_parse_fscan(header, block, card, fname))
-        else:
-            records.append(_parse_ascan(header, block, card, fname, scan_type))
+        # `_classify` defaults an unrecognized command (e.g. a `timescan`) to "measurement", but only
+        # an fscan carries the HerixE energy column `_parse_fscan` needs. A measurement-classified
+        # block with no energy column is NOT an energy scan — treat it as context (its column 0 is the
+        # scanned quantity, which `_parse_ascan` records), never crash the file on a missing HerixE.
+        is_energy = scan_type == "measurement" and pol.energy_column in block.column_labels
+        try:
+            if is_energy:
+                records.append(_parse_fscan(header, block, card, fname))
+            else:
+                ctx_type = scan_type if scan_type != "measurement" else "alignment"
+                records.append(_parse_ascan(header, block, card, fname, ctx_type))
+        except Exception as exc:
+            # Backstop: any residual shape/column surprise in one block skips just that scan (warned),
+            # so one odd miniscan can never abort the whole growing file.
+            log.warning("scan %s (%s): skipped — not a parseable S30 scan (%s)",
+                        block.scan_number, (block.command.split() or ["?"])[0], exc)
+    if not records:
+        raise ValueError(f"parsed 0 of {len(blocks)} SPEC blocks")
     return records
 
 

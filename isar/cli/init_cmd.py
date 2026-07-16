@@ -6,12 +6,22 @@ predates them, and writes empty state + session files. Prints the exact next com
 """
 from __future__ import annotations
 
+import json
 import sys
 from datetime import date
 from pathlib import Path
 
 from isar.parsers import registry
 from isar.session.state import SessionState
+
+
+def _fail(kind: str, message: str, as_json: bool) -> int:
+    """Emit an exit-2 error: the JSON error object on stdout (``--json`` only) plus the unchanged
+    ``error: <message>`` stderr line. ``message`` is exactly the stderr line's text (sans prefix)."""
+    if as_json:
+        print(json.dumps({"error": {"kind": kind, "message": message}}))
+    print(f"error: {message}", file=sys.stderr)
+    return 2
 
 # Appended (as comments) only when the template lacks the section, so `isar init` always shows the
 # user where guidelines and calibration policy live. Real cards carry uncommented versions.
@@ -65,22 +75,22 @@ def _has_section(text: str, name: str) -> bool:
 
 
 def run(args) -> int:
+    as_json = getattr(args, "json", False)
     data = Path(args.data)
     if not data.exists():
-        print(f"error: no such path: {data}", file=sys.stderr)
-        return 2
+        return _fail("bad_path", f"no such path: {data}", as_json)
 
     probe, detected = _first_recognizable(data)
     if detected is None:
-        print(f"error: could not detect an instrument from {data} "
-              f"(no recognizable data file found)", file=sys.stderr)
-        return 2
+        return _fail("no_recognizable_data",
+                     f"could not detect an instrument from {data} "
+                     f"(no recognizable data file found)", as_json)
     facility, instrument, fmt = detected
     plugin_name = registry.default_plugin_name(facility, instrument, fmt)
     if plugin_name is None:
-        print(f"error: detected {facility}/{instrument} ({fmt}) has no shipped card template yet; "
-              f"author a card + parser (see DESIGN.md §6).", file=sys.stderr)
-        return 2
+        return _fail("no_card_template",
+                     f"detected {facility}/{instrument} ({fmt}) has no shipped card template yet; "
+                     f"author a card + parser (see DESIGN.md §6).", as_json)
 
     plugin = registry.plugin_by_name(plugin_name)
     template_text = Path(plugin._CARD_PATH).read_text(encoding="utf-8")
@@ -91,14 +101,19 @@ def run(args) -> int:
 
     out = Path(args.out) if args.out else Path.cwd() / f"isar_{instrument}_{date.today():%Y%m%d}"
     if out.exists() and (out / "card.policy.toml").exists():
-        print(f"error: workspace already has a card: {out / 'card.policy.toml'} "
-              f"(remove it or choose another --out)", file=sys.stderr)
-        return 2
+        return _fail("card_exists",
+                     f"workspace already has a card: {out / 'card.policy.toml'} "
+                     f"(remove it or choose another --out)", as_json)
     out.mkdir(parents=True, exist_ok=True)
     (out / "card.policy.toml").write_text(template_text, encoding="utf-8")
     SessionState().save(out / "session.json")
     # Empty machine state — written so the workspace is complete and inspectable.
     (out / "card.state.json").write_text("{}", encoding="utf-8")
+
+    if as_json:
+        print(json.dumps({"workspace": str(out), "facility": facility, "instrument": instrument,
+                          "fmt": fmt, "plugin": plugin_name}))
+        return 0
 
     print(f"Detected {facility}/{instrument} (format {fmt}) from {probe.name}")
     print(f"Created workspace: {out}")

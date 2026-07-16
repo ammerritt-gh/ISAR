@@ -6,11 +6,15 @@ since the last tick is shown, so a warning is not repeated every refresh.
 """
 from __future__ import annotations
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QDockWidget, QPlainTextEdit
 
 
 class LogDock(QDockWidget):
     """A dock wrapping a read-only :class:`QPlainTextEdit`; ``append(str)`` adds a line."""
+
+    #: Every appended line, for lightweight mirrors (the compact monitor's ticker).
+    appended = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__("Log", parent)
@@ -18,6 +22,8 @@ class LogDock(QDockWidget):
         self._view = QPlainTextEdit(self)
         self._view.setReadOnly(True)
         self._view.setMaximumBlockCount(5000)  # bound memory on a long-running campaign view
+        # A dropped file must reach MainWindow.dropEvent, not be pasted as text into the log.
+        self._view.setAcceptDrops(False)
         self.setWidget(self._view)
         self._warnings_seen = 0
         self._last_generation = None   # last per-tick generation seen (None => none yet)
@@ -25,6 +31,19 @@ class LogDock(QDockWidget):
 
     def append(self, msg: str) -> None:
         self._view.appendPlainText(str(msg))
+        self.appended.emit(str(msg))
+
+    def reset_warnings(self) -> None:
+        """Clear the per-tick warning high-water bookkeeping.
+
+        The dock now persists across workspace rebinds (its scrollback is kept), so its
+        generation/seen/batch state must be reset explicitly on each rebind — otherwise a stale
+        ``_last_generation`` or ``_last_batch`` from the previous workspace could suppress the new
+        workspace's first warnings batch.
+        """
+        self._warnings_seen = 0
+        self._last_generation = None
+        self._last_batch = None
 
     def sync_warnings(self, warnings, generation=None) -> None:
         """Append only the warnings not shown yet.

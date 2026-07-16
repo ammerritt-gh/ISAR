@@ -1,10 +1,14 @@
 # ISAR GUI — Design
 
 **Status:** Design draft, 2026-07-11; Phase 0 + Phase A implemented on branch
-`ISAR-initial-GUI` as of 2026-07-11 (see §0bis for corrections found during that work). Every
-capability in this document is **Planned** unless explicitly marked otherwise — Phase B and
-Phase C remain entirely in the Planned voice. This document follows the discipline of
-`DESIGN.md`: nothing is described in the implemented voice unless it is.
+`ISAR-initial-GUI` as of 2026-07-11 (see §0bis for corrections found during that work). GUI
+Pass 3 (2026-07-16, branch `ISAR-GUI-Pass2`) implemented the workflow layout (center view host,
+versioned dock layout), the campaign workspace (launcher + live feed + cooperative stop), and
+the compact campaign monitor — see §0ter for its rulings (G18–G20) and §16 for what it
+deliberately left designed-but-unbuilt. Every capability in this document is **Planned** unless
+explicitly marked otherwise — Phase B and the directive machinery of Phase C remain entirely in
+the Planned voice. This document follows the discipline of `DESIGN.md`: nothing is described in
+the implemented voice unless it is.
 
 **Audience.** This document is a self-contained handoff. It assumes the reader knows `DESIGN.md`
 (the master design) but has **no access to the design conversation** that produced this document.
@@ -78,6 +82,61 @@ affected § carries a one-line pointer back here.
    planner forbidden-zone previews (Phase B) will be kinematics-only (triangle closure / Ewald
    sphere) until a per-instrument config is authored TAVI-side — the HTTP `/validate` call stays
    the sole authority for the real go/no-go, exactly as G11 already ruled.
+
+---
+
+## 0ter. Pass-3 rulings (2026-07-16) — layout + campaign workspace
+
+GUI Pass 3 reshaped the window into the left-to-right operator workflow (data enters top-left →
+scans organized on the left → display surfaces in the center → the campaign workspace on the
+right → a compact Log ticker) and built the campaign launcher/dashboard. Its rulings, in the
+G-series (canonical text in `docs/DECISIONS.md`):
+
+- **G18 — Center view host.** The five display surfaces (fit inspector, waterfall, plane,
+  dispersion, sandbox) are switchable pages of one central host, not five competing docks; docks
+  are tool panels only. Auto-follow (selection → scan page, campaign start → plane page) is
+  user-overridable and display switching remains pure view state (G10 unchanged). Saved dock
+  layouts are version-gated (`saveState(version)`): an old blob fails restore atomically and the
+  window falls back to the programmatic Pass-3 default — never a binary migration.
+- **G19 — Campaign observation and control.** The GUI *observes* a campaign exclusively through
+  workspace artifacts (`ws.session_events()` over `report/session_log.jsonl` — the §7 watch
+  promise, now exercised; the terminal `campaign_summary.json` only after the loop ends) and
+  *controls* it only as the sole-writer `isar drive` subprocess behind the single-writer
+  coordinator. **Stop is a cooperative, token-scoped, append-only control request**: the
+  coordinator mints a per-invocation token (`--control-token`), Stop writes an immutable
+  `report/control/stop-<token>.json`, and the loop honors its own token at the iteration
+  boundary, exiting with the first-class `operator_stopped` state (CLI exit 4) — certification
+  skipped, final grid recorded honestly as `grid_state`, nothing ever deleted. Tree-kill
+  (Job-Object `kill_tree`, best-effort with a synchronous-taskkill fallback) is an explicit
+  operator escalation, never automatic. This is a *control request*, not a directive — the
+  Phase-C directive inbox/schema is untouched (§15 item 4's door stays open; this is its
+  minimal precursor). Resume never re-compiles a goal: `--resume-latest` reuses the frozen
+  objective from the last `campaign_start` event, and start fingerprints
+  (`source: {kind, sha256}`) make Resume-vs-Start-anyway an honest, comparable decision.
+  Fingerprints decide *confidence of sameness*, never resumability: an explicit
+  "Resume last campaign" control stays reachable when no comparable fingerprint exists
+  (pre-fingerprint logs, a moved spec file, a freshly typed goal), since the frozen objective
+  alone is sufficient. Tier is frozen with the objective — the form disables it when the
+  primary action is a verified Resume, and the launcher never emits `--tier` on a resume.
+  **A campaign needs no data and no workspace** — the drive engine is cold-start capable (lazy
+  `isar init` after its first scan), so the Campaign dock exists in every window state and a
+  Start with no workspace at all runs the reserve → launch → promote → adopt lifecycle: the
+  window reserves a temporary directory (`new_temp`, the same recovery-covered machinery data
+  drops use), launches the campaign into it, and polls
+  `WorkspaceManager.promote_pending_if_ready` (all three init files, identity-checked against
+  the armed root+generation) until the workspace the campaign created opens; the coordinator
+  then rebases the running job onto the new generation (`adopt_drive_binding` — control token
+  untouched, so cooperative Stop spans the promotion). The window never inspects workspace
+  files; readiness detection lives in the manager. A campaign that dies before its first scan
+  leaves the reservation pending and retryable.
+- **G20 — Compact campaign monitor.** The small window is an explicit mode, not a responsive
+  collapse: same window, dock layout stashed in memory, central stack swapped to a glanceable
+  card (status, current scan, budget, mini plane, log ticker, cooperative Stop). Read-only; the
+  session file always carries the full layout.
+
+Live campaign state shows **only what the ledger supports** (iteration per invocation,
+converged-of-grid aggregates, whole-log spend, scan verdicts from results rows). Per-q live
+state needs an additive event-contract change first (§16.6).
 
 ---
 
@@ -471,7 +530,7 @@ All three donors and ISAR are **GPL-3** (verified 2026-07-11), so code may be li
 them freely with copyright/attribution notices. Strategy: copy patterns shamelessly, lift small
 widgets where they fit, factor a shared widget library later **only if it hurts**.
 
-### ACIDD (`C:\Users\AMM\Documents\Github\ACIDD-Arbitrary-Cuts-in-Diffraction-Data`)
+### ACIDD (`C:\Users\AMM\Documents\Github\Science\ACIDD`)
 Donates the **cut/plan gesture** and the image-view scaffolding:
 - Make Cut interaction: click start → live crosshair + dashed preview → click end → draggable
   endpoint markers → live-updating profile. This **is** the planner's "click two points" (item
@@ -494,7 +553,7 @@ two artifact outputs, mode explicit on screen — the user must always know whet
 browsing or authoring beamtime. Draw through measured region → view (side-effect-free); draw
 through terra incognita + approve → `objective_edit` directive to the inbox.
 
-### PUFFIN (`C:\Users\AMM\Documents\Github\PUFFIN`)
+### PUFFIN (`C:\Users\AMM\Documents\Github\Science\PUFFIN`)
 Donates the **live fitting grammar** and app skeleton:
 - MVVM layering (`view/` docks + `viewmodel/` + `worker/` threads) — adopt wholesale.
 - Parameter docks with live preview; exclusion mode (click/box-drag to toggle points);
@@ -520,10 +579,11 @@ model selection, branch model, verdicts, the driver, the ledger. The GUI adds no
 | C5 | Dispersion view: ω vs q with certifying-tier error bars, prior curve, off-curve flags | 3, 4 (view) | branch_model, results | — | A |
 | C6 | Planner: RS map from card lattice/space group, oriented plane, forbidden zones, two-click line, spacing spinbox, scan-series preview, approve | 1 | card, geometry, feasibility | `objective_edit` | B |
 | C7 | Directive composer + inbox monitor: pending/consumed/rejected with driver reasons | 1, 3, 4, 5 | session_events | all four types | C |
-| C8 | Sandbox refit panel (PUFFIN-grammar): structure editor, prior sliders, live fast-tier fit, SANDBOX banner, Commit → directive | 3 (interactive) | sandbox entry point | `prior_edit`, `fit_correction` | C |
+| C8 | Sandbox refit panel — **Partial:** live fast-tier preview, manual E₀, SANDBOX banner implemented; structure editor, prior sliders, Commit → directive planned | 3 (interactive) | `isar.sandbox_api` | `prior_edit`, `fit_correction` (planned) | C |
 | C9 | NL command bar: text → compiled directive(s) via LLMM → user confirms artifact → inbox | 5 | — | any (via compiler) | C |
-| C10 | Drive dashboard: EIG landscape over q, per-q state machine (met / declined / uncertifiable_interval / …), budget clock (labeled wall vs virtual), tier escalations, refusal log, proposal queue w/ human entries marked | 4 | campaign, session_events, watch | — | C |
+| C10 | Drive dashboard — **Partial (Pass 3):** live decision feed, aggregate progress (iteration, converged-of-grid, whole-log budget), scan verdicts, stop states implemented; EIG landscape, per-q state machine, refusal log, proposal queue still Planned (blocked on the per-q event contract, §16.6) | 4 | campaign, session_events, watch | — | C |
 | C11 | Dispersion-guess editor: drag the prior curve / control points → `prior_edit` scoped to line/model | 4 | branch_model | `prior_edit` | C |
+| C12 | Campaign launcher — **Implemented (Pass 3):** setup form → `isar drive` subprocess behind the coordinator; Resume via the frozen objective; cooperative stop + force escalation (G19) | 4 | card, campaign, session_events | none directly — the sole-writer drive subprocess performs mutations; the stop control request is the one sanctioned GUI write | Pass 3 |
 
 ---
 
@@ -551,6 +611,10 @@ criterion: item 1 end-to-end, including forbidden-zone rendering on a non-rectil
 NL compilation, the drive dashboard, the dispersion editor. The genuinely new machinery, last,
 when A has proven the rendering and B has proven the geometry. Exit criterion: the full MVP
 journey (§1.3) against TAVI-as-backend.
+
+> Pass-3 note (2026-07-16): the read-only half of C10 plus the C12 launcher shipped ahead of
+> Phase C (see §0ter) — campaign observation needed no directive machinery, only the existing
+> event log. Directives themselves remain entirely Planned.
 
 ---
 
@@ -587,7 +651,9 @@ journey (§1.3) against TAVI-as-backend.
    correction structures in code — the sketches in §4.3 are shapes, not schemas. First task of
    Phase C (or late B for `objective_edit`).
 4. **`stop_request` directive** (pause/finish-early as an append-only ask the driver honors at
-   a safe point) — out of scope for v1, door open.
+   a safe point) — out of scope for v1, door open. *Pass 3 shipped its minimal precursor as a
+   token-scoped control request (G19), deliberately outside the directive schema; folding it
+   into the inbox when Phase C lands is the remaining work.*
 5. **Mid-run renegotiation UI** ("±0.15 meV at these four q — accept?") — lands naturally as a
    driver-authored question artifact + GUI dialog + `objective_edit` answer, once the
    renegotiation protocol itself (Planned, `DESIGN.md` §8) exists.
@@ -595,3 +661,40 @@ journey (§1.3) against TAVI-as-backend.
    factor when duplication hurts.
 7. **GUI naming** — user-facing name for `isar view` (working title: none; the river does not
    need a tributary yet).
+
+---
+
+## 16. Roadmap (designed in Pass 3, not built)
+
+Each item was designed far enough to be picked up cold; none is implemented.
+
+1. **PUFFIN masking port.** Port `PUFFIN/view/view_box.py` (`CustomViewBox`: click-to-toggle
+   point exclusion, drag-box exclusion with visual feedback, exclude-mode signals) as
+   `isar_gui/views/mask_viewbox.py`. First consumer: the Sandbox pane — masks feed the
+   in-process preview refit (ephemeral, SANDBOX-marked); a "commit" of a mask waits for the
+   Phase-C `fit_correction` directive. **Hard Rule 3 restated as binding:** this is a view-layer
+   lift only — PUFFIN's σ≥1 variance floor must never cross into ISAR (σ=√N, σ=0 legal).
+2. **PUFFIN handoff contract.** For close-inspection fitting in PUFFIN itself: request
+   `{scan: {x[], y[], sigma[], meta{unit_key, q, E, T}}}` → response
+   `{mask: bool[], components: [{type, params}], provenance}`; file-pair or local-HTTP
+   transport (PUFFIN currently has no headless surface — that is the PUFFIN-side work). ISAR
+   compiles responses into `fit_correction`/`prior_edit` directives; σ is informational to
+   PUFFIN and never round-trips.
+3. **Combine-scans ("same spot") UX.** Multi-select → pooled *preview* overlay (pure view
+   state); persistence is a card collation-policy edit via directive (G10), never GUI-local
+   merge state. Blocked on Phase C.
+4. **S30 energy-zero carry-forward.** Change `isar/calibrate/energy_zero.py`
+   (`resolve_zero`/`ZeroSeries`) from interpolation-bracketing to authoritative step-function
+   carry-forward: the most-recent-preceding elastic supplies E0 until the next elastic; later
+   elastics never retroactively change earlier scans; pre-first-elastic scans stay held (never
+   E0=0); every carried assignment logged. Engine change → new D-series decision +
+   characterization updates in the calibrate tests; the GUI then shows "E0 carried from scan N"
+   provenance.
+5. **Import window.** A dedicated detect-preview import dialog (`build_detect_command` /
+   `DetectResult` are retained for it) as the long-term replacement for the compact Files dock.
+6. **Per-q live campaign state.** An additive event-contract change (per-q identifiers + status
+   on `model_update` or a new payload field) to unlock the per-q half of the C10 dashboard
+   honestly; today's ledger carries only aggregates (G19/AD-9).
+7. **Reclaimable in-flight scans.** Resume re-attaches to a submitted TAVI job via the `run`
+   event's `job_id` instead of re-proposing, closing the force-stop double-spend window; needs
+   TAVI job-query support.

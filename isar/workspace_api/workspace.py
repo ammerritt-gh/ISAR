@@ -23,7 +23,9 @@ from isar.session.state import SessionState
 from isar.session.workspace import (POLICY_NAME, SESSION_NAME, STATE_NAME, REPORT_DIRNAME)
 
 from .evaluate import evaluate_model as _evaluate_model
-from .views import (BranchModelView, CampaignView, CardView, FitView, GroupView, ScanView)
+from .scan_keys import split_key
+from .views import (BranchModelView, CampaignView, CardView, FileView, FitView, GroupView,
+                    LastIngestView, ScanView)
 
 # The read-surface contract version. Bump when the FitView/ScanView/etc. surface changes in a way
 # a consumer must branch on (additive fields do NOT require a bump).
@@ -130,19 +132,33 @@ class Workspace:
             return json.loads(p.read_text(encoding="utf-8"))
         return self._parse("campaign", _load, None)
 
-    # ---- derived index (scan_number, detector_id) -> FitOutcome dict ------
+    # ---- derived identity indexes -----------------------------------------
     def _outcome_index(self) -> dict:
+        """Exact ``scan_id -> FitOutcome`` index. Never collapse experiment identities."""
         if "outcome_index" in self._views:
             return self._views["outcome_index"]
         idx: dict = {}
-        scan_types: dict = {}
         for entry in self._session().scans.values():
-            scan_types[entry.scan_number] = entry.scan_type
             for det_id, oc in (entry.detectors or {}).items():
-                idx[(entry.scan_number, det_id)] = oc
+                idx[entry.scan_id] = oc
         self._views["outcome_index"] = idx
-        self._views["scan_types"] = scan_types
         return idx
+
+    def _outcome_pair_index(self) -> dict:
+        """Legacy ``(scan, detector) -> [(unit_id, outcome)]`` candidates.
+
+        Bare results produced before ``scan_id`` was added remain enrichable only when that pair is
+        unique. Multiple experiments with the same scan number must stay ambiguous, never select a
+        plausible-but-wrong detector outcome.
+        """
+        if "outcome_pair_index" in self._views:
+            return self._views["outcome_pair_index"]
+        pairs: dict = {}
+        for entry in self._session().scans.values():
+            for det_id, oc in (entry.detectors or {}).items():
+                pairs.setdefault((entry.scan_number, det_id), []).append((entry.scan_id, oc))
+        self._views["outcome_pair_index"] = pairs
+        return pairs
 
     # ---- public surfaces --------------------------------------------------
     @property
@@ -157,13 +173,53 @@ class Workspace:
         return sess if sess.scans or sess.files else None
 
     @property
+    def last_ingest(self) -> LastIngestView | None:
+        """Read-only evidence for the latest completed ingest, or ``None`` for older workspaces.
+
+        Coercion is deliberately local and tolerant: malformed optional summary data must not
+        prevent the normal file and scan surfaces from loading.
+        """
+        if "last_ingest" in self._views:
+            return self._views["last_ingest"]
+        raw = getattr(self._session(), "last_ingest", None)
+        if not isinstance(raw, dict) or not raw:
+            self._views["last_ingest"] = None
+            return None
+
+        def _count(name):
+            value = raw.get(name)
+            try:
+                return int(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        gaps = []
+        for gap in raw.get("gaps") or []:
+            if not isinstance(gap, (list, tuple)) or len(gap) != 3:
+                continue
+            try:
+                gaps.append((str(gap[0]), int(gap[1]), int(gap[2])))
+            except (TypeError, ValueError):
+                continue
+        completed = raw.get("completed_at")
+        view = LastIngestView(
+            completed_at=str(completed) if completed else None,
+            logical_scan_count=_count("logical_scan_count"),
+            analyzer_unit_count=_count("analyzer_unit_count"),
+            failed_file_count=_count("failed_file_count"),
+            gaps=tuple(gaps))
+        self._views["last_ingest"] = view
+        return view
+
+    @property
     def scans(self) -> list:
         if "scans" in self._views:
             return self._views["scans"]
         epochs = list(getattr(self._state(), "lattice_epochs", None) or [])
         out = []
         for entry in self._session().scans.values():
-            detectors = {det_id: FitView.from_outcome(oc, scan_number=entry.scan_number)
+            detectors = {det_id: FitView.from_outcome(oc, scan_number=entry.scan_number,
+                                                      unit_id=entry.scan_id)
                          for det_id, oc in (entry.detectors or {}).items()}
             out.append(ScanView(
                 scan_id=entry.scan_id, scan_number=entry.scan_number,
@@ -174,10 +230,34 @@ class Workspace:
         return out
 
     @property
+    def files(self) -> list:
+        """The ingest manifest as :class:`FileView` rows (``session.files``), parsed once and cached.
+
+        Degrades per the module contract: a malformed manifest row is skipped (never raises), and a
+        session that fails to parse serves the last-good/empty session via :meth:`_parse`.
+        """
+        if "files" in self._views:
+            return self._views["files"]
+        out = []
+        for path, row in (self._session().files or {}).items():
+            row = row or {}
+            scan_ids = row.get("scan_ids") or []
+            out.append(FileView(
+                path=str(path), size=row.get("size"), mtime=row.get("mtime"),
+                classification=row.get("format"),
+                n_scans=row.get("n_scans"),
+                scan_ids=tuple(scan_ids) if isinstance(scan_ids, (list, tuple)) else (),
+                n_context=row.get("n_context"),
+                error=row.get("error")))
+        self._views["files"] = out
+        return out
+
+    @property
     def results(self) -> list:
         if "results" in self._views:
             return self._views["results"]
         idx = self._outcome_index()
+        pairs = self._outcome_pair_index()
         out = []
         for row in self._results_rows():
             scan = row.get("scan")
@@ -186,8 +266,19 @@ class Workspace:
                 scan_i = int(scan) if scan is not None and scan != "" else None
             except (TypeError, ValueError):
                 scan_i = None
-            outcome = idx.get((scan_i, det)) if scan_i is not None else None
-            out.append(FitView.from_row(row, outcome))
+            unit_id = row.get("scan_id") or None
+            outcome = idx.get(unit_id) if unit_id else None
+            if unit_id is not None and outcome is None:
+                self.warnings.append(
+                    f"results: no ledger outcome for atomic scan_id {unit_id!r}; row left unresolved")
+            elif scan_i is not None:
+                candidates = pairs.get((scan_i, det), [])
+                if len(candidates) == 1:
+                    unit_id, outcome = candidates[0]
+            view = FitView.from_row(row, outcome)
+            if view.unit_id is None and unit_id is not None:
+                view.unit_id = unit_id
+            out.append(view)
         self._views["results"] = out
         return out
 
@@ -310,30 +401,111 @@ class Workspace:
         yerr = np.sqrt(np.clip(counts, 0.0, None))
         return energy, counts, yerr
 
+    def unit_data(self, scan_id, detector_id=None):
+        """The measured spectrum for one atomic *scan × detector* unit, or ``None``.
+
+        Reads the per-unit ingest file (``data/ingest/ingest-*.json``, ``isar.unit_data/1``) written
+        at ingest, returning ``SimpleNamespace(x, counts, yerr, mask, axis)`` — ``x`` the RAW scanned
+        abscissa (never energy-zero-shifted; the ``axis`` block carries the 3-state calibration so a
+        caller labels honestly), ``yerr`` the Poisson ``sqrt(clip(variance, 0, None))`` whisker (σ=0
+        stays 0, D3). ``scan_id`` may be a full ``exp:scan:det`` ledger id (``detector_id`` then
+        redundant) or an ``exp:scan``/bare scan with ``detector_id`` supplied.
+
+        Falls back to the drive loop's legacy single-detector ``data/j-*.json`` (axis defaults to
+        absolute — correct for TAVI) when no per-unit file exists. ``None`` when neither is present.
+        Read-only; never raises.
+        """
+        import numpy as np
+        from types import SimpleNamespace
+
+        from isar.session.unit_data import read_unit_data_for_unit, unit_data_artifact_exists
+
+        exp, scan_number, det = self._split_unit_id(scan_id, detector_id)
+        if exp is not None and scan_number is not None and det is not None:
+            # This validates schema, aligned arrays, and payload identity.  A corrupt or legacy
+            # collision file is therefore treated as missing rather than plotted as a plausible
+            # neighbour; the helper still reads a valid legacy filename for migration continuity.
+            rec = read_unit_data_for_unit(self._data_dir, exp, scan_number, det)
+            if rec is not None:
+                counts = np.asarray(rec.get("counts") or [], dtype=float)
+                var = np.asarray(rec.get("variance") or [], dtype=float)
+                yerr = np.sqrt(np.clip(var, 0.0, None)) if var.size else np.zeros(counts.shape)
+                mask = rec.get("mask")
+                mask = (np.asarray(mask, dtype=bool) if mask is not None
+                        else np.ones(counts.shape, dtype=bool))
+                return SimpleNamespace(
+                    x=np.asarray(rec.get("x") or [], dtype=float), counts=counts,
+                    yerr=yerr, mask=mask, axis=dict(rec.get("axis") or {}))
+            # A present but invalid/mismatched atomic artifact needs repair.  Do not conceal it by
+            # falling through to the scan-level drive file: that file has no detector identity and
+            # can silently display a neighbouring analyzer's counts.
+            if unit_data_artifact_exists(self._data_dir, exp, scan_number, det):
+                return None
+
+        # Fallback: legacy single-detector drive file; axis defaults absolute (TAVI is calibrated).
+        from .evaluate import _load_scan_arrays
+        energy, counts = _load_scan_arrays(self._data_dir, scan_number)
+        if energy is None or counts is None:
+            return None
+        counts = np.asarray(counts, dtype=float)
+        return SimpleNamespace(
+            x=np.asarray(energy, dtype=float), counts=counts,
+            yerr=np.sqrt(np.clip(counts, 0.0, None)),
+            mask=np.ones(counts.shape, dtype=bool),
+            axis={"name": "energy", "kind": "energy", "units": "meV",
+                  "raw_abscissa_kind": "energy", "calibration_status": "absolute"})
+
+    def _split_unit_id(self, scan_id, detector_id=None):
+        """``(experiment_id, scan_number, detector_id)`` from a unit id in any accepted form.
+
+        Delegates to the shared, right-anchored Qt-free codec. A supplied ``detector_id`` overrides
+        a legacy scan-level key's missing detector, but never changes a full atomic identity.
+        """
+        exp, scan_number, parsed_det = split_key(scan_id)
+        det = parsed_det if parsed_det is not None else detector_id
+        return exp, scan_number if isinstance(scan_number, int) else None, det
+
     def _find_fit(self, scan_id, detector_id) -> FitView | None:
-        scan_number = self._scan_number_of(scan_id)
-        # Prefer the results.csv-backed FitView (carries the flattened resolution columns).
-        for fv in self.results:
-            if fv.scan_number == scan_number and fv.detector_id == detector_id:
-                return fv
-        # Fall back to the ledger detector directly.
-        oc = self._outcome_index().get((scan_number, detector_id))
-        if oc is not None:
-            return FitView.from_outcome(oc, scan_number=scan_number)
+        # Use the raw codec result here (rather than _split_unit_id): that helper fills a missing
+        # detector from ``detector_id`` for legacy prefixes, which must not make a prefix look like
+        # a caller-supplied full atomic identity.
+        exp, scan_number, parsed_det = split_key(scan_id)
+        scan_number = scan_number if isinstance(scan_number, int) else None
+        det = parsed_det or detector_id
+        unit_id = str(scan_id) if exp is not None and scan_number is not None and parsed_det else None
+        # Prefer the results.csv-backed FitView (carries flattened resolution columns) by exact
+        # identity. This is the normal fitted-inspector path.
+        if unit_id is not None:
+            for fv in self.results:
+                if fv.unit_id == unit_id and fv.detector_id == det:
+                    return fv
+            oc = self._outcome_index().get(unit_id)
+            if oc is not None:
+                return FitView.from_outcome(oc, scan_number=scan_number, unit_id=unit_id)
+            self.warnings.append(
+                f"evaluate_model: no fit for atomic scan_id {unit_id!r} detector {det!r}")
+            return None
+
+        # Legacy bare/prefix lookup only succeeds when the pair identifies exactly one unit.
+        candidates = self._outcome_pair_index().get((scan_number, det), [])
+        if len(candidates) == 1:
+            candidate_id, oc = candidates[0]
+            for fv in self.results:
+                if fv.unit_id == candidate_id:
+                    return fv
+            return FitView.from_outcome(oc, scan_number=scan_number, unit_id=candidate_id)
+        # A pre-scan_id CSV with no ledger is still usable only when it has one matching row. This
+        # preserves old drive workspaces without reviving the unsafe first-match behavior.
+        legacy = [fv for fv in self.results
+                  if fv.unit_id is None and fv.scan_number == scan_number and fv.detector_id == det]
+        if len(legacy) == 1:
+            return legacy[0]
         return None
 
     @staticmethod
     def _scan_number_of(scan_id):
-        if isinstance(scan_id, int):
-            return scan_id
-        s = str(scan_id)
-        for part in s.split(":"):
-            if part.isdigit():
-                return int(part)
-        try:
-            return int(s)
-        except (TypeError, ValueError):
-            return None
+        _exp, scan_number, _det = split_key(scan_id)
+        return scan_number if isinstance(scan_number, int) else None
 
     # ---- HKL resolution ---------------------------------------------------
     def _resolve_hkl(self, entry, detectors, epochs):
@@ -343,7 +515,7 @@ class Workspace:
         record carries ``provenance['q_instrument']``; without it this is identity through the
         acquisition epoch, i.e. the stored HKL.
         """
-        acq = self._acquisition_hkl(detectors)
+        acq = self._acquisition_hkl(detectors, entry.provenance)
         if not epochs:
             return acq
         qxyz = (entry.provenance or {}).get("q_instrument")
@@ -362,10 +534,16 @@ class Workspace:
             return acq
 
     @staticmethod
-    def _acquisition_hkl(detectors):
+    def _acquisition_hkl(detectors, provenance=None):
+        """Acquisition-time HKL: a detector FitView's Q when a fit carries one, else the ledger
+        entry's ``provenance["q"]`` (the ingest-stamped Q — the only source for an ingested-only,
+        not-yet-fitted scan). ``None`` when neither is present."""
         for fv in detectors.values():
             if fv.q is not None:
                 return list(fv.q)
+        q = (provenance or {}).get("q")
+        if isinstance(q, (list, tuple)) and q and not any(v is None for v in q):
+            return list(q)
         return None
 
     # ---- groups (reuse the canonical collation key) -----------------------

@@ -3,6 +3,7 @@ selection; MainWindow wires it in and can swap the whole workspace via load_work
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,10 +12,12 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import Qt
 
 from isar.workspace_api import Workspace
+from isar_gui.commands import GuiIngestReport
 from isar_gui.main_window import MainWindow
 from isar_gui.session import Session
 from isar_gui.viewmodels.browser import BrowserViewModel
 from isar_gui.views.browser_dock import BrowserDock
+from synthetic_ws import scan_entry, write_session
 
 _MVP16 = Path(r"C:\Users\AMM\Documents\ISAR_baselines\mvp_zone_test16")
 
@@ -97,6 +100,29 @@ def test_dock_selecting_child_fires_vm_signal(qtbot, make_ws):
         tree.setCurrentItem(child)
 
 
+def test_dock_explains_that_parsed_scans_need_analysis(qtbot, make_ws):
+    """An empty Results tree must not look like a failed first ingest.
+
+    Results deliberately remains a fit-only tree; raw ledger scans belong in Scans/Scan Table.
+    """
+    root = make_ws(rows=[])
+    vm = BrowserViewModel(Workspace.open(root))
+    dock = BrowserDock(vm)
+    qtbot.addWidget(dock)
+
+    assert dock._tree.topLevelItemCount() == 0
+    assert not dock._tree.isVisible()
+    assert not dock._no_results.isHidden()
+    assert "No displayable Results yet" in dock._no_results.text()
+    assert "Scans" in dock._no_results.text()
+    assert "Run" in dock._no_results.text()
+
+    # An empty display tree is not proof that the reducer made no records: keep that distinction
+    # explicit when records exist but cannot be represented as browser group rows.
+    vm._ws = SimpleNamespace(results=[object()], scans=[])
+    assert "Analysis records exist" in dock._no_results_text()
+
+
 def test_dock_unreliable_member_shows_suffix_no_numeric_interval(qtbot, make_ws):
     ws, _ = _open(make_ws)
     vm = BrowserViewModel(ws)
@@ -130,9 +156,10 @@ def test_main_window_registers_browser_dock(qtbot, make_ws):
     assert w.browser_vm is not None
     w.show()
     assert w.browser_dock.isVisible()
-    # The central widget is now the C2 inspector, empty until a scan is selected.
+    # The C2 inspector is the CenterHost's "scan" page, empty until a scan is selected.
     from isar_gui.views.inspector_widget import InspectorWidget
-    assert isinstance(w.centralWidget(), InspectorWidget)
+    assert isinstance(w._center_host.pane("scan"), InspectorWidget)
+    assert w._center_host.pane("scan") is w.inspector
     assert w.inspector_vm.is_empty
 
 
@@ -145,8 +172,93 @@ def test_main_window_browser_selection_available(qtbot, make_ws):
         w.browser_vm.select(target)
 
 
+def test_successful_ingest_refreshes_scans_and_keeps_results_fit_only(qtbot, make_ws):
+    """A new workspace must immediately expose parsed scans even without WatchBridge.
+
+    This exercises the real post-ingest slot after a facade cache was populated while the workspace
+    was empty.  The Results tree remains empty until analysis writes fit results.
+    """
+    root = make_ws(rows=[])
+    ws = Workspace.open(root)
+    w = MainWindow(ws, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    w.show()
+    assert w.scans_vm.rows() == []  # populate the old empty facade cache before the write
+
+    scan_id = "tavi:41:det"
+    write_session(
+        root,
+        scans={scan_id: scan_entry(41, status="ingested")},
+        files={"C:/incoming/scan41.dat": {
+            "format": "measurement", "n_scans": 1, "scan_ids": [scan_id], "n_context": 0,
+        }},
+    )
+    report = GuiIngestReport(
+        files=({"path": "C:/incoming/scan41.dat", "scan_ids": [scan_id]},),
+        added=(scan_id,),
+    )
+
+    w._on_ingest_report(report)
+
+    assert [unit.key for unit in w.scans_vm.rows()] == [scan_id]
+    assert w.browser_dock._tree.topLevelItemCount() == 0
+    assert not w.browser_dock._no_results.isHidden()
+    assert "No displayable Results yet" in w.browser_dock._no_results.text()
+    assert w.scans_dock.isVisible()
+    assert "1 analyzer unit(s) awaiting analysis" in w.statusBar().currentMessage()
+
+
+def _legacy_unit(exp, scan, det):
+    return SimpleNamespace(key=f"{exp}:{scan}:{det}", scan_number=scan, det=det)
+
+
+def test_legacy_fit_browser_highlight_restores_after_rebuild_when_ledger_is_unique(
+        qtbot, make_ws, monkeypatch):
+    ws, _ = _open(make_ws)
+    w = MainWindow(ws, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    target = ws.results[0]
+    assert target.unit_id is None  # frozen legacy fixture deliberately exercises the fallback
+    monkeypatch.setattr(w.scans_vm, "rows",
+                        lambda: [_legacy_unit("tavi", target.scan_number, target.detector_id)])
+
+    w._inspect_fit(target)
+    expected = f"tavi:{target.scan_number}:{target.detector_id}"
+    assert w.active_units.key == expected
+    assert w.browser_dock._tree.currentItem() is not None
+
+    # Results-tree rendering must restore the same active row without emitting a recursive selection.
+    w.browser_vm.refresh()
+    current = w.browser_dock._tree.currentItem()
+    assert current is not None
+    assert current.data(0, Qt.ItemDataRole.UserRole).scan_number == target.scan_number
+
+
+def test_legacy_fit_never_maps_ambiguous_scan_detector_to_browser_or_active_unit(
+        qtbot, make_ws, monkeypatch):
+    ws, _ = _open(make_ws)
+    w = MainWindow(ws, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    target = ws.results[0]
+    monkeypatch.setattr(
+        w.scans_vm, "rows",
+        lambda: [_legacy_unit("run_a", target.scan_number, target.detector_id),
+                 _legacy_unit("run_b", target.scan_number, target.detector_id)])
+
+    w._inspect_fit(target)
+    assert w.active_units.key is None
+    assert w.browser_dock._tree.currentItem() is None
+
+
 # ---- load_workspace ----------------------------------------------------------
-def test_load_workspace_swaps_tree(qtbot, make_ws):
+def test_load_workspace_swaps_tree(qtbot, make_ws, tmp_path, monkeypatch):
+    import tempfile
+
+    # note_workspace now refuses recents under the OS temp dir (defense against a leaked pytest
+    # tmp_path polluting the real session). These synthetic workspaces live under tmp_path, so point
+    # the perceived temp dir elsewhere to let root2 stand in for a real, recordable workspace.
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "_not_temp"))
+
     ws1, root1 = _open(make_ws, rows=_ROWS[:1])
     w = MainWindow(ws1, session=Session(), watch=False)
     qtbot.addWidget(w)
@@ -172,8 +284,11 @@ def test_load_workspace_twice_no_menu_leak(qtbot, make_ws):
 
     def _menu_count() -> int:
         # Flush deferred deletes (deleteLater) so torn-down menus are actually gone before counting.
+        # Count only TITLED menus: QMenuBar lazily creates one untitled internal extension
+        # ("overflow") menu the first time layout pressure squeezes it — a hidden singleton, not a
+        # leak. Every real menu this guard protects (File/Docks/View/…) carries a title.
         QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-        return len(w.menuBar().findChildren(QMenu))
+        return len([m for m in w.menuBar().findChildren(QMenu) if m.title()])
 
     baseline = _menu_count()  # File + Docks
     w.load_workspace(make_ws(rows=_ROWS))

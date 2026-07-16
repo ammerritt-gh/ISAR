@@ -694,6 +694,13 @@ class CampaignConfig:
     max_points_source: str = "default"
     sample: str = "Al_phonon_DFT"
     bayes_errors: bool = False
+    # Cooperative operator stop (GUI subprocess control). When set, each iteration's top checks for
+    # ``<workspace>/report/control/stop-<control_token>.json`` and, if present, breaks with an
+    # ``operator_stopped`` terminal state. ``None`` (default) → behaviour byte-identical to today.
+    control_token: str | None = None
+    # Campaign provenance fingerprint stamped into the campaign_start event, plumbed from the CLI:
+    # ``{"kind": "goal"|"spec"|"resume", "sha256": <hex>}``. ``None`` → field omitted (back-compat).
+    source: dict | None = None
 
 
 def _run_nonce(workspace: Path) -> str:
@@ -767,6 +774,8 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
         max_points_source=max_points_source,
         sample=str(config.get("sample", "Al_phonon_DFT")),
         bayes_errors=bool(config.get("bayes_errors", False)),
+        control_token=(str(config["control_token"]) if config.get("control_token") else None),
+        source=(dict(config["source"]) if config.get("source") else None),
     )
 
 
@@ -1039,6 +1048,32 @@ def _render_campaign_diagnostic(cfg: CampaignConfig) -> None:
         log_event(cfg.log_path, "exception", {"action": "diagnostic_render_failed", "error": str(e)})
 
 
+def _operator_stop_requested(cfg: CampaignConfig, it: int) -> bool:
+    """True when the operator has requested a cooperative stop for THIS campaign's control token.
+
+    The GUI launches ``isar drive`` as a subprocess and requests a stop by writing
+    ``<workspace>/report/control/stop-<control_token>.json``. A hard kill during ``wait_scan`` would
+    strand the in-flight scan (its ``run`` event is the spend ledger, so resume would re-propose and
+    double-spend); the cooperative token lets the loop finish the current iteration and exit at the
+    next boundary instead.
+
+    Only THIS token's file is consulted, so a previous campaign's stale stop file is inert
+    automatically. Existence is the whole protocol — the file's JSON body is provenance, not a command,
+    so it is never read here and never modified/deleted (nothing is ever deleted). A stat error is
+    logged (never swallowed) and treated as NOT a stop: a corrupt/racing request must not be silently
+    honoured — the GUI retries by rewriting."""
+    token = cfg.control_token
+    if not token:
+        return False
+    marker = cfg.workspace / "report" / "control" / f"stop-{token}.json"
+    try:
+        return marker.exists()
+    except OSError as e:
+        log_event(cfg.log_path, "exception",
+                  {"action": "operator_stop_check_failed", "token": token, "iter": it, "error": str(e)})
+        return False
+
+
 def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[str, Any]:
     """Run an adaptive measurement campaign to satisfy ``objective`` (LLM_HARNESS_DESIGN §8).
 
@@ -1061,15 +1096,20 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     scan_kind: dict = resumed["scan_kind"]   # (scan, detector) -> (kind, ncount), to rebuild obs after certify
     scan_counter = resumed["scan_counter"]
 
-    log_event(cfg.log_path, "decide", {"event": "campaign_start", "action": "campaign_start",
-                                       "objective": objective.to_dict(),
-                                       "calibration": {"inflation": cfg.calibration.inflation,
-                                                       "floor_meV": cfg.floor},
-                                       "resumed": {"scan_counter": scan_counter,
-                                                   "n_observations": len(observations),
-                                                   "spent": budget_state["spent"]}})
+    start_payload = {"event": "campaign_start", "action": "campaign_start",
+                     "objective": objective.to_dict(),
+                     "calibration": {"inflation": cfg.calibration.inflation,
+                                     "floor_meV": cfg.floor},
+                     "resumed": {"scan_counter": scan_counter,
+                                 "n_observations": len(observations),
+                                 "spent": budget_state["spent"]}}
+    if cfg.source is not None:
+        start_payload["source"] = cfg.source           # provenance fingerprint (goal/spec/resume + sha256)
+    log_event(cfg.log_path, "decide", start_payload)
 
     decision = None
+    operator_stop = False        # set when a cooperative operator-stop file is found at an iteration top
+    op_stop_iter: int | None = None
     try:
         # Instrumentation only (no logic change): each stage runs inside a ``timed`` span that appends a
         # "timing" event (resume-inert — _resume_state reads only "run" events), and every in-loop
@@ -1077,6 +1117,16 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
         # whole body including all break paths (a break exits the span normally, ok=True).
         for it in range(cfg.max_iters):
             with timed(cfg.log_path, "iteration", iteration=it):
+                # Cooperative operator stop: honoured at the iteration boundary so the previous
+                # iteration's scan is already persisted/analysed (no stranded in-flight spend). Log ONE
+                # acknowledgement and break; the terminal state becomes operator_stopped (part B).
+                if _operator_stop_requested(cfg, it):
+                    log_event(cfg.log_path, "decide",
+                              {"event": "operator_stop", "action": "operator_stop",
+                               "iter": it, "token": cfg.control_token})
+                    operator_stop = True
+                    op_stop_iter = it
+                    break
                 with timed(cfg.log_path, "stop_eval", iteration=it):
                     master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
                     decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
@@ -1126,27 +1176,66 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                                    "n_observations": len(observations),
                                                    "converged": sum(1 for g in grid if g.converged),
                                                    "n_grid": len(grid), "iter": it})
+        else:
+            # The loop exhausted max_iters without a break, so the top-of-iteration check will never
+            # run again — but the boundary AFTER the final allowed iteration is still an iteration
+            # boundary, and a stop requested during that last scan must be honoured there (with
+            # --max-iters 1 it is the ONLY boundary that can see it). Same ordering rule as in-loop:
+            # the stop wins before any terminal bookkeeping (certification must not run). The break
+            # paths (met/unmeetable/no-proposal/budget) deliberately get no post-check — their
+            # boundary check already ran before the decision, and a campaign that ended on its own
+            # reports its true state. ``iter`` is cfg.max_iters, the would-be next iteration (the
+            # loop variable is unbound when max_iters == 0, so it is never referenced here).
+            if _operator_stop_requested(cfg, cfg.max_iters):
+                log_event(cfg.log_path, "decide",
+                          {"event": "operator_stop", "action": "operator_stop",
+                           "iter": cfg.max_iters, "token": cfg.control_token})
+                operator_stop = True
+                op_stop_iter = cfg.max_iters
 
-        # Certification: the loop converged on fast HESSE intervals; run ONE full bootstrap+profile pass
-        # (forced) so every reported ω₀ interval is bootstrap-backed (the "one bootstrap to certify"
-        # decision). Bounded — once, at the end, only when the objective is met. Then re-evaluate honestly:
-        # if a q's bootstrap-certified interval crosses tolerance the summary reflects that, not the
-        # optimistic fast-tier stop (the triage tool reports the certified truth).
-        observations, ran_certify = _certify(cfg=cfg, decision=decision, observations=observations,
-                                             scan_kind=scan_kind)
+        if operator_stop:
+            # Operator-stop terminal state (part B): an honest snapshot WITHOUT certification — a stop
+            # request must never trigger the end-of-campaign certify bootstrap. Recompute the final grid
+            # + evaluate_stop for a truthful picture, but record it under stop.grid_state; the terminal
+            # state itself is operator_stopped. The decision-None path (stop found before any iteration
+            # completed) is safe here: the snapshot is computed fresh from the grid, never from
+            # ``decision``, so no AttributeError.
+            master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
+            snapshot = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
+            stop_override = {
+                "state": "operator_stopped",
+                "reasons": [f"operator stop request honored at iteration {op_stop_iter}",
+                            f"token {cfg.control_token}"],
+                "per_q": list(snapshot.per_q),
+                "grid_state": snapshot.to_dict(),
+            }
+            summary = _campaign_summary(objective, grid, snapshot, budget_state, cfg.workspace,
+                                        cfg.log_path, len(observations), stop_override=stop_override)
+            stop_payload = {"state": "operator_stopped", "reasons": stop_override["reasons"],
+                            "grid_state": stop_override["grid_state"]}
+        else:
+            # Certification: the loop converged on fast HESSE intervals; run ONE full bootstrap+profile
+            # pass (forced) so every reported ω₀ interval is bootstrap-backed (the "one bootstrap to
+            # certify" decision). Bounded — once, at the end, only when the objective is met. Then
+            # re-evaluate honestly: if a q's bootstrap-certified interval crosses tolerance the summary
+            # reflects that, not the optimistic fast-tier stop (the triage tool reports the certified truth).
+            observations, ran_certify = _certify(cfg=cfg, decision=decision, observations=observations,
+                                                 scan_kind=scan_kind)
 
-        # Recompute the stop decision on the FINAL grid unconditionally: the in-loop decision is from
-        # the top of the last iteration, so a campaign that exhausts max_iters (or breaks on budget)
-        # would otherwise report a stale pre-scan verdict in the summary.
-        master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
-        decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
-        if ran_certify and decision.state != "met":
-            log_event(cfg.log_path, "exception",
-                      {"action": "certify_regression", "state": decision.state,
-                       "note": "a q's bootstrap-certified interval exceeded the fast-tier stop"})
+            # Recompute the stop decision on the FINAL grid unconditionally: the in-loop decision is from
+            # the top of the last iteration, so a campaign that exhausts max_iters (or breaks on budget)
+            # would otherwise report a stale pre-scan verdict in the summary.
+            master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
+            decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
+            if ran_certify and decision.state != "met":
+                log_event(cfg.log_path, "exception",
+                          {"action": "certify_regression", "state": decision.state,
+                           "note": "a q's bootstrap-certified interval exceeded the fast-tier stop"})
 
-        summary = _campaign_summary(objective, grid, decision, budget_state, cfg.workspace, cfg.log_path,
-                                    len(observations))
+            summary = _campaign_summary(objective, grid, decision, budget_state, cfg.workspace,
+                                        cfg.log_path, len(observations))
+            stop_payload = {"state": decision.state, "reasons": decision.reasons}
+
         (cfg.workspace / "report").mkdir(parents=True, exist_ok=True)
         (cfg.workspace / "report" / "campaign_summary.json").write_text(
             json.dumps(summary, indent=2), encoding="utf-8")
@@ -1156,7 +1245,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
         # `stop` the last logged decision).
         _render_campaign_report(cfg)
         _render_campaign_diagnostic(cfg)
-        log_event(cfg.log_path, "stop", {"state": decision.state, "reasons": decision.reasons})
+        log_event(cfg.log_path, "stop", stop_payload)
     finally:
         cfg.runner.close()
     return summary
@@ -1170,7 +1259,8 @@ def _charge_budget(budget_state: dict, proposal, eta) -> None:
                              else budget_state["seconds"])
 
 
-def _campaign_summary(objective, grid, decision, budget_state, workspace, log_path, n_obs) -> dict:
+def _campaign_summary(objective, grid, decision, budget_state, workspace, log_path, n_obs,
+                      *, stop_override: dict | None = None) -> dict:
     # The certified number per q is the tightest trustworthy fit (master pooled OR best single
     # production, whichever is smaller); fall back to the best quick-look estimate for an un-pooled q.
     def _omega0(g):
@@ -1204,7 +1294,9 @@ def _campaign_summary(objective, grid, decision, budget_state, workspace, log_pa
         prior_points = []
     return {
         "objective": objective.to_dict(),
-        "stop": decision.to_dict(),
+        # ``stop_override`` carries the operator_stopped terminal state (+ grid_state snapshot); the
+        # default is the honest StopDecision. Additive — the dict shape is otherwise unchanged.
+        "stop": stop_override if stop_override is not None else decision.to_dict(),
         "grid": [{"hkl": list(g.hkl), "q": g.q, "converged": g.converged,
                   "calibrated_halfwidth": g.cert_halfwidth, "omega0": _omega0(g),
                   "master_halfwidth": (g.master or {}).get("halfwidth"),

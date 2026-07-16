@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import csv
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -106,6 +107,89 @@ def test_results_enriched_from_session_detector(make_ws):
     assert fv.modality == "single"          # ledger-only field surfaced via enrichment
     rc = fv.resolution_context()
     assert rc["center"] == 0.0 and rc["gauss_fwhm"] == pytest.approx(1.4)
+
+
+def test_results_scan_id_keeps_same_scan_detector_from_different_experiments_distinct(make_ws):
+    """The additive CSV identity prevents a wrong cross-experiment outcome enrichment."""
+    first = detector_outcome(omega0=3.0, gamma=0.3, sample="first")
+    second = detector_outcome(omega0=7.0, gamma=0.4, sample="second")
+    scans = {
+        "first:9:det": {**scan_entry(9, detectors={"det": first}), "scan_id": "first:9:det"},
+        "second:9:det": {**scan_entry(9, detectors={"det": second}), "scan_id": "second:9:det"},
+    }
+    root = make_ws(
+        rows=[
+            {"scan_id": "first:9:det", "scan": 9, "detector": "det", "status": "fitted"},
+            {"scan_id": "second:9:det", "scan": 9, "detector": "det", "status": "fitted"},
+        ], scans=scans)
+    results = Workspace.open(root).results
+    assert [(f.unit_id, f.omega0, f.sample) for f in results] == [
+        ("first:9:det", 3.0, "first"), ("second:9:det", 7.0, "second")]
+
+
+def test_stale_atomic_result_id_never_enriches_from_same_scan_detector(make_ws):
+    """A full but stale identity is unresolved; the legacy pair fallback is not permitted."""
+    actual = detector_outcome(omega0=7.0, gamma=0.4, sample="actual")
+    scans = {"actual:9:det": {**scan_entry(9, detectors={"det": actual}),
+                                "scan_id": "actual:9:det"}}
+    root = make_ws(rows=[{"scan_id": "stale:9:det", "scan": 9, "detector": "det",
+                          "status": "fitted"}], scans=scans)
+    ws = Workspace.open(root)
+    fit = ws.results[0]
+    assert fit.unit_id == "stale:9:det"
+    assert fit.omega0 is None and fit.sample is None
+    assert any("stale:9:det" in warning and "unresolved" in warning for warning in ws.warnings)
+
+
+def test_atomic_evaluation_lookup_never_falls_back_to_another_experiment(make_ws):
+    actual = detector_outcome(omega0=7.0, gamma=0.4, sample="actual",
+                              amplitudes={"phonon.A": 1.0, "bg.BG": 1.0})
+    scans = {"actual:9:det": {**scan_entry(9, detectors={"det": actual}),
+                                "scan_id": "actual:9:det"}}
+    ws = Workspace.open(make_ws(scans=scans))
+    with pytest.raises(KeyError, match="stale:9:det"):
+        ws.evaluate_model("stale:9:det", "det")
+    assert any("atomic scan_id 'stale:9:det'" in warning for warning in ws.warnings)
+
+
+def test_results_writer_keeps_identity_for_no_detector_rows(tmp_path):
+    """Held/non-result rows retain their additive identity even when no detector fit exists."""
+    from isar.session.driver import _write_results_csv
+    from isar.session.state import ScanEntry, SessionState
+    from isar.session.workspace import Workspace as SessionWorkspace
+
+    session = SessionState(scans={
+        "first:9:det": ScanEntry(scan_id="first:9:det", scan_number=9,
+                                   scan_type="measurement", status="held_for_calibration"),
+        "second:9:det": ScanEntry(scan_id="second:9:det", scan_number=9,
+                                    scan_type="measurement", status="non_result"),
+    })
+    path = _write_results_csv(SessionWorkspace.open(tmp_path), session)
+    with path.open("r", newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert {row["scan_id"] for row in rows} == {"first:9:det", "second:9:det"}
+
+
+def test_last_ingest_view_is_immutable_and_tolerates_old_workspaces(make_ws):
+    root = make_ws()
+    session_path = root / "session.json"
+    payload = json.loads(session_path.read_text(encoding="utf-8"))
+    payload["last_ingest"] = {
+        "completed_at": "2026-07-13T12:00:00+00:00", "logical_scan_count": "2",
+        "analyzer_unit_count": 18, "failed_file_count": 1,
+        "gaps": [["SYN", 4, 7], ["bad"], ["SYN", "not-a-number", 8]],
+    }
+    session_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    view = Workspace.open(root).last_ingest
+    assert view.logical_scan_count == 2
+    assert view.analyzer_unit_count == 18
+    assert view.gaps == (("SYN", 4, 7),)
+    with pytest.raises(Exception):
+        view.failed_file_count = 0
+
+    old_root = make_ws()
+    assert Workspace.open(old_root).last_ingest is None
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +513,8 @@ def test_evaluate_via_workspace_fallback(make_ws):
         data_files=[{"scan_number": 5, "energy": energy, "counts": counts}],
     )
     ws = Workspace.open(root)
-    out = ws.evaluate_model("tavi:5:det", "det")
+    # This pre-atomic results.csv has no scan_id, so use the legacy scan-level form explicitly.
+    out = ws.evaluate_model("tavi:5", "det")
     assert out.pure is False
     assert np.all(np.isfinite(out.total))
     assert len(out.components) == 3

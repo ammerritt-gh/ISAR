@@ -119,6 +119,16 @@ DeepSeek **v4-pro**, not v3.x. The recall gap (9B ~0.80 vs cloud 1.00) is the 9B
 a scan-level decision (e.g. the sensor-divergence `hold`) — the deterministic flag still shows, so the
 human catches it; tightening the prompt to always emit a scan-level decision is a tracked improvement.
 
+**Update (2026-07-16): the cloud fallback default is now `nanogpt/deepseek/deepseek-v4-flash`.**
+gpt-oss-120b's NanoGPT serving degraded to empty plain-text replies (reasoning-channel issue — the
+same failure that moved the drive supervisor to GLM 5.2) with 3–8 s latency swings. v4-flash's
+2026-06-28 rejection ("ignores the schema") was measured through a different dispatch path
+(json_object); re-probed live through LLMM's `structured_output_schema` with the production
+`SYSTEM` contract it scored **6/6 schema-valid, 0 destructive** across the cosmic-ray/dead-detector
+and clipped-peak-restraint scenarios at a consistent ~3 s. It is also deliberately a different
+model family from the supervisor's GLM 5.2, so one serving outage cannot take down both LLM roles
+(council-reviewed choice). The table above is retained as the 2026-06-28 record.
+
 ## 8. Configuration
 
 The card `[adjudication]` policy block (read by `adjudication_config(card)`; all optional):
@@ -127,14 +137,19 @@ The card `[adjudication]` policy block (read by `adjudication_config(card)`; all
 [adjudication]
 enabled      = false                          # opt-in
 model_pin    = "local_desktop/qwen3p5-9b"     # offline/privacy-first default
-fallback_pin = "nanogpt/openai/gpt-oss-120b"  # cloud comparator/fallback
+# fallback_pin = "nanogpt/deepseek/deepseek-v4-flash" # optional cloud comparator/fallback
 endpoint     = "http://127.0.0.1:8766"
 temperature  = 0.2
 max_tokens   = 1500
 ```
 
-Env overrides `ISAR_LLM_ENDPOINT` / `ISAR_LLM_MODEL` flip offline↔cloud at the beamline without editing
-the card.
+Cloud fallback is off by default. Set `fallback_pin` or a non-empty `ISAR_LLM_FALLBACK_MODEL` only when
+the operator explicitly accepts that flagged-scan context may leave the machine; an explicitly empty
+`ISAR_LLM_FALLBACK_MODEL` disables a card fallback. Env overrides `ISAR_LLM_ENDPOINT` /
+`ISAR_LLM_MODEL` / `ISAR_LLM_PROFILE` configure the primary service. Remote endpoints must be HTTPS;
+plain HTTP is limited to literal `127.0.0.0/8` or `::1` addresses; `localhost` is excluded because its
+name resolution can be changed. For OpenAI-compatible services, provide the bearer token only through
+`ISAR_LLM_API_KEY`; cards may not contain `api_key` or arbitrary `api_key_env` names.
 
 ## 9. Scoring vs synthetic truth
 
@@ -149,7 +164,7 @@ up per model.
 
 - **Eyeball (findable artifact):** `python -m isar.reduce.adjudicate_eyeball` → writes a live report +
   audit to `out/adjudication_eyeball/`; prints `recall / destructive / schema_adherence`. Point at the
-  cloud model with `ISAR_LLM_MODEL=nanogpt/openai/gpt-oss-120b`.
+  cloud model with `ISAR_LLM_MODEL=nanogpt/deepseek/deepseek-v4-flash`.
 - **Gated bake-off test:** `tests/real_data/test_adjudicate_bakeoff.py` (marked `slow`; auto-skips when
   LLMM is unreachable) runs local-9B-vs-cloud and asserts the local 9B is non-destructive when
   serviceable.
@@ -169,6 +184,7 @@ LLMM must be running (`http://127.0.0.1:8766`) with the model launched.
   library call today.
 - **9B scan-level recall** — prompt nudge to always emit a scan-level decision would close the 0.80→1.0
   gap.
-- **Local serviceability** — the local pin needs the model *launched*; the cloud `fallback_pin` covers
-  unattended runs. (Probe timeouts during selection were just the un-launched models.)
+- **Local serviceability** — the local pin needs the model *launched*. A cloud fallback is an explicit
+  operator choice, not an unattended default. (Probe timeouts during selection were just the
+  un-launched models.)
 - **Not committed** — built in the working tree; commit on a branch when ready.

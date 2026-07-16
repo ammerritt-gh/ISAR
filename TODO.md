@@ -5,7 +5,24 @@ Design references: `DESIGN.md` (master), `docs/UNIFICATION_DESIGN.md` (current
 phase, §10 gates / §11 risks / §12 non-goals), `docs/READING_GUIDE.md`, and the
 closed-loop system capstone in the TAVI repo
 (`..\TAVI\docs\CLOSED_LOOP_DESIGN.md` — TAVI = instrument, ISAR = analysis
-authority, driver = future). Last updated: 2026-07-07.
+authority, driver = future). Last updated: 2026-07-16.
+
+## GUI Pass-3 roadmap (designed 2026-07-16, not built — GUI_DESIGN.md §16 has the specs)
+
+- [ ] **PUFFIN masking port** — `CustomViewBox` → `isar_gui/views/mask_viewbox.py`; first
+      consumer the Sandbox pane. View-layer only; PUFFIN's σ≥1 floor never crosses (Hard Rule 3).
+- [ ] **PUFFIN handoff contract** — scan out (x/y/σ/meta) → masks + model params back;
+      needs a PUFFIN-side headless surface first. (§16.2)
+- [ ] **Combine-scans ("same spot") UX** — pooled preview overlay now, persistence via a
+      collation-policy directive; blocked on Phase C. (§16.3)
+- [ ] **S30 energy-zero carry-forward** — step-function most-recent-preceding-elastic semantics
+      in `isar/calibrate/energy_zero.py`; later elastics never retroactive; needs a D-series
+      decision + calibrate characterization updates. (§16.4)
+- [ ] **Import window** — detect-preview dialog replacing the compact Files dock long-term. (§16.5)
+- [ ] **Per-q live campaign state** — additive event-contract change to unlock the per-q half of
+      the drive dashboard. (§16.6)
+- [ ] **Reclaimable in-flight scans** — resume re-attaches via the run event's job_id instead of
+      re-proposing; needs TAVI job-query support. (§16.7)
 
 ## Deferred validation gates (unification §10)
 

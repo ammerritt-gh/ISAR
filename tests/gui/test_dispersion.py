@@ -198,10 +198,10 @@ def test_point_click_activates_fit(qtbot, make_ws):
 
 
 def test_dock_renders_and_routes_click(qtbot, make_ws):
-    from isar_gui.views.dispersion_dock import DispersionDock
+    from isar_gui.views.dispersion_pane import DispersionPane
     ws = _make(make_ws)
     vm = DispersionViewModel(ws)
-    dock = DispersionDock(vm)
+    dock = DispersionPane(vm)
     qtbot.addWidget(dock)
     with qtbot.waitSignal(vm.point_activated, timeout=1000) as blocker:
         vm.activate_at(2.0, 4.0)
@@ -210,10 +210,10 @@ def test_dock_renders_and_routes_click(qtbot, make_ws):
 
 def test_dock_clears_render_when_spec_becomes_none(qtbot, make_ws):
     """A None spec must clear the previous render rather than retaining stale data on the plot."""
-    from isar_gui.views.dispersion_dock import DispersionDock
+    from isar_gui.views.dispersion_pane import DispersionPane
     ws = _make(make_ws)
     vm = DispersionViewModel(ws)
-    dock = DispersionDock(vm)
+    dock = DispersionPane(vm)
     qtbot.addWidget(dock)
     assert getattr(dock._plot, "_isar_rendered", None) is not None
     vm._spec = None
@@ -243,7 +243,7 @@ def test_mainwindow_registers_dispersion_dock_and_routes(qtbot, make_ws):
     ws = _make(make_ws)
     w = MainWindow(ws, session=Session(), watch=False)
     qtbot.addWidget(w)
-    assert "Dispersion ω(q)" in w._docks
+    assert w._center_host.pane("dispersion") is not None
     with qtbot.waitSignal(w.inspector_vm.spec_changed, timeout=1000):
         w.dispersion_vm.activate_at(2.1, 5.0)
     assert not w.inspector_vm.is_empty

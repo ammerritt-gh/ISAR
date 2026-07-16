@@ -194,10 +194,10 @@ def test_temperature_switch_rebuilds(qtbot, make_ws):
 
 
 def test_dock_renders_and_routes_click(qtbot, make_ws):
-    from isar_gui.views.heatmap_dock import HeatmapDock
+    from isar_gui.views.heatmap_pane import HeatmapPane
     ws = _make(make_ws)
     vm = HeatmapViewModel(ws)
-    dock = HeatmapDock(vm)
+    dock = HeatmapPane(vm)
     qtbot.addWidget(dock)
     with qtbot.waitSignal(vm.point_activated, timeout=1000) as blocker:
         vm.activate_at(2.0, 4.0)
@@ -210,10 +210,10 @@ def test_colorbar_detaches_when_spec_has_no_strips(qtbot, make_ws):
     import pyqtgraph as pg
 
     from isar.plotspec.spec import PlotSpec
-    from isar_gui.views.heatmap_dock import HeatmapDock
+    from isar_gui.views.heatmap_pane import HeatmapPane
     ws = _make(make_ws)
     vm = HeatmapViewModel(ws)
-    dock = HeatmapDock(vm)
+    dock = HeatmapPane(vm)
     qtbot.addWidget(dock)
     old_img = dock._colorbar.imageItem()
     assert isinstance(old_img, pg.ImageItem)
@@ -243,7 +243,7 @@ def test_mainwindow_registers_plane_dock_and_routes(qtbot, make_ws):
     ws = _make(make_ws)
     w = MainWindow(ws, session=Session(), watch=False)
     qtbot.addWidget(w)
-    assert w.heatmap_dock.isVisible() or "Plane (q, E)" in w._docks
+    assert w._center_host.pane("plane") is not None
     with qtbot.waitSignal(w.inspector_vm.spec_changed, timeout=1000):
         w.heatmap_vm.activate_at(2.1, 5.0)
     assert not w.inspector_vm.is_empty

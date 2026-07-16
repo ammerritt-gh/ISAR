@@ -5,7 +5,7 @@ Written for a scientist at (or preparing for) a beamtime. For what ISAR *is* and
 start with [READING_GUIDE.md](READING_GUIDE.md); for what a verdict means, see
 [INTERPRETING_A_VERDICT.md](INTERPRETING_A_VERDICT.md).
 
-> **Status: the v1 CLI described here is built** (`isar init/run/status/report/score/profile`, plus
+> **Status: the v1 CLI described here is built** (`isar init/ingest/run/status/report/score/profile`, plus
 > the autonomous `isar drive`, tested in `tests/session/`, `tests/cli/` and `tests/drive/`). It runs end-to-end on IN8
 > today and on S30 once a companion `.spec` supplies the
 > energy zero. One validation is still pending — the full 83-scan S30 statistical comparison at M=200
@@ -66,6 +66,36 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   [LLMM_INTEGRATION_HANDOFF.md](archive/LLMM_INTEGRATION_HANDOFF.md)), `--M N` (bootstrap size; default
   200, use ~60 for a fast first look), `--detectors ana7` (restrict which analyzers are fitted
   this run).
+- **`isar ingest <data>... --workspace DIR [--json]`** — parse data into the ledger **without
+  fitting**. It discovers and classifies the files, parses and dedups the scans, and upserts one
+  `ingested` ledger entry per `(exp, scan, detector)` — so parsed scans are visible (through
+  `workspace_api`, the GUI, `isar status`) before you commit to the expensive `isar run` fit. It
+  never fits, never deletes, and never writes `card.policy.toml`; a later `isar run` re-queues every
+  `ingested` entry. Idempotent — re-ingesting unchanged files is a no-op, and it never downgrades a
+  scan already fitted/held/excluded. With `--json` it prints one machine-readable object on stdout:
+
+  ```jsonc
+  {
+    "workspace": "my_experiment",
+    "files": [                         // one row per classified file
+      {"path": "...", "class": "measurement",   // measurement | companion | foreign | unrecognized
+       "n_scans": 12,                  // measurement scans ledgered from this file (== len(scan_ids))
+       "scan_ids": ["exp:1", "..."],   // scan-level ids entered from this file
+       "n_context": 3}                 // in-file calibration/alignment/environment scans routed out
+    ],
+    "scans": {"added": ["exp:1"], "updated": [], "unchanged": []},  // scan-level "exp:scan" ids
+    "deduped": [{"scan": "exp:7", "kept": "...", "superseded": ["..."]}],  // growing-file resends
+    "gaps": [["exp", 4, 7]]            // (experiment, after, before) scan-number gaps
+  }
+  ```
+
+  (No workspace at `DIR` prints `{"error": {"kind": "no_workspace", "message": "..."}}` and exits
+  non-zero.) The GUI shells exactly this verb for its drop-to-ingest and watched-folder flows.
+  Alongside the ledger, ingest writes one per-unit data file (`data/ingest/ingest-<exp>-<scan>-<det>.json`,
+  schema `isar.unit_data/1`) for every `(exp, scan, detector)` — raw abscissa, honest counts/variance
+  (σ²=0 kept, never energy-zero-shifted) and the 3-state calibration — so the GUI inspector can draw a
+  parsed-not-fitted unit before any `isar run`. Re-ingesting also backfills a missing unit file for an
+  otherwise-unchanged entry (repairs a pre-Phase-2 workspace) without ticking the ledger.
 - **`isar status --workspace DIR`** — where things stand, without reprocessing: how many scans
   fitted / held / excluded, *why* each held scan is held, gaps in the scan-number sequence and in
   Q coverage, current calibration versions.

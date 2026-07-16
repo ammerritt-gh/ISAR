@@ -81,6 +81,55 @@ class CardPolicy:
     sample: dict = field(default_factory=dict)               # [sample] — name override, require_alignment
 
 
+@dataclass(frozen=True)
+class PolicyValidation:
+    """Result of validating human-authored ``card.policy.toml`` text.
+
+    This deliberately lives beside the schema rather than in the Qt editor: command-line and
+    notebook consumers get the same construction and semantic checks, while the GUI can present
+    unknown keys as a deliberate warning instead of silently dropping them.
+    """
+
+    policy: CardPolicy | None
+    errors: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.errors
+
+
+def validate_policy_text(text: str) -> PolicyValidation:
+    """Parse and validate a policy TOML document without writing anything.
+
+    Syntax errors, dataclass construction failures, and :meth:`Card.validate` findings are
+    blocking errors.  Unknown *top-level* keys are warnings because existing cards may carry
+    forward-compatible annotations, but the editor must make their otherwise-silent omission
+    explicit before a scientist saves.
+    """
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        return PolicyValidation(None, (f"TOML error: {exc}",))
+    if not isinstance(data, dict):  # defensive: tomllib currently always returns a dict
+        return PolicyValidation(None, ("TOML document must contain a table",))
+
+    known = {f.name for f in fields(CardPolicy)}
+    warnings = tuple(f"unknown top-level key {key!r}" for key in sorted(data) if key not in known)
+    try:
+        policy = _json.from_dataclass(CardPolicy, data)
+    except (TypeError, ValueError, KeyError) as exc:
+        return PolicyValidation(None, (f"card construction error: {exc}",), warnings)
+    except Exception as exc:  # malformed human input must be reported, never crash the editor
+        return PolicyValidation(None, (f"card construction error: {exc}",), warnings)
+
+    try:
+        errors = tuple(Card(policy, CardState()).validate())
+    except Exception as exc:  # a malformed policy must be a visible validation error, never a GUI crash
+        return PolicyValidation(policy, (f"card validation error: {exc}",), warnings)
+    return PolicyValidation(policy, errors, warnings)
+
+
 @dataclass
 class CardState:
     exclusions: list = field(default_factory=list)
@@ -182,13 +231,24 @@ class Card:
             errs.append(f"normalize_by {pol.normalize_by!r} not in {NORMALIZE_BY}")
         if pol.raw_abscissa_kind not in RAW_ABSCISSA_KINDS:
             errs.append(f"raw_abscissa_kind {pol.raw_abscissa_kind!r} not in {RAW_ABSCISSA_KINDS}")
-        seen = set()
+        if not pol.detectors:
+            errs.append("at least one detector is required")
+        seen: set[str] = set()
         for det in pol.detectors:
-            if det.detector_id in seen:
-                errs.append(f"duplicate detector_id {det.detector_id!r}")
-            seen.add(det.detector_id)
-            if det.value_index < 0:
-                errs.append(f"detector {det.detector_id!r} value_index {det.value_index} < 0")
-            if not det.signal_column:
-                errs.append(f"detector {det.detector_id!r} has empty signal_column")
+            detector_id = det.detector_id
+            if not isinstance(detector_id, str) or not detector_id:
+                errs.append("detector has a non-string or empty detector_id")
+            elif detector_id in seen:
+                errs.append(f"duplicate detector_id {detector_id!r}")
+            else:
+                seen.add(detector_id)
+
+            value_index = det.value_index
+            if not isinstance(value_index, int) or isinstance(value_index, bool):
+                errs.append(f"detector {detector_id!r} value_index must be an integer")
+            elif value_index < 0:
+                errs.append(f"detector {detector_id!r} value_index {value_index} < 0")
+
+            if not isinstance(det.signal_column, str) or not det.signal_column:
+                errs.append(f"detector {detector_id!r} has a non-string or empty signal_column")
         return errs

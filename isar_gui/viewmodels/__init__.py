@@ -9,9 +9,12 @@ from __future__ import annotations
 from isar_gui.viewmodels.base import ViewModel
 from isar_gui.viewmodels.browser import BrowserViewModel, GroupRow
 from isar_gui.viewmodels.dispersion import DispersionViewModel
+from isar_gui.viewmodels.files import FilesViewModel
 from isar_gui.viewmodels.heatmap import HeatmapViewModel
 from isar_gui.viewmodels.inspector import InspectorViewModel
+from isar_gui.viewmodels.scans import ScansViewModel
 from isar_gui.viewmodels.waterfall import WaterfallViewModel
 
 __all__ = ["ViewModel", "BrowserViewModel", "GroupRow", "InspectorViewModel",
-           "HeatmapViewModel", "DispersionViewModel", "WaterfallViewModel"]
+           "HeatmapViewModel", "DispersionViewModel", "WaterfallViewModel", "FilesViewModel",
+           "ScansViewModel"]

@@ -1,20 +1,18 @@
-"""HeatmapDock — the C3 growing (q, E) plane view (Task 11, A-5).
+"""HeatmapPane — the C3 growing (q, E) plane view (Task 11, A-5).
 
 Purely presentational: the whole plane (measured strips + honesty overlays + the always-on
 projection legend) is a :class:`~isar.plotspec.spec.PlotSpec` computed by
-:class:`~isar_gui.viewmodels.heatmap.HeatmapViewModel`; this dock only renders it through
+:class:`~isar_gui.viewmodels.heatmap.HeatmapViewModel`; this pane only renders it through
 :func:`isar_gui.plotspec_pg.render_into`, offers a temperature selector when more than one T is
 present, shows a minimal colorbar labelled from ``spec.value_label``, and forwards a plot click to
 the VM's nearest-ω̂ hit-test (which emits ``point_activated``). No geometry, no workspace access —
-the dock is dumb.
+the pane is dumb.
 """
 from __future__ import annotations
 
 import pyqtgraph as pg
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
-    QDockWidget,
     QHBoxLayout,
     QLabel,
     QVBoxLayout,
@@ -22,19 +20,19 @@ from PySide6.QtWidgets import (
 )
 
 from isar_gui.plotspec_pg import clear_render, render_into
+from isar_gui.views.group_drop import GroupDropMixin
 
 
-class HeatmapDock(QDockWidget):
+class HeatmapPane(GroupDropMixin, QWidget):
     """(q, E) plane over a :class:`HeatmapViewModel`: strips + overlays + projection legend, a T
-    selector, a colorbar, and click -> ``VM.activate_at``."""
+    selector, a colorbar, click -> ``VM.activate_at``, and a group-drop restriction (2A, refuses
+    multi-T)."""
 
     def __init__(self, vm, parent=None):
-        super().__init__("Plane (q, E)", parent)
-        self.setObjectName("heatmap_dock")  # stable name for saveState()/restoreState()
+        super().__init__(parent)
         self._vm = vm
 
-        body = QWidget()
-        outer = QVBoxLayout(body)
+        outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 4, 4, 4)
 
         # --- temperature selector (only meaningful with >1 T) ---------------
@@ -56,7 +54,7 @@ class HeatmapDock(QDockWidget):
         self._glw.addItem(self._colorbar, row=0, col=1)
         outer.addWidget(self._glw)
 
-        self.setWidget(body)
+        self._init_group_drop(outer)   # group-drop restriction + Show-all banner (2A)
 
         self._plot.scene().sigMouseClicked.connect(self._on_click)
         vm.spec_changed.connect(self.refresh)

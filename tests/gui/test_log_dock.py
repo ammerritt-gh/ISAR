@@ -16,6 +16,12 @@ def _lines(dock) -> list:
     return [ln for ln in text.splitlines() if ln]
 
 
+def test_view_rejects_drops_so_mainwindow_sees_them(qtbot):
+    dock = LogDock()
+    qtbot.addWidget(dock)
+    assert dock._view.acceptDrops() is False
+
+
 def test_same_length_different_batch_shows_new_lines(qtbot):
     dock = LogDock()
     qtbot.addWidget(dock)

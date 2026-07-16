@@ -1,4 +1,8 @@
-"""BrowserDock — the workspace browser: card summary + group/member tree (Task 9, C1).
+"""BrowserDock — the Results browser: card summary + fit-result group/member tree (Task 9, C1).
+
+Titled "Results" in the UI: it browses fit-result collation buckets and feeds the C2 inspector — a
+different axis from the Phase-E Scans dock, which shows physical scans grouped by metadata/manual
+membership. Same read-only viewmodel and structure as before; only the window title changed.
 
 Purely presentational: all derivation (labels, tree data, verdict text) lives in
 :class:`~isar_gui.viewmodels.browser.BrowserViewModel`; this widget only lays out and renders what
@@ -49,10 +53,18 @@ def _group_label_text(row) -> str:
 class BrowserDock(QDockWidget):
     """Card summary header + group/member tree over a :class:`BrowserViewModel`."""
 
-    def __init__(self, vm, parent=None):
-        super().__init__("Browser", parent)
+    def __init__(self, vm, parent=None, *, unit_key_for_fit=None):
+        # "Results": this dock browses fit-result collation buckets and feeds the C2 inspector — a
+        # different axis from the Phase-E Scans dock (physical scans by group). Retitled to keep the
+        # two straight; objectName stays "browser_dock" so saved layouts still resolve it.
+        super().__init__("Results", parent)
         self.setObjectName("browser_dock")  # stable name for saveState()/restoreState()
         self._vm = vm
+        self._active_key: str | None = None
+        # Legacy results omit experiment/unit identity.  The window supplies the only authoritative
+        # resolver: it checks the current ledger and returns a key only when the match is unique.
+        # The Results tree itself must never infer identity from its own child count.
+        self._unit_key_for_fit = unit_key_for_fit
 
         container = QWidget(self)
         layout = QVBoxLayout(container)
@@ -66,6 +78,15 @@ class BrowserDock(QDockWidget):
         self._tree.itemSelectionChanged.connect(self._on_selection_changed)
         layout.addWidget(self._tree)
 
+        # The Results tree is intentionally fit-only: parsed scans live in the Scans / Scan Table
+        # views.  An empty QTreeWidget says nothing at all, but an empty *display* tree does not
+        # prove analysis produced no result records (some records cannot form a display group).
+        self._no_results = QLabel(container)
+        self._no_results.setObjectName("browser_no_results")
+        self._no_results.setWordWrap(True)
+        self._no_results.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._no_results)
+
         self._warnings_button = QPushButton(container)
         self._warnings_button.setCheckable(True)
         self._warnings_button.toggled.connect(self._on_warnings_toggled)
@@ -74,6 +95,8 @@ class BrowserDock(QDockWidget):
         self._warnings_view = QPlainTextEdit(container)
         self._warnings_view.setReadOnly(True)
         self._warnings_view.setVisible(False)
+        # A dropped file must reach MainWindow.dropEvent, not be pasted as text into this pane.
+        self._warnings_view.setAcceptDrops(False)
         layout.addWidget(self._warnings_view)
 
         self.setWidget(container)
@@ -103,7 +126,8 @@ class BrowserDock(QDockWidget):
         self._tree.blockSignals(True)
         try:
             self._tree.clear()
-            for row in self._vm.group_rows:
+            rows = self._vm.group_rows
+            for row in rows:
                 group_item = QTreeWidgetItem([_group_label_text(row), "", "", "", ""])
                 group_item.setData(0, Qt.ItemDataRole.UserRole, None)
                 self._tree.addTopLevelItem(group_item)
@@ -115,8 +139,70 @@ class BrowserDock(QDockWidget):
                     child.setData(0, Qt.ItemDataRole.UserRole, fv)
                     group_item.addChild(child)
             self._tree.expandAll()
+            self._restore_active_item()
         finally:
             self._tree.blockSignals(False)
+        self._tree.setVisible(bool(rows))
+        self._no_results.setVisible(not rows)
+        if not rows:
+            self._no_results.setText(self._no_results_text())
+
+    def _no_results_text(self) -> str:
+        """Explain an empty display tree without overstating the underlying result state."""
+        workspace = self._vm.workspace
+        if workspace.results:
+            return (
+                "No displayable Results yet.\n\n"
+                "Analysis records exist, but none can be shown in this Results tree. "
+                "Check Warnings and scan provenance for the reason."
+            )
+        scans = workspace.scans
+        if scans:
+            return (
+                "No displayable Results yet.\n\n"
+                "Parsed scans are listed in Scans or Scan Table. "
+                "Use Run \u25b8 Run analysis\u2026 when you are ready to analyse them."
+            )
+        return (
+            "No displayable Results yet.\n\n"
+            "Parsed scans will appear in Scans or Scan Table after ingestion. "
+            "Run analysis when scans are ready."
+        )
+
+    def set_active_key(self, key: str | None) -> None:
+        """Show the inspected detector in the results tree without re-emitting a selection."""
+        self._active_key = str(key) if key else None
+        self._tree.blockSignals(True)
+        try:
+            self._restore_active_item()
+        finally:
+            self._tree.blockSignals(False)
+
+    def _restore_active_item(self) -> None:
+        """Restore the child matching the canonical unit id after a tree rebuild.
+
+        A pooled aggregate has no atomic unit identity; in that case the tree deliberately has no
+        current child rather than pretending one of its members is being inspected.
+        """
+        target = self._active_key
+        found = None
+        if target is not None:
+            for i in range(self._tree.topLevelItemCount()):
+                group = self._tree.topLevelItem(i)
+                for j in range(group.childCount()):
+                    child = group.child(j)
+                    fv = child.data(0, Qt.ItemDataRole.UserRole)
+                    if getattr(fv, "unit_id", None) == target:
+                        found = child
+                        break
+                    if (getattr(fv, "unit_id", None) is None
+                            and self._unit_key_for_fit is not None
+                            and self._unit_key_for_fit(fv) == target):
+                        found = child
+                        break
+                if found is not None:
+                    break
+        self._tree.setCurrentItem(found)
 
     def _render_warnings(self) -> None:
         warnings = self._vm.warnings
