@@ -54,10 +54,12 @@ def _assert_pass3_default(w):
         assert w.dockWidgetArea(dock) == Qt.LeftDockWidgetArea
     assert set(w.tabifiedDockWidgets(w.scans_dock)) >= {w.browser_dock, w.card_dock,
                                                         w.scan_table_dock}
+    # The campaign workspace owns the right column (v3).
+    assert w.dockWidgetArea(w.campaign_dock) == Qt.RightDockWidgetArea
     # The Log is a compact ticker, not a workspace surface.
     assert w.log_dock.height() <= mw_mod._DEFAULT_LOG_HEIGHT + 40
     for dock in (w.files_dock, w.scans_dock, w.browser_dock, w.card_dock,
-                 w.scan_table_dock, w.log_dock):
+                 w.scan_table_dock, w.campaign_dock, w.log_dock):
         assert not dock.isHidden()
 
 
@@ -114,6 +116,6 @@ def test_restore_false_without_exception_falls_back(qtbot, ws, monkeypatch, capl
 
 
 def test_version_constant_is_current():
-    # M2-6 bumps this to 3 when the Campaign dock joins the default layout; this pin makes that
-    # bump a conscious edit here rather than a silent drift.
-    assert _LAYOUT_VERSION == 2
+    # A dock-inventory change must bump this consciously (v2 = M1 CenterHost migration, v3 = M2
+    # Campaign dock); the pin makes the bump an explicit edit here rather than a silent drift.
+    assert _LAYOUT_VERSION == 3

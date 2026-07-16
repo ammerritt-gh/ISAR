@@ -68,6 +68,7 @@ from isar_gui.viewmodels import (
 )
 from isar_gui.viewmodels.campaign import CampaignViewModel
 from isar_gui.viewmodels.sandbox import SandboxViewModel
+from isar_gui.views.campaign_dock import CampaignDock
 from isar_gui.views.sandbox_pane import SandboxPane
 from isar_gui.views.browser_dock import BrowserDock
 from isar_gui.views.card_dock import CardDock
@@ -93,8 +94,9 @@ _PENDING_HINT = ("Drop data files to begin — they'll land in a temporary works
 # Bump when the dock inventory/geometry contract changes: restoreState of any OTHER version fails
 # atomically and the window falls back to _apply_default_layout (never binary-migrate Qt blobs).
 # v1 (implicit, unversioned) = pre-Pass-3; v2 = Pass-3 M1 (plot docks moved into the CenterHost,
-# Scans column moved left); v3 is reserved for the Campaign dock (M2-6).
-_LAYOUT_VERSION = 2
+# Scans column moved left); v3 = Pass-3 M2 (the Campaign dock joins the right area).
+_LAYOUT_VERSION = 3
+_DEFAULT_CAMPAIGN_WIDTH = 380  # px — the right-hand campaign workspace column
 _DEFAULT_FILES_HEIGHT = 170   # px — data entry is deliberately small; Scans below it dominates
 _DEFAULT_LEFT_WIDTH = 300     # px — the Files/Scans tool column
 _DEFAULT_LOG_HEIGHT = 140     # px — the Log is a ticker, not a workspace surface
@@ -397,6 +399,8 @@ class MainWindow(QMainWindow):
             self._gui_store = GuiStore.load(ws.root)
             self.files_vm.set_store(self._gui_store)
             self.scans_vm.set_store(self._gui_store)
+            if getattr(self, "campaign_dock", None) is not None:
+                self.campaign_dock.set_store(self._gui_store)
             # Seed the watcher from the persisted config directly (a bind is not a user mutation, so
             # it must not re-persist the store; user add/remove/pause go through watch_config_changed).
             self._folder_watcher.configure(
@@ -547,6 +551,15 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.LeftDockWidgetArea, self.scan_table_dock)
         self._register_dock("Scan Table", self.scan_table_dock)
 
+        # The campaign workspace (GUI Pass 3, M2-6): setup + start/stop + live feed, far right.
+        # Store binds late (set_store below, once the GuiStore loads); TAVI launch routes through
+        # the window's existing Backends plumbing; health status is fed from _apply_health.
+        self.campaign_dock = CampaignDock(self.campaign_vm, self._operations, store=None,
+                                          llm_env=self._llm_env, parent=self)
+        self.campaign_dock.tavi_launch_requested.connect(self._launch_tavi)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.campaign_dock)
+        self._register_dock("Campaign", self.campaign_dock)
+
         # The four plot panes (plane / dispersion / waterfall / sandbox) are no longer docks: the C2
         # inspector and those four surfaces are switchable pages of the central CenterHost, built in
         # _bind_workspace (see _build_center_host). Splits/tabs/sizes for the remaining tool docks
@@ -578,7 +591,7 @@ class MainWindow(QMainWindow):
             return
         from PySide6.QtCore import Qt
         for dock in (self.files_dock, self.scans_dock, self.browser_dock, self.card_dock,
-                     self.scan_table_dock, self.log_dock):
+                     self.scan_table_dock, self.campaign_dock, self.log_dock):
             dock.setFloating(False)
             dock.show()
         self.addDockWidget(Qt.LeftDockWidgetArea, self.files_dock)
@@ -587,8 +600,10 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self.scans_dock, self.browser_dock)
         self.tabifyDockWidget(self.browser_dock, self.card_dock)
         self.tabifyDockWidget(self.card_dock, self.scan_table_dock)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.campaign_dock)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
         self.scans_dock.raise_()
+        self.resizeDocks([self.campaign_dock], [_DEFAULT_CAMPAIGN_WIDTH], Qt.Horizontal)
         # A large fixed hint (not self.height() — meaningless before the window is realized):
         # resizeDocks distributes proportionally, so [170, 700] reads "Files small, Scans the rest".
         self.resizeDocks([self.files_dock, self.scans_dock],
@@ -1063,6 +1078,10 @@ class MainWindow(QMainWindow):
         vm = getattr(self, "campaign_vm", None)
         if vm is not None:
             vm.set_process_alive(True)
+        # Auto-follow (AD-15): a starting campaign turns the center to the growing plane view.
+        host = getattr(self, "_center_host", None)
+        if host is not None and host.auto_follow:
+            host.show_view("plane")
         self.statusBar().showMessage("Campaign started")
 
     def _on_drive_finished(self, code: int, live_workspace: bool) -> None:
@@ -1408,6 +1427,8 @@ class MainWindow(QMainWindow):
             label.setStyleSheet(f"color: {color};")
             label.setToolTip(f"{url} — {detail}")
             status = "ok" if ok else ("reachable_error" if reachable else "down")
+            if key == "tavi" and getattr(self, "campaign_dock", None) is not None:
+                self.campaign_dock.set_backend_status("tavi", status, f"{url} — {detail}")
             previous = self._health_statuses.get(key)
             if status != previous:
                 self._health_statuses[key] = status
@@ -1598,6 +1619,7 @@ class MainWindow(QMainWindow):
         self.files_dock = None
         self.scans_dock = None
         self.scan_table_dock = None
+        self.campaign_dock = None
         # The old viewmodels are QObjects parented to self; without an explicit deleteLater() they
         # would linger as inert children (their dock's connections already dropped above) for the
         # rest of the window's life. Drop them so repeated rebinds don't accumulate.

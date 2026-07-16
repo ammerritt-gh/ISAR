@@ -139,6 +139,15 @@ class GuiStore:
     def set_watch_paused(self, flag: bool) -> None:
         self._data["watch_paused"] = bool(flag)
 
+    # ---- campaign setup form (GUI Pass 3) ----------------------------------
+    def campaign_form(self) -> dict:
+        """The remembered campaign setup form (goal/spec/tier/budget/seed/max_iters), or ``{}``."""
+        val = self._data.get("campaign")
+        return dict(val) if isinstance(val, dict) else {}
+
+    def set_campaign_form(self, form: dict) -> None:
+        self._data["campaign"] = dict(form)
+
     # ---- manual groups (Phase E) -----------------------------------------
     # Storage stays JSON (single writer, tiny data, Save-As copytree safety). The API below is
     # storage-agnostic — nothing outside this module touches ``self._data["groups"]`` — so swapping

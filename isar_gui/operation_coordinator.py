@@ -85,6 +85,10 @@ class WorkspaceOperationCoordinator(QObject):
     def is_running_campaign(self) -> bool:
         return self._active is not None and self._active.kind == "drive"
 
+    def is_stop_pending(self) -> bool:
+        """A cooperative campaign stop request has been written and not yet honored."""
+        return self._stop_pending
+
     def queued_count(self) -> int:
         return len(self._queue)
 
