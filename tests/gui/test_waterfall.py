@@ -171,10 +171,10 @@ def test_comparison_point_click_activates_fit(qtbot, make_ws):
 
 def test_dock_clears_render_when_spec_becomes_none(qtbot, make_ws):
     """A None spec must clear the previous render rather than retaining stale data on the plot."""
-    from isar_gui.views.waterfall_dock import WaterfallDock
+    from isar_gui.views.waterfall_pane import WaterfallPane
     ws = _make(make_ws)
     vm = WaterfallViewModel(ws)
-    dock = WaterfallDock(vm)
+    dock = WaterfallPane(vm)
     qtbot.addWidget(dock)
     assert getattr(dock._plot, "_isar_rendered", None) is not None
     vm._spec = None
@@ -220,11 +220,11 @@ def test_refresh_idempotent(make_ws):
 
 
 def test_dock_renders_and_routes_click(qtbot, make_ws):
-    from isar_gui.views.waterfall_dock import WaterfallDock
+    from isar_gui.views.waterfall_pane import WaterfallPane
     ws = _make(make_ws)
     vm = WaterfallViewModel(ws)
     vm.set_selected_q(2.0)
-    dock = WaterfallDock(vm)
+    dock = WaterfallPane(vm)
     qtbot.addWidget(dock)
     with qtbot.waitSignal(vm.point_activated, timeout=1000):
         vm.activate_at(4.0, vm.spec.series[0].y.max())

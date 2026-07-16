@@ -20,6 +20,7 @@ from weakref import WeakSet
 from PySide6.QtCore import QByteArray, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QDockWidget,
     QFileDialog,
     QLabel,
     QMainWindow,
@@ -66,19 +67,41 @@ from isar_gui.viewmodels import (
     WaterfallViewModel,
 )
 from isar_gui.viewmodels.sandbox import SandboxViewModel
-from isar_gui.views.sandbox_dock import SandboxDock
+from isar_gui.views.sandbox_pane import SandboxPane
 from isar_gui.views.browser_dock import BrowserDock
 from isar_gui.views.card_dock import CardDock
-from isar_gui.views.dispersion_dock import DispersionDock
+from isar_gui.views.dispersion_pane import DispersionPane
 from isar_gui.views.files_dock import FilesDock
-from isar_gui.views.heatmap_dock import HeatmapDock
+from isar_gui.views.heatmap_pane import HeatmapPane
 from isar_gui.views.inspector_widget import InspectorWidget
 from isar_gui.views.scan_table_dock import ScanTableDock
 from isar_gui.views.scans_dock import ScansDock
-from isar_gui.views.waterfall_dock import WaterfallDock
+from isar_gui.views.waterfall_pane import WaterfallPane
 from isar_gui.watch_bridge import WatchBridge
 
 log = logging.getLogger(__name__)
+
+
+class _PaneDock(QDockWidget):
+    """Temporary shim (GUI Pass 3, M1-1): wraps a plot pane in a QDockWidget so layout persistence,
+    the Docks menu, send-to-group routing, drag arming, and PNG export keep behaving exactly as they
+    did before the pane/dock split. It carries the same objectName/title the dock had, and forwards
+    any pane-level attribute (``apply_group``, ``arm_group_drop``, ``_glw``, …) to the wrapped pane.
+    M1-2 removes this once a central view host owns the panes directly."""
+
+    def __init__(self, title, object_name, pane, parent=None):
+        super().__init__(title, parent)
+        self.setObjectName(object_name)
+        self.setWidget(pane)
+
+    def __getattr__(self, name):
+        # Reached only when normal QDockWidget lookup fails — forward to the wrapped pane. Accessing
+        # the widget via the class avoids recursing through __getattr__.
+        pane = QDockWidget.widget(self)
+        if pane is None:
+            raise AttributeError(name)
+        return getattr(pane, name)
+
 
 _EMPTY_HINT = "No workspace loaded.\n\nFile ▸ Open Workspace… to begin."
 _PENDING_HINT = "Drop data files to begin — they'll land in a temporary workspace."
@@ -466,24 +489,31 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self.scans_dock, self.scan_table_dock)
         self._register_dock("Scan Table", self.scan_table_dock)
 
-        self.heatmap_dock = HeatmapDock(self.heatmap_vm, self)
+        # The plot panes are plain QWidgets (GUI Pass 3); wrap each in a _PaneDock shim so it still
+        # docks, tabifies, persists, and exports exactly as before. M1-2 replaces the shims with a
+        # central view host.
+        self.heatmap_dock = _PaneDock("Plane (q, E)", "heatmap_dock",
+                                      HeatmapPane(self.heatmap_vm), self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.heatmap_dock)
         self._register_dock("Plane (q, E)", self.heatmap_dock)
 
         # The C5 dispersion view shares the right area with the plane (tabified siblings).
-        self.dispersion_dock = DispersionDock(self.dispersion_vm, self)
+        self.dispersion_dock = _PaneDock("Dispersion ω(q)", "dispersion_dock",
+                                         DispersionPane(self.dispersion_vm), self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dispersion_dock)
         self.tabifyDockWidget(self.heatmap_dock, self.dispersion_dock)
         self._register_dock("Dispersion ω(q)", self.dispersion_dock)
 
         # The C4 waterfall/comparison view is a third tabified sibling in the same area.
-        self.waterfall_dock = WaterfallDock(self.waterfall_vm, self)
+        self.waterfall_dock = _PaneDock("Waterfall / Comparison", "waterfall_dock",
+                                        WaterfallPane(self.waterfall_vm), self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.waterfall_dock)
         self.tabifyDockWidget(self.heatmap_dock, self.waterfall_dock)
         self._register_dock("Waterfall / Comparison", self.waterfall_dock)
 
         # The G7 sandbox preview-fit panel — a fourth tabified sibling (2B).
-        self.sandbox_dock = SandboxDock(self.sandbox_vm, self)
+        self.sandbox_dock = _PaneDock("Sandbox (preview fit)", "sandbox_dock",
+                                      SandboxPane(self.sandbox_vm), self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.sandbox_dock)
         self.tabifyDockWidget(self.heatmap_dock, self.sandbox_dock)
         self._register_dock("Sandbox (preview fit)", self.sandbox_dock)

@@ -6,7 +6,7 @@ the certifying-tier ω̂ whisker (a warning marker where no tier certifies), the
 per-point assignment-entropy colouring, verdict glyphs, and a visible count of the scans excluded by
 the projection window.
 
-ALL derivation lives here; :class:`~isar_gui.views.heatmap_dock.HeatmapDock` only renders the emitted
+ALL derivation lives here; :class:`~isar_gui.views.heatmap_pane.HeatmapPane` only renders the emitted
 :class:`~isar.plotspec.spec.PlotSpec` and forwards clicks. isar_gui import contract: workspace_api /
 plotspec / PySide6 only — no matplotlib, no isar.session/analyze/drive.
 

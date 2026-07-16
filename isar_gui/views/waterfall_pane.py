@@ -1,20 +1,19 @@
-"""WaterfallDock — the C4 waterfall / comparison view (Task 13, A-6).
+"""WaterfallPane — the C4 waterfall / comparison view (Task 13, A-6).
 
 Purely presentational: the whole view (per-T waterfall stack, or the per-T dispersion comparison
 overlay) is a :class:`~isar.plotspec.spec.PlotSpec` computed by
-:class:`~isar_gui.viewmodels.waterfall.WaterfallViewModel`; this dock only renders it through
+:class:`~isar_gui.viewmodels.waterfall.WaterfallViewModel`; this pane only renders it through
 :func:`isar_gui.plotspec_pg.render_into`, offers a mode toggle, a q selector (waterfall + comparison
 share the same q axis but only waterfall fixes a single q — the selector still narrows which q's
 family of scans populate the "modal q" default), and an offset spinbox (waterfall mode only, since
-the offset is meaningless in comparison mode). No geometry, no workspace access — the dock is dumb,
-same shape as the heatmap/dispersion docks.
+the offset is meaningless in comparison mode). No geometry, no workspace access — the pane is dumb,
+same shape as the heatmap/dispersion panes.
 """
 from __future__ import annotations
 
 import pyqtgraph as pg
 from PySide6.QtWidgets import (
     QComboBox,
-    QDockWidget,
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
@@ -27,17 +26,15 @@ from isar_gui.plotspec_pg import clear_render, render_into
 from isar_gui.views.group_drop import GroupDropMixin
 
 
-class WaterfallDock(GroupDropMixin, QDockWidget):
+class WaterfallPane(GroupDropMixin, QWidget):
     """Waterfall/comparison over a :class:`WaterfallViewModel`: mode toggle, q selector, offset
     spinbox (waterfall mode only), click -> ``VM.activate_at``, and a group-drop restriction (2A)."""
 
     def __init__(self, vm, parent=None):
-        super().__init__("Waterfall / Comparison", parent)
-        self.setObjectName("waterfall_dock")  # stable name for saveState()/restoreState()
+        super().__init__(parent)
         self._vm = vm
 
-        body = QWidget()
-        outer = QVBoxLayout(body)
+        outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 4, 4, 4)
 
         # --- controls row ----------------------------------------------------
@@ -73,7 +70,6 @@ class WaterfallDock(GroupDropMixin, QDockWidget):
         self._plot = self._glw.addPlot(row=0, col=0)
         outer.addWidget(self._glw)
 
-        self.setWidget(body)
         self._init_group_drop(outer)   # group-drop restriction + Show-all banner (2A)
 
         self._plot.scene().sigMouseClicked.connect(self._on_click)

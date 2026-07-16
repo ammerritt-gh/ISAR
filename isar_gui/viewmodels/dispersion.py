@@ -6,7 +6,7 @@ overlay (a certifying-tier whisker only; a warning marker where no tier certifie
 entropy colour channel riding ONLY on the whiskered subset; verdict glyphs), plus the dispersion
 prior curve, branch-belief overlays, and off-curve flags for ω̂ that sit far from the prior.
 
-ALL derivation lives here; :class:`~isar_gui.views.dispersion_dock.DispersionDock` only renders the
+ALL derivation lives here; :class:`~isar_gui.views.dispersion_pane.DispersionPane` only renders the
 emitted :class:`~isar.plotspec.spec.PlotSpec` and forwards clicks. The plane/window/varying-component
 derivation and the prior-curve degrade rule are shared with the heatmap via
 :mod:`isar_gui.viewmodels.projection` (so the two views never disagree about the plane). isar_gui

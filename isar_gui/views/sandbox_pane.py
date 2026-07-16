@@ -1,4 +1,4 @@
-"""SandboxDock — the G7 sandbox preview: a dashed fit over the data, unmistakably marked NOT a result.
+"""SandboxPane — the G7 sandbox preview: a dashed fit over the data, unmistakably marked NOT a result.
 
 Presentational only: it renders a :class:`~isar.plotspec.spec.PlotSpec` (data + a ``Role.SANDBOX``
 dashed curve) built from the worker's :class:`~isar.sandbox_api.SandboxResult`. A persistent banner
@@ -12,7 +12,7 @@ sets the zero by eye — a threshold has no business overruling what they can se
 from __future__ import annotations
 
 import pyqtgraph as pg
-from PySide6.QtWidgets import QDockWidget, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from isar_gui.plotspec_pg import clear_render, disable_view_drops, render_into
 
@@ -24,17 +24,15 @@ _ZERO_PEN = pg.mkPen("#c07000", width=2, style=pg.QtCore.Qt.DashLine)
 _ZERO_HOVER = pg.mkPen("#ff8c00", width=3)
 
 
-class SandboxDock(QDockWidget):
+class SandboxPane(QWidget):
     """A live preview fit over a :class:`~isar_gui.viewmodels.sandbox.SandboxViewModel`."""
 
     def __init__(self, vm, parent=None):
-        super().__init__("Sandbox (preview fit)", parent)
-        self.setObjectName("sandbox_dock")
+        super().__init__(parent)
         self._vm = vm
         self._unit_key = None
 
-        body = QWidget()
-        outer = QVBoxLayout(body)
+        outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 4, 4, 4)
 
         banner = QLabel("SANDBOX — not a result (preview only; the official number comes from a run)")
@@ -59,8 +57,6 @@ class SandboxDock(QDockWidget):
         self._zero_line.setVisible(False)
         self._zero_line.sigPositionChangeFinished.connect(self._on_zero_moved)
         self._plot.addItem(self._zero_line)
-
-        self.setWidget(body)
 
         vm.busy_changed.connect(self._on_busy)
         vm.result_ready.connect(self._on_result)

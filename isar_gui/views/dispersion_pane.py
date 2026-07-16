@@ -1,19 +1,18 @@
-"""DispersionDock — the C5 ω̂(q) dispersion view (Task 12, A-7).
+"""DispersionPane — the C5 ω̂(q) dispersion view (Task 12, A-7).
 
 Purely presentational: the whole view (ω̂ scatter + certifying whiskers + entropy colour + verdict
 glyphs + prior/branch curves + off-curve flags + the always-on projection legend) is a
 :class:`~isar.plotspec.spec.PlotSpec` computed by
-:class:`~isar_gui.viewmodels.dispersion.DispersionViewModel`; this dock only renders it through
+:class:`~isar_gui.viewmodels.dispersion.DispersionViewModel`; this pane only renders it through
 :func:`isar_gui.plotspec_pg.render_into`, offers a temperature selector when more than one T is
 present, and forwards a plot click to the VM's nearest-ω̂ hit-test (which emits ``point_activated``).
-No geometry, no workspace access — the dock is dumb, the heatmap dock's 1-D sibling.
+No geometry, no workspace access — the pane is dumb, the heatmap pane's 1-D sibling.
 """
 from __future__ import annotations
 
 import pyqtgraph as pg
 from PySide6.QtWidgets import (
     QComboBox,
-    QDockWidget,
     QHBoxLayout,
     QLabel,
     QVBoxLayout,
@@ -24,17 +23,15 @@ from isar_gui.plotspec_pg import clear_render, render_into
 from isar_gui.views.group_drop import GroupDropMixin
 
 
-class DispersionDock(GroupDropMixin, QDockWidget):
+class DispersionPane(GroupDropMixin, QWidget):
     """ω̂(q) over a :class:`DispersionViewModel`: scatter + overlays + projection legend, a T
     selector, click -> ``VM.activate_at``, and a group-drop restriction (2A, refuses multi-T)."""
 
     def __init__(self, vm, parent=None):
-        super().__init__("Dispersion ω(q)", parent)
-        self.setObjectName("dispersion_dock")  # stable name for saveState()/restoreState()
+        super().__init__(parent)
         self._vm = vm
 
-        body = QWidget()
-        outer = QVBoxLayout(body)
+        outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 4, 4, 4)
 
         # --- temperature selector (only meaningful with >1 T) ---------------
@@ -53,7 +50,6 @@ class DispersionDock(GroupDropMixin, QDockWidget):
         self._plot = self._glw.addPlot(row=0, col=0)
         outer.addWidget(self._glw)
 
-        self.setWidget(body)
         self._init_group_drop(outer)   # group-drop restriction + Show-all banner (2A)
 
         self._plot.scene().sigMouseClicked.connect(self._on_click)

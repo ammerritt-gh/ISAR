@@ -229,7 +229,7 @@ def test_fit_no_result_preserves_calibrated_marker_without_manual_zero_prompt(
         qtbot, monkeypatch):
     from isar.session import driver
     from isar_gui.viewmodels.sandbox import SandboxViewModel
-    from isar_gui.views.sandbox_dock import SandboxDock
+    from isar_gui.views.sandbox_pane import SandboxPane
 
     ctx = types.SimpleNamespace()
     monkeypatch.setattr(driver, "build_context", lambda *args, **kwargs: (ctx, 3, []))
@@ -241,7 +241,7 @@ def test_fit_no_result_preserves_calibrated_marker_without_manual_zero_prompt(
 
     assert result.status == "held" and not result.needs_manual_zero
     assert result.zero_guess == pytest.approx(0.35)
-    dock = SandboxDock(SandboxViewModel(), None)
+    dock = SandboxPane(SandboxViewModel(), None)
     qtbot.addWidget(dock)
     dock._on_result(result)
     assert "drag" not in dock._status.text().lower()

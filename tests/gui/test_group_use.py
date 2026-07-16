@@ -28,7 +28,7 @@ from isar_gui.viewmodels.dispersion import DispersionViewModel
 from isar_gui.viewmodels.heatmap import HeatmapViewModel
 from isar_gui.viewmodels.scans import ScansViewModel
 from isar_gui.viewmodels.waterfall import WaterfallViewModel
-from isar_gui.views.dispersion_dock import DispersionDock
+from isar_gui.views.dispersion_pane import DispersionPane
 from isar_gui.views.scans_dock import ScansDock
 
 _X = np.linspace(-2.0, 8.0, 21)
@@ -169,7 +169,7 @@ class _Drop:
 
 def test_dispersion_dock_applies_single_t_group_and_shows_banner(qtbot, make_ws):
     vm = DispersionViewModel(_ws_2t(make_ws))
-    dock = DispersionDock(vm)
+    dock = DispersionPane(vm)
     qtbot.addWidget(dock)
     drop = _Drop(sorted(_COLD), gref=("g1", "Cold"))
     dock.dropEvent(drop)
@@ -183,7 +183,7 @@ def test_dispersion_dock_applies_single_t_group_and_shows_banner(qtbot, make_ws)
 
 def test_group_banner_escapes_group_label(qtbot, make_ws):
     vm = DispersionViewModel(_ws_2t(make_ws))
-    dock = DispersionDock(vm)
+    dock = DispersionPane(vm)
     qtbot.addWidget(dock)
     dock.apply_group(sorted(_COLD), '<i title="unsafe">Cold & Co</i>')
     text = dock._grp_banner.text()
@@ -193,7 +193,7 @@ def test_group_banner_escapes_group_label(qtbot, make_ws):
 
 def test_dispersion_dock_refuses_multi_t_group(qtbot, make_ws):
     vm = DispersionViewModel(_ws_2t(make_ws))
-    dock = DispersionDock(vm)
+    dock = DispersionPane(vm)
     qtbot.addWidget(dock)
     drop = _Drop(_MIXED, gref=("g2", "Both"))
     dock.dropEvent(drop)
@@ -232,7 +232,7 @@ def test_arm_group_drop_glows_only_when_can_accept(qtbot, make_ws):
     # R12: the plot edge-glow arms only when the dock can actually accept the scans; unfitted / stale
     # ids or an inactive drag leave it un-glowed (absence of glow = 'not a valid target').
     vm = DispersionViewModel(_ws_2t(make_ws))
-    dock = DispersionDock(vm)
+    dock = DispersionPane(vm)
     qtbot.addWidget(dock)
     dock.arm_group_drop(True, list(_COLD))            # fitted single-T group -> glow
     assert "border" in dock._grp_body.styleSheet()
@@ -249,7 +249,7 @@ def test_plot_view_does_not_accept_drops(qtbot, make_ws):
     # logs "dragLeaveEvent received before drag enter" and fights the dock's drag handling.
     from PySide6.QtWidgets import QGraphicsView
     vm = DispersionViewModel(_ws_2t(make_ws))
-    dock = DispersionDock(vm)
+    dock = DispersionPane(vm)
     qtbot.addWidget(dock)
     views = dock.findChildren(QGraphicsView)
     assert views and all(not v.acceptDrops() for v in views)
