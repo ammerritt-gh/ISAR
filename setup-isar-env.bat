@@ -14,6 +14,15 @@ rem  trimmed to ISAR's pure-Python needs (no compiler / MPI / McStas).
 rem ============================================================================
 
 set "MAMBA_VERSION=2.5.0-1"
+rem SHA-256 of the micromamba-win-64 release asset, pinned so a compromised release,
+rem redirect, or cache cannot hand the operator an arbitrary binary. Provenance:
+rem conda-forge's trusted metadata (api.anaconda.org) publishes sha256
+rem 01a89be3d83786b1258ff388f70e641b036852f7cac0a0f6fd051889f21962ea for
+rem win-64/micromamba-2.5.0-1.tar.bz2; that package's Library\bin\micromamba.exe hashes
+rem to the value below, and the GitHub-mirrored bare asset matches it byte-for-byte.
+rem When bumping MAMBA_VERSION, re-derive via the same chain (conda-forge package hash
+rem from api.anaconda.org -> extract -> hash the exe) before updating this pin.
+set "MAMBA_SHA256=56e3a55be1d8858f51ec9902bbc0825d7a18dc43c8558cd8d8b4e1f3d9af7bb4"
 set "ENV_NAME=isar"
 set "MICROMAMBA_DIR=%USERPROFILE%\AppData\Local\micromamba"
 if not defined MICROMAMBA_EXE set "MICROMAMBA_EXE=%MICROMAMBA_DIR%\micromamba.exe"
@@ -31,15 +40,14 @@ echo.
 
 echo [1/3] Ensuring micromamba is available...
 if not exist "%MICROMAMBA_DIR%" mkdir "%MICROMAMBA_DIR%"
+rem An already-installed micromamba.exe is trusted as-is (documented residual risk);
+rem the checksum below guards only binaries this script downloads itself.
 if not exist "%MICROMAMBA_EXE%" (
-    echo   Downloading micromamba %MAMBA_VERSION% ...
-    curl -L -o "%MICROMAMBA_EXE%.tmp" "https://github.com/mamba-org/micromamba-releases/releases/download/%MAMBA_VERSION%/micromamba-win-64"
+    call :download_micromamba
     if errorlevel 1 (
-        echo   [ERROR] Could not download micromamba. Check your internet connection.
         pause
         exit /b 1
     )
-    move /Y "%MICROMAMBA_EXE%.tmp" "%MICROMAMBA_EXE%" >nul
 )
 if not exist "%MICROMAMBA_EXE%" (
     echo   [ERROR] micromamba.exe not found at %MICROMAMBA_EXE%
@@ -80,4 +88,41 @@ echo   Done. ISAR is installed in the '%ENV_NAME%' environment.
 echo   Launch the GUI by double-clicking:  run-isar-gui.bat
 echo ============================================================================
 pause
+exit /b 0
+
+rem ----------------------------------------------------------------------------
+rem Download micromamba over HTTPS only and refuse to install it unless its
+rem SHA-256 matches the pinned digest. Every failure path removes the partial
+rem download. Returns errorlevel 0 on success, 1 on any failure.
+rem ----------------------------------------------------------------------------
+:download_micromamba
+echo   Downloading micromamba %MAMBA_VERSION% ...
+curl --fail --location --proto =https --proto-redir =https -o "%MICROMAMBA_EXE%.tmp" "https://github.com/mamba-org/micromamba-releases/releases/download/%MAMBA_VERSION%/micromamba-win-64"
+if errorlevel 1 (
+    echo   [ERROR] Could not download micromamba. Check your internet connection.
+    if exist "%MICROMAMBA_EXE%.tmp" del "%MICROMAMBA_EXE%.tmp"
+    exit /b 1
+)
+echo   Verifying SHA-256 checksum ...
+certutil -hashfile "%MICROMAMBA_EXE%.tmp" SHA256 > "%TEMP%\isar_mamba_hash.txt"
+rem certutil reports failure with a NEGATIVE exit code (e.g. 0x80070002), which
+rem `if errorlevel 1` (a >=1 test) would miss; this line-level equality check is
+rem expanded at execution time, so it is not the stale-%ERRORLEVEL%-in-parens trap.
+if not "%ERRORLEVEL%"=="0" (
+    echo   [ERROR] certutil failed; cannot verify the downloaded micromamba binary.
+    del "%MICROMAMBA_EXE%.tmp"
+    del "%TEMP%\isar_mamba_hash.txt" >nul 2>nul
+    exit /b 1
+)
+findstr /i /x /c:"%MAMBA_SHA256%" "%TEMP%\isar_mamba_hash.txt" >nul
+if errorlevel 1 (
+    echo   [ERROR] micromamba checksum mismatch - refusing to run the downloaded binary.
+    echo           Expected %MAMBA_SHA256%
+    del "%MICROMAMBA_EXE%.tmp"
+    del "%TEMP%\isar_mamba_hash.txt" >nul 2>nul
+    exit /b 1
+)
+del "%TEMP%\isar_mamba_hash.txt" >nul 2>nul
+move /Y "%MICROMAMBA_EXE%.tmp" "%MICROMAMBA_EXE%" >nul
+echo   [OK] checksum verified.
 exit /b 0
