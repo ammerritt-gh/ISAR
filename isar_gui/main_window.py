@@ -20,12 +20,12 @@ from weakref import WeakSet
 from PySide6.QtCore import QByteArray, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QDockWidget,
     QFileDialog,
     QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
+    QStackedWidget,
     QToolBar,
     QToolButton,
 )
@@ -70,6 +70,7 @@ from isar_gui.viewmodels.sandbox import SandboxViewModel
 from isar_gui.views.sandbox_pane import SandboxPane
 from isar_gui.views.browser_dock import BrowserDock
 from isar_gui.views.card_dock import CardDock
+from isar_gui.views.center_host import CenterHost
 from isar_gui.views.dispersion_pane import DispersionPane
 from isar_gui.views.files_dock import FilesDock
 from isar_gui.views.heatmap_pane import HeatmapPane
@@ -82,50 +83,16 @@ from isar_gui.watch_bridge import WatchBridge
 log = logging.getLogger(__name__)
 
 
-class _PaneDock(QDockWidget):
-    """Temporary shim (GUI Pass 3, M1-1): wraps a plot pane in a QDockWidget so layout persistence,
-    the Docks menu, send-to-group routing, drag arming, and PNG export keep behaving exactly as they
-    did before the pane/dock split. It carries the same objectName/title the dock had, and forwards
-    any pane-level attribute (``apply_group``, ``arm_group_drop``, ``_glw``, …) to the wrapped pane.
-    M1-2 removes this once a central view host owns the panes directly."""
-
-    def __init__(self, title, object_name, pane, parent=None):
-        super().__init__(title, parent)
-        self.setObjectName(object_name)
-        self.setWidget(pane)
-        # The mixin used to live on the dock itself, so a drop released on the TITLE BAR was a valid
-        # group drop. The pane (one level down) can't see those; accept drops here and forward the
-        # three handlers so the whole dock stays a target, exactly as before the pane/dock split.
-        # ``apply_group`` marks a GroupDropMixin pane (every QWidget has the event methods).
-        if hasattr(pane, "apply_group"):
-            self.setAcceptDrops(True)
-
-    def dragEnterEvent(self, event):  # noqa: N802
-        pane = QDockWidget.widget(self)
-        if pane is not None and hasattr(pane, "apply_group"):
-            pane.dragEnterEvent(event)
-
-    def dragMoveEvent(self, event):  # noqa: N802
-        pane = QDockWidget.widget(self)
-        if pane is not None and hasattr(pane, "apply_group"):
-            pane.dragMoveEvent(event)
-
-    def dropEvent(self, event):  # noqa: N802
-        pane = QDockWidget.widget(self)
-        if pane is not None and hasattr(pane, "apply_group"):
-            pane.dropEvent(event)
-
-    def __getattr__(self, name):
-        # Reached only when normal QDockWidget lookup fails — forward to the wrapped pane (``widget``
-        # resolves on QDockWidget's own MRO, so this cannot re-enter __getattr__).
-        pane = QDockWidget.widget(self)
-        if pane is None:
-            raise AttributeError(name)
-        return getattr(pane, name)
-
-
 _EMPTY_HINT = "No workspace loaded.\n\nFile ▸ Open Workspace… to begin."
 _PENDING_HINT = "Drop data files to begin — they'll land in a temporary workspace."
+# The five central display surfaces, in switcher order: (host key, button label).
+_CENTER_PAGES = (("scan", "Scan"), ("waterfall", "Waterfall"), ("plane", "Plane (q, E)"),
+                 ("dispersion", "Dispersion ω(q)"), ("sandbox", "Sandbox"))
+_CENTER_KEYS = tuple(key for key, _label in _CENTER_PAGES)
+# The File ▸ Export menu keeps its historical display keys; map them to the host page keys so PNG
+# export is unchanged for the operator. "Inspector" is the C2 fit inspector, now the "scan" page.
+_EXPORT_KEY_TO_CENTER = {"Plane (q, E)": "plane", "Dispersion ω(q)": "dispersion",
+                         "Waterfall / Comparison": "waterfall", "Inspector": "scan"}
 # The log is useful context, not the primary empty-start surface.  Qt gives a lone bottom dock a
 # surprisingly generous share of the window unless we establish a deliberate starting size.
 _EMPTY_START_LOG_HEIGHT = 180
@@ -189,8 +156,20 @@ class MainWindow(QMainWindow):
         self._docks: dict[str, object] = {}
         self._warn_generation = 0     # per-bridge-tick counter passed to LogDock.sync_warnings
         self._empty = False           # True while showing the empty-start (no workspace) state
-        self.inspector = None         # the C2 central widget; None in the empty state
+        self.inspector = None         # the C2 fit inspector (a CenterHost page); None in the empty state
+        self._center_host: CenterHost | None = None   # hosts the five display surfaces once bound
         self.setAcceptDrops(True)      # drop a data folder/numor onto the window -> ingest (D2/D5)
+
+        # One permanent central QStackedWidget. Page 0 is the empty/pending hint (persists across
+        # rebinds like the Log dock); page 1 is the CenterHost added on a ready bind. setCentralWidget
+        # is called exactly once, here — _bind_workspace/_teardown_binding add/remove stack pages, they
+        # never swap the central widget. (A future page 2 — a compact monitor — is a later task.)
+        self._center_stack = QStackedWidget(self)
+        self.setCentralWidget(self._center_stack)
+        self._empty_hint = QLabel("", self)
+        self._empty_hint.setObjectName("empty_hint")
+        self._empty_hint.setAlignment(Qt.AlignCenter)
+        self._center_stack.addWidget(self._empty_hint)   # stack index 0
         self._close_when_operations_finish = False
         self._bound = False           # True once a first workspace binding exists (rebind guard)
         self._gui_store: GuiStore | None = None   # per-workspace GUI-only state (watched folders)
@@ -240,6 +219,7 @@ class MainWindow(QMainWindow):
         self._init_workspace_toolbar()
         self._init_run_menu()
         self._init_backends_menu()
+        self._init_view_menu()
         self._init_status_bar()
         self._init_health()
         # The Log dock is created once and PERSISTS across workspace rebinds — _teardown_binding
@@ -329,14 +309,16 @@ class MainWindow(QMainWindow):
         self.heatmap_vm.load_view_state(self._session)
         self.dispersion_vm.load_view_state(self._session)
 
-        # The C2 fit inspector is the central widget; a browser selection drives it. In the empty
-        # state there is nothing to inspect, so the central widget is an Open-Workspace hint instead.
+        # The five display surfaces (the C2 fit inspector + the four plot panes) live as switchable
+        # pages of the central CenterHost; a browser selection drives the inspector. In the empty
+        # state there is nothing to inspect, so the stack shows the Open-Workspace hint (page 0).
         if self._empty:
             self.inspector = None
-            self.setCentralWidget(self._make_empty_hint())
+            self._center_host = None
+            self._show_empty_hint()
         else:
             self.inspector = InspectorWidget(self.inspector_vm, parent=self)
-            self.setCentralWidget(self.inspector)
+            self._build_center_host()
         # Every route that changes what is being inspected passes through the active-unit controller.
         # This keeps the Results tree, physical chips, and table honest about the one detector in the
         # central inspector, without treating a multi-selection as an inspection request.
@@ -426,15 +408,42 @@ class MainWindow(QMainWindow):
         self.files_dock.show()
         self.files_dock.raise_()
 
-    def _make_empty_hint(self) -> QLabel:
-        """The empty central widget: a centered hint. Pending (a temp workspace is reserved) invites
-        a drop; a true none-state points at Open Workspace…."""
-        text = _PENDING_HINT if self._wsm.state() == "pending" else _EMPTY_HINT
-        hint = QLabel(text, self)
-        hint.setObjectName("empty_hint")
-        hint.setAlignment(Qt.AlignCenter)
-        self._empty_hint = hint
-        return hint
+    def _show_empty_hint(self) -> None:
+        """Show the persistent hint page (stack index 0). Pending (a temp workspace is reserved)
+        invites a drop; a true none-state points at Open Workspace…."""
+        self._empty_hint.setText(_PENDING_HINT if self._wsm.state() == "pending" else _EMPTY_HINT)
+        self._center_stack.setCurrentWidget(self._empty_hint)
+
+    def _build_center_host(self) -> None:
+        """Build the CenterHost with the five display surfaces, register it as the stack's ready page,
+        restore the persisted view + auto-follow, and make it the visible central page."""
+        host = CenterHost(self)
+        host.add_page("scan", "Scan", self.inspector)
+        host.add_page("waterfall", "Waterfall", WaterfallPane(self.waterfall_vm))
+        host.add_page("plane", "Plane (q, E)", HeatmapPane(self.heatmap_vm))
+        host.add_page("dispersion", "Dispersion ω(q)", DispersionPane(self.dispersion_vm))
+        host.add_page("sandbox", "Sandbox", SandboxPane(self.sandbox_vm))
+        # Restore the persisted view state (default: the Scan/inspector page, auto-follow on). Set
+        # auto BEFORE show_view so the programmatic (non-user) restore does not clear it.
+        host.auto_follow = bool(self._session.view_state.get("center_auto_follow", True))
+        want = self._session.view_state.get("center_view", "scan")
+        host.show_view(want if want in _CENTER_KEYS else "scan")
+        host.view_changed.connect(self._on_center_view_changed)
+        self._center_host = host
+        self._center_stack.addWidget(host)   # stack index 1 (the ready page)
+        self._center_stack.setCurrentWidget(host)
+
+    def _on_center_view_changed(self, key: str) -> None:
+        """Persist the operator's current view + auto-follow when the central view switches."""
+        self._session.view_state["center_view"] = key
+        if self._center_host is not None:
+            self._session.view_state["center_auto_follow"] = self._center_host.auto_follow
+        self._autosave()
+
+    def _show_center_view(self, key: str, *, user: bool = False) -> None:
+        """View-menu / routing entry point: switch the central view if a host is bound."""
+        if self._center_host is not None:
+            self._center_host.show_view(key, user=user)
 
     def _update_title(self) -> None:
         """``ISAR — <name>`` for a saved workspace; ``ISAR — Unsaved workspace ●`` while temporary
@@ -510,34 +519,10 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self.scans_dock, self.scan_table_dock)
         self._register_dock("Scan Table", self.scan_table_dock)
 
-        # The plot panes are plain QWidgets (GUI Pass 3); wrap each in a _PaneDock shim so it still
-        # docks, tabifies, persists, and exports exactly as before. M1-2 replaces the shims with a
-        # central view host.
-        self.heatmap_dock = _PaneDock("Plane (q, E)", "heatmap_dock",
-                                      HeatmapPane(self.heatmap_vm), self)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.heatmap_dock)
-        self._register_dock("Plane (q, E)", self.heatmap_dock)
-
-        # The C5 dispersion view shares the right area with the plane (tabified siblings).
-        self.dispersion_dock = _PaneDock("Dispersion ω(q)", "dispersion_dock",
-                                         DispersionPane(self.dispersion_vm), self)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.dispersion_dock)
-        self.tabifyDockWidget(self.heatmap_dock, self.dispersion_dock)
-        self._register_dock("Dispersion ω(q)", self.dispersion_dock)
-
-        # The C4 waterfall/comparison view is a third tabified sibling in the same area.
-        self.waterfall_dock = _PaneDock("Waterfall / Comparison", "waterfall_dock",
-                                        WaterfallPane(self.waterfall_vm), self)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.waterfall_dock)
-        self.tabifyDockWidget(self.heatmap_dock, self.waterfall_dock)
-        self._register_dock("Waterfall / Comparison", self.waterfall_dock)
-
-        # The G7 sandbox preview-fit panel — a fourth tabified sibling (2B).
-        self.sandbox_dock = _PaneDock("Sandbox (preview fit)", "sandbox_dock",
-                                      SandboxPane(self.sandbox_vm), self)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.sandbox_dock)
-        self.tabifyDockWidget(self.heatmap_dock, self.sandbox_dock)
-        self._register_dock("Sandbox (preview fit)", self.sandbox_dock)
+        # The four plot panes (plane / dispersion / waterfall / sandbox) are no longer docks: the C2
+        # inspector and those four surfaces are switchable pages of the central CenterHost, built in
+        # _bind_workspace (see _build_center_host). Only the scan-centric docks remain in the right
+        # area here.
 
     def _apply_empty_start_dock_geometry(self) -> None:
         """Give the no-workspace/start-new screen a compact Log dock.
@@ -840,51 +825,45 @@ class MainWindow(QMainWindow):
             self._store_save_timer.start()
 
     def _on_send_group(self, keys, target: str, label: str) -> None:
-        """Route a folder's "Send to <plot>" to the destination dock: validate, restrict, raise (2A).
+        """Route a folder's "Send to <plot>" to the destination pane: validate, restrict, switch (2A).
 
         The engine is never handed a "group" — only the unit ids in ``keys`` reach the view VM. A
         refusal (e.g. a multi-T group on a single-T plane) is surfaced loudly on the status bar."""
-        mapping = {"waterfall": (getattr(self, "waterfall_vm", None), "Waterfall / Comparison"),
-                   "dispersion": (getattr(self, "dispersion_vm", None), "Dispersion ω(q)"),
-                   "heatmap": (getattr(self, "heatmap_vm", None), "Plane (q, E)")}
-        vm, dock_name = mapping.get(target, (None, None))
+        # target keys are the "Send to" verbs; the "heatmap" plot is the CenterHost "plane" page.
+        mapping = {"waterfall": ("waterfall", getattr(self, "waterfall_vm", None)),
+                   "dispersion": ("dispersion", getattr(self, "dispersion_vm", None)),
+                   "heatmap": ("plane", getattr(self, "heatmap_vm", None))}
+        center_key, vm = mapping.get(target, (None, None))
         keys = list(keys or [])
-        if vm is None or not keys:
+        if vm is None or not keys or self._center_host is None:
             return
         ok, reason = vm.can_accept(keys)
         if not ok:
             self.statusBar().showMessage(reason)
             return
-        dock = self._docks.get(dock_name)
-        if dock is None:
-            return
-        dock.apply_group(keys, label or "selection")
-        dock.show()
-        dock.raise_()
+        self._center_host.pane(center_key).apply_group(keys, label or "selection")
+        self._center_host.show_view(center_key)
 
     def _on_scan_drag(self, active: bool, keys) -> None:
-        """Arm the VISIBLE plot dock as a drop target while a scan drag is in flight (R12). Hidden
-        tabbed docks are deliberately NOT surfaced — only whichever plot is currently shown glows,
-        and only if it can accept the scans."""
-        for name in ("Plane (q, E)", "Dispersion ω(q)", "Waterfall / Comparison"):
-            dock = self._docks.get(name)
-            arm = getattr(dock, "arm_group_drop", None)
-            if not callable(arm):
-                continue
-            on = bool(active) and not dock.visibleRegion().isEmpty()   # empty region => hidden tab
-            arm(on, keys)
+        """Arm the currently-shown plot pane as a drop target while a scan drag is in flight (R12).
+        Only the visible central page can glow; the group-drop arm itself no-ops (no glow) when the
+        page cannot accept the scans, and the Scan/Sandbox pages have no ``arm_group_drop`` at all."""
+        if self._center_host is None:
+            return
+        pane = self._center_host.pane(self._center_host.current_key)
+        arm = getattr(pane, "arm_group_drop", None)
+        if callable(arm):
+            arm(bool(active), keys)
 
     def _on_fit_requested(self, unit_key: str) -> None:
-        """Run a G7 sandbox preview fit for ``unit_key`` and surface the Sandbox dock (2B). The fit
-        runs off-thread; the dock updates when it finishes. Nothing is written to the workspace."""
+        """Run a G7 sandbox preview fit for ``unit_key`` and switch to the Sandbox page (2B). The fit
+        runs off-thread; the pane updates when it finishes. Nothing is written to the workspace."""
         if self._empty:
             self.statusBar().showMessage("No workspace — nothing to fit")
             return
         self.sandbox_vm.set_workspace_root(self._ws.root)
-        dock = getattr(self, "sandbox_dock", None)
-        if dock is not None:
-            dock.show()
-            dock.raise_()
+        if self._center_host is not None:
+            self._center_host.show_view("sandbox")
         self.statusBar().showMessage(f"Sandbox preview fit for {unit_key}…")
         self.sandbox_vm.request_fit(unit_key)
 
@@ -1113,11 +1092,16 @@ class MainWindow(QMainWindow):
         return ok
 
     def _glw_for(self, dock_key: str):
-        """The pyqtgraph graphics widget backing a named view, or ``None``."""
-        if dock_key == "Inspector":
-            return None if self.inspector is None else self.inspector._glw
-        dock = self._docks.get(dock_key)
-        return getattr(dock, "_glw", None) if dock is not None else None
+        """The pyqtgraph graphics widget backing a named export view, or ``None``.
+
+        The File ▸ Export menu keeps its historical display keys (``Plane (q, E)`` / ``Dispersion
+        ω(q)`` / ``Waterfall / Comparison`` / ``Inspector``); they map to CenterHost page keys."""
+        if self._center_host is None:
+            return None
+        center_key = _EXPORT_KEY_TO_CENTER.get(dock_key)
+        if center_key is None:
+            return None
+        return self._center_host.glw_for(center_key)
 
     # ---- Backends: LLM settings + TAVI launch + health (D1/D3) ------------
     def _init_backends_menu(self) -> None:
@@ -1126,6 +1110,20 @@ class MainWindow(QMainWindow):
         settings_action.triggered.connect(self._open_settings)
         self._launch_tavi_action = menu.addAction("Launch TAVI")
         self._launch_tavi_action.triggered.connect(self._launch_tavi)
+
+    # ---- View menu (central view switcher; built once, persists across rebinds) ----
+    def _init_view_menu(self) -> None:
+        """The View menu selects the central display surface. It is built once, before the per-bind
+        Docks menu (which is always appended last), so View reads before Docks in the menu bar. A
+        trigger is an explicit user view change (clears auto-follow); it is a no-op with no host."""
+        menu = self.menuBar().addMenu("&View")
+        for key, label in _CENTER_PAGES:
+            act = menu.addAction(label)
+            act.triggered.connect(lambda _checked=False, k=key: self._show_center_view(k, user=True))
+        menu.addSeparator()
+        # Compact mode is a later task's page; the placeholder is present but disabled.
+        self._compact_mode_action = menu.addAction("Compact mode")
+        self._compact_mode_action.setEnabled(False)
 
     def _settings(self) -> dict:
         """Return GUI-owned non-secret backend settings.
@@ -1514,9 +1512,6 @@ class MainWindow(QMainWindow):
         self.files_dock = None
         self.scans_dock = None
         self.scan_table_dock = None
-        self.heatmap_dock = None
-        self.dispersion_dock = None
-        self.waterfall_dock = None
         # The old viewmodels are QObjects parented to self; without an explicit deleteLater() they
         # would linger as inert children (their dock's connections already dropped above) for the
         # rest of the window's life. Drop them so repeated rebinds don't accumulate.
@@ -1531,12 +1526,18 @@ class MainWindow(QMainWindow):
         self.dispersion_vm.deleteLater()
         self.waterfall_vm.save_view_state(self._session)
         self.waterfall_vm.deleteLater()
-        # The central inspector widget is rebuilt against the new workspace in _bind_workspace;
-        # setCentralWidget will reparent+delete the old one, but drop it explicitly so its VM
-        # connection is gone before the fresh bind.
-        old_inspector = self.takeCentralWidget()
-        if old_inspector is not None:
-            old_inspector.deleteLater()
+        # The five display surfaces live inside the CenterHost (stack page 1). Dispose it — detaching
+        # and deleting every page (incl. the inspector) — drop its view_changed connection, remove it
+        # from the stack, and delete it, so the fresh bind rebuilds a clean host. The permanent stack
+        # and its hint page (index 0) are left in place. The panes' VM connections drop when both the
+        # panes (deleteLater'd here) and the VMs (deleteLater'd just above) are torn down.
+        if self._center_host is not None:
+            self._center_host.view_changed.disconnect(self._on_center_view_changed)
+            self._center_stack.removeWidget(self._center_host)
+            self._center_host.dispose()
+            self._center_host.deleteLater()
+            self._center_host = None
+        self.inspector = None
 
     # ---- watch -----------------------------------------------------------
     def _on_workspace_changed(self, changed) -> None:
@@ -1583,6 +1584,7 @@ class MainWindow(QMainWindow):
         if isinstance(payload, str):
             self.active_units.set_active(payload)
             self.inspector_vm.set_unit(payload)
+            self._raise_inspector_if_auto()
         else:
             self._inspect_fit(payload)
 
@@ -1590,6 +1592,14 @@ class MainWindow(QMainWindow):
         """Inspect a fit selected by Results or one of the plot views, retaining its unit identity."""
         self.active_units.set_active(self._unit_key_for_fit(fit))
         self.inspector_vm.set_fit(fit)
+        self._raise_inspector_if_auto()
+
+    def _raise_inspector_if_auto(self) -> None:
+        """Switch the central view to the Scan/inspector page when an inspect request is routed AND
+        auto-follow is on. (Full campaign-event auto-follow rules land in a later task; this is the
+        selection hook only.) With auto off, the operator's chosen view is left untouched."""
+        if self._center_host is not None and self._center_host.auto_follow:
+            self._center_host.show_view("scan")
 
     def _unit_key_for_fit(self, fit) -> str | None:
         """Return a fit's exact unit id, with a conservative legacy-results fallback.
@@ -1653,6 +1663,11 @@ class MainWindow(QMainWindow):
         self.heatmap_vm.save_view_state(self._session)
         self.dispersion_vm.save_view_state(self._session)
         self.waterfall_vm.save_view_state(self._session)
+        # Persist the central view switcher (current page + auto-follow) alongside the other
+        # view-state writes; restored on the next ready bind (default: Scan page, auto-follow on).
+        if self._center_host is not None:
+            self._session.view_state["center_view"] = self._center_host.current_key
+            self._session.view_state["center_auto_follow"] = self._center_host.auto_follow
         return self._session
 
     def _restore_layout(self) -> None:

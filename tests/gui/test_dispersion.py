@@ -243,7 +243,7 @@ def test_mainwindow_registers_dispersion_dock_and_routes(qtbot, make_ws):
     ws = _make(make_ws)
     w = MainWindow(ws, session=Session(), watch=False)
     qtbot.addWidget(w)
-    assert "Dispersion ω(q)" in w._docks
+    assert w._center_host.pane("dispersion") is not None
     with qtbot.waitSignal(w.inspector_vm.spec_changed, timeout=1000):
         w.dispersion_vm.activate_at(2.1, 5.0)
     assert not w.inspector_vm.is_empty

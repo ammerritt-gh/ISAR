@@ -235,7 +235,7 @@ def test_mainwindow_registers_waterfall_dock_and_routes(qtbot, make_ws):
     ws = _make(make_ws)
     w = MainWindow(ws, session=Session(), watch=False)
     qtbot.addWidget(w)
-    assert "Waterfall / Comparison" in w._docks
+    assert w._center_host.pane("waterfall") is not None
     w.waterfall_vm.set_mode("comparison")
     with qtbot.waitSignal(w.inspector_vm.spec_changed, timeout=1000):
         w.waterfall_vm.activate_at(2.0, 4.0)

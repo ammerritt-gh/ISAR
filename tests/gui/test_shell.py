@@ -56,7 +56,11 @@ def test_empty_start_window(qtbot):
     qtbot.addWidget(w)
     assert w.is_empty
     assert w._bridge is None                       # never watch a workspace that isn't there
-    assert w.centralWidget() is w._empty_hint
+    # The central widget is the permanent stack; the empty state shows its hint page (index 0) and
+    # builds no CenterHost.
+    assert w.centralWidget() is w._center_stack
+    assert w._center_stack.currentWidget() is w._empty_hint
+    assert w._center_host is None
     assert "Open Workspace" in w._empty_hint.text()
     assert w.windowTitle() == "ISAR — (no workspace)"
     assert "No workspace" in w.statusBar().currentMessage()
@@ -98,14 +102,20 @@ def test_open_workspace_from_empty_binds(qtbot, make_ws):
 
     assert w.load_workspace(str(root)) is True
     assert not w.is_empty
-    assert w.centralWidget() is w.inspector
+    # The inspector is now the CenterHost's "scan" page (the stack shows the host, not the inspector).
+    assert w.centralWidget() is w._center_stack
+    assert w._center_host is not None
+    assert w._center_stack.currentWidget() is w._center_host
+    assert w._center_host.pane("scan") is w.inspector
     assert w.inspector is not None
     assert w.windowTitle() == f"ISAR — {root.name}"
     assert len(w.browser_vm.group_rows) == 1
-    # A ready workspace restores the full normal view; the sparse welcome scaffold is not sticky.
-    for name in ("Browser", "Card", "Scans", "Plane (q, E)", "Dispersion ω(q)",
-                 "Waterfall / Comparison"):
+    # A ready workspace restores the full normal view; the sparse welcome scaffold is not sticky. The
+    # scan-centric docks remain docks; the four plot surfaces are CenterHost pages.
+    for name in ("Browser", "Card", "Scans"):
         assert name in w._docks
+    for key in ("scan", "waterfall", "plane", "dispersion", "sandbox"):
+        assert w._center_host.pane(key) is not None
 
 
 def test_empty_start_autosave_preserves_full_workspace_layout(qtbot):

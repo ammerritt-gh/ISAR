@@ -156,9 +156,10 @@ def test_main_window_registers_browser_dock(qtbot, make_ws):
     assert w.browser_vm is not None
     w.show()
     assert w.browser_dock.isVisible()
-    # The central widget is now the C2 inspector, empty until a scan is selected.
+    # The C2 inspector is the CenterHost's "scan" page, empty until a scan is selected.
     from isar_gui.views.inspector_widget import InspectorWidget
-    assert isinstance(w.centralWidget(), InspectorWidget)
+    assert isinstance(w._center_host.pane("scan"), InspectorWidget)
+    assert w._center_host.pane("scan") is w.inspector
     assert w.inspector_vm.is_empty
 
 
