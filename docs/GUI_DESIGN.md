@@ -113,6 +113,11 @@ G-series (canonical text in `docs/DECISIONS.md`):
   minimal precursor). Resume never re-compiles a goal: `--resume-latest` reuses the frozen
   objective from the last `campaign_start` event, and start fingerprints
   (`source: {kind, sha256}`) make Resume-vs-Start-anyway an honest, comparable decision.
+  Fingerprints decide *confidence of sameness*, never resumability: an explicit
+  "Resume last campaign" control stays reachable when no comparable fingerprint exists
+  (pre-fingerprint logs, a moved spec file, a freshly typed goal), since the frozen objective
+  alone is sufficient. Tier is frozen with the objective — the form disables it when the
+  primary action is a verified Resume, and the launcher never emits `--tier` on a resume.
 - **G20 — Compact campaign monitor.** The small window is an explicit mode, not a responsive
   collapse: same window, dock layout stashed in memory, central stack swapped to a glanceable
   card (status, current scan, budget, mini plane, log ticker, cooperative Stop). Read-only; the

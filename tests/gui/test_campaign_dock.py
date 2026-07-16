@@ -64,6 +64,12 @@ class _Ops:
     def is_stop_pending(self):
         return self.stop_pending
 
+    def drive_options(self):
+        # Launch-captured options of the active campaign, mirroring the real coordinator.
+        if self.running and self.drive_requests:
+            return self.drive_requests[-1][0]
+        return None
+
 
 @pytest.fixture
 def dock_env(qtbot, make_ws):
@@ -142,6 +148,90 @@ def test_resume_launches_resume_latest_without_goal(dock_env):
     opts, _env = ops.drive_requests[0]
     assert opts.resume_latest is True
     assert opts.goal is None and opts.spec_path is None   # the frozen objective, no LLM re-compile
+
+
+def test_resume_button_works_without_any_recomputable_fingerprint(dock_env):
+    # A pre-fingerprint campaign log (campaign_start without `source`): the primary button cannot
+    # compare anything and the form is empty, but the frozen objective in the log is sufficient —
+    # the explicit resume route must be reachable (fingerprints decide confidence, not possibility).
+    dock, vm, ops, ws, root = dock_env
+    log_event(root / "report" / "session_log.jsonl", "decide", {
+        "event": "campaign_start", "action": "campaign_start", "objective": {}})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+    dock.set_backend_status("tavi", "ok", "up")
+    assert not dock._start_btn.isEnabled()           # empty form: no fresh start
+    assert dock._resume_btn.isVisible() and dock._resume_btn.isEnabled()
+    dock._resume_btn.click()
+    opts, _env = ops.drive_requests[0]
+    assert opts.resume_latest is True and opts.goal is None and opts.spec_path is None
+
+
+def test_resume_button_covers_a_moved_spec_file(dock_env, tmp_path):
+    # The original spec was moved/deleted: the form fingerprint is unreadable, so the primary
+    # button is disabled — but --resume-latest needs no source file at all.
+    dock, vm, ops, ws, root = dock_env
+    log_event(root / "report" / "session_log.jsonl", "decide", {
+        "event": "campaign_start", "action": "campaign_start", "objective": {},
+        "source": {"kind": "spec", "sha256": "f" * 64}})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+    dock.set_backend_status("tavi", "ok", "up")
+    dock._src_spec.setChecked(True)
+    dock._spec_path.setText(str(tmp_path / "moved-away.json"))   # does not exist
+    assert not dock._start_btn.isEnabled()
+    assert dock._resume_btn.isVisible() and dock._resume_btn.isEnabled()
+    dock._resume_btn.click()
+    assert ops.drive_requests and ops.drive_requests[0][0].resume_latest is True
+
+
+def test_resume_button_hidden_when_primary_offers_verified_resume(dock_env):
+    dock, vm, ops, ws, root = dock_env
+    goal = "map the acoustic branch"
+    log_event(root / "report" / "session_log.jsonl", "decide", {
+        "event": "campaign_start", "action": "campaign_start", "objective": {},
+        "source": {"kind": "goal", "sha256": _goal_sha(goal)}})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+    dock._goal.setPlainText(goal)                    # verified match -> one Resume, not two
+    assert dock._start_btn.text() == "Resume"
+    assert not dock._resume_btn.isVisible()
+    dock._goal.setPlainText("something else")        # mismatch -> the explicit route reappears
+    assert dock._resume_btn.isVisible()
+
+
+def test_tier_combo_frozen_when_primary_offers_resume(dock_env):
+    # Tier is frozen with a resumed objective (the CLI ignores it) — a live combo would lie.
+    dock, vm, ops, ws, root = dock_env
+    goal = "map the acoustic branch"
+    log_event(root / "report" / "session_log.jsonl", "decide", {
+        "event": "campaign_start", "action": "campaign_start", "objective": {},
+        "source": {"kind": "goal", "sha256": _goal_sha(goal)}})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+    dock._goal.setPlainText(goal)
+    assert not dock._tier.isEnabled()
+    assert "frozen" in dock._tier.toolTip()
+    dock._goal.setPlainText("a different goal")      # fresh start -> tier applies again
+    assert dock._tier.isEnabled()
+
+
+def test_running_status_is_one_based_with_the_launch_captured_cap(dock_env):
+    dock, vm, ops, ws, root = dock_env
+    dock.set_backend_status("tavi", "ok", "up")
+    dock._goal.setPlainText("map the branch")
+    dock._max_iters.setValue(12)
+    dock._start_btn.click()                          # ops fake captures the options, running=True
+    dock._max_iters.setValue(99)                     # editing mid-run must not change the display
+    path = root / "report" / "session_log.jsonl"
+    log_event(path, "decide", {"event": "campaign_start", "action": "campaign_start",
+                               "objective": {}, "source": {"kind": "goal", "sha256": "x"}})
+    _run_event_iter0 = {"job_id": "j-1", "cost": 1.0, "iter": 0}
+    log_event(path, "run", _run_event_iter0)
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+    assert "iteration 1 of 12 (this run)" in dock._status_line.text()
+    assert "iteration: 1 " in dock._iter_label.text()
 
 
 def test_stop_and_force_route_to_coordinator(dock_env):

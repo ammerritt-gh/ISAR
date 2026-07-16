@@ -89,6 +89,16 @@ class WorkspaceOperationCoordinator(QObject):
         """A cooperative campaign stop request has been written and not yet honored."""
         return self._stop_pending
 
+    def drive_options(self) -> DriveOptions | None:
+        """The ACTIVE campaign's launch-time options (None when no campaign is running).
+
+        Display code must read the running campaign's parameters from here — the setup form can
+        be edited freely mid-run and no longer describes the subprocess."""
+        if self._active is None or self._active.kind != "drive":
+            return None
+        opts, _env = self._active.payload
+        return opts
+
     def queued_count(self) -> int:
         return len(self._queue)
 

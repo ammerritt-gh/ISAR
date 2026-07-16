@@ -41,7 +41,6 @@ class CampaignMonitor(QWidget):
         self._heatmap_vm = heatmap_vm
         self._operations = operations
         self._ticker: list[str] = []
-        self._scan_line = "no scan yet"
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
@@ -52,7 +51,7 @@ class CampaignMonitor(QWidget):
         self._status.setStyleSheet("font-weight: bold;")
         outer.addWidget(self._status)
 
-        self._current = QLabel(self._scan_line, self)
+        self._current = QLabel("no scan yet", self)
         self._current.setWordWrap(True)
         outer.addWidget(self._current)
 
@@ -88,18 +87,11 @@ class CampaignMonitor(QWidget):
         outer.addLayout(buttons)
 
         campaign_vm.status_changed.connect(self._sync)
-        campaign_vm.feed_appended.connect(self._on_feed)
         heatmap_vm.spec_changed.connect(self._render_plane)
         self._sync()
         self._render_plane()
 
-    # ---- feed-driven "current scan" + ticker ---------------------------------
-    def _on_feed(self, items: list) -> None:
-        for item in items:
-            if item.kind in ("propose", "run"):
-                self._scan_line = item.text
-        self._current.setText(self._scan_line)
-
+    # ---- ticker ---------------------------------------------------------------
     def append_log_line(self, line: str) -> None:
         """The window feeds LogDock lines here; keep the last few as a ticker."""
         self._ticker.append(str(line))
@@ -110,9 +102,13 @@ class CampaignMonitor(QWidget):
     def _sync(self, *_a) -> None:
         state = self._vm.state
         running = self._operations.is_running_campaign()
+        # The current-scan line is state-derived (not feed-driven): this widget is created lazily
+        # on compact-entry, possibly mid-scan, and must not say "no scan yet" until the next event.
+        self._current.setText(state.last_scan or "no scan yet")
         if running:
             it = state.iteration
-            text = f"campaign running — iteration {it if it is not None else '…'}"
+            # state.iteration is the log's zero-based index; operators count from 1.
+            text = f"campaign running — iteration {it + 1 if it is not None else '…'}"
             if self._operations.is_stop_pending():
                 text += " — stopping after the current scan…"
         elif state.stop_state:

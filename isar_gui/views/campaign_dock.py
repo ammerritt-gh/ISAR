@@ -127,6 +127,15 @@ class CampaignDock(QDockWidget):
         controls = QHBoxLayout()
         self._start_btn = QPushButton("Start", body)
         self._start_btn.clicked.connect(self._on_start_clicked)
+        # The explicit resume route (fingerprints decide CONFIDENCE of sameness, never whether a
+        # resume is possible): the frozen objective in the session log is always sufficient, so
+        # this button works when the form can't produce a comparable fingerprint at all — a
+        # pre-fingerprint campaign log, a moved/deleted spec file, or a freshly typed goal.
+        self._resume_btn = QPushButton("Resume last campaign", body)
+        self._resume_btn.setFlat(True)
+        self._resume_btn.setStyleSheet("color: #1565c0;")
+        self._resume_btn.clicked.connect(self._on_resume_clicked)
+        self._resume_btn.setVisible(False)
         self._stop_btn = QPushButton("Stop", body)
         self._stop_btn.setToolTip("Cooperative: the campaign finishes the current scan, then stops.")
         self._stop_btn.clicked.connect(self._on_stop_clicked)
@@ -136,6 +145,7 @@ class CampaignDock(QDockWidget):
         self._force_btn.setStyleSheet("color: #c62828;")
         self._force_btn.clicked.connect(self._on_force_clicked)
         controls.addWidget(self._start_btn)
+        controls.addWidget(self._resume_btn)
         controls.addWidget(self._stop_btn)
         controls.addWidget(self._force_btn)
         controls.addStretch(1)
@@ -277,13 +287,27 @@ class CampaignDock(QDockWidget):
         return "Start", False
 
     # ---- controls --------------------------------------------------------------
+    def _launch_resume(self) -> None:
+        """Launch ``--resume-latest``: the frozen objective, no LLM. Tier is frozen with the
+        objective (the CLI ignores it on resume); budget/seed/max-iters still apply per run."""
+        opts = DriveOptions(resume_latest=True, tier=self._tier.currentText(),
+                            budget=self._budget.text().strip() or None,
+                            seed=self._seed.value(), max_iters=self._max_iters.value())
+        if not self._operations.request_drive(opts, env=dict(self._llm_env())):
+            self._status_line.setText("could not start — workspace not ready")
+            return
+        self._sync_status()
+
+    def _on_resume_clicked(self) -> None:
+        self._launch_resume()
+
     def _on_start_clicked(self) -> None:
-        label, resume = self._resume_decision()
+        _label, resume = self._resume_decision()
         budget = self._budget.text().strip() or None
         if resume:
-            opts = DriveOptions(resume_latest=True, tier=self._tier.currentText(), budget=budget,
-                                seed=self._seed.value(), max_iters=self._max_iters.value())
-        elif self._src_spec.isChecked():
+            self._launch_resume()
+            return
+        if self._src_spec.isChecked():
             opts = DriveOptions(spec_path=self._spec_path.text().strip(),
                                 tier=self._tier.currentText(), budget=budget,
                                 seed=self._seed.value(), max_iters=self._max_iters.value())
@@ -348,14 +372,34 @@ class CampaignDock(QDockWidget):
             self._start_btn.setToolTip("Enter a goal or pick a spec file")
         else:
             self._start_btn.setToolTip("")
+
+        # The explicit resume route needs NO form fingerprint — the frozen objective in the log is
+        # sufficient. Shown whenever a campaign exists and the primary isn't already a verified
+        # Resume (fingerprints decide confidence of sameness, never resumability).
+        self._resume_btn.setVisible(state.has_campaign and label != "Resume")
+        self._resume_btn.setEnabled((not busy) and self._tavi_status == "ok")
+        self._resume_btn.setToolTip(
+            "Continues the frozen objective from the campaign log (no LLM). Goal/spec and tier "
+            "are ignored; budget/seed/max-iters still apply to this run."
+            + ("" if self._tavi_status == "ok" else "\nTAVI backend is not reachable — launch it first."))
+
+        # Tier is frozen with a resumed objective — a live combo implying otherwise would lie.
+        resuming = label == "Resume"
+        self._tier.setEnabled(not resuming)
+        self._tier.setToolTip("Tier is frozen with the campaign objective — it applies to new "
+                              "starts only." if resuming else "")
+
         self._stop_btn.setEnabled(running)
         self._force_btn.setVisible(running and self._stop_pending())
 
         if running:
             it = state.iteration
-            cap = self._max_iters.value()
+            # Launch-captured cap: the spinbox can be edited mid-run and no longer describes the
+            # subprocess. Iterations are logged zero-based; operators count from 1.
+            opts = self._operations.drive_options()
+            cap = opts.max_iters if opts is not None else "—"
             self._status_line.setText(
-                f"running — iteration {it if it is not None else '…'} of {cap} (this run)"
+                f"running — iteration {it + 1 if it is not None else '…'} of {cap} (this run)"
                 + ("  — stopping after the current scan…" if self._stop_pending() else ""))
         elif state.stop_state == "operator_stopped":
             self._status_line.setText("stopped by operator — press Resume to continue")
@@ -369,7 +413,7 @@ class CampaignDock(QDockWidget):
 
         it = state.iteration
         self._iter_label.setText(
-            f"iteration: {it if it is not None else '—'}   scans: {state.scan_count}   "
+            f"iteration: {it + 1 if it is not None else '—'}   scans: {state.scan_count}   "
             f"observations: {state.n_observations if state.n_observations is not None else '—'}")
         permille, text = budget_readout(state)
         self._budget_bar.setValue(permille)

@@ -159,7 +159,9 @@ def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list
     else:
         cmd.append("--resume-latest")
     cmd += ["--workspace", str(workspace)]
-    if opts.tier != "deterministic":
+    # Tier is frozen with a resumed objective (the CLI ignores --tier on --resume-latest and
+    # notes an explicit override on stderr) — never emit the dead flag on a resume.
+    if opts.tier != "deterministic" and not opts.resume_latest:
         cmd += ["--tier", opts.tier]
     if opts.budget:
         cmd += ["--budget", opts.budget]

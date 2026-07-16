@@ -81,6 +81,25 @@ def test_monitor_stop_routes_cooperatively(qtbot, ready_window, monkeypatch):
     assert calls == [1]
 
 
+def test_monitor_built_mid_scan_shows_the_current_scan_immediately(qtbot, ready_window):
+    # The monitor is created lazily on first compact-entry — possibly mid-scan. Its current-scan
+    # line is state-derived (CampaignState.last_scan), so events consumed BEFORE it existed must
+    # still render; "no scan yet" until the next feed tick would be a lie.
+    from isar.drive.session_log import log_event
+
+    w = ready_window
+    path = w._ws.root / "report" / "session_log.jsonl"
+    log_event(path, "decide", {"event": "campaign_start", "action": "campaign_start",
+                               "objective": {}, "source": {"kind": "goal", "sha256": "x"}})
+    log_event(path, "propose", {"hkl": [2.0, 0.0, 0.0], "e_lo": 1.0, "e_hi": 9.0,
+                                "ncount": 200, "kind": "production", "iter": 4})
+    w._ws.refresh()
+    w.campaign_vm.on_workspace_changed({"events"})   # consumed with no monitor in existence
+    w.toggle_compact_mode()                          # NOW the monitor is created
+    text = w._campaign_monitor._current.text()
+    assert "q=(2, 0, 0)" in text and "no scan yet" not in text
+
+
 def test_monitor_ticker_mirrors_log(qtbot, ready_window):
     w = ready_window
     w.toggle_compact_mode()

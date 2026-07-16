@@ -15,7 +15,8 @@ pytest.importorskip("PySide6")
 
 from isar.drive.session_log import log_event
 from isar.workspace_api import Workspace
-from isar_gui.viewmodels.campaign import CampaignViewModel, reduce_campaign, render_feed_item
+from isar_gui.viewmodels.campaign import (
+    CampaignState, CampaignViewModel, budget_readout, reduce_campaign, render_feed_item)
 
 
 def _log_path(root):
@@ -100,6 +101,47 @@ def test_reducer_tolerates_unknown_kinds_and_missing_fields(make_ws):
     ws = Workspace.open(root)
     state = reduce_campaign(list(ws.session_events()))   # must not raise
     assert state.scan_count == 1
+
+
+def test_reducer_captures_last_scan_identical_to_the_feed_line(make_ws):
+    # last_scan is state-derived so a consumer built mid-campaign (the lazily-created compact
+    # monitor) shows the current scan immediately — and it must be the SAME text the feed shows.
+    root = make_ws(rows=[])
+    path = _log_path(root)
+    _start_event(path)
+    propose = {"hkl": [2.0, 0.0, 0.0], "e_lo": 1.0, "e_hi": 9.0, "ncount": 200,
+               "kind": "production", "iter": 3}
+    log_event(path, "propose", propose)
+    ws = Workspace.open(root)
+    state = reduce_campaign(list(ws.session_events()))
+    assert state.last_scan == render_feed_item({"kind": "propose", "ts": 1.0,
+                                                "payload": propose}).text
+
+    _run_event(path, 3, job="j-9")                    # the submitted scan supersedes the proposal
+    ws.refresh()
+    state = reduce_campaign(list(ws.session_events()))
+    assert "j-9" in state.last_scan
+
+    _start_event(path, sha="b" * 64)                  # a new segment starts with no scan yet
+    ws.refresh()
+    assert reduce_campaign(list(ws.session_events())).last_scan is None
+
+
+# ---- budget readout (pure) ---------------------------------------------------
+def test_budget_readout_time_budgets_use_the_engine_dichotomy():
+    # The engine's canonical time kind is counting_seconds (isar/cli/main.py::_parse_budget,
+    # goal_to_spec::_budget) and its ledger split is neutrons-vs-everything-else (loop.py
+    # budget_state) — the readout must not keep a second kind list that misses it.
+    st = CampaignState(has_campaign=True, budget_kind="counting_seconds",
+                       budget_amount=8 * 3600.0, spent_seconds=2 * 3600.0)
+    permille, text = budget_readout(st)
+    assert permille == 250
+    assert "2.00 / 8.00 h" in text
+    st = CampaignState(has_campaign=True, budget_kind="counting_seconds",
+                       budget_amount=120.0, spent_seconds=30.0)
+    permille, text = budget_readout(st)
+    assert permille == 250 and "30s / 120s" in text
+    assert budget_readout(CampaignState())[1] == "budget: —"     # no budget -> honest dash
 
 
 # ---- feed rendering ----------------------------------------------------------
