@@ -1332,6 +1332,12 @@ class MainWindow(QMainWindow):
                     DEFAULT_CLOUD_FALLBACK_MODEL, "tavi_bat": ""}
         saved = dict(self._session.view_state.get("settings", {}))
         saved.pop("llm_api_key", None)
+        # Retired-ref migration: settings saved before 2026-07-16 carry the old cloud-fallback pin
+        # (gpt-oss-120b, whose NanoGPT serving returns empty replies) — a stale saved value would
+        # silently override the repaired default forever. Drop it so the default wins; the dialog
+        # re-persists the current constant on the next save.
+        if saved.get("cloud_fallback_model") == "nanogpt/openai/gpt-oss-120b":
+            saved.pop("cloud_fallback_model")
         return {**defaults, **saved}
 
     def _open_settings(self) -> None:

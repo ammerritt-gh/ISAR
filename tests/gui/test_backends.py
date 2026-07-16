@@ -52,6 +52,22 @@ def test_llm_env_reads_credential_just_in_time(qtbot, make_ws, monkeypatch):
                    "ISAR_LLM_FALLBACK_MODEL": DEFAULT_CLOUD_FALLBACK_MODEL}
 
 
+def test_settings_migrate_the_retired_cloud_fallback_pin(qtbot, make_ws):
+    # A settings dict saved before 2026-07-16 carries the retired gpt-oss-120b pin; left alone it
+    # would silently override the repaired default forever. An explicit different pin survives.
+    from isar.workspace_api import DEFAULT_CLOUD_FALLBACK_MODEL
+
+    w = _win(qtbot, make_ws)
+    w._session.view_state["settings"] = {"cloud_fallback_enabled": True,
+                                         "cloud_fallback_model": "nanogpt/openai/gpt-oss-120b"}
+    assert w._settings()["cloud_fallback_model"] == DEFAULT_CLOUD_FALLBACK_MODEL
+    assert w._llm_env()["ISAR_LLM_FALLBACK_MODEL"] == DEFAULT_CLOUD_FALLBACK_MODEL
+
+    w._session.view_state["settings"] = {"cloud_fallback_enabled": True,
+                                         "cloud_fallback_model": "nanogpt/minimax/minimax-m3"}
+    assert w._settings()["cloud_fallback_model"] == "nanogpt/minimax/minimax-m3"
+
+
 def test_launch_tavi_missing_sets_status(qtbot, make_ws, monkeypatch):
     w = _win(qtbot, make_ws)
     monkeypatch.setattr("isar_gui.main_window.find_tavi_bat", lambda configured: None)
