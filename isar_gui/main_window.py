@@ -1074,7 +1074,16 @@ class MainWindow(QMainWindow):
                 self._close_when_operations_finish = False
                 QTimer.singleShot(0, self.close)
         else:
-            verb = "Cancelling" if state["cancelling"] else ("Ingesting" if kind == "ingest" else "Analysing")
+            if state["cancelling"]:
+                verb = "Cancelling"
+            elif state.get("stopping"):
+                verb = "Stopping campaign after the current scan"
+            elif kind == "ingest":
+                verb = "Ingesting"
+            elif kind == "drive":
+                verb = "Campaign running"
+            else:
+                verb = "Analysing"
             suffix = f" + {queued} queued" if queued else ""
             self._operation_status.setText(f"{verb}{suffix}")
         dock = getattr(self, "card_dock", None)

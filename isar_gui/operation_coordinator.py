@@ -8,15 +8,18 @@ generation, so a late callback cannot refresh a different binding.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import sys
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from isar_gui.commands import RunOptions, build_run_command
+from isar_gui.commands import DriveOptions, RunOptions, build_drive_command, build_run_command
 from isar_gui.ingest_controller import IngestController
 from isar_gui.process import ProcessRunner
 
@@ -45,6 +48,8 @@ class WorkspaceOperationCoordinator(QObject):
     ingest_failed = Signal(int, str)
     run_started = Signal()
     run_finished = Signal(int, bool)  # exit code, callback is still for the live workspace
+    drive_started = Signal()
+    drive_finished = Signal(int, bool)  # exit code (4 = stopped by operator), live workspace
 
     def __init__(self, python_exe: str, workspace_manager, log_sink, parent=None):
         super().__init__(parent)
@@ -60,9 +65,12 @@ class WorkspaceOperationCoordinator(QObject):
         self._queue: list[_Job] = []
         self._active: _Job | None = None
         self._run_runner: ProcessRunner | None = None
+        self._drive_runner: ProcessRunner | None = None
         self._ingest_report = None
         self._ingest_failure: tuple[int, str] | None = None
         self._cancelling = False
+        self._stop_pending = False        # a cooperative campaign stop request is in flight
+        self._drive_force_stopped = False  # the operator force-killed the campaign tree
         self._kill_timer = QTimer(self)
         self._kill_timer.setSingleShot(True)
         self._kill_timer.timeout.connect(self._kill_if_still_running)
@@ -73,6 +81,9 @@ class WorkspaceOperationCoordinator(QObject):
 
     def is_running_analysis(self) -> bool:
         return self._active is not None and self._active.kind == "run"
+
+    def is_running_campaign(self) -> bool:
+        return self._active is not None and self._active.kind == "drive"
 
     def queued_count(self) -> int:
         return len(self._queue)
@@ -98,6 +109,71 @@ class WorkspaceOperationCoordinator(QObject):
         self._start_next()
         return True
 
+    def request_drive(self, opts: DriveOptions, *, env: dict | None = None) -> bool:
+        """Queue an ``isar drive`` campaign for the CURRENT ready workspace.
+
+        A fresh control token is stamped into the options here — the token names this
+        invocation's stop-request file (``report/control/stop-<token>.json``), so Stop can only
+        ever address the campaign this coordinator launched. The job captures root + generation
+        at request time; a later rebind can neither hijack the stop path nor adopt the result.
+        """
+        root = self._wsm.root()
+        if root is None or self._wsm.state() != "ready":
+            return False
+        opts = replace(opts, control_token=uuid.uuid4().hex)
+        self._queue.append(_Job("drive", (opts, dict(env or {})), str(root),
+                                self._wsm.generation()))
+        self._emit_activity()
+        self._start_next()
+        return True
+
+    def request_drive_stop(self) -> bool:
+        """Cooperatively stop the ACTIVE campaign: write its token's stop-request control file.
+
+        The drive loop honors the request at its iteration boundary (the in-flight scan completes,
+        persists, and is analyzed first), then exits with the ``operator_stopped`` state (exit 4).
+        Idempotent — repeated clicks are no-ops once the file exists. Writes go to the job's
+        CAPTURED root, never the currently bound workspace. Nothing is ever deleted."""
+        active = self._active
+        if active is None or active.kind != "drive" or active.root is None:
+            return False
+        if self._drive_runner is None or not self._drive_runner.is_running():
+            return False   # already finishing — a request now would be a lie in the log
+        opts, _env = active.payload
+        control_dir = Path(active.root) / "report" / "control"
+        marker = control_dir / f"stop-{opts.control_token}.json"
+        if marker.exists():
+            return True
+        try:
+            control_dir.mkdir(parents=True, exist_ok=True)
+            tmp = control_dir / f".stop-{opts.control_token}.tmp"
+            tmp.write_text(json.dumps({"token": opts.control_token,
+                                       "requested_at": datetime.now().astimezone().isoformat(),
+                                       "by": "gui"}), encoding="utf-8")
+            os.replace(tmp, marker)   # atomic: the loop never sees a half-written request
+        except OSError as exc:
+            self._log(f"could not write the campaign stop request ({exc})")
+            return False
+        self._stop_pending = True
+        self._log("stop requested — the campaign will stop after the current scan")
+        self._emit_activity()
+        return True
+
+    def cancel_drive(self) -> bool:
+        """Force-stop the ACTIVE campaign only: kill its whole process tree, keep the queue.
+
+        No terminate()-then-wait grace — terminate is useless for console Python and the drive's
+        children must never be orphaned; ``kill_tree`` handles the ladder. Queued non-drive jobs
+        survive and start once ``finished`` flows through the normal completion path."""
+        active = self._active
+        if active is None or active.kind != "drive":
+            return False
+        self._log("force-stopping the campaign (process tree)")
+        self._drive_force_stopped = True
+        if self._drive_runner is not None and self._drive_runner.is_running():
+            self._drive_runner.kill_tree()
+        return True
+
     def cancel(self) -> bool:
         """Cancel the active process and clear jobs that have not written anything yet."""
         if not self.is_busy():
@@ -112,6 +188,14 @@ class WorkspaceOperationCoordinator(QObject):
             self._emit_activity()
             return True
         self._log(f"cancelling {self._active.kind}…")
+        if self._active.kind == "drive":
+            # A campaign's children must never be orphaned by ANY stop path; skip the
+            # terminate-grace dance (useless for console Python) and take the tree down now.
+            self._drive_force_stopped = True
+            if self._drive_runner is not None and self._drive_runner.is_running():
+                self._drive_runner.kill_tree()
+            self._emit_activity()
+            return True
         runner = self._run_runner if self._active.kind == "run" else self._ingest.runner()
         if runner is None or not runner.is_running():
             return True
@@ -138,6 +222,8 @@ class WorkspaceOperationCoordinator(QObject):
             self._emit_activity()
             if job.kind == "ingest":
                 self._ingest.start_ingest(job.payload)
+            elif job.kind == "drive":
+                self._start_drive(job)
             else:
                 self._start_run(job)
             return
@@ -155,6 +241,19 @@ class WorkspaceOperationCoordinator(QObject):
         self._run_runner = runner
         runner.start(cmd, log_path=str(log_path), env=env)
         self.run_started.emit()
+
+    def _start_drive(self, job: _Job) -> None:
+        opts, env = job.payload
+        assert job.root is not None
+        cmd = build_drive_command(self._python, job.root, opts)
+        log_path = Path(job.root) / "report" / "gui-runs" / f"drive-{datetime.now():%Y%m%d-%H%M%S}.log"
+        self._log("$ " + " ".join(cmd))
+        runner = ProcessRunner(self)
+        runner.line.connect(self._log)
+        runner.finished.connect(self._on_drive_finished)
+        self._drive_runner = runner
+        runner.start(cmd, log_path=str(log_path), env=env)
+        self.drive_started.emit()
 
     def _job_is_current(self, job: _Job) -> bool:
         live = self._wsm.root()
@@ -195,6 +294,8 @@ class WorkspaceOperationCoordinator(QObject):
         self._kill_timer.stop()
         self._active = None
         self._cancelling = False
+        self._stop_pending = False
+        self._drive_force_stopped = False
         self._emit_activity()
         # IngestController emits its public terminal signal before it clears its private step
         # scratch.  Defer the next dequeue one Qt turn so the next coordinated batch cannot see
@@ -244,8 +345,36 @@ class WorkspaceOperationCoordinator(QObject):
         self.run_finished.emit(int(code), bool(live))
         self._finish_active()
 
+    def _on_drive_finished(self, code: int) -> None:
+        active = self._active
+        live = active is not None and active.kind == "drive" and self._job_is_current(active)
+        runner = self._drive_runner
+        self._drive_runner = None
+        if runner is not None:
+            try:
+                runner.line.disconnect(self._log)
+                runner.finished.disconnect(self._on_drive_finished)
+            except (RuntimeError, TypeError) as exc:
+                log.debug("drive runner signals already detached: %s", exc)
+            runner.deleteLater()
+        # Exit 4 is the loop's operator_stopped state — an intentional, resumable outcome. A
+        # force-kill exits with an arbitrary code; without the flag it would read as a failure.
+        outcome = {0: "campaign met its objective", 3: "campaign stopped: objective unmeetable",
+                   4: "campaign stopped by operator (resumable)"}.get(int(code))
+        if outcome is None and self._drive_force_stopped:
+            outcome = "campaign force-stopped by operator (resumable; the in-flight scan may be re-measured)"
+        self._log(outcome if outcome else f"campaign failed (exit {code}) — see the drive log")
+        self.drive_finished.emit(int(code), bool(live))
+        self._finish_active()
+
     def _kill_if_still_running(self) -> None:
         if not self._cancelling or self._active is None:
+            return
+        if self._active.kind == "drive":
+            # Never plain-kill a campaign root — that orphans its isar-run/worker children.
+            if self._drive_runner is not None and self._drive_runner.is_running():
+                self._log("campaign did not stop after 3 seconds; killing its process tree")
+                self._drive_runner.kill_tree()
             return
         runner = self._run_runner if self._active.kind == "run" else self._ingest.runner()
         if runner is not None and runner.is_running():
@@ -258,4 +387,5 @@ class WorkspaceOperationCoordinator(QObject):
             "kind": None if active is None else active.kind,
             "queued": len(self._queue),
             "cancelling": self._cancelling,
+            "stopping": self._stop_pending,
         })

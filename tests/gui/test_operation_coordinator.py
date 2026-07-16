@@ -6,7 +6,9 @@ import pytest
 pytest.importorskip("PySide6")
 
 from isar_gui import operation_coordinator
-from isar_gui.commands import RunOptions
+import json
+
+from isar_gui.commands import DriveOptions, RunOptions
 from isar_gui.operation_coordinator import WorkspaceOperationCoordinator
 
 
@@ -80,6 +82,7 @@ class _Runner:
         self.running = False
         self.terminated = False
         self.killed = False
+        self.tree_killed = False
         _Runner.instances.append(self)
 
     def start(self, argv, **_kwargs):
@@ -94,6 +97,9 @@ class _Runner:
 
     def kill(self):
         self.killed = True
+
+    def kill_tree(self):
+        self.tree_killed = True
 
     def deleteLater(self):
         pass
@@ -208,3 +214,127 @@ def test_cancel_requests_graceful_run_termination(coordinator):
     assert coordinator.cancel() is True
     assert runner.terminated is True
     assert coordinator.queued_count() == 0
+
+
+# ---- campaigns (drive job kind) ----------------------------------------------
+def _drive_opts(**kw):
+    return DriveOptions(goal="map the acoustic branch", **kw)
+
+
+def test_request_drive_stamps_token_and_starts(coordinator):
+    assert coordinator.request_drive(_drive_opts()) is True
+    runner = _Runner.instances[0]
+    assert "drive" in runner.argv
+    i = runner.argv.index("--control-token")
+    token = runner.argv[i + 1]
+    assert len(token) == 32          # uuid4().hex, minted per invocation
+    assert coordinator.is_running_campaign()
+
+
+def test_request_drive_refused_when_not_ready(coordinator):
+    coordinator._wsm.state = lambda: "pending"
+    assert coordinator.request_drive(_drive_opts()) is False
+    assert not coordinator.is_busy()
+
+
+def test_drive_gates_run_and_ingest_until_finished(qtbot, coordinator):
+    coordinator.request_drive(_drive_opts())
+    coordinator.request_ingest(["late.dat"])
+    coordinator.request_run(["analysis.dat"], RunOptions())
+    assert coordinator.queued_count() == 2
+    ingest = _Ingest.instances[0]
+    assert ingest.started == []                       # everything waits behind the campaign
+
+    _Runner.instances[0].complete(0)
+    qtbot.waitUntil(lambda: ingest.started == [["late.dat"]])
+
+
+def test_drive_stop_writes_control_file_to_captured_root(qtbot, coordinator, tmp_path):
+    coordinator._wsm._root = str(tmp_path)
+    coordinator.request_drive(_drive_opts())
+    coordinator.request_ingest(["queued.dat"])
+    runner = _Runner.instances[0]
+    token = runner.argv[runner.argv.index("--control-token") + 1]
+
+    # A rebind between start and stop must not redirect the stop request.
+    coordinator._wsm._root = r"D:\other"
+
+    assert coordinator.request_drive_stop() is True
+    marker = tmp_path / "report" / "control" / f"stop-{token}.json"
+    assert marker.exists()
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["token"] == token and payload["by"] == "gui" and payload["requested_at"]
+    first_stat = marker.stat().st_mtime_ns
+
+    assert coordinator.request_drive_stop() is True   # idempotent: no rewrite
+    assert marker.stat().st_mtime_ns == first_stat
+    assert coordinator.queued_count() == 1            # cooperative stop never clears the queue
+
+
+def test_drive_stop_refused_for_non_drive_jobs(coordinator):
+    coordinator.request_run(["analysis.dat"], RunOptions())
+    assert coordinator.request_drive_stop() is False
+
+
+def test_cancel_drive_tree_kills_and_preserves_queue(qtbot, coordinator):
+    coordinator.request_drive(_drive_opts())
+    coordinator.request_ingest(["queued.dat"])
+    runner = _Runner.instances[0]
+
+    assert coordinator.cancel_drive() is True
+    assert runner.tree_killed is True and runner.terminated is False
+    assert coordinator.queued_count() == 1
+
+    runner.complete(4)                                # the tree kill surfaces as finished
+    ingest = _Ingest.instances[0]
+    qtbot.waitUntil(lambda: ingest.started == [["queued.dat"]])
+
+
+def test_legacy_cancel_on_drive_uses_kill_tree_and_clears_queue(coordinator):
+    coordinator.request_drive(_drive_opts())
+    coordinator.request_ingest(["queued.dat"])
+    runner = _Runner.instances[0]
+    assert coordinator.cancel() is True
+    assert runner.tree_killed is True and runner.terminated is False
+    assert coordinator.queued_count() == 0            # Run-menu contract: clear-all
+
+
+def test_drive_finished_classifies_operator_stop(qtbot, coordinator):
+    lines = []
+    coordinator._log = lines.append
+    results = []
+    coordinator.drive_finished.connect(lambda code, live: results.append((code, live)))
+    coordinator.request_drive(_drive_opts())
+    _Runner.instances[0].complete(4)
+    qtbot.waitUntil(lambda: results == [(4, True)])
+    assert any("stopped by operator" in ln for ln in lines)
+    assert not any("failed" in ln for ln in lines)
+
+
+def test_force_stop_exit_code_is_not_logged_as_failure(qtbot, coordinator):
+    lines = []
+    coordinator._log = lines.append
+    coordinator.request_drive(_drive_opts())
+    coordinator.cancel_drive()
+    _Runner.instances[0].complete(1)   # TerminateJobObject exits with an arbitrary code
+    qtbot.waitUntil(lambda: not coordinator.is_busy())
+    assert any("force-stopped by operator" in ln for ln in lines)
+    assert not any("failed" in ln for ln in lines)
+
+
+def test_drive_stop_refused_once_runner_finished(coordinator, tmp_path):
+    coordinator._wsm._root = str(tmp_path)
+    coordinator.request_drive(_drive_opts())
+    runner = _Runner.instances[0]
+    runner.running = False             # process gone; finished signal not yet delivered
+    assert coordinator.request_drive_stop() is False
+    assert not (tmp_path / "report" / "control").exists()
+
+
+def test_stale_generation_drive_completion_is_not_live(qtbot, coordinator):
+    results = []
+    coordinator.drive_finished.connect(lambda code, live: results.append((code, live)))
+    coordinator.request_drive(_drive_opts())
+    coordinator._wsm._generation += 1
+    _Runner.instances[0].complete(0)
+    qtbot.waitUntil(lambda: results == [(0, False)])
