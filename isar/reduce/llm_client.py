@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import ipaddress
+import urllib.error
 import urllib.request
 import urllib.parse
 import uuid
@@ -46,6 +47,57 @@ class Dispatcher(Protocol):
 
 
 Transport = Callable[[str, bytes, float], bytes]   # (url, json-bytes, timeout) -> response-bytes
+
+# Hard ceiling on any LLM service response. A structured QC decision is a few KB; 8 MiB is
+# generous headroom for a verbose raw ``output`` on a schema-miss, while a faulty or hostile
+# endpoint streaming forever cannot exhaust memory. The streaming cap below is authoritative
+# regardless of what (or whether) a Content-Length header claims.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
+
+def _read_capped(resp, limit: int | None = None) -> bytes:
+    """Read ``resp`` in chunks, raising once the body exceeds ``limit`` bytes.
+
+    ``limit`` defaults to the module's :data:`MAX_RESPONSE_BYTES` at call time (late-bound so
+    tests can shrink it without re-plumbing the transports).
+    """
+    if limit is None:
+        limit = MAX_RESPONSE_BYTES
+    length = resp.headers.get("Content-Length") if getattr(resp, "headers", None) else None
+    try:
+        declared = int(length) if length is not None else None
+    except (TypeError, ValueError):
+        declared = None   # an unparseable Content-Length is ignored; the streaming cap governs
+    if declared is not None and declared > limit:
+        raise ValueError(f"LLM response exceeded {limit} bytes (Content-Length {declared})")
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = resp.read(64 * 1024)
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > limit:
+            raise ValueError(f"LLM response exceeded {limit} bytes")
+        chunks.append(chunk)
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect on the production LLM transports.
+
+    A redirect could bypass :func:`validate_endpoint`'s HTTPS/loopback guarantee and forward the
+    request body (experimental context, and on the OpenAI path an Authorization header) to an
+    origin the operator never configured. Refusal surfaces as the normal ``transport_error``.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url, code,
+            f"redirect to {newurl!r} refused: LLM transports do not follow redirects",
+            headers, fp)
+
+
+_OPENER = urllib.request.build_opener(_NoRedirects)
 
 
 def validate_endpoint(endpoint: str) -> str:
@@ -95,8 +147,8 @@ def _default_transport(url: str, data: bytes, timeout: float) -> bytes:
     req = urllib.request.Request(
         url, data=data, headers={"Content-Type": "application/json"}, method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:   # nosec B310 (validated endpoint)
-        return resp.read()
+    with _OPENER.open(req, timeout=timeout) as resp:   # nosec B310 (validated endpoint)
+        return _read_capped(resp)
 
 
 class LLMMClient:
@@ -162,8 +214,8 @@ OpenAITransport = Callable[[str, bytes, dict, float], bytes]  # (url, body, head
 
 def _default_openai_transport(url: str, data: bytes, headers: dict, timeout: float) -> bytes:
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:   # nosec B310 (operator-configured)
-        return resp.read()
+    with _OPENER.open(req, timeout=timeout) as resp:   # nosec B310 (operator-configured)
+        return _read_capped(resp)
 
 
 class OpenAIClient:
