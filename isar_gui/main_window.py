@@ -653,12 +653,15 @@ class MainWindow(QMainWindow):
                 # way explicitly so the enter-order (switch, then detach) is not load-bearing
             self._compact_active = True
             self._compact_mode_action.setChecked(True)
-            # Queued: the dock-hide/page-detach layout invalidation must land first, or this
-            # resize is clamped by the STALE minimum width and silently ignored.
-            QTimer.singleShot(0, self._apply_compact_size)
+            # An explicit minimum overrides hint-based clamping: without it the resize races the
+            # pending dock-hide/page-detach LayoutRequest and is silently clamped to the STALE
+            # minimum width (a zero-timer defer still lost that race under offscreen Qt).
+            self.setMinimumSize(360, 280)
+            self.resize(430, 340)
         else:
             self._compact_active = False
             self._compact_mode_action.setChecked(False)
+            self.setMinimumSize(0, 0)        # back to hint-driven minimums for the full layout
             self._workspace_toolbar.show()   # explicit — never depend on the restore for it
             if self._center_host is not None:
                 self._center_stack.addWidget(self._center_host)   # re-attach the detached page
@@ -672,10 +675,6 @@ class MainWindow(QMainWindow):
                 if not self.restoreState(state, _LAYOUT_VERSION):
                     self._apply_default_layout()   # a stash can't be stale, but never half-apply
         self._sync_run_actions()
-
-    def _apply_compact_size(self) -> None:
-        if self._compact_active:   # the operator may have expanded before the queued call landed
-            self.resize(430, 340)
 
     def _dispose_campaign_monitor(self) -> None:
         """Per-binding teardown: leave compact first so the full layout is what persists."""

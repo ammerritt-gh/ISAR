@@ -32,8 +32,7 @@ def test_toggle_hides_docks_and_flips_stack(qtbot, ready_window):
     assert w._compact_active
     assert isinstance(w._center_stack.currentWidget(), CampaignMonitor)
     assert all(d.isHidden() for d in w.findChildren(QDockWidget))
-    qtbot.waitUntil(lambda: w.width() <= 500, timeout=2000)   # the shrink is queued (stale-min fix)
-    assert w.height() <= 400
+    assert w.width() <= 500 and w.height() <= 400   # synchronous: explicit min beats stale hints
 
 
 def test_expand_restores_layout_and_visibility(qtbot, ready_window):
