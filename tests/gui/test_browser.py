@@ -284,8 +284,11 @@ def test_load_workspace_twice_no_menu_leak(qtbot, make_ws):
 
     def _menu_count() -> int:
         # Flush deferred deletes (deleteLater) so torn-down menus are actually gone before counting.
+        # Count only TITLED menus: QMenuBar lazily creates one untitled internal extension
+        # ("overflow") menu the first time layout pressure squeezes it — a hidden singleton, not a
+        # leak. Every real menu this guard protects (File/Docks/View/…) carries a title.
         QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-        return len(w.menuBar().findChildren(QMenu))
+        return len([m for m in w.menuBar().findChildren(QMenu) if m.title()])
 
     baseline = _menu_count()  # File + Docks
     w.load_workspace(make_ws(rows=_ROWS))

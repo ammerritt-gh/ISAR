@@ -98,7 +98,9 @@ def test_ready_workspace_without_files_raises_files_dock(qtbot, make_ws):
 
 def test_ready_workspace_with_files_does_not_raise_files_dock(qtbot, make_ws):
     """The data-entry raise is conditional on an empty manifest: a workspace that already has files
-    keeps its default layout (Card leads the left tab group), so the raise must not fire."""
+    must not have its focus stolen. Since Pass 3 the Files dock owns a small dedicated top-left
+    slot (always visible by design), so 'not raised' is observed on the scan stack instead: Scans
+    keeps the front tab, its siblings (Browser/Card/Scan Table) stay buried."""
     from isar.workspace_api import Workspace
     from isar_gui.main_window import MainWindow
     from isar_gui.session import Session
@@ -110,9 +112,11 @@ def test_ready_workspace_with_files_does_not_raise_files_dock(qtbot, make_ws):
     w.show()
     qtbot.wait(20)                                 # let any queued layout work settle
     assert w.files_vm.rows                         # manifest is non-empty
-    # Files was not raised: it is buried behind its tab siblings (Card leads the stack by default),
-    # so its visibleRegion is empty. (isVisible() is unreliable for tabbed docks offscreen.)
-    assert w.files_dock.visibleRegion().isEmpty()
+    # (visibleRegion, not isVisible: isVisible is unreliable for tabbed docks offscreen.)
+    assert not w.scans_dock.visibleRegion().isEmpty()   # Scans leads its stack
+    assert w.card_dock.visibleRegion().isEmpty()        # siblings stay buried
+    assert w.browser_dock.visibleRegion().isEmpty()
+    assert not w.files_dock.visibleRegion().isEmpty()   # Files: small, dedicated, always visible
 
 
 def test_cold_launch_file_less_workspace_raises_files_over_saved_card_layout(qtbot, make_ws):

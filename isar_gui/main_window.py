@@ -83,8 +83,20 @@ from isar_gui.watch_bridge import WatchBridge
 log = logging.getLogger(__name__)
 
 
-_EMPTY_HINT = "No workspace loaded.\n\nFile ▸ Open Workspace… to begin."
-_PENDING_HINT = "Drop data files to begin — they'll land in a temporary workspace."
+_WORKFLOW_HINT = ("Workflow:  add data (top left)  →  organize scans (left)  →  "
+                  "views (center)  →  drive a campaign (right)")
+_EMPTY_HINT = f"No workspace loaded.\n\nFile ▸ Open Workspace… to begin.\n\n{_WORKFLOW_HINT}"
+_PENDING_HINT = ("Drop data files to begin — they'll land in a temporary workspace."
+                 f"\n\n{_WORKFLOW_HINT}")
+
+# Bump when the dock inventory/geometry contract changes: restoreState of any OTHER version fails
+# atomically and the window falls back to _apply_default_layout (never binary-migrate Qt blobs).
+# v1 (implicit, unversioned) = pre-Pass-3; v2 = Pass-3 M1 (plot docks moved into the CenterHost,
+# Scans column moved left); v3 is reserved for the Campaign dock (M2-6).
+_LAYOUT_VERSION = 2
+_DEFAULT_FILES_HEIGHT = 170   # px — data entry is deliberately small; Scans below it dominates
+_DEFAULT_LEFT_WIDTH = 300     # px — the Files/Scans tool column
+_DEFAULT_LOG_HEIGHT = 140     # px — the Log is a ticker, not a workspace surface
 # The five central display surfaces, in switcher order: (host key, button label).
 _CENTER_PAGES = (("scan", "Scan"), ("waterfall", "Waterfall"), ("plane", "Plane (q, E)"),
                  ("dispersion", "Dispersion ω(q)"), ("sandbox", "Sandbox"))
@@ -334,6 +346,12 @@ class MainWindow(QMainWindow):
         self._docks = {}
         self._init_docks()
         self._init_docks_menu()
+        # Impose the Pass-3 default arrangement synchronously, before the window paints or the
+        # operator (or a test) can touch a dock — a queued default would race and trample manual
+        # visibility changes. A valid saved layout, restored via the queued paths below/in
+        # __init__, then overrides it wholesale; a failed restore falls back onto this default.
+        if not self._empty:
+            self._apply_default_layout()
 
         # ``restoreState`` can only restore docks which exist at the time it runs.  A first launch
         # may deliberately bind the sparse empty-start scaffold, then open a real workspace later
@@ -485,7 +503,6 @@ class MainWindow(QMainWindow):
         self.active_units.active_changed.connect(self.browser_dock.set_active_key)
         self.browser_dock.set_active_key(self.active_units.key)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.browser_dock)
-        self.tabifyDockWidget(self.files_dock, self.browser_dock)
         self._register_dock("Browser", self.browser_dock)
 
         # The card editor (raw TOML, D2) shares the left area with the browser as a tabified sibling.
@@ -498,31 +515,29 @@ class MainWindow(QMainWindow):
         self.card_dock.saved.connect(
             lambda path, g=generation, r=root: self._on_card_saved(path, g, r))
         self.addDockWidget(Qt.LeftDockWidgetArea, self.card_dock)
-        self.tabifyDockWidget(self.browser_dock, self.card_dock)
         self._register_dock("Card", self.card_dock)
 
-        # The Phase-E physical scan view + its tabular twin, tabified together in the right area (they
-        # share one model + selection, so a chip and a row light up together). Placed before the plane
-        # so the scan-centric views lead the right column.
+        # The Phase-E physical scan view + its tabular twin (they share one model + selection, so a
+        # chip and a row light up together). Pass 3 puts the whole scan-organizing column on the
+        # LEFT, under the compact Files dock — the right area is the campaign workspace (M2-6).
         self.scans_dock = ScansDock(self.scans_vm, self)
         self.active_units.active_changed.connect(self.scans_dock.set_active_key)
         self.scans_dock.set_active_key(self.active_units.key)
         self.scans_dock.send_group_requested.connect(self._on_send_group)   # "Send to" routing (2A)
         self.scans_dock.scan_drag_active.connect(self._on_scan_drag)        # drag-reveal on plots (R12)
         self.scans_dock.fit_requested.connect(self._on_fit_requested)       # sandbox preview fit (2B)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.scans_dock)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.scans_dock)
         self._register_dock("Scans", self.scans_dock)
         self.scan_table_dock = ScanTableDock(self.scans_vm, self)
         self.active_units.active_changed.connect(self.scans_vm.model.set_active_key)
         self.scans_vm.model.set_active_key(self.active_units.key)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.scan_table_dock)
-        self.tabifyDockWidget(self.scans_dock, self.scan_table_dock)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.scan_table_dock)
         self._register_dock("Scan Table", self.scan_table_dock)
 
         # The four plot panes (plane / dispersion / waterfall / sandbox) are no longer docks: the C2
         # inspector and those four surfaces are switchable pages of the central CenterHost, built in
-        # _bind_workspace (see _build_center_host). Only the scan-centric docks remain in the right
-        # area here.
+        # _bind_workspace (see _build_center_host). Splits/tabs/sizes for the remaining tool docks
+        # are imposed by _apply_default_layout (and overridden by a valid saved layout).
 
     def _apply_empty_start_dock_geometry(self) -> None:
         """Give the no-workspace/start-new screen a compact Log dock.
@@ -537,6 +552,37 @@ class MainWindow(QMainWindow):
         self.files_dock.show()
         self.files_dock.raise_()
         self.resizeDocks([self.log_dock], [_EMPTY_START_LOG_HEIGHT], Qt.Vertical)
+
+    def _apply_default_layout(self) -> None:
+        """The Pass-3 default dock geometry (left-to-right workflow).
+
+        Files sits small at the top-left; the scan-organizing stack (Scans + Browser/Card/Scan
+        Table tabs) fills the left column under it; the center is the CenterHost view switcher;
+        the bottom Log is a compact ticker. (The Campaign dock joins the right area in M2-6.)
+        Idempotent. Never called for the empty (no-workspace) scaffold; a pending temporary
+        workspace is a real binding and does get the default arrangement."""
+        if self._empty:
+            return
+        from PySide6.QtCore import Qt
+        for dock in (self.files_dock, self.scans_dock, self.browser_dock, self.card_dock,
+                     self.scan_table_dock, self.log_dock):
+            dock.setFloating(False)
+            dock.show()
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.files_dock)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.scans_dock)
+        self.splitDockWidget(self.files_dock, self.scans_dock, Qt.Vertical)
+        self.tabifyDockWidget(self.scans_dock, self.browser_dock)
+        self.tabifyDockWidget(self.browser_dock, self.card_dock)
+        self.tabifyDockWidget(self.card_dock, self.scan_table_dock)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
+        self.scans_dock.raise_()
+        # A large fixed hint (not self.height() — meaningless before the window is realized):
+        # resizeDocks distributes proportionally, so [170, 700] reads "Files small, Scans the rest".
+        self.resizeDocks([self.files_dock, self.scans_dock],
+                         [_DEFAULT_FILES_HEIGHT, 700], Qt.Vertical)
+        self.resizeDocks([self.files_dock, self.scans_dock],
+                         [_DEFAULT_LEFT_WIDTH, _DEFAULT_LEFT_WIDTH], Qt.Horizontal)
+        self.resizeDocks([self.log_dock], [_DEFAULT_LOG_HEIGHT], Qt.Vertical)
 
     def _register_dock(self, name: str, dock) -> None:
         """Track a dock so the Docks menu and layout autosave pick it up (call before menu build)."""
@@ -1658,7 +1704,7 @@ class MainWindow(QMainWindow):
         # scaffold would overwrite the operator's complete workspace layout while New is waiting
         # for its first ingest, so retain the last full layout until a ready workspace is bound.
         if not self._empty:
-            state = bytes(self.saveState().toBase64().data()).decode("ascii")
+            state = bytes(self.saveState(_LAYOUT_VERSION).toBase64().data()).decode("ascii")
             self._session.dock_layout_b64 = state
         # Only saved workspaces belong in recents — a temporary (pending/unsaved) workspace must
         # never pollute the recent-workspaces list (it may be discarded moments later).
@@ -1675,13 +1721,24 @@ class MainWindow(QMainWindow):
         return self._session
 
     def _restore_layout(self) -> None:
+        """Restore the saved dock layout; any failure falls back to the Pass-3 default.
+
+        ``restoreState`` is version-gated (``_LAYOUT_VERSION``): a pre-Pass-3 (unversioned) or
+        future-version blob returns False atomically instead of half-applying stale geometry that
+        names docks which no longer exist. The one-time cost is that upgrading users get the new
+        default arrangement once, with an honest log line."""
         b64 = self._session.dock_layout_b64
         if not b64:
             return
         try:
-            self.restoreState(QByteArray.fromBase64(b64.encode("ascii")))
+            ok = self.restoreState(QByteArray.fromBase64(b64.encode("ascii")), _LAYOUT_VERSION)
         except Exception as exc:  # noqa: BLE001 — a bad saved layout must never block the window
             self.log(f"could not restore dock layout ({exc})")
+            ok = False
+        if not ok:
+            self._apply_default_layout()
+            self.log("applied the default Pass-3 arrangement (saved dock layout was from an "
+                     "older version or unreadable)")
 
     def _autosave(self) -> None:
         if getattr(self, "_autosaver", None) is not None:
