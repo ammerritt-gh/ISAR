@@ -93,10 +93,31 @@ class _PaneDock(QDockWidget):
         super().__init__(title, parent)
         self.setObjectName(object_name)
         self.setWidget(pane)
+        # The mixin used to live on the dock itself, so a drop released on the TITLE BAR was a valid
+        # group drop. The pane (one level down) can't see those; accept drops here and forward the
+        # three handlers so the whole dock stays a target, exactly as before the pane/dock split.
+        # ``apply_group`` marks a GroupDropMixin pane (every QWidget has the event methods).
+        if hasattr(pane, "apply_group"):
+            self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):  # noqa: N802
+        pane = QDockWidget.widget(self)
+        if pane is not None and hasattr(pane, "apply_group"):
+            pane.dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):  # noqa: N802
+        pane = QDockWidget.widget(self)
+        if pane is not None and hasattr(pane, "apply_group"):
+            pane.dragMoveEvent(event)
+
+    def dropEvent(self, event):  # noqa: N802
+        pane = QDockWidget.widget(self)
+        if pane is not None and hasattr(pane, "apply_group"):
+            pane.dropEvent(event)
 
     def __getattr__(self, name):
-        # Reached only when normal QDockWidget lookup fails — forward to the wrapped pane. Accessing
-        # the widget via the class avoids recursing through __getattr__.
+        # Reached only when normal QDockWidget lookup fails — forward to the wrapped pane (``widget``
+        # resolves on QDockWidget's own MRO, so this cannot re-enter __getattr__).
         pane = QDockWidget.widget(self)
         if pane is None:
             raise AttributeError(name)
