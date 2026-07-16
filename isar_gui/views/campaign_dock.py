@@ -54,14 +54,22 @@ class CampaignDock(QDockWidget):
 
     #: Emitted when the operator asks to launch TAVI (the window owns the .bat plumbing).
     tavi_launch_requested = Signal()
+    #: Emitted instead of request_drive when Start is clicked with NO workspace at all ("none"
+    #: state): the window must reserve a temporary workspace first, which rebinds (and tears this
+    #: dock down), so the launch has to happen from the window side. Carries (DriveOptions, env).
+    virtual_start_requested = Signal(object, dict)
 
-    def __init__(self, vm, operations, store=None, llm_env=None, parent=None):
+    def __init__(self, vm, operations, store=None, llm_env=None, workspace_state=None,
+                 parent=None):
         super().__init__("Campaign", parent)
         self.setObjectName("campaign_dock")
         self._vm = vm
         self._operations = operations
         self._store = store
         self._llm_env = llm_env or (lambda: {})
+        # The manager's live state ("none" | "pending" | "ready"), injected like llm_env so the
+        # dock stays coordinator/manager-agnostic. Default suits tests and ready-only embeddings.
+        self._workspace_state = workspace_state or (lambda: "ready")
         self._tavi_status = "down"
         self._feed_items: list = []
         self._loading_form = False   # _load_form sets widgets; their signals must not write back
@@ -238,10 +246,10 @@ class CampaignDock(QDockWidget):
         except (TypeError, ValueError):
             log.debug("campaign form carried non-numeric seed/max_iters; defaults kept")
 
-    def _save_form(self) -> None:
-        if self._store is None:
-            return
-        self._store.set_campaign_form({
+    def form_dict(self) -> dict:
+        """The current form as the plain dict the GuiStore persists — the window uses this to
+        carry the operator's typed setup across a workspace rebind (virtual-campaign start)."""
+        return {
             "source": "spec" if self._src_spec.isChecked() else "goal",
             "goal": self._goal.toPlainText(),
             "spec_path": self._spec_path.text(),
@@ -249,7 +257,20 @@ class CampaignDock(QDockWidget):
             "budget": self._budget.text(),
             "seed": self._seed.value(),
             "max_iters": self._max_iters.value(),
-        })
+        }
+
+    def apply_form(self, form: dict) -> None:
+        """Populate the form programmatically (a rebind carry-over) without write-back churn."""
+        self._loading_form = True
+        try:
+            self._apply_form(form)
+        finally:
+            self._loading_form = False
+
+    def _save_form(self) -> None:
+        if self._store is None:
+            return
+        self._store.set_campaign_form(self.form_dict())
         self._store.save()
 
     def _on_form_edited(self, *_a) -> None:
@@ -315,6 +336,11 @@ class CampaignDock(QDockWidget):
             opts = DriveOptions(goal=self._goal.toPlainText().strip(),
                                 tier=self._tier.currentText(), budget=budget,
                                 seed=self._seed.value(), max_iters=self._max_iters.value())
+        if self._workspace_state() == "none":
+            # No workspace at all: the window must reserve a temporary one first, and that
+            # rebind tears THIS dock down — so hand the launch over instead of requesting it.
+            self.virtual_start_requested.emit(opts, dict(self._llm_env()))
+            return
         if not self._operations.request_drive(opts, env=dict(self._llm_env())):
             self._status_line.setText("could not start — workspace not ready")
             return
@@ -392,7 +418,13 @@ class CampaignDock(QDockWidget):
         self._stop_btn.setEnabled(running)
         self._force_btn.setVisible(running and self._stop_pending())
 
-        if running:
+        if running and self._workspace_state() == "pending":
+            # The campaign is initializing its own workspace (the card lands after the first
+            # scan); until then there is no event log to report iterations from — say so.
+            self._status_line.setText(
+                "campaign starting — the workspace appears after the first scan lands"
+                + ("  — stopping after the current scan…" if self._stop_pending() else ""))
+        elif running:
             it = state.iteration
             # Launch-captured cap: the spinbox can be edited mid-run and no longer describes the
             # subprocess. Iterations are logged zero-based; operators count from 1.

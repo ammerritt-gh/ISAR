@@ -45,6 +45,10 @@ log = logging.getLogger(__name__)
 # Markers whose presence means a directory holds real analysis worth recovering / prompting about.
 _CONTENT_MARKERS = ("card.policy.toml", "session.json")
 
+# Everything `isar init` writes, in ITS order (policy first — init_cmd.py). Promotion of a pending
+# campaign workspace waits for the full trio: the policy alone is a mid-init state.
+_INIT_FILES = ("card.policy.toml", "session.json", "card.state.json")
+
 
 # ---- Qt-free module helpers (unit-tested without a QApplication) -------------
 def temp_root() -> Path:
@@ -249,6 +253,39 @@ class WorkspaceManager(QObject):
         self.workspace_changed.emit(ws)
         self._set_state("ready")
         return True
+
+    def promote_pending_if_ready(self, expected_root, expected_generation: int) -> bool:
+        """Promote the pending workspace to ready once a campaign's lazy init has completed it.
+
+        An ``isar drive`` campaign launched into a reserved (pending) directory initializes the
+        workspace itself after its first scan lands. This is the ONE place that detects that —
+        the window owns only a timer and never inspects workspace files. Returns True exactly
+        when the workspace was opened (the ready rebind has then already happened).
+
+        ``expected_root``/``expected_generation`` are the identity the caller captured when it
+        armed its timer: a stale tick (the operator rebound to something else meanwhile) is
+        refused here regardless of what the caller believes. Promotion requires ALL of
+        :data:`_INIT_FILES` — ``isar init`` writes the policy first, so its presence alone is a
+        mid-init state. A failed ``open`` (e.g. a transient half-written card) logs, leaves the
+        state pending, and returns False so the caller simply retries on its next tick.
+        """
+        if self._state != "pending" or self._root is None:
+            return False
+        if self._generation != int(expected_generation):
+            log.debug("promotion skipped: generation moved on (%s != %s)",
+                      self._generation, expected_generation)
+            return False
+        try:
+            if Path(expected_root).resolve() != self._root.resolve():
+                log.debug("promotion skipped: pending root is %s, caller expected %s",
+                          self._root, expected_root)
+                return False
+        except OSError as exc:
+            log.warning("promotion identity check failed for %s: %s", expected_root, exc)
+            return False
+        if not all((self._root / name).exists() for name in _INIT_FILES):
+            return False   # the campaign has not (fully) initialized the workspace yet
+        return self.open(self._root)   # failure: open() logged, binding untouched — still pending
 
     # ---- save / discard ---------------------------------------------------
     def save_as(self, dest) -> bool:

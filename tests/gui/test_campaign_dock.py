@@ -234,6 +234,47 @@ def test_running_status_is_one_based_with_the_launch_captured_cap(dock_env):
     assert "iteration: 1 " in dock._iter_label.text()
 
 
+def test_none_state_start_hands_off_instead_of_requesting(qtbot, dock_env, make_ws):
+    # With NO workspace at all the reserve rebind would tear this dock down mid-click, so Start
+    # must emit virtual_start_requested (window-owned sequence) and never call request_drive.
+    _dock, vm, ops, ws, root = dock_env
+    dock = CampaignDock(vm, ops, store=None, llm_env=lambda: {"ISAR_LLM": "x"},
+                        workspace_state=lambda: "none")
+    qtbot.addWidget(dock)
+    dock.show()
+    handed = []
+    dock.virtual_start_requested.connect(lambda opts, env: handed.append((opts, env)))
+    dock.set_backend_status("tavi", "ok", "up")
+    dock._goal.setPlainText("map the branch")
+    dock._start_btn.click()
+    assert ops.drive_requests == []
+    assert len(handed) == 1
+    opts, env = handed[0]
+    assert opts.goal == "map the branch" and env == {"ISAR_LLM": "x"}
+
+
+def test_pending_running_status_names_the_coming_workspace(dock_env):
+    dock, vm, ops, ws, root = dock_env
+    dock._workspace_state = lambda: "pending"
+    ops.running = True
+    dock._sync_status()
+    assert "workspace appears after the first scan" in dock._status_line.text()
+
+
+def test_form_dict_round_trips_through_apply_form(qtbot, dock_env):
+    dock, vm, ops, ws, root = dock_env
+    dock._goal.setPlainText("carry me")
+    dock._max_iters.setValue(17)
+    dock._budget.setText("1e9n")
+    form = dock.form_dict()
+
+    other = CampaignDock(vm, ops, store=None)
+    qtbot.addWidget(other)
+    other.apply_form(form)
+    assert other.form_dict() == form
+    assert other._goal.toPlainText() == "carry me" and other._max_iters.value() == 17
+
+
 def test_stop_and_force_route_to_coordinator(dock_env):
     dock, vm, ops, ws, root = dock_env
     ops.running = True

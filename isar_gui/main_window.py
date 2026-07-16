@@ -91,8 +91,10 @@ log = logging.getLogger(__name__)
 
 _WORKFLOW_HINT = ("Workflow:  add data (top left)  →  organize scans (left)  →  "
                   "views (center)  →  drive a campaign (right)")
-_EMPTY_HINT = f"No workspace loaded.\n\nFile ▸ Open Workspace… to begin.\n\n{_WORKFLOW_HINT}"
-_PENDING_HINT = ("Drop data files to begin — they'll land in a temporary workspace."
+_EMPTY_HINT = ("No workspace loaded.\n\nFile ▸ Open Workspace… to begin, or drive a virtual "
+               f"campaign (right) — it creates its own workspace.\n\n{_WORKFLOW_HINT}")
+_PENDING_HINT = ("Drop data files to begin — they'll land in a temporary workspace.\n"
+                 "Or drive a virtual campaign (right) — it creates its own data."
                  f"\n\n{_WORKFLOW_HINT}")
 
 # Bump when the dock inventory/geometry contract changes: restoreState of any OTHER version fails
@@ -234,6 +236,16 @@ class MainWindow(QMainWindow):
         self._operations.drive_started.connect(self._on_drive_started)
         self._operations.drive_finished.connect(self._on_drive_finished)
         self._operations.activity_changed.connect(self._on_operation_activity_changed)
+
+        # Virtual-campaign promotion: a campaign launched into a reserved (pending) directory
+        # initializes the workspace itself after its first scan; this timer merely asks the
+        # manager to promote it (the window never inspects workspace files — the readiness
+        # check lives in WorkspaceManager.promote_pending_if_ready). Armed in _on_drive_started
+        # with a captured (root, generation) identity; disarmed on rebind and drive completion.
+        self._promote_timer = QTimer(self)
+        self._promote_timer.setInterval(1000)
+        self._promote_timer.timeout.connect(self._try_promote_campaign_workspace)
+        self._promote_identity: tuple[str, int] | None = None
 
         # Watched-folder poller: settled new files feed the same controller queue. Lives across
         # switches; its folder set is re-seeded from each ready workspace's GuiStore.
@@ -516,13 +528,28 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.LeftDockWidgetArea, self.files_dock)
         self._register_dock("Files", self.files_dock)
 
+        # The campaign workspace (GUI Pass 3, M2-6) exists in EVERY state, including empty/pending:
+        # a virtual campaign needs no data — it creates its own workspace, so the entry point must
+        # not be gated behind one. Store binds late (set_store below, ready binds only); TAVI
+        # launch routes through the window's Backends plumbing; health status is fed from
+        # _apply_health; the "none"-state Start hands the launch back via virtual_start_requested
+        # (the reserve rebind tears the emitting dock down, so the window owns that sequence).
+        self.campaign_dock = CampaignDock(self.campaign_vm, self._operations, store=None,
+                                          llm_env=self._llm_env, workspace_state=self._wsm.state,
+                                          parent=self)
+        self.campaign_dock.tavi_launch_requested.connect(self._launch_tavi)
+        self.campaign_dock.virtual_start_requested.connect(self._on_virtual_start_requested)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.campaign_dock)
+        self._register_dock("Campaign", self.campaign_dock)
+
         if self._empty:
             # Before a workspace exists, results, card, scan, and plot docks are not merely empty:
-            # they describe concepts the operator cannot act on yet.  Keep just the data-entry dock
-            # visible, matching the useful New Workspace pending state.  A ready bind rebuilds the
-            # complete normal dock scaffold below.
+            # they describe concepts the operator cannot act on yet.  Keep the data-entry dock and
+            # the campaign workspace (the two ways IN), matching the New Workspace pending state.
+            # A ready bind rebuilds the complete normal dock scaffold below.
             self.files_dock.show()
             self.files_dock.raise_()
+            self.campaign_dock.show()
             return
 
         self.browser_dock = BrowserDock(
@@ -561,14 +588,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.LeftDockWidgetArea, self.scan_table_dock)
         self._register_dock("Scan Table", self.scan_table_dock)
 
-        # The campaign workspace (GUI Pass 3, M2-6): setup + start/stop + live feed, far right.
-        # Store binds late (set_store below, once the GuiStore loads); TAVI launch routes through
-        # the window's existing Backends plumbing; health status is fed from _apply_health.
-        self.campaign_dock = CampaignDock(self.campaign_vm, self._operations, store=None,
-                                          llm_env=self._llm_env, parent=self)
-        self.campaign_dock.tavi_launch_requested.connect(self._launch_tavi)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.campaign_dock)
-        self._register_dock("Campaign", self.campaign_dock)
+        # (The Campaign dock was created above, before the empty-state early return.)
 
         # The four plot panes (plane / dispersion / waterfall / sandbox) are no longer docks: the C2
         # inspector and those four surfaces are switchable pages of the central CenterHost, built in
@@ -587,6 +607,9 @@ class MainWindow(QMainWindow):
             return
         self.files_dock.show()
         self.files_dock.raise_()
+        if self.campaign_dock is not None:
+            self.campaign_dock.show()
+            self.resizeDocks([self.campaign_dock], [380], Qt.Horizontal)
         self.resizeDocks([self.log_dock], [_EMPTY_START_LOG_HEIGHT], Qt.Vertical)
 
     def _apply_default_layout(self) -> None:
@@ -1164,10 +1187,77 @@ class MainWindow(QMainWindow):
         self._operations.request_run(data_paths, opts, env=self._llm_env())
         self._sync_run_actions()
 
+    def _on_virtual_start_requested(self, opts, env: dict) -> None:
+        """Launch a campaign with NO workspace at all: reserve → rebind → carry the form → drive.
+
+        The dock cannot call request_drive itself here — reserving tears the emitting dock down
+        mid-click — so it hands the built options over and this slot owns the sequence. The
+        campaign then initializes the reserved directory itself (lazy `isar init` after its
+        first scan); the promotion timer adopts it (see _try_promote_campaign_workspace)."""
+        dock = getattr(self, "campaign_dock", None)
+        form = dock.form_dict() if dock is not None else None
+        self._wsm.new_temp()                       # rebind: a fresh pending dock appears
+        if form is not None and self.campaign_dock is not None:
+            self.campaign_dock.apply_form(form)    # in-memory carry — pending has no GuiStore yet
+        if not self._operations.request_drive(opts, env=dict(env or {})):
+            self.log("could not start the virtual campaign — workspace not ready")
+
+    def _seed_pending_campaign_form(self) -> None:
+        """Persist the typed campaign form into the reserved directory's GuiStore BEFORE the
+        promotion rebind loads it — set_store fires during the ready bind, so seeding afterwards
+        would be invisible. Never overwrites an existing form (a recovered temporary workspace
+        keeps its own). The GuiStore is a machine-written GUI file — sanctioned, unlike the card."""
+        root = self._wsm.root()
+        dock = getattr(self, "campaign_dock", None)
+        if root is None or dock is None:
+            return
+        try:
+            store = GuiStore.load(root)
+            if not store.campaign_form():
+                store.set_campaign_form(dock.form_dict())
+                store.save()
+        except OSError as exc:
+            self.log(f"could not persist the campaign form into {root}: {exc}")
+
+    def _try_promote_campaign_workspace(self, *, final: bool = False) -> None:
+        """One promotion attempt for a campaign running in a pending workspace.
+
+        The readiness check itself lives in WorkspaceManager.promote_pending_if_ready (the
+        window never inspects workspace files); this slot owns only the cadence and the
+        follow-up adoption. ``final`` is the drive-finished last chance — the campaign may have
+        initialized the workspace and exited within one tick interval; without it a valid
+        workspace would stay pending forever. On the final attempt no adoption is needed (the
+        job is finishing), and the timer disarms whether or not promotion happened."""
+        ident = self._promote_identity
+        if ident is None:
+            self._promote_timer.stop()
+            return
+        root, generation = ident
+        if self._wsm.promote_pending_if_ready(root, generation):
+            self._promote_timer.stop()
+            self._promote_identity = None
+            if not final and not self._operations.adopt_drive_binding(
+                    root, self._wsm.generation()):
+                msg = ("campaign workspace opened, but the running campaign could not be "
+                       "re-adopted — its completion will be reported as stale")
+                self.log(msg)
+                self.statusBar().showMessage(msg)
+        elif final:
+            self._promote_timer.stop()
+            self._promote_identity = None
+
     def _on_drive_started(self) -> None:
         vm = getattr(self, "campaign_vm", None)
         if vm is not None:
             vm.set_process_alive(True)
+        # A campaign launched into a reserved (pending) directory initializes the workspace
+        # itself: persist the typed form for the coming ready rebind, capture the promotion
+        # identity, and start polling the manager. (A stale tick is refused by the manager's own
+        # identity check too — this capture is the caller's independent half of that contract.)
+        if self._wsm.state() == "pending" and self._wsm.root() is not None:
+            self._seed_pending_campaign_form()
+            self._promote_identity = (str(self._wsm.root()), self._wsm.generation())
+            self._promote_timer.start()
         # Auto-follow (AD-15): a starting campaign turns the center to the growing plane view.
         host = getattr(self, "_center_host", None)
         if host is not None and host.auto_follow:
@@ -1175,6 +1265,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Campaign started")
 
     def _on_drive_finished(self, code: int, live_workspace: bool) -> None:
+        # Final promotion attempt FIRST: the campaign may have initialized the workspace and
+        # exited inside one tick interval. Ordering matters — the promotion rebind constructs a
+        # new CampaignViewModel whose constructor reads is_running_campaign(), still True while
+        # this signal is being delivered (the coordinator clears its active job afterwards) —
+        # so set_process_alive(False) must run AFTER the promotion, on the post-rebind VM.
+        self._try_promote_campaign_workspace(final=True)
         vm = getattr(self, "campaign_vm", None)
         if vm is not None:
             vm.set_process_alive(False)
@@ -1692,6 +1788,11 @@ class MainWindow(QMainWindow):
         # watched-folder/group mutation made just before this rebind must land in the old workspace,
         # not silently follow the timer into the new one (or be dropped entirely).
         self._flush_gui_store_if_pending()
+        # Any rebind invalidates an armed promotion watch. (The promotion path itself rebinds via
+        # wsm.open — its caller keeps the identity in a local and finishes safely after this.)
+        if getattr(self, "_promote_timer", None) is not None:
+            self._promote_timer.stop()
+        self._promote_identity = None
         if self._bridge is not None:
             self._bridge.stop()
             self._bridge = None

@@ -65,8 +65,9 @@ def test_empty_start_window(qtbot):
     assert w.windowTitle() == "ISAR — (no workspace)"
     assert "No workspace" in w.statusBar().currentMessage()
     # Workspace-specific docks are withheld until data has a workspace.  Files is the useful
-    # first-time surface for adding/dropping data; Log remains available for visible failures.
-    assert set(w._docks) == {"Log", "Files"}
+    # first-time surface for adding/dropping data; Campaign is the OTHER way in (a virtual
+    # campaign creates its own workspace); Log remains available for visible failures.
+    assert set(w._docks) == {"Log", "Files", "Campaign"}
     assert w.files_dock.isVisible() is False  # the window itself has not been shown yet
     assert not hasattr(w, "browser_dock")
     assert not hasattr(w, "card_dock")

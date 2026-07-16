@@ -34,6 +34,15 @@ class _Job:
     generation: int
 
 
+def _same_root(a, b) -> bool:
+    """One normalization for job-root identity — Windows case/separator variants must not defeat
+    it (WindowsPath equality is case-insensitive; resolve() settles separators/relative parts)."""
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except OSError:
+        return False
+
+
 class WorkspaceOperationCoordinator(QObject):
     """Serialize GUI initiated init/ingest/run work for one workspace binding.
 
@@ -124,15 +133,18 @@ class WorkspaceOperationCoordinator(QObject):
         return True
 
     def request_drive(self, opts: DriveOptions, *, env: dict | None = None) -> bool:
-        """Queue an ``isar drive`` campaign for the CURRENT ready workspace.
+        """Queue an ``isar drive`` campaign for the CURRENT ready OR pending workspace.
 
+        A pending (reserved, card-less) root is a first-class campaign target: the drive engine
+        is cold-start capable and lazily initializes the workspace itself after its first scan —
+        the window promotes/adopts the binding once that happens (see ``adopt_drive_binding``).
         A fresh control token is stamped into the options here — the token names this
         invocation's stop-request file (``report/control/stop-<token>.json``), so Stop can only
         ever address the campaign this coordinator launched. The job captures root + generation
         at request time; a later rebind can neither hijack the stop path nor adopt the result.
         """
         root = self._wsm.root()
-        if root is None or self._wsm.state() != "ready":
+        if root is None or self._wsm.state() not in ("pending", "ready"):
             return False
         opts = replace(opts, control_token=uuid.uuid4().hex)
         self._queue.append(_Job("drive", (opts, dict(env or {})), str(root),
@@ -272,7 +284,7 @@ class WorkspaceOperationCoordinator(QObject):
     def _job_is_current(self, job: _Job) -> bool:
         live = self._wsm.root()
         return job.generation == self._wsm.generation() and (
-            job.root is None or (live is not None and str(live) == job.root))
+            job.root is None or (live is not None and _same_root(live, job.root)))
 
     def _adopt_bootstrap_binding(self, root: str, generation: int) -> None:
         """Adopt a known init/ingest bootstrap transition from our active controller.
@@ -303,6 +315,37 @@ class WorkspaceOperationCoordinator(QObject):
         self._queue = rebased
         self._log(f"ingest bootstrap bound to {root}")
         self._emit_activity()
+
+    def adopt_drive_binding(self, root: str, generation: int) -> bool:
+        """Adopt the pending→ready promotion of the ACTIVE campaign's own workspace.
+
+        Mirrors :meth:`_adopt_bootstrap_binding` for the drive job: the campaign that was
+        launched into a reserved pending directory has initialized it, the manager just opened
+        it (bumping the generation), and the running job must follow — its payload (control
+        token included) is untouched, so cooperative Stop keeps addressing the same campaign
+        before and after the promotion. Succeeds only for an active DRIVE job whose root is the
+        SAME directory the manager now has bound at ``generation``.
+
+        Returns whether the job was rebased. A refusal after the manager already bumped the
+        generation means the campaign's eventual completion will be classified stale — the
+        caller must surface that loudly rather than let it be discovered later."""
+        active = self._active
+        if active is None or active.kind != "drive":
+            log.warning("refusing drive adoption for %s — no active campaign", root)
+            return False
+        if active.root is None or not _same_root(active.root, root):
+            log.warning("refusing drive adoption for %s — the active campaign runs in %s",
+                        root, active.root)
+            return False
+        live = self._wsm.root()
+        if live is None or not _same_root(live, root) or self._wsm.generation() != generation:
+            log.warning("refusing stale drive adoption for %s (live %s, generation %s)",
+                        root, live, self._wsm.generation())
+            return False
+        self._active = _Job(active.kind, active.payload, active.root, generation)
+        self._log(f"campaign workspace adopted: {root}")
+        self._emit_activity()
+        return True
 
     def _finish_active(self) -> None:
         self._kill_timer.stop()

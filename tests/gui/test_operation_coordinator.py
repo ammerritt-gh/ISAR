@@ -231,10 +231,62 @@ def test_request_drive_stamps_token_and_starts(coordinator):
     assert coordinator.is_running_campaign()
 
 
-def test_request_drive_refused_when_not_ready(coordinator):
-    coordinator._wsm.state = lambda: "pending"
+def test_request_drive_allowed_in_pending_refused_in_none(coordinator):
+    # A pending (reserved, card-less) root is a first-class campaign target — the drive engine
+    # initializes the workspace itself. Only "none" (no root at all) refuses.
+    coordinator._wsm.state = lambda: "none"
+    coordinator._wsm.root = lambda: None
     assert coordinator.request_drive(_drive_opts()) is False
     assert not coordinator.is_busy()
+
+    coordinator._wsm.state = lambda: "pending"
+    coordinator._wsm.root = lambda: r"D:\ws"
+    assert coordinator.request_drive(_drive_opts()) is True
+    assert coordinator.is_running_campaign()
+
+
+def test_adopt_drive_binding_rebases_the_active_campaign(qtbot, coordinator):
+    # The pending->ready promotion of the campaign's OWN workspace bumps the generation; adoption
+    # rebases the running job so its completion still classifies as live. The payload (control
+    # token included) is untouched.
+    coordinator._wsm.state = lambda: "pending"
+    assert coordinator.request_drive(_drive_opts())
+    token = coordinator._active.payload[0].control_token
+    finishes = []
+    coordinator.drive_finished.connect(lambda code, live: finishes.append((code, live)))
+
+    coordinator._wsm._generation = 8            # the manager's open() bumped the generation
+    coordinator._wsm.state = lambda: "ready"
+    assert coordinator.adopt_drive_binding(r"D:\ws", 8) is True
+    assert coordinator._active.generation == 8
+    assert coordinator._active.payload[0].control_token == token
+
+    _Runner.instances[0].complete(0)
+    assert finishes == [(0, True)]              # NOT stale after the promotion
+
+
+def test_adopt_drive_binding_normalizes_windows_paths(coordinator):
+    import sys
+
+    coordinator._wsm.state = lambda: "pending"
+    assert coordinator.request_drive(_drive_opts())
+    coordinator._wsm._generation = 8
+    variant = "d:/WS" if sys.platform == "win32" else r"D:\ws"
+    assert coordinator.adopt_drive_binding(variant, 8) is True
+
+
+def test_adopt_drive_binding_refusals(coordinator):
+    # No active campaign at all.
+    assert coordinator.adopt_drive_binding(r"D:\ws", 8) is False
+    # Wrong root: the active campaign runs elsewhere.
+    coordinator._wsm.state = lambda: "pending"
+    assert coordinator.request_drive(_drive_opts())
+    assert coordinator.adopt_drive_binding(r"D:\other", 8) is False
+    # Stale generation: the manager moved on again after the promotion.
+    coordinator._wsm._generation = 9
+    assert coordinator.adopt_drive_binding(r"D:\ws", 8) is False
+    # A refused adoption leaves the job on its original generation -> completion will be stale.
+    assert coordinator._active.generation == 7
 
 
 def test_drive_gates_run_and_ingest_until_finished(qtbot, coordinator):

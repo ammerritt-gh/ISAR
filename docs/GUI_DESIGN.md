@@ -118,6 +118,17 @@ G-series (canonical text in `docs/DECISIONS.md`):
   (pre-fingerprint logs, a moved spec file, a freshly typed goal), since the frozen objective
   alone is sufficient. Tier is frozen with the objective — the form disables it when the
   primary action is a verified Resume, and the launcher never emits `--tier` on a resume.
+  **A campaign needs no data and no workspace** — the drive engine is cold-start capable (lazy
+  `isar init` after its first scan), so the Campaign dock exists in every window state and a
+  Start with no workspace at all runs the reserve → launch → promote → adopt lifecycle: the
+  window reserves a temporary directory (`new_temp`, the same recovery-covered machinery data
+  drops use), launches the campaign into it, and polls
+  `WorkspaceManager.promote_pending_if_ready` (all three init files, identity-checked against
+  the armed root+generation) until the workspace the campaign created opens; the coordinator
+  then rebases the running job onto the new generation (`adopt_drive_binding` — control token
+  untouched, so cooperative Stop spans the promotion). The window never inspects workspace
+  files; readiness detection lives in the manager. A campaign that dies before its first scan
+  leaves the reservation pending and retryable.
 - **G20 — Compact campaign monitor.** The small window is an explicit mode, not a responsive
   collapse: same window, dock layout stashed in memory, central stack swapped to a glanceable
   card (status, current scan, budget, mini plane, log ticker, cooperative Stop). Read-only; the
