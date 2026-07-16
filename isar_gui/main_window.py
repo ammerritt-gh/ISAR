@@ -66,6 +66,7 @@ from isar_gui.viewmodels import (
     ViewModel,
     WaterfallViewModel,
 )
+from isar_gui.viewmodels.campaign import CampaignViewModel
 from isar_gui.viewmodels.sandbox import SandboxViewModel
 from isar_gui.views.sandbox_pane import SandboxPane
 from isar_gui.views.browser_dock import BrowserDock
@@ -126,9 +127,14 @@ class _EmptyWorkspace:
     scans: list = []
     files: list = []
     last_ingest = None
+    #: The campaign dashboard's read surface: no log -> no events, no terminal summary.
+    campaign = None
 
     def __init__(self):
         self.warnings: list = []
+
+    def session_events(self, kind=None, since=None):
+        return iter(())
 
     @property
     def card(self) -> CardView:
@@ -213,6 +219,8 @@ class MainWindow(QMainWindow):
         self._operations.ingest_failed.connect(self._on_ingest_failed)
         self._operations.run_started.connect(self._on_run_started)
         self._operations.run_finished.connect(self._on_run_finished)
+        self._operations.drive_started.connect(self._on_drive_started)
+        self._operations.drive_finished.connect(self._on_drive_finished)
         self._operations.activity_changed.connect(self._on_operation_activity_changed)
 
         # Watched-folder poller: settled new files feed the same controller queue. Lives across
@@ -317,6 +325,11 @@ class MainWindow(QMainWindow):
         self.scans_vm.inspect_requested.connect(self._route_inspect)
         self.scans_vm.groups_changed.connect(self._on_groups_changed)
         self.scans_vm.store_dirty.connect(self._on_groups_changed)
+        # The campaign feed/status VM: event-log ticks fan out to it in _on_workspace_changed;
+        # process liveness arrives via the window's stable drive slots (wired once in __init__ —
+        # the coordinator outlives bindings, so per-bind lambdas would accumulate and dangle).
+        self.campaign_vm = CampaignViewModel(ws, parent=self)
+        self.campaign_vm.set_process_alive(self._operations.is_running_campaign())
         self.waterfall_vm.load_view_state(self._session)
         self.heatmap_vm.load_view_state(self._session)
         self.dispersion_vm.load_view_state(self._session)
@@ -1046,6 +1059,24 @@ class MainWindow(QMainWindow):
         self._operations.request_run(data_paths, opts, env=self._llm_env())
         self._sync_run_actions()
 
+    def _on_drive_started(self) -> None:
+        vm = getattr(self, "campaign_vm", None)
+        if vm is not None:
+            vm.set_process_alive(True)
+        self.statusBar().showMessage("Campaign started")
+
+    def _on_drive_finished(self, code: int, live_workspace: bool) -> None:
+        vm = getattr(self, "campaign_vm", None)
+        if vm is not None:
+            vm.set_process_alive(False)
+        if not live_workspace:
+            self.log("stale campaign completion ignored — workspace changed")
+            return
+        msg = {0: "Campaign met its objective", 3: "Campaign unmeetable — see the feed",
+               4: "Campaign stopped by operator"}.get(int(code), f"Campaign failed (exit {code})")
+        self.statusBar().showMessage(msg)
+        self._sync_run_actions()
+
     def _on_run_started(self) -> None:
         self._set_run_status("running…", "#b8860b")
 
@@ -1575,6 +1606,7 @@ class MainWindow(QMainWindow):
         self.files_vm.deleteLater()
         self.scans_vm.deleteLater()
         self.inspector_vm.deleteLater()
+        self.campaign_vm.deleteLater()
         self.heatmap_vm.save_view_state(self._session)
         self.heatmap_vm.deleteLater()
         self.dispersion_vm.save_view_state(self._session)
@@ -1633,6 +1665,11 @@ class MainWindow(QMainWindow):
             if changed & {"card_state"} and not (changed & {"snapshot"}):
                 self.scans_vm.refresh()
                 self.active_units.retain(self.scans_vm.available_keys())
+        # "events" is the drive loop's session log (the watcher has always reported it; the GUI
+        # ignored it until the campaign dashboard). results/card_state also feed the campaign
+        # status (scan verdicts, spend context), so fan those out too.
+        if changed & {"events", "results", "card_state"}:
+            self.campaign_vm.on_workspace_changed(changed)
         self._live_label.setText(f"live — last update {datetime.now():%H:%M:%S}")
         self.statusBar().showMessage(f"Updated: {', '.join(sorted(changed)) or '(none)'}")
 
