@@ -16,12 +16,18 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from isar.schema.hypotheses import SteeringPolicy, content_fingerprint, preset
+from isar.schema.hypotheses import (
+    SteeringPolicy,
+    content_fingerprint,
+    preset,
+    resolve_hypothesis,
+)
 
 # The two fidelity tiers a driver campaign can run against (LLM_HARNESS_DESIGN §6). "deterministic"
 # is TAVI's fast analytic engine (develop the loop); "mcstas" is the full Monte-Carlo (validate).
 TIERS = ("deterministic", "mcstas")
 TARGET_BRANCHES = ("acoustic", "optic")
+OBJECTIVE_SCHEMA = "isar.objective/2"
 
 
 @dataclass
@@ -67,6 +73,8 @@ class ObjectiveSpec:
         # Normalize path entries to plain float triples so round-trips are stable.
         norm: list[tuple[float, float, float]] = []
         for p in self.path:
+            if not isinstance(p, (list, tuple)) or len(p) != 3:
+                raise ValueError("every objective path point must contain exactly three coordinates")
             h, k, l = p
             # Round to 9 dp so grid arithmetic (e.g. 2.1 + 0.1·2) does not leave 2.3000000000000003.
             norm.append((round(float(h), 9), round(float(k), 9), round(float(l), 9)))
@@ -167,6 +175,7 @@ class ObjectiveSpec:
     # ---- (de)serialization -------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema": OBJECTIVE_SCHEMA,
             "path": [list(p) for p in self.path],
             "tolerance_meV": self.tolerance_meV,
             "budget": dict(self.budget),
@@ -185,6 +194,8 @@ class ObjectiveSpec:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ObjectiveSpec":
+        if d.get("schema") != OBJECTIVE_SCHEMA:
+            raise ValueError(f"objective schema must be {OBJECTIVE_SCHEMA!r}")
         return cls(
             path=[tuple(p) for p in d["path"]],
             tolerance_meV=float(d["tolerance_meV"]),
@@ -212,5 +223,38 @@ def shipped_hypothesis_snapshot(target_branch: str, energy_search_meV) -> dict[s
     steering = SteeringPolicy().to_dict()
     return {"hypotheses": hypotheses, "target_hypothesis": target_branch,
             "hypothesis_source": "shipped_preset",
+            "hypothesis_fingerprint": content_fingerprint(hypotheses, steering),
+            "steering": steering}
+
+
+def resolve_hypothesis_snapshot(target_branch: str, energy_search_meV, *,
+                                card_hypotheses: dict[str, Any] | None = None,
+                                goal_override: dict[str, Any] | None = None,
+                                steering_override: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Freeze goal > card > shipped declarations, including all declared rival branches.
+
+    The returned source names the declaration that won for the target.  Rivals from the card remain
+    available to classification even when a goal override replaces only the target declaration.
+    """
+    energy = tuple(energy_search_meV or (
+        (-2.0, 12.0) if target_branch == "optic" else (-2.0, 7.0)))
+    declarations = {str(name): dict(value or {})
+                    for name, value in dict(card_hypotheses or {}).items()}
+    source = "card_policy" if target_branch in declarations else "shipped_preset"
+    if goal_override:
+        declarations[target_branch] = {**declarations.get(target_branch, {}), **dict(goal_override)}
+        source = "goal_override"
+
+    ordered_names = [target_branch]
+    ordered_names.extend(name for name in declarations if name != target_branch)
+    # Always carry the standard acoustic/optic rival unless the scientist supplied an equivalent
+    # custom set.  This is a prior with zero real occupancy, not fabricated classification evidence.
+    ordered_names.extend(name for name in ("acoustic", "optic") if name not in ordered_names)
+    hypotheses = [resolve_hypothesis(
+        name, declarations.get(name), energy_search_meV=energy).to_dict()
+        for name in ordered_names]
+    steering = SteeringPolicy(**dict(steering_override or {})).to_dict()
+    return {"hypotheses": hypotheses, "target_hypothesis": target_branch,
+            "hypothesis_source": source,
             "hypothesis_fingerprint": content_fingerprint(hypotheses, steering),
             "steering": steering}

@@ -1,9 +1,9 @@
 # Excitation hypotheses — declaring what you expect to measure
 
-> **Status: Partial.** The branch schema, shipped presets, frozen objective fingerprint, parameter
+> **Status: Implemented (branch hypotheses).** The branch schema, shipped presets, frozen objective fingerprint, parameter
 > priors, branch-MI acquisition, opening moves, deterministic widening, incremental count batches,
-> and persisted mismatch evidence are implemented (2026-07-17). Card tables parse and validate;
-> resolving goal overrides against card declarations is the remaining user-facing gap.
+> persisted mismatch evidence, and goal > card > shipped resolution are implemented (2026-07-17).
+> `level` and `continuum` remain the explicitly declared future plugin surfaces (O10).
 
 ## What a hypothesis is (and is not)
 
@@ -119,6 +119,11 @@ prior-vs-data-only check under `hypothesis_mismatch`, drive regression ingredien
 `branch_belief_models`, and viewer/report rows under `branch_belief`. Each viewer row carries
 `label_probabilities`, `assignment_entropy`, and `p_is_target`; there is no ambiguous
 `target_probability` field.
+
+Resolution precedence is deterministic: an energy/gap stated in the natural-language goal wins;
+otherwise a matching `[hypotheses.<target>]` card declaration wins; otherwise the shipped preset is
+frozen. `hypothesis_source` records which source won. Frozen objectives use `isar.objective/2` inside
+`isar.objective-envelope/2`; pre-release v1 campaign files are intentionally rejected (O12).
 
 ---
 

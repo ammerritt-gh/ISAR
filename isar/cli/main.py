@@ -228,7 +228,7 @@ def main(argv=None) -> int:
         from isar.drive.loop import run_campaign
         from isar.drive.session_log import read_log
         from isar.drive.supervisor.goal_to_spec import (
-            GoalParseError, envelope_from_json, goal_to_spec, make_envelope, spec_from_dict,
+            ENVELOPE_SCHEMA, GoalParseError, envelope_from_json, goal_to_spec, make_envelope, spec_from_dict,
             spec_from_json)
         try:
             if args.compile_only and (args.resume_latest or args.envelope):
@@ -262,7 +262,7 @@ def main(argv=None) -> int:
             elif args.envelope:
                 objective, source, original_goal = envelope_from_json(args.envelope)
                 source = dict(source)
-                source["envelope_schema"] = "isar.objective-envelope/1"
+                source["envelope_schema"] = ENVELOPE_SCHEMA
                 if original_goal is not None:
                     source["original_goal"] = original_goal
             elif args.spec:
@@ -270,7 +270,15 @@ def main(argv=None) -> int:
                 source = {"kind": "spec",
                           "sha256": hashlib.sha256(Path(args.spec).read_bytes()).hexdigest()}
             else:
-                objective = goal_to_spec(args.goal, defaults={"tier": args.tier or "deterministic"})
+                card_hypotheses = None
+                if args.workspace:
+                    policy_path = Path(args.workspace) / "card.policy.toml"
+                    if policy_path.exists():
+                        from isar.schema.card import load_policy
+                        card_hypotheses = load_policy(policy_path).hypotheses
+                objective = goal_to_spec(
+                    args.goal, defaults={"tier": args.tier or "deterministic"},
+                    card_hypotheses=card_hypotheses)
                 source = {"kind": "goal",
                           "sha256": hashlib.sha256(args.goal.encode("utf-8")).hexdigest()}
             if args.budget and not args.envelope:

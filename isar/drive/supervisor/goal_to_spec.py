@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import isar.reduce.llm_client as _llm  # boundary carve-out: the shared LLMM HTTP plumbing only
-from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
+from isar.drive.objective import ObjectiveSpec, resolve_hypothesis_snapshot
 
 Dispatcher = _llm.Dispatcher
 LLMMClient = _llm.LLMMClient
@@ -63,6 +63,8 @@ GOAL_SCHEMA = {
         "target_label": {"type": "string"},
         "energy_search_meV": {"type": "array", "items": {"type": "number"},
                               "minItems": 2, "maxItems": 2},
+        "target_zc_energy_meV": {"type": "number"},
+        "target_zc_energy_sigma_meV": {"type": "number"},
     },
 }
 
@@ -82,8 +84,10 @@ SYSTEM = (
     "phonon energy ω₀; map '±X meV' to X, 'less than X meV' to X), and a budget as EITHER budget_hours "
     "OR budget_neutrons ('overnight' ≈ 8 hours; if no budget is stated, use budget_hours = 8). "
     "Set target_branch to optic when the user asks for an optic or transverse optic phonon, otherwise "
-    "acoustic; retain their wording in target_label. For optic goals use energy_search_meV [-2,12] "
-    "unless the user provides a range. Optionally a short notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
+    "acoustic; retain their wording in target_label. If the user states a zone-centre or gap energy, "
+    "put it in target_zc_energy_meV and put an explicitly stated uncertainty in "
+    "target_zc_energy_sigma_meV. For optic goals use energy_search_meV [-2,12] unless the user "
+    "provides a range. Optionally a short notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
     "these keys, no wrapper object, no extra keys, and never enumerate grid points:\n"
     + json.dumps(GOAL_SCHEMA)
     + "\n\nExample. Goal: 'map the acoustic phonon from (1,0,0) to (2,0,0) to +-0.5 meV, steps of 0.1, "
@@ -96,7 +100,7 @@ _REPAIR_SUFFIX = (
 )
 
 DEFAULTS: dict[str, Any] = {"step_h": 0.05, "tier": "deterministic"}
-ENVELOPE_SCHEMA = "isar.objective-envelope/1"
+ENVELOPE_SCHEMA = "isar.objective-envelope/2"
 
 
 class GoalParseError(ValueError):
@@ -105,6 +109,7 @@ class GoalParseError(ValueError):
 
 # --------------------------------------------------------------------------- LLM path
 def goal_to_spec(goal: str, *, dispatcher: Dispatcher | None = None, defaults: dict | None = None,
+                 card_hypotheses: dict[str, Any] | None = None,
                  endpoint: str | None = None, model_pin: str | None = None,
                  temperature: float = 0.1, max_tokens: int = 800) -> ObjectiveSpec:
     """Parse ``goal`` into an :class:`ObjectiveSpec` via the LLM supervisor.
@@ -137,11 +142,12 @@ def goal_to_spec(goal: str, *, dispatcher: Dispatcher | None = None, defaults: d
             "goal→ObjectiveSpec failed: the supervisor LLM did not return a schema-valid objective"
             + detail + (f"; raw: {raw!r}" if raw else "")
             + ". Use `isar drive --spec <file.json>` for an LLM-free run.")
-    return _build_spec(data, merged)
+    return _build_spec(data, merged, card_hypotheses=card_hypotheses)
 
 
 # --------------------------------------------------------------------------- LLM-free path
-def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec") -> ObjectiveSpec:
+def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec",
+                   card_hypotheses: dict[str, Any] | None = None) -> ObjectiveSpec:
     """Build an :class:`ObjectiveSpec` from an already-parsed dict — no LLM, no file I/O.
 
     Accepts either the goal schema (``{"path": {"h_start", …}, "step_h", "tolerance_meV", …}``) or a
@@ -159,7 +165,7 @@ def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec"
         raise GoalParseError(f"{where}: not a valid goal spec (needs path{{h_start,h_end,k,l}}, step_h, "
                              "tolerance_meV, and a budget)")
     merged = {**DEFAULTS, **(defaults or {})}
-    return _build_spec(d, merged)
+    return _build_spec(d, merged, card_hypotheses=card_hypotheses)
 
 
 def spec_from_json(path: str | Path, *, defaults: dict | None = None) -> ObjectiveSpec:
@@ -193,14 +199,31 @@ def envelope_from_json(path: str | Path) -> tuple[ObjectiveSpec, dict, str | Non
 
 
 # --------------------------------------------------------------------------- shared
-def _build_spec(data: dict, merged: dict) -> ObjectiveSpec:
+def _build_spec(data: dict, merged: dict, *,
+                card_hypotheses: dict[str, Any] | None = None) -> ObjectiveSpec:
     budget = _budget(data)
     branch = str(data.get("target_branch", "acoustic"))
     label = str(data.get("target_label") or branch)
     energy = data.get("energy_search_meV")
     resolved_energy = tuple(energy) if energy is not None else (
         (-2.0, 12.0) if branch == "optic" else (-2.0, 7.0))
-    frozen = shipped_hypothesis_snapshot(branch, resolved_energy)
+    goal_override = None
+    if (data.get("target_zc_energy_sigma_meV") is not None
+            and data.get("target_zc_energy_meV") is None):
+        raise GoalParseError(
+            "target_zc_energy_sigma_meV requires target_zc_energy_meV")
+    if data.get("target_zc_energy_meV") is not None:
+        shipped_sigma = max((float(resolved_energy[1]) - max(float(resolved_energy[0]), 0.0)) / 4.0,
+                            1e-6)
+        explicit_sigma = data.get("target_zc_energy_sigma_meV")
+        if explicit_sigma is not None and float(explicit_sigma) <= 0.0:
+            raise GoalParseError("target_zc_energy_sigma_meV must be positive")
+        goal_override = {"zc_energy": {
+            "mean": float(data["target_zc_energy_meV"]),
+            "sigma": float(explicit_sigma if explicit_sigma is not None else shipped_sigma),
+        }}
+    frozen = resolve_hypothesis_snapshot(
+        branch, resolved_energy, card_hypotheses=card_hypotheses, goal_override=goal_override)
     common = dict(tolerance_meV=float(data["tolerance_meV"]), budget=budget,
                   tier=str(merged.get("tier", "deterministic")),
                   name=str(data.get("notes", "")),

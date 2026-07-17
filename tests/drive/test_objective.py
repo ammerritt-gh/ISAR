@@ -28,6 +28,20 @@ def test_round_trip_dict():
     assert back.meta == spec.meta
 
 
+def test_persisted_objective_requires_prerelease_v2_schema():
+    old = _spec().to_dict()
+    old.pop("schema")
+    with pytest.raises(ValueError, match="isar.objective/2"):
+        ObjectiveSpec.from_dict(old)
+
+
+def test_persisted_objective_rejects_malformed_q_with_clear_error():
+    malformed = _spec().to_dict()
+    malformed["path"] = [[1.0, 0.0]]
+    with pytest.raises(ValueError, match="exactly three coordinates"):
+        ObjectiveSpec.from_dict(malformed)
+
+
 def test_path_normalized_to_float_triples():
     spec = ObjectiveSpec(path=[(1, 0, 0), [2, 0, 0]], tolerance_meV=0.1,
                          budget={"kind": "neutrons", "amount": 1e9})

@@ -105,6 +105,54 @@ def test_transverse_optic_k_segment_compiles_to_eleven_points():
     assert spec.energy_search_meV == (-2.0, 12.0)
 
 
+def test_hypothesis_resolution_precedence_goal_then_card_then_shipped():
+    base = {"q_start": [2, 0, 0], "q_end": [2, 0.5, 0], "step_rlu": 0.05,
+            "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic"}
+    card = {"optic": {"zc_energy": {"mean": 8.0, "sigma": 1.0}, "confidence": 0.7},
+            "acoustic": {}}
+
+    card_spec = g2s.goal_to_spec(
+        "optic", dispatcher=_FakeDispatcher(DispatchResult(structured=base)),
+        card_hypotheses=card)
+    optic = next(h for h in card_spec.hypotheses if h["name"] == "optic")
+    assert optic["zc_energy"] == {"mean": 8.0, "sigma": 1.0}
+    assert card_spec.hypothesis_source == "card_policy"
+
+    goal_payload = {**base, "target_zc_energy_meV": 10.0,
+                    "target_zc_energy_sigma_meV": 0.5}
+    goal_spec = g2s.goal_to_spec(
+        "optic at 10 +- 0.5 meV",
+        dispatcher=_FakeDispatcher(DispatchResult(structured=goal_payload)),
+        card_hypotheses=card)
+    optic = next(h for h in goal_spec.hypotheses if h["name"] == "optic")
+    assert optic["zc_energy"] == {"mean": 10.0, "sigma": 0.5}
+    assert goal_spec.hypothesis_source == "goal_override"
+
+    shipped = g2s.goal_to_spec(
+        "optic", dispatcher=_FakeDispatcher(DispatchResult(structured=base)))
+    assert shipped.hypothesis_source == "shipped_preset"
+    assert next(h for h in shipped.hypotheses if h["name"] == "optic")["zc_energy"]["mean"] == 6.0
+
+
+def test_objective_envelope_v1_is_rejected_after_prerelease_reset(tmp_path):
+    path = tmp_path / "old-envelope.json"
+    path.write_text(json.dumps({"schema": "isar.objective-envelope/1",
+                                "objective": {}, "source": {}}), encoding="utf-8")
+    with pytest.raises(g2s.GoalParseError, match="objective-envelope/2"):
+        g2s.envelope_from_json(path)
+
+
+@pytest.mark.parametrize("payload, message", [
+    ({"target_zc_energy_meV": 10.0, "target_zc_energy_sigma_meV": -0.5}, "must be positive"),
+    ({"target_zc_energy_sigma_meV": 0.5}, "requires target_zc_energy_meV"),
+])
+def test_gap_uncertainty_validation_is_explicit(payload, message):
+    data = {"q_start": [2, 0, 0], "q_end": [2, 0.5, 0], "step_rlu": 0.05,
+            "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic", **payload}
+    with pytest.raises(g2s.GoalParseError, match=message):
+        g2s.goal_to_spec("optic", dispatcher=_FakeDispatcher(DispatchResult(structured=data)))
+
+
 def test_goal_layer_rejects_degenerate_segment():
     payload = {"q_start": [2, 0, 0], "q_end": [2, 0, 0], "step_rlu": 0.05,
                "tolerance_meV": 0.5, "budget_hours": 8}

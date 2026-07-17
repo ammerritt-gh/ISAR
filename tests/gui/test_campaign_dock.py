@@ -48,11 +48,12 @@ class _Ops:
 
     def request_drive_compile(self, opts, *, env=None):
         self.compile_requests.append((opts, dict(env or {})))
-        objective = {"path": [[2, 0, 0], [2, 0.5, 0]], "target_branch": "optic",
+        objective = {"schema": "isar.objective/2",
+                     "path": [[2, 0, 0], [2, 0.5, 0]], "target_branch": "optic",
                      "target_label": "transverse optic", "energy_search_meV": [-2, 12],
                      "tolerance_meV": 0.5,
                      "budget": {"kind": "neutrons", "amount": 1e9}}
-        self.drive_compiled.emit({"schema": "isar.objective-envelope/1",
+        self.drive_compiled.emit({"schema": "isar.objective-envelope/2",
                                   "objective": objective, "source": {"kind": "goal"}},
                                  "frozen-objective.json")
         return True

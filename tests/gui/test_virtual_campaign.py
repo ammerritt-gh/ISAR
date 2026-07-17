@@ -107,8 +107,9 @@ def _start_virtual(w, goal="map the branch"):
     envelope_path = Path(argv[argv.index("--compile-only") + 1])
     envelope_path.parent.mkdir(parents=True, exist_ok=True)
     envelope_path.write_text(json.dumps({
-        "schema": "isar.objective-envelope/1",
+        "schema": "isar.objective-envelope/2",
         "objective": {
+            "schema": "isar.objective/2",
             "path": [[2.0, 0.0, 0.0], [2.5, 0.0, 0.0]],
             "tolerance_meV": 0.5,
             "budget": {"kind": "neutrons", "amount": 1e9},

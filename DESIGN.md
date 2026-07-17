@@ -136,7 +136,8 @@ occurrence. *(Implemented; see `docs/UNIFICATION_DESIGN.md` for the full treatme
 
 **The Stage II ↔ Stage III boundary is a frozen file contract.** The driver consumes analysis
 only via the `isar run` subprocess and its products — `report/results.csv`, `report.json`,
-`card.state.json` — and never imports fit internals. Contract changes are additive. This boundary
+`card.state.json` — and never imports fit internals. The pre-release v1→v2 objective/campaign reset
+was authorized on 2026-07-17 (O12); additive-only evolution resumes from v2. This boundary
 is what lets the stages be independently useful and independently testable, and it is what makes
 the asynchronous loop (§8) possible.
 
@@ -289,7 +290,7 @@ and its `recenter_refused_elastic` refusal logging landed 2026-07-10 — previou
 absent — and the remaining R4 logging additions (escalate_fit outcomes, decide.action) landed the
 same day.)*
 
-**Branch-identity-aware acquisition** *(design locked 2026-07-17, Planned — DECISIONS O6–O11,
+**Branch-identity-aware acquisition** *(design locked 2026-07-17, Partial — DECISIONS O6–O12,
 MEASUREMENT_STEERING §4.5, `docs/HYPOTHESES.md`)*: scan value becomes two-term (target-ω₀ EIG +
 λ × branch-assignment-entropy reduction); user-declared excitation hypotheses in
 `card.policy.toml` weight — never force — belief seeding, classification, opening moves, and

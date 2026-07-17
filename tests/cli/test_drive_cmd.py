@@ -185,7 +185,7 @@ def test_compile_only_writes_frozen_envelope_without_running_campaign(tmp_path, 
     rc = main(["drive", "--spec", str(_spec_file(tmp_path)), "--compile-only", str(out)])
     assert rc == 0 and captured == []
     envelope = json.loads(out.read_text(encoding="utf-8"))
-    assert envelope["schema"] == "isar.objective-envelope/1"
+    assert envelope["schema"] == "isar.objective-envelope/2"
     assert envelope["objective"]["path"][0] == [2.1, 0.0, 0.0]
 
 
@@ -194,7 +194,7 @@ def test_envelope_start_preserves_original_source_fingerprint(tmp_path, monkeypa
                                  tolerance_meV=0.5,
                                  budget={"kind": "neutrons", "amount": 1e9},
                                  target_branch="optic")
-    envelope = {"schema": "isar.objective-envelope/1", "objective": spec.to_dict(),
+    envelope = {"schema": "isar.objective-envelope/2", "objective": spec.to_dict(),
                 "source": {"kind": "goal", "sha256": "frozen123"},
                 "original_goal": "map transverse optic"}
     path = tmp_path / "envelope.json"
@@ -211,7 +211,7 @@ def test_envelope_start_ignores_budget_override_and_uses_frozen_objective(tmp_pa
                                  tolerance_meV=0.5,
                                  budget={"kind": "neutrons", "amount": 1234},
                                  target_branch="optic")
-    envelope = {"schema": "isar.objective-envelope/1", "objective": spec.to_dict(),
+    envelope = {"schema": "isar.objective-envelope/2", "objective": spec.to_dict(),
                 "source": {"kind": "goal", "sha256": "frozen123"},
                 "original_goal": "map transverse optic"}
     path = tmp_path / "envelope.json"
