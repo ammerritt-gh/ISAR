@@ -78,6 +78,27 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   version, which energy-zero source, whether the seed was your expectation or the auto prior and
   how many neighbors informed it.
 
+## Steering vocabulary (the autonomous driver)
+
+- **branch** — one dispersion curve ω(Q) (e.g. the transverse acoustic phonon). A campaign
+  targets one branch; others it encounters are **rivals**.
+- **branch assignment / assignment entropy** — the Bayesian posterior assigning each fitted
+  feature to a branch label ({acoustic, optic, new, …}), and the Shannon entropy of that
+  posterior — high entropy means "the labels are genuinely ambiguous here." Shown as a color
+  channel in the GUI.
+- **branch belief** — the driver's per-branch dispersion estimate: a weighted local regression
+  over that branch's confirmed points, with honest uncertainty growth away from data.
+- **excitation hypothesis** *(Planned — `docs/HYPOTHESES.md`)* — your declared physics
+  expectation for the target (and rivals) in `card.policy.toml`: character (acoustic / optic /
+  custom), zone-centre energy with uncertainty, flatness, confidence. It weights the driver's
+  seeding, classification, and scan choice; it never forces a fit.
+- **differentiation tolerance** *(Planned)* — the looser precision to which a *rival* branch is
+  measured: enough to tell it apart from the target, never the target's tolerance. Rivals get
+  identification, not publication error bars.
+- **sanity-check opening move** *(Planned)* — the campaign's first scans probe the declared
+  hypothesis's most discriminating feature (a gapped target: the zone centre at the claimed
+  gap), so a grossly wrong expectation is caught immediately.
+
 ## Validation vocabulary
 
 - **gold / expert fit** — a human's by-hand fit of the same data (in their usual tool). ISAR is compared

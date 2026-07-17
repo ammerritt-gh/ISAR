@@ -53,7 +53,7 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
 
 | File | Who writes it | What it is |
 |---|---|---|
-| `card.policy.toml` | **You** (ISAR scaffolds it once, then never touches it) | Every per-experiment decision: detectors, column names, collation rules, calibration method, and your fitting guidelines. Commented — the comments are the documentation. |
+| `card.policy.toml` | **You** (ISAR scaffolds it once, then never touches it) | Every per-experiment decision: detectors, column names, collation rules, calibration method, and your fitting guidelines. (Planned: your declared excitation hypotheses for autonomous campaigns — [HYPOTHESES.md](HYPOTHESES.md).) Commented — the comments are the documentation. |
 | `card.state.json` | ISAR | Accumulated experiment state: energy-zero series, resolution versions, the running dispersion prior, sample map, exclusions, corrections audit trail. Don't hand-edit; don't delete. |
 | `session.json` | ISAR | Bookkeeping: which files were seen, which scans were processed and how. Safe to delete — a re-run rebuilds it (refitting everything once). |
 | `report/` | ISAR | The product: `report.html`/`.md`, `results.csv`, figures, plus `reduction.*` (the QC-level detail report). |

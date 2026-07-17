@@ -289,6 +289,15 @@ and its `recenter_refused_elastic` refusal logging landed 2026-07-10 — previou
 absent — and the remaining R4 logging additions (escalate_fit outcomes, decide.action) landed the
 same day.)*
 
+**Branch-identity-aware acquisition** *(design locked 2026-07-17, Planned — DECISIONS O6–O11,
+MEASUREMENT_STEERING §4.5, `docs/HYPOTHESES.md`)*: scan value becomes two-term (target-ω₀ EIG +
+λ × branch-assignment-entropy reduction); user-declared excitation hypotheses in
+`card.policy.toml` weight — never force — belief seeding, classification, opening moves, and
+energy windows (which stop unconditionally excluding the rival branch); the compiled path
+becomes first-guess (driver-inserted classification q, which never seat convergence); rivals
+are measured only to a looser differentiation tolerance; hypothesis mismatch is detected and
+flagged, and the resolved hypothesis is content-hashed into `card.state.json`.
+
 **Stop states.** `met` · `unmeetable` (statistics cannot deliver; refuse to spend the rest) ·
 `budget_exhausted` · **`diminishing_returns`** (best available marginal EIG per second below
 threshold — the morning report states what the remaining budget would have bought) · plus per-q
@@ -421,6 +430,7 @@ DECISIONS W1–W3.)*
 | Bayesian interval tier | Planned |
 | Renegotiation protocol | Planned (design door open) |
 | Model-level (ARIANE-style) objective tier | Planned |
+| Branch-identity-aware acquisition (two-term scan value; excitation hypotheses; first-guess path) | Planned (design locked 2026-07-17 — O6–O11) |
 
 **Genuinely open:** wrap an existing 4D-convolution engine (ResLib/Tobyfit lineage) vs implement
 the Cooper–Nathans projection against TAVI ellipsoids directly — decide when `tas4d` is
@@ -434,6 +444,7 @@ scheduled. Cross-T dispersion-prior pooling near transitions — revisit with da
 | The statistics (and the seminar) | `docs/STATS_PRIMER.md` (+ generated gallery, `docs/stats/`) |
 | Workspace/session/CLI internals | `docs/UNIFICATION_DESIGN.md` |
 | Steering research & drive internals | `docs/MEASUREMENT_STEERING.md` |
+| Declaring expected excitations (Planned) | `docs/HYPOTHESES.md` |
 | Flag adjudication | `docs/ADJUDICATION.md` |
 | Card/schema survey across facilities | `docs/SCHEMA_LANDSCAPE.md`, `docs/DATA_SCHEME_RESEARCH.md` |
 | Reports the runs owe us | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` |

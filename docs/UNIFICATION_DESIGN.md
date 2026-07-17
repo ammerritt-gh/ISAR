@@ -130,6 +130,11 @@ class CardState:
     sample_map: list = field(default_factory=list)            # [{from_scan, sample, source}]
 ```
 
+*(Planned additions, DECISIONS O7/O11 — same additive-only discipline: `CardPolicy.hypotheses`
+(`[hypotheses.<name>]` tables, human-owned excitation hypotheses — `docs/HYPOTHESES.md`), and
+machine-written `CardState.hypothesis` (resolved params + content hash) and
+`CardState.hypothesis_check` (prior-vs-data disagreement flag).)*
+
 Two traps this must handle, both found in code:
 
 - `_json.from_dataclass` **silently drops unknown TOML keys** (`isar/schema/_json.py`). Without the

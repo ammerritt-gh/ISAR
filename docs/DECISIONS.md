@@ -82,6 +82,42 @@ explicitly reopened; "future" means designed-for but not v1.
   n−1 and queue proposal n+1 for the instant the instrument idles. On real instruments counting
   dominates fitting by 20–100×, so compute hides entirely; "fitting-bound" is a TAVI-tier
   artifact only.
+- **O6.** (2026-07-17, Planned) Scan value is **two-term**: deficit-weighted EIG on the target's
+  ω₀ **plus** λ × expected reduction of branch-assignment entropy. λ decays with label
+  confidence; the per-q classification term zeroes once the rival band at that q reaches a
+  looser **differentiation tolerance** (default `max(3 × tolerance_meV, resolution σ)`) — a
+  rival is never driven to the target tolerance. **No hard rival-spend caps**: λ decay plus the
+  budget stop bound rival spending. "Done" is unchanged — the user path certified on the target
+  branch. (MEASUREMENT_STEERING §4.1 item 7.)
+- **O7.** (2026-07-17, Planned) **Hypothesis/policy split.** `ExcitationHypothesis` = physics
+  character; declared in human-owned `card.policy.toml` (`[hypotheses.<name>]`); code never
+  writes it. `SteeringPolicy` = tactics (opening moves, search bands, λ); the hypothesis
+  suggests defaults, the planner owns decisions, the objective's `steering` block overrides.
+  `acoustic` / `optic` / `null` ship as named presets-as-data. Reference: `docs/HYPOTHESES.md`,
+  MEASUREMENT_STEERING §4.5.
+- **O8.** (2026-07-17, Planned) Hypothesis priors enter the branch-belief regression as **priors
+  on parameters** (mean + precision on intercept and slope-at-ZC in the WLS normal equations),
+  never as pseudo-anchors — pseudo-data double-counts evidence and feeds the classifier features
+  the prior painted in (circularity). The acoustic zone anchor migrates to this form.
+  Classification likelihoods and occupancy counts use real anchors only. Zone-centre energy
+  priors are half-normal (non-negative).
+- **O9.** (2026-07-17, Planned) **Path is first-guess.** The driver may insert/extend q without
+  restriction when classification value warrants, each logged as driver-inserted with a
+  machine-readable purpose. The compiled user path remains the certification set;
+  driver-inserted q never seat convergence.
+- **O10.** (2026-07-17, Planned) **Three-tier extensibility.** New excitation characters are
+  Tier-1 *data* (parameter presets in TOML), never code branches. `dispersion_type`
+  (`branch` / `level` / `continuum`) is a Tier-2 registry plugin interface — declared with the
+  first slice, `branch` only implemented. The assignment posterior's `new` class + the `null`
+  hypothesis are the Tier-3 agnostic runtime track: notice the unknown, don't force it, hand it
+  to the human (who writes a Tier-1 preset for the next campaign).
+- **O11.** (2026-07-17, Planned) **Mismatch detection + reproducibility.** Mandatory sanity-check
+  opening move probing the declared hypothesis's most discriminating feature; deterministic
+  search-band widening when the expected signal is absent (pure function of the persisted
+  decline counter); posterior-predictive prior-vs-data disagreement flagged in
+  `card.state.json` and stated in the report. The resolved hypothesis + preset version is
+  content-hashed into `card.state.json` at campaign start — presets are part of the determinism
+  chain.
 
 ## Workspace hygiene
 

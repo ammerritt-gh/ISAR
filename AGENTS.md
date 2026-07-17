@@ -77,6 +77,7 @@ area.
 | Card / schema across facilities | `docs/SCHEMA_LANDSCAPE.md`, `docs/DATA_SCHEME_RESEARCH.md` |
 | Flag adjudication (opt-in LLM) | `docs/ADJUDICATION.md` |
 | The autonomous driver (`isar drive`) | `docs/MEASUREMENT_STEERING.md` |
+| Declaring expected excitations (hypotheses; Planned) | `docs/HYPOTHESES.md` |
 | Campaign diagnostic report | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` |
 | Why a decision was made | `docs/DECISIONS.md` (IDs P*/D*/V/R/S/O/T/W are stable, safe to cite) |
 | What happened in a run (historical, never load-bearing) | `docs/campaigns/` |
