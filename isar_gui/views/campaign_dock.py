@@ -16,13 +16,20 @@ inline warning — the whole-log spend ledger carries over — plus an explicit 
 from __future__ import annotations
 
 import logging
+import json
+
+import shiboken6
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QApplication,
+    QAbstractItemView,
     QComboBox,
     QDockWidget,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -186,9 +193,21 @@ class CampaignDock(QDockWidget):
         # ---- Feed ------------------------------------------------------------
         self._exceptions_only = QCheckBox("exceptions only", body)
         self._exceptions_only.toggled.connect(self._rebuild_feed)
-        outer.addWidget(self._exceptions_only)
+        feed_tools = QHBoxLayout()
+        feed_tools.addWidget(self._exceptions_only)
+        self._copy_selection_btn = QPushButton("Copy selection", body)
+        self._copy_all_btn = QPushButton("Copy all", body)
+        self._save_log_btn = QPushButton("Save log…", body)
+        self._copy_selection_btn.clicked.connect(self._copy_feed_selection)
+        self._copy_all_btn.clicked.connect(self._copy_feed_all)
+        self._save_log_btn.clicked.connect(self._save_feed)
+        feed_tools.addStretch(1)
+        feed_tools.addWidget(self._copy_selection_btn)
+        feed_tools.addWidget(self._copy_all_btn)
+        feed_tools.addWidget(self._save_log_btn)
+        outer.addLayout(feed_tools)
         self._feed = QListWidget(body)
-        self._feed.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self._feed.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         outer.addWidget(self._feed, 1)
 
         self.setWidget(body)
@@ -202,6 +221,9 @@ class CampaignDock(QDockWidget):
         operations.drive_started.connect(self._sync_status)
         operations.drive_finished.connect(self._on_drive_finished)
         operations.activity_changed.connect(self._on_activity)
+        if hasattr(operations, "drive_compiled"):
+            operations.drive_compiled.connect(self._on_objective_compiled)
+            operations.drive_compile_failed.connect(self._on_objective_compile_failed)
         self._goal.textChanged.connect(self._on_form_edited)
         self._spec_path.textChanged.connect(self._on_form_edited)
         self._budget.textChanged.connect(self._on_form_edited)
@@ -336,15 +358,89 @@ class CampaignDock(QDockWidget):
             opts = DriveOptions(goal=self._goal.toPlainText().strip(),
                                 tier=self._tier.currentText(), budget=budget,
                                 seed=self._seed.value(), max_iters=self._max_iters.value())
+        if not hasattr(self._operations, "request_drive_compile"):
+            self._status_line.setText("could not compile objective — coordinator is unavailable")
+            return
+        if not self._operations.request_drive_compile(opts, env=dict(self._llm_env())):
+            self._status_line.setText("could not compile objective")
+            return
+        self._status_line.setText("compiling objective for confirmation…")
+        self._sync_status()
+
+    def _on_objective_compiled(self, envelope: dict, path: str) -> None:
+        # A workspace rebind replaces this dock with deleteLater(); a compile signal already queued
+        # for the retired receiver can arrive before Qt finishes disconnecting it. Never let that
+        # stale Python wrapper open a second modal or launch a duplicate campaign.
+        if not shiboken6.isValid(self):
+            return
+        if not self._confirm_objective(envelope):
+            self._status_line.setText("campaign start cancelled — no measurements submitted")
+            return
+        # Branch, tier, energy window, tolerance, and budget are exactly what the operator just
+        # confirmed. Only invocation controls that are outside the objective remain mutable here.
+        opts = DriveOptions(envelope_path=path, seed=self._seed.value(),
+                            max_iters=self._max_iters.value())
         if self._workspace_state() == "none":
-            # No workspace at all: the window must reserve a temporary one first, and that
-            # rebind tears THIS dock down — so hand the launch over instead of requesting it.
             self.virtual_start_requested.emit(opts, dict(self._llm_env()))
             return
         if not self._operations.request_drive(opts, env=dict(self._llm_env())):
             self._status_line.setText("could not start — workspace not ready")
+
+    def _on_objective_compile_failed(self, message: str) -> None:
+        if not shiboken6.isValid(self):
             return
-        self._sync_status()
+        self._status_line.setText(str(message))
+
+    def dispose(self) -> None:
+        """Disconnect persistent coordinator signals before a workspace rebind deletes this dock."""
+        self._save_timer.stop()
+        connections = [
+            (self._operations.drive_started, self._sync_status),
+            (self._operations.drive_finished, self._on_drive_finished),
+            (self._operations.activity_changed, self._on_activity),
+        ]
+        if hasattr(self._operations, "drive_compiled"):
+            connections.extend([
+                (self._operations.drive_compiled, self._on_objective_compiled),
+                (self._operations.drive_compile_failed, self._on_objective_compile_failed),
+            ])
+        for signal, slot in connections:
+            try:
+                signal.disconnect(slot)
+            except (RuntimeError, TypeError) as exc:
+                log.debug("campaign dock signal already disconnected during dispose: %s", exc)
+
+    def _confirm_objective(self, envelope: dict) -> bool:
+        """Copyable, modal measurement preview. Tests must stub this method."""
+        objective = envelope.get("objective") or {}
+        path = objective.get("path") or []
+        budget = objective.get("budget") or {}
+        lines = [
+            f"Target: {objective.get('target_label') or objective.get('target_branch', 'acoustic')}",
+            f"Branch certified: {objective.get('target_branch', 'acoustic')}",
+            f"Q path: {path[0] if path else '?'} → {path[-1] if path else '?'} ({len(path)} points)",
+            f"Energy search: {objective.get('energy_search_meV')} meV",
+            f"Tolerance: ±{objective.get('tolerance_meV')} meV",
+            f"Budget: {budget.get('amount')} {budget.get('kind')}",
+            "",
+            "Frozen envelope:",
+            json.dumps(envelope, indent=2),
+        ]
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Confirm campaign objective")
+        dialog.resize(620, 500)
+        layout = QVBoxLayout(dialog)
+        view = QPlainTextEdit(dialog)
+        view.setReadOnly(True)
+        view.setPlainText("\n".join(lines))
+        layout.addWidget(view)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
+                                   QDialogButtonBox.StandardButton.Cancel, parent=dialog)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Start measurements")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        return dialog.exec() == QDialog.DialogCode.Accepted
 
     def _on_stop_clicked(self) -> None:
         if self._operations.request_drive_stop():
@@ -496,5 +592,25 @@ class CampaignDock(QDockWidget):
         self._feed.addItem(row)
         while self._feed.count() > _MAX_FEED_ROWS:
             self._feed.takeItem(0)
-        # QListWidgetItem alignment default is fine; keep rows compact.
-        row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        # QListWidgetItem alignment default is fine; keep rows compact and selectable/copyable.
+
+    def _copy_feed_selection(self) -> None:
+        lines = [item.text() for item in self._feed.selectedItems()]
+        if lines:
+            QApplication.clipboard().setText("\n".join(lines))
+
+    def _copy_feed_all(self) -> None:
+        QApplication.clipboard().setText("\n".join(item.text for item in self._feed_items))
+
+    def _save_feed(self) -> None:
+        path, _kind = QFileDialog.getSaveFileName(self, "Save campaign log", "campaign-log.txt",
+                                                   "Text (*.txt);;All files (*)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as stream:
+                stream.write("\n".join(item.text for item in self._feed_items))
+                stream.write("\n" if self._feed_items else "")
+        except OSError as exc:
+            log.warning("campaign feed save failed for %s: %s", path, exc)
+            self._status_line.setText(f"could not save campaign log — {exc}")

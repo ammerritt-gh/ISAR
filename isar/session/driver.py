@@ -145,6 +145,8 @@ class FitOutcome:
     # older ledgers, when there is no delivered fit, or when nothing converged.
     amplitudes: dict | None = None
     candidates: list | None = None
+    target_branch: str = "acoustic"
+    target_label: str = "acoustic"
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -1015,7 +1017,7 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
                                     intensity=oc.get("intensity"),
                                     fit_kind=oc.get("fit_kind"), branch_id=oc.get("branch_id"),
                                     weight=oc.get("branch_weight"), t_round=t_round,
-                                    require_fold=oc.get("branch_id") != "acoustic")
+                                    require_fold=True)
             # Rival-branch anchors from this DELIVERED scan's other features (optic banking):
             # stored under suffixed scan_ids; purge first so a refit with fewer secondaries
             # leaves no stale points behind.
@@ -1258,18 +1260,28 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
     sample = str(grp.key_fields.get("sample", ""))
     period = _dispersion_period(card)
     t_round = float((card.policy.collation or {}).get("t_round", 5.0))
+    target_branch, target_label, energy_search = _campaign_target(card)
     prior = (session_prior.prior_for(card.state, sample=sample, T=T, q=q, period=period,
-                                     t_round=t_round) if period is not None else None)
-    ao = float(prior.omega0) if (prior is not None and np.isfinite(prior.omega0)) else None
+                                     t_round=t_round, branch_id=target_branch)
+             if period is not None else None)
+    prior_ao = float(prior.omega0) if (prior is not None and np.isfinite(prior.omega0)) else None
+    target_anchors = _target_fold_anchor_count(card, sample=sample, branch=target_branch)
+    established = target_branch == "acoustic" or target_anchors >= branch_model.MIN_ANCHORS
+    # Before an optic branch has a slope, a flat one-anchor prediction can sit closer to the acoustic
+    # mode at the far endpoint. Keep the IC broad but tell primary_phonon_index to choose the upper
+    # finite-energy mode; this is the cold-start meaning of an explicit optic-family objective.
+    ao = (prior_ao if established else float(energy_search[1]))
     # Narrow the IC only when the belief is confident (see _PRIOR_NARROW_SIGMA); else keep the acoustic
     # mode hint but a wide IC so the pooled fit still finds the resolvable acoustic.
-    ic_ao = ao if (ao is not None and float(prior.omega0_sigma or 1e9) <= _PRIOR_NARROW_SIGMA) else None
+    ic_ao = (prior_ao if (established and prior_ao is not None
+                          and float(prior.omega0_sigma or 1e9) <= _PRIOR_NARROW_SIGMA) else None)
     ctx = ScanContext(x=x, counts=counts, mask=mask, T=T, center=calres.center,
                       gauss_fwhm=calres.gauss_fwhm, lorentz_fwhm=calres.lorentz_fwhm,
                       instrument=card.policy.instrument, energy_status=card.policy.energy_status,
                       prior_omega=ic_ao, quasielastic_fwhm=card.policy.quasielastic_fwhm,
                       acoustic_omega=ao)
-    near_gamma = ao is not None and ao < BA.RESOLVABLE_FWHM_FACTOR * calres.gauss_fwhm
+    near_gamma = (target_branch == "acoustic" and ao is not None
+                  and ao < BA.RESOLVABLE_FWHM_FACTOR * calres.gauss_fwhm)
     descriptor = _build_descriptor(ctx)
     try:
         fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, errors_tier=errors_tier,
@@ -1313,7 +1325,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         bayes_freq_ratio=fit.get("bayes_freq_ratio"), hesse_freq_ratio=fit.get("hesse_freq_ratio"),
         bayes_prior_driven=fit.get("bayes_prior_driven", False),
         bayes_fork_suspected=fit.get("bayes_fork_suspected", False),
-        bayes_unconstrained=fit.get("bayes_unconstrained", False))
+        bayes_unconstrained=fit.get("bayes_unconstrained", False),
+        target_branch=target_branch, target_label=target_label)
     entry = ScanEntry(status="fitted", **base)
     entry.detectors[det] = outcome.to_dict()
     entry.provenance = {"pooled": True, "n_members": int(ms.n_members),
@@ -1350,6 +1363,24 @@ def _dispersion_period(card) -> float | None:
         return None
 
 
+def _campaign_target(card) -> tuple[str, str, tuple[float, float]]:
+    state = getattr(card, "state", None)
+    target = getattr(state, "campaign_target", None) or {}
+    branch = str(target.get("branch") or "acoustic")
+    label = str(target.get("label") or branch)
+    energy = target.get("energy_search_meV") or [-2.0, 7.0]
+    return branch, label, (float(energy[0]), float(energy[1]))
+
+
+def _target_fold_anchor_count(card, *, sample: str, branch: str) -> int:
+    """Count trusted target-branch anchors while accepting pre-target legacy cards."""
+    state = getattr(card, "state", None)
+    points = getattr(state, "dispersion_prior", None) or []
+    return sum(1 for point in points
+               if point.get("sample") == sample and point.get("branch_id") == branch
+               and point.get("modality") == "fold")
+
+
 def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, near_gamma):
     """Bayesian branch assignment + honest triage over a completed fit (Phase A). Returns override
     fields ``{deliver, branch_id, weight, entropy, resolvable}`` or ``None`` when the posterior is off.
@@ -1374,6 +1405,36 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
         return {"deliver": bool(fit.get("omega0") is not None), "branch_id": None,
                 "weight": None, "entropy": None, "resolvable": None}
     u = BA.reduced_q(q, period)
+    target_branch, _target_label, energy_search = _campaign_target(card)
+    if target_branch != BA.ACOUSTIC:
+        # A fitted mode and the model-free descriptor commonly report the same physical peak.  Do
+        # branch assignment from the fitted modes when they exist: counting both representations as
+        # rival features splits dominance and can demote an otherwise clean pooled optic fit.  The
+        # descriptor remains the honest fallback when no model mode survived.
+        target_feats = [feature for feature in feats if feature.source == "mode"] or feats
+        target_post = BA.assignment_posterior(target_feats, beliefs, u)
+        belief = beliefs.get(target_branch)
+        if belief is None or belief.n_anchors < branch_model.MIN_ANCHORS:
+            eligible = [f for f in target_feats if energy_search[0] <= f.energy <= energy_search[1]
+                        and f.energy >= BA.RESOLVABLE_FWHM_FACTOR * ctx.gauss_fwhm
+                        and (f.source == "mode" or f.significance >= BA.SECONDARY_MIN_SIGNIFICANCE)]
+            feature = max(eligible, key=lambda f: f.energy) if eligible else None
+            if feature is None:
+                return {"deliver": False, "branch_id": target_branch, "weight": 0.0,
+                        "entropy": None, "resolvable": False}
+            aligned = fit.get("omega0") is not None and abs(float(fit["omega0"]) - feature.energy) \
+                <= 0.5 * ctx.gauss_fwhm
+            return {"deliver": bool(aligned), "branch_id": target_branch, "weight": 1.0,
+                    "entropy": 0.0, "resolvable": True}
+        qoi = BA.branch_qoi(target_feats, target_post, target_branch,
+                            gauss_fwhm=ctx.gauss_fwhm)
+        ent = float(qoi["entropy"]) if np.isfinite(qoi["entropy"]) else None
+        aligned = fit.get("omega0") is not None and qoi.get("omega0") is not None \
+            and abs(float(fit["omega0"]) - float(qoi["omega0"])) <= 0.5 * ctx.gauss_fwhm
+        deliver = BA.deliver_branch(qoi) and aligned
+        return {"deliver": bool(deliver), "branch_id": target_branch,
+                "weight": float(qoi.get("p_branch", 0.0)), "entropy": ent,
+                "resolvable": bool(qoi.get("resolvable"))}
     post = BA.assignment_posterior(feats, beliefs, u)
     qoi = BA.acoustic_qoi(feats, post, gauss_fwhm=ctx.gauss_fwhm)
     ent = float(qoi["entropy"]) if np.isfinite(qoi["entropy"]) else None
@@ -1424,13 +1485,14 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
             resolvable = triage.get("resolvable")
             secondary_features = triage.get("secondary_points") or None
             if triage.get("deliver") is False and fit.get("omega0") is not None:
+                target_branch, _target_label, _energy = _campaign_target(card)
                 if master:
                     fit["reasons"].append(
-                        f"branch triage (master): not a resolvable acoustic delivery "
+                        f"branch triage (master): not a resolvable {target_branch} delivery "
                         f"(assigned {branch_id}); reported branch_continuation")
                 else:
                     fit["reasons"].append(
-                        f"branch triage: not a resolvable acoustic delivery (assigned {branch_id}); "
+                        f"branch triage: not a resolvable {target_branch} delivery (assigned {branch_id}); "
                         f"reported as branch_continuation, ω₀ withheld")
                 fit["verdict"] = "branch_continuation"
                 fit["omega0"] = fit["omega0_err"] = fit["interval"] = None
@@ -1508,8 +1570,10 @@ def _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres,
     prior_source = "user"
     n_neighbors = None
     if prior is None:
-        prior = session_prior.prior_for(card.state, sample=sample, T=T, q=q, exclude_scan_id=scan_id,
-                                        period=period, t_round=t_round)
+        target_branch, _target_label, _energy_search = _campaign_target(card)
+        prior = session_prior.prior_for(card.state, sample=sample, T=T, q=q,
+                                        exclude_scan_id=scan_id, period=period, t_round=t_round,
+                                        branch_id=target_branch)
         prior_source = "auto" if prior is not None else None
         if prior is not None:
             n_neighbors = sum(1 for p in card.state.dispersion_prior
@@ -1529,14 +1593,20 @@ def _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres,
     # the ACOUSTIC mode as primary (not nearest-any-prior / largest-amplitude). Narrow the IC grid with
     # it only when the belief is CONFIDENT — a cold, uncertain ~0 prediction must not over-narrow the
     # search and miss the resolvable acoustic (the bootstrap deadlock).
-    if period is not None and prior is not None and np.isfinite(prior.omega0):
+    target_branch, _target_label, energy_search = _campaign_target(card)
+    target_anchors = _target_fold_anchor_count(card, sample=sample, branch=target_branch)
+    established = target_branch == "acoustic" or target_anchors >= branch_model.MIN_ANCHORS
+    if target_branch == "optic" and not established:
+        ctx = replace(ctx, acoustic_omega=float(energy_search[1]), prior_omega=None)
+    elif period is not None and prior is not None and np.isfinite(prior.omega0):
         confident = float(prior.omega0_sigma or 1e9) <= _PRIOR_NARROW_SIGMA
         ctx = replace(ctx, acoustic_omega=float(prior.omega0),
                       prior_omega=(float(prior.omega0) if confident else None))
 
-    near_gamma = (prior is not None and np.isfinite(prior.omega0)
+    near_gamma = (target_branch == "acoustic" and prior is not None and np.isfinite(prior.omega0)
                   and prior.omega0 < BA.RESOLVABLE_FWHM_FACTOR * ctx.gauss_fwhm)
-    ctx = _apply_low_q_rescue(ctx, prior, card, sample, T, rec, near_gamma, region_reasons)
+    if target_branch == "acoustic":
+        ctx = _apply_low_q_rescue(ctx, prior, card, sample, T, rec, near_gamma, region_reasons)
 
     # L0 descriptor: built once here (mask/counts are now fixed) and reused for the verdict's
     # under-model falsification (Phase 4a) AND storage — including through the hard-fix retry below.
@@ -1561,9 +1631,11 @@ def _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descri
     computed from the fitted Γ value regardless of constraints, so a frozen Γ can still read at-bound —
     but re-freezing an already-frozen Γ rescues nothing, and rebuilding constraints from soft-only here
     would silently drop the existing hard phonon.A brightness constraint."""
+    target_branch, _target_label, _energy_search = _campaign_target(card)
     already_hard_gamma = (ctx.constraints is not None
                           and "phonon.Gamma" in (ctx.constraints.hard or {}))
-    if (fit.get("gamma_at_bound") and prior is not None and np.isfinite(prior.omega0)
+    if (target_branch == "acoustic" and fit.get("gamma_at_bound")
+            and prior is not None and np.isfinite(prior.omega0)
             and not already_hard_gamma):
         pred = branch_model.branch_for(card.state, sample=sample, T=T, omega0=float(prior.omega0))
         if pred is not None and pred.in_anchor_range and pred.gamma > 0:
@@ -1614,6 +1686,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         prior_used = {"omega0": prior.omega0, "sigma": prior.omega0_sigma,
                       "n_neighbors": n_neighbors, "source": prior_source}
 
+    target_branch, target_label, _energy_search = _campaign_target(card)
     outcome = FitOutcome(
         detector_id=det, verdict=fit["verdict"], disposition=disposition,
         confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
@@ -1638,7 +1711,8 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         bayes_freq_ratio=fit.get("bayes_freq_ratio"), hesse_freq_ratio=fit.get("hesse_freq_ratio"),
         bayes_prior_driven=fit.get("bayes_prior_driven", False),
         bayes_fork_suspected=fit.get("bayes_fork_suspected", False),
-        bayes_unconstrained=fit.get("bayes_unconstrained", False))
+        bayes_unconstrained=fit.get("bayes_unconstrained", False),
+        target_branch=target_branch, target_label=target_label)
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is
@@ -1743,7 +1817,7 @@ _CSV_COLUMNS = [
     # Additive atomic identity: scan numbers are not globally unique across experiments, so new
     # consumers must route detector data using this full ledger key. Appended for old positional CSV
     # consumers, which continue seeing every existing column in its original order.
-    "scan_id",
+    "scan_id", "target_branch", "target_label",
 ]
 
 
@@ -1805,6 +1879,8 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                     f"len(members)={len(members)} — member provenance corrupt")
             rows.append({
                 "scan_id": e.scan_id, "scan": e.scan_number, "detector": det, "sample": oc.get("sample"),
+                "target_branch": oc.get("target_branch", "acoustic"),
+                "target_label": oc.get("target_label", oc.get("target_branch", "acoustic")),
                 "T": oc.get("T"), "h": q[0], "k": q[1], "l": q[2], "status": e.status,
                 "verdict": oc.get("verdict"), "disposition": oc.get("disposition"),
                 "confidence": oc.get("confidence"), "omega0": oc.get("omega0"),

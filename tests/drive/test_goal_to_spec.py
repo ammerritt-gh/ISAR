@@ -91,3 +91,29 @@ def test_spec_from_json_rejects_garbage(tmp_path):
     p.write_text(json.dumps({"nonsense": 1}), encoding="utf-8")
     with pytest.raises(g2s.GoalParseError):
         g2s.spec_from_json(p)
+
+
+def test_transverse_optic_k_segment_compiles_to_eleven_points():
+    payload = {"q_start": [2, 0, 0], "q_end": [2, 0.5, 0], "step_rlu": 0.05,
+               "tolerance_meV": 0.5, "budget_hours": 8,
+               "target_branch": "optic", "target_label": "transverse optic"}
+    spec = g2s.goal_to_spec(
+        "map the transverse optic phonon from (2,0,0) along k, out to k=0.5",
+        dispatcher=_FakeDispatcher(DispatchResult(structured=payload)))
+    assert len(spec.path) == 11 and spec.path[-1] == (2.0, 0.5, 0.0)
+    assert spec.target_branch == "optic" and spec.target_label == "transverse optic"
+    assert spec.energy_search_meV == (-2.0, 12.0)
+
+
+def test_goal_layer_rejects_degenerate_segment():
+    payload = {"q_start": [2, 0, 0], "q_end": [2, 0, 0], "step_rlu": 0.05,
+               "tolerance_meV": 0.5, "budget_hours": 8}
+    with pytest.raises(g2s.GoalParseError, match="degenerate"):
+        g2s.goal_to_spec("single accidental segment",
+                         dispatcher=_FakeDispatcher(DispatchResult(structured=payload)))
+
+
+def test_schema_checker_enforces_array_shape_and_branch_enum():
+    payload = {"q_start": [2, 0], "q_end": [2, 0.5, 0], "tolerance_meV": 0.5,
+               "budget_hours": 8, "target_branch": "banana"}
+    assert not g2s._conforms(payload, g2s.GOAL_SCHEMA)

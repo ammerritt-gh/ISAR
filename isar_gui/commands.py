@@ -123,6 +123,7 @@ class DriveOptions:
 
     goal: str | None = None
     spec_path: str | None = None
+    envelope_path: str | None = None
     resume_latest: bool = False
     tier: str = "deterministic"       # deterministic | mcstas
     budget: str | None = None         # '<amount><unit>' e.g. '8h', '1e10n'; None => from spec/goal
@@ -142,11 +143,12 @@ def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list
     ``>= 1``, matching the CLI's mutually-exclusive source group and its ``_positive_int`` type. Only
     non-default options add flags, so the command stays legible in the log dock.
     """
-    sources = [opts.goal is not None, opts.spec_path is not None, opts.resume_latest]
+    sources = [opts.goal is not None, opts.spec_path is not None,
+               opts.envelope_path is not None, opts.resume_latest]
     n_sources = sum(1 for s in sources if s)
     if n_sources != 1:
         raise ValueError(
-            "exactly one campaign source must be set (goal, spec_path, or resume_latest); "
+            "exactly one campaign source must be set (goal, spec_path, envelope_path, or resume_latest); "
             f"got {n_sources}")
     if opts.max_iters is not None and opts.max_iters < 1:
         raise ValueError(f"max_iters must be >= 1 (or None); got {opts.max_iters}")
@@ -156,14 +158,16 @@ def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list
         cmd += ["--goal", opts.goal]
     elif opts.spec_path is not None:
         cmd += ["--spec", str(opts.spec_path)]
+    elif opts.envelope_path is not None:
+        cmd += ["--envelope", str(opts.envelope_path)]
     else:
         cmd.append("--resume-latest")
     cmd += ["--workspace", str(workspace)]
-    # Tier is frozen with a resumed objective (the CLI ignores --tier on --resume-latest and
-    # notes an explicit override on stderr) — never emit the dead flag on a resume.
-    if opts.tier != "deterministic" and not opts.resume_latest:
+    # Tier and budget are frozen in a confirmed envelope. Resume keeps its established tier but may
+    # still receive an explicit budget override for the new invocation.
+    if opts.tier != "deterministic" and not (opts.resume_latest or opts.envelope_path):
         cmd += ["--tier", opts.tier]
-    if opts.budget:
+    if opts.budget and not opts.envelope_path:
         cmd += ["--budget", opts.budget]
     if opts.calibration:
         cmd += ["--calibration", str(opts.calibration)]
@@ -177,6 +181,20 @@ def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list
         cmd += ["--control-token", opts.control_token]
     if not opts.worker:
         cmd.append("--no-worker")
+    return cmd
+
+
+def build_compile_command(python: str, opts: DriveOptions, output_path: str) -> list[str]:
+    """Compile a goal/spec into a frozen envelope without a workspace or TAVI contact."""
+    if (opts.goal is None) == (opts.spec_path is None):
+        raise ValueError("compile needs exactly one of goal or spec_path")
+    cmd = [python, "-m", "isar", "drive"]
+    cmd += (["--goal", opts.goal] if opts.goal is not None else ["--spec", str(opts.spec_path)])
+    cmd += ["--compile-only", str(output_path)]
+    if opts.tier != "deterministic":
+        cmd += ["--tier", opts.tier]
+    if opts.budget:
+        cmd += ["--budget", opts.budget]
     return cmd
 
 

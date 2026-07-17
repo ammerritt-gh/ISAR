@@ -77,7 +77,7 @@ def add_point(state: CardState, *, scan_id, sample, T, q, omega0, modality, verd
 
 def prior_for(state: CardState, *, sample, T, q, exclude_scan_id=None, period: float | None = None,
               same_t_tol: float = SAME_T_TOL, sigma_floor: float = SIGMA_FLOOR,
-              t_round: float = 5.0) -> PhononPrior | None:
+              t_round: float = 5.0, branch_id: str = "acoustic") -> PhononPrior | None:
     """A `PhononPrior` from the accumulated points near (sample, T, q), or None if too sparse.
 
     When ``period`` is given (the card's reduced-zone fold period, Phase A) the prediction is the
@@ -92,7 +92,7 @@ def prior_for(state: CardState, *, sample, T, q, exclude_scan_id=None, period: f
         t_bin = round(float(T) / t_round) * t_round if t_round else float(T)
         beliefs = BA.build_beliefs(pts, sample=sample, t_bin=t_bin, period=float(period),
                                    t_round=t_round)
-        belief = beliefs.get(BA.ACOUSTIC)
+        belief = beliefs.get(branch_id)
         if belief is None:
             return None
         mu, sig = belief.predict(BA.reduced_q(q, float(period)))

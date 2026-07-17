@@ -143,6 +143,7 @@ class CardState:
     sample_map: list = field(default_factory=list)           # [{from_scan, sample, source}]
     branch_models: list = field(default_factory=list)        # BranchModel dicts (steering, Phase 2+)
     branch_belief: list = field(default_factory=list)        # per-(sample,t_bin,q) acoustic QoI trace
+    campaign_target: dict = field(default_factory=dict)      # active frozen objective branch/search
     #   {sample, t_bin, q, hkl, omega0, sigma, entropy, resolvable} — the drive reads this (durable,
     #   boundary-safe) to steer ω(q) by the assignment-inflated σ instead of raw best_omega0 (Phase A).
     lattice_epochs: list = field(default_factory=list)       # versioned lattice/orientation interpretation

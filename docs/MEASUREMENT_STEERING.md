@@ -427,6 +427,28 @@ A hard kill remains possible (the GUI escalation path tree-kills the process gro
 the crash-resume contract, at the documented cost: a scan whose `run` event was logged before
 the kill is spend-counted but unfetched, and the next invocation re-proposes that q.
 
+### 7.2 Frozen objective preview and first optic-target slice (implemented, 2026-07-17)
+
+Natural-language campaigns now compile generic reciprocal-space line segments (`q_start`, `q_end`,
+`step_rlu`) into an explicit path before measurement. `step_rlu` is a maximum interval: segment
+expansion uses `ceil(distance / step_rlu)` and includes both endpoints. The legacy `along_h` wrapper
+retains its round-based grid exactly, including its non-commensurate-span behavior. Natural-language
+degenerate segments are rejected; explicit and resumed one-point objectives remain valid.
+
+`isar drive --compile-only <envelope.json>` freezes the objective, original goal, and source
+fingerprint without contacting TAVI. The GUI presents that envelope in a copyable confirmation dialog
+(path, point count, target branch, energy range, tolerance, and budget), then executes the same envelope;
+confirmed fields cannot be overridden on that handoff. Resume continues to read the frozen
+`campaign_start.objective` and never recompiles through the LLM.
+
+The objective carries additive `target_branch`, `target_label`, and `energy_search_meV` fields. Older
+objectives default to acoustic and `[-2, 7]` meV. An optic objective defaults to `[-2, 12]` meV; that
+range drives the cold survey, while the acoustic-only near-Γ and Fisher advisory paths stay disabled for
+the optic slice. Branch assignment, prior seeding, pooled delivery, and stopping certify only the
+requested branch. Clean folds may seed that branch; ambiguous forks still may not. Terminal reporting
+distinguishes branch ambiguity, no signal, and an uncertifiable interval. The active target is copied
+only into machine-owned `card.state.json`; `card.policy.toml` remains human-owned.
+
 ---
 
 ## 8. Open questions and risks

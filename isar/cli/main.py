@@ -135,11 +135,14 @@ def build_parser() -> argparse.ArgumentParser:
     src = pd.add_mutually_exclusive_group(required=True)
     src.add_argument("--goal", help="natural-language measurement goal (LLM supervisor; needs LLMM)")
     src.add_argument("--spec", help="objective spec JSON file (LLM-free path)")
+    src.add_argument("--envelope", help="frozen objective envelope JSON (LLM-free confirmed start)")
     src.add_argument("--resume-latest", dest="resume_latest", action="store_true",
                      help="resume the last campaign in --workspace using its frozen objective from the "
                           "session log (LLM-free — never re-compiles a goal); --budget may still override")
-    pd.add_argument("--workspace", required=True,
+    pd.add_argument("--workspace", required=False,
                     help="ISAR workspace the driver drives (auto-init'd after the first scan)")
+    pd.add_argument("--compile-only", dest="compile_only", metavar="OUTPUT",
+                    help="compile --goal/--spec to a frozen envelope and exit without contacting TAVI")
     pd.add_argument("--max-iters", dest="max_iters", type=_positive_int, default=None,
                     help="cap the adaptive-loop iterations for THIS invocation (>= 1). Applies per "
                          "invocation: each run_campaign restarts iteration numbering at zero, so a "
@@ -220,12 +223,18 @@ def main(argv=None) -> int:
         return view_cmd.run(args)
     if cmd == "drive":
         import hashlib
+        import json
         from pathlib import Path
         from isar.drive.loop import run_campaign
         from isar.drive.session_log import read_log
         from isar.drive.supervisor.goal_to_spec import (
-            GoalParseError, goal_to_spec, spec_from_dict, spec_from_json)
+            GoalParseError, envelope_from_json, goal_to_spec, make_envelope, spec_from_dict,
+            spec_from_json)
         try:
+            if args.compile_only and (args.resume_latest or args.envelope):
+                raise GoalParseError("--compile-only accepts --goal or --spec, not resume/envelope")
+            if not args.compile_only and not args.workspace:
+                raise GoalParseError("--workspace is required unless --compile-only is used")
             if args.resume_latest:
                 # LLM-free resume: rebuild the FROZEN objective from the last campaign_start event; a
                 # goal is NEVER re-compiled through the LLM (spec_from_dict is a pure dict path).
@@ -250,6 +259,12 @@ def main(argv=None) -> int:
                 # Carry the resumed campaign's fingerprint over so it stays comparable across resumes.
                 prev_source = payload.get("source") or {}
                 source = {"kind": "resume", "sha256": prev_source.get("sha256")}
+            elif args.envelope:
+                objective, source, original_goal = envelope_from_json(args.envelope)
+                source = dict(source)
+                source["envelope_schema"] = "isar.objective-envelope/1"
+                if original_goal is not None:
+                    source["original_goal"] = original_goal
             elif args.spec:
                 objective = spec_from_json(args.spec, defaults={"tier": args.tier or "deterministic"})
                 source = {"kind": "spec",
@@ -258,9 +273,20 @@ def main(argv=None) -> int:
                 objective = goal_to_spec(args.goal, defaults={"tier": args.tier or "deterministic"})
                 source = {"kind": "goal",
                           "sha256": hashlib.sha256(args.goal.encode("utf-8")).hexdigest()}
-            if args.budget:
+            if args.budget and not args.envelope:
                 objective.budget = _parse_budget(args.budget)
                 objective.__post_init__()
+            elif args.budget and args.envelope:
+                print("isar drive: note — --budget is frozen with the confirmed objective envelope; "
+                      "the override is ignored", file=sys.stderr)
+            if args.compile_only:
+                original_goal = args.goal if args.goal is not None else None
+                envelope = make_envelope(objective, source=source, original_goal=original_goal)
+                out = Path(args.compile_only)
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(json.dumps(envelope, indent=2) + "\n", encoding="utf-8")
+                print(json.dumps(envelope))
+                return 0
         except (GoalParseError, ValueError, OSError, KeyError) as exc:
             print(f"isar drive: {exc}", file=sys.stderr)
             return 2

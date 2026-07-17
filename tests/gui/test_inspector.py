@@ -354,6 +354,27 @@ def test_fitted_inspector_withholds_energy_fit_for_raw_unit_axis(make_ws, monkey
     assert any("calibration pending" in a.text for a in st.main_spec.annotations)
 
 
+def test_fitted_inspector_keeps_raw_counts_when_model_evaluation_fails(make_ws, monkeypatch):
+    """A broken/stale fit must not make usable measured counts disappear from the inspector."""
+    from isar.plotspec.spec import Role
+
+    ws = _ws_with(make_ws, _outcome())
+    monkeypatch.setattr(ws, "evaluate_model",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                            ValueError("no stored amplitudes and no re-parseable context")))
+    vm = InspectorViewModel(ws)
+    vm.set_fit(_fit(ws))
+    st = vm.state
+
+    assert st.main_spec is not None
+    data = [s for s in st.main_spec.series if s.role is Role.DATA]
+    assert len(data) == 1 and data[0].y.size == len(_COUNTS)
+    assert not any(s.role is Role.FIT for s in st.main_spec.series)
+    assert st.residuals_spec is None
+    assert "model curve unavailable" in st.curve_error
+    assert any("raw counts shown" in a.text for a in st.main_spec.annotations)
+
+
 def test_unit_metadata_carries_command_qtarget_and_T(make_ws):
     ws = _unit_ws(make_ws)
     vm = InspectorViewModel(ws)

@@ -33,10 +33,12 @@ LLMMClient = _llm.LLMMClient
 DEFAULT_SUPERVISOR_MODEL = "nanogpt/zai-org/glm-5.2"
 DEFAULT_ENDPOINT = "http://127.0.0.1:8766"
 
+_Q_ARRAY = {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+
 GOAL_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["path", "step_h", "tolerance_meV"],
+    "required": ["tolerance_meV"],
     "properties": {
         "path": {
             "type": "object",
@@ -50,10 +52,17 @@ GOAL_SCHEMA = {
             },
         },
         "step_h": {"type": "number"},
+        "q_start": _Q_ARRAY,
+        "q_end": _Q_ARRAY,
+        "step_rlu": {"type": "number"},
         "tolerance_meV": {"type": "number"},
         "budget_hours": {"type": "number"},
         "budget_neutrons": {"type": "number"},
         "notes": {"type": "string"},
+        "target_branch": {"type": "string", "enum": ["acoustic", "optic"]},
+        "target_label": {"type": "string"},
+        "energy_search_meV": {"type": "array", "items": {"type": "number"},
+                              "minItems": 2, "maxItems": 2},
     },
 }
 
@@ -67,11 +76,14 @@ _EXAMPLE = {
 
 SYSTEM = (
     "You translate a neutron triple-axis measurement goal into a machine objective for an autonomous "
-    "driver. The path is a straight segment in H at fixed K, L. Extract: path {h_start, h_end, k, l}, "
-    "step_h (the H grid spacing, default 0.05 if unstated), tolerance_meV (the per-point target on the "
+    "driver. Express a general reciprocal-space line as q_start [h,k,l], q_end [h,k,l], and "
+    "step_rlu (the maximum point spacing, default 0.05 if unstated). The legacy path/step_h shape is "
+    "also valid for a segment purely along H. Extract tolerance_meV (the per-point target on the "
     "phonon energy ω₀; map '±X meV' to X, 'less than X meV' to X), and a budget as EITHER budget_hours "
     "OR budget_neutrons ('overnight' ≈ 8 hours; if no budget is stated, use budget_hours = 8). "
-    "Optionally a short notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
+    "Set target_branch to optic when the user asks for an optic or transverse optic phonon, otherwise "
+    "acoustic; retain their wording in target_label. For optic goals use energy_search_meV [-2,12] "
+    "unless the user provides a range. Optionally a short notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
     "these keys, no wrapper object, no extra keys, and never enumerate grid points:\n"
     + json.dumps(GOAL_SCHEMA)
     + "\n\nExample. Goal: 'map the acoustic phonon from (1,0,0) to (2,0,0) to +-0.5 meV, steps of 0.1, "
@@ -84,6 +96,7 @@ _REPAIR_SUFFIX = (
 )
 
 DEFAULTS: dict[str, Any] = {"step_h": 0.05, "tier": "deterministic"}
+ENVELOPE_SCHEMA = "isar.objective-envelope/1"
 
 
 class GoalParseError(ValueError):
@@ -159,20 +172,52 @@ def spec_from_json(path: str | Path, *, defaults: dict | None = None) -> Objecti
     return spec_from_dict(d, defaults=defaults, where=str(path))
 
 
+def make_envelope(spec: ObjectiveSpec, *, source: dict, original_goal: str | None = None) -> dict:
+    """Freeze a compiled objective together with the fingerprint of its operator source."""
+    envelope = {"schema": ENVELOPE_SCHEMA, "objective": spec.to_dict(), "source": dict(source)}
+    if original_goal is not None:
+        envelope["original_goal"] = str(original_goal)
+    return envelope
+
+
+def envelope_from_json(path: str | Path) -> tuple[ObjectiveSpec, dict, str | None]:
+    """Read a versioned frozen objective envelope without invoking the supervisor LLM."""
+    p = Path(path)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or data.get("schema") != ENVELOPE_SCHEMA:
+        raise GoalParseError(f"{p}: not an {ENVELOPE_SCHEMA} envelope")
+    if not isinstance(data.get("source"), dict):
+        raise GoalParseError(f"{p}: objective envelope has no source fingerprint")
+    spec = spec_from_dict(data.get("objective"), where=f"{p}:objective")
+    return spec, dict(data["source"]), data.get("original_goal")
+
+
 # --------------------------------------------------------------------------- shared
 def _build_spec(data: dict, merged: dict) -> ObjectiveSpec:
-    p = data["path"]
-    step = float(data.get("step_h") or merged.get("step_h") or 0.05)
     budget = _budget(data)
-    spec = ObjectiveSpec.along_h(
+    branch = str(data.get("target_branch", "acoustic"))
+    label = str(data.get("target_label") or branch)
+    energy = data.get("energy_search_meV")
+    common = dict(tolerance_meV=float(data["tolerance_meV"]), budget=budget,
+                  tier=str(merged.get("tier", "deterministic")),
+                  name=str(data.get("notes", "")),
+                  meta={"source": "goal_to_spec", "raw": data}, target_branch=branch,
+                  target_label=label,
+                  energy_search_meV=(tuple(energy) if energy is not None else None))
+    if "q_start" in data or "q_end" in data:
+        if "q_start" not in data or "q_end" not in data:
+            raise GoalParseError("goal spec needs both q_start and q_end")
+        if list(data["q_start"]) == list(data["q_end"]):
+            raise GoalParseError("natural-language path is degenerate; q_start and q_end are identical")
+        return ObjectiveSpec.segment(q_start=data["q_start"], q_end=data["q_end"],
+                                     step_rlu=float(data.get("step_rlu") or 0.05), **common)
+    if "path" not in data:
+        raise GoalParseError("goal spec needs q_start/q_end or legacy path")
+    p = data["path"]
+    return ObjectiveSpec.along_h(
         h_start=float(p["h_start"]), h_end=float(p["h_end"]),
-        k=float(p.get("k", 0.0)), l=float(p.get("l", 0.0)), step=step,
-        tolerance_meV=float(data["tolerance_meV"]), budget=budget,
-        tier=str(merged.get("tier", "deterministic")),
-        name=str(data.get("notes", "")),
-        meta={"source": "goal_to_spec", "raw": data},
-    )
-    return spec
+        k=float(p.get("k", 0.0)), l=float(p.get("l", 0.0)),
+        step=float(data.get("step_h") or merged.get("step_h") or 0.05), **common)
 
 
 def _budget(data: dict) -> dict[str, Any]:
@@ -230,5 +275,11 @@ def _conforms(value, schema) -> bool:
     if t == "number":
         return isinstance(value, (int, float)) and not isinstance(value, bool)
     if t == "string":
-        return isinstance(value, str)
+        return isinstance(value, str) and ("enum" not in schema or value in schema["enum"])
+    if t == "array":
+        if not isinstance(value, list):
+            return False
+        if len(value) < schema.get("minItems", 0) or len(value) > schema.get("maxItems", len(value)):
+            return False
+        return all(_conforms(item, schema.get("items", {})) for item in value)
     return True

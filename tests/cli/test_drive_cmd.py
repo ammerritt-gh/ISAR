@@ -177,3 +177,47 @@ def test_unmeetable_and_met_exit_codes(tmp_path, monkeypatch):
     assert main(["drive", "--spec", str(_spec_file(tmp_path)), "--workspace", str(tmp_path / "w1")]) == 0
     _stub_run_campaign(monkeypatch, state="unmeetable")
     assert main(["drive", "--spec", str(_spec_file(tmp_path)), "--workspace", str(tmp_path / "w2")]) == 3
+
+
+def test_compile_only_writes_frozen_envelope_without_running_campaign(tmp_path, monkeypatch):
+    captured = _stub_run_campaign(monkeypatch)
+    out = tmp_path / "objective-envelope.json"
+    rc = main(["drive", "--spec", str(_spec_file(tmp_path)), "--compile-only", str(out)])
+    assert rc == 0 and captured == []
+    envelope = json.loads(out.read_text(encoding="utf-8"))
+    assert envelope["schema"] == "isar.objective-envelope/1"
+    assert envelope["objective"]["path"][0] == [2.1, 0.0, 0.0]
+
+
+def test_envelope_start_preserves_original_source_fingerprint(tmp_path, monkeypatch):
+    spec = ObjectiveSpec.segment(q_start=[2, 0, 0], q_end=[2, 0.5, 0], step_rlu=0.05,
+                                 tolerance_meV=0.5,
+                                 budget={"kind": "neutrons", "amount": 1e9},
+                                 target_branch="optic")
+    envelope = {"schema": "isar.objective-envelope/1", "objective": spec.to_dict(),
+                "source": {"kind": "goal", "sha256": "frozen123"},
+                "original_goal": "map transverse optic"}
+    path = tmp_path / "envelope.json"
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+    captured = _stub_run_campaign(monkeypatch)
+    assert main(["drive", "--envelope", str(path), "--workspace", str(tmp_path / "ws")]) == 0
+    assert captured[0][0].target_branch == "optic"
+    assert captured[0][1]["source"]["sha256"] == envelope["source"]["sha256"]
+    assert captured[0][1]["source"]["original_goal"] == "map transverse optic"
+
+
+def test_envelope_start_ignores_budget_override_and_uses_frozen_objective(tmp_path, monkeypatch):
+    spec = ObjectiveSpec.segment(q_start=[2, 0, 0], q_end=[2, 0.5, 0], step_rlu=0.05,
+                                 tolerance_meV=0.5,
+                                 budget={"kind": "neutrons", "amount": 1234},
+                                 target_branch="optic")
+    envelope = {"schema": "isar.objective-envelope/1", "objective": spec.to_dict(),
+                "source": {"kind": "goal", "sha256": "frozen123"},
+                "original_goal": "map transverse optic"}
+    path = tmp_path / "envelope.json"
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+    captured = _stub_run_campaign(monkeypatch)
+    rc = main(["drive", "--envelope", str(path), "--workspace", str(tmp_path / "ws"),
+               "--budget", "8h"])
+    assert rc == 0
+    assert captured[0][0].budget == {"kind": "neutrons", "amount": 1234}

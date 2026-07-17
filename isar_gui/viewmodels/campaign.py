@@ -184,6 +184,17 @@ def _fmt_hkl(hkl) -> str:
         return str(hkl)
 
 
+def _fmt_count(value) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    for scale, suffix in ((1e9, "G"), (1e6, "M"), (1e3, "k")):
+        if abs(number) >= scale:
+            return f"{number / scale:.3g}{suffix}"
+    return f"{number:g}"
+
+
 def _scan_text(kind: str, p: dict) -> str | None:
     """The operator line for a propose/run payload — shared by the live feed and the reducer's
     ``last_scan`` so both surfaces show the identical text for the same record."""
@@ -191,9 +202,9 @@ def _scan_text(kind: str, p: dict) -> str | None:
     tail = f"  [iter {it}]" if it is not None else ""
     if kind == "propose":
         return (f"propose q={_fmt_hkl(p.get('hkl'))} E∈[{p.get('e_lo')}, {p.get('e_hi')}] "
-                f"n={p.get('ncount')} ({p.get('kind', '?')}){tail}")
+                f"n={_fmt_count(p.get('ncount'))} ({p.get('kind', '?')}){tail}")
     if kind == "run":
-        return f"scan {p.get('job_id', '?')} submitted (cost {p.get('cost')}){tail}"
+        return f"scan {p.get('job_id', '?')} submitted (cost {_fmt_count(p.get('cost'))} n){tail}"
     return None
 
 

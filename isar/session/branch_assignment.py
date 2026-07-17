@@ -290,6 +290,34 @@ def acoustic_qoi(features, posterior, *, gauss_fwhm: float,
             "feature": features[j]}
 
 
+def branch_qoi(features, posterior, branch_id: str, *, gauss_fwhm: float) -> dict:
+    """The measured QoI for an established non-acoustic branch."""
+    weights = np.array([p.get(branch_id, 0.0) for p in posterior], dtype=float)
+    if weights.sum() < W_MIN or not features:
+        return {"omega0": None, "sigma": None, "p_branch": float(weights.max() if weights.size else 0.0),
+                "entropy": float("inf"), "dominance": 0.0, "resolvable": False, "feature": None}
+    j = int(np.argmax(weights))
+    wn = weights / weights.sum()
+    mean = float(sum(wn[i] * features[i].energy for i in range(len(features))))
+    var = float(sum(wn[i] * (features[i].sigma_e ** 2 + (features[i].energy - mean) ** 2)
+                    for i in range(len(features))))
+    feature = features[j]
+    return {"omega0": float(feature.energy), "sigma": math.sqrt(max(var, 0.0)),
+            "p_branch": float(weights[j]), "entropy": _entropy(posterior[j]),
+            "dominance": float(weights[j] / weights.sum()),
+            "resolvable": bool(feature.energy >= RESOLVABLE_FWHM_FACTOR * float(gauss_fwhm)),
+            "feature": feature}
+
+
+def deliver_branch(qoi: dict, *, p_min: float = P_ACOUSTIC_MIN,
+                   entropy_max: float = ENTROPY_MAX,
+                   dominance_min: float = DOMINANCE_MIN) -> bool:
+    return bool(qoi.get("omega0") is not None and qoi.get("resolvable")
+                and qoi.get("p_branch", 0.0) >= p_min
+                and qoi.get("dominance", 0.0) >= dominance_min
+                and qoi.get("entropy", math.inf) <= entropy_max)
+
+
 def deliver_acoustic(qoi: dict, *, p_min: float = P_ACOUSTIC_MIN, entropy_max: float = ENTROPY_MAX,
                      dominance_min: float = DOMINANCE_MIN) -> bool:
     """Triage: deliver the acoustic ω₀ only when it is a single, confidently-assigned, *resolvable*

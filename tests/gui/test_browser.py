@@ -16,6 +16,7 @@ from isar_gui.commands import GuiIngestReport
 from isar_gui.main_window import MainWindow
 from isar_gui.session import Session
 from isar_gui.viewmodels.browser import BrowserViewModel
+from isar_gui.viewmodels.scans import ScansViewModel
 from isar_gui.views.browser_dock import BrowserDock
 from synthetic_ws import scan_entry, write_session
 
@@ -85,6 +86,48 @@ def test_dock_renders_groups_and_children(qtbot, make_ws):
     assert tree.topLevelItemCount() == len(vm.group_rows)
     total_children = sum(tree.topLevelItem(i).childCount() for i in range(tree.topLevelItemCount()))
     assert total_children == len(ws.results)
+
+
+def test_pooled_master_is_derived_child_not_physical_member(qtbot, make_ws):
+    rows = [dict(_ROWS[0]), dict(_ROWS[1]), {
+        "scan": 9_000_000, "detector": "det", "sample": "tavi", "T": 200.0,
+        "h": 2.0, "k": 0.0, "l": 0.0, "status": "fitted", "verdict": "resolved",
+        "omega0": 5.05, "interval_lo": 4.8, "interval_hi": 5.3,
+        "interval_reliable": True, "pooled": True, "n_members": 2,
+        "members": "[1, 2]",
+    }]
+    ws, _ = _open(make_ws, rows=rows)
+    scan_views = [
+        SimpleNamespace(scan_id=f"tavi:{n}:det", experiment_id="tavi", scan_number=n,
+                        scan_type="measurement", status="fitted", source_file=None, T=200.0,
+                        hkl=[2, 0, 0], provenance={},
+                        detectors={"det": SimpleNamespace(pooled=pooled)})
+        for n, pooled in ((1, False), (2, False), (9_000_000, True))
+    ]
+    scan_vm = ScansViewModel(SimpleNamespace(scans=scan_views))
+    assert [r.scan_number for r in scan_vm.rows()] == [1, 2]
+    physical_results = [fv for fv in ws.results if not fv.pooled]
+    pooled = SimpleNamespace(
+        pooled=True, members=[["tavi", 1, "det"], ["tavi", 2, "det"]],
+        scan_number=9_000_000, detector_id="det", verdict="resolved", omega0=5.05,
+        interval_reliable=True, interval=(4.8, 5.3), disposition="resolved",
+        q=[2.0, 0.0, 0.0], T=200.0,
+    )
+    browser_ws = SimpleNamespace(results=physical_results + [pooled], groups=ws.groups,
+                                 warnings=[], card=ws.card, root=ws.root,
+                                 schema_version=ws.schema_version)
+    vm = BrowserViewModel(browser_ws)
+    group = next(r for r in vm.group_rows if len(r.members) == 2)
+    assert [m.scan_number for m in group.members] == [1, 2]
+    assert len(group.derived) == 1 and group.derived[0].scan_number == 9_000_000
+
+    dock = BrowserDock(vm)
+    qtbot.addWidget(dock)
+    item = next(dock._tree.topLevelItem(i) for i in range(dock._tree.topLevelItemCount())
+                if dock._tree.topLevelItem(i).childCount() == 3)
+    derived = item.child(2)
+    assert derived.text(0) == "Derived pooled result"
+    assert derived.data(0, Qt.ItemDataRole.UserRole).pooled is True
 
 
 def test_dock_selecting_child_fires_vm_signal(qtbot, make_ws):

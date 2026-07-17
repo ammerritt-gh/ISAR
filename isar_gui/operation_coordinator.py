@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -19,7 +20,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from isar_gui.commands import DriveOptions, RunOptions, build_drive_command, build_run_command
+from isar_gui.commands import (
+    DriveOptions, RunOptions, build_compile_command, build_drive_command, build_run_command)
 from isar_gui.ingest_controller import IngestController
 from isar_gui.process import ProcessRunner
 
@@ -59,6 +61,8 @@ class WorkspaceOperationCoordinator(QObject):
     run_finished = Signal(int, bool)  # exit code, callback is still for the live workspace
     drive_started = Signal()
     drive_finished = Signal(int, bool)  # exit code (4 = stopped by operator), live workspace
+    drive_compiled = Signal(object, str)  # envelope dict, envelope path
+    drive_compile_failed = Signal(str)
 
     def __init__(self, python_exe: str, workspace_manager, log_sink, parent=None):
         super().__init__(parent)
@@ -75,6 +79,7 @@ class WorkspaceOperationCoordinator(QObject):
         self._active: _Job | None = None
         self._run_runner: ProcessRunner | None = None
         self._drive_runner: ProcessRunner | None = None
+        self._compile_runner: ProcessRunner | None = None
         self._ingest_report = None
         self._ingest_failure: tuple[int, str] | None = None
         self._cancelling = False
@@ -153,6 +158,23 @@ class WorkspaceOperationCoordinator(QObject):
         self._start_next()
         return True
 
+    def request_drive_compile(self, opts: DriveOptions, *, env: dict | None = None) -> bool:
+        """Queue the non-measuring compile step used by the campaign confirmation flow."""
+        if (opts.goal is None) == (opts.spec_path is None):
+            return False
+        root = self._wsm.root()
+        if root is not None:
+            out_dir = Path(root) / "report" / "gui-runs"
+        else:
+            out_dir = Path(tempfile.gettempdir()) / "isar-objectives"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output = out_dir / f"objective-{datetime.now():%Y%m%d-%H%M%S-%f}.json"
+        self._queue.append(_Job("compile", (opts, dict(env or {}), str(output)),
+                                str(root) if root is not None else None, self._wsm.generation()))
+        self._emit_activity()
+        self._start_next()
+        return True
+
     def request_drive_stop(self) -> bool:
         """Cooperatively stop the ACTIVE campaign: write its token's stop-request control file.
 
@@ -222,7 +244,12 @@ class WorkspaceOperationCoordinator(QObject):
                 self._drive_runner.kill_tree()
             self._emit_activity()
             return True
-        runner = self._run_runner if self._active.kind == "run" else self._ingest.runner()
+        if self._active.kind == "run":
+            runner = self._run_runner
+        elif self._active.kind == "compile":
+            runner = self._compile_runner
+        else:
+            runner = self._ingest.runner()
         if runner is None or not runner.is_running():
             return True
         runner.terminate()
@@ -250,6 +277,8 @@ class WorkspaceOperationCoordinator(QObject):
                 self._ingest.start_ingest(job.payload)
             elif job.kind == "drive":
                 self._start_drive(job)
+            elif job.kind == "compile":
+                self._start_compile(job)
             else:
                 self._start_run(job)
             return
@@ -280,6 +309,17 @@ class WorkspaceOperationCoordinator(QObject):
         self._drive_runner = runner
         runner.start(cmd, log_path=str(log_path), env=env)
         self.drive_started.emit()
+
+    def _start_compile(self, job: _Job) -> None:
+        opts, env, output = job.payload
+        cmd = build_compile_command(self._python, opts, output)
+        log_path = Path(output).with_suffix(".log")
+        self._log("$ " + " ".join(cmd))
+        runner = ProcessRunner(self)
+        runner.line.connect(self._log)
+        runner.finished.connect(self._on_compile_finished)
+        self._compile_runner = runner
+        runner.start(cmd, log_path=str(log_path), env=env)
 
     def _job_is_current(self, job: _Job) -> bool:
         live = self._wsm.root()
@@ -424,6 +464,28 @@ class WorkspaceOperationCoordinator(QObject):
         self.drive_finished.emit(int(code), bool(live))
         self._finish_active()
 
+    def _on_compile_finished(self, code: int) -> None:
+        active = self._active
+        runner = self._compile_runner
+        self._compile_runner = None
+        if runner is not None:
+            try:
+                runner.line.disconnect(self._log)
+                runner.finished.disconnect(self._on_compile_finished)
+            except (RuntimeError, TypeError) as exc:
+                log.debug("compile runner signals already detached: %s", exc)
+            runner.deleteLater()
+        if active is not None and active.kind == "compile" and int(code) == 0:
+            output = active.payload[2]
+            try:
+                envelope = json.loads(Path(output).read_text(encoding="utf-8"))
+                self.drive_compiled.emit(envelope, output)
+            except (OSError, ValueError) as exc:
+                self.drive_compile_failed.emit(f"compiled objective could not be read: {exc}")
+        else:
+            self.drive_compile_failed.emit(f"objective compilation failed (exit {code})")
+        self._finish_active()
+
     def _kill_if_still_running(self) -> None:
         if not self._cancelling or self._active is None:
             return
@@ -433,7 +495,12 @@ class WorkspaceOperationCoordinator(QObject):
                 self._log("campaign did not stop after 3 seconds; killing its process tree")
                 self._drive_runner.kill_tree()
             return
-        runner = self._run_runner if self._active.kind == "run" else self._ingest.runner()
+        if self._active.kind == "run":
+            runner = self._run_runner
+        elif self._active.kind == "compile":
+            runner = self._compile_runner
+        else:
+            runner = self._ingest.runner()
         if runner is not None and runner.is_running():
             self._log(f"{self._active.kind} did not stop after 3 seconds; killing it")
             runner.kill()

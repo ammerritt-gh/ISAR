@@ -318,7 +318,22 @@ class InspectorViewModel(ViewModel):
             if fine is None:
                 st.curve_error = "no energy grid available for this scan"
                 return
-            curve = ws.evaluate_model(fit.unit_id or fit.scan_number, fit.detector_id, x_eval=fine)
+            try:
+                curve = ws.evaluate_model(fit.unit_id or fit.scan_number, fit.detector_id, x_eval=fine)
+            except (KeyError, ValueError, OSError) as exc:
+                if not pooled and energy is not None and energy.size:
+                    st.main_spec = builders.fit_overlay_spec(
+                        x=energy, counts=counts, yerr=yerr, mask=mask,
+                        x_fit=None, total=None, components=None,
+                        scan_number=fit.scan_number, det_id=fit.detector_id, q=fit.q,
+                        xlabel=self._axis_label(axis) if axis else "energy transfer (meV)")
+                    st.main_spec.annotations.append(ps.Annotation(
+                        text="model curve unavailable — raw counts shown", xy=None,
+                        role=ps.State.UNRELIABLE))
+                    st.curve_error = f"model curve unavailable; raw counts shown ({exc})"
+                else:
+                    st.curve_error = f"model curve unavailable ({exc})"
+                return
         except (KeyError, ValueError, OSError) as exc:
             st.curve_error = str(exc)
             return

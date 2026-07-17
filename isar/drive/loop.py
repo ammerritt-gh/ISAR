@@ -52,6 +52,7 @@ from isar.drive.supervisor.stopping import (
     summarize_grid,
     systematic_floor,
 )
+from isar.schema.card import Card
 
 DEFAULT_MAX_ITERS = 200
 DEFAULT_WAIT_TIMEOUT = 600.0
@@ -788,6 +789,23 @@ def _declined_observation(proposal, verdict: str) -> dict:
             "verdict": verdict, "omega0": None}
 
 
+def _persist_campaign_target(workspace: Path, objective) -> None:
+    """Copy the frozen objective's active analysis target into machine-owned card state."""
+    policy_path = workspace / "card.policy.toml"
+    state_path = workspace / "card.state.json"
+    # Runner seams used by dry-run/notebook consumers may deliberately provide a no-op initializer.
+    # There is then no machine state to extend; the real runner creates the policy immediately above.
+    if not policy_path.exists():
+        return
+    card = Card.load(policy_path, state_path)
+    target = {"branch": getattr(objective, "target_branch", "acoustic"),
+              "label": getattr(objective, "target_label", "acoustic"),
+              "energy_search_meV": list(getattr(objective, "energy_search_meV", (-2.0, 7.0)))}
+    if card.state.campaign_target != target:
+        card.state.campaign_target = target
+        card.save_state(state_path)
+
+
 def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan_counter: int,
                       budget_state: dict, observations: list[dict], consumed: set,
                       scan_kind: dict) -> tuple[list[dict], int]:
@@ -881,6 +899,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                 cfg.init_isar(workspace, scan_path)
             log_event(log_path, "decide", {"event": "workspace_init", "action": "workspace_init",
                                            "probe": str(scan_path), "iter": it})
+        _persist_campaign_target(workspace, objective)
         # Error tier per the escalation ladder: quicklook → cheap (steer only), production →
         # fast (HESSE interval + trust flag), escalating to full (bootstrap+profile) only where an
         # untrusted-HESSE q needs the reliable interval. The bootstrap fires only where needed.
@@ -1139,7 +1158,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                 # iteration (durable / crash-safe — a file, never a live session object). No branch yet →
                 # provider is None → propose_scan falls back to the 5a counts tier.
                 with timed(cfg.log_path, "fisher_provider", iteration=it):
-                    fisher = _make_fisher_provider(read_card_state(cfg.workspace), cfg.resolution_cb)
+                    fisher = (None if objective.target_branch != "acoustic" else
+                              _make_fisher_provider(read_card_state(cfg.workspace), cfg.resolution_cb))
                 with timed(cfg.log_path, "propose", iteration=it):
                     proposal = propose_scan(objective, model, observations, cfg.resolution_cb, budget_state,
                                             master_rows=master_rows, fisher=fisher)

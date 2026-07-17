@@ -1805,6 +1805,8 @@ class MainWindow(QMainWindow):
         for dock in list(self._docks.values()):
             if dock is self.log_dock:
                 continue  # persists across rebinds (created in __init__); keep its scrollback
+            if dock is self.campaign_dock:
+                dock.dispose()
             self.removeDockWidget(dock)
             dock.deleteLater()
         self._docks.clear()

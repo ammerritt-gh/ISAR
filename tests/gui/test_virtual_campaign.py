@@ -8,6 +8,9 @@ transient open failure, finish-before-tick, finish-before-init, rebind mid-promo
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("PySide6")
@@ -89,12 +92,39 @@ def cold(qtbot, monkeypatch):
 
 
 def _start_virtual(w, goal="map the branch"):
+    from PySide6.QtWidgets import QApplication
+
     dock = w.campaign_dock
+    dock._confirm_objective = lambda _envelope: True
     dock.set_backend_status("tavi", "ok", "up")
     dock._goal.setPlainText(goal)
     dock._max_iters.setValue(12)
     assert dock._start_btn.isEnabled()
     dock._start_btn.click()
+    compile_runner = _FakeRunner.instances[-1]
+    argv = compile_runner.argv
+    assert "--compile-only" in argv
+    envelope_path = Path(argv[argv.index("--compile-only") + 1])
+    envelope_path.parent.mkdir(parents=True, exist_ok=True)
+    envelope_path.write_text(json.dumps({
+        "schema": "isar.objective-envelope/1",
+        "objective": {
+            "path": [[2.0, 0.0, 0.0], [2.5, 0.0, 0.0]],
+            "tolerance_meV": 0.5,
+            "budget": {"kind": "neutrons", "amount": 1e9},
+            "tier": "deterministic", "name": "test", "meta": {"goal": goal},
+            "target_branch": "acoustic", "target_label": "acoustic",
+            "energy_search_meV": [-2.0, 7.0],
+        },
+        "source": {"kind": "goal", "sha256": "test-fingerprint"},
+        "original_goal": goal,
+    }), encoding="utf-8")
+    compile_runner.complete(0)
+    QApplication.processEvents()
+    QApplication.processEvents()
+    # Keep the historical fixture contract: instances contains campaign runners, not the completed
+    # compile-only preview process.
+    _FakeRunner.instances.remove(compile_runner)
 
 
 def _complete_init(root):
@@ -121,7 +151,7 @@ def test_virtual_start_reserves_a_temp_workspace_and_launches(cold):
     assert root is not None
     assert w._operations.is_running_campaign()
     argv = _FakeRunner.instances[0].argv
-    assert "--goal" in argv and "map the acoustic branch" in argv
+    assert "--envelope" in argv
     assert str(root) in argv
     # The typed form survived the none→pending rebind (a NEW dock was constructed).
     assert w.campaign_dock._goal.toPlainText() == "map the acoustic branch"

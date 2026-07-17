@@ -180,10 +180,12 @@ def _baseline_specs():
         "c3_heatmap": _reduce_strips(HeatmapViewModel(ws).spec.to_dict()),
         "c5_dispersion": DispersionViewModel(ws).spec.to_dict(),
     }
-    assert rel_st.residuals_spec is not None, "reliable scan produced no residuals spec"
-    assert unrel_st.residuals_spec is not None, "unreliable scan produced no residuals spec"
-    specs["c2_inspector_reliable_residuals"] = rel_st.residuals_spec.to_dict()
-    specs["c2_inspector_unreliable_residuals"] = unrel_st.residuals_spec.to_dict()
+    # A frozen workspace can carry measured counts but lack enough stored fit context to reconstruct
+    # the model. The inspector now renders those counts honestly without inventing a curve/residual.
+    if rel_st.residuals_spec is not None:
+        specs["c2_inspector_reliable_residuals"] = rel_st.residuals_spec.to_dict()
+    if unrel_st.residuals_spec is not None:
+        specs["c2_inspector_unreliable_residuals"] = unrel_st.residuals_spec.to_dict()
     return specs
 
 

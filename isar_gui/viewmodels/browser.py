@@ -12,7 +12,7 @@ re-emits it unchanged — the payload is always a ``FitView``, never a group.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from PySide6.QtCore import Signal
 
@@ -27,6 +27,7 @@ class GroupRow:
     key_fields: dict
     members: list  # list[FitView]
     pooled: bool  # True when a pooled master downstream covers this group's members
+    derived: list = field(default_factory=list)  # pooled FitView children on the physical group
 
 
 def _group_label(key_fields: dict) -> str:
@@ -47,6 +48,11 @@ def _member_scan_numbers(members) -> set:
         if isinstance(m, (list, tuple)) and len(m) >= 2:
             try:
                 out.add(int(m[1]))
+            except (TypeError, ValueError):
+                continue
+        else:
+            try:
+                out.add(int(str(m).split(":")[-2] if str(m).count(":") >= 2 else str(m)))
             except (TypeError, ValueError):
                 continue
     return out
@@ -84,20 +90,24 @@ class BrowserViewModel(ViewModel):
         of this group's member scan numbers among its own members — i.e. a pooled fit downstream
         already covers (some of) this group.
         """
-        pooled_member_sets = [
-            _member_scan_numbers(fv.members)
-            for fv in self.workspace.results
-            if fv.pooled and fv.members
-        ]
+        pooled_results = [fv for fv in self.workspace.results if fv.pooled]
+        pooled_member_sets = [(fv, _member_scan_numbers(fv.members))
+                              for fv in pooled_results if fv.members]
         rows = []
         for g in self.workspace.groups:
-            scan_numbers = {m.scan_number for m in g.members if m.scan_number is not None}
-            pooled = bool(scan_numbers) and any(scan_numbers & s for s in pooled_member_sets)
+            members = [m for m in g.members if not m.pooled]
+            if not members:
+                continue
+            scan_numbers = {m.scan_number for m in members if m.scan_number is not None}
+            derived = [fv for fv, member_set in pooled_member_sets
+                       if scan_numbers and member_set == scan_numbers]
+            pooled = bool(derived)
             rows.append(GroupRow(
                 label=_group_label(g.key_fields),
                 key_fields=dict(g.key_fields),
-                members=list(g.members),
+                members=members,
                 pooled=pooled,
+                derived=derived,
             ))
         return rows
 

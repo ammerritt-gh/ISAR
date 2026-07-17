@@ -1,10 +1,13 @@
 """Phase A wiring: the branch-assignment posterior feeds the session's prior, seeding, and near-Γ
 constrained recipe. Guards that an optic-tagged point cannot pollute the acoustic predictors."""
+from types import SimpleNamespace
+
 import pytest
 
 from isar.schema.card import CardState
 from isar.session import branch_model as BM
 from isar.session import session_prior as SP
+from isar.session import driver
 
 
 def _add(state, scan_id, q, omega0, *, branch_id, weight=1.0, sample="S", T=200.0):
@@ -36,6 +39,90 @@ def test_add_point_stores_branch_id_and_weight():
     _add(st, "A0", 0.20, 1.85, branch_id="acoustic", weight=0.9)
     p = st.dispersion_prior[0]
     assert p["branch_id"] == "acoustic" and p["weight"] == pytest.approx(0.9)
+
+
+def test_prior_for_can_select_optic_branch():
+    st = CardState()
+    _add(st, "A0", 0.20, 1.85, branch_id="acoustic")
+    _add(st, "O0", 0.10, 6.1, branch_id="optic")
+    _add(st, "O1", 0.30, 6.5, branch_id="optic")
+    pr = SP.prior_for(st, sample="S", T=200.0, q=[2.2, 0.0, 0.0], period=2.0,
+                      branch_id="optic")
+    assert pr is not None and pr.omega0 == pytest.approx(6.3, abs=0.5)
+
+
+def test_optic_cold_start_delivers_optic_and_rejects_acoustic_fit():
+    state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
+                                      "energy_search_meV": [-2.0, 12.0]})
+    card = SimpleNamespace(
+        state=state,
+        policy=SimpleNamespace(dispersion={"zone_period": 2.0}),
+    )
+    ctx = SimpleNamespace(gauss_fwhm=1.0)
+    modes = [
+        {"omega0": 1.2, "omega0_err": 0.1, "gamma": 0.2, "amplitude": 900.0},
+        {"omega0": 6.0, "omega0_err": 0.1, "gamma": 0.3, "amplitude": 300.0},
+    ]
+    optic = driver._assign_and_triage(
+        {"omega0": 6.0, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
+        q=[2.0, 0.0, 0.0], t_round=5.0, near_gamma=False)
+    acoustic = driver._assign_and_triage(
+        {"omega0": 1.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
+        q=[2.0, 0.0, 0.0], t_round=5.0, near_gamma=False)
+    assert optic["deliver"] is True and optic["branch_id"] == "optic"
+    assert acoustic["deliver"] is False
+
+
+def test_optic_bootstrap_keeps_upper_mode_until_branch_is_established():
+    state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
+                                      "energy_search_meV": [-2.0, 12.0]})
+    _add(state, "O0", 0.0, 6.0, branch_id="optic")
+    card = SimpleNamespace(
+        state=state,
+        policy=SimpleNamespace(dispersion={"zone_period": 2.0}),
+    )
+    ctx = SimpleNamespace(gauss_fwhm=1.0)
+    modes = [
+        {"omega0": 4.2, "omega0_err": 0.1, "gamma": 0.2, "amplitude": 900.0},
+        {"omega0": 7.4, "omega0_err": 0.1, "gamma": 0.3, "amplitude": 300.0},
+    ]
+
+    optic = driver._assign_and_triage(
+        {"omega0": 7.4, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
+        q=[2.0, 0.5, 0.0], t_round=5.0, near_gamma=False)
+    acoustic = driver._assign_and_triage(
+        {"omega0": 4.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
+        q=[2.0, 0.5, 0.0], t_round=5.0, near_gamma=False)
+
+    assert optic["deliver"] is True and optic["branch_id"] == "optic"
+    assert acoustic["deliver"] is False
+
+
+def test_established_optic_uses_fitted_modes_before_descriptor_rivals():
+    state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
+                                      "energy_search_meV": [-2.0, 12.0]})
+    _add(state, "O0", 0.0, 6.0, branch_id="optic")
+    _add(state, "O1", 0.25, 6.7, branch_id="optic")
+    _add(state, "O2", 0.4, 7.2, branch_id="optic")
+    card = SimpleNamespace(
+        state=state,
+        policy=SimpleNamespace(dispersion={"zone_period": 2.0}),
+    )
+    ctx = SimpleNamespace(gauss_fwhm=1.0)
+    modes = [
+        {"omega0": 4.2, "omega0_err": 0.1, "gamma": 0.2, "amplitude": 900.0},
+        {"omega0": 7.4, "omega0_err": 0.1, "gamma": 0.3, "amplitude": 300.0},
+    ]
+    descriptor = SimpleNamespace(peaks=[
+        SimpleNamespace(energy=6.8, width=0.2, integrated_intensity=100.0, significance=20.0),
+        SimpleNamespace(energy=8.0, width=0.2, integrated_intensity=100.0, significance=20.0),
+    ])
+
+    optic = driver._assign_and_triage(
+        {"omega0": 7.4, "modes": modes}, descriptor, ctx, card=card, sample="S", T=200.0,
+        q=[2.0, 0.5, 0.0], t_round=5.0, near_gamma=False)
+
+    assert optic["deliver"] is True and optic["branch_id"] == "optic"
 
 
 # ---------------------------------------------------------------- branch-filtered seeding

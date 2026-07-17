@@ -201,6 +201,38 @@ def test_no_usable_fits_is_still_no_signal():
     assert any("no signal" in r for r in st.evaluate_stop(obj, grid, _BUDGET).reasons)
 
 
+def test_optic_objective_certifies_only_optic_observations_and_master():
+    obj = _obj()
+    obj.target_branch = "optic"
+    acoustic = _obs((2.1, 0.0, 0.0), "production", 0.1)
+    acoustic["branch_id"] = "acoustic"
+    optic = _obs((2.2, 0.0, 0.0), "production", 0.1)
+    optic["branch_id"] = "optic"
+    wrong_master = _master((2.3, 0.0, 0.0), 0.1)
+    wrong_master["branch_id"] = "acoustic"
+    right_master = _master((2.4, 0.0, 0.0), 0.1)
+    right_master["branch_id"] = "optic"
+    grid = st.summarize_grid(obj, [acoustic, optic], [wrong_master, right_master])
+    assert grid[0].best_prod_halfwidth is None
+    assert grid[1].best_prod_halfwidth == pytest.approx(0.1)
+    assert grid[2].master is None
+    assert grid[3].master is right_master
+
+
+def test_branch_continuation_reports_branch_ambiguity_not_no_signal():
+    obj = _obj()
+    obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False,
+                disp="branch_continuation") for _ in range(st.MAX_DECLINES)]
+    for row in obs:
+        row["verdict"] = "branch_continuation"
+    masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
+    grid = st.summarize_grid(obj, obs, masters)
+    assert grid[0].stuck_reason == "branch_ambiguity"
+    decision = st.evaluate_stop(obj, grid, _BUDGET)
+    joined = " ".join(decision.reasons).lower()
+    assert "branch ambiguity" in joined and "no-signal" in joined
+
+
 def test_master_over_tolerance_keeps_accumulating():
     obj = _obj()
     # One master still over tolerance (needs more pooled scans) → continue.

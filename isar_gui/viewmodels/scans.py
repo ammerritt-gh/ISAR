@@ -484,7 +484,12 @@ class ScansViewModel(ViewModel):
         except Exception as exc:  # noqa: BLE001 — the facade degrades; never crash the VM
             log.warning("scans facade read failed: %s", exc)
             scan_views = []
-        self._all_rows = unit_rows(scan_views)
+        # Pooled masters remain available through Workspace/results for notebooks and the Results
+        # tree, but they are derived fits rather than physical scans and do not belong in the Pool.
+        physical = [sv for sv in scan_views
+                    if not any(bool(getattr(fv, "pooled", False))
+                               for fv in (getattr(sv, "detectors", None) or {}).values())]
+        self._all_rows = unit_rows(physical)
         self._reapply_filter()
 
     def _reapply_filter(self) -> None:

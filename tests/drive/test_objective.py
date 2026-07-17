@@ -48,6 +48,23 @@ def test_along_h_descending():
     assert spec.path[-1] == (1.0, 0.0, 0.0)
 
 
+@pytest.mark.parametrize("start,end,step", [
+    (1.0, 2.0, 0.3),       # non-commensurate: legacy round intentionally misses the endpoint
+    (2.0, 1.0, 0.3),
+    (2.0, 2.0, 0.05),
+    (-0.2, 0.5, 0.2),
+])
+def test_along_h_path_is_equivalent_to_legacy_round_expansion(start, end, step):
+    span = end - start
+    n = int(round(abs(span) / step))
+    sign = 1.0 if span >= 0 else -1.0
+    expected = [(round(start + sign * step * i, 9), 0.1, -0.2) for i in range(n + 1)]
+    spec = ObjectiveSpec.along_h(h_start=start, h_end=end, step=step, k=0.1, l=-0.2,
+                                 tolerance_meV=0.1,
+                                 budget={"kind": "counting_seconds", "amount": 100})
+    assert spec.path == expected
+
+
 def test_rejects_bad_tier():
     with pytest.raises(ValueError):
         ObjectiveSpec(path=[(0, 0, 0)], tolerance_meV=0.1,
@@ -63,3 +80,22 @@ def test_along_h_rejects_nonpositive_step():
     with pytest.raises(ValueError):
         ObjectiveSpec.along_h(h_start=0.0, h_end=1.0, step=0.0, tolerance_meV=0.1,
                               budget={"kind": "neutrons", "amount": 1})
+
+
+def test_generic_segment_uses_step_as_a_maximum_and_includes_endpoints():
+    spec = ObjectiveSpec.segment(q_start=[2, 0, 0], q_end=[2, 0.5, 0], step_rlu=0.05,
+                                 tolerance_meV=0.5,
+                                 budget={"kind": "counting_seconds", "amount": 8 * 3600},
+                                 target_branch="optic", target_label="transverse optic")
+    assert len(spec.path) == 11
+    assert spec.path[0] == (2.0, 0.0, 0.0)
+    assert spec.path[-1] == (2.0, 0.5, 0.0)
+    assert max(spec.path[i + 1][1] - spec.path[i][1] for i in range(10)) <= 0.05 + 1e-12
+    assert spec.energy_search_meV == (-2.0, 12.0)
+
+
+def test_explicit_degenerate_segment_remains_a_valid_single_point():
+    spec = ObjectiveSpec.segment(q_start=[2, 0, 0], q_end=[2, 0, 0], step_rlu=0.05,
+                                 tolerance_meV=0.5,
+                                 budget={"kind": "neutrons", "amount": 1})
+    assert spec.path == [(2.0, 0.0, 0.0)]

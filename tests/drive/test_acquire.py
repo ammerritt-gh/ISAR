@@ -99,6 +99,13 @@ def test_energy_window_surveys_when_prediction_uncertain():
     assert e_hi_force == pytest.approx(acq.SURVEY_E_HI_MEV)
 
 
+def test_energy_window_uses_compiled_optic_search_for_survey():
+    e_lo, e_hi, _step, _npts = acq._energy_window(
+        0.0, 0.8, acq.SURVEY_E_HI_MEV * 10, energy_search_meV=(-2.0, 12.0))
+    assert e_lo <= -2.0
+    assert e_hi == pytest.approx(12.0)
+
+
 def test_energy_window_clamps_point_count():
     # A huge span at a fine step would exceed 100 points; the step is widened to cap it.
     _, _, _, npts = acq._energy_window(200.0, 0.01)

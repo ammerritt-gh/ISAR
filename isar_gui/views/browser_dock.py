@@ -138,6 +138,14 @@ class BrowserDock(QDockWidget):
                     ])
                     child.setData(0, Qt.ItemDataRole.UserRole, fv)
                     group_item.addChild(child)
+                for fv in row.derived or []:
+                    child = QTreeWidgetItem([
+                        "Derived pooled result", _fmt(fv.detector_id), _member_verdict_text(fv),
+                        _fmt(fv.q), _fmt(fv.T),
+                    ])
+                    child.setToolTip(0, "Combined fit derived from this group's physical scans")
+                    child.setData(0, Qt.ItemDataRole.UserRole, fv)
+                    group_item.addChild(child)
             self._tree.expandAll()
             self._restore_active_item()
         finally:

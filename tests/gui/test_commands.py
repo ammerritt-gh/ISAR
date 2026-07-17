@@ -255,6 +255,22 @@ def test_build_drive_command_resume_latest():
     assert cmd == ["py", "-m", "isar", "drive", "--resume-latest", "--workspace", "ws"]
 
 
+def test_build_drive_command_frozen_envelope():
+    cmd = commands.build_drive_command(
+        "py", "ws", DriveOptions(envelope_path="objective.json", tier="mcstas", budget="8h"))
+    assert cmd == ["py", "-m", "isar", "drive", "--envelope", "objective.json",
+                   "--workspace", "ws"]
+
+
+def test_build_compile_command_has_no_workspace_or_measurement_flags():
+    cmd = commands.build_compile_command(
+        "py", DriveOptions(goal="map transverse optic along k", budget="8h"), "frozen.json")
+    assert cmd == ["py", "-m", "isar", "drive", "--goal",
+                   "map transverse optic along k", "--compile-only", "frozen.json",
+                   "--budget", "8h"]
+    assert "--workspace" not in cmd and "--tavi" not in cmd and "--worker" not in cmd
+
+
 def test_build_drive_command_resume_never_emits_tier():
     # Tier is frozen with a resumed objective — the CLI ignores --tier on --resume-latest, so
     # emitting it would only imply an effect the invocation doesn't have.

@@ -48,6 +48,10 @@ class DispersionPane(GroupDropMixin, QWidget):
         # --- plot -----------------------------------------------------------
         self._glw = pg.GraphicsLayoutWidget()
         self._plot = self._glw.addPlot(row=0, col=0)
+        # Reciprocal-lattice coordinates are conventionally read as plain decimals.  Pyqtgraph's
+        # default SI-prefix formatter turns a K range such as 0..0.5 into milli-scaled tick labels
+        # (0..500 with a ×10⁻³-style suffix), which looks like a thousand-fold coordinate error.
+        self._plot.getAxis("bottom").enableAutoSIPrefix(False)
         outer.addWidget(self._glw)
 
         self._init_group_drop(outer)   # group-drop restriction + Show-all banner (2A)

@@ -141,6 +141,7 @@ class GridQ:
     # account for (disposition "unmodeled"). Used only to refine the terminal stuck_reason.
     n_infeasible: int = 0
     n_unmodeled: int = 0
+    n_branch_ambiguous: int = 0
     # S3 (DECISIONS): the THIRD state. A production/confirm delivery whose ω₀ interval is
     # interval_reliable=False (γ-at-bound) or never left the untrusted fast tier — it delivers a
     # center but carries no certifiable interval. Counted here, NOT as a no-signal decline (it is not
@@ -254,6 +255,8 @@ class GridQ:
             return "infeasible"
         if self.n_unmodeled > 0:
             return "signal_unmodeled"
+        if self.n_branch_ambiguous > 0:
+            return "branch_ambiguity"
         return "no_signal"
 
     @property
@@ -276,6 +279,7 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
     grid point by nearest hkl; off-grid entries are ignored.
     """
     path = objective.path
+    target_branch = getattr(objective, "target_branch", "acoustic") or "acoustic"
     scalars = path_scalars(path)
     grid = [GridQ(index=i, hkl=tuple(path[i]), q=scalars[i], tolerance=objective.tolerance_meV)
             for i in range(len(path))]
@@ -297,18 +301,18 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                 g.last_prod_cost = cost                 # the next production scan's ΔC proxy
         elif kind == "quicklook":
             g.n_quicklook += 1
-        # Phase A: only ACOUSTIC fits steer the ω(q) model / certify a q — a non-acoustic (optic) ω₀
-        # can never raise the acoustic window centre. ``None`` counts as acoustic DELIBERATELY: legacy
+        # Only the REQUESTED branch steers the ω(q) model / certifies a q. ``None`` is permissive
+        # DELIBERATELY for legacy
         # ledgers and posterior-off mode (no [dispersion] zone_period ⇒ branch_id is None for every
         # row) carry no branch assignment, and this gate is then fully permissive by design. It only
         # bites once branch assignment is active (posterior on), rejecting rows tagged non-acoustic.
-        acoustic = obs.get("branch_id") in (None, "acoustic")
+        requested_branch = obs.get("branch_id") in (None, target_branch)
         is_prod = kind in PRODUCTION_KINDS
         # S3: `certifiable` (loop._observation_from_row) is True only for a reliable interval
         # (interval_reliable≠False, or a trusted-HESSE fast fallback). Default True keeps synthetic /
         # pre-S3 observations behaving as before (additive contract).
         certifiable = obs.get("certifiable", True)
-        if not usable:
+        if not usable or not requested_branch:
             # Sub-label the decline (abandon-count semantics unchanged — both still increment
             # n_decline): a validation-rejected proposal is instrument-infeasible; an "unmodeled"
             # disposition is signal the model could not fit. Only refines the terminal stuck_reason.
@@ -316,6 +320,10 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                 g.n_infeasible += 1
             if obs.get("disposition") == "unmodeled":
                 g.n_unmodeled += 1
+            if (obs.get("verdict") == "branch_continuation"
+                    or obs.get("disposition") == "branch_continuation"
+                    or (usable and not requested_branch)):
+                g.n_branch_ambiguous += 1
             g.n_decline += 1
         elif is_prod and not certifiable:
             # THIRD STATE: a delivered production/confirm center whose interval is uncertifiable. It
@@ -330,7 +338,7 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
             g.n_decline = 0        # a certifiable fit (or a steering quicklook) proves the q CAN deliver
             if obs.get("fit_kind"):
                 g.last_fit_kind = obs.get("fit_kind")   # provenance of the most recent usable fit
-            if acoustic and obs.get("omega0") is not None and (g.best_halfwidth is None
+            if requested_branch and obs.get("omega0") is not None and (g.best_halfwidth is None
                                                   or (hw is not None and hw < g.best_halfwidth)):
                 g.best_omega0 = float(obs["omega0"])
                 g.best_halfwidth = hw
@@ -338,13 +346,13 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
             # A usable single PRODUCTION fit with a real (reliable, certifiable) interval is a
             # convergence candidate in its own right — it beats the master when pooling degrades a
             # model-limited q. Uncertifiable production fits were routed above and never reach here.
-            if acoustic and is_prod and hw is not None and obs.get("omega0") is not None and (
+            if requested_branch and is_prod and hw is not None and obs.get("omega0") is not None and (
                     g.best_prod_halfwidth is None or hw < g.best_prod_halfwidth):
                 g.best_prod_halfwidth = hw
                 g.best_prod_omega0 = float(obs["omega0"])
     for mr in (master_rows or []):
         i = match_grid_index(tuple(mr["hkl"]), path)
-        if i is not None:
+        if i is not None and mr.get("branch_id") in (None, target_branch):
             grid[i].master = mr
     return grid
 
@@ -407,6 +415,9 @@ def _stuck_why(g: GridQ) -> str:
     if reason == "signal_unmodeled":
         return ("signal present but the model cannot account for it (disposition 'unmodeled') — "
                 "model problem, not absence of signal")
+    if reason == "branch_ambiguity":
+        return (f"detected feature(s), but {g.n_branch_ambiguous} assignment(s) could not certify "
+                "the requested branch — branch ambiguity, not no-signal")
     return f"declined {g.n_decline}× (no signal)"
 
 
@@ -439,7 +450,9 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                       "source": ("master" if (g._master_hw is not None and g.cert_halfwidth == g._master_hw)
                                  else "single_production" if g.cert_halfwidth is not None else None),
                       "n_production": g.n_production, "n_decline": g.n_decline,
-                      "n_uncertifiable": g.n_uncertifiable, "reason": reason, "stuck": g.stuck})
+                      "n_uncertifiable": g.n_uncertifiable,
+                      "n_branch_ambiguous": g.n_branch_ambiguous,
+                      "reason": reason, "stuck": g.stuck})
 
     # Tolerance below the systematic floor is unmeetable by construction — check before "met".
     if tol < fl:
@@ -449,8 +462,9 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
 
     if grid and all(g.converged for g in grid):
         return StopDecision("met",
-                            [f"all {len(grid)} grid q converged: the pooled master ω₀ interval "
-                             f"(inflation-calibrated) ≤ {tol:g} meV at each point"], per_q)
+                            [f"all {len(grid)} grid q converged: a certified ω₀ interval "
+                             f"(pooled master or best production fallback, inflation-calibrated) "
+                             f"≤ {tol:g} meV at each point"], per_q)
 
     reasons: list[str] = []
     spent = float(budget_state.get("spent", 0.0))

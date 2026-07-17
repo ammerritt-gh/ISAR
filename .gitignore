@@ -18,3 +18,4 @@ test_data/
 ISAR.code-workspace
 examples/
 .isar-local/
+.codex-validation/

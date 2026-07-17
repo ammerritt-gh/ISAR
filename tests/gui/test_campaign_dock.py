@@ -24,6 +24,7 @@ class _Ops:
 
     def __init__(self):
         self.drive_requests = []
+        self.compile_requests = []
         self.stop_requests = 0
         self.force_requests = 0
         self.running = False
@@ -35,11 +36,26 @@ class _Ops:
             drive_started = Signal()
             drive_finished = Signal(int, bool)
             activity_changed = Signal(object)
+            drive_compiled = Signal(object, str)
+            drive_compile_failed = Signal(str)
 
         self._sig = _Sig()
         self.drive_started = self._sig.drive_started
         self.drive_finished = self._sig.drive_finished
         self.activity_changed = self._sig.activity_changed
+        self.drive_compiled = self._sig.drive_compiled
+        self.drive_compile_failed = self._sig.drive_compile_failed
+
+    def request_drive_compile(self, opts, *, env=None):
+        self.compile_requests.append((opts, dict(env or {})))
+        objective = {"path": [[2, 0, 0], [2, 0.5, 0]], "target_branch": "optic",
+                     "target_label": "transverse optic", "energy_search_meV": [-2, 12],
+                     "tolerance_meV": 0.5,
+                     "budget": {"kind": "neutrons", "amount": 1e9}}
+        self.drive_compiled.emit({"schema": "isar.objective-envelope/1",
+                                  "objective": objective, "source": {"kind": "goal"}},
+                                 "frozen-objective.json")
+        return True
 
     def request_drive(self, opts, *, env=None):
         self.drive_requests.append((opts, dict(env or {})))
@@ -78,6 +94,7 @@ def dock_env(qtbot, make_ws):
     vm = CampaignViewModel(ws)
     ops = _Ops()
     dock = CampaignDock(vm, ops, store=None, llm_env=lambda: {"ISAR_LLM": "x"})
+    dock._confirm_objective = lambda _envelope: True
     qtbot.addWidget(dock)
     dock.show()          # isVisible() on children is meaningless under an unshown parent
     return dock, vm, ops, ws, root
@@ -107,10 +124,15 @@ def test_start_maps_form_to_drive_options_with_llm_env(dock_env):
     dock._seed.setValue(7)
     dock._max_iters.setValue(12)
     dock._start_btn.click()
+    assert len(ops.compile_requests) == 1
     assert len(ops.drive_requests) == 1
     opts, env = ops.drive_requests[0]
-    assert opts.goal == "map the branch" and opts.spec_path is None and not opts.resume_latest
-    assert opts.budget == "1e9n" and opts.seed == 7 and opts.max_iters == 12
+    compile_opts, compile_env = ops.compile_requests[0]
+    assert (compile_opts.goal == "map the branch" and compile_opts.spec_path is None
+            and compile_opts.budget == "1e9n")
+    assert compile_env == {"ISAR_LLM": "x"}
+    assert opts.envelope_path == "frozen-objective.json" and not opts.resume_latest
+    assert opts.budget is None and opts.seed == 7 and opts.max_iters == 12
     assert env == {"ISAR_LLM": "x"}
 
 
@@ -237,9 +259,11 @@ def test_running_status_is_one_based_with_the_launch_captured_cap(dock_env):
 def test_none_state_start_hands_off_instead_of_requesting(qtbot, dock_env, make_ws):
     # With NO workspace at all the reserve rebind would tear this dock down mid-click, so Start
     # must emit virtual_start_requested (window-owned sequence) and never call request_drive.
-    _dock, vm, ops, ws, root = dock_env
+    _dock, vm, _bound_ops, ws, root = dock_env
+    ops = _Ops()
     dock = CampaignDock(vm, ops, store=None, llm_env=lambda: {"ISAR_LLM": "x"},
                         workspace_state=lambda: "none")
+    dock._confirm_objective = lambda _envelope: True
     qtbot.addWidget(dock)
     dock.show()
     handed = []
@@ -250,7 +274,7 @@ def test_none_state_start_hands_off_instead_of_requesting(qtbot, dock_env, make_
     assert ops.drive_requests == []
     assert len(handed) == 1
     opts, env = handed[0]
-    assert opts.goal == "map the branch" and env == {"ISAR_LLM": "x"}
+    assert opts.envelope_path == "frozen-objective.json" and env == {"ISAR_LLM": "x"}
 
 
 def test_pending_running_status_names_the_coming_workspace(dock_env):
@@ -314,6 +338,31 @@ def test_feed_renders_and_filters_exceptions(dock_env):
     dock._exceptions_only.setChecked(True)
     assert dock._feed.count() == 1
     assert "proposal_clamped" in dock._feed.item(0).text()
+
+
+def test_feed_copy_selection_copy_all_and_save_text(dock_env, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication, QFileDialog
+
+    dock, vm, ops, ws, root = dock_env
+    path = root / "report" / "session_log.jsonl"
+    log_event(path, "decide", {"event": "campaign_start", "action": "campaign_start",
+                               "objective": {}, "source": {"kind": "goal", "sha256": "x"}})
+    log_event(path, "exception", {"action": "proposal_clamped", "iter": 0})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+
+    dock._feed.item(1).setSelected(True)
+    dock._copy_feed_selection()
+    assert "proposal_clamped" in QApplication.clipboard().text()
+    dock._copy_feed_all()
+    visible = "\n".join(dock._feed.item(i).text() for i in range(dock._feed.count()))
+    assert QApplication.clipboard().text() == visible
+
+    destination = tmp_path / "campaign-log.txt"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        lambda *_args, **_kwargs: (str(destination), "Text (*.txt)"))
+    dock._save_feed()
+    assert destination.read_text(encoding="utf-8") == visible + "\n"
 
 
 def test_form_round_trips_through_gui_store(qtbot, dock_env, tmp_path):

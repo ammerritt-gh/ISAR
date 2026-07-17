@@ -131,7 +131,8 @@ def points_in_window(e_lo: float, e_hi: float, e_step: float) -> int:
 
 
 def _energy_window(e_pred: float, fwhm: float, e_sigma: float = 0.0,
-                   *, survey: bool = False) -> tuple[float, float, float, int]:
+                   *, survey: bool = False,
+                   energy_search_meV=None) -> tuple[float, float, float, int]:
     """Build ``(e_lo, e_hi, e_step, n_points)`` from the predicted ω, the resolution FWHM, and the
     predictive uncertainty ``e_sigma`` on ω(q).
 
@@ -148,10 +149,13 @@ def _energy_window(e_pred: float, fwhm: float, e_sigma: float = 0.0,
     e_lo = -(e + LOW_MARGIN_MEV)
     e_hi = e + HIGH_RES_FACTOR * fwhm
     sig = float(e_sigma)
-    if survey:                                     # unconfirmed q → scan the whole plausible band
-        e_hi = max(e_hi, SURVEY_E_HI_MEV)
+    search_lo, search_hi = ((float(energy_search_meV[0]), float(energy_search_meV[1]))
+                            if energy_search_meV is not None else (-2.0, SURVEY_E_HI_MEV))
+    if survey:                                     # unconfirmed q → scan the configured plausible band
+        e_lo = min(e_lo, search_lo)
+        e_hi = max(e_hi, search_hi)
     elif math.isfinite(sig) and sig > fwhm:        # ω(q) not yet localized → survey e_pred + k·σ
-        e_hi = max(e_hi, min(e + SURVEY_SIGMA_K * sig, SURVEY_E_HI_MEV))
+        e_hi = max(e_hi, min(e + SURVEY_SIGMA_K * sig, search_hi))
     if e_hi <= e_lo:                               # defensive: never invert
         e_hi = e_lo + fwhm
     e_step = STEP_RES_FRACTION * fwhm
@@ -299,7 +303,9 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
     # Survey the band until this q has a confirmed resolved fit — a concave dispersion sits above the
     # local-linear e_pred, so a tight window on an unconfirmed q misses the peak and never seeds.
     survey = not bool(getattr(pick, "best_resolved", False))
-    e_lo, e_hi, e_step, n_points = _energy_window(e_pred, fwhm, e_sigma, survey=survey)
+    e_lo, e_hi, e_step, n_points = _energy_window(
+        e_pred, fwhm, e_sigma, survey=survey,
+        energy_search_meV=getattr(objective, "energy_search_meV", None))
     ncount = QUICKLOOK_NCOUNT if kind == "quicklook" else PRODUCTION_NCOUNT
 
     dc = float(n_points) * float(ncount)
