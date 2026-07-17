@@ -298,6 +298,11 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                   requires_crossing_guard=crossing_guard, max_production_batches=max_batches)
             for i in range(len(path))]
     for obs in observations:
+        # A classification probe may deliberately sit off the requested path.  Its branch evidence is
+        # retained elsewhere, but it must never seat or penalize a certification point — even when an
+        # unusually fine path places it within the nearest-hkl matching tolerance.
+        if obs.get("certification_eligible") is False or obs.get("driver_inserted") is True:
+            continue
         i = match_grid_index(tuple(obs["hkl"]), path)
         if i is None:
             continue

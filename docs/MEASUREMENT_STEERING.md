@@ -480,10 +480,9 @@ The confidence ladder maps directly onto ISAR's layers, mostly by *extending* wh
 - **L3 — falsification**: heuristic gate → evidence when ambiguous → demote + flag; model-averaged.
 - **Acquisition**: marginal-EIG-on-ω₀-per-second, exact-Poisson-likelihood but **sample-estimated** and
   **scan-level** (rank scan proposals), Fisher-screened, OCBA-stopped — replacing/augmenting the current
-  σ-deficit `_select_target`. *(Planned refinement, §4.1 item 7: the ranking gains the λ-weighted
-  branch-assignment-entropy term, character-aware opening moves and rival-covering energy windows —
-  the tight `e_pred + 1.5·FWHM` high side stops being unconditional — and the compiled path becomes
-  first-guess, with driver-inserted classification q that never seat convergence.)*
+  σ-deficit `_select_target`. *(Implemented branch slice, 2026-07-17: λ-weighted branch-assignment
+  information, character-aware opening moves, rival-covering windows, and purpose-tagged
+  driver-inserted classification q that never seat convergence.)*
 - **Engineering invariants (§4.4):** the data-cost / posterior-cost split, provenance-bearing normalised
   intensity, and the `fit_kind` tag are load-bearing — and their serializable schemas (descriptor,
   branch-prior point, `ScanContext` constraints, acquisition observation, report fields) are defined

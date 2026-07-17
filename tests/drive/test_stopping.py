@@ -96,6 +96,19 @@ def test_single_production_converges_when_master_degraded():
     assert st.evaluate_stop(obj, grid, _BUDGET).state == "met"
 
 
+def test_driver_inserted_observation_cannot_occupy_or_penalize_requested_q():
+    obj = _obj()
+    probe = _obs((2.10000001, 0.0, 0.0), "production", 0.01)
+    probe.update({"driver_inserted": True, "certification_eligible": False,
+                  "proposal_cost": 1234.0})
+    first = st.summarize_grid(obj, [probe])[0]
+    assert first.n_production == 0
+    assert first.n_decline == 0
+    assert first.counts_spent == 0.0
+    assert first.best_prod_halfwidth is None
+    assert not first.visited and not first.converged
+
+
 # --------------------------------------------------------------------------- S3 uncertifiable state
 def test_unreliable_best_prod_does_not_converge():
     # The mid-zone hole (§5.3): a usable single-production fit with an UNCERTIFIABLE interval

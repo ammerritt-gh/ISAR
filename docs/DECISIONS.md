@@ -103,7 +103,7 @@ explicitly reopened; "future" means designed-for but not v1.
   the prior painted in (circularity). The acoustic zone anchor migrates to this form.
   Classification likelihoods and occupancy counts use real anchors only. Zone-centre energy
   priors are half-normal (non-negative).
-- **O9.** (2026-07-17, Planned) **Path is first-guess.** The driver may insert/extend q without
+- **O9.** (2026-07-17, Implemented) **Path is first-guess.** The driver may insert/extend q without
   restriction when classification value warrants, each logged as driver-inserted with a
   machine-readable purpose. The compiled user path remains the certification set;
   driver-inserted q never seat convergence.

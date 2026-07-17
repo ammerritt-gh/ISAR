@@ -1,4 +1,6 @@
 """The acquisition function: target selection, escalation ladder, and the energy-window rule."""
+import math
+
 import pytest
 
 from isar.drive.acquisition import model as acq_model
@@ -171,3 +173,67 @@ def test_hypothesis_scan_respects_frozen_point_cap():
     assert acq.points_in_window(
         proposal.e_lo, proposal.e_hi, proposal.e_step,
         max_points=proposal.meta["max_scan_points"]) == 24
+
+
+def test_higher_value_classification_probe_can_leave_certification_segment():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    obj = ObjectiveSpec.segment(q_start=(2, 0, 0), q_end=(2, 0.2, 0), step_rlu=0.1,
+                                tolerance_meV=0.5,
+                                budget={"kind": "neutrons", "amount": 1e12},
+                                target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    observations = [_obs(tuple(point), "quicklook", 0.8, omega0=6.0) for point in obj.path]
+    from isar.drive.supervisor.stopping import model_points, summarize_grid
+    model = acq_model.fit(model_points(summarize_grid(obj, observations)))
+
+    def classification_value(candidate):
+        return 1.0 if candidate.hkl[1] <= 0.2 + 1e-9 else 2.0
+
+    proposal = acq.propose_scan(
+        obj, model, observations, {"fwhm_dE": 0.5}, {}, classify=classification_value)
+    assert proposal.h == 2.0 and proposal.k > 0.2
+    assert proposal.meta["driver_inserted"] is True
+    assert proposal.meta["certification_eligible"] is False
+    assert proposal.meta["purpose"] == proposal.meta["insertion_purpose"] == "differentiate"
+
+    # Persisted evidence at that Q makes resume advance to a different candidate, never repeat it.
+    observations.append(_obs((proposal.h, proposal.k, proposal.l), "quicklook", 0.8, omega0=6.0))
+    resumed = acq.propose_scan(
+        obj, model, observations, {"fwhm_dE": 0.5}, {}, classify=classification_value)
+    assert (resumed.h, resumed.k, resumed.l) != (proposal.h, proposal.k, proposal.l)
+
+
+def test_driver_insertion_stays_clear_of_extremely_fine_certification_grid():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    obj = ObjectiveSpec.segment(q_start=(2, 0, 0), q_end=(2, 0.00005, 0), step_rlu=0.00005,
+                                tolerance_meV=0.5,
+                                budget={"kind": "neutrons", "amount": 1e12},
+                                target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    observations = [_obs(tuple(point), "quicklook", 0.8, omega0=6.0) for point in obj.path]
+    from isar.drive.supervisor.stopping import model_points, summarize_grid
+    model = acq_model.fit(model_points(summarize_grid(obj, observations)))
+    proposal = acq.propose_scan(
+        obj, model, observations, {"fwhm_dE": 0.5}, {}, classify=lambda _candidate: 2.0)
+    assert proposal is not None
+    assert proposal.meta["driver_inserted"] is False
+    assert any(math.dist((proposal.h, proposal.k, proposal.l), tuple(point)) <= 1e-4
+               for point in obj.path)
+
+
+def test_driver_insertion_requires_finite_requested_grid_comparison():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    obj = ObjectiveSpec.segment(q_start=(2, 0, 0), q_end=(2, 0.2, 0), step_rlu=0.1,
+                                tolerance_meV=0.5,
+                                budget={"kind": "neutrons", "amount": 1e12},
+                                target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    observations = [_obs(tuple(point), "quicklook", 0.8, omega0=6.0) for point in obj.path]
+    from isar.drive.supervisor.stopping import model_points, summarize_grid
+    model = acq_model.fit(model_points(summarize_grid(obj, observations)))
+
+    def classification_value(candidate):
+        on_grid = any(math.dist(candidate.hkl, tuple(point)) <= 1e-4 for point in obj.path)
+        return float("nan") if on_grid else 2.0
+
+    proposal = acq.propose_scan(
+        obj, model, observations, {"fwhm_dE": 0.5}, {}, classify=classification_value)
+    assert proposal is not None
+    assert proposal.meta["driver_inserted"] is False

@@ -17,6 +17,7 @@ import types
 import isar.drive.loop as loop_mod
 from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_point_count,
                              _campaign_summary,
+                             _declined_observation,
                              _executed_point_count, _feasible_point_count,
                              _errors_arg_for, _errors_tier_for, _extract_max_points, _full_tier,
                              _guard_point_count,
@@ -738,6 +739,61 @@ def test_resume_state_attributes_per_row_kinds_not_hkl_lock(tmp_path):
     cost_rows = [o for o in obs if o["proposal_cost"] > 0]
     assert len(cost_rows) == 1 and cost_rows[0]["kind"] == "production"
     assert sum(o["proposal_cost"] for o in obs) == pytest.approx(5.0e8 + 6.0e9 + 7.0e9)
+
+
+def test_resume_state_restores_driver_inserted_certification_provenance(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    log_event(log, "run", {
+        "job_id": "probe", "state": "done", "eta": {"estimated_seconds": 1.0},
+        "kind": "quicklook", "ncount": QUICKLOOK_NCOUNT, "n_points": 20,
+        "hkl": [2.15, 0.0, 0.0], "cost": 2.0e8,
+        "driver_inserted": True, "certification_eligible": False,
+        "insertion_purpose": "differentiate",
+    })
+    _write_results(ws, [{"scan": 1, "detector": "det", "h": 2.15, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "verdict": "resolved", "disposition": "resolved",
+                         "omega0": 6.0, "interval_lo": 5.8, "interval_hi": 6.2,
+                         "interval_reliable": True}])
+    resumed = _resume_state(ws, log, _UNITY_CAL)
+    assert len(resumed["observations"]) == 1
+    observation = resumed["observations"][0]
+    assert observation["driver_inserted"] is True
+    assert observation["certification_eligible"] is False
+
+
+def test_declined_inserted_observation_keeps_noncertification_provenance():
+    proposal = _scan_proposal(1.0, 2.0, 0.1)
+    proposal.meta.update({"driver_inserted": True, "certification_eligible": False,
+                          "insertion_purpose": "differentiate"})
+    observation = _declined_observation(proposal, "validation_rejected")
+    assert observation["driver_inserted"] is True
+    assert observation["certification_eligible"] is False
+
+
+def test_resume_keeps_nearby_probe_provenance_ledgers_distinct(tmp_path):
+    ws = tmp_path / "ws-nearby"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    for job_id, h, inserted in (("probe", 2.15001, True), ("grid", 2.15004, False)):
+        log_event(log, "run", {
+            "job_id": job_id, "state": "done", "kind": "quicklook",
+            "ncount": QUICKLOOK_NCOUNT, "n_points": 20, "hkl": [h, 0.0, 0.0],
+            "cost": 2.0e8, "driver_inserted": inserted,
+            "certification_eligible": not inserted,
+        })
+    base = {"detector": "det", "k": 0.0, "l": 0.0, "status": "fitted",
+            "verdict": "resolved", "disposition": "resolved", "omega0": 6.0,
+            "interval_lo": 5.8, "interval_hi": 6.2, "interval_reliable": True}
+    _write_results(ws, [{"scan": 1, "h": 2.15001, **base},
+                        {"scan": 2, "h": 2.15004, **base}])
+    observations = _resume_state(ws, log, _UNITY_CAL)["observations"]
+    by_h = {round(observation["hkl"][0], 5): observation for observation in observations}
+    assert by_h[2.15001]["driver_inserted"] is True
+    assert by_h[2.15001]["certification_eligible"] is False
+    assert by_h[2.15004]["driver_inserted"] is False
+    assert by_h[2.15004]["certification_eligible"] is True
 
 
 def test_cold_workspace_resumes_to_fresh(tmp_path):

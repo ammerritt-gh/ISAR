@@ -207,6 +207,79 @@ def _finite_or_none(x) -> float | None:
     return float(x) if x is not None and math.isfinite(x) else None
 
 
+def _driver_inserted_candidate(objective, grid: list[GridQ], observations: list[dict],
+                               classify) -> GridQ | None:
+    """Choose one deterministic classification probe outside the certification grid.
+
+    The operator path remains the complete certification set.  After every requested point has at
+    least a quicklook, O9 permits a higher-classification-value midpoint or segment extension to win
+    one scan.  Already observed inserted points are skipped, so resume cannot repeat the same probe.
+    """
+    if classify is None or not getattr(objective, "hypotheses", None) or len(grid) < 2:
+        return None
+    if not all(g.visited for g in grid):
+        return None
+
+    path = [tuple(map(float, point)) for point in objective.path]
+    scalars = [0.0]
+    for left, right in zip(path, path[1:]):
+        scalars.append(scalars[-1] + math.sqrt(sum((b - a) ** 2 for a, b in zip(left, right))))
+    candidates: list[tuple[tuple[float, float, float], float]] = []
+    for i, (left, right) in enumerate(zip(path, path[1:])):
+        candidates.append((tuple((a + b) / 2.0 for a, b in zip(left, right)),
+                           (scalars[i] + scalars[i + 1]) / 2.0))
+    first_delta = tuple(b - a for a, b in zip(path[0], path[1]))
+    last_delta = tuple(b - a for a, b in zip(path[-2], path[-1]))
+    # Multiple deterministic extension shells make the authority genuinely able to leave the
+    # requested segment; acquisition value, not a special-case branch rule, chooses among them.
+    for shell in (1.0, 2.0, 3.0):
+        candidates.append((tuple(a - shell * d for a, d in zip(path[0], first_delta)),
+                           scalars[0] - shell * (scalars[1] - scalars[0])))
+        candidates.append((tuple(a + shell * d for a, d in zip(path[-1], last_delta)),
+                           scalars[-1] + shell * (scalars[-1] - scalars[-2])))
+
+    observed = [tuple(map(float, row["hkl"])) for row in observations
+                if isinstance(row.get("hkl"), (list, tuple)) and len(row["hkl"]) == 3]
+    transient = []
+    seen_candidates: set[tuple[float, float, float]] = set()
+    differentiation = (getattr(objective, "steering", None) or {}).get(
+        "differentiation_tolerance_meV")
+    differentiation = (float(differentiation) if differentiation is not None
+                       else 3.0 * float(objective.tolerance_meV))
+    for offset, (hkl, q) in enumerate(candidates):
+        identity = tuple(round(value, 12) for value in hkl)
+        if identity in seen_candidates:
+            continue
+        seen_candidates.add(identity)
+        # Keep a hard geometric separation from every certification point.  Explicit provenance is
+        # still the authoritative gate, but this also prevents a pooled off-path result from being
+        # nearest-matched to an extremely fine requested grid after resume.
+        if any(math.dist(hkl, requested) <= 1e-4 for requested in path):
+            continue
+        if any(math.dist(hkl, old) <= 1e-4 for old in observed):
+            continue
+        transient.append(GridQ(index=len(grid) + offset, hkl=hkl, q=q,
+                               tolerance=differentiation))
+    if not transient:
+        return None
+
+    def classification_value(candidate: GridQ) -> float:
+        value = float(classify(candidate))
+        # The provider estimates mutual information, whose support is non-negative.  Tiny negative
+        # numerical artifacts carry no information and must not make another candidate look valuable.
+        return max(value, 0.0) if math.isfinite(value) else float("-inf")
+
+    inserted_scores = [(classification_value(candidate), candidate) for candidate in transient]
+    inserted_value, best = max(inserted_scores, key=lambda item: item[0])
+    requested_value = max(classification_value(candidate) for candidate in grid)
+    # An inserted probe may win only by a real comparison.  If the classification provider cannot
+    # score any requested point, fall back to ordinary target acquisition rather than interpreting
+    # missing/non-finite grid evidence as permission to leave the path.
+    if not math.isfinite(requested_value) or inserted_value <= requested_value + 1e-12:
+        return None
+    return best
+
+
 def _select_target(grid: list[GridQ], model, *,
                    fisher=None, opening=None, classify=None,
                    classification_weight: float = 0.0) -> tuple[GridQ | None, str, str, ProposalScore | None]:
@@ -347,11 +420,19 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
                 return (0 if mu >= DEFAULT_FWHM_MEV else 1, g.q, g.index)
     policy = dict(getattr(objective, "steering", {}) or {})
     classification_weight = float(policy.get("classification_weight", 0.0))
+    inserted = _driver_inserted_candidate(objective, grid, results_so_far or [], classify)
+    if inserted is not None:
+        grid = [*grid, inserted]
     pick, kind, reason, score = _select_target(
         grid, model, fisher=fisher, opening=opening, classify=classify,
         classification_weight=classification_weight)
     if pick is None:
         return None
+    driver_inserted = not any(math.dist(pick.hkl, tuple(point)) <= 1e-4 for point in objective.path)
+    if driver_inserted:
+        reason = (f"driver-inserted classification probe q={pick.q:g} (hkl={list(pick.hkl)}); "
+                  "higher expected branch-information value than every certification point")
+        score = replace(score, reason=reason, purpose="differentiate")
 
     e_pred, e_sigma = model.predict(pick.q)
     h, k, l = pick.hkl
@@ -391,6 +472,9 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
         reason=reason, e_pred=float(e_pred), fwhm_dE=float(fwhm), n_points=n_points,
         meta={"e_sigma": _finite_or_none(e_sigma), "q": pick.q, "score": score.to_dict(),
               "purpose": score.purpose, "widen_factor": widen,
+              "driver_inserted": driver_inserted,
+              "certification_eligible": not driver_inserted,
+              "insertion_purpose": "differentiate" if driver_inserted else None,
               "max_scan_points": int(policy.get("max_scan_points", MAX_POINTS)),
               "target_band": list(target_band) if target_band is not None else None,
               "rival_band": list(rb) if rb is not None else None,

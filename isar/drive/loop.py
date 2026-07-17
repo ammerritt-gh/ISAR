@@ -447,7 +447,8 @@ def _calibrated_hw(row: dict, calibration: Calibration, bucket: str) -> float | 
 
 
 def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibration,
-                          proposal_cost: float = 0.0) -> dict:
+                          proposal_cost: float = 0.0, *, driver_inserted: bool = False,
+                          certification_eligible: bool = True) -> dict:
     disp = row.get("disposition")
     verdict = row.get("verdict")
     # `flagged` (model_incomplete) still carries a usable ω₀ — for an ω₀-tolerance objective the flag
@@ -480,6 +481,11 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         "omega0": row.get("omega0"), "scan": row.get("scan"), "detector": row.get("detector"),
         "proposal_cost": float(proposal_cost), "fit_kind": row.get("fit_kind"),
         "branch_id": row.get("branch_id"),   # Phase A: only acoustic (or null) rows steer ω(q)
+        # Driver-inserted probes inform branch classification but never occupy a requested grid point
+        # or contribute to its production/certification counters.  Persisted run-event provenance
+        # restores these flags after a crash rather than relying on an hkl-nearness inference.
+        "driver_inserted": bool(driver_inserted),
+        "certification_eligible": bool(certification_eligible),
     }
 
 
@@ -648,11 +654,17 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
     row when the q has one (``summarize_grid`` reads cost>0 rows to set ``last_prod_cost``), else the
     first row (quicklook-only q). A cold workspace (no log / no results.csv) returns the fresh-start
     tuple."""
+    def resume_hkl_key(hkl) -> tuple:
+        # Preserve enough precision to keep nearby diagnostic probes distinct while absorbing only
+        # serialization-level float noise.  Four decimals merged legitimate sub-1e-4 scan points.
+        return tuple(round(float(x), 8) for x in hkl)
+
     runs = [e.get("payload", {}) for e in read_log(log_path) if e.get("kind") == "run"]
     scan_counter = len(runs)                        # one run event per submitted scan
     neutrons = seconds = 0.0
     cost_by_hkl: dict = {}
     kinds_by_hkl: dict = {}                         # per-q kind ledger, in submission order
+    provenance_by_hkl: dict = {}                    # aligned driver-insertion/certification ledger
     ncount_by_hkl: dict = {}
     for r in runs:
         cost = float(r.get("cost")) if r.get("cost") is not None else 0.0
@@ -663,9 +675,13 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
         hkl = r.get("hkl")
         if hkl is None:
             continue
-        key = tuple(round(float(x), 4) for x in hkl)
+        key = resume_hkl_key(hkl)
         cost_by_hkl[key] = cost_by_hkl.get(key, 0.0) + cost
         kinds_by_hkl.setdefault(key, []).append(r.get("kind") or "production")
+        provenance_by_hkl.setdefault(key, []).append({
+            "driver_inserted": bool(r.get("driver_inserted", False)),
+            "certification_eligible": bool(r.get("certification_eligible", True)),
+        })
         ncount_by_hkl[key] = r.get("ncount") or ncount_by_hkl.get(key)
 
     reconciliations = [e.get("payload", {}) for e in read_log(log_path)
@@ -678,7 +694,7 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
         seconds += seconds_delta
         hkl = reconciliation.get("hkl")
         if hkl is not None:
-            key = tuple(round(float(x), 4) for x in hkl)
+            key = resume_hkl_key(hkl)
             cost_by_hkl[key] = cost_by_hkl.get(key, 0.0) + neutron_delta
 
     try:
@@ -693,22 +709,27 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
     # old quicklook. A ledger shorter than the rows defaults the leading rows to "production", as before.
     count_by_hkl: dict = {}
     for row in result_rows:
-        key = tuple(round(float(x), 4) for x in _row_hkl(row))
+        key = resume_hkl_key(_row_hkl(row))
         count_by_hkl[key] = count_by_hkl.get(key, 0) + 1
     row_kinds: list = []
+    row_provenance: list[dict] = []
     cursor: dict = {}
     for row in result_rows:
-        key = tuple(round(float(x), 4) for x in _row_hkl(row))
+        key = resume_hkl_key(_row_hkl(row))
         ledger = kinds_by_hkl.get(key, [])
         i = cursor.get(key, 0)
         li = (len(ledger) - count_by_hkl[key]) + i     # tail-align rows against the per-q ledger
         row_kinds.append(ledger[li] if 0 <= li < len(ledger) else "production")
+        provenance = provenance_by_hkl.get(key, [])
+        row_provenance.append(provenance[li] if 0 <= li < len(provenance) else {
+            "driver_inserted": False, "certification_eligible": True,
+        })
         cursor[key] = i + 1
     # Choose the row each q's summed cost lands on: the first PRODUCTION row if the q has one, else its
     # first row (stamping the full sum onto a quicklook row would mis-set last_prod_cost).
     cost_target: dict = {}
-    for idx, (row, kind) in enumerate(zip(result_rows, row_kinds)):
-        key = tuple(round(float(x), 4) for x in _row_hkl(row))
+    for idx, (row, kind, provenance) in enumerate(zip(result_rows, row_kinds, row_provenance)):
+        key = resume_hkl_key(_row_hkl(row))
         if key not in cost_target:
             cost_target[key] = idx
         elif kind in PRODUCTION_KINDS and row_kinds[cost_target[key]] not in PRODUCTION_KINDS:
@@ -717,11 +738,12 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
     observations: list[dict] = []
     consumed: set = set()
     scan_kind: dict = {}
-    for idx, (row, kind) in enumerate(zip(result_rows, row_kinds)):
-        key = tuple(round(float(x), 4) for x in _row_hkl(row))
+    for idx, (row, kind, provenance) in enumerate(zip(result_rows, row_kinds, row_provenance)):
+        key = resume_hkl_key(_row_hkl(row))
         ncount = int(ncount_by_hkl.get(key) or PRODUCTION_NCOUNT)
         pc = cost_by_hkl.get(key, 0.0) if cost_target.get(key) == idx else 0.0
-        observations.append(_observation_from_row(row, kind, ncount, calibration, proposal_cost=pc))
+        observations.append(_observation_from_row(
+            row, kind, ncount, calibration, proposal_cost=pc, **provenance))
         sd = (row.get("scan"), row.get("detector"))
         consumed.add(sd)
         scan_kind[sd] = (kind, ncount)
@@ -942,9 +964,12 @@ def _declined_observation(proposal, verdict: str) -> dict:
     """The observation appended when a proposed scan yields no fit — validation rejected it, or the
     scan job never reached ``done``. Identical shape at both sites; only ``verdict`` differs
     (``"validation_rejected"`` vs the terminal job state)."""
+    meta = proposal.meta or {}
     return {"hkl": (proposal.h, proposal.k, proposal.l), "kind": proposal.kind,
             "calibrated_halfwidth": None, "resolved": False, "disposition": "declined",
-            "verdict": verdict, "omega0": None}
+            "verdict": verdict, "omega0": None,
+            "driver_inserted": bool(meta.get("driver_inserted", False)),
+            "certification_eligible": bool(meta.get("certification_eligible", True))}
 
 
 def _persist_campaign_target(workspace: Path, objective) -> None:
@@ -1088,6 +1113,12 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                                     "requested_points": int(proposal.n_points or 0),
                                     "n_points": feasible_points,
                                     "hkl": [proposal.h, proposal.k, proposal.l],
+                                    "driver_inserted": bool((proposal.meta or {}).get(
+                                        "driver_inserted", False)),
+                                    "certification_eligible": bool((proposal.meta or {}).get(
+                                        "certification_eligible", True)),
+                                    "insertion_purpose": (proposal.meta or {}).get(
+                                        "insertion_purpose"),
                                     "cost": float(feasible_points) * float(proposal.ncount),
                                     "iter": it})
 
@@ -1160,7 +1191,10 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             for j, r in enumerate(rows):
                 observations.append(_observation_from_row(
                     r, proposal.kind, proposal.ncount, cfg.calibration,
-                    proposal_cost=scan_cost if j == 0 else 0.0))
+                    proposal_cost=scan_cost if j == 0 else 0.0,
+                    driver_inserted=bool((proposal.meta or {}).get("driver_inserted", False)),
+                    certification_eligible=bool((proposal.meta or {}).get(
+                        "certification_eligible", True))))
                 scan_kind[(r.get("scan"), r.get("detector"))] = (proposal.kind, proposal.ncount)
             _m["n_rows"] = len(rows)
         # Embed the subprocess stage-timing snapshot (best-effort) + the folded rows' outcomes.
