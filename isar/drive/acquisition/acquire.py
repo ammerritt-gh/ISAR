@@ -432,7 +432,12 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
     if driver_inserted:
         reason = (f"driver-inserted classification probe q={pick.q:g} (hkl={list(pick.hkl)}); "
                   "higher expected branch-information value than every certification point")
-        score = replace(score, reason=reason, purpose="differentiate")
+        classification = max(float(classify(pick)), 0.0)
+        combined = ((score.eig or 0.0) + classification_weight * classification)
+        score = replace(score, reason=reason, purpose="differentiate",
+                        classification_eig=_finite_or_none(classification),
+                        classification_weight=classification_weight,
+                        combined_information=_finite_or_none(combined))
 
     e_pred, e_sigma = model.predict(pick.q)
     h, k, l = pick.hkl

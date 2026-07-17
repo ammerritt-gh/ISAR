@@ -26,9 +26,10 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
                              _run_nonce, _target_supporting_feasible_points, _validate_body,
                              run_campaign)
 from isar.drive.acquisition.acquire import ScanProposal, points_in_window
-from isar.drive.objective import ObjectiveSpec
+from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
 from isar.drive.session_log import log_event, read_log
 from isar.drive.supervisor.stopping import PRODUCTION_NCOUNT, QUICKLOOK_NCOUNT
+from isar.schema.hypotheses import content_fingerprint
 
 _UNITY_CAL = Calibration.from_dict({"inflation": 1.0, "buckets": [], "center_pull_mean": 0.0})
 
@@ -206,6 +207,140 @@ def make_mock_runner(omega_true, *, window_gate=True, hesse_only=False, blank_me
             w.writeheader()
             for r in rows:
                 w.writerow({c: r.get(c) for c in cols})
+    return runner
+
+
+class BranchAwareOpticTavi(MockTavi):
+    """Deterministic two-branch spectrum: acoustic rises from zero; optic stays near 6 meV."""
+
+    @staticmethod
+    def optic(k):
+        return 6.0 + 0.4 * float(k)
+
+    @staticmethod
+    def acoustic(k):
+        return 12.0 * abs(float(k))
+
+    def get_scan_data(self, job_id):
+        body = self.jobs[job_id]
+        params = body["parameters"]
+        grid = _parse_grid(params["scan_command1"])
+        optic = self.optic(params["K"])
+        acoustic = self.acoustic(params["K"])
+        counts = [1.0 + 75.0 * _math.exp(-((energy - optic) / 0.35) ** 2)
+                  + 120.0 * _math.exp(-((energy - acoustic) / 0.30) ** 2)
+                  for energy in grid]
+        return {"job_id": job_id, "state": "done",
+                "result": {"counts": counts, "scan_values_1": grid},
+                "launch": {"parameters": params}}
+
+
+def make_branch_aware_optic_runner(objective):
+    """Analysis seam for the orchestration regression, with durable two-branch beliefs."""
+    assigned: dict[str, int] = {}
+    priors = {row["name"]: row for row in objective.hypotheses}
+    if not {"optic", "acoustic"} <= set(priors):
+        raise AssertionError("two-branch optic fixture requires optic and acoustic hypotheses")
+
+    def runner(workspace, data_paths, **_kwargs):
+        data_dir = Path(data_paths[0])
+        rows = []
+        production: dict[tuple[str, float, float, float], list[int]] = {}
+        anchors = {"optic": {}, "acoustic": {}}
+        for path in sorted(data_dir.glob("*.json")):
+            document = json.loads(path.read_text(encoding="utf-8"))
+            params = document.get("launch", {}).get("parameters", {})
+            h, k, l = map(float, (params["H"], params["K"], params["L"]))
+            ncount = int(params["number_neutrons"])
+            if path.stem not in assigned:
+                assigned[path.stem] = len(assigned) + 1
+            scan_id = assigned[path.stem]
+            energy_grid = _parse_grid(params["scan_command1"])
+            optic = BranchAwareOpticTavi.optic(k)
+            acoustic = BranchAwareOpticTavi.acoustic(k)
+            for branch_id, energy in (("optic", optic), ("acoustic", acoustic)):
+                if energy_grid[0] <= energy <= energy_grid[-1]:
+                    anchors[branch_id][round(k, 8)] = {
+                        "u": k, "omega0": energy, "weight": 0.05,
+                    }
+            optic_contained = energy_grid[0] <= optic <= energy_grid[-1]
+            optic_row = {"scan": scan_id, "detector": "det-optic", "h": h, "k": k, "l": l,
+                         "status": "fitted", "interval_reliable": True, "branch_id": "optic"}
+            if not optic_contained:
+                optic_row.update({"verdict": "no_signal", "disposition": "declined", "omega0": None,
+                                  "interval_lo": None, "interval_hi": None,
+                                  "reasons": "optic peak outside window"})
+            else:
+                halfwidth = 0.6 if ncount <= QUICKLOOK_NCOUNT else 0.3
+                optic_row.update({"verdict": "resolved", "disposition": "resolved", "omega0": optic,
+                                  "interval_lo": optic - halfwidth, "interval_hi": optic + halfwidth,
+                                  "confidence": 0.95, "reasons": "optic branch resolved"})
+                if ncount > QUICKLOOK_NCOUNT:
+                    production.setdefault(("optic", h, k, l), []).append(scan_id)
+            rows.append(optic_row)
+
+            # A second resolved candidate models the stronger acoustic peak in the same spectrum.  It
+            # is intentionally present in results.csv so branch filtering—not fixture omission—keeps
+            # it out of optic certification and the final dispersion.
+            if energy_grid[0] <= acoustic <= energy_grid[-1]:
+                halfwidth = 0.5 if ncount <= QUICKLOOK_NCOUNT else 0.25
+                rows.append({
+                    "scan": scan_id, "detector": "det-acoustic", "h": h, "k": k, "l": l,
+                    "status": "fitted", "interval_reliable": True, "branch_id": "acoustic",
+                    "verdict": "resolved", "disposition": "resolved", "omega0": acoustic,
+                    "interval_lo": acoustic - halfwidth, "interval_hi": acoustic + halfwidth,
+                    "confidence": 0.97, "reasons": "strong acoustic branch resolved",
+                })
+                if ncount > QUICKLOOK_NCOUNT:
+                    production.setdefault(("acoustic", h, k, l), []).append(scan_id)
+
+        master_scan = 9_100_000
+        for (branch_id, h, k, l), members in sorted(production.items()):
+            energy = (BranchAwareOpticTavi.optic(k) if branch_id == "optic"
+                      else BranchAwareOpticTavi.acoustic(k))
+            halfwidth = (0.3 if branch_id == "optic" else 0.25) / _math.sqrt(len(members))
+            rows.append({
+                "scan": master_scan, "detector": f"det-{branch_id}", "h": h, "k": k, "l": l,
+                "status": "fitted", "verdict": "resolved", "disposition": "resolved",
+                "omega0": energy, "interval_lo": energy - halfwidth,
+                "interval_hi": energy + halfwidth, "interval_reliable": True,
+                "pooled": True, "n_members": len(members),
+                "members": ";".join(map(str, members)), "branch_id": branch_id,
+                "confidence": 0.95, "reasons": f"pooled {branch_id} master",
+            })
+            master_scan += 1
+
+        report = Path(workspace) / "report"
+        report.mkdir(parents=True, exist_ok=True)
+        columns = ["scan", "detector", "h", "k", "l", "status", "verdict", "disposition",
+                   "confidence", "omega0", "interval_lo", "interval_hi", "interval_reliable",
+                   "pooled", "n_members", "members", "branch_id", "reasons"]
+        with open(report / "results.csv", "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=columns)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({column: row.get(column) for column in columns})
+
+        belief_models = []
+        flat_beliefs = []
+        for branch_id in ("optic", "acoustic"):
+            branch_anchors = [anchors[branch_id][key] for key in sorted(anchors[branch_id])]
+            belief_models.append({
+                "sample": "Al_phonon_DFT", "t_bin": 200.0, "branch_id": branch_id,
+                "anchors": branch_anchors, "n_anchors": len(branch_anchors), "period": None,
+                "parameter_prior": priors[branch_id],
+            })
+            flat_beliefs.append({
+                "sample": "Al_phonon_DFT", "t_bin": 200.0, "branch_id": branch_id,
+                "label_probabilities": {branch_id: 0.95},
+                "p_is_target": 0.95 if branch_id == "optic" else 0.05,
+                "n_anchors": len(branch_anchors),
+            })
+        (Path(workspace) / "card.state.json").write_text(json.dumps({
+            "schema_version": 1, "branch_belief_models": belief_models,
+            "branch_belief": flat_beliefs, "dispersion_prior": [],
+        }, indent=2), encoding="utf-8")
+
     return runner
 
 
@@ -542,6 +677,83 @@ def test_campaign_reaches_met(tmp_path):
     assert len(summary["dispersion"]) == 4
     # The campaign summary file was written.
     assert (ws / "report" / "campaign_summary.json").exists()
+
+
+def test_optic_campaign_tracks_target_amid_acoustic_distractor_deterministically(
+        tmp_path, monkeypatch):
+    """End-to-end steering regression for the failure that motivated branch-aware campaigns."""
+    _no_subprocess(monkeypatch)
+
+    def execute(root):
+        frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+        frozen["steering"] = {**frozen["steering"],
+                              "differentiation_tolerance_meV": 1.2}
+        frozen["hypothesis_fingerprint"] = content_fingerprint(
+            frozen["hypotheses"], frozen["steering"])
+        objective = ObjectiveSpec.segment(
+            q_start=(2.0, 0.0, 0.0), q_end=(2.0, 0.5, 0.0), step_rlu=0.1,
+            tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 2.0e12},
+            name="optic-two-branch", target_branch="optic", target_label="transverse optic",
+            energy_search_meV=(-2.0, 12.0), **frozen)
+        client = BranchAwareOpticTavi(lambda _h: 0.0)
+        summary, workspace = _run(
+            root, objective, client, make_branch_aware_optic_runner(objective), max_iters=60)
+        events = read_log(summary["session_log"])
+        proposals = [event["payload"] for event in events if event["kind"] == "propose"]
+        return summary, proposals, workspace
+
+    first_summary, first_proposals, first_workspace = execute(tmp_path / "first")
+    second_summary, second_proposals, _ = execute(tmp_path / "second")
+
+    # Optic campaigns begin at Γ and never waste the first scan on the Bragg/elastic position.
+    first = first_proposals[0]
+    assert first["hkl"] == [2.0, 0.0, 0.0]
+    assert first["e_lo"] > 0.0 and first["e_lo"] < 6.0 < first["e_hi"]
+
+    # The resolved dispersion stays on the ~6 meV optic branch; the strong acoustic distractor rises
+    # from zero to 6 meV but never becomes the reported target (no acoustic/optic sawtooth).
+    energies = [row["omega0"] for row in first_summary["dispersion"]]
+    assert len(energies) == 6 and min(energies) >= 5.9
+    assert all(abs(right - left) < 0.2 for left, right in zip(energies, energies[1:]))
+    with open(first_workspace / "report" / "results.csv", newline="", encoding="utf-8") as handle:
+        result_rows = list(csv.DictReader(handle))
+    assert any(row["branch_id"] == "acoustic" and row["disposition"] == "resolved"
+               for row in result_rows)
+    assert any(float(row["omega0"] or 0.0) < 5.0 for row in result_rows
+               if row["branch_id"] == "acoustic")
+
+    # Once requested points are seeded, at least one explicitly non-certifying probe wins on branch
+    # information and exposes the MI in its score; rival support also reaches the scan window.
+    inserted = [proposal for proposal in first_proposals
+                if proposal["meta"].get("driver_inserted")]
+    assert inserted
+    assert all(not proposal["meta"]["certification_eligible"] for proposal in inserted)
+    assert any((proposal["meta"]["score"].get("classification_eig") or 0.0) > 0.0
+               for proposal in inserted)
+    assert any(proposal["meta"].get("rival_band") is not None for proposal in first_proposals[1:])
+
+    # Branch beliefs survive into the human/machine terminal artifact, and terminal success is honest:
+    # every requested point—not a diagnostic probe—is converged.
+    assert {row["branch_id"] for row in first_summary["branch_beliefs"]} == {"optic", "acoustic"}
+    assert first_summary["stop"]["state"] == "met"
+    assert all(row["converged"] for row in first_summary["grid"])
+    final_events = read_log(first_summary["session_log"])
+    assert len([event for event in final_events
+                if event["kind"] == "certification_crossing"]) >= 2 * len(first_summary["grid"])
+    assert not any(event["kind"] == "exception"
+                   and (event.get("payload") or {}).get("action") == "certify_regression"
+                   for event in final_events)
+    persisted = json.loads(
+        (first_workspace / "report" / "campaign_summary.json").read_text(encoding="utf-8"))
+    assert persisted["stop"]["state"] == "met" and persisted["branch_beliefs"]
+
+    # Fixed objective, spectra, priors, and seed produce the same acquisition sequence on a fresh run.
+    signature = lambda proposals: [
+        (tuple(proposal["hkl"]), proposal["kind"], proposal["meta"].get("driver_inserted"),
+         round(proposal["e_lo"], 8), round(proposal["e_hi"], 8))
+        for proposal in proposals]
+    assert signature(second_proposals) == signature(first_proposals)
+    assert second_summary["stop"]["state"] == first_summary["stop"]["state"]
 
 
 def test_session_log_shows_propose_analyze_decide_stop_chain(tmp_path):

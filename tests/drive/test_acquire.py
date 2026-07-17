@@ -194,6 +194,8 @@ def test_higher_value_classification_probe_can_leave_certification_segment():
     assert proposal.meta["driver_inserted"] is True
     assert proposal.meta["certification_eligible"] is False
     assert proposal.meta["purpose"] == proposal.meta["insertion_purpose"] == "differentiate"
+    assert proposal.meta["score"]["classification_eig"] == pytest.approx(2.0)
+    assert proposal.meta["score"]["combined_information"] > 0.0
 
     # Persisted evidence at that Q makes resume advance to a different candidate, never repeat it.
     observations.append(_obs((proposal.h, proposal.k, proposal.l), "quicklook", 0.8, omega0=6.0))

@@ -1273,7 +1273,23 @@ def _certify(*, cfg: CampaignConfig, decision, observations: list[dict],
     try:
         with timed(log_path, "certify", iteration=None):
             cfg.runner.run(workspace, [data_dir], errors_tier=full_tier, force=True, render=False)
-        observations = _recertified_observations(workspace, cfg.calibration, scan_kind)
+        # Rebuilding folded rows must not erase steering-only provenance or the two-crossing evidence
+        # that made the hypothesis campaign eligible for certification in the first place.
+        provenance = {
+            (observation.get("scan"), observation.get("detector")): {
+                "driver_inserted": bool(observation.get("driver_inserted", False)),
+                "certification_eligible": bool(observation.get("certification_eligible", True)),
+            }
+            for observation in observations
+            if observation.get("scan") is not None and observation.get("detector") is not None
+        }
+        crossing_markers = [dict(observation) for observation in observations
+                            if observation.get("kind") == "certification_crossing"]
+        certified = _recertified_observations(workspace, cfg.calibration, scan_kind)
+        for observation in certified:
+            observation.update(provenance.get(
+                (observation.get("scan"), observation.get("detector")), {}))
+        observations = [*certified, *crossing_markers]
         # Embed the certification subprocess timings (iter=None — the certify pass is reported
         # separately, never averaged into per-iteration stats).
         timings = _read_run_timings(workspace)
