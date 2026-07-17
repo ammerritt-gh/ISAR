@@ -135,6 +135,7 @@ class BranchBelief:
     ws: np.ndarray
     zone_anchor: bool = False
     window_k: int = WINDOW_K
+    parameter_prior: dict | None = None
 
     @property
     def n_anchors(self) -> int:
@@ -165,6 +166,8 @@ class BranchBelief:
         Gaussian locality), so σ shrinks where anchors are dense/precise and grows on extrapolation.
         With only the zone anchor (acoustic cold start) ``mu≈0`` and ``sigma`` grows as
         ``ACOUSTIC_MAX_SLOPE·u`` — tight enough near Γ to reject a 6-meV feature, honest far out."""
+        if self.parameter_prior:
+            return self._predict_with_parameter_prior(float(u), include_prior=True)
         u = float(u)
         us, ys, prec = self._anchors()
         n = us.size
@@ -204,9 +207,69 @@ class BranchBelief:
         frac = (umin - u) / span if u < umin else (u - umax) / span if u > umax else 0.0
         return mu, max(math.sqrt(max(var, 0.0)), SIGMA_SLACK) * (1.0 + max(frac, 0.0))
 
+    def predict_data_only(self, u: float) -> tuple[float, float]:
+        """Prediction from measured anchors only; never lets a prior confirm itself."""
+        if not self.parameter_prior:
+            return self.predict(u)
+        return self._predict_with_parameter_prior(float(u), include_prior=False)
+
+    def _predict_with_parameter_prior(self, u: float, *, include_prior: bool) -> tuple[float, float]:
+        """Local linear Gaussian update followed by non-negative marginal truncation moments."""
+        if self.us.size:
+            d = np.abs(self.us - u)
+            idx = np.argsort(d, kind="stable")[:min(self.us.size, self.window_k)]
+            wu, wy = self.us[idx], self.ys[idx]
+            weights = (np.maximum(self.ws[idx], 0.0) / (SIGMA_SLACK ** 2)
+                       * np.exp(-0.5 * (d[idx] / LOCALITY_BW) ** 2))
+            X = np.column_stack([np.ones_like(wu), wu])
+            precision = X.T @ (weights[:, None] * X)
+            rhs = X.T @ (weights * wy)
+        else:
+            precision = np.zeros((2, 2), dtype=float)
+            rhs = np.zeros(2, dtype=float)
+        if include_prior:
+            prior = self.parameter_prior or {}
+            confidence = max(float(prior.get("confidence", 0.0)), 0.0)
+            gap = prior.get("zc_energy") or {}
+            slope = prior.get("slope_zc") or {}
+            means = np.array([float(gap.get("mean", gap.get("mode", 0.0))),
+                              float(slope.get("mean", 0.0))])
+            sigmas = np.array([max(float(gap.get("sigma", 1e3)), 1e-9),
+                               max(float(slope.get("sigma", 1e3)), 1e-9)])
+            prior_precision = confidence / np.square(sigmas)
+            precision += np.diag(prior_precision)
+            rhs += prior_precision * means
+        if not np.any(precision):
+            return 0.0, 1e3
+        try:
+            cov = np.linalg.pinv(precision, hermitian=True)
+            beta = cov @ rhs
+        except np.linalg.LinAlgError:
+            return 0.0, 1e3
+        xq = np.array([1.0, u])
+        mu = float(xq @ beta)
+        sigma = max(math.sqrt(max(float(xq @ cov @ xq), 0.0)), SIGMA_SLACK)
+        if not include_prior:
+            return mu, sigma
+        return _lower_truncated_normal_moments(mu, sigma)
+
+
+def _lower_truncated_normal_moments(mu: float, sigma: float) -> tuple[float, float]:
+    """Mean and standard deviation of ``N(mu,sigma²)`` conditioned on energy >= 0."""
+    sigma = max(float(sigma), 1e-12)
+    alpha = -float(mu) / sigma
+    # phi(alpha) / (1-Phi(alpha)), evaluated safely in the tails used by branch priors.
+    survival = 0.5 * math.erfc(alpha / math.sqrt(2.0))
+    if survival <= 1e-15:
+        return max(float(mu), 0.0), sigma
+    ratio = math.exp(-0.5 * alpha * alpha) / math.sqrt(2.0 * math.pi) / survival
+    mean = float(mu) + sigma * ratio
+    variance = sigma * sigma * max(1.0 + alpha * ratio - ratio * ratio, 1e-12)
+    return mean, math.sqrt(variance)
+
 
 def build_beliefs(points, *, sample, t_bin, period: float,
-                  t_round: float = 5.0) -> dict[str, BranchBelief]:
+                  t_round: float = 5.0, hypotheses: list[dict] | None = None) -> dict[str, BranchBelief]:
     """Build ``{branch_id: BranchBelief}`` from ``state.dispersion_prior`` points for one (sample,
     T-bin). Each point carries ``q``, ``omega0``, ``branch_id`` (default ``"acoustic"``) and a soft
     assignment ``weight`` (default 1.0). The acoustic belief always exists (zone anchor), even with
@@ -224,15 +287,25 @@ def build_beliefs(points, *, sample, t_bin, period: float,
         bid = p.get("branch_id") or ACOUSTIC
         by.setdefault(bid, []).append(
             (reduced_q(p["q"], period), float(w), float(p.get("weight", 1.0))))
+    resolved = {str(h.get("name")): h for h in (hypotheses or []) if isinstance(h, dict)}
     beliefs: dict[str, BranchBelief] = {}
     for bid, rows in by.items():
         us = np.array([r[0] for r in rows], dtype=float)
         ys = np.array([r[1] for r in rows], dtype=float)
         ws = np.array([r[2] for r in rows], dtype=float)
-        beliefs[bid] = BranchBelief(bid, us, ys, ws, zone_anchor=(bid == ACOUSTIC))
+        prior = resolved.get(bid)
+        beliefs[bid] = BranchBelief(bid, us, ys, ws,
+                                    zone_anchor=(bid == ACOUSTIC and prior is None),
+                                    parameter_prior=prior)
+    for bid, prior in resolved.items():
+        if bid not in beliefs and bid != "null":
+            empty = np.array([], dtype=float)
+            beliefs[bid] = BranchBelief(bid, empty, empty, empty, parameter_prior=prior)
     if ACOUSTIC not in beliefs:
         empty = np.array([], dtype=float)
-        beliefs[ACOUSTIC] = BranchBelief(ACOUSTIC, empty, empty, empty, zone_anchor=True)
+        prior = resolved.get(ACOUSTIC)
+        beliefs[ACOUSTIC] = BranchBelief(ACOUSTIC, empty, empty, empty,
+                                         zone_anchor=prior is None, parameter_prior=prior)
     return beliefs
 
 

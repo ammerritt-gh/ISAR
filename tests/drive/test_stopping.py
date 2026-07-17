@@ -2,7 +2,7 @@
 import pytest
 
 from isar.drive.acquisition.calibration import Calibration
-from isar.drive.objective import ObjectiveSpec
+from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
 from isar.drive.supervisor import stopping as st
 
 _BUDGET = {"kind": "neutrons", "amount": 1e12, "spent": 0.0}
@@ -50,6 +50,23 @@ def test_met_when_all_masters_within_tolerance():
     masters = [_master((h, 0.0, 0.0), 0.30) for h in (2.1, 2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, [], masters)
     assert st.evaluate_stop(obj, grid, _BUDGET).state == "met"
+
+
+def test_hypothesis_campaign_requires_new_production_pool_between_crossings():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    obj = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
+                        budget={"kind": "neutrons", "amount": 1e12},
+                        target_branch="optic", **frozen)
+    first = _master((2.0, 0.0, 0.0), 0.3, members=["batch-1"])
+    grid = st.summarize_grid(obj, [], [first])
+    fingerprint = grid[0].master["production_batch_fingerprint"]
+    assert not grid[0].converged
+    marker = {"hkl": (2.0, 0.0, 0.0), "kind": "certification_crossing",
+              "production_batch_fingerprint": fingerprint}
+    # Re-evaluating the unchanged pool cannot produce the second crossing.
+    assert not st.summarize_grid(obj, [marker], [first])[0].converged
+    second = _master((2.0, 0.0, 0.0), 0.25, members=["batch-1", "batch-2"])
+    assert st.summarize_grid(obj, [marker], [second])[0].converged
 
 
 def test_flagged_master_with_reliable_interval_converges():

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import isar.reduce.llm_client as _llm  # boundary carve-out: the shared LLMM HTTP plumbing only
-from isar.drive.objective import ObjectiveSpec
+from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
 
 Dispatcher = _llm.Dispatcher
 LLMMClient = _llm.LLMMClient
@@ -198,12 +198,15 @@ def _build_spec(data: dict, merged: dict) -> ObjectiveSpec:
     branch = str(data.get("target_branch", "acoustic"))
     label = str(data.get("target_label") or branch)
     energy = data.get("energy_search_meV")
+    resolved_energy = tuple(energy) if energy is not None else (
+        (-2.0, 12.0) if branch == "optic" else (-2.0, 7.0))
+    frozen = shipped_hypothesis_snapshot(branch, resolved_energy)
     common = dict(tolerance_meV=float(data["tolerance_meV"]), budget=budget,
                   tier=str(merged.get("tier", "deterministic")),
                   name=str(data.get("notes", "")),
                   meta={"source": "goal_to_spec", "raw": data}, target_branch=branch,
                   target_label=label,
-                  energy_search_meV=(tuple(energy) if energy is not None else None))
+                  energy_search_meV=resolved_energy, **frozen)
     if "q_start" in data or "q_end" in data:
         if "q_start" not in data or "q_end" not in data:
             raise GoalParseError("goal spec needs both q_start and q_end")

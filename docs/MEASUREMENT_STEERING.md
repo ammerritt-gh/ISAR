@@ -101,7 +101,7 @@ Four consequences worth stating plainly:
   n+1), magnetic scattering falls with Q (form factor) and has a different T-law, an elastic line is
   ~T-independent, a quasi-elastic line broadens with T; those are the levers the loop should *choose* to
   pull.
-- **Branch identity is part of the quantity of interest** *(design locked 2026-07-17, Planned)*.
+- **Branch identity is part of the quantity of interest** *(first implementation 2026-07-17; O6/O8/O11)*.
   Stage-C discrimination applies *within* a campaign, not only between fit models: the
   branch-assignment entropy is a QoI the acquisition must be allowed to buy down. Knowing that a
   rival feature *is* the acoustic branch is precisely what certifies the target as the optic — so
@@ -212,7 +212,7 @@ So the chosen engine is:
    same ladder.
 6. **Model-average the EIG** over competing hypotheses so the loop does not optimise for one possibly-wrong
    model (see §4.2 and §6).
-7. **Two-term scan value** *(design locked 2026-07-17, Planned — DECISIONS O6)*:
+7. **Two-term scan value** *(Implemented 2026-07-17 — DECISIONS O6)*:
    `value(d) = deficit-weighted EIG on target ω₀ + λ · (expected reduction of branch-assignment
    entropy at d)`. The λ term is what buys the cheap "establish that the zone-centre feature is
    the optic" scan, widens an energy window over a rival where the branches approach, and stops

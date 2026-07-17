@@ -3,7 +3,8 @@ import pytest
 
 from isar.drive.acquisition import model as acq_model
 from isar.drive.acquisition import acquire as acq
-from isar.drive.objective import ObjectiveSpec
+from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
+from isar.schema.hypotheses import content_fingerprint
 
 
 def _obj(tol=0.5):
@@ -132,3 +133,41 @@ def test_scan_command_grammar():
     p = acq.propose_scan(_obj(), acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
     assert p.scan_command().startswith("deltaE ")
     assert len(p.scan_command().split()) == 4
+
+
+def test_optic_hypothesis_starts_at_zone_center_in_positive_energy_band():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    obj = ObjectiveSpec.segment(q_start=(2, 0, 0), q_end=(2, 0.2, 0), step_rlu=0.1,
+                                tolerance_meV=0.5,
+                                budget={"kind": "neutrons", "amount": 1e12},
+                                target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    p = acq.propose_scan(obj, acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
+    assert (p.h, p.k, p.l) == (2.0, 0.0, 0.0)
+    assert p.e_lo > 0.0 and p.e_lo <= 1.0
+    assert p.e_hi == pytest.approx(12.0)
+    assert p.meta["purpose"] == "hypothesis_check"
+
+
+def test_rival_band_and_absent_signal_widening_remain_point_capped():
+    e_lo, e_hi, _step, npts = acq._energy_window(
+        6.0, 0.5, 0.5, energy_search_meV=(-2.0, 12.0), rival_band=(3.0, 1.0), widen=2.5)
+    assert e_lo <= 1.0
+    assert e_hi == 12.0
+    assert npts <= acq.MAX_POINTS
+
+
+def test_hypothesis_scan_respects_frozen_point_cap():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    frozen["steering"] = {**frozen["steering"], "max_scan_points": 24}
+    frozen["hypothesis_fingerprint"] = content_fingerprint(
+        frozen["hypotheses"], frozen["steering"])
+    obj = ObjectiveSpec.segment(q_start=(2, 0, 0), q_end=(2, 0.1, 0), step_rlu=0.1,
+                                tolerance_meV=0.5,
+                                budget={"kind": "neutrons", "amount": 1e12},
+                                target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    proposal = acq.propose_scan(obj, acq_model.fit([]), [], {"fwhm_dE": 0.5}, {})
+    assert proposal.n_points == 24
+    assert proposal.meta["max_scan_points"] == 24
+    assert acq.points_in_window(
+        proposal.e_lo, proposal.e_hi, proposal.e_step,
+        max_points=proposal.meta["max_scan_points"]) == 24

@@ -16,10 +16,13 @@ import types
 
 import isar.drive.loop as loop_mod
 from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_point_count,
+                             _campaign_summary,
+                             _executed_point_count, _feasible_point_count,
                              _errors_arg_for, _errors_tier_for, _extract_max_points, _full_tier,
                              _guard_point_count,
                              _master_obs_from_row, _observation_from_row, _pick_interval,
-                             _preflight_max_points, _resume_state, _run_nonce, _validate_body,
+                             _preflight_max_points, _reconcile_budget_points, _resume_state,
+                             _run_nonce, _target_supporting_feasible_points, _validate_body,
                              run_campaign)
 from isar.drive.acquisition.acquire import ScanProposal, points_in_window
 from isar.drive.objective import ObjectiveSpec
@@ -27,6 +30,62 @@ from isar.drive.session_log import log_event, read_log
 from isar.drive.supervisor.stopping import PRODUCTION_NCOUNT, QUICKLOOK_NCOUNT
 
 _UNITY_CAL = Calibration.from_dict({"inflation": 1.0, "buckets": [], "center_pull_mean": 0.0})
+
+
+def test_feasible_point_count_prefers_tavi_contract_fields():
+    assert _feasible_point_count({"feasible_points": 2,
+                                  "planned_feasible_mask": [True, True, True]}, 9) == 2
+    assert _feasible_point_count({"planned_feasible_mask": [True, False, True]}, 9) == 2
+    assert _feasible_point_count({}, 9) == 9
+
+
+def test_executed_point_count_uses_frozen_execution_mask():
+    data = {"result": {"executed_feasible_mask": [True, False, True]}}
+    assert _executed_point_count(data, 9) == 2
+    assert _executed_point_count({"result": {}}, 9) == 9
+
+
+def test_target_support_preflight_counts_only_feasible_bins_inside_credible_band():
+    validation = {"point_manifest": [
+        {"feasible": True, "values": {"deltaE": 5.8}},
+        {"feasible": False, "values": {"deltaE": 6.0}},
+        {"feasible": True, "values": {"deltaE": 6.2}},
+        {"feasible": True, "values": {"deltaE": 10.0}},  # feasible background is not support
+    ]}
+    assert _target_supporting_feasible_points(validation, (6.0, 0.2)) == 2
+    assert _target_supporting_feasible_points({}, (6.0, 0.2)) is None
+    malformed = {"point_manifest": [{"feasible": True, "values": {"deltaE": "bad"}}]}
+    assert _target_supporting_feasible_points(malformed, (6.0, 0.2)) == 0
+
+
+def test_budget_reconciliation_charges_only_executed_points():
+    budget = {"kind": "neutrons", "neutrons": 300.0, "seconds": 0.0, "spent": 300.0}
+    _reconcile_budget_points(budget, ncount=100, planned=3, executed=2)
+    assert budget == {"kind": "neutrons", "neutrons": 200.0,
+                      "seconds": 0.0, "spent": 200.0}
+
+
+def test_budget_reconciliation_scales_time_and_returns_durable_deltas():
+    budget = {"kind": "counting_seconds", "neutrons": 300.0,
+              "seconds": 30.0, "spent": 30.0}
+    deltas = _reconcile_budget_points(budget, ncount=100, planned=3, executed=2, eta=30.0)
+    assert deltas == pytest.approx((-100.0, -10.0))
+    assert budget["neutrons"] == pytest.approx(200.0)
+    assert budget["seconds"] == pytest.approx(20.0)
+    assert budget["spent"] == pytest.approx(20.0)
+
+
+def test_campaign_summary_persists_hypothesis_mismatch_not_just_a_log(monkeypatch, tmp_path):
+    mismatch = {"active": True, "comparison": "prior_vs_data_only_posterior_predictive"}
+    monkeypatch.setattr(loop_mod, "read_card_state", lambda _workspace: {
+        "dispersion_prior": [], "branch_belief": [{"branch_id": "optic"}],
+        "hypothesis_mismatch": mismatch})
+    decision = types.SimpleNamespace(to_dict=lambda: {"state": "continue", "reasons": [], "per_q": []})
+    summary = _campaign_summary(_objective(), [], decision,
+                                {"kind": "neutrons", "spent": 0}, tmp_path,
+                                tmp_path / "session.jsonl", 0)
+    assert summary["hypothesis_mismatch"] == mismatch
+    assert summary["branch_beliefs"][0]["branch_id"] == "optic"
 
 
 def _parse_grid(scan_command):

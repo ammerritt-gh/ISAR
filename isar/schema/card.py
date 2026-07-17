@@ -21,6 +21,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from isar.schema import _json
+from isar.schema.hypotheses import resolve_hypothesis
 from isar.schema.scan import COUNTING_MODES, ENERGY_STATUSES, RAW_ABSCISSA_KINDS
 
 SCHEMA_VERSION = "isar.card/1"
@@ -79,6 +80,7 @@ class CardPolicy:
     calibration: dict = field(default_factory=dict)          # [calibration] — method + knobs (§3)
     fitting: dict = field(default_factory=dict)              # [fitting] — user guidelines (§6)
     sample: dict = field(default_factory=dict)               # [sample] — name override, require_alignment
+    hypotheses: dict = field(default_factory=dict)           # [hypotheses.*] — human physics intent
 
 
 @dataclass(frozen=True)
@@ -142,8 +144,11 @@ class CardState:
     dispersion_prior: list = field(default_factory=list)     # PriorPoint dicts (§5)
     sample_map: list = field(default_factory=list)           # [{from_scan, sample, source}]
     branch_models: list = field(default_factory=list)        # BranchModel dicts (steering, Phase 2+)
-    branch_belief: list = field(default_factory=list)        # per-(sample,t_bin,q) acoustic QoI trace
+    branch_belief: list = field(default_factory=list)        # flat per-Q rows for viewer/report contract
+    branch_belief_models: list = field(default_factory=list) # regression ingredients for drive scoring
     campaign_target: dict = field(default_factory=dict)      # active frozen objective branch/search
+    hypothesis_snapshot: dict = field(default_factory=dict)  # resolved set + source + content fingerprint
+    hypothesis_mismatch: dict = field(default_factory=dict)  # persisted prior-vs-data PPC warning (O11)
     #   {sample, t_bin, q, hkl, omega0, sigma, entropy, resolvable} — the drive reads this (durable,
     #   boundary-safe) to steer ω(q) by the assignment-inflated σ instead of raw best_omega0 (Phase A).
     lattice_epochs: list = field(default_factory=list)       # versioned lattice/orientation interpretation
@@ -252,4 +257,15 @@ class Card:
 
             if not isinstance(det.signal_column, str) or not det.signal_column:
                 errs.append(f"detector {detector_id!r} has a non-string or empty signal_column")
+        if not isinstance(pol.hypotheses, dict):
+            errs.append("hypotheses must be a table of named hypothesis tables")
+        else:
+            for name, declaration in sorted(pol.hypotheses.items()):
+                if not isinstance(declaration, dict):
+                    errs.append(f"hypotheses.{name} must be a table")
+                    continue
+                try:
+                    resolve_hypothesis(str(name), declaration)
+                except (TypeError, ValueError) as exc:
+                    errs.append(f"hypotheses.{name}: {exc}")
         return errs

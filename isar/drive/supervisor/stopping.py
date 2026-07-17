@@ -27,6 +27,8 @@ Otherwise ``continue``.
 from __future__ import annotations
 
 import math
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -158,6 +160,9 @@ class GridQ:
     best_prod_halfwidth: float | None = None  # tightest usable+reliable SINGLE production fit
     best_prod_omega0: float | None = None
     master: dict | None = None     # {"omega0","halfwidth","reliable","usable","disposition","n_members"}
+    requires_crossing_guard: bool = False
+    crossing_fingerprints: list[str] = field(default_factory=list)
+    max_production_batches: int = MAX_PROD_ATTEMPTS
 
     @property
     def visited(self) -> bool:
@@ -197,7 +202,12 @@ class GridQ:
     def converged(self) -> bool:
         """A trustworthy ω₀ interval (master OR best single production) is within tolerance."""
         hw = self.cert_halfwidth
-        return hw is not None and hw <= self.tolerance
+        if hw is None or hw > self.tolerance:
+            return False
+        if not self.requires_crossing_guard:
+            return True
+        fingerprint = (self.master or {}).get("production_batch_fingerprint")
+        return bool(fingerprint and any(old != fingerprint for old in self.crossing_fingerprints))
 
     @property
     def info_saturated(self) -> bool:
@@ -224,7 +234,7 @@ class GridQ:
         if self.converged:
             return False
         return (self.n_decline >= MAX_DECLINES or self.n_uncertifiable >= MAX_DECLINES
-                or self.n_production >= MAX_PROD_ATTEMPTS or self.info_saturated)
+                or self.n_production >= self.max_production_batches or self.info_saturated)
 
     @property
     def stuck_reason(self) -> str | None:
@@ -239,14 +249,14 @@ class GridQ:
         if not self.stuck:
             return None
         # Floored: a genuinely CERTIFIABLE interval exists but cannot shrink below tolerance.
-        if self.n_production >= MAX_PROD_ATTEMPTS and self.cert_halfwidth is not None:
+        if self.n_production >= self.max_production_batches and self.cert_halfwidth is not None:
             return "interval_floored"
         if self.info_saturated:
             return "info_saturated"
         # Uncertifiable third state — a usable center was delivered, but no certifiable interval.
         if self.saw_uncertifiable_gamma or self.saw_uncertifiable_fast or self.n_uncertifiable > 0:
             return "uncertifiable_interval" if self.saw_uncertifiable_gamma else "fast_tier_only"
-        if self.n_production >= MAX_PROD_ATTEMPTS:
+        if self.n_production >= self.max_production_batches:
             return "interval_floored"
         # Terminal no-signal fall-through, refined by decline sub-labels: ALL declines being
         # validation rejections means the point is instrument-infeasible; an "unmodeled" disposition
@@ -281,7 +291,11 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
     path = objective.path
     target_branch = getattr(objective, "target_branch", "acoustic") or "acoustic"
     scalars = path_scalars(path)
-    grid = [GridQ(index=i, hkl=tuple(path[i]), q=scalars[i], tolerance=objective.tolerance_meV)
+    crossing_guard = bool(getattr(objective, "hypotheses", None))
+    max_batches = int((getattr(objective, "steering", None) or {}).get(
+        "maximum_production_batches_per_q", MAX_PROD_ATTEMPTS))
+    grid = [GridQ(index=i, hkl=tuple(path[i]), q=scalars[i], tolerance=objective.tolerance_meV,
+                  requires_crossing_guard=crossing_guard, max_production_batches=max_batches)
             for i in range(len(path))]
     for obs in observations:
         i = match_grid_index(tuple(obs["hkl"]), path)
@@ -289,6 +303,11 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
             continue
         g = grid[i]
         kind = obs.get("kind")
+        if kind == "certification_crossing":
+            fingerprint = obs.get("production_batch_fingerprint")
+            if fingerprint and fingerprint not in g.crossing_fingerprints:
+                g.crossing_fingerprints.append(str(fingerprint))
+            continue
         # `resolved` on the observation is "usable for steering" — set by loop._observation_from_row
         # for resolved-or-flagged fits carrying a calibrated half-width.
         usable = bool(obs.get("resolved"))
@@ -353,7 +372,14 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
     for mr in (master_rows or []):
         i = match_grid_index(tuple(mr["hkl"]), path)
         if i is not None and mr.get("branch_id") in (None, target_branch):
-            grid[i].master = mr
+            master = mr
+            members = master.get("members") or []
+            if members:
+                encoded = json.dumps(sorted(str(member) for member in members),
+                                     separators=(",", ":"), ensure_ascii=True)
+                master["production_batch_fingerprint"] = hashlib.sha256(
+                    encoded.encode("utf-8")).hexdigest()
+            grid[i].master = master
     return grid
 
 

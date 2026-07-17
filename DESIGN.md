@@ -430,7 +430,7 @@ DECISIONS W1–W3.)*
 | Bayesian interval tier | Planned |
 | Renegotiation protocol | Planned (design door open) |
 | Model-level (ARIANE-style) objective tier | Planned |
-| Branch-identity-aware acquisition (two-term scan value; excitation hypotheses; first-guess path) | Planned (design locked 2026-07-17 — O6–O11) |
+| Branch-identity-aware acquisition (two-term scan value; excitation hypotheses; first-guess path) | Partial (O6/O8/O11 implemented 2026-07-17; card precedence + off-path insertion remain) |
 
 **Genuinely open:** wrap an existing 4D-convolution engine (ResLib/Tobyfit lineage) vs implement
 the Cooper–Nathans projection against TAVI ellipsoids directly — decide when `tas4d` is

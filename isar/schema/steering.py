@@ -134,6 +134,10 @@ class ProposalScore:
     sigma_scan: float | None = None   # predicted σ(ω₀) after the scan (meV)
     c_spent: float = 0.0              # C_q accumulated cost at this q before the scan
     reason: str = ""
+    classification_eig: float | None = None  # branch-label mutual information (nats)
+    classification_weight: float = 0.0
+    combined_information: float | None = None
+    purpose: str | None = None
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)

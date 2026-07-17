@@ -32,9 +32,9 @@ import uuid
 import numpy as np
 
 from isar.drive.acquisition import model as acq_model
-from isar.drive.acquisition.acquire import points_in_window, propose_scan
+from isar.drive.acquisition.acquire import MAX_POINTS, points_in_window, propose_scan
 from isar.drive.acquisition.calibration import Calibration, load_calibration
-from isar.drive.instrument.tavi_client import TaviClient
+from isar.drive.instrument.tavi_client import TaviClient, TaviError
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
 from isar.drive.isar_io.runner import SubprocessRunner, as_runner
 from isar.drive.isar_io.runner import init_isar as _default_init_isar
@@ -44,8 +44,10 @@ from isar.drive.objective import ObjectiveSpec
 from isar.drive.session_log import log_event, read_log, timed
 from isar.drive.supervisor import exceptions as exc
 from isar.drive.supervisor.stopping import (
+    FIRST_CROSSING_MARGIN,
     PRODUCTION_KINDS,
     PRODUCTION_NCOUNT,
+    StopDecision,
     USABLE_DISPOSITIONS as _USABLE,
     evaluate_stop,
     model_points,
@@ -163,7 +165,8 @@ def _make_resolution_cb(client, override):
     return cb
 
 
-def _make_fisher_provider(card_state: dict, resolution_cb):
+def _make_fisher_provider(card_state: dict, resolution_cb, *,
+                          production_ncount: int = PRODUCTION_NCOUNT):
     """The 5b Poisson-Fisher screen provider ``(gridq, omega0_pred, sigma_prior) -> σ_scan|None`` built
     from the branch(es) the session persisted into ``card.state.json`` (durable / crash-safe — the drive
     reads the file, never a live session object). Returns ``None`` when no branch exists yet (cold
@@ -196,7 +199,9 @@ def _make_fisher_provider(card_state: dict, resolution_cb):
         if not pred.in_anchor_range or pred.gamma <= 0:
             return None
         T = float(branch.get("t_bin", 0.0))         # the branch carries its own T-bin
-        exposure = float(PRODUCTION_NCOUNT)
+        # Match the frozen campaign policy's incremental production batch.  Using the legacy 1e8
+        # exposure here would overstate information for hypothesis campaigns that submit 2.5e7.
+        exposure = float(production_ncount)
         amp = float(pred.amplitude_norm) * exposure
         gamma = float(pred.gamma)
         od = omega_d_from(float(omega0_pred), gamma)
@@ -215,7 +220,68 @@ def _make_fisher_provider(card_state: dict, resolution_cb):
     return provider
 
 
-def _validate_body(proposal, *, sample: str, allow_partial: bool = False) -> dict[str, Any]:
+def _make_classification_providers(card_state: dict, objective, resolution_cb):
+    """Build drive-side MI and rival-band providers from durable belief rows/frozen priors."""
+    from isar.drive.acquisition.acquire import _resolve_fwhm
+    from isar.drive.acquisition.classify_eig import assignment_mi, belief_predict
+
+    rows = [dict(row) for row in (card_state.get("branch_belief_models") or [])
+            if isinstance(row, dict)]
+    if not rows:
+        rows = [{"branch_id": h.get("name"), "anchors": [], "n_anchors": 0,
+                 "parameter_prior": h, "period": None}
+                for h in (getattr(objective, "hypotheses", []) or [])
+                if h.get("name") not in (None, "null")]
+    if len(rows) < 2:
+        return None, None
+    # Prefer the most recently persisted sample/T slice without mixing independent experiments.
+    keyed = [(str(row.get("sample", "")), float(row.get("t_bin", -math.inf))) for row in rows]
+    selected_key = max(keyed)
+    selected = [row for row, key in zip(rows, keyed) if key == selected_key]
+    if len(selected) < 2:  # prior-only fallback has one empty key shared by every hypothesis
+        selected = rows
+    target = getattr(objective, "target_hypothesis", None)
+    policy = dict(getattr(objective, "steering", {}) or {})
+
+    def reduced(hkl, period):
+        if not period:
+            return None
+        folded = [((float(v) + 0.5 * period) % period) - 0.5 * period for v in hkl]
+        return math.sqrt(sum(v * v for v in folded))
+
+    def components(g):
+        out = []
+        for row in selected:
+            u = reduced(g.hkl, row.get("period"))
+            mu, sigma = belief_predict(row, g.q if u is None else u)
+            out.append({"branch_id": row.get("branch_id"), "mean": mu, "sigma": sigma,
+                        "probability": float(row.get("n_anchors", 0)) + 1.0})
+        total = sum(item["probability"] for item in out) or 1.0
+        for item in out:
+            item["probability"] /= total
+        return out
+
+    def classify(g):
+        parts = components(g)
+        target_part = next((part for part in parts if part["branch_id"] == target), parts[0])
+        fwhm = _resolve_fwhm(resolution_cb, *g.hkl, max(target_part["mean"], 0.0))
+        tolerance = policy.get("differentiation_tolerance_meV")
+        if tolerance is None:
+            tolerance = max(3.0 * float(objective.tolerance_meV), fwhm / 2.3548)
+        return assignment_mi(parts, meas_sigma=fwhm / 2.3548,
+                             differentiation_tolerance_meV=float(tolerance))
+
+    def rival_band(g):
+        parts = [part for part in components(g) if part["branch_id"] != target]
+        if not parts:
+            return None
+        rival = max(parts, key=lambda part: part["probability"])
+        return rival["mean"], rival["sigma"]
+
+    return classify, rival_band
+
+
+def _validate_body(proposal, *, sample: str) -> dict[str, Any]:
     """The ``POST /validate`` body — ``parameters`` only (engine/seed/isolated are scan-only fields)."""
     body: dict[str, Any] = {
         "parameters": {
@@ -235,16 +301,64 @@ def _validate_body(proposal, *, sample: str, allow_partial: bool = False) -> dic
             "sample": sample,
         },
     }
-    if allow_partial:
-        body["allow_partial"] = True
     return body
 
 
-def _scan_body(proposal, engine: str, seed: int, *, sample: str, allow_partial: bool = False) -> dict[str, Any]:
+def _scan_body(proposal, engine: str, seed: int, *, sample: str) -> dict[str, Any]:
     """The ``POST /scan`` body — the validate body plus the isolated/seeded engine selection."""
-    body = _validate_body(proposal, sample=sample, allow_partial=allow_partial)
+    body = _validate_body(proposal, sample=sample)
     body.update({"engine": engine, "seed": int(seed), "isolated": True})
     return body
+
+
+def _feasible_point_count(validation: dict, fallback: int) -> int:
+    """Executable point count from TAVI's frozen feasibility manifest."""
+    value = validation.get("feasible_points") if isinstance(validation, dict) else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        return int(value)
+    mask = validation.get("planned_feasible_mask") if isinstance(validation, dict) else None
+    if isinstance(mask, list):
+        return sum(bool(item) for item in mask)
+    return max(int(fallback), 0)
+
+
+def _executed_point_count(data: dict, fallback: int) -> int:
+    result = data.get("result") if isinstance(data, dict) else None
+    if not isinstance(result, dict):
+        return max(int(fallback), 0)
+    mask = result.get("executed_feasible_mask")
+    if isinstance(mask, list) and mask:
+        return sum(bool(item) for item in mask)
+    return max(int(fallback), 0)
+
+
+def _target_supporting_feasible_points(validation: dict, target_band) -> int | None:
+    """Feasible bins inside the target's 95%-credible energy support; None without a manifest."""
+    manifest = validation.get("point_manifest") if isinstance(validation, dict) else None
+    if not isinstance(manifest, list) or target_band is None:
+        return None
+    mean, sigma = map(float, target_band)
+    lo, hi = mean - 2.0 * sigma, mean + 2.0 * sigma
+    count = 0
+    for point in manifest:
+        if not isinstance(point, dict) or not point.get("feasible", False):
+            continue
+        values = point.get("values") or {}
+        energy = values.get("deltaE") if isinstance(values, dict) else None
+        if (isinstance(energy, (int, float)) and not isinstance(energy, bool)
+                and math.isfinite(float(energy)) and lo <= float(energy) <= hi):
+            count += 1
+    return count
+
+
+def _tavi_error_code(error: TaviError) -> str | None:
+    """Best-effort structured code from a TAVI error envelope."""
+    try:
+        payload = json.loads(error.body)
+    except (TypeError, ValueError):
+        return None
+    detail = payload.get("error") if isinstance(payload, dict) else None
+    return detail.get("code") if isinstance(detail, dict) else None
 
 
 def _row_hkl(row: dict):
@@ -413,6 +527,30 @@ def _grid_state(objective, observations: list[dict], workspace, calibration: Cal
     return master_rows, grid
 
 
+def _record_eligible_crossings(grid, observations: list[dict], log_path=None) -> int:
+    """Record each qualifying pooled crossing once; unchanged pools can never cross twice."""
+    added = 0
+    for g in grid:
+        if not g.requires_crossing_guard:
+            continue
+        master = g.master or {}
+        fingerprint = master.get("production_batch_fingerprint")
+        halfwidth = g._master_hw
+        if (not fingerprint or halfwidth is None
+                or FIRST_CROSSING_MARGIN * halfwidth > g.tolerance
+                or fingerprint in g.crossing_fingerprints):
+            continue
+        marker = {"hkl": g.hkl, "kind": "certification_crossing",
+                  "production_batch_fingerprint": fingerprint,
+                  "calibrated_halfwidth": halfwidth,
+                  "n_members": master.get("n_members")}
+        observations.append(marker)
+        if log_path is not None:
+            log_event(log_path, "certification_crossing", marker)
+        added += 1
+    return added
+
+
 def _hkl_close(a, b, tol: float = 1e-4) -> bool:
     return a is not None and b is not None and all(abs(x - y) <= tol for x, y in zip(a, b))
 
@@ -530,6 +668,19 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
         kinds_by_hkl.setdefault(key, []).append(r.get("kind") or "production")
         ncount_by_hkl[key] = r.get("ncount") or ncount_by_hkl.get(key)
 
+    reconciliations = [e.get("payload", {}) for e in read_log(log_path)
+                       if e.get("kind") == "exception"
+                       and (e.get("payload") or {}).get("action") == "feasibility_reconciled"]
+    for reconciliation in reconciliations:
+        neutron_delta = float(reconciliation.get("neutron_delta") or 0.0)
+        seconds_delta = float(reconciliation.get("seconds_delta") or 0.0)
+        neutrons += neutron_delta
+        seconds += seconds_delta
+        hkl = reconciliation.get("hkl")
+        if hkl is not None:
+            key = tuple(round(float(x), 4) for x in hkl)
+            cost_by_hkl[key] = cost_by_hkl.get(key, 0.0) + neutron_delta
+
     try:
         rows = read_results_csv(workspace)
     except FileNotFoundError:
@@ -574,6 +725,13 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
         sd = (row.get("scan"), row.get("detector"))
         consumed.add(sd)
         scan_kind[sd] = (kind, ncount)
+
+    for event in read_log(log_path):
+        if event.get("kind") == "certification_crossing":
+            marker = dict(event.get("payload") or {})
+            if marker.get("hkl") is not None and marker.get("production_batch_fingerprint"):
+                marker["kind"] = "certification_crossing"
+                observations.append(marker)
 
     return {"observations": observations, "consumed": consumed, "scan_kind": scan_kind,
             "scan_counter": scan_counter, "neutrons": neutrons, "seconds": seconds}
@@ -801,8 +959,15 @@ def _persist_campaign_target(workspace: Path, objective) -> None:
     target = {"branch": getattr(objective, "target_branch", "acoustic"),
               "label": getattr(objective, "target_label", "acoustic"),
               "energy_search_meV": list(getattr(objective, "energy_search_meV", (-2.0, 7.0)))}
-    if card.state.campaign_target != target:
+    snapshot = ({"hypotheses": list(getattr(objective, "hypotheses", []) or []),
+                 "target_hypothesis": getattr(objective, "target_hypothesis", None),
+                 "source": getattr(objective, "hypothesis_source", None),
+                 "fingerprint": getattr(objective, "hypothesis_fingerprint", None),
+                 "steering": dict(getattr(objective, "steering", {}) or {})}
+                if getattr(objective, "hypotheses", None) else {})
+    if card.state.campaign_target != target or card.state.hypothesis_snapshot != snapshot:
         card.state.campaign_target = target
+        card.state.hypothesis_snapshot = snapshot
         card.save_state(state_path)
 
 
@@ -820,13 +985,13 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
     client, runner = cfg.client, cfg.runner
     log_path, workspace, data_dir = cfg.log_path, cfg.workspace, cfg.data_dir
     # ---- run this proposal, with bounded missed-window re-centering (a LOOK, §1) ----------
-    allow_partial = False
     attempt = 0
     rows: list[dict] = []
     # Tracks an in-flight full-tier promotion whose outcome has not yet been logged (escalate_fit,
     # spec §5.1): set when a production q is promoted to the full error tier, cleared the moment its
     # outcome record is written (at the fold, or as `superseded` if the retry declines first).
     promoted = False
+    support_adjusted = False
     while True:
         # Point-count guard (single checkpoint before ANY validate/submit): a missed-window recenter
         # widens e_lo/e_hi without recomputing the tight e_step, so the emitted `deltaE lo hi step`
@@ -834,16 +999,52 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         # full window and fit the limit; a no-op on a proposal that already fits.
         _guard_point_count(proposal, cfg.max_points, cfg.max_points_source, log_path, it)
         with timed(log_path, "validate", iteration=it, attempt=attempt):
-            val = client.validate(_validate_body(proposal, sample=cfg.sample, allow_partial=allow_partial))
+            val = client.validate(_validate_body(proposal, sample=cfg.sample))
+        feasible_points = _feasible_point_count(val, proposal.n_points or 1)
+        target_band = (proposal.meta or {}).get("target_band")
+        min_support = int((getattr(objective, "steering", None) or {}).get(
+            "minimum_target_support_points", 0))
+        target_support = _target_supporting_feasible_points(val, target_band)
         log_event(log_path, "validate", {"would_queue": val.get("would_queue"),
                                           "blockers": val.get("blockers"), "eta": val.get("eta"),
+                                          "requested_points": val.get("requested_points"),
+                                          "feasible_points": feasible_points,
+                                          "target_supporting_feasible_points": target_support,
+                                          "partial": val.get("partial"),
+                                          "feasible_segments": val.get("feasible_segments"),
+                                          "infeasible": val.get("infeasible"),
                                           "iter": it})
+        if (min_support > 0 and target_support is not None and target_support < min_support
+                and val.get("would_queue", False)):
+            mean, sigma = map(float, target_band)
+            desired_step = max((4.0 * sigma) / max(min_support - 1, 1), 1e-6)
+            if not support_adjusted and desired_step < proposal.e_step:
+                old_step = proposal.e_step
+                proposal.e_step = desired_step
+                proposal.n_points = points_in_window(proposal.e_lo, proposal.e_hi, proposal.e_step)
+                support_adjusted = True
+                log_event(log_path, "exception", {
+                    "action": "increase_target_support", "hkl": [proposal.h, proposal.k, proposal.l],
+                    "old_step": old_step, "new_step": proposal.e_step,
+                    "target_supporting_feasible_points": target_support,
+                    "required": min_support, "iter": it})
+                continue
+            log_event(log_path, "exception", {
+                "action": "insufficient_target_support", "hkl": [proposal.h, proposal.k, proposal.l],
+                "target_supporting_feasible_points": target_support,
+                "required": min_support, "iter": it})
+            observations.append(_declined_observation(proposal, "insufficient_target_support"))
+            break
         if not val.get("would_queue", False):
+            if feasible_points <= 0 and int(val.get("requested_points") or proposal.n_points or 0) > 0:
+                log_event(log_path, "exception", {
+                    "action": "geometry_unreachable", "phase": "validation",
+                    "hkl": [proposal.h, proposal.k, proposal.l], "blockers": val.get("blockers"),
+                    "iter": it})
+                observations.append(_declined_observation(proposal, "geometry_unreachable"))
+                break
             v_act = exc.handle_validation_rejection(val.get("blockers") or [])
             log_event(log_path, "exception", {**v_act.to_dict(), "iter": it})
-            if v_act.action == "repair" and not allow_partial:
-                allow_partial = True
-                continue
             if promoted:   # a promoted retry that now declines before folding — supersede the promotion
                 log_event(log_path, "escalate_fit",
                           {"phase": "outcome", "iter": it, "job_id": None,
@@ -855,22 +1056,39 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
 
         with timed(log_path, "submit", iteration=it, attempt=attempt) as _m:
             body = _scan_body(proposal, cfg.engine, cfg.base_seed + scan_counter,
-                               sample=cfg.sample, allow_partial=allow_partial)
-            submit = client.submit_scan(
-                body, idempotency_key=f"{objective.name or 'campaign'}-{cfg.run_nonce}-{scan_counter}")
+                               sample=cfg.sample)
+            try:
+                submit = client.submit_scan(
+                    body,
+                    idempotency_key=(
+                        f"{objective.name or 'campaign'}-{cfg.run_nonce}-{scan_counter}"))
+            except TaviError as error:
+                code = _tavi_error_code(error)
+                if error.status == 400 and code == "all_points_infeasible":
+                    log_event(log_path, "exception", {
+                        "action": "geometry_unreachable",
+                        "error": str(error),
+                        "hkl": [proposal.h, proposal.k, proposal.l],
+                        "iter": it,
+                    })
+                    observations.append(
+                        _declined_observation(proposal, "geometry_unreachable"))
+                    break
+                raise
             scan_counter += 1
             job_id = submit.get("job_id")
             _m["job_id"] = job_id
         eta = (submit.get("eta") or {}).get("estimated_seconds")
-        _charge_budget(budget_state, proposal, eta)
+        _charge_budget(budget_state, proposal, eta, n_points=feasible_points)
         # The run event doubles as the durable SPEND LEDGER for crash resume: kind/ncount/n_points/
         # hkl + the charged cost (= n_points×ncount) let a restart recover budget + scan_counter.
         log_event(log_path, "run", {"job_id": job_id, "state": submit.get("state"),
                                     "eta": submit.get("eta"), "attempt": attempt,
                                     "kind": proposal.kind, "ncount": int(proposal.ncount),
-                                    "n_points": int(proposal.n_points or 0),
+                                    "requested_points": int(proposal.n_points or 0),
+                                    "n_points": feasible_points,
                                     "hkl": [proposal.h, proposal.k, proposal.l],
-                                    "cost": float(proposal.n_points or 1) * float(proposal.ncount),
+                                    "cost": float(feasible_points) * float(proposal.ncount),
                                     "iter": it})
 
         with timed(log_path, "wait_scan", iteration=it, job_id=job_id) as _m:
@@ -892,6 +1110,22 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         with timed(log_path, "fetch_save", iteration=it):
             data = client.get_scan_data(job_id)
             scan_path = save_scan_json(data, data_dir)
+        executed_points = _executed_point_count(data, feasible_points)
+        if executed_points != feasible_points:
+            neutron_delta, seconds_delta = _reconcile_budget_points(
+                budget_state, proposal.ncount, feasible_points, executed_points, eta=eta)
+            log_event(log_path, "exception", {
+                "action": "feasibility_reconciled",
+                "job_id": job_id,
+                "hkl": [proposal.h, proposal.k, proposal.l],
+                "planned_points": feasible_points,
+                "executed_points": executed_points,
+                "ncount": int(proposal.ncount),
+                "executed_cost": float(executed_points) * float(proposal.ncount),
+                "neutron_delta": neutron_delta,
+                "seconds_delta": seconds_delta,
+                "iter": it,
+            })
         # Lazy `isar init`: the instrument card can only be scaffolded from a recognizable
         # data file, which first exists NOW. Subprocess keeps the analysis boundary.
         if not (workspace / "card.policy.toml").exists():
@@ -922,7 +1156,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             rows = _new_rows(workspace, consumed)
             # The scan's actual monitor cost (n_points reflects any recenter; charged once per scan,
             # onto the first detector row so counts_spent per q is not multiplied by detector count).
-            scan_cost = float(proposal.n_points or 1) * float(proposal.ncount)
+            scan_cost = float(executed_points) * float(proposal.ncount)
             for j, r in enumerate(rows):
                 observations.append(_observation_from_row(
                     r, proposal.kind, proposal.ncount, cfg.calibration,
@@ -973,7 +1207,9 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             break
         proposal.e_lo = act.params["e_lo"]
         proposal.e_hi = act.params["e_hi"]
-        proposal.n_points = points_in_window(proposal.e_lo, proposal.e_hi, proposal.e_step)
+        proposal.n_points = points_in_window(
+            proposal.e_lo, proposal.e_hi, proposal.e_step,
+            max_points=int((proposal.meta or {}).get("max_scan_points", MAX_POINTS)))
         attempt += 1
 
     return rows, scan_counter
@@ -1148,6 +1384,9 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     break
                 with timed(cfg.log_path, "stop_eval", iteration=it):
                     master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
+                    if _record_eligible_crossings(grid, observations, cfg.log_path):
+                        master_rows, grid = _grid_state(
+                            objective, observations, cfg.workspace, cfg.calibration)
                     decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
                 if decision.state != "continue":
                     break
@@ -1158,13 +1397,27 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                 # iteration (durable / crash-safe — a file, never a live session object). No branch yet →
                 # provider is None → propose_scan falls back to the 5a counts tier.
                 with timed(cfg.log_path, "fisher_provider", iteration=it):
+                    durable_state = read_card_state(cfg.workspace)
                     fisher = (None if objective.target_branch != "acoustic" else
-                              _make_fisher_provider(read_card_state(cfg.workspace), cfg.resolution_cb))
+                              _make_fisher_provider(
+                                  durable_state, cfg.resolution_cb,
+                                  production_ncount=int((getattr(objective, "steering", None) or {}).get(
+                                      "production_batch_ncount", PRODUCTION_NCOUNT))))
+                    classify, rival_band = _make_classification_providers(
+                        durable_state, objective, cfg.resolution_cb)
                 with timed(cfg.log_path, "propose", iteration=it):
                     proposal = propose_scan(objective, model, observations, cfg.resolution_cb, budget_state,
-                                            master_rows=master_rows, fisher=fisher)
+                                            master_rows=master_rows, fisher=fisher,
+                                            classify=classify, rival_band=rival_band)
                 if proposal is None:
                     decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
+                    threshold = float((getattr(objective, "steering", None) or {}).get(
+                        "minimum_information_per_cost", 0.0))
+                    if decision.state == "continue" and threshold > 0.0:
+                        decision = StopDecision(
+                            "diminishing_returns",
+                            [f"best available marginal information/cost is below {threshold:g}"],
+                            decision.per_q)
                     break
                 log_event(cfg.log_path, "propose", {**proposal.to_dict(), "iter": it})
 
@@ -1271,12 +1524,27 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     return summary
 
 
-def _charge_budget(budget_state: dict, proposal, eta) -> None:
-    budget_state["neutrons"] += float(proposal.ncount) * float(proposal.n_points or 1)
+def _charge_budget(budget_state: dict, proposal, eta, *, n_points: int | None = None) -> None:
+    points = int(proposal.n_points or 1) if n_points is None else max(int(n_points), 0)
+    budget_state["neutrons"] += float(proposal.ncount) * float(points)
     if eta is not None:
         budget_state["seconds"] += float(eta)
     budget_state["spent"] = (budget_state["neutrons"] if budget_state["kind"] == "neutrons"
                              else budget_state["seconds"])
+
+
+def _reconcile_budget_points(budget_state: dict, ncount: int, planned: int, executed: int,
+                             *, eta: float | None = None) -> tuple[float, float]:
+    """Replace planned point/time cost with executed cost; return durable ledger deltas."""
+    delta = float(ncount) * float(int(executed) - int(planned))
+    budget_state["neutrons"] = max(0.0, float(budget_state["neutrons"]) + delta)
+    seconds_delta = 0.0
+    if eta is not None and int(planned) > 0:
+        seconds_delta = float(eta) * (float(executed) / float(planned) - 1.0)
+        budget_state["seconds"] = max(0.0, float(budget_state["seconds"]) + seconds_delta)
+    budget_state["spent"] = (budget_state["neutrons"] if budget_state["kind"] == "neutrons"
+                             else budget_state["seconds"])
+    return delta, seconds_delta
 
 
 def _campaign_summary(objective, grid, decision, budget_state, workspace, log_path, n_obs,
@@ -1310,8 +1578,14 @@ def _campaign_summary(objective, grid, decision, budget_state, workspace, log_pa
     try:
         card = read_card_state(workspace)
         prior_points = card.get("dispersion_prior") or []
-    except Exception:   # noqa: BLE001
+        mismatch = dict(card.get("hypothesis_mismatch") or {})
+        branch_beliefs = list(card.get("branch_belief") or [])
+    except Exception as error:   # noqa: BLE001
+        log_event(log_path, "exception", {"event": "summary_state_read_failed",
+                                           "error": str(error)})
         prior_points = []
+        mismatch = {}
+        branch_beliefs = []
     return {
         "objective": objective.to_dict(),
         # ``stop_override`` carries the operator_stopped terminal state (+ grid_state snapshot); the
@@ -1327,6 +1601,8 @@ def _campaign_summary(objective, grid, decision, budget_state, workspace, log_pa
                   "stuck": g.stuck} for g in grid],
         "dispersion": dispersion,
         "dispersion_prior_points": len(prior_points),
+        "branch_beliefs": branch_beliefs,
+        "hypothesis_mismatch": mismatch,
         "budget": dict(budget_state),
         "n_observations": n_obs,
         "session_log": str(log_path),

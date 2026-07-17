@@ -33,6 +33,7 @@ from isar.drive.acquisition.eig import (
     fisher_eig,
     predicted_sigma_after,
 )
+from isar.drive.acquisition.classify_eig import widen_factor
 from isar.drive.supervisor.stopping import (
     PRODUCTION_NCOUNT,
     QUICKLOOK_NCOUNT,
@@ -118,8 +119,9 @@ def _fwhm_from(info) -> float:
     return DEFAULT_FWHM_MEV
 
 
-def points_in_window(e_lo: float, e_hi: float, e_step: float) -> int:
-    """The number of scan points a ``deltaE e_lo e_hi e_step`` window has (clamped to ``MAX_POINTS``).
+def points_in_window(e_lo: float, e_hi: float, e_step: float, *,
+                     max_points: int = MAX_POINTS) -> int:
+    """The number of scan points a ``deltaE e_lo e_hi e_step`` window has, capped by policy.
 
     The single source of truth for a window's point count — used by :func:`_energy_window` and by the
     loop's missed-window recenter so ``ScanProposal.n_points`` (hence the charged cost) stays truthful
@@ -127,12 +129,16 @@ def points_in_window(e_lo: float, e_hi: float, e_step: float) -> int:
     """
     step = max(float(e_step), 1e-9)
     span = max(float(e_hi) - float(e_lo), 0.0)
-    return min(int(span / step) + 1, MAX_POINTS)
+    # Mirror TAVI utilities.parse_scan_steps exactly: nearest integral number of intervals, plus the
+    # inclusive start point.  This also avoids a 23.999999999999996 quotient losing the last point.
+    return min(int(math.floor(span / step + 0.5)) + 1, max(int(max_points), 2))
 
 
 def _energy_window(e_pred: float, fwhm: float, e_sigma: float = 0.0,
-                   *, survey: bool = False,
-                   energy_search_meV=None) -> tuple[float, float, float, int]:
+                   *, survey: bool = False, energy_search_meV=None,
+                   target_band=None, rival_band=None, widen: float = 1.0,
+                   positive_only: bool = False,
+                   max_points: int = MAX_POINTS) -> tuple[float, float, float, int]:
     """Build ``(e_lo, e_hi, e_step, n_points)`` from the predicted ω, the resolution FWHM, and the
     predictive uncertainty ``e_sigma`` on ω(q).
 
@@ -156,14 +162,31 @@ def _energy_window(e_pred: float, fwhm: float, e_sigma: float = 0.0,
         e_hi = max(e_hi, search_hi)
     elif math.isfinite(sig) and sig > fwhm:        # ω(q) not yet localized → survey e_pred + k·σ
         e_hi = max(e_hi, min(e + SURVEY_SIGMA_K * sig, search_hi))
+    if target_band is not None:
+        target_mu, target_sigma = map(float, target_band)
+        e_lo = min(e_lo, target_mu - 2.0 * target_sigma)
+        e_hi = max(e_hi, target_mu + 2.0 * target_sigma)
+    if rival_band is not None:
+        rival_mu, rival_sigma = map(float, rival_band)
+        e_lo = min(e_lo, rival_mu - 2.0 * rival_sigma)
+        e_hi = max(e_hi, rival_mu + 2.0 * rival_sigma)
+    if widen > 1.0:
+        e_hi = e + (e_hi - e) * float(widen)
+        if widen >= 2.5:  # persisted decline step 3+: full feasible search-band intersection
+            e_hi = search_hi
+    if target_band is not None or rival_band is not None or widen > 1.0 or positive_only:
+        e_lo, e_hi = max(e_lo, search_lo), min(e_hi, search_hi)
+    if positive_only:
+        e_lo = max(e_lo, 0.5 * fwhm)
     if e_hi <= e_lo:                               # defensive: never invert
         e_hi = e_lo + fwhm
     e_step = STEP_RES_FRACTION * fwhm
     span = e_hi - e_lo
-    n_points = int(span / e_step) + 1
-    if n_points > MAX_POINTS:                       # clamp to the budget cap
-        e_step = span / (MAX_POINTS - 1)
-        n_points = MAX_POINTS
+    point_cap = max(int(max_points), 2)
+    n_points = int(math.floor(span / e_step + 0.5)) + 1
+    if n_points > point_cap:                        # clamp to the frozen steering-policy cap
+        e_step = span / (point_cap - 1)
+        n_points = point_cap
     return e_lo, e_hi, e_step, n_points
 
 
@@ -185,7 +208,8 @@ def _finite_or_none(x) -> float | None:
 
 
 def _select_target(grid: list[GridQ], model, *,
-                   fisher=None) -> tuple[GridQ | None, str, str, ProposalScore | None]:
+                   fisher=None, opening=None, classify=None,
+                   classification_weight: float = 0.0) -> tuple[GridQ | None, str, str, ProposalScore | None]:
     """Pick the next grid q and its scan kind. Returns ``(gridq, kind, reason, score)``.
 
     Tiers, most-specific first:
@@ -207,11 +231,13 @@ def _select_target(grid: list[GridQ], model, *,
     """
     unvisited = [g for g in grid if not g.visited]
     if unvisited:
-        pick = max(unvisited, key=lambda g: model.predict(g.q)[1])
+        pick = min(unvisited, key=opening) if opening is not None else max(
+            unvisited, key=lambda g: model.predict(g.q)[1])
+        purpose = "hypothesis_check" if opening is not None else "survey"
         reason = (f"unvisited q={pick.q:g} (hkl={list(pick.hkl)}); quick-look to seed the ω(q) model "
                   f"and count rate (predicted σ={model.predict(pick.q)[1]:g} meV)")
         return pick, "quicklook", reason, ProposalScore(
-            method="explore", c_spent=float(pick.counts_spent), reason=reason)
+            method="explore", c_spent=float(pick.counts_spent), reason=reason, purpose=purpose)
     candidates = [g for g in grid if not (g.converged or g.stuck)]
     if not candidates:
         return None, "", "all grid q converged or abandoned (stuck)", None
@@ -239,29 +265,44 @@ def _select_target(grid: list[GridQ], model, *,
         if graded:
             def _fkey(t):
                 g, sp, ss = t
-                return eig_per_cost(fisher_eig(sp, ss), _q_next_cost(g))
+                classification = max(float(classify(g)), 0.0) if classify is not None else 0.0
+                return eig_per_cost(
+                    fisher_eig(sp, ss) + classification_weight * classification,
+                    _q_next_cost(g))
             pick, sp, ss = max(graded, key=_fkey)
             eig = fisher_eig(sp, ss)
+            classification = max(float(classify(pick)), 0.0) if classify is not None else 0.0
+            combined = eig + classification_weight * classification
             reason = (f"max-Fisher-EIG/cost q={pick.q:g} (hkl={list(pick.hkl)}); σ_prior={sp:g}→"
                       f"σ_scan={ss:g} meV, C={pick.counts_spent:g}; production scan (identifiability-aware)")
             return pick, "production", reason, ProposalScore(
                 method="fisher", eig=_finite_or_none(eig), sigma_prior=_finite_or_none(sp),
-                sigma_scan=_finite_or_none(ss), c_spent=float(pick.counts_spent), reason=reason)
+                sigma_scan=_finite_or_none(ss), c_spent=float(pick.counts_spent), reason=reason,
+                classification_eig=_finite_or_none(classification),
+                classification_weight=float(classification_weight),
+                combined_information=_finite_or_none(combined), purpose="target_or_classification")
 
     # Counts tier (5a): goal-weighted EIG-per-cost when every candidate has a cost history.
     if all(g.counts_spent > 0.0 for g in candidates):
         def _ckey(g):
             dc = _q_next_cost(g)
-            return eig_per_cost(counts_eig(_q_sigma(g), g.tolerance, g.counts_spent, dc), dc)
+            target = counts_eig(_q_sigma(g), g.tolerance, g.counts_spent, dc)
+            classification = max(float(classify(g)), 0.0) if classify is not None else 0.0
+            return eig_per_cost(target + classification_weight * classification, dc)
         pick = max(candidates, key=_ckey)
         dc = _q_next_cost(pick)
         eig = counts_eig(_q_sigma(pick), pick.tolerance, pick.counts_spent, dc)
+        classification = max(float(classify(pick)), 0.0) if classify is not None else 0.0
+        combined = eig + classification_weight * classification
         reason = (f"max-EIG/cost q={pick.q:g} (hkl={list(pick.hkl)}); σ={_q_sigma(pick):g} meV over "
                   f"tolerance {pick.tolerance:g}, C={pick.counts_spent:g}; production scan (EIG-per-cost ranked)")
         return pick, "production", reason, ProposalScore(
             method="counts", eig=_finite_or_none(eig), sigma_prior=_finite_or_none(_q_sigma(pick)),
             sigma_scan=_finite_or_none(predicted_sigma_after(_q_sigma(pick), pick.counts_spent, dc)),
-            c_spent=float(pick.counts_spent), reason=reason)
+            c_spent=float(pick.counts_spent), reason=reason,
+            classification_eig=_finite_or_none(classification),
+            classification_weight=float(classification_weight),
+            combined_information=_finite_or_none(combined), purpose="target_or_classification")
 
     pick = max(candidates, key=lambda g: g.deficit)
     deficit = pick.deficit
@@ -276,7 +317,7 @@ def _select_target(grid: list[GridQ], model, *,
 
 def propose_scan(objective, model, results_so_far: list[dict], resolution_info=None,
                  budget_state: dict | None = None, master_rows: list[dict] | None = None,
-                 fisher=None) -> ScanProposal | None:
+                 fisher=None, classify=None, rival_band=None) -> ScanProposal | None:
     """Propose the next scan (Q, energy window, neutron count), or ``None`` if nothing remains.
 
     Args:
@@ -293,7 +334,22 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
             (5b). Returns the predicted post-scan σ(ω₀) when the q is Fisher-grounded, else ``None``.
     """
     grid = summarize_grid(objective, results_so_far or [], master_rows or [])
-    pick, kind, reason, score = _select_target(grid, model, fisher=fisher)
+    target_hypothesis = next((h for h in getattr(objective, "hypotheses", [])
+                              if h.get("name") == getattr(objective, "target_hypothesis", None)), None)
+    opening = None
+    if target_hypothesis is not None:
+        name = target_hypothesis.get("name")
+        if name == "optic":
+            opening = lambda g: (g.q, g.index)
+        elif name == "acoustic":
+            def opening(g):
+                mu, _ = model.predict(g.q)
+                return (0 if mu >= DEFAULT_FWHM_MEV else 1, g.q, g.index)
+    policy = dict(getattr(objective, "steering", {}) or {})
+    classification_weight = float(policy.get("classification_weight", 0.0))
+    pick, kind, reason, score = _select_target(
+        grid, model, fisher=fisher, opening=opening, classify=classify,
+        classification_weight=classification_weight)
     if pick is None:
         return None
 
@@ -303,17 +359,40 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
     # Survey the band until this q has a confirmed resolved fit — a concave dispersion sits above the
     # local-linear e_pred, so a tight window on an unconfirmed q misses the peak and never seeds.
     survey = not bool(getattr(pick, "best_resolved", False))
+    target_band = None
+    positive_only = False
+    if target_hypothesis is not None and target_hypothesis.get("name") == "optic" and survey:
+        zc = target_hypothesis.get("zc_energy") or {}
+        target_band = (zc.get("mean", zc.get("mode", e_pred)), zc.get("sigma", e_sigma))
+        positive_only = True
+    elif target_hypothesis is not None:
+        target_band = (max(float(e_pred), 0.0), max(float(e_sigma), 0.5 * fwhm))
+    widen = widen_factor(
+        getattr(pick, "n_decline", 0), step=float(policy.get("absent_signal_widen_step", 0.5)),
+        max_steps=int(policy.get("absent_signal_widen_steps", 3)))
+    rb = rival_band(pick) if callable(rival_band) else rival_band
     e_lo, e_hi, e_step, n_points = _energy_window(
         e_pred, fwhm, e_sigma, survey=survey,
-        energy_search_meV=getattr(objective, "energy_search_meV", None))
-    ncount = QUICKLOOK_NCOUNT if kind == "quicklook" else PRODUCTION_NCOUNT
+        energy_search_meV=getattr(objective, "energy_search_meV", None),
+        target_band=target_band, rival_band=rb, widen=widen, positive_only=positive_only,
+        max_points=int(policy.get("max_scan_points", MAX_POINTS)))
+    ncount = (int(policy.get("quicklook_ncount", QUICKLOOK_NCOUNT)) if kind == "quicklook" else
+              int(policy.get("production_batch_ncount", PRODUCTION_NCOUNT)))
 
     dc = float(n_points) * float(ncount)
-    epc = None if score.eig is None else _finite_or_none(eig_per_cost(score.eig, dc))
+    information = score.combined_information if score.combined_information is not None else score.eig
+    epc = None if information is None else _finite_or_none(eig_per_cost(information, dc))
     score = replace(score, cost=dc, eig_per_cost=epc)
+    threshold = float(policy.get("minimum_information_per_cost", 0.0))
+    if epc is not None and threshold > 0.0 and epc < threshold:
+        return None
     return ScanProposal(
         h=h, k=k, l=l, e_lo=e_lo, e_hi=e_hi, e_step=e_step, ncount=ncount, kind=kind,
         reason=reason, e_pred=float(e_pred), fwhm_dE=float(fwhm), n_points=n_points,
         meta={"e_sigma": _finite_or_none(e_sigma), "q": pick.q, "score": score.to_dict(),
+              "purpose": score.purpose, "widen_factor": widen,
+              "max_scan_points": int(policy.get("max_scan_points", MAX_POINTS)),
+              "target_band": list(target_band) if target_band is not None else None,
+              "rival_band": list(rb) if rb is not None else None,
               "budget_state": dict(budget_state) if budget_state else {}},
     )

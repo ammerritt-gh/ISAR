@@ -16,6 +16,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from isar.schema.hypotheses import SteeringPolicy, content_fingerprint, preset
+
 # The two fidelity tiers a driver campaign can run against (LLM_HARNESS_DESIGN §6). "deterministic"
 # is TAVI's fast analytic engine (develop the loop); "mcstas" is the full Monte-Carlo (validate).
 TIERS = ("deterministic", "mcstas")
@@ -51,6 +53,11 @@ class ObjectiveSpec:
     target_branch: str = "acoustic"
     target_label: str = "acoustic"
     energy_search_meV: tuple[float, float] | None = None
+    hypotheses: list[dict[str, Any]] = field(default_factory=list)
+    target_hypothesis: str | None = None
+    hypothesis_source: str | None = None
+    hypothesis_fingerprint: str | None = None
+    steering: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.tier not in TIERS:
@@ -76,6 +83,21 @@ class ObjectiveSpec:
             if not self.energy_search_meV[0] < self.energy_search_meV[1]:
                 raise ValueError("energy_search_meV must be [low, high] with low < high")
         self.target_label = str(self.target_label or self.target_branch)
+        self.hypotheses = [dict(h) for h in self.hypotheses]
+        self.steering = dict(self.steering)
+        if self.hypotheses:
+            names = {str(h.get("name")) for h in self.hypotheses}
+            if not self.target_hypothesis or self.target_hypothesis not in names:
+                raise ValueError("target_hypothesis must name one of the frozen hypotheses")
+            policy = SteeringPolicy(**self.steering)
+            self.steering = policy.to_dict()
+            expected = content_fingerprint(self.hypotheses, self.steering)
+            if self.hypothesis_fingerprint is not None and self.hypothesis_fingerprint != expected:
+                raise ValueError("hypothesis_fingerprint does not match the frozen hypothesis snapshot")
+            self.hypothesis_fingerprint = expected
+        elif any((self.target_hypothesis, self.hypothesis_source, self.hypothesis_fingerprint,
+                  self.steering)):
+            raise ValueError("hypothesis metadata cannot exist without frozen hypotheses")
 
     # ---- constructors ------------------------------------------------------
     @classmethod
@@ -83,7 +105,11 @@ class ObjectiveSpec:
                 tolerance_meV: float, budget: dict[str, Any], tier: str = "deterministic",
                 name: str = "", meta: dict[str, Any] | None = None,
                 target_branch: str = "acoustic", target_label: str = "acoustic",
-                energy_search_meV: tuple[float, float] | None = None) -> "ObjectiveSpec":
+                energy_search_meV: tuple[float, float] | None = None,
+                hypotheses: list[dict[str, Any]] | None = None,
+                target_hypothesis: str | None = None, hypothesis_source: str | None = None,
+                hypothesis_fingerprint: str | None = None,
+                steering: dict[str, Any] | None = None) -> "ObjectiveSpec":
         """A path that walks H from ``h_start`` to ``h_end`` in increments of ``step`` at fixed K, L.
 
         The endpoint is included when it lands on the grid (within a tolerance of ``step``). ``step``
@@ -97,14 +123,22 @@ class ObjectiveSpec:
         pts = [(h_start + sign * step * i, k, l) for i in range(n + 1)]
         return cls(path=pts, tolerance_meV=float(tolerance_meV), budget=dict(budget),
                    tier=tier, name=name, meta=dict(meta or {}), target_branch=target_branch,
-                   target_label=target_label, energy_search_meV=energy_search_meV)
+                   target_label=target_label, energy_search_meV=energy_search_meV,
+                   hypotheses=list(hypotheses or []), target_hypothesis=target_hypothesis,
+                   hypothesis_source=hypothesis_source,
+                   hypothesis_fingerprint=hypothesis_fingerprint,
+                   steering=dict(steering or {}))
 
     @classmethod
     def segment(cls, *, q_start, q_end, step_rlu: float, tolerance_meV: float,
                 budget: dict[str, Any], tier: str = "deterministic", name: str = "",
                 meta: dict[str, Any] | None = None, target_branch: str = "acoustic",
                 target_label: str = "acoustic",
-                energy_search_meV: tuple[float, float] | None = None) -> "ObjectiveSpec":
+                energy_search_meV: tuple[float, float] | None = None,
+                hypotheses: list[dict[str, Any]] | None = None,
+                target_hypothesis: str | None = None, hypothesis_source: str | None = None,
+                hypothesis_fingerprint: str | None = None,
+                steering: dict[str, Any] | None = None) -> "ObjectiveSpec":
         """A straight reciprocal-space segment whose intervals never exceed ``step_rlu``.
 
         Unlike :meth:`along_h`, this uses ``ceil`` and evenly divides the complete vector so the
@@ -124,7 +158,11 @@ class ObjectiveSpec:
                [tuple(a + d * (i / n) for a, d in zip(start, delta)) for i in range(n + 1)])
         return cls(path=pts, tolerance_meV=float(tolerance_meV), budget=dict(budget), tier=tier,
                    name=name, meta=dict(meta or {}), target_branch=target_branch,
-                   target_label=target_label, energy_search_meV=energy_search_meV)
+                   target_label=target_label, energy_search_meV=energy_search_meV,
+                   hypotheses=list(hypotheses or []), target_hypothesis=target_hypothesis,
+                   hypothesis_source=hypothesis_source,
+                   hypothesis_fingerprint=hypothesis_fingerprint,
+                   steering=dict(steering or {}))
 
     # ---- (de)serialization -------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
@@ -138,6 +176,11 @@ class ObjectiveSpec:
             "target_branch": self.target_branch,
             "target_label": self.target_label,
             "energy_search_meV": list(self.energy_search_meV),
+            "hypotheses": [dict(h) for h in self.hypotheses],
+            "target_hypothesis": self.target_hypothesis,
+            "hypothesis_source": self.hypothesis_source,
+            "hypothesis_fingerprint": self.hypothesis_fingerprint,
+            "steering": dict(self.steering),
         }
 
     @classmethod
@@ -153,4 +196,21 @@ class ObjectiveSpec:
             target_label=d.get("target_label", d.get("target_branch", "acoustic")),
             energy_search_meV=(tuple(d["energy_search_meV"])
                                if d.get("energy_search_meV") is not None else None),
+            hypotheses=list(d.get("hypotheses") or []),
+            target_hypothesis=d.get("target_hypothesis"),
+            hypothesis_source=d.get("hypothesis_source"),
+            hypothesis_fingerprint=d.get("hypothesis_fingerprint"),
+            steering=dict(d.get("steering") or {}),
         )
+
+
+def shipped_hypothesis_snapshot(target_branch: str, energy_search_meV) -> dict[str, Any]:
+    """Freeze the shipped target plus its acoustic/optic rival for a newly compiled goal."""
+    energy = tuple(energy_search_meV or ((-2.0, 12.0) if target_branch == "optic" else (-2.0, 7.0)))
+    names = [target_branch] + [name for name in ("acoustic", "optic") if name != target_branch]
+    hypotheses = [preset(name, energy).to_dict() for name in names]
+    steering = SteeringPolicy().to_dict()
+    return {"hypotheses": hypotheses, "target_hypothesis": target_branch,
+            "hypothesis_source": "shipped_preset",
+            "hypothesis_fingerprint": content_fingerprint(hypotheses, steering),
+            "steering": steering}

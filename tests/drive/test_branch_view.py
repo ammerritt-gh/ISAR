@@ -64,6 +64,16 @@ def test_fisher_provider_grounds_unconstrained_in_range():
     assert ss is not None and math.isfinite(ss) and ss > 0
 
 
+def test_fisher_provider_uses_campaign_production_batch_exposure():
+    card = {"branch_models": [_branch()]}
+    low = loop._make_fisher_provider(
+        card, {"fwhm_dE": 0.5}, production_ncount=25_000_000)
+    high = loop._make_fisher_provider(
+        card, {"fwhm_dE": 0.5}, production_ncount=100_000_000)
+    grid = _gridq("unconstrained")
+    assert low(grid, 5.0, 0.3) > high(grid, 5.0, 0.3)
+
+
 def test_fisher_provider_declines_when_ungrounded():
     card = {"branch_models": [_branch()]}
     provider = loop._make_fisher_provider(card, {"fwhm_dE": 0.5})

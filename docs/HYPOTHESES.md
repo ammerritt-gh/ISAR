@@ -1,9 +1,9 @@
 # Excitation hypotheses — declaring what you expect to measure
 
-> **Status: Planned.** Design locked 2026-07-17 (DECISIONS O6–O11; rationale in
-> `MEASUREMENT_STEERING.md` §4.5). **None of this is implemented yet** — this document is the
-> user-facing reference for the declared design, written ahead of the code so the TOML surface is
-> reviewable. It will gain per-field status notes as slices land.
+> **Status: Partial.** The branch schema, shipped presets, frozen objective fingerprint, parameter
+> priors, branch-MI acquisition, opening moves, deterministic widening, incremental count batches,
+> and persisted mismatch evidence are implemented (2026-07-17). Card tables parse and validate;
+> resolving goal overrides against card declarations is the remaining user-facing gap.
 
 ## What a hypothesis is (and is not)
 
@@ -50,8 +50,9 @@ uninformative default):
 
 | Field | Meaning |
 |---|---|
+| `preset` | Optional shipped base (`"acoustic"`, `"optic"`, or `"null"`). A table named for a shipped preset inherits it automatically. |
 | `dispersion_type` | `"branch"` (an E(q) curve) / `"level"` (flat in q, e.g. crystal-field) / `"continuum"`. **First slice implements `branch` only**; the others are declared interface (O10) and are rejected with a clear error until their plugins exist. |
-| `zc_energy` | Zone-centre energy prior: `{ mode, sigma }`, **half-normal** — it can never imply a negative energy. The acoustic preset pins `mode = 0`. |
+| `zc_energy` | Zone-centre energy prior: `{ mode, sigma }` (or `{ mean, sigma }`), truncated at zero — it can never imply a negative energy. The acoustic preset has mean 0. |
 | `slope_zc` | Prior on the dispersion slope at the zone centre (mean, sigma). |
 | `flatness` | `"low"` / `"high"` — shorthand that scales the slope-prior sigma. |
 | `confidence` | 0..1; scales the prior's precision. Treat it as "how much data would it take to talk me out of this." The prior's influence decays automatically as real data accumulates regardless. |
@@ -111,6 +112,13 @@ The resolved hypothesis set (parameters + preset versions) is content-hashed int
 `card.state.json` at campaign start. Steering is deterministic given the workspace and the
 policy file; presets are part of that chain, so a preset edit is a visible fingerprint change,
 never a silent behavior change.
+
+The frozen objective stores `hypotheses`, `target_hypothesis`, `hypothesis_source`, `steering`, and
+`hypothesis_fingerprint`. Machine state stores the snapshot under `hypothesis_snapshot`, the
+prior-vs-data-only check under `hypothesis_mismatch`, drive regression ingredients under
+`branch_belief_models`, and viewer/report rows under `branch_belief`. Each viewer row carries
+`label_probabilities`, `assignment_entropy`, and `p_is_target`; there is no ambiguous
+`target_probability` field.
 
 ---
 

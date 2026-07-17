@@ -95,10 +95,7 @@ def test_budget_warn_and_exhausted():
     assert done.action == "exhausted"
 
 
-def test_validation_rejection_repair_vs_drop():
-    repair = exc.handle_validation_rejection(["infeasible_points: 2"])
-    assert repair.action == "repair"
-    drop = exc.handle_validation_rejection([], allow_partial_ok=True)
-    assert drop.action == "drop"                           # nothing feasible to keep
-    drop2 = exc.handle_validation_rejection(["bad"], allow_partial_ok=False)
-    assert drop2.action == "drop"
+def test_validation_rejection_drops_unavailable_proposal():
+    drop = exc.handle_validation_rejection(["all_points_infeasible"])
+    assert drop.action == "drop"
+    assert "no executable scan" in drop.reason

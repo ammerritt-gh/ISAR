@@ -14,6 +14,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import math
 import os
 import time
 from collections import Counter
@@ -937,6 +938,121 @@ def _store_branch_models(state, t_round: float) -> None:
         state.branch_models.append(bm)
 
 
+def _store_branch_beliefs(state, t_round: float, *, period: float | None,
+                          hypotheses: list[dict] | None = None) -> None:
+    """Persist the data/prior ingredients of every branch belief for the Qt-free drive/viewers."""
+    if period is None:
+        state.branch_belief = []
+        state.branch_belief_models = []
+        return
+    points = state.dispersion_prior or []
+    keys: list[tuple[str, float]] = []
+    for point in points:
+        sample = point.get("sample")
+        tb = point.get("t_bin", point.get("T"))
+        if sample is None or tb is None:
+            continue
+        tb = round(float(tb) / t_round) * t_round if t_round else float(tb)
+        key = (str(sample), float(tb))
+        if key not in keys:
+            keys.append(key)
+    if not keys and hypotheses:
+        # A prior-only snapshot is useful but has no sample/T identity until the first scan lands.
+        state.branch_belief = []
+        state.branch_belief_models = []
+        return
+    rows: list[dict] = []
+    for sample, tb in keys:
+        beliefs = BA.build_beliefs(points, sample=sample, t_bin=tb, period=period,
+                                   t_round=t_round, hypotheses=hypotheses)
+        for branch_id, belief in sorted(beliefs.items()):
+            anchors = [{"u": float(u), "omega0": float(y), "weight": float(w)}
+                       for u, y, w in zip(belief.us, belief.ys, belief.ws)]
+            rows.append({"sample": sample, "t_bin": tb, "branch_id": branch_id,
+                         "period": float(period), "anchors": anchors,
+                         "n_anchors": belief.n_anchors,
+                         "parameter_prior": dict(belief.parameter_prior or {}),
+                         "label_probabilities": {}})
+    state.branch_belief_models = rows
+    target = (getattr(state, "hypothesis_snapshot", None) or {}).get("target_hypothesis")
+    point_rows: list[dict] = []
+    for point in sorted(points, key=lambda item: (
+            str(item.get("sample", "")), float(item.get("t_bin", item.get("T", 0.0))),
+            tuple(float(value) for value in (item.get("q") or ())),
+            str(item.get("scan_id", "")))):
+        branch_id = str(point.get("branch_id") or BA.ACOUSTIC)
+        probability = min(max(float(point.get("weight", 1.0)), 0.0), 1.0)
+        probabilities = {branch_id: probability, BA.NEW: 1.0 - probability}
+        entropy = -sum(value * math.log(value) for value in probabilities.values() if value > 0.0)
+        point_rows.append({
+            "sample": point.get("sample"), "t_bin": point.get("t_bin", point.get("T")),
+            "q": list(point.get("q") or []), "omega0": point.get("omega0"),
+            "sigma": BA.SIGMA_SLACK / math.sqrt(max(probability, 1e-9)),
+            "branch_id": branch_id, "label_probabilities": probabilities,
+            "assignment_entropy": entropy,
+            "p_is_target": probability if branch_id == target else 0.0,
+            "resolvable": None, "scan_id": point.get("scan_id")})
+    state.branch_belief = point_rows
+
+
+def _update_hypothesis_mismatch(state, t_round: float, *, period: float | None,
+                                hypotheses: list[dict] | None = None) -> None:
+    """Persist O11's prior-vs-data-only posterior-predictive mismatch assessment."""
+    snapshot = getattr(state, "hypothesis_snapshot", None) or {}
+    target = snapshot.get("target_hypothesis")
+    policy = snapshot.get("steering") or {}
+    threshold = float(policy.get("mismatch_z_threshold", 3.0))
+    hypothesis = next((h for h in (hypotheses or []) if h.get("name") == target), None)
+    if period is None or hypothesis is None:
+        state.hypothesis_mismatch = {}
+        return
+    target_points = [p for p in (state.dispersion_prior or []) if p.get("branch_id") == target]
+    groups: dict[tuple[str, float], list[dict]] = {}
+    for point in target_points:
+        sample_value = point.get("sample")
+        tb_value = point.get("t_bin", point.get("T"))
+        if sample_value is None or tb_value is None:
+            continue
+        tb = round(float(tb_value) / t_round) * t_round if t_round else float(tb_value)
+        groups.setdefault((str(sample_value), float(tb)), []).append(point)
+    eligible = {key: rows for key, rows in groups.items() if len(rows) >= 2}
+    if not eligible:
+        state.hypothesis_mismatch = {
+            "active": False, "evaluated": False, "target_hypothesis": target,
+            "comparison": "prior_vs_data_only_posterior_predictive",
+            "reason": "fewer_than_two_real_anchors", "threshold_z": threshold,
+            "fingerprint": snapshot.get("fingerprint")}
+        return
+    sample, tb = max(sorted(eligible), key=lambda key: (len(eligible[key]), key))
+    points = sorted(eligible[(sample, tb)], key=lambda point: (
+        tuple(float(value) for value in (point.get("q") or ())),
+        str(point.get("scan_id", ""))))
+    belief = BA.build_beliefs(points, sample=sample, t_bin=tb, period=period,
+                              t_round=t_round, hypotheses=hypotheses).get(target)
+    prior_only = BA.BranchBelief(target, np.array([]), np.array([]), np.array([]),
+                                 parameter_prior=hypothesis)
+    comparisons = []
+    for u in sorted(set(float(value) for value in belief.us)):
+        prior_mu, prior_sigma = prior_only.predict(u)
+        data_mu, data_sigma = belief.predict_data_only(u)
+        denom = math.sqrt(prior_sigma ** 2 + data_sigma ** 2)
+        z = abs(prior_mu - data_mu) / max(denom, 1e-12)
+        comparisons.append({"u": u, "prior_mean": prior_mu, "prior_sigma": prior_sigma,
+                            "data_mean": data_mu, "data_sigma": data_sigma, "z": z})
+    worst = max(comparisons, key=lambda row: row["z"])
+    active = bool(worst["z"] >= threshold)
+    state.hypothesis_mismatch = {
+        "active": active, "evaluated": True, "target_hypothesis": target,
+        "comparison": "prior_vs_data_only_posterior_predictive",
+        "max_z": worst["z"], "threshold_z": threshold,
+        "evaluated_points": len(comparisons), "worst": worst,
+        "sample": sample, "t_bin": tb,
+        "point_ids": [str(point.get("scan_id", "")) for point in points],
+        "fingerprint": snapshot.get("fingerprint"),
+        "message": (f"declared {target} hypothesis disagrees with data-only branch prediction"
+                    if active else "declared hypothesis remains compatible with data-only prediction")}
+
+
 def _core_provenance(rec, det, source_by_name=None) -> dict:
     """The ingest-parity core provenance keys for one (record, detector), reused from the Phase-2
     helper so `isar run` on a workspace that was never `isar ingest`-ed still carries per-unit q, T,
@@ -1039,6 +1155,10 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
     # separate, crash-prone process that cannot import isar.session — reads the prediction durably from
     # card.state.json (steering Phase 5b-live).
     _store_branch_models(card.state, t_round)
+    _store_branch_beliefs(card.state, t_round, period=_dispersion_period(card),
+                          hypotheses=_campaign_hypotheses(card))
+    _update_hypothesis_mismatch(card.state, t_round, period=_dispersion_period(card),
+                                hypotheses=_campaign_hypotheses(card))
 
     # Collate (all records, whole-experiment view).
     with timer.stage("collate"):
@@ -1372,6 +1492,13 @@ def _campaign_target(card) -> tuple[str, str, tuple[float, float]]:
     return branch, label, (float(energy[0]), float(energy[1]))
 
 
+def _campaign_hypotheses(card) -> list[dict]:
+    state = getattr(card, "state", None)
+    snapshot = getattr(state, "hypothesis_snapshot", None) or {}
+    value = snapshot.get("hypotheses") or []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
 def _target_fold_anchor_count(card, *, sample: str, branch: str) -> int:
     """Count trusted target-branch anchors while accepting pre-target legacy cards."""
     state = getattr(card, "state", None)
@@ -1395,7 +1522,8 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
         return None
     t_bin = round(float(T) / t_round) * t_round if t_round else float(T)
     beliefs = BA.build_beliefs(card.state.dispersion_prior, sample=sample, t_bin=t_bin,
-                               period=period, t_round=t_round)
+                               period=period, t_round=t_round,
+                               hypotheses=_campaign_hypotheses(card))
     modes = fit.get("modes")
     if not modes and fit.get("omega0") is not None:
         modes = [{"omega0": fit["omega0"], "omega0_err": fit.get("omega0_err"),

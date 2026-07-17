@@ -182,9 +182,15 @@ class DispersionViewModel(ViewModel):
         prior = projection.prior_curve(
             list(getattr(bm, "dispersion_prior", None) or []) if bm is not None else [],
             varying, sample=sample, T=T, t_round=_T_ROUND, want_sigma=True)
-        branch = projection.prior_curve(
-            list(getattr(bm, "branch_belief", None) or []) if bm is not None else [],
-            varying, sample=sample, T=T, t_round=_T_ROUND)
+        belief_rows = list(getattr(bm, "branch_belief", None) or []) if bm is not None else []
+        branches = []
+        branch_ids = sorted({str(row.get("branch_id") or "branch") for row in belief_rows})
+        for branch_id in branch_ids:
+            curve = projection.prior_curve(
+                [row for row in belief_rows if str(row.get("branch_id") or "branch") == branch_id],
+                varying, sample=sample, T=T, t_round=_T_ROUND)
+            if curve is not None:
+                branches.append((f"{branch_id} belief", curve[0], curve[1]))
 
         points, entropy = [], []
         self._points = []
@@ -206,8 +212,6 @@ class DispersionViewModel(ViewModel):
 
         prior_xy = None if prior is None else (prior[0], prior[1])
         off_curve = self._off_curve(points, prior)
-        branches = [] if branch is None else [("branch belief", branch[0], branch[1])]
-
         plane = self._projection.plane
         title = "dispersion ω̂(q) · " + plane + (f" · T={_g(T)} K" if T is not None else "")
         return builders.dispersion_spec(
@@ -216,6 +220,12 @@ class DispersionViewModel(ViewModel):
             xlabel=f"{projection.AXIS[varying]} (rlu)",
             meta={"varying": varying, "modal": modal, "temperature": T,
                   "excluded_count": self._excluded_count,
+                  "branch_label_uncertainty": [
+                      {"q": row.get("q"), "branch_id": row.get("branch_id"),
+                       "label_probabilities": row.get("label_probabilities"),
+                       "assignment_entropy": row.get("assignment_entropy"),
+                       "p_is_target": row.get("p_is_target")}
+                      for row in belief_rows],
                   # every plotted ω̂ (members + pooled masters), aligned to the full population.
                   "omega_hat_entropy_all": entropy},
         )

@@ -1,7 +1,7 @@
 """ObjectiveSpec — the machine objective the supervisor produces and the loop consumes."""
 import pytest
 
-from isar.drive.objective import ObjectiveSpec
+from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
 
 
 def _spec():
@@ -99,3 +99,22 @@ def test_explicit_degenerate_segment_remains_a_valid_single_point():
                                  tolerance_meV=0.5,
                                  budget={"kind": "neutrons", "amount": 1})
     assert spec.path == [(2.0, 0.0, 0.0)]
+
+
+def test_old_style_objective_has_no_implicit_null_hypothesis():
+    spec = _spec()
+    assert spec.hypotheses == []
+    assert spec.target_hypothesis is None
+    assert spec.steering == {}
+
+
+def test_frozen_hypothesis_snapshot_round_trips_and_detects_tampering():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    spec = ObjectiveSpec(path=[(2, 0, 0)], tolerance_meV=0.5,
+                         budget={"kind": "neutrons", "amount": 1},
+                         target_branch="optic", **frozen)
+    assert ObjectiveSpec.from_dict(spec.to_dict()).to_dict() == spec.to_dict()
+    tampered = spec.to_dict()
+    tampered["hypotheses"][0]["confidence"] = 0.01
+    with pytest.raises(ValueError, match="fingerprint"):
+        ObjectiveSpec.from_dict(tampered)
