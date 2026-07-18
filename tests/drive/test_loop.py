@@ -239,6 +239,7 @@ def make_branch_aware_optic_runner(objective):
     """Analysis seam for the orchestration regression, with durable two-branch beliefs."""
     assigned: dict[str, int] = {}
     priors = {row["name"]: row for row in objective.hypotheses}
+    quicklook_floor = int(objective.steering.get("quicklook_ncount", QUICKLOOK_NCOUNT))
     if not {"optic", "acoustic"} <= set(priors):
         raise AssertionError("two-branch optic fixture requires optic and acoustic hypotheses")
 
@@ -271,11 +272,11 @@ def make_branch_aware_optic_runner(objective):
                                   "interval_lo": None, "interval_hi": None,
                                   "reasons": "optic peak outside window"})
             else:
-                halfwidth = 0.6 if ncount <= QUICKLOOK_NCOUNT else 0.3
+                halfwidth = 0.6 if ncount <= quicklook_floor else 0.3
                 optic_row.update({"verdict": "resolved", "disposition": "resolved", "omega0": optic,
                                   "interval_lo": optic - halfwidth, "interval_hi": optic + halfwidth,
                                   "confidence": 0.95, "reasons": "optic branch resolved"})
-                if ncount > QUICKLOOK_NCOUNT:
+                if ncount > quicklook_floor:
                     production.setdefault(("optic", h, k, l), []).append(scan_id)
             rows.append(optic_row)
 
@@ -283,7 +284,7 @@ def make_branch_aware_optic_runner(objective):
             # is intentionally present in results.csv so branch filtering—not fixture omission—keeps
             # it out of optic certification and the final dispersion.
             if energy_grid[0] <= acoustic <= energy_grid[-1]:
-                halfwidth = 0.5 if ncount <= QUICKLOOK_NCOUNT else 0.25
+                halfwidth = 0.5 if ncount <= quicklook_floor else 0.25
                 rows.append({
                     "scan": scan_id, "detector": "det-acoustic", "h": h, "k": k, "l": l,
                     "status": "fitted", "interval_reliable": True, "branch_id": "acoustic",
@@ -291,7 +292,7 @@ def make_branch_aware_optic_runner(objective):
                     "interval_lo": acoustic - halfwidth, "interval_hi": acoustic + halfwidth,
                     "confidence": 0.97, "reasons": "strong acoustic branch resolved",
                 })
-                if ncount > QUICKLOOK_NCOUNT:
+                if ncount > quicklook_floor:
                     production.setdefault(("acoustic", h, k, l), []).append(scan_id)
 
         master_scan = 9_100_000
@@ -726,7 +727,9 @@ def test_optic_campaign_tracks_target_amid_acoustic_distractor_deterministically
     def execute(root):
         frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
         frozen["steering"] = {**frozen["steering"],
-                              "differentiation_tolerance_meV": 1.2}
+                              "differentiation_tolerance_meV": 1.2,
+                              "quicklook_ncount": 50_000_000,
+                              "production_batch_ncount": 100_000_000}
         frozen["hypothesis_fingerprint"] = content_fingerprint(
             frozen["hypotheses"], frozen["steering"])
         objective = ObjectiveSpec.segment(
@@ -748,6 +751,9 @@ def test_optic_campaign_tracks_target_amid_acoustic_distractor_deterministically
     first = first_proposals[0]
     assert first["hkl"] == [2.0, 0.0, 0.0]
     assert first["e_lo"] > 0.0 and first["e_lo"] < 6.0 < first["e_hi"]
+    assert first["ncount"] == 50_000_000
+    assert any(proposal["kind"] == "production" and proposal["ncount"] >= 100_000_000
+               for proposal in first_proposals)
 
     # The resolved dispersion stays on the ~6 meV optic branch; the strong acoustic distractor rises
     # from zero to 6 meV but never becomes the reported target (no acoustic/optic sawtooth).
@@ -793,6 +799,33 @@ def test_optic_campaign_tracks_target_amid_acoustic_distractor_deterministically
         for proposal in proposals]
     assert signature(second_proposals) == signature(first_proposals)
     assert second_summary["stop"]["state"] == first_summary["stop"]["state"]
+
+
+def test_optic_campaign_with_supplied_energy_runs_nearest_selector(tmp_path, monkeypatch):
+    """The scientist-facing supplied-energy mode traverses the complete campaign loop."""
+    _no_subprocess(monkeypatch)
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    frozen["steering"] = {**frozen["steering"],
+                          "quicklook_ncount": 50_000_000,
+                          "production_batch_ncount": 100_000_000}
+    frozen["hypothesis_fingerprint"] = content_fingerprint(
+        frozen["hypotheses"], frozen["steering"])
+    objective = ObjectiveSpec.segment(
+        q_start=(2.0, 0.0, 0.0), q_end=(2.0, 0.2, 0.0), step_rlu=0.1,
+        tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 1.0e12},
+        name="optic-nearest", target_branch="optic", target_label="transverse optic",
+        target_energy_meV=6.1, energy_search_meV=(-2.0, 12.0), **frozen)
+    assert objective.target_selector == "nearest_energy"
+
+    summary, _workspace = _run(
+        tmp_path, objective, BranchAwareOpticTavi(lambda _h: 0.0),
+        make_branch_aware_optic_runner(objective), max_iters=40)
+    proposals = [event["payload"] for event in read_log(summary["session_log"])
+                 if event["kind"] == "propose"]
+    assert proposals[0]["e_lo"] < 6.1 < proposals[0]["e_hi"]
+    assert proposals[0]["ncount"] == 50_000_000
+    assert summary["stop"]["state"] == "met"
+    assert all(abs(row["omega0"] - 6.1) <= 0.2 for row in summary["dispersion"])
 
 
 def test_session_log_shows_propose_analyze_decide_stop_chain(tmp_path):
