@@ -6,10 +6,11 @@
 > are implemented (`isar/analyze/descriptor.py`, `isar/session/branch_model.py` /
 > `branch_assignment.py`, `isar/drive/acquisition/eig.py`); what ran and what failed is recorded in
 > `campaigns/2026-06_MVP_FIRST_RUN.md` and `campaigns/2026-07_MVP_ZONE_RETEST.md`.
-> **Branch-identity-aware acquisition (§2 fourth consequence, §4.1 item 7, §4.5): design locked
-> 2026-07-17, implementation Planned** (DECISIONS O6–O11; user-facing reference
-> `docs/HYPOTHESES.md`) — nothing in that slice is built yet, and this document describes it in
-> the design voice only. This document remains the durable record of *why*
+> **Branch-identity-aware acquisition (§2 fourth consequence, §4.1 item 7, §4.5): first
+> implementation landed 2026-07-17** (DECISIONS O6–O12; user-facing reference
+> `docs/HYPOTHESES.md`). Dynamic tolerance-driven exposure and Bayesian optic cold-start are Partial
+> as of 2026-07-18 (O13); sampled Stage-C information and Fisher dwell optimisation remain planned.
+> This document remains the durable record of *why*
 > the loop steers the way it does — what the literature actually says and the design options we
 > considered — behind the "R" in ISAR that acts to *resolve a measurement problem* (`DESIGN.md`). Where a claim rests on a paper we
 > give the citation; citation-confidence flags are collected at the end (the reference list is meant
@@ -203,10 +204,15 @@ So the chosen engine is:
    heavy rank (light for simulation/proof-of-concept, heavy where it matters). The **acquisition unit is a
    whole constant-Q scan**: rank scan proposals by EIG-per-cost first; per-energy-bin dwell optimisation
    is a later refinement.
-4. **Counting time is a design variable:** rank **EIG-per-second** (Snoek EI/cost; Poisson information is
-   linear in time, so per-second information at a point is `(∂λ/∂θ)²/λ`), and decide keep-counting-here
-   vs move with an OCBA / value-of-information stopping rule (Chen 2000; Wald 1945) — generalising ISAR's
-   existing σ ≤ tolerance stop.
+4. **Counting time is a design variable** *(Partial 2026-07-18 — DECISIONS O13)*. **Implemented
+   subset:** newly compiled objectives treat quicklook/production `ncount` as floors. Pooled fits use
+   summed per-point monitor exposure in the raw-count Poisson mean, and refinement requests scale from
+   the authoritative pooled interval toward the requested tolerance, subject to deterministic
+   ladder/growth/cap/budget brakes and an empirical interval-floor stop. The ledger preserves every
+   physical submission and pooled update for exact replay. **Planned remainder:** rank
+   **EIG-per-second** (Snoek EI/cost; Poisson information is linear in time, so per-second information
+   at a point is `(∂λ/∂θ)²/λ`) and decide keep-counting-here vs move with a Fisher/sample-based OCBA or
+   value-of-information rule (Chen 2000; Wald 1945).
 5. **Escalate estimator honesty where the posterior is non-Gaussian** (weak signal): HESSE/Laplace when
    clean → bootstrap / nested sampling when not. ISAR already has all three; wire the acquisition to the
    same ladder.

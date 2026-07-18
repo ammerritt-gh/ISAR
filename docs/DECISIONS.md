@@ -126,6 +126,15 @@ explicitly reopened; "future" means designed-for but not v1.
   rejected rather than migrated. All in-repository consumers and characterization goldens move in
   the same change. The Stage II↔III additive-only rule resumes at v2. W1's v1 evidence remains
   historical evidence, not a load-bearing v2 fixture.
+- **O13.** (2026-07-18, Partial) **Counting time is tolerance-driven and dynamic.** In newly compiled
+  objectives, configured quicklook and production `ncount` values are floors rather than fixed
+  prescriptions. Pooled raw counts are fit with their summed per-point monitor exposure in the
+  Poisson model mean; observations and their ΣN variance are never rescaled. Refinement requests are
+  derived from the authoritative pooled interval, request only the remaining exposure, and are
+  bounded by the production ladder, per-scan growth/cap, neutron budget, and an empirical
+  interval-floor brake. Legacy/direct policies remain static unless they opt in. **Implemented
+  subset:** exposure-aware pooled Poisson fitting, deterministic tolerance scaling/brakes, and exact
+  replay. **Planned remainder:** Fisher/sample-based value-of-information dwell optimisation.
 
 ## Workspace hygiene
 

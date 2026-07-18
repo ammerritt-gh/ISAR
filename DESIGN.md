@@ -420,6 +420,8 @@ DECISIONS W1–W3.)*
 | γ-at-bound calibration v2; Γ prior | Planned |
 | `tas4d` convolution (TAVI-supplied ellipsoids) | Planned |
 | Stage III: per-point objective, EIG acquisition, stop-and-report | Implemented (analytic tier certified) |
+| Exposure-aware pooling + tolerance-driven dynamic `ncount` | **Partial** (O13, 2026-07-18; raw counts/ΣN retained and deterministic interval scaling/brakes/replay Implemented, Fisher/sample-based VOI Planned) |
+| Bayesian optic cold-start + selector-driven provisional evidence | **Partial** (2026-07-18; posterior assignment, neighboring-q evidence and probabilistic rejection implemented, sampled Stage-C MI Planned) |
 | Wall-clock budget discipline; ledger audit | **Partial** (O2) |
 | Stop-reason enum (full) + R4 log events (escalate_fit, recenter guard, decide.action) | Implemented (2026-07-10) |
 | `diminishing_returns` stop state | Planned (O4) |
