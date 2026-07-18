@@ -31,7 +31,7 @@ say so (see *When you're wrong*, below), not to fit your expectation anyway.
 ```toml
 # The target and any rivals you expect to encounter. Each table is one hypothesis.
 [hypotheses.optic]                 # start from the shipped "optic" preset…
-zc_energy = { mode = 10.0, sigma = 2.0 }   # …and override: zone-centre gap, half-normal (meV)
+zc_energy = { mode = 10.0, sigma = 2.0 }   # …and override: lower-truncated-normal gap (meV)
 flatness = "high"                  # weak dispersion expected
 confidence = 0.7                   # how strongly the prior weighs against data (0..1)
 

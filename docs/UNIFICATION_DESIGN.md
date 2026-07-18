@@ -130,10 +130,10 @@ class CardState:
     sample_map: list = field(default_factory=list)            # [{from_scan, sample, source}]
 ```
 
-*(Planned additions, DECISIONS O7/O11 — same additive-only discipline: `CardPolicy.hypotheses`
-(`[hypotheses.<name>]` tables, human-owned excitation hypotheses — `docs/HYPOTHESES.md`), and
-machine-written `CardState.hypothesis` (resolved params + content hash) and
-`CardState.hypothesis_check` (prior-vs-data disagreement flag).)*
+*(Implemented additive fields, DECISIONS O7/O11: human-owned `CardPolicy.hypotheses`
+(`[hypotheses.<name>]` tables — `docs/HYPOTHESES.md`), machine-owned
+`CardState.hypothesis_snapshot` (resolved parameters + content hash), and machine-owned
+`CardState.hypothesis_mismatch` (prior-vs-data disagreement evidence).)*
 
 Two traps this must handle, both found in code:
 

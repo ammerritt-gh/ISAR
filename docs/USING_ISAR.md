@@ -53,8 +53,8 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
 
 | File | Who writes it | What it is |
 |---|---|---|
-| `card.policy.toml` | **You** (ISAR scaffolds it once, then never touches it) | Every per-experiment decision: detectors, column names, collation rules, calibration method, and your fitting guidelines. (Planned: your declared excitation hypotheses for autonomous campaigns — [HYPOTHESES.md](HYPOTHESES.md).) Commented — the comments are the documentation. |
-| `card.state.json` | ISAR | Accumulated experiment state: energy-zero series, resolution versions, the running dispersion prior, sample map, exclusions, corrections audit trail. Don't hand-edit; don't delete. |
+| `card.policy.toml` | **You** (ISAR scaffolds it once, then never touches it) | Every per-experiment decision: detectors, column names, collation rules, calibration method, fitting guidelines, and declared branch hypotheses for autonomous campaigns ([HYPOTHESES.md](HYPOTHESES.md)). Commented — the comments are the documentation. |
+| `card.state.json` | ISAR | Accumulated experiment state: energy-zero series, resolution versions, the running dispersion prior, resolved hypothesis snapshot and mismatch evidence, sample map, exclusions, corrections audit trail. Don't hand-edit; don't delete. |
 | `session.json` | ISAR | Bookkeeping: which files were seen, which scans were processed and how. Safe to delete — a re-run rebuilds it (refitting everything once). |
 | `report/` | ISAR | The product: `report.html`/`.md`, `results.csv`, figures, plus `reduction.*` (the QC-level detail report). |
 
@@ -154,6 +154,13 @@ Three things to know about how guidelines behave:
 - **This is also the correction channel.** ISAR mis-fits a scan → add an override or exclusion →
   `isar run` again. Only the affected scans are refitted. The report's provenance column always
   says whether a fit was seeded by *you* or by the *auto prior*.
+
+Autonomous campaigns additionally read human-owned `[hypotheses.<name>]` tables from
+`card.policy.toml`. Branch hypotheses are implemented: they seed Bayesian branch beliefs, opening
+moves, classification, and scan selection without forcing a fit. Zone-centre energies use
+lower-truncated-normal priors (the zero-mean acoustic case is half-normal). `level` and `continuum`
+remain declared plugin surfaces rather than implemented acquisition models; see
+[HYPOTHESES.md](HYPOTHESES.md) for the complete contract.
 
 `[fitting]` also carries one performance toggle, `reuse_master_structure` (default `false`):
 

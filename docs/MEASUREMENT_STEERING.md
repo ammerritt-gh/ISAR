@@ -283,7 +283,8 @@ implementation must keep them apart or the prior silently corrupts model selecti
   acquisition. A constrained or demoted fit **never feeds the prior it was constrained by** — that
   self-reinforcement is exactly the confident-wrong feedback loop (§6).
 
-### 4.5 Excitation hypotheses — physics vs tactics *(design locked 2026-07-17, Planned; DECISIONS O7–O11)*
+### 4.5 Excitation hypotheses — physics vs tactics *(branch slice Implemented 2026-07-17;
+`level`/`continuum` Partial; DECISIONS O7–O11)*
 
 The user's physics expectations ("we think the target is an optic phonon with a ~10 ± 2 meV
 zone-centre gap, roughly flat — but we may be wrong") must **weight** the Bayesian machinery —
@@ -293,8 +294,8 @@ separate:
 - **`ExcitationHypothesis` — what the excitation looks like.** Declared in human-owned
   `card.policy.toml` (`[hypotheses.<name>]` tables — a hypothesis *is* hand-edited human intent;
   code never writes it). Parameters: `dispersion_type` (`branch` / `level` / `continuum`), a
-  **non-negative** zone-centre energy prior (half-normal — a symmetric Gaussian on a gap is a
-  physics bug), shape priors (slope-at-ZC, flatness, fold periodicity), and a `confidence` that
+  **non-negative** zone-centre energy prior (a lower-truncated normal; the zero-mean acoustic
+  case is half-normal), shape priors (slope-at-ZC, flatness, fold periodicity), and a `confidence` that
   scales prior precision. `acoustic`, `optic`, and `null` ship as **named presets-as-data**; the
   full TOML reference lives in `docs/HYPOTHESES.md`.
 - **`SteeringPolicy` — what the planner does about it.** Opening moves, energy-search bands, λ.
@@ -480,9 +481,9 @@ The confidence ladder maps directly onto ISAR's layers, mostly by *extending* wh
   its Bayesian update. Requires generalising the `Ω_d`-only IC grid, the phonon-suffix bounds, and the
   `isinstance(PhononDHO)` reporting. The branch prior is keyed on objective-path **arclength + an explicit
   branch id** (reusing `path_scalars`), not the current dominant-varying-Q heuristic, and never spans a
-  branch crossing. *(Planned refinement, §4.5: per-branch beliefs additionally carry the declared
-  hypothesis's parameter prior — priors on the regression's intercept/slope, never pseudo-anchors —
-  and the acoustic zone anchor migrates into that form.)*
+  branch crossing. *(Implemented branch slice, §4.5: per-branch beliefs carry the declared
+  hypothesis's parameter prior — priors on the regression's intercept/slope, never pseudo-anchors;
+  `level`/`continuum` belief plugins remain O10-Partial.)*
 - **L3 — falsification**: heuristic gate → evidence when ambiguous → demote + flag; model-averaged.
 - **Acquisition**: marginal-EIG-on-ω₀-per-second, exact-Poisson-likelihood but **sample-estimated** and
   **scan-level** (rank scan proposals), Fisher-screened, OCBA-stopped — replacing/augmenting the current

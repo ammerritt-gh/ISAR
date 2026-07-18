@@ -88,16 +88,22 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   channel in the GUI.
 - **branch belief** — the driver's per-branch dispersion estimate: a weighted local regression
   over that branch's confirmed points, with honest uncertainty growth away from data.
-- **excitation hypothesis** *(Planned — `docs/HYPOTHESES.md`)* — your declared physics
+- **excitation hypothesis** *(branch hypotheses Implemented; `level`/`continuum` Partial —
+  `docs/HYPOTHESES.md`)* — your declared physics
   expectation for the target (and rivals) in `card.policy.toml`: character (acoustic / optic /
   custom), zone-centre energy with uncertainty, flatness, confidence. It weights the driver's
   seeding, classification, and scan choice; it never forces a fit.
-- **differentiation tolerance** *(Planned)* — the looser precision to which a *rival* branch is
+- **differentiation tolerance** — the looser precision to which a *rival* branch is
   measured: enough to tell it apart from the target, never the target's tolerance. Rivals get
   identification, not publication error bars.
-- **sanity-check opening move** *(Planned)* — the campaign's first scans probe the declared
+- **sanity-check opening move** — the campaign's first scans probe the declared
   hypothesis's most discriminating feature (a gapped target: the zone centre at the claimed
   gap), so a grossly wrong expectation is caught immediately.
+- **zone-centre energy prior** — a Gaussian prior truncated below zero, so it cannot predict a
+  negative excitation energy. The zero-mean acoustic case is therefore a half-normal; a gapped
+  optic prior with a positive mode is a general lower-truncated normal, not a half-normal.
+- **repair / drop** — supervisor actions with deliberately different consequences: `repair`
+  modifies a rejected proposal and retries it; `drop` skips that point rather than resubmitting it.
 
 ## Validation vocabulary
 

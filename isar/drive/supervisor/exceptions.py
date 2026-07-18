@@ -61,8 +61,8 @@ class ExceptionAction:
 
     ``action`` vocabulary: ``recenter`` (re-run with a new window), ``escalate`` (hand to the human /
     give up on this q), ``accept_no_converge`` (keep the number, do not converge), ``schedule_context``
-    (run a calibration/sample scan first), ``warn`` / ``exhausted`` (budget), ``repair`` (resubmit with
-    ``drop`` (skip this point).
+    (run a calibration/sample scan first), ``warn`` / ``exhausted`` (budget), ``repair`` (modify a
+    rejected proposal and retry it), and ``drop`` (skip this point without resubmitting it).
     """
 
     action: str

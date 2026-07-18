@@ -290,8 +290,9 @@ and its `recenter_refused_elastic` refusal logging landed 2026-07-10 — previou
 absent — and the remaining R4 logging additions (escalate_fit outcomes, decide.action) landed the
 same day.)*
 
-**Branch-identity-aware acquisition** *(design locked 2026-07-17, Partial — DECISIONS O6–O12,
-MEASUREMENT_STEERING §4.5, `docs/HYPOTHESES.md`)*: scan value becomes two-term (target-ω₀ EIG +
+**Branch-identity-aware acquisition** *(branch-hypothesis slice Implemented 2026-07-17;
+`level`/`continuum` plugins Partial — DECISIONS O6–O12, MEASUREMENT_STEERING §4.5,
+`docs/HYPOTHESES.md`)*: scan value is two-term (target-ω₀ EIG +
 λ × branch-assignment-entropy reduction); user-declared excitation hypotheses in
 `card.policy.toml` weight — never force — belief seeding, classification, opening moves, and
 energy windows (which stop unconditionally excluding the rival branch); the compiled path
@@ -420,7 +421,7 @@ DECISIONS W1–W3.)*
 | γ-at-bound calibration v2; Γ prior | Planned |
 | `tas4d` convolution (TAVI-supplied ellipsoids) | Planned |
 | Stage III: per-point objective, EIG acquisition, stop-and-report | Implemented (analytic tier certified) |
-| Exposure-aware pooling + tolerance-driven dynamic `ncount` | **Partial** (O13, 2026-07-18; raw counts/ΣN retained and deterministic interval scaling/brakes/replay Implemented, Fisher/sample-based VOI Planned) |
+| Exposure-aware pooling + tolerance-driven dynamic `ncount` | **Partial** (O13, 2026-07-18; raw counts/ΣN retained and deterministic interval scaling/brakes/replay Implemented, Fisher/sample-based dwell optimisation Planned) |
 | Bayesian optic cold-start + selector-driven provisional evidence | **Partial** (2026-07-18; posterior assignment, neighboring-q evidence and probabilistic rejection implemented, sampled Stage-C MI Planned) |
 | Wall-clock budget discipline; ledger audit | **Partial** (O2) |
 | Stop-reason enum (full) + R4 log events (escalate_fit, recenter guard, decide.action) | Implemented (2026-07-10) |
@@ -447,7 +448,7 @@ scheduled. Cross-T dispersion-prior pooling near transitions — revisit with da
 | The statistics (and the seminar) | `docs/STATS_PRIMER.md` (+ generated gallery, `docs/stats/`) |
 | Workspace/session/CLI internals | `docs/UNIFICATION_DESIGN.md` |
 | Steering research & drive internals | `docs/MEASUREMENT_STEERING.md` |
-| Declaring expected excitations (Planned) | `docs/HYPOTHESES.md` |
+| Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
 | Flag adjudication | `docs/ADJUDICATION.md` |
 | Card/schema survey across facilities | `docs/SCHEMA_LANDSCAPE.md`, `docs/DATA_SCHEME_RESEARCH.md` |
 | Reports the runs owe us | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` |
