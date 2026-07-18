@@ -531,6 +531,9 @@ class CampaignDock(QDockWidget):
                 + ("  — stopping after the current scan…" if self._stop_pending() else ""))
         elif state.stop_state == "operator_stopped":
             self._status_line.setText("stopped by operator — press Resume to continue")
+        elif state.stop_state == "pending_recovery":
+            self._status_line.setText(
+                "scan recovery pending — no new scan was submitted; press Resume to retry")
         elif state.stop_state:
             self._status_line.setText(
                 f"{state.stop_state}: " + "; ".join(state.stop_reasons))

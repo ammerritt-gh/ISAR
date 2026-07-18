@@ -172,6 +172,13 @@ def test_operator_stopped_maps_to_exit_code_4(tmp_path, monkeypatch):
     assert rc == 4
 
 
+def test_pending_recovery_maps_to_exit_code_5(tmp_path, monkeypatch):
+    _stub_run_campaign(monkeypatch, state="pending_recovery")
+    rc = main(["drive", "--spec", str(_spec_file(tmp_path)),
+               "--workspace", str(tmp_path / "ws")])
+    assert rc == 5
+
+
 def test_unmeetable_and_met_exit_codes(tmp_path, monkeypatch):
     _stub_run_campaign(monkeypatch, state="met")
     assert main(["drive", "--spec", str(_spec_file(tmp_path)), "--workspace", str(tmp_path / "w1")]) == 0

@@ -35,6 +35,7 @@ from isar.drive.acquisition import model as acq_model
 from isar.drive.acquisition.acquire import (
     MAX_POINTS,
     BudgetInsufficientForMinimumBatch,
+    ScanProposal,
     points_in_window,
     propose_scan,
 )
@@ -44,7 +45,7 @@ from isar.drive.isar_io.readers import read_card_state, read_results_csv
 from isar.drive.isar_io.runner import SubprocessRunner, as_runner
 from isar.drive.isar_io.runner import init_isar as _default_init_isar
 from isar.drive.isar_io.worker_client import WorkerRunner
-from isar.drive.isar_io.scan_writer import save_scan_json
+from isar.drive.isar_io.scan_writer import save_scan_json, scan_json_path
 from isar.drive.objective import ObjectiveSpec
 from isar.drive.session_log import log_event, read_log, timed
 from isar.drive.supervisor import exceptions as exc
@@ -837,6 +838,30 @@ def _recertified_observations(workspace, calibration: Calibration, scan_kind: di
     return out
 
 
+def _proposal_from_submission(payload: dict) -> ScanProposal:
+    """Rebuild the analysis-facing proposal fields from a durable physical submission."""
+    hkl = payload.get("hkl") or (0.0, 0.0, 0.0)
+    meta = {
+        "driver_inserted": bool(payload.get("driver_inserted", False)),
+        "certification_eligible": bool(payload.get("certification_eligible", True)),
+    }
+    if payload.get("insertion_purpose") is not None:
+        meta["insertion_purpose"] = payload.get("insertion_purpose")
+    return ScanProposal(
+        h=float(hkl[0]), k=float(hkl[1]), l=float(hkl[2]),
+        e_lo=0.0, e_hi=0.0, e_step=1.0,
+        ncount=int(payload.get("submitted_ncount") or payload.get("ncount")
+                   or PRODUCTION_NCOUNT),
+        kind=str(payload.get("kind") or "production"),
+        reason="recovered physical submission",
+        e_pred=float(payload.get("acquisition_target_energy") or 0.0),
+        n_points=int(payload.get("n_points") or payload.get("requested_points") or 0),
+        acquisition_id=(str(payload["acquisition_id"])
+                        if payload.get("acquisition_id") is not None else None),
+        meta=meta,
+    )
+
+
 def _resume_detailed_events(workspace, events: list[dict], calibration: Calibration) -> dict:
     """Replay additive physical-submission/master-update events in chronological order."""
     def hkl_key(hkl) -> tuple:
@@ -858,8 +883,9 @@ def _resume_detailed_events(workspace, events: list[dict], calibration: Calibrat
                              or str(payload.get("job_id")) not in physical_job_ids))
         if not (is_detailed or is_legacy_prefix):
             continue
-        record = {"order": order, "payload": payload,
-                  "cost": float(payload.get("cost") or 0.0), "seconds_delta": 0.0}
+        record = {"order": order, "payload": payload, "detailed": is_detailed,
+                  "cost": float(payload.get("cost") or 0.0), "seconds_delta": 0.0,
+                  "reconciled": False, "has_result_rows": False}
         submissions.append(record)
         if payload.get("job_id") is not None:
             by_job[str(payload["job_id"])] = record
@@ -872,6 +898,20 @@ def _resume_detailed_events(workspace, events: list[dict], calibration: Calibrat
         if record is not None:
             record["cost"] += float(payload.get("neutron_delta") or 0.0)
             record["seconds_delta"] += float(payload.get("seconds_delta") or 0.0)
+            record["reconciled"] = True
+
+    analyzed_by_job: dict[str, tuple[int, dict]] = {}
+    terminal_by_job: dict[str, tuple[int, dict]] = {}
+    for order, event in enumerate(events):
+        payload = dict(event.get("payload") or {})
+        job_id = payload.get("job_id")
+        if job_id is None:
+            continue
+        if event.get("kind") == "analyze":
+            analyzed_by_job[str(job_id)] = (order, payload)
+        elif (event.get("kind") == "exception"
+              and payload.get("action") == "scan_not_done"):
+            terminal_by_job[str(job_id)] = (order, payload)
 
     neutrons = sum(record["cost"] for record in submissions)
     seconds = 0.0
@@ -908,10 +948,21 @@ def _resume_detailed_events(workspace, events: list[dict], calibration: Calibrat
     sequence = 0
     for key, group_keys in groups_by_hkl.items():
         ledger = submissions_by_hkl.get(key, [])
-        offset = len(ledger) - len(group_keys)
+        explicitly_analyzed = [
+            record for record in ledger
+            if ((analysis := analyzed_by_job.get(str(record["payload"].get("job_id"))))
+                is not None and int(analysis[1].get("n_rows") or 0) > 0)]
+        unexplained = [
+            record for record in ledger
+            if str(record["payload"].get("job_id")) not in analyzed_by_job
+            and str(record["payload"].get("job_id")) not in terminal_by_job]
+        remaining = max(len(group_keys) - len(explicitly_analyzed), 0)
+        row_ledger = sorted(
+            [*explicitly_analyzed, *unexplained[:remaining]], key=lambda record: record["order"])
         for group_index, group_key in enumerate(group_keys):
-            ledger_index = offset + group_index
-            record = ledger[ledger_index] if 0 <= ledger_index < len(ledger) else None
+            record = row_ledger[group_index] if group_index < len(row_ledger) else None
+            if record is not None:
+                record["has_result_rows"] = True
             payload = record["payload"] if record is not None else {}
             kind = payload.get("kind") or "production"
             ncount = int(payload.get("submitted_ncount") or payload.get("ncount")
@@ -934,6 +985,33 @@ def _resume_detailed_events(workspace, events: list[dict], calibration: Calibrat
                 consumed.add(scan_detector)
                 scan_kind[scan_detector] = (kind, ncount, acquisition_id)
 
+    unmatched_submissions: list[dict] = []
+    for record in submissions:
+        if not record["detailed"] or record["has_result_rows"]:
+            continue
+        payload = record["payload"]
+        job_key = str(payload.get("job_id"))
+        analysis = analyzed_by_job.get(job_key)
+        terminal = terminal_by_job.get(job_key)
+        if analysis is not None and int(analysis[1].get("n_rows") or 0) == 0:
+            ordered_observations.append((float(analysis[0]), sequence,
+                                         _declined_observation(
+                                             _proposal_from_submission(payload),
+                                             "analysis_no_result")))
+            sequence += 1
+            continue
+        if terminal is not None:
+            verdict = str(terminal[1].get("state") or "scan_not_done")
+            ordered_observations.append((float(terminal[0]), sequence,
+                                         _declined_observation(
+                                             _proposal_from_submission(payload), verdict)))
+            sequence += 1
+            continue
+        unmatched_submissions.append({
+            "order": record["order"], "payload": dict(payload),
+            "reconciled": bool(record["reconciled"]),
+        })
+
     for order, event in enumerate(events):
         if event.get("kind") == "pooled_master_update":
             marker = dict(event.get("payload") or {})
@@ -949,7 +1027,8 @@ def _resume_detailed_events(workspace, events: list[dict], calibration: Calibrat
     ordered_observations.sort(key=lambda item: (item[0], item[1]))
     return {"observations": [item[2] for item in ordered_observations],
             "consumed": consumed, "scan_kind": scan_kind,
-            "scan_counter": len(submissions), "neutrons": neutrons, "seconds": seconds}
+            "scan_counter": len(submissions), "neutrons": neutrons, "seconds": seconds,
+            "unmatched_submissions": unmatched_submissions}
 
 
 def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
@@ -1076,7 +1155,8 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
                 observations.append(marker)
 
     return {"observations": observations, "consumed": consumed, "scan_kind": scan_kind,
-            "scan_counter": scan_counter, "neutrons": neutrons, "seconds": seconds}
+            "scan_counter": scan_counter, "neutrons": neutrons, "seconds": seconds,
+            "unmatched_submissions": []}
 
 
 def _read_run_timings(workspace) -> dict | None:
@@ -1344,6 +1424,171 @@ def _persist_acquisition_provenance(workspace: Path, payload: dict) -> None:
     card.save_state(state_path)
 
 
+def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
+                                   submission_payload: dict, budget_state: dict,
+                                   observations: list[dict], consumed: set, scan_kind: dict,
+                                   it: int | None, attempt: int = 0,
+                                   data: dict | None = None,
+                                   reconciliation_applied: bool = False) -> tuple[list[dict], dict]:
+    """Turn one completed physical job into the authoritative analyzed evidence.
+
+    Live scans and crash recovery both enter here.  The function never submits or waits for a job;
+    it owns the common fetch/save, executed-cost reconciliation, workspace/provenance update,
+    analysis, folding, and pooled-master ledger tail.
+    """
+    job_id = str(submission_payload["job_id"])
+    planned_points = int(submission_payload.get("n_points")
+                         or submission_payload.get("requested_points") or proposal.n_points or 0)
+    eta_doc = submission_payload.get("eta")
+    eta = eta_doc.get("estimated_seconds") if isinstance(eta_doc, dict) else None
+    with timed(cfg.log_path, "fetch_save", iteration=it):
+        document = data if data is not None else cfg.client.get_scan_data(job_id)
+        scan_path = save_scan_json(document, cfg.data_dir)
+    executed_points = _executed_point_count(document, planned_points)
+    if executed_points != planned_points and not reconciliation_applied:
+        neutron_delta, seconds_delta = _reconcile_budget_points(
+            budget_state, proposal.ncount, planned_points, executed_points, eta=eta)
+        log_event(cfg.log_path, "exception", {
+            "action": "feasibility_reconciled", "job_id": job_id,
+            "hkl": [proposal.h, proposal.k, proposal.l],
+            "planned_points": planned_points, "executed_points": executed_points,
+            "ncount": int(proposal.ncount),
+            "executed_cost": float(executed_points) * float(proposal.ncount),
+            "neutron_delta": neutron_delta, "seconds_delta": seconds_delta, "iter": it,
+        })
+
+    if not (cfg.workspace / "card.policy.toml").exists():
+        with timed(cfg.log_path, "isar_init", iteration=it):
+            cfg.init_isar(cfg.workspace, scan_path)
+        log_event(cfg.log_path, "decide", {
+            "event": "workspace_init", "action": "workspace_init",
+            "probe": str(scan_path), "iter": it})
+    _persist_campaign_target(cfg.workspace, objective)
+    _persist_acquisition_provenance(cfg.workspace, submission_payload)
+
+    tier = _errors_tier_for(proposal, cfg.workspace, cfg)
+    promoted = proposal.kind in PRODUCTION_KINDS and tier == "full"
+    if promoted:
+        log_event(cfg.log_path, "escalate_fit", {
+            "phase": "promote", "iter": it, "attempt": attempt,
+            "hkl": [proposal.h, proposal.k, proposal.l], "from_tier": "fast",
+            "to_tier": "full", "reason": "untrusted_hesse_no_reliable_interval"})
+    with timed(cfg.log_path, "isar_run", iteration=it, errors_tier=tier, attempt=attempt):
+        cfg.runner.run(cfg.workspace, [cfg.data_dir], errors_tier=tier, render=False)
+
+    with timed(cfg.log_path, "fold_rows", iteration=it) as metrics:
+        rows = _new_rows(cfg.workspace, consumed)
+        scan_cost = float(executed_points) * float(proposal.ncount)
+        for index, row in enumerate(rows):
+            observations.append(_observation_from_row(
+                row, proposal.kind, proposal.ncount, cfg.calibration,
+                proposal_cost=scan_cost if index == 0 else 0.0,
+                driver_inserted=bool((proposal.meta or {}).get("driver_inserted", False)),
+                certification_eligible=bool((proposal.meta or {}).get(
+                    "certification_eligible", True)),
+                acquisition_id=proposal.acquisition_id))
+            scan_kind[(row.get("scan"), row.get("detector"))] = (
+                proposal.kind, proposal.ncount, proposal.acquisition_id)
+        metrics["n_rows"] = len(rows)
+
+    timings = _read_run_timings(cfg.workspace)
+    analyze_payload = {"job_id": job_id, "errors_tier": tier, "iter": it,
+                       "n_rows": len(rows),
+                       "dispositions": [row.get("disposition") or row.get("verdict")
+                                        for row in rows]}
+    if timings is not None:
+        analyze_payload["timings"] = timings
+    log_event(cfg.log_path, "analyze", analyze_payload)
+    _record_pooled_master_update(
+        cfg.workspace, cfg.calibration, proposal, target_branch=objective.target_branch,
+        log_path=cfg.log_path, observations=observations)
+
+    if promoted:
+        outcome = ("superseded" if not rows else
+                   "seated" if any(_row_certifiable(row) for row in rows) else "failed")
+        log_event(cfg.log_path, "escalate_fit", {
+            "phase": "outcome", "iter": it, "job_id": job_id,
+            "hkl": [proposal.h, proposal.k, proposal.l], "to_tier": "full",
+            "outcome": outcome, "n_rows": len(rows),
+            "dispositions": [row.get("disposition") or row.get("verdict") for row in rows]})
+    return rows, document
+
+
+def _recover_unmatched_submissions(*, cfg: CampaignConfig, objective,
+                                   unmatched: list[dict], budget_state: dict,
+                                   observations: list[dict], consumed: set,
+                                   scan_kind: dict) -> str | None:
+    """Recover durable physical submissions without ever issuing another submission.
+
+    Returns a human reason when one job remains non-terminal or unreachable.  The caller must stop as
+    ``pending_recovery`` in that case; completed and terminal-failure jobs are finalized in order.
+    """
+    for item in sorted(unmatched, key=lambda entry: int(entry.get("order", 0))):
+        payload = dict(item.get("payload") or {})
+        job_id = str(payload.get("job_id") or "")
+        proposal = _proposal_from_submission(payload)
+        data = None
+        raw_path = scan_json_path(job_id, cfg.data_dir)
+        if raw_path.exists():
+            try:
+                data = json.loads(raw_path.read_text(encoding="utf-8"))
+                if str(data.get("job_id")) != job_id or "result" not in data:
+                    raise ValueError("saved raw scan does not match the submitted job")
+            except (OSError, ValueError) as error:
+                data = None
+                log_event(cfg.log_path, "exception", {
+                    "action": "recovery_raw_read_failed", "job_id": job_id,
+                    "path": str(raw_path), "error": str(error), "iter": None})
+
+        state = "done" if data is not None else None
+        if state is None:
+            try:
+                snapshot = cfg.client.get_scan(job_id)
+                state = str(snapshot.get("state") or "")
+                if state not in {"done", "failed", "stopped", "cancelled"}:
+                    snapshot = cfg.client.wait_scan(job_id, timeout=cfg.wait_timeout)
+                    state = str(snapshot.get("state") or "")
+            except Exception as error:  # noqa: BLE001 — uncertainty must stop, never resubmit
+                reason = f"job {job_id} recovery is pending: instrument unreachable ({error})"
+                log_event(cfg.log_path, "recovery_pending", {
+                    "job_id": job_id, "state": state or "unknown", "decline": False,
+                    "reason": reason, "acquisition_id": proposal.acquisition_id})
+                return reason
+
+        if state in {"failed", "stopped", "cancelled"}:
+            observations.append(_declined_observation(proposal, state))
+            log_event(cfg.log_path, "exception", {
+                "action": "scan_not_done", "job_id": job_id, "state": state,
+                "error": "reconstructed during recovery", "iter": None})
+            continue
+        if state != "done":
+            reason = f"job {job_id} recovery is pending: instrument state {state or 'unknown'}"
+            log_event(cfg.log_path, "recovery_pending", {
+                "job_id": job_id, "state": state or "unknown", "decline": False,
+                "reason": reason, "acquisition_id": proposal.acquisition_id})
+            return reason
+
+        if data is None:
+            try:
+                data = cfg.client.get_scan_data(job_id)
+            except Exception as error:  # noqa: BLE001 — completed job data remains safely retryable
+                reason = f"job {job_id} recovery is pending: scan data unavailable ({error})"
+                log_event(cfg.log_path, "recovery_pending", {
+                    "job_id": job_id, "state": "done", "decline": False,
+                    "reason": reason, "acquisition_id": proposal.acquisition_id})
+                return reason
+
+        rows, _document = _finalize_completed_submission(
+            cfg=cfg, objective=objective, proposal=proposal,
+            submission_payload=payload, budget_state=budget_state,
+            observations=observations, consumed=consumed, scan_kind=scan_kind,
+            it=None, data=data, reconciliation_applied=bool(item.get("reconciled", False)))
+        log_event(cfg.log_path, "recovery_completed", {
+            "job_id": job_id, "state": "done", "n_rows": len(rows),
+            "acquisition_id": proposal.acquisition_id, "resubmitted": False})
+    return None
+
+
 def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan_counter: int,
                       budget_state: dict, observations: list[dict], consumed: set,
                       scan_kind: dict) -> tuple[list[dict], int]:
@@ -1360,10 +1605,6 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
     # ---- run this proposal, with bounded missed-window re-centering (a LOOK, §1) ----------
     attempt = 0
     rows: list[dict] = []
-    # Tracks an in-flight full-tier promotion whose outcome has not yet been logged (escalate_fit,
-    # spec §5.1): set when a production q is promoted to the full error tier, cleared the moment its
-    # outcome record is written (at the fold, or as `superseded` if the retry declines first).
-    promoted = False
     support_adjusted = False
     while True:
         # Single checkpoint before EVERY validate/submit, including support/recenter retries.
@@ -1416,12 +1657,6 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                 break
             v_act = exc.handle_validation_rejection(val.get("blockers") or [])
             log_event(log_path, "exception", {**v_act.to_dict(), "iter": it})
-            if promoted:   # a promoted retry that now declines before folding — supersede the promotion
-                log_event(log_path, "escalate_fit",
-                          {"phase": "outcome", "iter": it, "job_id": None,
-                           "hkl": [proposal.h, proposal.k, proposal.l], "to_tier": "full",
-                           "outcome": "superseded", "n_rows": 0, "dispositions": []})
-                promoted = False
             observations.append(_declined_observation(proposal, "validation_rejected"))
             break
 
@@ -1477,107 +1712,14 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             log_event(log_path, "exception", {"action": "scan_not_done", "job_id": job_id,
                                               "state": snap.get("state"), "error": snap.get("error"),
                                               "iter": it})
-            if promoted:   # a promoted retry whose scan never reached done — supersede the promotion
-                log_event(log_path, "escalate_fit",
-                          {"phase": "outcome", "iter": it, "job_id": job_id,
-                           "hkl": [proposal.h, proposal.k, proposal.l], "to_tier": "full",
-                           "outcome": "superseded", "n_rows": 0, "dispositions": []})
-                promoted = False
             observations.append(_declined_observation(proposal, str(snap.get("state"))))
             break
 
-        with timed(log_path, "fetch_save", iteration=it):
-            data = client.get_scan_data(job_id)
-            scan_path = save_scan_json(data, data_dir)
-        executed_points = _executed_point_count(data, feasible_points)
-        if executed_points != feasible_points:
-            neutron_delta, seconds_delta = _reconcile_budget_points(
-                budget_state, proposal.ncount, feasible_points, executed_points, eta=eta)
-            log_event(log_path, "exception", {
-                "action": "feasibility_reconciled",
-                "job_id": job_id,
-                "hkl": [proposal.h, proposal.k, proposal.l],
-                "planned_points": feasible_points,
-                "executed_points": executed_points,
-                "ncount": int(proposal.ncount),
-                "executed_cost": float(executed_points) * float(proposal.ncount),
-                "neutron_delta": neutron_delta,
-                "seconds_delta": seconds_delta,
-                "iter": it,
-            })
-        # Lazy `isar init`: the instrument card can only be scaffolded from a recognizable
-        # data file, which first exists NOW. Subprocess keeps the analysis boundary.
-        if not (workspace / "card.policy.toml").exists():
-            with timed(log_path, "isar_init", iteration=it):
-                cfg.init_isar(workspace, scan_path)
-            log_event(log_path, "decide", {"event": "workspace_init", "action": "workspace_init",
-                                           "probe": str(scan_path), "iter": it})
-        _persist_campaign_target(workspace, objective)
-        _persist_acquisition_provenance(workspace, submission_payload)
-        # Error tier per the escalation ladder: quicklook → cheap (steer only), production →
-        # fast (HESSE interval + trust flag), escalating to full (bootstrap+profile) only where an
-        # untrusted-HESSE q needs the reliable interval. The bootstrap fires only where needed.
-        tier = _errors_tier_for(proposal, workspace, cfg)
-        # escalate_fit PROMOTE (spec §5.1): a production/confirm q bumped to the full (bootstrap+
-        # profile) tier because its only interval is an untrusted HESSE one. Paired with an OUTCOME
-        # record after the fold so the promotion and its result are both in the log.
-        if proposal.kind in PRODUCTION_KINDS and tier == "full":
-            promoted = True
-            log_event(log_path, "escalate_fit",
-                      {"phase": "promote", "iter": it, "attempt": attempt,
-                       "hkl": [proposal.h, proposal.k, proposal.l], "from_tier": "fast",
-                       "to_tier": "full", "reason": "untrusted_hesse_no_reliable_interval"})
-        with timed(log_path, "isar_run", iteration=it, errors_tier=tier, attempt=attempt):
-            # render=False: skip the per-invocation report (report layer / matplotlib import is the
-            # dominant cost and nothing mid-campaign reads it); the campaign re-renders once at the end.
-            runner.run(workspace, [data_dir], errors_tier=tier, render=False)
-
-        with timed(log_path, "fold_rows", iteration=it) as _m:
-            rows = _new_rows(workspace, consumed)
-            # The scan's actual monitor cost (n_points reflects any recenter; charged once per scan,
-            # onto the first detector row so counts_spent per q is not multiplied by detector count).
-            scan_cost = float(executed_points) * float(proposal.ncount)
-            for j, r in enumerate(rows):
-                observations.append(_observation_from_row(
-                    r, proposal.kind, proposal.ncount, cfg.calibration,
-                    proposal_cost=scan_cost if j == 0 else 0.0,
-                    driver_inserted=bool((proposal.meta or {}).get("driver_inserted", False)),
-                    certification_eligible=bool((proposal.meta or {}).get(
-                        "certification_eligible", True)),
-                    acquisition_id=proposal.acquisition_id))
-                scan_kind[(r.get("scan"), r.get("detector"))] = (
-                    proposal.kind, proposal.ncount, proposal.acquisition_id)
-            _m["n_rows"] = len(rows)
-        # Embed the subprocess stage-timing snapshot (best-effort) + the folded rows' outcomes.
-        timings = _read_run_timings(workspace)
-        analyze_payload = {"job_id": job_id, "errors_tier": tier, "iter": it,
-                           "n_rows": len(rows),
-                           "dispositions": [r.get("disposition") or r.get("verdict") for r in rows]}
-        if timings is not None:
-            analyze_payload["timings"] = timings
-        log_event(log_path, "analyze", analyze_payload)
-        _record_pooled_master_update(
-            workspace, cfg.calibration, proposal, target_branch=objective.target_branch,
-            log_path=log_path,
-            observations=observations)
-
-        if promoted:
-            # escalate_fit OUTCOME (spec §5.1): did the full-tier promotion seat a certifiable
-            # interval? `seated` (≥1 folded row certifiable), `failed` (rows folded, none certifiable),
-            # `superseded` (no rows folded at all). `_row_certifiable` is the SAME predicate that seats
-            # convergence in `_observation_from_row`, so promotion accounting cannot drift from it.
-            if not rows:
-                outcome = "superseded"
-            elif any(_row_certifiable(r) for r in rows):
-                outcome = "seated"
-            else:
-                outcome = "failed"
-            log_event(log_path, "escalate_fit",
-                      {"phase": "outcome", "iter": it, "job_id": job_id,
-                       "hkl": [proposal.h, proposal.k, proposal.l], "to_tier": "full",
-                       "outcome": outcome, "n_rows": len(rows),
-                       "dispositions": [r.get("disposition") or r.get("verdict") for r in rows]})
-            promoted = False
+        rows, data = _finalize_completed_submission(
+            cfg=cfg, objective=objective, proposal=proposal,
+            submission_payload=submission_payload, budget_state=budget_state,
+            observations=observations, consumed=consumed, scan_kind=scan_kind,
+            it=it, attempt=attempt)
 
         if not _rows_missed(rows):
             break
@@ -1768,12 +1910,18 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     decision = None
     operator_stop = False        # set when a cooperative operator-stop file is found at an iteration top
     op_stop_iter: int | None = None
+    pending_recovery_reason: str | None = None
     try:
+        pending_recovery_reason = _recover_unmatched_submissions(
+            cfg=cfg, objective=objective,
+            unmatched=list(resumed.get("unmatched_submissions") or []),
+            budget_state=budget_state, observations=observations,
+            consumed=consumed, scan_kind=scan_kind)
         # Instrumentation only (no logic change): each stage runs inside a ``timed`` span that appends a
         # "timing" event (resume-inert — _resume_state reads only "run" events), and every in-loop
         # log_event carries the iteration index ``it``. The outer ``timed(... "iteration")`` covers the
         # whole body including all break paths (a break exits the span normally, ok=True).
-        for it in range(cfg.max_iters):
+        for it in range(0 if pending_recovery_reason is not None else cfg.max_iters):
             with timed(cfg.log_path, "iteration", iteration=it):
                 # Cooperative operator stop: honoured at the iteration boundary so the previous
                 # iteration's scan is already persisted/analysed (no stranded in-flight spend). Log ONE
@@ -1890,14 +2038,29 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             # boundary check already ran before the decision, and a campaign that ended on its own
             # reports its true state. ``iter`` is cfg.max_iters, the would-be next iteration (the
             # loop variable is unbound when max_iters == 0, so it is never referenced here).
-            if _operator_stop_requested(cfg, cfg.max_iters):
+            if pending_recovery_reason is None and _operator_stop_requested(cfg, cfg.max_iters):
                 log_event(cfg.log_path, "decide",
                           {"event": "operator_stop", "action": "operator_stop",
                            "iter": cfg.max_iters, "token": cfg.control_token})
                 operator_stop = True
                 op_stop_iter = cfg.max_iters
 
-        if operator_stop:
+        if pending_recovery_reason is not None:
+            master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
+            snapshot = evaluate_stop(
+                objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
+            stop_override = {
+                "state": "pending_recovery",
+                "reasons": [pending_recovery_reason, "press Resume to retry recovery"],
+                "per_q": list(snapshot.per_q),
+                "grid_state": snapshot.to_dict(),
+            }
+            summary = _campaign_summary(
+                objective, grid, snapshot, budget_state, cfg.workspace,
+                cfg.log_path, len(observations), stop_override=stop_override)
+            stop_payload = {"state": "pending_recovery", "reasons": stop_override["reasons"],
+                            "grid_state": stop_override["grid_state"]}
+        elif operator_stop:
             # Operator-stop terminal state (part B): an honest snapshot WITHOUT certification — a stop
             # request must never trigger the end-of-campaign certify bootstrap. Recompute the final grid
             # + evaluate_stop for a truthful picture, but record it under stop.grid_state; the terminal

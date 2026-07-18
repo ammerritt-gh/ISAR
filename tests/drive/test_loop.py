@@ -28,6 +28,7 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
                              run_campaign)
 from isar.drive.acquisition.acquire import ScanProposal, points_in_window
 from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
+from isar.drive.isar_io.scan_writer import save_scan_json
 from isar.drive.session_log import log_event, read_log
 from isar.drive.supervisor.stopping import PRODUCTION_NCOUNT, QUICKLOOK_NCOUNT, summarize_grid
 from isar.schema.hypotheses import content_fingerprint
@@ -1235,7 +1236,143 @@ def test_cold_workspace_resumes_to_fresh(tmp_path):
     (ws / "report").mkdir(parents=True)
     r = _resume_state(ws, ws / "report" / "session_log.jsonl", _UNITY_CAL)
     assert r == {"observations": [], "consumed": set(), "scan_kind": {},
-                 "scan_counter": 0, "neutrons": 0.0, "seconds": 0.0}
+                 "scan_counter": 0, "neutrons": 0.0, "seconds": 0.0,
+                 "unmatched_submissions": []}
+
+
+def _seed_unmatched_submission(ws, *, job_id="old-job", state="queued"):
+    (ws / "report").mkdir(parents=True, exist_ok=True)
+    ncount = PRODUCTION_NCOUNT
+    payload = {
+        "job_id": job_id, "state": state, "eta": {"estimated_seconds": 5.0},
+        "kind": "production", "ncount": ncount, "submitted_ncount": ncount,
+        "requested_points": 21, "n_points": 21, "hkl": [2.1, 0.0, 0.0],
+        "cost": 21.0 * ncount, "acquisition_id": "A-recover",
+        "acquisition_target_energy": 0.2, "driver_inserted": False,
+        "certification_eligible": True,
+    }
+    log = ws / "report" / "session_log.jsonl"
+    log_event(log, "run", payload)
+    log_event(log, "physical_submission", payload)
+    body = {"parameters": {"H": 2.1, "K": 0.0, "L": 0.0,
+                           "scan_command1": "deltaE -0.8 1.2 0.1",
+                           "number_neutrons": ncount, "sample": "Al_phonon_DFT"}}
+    return payload, body
+
+
+class _RecoveryTavi(MockTavi):
+    def __init__(self, body, *, state="done", wait_state=None, unreachable=False):
+        super().__init__(lambda _h: 0.2)
+        self.jobs = {"old-job": body}
+        self.state = state
+        self.wait_state = wait_state if wait_state is not None else state
+        self.unreachable = unreachable
+        self.submit_calls = 0
+        self.wait_calls = 0
+
+    def submit_scan(self, body, idempotency_key=None):
+        self.submit_calls += 1
+        return super().submit_scan(body, idempotency_key=idempotency_key)
+
+    def get_scan(self, job_id):
+        if self.unreachable:
+            raise RuntimeError("instrument offline")
+        return {"job_id": job_id, "state": self.state}
+
+    def wait_scan(self, job_id, timeout=0.0, **kw):
+        self.wait_calls += 1
+        return {"job_id": job_id, "state": self.wait_state}
+
+
+def _recovery_config(ws, client, omega, *, max_iters=0):
+    return {"workspace": ws, "client": client, "run_isar": make_mock_runner(omega),
+            "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8},
+            "seed": 7, "max_iters": max_iters}
+
+
+def test_resume_reconstructs_analyzed_zero_rows_and_terminal_failure(tmp_path):
+    for suffix, event, expected in [
+        ("zero", ("analyze", {"job_id": "old-job", "n_rows": 0}), "analysis_no_result"),
+        ("failed", ("exception", {"action": "scan_not_done", "job_id": "old-job",
+                                   "state": "failed"}), "failed"),
+    ]:
+        ws = tmp_path / suffix
+        _seed_unmatched_submission(ws)
+        log_event(ws / "report" / "session_log.jsonl", event[0], event[1])
+        resumed = _resume_state(ws, ws / "report" / "session_log.jsonl", _UNITY_CAL)
+        assert resumed["unmatched_submissions"] == []
+        assert len(resumed["observations"]) == 1
+        assert resumed["observations"][0]["verdict"] == expected
+        assert resumed["observations"][0]["acquisition_id"] == "A-recover"
+
+
+def test_resume_keeps_latest_same_q_submission_unmatched(tmp_path):
+    ws = tmp_path / "same-q"
+    first, _body = _seed_unmatched_submission(ws, job_id="j1")
+    log = ws / "report" / "session_log.jsonl"
+    log_event(log, "analyze", {"job_id": "j1", "n_rows": 1})
+    second = {**first, "job_id": "j2", "acquisition_id": "A2"}
+    log_event(log, "run", second)
+    log_event(log, "physical_submission", second)
+    _write_results(ws, [{"scan": 1, "detector": "det", "h": 2.1, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "verdict": "resolved", "disposition": "resolved",
+                         "omega0": 0.2, "interval_lo": 0.05, "interval_hi": 0.35,
+                         "interval_reliable": True}])
+    resumed = _resume_state(ws, log, _UNITY_CAL)
+    assert [item["payload"]["job_id"] for item in resumed["unmatched_submissions"]] == ["j2"]
+    physical = [item for item in resumed["observations"]
+                if item.get("kind") != "pooled_master_update"]
+    assert len(physical) == 1 and physical[0]["acquisition_id"] == "A-recover"
+
+
+def test_resume_recovers_remote_completed_job_without_resubmission(tmp_path, monkeypatch):
+    _no_subprocess(monkeypatch)
+    ws = tmp_path / "remote"
+    _payload, body = _seed_unmatched_submission(ws)
+    client = _RecoveryTavi(body, state="done")
+    summary = run_campaign(
+        _objective(), _recovery_config(ws, client, lambda _h: 0.2))
+    events = read_log(summary["session_log"])
+    assert summary["stop"]["state"] != "pending_recovery"
+    assert client.submit_calls == 0 and client.wait_calls == 0
+    assert (ws / "data" / "old-job.json").exists()
+    assert any(event["kind"] == "recovery_completed" for event in events)
+    assert any(event["kind"] == "analyze"
+               and event["payload"].get("job_id") == "old-job" for event in events)
+
+
+def test_resume_reuses_saved_raw_job_without_contact_or_resubmission(tmp_path, monkeypatch):
+    _no_subprocess(monkeypatch)
+    ws = tmp_path / "raw"
+    _payload, body = _seed_unmatched_submission(ws)
+    client = _RecoveryTavi(body, unreachable=True)
+    save_scan_json(client.get_scan_data("old-job"), ws / "data")
+    summary = run_campaign(
+        _objective(), _recovery_config(ws, client, lambda _h: 0.2))
+    assert summary["stop"]["state"] != "pending_recovery"
+    assert client.submit_calls == 0 and client.wait_calls == 0
+
+
+@pytest.mark.parametrize("unreachable,state,wait_state", [
+    (False, "running", "running"),
+    (True, "queued", None),
+])
+def test_resume_pending_recovery_never_submits_new_scan(
+        tmp_path, monkeypatch, unreachable, state, wait_state):
+    _no_subprocess(monkeypatch)
+    ws = tmp_path / ("offline" if unreachable else "running")
+    _payload, body = _seed_unmatched_submission(ws)
+    client = _RecoveryTavi(
+        body, state=state, wait_state=wait_state, unreachable=unreachable)
+    summary = run_campaign(
+        _objective(), _recovery_config(ws, client, lambda _h: 0.2, max_iters=5))
+    assert summary["stop"]["state"] == "pending_recovery"
+    assert client.submit_calls == 0
+    assert client.wait_calls == (0 if unreachable else 1)
+    events = read_log(summary["session_log"])
+    pending = [event for event in events if event["kind"] == "recovery_pending"]
+    assert pending and pending[-1]["payload"]["decline"] is False
+    assert not any(event["kind"] == "propose" for event in events)
 
 
 # --------------------------------------------------------------------------- profiling / timing (step 4)

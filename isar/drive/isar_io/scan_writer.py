@@ -13,6 +13,12 @@ from pathlib import Path
 from typing import Any
 
 
+def scan_json_path(job_id: str, data_dir: str | Path) -> Path:
+    """Return the sanitized workspace path used for one TAVI job identifier."""
+    safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in str(job_id)) or "scan"
+    return Path(data_dir) / f"{safe}.json"
+
+
 def save_scan_json(data_dict: dict[str, Any], data_dir: str | Path) -> Path:
     """Write ``data_dict`` (a ``GET /scan/{id}/data`` body) verbatim as ``{job_id}.json``.
 
@@ -26,11 +32,8 @@ def save_scan_json(data_dict: dict[str, Any], data_dir: str | Path) -> Path:
             "save_scan_json expects a GET /scan/{id}/data body with top-level 'job_id' and 'result' "
             "(the keys ISAR's tavi plugin sniffs); got keys "
             f"{sorted(data_dict) if isinstance(data_dict, dict) else type(data_dict).__name__}")
-    job_id = str(data_dict["job_id"])
     d = Path(data_dir)
     d.mkdir(parents=True, exist_ok=True)
-    # Sanitize the filename (job ids are like "j-0001", but never trust an id into a path component).
-    safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in job_id) or "scan"
-    path = d / f"{safe}.json"
+    path = scan_json_path(str(data_dict["job_id"]), d)
     path.write_text(json.dumps(data_dict), encoding="utf-8")
     return path

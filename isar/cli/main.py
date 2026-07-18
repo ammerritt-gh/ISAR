@@ -310,7 +310,8 @@ def main(argv=None) -> int:
             return 2
         state = summary["stop"]["state"]
         print(f"isar drive: {state} — {'; '.join(summary['stop']['reasons'])}")
-        return {"met": 0, "unmeetable": 3, "operator_stopped": 4}.get(state, 2)
+        return {"met": 0, "unmeetable": 3, "operator_stopped": 4,
+                "pending_recovery": 5}.get(state, 2)
     print(f"unknown command: {cmd}", file=sys.stderr)
     return 2
 

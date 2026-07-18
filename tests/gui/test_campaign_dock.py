@@ -324,6 +324,12 @@ def test_status_lines_for_terminal_states(dock_env, make_ws):
     ws.refresh()
     vm.on_workspace_changed({"events"})
     assert "press Resume" in dock._status_line.text()
+    log_event(path, "stop", {"state": "pending_recovery", "reasons": ["job still running"],
+                             "grid_state": {"state": "continue", "reasons": [], "per_q": []}})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+    assert "no new scan was submitted" in dock._status_line.text()
+    assert "press Resume" in dock._status_line.text()
 
 
 def test_feed_renders_and_filters_exceptions(dock_env):
