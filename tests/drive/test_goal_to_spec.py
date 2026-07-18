@@ -186,3 +186,11 @@ def test_schema_checker_enforces_array_shape_and_branch_enum():
     payload = {"q_start": [2, 0], "q_end": [2, 0.5, 0], "tolerance_meV": 0.5,
                "budget_hours": 8, "target_branch": "banana"}
     assert not g2s._conforms(payload, g2s.GOAL_SCHEMA)
+
+
+def test_schema_checker_requires_real_booleans_and_rejects_unknown_types():
+    assert g2s._conforms(True, {"type": "boolean"})
+    assert not g2s._conforms("false", {"type": "boolean"})
+    assert not g2s._conforms(1, {"type": "boolean"})
+    assert g2s._conforms("anything", {})
+    assert not g2s._conforms("anything", {"type": "mystery"})

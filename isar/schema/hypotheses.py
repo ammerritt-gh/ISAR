@@ -103,6 +103,38 @@ class SteeringPolicy:
     interval_floor_min_exposure_ratio: float = 2.0
 
     def __post_init__(self) -> None:
+        finite_values = {
+            "classification_weight": self.classification_weight,
+            "assignment_entropy_stop_nats": self.assignment_entropy_stop_nats,
+            "minimum_information_per_cost": self.minimum_information_per_cost,
+            "absent_signal_widen_step": self.absent_signal_widen_step,
+            "mismatch_z_threshold": self.mismatch_z_threshold,
+            "ncount_growth_cap": self.ncount_growth_cap,
+            "tolerance_margin": self.tolerance_margin,
+            "interval_floor_min_improvement": self.interval_floor_min_improvement,
+            "interval_floor_min_exposure_ratio": self.interval_floor_min_exposure_ratio,
+        }
+        if self.differentiation_tolerance_meV is not None:
+            finite_values["differentiation_tolerance_meV"] = self.differentiation_tolerance_meV
+        for name, value in finite_values.items():
+            if not math.isfinite(float(value)):
+                raise ValueError(f"{name} must be finite")
+        integer_values = {
+            "minimum_target_support_points": self.minimum_target_support_points,
+            "max_scan_points": self.max_scan_points,
+            "absent_signal_widen_steps": self.absent_signal_widen_steps,
+            "quadrature_order": self.quadrature_order,
+            "quicklook_ncount": self.quicklook_ncount,
+            "production_batch_ncount": self.production_batch_ncount,
+            "maximum_production_batches_per_q": self.maximum_production_batches_per_q,
+            "max_ncount_per_scan": self.max_ncount_per_scan,
+            "interval_floor_window": self.interval_floor_window,
+        }
+        for name, value in integer_values.items():
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"{name} must be an integer")
+        if not isinstance(self.dynamic_ncount, bool):
+            raise ValueError("dynamic_ncount must be a boolean")
         if float(self.classification_weight) < 0.0:
             raise ValueError("classification_weight must be non-negative")
         if self.differentiation_tolerance_meV is not None and float(self.differentiation_tolerance_meV) <= 0:
@@ -113,6 +145,8 @@ class SteeringPolicy:
             raise ValueError("minimum_information_per_cost must be non-negative")
         if int(self.minimum_target_support_points) < 1 or int(self.max_scan_points) < 2:
             raise ValueError("point-count policy values are too small")
+        if float(self.absent_signal_widen_step) <= 0.0 or int(self.absent_signal_widen_steps) <= 0:
+            raise ValueError("absent-signal widening values must be positive")
         if int(self.quadrature_order) != 32:
             raise ValueError("the v1 acquisition estimator requires committed GH32 quadrature")
         if float(self.mismatch_z_threshold) <= 0.0:

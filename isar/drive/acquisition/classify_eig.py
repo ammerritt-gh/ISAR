@@ -12,6 +12,8 @@ from typing import Iterable
 
 import numpy as np
 
+from isar.probability import lower_truncated_normal_moments
+
 from isar.schema.hypotheses import ACQUISITION_ESTIMATOR_VERSION
 
 
@@ -83,13 +85,7 @@ def belief_predict(row: dict, u: float, *, data_only: bool = False) -> tuple[flo
     sigma = max(math.sqrt(max(float(xq @ cov @ xq), 0.0)), SIGMA_SLACK)
     if data_only or not prior:
         return mu, sigma
-    alpha = -mu / sigma
-    survival = 0.5 * math.erfc(alpha / math.sqrt(2.0))
-    if survival <= 1e-15:
-        return max(mu, 0.0), sigma
-    ratio = math.exp(-0.5 * alpha * alpha) / math.sqrt(2.0 * math.pi) / survival
-    variance = sigma * sigma * max(1.0 + alpha * ratio - ratio * ratio, 1e-12)
-    return mu + sigma * ratio, math.sqrt(variance)
+    return lower_truncated_normal_moments(mu, sigma)
 
 
 def assignment_mi(components: Iterable[dict], *, meas_sigma: float,

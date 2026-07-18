@@ -337,6 +337,8 @@ def _loads_lenient(text: str):
 def _conforms(value, schema) -> bool:
     """A conservative, dependency-free check for the JSON-Schema subset GOAL_SCHEMA uses."""
     t = schema.get("type")
+    if t is None:
+        return not schema
     if t == "object":
         if not isinstance(value, dict):
             return False
@@ -350,6 +352,8 @@ def _conforms(value, schema) -> bool:
         return isinstance(value, (int, float)) and not isinstance(value, bool)
     if t == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
+    if t == "boolean":
+        return isinstance(value, bool)
     if t == "string":
         return isinstance(value, str) and ("enum" not in schema or value in schema["enum"])
     if t == "array":
@@ -358,4 +362,4 @@ def _conforms(value, schema) -> bool:
         if len(value) < schema.get("minItems", 0) or len(value) > schema.get("maxItems", len(value)):
             return False
         return all(_conforms(item, schema.get("items", {})) for item in value)
-    return True
+    return False

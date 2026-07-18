@@ -170,3 +170,14 @@ def test_new_snapshots_enable_dynamic_counting_but_legacy_fingerprint_stays_exac
         steering=old_policy)
     assert legacy.hypothesis_fingerprint == old_fingerprint
     assert legacy.steering == old_policy
+
+
+@pytest.mark.parametrize("names, message", [
+    (["optic", "optic"], "duplicate"), (["optic", ""], "non-empty"),
+])
+def test_frozen_hypothesis_names_must_be_nonempty_and_unique(names, message):
+    hypotheses = [{"name": name} for name in names]
+    with pytest.raises(ValueError, match=message):
+        ObjectiveSpec(path=[(2, 0, 0)], tolerance_meV=0.5,
+                      budget={"kind": "neutrons", "amount": 1}, target_branch="optic",
+                      hypotheses=hypotheses, target_hypothesis="optic")

@@ -303,6 +303,7 @@ def test_target_selector_chooses_candidate_without_changing_its_posterior():
         {"acoustic": 0.05, "optic": 0.9, "new": 0.05},
         {"acoustic": 0.1, "optic": 0.2, "new": 0.7},
     ]
+    snapshot = [dict(row) for row in posterior]
     low = BA.selected_branch_qoi(feats, posterior, "optic", gauss_fwhm=0.5,
                                  selector="lowest_energy")
     near = BA.selected_branch_qoi(feats, posterior, "optic", gauss_fwhm=0.5,
@@ -314,6 +315,7 @@ def test_target_selector_chooses_candidate_without_changing_its_posterior():
     assert high["omega0"] == 9.0 and high["posterior"] == posterior[2]
     assert not BA.deliver_branch(low)
     assert BA.deliver_branch(near)
+    assert posterior == snapshot
 
 
 def test_scientist_target_energy_conditions_branch_odds_without_removing_rivals():
@@ -327,5 +329,14 @@ def test_scientist_target_energy_conditions_branch_odds_without_removing_rivals(
         features, posterior, "optic", target_energy=6.0, sigma=1.0)
     assert result[0]["optic"] < posterior[0]["optic"]
     assert result[1]["optic"] > posterior[1]["optic"]
-    assert set(result[1]) == {"acoustic", "optic", "new"}
-    assert sum(result[1].values()) == pytest.approx(1.0)
+    for conditioned in result:
+        assert set(conditioned) == {"acoustic", "optic", "new"}
+        assert sum(conditioned.values()) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("mu,sigma", [(-20.0, 1.0), (-100.0, 2.0)])
+def test_lower_truncated_prior_is_concentrated_above_zero_in_far_tail(mu, sigma):
+    mean, std = BA.lower_truncated_normal_moments(mu, sigma)
+    alpha = -mu / sigma
+    assert 0.0 < mean < 2.0 * sigma / alpha
+    assert 0.0 < std < 2.0 * sigma / alpha

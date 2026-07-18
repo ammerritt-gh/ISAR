@@ -108,7 +108,14 @@ class ObjectiveSpec:
         self.hypotheses = [dict(h) for h in self.hypotheses]
         self.steering = dict(self.steering)
         if self.hypotheses:
-            names = {str(h.get("name")) for h in self.hypotheses}
+            names: set[str] = set()
+            for hypothesis in self.hypotheses:
+                name = hypothesis.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError("every frozen hypothesis must have a non-empty string name")
+                if name in names:
+                    raise ValueError(f"duplicate frozen hypothesis name {name!r}")
+                names.add(name)
             if not self.target_hypothesis or self.target_hypothesis not in names:
                 raise ValueError("target_hypothesis must name one of the frozen hypotheses")
             supplied_steering = dict(self.steering)

@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from isar.probability import lower_truncated_normal_moments
+
 from isar.analyze.truth import _fold
 
 # --- tunables (module-level so tests / a future card can override) ---------------------------
@@ -251,21 +253,7 @@ class BranchBelief:
         sigma = max(math.sqrt(max(float(xq @ cov @ xq), 0.0)), SIGMA_SLACK)
         if not include_prior:
             return mu, sigma
-        return _lower_truncated_normal_moments(mu, sigma)
-
-
-def _lower_truncated_normal_moments(mu: float, sigma: float) -> tuple[float, float]:
-    """Mean and standard deviation of ``N(mu,sigma²)`` conditioned on energy >= 0."""
-    sigma = max(float(sigma), 1e-12)
-    alpha = -float(mu) / sigma
-    # phi(alpha) / (1-Phi(alpha)), evaluated safely in the tails used by branch priors.
-    survival = 0.5 * math.erfc(alpha / math.sqrt(2.0))
-    if survival <= 1e-15:
-        return max(float(mu), 0.0), sigma
-    ratio = math.exp(-0.5 * alpha * alpha) / math.sqrt(2.0 * math.pi) / survival
-    mean = float(mu) + sigma * ratio
-    variance = sigma * sigma * max(1.0 + alpha * ratio - ratio * ratio, 1e-12)
-    return mean, math.sqrt(variance)
+        return lower_truncated_normal_moments(mu, sigma)
 
 
 def build_beliefs(points, *, sample, t_bin, period: float,

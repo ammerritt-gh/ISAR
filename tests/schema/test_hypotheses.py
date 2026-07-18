@@ -40,3 +40,22 @@ def test_fingerprint_changes_with_preset_or_estimator_inputs():
 def test_quadrature_order_is_committed_to_gh32():
     with pytest.raises(ValueError, match="GH32"):
         SteeringPolicy(quadrature_order=16)
+
+
+@pytest.mark.parametrize("field", [
+    "classification_weight", "assignment_entropy_stop_nats", "minimum_information_per_cost",
+    "absent_signal_widen_step", "mismatch_z_threshold", "ncount_growth_cap", "tolerance_margin",
+    "interval_floor_min_improvement", "interval_floor_min_exposure_ratio",
+])
+def test_steering_policy_rejects_non_finite_numeric_values(field):
+    with pytest.raises(ValueError, match="finite"):
+        SteeringPolicy(**{field: float("nan")})
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"absent_signal_widen_step": 0.0}, {"absent_signal_widen_steps": 0},
+    {"dynamic_ncount": "false"},
+])
+def test_steering_policy_rejects_invalid_widening_and_boolean(kwargs):
+    with pytest.raises(ValueError):
+        SteeringPolicy(**kwargs)
