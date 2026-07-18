@@ -84,3 +84,23 @@ def test_branch_beliefs_and_wrong_preset_warning_persist_in_machine_state():
     state.dispersion_prior = list(reversed(state.dispersion_prior))
     _update_hypothesis_mismatch(state, 5.0, period=2.0, hypotheses=[hypothesis])
     assert state.hypothesis_mismatch == first
+
+
+def test_branch_belief_preserves_complete_posterior_and_legacy_fallback():
+    complete = _pt("A", 300, 4.0, 0.3, 0.2)
+    complete.update({"branch_id": "optic", "weight": 0.7,
+                     "branch_posterior": {"acoustic": 0.2, "optic": 0.7, "new": 0.1},
+                     "assignment_entropy": 123.0})
+    legacy = _pt("A", 300, 5.0, 0.3, 0.2)
+    legacy.update({"branch_id": "optic", "weight": 0.75})
+    state = CardState(
+        dispersion_prior=[complete, legacy],
+        hypothesis_snapshot={"target_hypothesis": "optic"})
+    _store_branch_beliefs(state, 5.0, period=2.0)
+    by_scan = {row["scan_id"]: row for row in state.branch_belief}
+    exact = by_scan[complete["scan_id"]]
+    assert exact["label_probabilities"] == complete["branch_posterior"]
+    assert exact["p_is_target"] == 0.7
+    assert exact["assignment_entropy"] != 123.0  # derived from the normalized complete vector
+    old = by_scan[legacy["scan_id"]]
+    assert old["label_probabilities"] == {"optic": 0.75, "new": 0.25}

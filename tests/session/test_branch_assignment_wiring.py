@@ -41,6 +41,43 @@ def test_add_point_stores_branch_id_and_weight():
     assert p["branch_id"] == "acoustic" and p["weight"] == pytest.approx(0.9)
 
 
+def test_add_point_stores_complete_branch_evidence_additively():
+    state = CardState()
+    posterior = {"acoustic": 0.2, "optic": 0.7, "new": 0.1}
+    assert SP.add_point(
+        state, scan_id="O0", sample="S", T=200.0, q=[0.1, 0.0, 0.0], omega0=6.0,
+        modality="fold", verdict="resolved", branch_id="optic", weight=0.7,
+        branch_posterior=posterior, assignment_entropy=0.8)
+    assert state.dispersion_prior[0]["branch_posterior"] == posterior
+    assert state.dispersion_prior[0]["assignment_entropy"] == pytest.approx(0.8)
+
+
+def test_acquisition_provenance_resolves_driven_and_standalone_scans():
+    state = CardState(acquisition_provenance=[{
+        "job_id": "j-0042", "acquisition_id": "logical:7",
+        "acquisition_target_energy": 6.25, "submitted_ncount": 100_000_000,
+        "scan_kind": "production"}])
+    card = SimpleNamespace(state=state)
+    assert CardState.from_dict(state.to_dict()).acquisition_provenance == state.acquisition_provenance
+    driven = SimpleNamespace(raw_header={"tavi": {"job_id": "j-0042"}})
+    acquisition_id, provenance = driver._acquisition_provenance_for(driven, card, "S:42")
+    assert acquisition_id == "logical:7"
+    assert provenance["acquisition_target_energy"] == pytest.approx(6.25)
+    standalone = SimpleNamespace(raw_header={})
+    assert driver._acquisition_provenance_for(standalone, card, "S:9") == ("scan:S:9", None)
+
+
+def test_effective_exposure_uses_preserved_selected_center_after_triage_withholds_fit():
+    ctx = SimpleNamespace(
+        x=[0.0, 1.0, 2.0, 3.0], mask=[True] * 4, gauss_fwhm=0.1,
+        lorentz_fwhm=0.0, acoustic_omega=None, prior_omega=None, window=(0.0, 3.0))
+    info = driver._effective_exposure_for(
+        None, ctx, {"omega0": None}, absolute_exposure=[10.0, 20.0, 80.0, 160.0],
+        target_center=2.0)
+    assert info["center"] == pytest.approx(2.0)
+    assert info["value"] == pytest.approx(80.0)
+
+
 def test_prior_for_can_select_optic_branch():
     st = CardState()
     _add(st, "A0", 0.20, 1.85, branch_id="acoustic")

@@ -26,7 +26,9 @@ import numpy as np
 
 from isar.analyze import errors, loop, select, verdict
 from isar.analyze import gold as gold_mod
-from isar.analyze.context import ScanContext, effective_exposure, normalized_exposure
+from isar.analyze.context import (
+    ScanContext, effective_exposure, normalized_exposure, select_exposure,
+)
 from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.reduce import collate as collate_mod
@@ -272,10 +274,14 @@ def _exposure_per_point(rec, ctx) -> tuple[float, str]:
     norm = getattr(rec, "normalization", None)
     if norm is None:
         return float("nan"), ""
-    mode = getattr(norm, "counting_mode", "") or ""
-    arr = norm.monitor if mode == "monitor" else norm.time
+    # The mask is the fit-window shape authority and remains available on lightweight consumers
+    # that intentionally omit the acquisition grid (for example portable intensity reconstruction).
+    selected = select_exposure(norm, np.asarray(ctx.mask, dtype=bool).shape, ctx.mask)
+    mode = selected.source or (getattr(norm, "counting_mode", "") or "")
+    if selected.absolute is None:
+        return float("nan"), mode
     try:
-        a = np.asarray(arr, dtype=float)
+        a = np.asarray(selected.absolute, dtype=float)
         m = np.asarray(ctx.mask, dtype=bool)
         if a.size == m.size and m.any():
             a = a[m]
@@ -311,9 +317,15 @@ def _intensity_measure(rec, ctx, fit) -> dict | None:
 
 
 def _effective_exposure_for(rec, ctx, fit, *, absolute_exposure=None,
+                            absolute_exposure_source=None, target_center=None,
+                            acquisition_target_energy=None,
                             submitted_ncount: int | None = None) -> dict:
     """One exposure definition for single scans and pooled masters."""
-    target = fit.get("omega0")
+    target = target_center
+    if target is None or not np.isfinite(target):
+        target = fit.get("omega0")
+    if target is None or not np.isfinite(target):
+        target = acquisition_target_energy
     if target is None or not np.isfinite(target):
         target = getattr(ctx, "acoustic_omega", None)
     if target is None or not np.isfinite(target):
@@ -321,16 +333,32 @@ def _effective_exposure_for(rec, ctx, fit, *, absolute_exposure=None,
     if target is None or not np.isfinite(target):
         target = 0.5 * (float(ctx.window[0]) + float(ctx.window[1]))
     exposure = absolute_exposure
+    normalization_source = absolute_exposure_source
     if exposure is None and rec is not None:
         norm = getattr(rec, "normalization", None)
-        if norm is not None:
-            exposure = getattr(norm, "monitor", None)
-            if exposure is None:
-                exposure = getattr(norm, "time", None)
-    return effective_exposure(
+        selected = select_exposure(norm, np.asarray(ctx.x).shape, ctx.mask)
+        exposure = selected.absolute
+        normalization_source = selected.source
+    info = effective_exposure(
         ctx.x, exposure, ctx.mask, target_center=float(target),
         resolution_fwhm=float(ctx.gauss_fwhm) + float(ctx.lorentz_fwhm),
         submitted_ncount=submitted_ncount)
+    info["normalization_source"] = normalization_source
+    return info
+
+
+def _acquisition_provenance_for(rec, card, scan_id: str) -> tuple[str, dict | None]:
+    """Resolve a driven TAVI scan through machine state, else return its stable standalone ID."""
+    raw = getattr(rec, "raw_header", None) or {}
+    tavi = raw.get("tavi") if isinstance(raw, dict) else None
+    job_id = tavi.get("job_id") if isinstance(tavi, dict) else None
+    if job_id is not None:
+        for item in reversed(getattr(card.state, "acquisition_provenance", None) or []):
+            if str(item.get("job_id")) == str(job_id):
+                acquisition_id = item.get("acquisition_id")
+                if acquisition_id:
+                    return str(acquisition_id), item
+    return f"scan:{scan_id}", None
 
 
 def _build_descriptor(ctx):
@@ -1013,7 +1041,23 @@ def _store_branch_beliefs(state, t_round: float, *, period: float | None,
             str(item.get("scan_id", "")))):
         branch_id = str(point.get("branch_id") or BA.ACOUSTIC)
         probability = min(max(float(point.get("weight", 1.0)), 0.0), 1.0)
-        probabilities = {branch_id: probability, BA.NEW: 1.0 - probability}
+        complete = point.get("branch_posterior")
+        probabilities = None
+        if isinstance(complete, dict):
+            usable = {}
+            for key, value in complete.items():
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if np.isfinite(numeric) and numeric >= 0.0:
+                    usable[str(key)] = numeric
+            total = sum(usable.values())
+            if usable and total > 0.0:
+                probabilities = {key: value / total for key, value in usable.items()}
+        if probabilities is None:
+            # Compatibility for points persisted before complete vectors were additive.
+            probabilities = {branch_id: probability, BA.NEW: 1.0 - probability}
         entropy = -sum(value * math.log(value) for value in probabilities.values() if value > 0.0)
         point_rows.append({
             "sample": point.get("sample"), "t_bin": point.get("t_bin", point.get("T")),
@@ -1021,7 +1065,7 @@ def _store_branch_beliefs(state, t_round: float, *, period: float | None,
             "sigma": BA.SIGMA_SLACK / math.sqrt(max(probability, 1e-9)),
             "branch_id": branch_id, "label_probabilities": probabilities,
             "assignment_entropy": entropy,
-            "p_is_target": probability if branch_id == target else 0.0,
+            "p_is_target": float(probabilities.get(target, 0.0)) if target is not None else 0.0,
             "resolvable": None, "scan_id": point.get("scan_id")})
     state.branch_belief = point_rows
 
@@ -1163,7 +1207,9 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
                                     gamma=oc.get("gamma"), gamma_err=g_err,
                                     intensity=oc.get("intensity"),
                                     fit_kind=oc.get("fit_kind"), branch_id=oc.get("branch_id"),
-                                    weight=oc.get("branch_weight"), t_round=t_round,
+                                    weight=oc.get("branch_weight"),
+                                    branch_posterior=oc.get("branch_posterior"),
+                                    assignment_entropy=oc.get("assignment_entropy"), t_round=t_round,
                                     require_fold=True)
             # Rival-branch anchors from this DELIVERED scan's other features (optic banking):
             # stored under suffixed scan_ids; purge first so a refit with fewer secondaries
@@ -1179,6 +1225,8 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
                                         # not inherit the primary fit's constrained fit_kind.
                                         verdict=oc.get("verdict"), fit_kind="unconstrained",
                                         branch_id=sf.get("branch_id"), weight=sf.get("weight"),
+                                        branch_posterior=sf.get("branch_posterior"),
+                                        assignment_entropy=sf.get("assignment_entropy"),
                                         t_round=t_round, require_fold=False)
             summary.outcomes.append((scan, FitOutcome(**oc) if not isinstance(oc, FitOutcome) else oc))
 
@@ -1453,12 +1501,15 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
     # and the triage withholds a non-acoustic/unresolvable pool as branch_continuation. Without this a
     # boundary master delivers the optic as the acoustic ω₀.
     (branch_id, assignment_entropy, branch_weight, resolvable, secondary_features,
-     branch_posterior, candidate_id, candidate_state) = _apply_branch_triage(
+     branch_posterior, candidate_id, candidate_state, selected_energy) = _apply_branch_triage(
         fit, descriptor, ctx, card=card, sample=sample, T=T, q=q, t_round=t_round,
         near_gamma=near_gamma, master=True)
 
     disposition = gold_mod.verdict_disposition(fit["verdict"])
-    exposure_info = _effective_exposure_for(None, ctx, fit, absolute_exposure=monitor)
+    exposure_info = _effective_exposure_for(
+        None, ctx, fit, absolute_exposure=monitor,
+        absolute_exposure_source=("monitor" if monitor is not None else None),
+        target_center=selected_energy)
     outcome = FitOutcome(
         detector_id=det, verdict=fit["verdict"], disposition=disposition,
         confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
@@ -1486,7 +1537,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         bayes_fork_suspected=fit.get("bayes_fork_suspected", False),
         bayes_unconstrained=fit.get("bayes_unconstrained", False),
         target_branch=target_branch, target_label=target_label,
-        effective_exposure=exposure_info.get("value"), exposure_provenance=exposure_info)
+        effective_exposure=exposure_info.get("value"), exposure_provenance=exposure_info,
+        acquisition_id=f"pooled:{chash}")
     entry = ScanEntry(status="fitted", **base)
     entry.detectors[det] = outcome.to_dict()
     entry.provenance = {"pooled": True, "n_members": int(ms.n_members),
@@ -1584,7 +1636,8 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
     feats = BA.features_from(modes or [], descriptor, gauss_fwhm=ctx.gauss_fwhm)
     if not feats:
         return {"deliver": bool(fit.get("omega0") is not None), "branch_id": None,
-                "weight": None, "entropy": None, "resolvable": None}
+                "weight": None, "entropy": None, "resolvable": None,
+                "selected_energy": fit.get("omega0")}
     u = BA.reduced_q(q, period)
     if target_branch != BA.ACOUSTIC:
         # A fitted mode and the model-free descriptor commonly report the same physical peak.  Do
@@ -1614,6 +1667,7 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
         return {"deliver": bool(deliver), "branch_id": assigned,
                 "weight": float(qoi.get("p_branch", 0.0)), "entropy": ent,
                 "resolvable": bool(qoi.get("resolvable")), "posterior": posterior,
+                "selected_energy": qoi.get("omega0"),
                 "candidate_id": candidate_id,
                 "candidate_state": ("accepted" if deliver else "provisional")}
     post = BA.assignment_posterior(feats, beliefs, u)
@@ -1635,6 +1689,7 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
         # acoustic dominance (the post-Phase-A abstention deadlock at mid-band q).
         return {"deliver": True, "branch_id": "acoustic", "weight": float(qoi["p_acoustic"]),
                 "entropy": ent, "resolvable": bool(qoi["resolvable"]),
+                "posterior": qoi.get("posterior"), "selected_energy": qoi.get("omega0"),
                 "secondary_points": BA.secondary_branch_points(feats, post, qoi,
                                                                gauss_fwhm=ctx.gauss_fwhm)}
     bid = "optic"
@@ -1642,7 +1697,8 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
         bid, _ = BA.assign_label(fit["omega0"], fit.get("omega0_err") or 0.3 * ctx.gauss_fwhm,
                                  beliefs, u, gauss_fwhm=ctx.gauss_fwhm)
     return {"deliver": False, "branch_id": bid, "weight": 0.0, "entropy": ent,
-            "resolvable": bool(qoi["resolvable"])}
+            "resolvable": bool(qoi["resolvable"]), "posterior": qoi.get("posterior"),
+            "selected_energy": qoi.get("omega0")}
 
 
 def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, near_gamma,
@@ -1655,7 +1711,7 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
     triage declines delivery it mutates ``fit`` in place: flips the verdict to ``branch_continuation``,
     nulls the ω₀ fields, and appends a reason (worded per ``master``)."""
     branch_id = assignment_entropy = branch_weight = resolvable = None
-    branch_posterior = candidate_id = candidate_state = None
+    branch_posterior = candidate_id = candidate_state = selected_energy = None
     secondary_features = None
     if fit.get("verdict") != "signal_unmodeled":
         triage = _assign_and_triage(fit, descriptor, ctx, card=card, sample=sample, T=T, q=q,
@@ -1667,6 +1723,7 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
             resolvable = triage.get("resolvable")
             secondary_features = triage.get("secondary_points") or None
             branch_posterior = triage.get("posterior")
+            selected_energy = triage.get("selected_energy")
             candidate_id = triage.get("candidate_id")
             candidate_state = triage.get("candidate_state")
             if triage.get("deliver") is False and fit.get("omega0") is not None:
@@ -1685,7 +1742,7 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
                 fit["bayes_interval"] = None
                 fit["interval_reliable"] = False
     return (branch_id, assignment_entropy, branch_weight, resolvable, secondary_features,
-            branch_posterior, candidate_id, candidate_state)
+            branch_posterior, candidate_id, candidate_state, selected_energy)
 
 
 def _gate_scan(rec, det, card, g, runcal, exclusions, base) -> tuple:
@@ -1854,7 +1911,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
     # optic/spurious feature can never seed or be scored as the acoustic branch. Skipped for
     # signal_unmodeled (already a non-ω₀ descriptor result) and when the posterior is off (period None).
     (branch_id, assignment_entropy, branch_weight, resolvable, secondary_features,
-     branch_posterior, candidate_id, candidate_state) = _apply_branch_triage(
+     branch_posterior, candidate_id, candidate_state, selected_energy) = _apply_branch_triage(
         fit, descriptor, ctx, card=card, sample=sample, T=T, q=q, t_round=t_round,
         near_gamma=near_gamma, master=False)
 
@@ -1873,7 +1930,12 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
                       "n_neighbors": n_neighbors, "source": prior_source}
 
     target_branch, target_label, _energy_search = _campaign_target(card)
-    exposure_info = _effective_exposure_for(rec, ctx, fit)
+    acquisition_id, acquisition = _acquisition_provenance_for(rec, card, base["scan_id"])
+    acquisition_target = (acquisition or {}).get("acquisition_target_energy")
+    submitted_ncount = (acquisition or {}).get("submitted_ncount")
+    exposure_info = _effective_exposure_for(
+        rec, ctx, fit, target_center=selected_energy,
+        acquisition_target_energy=acquisition_target, submitted_ncount=submitted_ncount)
     outcome = FitOutcome(
         detector_id=det, verdict=fit["verdict"], disposition=disposition,
         confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
@@ -1902,7 +1964,8 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         bayes_fork_suspected=fit.get("bayes_fork_suspected", False),
         bayes_unconstrained=fit.get("bayes_unconstrained", False),
         target_branch=target_branch, target_label=target_label,
-        effective_exposure=exposure_info.get("value"), exposure_provenance=exposure_info)
+        effective_exposure=exposure_info.get("value"), exposure_provenance=exposure_info,
+        acquisition_id=acquisition_id)
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is

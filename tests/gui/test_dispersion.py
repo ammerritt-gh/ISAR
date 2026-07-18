@@ -136,6 +136,22 @@ def test_prior_and_branch_curves(make_ws):
     assert Role.PRIOR in roles and Role.BRANCH in roles
 
 
+def test_branch_uncertainty_metadata_uses_the_plotted_sample_temperature_slice(make_ws):
+    branch = [
+        {"sample": "tavi", "t_bin": 200.0, "q": [2.0, 0.0, 0.0], "omega0": 4.2,
+         "branch_id": "optic", "assignment_entropy": 0.1},
+        {"sample": "tavi", "t_bin": 200.0, "q": [2.2, 0.0, 0.0], "omega0": 6.2,
+         "branch_id": "optic", "assignment_entropy": 0.2},
+        {"sample": "other", "t_bin": 200.0, "q": [2.1, 0.0, 0.0], "omega0": 9.0,
+         "branch_id": "optic", "assignment_entropy": 9.0},
+        {"sample": "tavi", "t_bin": 300.0, "q": [2.1, 0.0, 0.0], "omega0": 8.0,
+         "branch_id": "optic", "assignment_entropy": 8.0},
+    ]
+    vm = DispersionViewModel(_make(make_ws, branch=branch))
+    metadata = vm.spec.meta["branch_label_uncertainty"]
+    assert [item["assignment_entropy"] for item in metadata] == [0.1, 0.2]
+
+
 def test_prior_degrades_when_fewer_than_two_points(make_ws):
     ws = _make(make_ws, prior=[_PRIOR[0]])  # a single anchor is not a curve
     vm = DispersionViewModel(ws)

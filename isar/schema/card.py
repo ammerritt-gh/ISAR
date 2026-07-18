@@ -149,6 +149,7 @@ class CardState:
     campaign_target: dict = field(default_factory=dict)      # active frozen objective branch/search
     hypothesis_snapshot: dict = field(default_factory=dict)  # resolved set + source + content fingerprint
     hypothesis_mismatch: dict = field(default_factory=dict)  # persisted prior-vs-data PPC warning (O11)
+    acquisition_provenance: list = field(default_factory=list)  # append-only TAVI job→logical scan map
     #   {sample, t_bin, q, hkl, omega0, sigma, entropy, resolvable} — the drive reads this (durable,
     #   boundary-safe) to steer ω(q) by the assignment-inflated σ instead of raw best_omega0 (Phase A).
     lattice_epochs: list = field(default_factory=list)       # versioned lattice/orientation interpretation

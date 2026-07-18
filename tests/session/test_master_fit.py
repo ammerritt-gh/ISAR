@@ -245,6 +245,7 @@ def test_parallel_masters_match_serial_end_to_end(tmp_path):
     assert len(pooled_rows) == 2
     for r in pooled_rows:
         assert r["members"] and len(r["members"]) == r["n_members"]
+        assert r["acquisition_id"].startswith("pooled:")
 
     # Real S30 batch (held, merge="separate"): the master pass must be a no-op — per-scan path intact.
     ws = Workspace.open(tmp_path / "ws")

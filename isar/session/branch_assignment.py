@@ -357,7 +357,8 @@ def acoustic_qoi(features, posterior, *, gauss_fwhm: float,
     wa = np.array([p.get(ACOUSTIC, 0.0) for p in posterior], dtype=float)
     if wa.sum() < W_MIN or not features:
         return {"omega0": None, "sigma": None, "p_acoustic": float(wa.max() if wa.size else 0.0),
-                "entropy": float("inf"), "dominance": 0.0, "resolvable": False, "feature": None}
+                "entropy": float("inf"), "dominance": 0.0, "resolvable": False,
+                "feature": None, "posterior": None, "feature_index": None}
     j = int(np.argmax(wa))
     mu = float(features[j].energy)
     wn = wa / wa.sum()
@@ -368,7 +369,7 @@ def acoustic_qoi(features, posterior, *, gauss_fwhm: float,
             "p_acoustic": float(wa[j]), "entropy": _entropy(posterior[j]),
             "dominance": float(wa[j] / wa.sum()),
             "resolvable": bool(mu >= resolvable_factor * float(gauss_fwhm)),
-            "feature": features[j]}
+            "feature": features[j], "posterior": dict(posterior[j]), "feature_index": j}
 
 
 def branch_qoi(features, posterior, branch_id: str, *, gauss_fwhm: float) -> dict:
@@ -485,8 +486,11 @@ def secondary_branch_points(features, posterior, qoi, *, gauss_fwhm: float,
             continue
         if f.energy < float(gauss_fwhm) or f.energy <= w_acoustic:
             continue
+        probabilities = dict(p)
         out.append({"omega0": float(f.energy), "branch_id": "optic",
-                    "weight": float(1.0 - p.get(ACOUSTIC, 0.0))})
+                    "weight": float(1.0 - p.get(ACOUSTIC, 0.0)),
+                    "branch_posterior": probabilities,
+                    "assignment_entropy": _entropy(probabilities)})
     return out
 
 

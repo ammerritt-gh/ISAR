@@ -163,6 +163,19 @@ def projection_legend(varying, modal, step) -> ps.ProjectionLegend:
     return ps.ProjectionLegend(plane=plane, integration=", ".join(integ))
 
 
+def filter_prior_rows(points, *, sample=None, T=None, t_round) -> list[dict]:
+    """Apply the shared sample/temperature slice used by curves and their metadata."""
+    rows = []
+    for point in points or []:
+        if sample is not None and point.get("sample") != sample:
+            continue
+        point_T = point.get("t_bin", point.get("T"))
+        if T is not None and point_T is not None and abs(float(point_T) - float(T)) > t_round:
+            continue
+        rows.append(point)
+    return rows
+
+
 def prior_curve(points, varying, *, sample=None, T=None, t_round, want_sigma=False):
     """Reduce a list of PriorPoint-shaped dicts (``{sample, t_bin/T, q, omega0, sigma, ...}``) to the
     sorted ω(q) curve for one sample + temperature bin, projected onto the ``varying`` q component.
@@ -172,12 +185,7 @@ def prior_curve(points, varying, *, sample=None, T=None, t_round, want_sigma=Fal
     heatmap's exact degrade rule, shared so prior + branch overlays degrade identically). Anchors are
     matched to ``sample`` (when given) and to within ``t_round`` of ``T`` (when both given)."""
     rows = []
-    for p in points or []:
-        if sample is not None and p.get("sample") != sample:
-            continue
-        pt = p.get("t_bin", p.get("T"))
-        if T is not None and pt is not None and abs(float(pt) - float(T)) > t_round:
-            continue
+    for p in filter_prior_rows(points, sample=sample, T=T, t_round=t_round):
         q = p.get("q")
         w = p.get("omega0")
         if q is None or len(q) <= varying or w is None:

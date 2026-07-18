@@ -111,3 +111,11 @@ def test_descriptor_uses_exposure_in_poisson_mean_without_rescaling_counts():
                           exposure_scale=exposure)
     assert np.array_equal(counts, original)
     assert any(abs(p.energy - 4.0) <= 1.0 for p in d.peaks)
+
+
+@pytest.mark.parametrize("exposure", [1.0, np.ones(3)])
+def test_descriptor_rejects_exposure_shape_before_masking(exposure):
+    x = _grid()
+    with pytest.raises(ValueError, match="original spectrum"):
+        describe_spectrum(x, np.ones_like(x), center=0.0, gauss_fwhm=1.5,
+                          mask=np.ones_like(x, dtype=bool), exposure_scale=exposure)

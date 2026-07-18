@@ -578,6 +578,7 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         "diagnostic_halfwidth": diagnostic_hw, "interval_method": diagnostic_method,
         "calibration_version": _calibration_version(calibration),
         "branch_id": row.get("branch_id"), "branch_posterior": row.get("branch_posterior"),
+        "assignment_entropy": row.get("assignment_entropy"),
         "target_branch": row.get("target_branch"),
         "candidate_id": row.get("candidate_id"), "candidate_state": row.get("candidate_state"),
         # Chain of custody: the member scan labels behind this pooled value (readers coerce the CSV
@@ -635,6 +636,7 @@ def _record_pooled_master_update(workspace, calibration: Calibration, proposal, 
             "candidate_id": payload.get("candidate_id"), "state": "rejected",
             "target_branch": payload.get("target_branch"), "hkl": payload.get("hkl"),
             "branch_posterior": payload.get("branch_posterior"),
+            "assignment_entropy": payload.get("assignment_entropy"),
             "evidence": payload.get("candidate_evidence")})
     return payload
 
@@ -1252,6 +1254,30 @@ def _persist_campaign_target(workspace: Path, objective) -> None:
         card.save_state(state_path)
 
 
+def _persist_acquisition_provenance(workspace: Path, payload: dict) -> None:
+    """Append the TAVI job→logical acquisition map before analysis consumes the raw scan."""
+    policy_path = workspace / "card.policy.toml"
+    state_path = workspace / "card.state.json"
+    if not policy_path.exists():
+        return
+    job_id = payload.get("job_id")
+    acquisition_id = payload.get("acquisition_id")
+    if job_id is None or acquisition_id is None:
+        return
+    card = Card.load(policy_path, state_path)
+    existing = getattr(card.state, "acquisition_provenance", None) or []
+    if any(str(item.get("job_id")) == str(job_id) for item in existing):
+        return
+    card.state.acquisition_provenance.append({
+        "job_id": str(job_id),
+        "acquisition_id": str(acquisition_id),
+        "acquisition_target_energy": float(payload["acquisition_target_energy"]),
+        "submitted_ncount": int(payload["submitted_ncount"]),
+        "scan_kind": str(payload["kind"]),
+    })
+    card.save_state(state_path)
+
+
 def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan_counter: int,
                       budget_state: dict, observations: list[dict], consumed: set,
                       scan_kind: dict) -> tuple[list[dict], int]:
@@ -1423,6 +1449,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             log_event(log_path, "decide", {"event": "workspace_init", "action": "workspace_init",
                                            "probe": str(scan_path), "iter": it})
         _persist_campaign_target(workspace, objective)
+        _persist_acquisition_provenance(workspace, submission_payload)
         # Error tier per the escalation ladder: quicklook → cheap (steer only), production →
         # fast (HESSE interval + trust flag), escalating to full (bootstrap+profile) only where an
         # untrusted-HESSE q needs the reliable interval. The bootstrap fires only where needed.

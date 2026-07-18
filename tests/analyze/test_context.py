@@ -113,3 +113,25 @@ def test_from_scan_prefers_monitor_exposure_even_in_time_counting_mode():
     ctx = CTX.ScanContext.from_scan(rec, "ana5", card,
                                     center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0)
     assert np.allclose(ctx.exposure_scale, monitor / np.median(monitor))
+
+
+def test_from_scan_falls_back_to_time_when_monitor_is_malformed():
+    rec = _stub_record()
+    time = np.linspace(4.0, 8.0, 41)
+    rec.normalization = SimpleNamespace(
+        counting_mode="monitor", monitor=np.array([1.0, 2.0]), time=time)
+    card = SimpleNamespace(policy=SimpleNamespace(instrument="S30", quasielastic_fwhm=None))
+    ctx = CTX.ScanContext.from_scan(rec, "ana5", card,
+                                    center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0)
+    assert np.allclose(ctx.exposure_scale, time / np.median(time))
+    selected = CTX.select_exposure(rec.normalization, ctx.x.shape, ctx.mask)
+    assert selected.source == "time"
+    assert np.array_equal(selected.absolute, time)
+
+
+def test_exposure_selection_falls_back_when_monitor_has_no_positive_values():
+    norm = SimpleNamespace(monitor=np.array([0.0, np.nan, -1.0]),
+                           time=np.array([10.0, 20.0, 30.0]))
+    selected = CTX.select_exposure(norm, (3,), np.ones(3, dtype=bool))
+    assert selected.source == "time"
+    assert np.array_equal(selected.scale, np.array([0.5, 1.0, 1.5]))

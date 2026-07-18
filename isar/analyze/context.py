@@ -16,6 +16,16 @@ from isar.schema import axes
 from isar.schema.steering import ParamConstraints
 
 
+@dataclass(frozen=True)
+class ExposureSelection:
+    """The single usable normalization vector selected for one spectrum."""
+
+    absolute: np.ndarray | None
+    scale: np.ndarray | None
+    source: str | None
+    reference: float | None
+
+
 def normalized_exposure(exposure, mask=None) -> tuple[np.ndarray | None, float | None]:
     """Return ``(relative exposure, positive kept median)`` without altering observed data.
 
@@ -32,6 +42,35 @@ def normalized_exposure(exposure, mask=None) -> tuple[np.ndarray | None, float |
     scale = np.zeros(values.shape, dtype=float)
     scale[np.isfinite(values) & (values > 0)] = values[np.isfinite(values) & (values > 0)] / reference
     return scale, reference
+
+
+def select_exposure(normalization, shape, mask=None) -> ExposureSelection:
+    """Select monitor, then time, only when it can normalize the requested spectrum.
+
+    A malformed or wholly unusable monitor must not suppress a valid time vector.  The returned
+    absolute vector is the same vector whose relative scale is consumed by fitting, so diagnostics
+    cannot silently report a different exposure source.
+    """
+    expected = tuple(shape)
+    if normalization is None:
+        return ExposureSelection(None, None, None, None)
+    for source in ("monitor", "time"):
+        candidate = getattr(normalization, source, None)
+        if candidate is None:
+            continue
+        try:
+            absolute = np.asarray(candidate, dtype=float)
+        except (TypeError, ValueError):
+            continue
+        if absolute.shape != expected:
+            continue
+        try:
+            scale, reference = normalized_exposure(absolute, mask)
+        except (TypeError, ValueError):
+            continue
+        if scale is not None:
+            return ExposureSelection(absolute, scale, source, reference)
+    return ExposureSelection(None, None, None, None)
 
 
 def effective_exposure(x, exposure, mask, *, target_center: float,
@@ -149,16 +188,11 @@ class ScanContext:
         sp = record.spectra[detector_id]
         exposure_scale = None
         norm = getattr(record, "normalization", None)
-        if norm is not None:
-            # Detector expectation follows incident exposure.  Prefer the recorded monitor even on
-            # time-counted instruments (where it captures flux drift); seconds are only a fallback.
-            raw_exposure = getattr(norm, "monitor", None)
-            if raw_exposure is None:
-                raw_exposure = getattr(norm, "time", None)
-            if raw_exposure is not None:
-                exposure = np.asarray(raw_exposure, dtype=float)
-                if exposure.shape == np.asarray(energy).shape:
-                    exposure_scale, _reference = normalized_exposure(exposure, sp.mask)
+        # Detector expectation follows incident exposure.  Prefer a usable recorded monitor even on
+        # time-counted instruments (where it captures flux drift); seconds are the deterministic
+        # fallback when monitor is absent or malformed.
+        selected = select_exposure(norm, np.asarray(energy).shape, sp.mask)
+        exposure_scale = selected.scale
         T = float(np.median(np.asarray(record.temperature.setpoint, dtype=float)))
         return cls(
             x=np.asarray(energy, dtype=float),

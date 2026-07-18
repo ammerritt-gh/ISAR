@@ -880,6 +880,15 @@ def test_missed_window_triggers_recenter(tmp_path):
     retried = next(group for group in by_acquisition.values() if len(group) > 1)
     assert [item["attempt"] for item in retried[:2]] == [0, 1]
     assert all(item["submitted_ncount"] == item["ncount"] for item in submissions)
+    state = json.loads((ws / "card.state.json").read_text(encoding="utf-8"))
+    provenance = state["acquisition_provenance"]
+    assert {item["job_id"] for item in provenance} == {item["job_id"] for item in submissions}
+    by_job = {item["job_id"]: item for item in provenance}
+    for submission in submissions:
+        saved = by_job[submission["job_id"]]
+        assert saved["acquisition_id"] == submission["acquisition_id"]
+        assert saved["submitted_ncount"] == submission["submitted_ncount"]
+        assert saved["scan_kind"] == submission["kind"]
 
 
 # --------------------------------------------------------------------------- escalate_fit logging

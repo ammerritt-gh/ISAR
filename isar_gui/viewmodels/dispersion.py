@@ -183,6 +183,8 @@ class DispersionViewModel(ViewModel):
             list(getattr(bm, "dispersion_prior", None) or []) if bm is not None else [],
             varying, sample=sample, T=T, t_round=_T_ROUND, want_sigma=True)
         belief_rows = list(getattr(bm, "branch_belief", None) or []) if bm is not None else []
+        belief_rows = projection.filter_prior_rows(
+            belief_rows, sample=sample, T=T, t_round=_T_ROUND)
         branches = []
         branch_ids = sorted({str(row.get("branch_id") or "branch") for row in belief_rows})
         for branch_id in branch_ids:

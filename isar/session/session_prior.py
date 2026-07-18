@@ -26,7 +26,8 @@ SAME_T_TOL = 0.5        # K — "same temperature" for pooling (matches predict_
 
 def add_point(state: CardState, *, scan_id, sample, T, q, omega0, modality, verdict,
               gamma=None, gamma_err=None, intensity=None, fit_kind=None,
-              branch_id=None, weight=None, t_round: float = 5.0,
+              branch_id=None, weight=None, branch_posterior=None, assignment_entropy=None,
+              t_round: float = 5.0,
               require_fold: bool = True) -> bool:
     """Append/replace a prior point, gated to resolved + fold. Returns True if a point was stored.
 
@@ -69,6 +70,11 @@ def add_point(state: CardState, *, scan_id, sample, T, q, omega0, modality, verd
         point["branch_id"] = str(branch_id)
     if weight is not None:
         point["weight"] = float(weight)
+    if branch_posterior is not None:
+        point["branch_posterior"] = {
+            str(key): float(value) for key, value in branch_posterior.items()}
+    if assignment_entropy is not None:
+        point["assignment_entropy"] = float(assignment_entropy)
     # Replace an existing point for the same scan (a re-fit supersedes).
     state.dispersion_prior = [p for p in state.dispersion_prior if p.get("scan_id") != scan_id]
     state.dispersion_prior.append(point)

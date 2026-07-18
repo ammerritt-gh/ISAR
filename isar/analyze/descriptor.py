@@ -52,6 +52,8 @@ def describe_spectrum(x, counts, *, center, gauss_fwhm, lorentz_fwhm=0.0, mask=N
     x = np.asarray(x, dtype=float)
     y = np.asarray(counts, dtype=float)
     exposure = (None if exposure_scale is None else np.asarray(exposure_scale, dtype=float))
+    if exposure is not None and exposure.shape != y.shape:
+        raise ValueError("exposure_scale must have the same shape as the original spectrum")
     if mask is not None:
         m = np.asarray(mask, dtype=bool)
         x, y = x[m], y[m]
