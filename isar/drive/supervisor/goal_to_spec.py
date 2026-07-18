@@ -15,6 +15,7 @@ Two entry points:
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 from pathlib import Path
@@ -35,7 +36,7 @@ DEFAULT_ENDPOINT = "http://127.0.0.1:8766"
 
 _Q_ARRAY = {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
 
-GOAL_SCHEMA = {
+LLM_GOAL_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "required": ["tolerance_meV"],
@@ -61,12 +62,40 @@ GOAL_SCHEMA = {
         "notes": {"type": "string"},
         "target_branch": {"type": "string", "enum": ["acoustic", "optic"]},
         "target_label": {"type": "string"},
+        "target_selector": {"type": "string",
+                            "enum": ["lowest_energy", "highest_energy", "nearest_energy"]},
+        "target_energy_meV": {"type": "number"},
         "energy_search_meV": {"type": "array", "items": {"type": "number"},
                               "minItems": 2, "maxItems": 2},
         "target_zc_energy_meV": {"type": "number"},
         "target_zc_energy_sigma_meV": {"type": "number"},
     },
 }
+
+# File specs are an additive superset.  Operator acquisition policy is deliberately absent from the
+# LLM schema, so the supervisor can express scientific intent but cannot invent beam-time limits.
+FILE_SPEC_SCHEMA = copy.deepcopy(LLM_GOAL_SCHEMA)
+FILE_SPEC_SCHEMA["properties"]["steering"] = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "classification_weight": {"type": "number"},
+        "differentiation_tolerance_meV": {"type": "number"},
+        "assignment_entropy_stop_nats": {"type": "number"},
+        "minimum_information_per_cost": {"type": "number"},
+        "minimum_target_support_points": {"type": "integer"},
+        "max_scan_points": {"type": "integer"},
+        "absent_signal_widen_step": {"type": "number"},
+        "absent_signal_widen_steps": {"type": "integer"},
+        "quadrature_order": {"type": "integer"},
+        "acquisition_estimator_version": {"type": "string"},
+        "mismatch_z_threshold": {"type": "number"},
+        "quicklook_ncount": {"type": "integer"},
+        "production_batch_ncount": {"type": "integer"},
+        "maximum_production_batches_per_q": {"type": "integer"},
+    },
+}
+# Compatibility alias for callers/tests that imported the original public name.
+GOAL_SCHEMA = LLM_GOAL_SCHEMA
 
 _EXAMPLE = {
     "path": {"h_start": 1.0, "h_end": 2.0, "k": 0.0, "l": 0.0},
@@ -84,12 +113,15 @@ SYSTEM = (
     "phonon energy ω₀; map '±X meV' to X, 'less than X meV' to X), and a budget as EITHER budget_hours "
     "OR budget_neutrons ('overnight' ≈ 8 hours; if no budget is stated, use budget_hours = 8). "
     "Set target_branch to optic when the user asks for an optic or transverse optic phonon, otherwise "
-    "acoustic; retain their wording in target_label. If the user states a zone-centre or gap energy, "
+    "acoustic; retain their wording in target_label. For an unspecified optic target use "
+    "target_selector='lowest_energy'. If the user supplies a target energy, put it in "
+    "target_energy_meV and use target_selector='nearest_energy'. If the user explicitly asks for the "
+    "highest optic mode use target_selector='highest_energy'. If the user states a zone-centre or gap energy, "
     "put it in target_zc_energy_meV and put an explicitly stated uncertainty in "
     "target_zc_energy_sigma_meV. For optic goals use energy_search_meV [-2,12] unless the user "
     "provides a range. Optionally a short notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
     "these keys, no wrapper object, no extra keys, and never enumerate grid points:\n"
-    + json.dumps(GOAL_SCHEMA)
+    + json.dumps(LLM_GOAL_SCHEMA)
     + "\n\nExample. Goal: 'map the acoustic phonon from (1,0,0) to (2,0,0) to +-0.5 meV, steps of 0.1, "
     "overnight'. Reply:\n" + json.dumps(_EXAMPLE)
 )
@@ -128,11 +160,11 @@ def goal_to_spec(goal: str, *, dispatcher: Dispatcher | None = None, defaults: d
         pin = model_pin or os.environ.get("LLMM_SUPERVISOR_MODEL", DEFAULT_SUPERVISOR_MODEL)
         dispatcher = LLMMClient(ep, pin)
 
-    res = dispatcher.dispatch(system=SYSTEM, user=goal, schema=GOAL_SCHEMA,
+    res = dispatcher.dispatch(system=SYSTEM, user=goal, schema=LLM_GOAL_SCHEMA,
                               temperature=temperature, max_tokens=max_tokens)
     data = _extract(res)
     if data is None:
-        res = dispatcher.dispatch(system=SYSTEM, user=goal + _REPAIR_SUFFIX, schema=GOAL_SCHEMA,
+        res = dispatcher.dispatch(system=SYSTEM, user=goal + _REPAIR_SUFFIX, schema=LLM_GOAL_SCHEMA,
                                   temperature=temperature, max_tokens=max_tokens)
         data = _extract(res)
     if data is None:
@@ -161,21 +193,22 @@ def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec"
         raise GoalParseError(f"{where}: spec must be an object, got {type(d).__name__}")
     if isinstance(d.get("path"), list):
         return ObjectiveSpec.from_dict(d)         # already a full ObjectiveSpec
-    if not _conforms(d, GOAL_SCHEMA):
+    if not _conforms(d, FILE_SPEC_SCHEMA):
         raise GoalParseError(f"{where}: not a valid goal spec (needs path{{h_start,h_end,k,l}}, step_h, "
                              "tolerance_meV, and a budget)")
     merged = {**DEFAULTS, **(defaults or {})}
     return _build_spec(d, merged, card_hypotheses=card_hypotheses)
 
 
-def spec_from_json(path: str | Path, *, defaults: dict | None = None) -> ObjectiveSpec:
+def spec_from_json(path: str | Path, *, defaults: dict | None = None,
+                   card_hypotheses: dict[str, Any] | None = None) -> ObjectiveSpec:
     """Build an :class:`ObjectiveSpec` from a JSON file — no LLM.
 
     Accepts either the goal schema (``{"path": {"h_start", …}, "step_h", "tolerance_meV", …}``) or a
     full ``ObjectiveSpec.to_dict()`` (``path`` is a list of triples).
     """
     d = json.loads(Path(path).read_text(encoding="utf-8"))
-    return spec_from_dict(d, defaults=defaults, where=str(path))
+    return spec_from_dict(d, defaults=defaults, where=str(path), card_hypotheses=card_hypotheses)
 
 
 def make_envelope(spec: ObjectiveSpec, *, source: dict, original_goal: str | None = None) -> dict:
@@ -204,6 +237,12 @@ def _build_spec(data: dict, merged: dict, *,
     budget = _budget(data)
     branch = str(data.get("target_branch", "acoustic"))
     label = str(data.get("target_label") or branch)
+    target_energy = data.get("target_energy_meV")
+    selector = data.get("target_selector")
+    if selector is None:
+        selector = "nearest_energy" if target_energy is not None else "lowest_energy"
+    if selector == "nearest_energy" and target_energy is None:
+        raise GoalParseError("nearest_energy target_selector requires target_energy_meV")
     energy = data.get("energy_search_meV")
     resolved_energy = tuple(energy) if energy is not None else (
         (-2.0, 12.0) if branch == "optic" else (-2.0, 7.0))
@@ -223,12 +262,14 @@ def _build_spec(data: dict, merged: dict, *,
             "sigma": float(explicit_sigma if explicit_sigma is not None else shipped_sigma),
         }}
     frozen = resolve_hypothesis_snapshot(
-        branch, resolved_energy, card_hypotheses=card_hypotheses, goal_override=goal_override)
+        branch, resolved_energy, card_hypotheses=card_hypotheses, goal_override=goal_override,
+        steering_override=data.get("steering"))
     common = dict(tolerance_meV=float(data["tolerance_meV"]), budget=budget,
                   tier=str(merged.get("tier", "deterministic")),
                   name=str(data.get("notes", "")),
                   meta={"source": "goal_to_spec", "raw": data}, target_branch=branch,
-                  target_label=label,
+                  target_label=label, target_selector=str(selector),
+                  target_energy_meV=(float(target_energy) if target_energy is not None else None),
                   energy_search_meV=resolved_energy, **frozen)
     if "q_start" in data or "q_end" in data:
         if "q_start" not in data or "q_end" not in data:
@@ -256,12 +297,12 @@ def _budget(data: dict) -> dict[str, Any]:
 
 def _extract(res) -> dict | None:
     """The schema-valid goal object from a dispatch result, or None if it can't be recovered."""
-    if getattr(res, "structured", None) is not None and _conforms(res.structured, GOAL_SCHEMA):
+    if getattr(res, "structured", None) is not None and _conforms(res.structured, LLM_GOAL_SCHEMA):
         return res.structured
     out = getattr(res, "output", None)
     if out:
         obj = _loads_lenient(out)
-        if obj is not None and _conforms(obj, GOAL_SCHEMA):
+        if obj is not None and _conforms(obj, LLM_GOAL_SCHEMA):
             return obj
     return None
 
@@ -300,6 +341,8 @@ def _conforms(value, schema) -> bool:
         return all(_conforms(v, props[k]) for k, v in value.items() if k in props)
     if t == "number":
         return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if t == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
     if t == "string":
         return isinstance(value, str) and ("enum" not in schema or value in schema["enum"])
     if t == "array":

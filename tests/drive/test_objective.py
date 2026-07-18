@@ -106,6 +106,23 @@ def test_generic_segment_uses_step_as_a_maximum_and_includes_endpoints():
     assert spec.path[-1] == (2.0, 0.5, 0.0)
     assert max(spec.path[i + 1][1] - spec.path[i][1] for i in range(10)) <= 0.05 + 1e-12
     assert spec.energy_search_meV == (-2.0, 12.0)
+    assert spec.target_selector == "lowest_energy"
+
+
+def test_target_selector_defaults_and_validation():
+    common = dict(path=[(2, 0, 0)], tolerance_meV=0.5,
+                  budget={"kind": "neutrons", "amount": 1}, target_branch="optic")
+    assert ObjectiveSpec(**common).target_selector == "lowest_energy"
+    nearest = ObjectiveSpec(**common, target_energy_meV=7.25)
+    assert nearest.target_selector == "nearest_energy" and nearest.target_energy_meV == 7.25
+    with pytest.raises(ValueError, match="requires target_energy_meV"):
+        ObjectiveSpec(**common, target_selector="nearest_energy")
+    with pytest.raises(ValueError, match="target_selector"):
+        ObjectiveSpec(**common, target_selector="brightest")
+    with pytest.raises(ValueError, match="finite"):
+        ObjectiveSpec(**common, target_energy_meV=float("nan"))
+    with pytest.raises(ValueError, match="finite"):
+        ObjectiveSpec(**common, target_energy_meV=float("inf"))
 
 
 def test_explicit_degenerate_segment_remains_a_valid_single_point():

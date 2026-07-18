@@ -27,6 +27,7 @@ from isar.schema.hypotheses import (
 # is TAVI's fast analytic engine (develop the loop); "mcstas" is the full Monte-Carlo (validate).
 TIERS = ("deterministic", "mcstas")
 TARGET_BRANCHES = ("acoustic", "optic")
+TARGET_SELECTORS = ("lowest_energy", "highest_energy", "nearest_energy")
 OBJECTIVE_SCHEMA = "isar.objective/2"
 
 
@@ -58,6 +59,8 @@ class ObjectiveSpec:
     meta: dict[str, Any] = field(default_factory=dict)
     target_branch: str = "acoustic"
     target_label: str = "acoustic"
+    target_selector: str | None = None
+    target_energy_meV: float | None = None
     energy_search_meV: tuple[float, float] | None = None
     hypotheses: list[dict[str, Any]] = field(default_factory=list)
     target_hypothesis: str | None = None
@@ -70,6 +73,17 @@ class ObjectiveSpec:
             raise ValueError(f"tier {self.tier!r} not in {TIERS}")
         if self.target_branch not in TARGET_BRANCHES:
             raise ValueError(f"target_branch {self.target_branch!r} not in {TARGET_BRANCHES}")
+        if self.target_energy_meV is not None:
+            self.target_energy_meV = float(self.target_energy_meV)
+            if not math.isfinite(self.target_energy_meV):
+                raise ValueError("target_energy_meV must be finite")
+        if self.target_selector is None:
+            self.target_selector = ("nearest_energy" if self.target_energy_meV is not None
+                                    else "lowest_energy")
+        if self.target_selector not in TARGET_SELECTORS:
+            raise ValueError(f"target_selector {self.target_selector!r} not in {TARGET_SELECTORS}")
+        if self.target_selector == "nearest_energy" and self.target_energy_meV is None:
+            raise ValueError("nearest_energy target_selector requires target_energy_meV")
         # Normalize path entries to plain float triples so round-trips are stable.
         norm: list[tuple[float, float, float]] = []
         for p in self.path:
@@ -113,6 +127,7 @@ class ObjectiveSpec:
                 tolerance_meV: float, budget: dict[str, Any], tier: str = "deterministic",
                 name: str = "", meta: dict[str, Any] | None = None,
                 target_branch: str = "acoustic", target_label: str = "acoustic",
+                target_selector: str | None = None, target_energy_meV: float | None = None,
                 energy_search_meV: tuple[float, float] | None = None,
                 hypotheses: list[dict[str, Any]] | None = None,
                 target_hypothesis: str | None = None, hypothesis_source: str | None = None,
@@ -131,7 +146,8 @@ class ObjectiveSpec:
         pts = [(h_start + sign * step * i, k, l) for i in range(n + 1)]
         return cls(path=pts, tolerance_meV=float(tolerance_meV), budget=dict(budget),
                    tier=tier, name=name, meta=dict(meta or {}), target_branch=target_branch,
-                   target_label=target_label, energy_search_meV=energy_search_meV,
+                   target_label=target_label, target_selector=target_selector,
+                   target_energy_meV=target_energy_meV, energy_search_meV=energy_search_meV,
                    hypotheses=list(hypotheses or []), target_hypothesis=target_hypothesis,
                    hypothesis_source=hypothesis_source,
                    hypothesis_fingerprint=hypothesis_fingerprint,
@@ -142,6 +158,7 @@ class ObjectiveSpec:
                 budget: dict[str, Any], tier: str = "deterministic", name: str = "",
                 meta: dict[str, Any] | None = None, target_branch: str = "acoustic",
                 target_label: str = "acoustic",
+                target_selector: str | None = None, target_energy_meV: float | None = None,
                 energy_search_meV: tuple[float, float] | None = None,
                 hypotheses: list[dict[str, Any]] | None = None,
                 target_hypothesis: str | None = None, hypothesis_source: str | None = None,
@@ -166,7 +183,8 @@ class ObjectiveSpec:
                [tuple(a + d * (i / n) for a, d in zip(start, delta)) for i in range(n + 1)])
         return cls(path=pts, tolerance_meV=float(tolerance_meV), budget=dict(budget), tier=tier,
                    name=name, meta=dict(meta or {}), target_branch=target_branch,
-                   target_label=target_label, energy_search_meV=energy_search_meV,
+                   target_label=target_label, target_selector=target_selector,
+                   target_energy_meV=target_energy_meV, energy_search_meV=energy_search_meV,
                    hypotheses=list(hypotheses or []), target_hypothesis=target_hypothesis,
                    hypothesis_source=hypothesis_source,
                    hypothesis_fingerprint=hypothesis_fingerprint,
@@ -184,6 +202,8 @@ class ObjectiveSpec:
             "meta": dict(self.meta),
             "target_branch": self.target_branch,
             "target_label": self.target_label,
+            "target_selector": self.target_selector,
+            "target_energy_meV": self.target_energy_meV,
             "energy_search_meV": list(self.energy_search_meV),
             "hypotheses": [dict(h) for h in self.hypotheses],
             "target_hypothesis": self.target_hypothesis,
@@ -205,6 +225,8 @@ class ObjectiveSpec:
             meta=dict(d.get("meta", {})),
             target_branch=d.get("target_branch", "acoustic"),
             target_label=d.get("target_label", d.get("target_branch", "acoustic")),
+            target_selector=d.get("target_selector"),
+            target_energy_meV=d.get("target_energy_meV"),
             energy_search_meV=(tuple(d["energy_search_meV"])
                                if d.get("energy_search_meV") is not None else None),
             hypotheses=list(d.get("hypotheses") or []),

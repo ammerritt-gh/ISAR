@@ -32,6 +32,7 @@ from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
 from isar.schema.card import Card
+from isar.schema.hypotheses import preset as hypothesis_preset
 from isar.schema.steering import IntensityMeasure, ParamConstraints
 from isar.session import branch_assignment as BA
 from isar.session import branch_model, calibrations, guidelines as guide_mod, ingest, router, session_prior
@@ -1423,10 +1424,9 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
     prior_ao = float(prior.omega0) if (prior is not None and np.isfinite(prior.omega0)) else None
     target_anchors = _target_fold_anchor_count(card, sample=sample, branch=target_branch)
     established = target_branch == "acoustic" or target_anchors >= branch_model.MIN_ANCHORS
-    # Before an optic branch has a slope, a flat one-anchor prediction can sit closer to the acoustic
-    # mode at the far endpoint. Keep the IC broad but tell primary_phonon_index to choose the upper
-    # finite-energy mode; this is the cold-start meaning of an explicit optic-family objective.
-    ao = (prior_ao if established else float(energy_search[1]))
+    # A cold optic target has no numeric anchor.  Keep both the IC and primary-mode choice broad;
+    # Bayesian assignment below will select a candidate without forcing the upper-energy mode.
+    ao = prior_ao if established else None
     # Narrow the IC only when the belief is confident (see _PRIOR_NARROW_SIGMA); else keep the acoustic
     # mode hint but a wide IC so the pooled fit still finds the resolvable acoustic.
     ic_ao = (prior_ao if (established and prior_ao is not None
@@ -1452,8 +1452,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
     # (ctx.acoustic_omega) makes primary_phonon_index report the acoustic mode (not the brighter optic),
     # and the triage withholds a non-acoustic/unresolvable pool as branch_continuation. Without this a
     # boundary master delivers the optic as the acoustic ω₀.
-    (branch_id, assignment_entropy, branch_weight, resolvable,
-     secondary_features) = _apply_branch_triage(
+    (branch_id, assignment_entropy, branch_weight, resolvable, secondary_features,
+     branch_posterior, candidate_id, candidate_state) = _apply_branch_triage(
         fit, descriptor, ctx, card=card, sample=sample, T=T, q=q, t_round=t_round,
         near_gamma=near_gamma, master=True)
 
@@ -1476,6 +1476,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         branch_id=branch_id, assignment_entropy=assignment_entropy,
         resolvable=resolvable, branch_weight=branch_weight,
         secondary_features=secondary_features,
+        branch_posterior=branch_posterior, candidate_id=candidate_id,
+        candidate_state=candidate_state,
         bayes_interval=fit.get("bayes_interval"), bayes_ok=fit.get("bayes_ok"),
         bayes_ess=fit.get("bayes_ess"), bayes_fail_reason=fit.get("bayes_fail_reason"),
         log_evidence=fit.get("log_evidence"), log_evidence_err=fit.get("log_evidence_err"),
@@ -1530,6 +1532,13 @@ def _campaign_target(card) -> tuple[str, str, tuple[float, float]]:
     return branch, label, (float(energy[0]), float(energy[1]))
 
 
+def _campaign_selector(card) -> tuple[str, float | None]:
+    target = getattr(getattr(card, "state", None), "campaign_target", None) or {}
+    selector = str(target.get("selector") or "lowest_energy")
+    energy = target.get("target_energy_meV")
+    return selector, (float(energy) if energy is not None else None)
+
+
 def _campaign_hypotheses(card) -> list[dict]:
     state = getattr(card, "state", None)
     snapshot = getattr(state, "hypothesis_snapshot", None) or {}
@@ -1559,9 +1568,15 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
     if period is None:
         return None
     t_bin = round(float(T) / t_round) * t_round if t_round else float(T)
+    target_branch, _target_label, energy_search = _campaign_target(card)
+    hypotheses = _campaign_hypotheses(card)
+    if target_branch != BA.ACOUSTIC and not any(h.get("name") == target_branch for h in hypotheses):
+        # Transition tolerance for old campaign state: create a broad shipped hypothesis, never an
+        # assignment or anchor.  Its zero occupancy remains weak evidence in the posterior.
+        hypotheses.append(hypothesis_preset(target_branch, energy_search).to_dict())
     beliefs = BA.build_beliefs(card.state.dispersion_prior, sample=sample, t_bin=t_bin,
                                period=period, t_round=t_round,
-                               hypotheses=_campaign_hypotheses(card))
+                               hypotheses=hypotheses)
     modes = fit.get("modes")
     if not modes and fit.get("omega0") is not None:
         modes = [{"omega0": fit["omega0"], "omega0_err": fit.get("omega0_err"),
@@ -1571,7 +1586,6 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
         return {"deliver": bool(fit.get("omega0") is not None), "branch_id": None,
                 "weight": None, "entropy": None, "resolvable": None}
     u = BA.reduced_q(q, period)
-    target_branch, _target_label, energy_search = _campaign_target(card)
     if target_branch != BA.ACOUSTIC:
         # A fitted mode and the model-free descriptor commonly report the same physical peak.  Do
         # branch assignment from the fitted modes when they exist: counting both representations as
@@ -1579,28 +1593,26 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
         # descriptor remains the honest fallback when no model mode survived.
         target_feats = [feature for feature in feats if feature.source == "mode"] or feats
         target_post = BA.assignment_posterior(target_feats, beliefs, u)
-        belief = beliefs.get(target_branch)
-        if belief is None or belief.n_anchors < branch_model.MIN_ANCHORS:
-            eligible = [f for f in target_feats if energy_search[0] <= f.energy <= energy_search[1]
-                        and f.energy >= BA.RESOLVABLE_FWHM_FACTOR * ctx.gauss_fwhm
-                        and (f.source == "mode" or f.significance >= BA.SECONDARY_MIN_SIGNIFICANCE)]
-            feature = max(eligible, key=lambda f: f.energy) if eligible else None
-            if feature is None:
-                return {"deliver": False, "branch_id": target_branch, "weight": 0.0,
-                        "entropy": None, "resolvable": False}
-            aligned = fit.get("omega0") is not None and abs(float(fit["omega0"]) - feature.energy) \
-                <= 0.5 * ctx.gauss_fwhm
-            return {"deliver": bool(aligned), "branch_id": target_branch, "weight": 1.0,
-                    "entropy": 0.0, "resolvable": True}
-        qoi = BA.branch_qoi(target_feats, target_post, target_branch,
-                            gauss_fwhm=ctx.gauss_fwhm)
+        selector, target_energy = _campaign_selector(card)
+        if target_energy is not None:
+            target_post = BA.condition_on_target_energy(
+                target_feats, target_post, target_branch, target_energy=target_energy,
+                sigma=max(float(ctx.gauss_fwhm), BA.SIGMA_SLACK))
+        qoi = BA.selected_branch_qoi(
+            target_feats, target_post, target_branch, gauss_fwhm=ctx.gauss_fwhm,
+            selector=selector, target_energy=target_energy, energy_search=energy_search)
         ent = float(qoi["entropy"]) if np.isfinite(qoi["entropy"]) else None
         aligned = fit.get("omega0") is not None and qoi.get("omega0") is not None \
             and abs(float(fit["omega0"]) - float(qoi["omega0"])) <= 0.5 * ctx.gauss_fwhm
         deliver = BA.deliver_branch(qoi) and aligned
-        return {"deliver": bool(deliver), "branch_id": target_branch,
+        posterior = qoi.get("posterior")
+        assigned = max(posterior, key=posterior.get) if posterior else None
+        candidate_id = f"{target_branch}:{u:.6f}:{selector}"
+        return {"deliver": bool(deliver), "branch_id": assigned,
                 "weight": float(qoi.get("p_branch", 0.0)), "entropy": ent,
-                "resolvable": bool(qoi.get("resolvable"))}
+                "resolvable": bool(qoi.get("resolvable")), "posterior": posterior,
+                "candidate_id": candidate_id,
+                "candidate_state": ("accepted" if deliver else "provisional")}
     post = BA.assignment_posterior(feats, beliefs, u)
     qoi = BA.acoustic_qoi(feats, post, gauss_fwhm=ctx.gauss_fwhm)
     ent = float(qoi["entropy"]) if np.isfinite(qoi["entropy"]) else None
@@ -1635,11 +1647,12 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
     """Run branch assignment + honest triage over ``fit`` and apply its verdict (Phase A). Shared by
     the per-scan (:func:`_finish_outcome`) and pooled-master (:func:`_fit_master_group`) paths.
 
-    Returns ``(branch_id, assignment_entropy, branch_weight, resolvable, secondary_features)`` — all
+    Returns branch assignment, candidate posterior/state, and secondary features — all
     None when the posterior is off or the fit is a ``signal_unmodeled`` descriptor result. When the
     triage declines delivery it mutates ``fit`` in place: flips the verdict to ``branch_continuation``,
     nulls the ω₀ fields, and appends a reason (worded per ``master``)."""
     branch_id = assignment_entropy = branch_weight = resolvable = None
+    branch_posterior = candidate_id = candidate_state = None
     secondary_features = None
     if fit.get("verdict") != "signal_unmodeled":
         triage = _assign_and_triage(fit, descriptor, ctx, card=card, sample=sample, T=T, q=q,
@@ -1650,6 +1663,9 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
             branch_weight = triage.get("weight")
             resolvable = triage.get("resolvable")
             secondary_features = triage.get("secondary_points") or None
+            branch_posterior = triage.get("posterior")
+            candidate_id = triage.get("candidate_id")
+            candidate_state = triage.get("candidate_state")
             if triage.get("deliver") is False and fit.get("omega0") is not None:
                 target_branch, _target_label, _energy = _campaign_target(card)
                 if master:
@@ -1665,7 +1681,8 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
                 fit["omega0_profile"] = fit["hesse_interval"] = None
                 fit["bayes_interval"] = None
                 fit["interval_reliable"] = False
-    return branch_id, assignment_entropy, branch_weight, resolvable, secondary_features
+    return (branch_id, assignment_entropy, branch_weight, resolvable, secondary_features,
+            branch_posterior, candidate_id, candidate_state)
 
 
 def _gate_scan(rec, det, card, g, runcal, exclusions, base) -> tuple:
@@ -1763,7 +1780,7 @@ def _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres,
     target_anchors = _target_fold_anchor_count(card, sample=sample, branch=target_branch)
     established = target_branch == "acoustic" or target_anchors >= branch_model.MIN_ANCHORS
     if target_branch == "optic" and not established:
-        ctx = replace(ctx, acoustic_omega=float(energy_search[1]), prior_omega=None)
+        ctx = replace(ctx, acoustic_omega=None, prior_omega=None)
     elif period is not None and prior is not None and np.isfinite(prior.omega0):
         confident = float(prior.omega0_sigma or 1e9) <= _PRIOR_NARROW_SIGMA
         ctx = replace(ctx, acoustic_omega=float(prior.omega0),
@@ -1833,8 +1850,8 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
     # deliverable ACOUSTIC measurement or must abstain, and tag the branch it was assigned to so an
     # optic/spurious feature can never seed or be scored as the acoustic branch. Skipped for
     # signal_unmodeled (already a non-ω₀ descriptor result) and when the posterior is off (period None).
-    (branch_id, assignment_entropy, branch_weight, resolvable,
-     secondary_features) = _apply_branch_triage(
+    (branch_id, assignment_entropy, branch_weight, resolvable, secondary_features,
+     branch_posterior, candidate_id, candidate_state) = _apply_branch_triage(
         fit, descriptor, ctx, card=card, sample=sample, T=T, q=q, t_round=t_round,
         near_gamma=near_gamma, master=False)
 
@@ -1872,6 +1889,8 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         branch_id=branch_id, assignment_entropy=assignment_entropy,
         resolvable=resolvable, branch_weight=branch_weight,
         secondary_features=secondary_features,
+        branch_posterior=branch_posterior, candidate_id=candidate_id,
+        candidate_state=candidate_state,
         bayes_interval=fit.get("bayes_interval"), bayes_ok=fit.get("bayes_ok"),
         bayes_ess=fit.get("bayes_ess"), bayes_fail_reason=fit.get("bayes_fail_reason"),
         log_evidence=fit.get("log_evidence"), log_evidence_err=fit.get("log_evidence_err"),

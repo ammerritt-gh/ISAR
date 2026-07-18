@@ -292,3 +292,40 @@ def test_fold_does_not_relax_the_zone_anchor():
     assert post[0][BA.ACOUSTIC] < 0.1           # and it still cannot read acoustic near Γ
     qoi = BA.acoustic_qoi(feats, post, gauss_fwhm=FWHM)
     assert not BA.deliver_acoustic(qoi)
+
+
+def test_target_selector_chooses_candidate_without_changing_its_posterior():
+    feats = [BA.Feature(1.0, 0.1, 10.0, np.inf, "mode"),
+             BA.Feature(6.0, 0.1, 8.0, np.inf, "mode"),
+             BA.Feature(9.0, 0.1, 5.0, np.inf, "mode")]
+    posterior = [
+        {"acoustic": 0.94, "optic": 0.01, "new": 0.05},
+        {"acoustic": 0.05, "optic": 0.9, "new": 0.05},
+        {"acoustic": 0.1, "optic": 0.2, "new": 0.7},
+    ]
+    low = BA.selected_branch_qoi(feats, posterior, "optic", gauss_fwhm=0.5,
+                                 selector="lowest_energy")
+    near = BA.selected_branch_qoi(feats, posterior, "optic", gauss_fwhm=0.5,
+                                  selector="nearest_energy", target_energy=6.4)
+    high = BA.selected_branch_qoi(feats, posterior, "optic", gauss_fwhm=0.5,
+                                  selector="highest_energy")
+    assert low["omega0"] == 1.0 and low["posterior"] == posterior[0]
+    assert near["omega0"] == 6.0 and near["posterior"] == posterior[1]
+    assert high["omega0"] == 9.0 and high["posterior"] == posterior[2]
+    assert not BA.deliver_branch(low)
+    assert BA.deliver_branch(near)
+
+
+def test_scientist_target_energy_conditions_branch_odds_without_removing_rivals():
+    features = [BA.Feature(1.0, 0.1, 10.0, 10.0, "mode"),
+                BA.Feature(6.0, 0.1, 10.0, 10.0, "mode")]
+    posterior = [
+        {"acoustic": 0.7, "optic": 0.2, "new": 0.1},
+        {"acoustic": 0.2, "optic": 0.5, "new": 0.3},
+    ]
+    result = BA.condition_on_target_energy(
+        features, posterior, "optic", target_energy=6.0, sigma=1.0)
+    assert result[0]["optic"] < posterior[0]["optic"]
+    assert result[1]["optic"] > posterior[1]["optic"]
+    assert set(result[1]) == {"acoustic", "optic", "new"}
+    assert sum(result[1].values()) == pytest.approx(1.0)

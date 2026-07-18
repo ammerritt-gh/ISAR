@@ -103,6 +103,26 @@ def test_transverse_optic_k_segment_compiles_to_eleven_points():
     assert len(spec.path) == 11 and spec.path[-1] == (2.0, 0.5, 0.0)
     assert spec.target_branch == "optic" and spec.target_label == "transverse optic"
     assert spec.energy_search_meV == (-2.0, 12.0)
+    assert spec.target_selector == "lowest_energy" and spec.target_energy_meV is None
+
+
+def test_supplied_target_energy_implies_nearest_selector():
+    payload = {"q_start": [2, 0, 0], "q_end": [2, 0.5, 0], "step_rlu": 0.05,
+               "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic",
+               "target_energy_meV": 7.5}
+    spec = g2s.goal_to_spec("measure the optic phonon near 7.5 meV",
+                            dispatcher=_FakeDispatcher(DispatchResult(structured=payload)))
+    assert spec.target_selector == "nearest_energy" and spec.target_energy_meV == 7.5
+
+
+def test_file_schema_accepts_operator_steering_but_llm_schema_does_not():
+    payload = {"q_start": [2, 0, 0], "q_end": [2, 0.5, 0], "step_rlu": 0.05,
+               "tolerance_meV": 0.5, "budget_hours": 8,
+               "steering": {"quicklook_ncount": 50_000_000}}
+    assert g2s._conforms(payload, g2s.FILE_SPEC_SCHEMA)
+    assert not g2s._conforms(payload, g2s.LLM_GOAL_SCHEMA)
+    spec = g2s.spec_from_dict(payload)
+    assert spec.steering["quicklook_ncount"] == 50_000_000
 
 
 def test_hypothesis_resolution_precedence_goal_then_card_then_shipped():

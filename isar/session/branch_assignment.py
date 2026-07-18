@@ -332,6 +332,26 @@ def assignment_posterior(features, beliefs, u: float) -> list[dict]:
     return out
 
 
+def condition_on_target_energy(features, posterior, branch_id: str, *, target_energy: float,
+                               sigma: float) -> list[dict]:
+    """Update branch odds from a scientist-supplied approximate target energy.
+
+    This is prior evidence about branch identity, not a dispersion anchor and not a selector. A
+    matching feature gains odds for ``branch_id`` relative to the flat new-feature likelihood; a
+    distant feature loses those odds. Every competing hypothesis remains present and normalized.
+    """
+    conditioned: list[dict] = []
+    width = max(float(sigma), SIGMA_SLACK)
+    for feature, probs in zip(features, posterior):
+        scores = dict(probs)
+        evidence_ratio = _gauss(feature.energy, float(target_energy), width) / NEW_LEVEL
+        scores[branch_id] = scores.get(branch_id, 0.0) * max(evidence_ratio, 1e-12)
+        total = sum(scores.values())
+        conditioned.append({key: value / total for key, value in scores.items()}
+                           if total > 0.0 else {NEW: 1.0})
+    return conditioned
+
+
 def _entropy(probs: dict) -> float:
     return float(-sum(p * math.log(p) for p in probs.values() if p > 0.0))
 
@@ -380,6 +400,42 @@ def branch_qoi(features, posterior, branch_id: str, *, gauss_fwhm: float) -> dic
             "dominance": float(weights[j] / weights.sum()),
             "resolvable": bool(feature.energy >= RESOLVABLE_FWHM_FACTOR * float(gauss_fwhm)),
             "feature": feature}
+
+
+def selected_branch_qoi(features, posterior, branch_id: str, *, gauss_fwhm: float,
+                        selector: str = "lowest_energy", target_energy: float | None = None,
+                        energy_search: tuple[float, float] | None = None) -> dict:
+    """QoI for the scientist-selected candidate without overriding branch probabilities.
+
+    Selection answers *which feature to investigate*; ``assignment_posterior`` still answers what
+    that feature most likely is.  Thus a lowest-energy acoustic leak remains a low-probability optic
+    candidate and causes abstention/evidence collection instead of being forced onto either branch.
+    """
+    candidates = list(range(len(features)))
+    if energy_search is not None:
+        lo, hi = map(float, energy_search)
+        candidates = [i for i in candidates if lo <= float(features[i].energy) <= hi]
+    if not candidates:
+        return {"omega0": None, "sigma": None, "p_branch": 0.0, "entropy": float("inf"),
+                "dominance": 0.0, "resolvable": False, "feature": None,
+                "posterior": None, "feature_index": None}
+    if selector == "lowest_energy":
+        selected = min(candidates, key=lambda i: float(features[i].energy))
+    elif selector == "highest_energy":
+        selected = max(candidates, key=lambda i: float(features[i].energy))
+    elif selector == "nearest_energy" and target_energy is not None:
+        selected = min(candidates, key=lambda i: abs(float(features[i].energy) - float(target_energy)))
+    else:
+        raise ValueError(f"invalid target selector {selector!r}")
+    feature = features[selected]
+    probs = dict(posterior[selected])
+    weights = np.asarray([p.get(branch_id, 0.0) for p in posterior], dtype=float)
+    p_branch = float(weights[selected])
+    dominance = float(p_branch / weights.sum()) if weights.sum() > 0 else 0.0
+    return {"omega0": float(feature.energy), "sigma": float(feature.sigma_e),
+            "p_branch": p_branch, "entropy": _entropy(probs), "dominance": dominance,
+            "resolvable": bool(feature.energy >= RESOLVABLE_FWHM_FACTOR * float(gauss_fwhm)),
+            "feature": feature, "posterior": probs, "feature_index": selected}
 
 
 def deliver_branch(qoi: dict, *, p_min: float = P_ACOUSTIC_MIN,

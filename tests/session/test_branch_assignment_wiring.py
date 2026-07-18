@@ -51,7 +51,7 @@ def test_prior_for_can_select_optic_branch():
     assert pr is not None and pr.omega0 == pytest.approx(6.3, abs=0.5)
 
 
-def test_optic_cold_start_delivers_optic_and_rejects_acoustic_fit():
+def test_optic_cold_start_keeps_lowest_candidate_provisional_with_bayesian_evidence():
     state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
                                       "energy_search_meV": [-2.0, 12.0]})
     card = SimpleNamespace(
@@ -65,16 +65,36 @@ def test_optic_cold_start_delivers_optic_and_rejects_acoustic_fit():
     ]
     optic = driver._assign_and_triage(
         {"omega0": 6.0, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
-        q=[2.0, 0.0, 0.0], t_round=5.0, near_gamma=False)
+        q=[2.1, 0.0, 0.0], t_round=5.0, near_gamma=False)
     acoustic = driver._assign_and_triage(
         {"omega0": 1.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
-        q=[2.0, 0.0, 0.0], t_round=5.0, near_gamma=False)
-    assert optic["deliver"] is True and optic["branch_id"] == "optic"
-    assert acoustic["deliver"] is False
+        q=[2.1, 0.0, 0.0], t_round=5.0, near_gamma=False)
+    assert optic["deliver"] is False and acoustic["deliver"] is False
+    assert acoustic["branch_id"] == "acoustic"
+    assert acoustic["candidate_state"] == "provisional"
+    assert acoustic["posterior"]["acoustic"] > acoustic["posterior"].get("optic", 0.0)
 
 
-def test_optic_bootstrap_keeps_upper_mode_until_branch_is_established():
+def test_optic_cold_start_nearest_energy_can_deliver_supported_mode():
     state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
+                                      "selector": "nearest_energy", "target_energy_meV": 6.0,
+                                      "energy_search_meV": [-2.0, 12.0]})
+    card = SimpleNamespace(state=state, policy=SimpleNamespace(dispersion={"zone_period": 2.0}))
+    ctx = SimpleNamespace(gauss_fwhm=1.0)
+    modes = [
+        {"omega0": 1.2, "omega0_err": 0.1, "gamma": 0.2, "amplitude": 900.0},
+        {"omega0": 6.0, "omega0_err": 0.1, "gamma": 0.3, "amplitude": 300.0},
+    ]
+    result = driver._assign_and_triage(
+        {"omega0": 6.0, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
+        q=[2.0, 0.0, 0.0], t_round=5.0, near_gamma=False)
+    assert result["deliver"] is True and result["branch_id"] == "optic"
+    assert result["candidate_state"] == "accepted"
+
+
+def test_explicit_highest_selector_keeps_unsupported_upper_mode_provisional():
+    state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
+                                      "selector": "highest_energy",
                                       "energy_search_meV": [-2.0, 12.0]})
     _add(state, "O0", 0.0, 6.0, branch_id="optic")
     card = SimpleNamespace(
@@ -94,12 +114,14 @@ def test_optic_bootstrap_keeps_upper_mode_until_branch_is_established():
         {"omega0": 4.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
         q=[2.0, 0.5, 0.0], t_round=5.0, near_gamma=False)
 
-    assert optic["deliver"] is True and optic["branch_id"] == "optic"
+    assert optic["deliver"] is False and optic["branch_id"] == "optic"
+    assert optic["candidate_state"] == "provisional"
     assert acoustic["deliver"] is False
 
 
 def test_established_optic_uses_fitted_modes_before_descriptor_rivals():
     state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
+                                      "selector": "nearest_energy", "target_energy_meV": 7.4,
                                       "energy_search_meV": [-2.0, 12.0]})
     _add(state, "O0", 0.0, 6.0, branch_id="optic")
     _add(state, "O1", 0.25, 6.7, branch_id="optic")
