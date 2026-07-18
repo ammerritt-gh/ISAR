@@ -52,6 +52,7 @@ from isar.drive.supervisor.stopping import (
     FIRST_CROSSING_MARGIN,
     PRODUCTION_KINDS,
     PRODUCTION_NCOUNT,
+    QUICKLOOK_NCOUNT,
     StopDecision,
     USABLE_DISPOSITIONS as _USABLE,
     evaluate_stop,
@@ -133,12 +134,13 @@ def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int
     Returns ``True`` when it clamped."""
     n_emitted = _emitted_point_count(proposal.e_lo, proposal.e_hi, proposal.e_step)
     if n_emitted <= max_points:
+        proposal.n_points = n_emitted
         return False
     old_step = float(proposal.e_step)
     span = max(float(proposal.e_hi) - float(proposal.e_lo), 0.0)
     new_step = span / max(int(max_points) - 1, 1)   # exactly max_points points across the kept window
     proposal.e_step = new_step
-    proposal.n_points = points_in_window(proposal.e_lo, proposal.e_hi, new_step)
+    proposal.n_points = _emitted_point_count(proposal.e_lo, proposal.e_hi, new_step)
     log_event(log_path, "exception", {
         "action": "proposal_clamped",
         "hkl": [proposal.h, proposal.k, proposal.l],
@@ -149,6 +151,48 @@ def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int
         "iter": it,
     })
     return True
+
+
+def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int) -> None:
+    """Normalize one proposal immediately before validation/submission.
+
+    The frozen steering ceiling and the live instrument ceiling are both authoritative.  Once the
+    true emitted point count is known, neutron affordability is recalculated against it; hour budgets
+    remain scan-boundary-only because ISAR has no invented ncount-to-seconds conversion.
+    """
+    policy = dict(getattr(objective, "steering", None) or {})
+    policy_cap = int(policy.get("max_scan_points", MAX_POINTS))
+    cap = min(policy_cap, int(cfg.max_points))
+    source = f"policy+{cfg.max_points_source}"
+    _guard_point_count(proposal, cap, source, cfg.log_path, it)
+    n_points = int(proposal.n_points or 0)
+    budget = dict(budget_state or {})
+    if budget.get("kind") != "neutrons" or budget.get("amount") is None:
+        return
+    minimum = int(policy.get(
+        "quicklook_ncount" if proposal.kind == "quicklook" else "production_batch_ncount",
+        QUICKLOOK_NCOUNT if proposal.kind == "quicklook" else PRODUCTION_NCOUNT))
+    if bool(policy.get("dynamic_ncount", False)) and int(proposal.ncount) < minimum:
+        old_ncount = int(proposal.ncount)
+        proposal.ncount = minimum
+        log_event(cfg.log_path, "exception", {
+            "action": "proposal_ncount_raised_to_floor",
+            "hkl": [proposal.h, proposal.k, proposal.l],
+            "old_ncount": old_ncount, "new_ncount": minimum,
+            "n_points": n_points, "iter": it})
+    remaining = max(float(budget["amount"]) - float(budget.get("spent", 0.0)), 0.0)
+    affordable = int(math.floor(remaining / max(n_points, 1)))
+    if affordable < minimum:
+        raise BudgetInsufficientForMinimumBatch(
+            f"budget_insufficient_for_minimum_batch: need {minimum * max(n_points, 1):g} "
+            f"neutrons, have {remaining:g}")
+    if int(proposal.ncount) > affordable:
+        old_ncount = int(proposal.ncount)
+        proposal.ncount = affordable
+        log_event(cfg.log_path, "exception", {
+            "action": "proposal_ncount_clamped", "hkl": [proposal.h, proposal.k, proposal.l],
+            "old_ncount": old_ncount, "new_ncount": affordable, "n_points": n_points,
+            "remaining_neutrons": remaining, "iter": it})
 
 
 def _resolve_calibration(cfg_value) -> Calibration:
@@ -225,26 +269,32 @@ def _make_fisher_provider(card_state: dict, resolution_cb, *,
     return provider
 
 
-def _make_classification_providers(card_state: dict, objective, resolution_cb):
-    """Build drive-side MI and rival-band providers from durable belief rows/frozen priors."""
+def _make_classification_providers(card_state: dict, objective, resolution_cb, *, sample: str):
+    """Build MI/rival providers from one complete active-sample temperature slice."""
     from isar.drive.acquisition.acquire import _resolve_fwhm
     from isar.drive.acquisition.classify_eig import assignment_mi, belief_predict
 
     rows = [dict(row) for row in (card_state.get("branch_belief_models") or [])
-            if isinstance(row, dict)]
-    if not rows:
-        rows = [{"branch_id": h.get("name"), "anchors": [], "n_anchors": 0,
-                 "parameter_prior": h, "period": None}
-                for h in (getattr(objective, "hypotheses", []) or [])
-                if h.get("name") not in (None, "null")]
-    if len(rows) < 2:
+            if isinstance(row, dict) and str(row.get("sample", "")) == str(sample)]
+    slices: dict[float, list[dict]] = {}
+    for row in rows:
+        try:
+            temperature = float(row.get("t_bin"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(temperature):
+            slices.setdefault(temperature, []).append(row)
+    complete = [temperature for temperature, group in slices.items()
+                if len({row.get("branch_id") for row in group if row.get("branch_id")}) >= 2]
+    selected = slices[max(complete)] if complete else []
+    if not selected:
+        # A common prior-only slice is safe across samples/T; unrelated measured slices are not.
+        selected = [{"branch_id": h.get("name"), "anchors": [], "n_anchors": 0,
+                     "parameter_prior": h, "period": None}
+                    for h in (getattr(objective, "hypotheses", []) or [])
+                    if h.get("name") not in (None, "null")]
+    if len({row.get("branch_id") for row in selected if row.get("branch_id")}) < 2:
         return None, None
-    # Prefer the most recently persisted sample/T slice without mixing independent experiments.
-    keyed = [(str(row.get("sample", "")), float(row.get("t_bin", -math.inf))) for row in rows]
-    selected_key = max(keyed)
-    selected = [row for row, key in zip(rows, keyed) if key == selected_key]
-    if len(selected) < 2:  # prior-only fallback has one empty key shared by every hypothesis
-        selected = rows
     target = getattr(objective, "target_hypothesis", None)
     policy = dict(getattr(objective, "steering", {}) or {})
 
@@ -617,10 +667,12 @@ def _candidate_evidence_state(observations: list[dict], update: dict) -> tuple[s
 
 
 def _record_pooled_master_update(workspace, calibration: Calibration, proposal, *,
-                                 log_path, observations: list[dict]) -> dict | None:
+                                 target_branch: str, log_path,
+                                 observations: list[dict]) -> dict | None:
     """Persist the current pooled master for the submitted q as chronological replay evidence."""
     matching = [row for row in _read_master_rows(workspace, calibration)
-                if _hkl_close(row.get("hkl"), (proposal.h, proposal.k, proposal.l))]
+                if _hkl_close(row.get("hkl"), (proposal.h, proposal.k, proposal.l))
+                and row.get("branch_id") == target_branch]
     if not matching:
         return None
     master = max(matching, key=lambda row: int(row.get("n_members") or 0))
@@ -666,7 +718,16 @@ def _grid_state(objective, observations: list[dict], workspace, calibration: Cal
 
 
 def _record_eligible_crossings(grid, observations: list[dict], log_path=None) -> int:
-    """Record each qualifying pooled crossing once; unchanged pools can never cross twice."""
+    """Record each initial/re-crossing chronologically; unchanged pools never duplicate."""
+    def eligible(update, tolerance) -> bool:
+        halfwidth = update.get("halfwidth")
+        certifiable = update.get("certifiable", update.get("reliable", False))
+        try:
+            return bool(update.get("usable") and certifiable and halfwidth is not None
+                        and FIRST_CROSSING_MARGIN * float(halfwidth) <= float(tolerance))
+        except (TypeError, ValueError):
+            return False
+
     added = 0
     for g in grid:
         if not g.requires_crossing_guard:
@@ -675,8 +736,13 @@ def _record_eligible_crossings(grid, observations: list[dict], log_path=None) ->
         fingerprint = master.get("production_batch_fingerprint")
         halfwidth = g._master_hw
         if (not fingerprint or halfwidth is None
-                or FIRST_CROSSING_MARGIN * halfwidth > g.tolerance
-                or fingerprint in g.crossing_fingerprints):
+                or FIRST_CROSSING_MARGIN * halfwidth > g.tolerance):
+            continue
+        previous = g.master_updates[-2] if len(g.master_updates) >= 2 else None
+        if previous is not None and eligible(previous, g.tolerance):
+            continue
+        if previous is None and g.crossing_fingerprints \
+                and g.crossing_fingerprints[-1] == fingerprint:
             continue
         marker = {"hkl": g.hkl, "kind": "certification_crossing",
                   "production_batch_fingerprint": fingerprint,
@@ -1300,11 +1366,8 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
     promoted = False
     support_adjusted = False
     while True:
-        # Point-count guard (single checkpoint before ANY validate/submit): a missed-window recenter
-        # widens e_lo/e_hi without recomputing the tight e_step, so the emitted `deltaE lo hi step`
-        # command can exceed TAVI's max_points and latch its validator. Coarsen the step to keep the
-        # full window and fit the limit; a no-op on a proposal that already fits.
-        _guard_point_count(proposal, cfg.max_points, cfg.max_points_source, log_path, it)
+        # Single checkpoint before EVERY validate/submit, including support/recenter retries.
+        _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
         with timed(log_path, "validate", iteration=it, attempt=attempt):
             val = client.validate(_validate_body(proposal, sample=cfg.sample))
         feasible_points = _feasible_point_count(val, proposal.n_points or 1)
@@ -1328,11 +1391,12 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             if not support_adjusted and desired_step < proposal.e_step:
                 old_step = proposal.e_step
                 proposal.e_step = desired_step
-                proposal.n_points = points_in_window(proposal.e_lo, proposal.e_hi, proposal.e_step)
+                _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
                 support_adjusted = True
                 log_event(log_path, "exception", {
                     "action": "increase_target_support", "hkl": [proposal.h, proposal.k, proposal.l],
-                    "old_step": old_step, "new_step": proposal.e_step,
+                    "old_step": old_step, "requested_step": desired_step,
+                    "new_step": proposal.e_step, "finalized_step": proposal.e_step,
                     "target_supporting_feasible_points": target_support,
                     "required": min_support, "iter": it})
                 continue
@@ -1493,7 +1557,8 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             analyze_payload["timings"] = timings
         log_event(log_path, "analyze", analyze_payload)
         _record_pooled_master_update(
-            workspace, cfg.calibration, proposal, log_path=log_path,
+            workspace, cfg.calibration, proposal, target_branch=objective.target_branch,
+            log_path=log_path,
             observations=observations)
 
         if promoted:
@@ -1531,9 +1596,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             break
         proposal.e_lo = act.params["e_lo"]
         proposal.e_hi = act.params["e_hi"]
-        proposal.n_points = points_in_window(
-            proposal.e_lo, proposal.e_hi, proposal.e_step,
-            max_points=int((proposal.meta or {}).get("max_scan_points", MAX_POINTS)))
+        _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
         attempt += 1
 
     return rows, scan_counter
@@ -1744,13 +1807,15 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                   production_ncount=int((getattr(objective, "steering", None) or {}).get(
                                       "production_batch_ncount", PRODUCTION_NCOUNT))))
                     classify, rival_band = _make_classification_providers(
-                        durable_state, objective, cfg.resolution_cb)
+                        durable_state, objective, cfg.resolution_cb, sample=cfg.sample)
                 with timed(cfg.log_path, "propose", iteration=it):
                     try:
                         proposal = propose_scan(
                             objective, model, observations, cfg.resolution_cb, budget_state,
                             master_rows=master_rows, fisher=fisher,
                             classify=classify, rival_band=rival_band)
+                        if proposal is not None:
+                            _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
                     except BudgetInsufficientForMinimumBatch as error:
                         log_event(cfg.log_path, "exception", {
                             "action": "budget_insufficient_for_minimum_batch",
@@ -1783,10 +1848,20 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     if b_act.action == "exhausted":
                         break
 
-                rows, scan_counter = _execute_proposal(
-                    cfg=cfg, objective=objective, proposal=proposal, it=it, scan_counter=scan_counter,
-                    budget_state=budget_state, observations=observations, consumed=consumed,
-                    scan_kind=scan_kind)
+                try:
+                    rows, scan_counter = _execute_proposal(
+                        cfg=cfg, objective=objective, proposal=proposal, it=it,
+                        scan_counter=scan_counter, budget_state=budget_state,
+                        observations=observations, consumed=consumed, scan_kind=scan_kind)
+                except BudgetInsufficientForMinimumBatch as error:
+                    log_event(cfg.log_path, "exception", {
+                        "action": "budget_insufficient_for_minimum_batch",
+                        "error": str(error), "iter": it})
+                    decision = StopDecision(
+                        "unmeetable", [str(error)],
+                        evaluate_stop(objective, grid, budget_state,
+                                      calibration=cfg.calibration, floor=cfg.floor).per_q)
+                    break
 
                 # ---- exception branch on the final verdict (flagged / held) ----------------------------
                 with timed(cfg.log_path, "verdict_exceptions", iteration=it):

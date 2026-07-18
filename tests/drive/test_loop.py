@@ -20,7 +20,8 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
                              _declined_observation,
                              _executed_point_count, _feasible_point_count,
                              _errors_arg_for, _errors_tier_for, _extract_max_points, _full_tier,
-                             _guard_point_count,
+                             _finalize_proposal, _guard_point_count,
+                             _make_classification_providers, _record_eligible_crossings,
                              _master_obs_from_row, _observation_from_row, _pick_interval,
                              _preflight_max_points, _reconcile_budget_points, _resume_state,
                              _run_nonce, _target_supporting_feasible_points, _validate_body,
@@ -58,6 +59,67 @@ def test_target_support_preflight_counts_only_feasible_bins_inside_credible_band
     assert _target_supporting_feasible_points({}, (6.0, 0.2)) is None
     malformed = {"point_manifest": [{"feasible": True, "values": {"deltaE": "bad"}}]}
     assert _target_supporting_feasible_points(malformed, (6.0, 0.2)) == 0
+
+
+def test_classification_uses_latest_complete_temperature_for_active_sample_only():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    objective = ObjectiveSpec.segment(
+        q_start=(2.0, 0.0, 0.0), q_end=(2.0, 0.1, 0.0), step_rlu=0.1,
+        tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 1e12},
+        target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+
+    def row(sample, temperature, branch, energy):
+        return {"sample": sample, "t_bin": temperature, "branch_id": branch,
+                "anchors": [{"u": u, "omega0": energy, "weight": 1.0}
+                            for u in (0.0, 0.1, 0.2)],
+                "n_anchors": 3, "period": None,
+                "parameter_prior": next(h for h in objective.hypotheses
+                                        if h["name"] == branch)}
+
+    selected_acoustic = row("active", 200.0, "acoustic", 2.0)
+    state = {"branch_belief_models": [
+        row("active", 100.0, "acoustic", 1.0), row("active", 100.0, "optic", 6.0),
+        selected_acoustic, row("active", 200.0, "optic", 7.0),
+        row("active", 300.0, "optic", 8.0),  # newest but incomplete: never mix with 200 K
+        row("other", 400.0, "acoustic", 9.0), row("other", 400.0, "optic", 10.0),
+    ]}
+    classify, rival = _make_classification_providers(
+        state, objective, 1.0, sample="active")
+    gridq = types.SimpleNamespace(hkl=(2.0, 0.0, 0.0), q=0.0)
+    assert classify(gridq) >= 0.0
+    from isar.drive.acquisition.classify_eig import belief_predict
+    assert rival(gridq) == pytest.approx(belief_predict(selected_acoustic, 0.0))
+    fallback, fallback_rival = _make_classification_providers(
+        state, objective, 1.0, sample="missing")
+    assert fallback is not None and fallback_rival is not None
+
+
+def test_crossing_recorder_records_transitions_not_every_eligible_batch(tmp_path):
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    objective = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
+                              budget={"kind": "neutrons", "amount": 1e12},
+                              target_branch="optic", **frozen)
+
+    def update(halfwidth):
+        return {"kind": "pooled_master_update", "hkl": (2.0, 0.0, 0.0),
+                "branch_id": "optic", "halfwidth": halfwidth, "usable": True,
+                "certifiable": True}
+
+    def master(members, halfwidth=0.3):
+        return {"hkl": (2.0, 0.0, 0.0), "branch_id": "optic", "halfwidth": halfwidth,
+                "usable": True, "reliable": True, "certifiable": True, "omega0": 6.0,
+                "members": members}
+
+    observations = [update(0.3)]
+    grid = summarize_grid(objective, observations, [master(["A"])])
+    assert _record_eligible_crossings(grid, observations, tmp_path / "crossings.jsonl") == 1
+    observations.append(update(0.25))
+    grid = summarize_grid(objective, observations, [master(["A", "B"], 0.25)])
+    assert _record_eligible_crossings(grid, observations) == 0
+    assert grid[0].converged
+    observations.extend([update(0.8), update(0.3)])
+    grid = summarize_grid(objective, observations, [master(["A"], 0.3)])
+    assert _record_eligible_crossings(grid, observations) == 1
 
 
 def test_budget_reconciliation_charges_only_executed_points():
@@ -784,7 +846,7 @@ def test_optic_campaign_tracks_target_amid_acoustic_distractor_deterministically
     assert all(row["converged"] for row in first_summary["grid"])
     final_events = read_log(first_summary["session_log"])
     assert len([event for event in final_events
-                if event["kind"] == "certification_crossing"]) >= 2 * len(first_summary["grid"])
+                if event["kind"] == "certification_crossing"]) == len(first_summary["grid"])
     assert not any(event["kind"] == "exception"
                    and (event.get("payload") or {}).get("action") == "certify_regression"
                    for event in final_events)
@@ -1370,7 +1432,30 @@ def test_guard_leaves_at_limit_proposal_untouched(tmp_path):
     step_before = p.e_step
     assert _guard_point_count(p, 200, "get_state", log, it=0) is False
     assert p.e_step == step_before
+    assert p.n_points == 200
     assert not read_log(log)                            # nothing logged for an in-limit proposal
+
+
+def test_proposal_finalizer_uses_smaller_policy_cap_and_reclamps_neutron_count(tmp_path):
+    p = ScanProposal(h=2.1, k=0.0, l=0.0, e_lo=0.0, e_hi=20.0, e_step=0.1,
+                     ncount=200, kind="production", reason="test", n_points=100)
+    objective = types.SimpleNamespace(steering={"max_scan_points": 10,
+                                                "production_batch_ncount": 10,
+                                                "dynamic_ncount": True})
+    cfg = types.SimpleNamespace(max_points=50, max_points_source="get_state",
+                                log_path=tmp_path / "log.jsonl")
+    _finalize_proposal(
+        p, objective, cfg, {"kind": "neutrons", "amount": 1_000.0, "spent": 0.0}, it=2)
+    assert p.n_points == 10 and _emitted_point_count(p.e_lo, p.e_hi, p.e_step) == 10
+    assert p.ncount == 100
+    p.ncount = 5
+    _finalize_proposal(
+        p, objective, cfg, {"kind": "neutrons", "amount": 1_000.0, "spent": 0.0}, it=3)
+    assert p.ncount == 10
+    with pytest.raises(loop_mod.BudgetInsufficientForMinimumBatch,
+                       match="budget_insufficient_for_minimum_batch"):
+        _finalize_proposal(
+            p, objective, cfg, {"kind": "neutrons", "amount": 99.0, "spent": 0.0}, it=4)
 
 
 def test_preflight_reads_limit_from_state_limits_dict():
@@ -1450,7 +1535,8 @@ def test_campaign_never_submits_over_limit_scan(tmp_path):
     clamps = [e for e in read_log(summary["session_log"])
               if e["kind"] == "exception" and (e["payload"] or {}).get("action") == "proposal_clamped"]
     assert clamps, "a widening recenter should have tripped the point-count guard"
-    assert all(c["payload"]["limit"] == 50 and c["payload"]["limit_source"] == "get_state"
+    assert all(c["payload"]["limit"] == 50
+               and c["payload"]["limit_source"] == "policy+get_state"
                for c in clamps)
 
 

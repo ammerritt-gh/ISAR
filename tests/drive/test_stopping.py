@@ -69,6 +69,26 @@ def test_hypothesis_campaign_requires_new_production_pool_between_crossings():
     assert st.summarize_grid(obj, [marker], [second])[0].converged
 
 
+def test_crossing_history_compares_only_latest_and_preserves_repeated_fingerprints():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    obj = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
+                        budget={"kind": "neutrons", "amount": 1e12},
+                        target_branch="optic", **frozen)
+    master = _master((2.0, 0.0, 0.0), 0.3, members=["batch-a"])
+    fingerprint = st.summarize_grid(obj, [], [master])[0].master["production_batch_fingerprint"]
+    markers = [
+        {"hkl": (2.0, 0.0, 0.0), "kind": "certification_crossing",
+         "production_batch_fingerprint": fingerprint},
+        {"hkl": (2.0, 0.0, 0.0), "kind": "certification_crossing",
+         "production_batch_fingerprint": "intervening"},
+        {"hkl": (2.0, 0.0, 0.0), "kind": "certification_crossing",
+         "production_batch_fingerprint": fingerprint},
+    ]
+    grid = st.summarize_grid(obj, markers, [master])
+    assert grid[0].crossing_fingerprints == [fingerprint, "intervening", fingerprint]
+    assert not grid[0].converged
+
+
 def test_flagged_master_with_reliable_interval_converges():
     # The accept-flagged decision: a model_incomplete fit whose omega0 interval is reliable + tight
     # still delivers a usable omega0 for the tolerance objective.
@@ -279,6 +299,18 @@ def test_recenter_rows_share_one_logical_attempt_and_one_decline():
     assert grid[0].submitted_exposure == pytest.approx(300.0)
 
 
+def test_logical_exposure_and_last_ncount_do_not_depend_on_representative_row():
+    declined = _obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
+    declined.update({"acquisition_id": "A1", "submitted_ncount": 125,
+                     "proposal_cost": 1_250.0})
+    resolved = _obs((2.1, 0.0, 0.0), "production", 0.4, resolved=True, disp="resolved")
+    resolved.update({"acquisition_id": "A1", "submitted_ncount": None,
+                     "proposal_cost": 0.0})
+    grid = st.summarize_grid(_obj(), [declined, resolved])
+    assert grid[0].last_submitted_ncount == 125
+    assert grid[0].submitted_exposure == pytest.approx(125.0)
+
+
 def test_successful_recenter_resolves_its_logical_acquisition():
     obj = _obj()
     missed = _obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
@@ -293,7 +325,7 @@ def test_successful_recenter_resolves_its_logical_acquisition():
 
 def _master_update(exposure, halfwidth, **overrides):
     update = {"kind": "pooled_master_update", "hkl": (2.1, 0.0, 0.0),
-              "candidate_id": "optic:0.1:lowest_energy", "branch_id": "optic",
+              "candidate_id": "acoustic:0.1:lowest_energy", "branch_id": "acoustic",
               "interval_method": "profile", "exposure_bucket": "global",
               "calibration_version": "v1", "effective_exposure": exposure,
               "diagnostic_halfwidth": halfwidth}
@@ -331,6 +363,22 @@ def test_posterior_rejected_candidate_is_a_terminal_q_reason():
     grid = st.summarize_grid(_obj(), [update])
     assert grid[0].candidate_rejected
     assert grid[0].stuck_reason == "posterior_rejected"
+
+
+def test_wrong_branch_master_updates_cannot_trigger_floor_or_rejection():
+    updates = [_master_update(100.0, 1.0, branch_id="optic"),
+               _master_update(150.0, 1.0, branch_id="optic"),
+               _master_update(220.0, 1.0, branch_id="optic", candidate_state="rejected")]
+    grid = st.summarize_grid(_obj(), updates)
+    assert grid[0].master_updates == []
+    assert not grid[0].interval_floored and not grid[0].candidate_rejected
+
+
+def test_production_cap_without_certifiable_interval_keeps_honest_taxonomy():
+    obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
+           for _ in range(st.MAX_PROD_ATTEMPTS)]
+    grid = st.summarize_grid(_obj(), obs)
+    assert grid[0].stuck and grid[0].stuck_reason == "no_signal"
 
 
 def test_master_over_tolerance_keeps_accumulating():

@@ -213,7 +213,8 @@ class GridQ:
         if not self.requires_crossing_guard:
             return True
         fingerprint = (self.master or {}).get("production_batch_fingerprint")
-        return bool(fingerprint and any(old != fingerprint for old in self.crossing_fingerprints))
+        return bool(fingerprint and self.crossing_fingerprints
+                    and self.crossing_fingerprints[-1] != fingerprint)
 
     @property
     def info_saturated(self) -> bool:
@@ -317,8 +318,6 @@ class GridQ:
             return "signal_unmodeled"
         if self.n_branch_ambiguous > 0:
             return "branch_ambiguity"
-        if self.n_production >= self.max_production_batches:
-            return "interval_floored"
         # Terminal no-signal fall-through, refined by decline sub-labels: ALL declines being
         # validation rejections means the point is instrument-infeasible; an "unmodeled" disposition
         # means the signal is present but unfit. Otherwise it is a genuine no-signal q.
@@ -380,6 +379,10 @@ def _logical_observations(observations: list[dict], target_branch: str) -> list[
         folded["submitted_exposure_increment"] = sum(
             float(item.get("submitted_ncount") or 0.0) for item in group
             if float(item.get("proposal_cost") or 0.0) > 0.0)
+        submitted = [item.get("submitted_ncount") for item in group
+                     if item.get("submitted_ncount") is not None]
+        if submitted:
+            folded["submitted_ncount"] = submitted[-1]
         logical.append(folded)
     return logical
 
@@ -396,6 +399,12 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
     target_branch = getattr(objective, "target_branch", "acoustic") or "acoustic"
     scalars = path_scalars(path)
     crossing_guard = bool(getattr(objective, "hypotheses", None))
+    def branch_matches(item: dict) -> bool:
+        if "branch_id" not in item:
+            return True                  # legacy event predating additive branch provenance
+        if item.get("branch_id") is None and not crossing_guard:
+            return True                  # static/posterior-off campaigns retain v2 behavior
+        return item.get("branch_id") == target_branch
     max_batches = int((getattr(objective, "steering", None) or {}).get(
         "maximum_production_batches_per_q", MAX_PROD_ATTEMPTS))
     policy = getattr(objective, "steering", None) or {}
@@ -409,6 +418,8 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
             for i in range(len(path))]
     for update in observations:
         if update.get("kind") != "pooled_master_update" or update.get("hkl") is None:
+            continue
+        if not branch_matches(update):
             continue
         i = match_grid_index(tuple(update["hkl"]), path)
         if i is not None:
@@ -426,7 +437,7 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
         kind = obs.get("kind")
         if kind == "certification_crossing":
             fingerprint = obs.get("production_batch_fingerprint")
-            if fingerprint and fingerprint not in g.crossing_fingerprints:
+            if fingerprint:
                 g.crossing_fingerprints.append(str(fingerprint))
             continue
         # `resolved` on the observation is "usable for steering" — set by loop._observation_from_row
@@ -498,7 +509,7 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                 g.best_prod_omega0 = float(obs["omega0"])
     for mr in (master_rows or []):
         i = match_grid_index(tuple(mr["hkl"]), path)
-        if i is not None and mr.get("branch_id") in (None, target_branch):
+        if i is not None and branch_matches(mr):
             master = mr
             members = master.get("members") or []
             if members:
