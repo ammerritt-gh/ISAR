@@ -66,6 +66,14 @@ def test_dynamic_count_request_uses_remainder_ladder_growth_and_scan_cap():
     assert diagnostics["exposure_remaining"] == pytest.approx(525_000_000)
     assert requested == 400_000_000  # 800M ladder request, clamped to 4x the last submission
 
+    legal, limited = acq._count_request(
+        g, kind="production", n_points=10, tolerance=0.5, policy=policy,
+        budget_state={"kind": "counting_seconds", "amount": 1.0, "spent": 1.0},
+        runtime_ncount_limit=100_000_000)
+    assert legal == 100_000_000
+    assert limited["requested_before_runtime_limit"] == 400_000_000
+    assert limited["runtime_ncount_limit"] == 100_000_000
+
     g.last_submitted_ncount = 2_000_000_000
     g.master = {"halfwidth": 10.0, "effective_exposure": 4_000_000_000}
     capped, _ = acq._count_request(
@@ -89,6 +97,13 @@ def test_dynamic_count_request_clamps_only_neutron_budget_and_requires_floor():
         budget_state={"kind": "neutrons", "amount": 1_500_000_000, "spent": 0.0})
     assert requested == 100_000_000
     assert diagnostics["neutron_budget_clamp"] == 150_000_000
+
+    with pytest.raises(acq.InstrumentLimitBelowMinimumBatch,
+                       match="instrument_limit_below_minimum_batch"):
+        acq._count_request(
+            g, kind="production", n_points=10, tolerance=0.5, policy=policy,
+            budget_state={"kind": "counting_seconds", "amount": 1.0, "spent": 0.0},
+            runtime_ncount_limit=99_999_999)
 
 
 def test_static_policy_retains_fixed_production_count():
@@ -123,6 +138,22 @@ def test_dynamic_proposal_uses_pooled_exposure_and_authoritative_halfwidth():
         master_rows=[master])
     assert proposal.ncount == 400_000_000
     assert proposal.meta["count_diagnostics"]["exposure_required"] == pytest.approx(625_000_000)
+
+    limited = acq.propose_scan(
+        obj, _model(obs), obs, {"fwhm_dE": 0.8},
+        {"kind": "counting_seconds", "amount": 1.0, "spent": 1.0},
+        master_rows=[master], runtime_limits={"max_neutrons_per_point": 100_000_000})
+    score = limited.meta["score"]
+    final_cost = float(limited.n_points) * 100_000_000.0
+    expected_eig = acq.counts_eig(score["sigma_prior"], obj.tolerance_meV,
+                                  score["c_spent"], final_cost)
+    assert limited.ncount == 100_000_000
+    assert score["ranking_cost"] != final_cost
+    assert score["cost"] == final_cost
+    assert score["eig"] == pytest.approx(expected_eig)
+    assert score["sigma_scan"] == pytest.approx(acq.predicted_sigma_after(
+        score["sigma_prior"], score["c_spent"], final_cost))
+    assert score["eig_per_cost"] == pytest.approx(expected_eig / final_cost)
 
 
 def test_third_generic_no_signal_attempt_grows_above_production_floor():

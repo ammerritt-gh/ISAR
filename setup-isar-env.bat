@@ -62,7 +62,7 @@ echo [2/3] Creating or updating the '%ENV_NAME%' environment...
 "%MICROMAMBA_EXE%" env list > "%TEMP%\isar_envs.txt" 2>nul
 findstr /i /c:"\envs\%ENV_NAME%" "%TEMP%\isar_envs.txt" >nul 2>nul
 if "%ERRORLEVEL%"=="0" (
-    echo   Environment '%ENV_NAME%' already exists — reusing it (updating the ISAR install below).
+    echo   Environment '%ENV_NAME%' already exists — reusing it ^(updating the ISAR install below^).
 ) else (
     "%MICROMAMBA_EXE%" create -y -n %ENV_NAME% -f environment-isar.yml
     if errorlevel 1 (

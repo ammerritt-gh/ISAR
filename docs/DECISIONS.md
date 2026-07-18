@@ -135,6 +135,13 @@ explicitly reopened; "future" means designed-for but not v1.
   interval-floor brake. Legacy/direct policies remain static unless they opt in. **Implemented
   subset:** exposure-aware pooled Poisson fitting, deterministic tolerance scaling/brakes, and exact
   replay. **Planned remainder:** Fisher/sample-based value-of-information dwell optimisation.
+- **O14.** (2026-07-18, Implemented) **Live instrument limits bound batches, not intent.** The frozen
+  objective retains the operator's policy and fingerprint. At campaign start ISAR snapshots TAVI's
+  point, per-point neutron, queue-neutron, and queue-depth limits with field-level provenance; runtime
+  proposals use the smaller policy/live ceiling and split larger tolerance-driven requests into legal
+  pooled batches. `/validate` remains final feasibility authority. A live ceiling below the policy
+  floor is explicitly unmeetable. Logical proposal IDs advance independently of physical submissions,
+  so refusals count separately while recenter retries remain one acquisition.
 
 ## Workspace hygiene
 

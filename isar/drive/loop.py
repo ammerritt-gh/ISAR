@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import json
+import logging
 import math
 import subprocess
 import sys
@@ -35,7 +36,9 @@ from isar.drive.acquisition import model as acq_model
 from isar.drive.acquisition.acquire import (
     MAX_POINTS,
     BudgetInsufficientForMinimumBatch,
+    InstrumentLimitBelowMinimumBatch,
     ScanProposal,
+    normalize_proposal_score,
     points_in_window,
     propose_scan,
 )
@@ -72,23 +75,69 @@ DEFAULT_WAIT_TIMEOUT = 600.0
 DEFAULT_MAX_POINTS = 200
 # Candidate keys a TAVI /state or /schema payload might carry the point-count limit under.
 _MAX_POINTS_KEYS = ("max_points", "maxPoints", "scan_max_points", "max_scan_points", "points_max")
+_LIMIT_KEYS = {
+    "max_points": _MAX_POINTS_KEYS,
+    "max_neutrons_per_point": ("max_neutrons_per_point", "maxNeutronsPerPoint",
+                                "max_ncount", "max_ncount_per_point"),
+    "queue_neutron_budget": ("queue_neutron_budget", "queueNeutronBudget",
+                              "max_queue_neutrons", "queue_neutrons"),
+    "max_queued": ("max_queued", "maxQueued", "max_queue_size", "queue_max_scans"),
+}
 _DEFAULT_CALIBRATION = (Path(__file__).resolve().parents[2] / "calibration"
                         / "phonon_dft_deterministic.json")
+_LOG = logging.getLogger(__name__)
+
+
+def _extract_limit(payload: Any, keys: tuple[str, ...]) -> int | None:
+    """Extract a positive integral limit from a top-level or nested TAVI limits document."""
+    if not isinstance(payload, dict):
+        return None
+    scopes = [payload]
+    for key in ("limits", "instrument_limits", "queue_limits"):
+        if isinstance(payload.get(key), dict):
+            scopes.append(payload[key])
+    for scope in scopes:
+        for key in keys:
+            value = scope.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+                return int(value)
+            if (isinstance(value, float) and math.isfinite(value)
+                    and value >= 1.0 and value.is_integer()):
+                return int(value)
+    return None
 
 
 def _extract_max_points(payload: Any) -> int | None:
     """Pull a positive integer point-count limit out of a TAVI /state or /schema body, checking the
     known key names at the top level and inside a nested ``limits`` dict. Returns ``None`` when no
     recognizable limit is present (the caller then falls back to :data:`DEFAULT_MAX_POINTS`)."""
-    if not isinstance(payload, dict):
-        return None
-    nested = payload.get("limits")
-    for scope in (payload, nested if isinstance(nested, dict) else {}):
-        for k in _MAX_POINTS_KEYS:
-            v = scope.get(k)
-            if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
-                return int(v)
-    return None
+    return _extract_limit(payload, _MAX_POINTS_KEYS)
+
+
+def _preflight_instrument_limits(client) -> dict[str, Any]:
+    """Resolve the additive TAVI limit snapshot once, preferring /state field by field."""
+    values: dict[str, int | None] = {name: None for name in _LIMIT_KEYS}
+    sources: dict[str, str] = {name: "unavailable" for name in _LIMIT_KEYS}
+    for method in ("get_state", "get_schema"):
+        fn = getattr(client, method, None)
+        if not callable(fn):
+            continue
+        try:
+            payload = fn()
+        except Exception as error:   # noqa: BLE001 — discovery is best-effort and fallback-safe
+            _LOG.warning("TAVI instrument-limit discovery via %s failed: %s", method, error)
+            continue
+        for name, keys in _LIMIT_KEYS.items():
+            if values[name] is not None:
+                continue
+            value = _extract_limit(payload, keys)
+            if value is not None:
+                values[name] = value
+                sources[name] = method
+    if values["max_points"] is None:
+        values["max_points"] = DEFAULT_MAX_POINTS
+        sources["max_points"] = "default"
+    return {**values, "sources": sources}
 
 
 def _preflight_max_points(client) -> tuple[int, str]:
@@ -98,18 +147,32 @@ def _preflight_max_points(client) -> tuple[int, str]:
     preflight failure — endpoint unreachable, method absent on the client seam, or no limit present —
     must never break the campaign: it falls back silently to :data:`DEFAULT_MAX_POINTS`, recording the
     fallback via the ``source`` so the eventual clamp event states where the limit came from."""
-    for method in ("get_state", "get_schema"):
-        fn = getattr(client, method, None)
-        if not callable(fn):
-            continue
-        try:
-            payload = fn()
-        except Exception:   # noqa: BLE001 — preflight is best-effort; never fail a campaign on it
-            continue
-        mp = _extract_max_points(payload)
-        if mp is not None:
-            return mp, method
-    return DEFAULT_MAX_POINTS, "default"
+    snapshot = _preflight_instrument_limits(client)
+    return int(snapshot["max_points"]), str(snapshot["sources"]["max_points"])
+
+
+def _runtime_limits(cfg, objective, n_points: int | None = None) -> dict[str, Any]:
+    policy = dict(getattr(objective, "steering", None) or {})
+    instrument = dict(getattr(cfg, "instrument_limits", None) or {})
+    instrument.setdefault("max_points", int(getattr(cfg, "max_points", DEFAULT_MAX_POINTS)))
+    instrument.setdefault("sources", {"max_points": getattr(cfg, "max_points_source", "default")})
+    result = dict(instrument)
+    result["instrument_max_neutrons_per_point"] = instrument.get("max_neutrons_per_point")
+    result["max_points"] = min(int(policy.get("max_scan_points", MAX_POINTS)),
+                               int(instrument["max_points"]))
+    policy_ncount = int(policy.get("max_ncount_per_scan", 4_000_000_000))
+    candidates = [(policy_ncount, "policy")]
+    if instrument.get("max_neutrons_per_point") is not None:
+        candidates.append((int(instrument["max_neutrons_per_point"]),
+                           instrument["sources"].get("max_neutrons_per_point", "instrument")))
+    if n_points and instrument.get("queue_neutron_budget") is not None:
+        candidates.append((int(math.floor(float(instrument["queue_neutron_budget"]) /
+                                          max(int(n_points), 1))),
+                           instrument["sources"].get("queue_neutron_budget", "instrument")))
+    result["max_neutrons_per_point"] = min(value for value, _source in candidates)
+    result["effective_ncount_sources"] = [source for value, source in candidates
+                                           if value == result["max_neutrons_per_point"]]
+    return result
 
 
 def _emitted_point_count(e_lo: float, e_hi: float, e_step: float) -> int:
@@ -162,17 +225,44 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int)
     remain scan-boundary-only because ISAR has no invented ncount-to-seconds conversion.
     """
     policy = dict(getattr(objective, "steering", None) or {})
-    policy_cap = int(policy.get("max_scan_points", MAX_POINTS))
-    cap = min(policy_cap, int(cfg.max_points))
-    source = f"policy+{cfg.max_points_source}"
+    limits = _runtime_limits(cfg, objective)
+    cap = int(limits["max_points"])
+    source = f"policy+{limits['sources'].get('max_points', 'default')}"
     _guard_point_count(proposal, cap, source, cfg.log_path, it)
     n_points = int(proposal.n_points or 0)
-    budget = dict(budget_state or {})
-    if budget.get("kind") != "neutrons" or budget.get("amount") is None:
-        return
+    limits = _runtime_limits(cfg, objective, n_points)
     minimum = int(policy.get(
         "quicklook_ncount" if proposal.kind == "quicklook" else "production_batch_ncount",
         QUICKLOOK_NCOUNT if proposal.kind == "quicklook" else PRODUCTION_NCOUNT))
+    instrument_cap = int(limits["max_neutrons_per_point"])
+    if instrument_cap < minimum:
+        raise InstrumentLimitBelowMinimumBatch(
+            f"instrument_limit_below_minimum_batch: {instrument_cap:g} neutrons/point "
+            f"is below the {minimum:g} {proposal.kind} floor")
+    diagnostics = (proposal.meta or {}).get("count_diagnostics")
+    preclamp_requested = (diagnostics.get("requested_before_runtime_limit")
+                          if isinstance(diagnostics, dict) else None)
+    if int(proposal.ncount) > instrument_cap or (
+            preclamp_requested is not None and not diagnostics.get("limit_clamp_logged")):
+        requested = max(int(proposal.ncount), int(preclamp_requested or 0))
+        proposal.ncount = instrument_cap
+        if isinstance(diagnostics, dict):
+            diagnostics["runtime_ncount_limit"] = instrument_cap
+            diagnostics["limit_clamp_logged"] = True
+        log_event(cfg.log_path, "exception", {
+            "action": "proposal_ncount_clamped_to_limit",
+            "hkl": [proposal.h, proposal.k, proposal.l],
+            "requested_ncount": requested, "effective_ncount": instrument_cap,
+            "policy_limit": int(policy.get("max_ncount_per_scan", 4_000_000_000)),
+            "instrument_limits": {
+                "max_neutrons_per_point": limits.get("instrument_max_neutrons_per_point"),
+                "queue_neutron_budget": limits.get("queue_neutron_budget")},
+            "limit_sources": limits.get("effective_ncount_sources", []),
+            "n_points": n_points, "iter": it})
+    budget = dict(budget_state or {})
+    if budget.get("kind") != "neutrons" or budget.get("amount") is None:
+        normalize_proposal_score(proposal, float(getattr(objective, "tolerance_meV", 0.0)))
+        return
     if bool(policy.get("dynamic_ncount", False)) and int(proposal.ncount) < minimum:
         old_ncount = int(proposal.ncount)
         proposal.ncount = minimum
@@ -194,6 +284,7 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int)
             "action": "proposal_ncount_clamped", "hkl": [proposal.h, proposal.k, proposal.l],
             "old_ncount": old_ncount, "new_ncount": affordable, "n_points": n_points,
             "remaining_neutrons": remaining, "iter": it})
+    normalize_proposal_score(proposal, float(getattr(objective, "tolerance_meV", 0.0)))
 
 
 def _resolve_calibration(cfg_value) -> Calibration:
@@ -237,7 +328,7 @@ def _make_fisher_provider(card_state: dict, resolution_cb, *,
     from isar.drive.acquisition.eig import fisher_information, sigma_omega0
     from isar.synth.fit import omega_d_from      # isar.synth is boundary-allowed
 
-    def provider(g, omega0_pred, sigma_prior):
+    def provider(g, omega0_pred, sigma_prior, exposure_override=None):
         if getattr(g, "last_fit_kind", None) != "unconstrained":
             return None
         if omega0_pred is None or not math.isfinite(omega0_pred) or omega0_pred <= 0:
@@ -251,7 +342,7 @@ def _make_fisher_provider(card_state: dict, resolution_cb, *,
         T = float(branch.get("t_bin", 0.0))         # the branch carries its own T-bin
         # Match the frozen campaign policy's incremental production batch.  Using the legacy 1e8
         # exposure here would overstate information for hypothesis campaigns that submit 2.5e7.
-        exposure = float(production_ncount)
+        exposure = float(production_ncount if exposure_override is None else exposure_override)
         amp = float(pred.amplitude_norm) * exposure
         gamma = float(pred.gamma)
         od = omega_d_from(float(omega0_pred), gamma)
@@ -267,6 +358,8 @@ def _make_fisher_provider(card_state: dict, resolution_cb, *,
         ss = sigma_omega0(theta, info)
         return ss if math.isfinite(ss) else None
 
+    provider.supports_exposure = True
+    provider.default_exposure = int(production_ncount)
     return provider
 
 
@@ -1028,6 +1121,8 @@ def _resume_detailed_events(workspace, events: list[dict], calibration: Calibrat
     return {"observations": [item[2] for item in ordered_observations],
             "consumed": consumed, "scan_kind": scan_kind,
             "scan_counter": len(submissions), "neutrons": neutrons, "seconds": seconds,
+            "proposal_counter": max(len(submissions),
+                                    sum(1 for event in events if event.get("kind") == "propose")),
             "unmatched_submissions": unmatched_submissions}
 
 
@@ -1156,6 +1251,8 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
 
     return {"observations": observations, "consumed": consumed, "scan_kind": scan_kind,
             "scan_counter": scan_counter, "neutrons": neutrons, "seconds": seconds,
+            "proposal_counter": max(scan_counter,
+                                    sum(1 for event in events if event.get("kind") == "propose")),
             "unmatched_submissions": []}
 
 
@@ -1273,6 +1370,8 @@ class CampaignConfig:
     # Instrument point-count ceiling, read once per campaign (GET /state|/schema), else DEFAULT_MAX_POINTS.
     max_points: int = DEFAULT_MAX_POINTS
     max_points_source: str = "default"
+    # Complete live limit envelope; additive and independent of the frozen objective policy.
+    instrument_limits: dict | None = None
     sample: str = "Al_phonon_DFT"
     bayes_errors: bool = False
     # Cooperative operator stop (GUI subprocess control). When set, each iteration's top checks for
@@ -1333,7 +1432,9 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
     calibration = _resolve_calibration(config.get("calibration"))
     # Read the instrument's point-count ceiling once per campaign (falls back silently to
     # DEFAULT_MAX_POINTS if the endpoint is unreachable / carries no limit).
-    max_points, max_points_source = _preflight_max_points(client)
+    instrument_limits = _preflight_instrument_limits(client)
+    max_points = int(instrument_limits["max_points"])
+    max_points_source = str(instrument_limits["sources"]["max_points"])
     return CampaignConfig(
         workspace=workspace,
         data_dir=Path(config.get("data_dir", workspace / "data")),
@@ -1353,6 +1454,7 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
         run_nonce=_run_nonce(workspace),
         max_points=max_points,
         max_points_source=max_points_source,
+        instrument_limits=instrument_limits,
         sample=str(config.get("sample", "Al_phonon_DFT")),
         bayes_errors=bool(config.get("bayes_errors", False)),
         control_token=(str(config["control_token"]) if config.get("control_token") else None),
@@ -1895,12 +1997,19 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     consumed: set = resumed["consumed"]
     scan_kind: dict = resumed["scan_kind"]   # (scan, detector) -> (kind, ncount), to rebuild obs after certify
     scan_counter = resumed["scan_counter"]
+    proposal_counter = resumed.get("proposal_counter", 0)
+    limit_envelope = {
+        "discovered": dict(cfg.instrument_limits or {}),
+        "effective": _runtime_limits(cfg, objective),
+    }
 
     start_payload = {"event": "campaign_start", "action": "campaign_start",
                      "objective": objective.to_dict(),
                      "calibration": {"inflation": cfg.calibration.inflation,
                                      "floor_meV": cfg.floor},
+                     "instrument_limits": limit_envelope,
                      "resumed": {"scan_counter": scan_counter,
+                                 "proposal_counter": proposal_counter,
                                  "n_observations": len(observations),
                                  "spent": budget_state["spent"]}}
     if cfg.source is not None:
@@ -1961,12 +2070,16 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                         proposal = propose_scan(
                             objective, model, observations, cfg.resolution_cb, budget_state,
                             master_rows=master_rows, fisher=fisher,
-                            classify=classify, rival_band=rival_band)
+                            classify=classify, rival_band=rival_band,
+                            runtime_limits=_runtime_limits(cfg, objective))
                         if proposal is not None:
                             _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
-                    except BudgetInsufficientForMinimumBatch as error:
+                    except (BudgetInsufficientForMinimumBatch,
+                            InstrumentLimitBelowMinimumBatch) as error:
                         log_event(cfg.log_path, "exception", {
-                            "action": "budget_insufficient_for_minimum_batch",
+                            "action": ("instrument_limit_below_minimum_batch"
+                                       if isinstance(error, InstrumentLimitBelowMinimumBatch)
+                                       else "budget_insufficient_for_minimum_batch"),
                             "error": str(error), "iter": it})
                         decision = StopDecision(
                             "unmeetable", [str(error)],
@@ -1987,7 +2100,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                             decision.per_q)
                     break
                 proposal.acquisition_id = (proposal.acquisition_id
-                                           or f"{cfg.run_nonce}:{scan_counter:08d}")
+                                           or f"{cfg.run_nonce}:{proposal_counter:08d}")
+                proposal_counter += 1
                 log_event(cfg.log_path, "propose", {**proposal.to_dict(), "iter": it})
 
                 b_act = exc.handle_budget(budget_state)
@@ -2001,9 +2115,12 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                         cfg=cfg, objective=objective, proposal=proposal, it=it,
                         scan_counter=scan_counter, budget_state=budget_state,
                         observations=observations, consumed=consumed, scan_kind=scan_kind)
-                except BudgetInsufficientForMinimumBatch as error:
+                except (BudgetInsufficientForMinimumBatch,
+                        InstrumentLimitBelowMinimumBatch) as error:
                     log_event(cfg.log_path, "exception", {
-                        "action": "budget_insufficient_for_minimum_batch",
+                        "action": ("instrument_limit_below_minimum_batch"
+                                   if isinstance(error, InstrumentLimitBelowMinimumBatch)
+                                   else "budget_insufficient_for_minimum_batch"),
                         "error": str(error), "iter": it})
                     decision = StopDecision(
                         "unmeetable", [str(error)],
@@ -2057,7 +2174,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             }
             summary = _campaign_summary(
                 objective, grid, snapshot, budget_state, cfg.workspace,
-                cfg.log_path, len(observations), stop_override=stop_override)
+                cfg.log_path, len(observations), stop_override=stop_override,
+                instrument_limits=limit_envelope)
             stop_payload = {"state": "pending_recovery", "reasons": stop_override["reasons"],
                             "grid_state": stop_override["grid_state"]}
         elif operator_stop:
@@ -2077,7 +2195,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                 "grid_state": snapshot.to_dict(),
             }
             summary = _campaign_summary(objective, grid, snapshot, budget_state, cfg.workspace,
-                                        cfg.log_path, len(observations), stop_override=stop_override)
+                                        cfg.log_path, len(observations), stop_override=stop_override,
+                                        instrument_limits=limit_envelope)
             stop_payload = {"state": "operator_stopped", "reasons": stop_override["reasons"],
                             "grid_state": stop_override["grid_state"]}
         else:
@@ -2099,8 +2218,9 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             # plain final budget evaluation therefore still says "continue". Preserve that terminal
             # decision while retaining ordinary recomputation for every measured-scan exit path.
             if not (decision is not None and decision.state == "unmeetable"
-                    and any("budget_insufficient_for_minimum_batch" in reason
-                            for reason in decision.reasons)):
+                    and any(marker in reason for reason in decision.reasons
+                            for marker in ("budget_insufficient_for_minimum_batch",
+                                           "instrument_limit_below_minimum_batch"))):
                 decision = final_decision
             if ran_certify and decision.state != "met":
                 log_event(cfg.log_path, "exception",
@@ -2108,7 +2228,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                            "note": "a q's bootstrap-certified interval exceeded the fast-tier stop"})
 
             summary = _campaign_summary(objective, grid, decision, budget_state, cfg.workspace,
-                                        cfg.log_path, len(observations))
+                                        cfg.log_path, len(observations),
+                                        instrument_limits=limit_envelope)
             stop_payload = {"state": decision.state, "reasons": decision.reasons}
 
         (cfg.workspace / "report").mkdir(parents=True, exist_ok=True)
@@ -2150,7 +2271,8 @@ def _reconcile_budget_points(budget_state: dict, ncount: int, planned: int, exec
 
 
 def _campaign_summary(objective, grid, decision, budget_state, workspace, log_path, n_obs,
-                      *, stop_override: dict | None = None) -> dict:
+                      *, stop_override: dict | None = None,
+                      instrument_limits: dict | None = None) -> dict:
     # The certified number per q is the tightest trustworthy fit (master pooled OR best single
     # production, whichever is smaller); fall back to the best quick-look estimate for an un-pooled q.
     def _omega0(g):
@@ -2206,6 +2328,7 @@ def _campaign_summary(objective, grid, decision, budget_state, workspace, log_pa
         "branch_beliefs": branch_beliefs,
         "hypothesis_mismatch": mismatch,
         "budget": dict(budget_state),
+        "instrument_limits": dict(instrument_limits or {}),
         "n_observations": n_obs,
         "session_log": str(log_path),
     }

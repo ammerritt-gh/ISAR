@@ -23,6 +23,7 @@ virtual instrument clock exists; until then the function counts neutrons only.
 """
 from __future__ import annotations
 
+import inspect
 import math
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
@@ -76,6 +77,10 @@ class ScanProposal:
     n_points: int = 0
     acquisition_id: str | None = None
     meta: dict[str, Any] = field(default_factory=dict)
+    # In-memory only: refresh exposure-sensitive score fields after runtime clamps. Deliberately
+    # omitted from to_dict(), so the event/file contract remains plain JSON.
+    score_recompute: Callable[[int], dict[str, float | None]] | None = field(
+        default=None, repr=False, compare=False)
 
     def scan_command(self) -> str:
         """The TAVI ``scan_command1`` for this window: ``deltaE <lo> <hi> <step>``."""
@@ -95,6 +100,50 @@ class BudgetInsufficientForMinimumBatch(ValueError):
     """The remaining neutron budget cannot fund one policy-floor scan."""
 
 
+class InstrumentLimitBelowMinimumBatch(ValueError):
+    """The instrument cannot accept one policy-floor scan."""
+
+
+def _fisher_supports_exposure(provider) -> bool:
+    """Whether a Fisher seam accepts the additive fourth exposure argument (legacy 3-arg stays valid)."""
+    if bool(getattr(provider, "supports_exposure", False)):
+        return True
+    try:
+        inspect.signature(provider).bind(None, None, None, None)
+    except (TypeError, ValueError):
+        # Some extension callables do not expose a signature; without an explicit capability marker,
+        # preserve the legacy three-argument protocol instead of risking a runtime TypeError.
+        return False
+    return True
+
+
+def normalize_proposal_score(proposal: ScanProposal, tolerance: float) -> None:
+    """Make score diagnostics describe the proposal's current emitted point/count batch."""
+    score = (proposal.meta or {}).get("score")
+    if not isinstance(score, dict):
+        return
+    dc = float(proposal.n_points) * float(proposal.ncount)
+    method = score.get("method")
+    if method == "fisher" and proposal.score_recompute is not None:
+        score.update(proposal.score_recompute(int(proposal.ncount)))
+    sigma_prior = score.get("sigma_prior")
+    c_spent = float(score.get("c_spent") or 0.0)
+    if method in ("counts", "deficit") and sigma_prior is not None and c_spent > 0.0:
+        eig = counts_eig(float(sigma_prior), float(tolerance), c_spent, dc)
+        sigma_scan = predicted_sigma_after(float(sigma_prior), c_spent, dc)
+        classification = float(score.get("classification_eig") or 0.0)
+        combined = eig + float(score.get("classification_weight") or 0.0) * classification
+        score.update({"eig": _finite_or_none(eig),
+                      "sigma_scan": _finite_or_none(sigma_scan),
+                      "combined_information": _finite_or_none(combined)})
+    information = score.get("combined_information")
+    if information is None:
+        information = score.get("eig")
+    score["cost"] = dc
+    score["eig_per_cost"] = (None if information is None
+                             else _finite_or_none(eig_per_cost(float(information), dc)))
+
+
 def _ceil_production_ladder(exposure: float, floor: int) -> int:
     """Smallest ``floor * 2**k`` not below ``exposure`` (``k >= 0``)."""
     floor = max(int(floor), 1)
@@ -105,7 +154,8 @@ def _ceil_production_ladder(exposure: float, floor: int) -> int:
 
 
 def _count_request(gridq: GridQ, *, kind: str, n_points: int, tolerance: float,
-                   policy: dict, budget_state: dict | None) -> tuple[int, dict[str, Any]]:
+                   policy: dict, budget_state: dict | None,
+                   runtime_ncount_limit: int | None = None) -> tuple[int, dict[str, Any]]:
     """Return the next per-point count request and deterministic scaling diagnostics."""
     quicklook_floor = int(policy.get("quicklook_ncount", QUICKLOOK_NCOUNT))
     production_floor = int(policy.get("production_batch_ncount", PRODUCTION_NCOUNT))
@@ -152,6 +202,16 @@ def _count_request(gridq: GridQ, *, kind: str, n_points: int, tolerance: float,
                             "exposure_remaining": remaining})
 
     budget = dict(budget_state or {})
+    if runtime_ncount_limit is not None:
+        runtime_ncount_limit = int(runtime_ncount_limit)
+        if runtime_ncount_limit < minimum:
+            raise InstrumentLimitBelowMinimumBatch(
+                f"instrument_limit_below_minimum_batch: {runtime_ncount_limit:g} neutrons/point "
+                f"is below the {minimum:g} {kind} floor")
+        if requested > runtime_ncount_limit:
+            diagnostics["requested_before_runtime_limit"] = int(requested)
+        requested = min(requested, runtime_ncount_limit)
+        diagnostics["runtime_ncount_limit"] = runtime_ncount_limit
     if budget.get("kind") == "neutrons" and budget.get("amount") is not None:
         remaining_budget = max(float(budget["amount"]) - float(budget.get("spent", 0.0)), 0.0)
         affordable = int(math.floor(remaining_budget / max(int(n_points), 1)))
@@ -494,7 +554,9 @@ def _select_target(grid: list[GridQ], model, *,
                 sigma_scan=_finite_or_none(ss), c_spent=float(pick.counts_spent), reason=reason,
                 classification_eig=_finite_or_none(classification),
                 classification_weight=float(classification_weight),
-                combined_information=_finite_or_none(combined), purpose="target_or_classification")
+                combined_information=_finite_or_none(combined), purpose="target_or_classification",
+                ranking_cost=float(_q_next_cost(pick)),
+                ranking_ncount=getattr(fisher, "default_exposure", None))
 
     # Counts tier (5a): goal-weighted EIG-per-cost when every candidate has a cost history.
     if all(g.counts_spent > 0.0 for g in candidates):
@@ -516,7 +578,8 @@ def _select_target(grid: list[GridQ], model, *,
             c_spent=float(pick.counts_spent), reason=reason,
             classification_eig=_finite_or_none(classification),
             classification_weight=float(classification_weight),
-            combined_information=_finite_or_none(combined), purpose="target_or_classification")
+            combined_information=_finite_or_none(combined), purpose="target_or_classification",
+            ranking_cost=float(dc))
 
     pick = max(candidates, key=lambda g: g.deficit)
     deficit = pick.deficit
@@ -531,7 +594,8 @@ def _select_target(grid: list[GridQ], model, *,
 
 def propose_scan(objective, model, results_so_far: list[dict], resolution_info=None,
                  budget_state: dict | None = None, master_rows: list[dict] | None = None,
-                 fisher=None, classify=None, rival_band=None) -> ScanProposal | None:
+                 fisher=None, classify=None, rival_band=None,
+                 runtime_limits: dict | None = None) -> ScanProposal | None:
     """Propose the next scan (Q, energy window, neutron count), or ``None`` if nothing remains.
 
     Args:
@@ -560,6 +624,7 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
                 mu, _ = model.predict(g.q)
                 return (0 if mu >= DEFAULT_FWHM_MEV else 1, g.q, g.index)
     policy = dict(getattr(objective, "steering", {}) or {})
+    runtime_limits = dict(runtime_limits or {})
     classification_weight = float(policy.get("classification_weight", 0.0))
     inserted = _driver_inserted_candidate(objective, grid, results_so_far or [], classify)
     if inserted is not None:
@@ -602,19 +667,34 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
         e_pred, fwhm, e_sigma, survey=survey,
         energy_search_meV=getattr(objective, "energy_search_meV", None),
         target_band=target_band, rival_band=rb, widen=widen, positive_only=positive_only,
-        max_points=int(policy.get("max_scan_points", MAX_POINTS)))
+        max_points=min(int(policy.get("max_scan_points", MAX_POINTS)),
+                       int(runtime_limits.get("max_points", policy.get("max_scan_points", MAX_POINTS)))))
+    runtime_ncount_limit = runtime_limits.get("max_neutrons_per_point")
+    queue_budget = runtime_limits.get("queue_neutron_budget")
+    if queue_budget is not None:
+        queue_cap = int(math.floor(float(queue_budget) / max(int(n_points), 1)))
+        runtime_ncount_limit = (queue_cap if runtime_ncount_limit is None
+                                else min(int(runtime_ncount_limit), queue_cap))
     ncount, count_diagnostics = _count_request(
         pick, kind=kind, n_points=n_points, tolerance=float(objective.tolerance_meV),
-        policy=policy, budget_state=budget_state)
+        policy=policy, budget_state=budget_state,
+        runtime_ncount_limit=runtime_ncount_limit)
 
-    dc = float(n_points) * float(ncount)
-    information = score.combined_information if score.combined_information is not None else score.eig
-    epc = None if information is None else _finite_or_none(eig_per_cost(information, dc))
-    score = replace(score, cost=dc, eig_per_cost=epc)
-    threshold = float(policy.get("minimum_information_per_cost", 0.0))
-    if epc is not None and threshold > 0.0 and epc < threshold:
-        return None
-    return ScanProposal(
+    score_recompute = None
+    if score.method == "fisher" and _fisher_supports_exposure(fisher):
+        sigma_prior = score.sigma_prior
+        classification = float(score.classification_eig or 0.0)
+        score_classification_weight = float(score.classification_weight or 0.0)
+
+        def score_recompute(exposure: int) -> dict[str, float | None]:
+            sigma_scan = fisher(pick, float(e_pred), sigma_prior, int(exposure))
+            eig = fisher_eig(sigma_prior, sigma_scan)
+            combined = eig + score_classification_weight * classification
+            return {"eig": _finite_or_none(eig),
+                    "sigma_scan": _finite_or_none(sigma_scan),
+                    "combined_information": _finite_or_none(combined)}
+
+    proposal = ScanProposal(
         h=h, k=k, l=l, e_lo=e_lo, e_hi=e_hi, e_step=e_step, ncount=ncount, kind=kind,
         reason=reason, e_pred=float(e_pred), fwhm_dE=float(fwhm), n_points=n_points,
         meta={"e_sigma": _finite_or_none(e_sigma), "q": pick.q, "score": score.to_dict(),
@@ -627,4 +707,11 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
               "rival_band": list(rb) if rb is not None else None,
               "count_diagnostics": count_diagnostics,
               "budget_state": dict(budget_state) if budget_state else {}},
-    )
+        score_recompute=score_recompute)
+    normalize_proposal_score(proposal, float(objective.tolerance_meV))
+    normalized_score = proposal.meta["score"]
+    epc = normalized_score.get("eig_per_cost")
+    threshold = float(policy.get("minimum_information_per_cost", 0.0))
+    if epc is not None and threshold > 0.0 and epc < threshold:
+        return None
+    return proposal

@@ -235,3 +235,48 @@ def test_production_proposal_scored_by_counts_method():
     assert p.meta["score"]["method"] == "counts"
     assert p.meta["score"]["sigma_prior"] == pytest.approx(0.9)
     json.dumps(p.to_dict())
+
+
+def test_fisher_score_recomputes_for_runtime_clamped_exposure():
+    obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.1, step=0.1, tolerance_meV=0.5,
+                                budget={"kind": "counting_seconds", "amount": 60.0})
+    obs = [
+        {"hkl": (2.1, 0.0, 0.0), "kind": "production", "calibrated_halfwidth": 0.9,
+         "resolved": True, "disposition": "resolved", "omega0": 3.0,
+         "proposal_cost": 1e10},
+    ]
+    master = [{"hkl": (2.1, 0.0, 0.0), "omega0": 3.0, "halfwidth": 0.9,
+               "reliable": True, "usable": True, "disposition": "resolved", "n_members": 1}]
+    model = acq_model.fit([(g.q, g.best_omega0, g.best_halfwidth)
+                           for g in summarize_grid(obj, obs, master) if g.best_omega0 is not None])
+    calls = []
+
+    def fisher(_g, _w0, _sp, exposure=None):
+        actual = 400_000_000 if exposure is None else int(exposure)
+        calls.append(actual)
+        return 0.4 * math.sqrt(400_000_000 / actual)
+
+    fisher.supports_exposure = True
+    fisher.default_exposure = 400_000_000
+    p = acq.propose_scan(
+        obj, model, obs, {"fwhm_dE": 0.8}, {}, master_rows=master, fisher=fisher,
+        runtime_limits={"max_neutrons_per_point": 100_000_000})
+    score = p.meta["score"]
+    expected_sigma = 0.8
+    expected_eig = fisher_eig(0.9, expected_sigma)
+    assert calls == [400_000_000, 100_000_000]
+    assert p.ncount == 100_000_000
+    assert score["ranking_ncount"] == 400_000_000
+    assert score["sigma_scan"] == pytest.approx(expected_sigma)
+    assert score["eig"] == pytest.approx(expected_eig)
+    assert score["combined_information"] == pytest.approx(expected_eig)
+    assert score["eig_per_cost"] == pytest.approx(expected_eig / score["cost"])
+
+
+def test_bound_legacy_fisher_method_is_not_misdetected_as_exposure_aware():
+    class LegacyProvider:
+        def fisher(self, _g, _w0, _sp):
+            return 0.5
+
+    provider = LegacyProvider()
+    assert acq._fisher_supports_exposure(provider.fisher) is False

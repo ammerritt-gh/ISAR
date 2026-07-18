@@ -138,6 +138,8 @@ class ProposalScore:
     classification_weight: float = 0.0
     combined_information: float | None = None
     purpose: str | None = None
+    ranking_cost: float | None = None  # ΔC proxy used to choose the q before its window was emitted
+    ranking_ncount: int | None = None  # per-point exposure used by an exposure-aware ranking screen
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)

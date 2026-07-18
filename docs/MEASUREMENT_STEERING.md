@@ -563,6 +563,24 @@ requested branch. Clean folds may seed that branch; ambiguous forks still may no
 distinguishes branch ambiguity, no signal, and an uncertifiable interval. The active target is copied
 only into machine-owned `card.state.json`; `card.policy.toml` remains human-owned.
 
+### 7.3 Instrument-limit-aware batching (implemented, 2026-07-18)
+
+At campaign start the driver snapshots TAVI's advertised `max_points`,
+`max_neutrons_per_point`, `queue_neutron_budget`, and `max_queued` values from `/state`, then fills
+missing fields from `/schema`. Each field retains its source; only `max_points` has a legacy-safe
+fallback (200) when discovery is unavailable. The frozen objective remains human intent and keeps its
+fingerprint unchanged.
+
+Proposal generation and the final pre-validation checkpoint apply the smaller policy/instrument
+ceiling. The queue neutron budget is converted to a per-point ceiling using the emitted point count;
+it constrains one serial submission and is not charged as campaign spend. A larger statistical request
+therefore becomes repeated legal batches whose evidence is pooled. Clamps are recorded as
+`proposal_ncount_clamped_to_limit`, while a live ceiling below the applicable quicklook/production
+floor terminates explicitly as `instrument_limit_below_minimum_batch`. Campaign starts and summaries
+carry the discovered/effective envelope. Logical acquisition IDs use a separately resumed proposal
+counter, so validation refusals are distinct acquisitions while physical recenter retries still share
+one ID.
+
 ---
 
 ## 8. Open questions and risks

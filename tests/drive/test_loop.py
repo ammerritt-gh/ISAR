@@ -23,10 +23,12 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
                              _finalize_proposal, _guard_point_count,
                              _make_classification_providers, _record_eligible_crossings,
                              _master_obs_from_row, _observation_from_row, _pick_interval,
-                             _preflight_max_points, _reconcile_budget_points, _resume_state,
+                             _preflight_instrument_limits, _preflight_max_points,
+                             _reconcile_budget_points, _resume_state,
                              _run_nonce, _target_supporting_feasible_points, _validate_body,
                              run_campaign)
 from isar.drive.acquisition.acquire import ScanProposal, points_in_window
+from isar.drive.acquisition.eig import counts_eig
 from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
 from isar.drive.isar_io.scan_writer import save_scan_json
 from isar.drive.session_log import log_event, read_log
@@ -1237,6 +1239,7 @@ def test_cold_workspace_resumes_to_fresh(tmp_path):
     r = _resume_state(ws, ws / "report" / "session_log.jsonl", _UNITY_CAL)
     assert r == {"observations": [], "consumed": set(), "scan_kind": {},
                  "scan_counter": 0, "neutrons": 0.0, "seconds": 0.0,
+                 "proposal_counter": 0,
                  "unmatched_submissions": []}
 
 
@@ -1595,11 +1598,97 @@ def test_proposal_finalizer_uses_smaller_policy_cap_and_reclamps_neutron_count(t
             p, objective, cfg, {"kind": "neutrons", "amount": 99.0, "spent": 0.0}, it=4)
 
 
+def test_finalizer_composes_per_point_and_queue_limits_for_hour_budget(tmp_path):
+    p = ScanProposal(h=2.1, k=0.0, l=0.0, e_lo=0.0, e_hi=9.0, e_step=1.0,
+                     ncount=400_000_000, kind="production", reason="test", n_points=10,
+                     meta={"score": {"eig": 2.0, "cost": 4_000_000_000.0}})
+    objective = types.SimpleNamespace(steering={"max_scan_points": 20,
+                                                "production_batch_ncount": 100_000_000,
+                                                "max_ncount_per_scan": 4_000_000_000})
+    cfg = types.SimpleNamespace(
+        max_points=20, max_points_source="get_state", log_path=tmp_path / "log.jsonl",
+        instrument_limits={"max_points": 20, "max_neutrons_per_point": 150_000_000,
+                           "queue_neutron_budget": 1_000_000_000, "max_queued": 4,
+                           "sources": {"max_points": "get_state",
+                                       "max_neutrons_per_point": "get_state",
+                                       "queue_neutron_budget": "get_schema",
+                                       "max_queued": "get_schema"}})
+    _finalize_proposal(
+        p, objective, cfg, {"kind": "counting_seconds", "amount": 60.0, "spent": 0.0}, it=7)
+    assert p.ncount == 100_000_000
+    assert p.meta["score"]["cost"] == 1_000_000_000.0
+    clamp = [e["payload"] for e in read_log(cfg.log_path)
+             if (e.get("payload") or {}).get("action") == "proposal_ncount_clamped_to_limit"]
+    assert len(clamp) == 1
+    assert clamp[0]["requested_ncount"] == 400_000_000
+    assert clamp[0]["effective_ncount"] == 100_000_000
+    assert clamp[0]["n_points"] == 10
+
+    cfg.instrument_limits["queue_neutron_budget"] = 900_000_000
+    with pytest.raises(loop_mod.InstrumentLimitBelowMinimumBatch,
+                       match="instrument_limit_below_minimum_batch"):
+        _finalize_proposal(
+            p, objective, cfg, {"kind": "counting_seconds", "amount": 60.0, "spent": 0.0}, it=8)
+
+
+def test_neutron_affordability_clamp_renormalizes_score(tmp_path):
+    p = ScanProposal(
+        h=2.1, k=0.0, l=0.0, e_lo=0.0, e_hi=9.0, e_step=1.0,
+        ncount=400, kind="production", reason="test", n_points=10,
+        meta={"score": {"method": "counts", "sigma_prior": 1.0, "c_spent": 1_000.0,
+                         "classification_eig": 0.0, "classification_weight": 0.0,
+                         "eig": 0.1, "combined_information": 0.1,
+                         "cost": 4_000.0, "eig_per_cost": 0.1 / 4_000.0}})
+    objective = types.SimpleNamespace(
+        tolerance_meV=0.5,
+        steering={"max_scan_points": 20, "production_batch_ncount": 10,
+                  "max_ncount_per_scan": 1_000})
+    cfg = types.SimpleNamespace(max_points=20, max_points_source="default",
+                                instrument_limits=None, log_path=tmp_path / "log.jsonl")
+    _finalize_proposal(
+        p, objective, cfg, {"kind": "neutrons", "amount": 1_000.0, "spent": 0.0}, it=1)
+    score = p.meta["score"]
+    expected_eig = counts_eig(1.0, 0.5, 1_000.0, 1_000.0)
+    assert p.ncount == 100
+    assert score["cost"] == 1_000.0
+    assert score["eig"] == pytest.approx(expected_eig)
+    assert score["sigma_scan"] == pytest.approx(math.sqrt(0.5))
+    assert score["eig_per_cost"] == pytest.approx(expected_eig / 1_000.0)
+
+
 def test_preflight_reads_limit_from_state_limits_dict():
     class _C:
         def get_state(self):
             return {"mode": "allow", "busy": False, "limits": {"max_points": 128}}
     assert _preflight_max_points(_C()) == (128, "get_state")
+
+
+def test_preflight_resolves_each_limit_from_state_then_schema():
+    class _C:
+        def get_state(self):
+            return {"limits": {"max_points": 37, "max_neutrons_per_point": 100_000_000,
+                               "queue_neutron_budget": "malformed"}}
+
+        def get_schema(self):
+            return {"limits": {"max_points": 99, "queue_neutron_budget": 1_000_000_000,
+                               "max_queued": 4}}
+
+    snapshot = _preflight_instrument_limits(_C())
+    assert snapshot == {
+        "max_points": 37, "max_neutrons_per_point": 100_000_000,
+        "queue_neutron_budget": 1_000_000_000, "max_queued": 4,
+        "sources": {"max_points": "get_state", "max_neutrons_per_point": "get_state",
+                    "queue_neutron_budget": "get_schema", "max_queued": "get_schema"}}
+
+
+def test_resume_restores_logical_proposal_counter_without_submissions(tmp_path):
+    ws = tmp_path / "ws"
+    log = ws / "report" / "session_log.jsonl"
+    log_event(log, "propose", {"acquisition_id": "nonce:00000000"})
+    log_event(log, "propose", {"acquisition_id": "nonce:00000001"})
+    resumed = _resume_state(ws, log, _UNITY_CAL)
+    assert resumed["proposal_counter"] == 2
+    assert resumed["scan_counter"] == 0
 
 
 def test_preflight_reads_top_level_limit_key():
@@ -1633,6 +1722,10 @@ def test_extract_max_points_ignores_non_positive_and_bool():
     assert _extract_max_points({"max_points": 0}) is None
     assert _extract_max_points({"max_points": True}) is None      # bool is not a real limit
     assert _extract_max_points({"max_points": 200}) == 200
+    assert _extract_max_points({"max_points": 0.5}) is None
+    assert _extract_max_points({"max_points": 1.2}) is None
+    assert _extract_max_points({"max_points": 1.0}) == 1
+    assert _extract_max_points({"max_points": 1e8}) == 100_000_000
     assert _extract_max_points("nope") is None
 
 
@@ -1650,6 +1743,78 @@ class _StateTavi(MockTavi):
     def submit_scan(self, body, idempotency_key=None):
         self.submitted_cmds.append(body["parameters"]["scan_command1"])
         return super().submit_scan(body, idempotency_key=idempotency_key)
+
+
+class _NcountLimitedTavi(MockTavi):
+    def __init__(self, omega):
+        super().__init__(omega)
+        self.validated_ncounts = []
+        self.submitted_ncounts = []
+
+    def get_state(self):
+        return {"limits": {"max_points": 200,
+                           "max_neutrons_per_point": 100_000_000,
+                           "queue_neutron_budget": 20_000_000_000,
+                           "max_queued": 4}}
+
+    def validate(self, body):
+        self.validated_ncounts.append(body["parameters"]["number_neutrons"])
+        return super().validate(body)
+
+    def submit_scan(self, body, idempotency_key=None):
+        self.submitted_ncounts.append(body["parameters"]["number_neutrons"])
+        return super().submit_scan(body, idempotency_key=idempotency_key)
+
+
+def test_campaign_clamps_dynamic_400m_batch_and_publishes_limit_envelope(
+        tmp_path, monkeypatch):
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _NcountLimitedTavi(omega)
+
+    def desired_400m(*_args, **_kwargs):
+        return ScanProposal(
+            h=2.1, k=0.0, l=0.0, e_lo=-2.0, e_hi=7.0, e_step=0.1,
+            ncount=400_000_000, kind="production", reason="dynamic tolerance request",
+            e_pred=0.2, n_points=91,
+            meta={"score": {"method": "deficit", "cost": 36_400_000_000.0},
+                  "count_diagnostics": {"dynamic_ncount": True,
+                                        "requested_before_runtime_limit": 400_000_000}})
+
+    monkeypatch.setattr(loop_mod, "propose_scan", desired_400m)
+    summary, _ws = _run(
+        tmp_path, _objective(), client, make_mock_runner(omega), max_iters=1)
+    assert client.validated_ncounts == [100_000_000]
+    assert client.submitted_ncounts == [100_000_000]
+    events = read_log(summary["session_log"])
+    start = next(e["payload"] for e in events
+                 if (e.get("payload") or {}).get("action") == "campaign_start")
+    assert start["instrument_limits"]["discovered"]["max_neutrons_per_point"] == 100_000_000
+    assert summary["instrument_limits"] == start["instrument_limits"]
+    clamps = [e["payload"] for e in events
+              if (e.get("payload") or {}).get("action") == "proposal_ncount_clamped_to_limit"]
+    assert len(clamps) == 1
+    assert clamps[0]["requested_ncount"] == 400_000_000
+    assert clamps[0]["effective_ncount"] == 100_000_000
+
+
+class _RejectingTavi(MockTavi):
+    def validate(self, body):
+        return {"would_queue": False, "blockers": ["unknown refusal"],
+                "requested_points": _cmd_points(body["parameters"]["scan_command1"]),
+                "feasible_points": _cmd_points(body["parameters"]["scan_command1"])}
+
+
+def test_validation_refusals_use_distinct_logical_acquisitions(tmp_path):
+    client = _RejectingTavi()
+    summary, _ws = _run(
+        tmp_path, _objective(), client, make_mock_runner(lambda h: (h - 2.0) * 2.0),
+        max_iters=20)
+    proposals = [e["payload"] for e in read_log(summary["session_log"])
+                 if e["kind"] == "propose"]
+    # Four requested q values, each abandoned after three distinct refusals (12), not max_iters (20).
+    assert len(proposals) == 12
+    assert len({proposal["acquisition_id"] for proposal in proposals}) == 12
+    assert client.n == 0
 
 
 def _cmd_points(cmd):
