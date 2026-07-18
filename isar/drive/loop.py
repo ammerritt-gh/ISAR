@@ -32,7 +32,12 @@ import uuid
 import numpy as np
 
 from isar.drive.acquisition import model as acq_model
-from isar.drive.acquisition.acquire import MAX_POINTS, points_in_window, propose_scan
+from isar.drive.acquisition.acquire import (
+    MAX_POINTS,
+    BudgetInsufficientForMinimumBatch,
+    points_in_window,
+    propose_scan,
+)
 from isar.drive.acquisition.calibration import Calibration, load_calibration
 from isar.drive.instrument.tavi_client import TaviClient, TaviError
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
@@ -446,9 +451,25 @@ def _calibrated_hw(row: dict, calibration: Calibration, bucket: str) -> float | 
         return None
 
 
+def _effective_exposure_bucket(row: dict, submitted_ncount: int) -> tuple[str, float, str]:
+    """Deterministic calibration/steering exposure key with a submitted-count fallback."""
+    value = row.get("effective_exposure")
+    if value is None:
+        fallback = float(submitted_ncount)
+        return str(int(round(fallback))), fallback, "submitted_ncount"
+    try:
+        exposure = float(value)
+    except (TypeError, ValueError):
+        return "invalid", 0.0, "invalid_effective_exposure"
+    if math.isfinite(exposure) and exposure > 0.0:
+        return str(int(round(exposure))), exposure, "effective_exposure"
+    return "invalid", exposure, "invalid_effective_exposure"
+
+
 def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibration,
                           proposal_cost: float = 0.0, *, driver_inserted: bool = False,
-                          certification_eligible: bool = True) -> dict:
+                          certification_eligible: bool = True,
+                          acquisition_id: str | None = None) -> dict:
     disp = row.get("disposition")
     verdict = row.get("verdict")
     # `flagged` (model_incomplete) still carries a usable ω₀ — for an ω₀-tolerance objective the flag
@@ -460,8 +481,9 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
     # S3 third state: a usable delivery with no certifiable interval. Classify WHY (γ-at-bound vs
     # fast-tier-only) so the stop taxonomy can name it; only meaningful for a usable, uncertifiable fit.
     uncertifiable_kind = _uncertifiable_kind(row) if (usable and not certifiable) else None
+    bucket, effective_exposure, exposure_source = _effective_exposure_bucket(row, ncount)
     if usable and ok:
-        hw = _calibrated_hw(row, calibration, str(ncount))
+        hw = _calibrated_hw(row, calibration, bucket)
     elif usable and kind == "quicklook":
         # Cheap-tier quicklooks carry only a HESSE omega0_err (no bootstrap interval). Good enough to
         # SEED the ω(q) acquisition model (steering only); it never reaches the stop rule, which
@@ -470,7 +492,7 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         if err is not None and w0 is not None and float(err) > 0:
             try:
                 hw = calibration.calibrated_halfwidth(float(w0) - float(err), float(w0) + float(err),
-                                                      bucket=str(ncount))
+                                                      bucket=bucket)
             except Exception:   # noqa: BLE001
                 hw = None
     return {
@@ -480,6 +502,9 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         "certifiable": certifiable, "uncertifiable_kind": uncertifiable_kind,
         "omega0": row.get("omega0"), "scan": row.get("scan"), "detector": row.get("detector"),
         "proposal_cost": float(proposal_cost), "fit_kind": row.get("fit_kind"),
+        "submitted_ncount": int(ncount), "acquisition_id": acquisition_id,
+        "effective_exposure": effective_exposure, "exposure_source": exposure_source,
+        "exposure_bucket": bucket,
         "branch_id": row.get("branch_id"),   # Phase A: only acoustic (or null) rows steer ω(q)
         # Driver-inserted probes inform branch classification but never occupy a requested grid point
         # or contribute to its production/certification counters.  Persisted run-event provenance
@@ -493,7 +518,9 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
     """A master (pooled) fit → the convergence observation for its q. The calibrated half-width uses
     the reliable interval (profile when the bootstrap is Γ-at-bound) at the production count bucket."""
     ok = _pick_interval(row)[2]
-    hw = _calibrated_hw(row, calibration, str(PRODUCTION_NCOUNT))
+    bucket, effective_exposure, exposure_source = _effective_exposure_bucket(
+        row, PRODUCTION_NCOUNT)
+    hw = _calibrated_hw(row, calibration, bucket)
     disp = row.get("disposition")
     return {
         "hkl": _row_hkl(row), "omega0": row.get("omega0"), "halfwidth": hw,
@@ -502,6 +529,8 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         "reliable": bool(ok), "certifiable": _is_certifiable(row, ok),
         "usable": (disp in _USABLE and row.get("omega0") is not None),
         "disposition": disp, "n_members": row.get("n_members"),
+        "effective_exposure": effective_exposure, "exposure_source": exposure_source,
+        "exposure_bucket": bucket,
         # Chain of custody: the member scan labels behind this pooled value (readers coerce the CSV
         # cell to a list). members_field_present distinguishes "old results.csv lacked the column"
         # (guard skipped) from "column present but empty" (guard fires).
@@ -968,6 +997,8 @@ def _declined_observation(proposal, verdict: str) -> dict:
     return {"hkl": (proposal.h, proposal.k, proposal.l), "kind": proposal.kind,
             "calibrated_halfwidth": None, "resolved": False, "disposition": "declined",
             "verdict": verdict, "omega0": None,
+            "submitted_ncount": int(proposal.ncount),
+            "acquisition_id": proposal.acquisition_id,
             "driver_inserted": bool(meta.get("driver_inserted", False)),
             "certification_eligible": bool(meta.get("certification_eligible", True))}
 
@@ -1109,20 +1140,22 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         _charge_budget(budget_state, proposal, eta, n_points=feasible_points)
         # The run event doubles as the durable SPEND LEDGER for crash resume: kind/ncount/n_points/
         # hkl + the charged cost (= n_points×ncount) let a restart recover budget + scan_counter.
-        log_event(log_path, "run", {"job_id": job_id, "state": submit.get("state"),
-                                    "eta": submit.get("eta"), "attempt": attempt,
-                                    "kind": proposal.kind, "ncount": int(proposal.ncount),
-                                    "requested_points": int(proposal.n_points or 0),
-                                    "n_points": feasible_points,
-                                    "hkl": [proposal.h, proposal.k, proposal.l],
-                                    "driver_inserted": bool((proposal.meta or {}).get(
-                                        "driver_inserted", False)),
-                                    "certification_eligible": bool((proposal.meta or {}).get(
-                                        "certification_eligible", True)),
-                                    "insertion_purpose": (proposal.meta or {}).get(
-                                        "insertion_purpose"),
-                                    "cost": float(feasible_points) * float(proposal.ncount),
-                                    "iter": it})
+        submission_payload = {
+            "job_id": job_id, "state": submit.get("state"), "eta": submit.get("eta"),
+            "attempt": attempt, "acquisition_id": proposal.acquisition_id,
+            "kind": proposal.kind, "ncount": int(proposal.ncount),
+            "submitted_ncount": int(proposal.ncount),
+            "requested_points": int(proposal.n_points or 0), "n_points": feasible_points,
+            "hkl": [proposal.h, proposal.k, proposal.l],
+            "acquisition_target_energy": float(proposal.e_pred),
+            "driver_inserted": bool((proposal.meta or {}).get("driver_inserted", False)),
+            "certification_eligible": bool((proposal.meta or {}).get(
+                "certification_eligible", True)),
+            "insertion_purpose": (proposal.meta or {}).get("insertion_purpose"),
+            "cost": float(feasible_points) * float(proposal.ncount), "iter": it,
+        }
+        log_event(log_path, "run", submission_payload)
+        log_event(log_path, "physical_submission", submission_payload)
 
         with timed(log_path, "wait_scan", iteration=it, job_id=job_id) as _m:
             snap = client.wait_scan(job_id, timeout=cfg.wait_timeout)
@@ -1196,7 +1229,8 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                     proposal_cost=scan_cost if j == 0 else 0.0,
                     driver_inserted=bool((proposal.meta or {}).get("driver_inserted", False)),
                     certification_eligible=bool((proposal.meta or {}).get(
-                        "certification_eligible", True))))
+                        "certification_eligible", True)),
+                    acquisition_id=proposal.acquisition_id))
                 scan_kind[(r.get("scan"), r.get("detector"))] = (proposal.kind, proposal.ncount)
             _m["n_rows"] = len(rows)
         # Embed the subprocess stage-timing snapshot (best-effort) + the folded rows' outcomes.
@@ -1458,11 +1492,25 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     classify, rival_band = _make_classification_providers(
                         durable_state, objective, cfg.resolution_cb)
                 with timed(cfg.log_path, "propose", iteration=it):
-                    proposal = propose_scan(objective, model, observations, cfg.resolution_cb, budget_state,
-                                            master_rows=master_rows, fisher=fisher,
-                                            classify=classify, rival_band=rival_band)
+                    try:
+                        proposal = propose_scan(
+                            objective, model, observations, cfg.resolution_cb, budget_state,
+                            master_rows=master_rows, fisher=fisher,
+                            classify=classify, rival_band=rival_band)
+                    except BudgetInsufficientForMinimumBatch as error:
+                        log_event(cfg.log_path, "exception", {
+                            "action": "budget_insufficient_for_minimum_batch",
+                            "error": str(error), "iter": it})
+                        decision = StopDecision(
+                            "unmeetable", [str(error)],
+                            evaluate_stop(objective, grid, budget_state,
+                                          calibration=cfg.calibration, floor=cfg.floor).per_q)
+                        proposal = None
                 if proposal is None:
-                    decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
+                    if decision is None or decision.state == "continue":
+                        decision = evaluate_stop(
+                            objective, grid, budget_state,
+                            calibration=cfg.calibration, floor=cfg.floor)
                     threshold = float((getattr(objective, "steering", None) or {}).get(
                         "minimum_information_per_cost", 0.0))
                     if decision.state == "continue" and threshold > 0.0:
@@ -1471,6 +1519,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                             [f"best available marginal information/cost is below {threshold:g}"],
                             decision.per_q)
                     break
+                proposal.acquisition_id = (proposal.acquisition_id
+                                           or f"{cfg.run_nonce}:{scan_counter:08d}")
                 log_event(cfg.log_path, "propose", {**proposal.to_dict(), "iter": it})
 
                 b_act = exc.handle_budget(budget_state)
@@ -1551,7 +1601,15 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             # the top of the last iteration, so a campaign that exhausts max_iters (or breaks on budget)
             # would otherwise report a stale pre-scan verdict in the summary.
             master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
-            decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
+            final_decision = evaluate_stop(
+                objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
+            # A prospective neutron-budget refusal occurs before spend reaches the nominal amount; a
+            # plain final budget evaluation therefore still says "continue". Preserve that terminal
+            # decision while retaining ordinary recomputation for every measured-scan exit path.
+            if not (decision is not None and decision.state == "unmeetable"
+                    and any("budget_insufficient_for_minimum_batch" in reason
+                            for reason in decision.reasons)):
+                decision = final_decision
             if ran_certify and decision.state != "met":
                 log_event(cfg.log_path, "exception",
                           {"action": "certify_regression", "state": decision.state,

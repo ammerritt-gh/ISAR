@@ -111,8 +111,13 @@ class ObjectiveSpec:
             names = {str(h.get("name")) for h in self.hypotheses}
             if not self.target_hypothesis or self.target_hypothesis not in names:
                 raise ValueError("target_hypothesis must name one of the frozen hypotheses")
-            policy = SteeringPolicy(**self.steering)
-            self.steering = policy.to_dict()
+            supplied_steering = dict(self.steering)
+            policy = SteeringPolicy(**supplied_steering)
+            # v2 objective snapshots created before dynamic counting contain the complete old policy
+            # dictionary and its fingerprint.  Validate those values without expanding the dictionary;
+            # newly compiled objectives explicitly carry dynamic_ncount and freeze the complete policy.
+            self.steering = (policy.to_dict() if "dynamic_ncount" in supplied_steering
+                             else supplied_steering)
             expected = content_fingerprint(self.hypotheses, self.steering)
             if self.hypothesis_fingerprint is not None and self.hypothesis_fingerprint != expected:
                 raise ValueError("hypothesis_fingerprint does not match the frozen hypothesis snapshot")
@@ -242,7 +247,7 @@ def shipped_hypothesis_snapshot(target_branch: str, energy_search_meV) -> dict[s
     energy = tuple(energy_search_meV or ((-2.0, 12.0) if target_branch == "optic" else (-2.0, 7.0)))
     names = [target_branch] + [name for name in ("acoustic", "optic") if name != target_branch]
     hypotheses = [preset(name, energy).to_dict() for name in names]
-    steering = SteeringPolicy().to_dict()
+    steering = SteeringPolicy(dynamic_ncount=True).to_dict()
     return {"hypotheses": hypotheses, "target_hypothesis": target_branch,
             "hypothesis_source": "shipped_preset",
             "hypothesis_fingerprint": content_fingerprint(hypotheses, steering),
@@ -275,7 +280,8 @@ def resolve_hypothesis_snapshot(target_branch: str, energy_search_meV, *,
     hypotheses = [resolve_hypothesis(
         name, declarations.get(name), energy_search_meV=energy).to_dict()
         for name in ordered_names]
-    steering = SteeringPolicy(**dict(steering_override or {})).to_dict()
+    steering_values = {"dynamic_ncount": True, **dict(steering_override or {})}
+    steering = SteeringPolicy(**steering_values).to_dict()
     return {"hypotheses": hypotheses, "target_hypothesis": target_branch,
             "hypothesis_source": source,
             "hypothesis_fingerprint": content_fingerprint(hypotheses, steering),

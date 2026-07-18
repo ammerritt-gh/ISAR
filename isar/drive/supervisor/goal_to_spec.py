@@ -92,6 +92,13 @@ FILE_SPEC_SCHEMA["properties"]["steering"] = {
         "quicklook_ncount": {"type": "integer"},
         "production_batch_ncount": {"type": "integer"},
         "maximum_production_batches_per_q": {"type": "integer"},
+        "dynamic_ncount": {"type": "boolean"},
+        "max_ncount_per_scan": {"type": "integer"},
+        "ncount_growth_cap": {"type": "number"},
+        "tolerance_margin": {"type": "number"},
+        "interval_floor_window": {"type": "integer"},
+        "interval_floor_min_improvement": {"type": "number"},
+        "interval_floor_min_exposure_ratio": {"type": "number"},
     },
 }
 # Compatibility alias for callers/tests that imported the original public name.

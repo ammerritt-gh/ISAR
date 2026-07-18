@@ -358,6 +358,16 @@ def test_observation_reliable_bootstrap_is_certifiable():
     assert o["certifiable"] is True and o["uncertifiable_kind"] is None
 
 
+def test_invalid_effective_exposure_is_not_replaced_by_submitted_ncount():
+    o = _observation_from_row(
+        _urow(interval_lo=4.9, interval_hi=5.1, interval_reliable=True,
+              effective_exposure=0.0),
+        "production", PRODUCTION_NCOUNT, _UNITY_CAL)
+    assert o["effective_exposure"] == 0.0
+    assert o["exposure_source"] == "invalid_effective_exposure"
+    assert o["exposure_bucket"] == "invalid"
+
+
 def test_observation_gamma_at_bound_is_uncertifiable():
     # interval_reliable=False with a profile fallback: _pick_interval says ok, but the flag makes it
     # uncertifiable — it must not seat convergence (the mid-zone hole).
@@ -800,6 +810,14 @@ def test_missed_window_triggers_recenter(tmp_path):
     recenters = [e for e in events if e["kind"] == "exception"
                  and e["payload"].get("action") == "recenter"]
     assert recenters, "a missed window should have logged a recenter action"
+    submissions = [e["payload"] for e in events if e["kind"] == "physical_submission"]
+    assert submissions
+    by_acquisition = {}
+    for submission in submissions:
+        by_acquisition.setdefault(submission["acquisition_id"], []).append(submission)
+    retried = next(group for group in by_acquisition.values() if len(group) > 1)
+    assert [item["attempt"] for item in retried[:2]] == [0, 1]
+    assert all(item["submitted_ncount"] == item["ncount"] for item in submissions)
 
 
 # --------------------------------------------------------------------------- escalate_fit logging

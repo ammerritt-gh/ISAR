@@ -123,6 +123,7 @@ def test_file_schema_accepts_operator_steering_but_llm_schema_does_not():
     assert not g2s._conforms(payload, g2s.LLM_GOAL_SCHEMA)
     spec = g2s.spec_from_dict(payload)
     assert spec.steering["quicklook_ncount"] == 50_000_000
+    assert spec.steering["dynamic_ncount"] is True
 
 
 def test_hypothesis_resolution_precedence_goal_then_card_then_shipped():

@@ -2,6 +2,7 @@
 import pytest
 
 from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
+from isar.schema.hypotheses import SteeringPolicy, content_fingerprint
 
 
 def _spec():
@@ -149,3 +150,23 @@ def test_frozen_hypothesis_snapshot_round_trips_and_detects_tampering():
     tampered["hypotheses"][0]["confidence"] = 0.01
     with pytest.raises(ValueError, match="fingerprint"):
         ObjectiveSpec.from_dict(tampered)
+
+
+def test_new_snapshots_enable_dynamic_counting_but_legacy_fingerprint_stays_exact():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    assert frozen["steering"]["dynamic_ncount"] is True
+
+    old_policy = SteeringPolicy().to_dict()
+    for key in ("dynamic_ncount", "max_ncount_per_scan", "ncount_growth_cap",
+                "tolerance_margin", "interval_floor_window",
+                "interval_floor_min_improvement", "interval_floor_min_exposure_ratio"):
+        old_policy.pop(key)
+    old_fingerprint = content_fingerprint(frozen["hypotheses"], old_policy)
+    legacy = ObjectiveSpec(
+        path=[(2, 0, 0)], tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1}, target_branch="optic",
+        hypotheses=frozen["hypotheses"], target_hypothesis="optic",
+        hypothesis_source="shipped_preset", hypothesis_fingerprint=old_fingerprint,
+        steering=old_policy)
+    assert legacy.hypothesis_fingerprint == old_fingerprint
+    assert legacy.steering == old_policy

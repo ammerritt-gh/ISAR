@@ -94,6 +94,13 @@ class SteeringPolicy:
     quicklook_ncount: int = 10_000_000
     production_batch_ncount: int = 25_000_000
     maximum_production_batches_per_q: int = 12
+    dynamic_ncount: bool = False
+    max_ncount_per_scan: int = 4_000_000_000
+    ncount_growth_cap: float = 4.0
+    tolerance_margin: float = 0.8
+    interval_floor_window: int = 3
+    interval_floor_min_improvement: float = 0.05
+    interval_floor_min_exposure_ratio: float = 2.0
 
     def __post_init__(self) -> None:
         if float(self.classification_weight) < 0.0:
@@ -114,6 +121,18 @@ class SteeringPolicy:
             raise ValueError("count batches must be positive")
         if int(self.maximum_production_batches_per_q) < 2:
             raise ValueError("maximum_production_batches_per_q must be at least two")
+        if int(self.max_ncount_per_scan) < int(self.production_batch_ncount):
+            raise ValueError("max_ncount_per_scan must be at least the production batch floor")
+        if float(self.ncount_growth_cap) < 1.0:
+            raise ValueError("ncount_growth_cap must be at least one")
+        if not 0.0 < float(self.tolerance_margin) <= 1.0:
+            raise ValueError("tolerance_margin must be in (0, 1]")
+        if int(self.interval_floor_window) < 3:
+            raise ValueError("interval_floor_window must be at least three")
+        if not 0.0 <= float(self.interval_floor_min_improvement) < 1.0:
+            raise ValueError("interval_floor_min_improvement must be in [0, 1)")
+        if float(self.interval_floor_min_exposure_ratio) <= 1.0:
+            raise ValueError("interval_floor_min_exposure_ratio must exceed one")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

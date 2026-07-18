@@ -138,11 +138,12 @@ def test_uncertifiable_delivery_is_third_state_then_stuck():
     # and the why-string names γ-at-bound / uncertifiable, NOT "no signal".
     obj = _obj()
     obs = [_obs((2.1, 0.0, 0.0), "production", 0.001, disp="flagged",
-                certifiable=False, uncertifiable_kind="gamma_at_bound") for _ in range(st.MAX_DECLINES)]
+                certifiable=False, uncertifiable_kind="gamma_at_bound")
+           for _ in range(st.MAX_PROD_ATTEMPTS)]
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]   # the other three converge
     grid = st.summarize_grid(obj, obs, masters)
     g0 = grid[0]
-    assert g0.n_decline == 0 and g0.n_uncertifiable == st.MAX_DECLINES
+    assert g0.n_decline == 0 and g0.n_uncertifiable == st.MAX_PROD_ATTEMPTS
     assert not g0.converged and g0.stuck and g0.stuck_reason == "uncertifiable_interval"
     d = st.evaluate_stop(obj, grid, _BUDGET)
     assert d.state == "unmeetable"
@@ -167,7 +168,8 @@ def test_fast_tier_only_stuck_reason():
     # A q whose fits never left the untrusted fast tier → stuck with reason fast_tier_only.
     obj = _obj()
     obs = [_obs((2.1, 0.0, 0.0), "production", None, disp="resolved",
-                certifiable=False, uncertifiable_kind="fast_tier") for _ in range(st.MAX_DECLINES)]
+                certifiable=False, uncertifiable_kind="fast_tier")
+           for _ in range(st.MAX_PROD_ATTEMPTS)]
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
     assert grid[0].stuck and grid[0].stuck_reason == "fast_tier_only"
@@ -197,10 +199,10 @@ def test_unmodeled_declines_is_signal_unmodeled():
     # `signal_unmodeled` (a model problem), never `no_signal`.
     obj = _obj()
     obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="unmodeled")
-           for _ in range(st.MAX_DECLINES)]
+           for _ in range(st.MAX_PROD_ATTEMPTS)]
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
-    assert grid[0].n_unmodeled == st.MAX_DECLINES
+    assert grid[0].n_unmodeled == st.MAX_PROD_ATTEMPTS
     assert grid[0].stuck and grid[0].stuck_reason == "signal_unmodeled"
     d = st.evaluate_stop(obj, grid, _BUDGET)
     joined = " ".join(d.reasons).lower()
@@ -252,7 +254,7 @@ def test_optic_objective_certifies_only_optic_observations_and_master():
 def test_branch_continuation_reports_branch_ambiguity_not_no_signal():
     obj = _obj()
     obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False,
-                disp="branch_continuation") for _ in range(st.MAX_DECLINES)]
+                disp="branch_continuation") for _ in range(st.MAX_PROD_ATTEMPTS)]
     for row in obs:
         row["verdict"] = "branch_continuation"
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
@@ -261,6 +263,32 @@ def test_branch_continuation_reports_branch_ambiguity_not_no_signal():
     decision = st.evaluate_stop(obj, grid, _BUDGET)
     joined = " ".join(decision.reasons).lower()
     assert "branch ambiguity" in joined and "no-signal" in joined
+
+
+def test_recenter_rows_share_one_logical_attempt_and_one_decline():
+    obj = _obj()
+    obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
+           for _ in range(3)]
+    for row in obs:
+        row.update({"acquisition_id": "A1", "submitted_ncount": 100,
+                    "proposal_cost": 1_000.0})
+    grid = st.summarize_grid(obj, obs)
+    assert grid[0].n_production == 1
+    assert grid[0].n_decline == 1
+    assert grid[0].counts_spent == pytest.approx(3_000.0)
+    assert grid[0].submitted_exposure == pytest.approx(300.0)
+
+
+def test_successful_recenter_resolves_its_logical_acquisition():
+    obj = _obj()
+    missed = _obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
+    found = _obs((2.1, 0.0, 0.0), "production", 0.4, resolved=True, disp="resolved")
+    for row in (missed, found):
+        row["acquisition_id"] = "A1"
+    grid = st.summarize_grid(obj, [missed, found])
+    assert grid[0].n_production == 1
+    assert grid[0].n_decline == 0
+    assert grid[0].best_omega0 is not None
 
 
 def test_master_over_tolerance_keeps_accumulating():

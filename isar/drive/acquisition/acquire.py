@@ -74,6 +74,7 @@ class ScanProposal:
     e_pred: float = 0.0
     fwhm_dE: float = 0.0
     n_points: int = 0
+    acquisition_id: str | None = None
     meta: dict[str, Any] = field(default_factory=dict)
 
     def scan_command(self) -> str:
@@ -85,8 +86,82 @@ class ScanProposal:
             "hkl": [self.h, self.k, self.l], "e_lo": self.e_lo, "e_hi": self.e_hi,
             "e_step": self.e_step, "ncount": self.ncount, "kind": self.kind, "reason": self.reason,
             "e_pred": self.e_pred, "fwhm_dE": self.fwhm_dE, "n_points": self.n_points,
+            "acquisition_id": self.acquisition_id,
             "scan_command": self.scan_command(), "meta": dict(self.meta),
         }
+
+
+class BudgetInsufficientForMinimumBatch(ValueError):
+    """The remaining neutron budget cannot fund one policy-floor scan."""
+
+
+def _ceil_production_ladder(exposure: float, floor: int) -> int:
+    """Smallest ``floor * 2**k`` not below ``exposure`` (``k >= 0``)."""
+    floor = max(int(floor), 1)
+    exposure = max(float(exposure), float(floor))
+    if exposure <= floor:
+        return floor
+    return floor * (2 ** int(math.ceil(math.log2(exposure / floor))))
+
+
+def _count_request(gridq: GridQ, *, kind: str, n_points: int, tolerance: float,
+                   policy: dict, budget_state: dict | None) -> tuple[int, dict[str, Any]]:
+    """Return the next per-point count request and deterministic scaling diagnostics."""
+    quicklook_floor = int(policy.get("quicklook_ncount", QUICKLOOK_NCOUNT))
+    production_floor = int(policy.get("production_batch_ncount", PRODUCTION_NCOUNT))
+    dynamic = bool(policy.get("dynamic_ncount", False))
+    diagnostics: dict[str, Any] = {"dynamic_ncount": dynamic, "exposure_required": None,
+                                   "exposure_current": None, "exposure_remaining": None}
+    if kind == "quicklook":
+        requested = quicklook_floor
+        minimum = quicklook_floor
+    elif not dynamic:
+        requested = production_floor
+        minimum = production_floor
+    else:
+        master = gridq.master or {}
+        halfwidth = master.get("diagnostic_halfwidth", master.get("halfwidth"))
+        if halfwidth is None:
+            halfwidth = gridq.cert_halfwidth if gridq.cert_halfwidth is not None else gridq.best_halfwidth
+        current = master.get("effective_exposure")
+        if current is None:
+            current = gridq.submitted_exposure
+        try:
+            current = float(current)
+        except (TypeError, ValueError):
+            current = 0.0
+        if not math.isfinite(current) or current <= 0.0:
+            current = 0.0
+        # No interval yet: quicklook is attempt one, the production floor attempt two, and the final
+        # generic no-signal attempt grows geometrically. Once an interval exists, tolerance scaling
+        # below replaces this fallback with the authoritative remainder calculation.
+        remaining = float(production_floor * (2 ** max(int(gridq.n_production), 0)))
+        required = None
+        if halfwidth is not None and math.isfinite(float(halfwidth)) and current > 0.0:
+            margin = float(policy.get("tolerance_margin", 0.8))
+            required = current * (float(halfwidth) / (margin * float(tolerance))) ** 2
+            remaining = max(required - current, 0.0)
+        requested = _ceil_production_ladder(remaining, production_floor)
+        previous = int(gridq.last_submitted_ncount or production_floor)
+        requested = min(requested,
+                        int(math.floor(previous * float(policy.get("ncount_growth_cap", 4.0)))),
+                        int(policy.get("max_ncount_per_scan", 4_000_000_000)))
+        requested = max(requested, production_floor)
+        minimum = production_floor
+        diagnostics.update({"exposure_required": required, "exposure_current": current,
+                            "exposure_remaining": remaining})
+
+    budget = dict(budget_state or {})
+    if budget.get("kind") == "neutrons" and budget.get("amount") is not None:
+        remaining_budget = max(float(budget["amount"]) - float(budget.get("spent", 0.0)), 0.0)
+        affordable = int(math.floor(remaining_budget / max(int(n_points), 1)))
+        if affordable < minimum:
+            raise BudgetInsufficientForMinimumBatch(
+                f"budget_insufficient_for_minimum_batch: need {minimum * max(int(n_points), 1):g} "
+                f"neutrons, have {remaining_budget:g}")
+        requested = min(requested, affordable)
+        diagnostics["neutron_budget_clamp"] = affordable
+    return int(requested), diagnostics
 
 
 def _resolve_fwhm(resolution_info, h: float, k: float, l: float, deltaE: float) -> float:
@@ -462,8 +537,9 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
         energy_search_meV=getattr(objective, "energy_search_meV", None),
         target_band=target_band, rival_band=rb, widen=widen, positive_only=positive_only,
         max_points=int(policy.get("max_scan_points", MAX_POINTS)))
-    ncount = (int(policy.get("quicklook_ncount", QUICKLOOK_NCOUNT)) if kind == "quicklook" else
-              int(policy.get("production_batch_ncount", PRODUCTION_NCOUNT)))
+    ncount, count_diagnostics = _count_request(
+        pick, kind=kind, n_points=n_points, tolerance=float(objective.tolerance_meV),
+        policy=policy, budget_state=budget_state)
 
     dc = float(n_points) * float(ncount)
     information = score.combined_information if score.combined_information is not None else score.eig
@@ -483,5 +559,6 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
               "max_scan_points": int(policy.get("max_scan_points", MAX_POINTS)),
               "target_band": list(target_band) if target_band is not None else None,
               "rival_band": list(rb) if rb is not None else None,
+              "count_diagnostics": count_diagnostics,
               "budget_state": dict(budget_state) if budget_state else {}},
     )

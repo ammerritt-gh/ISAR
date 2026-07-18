@@ -52,6 +52,101 @@ def test_picks_worst_deficit_q_for_production():
     assert p.kind == "production" and p.ncount == acq.PRODUCTION_NCOUNT
 
 
+def test_dynamic_count_request_uses_remainder_ladder_growth_and_scan_cap():
+    g = acq.GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
+                  last_submitted_ncount=100_000_000,
+                  master={"halfwidth": 1.0, "effective_exposure": 100_000_000})
+    policy = {"dynamic_ncount": True, "production_batch_ncount": 100_000_000,
+              "tolerance_margin": 0.8, "ncount_growth_cap": 4.0,
+              "max_ncount_per_scan": 4_000_000_000}
+    requested, diagnostics = acq._count_request(
+        g, kind="production", n_points=10, tolerance=0.5, policy=policy,
+        budget_state={"kind": "counting_seconds", "amount": 1.0, "spent": 1.0})
+    assert diagnostics["exposure_required"] == pytest.approx(625_000_000)
+    assert diagnostics["exposure_remaining"] == pytest.approx(525_000_000)
+    assert requested == 400_000_000  # 800M ladder request, clamped to 4x the last submission
+
+    g.last_submitted_ncount = 2_000_000_000
+    g.master = {"halfwidth": 10.0, "effective_exposure": 4_000_000_000}
+    capped, _ = acq._count_request(
+        g, kind="production", n_points=10, tolerance=0.5, policy=policy,
+        budget_state={"kind": "counting_seconds", "amount": 0.0, "spent": 0.0})
+    assert capped == 4_000_000_000
+
+
+def test_dynamic_count_request_clamps_only_neutron_budget_and_requires_floor():
+    g = acq.GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5)
+    policy = {"dynamic_ncount": True, "production_batch_ncount": 100_000_000,
+              "ncount_growth_cap": 4.0, "max_ncount_per_scan": 4_000_000_000}
+    with pytest.raises(acq.BudgetInsufficientForMinimumBatch,
+                       match="budget_insufficient_for_minimum_batch"):
+        acq._count_request(
+            g, kind="production", n_points=10, tolerance=0.5, policy=policy,
+            budget_state={"kind": "neutrons", "amount": 999_999_990, "spent": 0.0})
+
+    requested, diagnostics = acq._count_request(
+        g, kind="production", n_points=10, tolerance=0.5, policy=policy,
+        budget_state={"kind": "neutrons", "amount": 1_500_000_000, "spent": 0.0})
+    assert requested == 100_000_000
+    assert diagnostics["neutron_budget_clamp"] == 150_000_000
+
+
+def test_static_policy_retains_fixed_production_count():
+    g = acq.GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
+                  master={"halfwidth": 10.0, "effective_exposure": 1_000_000_000})
+    requested, diagnostics = acq._count_request(
+        g, kind="production", n_points=10, tolerance=0.5,
+        policy={"dynamic_ncount": False, "production_batch_ncount": 25_000_000},
+        budget_state={"kind": "counting_seconds", "amount": 0.0, "spent": 0.0})
+    assert requested == 25_000_000
+    assert diagnostics["dynamic_ncount"] is False
+
+
+def test_dynamic_proposal_uses_pooled_exposure_and_authoritative_halfwidth():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    frozen["steering"] = {**frozen["steering"],
+                          "quicklook_ncount": 50_000_000,
+                          "production_batch_ncount": 100_000_000}
+    frozen["hypothesis_fingerprint"] = content_fingerprint(
+        frozen["hypotheses"], frozen["steering"])
+    obj = ObjectiveSpec.segment(
+        q_start=(2, 0, 0), q_end=(2, 0, 0), step_rlu=0.1, tolerance_meV=0.5,
+        budget={"kind": "counting_seconds", "amount": 1.0},
+        target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    obs = [_obs((2.0, 0.0, 0.0), "production", 1.0, omega0=6.0)]
+    obs[0].update({"submitted_ncount": 100_000_000, "proposal_cost": 1.0})
+    master = _master((2.0, 0.0, 0.0), 1.0)
+    master["effective_exposure"] = 100_000_000
+    proposal = acq.propose_scan(
+        obj, _model(obs), obs, {"fwhm_dE": 0.8},
+        {"kind": "counting_seconds", "amount": 1.0, "spent": 1.0},
+        master_rows=[master])
+    assert proposal.ncount == 400_000_000
+    assert proposal.meta["count_diagnostics"]["exposure_required"] == pytest.approx(625_000_000)
+
+
+def test_third_generic_no_signal_attempt_grows_above_production_floor():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    frozen["steering"] = {**frozen["steering"], "production_batch_ncount": 100_000_000}
+    frozen["hypothesis_fingerprint"] = content_fingerprint(
+        frozen["hypotheses"], frozen["steering"])
+    obj = ObjectiveSpec.segment(
+        q_start=(2, 0, 0), q_end=(2, 0, 0), step_rlu=0.1, tolerance_meV=0.5,
+        budget={"kind": "counting_seconds", "amount": 10.0},
+        target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    obs = [
+        {**_obs((2.0, 0.0, 0.0), "quicklook", None, resolved=False, disp="declined"),
+         "acquisition_id": "A", "submitted_ncount": 50_000_000, "proposal_cost": 1.0},
+        {**_obs((2.0, 0.0, 0.0), "production", None, resolved=False, disp="declined"),
+         "acquisition_id": "B", "submitted_ncount": 100_000_000, "proposal_cost": 1.0},
+    ]
+    proposal = acq.propose_scan(
+        obj, acq_model.fit([]), obs, {"fwhm_dE": 0.8},
+        {"kind": "counting_seconds", "amount": 10.0, "spent": 0.0})
+    assert proposal.kind == "production"
+    assert proposal.ncount == 200_000_000
+
+
 def _master(hkl, hw, disp="resolved", reliable=True, n=2):
     return {"hkl": hkl, "omega0": 3.0, "halfwidth": hw, "reliable": reliable,
             "usable": disp in ("resolved", "flagged"), "disposition": disp, "n_members": n}

@@ -153,6 +153,8 @@ class GridQ:
     saw_uncertifiable_fast: bool = False    # ≥1 uncertifiable delivery stayed on the untrusted fast tier
     counts_spent: float = 0.0      # accumulated monitor-count budget (Σ proposal_cost) at this q (Phase 5)
     last_prod_cost: float | None = None  # most recent production scan's cost (ΔC proxy for the next)
+    last_submitted_ncount: int | None = None
+    submitted_exposure: float = 0.0
     last_fit_kind: str | None = None     # provenance of the most recent usable fit (5b grounding gate)
     best_omega0: float | None = None
     best_halfwidth: float | None = None
@@ -226,6 +228,12 @@ class GridQ:
         return voi_saturated(sigma, self.tolerance, self.counts_spent, self.last_prod_cost)
 
     @property
+    def signal_seen(self) -> bool:
+        """Whether this q has positive signal evidence, including an unresolved branch candidate."""
+        return bool(self.best_omega0 is not None or self.n_uncertifiable > 0
+                    or self.n_unmodeled > 0 or self.n_branch_ambiguous > 0)
+
+    @property
     def stuck(self) -> bool:
         """Abandoned: can't get signal (``MAX_DECLINES`` consecutive junk fits), delivered centers but
         every calibrated interval is uncertifiable ``MAX_DECLINES``× (S3: γ-at-bound or fast-tier-only),
@@ -233,8 +241,9 @@ class GridQ:
         tolerance), or the q is value-of-information saturated (:attr:`info_saturated`)."""
         if self.converged:
             return False
-        return (self.n_decline >= MAX_DECLINES or self.n_uncertifiable >= MAX_DECLINES
-                or self.n_production >= self.max_production_batches or self.info_saturated)
+        no_signal_exhausted = self.n_decline >= MAX_DECLINES and not self.signal_seen
+        return (no_signal_exhausted or self.n_production >= self.max_production_batches
+                or self.info_saturated)
 
     @property
     def stuck_reason(self) -> str | None:
@@ -256,6 +265,10 @@ class GridQ:
         # Uncertifiable third state — a usable center was delivered, but no certifiable interval.
         if self.saw_uncertifiable_gamma or self.saw_uncertifiable_fast or self.n_uncertifiable > 0:
             return "uncertifiable_interval" if self.saw_uncertifiable_gamma else "fast_tier_only"
+        if self.n_unmodeled > 0:
+            return "signal_unmodeled"
+        if self.n_branch_ambiguous > 0:
+            return "branch_ambiguity"
         if self.n_production >= self.max_production_batches:
             return "interval_floored"
         # Terminal no-signal fall-through, refined by decline sub-labels: ALL declines being
@@ -263,10 +276,6 @@ class GridQ:
         # means the signal is present but unfit. Otherwise it is a genuine no-signal q.
         if self.n_infeasible > 0 and self.n_infeasible >= self.n_decline:
             return "infeasible"
-        if self.n_unmodeled > 0:
-            return "signal_unmodeled"
-        if self.n_branch_ambiguous > 0:
-            return "branch_ambiguity"
         return "no_signal"
 
     @property
@@ -278,6 +287,51 @@ class GridQ:
         if hw is None:
             hw = self.best_halfwidth
         return _BIG if hw is None else hw - self.tolerance
+
+
+def _logical_observations(observations: list[dict], target_branch: str) -> list[dict]:
+    """Collapse physical retry/detector rows to one logical outcome per acquisition.
+
+    Raw cost and submitted exposure are summed, while the best target-branch delivery represents the
+    logical result. Legacy observations without an acquisition ID remain one-for-one.
+    """
+    groups: dict[tuple, list[dict]] = {}
+    for index, observation in enumerate(observations):
+        if observation.get("kind") == "certification_crossing":
+            groups[("crossing", index)] = [observation]
+            continue
+        acquisition_id = observation.get("acquisition_id")
+        key = (("acquisition", str(acquisition_id)) if acquisition_id is not None
+               else ("legacy", index))
+        groups.setdefault(key, []).append(observation)
+
+    logical: list[dict] = []
+    for group in groups.values():
+        if group[0].get("kind") == "certification_crossing":
+            logical.append(dict(group[0]))
+            continue
+        requested = [item for item in group
+                     if item.get("resolved") and item.get("branch_id") in (None, target_branch)]
+        certifiable = [item for item in requested if item.get("certifiable", True)]
+        if certifiable:
+            representative = min(
+                certifiable,
+                key=lambda item: (float(item["calibrated_halfwidth"])
+                                  if item.get("calibrated_halfwidth") is not None else math.inf))
+        elif requested:
+            representative = requested[-1]
+        else:
+            positive = [item for item in group
+                        if item.get("disposition") in {"unmodeled", "branch_continuation"}
+                        or item.get("verdict") == "branch_continuation"]
+            representative = positive[-1] if positive else group[-1]
+        folded = dict(representative)
+        folded["proposal_cost"] = sum(float(item.get("proposal_cost") or 0.0) for item in group)
+        folded["submitted_exposure_increment"] = sum(
+            float(item.get("submitted_ncount") or 0.0) for item in group
+            if float(item.get("proposal_cost") or 0.0) > 0.0)
+        logical.append(folded)
+    return logical
 
 
 def summarize_grid(objective, observations: list[dict], master_rows: list[dict] | None = None):
@@ -297,7 +351,7 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
     grid = [GridQ(index=i, hkl=tuple(path[i]), q=scalars[i], tolerance=objective.tolerance_meV,
                   requires_crossing_guard=crossing_guard, max_production_batches=max_batches)
             for i in range(len(path))]
-    for obs in observations:
+    for obs in _logical_observations(observations, target_branch):
         # A classification probe may deliberately sit off the requested path.  Its branch evidence is
         # retained elsewhere, but it must never seat or penalize a certification point — even when an
         # unusually fine path places it within the nearest-hkl matching tolerance.
@@ -319,6 +373,12 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
         hw = obs.get("calibrated_halfwidth")
         cost = float(obs.get("proposal_cost") or 0.0)   # actual submitted scan cost (Phase 5)
         g.counts_spent += cost
+        submitted_ncount = obs.get("submitted_ncount")
+        if submitted_ncount is not None:
+            g.last_submitted_ncount = int(submitted_ncount)
+            if cost > 0.0:
+                g.submitted_exposure += float(
+                    obs.get("submitted_exposure_increment", submitted_ncount))
         if kind in PRODUCTION_KINDS:
             g.n_production += 1
             if cost > 0.0:
