@@ -447,8 +447,42 @@ def _calibrated_hw(row: dict, calibration: Calibration, bucket: str) -> float | 
         return None
     try:
         return calibration.calibrated_halfwidth(lo, hi, bucket=bucket)
-    except Exception:   # noqa: BLE001  (bad interval → treat as un-calibratable, not a crash)
+    except Exception:   # noqa: BLE001  (bad interval -> treat as un-calibratable, not a crash)
         return None
+
+
+def _diagnostic_interval(row: dict) -> tuple[Any, Any, str | None]:
+    """Best finite interval available before the certifiability gate, with method provenance."""
+    for lo_key, hi_key, method in (
+            ("interval_lo", "interval_hi", "bootstrap"),
+            ("omega0_profile_lo", "omega0_profile_hi", "profile"),
+            ("hesse_lo", "hesse_hi", "hesse"),
+            ("bayes_lo", "bayes_hi", "bayesian")):
+        lo, hi = row.get(lo_key), row.get(hi_key)
+        if lo is not None and hi is not None:
+            try:
+                if math.isfinite(float(lo)) and math.isfinite(float(hi)) and float(hi) >= float(lo):
+                    return lo, hi, method
+            except (TypeError, ValueError):
+                continue
+    return None, None, None
+
+
+def _calibration_version(calibration: Calibration) -> str:
+    raw = calibration.raw or {}
+    return str(raw.get("version") or raw.get("schema") or calibration.truth_source or "unversioned")
+
+
+def _diagnostic_halfwidth(row: dict, calibration: Calibration,
+                          bucket: str) -> tuple[float | None, str | None]:
+    lo, hi, method = _diagnostic_interval(row)
+    if method is None:
+        return None, None
+    try:
+        value = calibration.calibrated_halfwidth(lo, hi, bucket=bucket)
+    except Exception:  # noqa: BLE001 - diagnostic absence must not become a delivery interval
+        return None, method
+    return (float(value) if math.isfinite(float(value)) else None), method
 
 
 def _effective_exposure_bucket(row: dict, submitted_ncount: int) -> tuple[str, float, str]:
@@ -466,6 +500,13 @@ def _effective_exposure_bucket(row: dict, submitted_ncount: int) -> tuple[str, f
     return "invalid", exposure, "invalid_effective_exposure"
 
 
+def _calibration_bucket(calibration: Calibration, exposure_key: str) -> tuple[str, str | None]:
+    """Record the bucket actually used; unmatched exposures use the global calibration."""
+    if exposure_key in calibration.buckets:
+        return exposure_key, exposure_key
+    return "global", None
+
+
 def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibration,
                           proposal_cost: float = 0.0, *, driver_inserted: bool = False,
                           certification_eligible: bool = True,
@@ -481,9 +522,10 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
     # S3 third state: a usable delivery with no certifiable interval. Classify WHY (γ-at-bound vs
     # fast-tier-only) so the stop taxonomy can name it; only meaningful for a usable, uncertifiable fit.
     uncertifiable_kind = _uncertifiable_kind(row) if (usable and not certifiable) else None
-    bucket, effective_exposure, exposure_source = _effective_exposure_bucket(row, ncount)
+    exposure_key, effective_exposure, exposure_source = _effective_exposure_bucket(row, ncount)
+    bucket, calibration_arg = _calibration_bucket(calibration, exposure_key)
     if usable and ok:
-        hw = _calibrated_hw(row, calibration, bucket)
+        hw = _calibrated_hw(row, calibration, calibration_arg)
     elif usable and kind == "quicklook":
         # Cheap-tier quicklooks carry only a HESSE omega0_err (no bootstrap interval). Good enough to
         # SEED the ω(q) acquisition model (steering only); it never reaches the stop rule, which
@@ -492,7 +534,7 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         if err is not None and w0 is not None and float(err) > 0:
             try:
                 hw = calibration.calibrated_halfwidth(float(w0) - float(err), float(w0) + float(err),
-                                                      bucket=bucket)
+                                                      bucket=calibration_arg)
             except Exception:   # noqa: BLE001
                 hw = None
     return {
@@ -518,9 +560,11 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
     """A master (pooled) fit → the convergence observation for its q. The calibrated half-width uses
     the reliable interval (profile when the bootstrap is Γ-at-bound) at the production count bucket."""
     ok = _pick_interval(row)[2]
-    bucket, effective_exposure, exposure_source = _effective_exposure_bucket(
+    exposure_key, effective_exposure, exposure_source = _effective_exposure_bucket(
         row, PRODUCTION_NCOUNT)
-    hw = _calibrated_hw(row, calibration, bucket)
+    bucket, calibration_arg = _calibration_bucket(calibration, exposure_key)
+    hw = _calibrated_hw(row, calibration, calibration_arg)
+    diagnostic_hw, diagnostic_method = _diagnostic_halfwidth(row, calibration, calibration_arg)
     disp = row.get("disposition")
     return {
         "hkl": _row_hkl(row), "omega0": row.get("omega0"), "halfwidth": hw,
@@ -531,11 +575,31 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         "disposition": disp, "n_members": row.get("n_members"),
         "effective_exposure": effective_exposure, "exposure_source": exposure_source,
         "exposure_bucket": bucket,
+        "diagnostic_halfwidth": diagnostic_hw, "interval_method": diagnostic_method,
+        "calibration_version": _calibration_version(calibration),
+        "branch_id": row.get("branch_id"), "branch_posterior": row.get("branch_posterior"),
+        "candidate_id": row.get("candidate_id"), "candidate_state": row.get("candidate_state"),
         # Chain of custody: the member scan labels behind this pooled value (readers coerce the CSV
         # cell to a list). members_field_present distinguishes "old results.csv lacked the column"
         # (guard skipped) from "column present but empty" (guard fires).
         "members": row.get("members"), "members_field_present": ("members" in row),
     }
+
+
+def _record_pooled_master_update(workspace, calibration: Calibration, proposal, *,
+                                 log_path, observations: list[dict]) -> dict | None:
+    """Persist the current pooled master for the submitted q as chronological replay evidence."""
+    matching = [row for row in _read_master_rows(workspace, calibration)
+                if _hkl_close(row.get("hkl"), (proposal.h, proposal.k, proposal.l))]
+    if not matching:
+        return None
+    master = max(matching, key=lambda row: int(row.get("n_members") or 0))
+    payload = {**master, "kind": "pooled_master_update",
+               "acquisition_id": proposal.acquisition_id,
+               "acquisition_target_energy": float(proposal.e_pred)}
+    observations.append(payload)
+    log_event(log_path, "pooled_master_update", payload)
+    return payload
 
 
 def _read_master_rows(workspace, calibration: Calibration) -> list[dict]:
@@ -659,10 +723,128 @@ def _recertified_observations(workspace, calibration: Calibration, scan_kind: di
     for r in rows:
         if r.get("pooled") or _row_hkl(r) is None:
             continue
-        kind, ncount = scan_kind.get((r.get("scan"), r.get("detector")),
-                                     ("production", PRODUCTION_NCOUNT))
-        out.append(_observation_from_row(r, kind, ncount, calibration))
+        submitted = scan_kind.get((r.get("scan"), r.get("detector")),
+                                  ("production", PRODUCTION_NCOUNT, None))
+        kind, ncount = submitted[:2]
+        acquisition_id = submitted[2] if len(submitted) > 2 else None
+        out.append(_observation_from_row(
+            r, kind, ncount, calibration, acquisition_id=acquisition_id))
     return out
+
+
+def _resume_detailed_events(workspace, events: list[dict], calibration: Calibration) -> dict:
+    """Replay additive physical-submission/master-update events in chronological order."""
+    def hkl_key(hkl) -> tuple:
+        return tuple(round(float(value), 8) for value in hkl)
+
+    physical_job_ids = {
+        str((event.get("payload") or {}).get("job_id"))
+        for event in events if event.get("kind") == "physical_submission"
+        and (event.get("payload") or {}).get("job_id") is not None
+    }
+    submissions = []
+    by_job: dict[str, dict] = {}
+    for order, event in enumerate(events):
+        kind = event.get("kind")
+        payload = dict(event.get("payload") or {})
+        is_detailed = kind == "physical_submission"
+        is_legacy_prefix = (kind == "run" and
+                            (payload.get("job_id") is None
+                             or str(payload.get("job_id")) not in physical_job_ids))
+        if not (is_detailed or is_legacy_prefix):
+            continue
+        record = {"order": order, "payload": payload,
+                  "cost": float(payload.get("cost") or 0.0), "seconds_delta": 0.0}
+        submissions.append(record)
+        if payload.get("job_id") is not None:
+            by_job[str(payload["job_id"])] = record
+    for event in events:
+        payload = event.get("payload") or {}
+        if (event.get("kind") != "exception"
+                or payload.get("action") != "feasibility_reconciled"):
+            continue
+        record = by_job.get(str(payload.get("job_id")))
+        if record is not None:
+            record["cost"] += float(payload.get("neutron_delta") or 0.0)
+            record["seconds_delta"] += float(payload.get("seconds_delta") or 0.0)
+
+    neutrons = sum(record["cost"] for record in submissions)
+    seconds = 0.0
+    submissions_by_hkl: dict[tuple, list[dict]] = {}
+    for record in submissions:
+        payload = record["payload"]
+        eta = payload.get("eta")
+        if isinstance(eta, dict) and eta.get("estimated_seconds") is not None:
+            seconds += float(eta["estimated_seconds"])
+        seconds += record["seconds_delta"]
+        if payload.get("hkl") is not None:
+            submissions_by_hkl.setdefault(hkl_key(payload["hkl"]), []).append(record)
+
+    try:
+        rows = read_results_csv(workspace)
+    except FileNotFoundError:
+        rows = []
+    result_rows = [row for row in rows if not row.get("pooled") and _row_hkl(row) is not None]
+    scan_groups: dict[tuple, list[dict]] = {}
+    scan_group_order: list[tuple] = []
+    for row in result_rows:
+        key = (hkl_key(_row_hkl(row)), str(row.get("scan")))
+        if key not in scan_groups:
+            scan_groups[key] = []
+            scan_group_order.append(key)
+        scan_groups[key].append(row)
+    groups_by_hkl: dict[tuple, list[tuple]] = {}
+    for key in scan_group_order:
+        groups_by_hkl.setdefault(key[0], []).append(key)
+
+    ordered_observations: list[tuple[float, int, dict]] = []
+    consumed: set = set()
+    scan_kind: dict = {}
+    sequence = 0
+    for key, group_keys in groups_by_hkl.items():
+        ledger = submissions_by_hkl.get(key, [])
+        offset = len(ledger) - len(group_keys)
+        for group_index, group_key in enumerate(group_keys):
+            ledger_index = offset + group_index
+            record = ledger[ledger_index] if 0 <= ledger_index < len(ledger) else None
+            payload = record["payload"] if record is not None else {}
+            kind = payload.get("kind") or "production"
+            ncount = int(payload.get("submitted_ncount") or payload.get("ncount")
+                         or PRODUCTION_NCOUNT)
+            acquisition_id = payload.get("acquisition_id")
+            provenance = {
+                "driver_inserted": bool(payload.get("driver_inserted", False)),
+                "certification_eligible": bool(payload.get("certification_eligible", True)),
+            }
+            cost = record["cost"] if record is not None else 0.0
+            order = float(record["order"]) if record is not None else -1.0 + sequence * 1e-6
+            for detector_index, row in enumerate(scan_groups[group_key]):
+                observation = _observation_from_row(
+                    row, kind, ncount, calibration,
+                    proposal_cost=cost if detector_index == 0 else 0.0,
+                    acquisition_id=acquisition_id, **provenance)
+                ordered_observations.append((order, sequence, observation))
+                sequence += 1
+                scan_detector = (row.get("scan"), row.get("detector"))
+                consumed.add(scan_detector)
+                scan_kind[scan_detector] = (kind, ncount, acquisition_id)
+
+    for order, event in enumerate(events):
+        if event.get("kind") == "pooled_master_update":
+            marker = dict(event.get("payload") or {})
+            marker["kind"] = "pooled_master_update"
+            ordered_observations.append((float(order), sequence, marker))
+            sequence += 1
+        elif event.get("kind") == "certification_crossing":
+            marker = dict(event.get("payload") or {})
+            if marker.get("hkl") is not None and marker.get("production_batch_fingerprint"):
+                marker["kind"] = "certification_crossing"
+                ordered_observations.append((float(order), sequence, marker))
+                sequence += 1
+    ordered_observations.sort(key=lambda item: (item[0], item[1]))
+    return {"observations": [item[2] for item in ordered_observations],
+            "consumed": consumed, "scan_kind": scan_kind,
+            "scan_counter": len(submissions), "neutrons": neutrons, "seconds": seconds}
 
 
 def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
@@ -683,12 +865,16 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
     row when the q has one (``summarize_grid`` reads cost>0 rows to set ``last_prod_cost``), else the
     first row (quicklook-only q). A cold workspace (no log / no results.csv) returns the fresh-start
     tuple."""
+    events = read_log(log_path)
+    if any(event.get("kind") == "physical_submission" for event in events):
+        return _resume_detailed_events(workspace, events, calibration)
+
     def resume_hkl_key(hkl) -> tuple:
         # Preserve enough precision to keep nearby diagnostic probes distinct while absorbing only
         # serialization-level float noise.  Four decimals merged legitimate sub-1e-4 scan points.
         return tuple(round(float(x), 8) for x in hkl)
 
-    runs = [e.get("payload", {}) for e in read_log(log_path) if e.get("kind") == "run"]
+    runs = [e.get("payload", {}) for e in events if e.get("kind") == "run"]
     scan_counter = len(runs)                        # one run event per submitted scan
     neutrons = seconds = 0.0
     cost_by_hkl: dict = {}
@@ -713,7 +899,7 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
         })
         ncount_by_hkl[key] = r.get("ncount") or ncount_by_hkl.get(key)
 
-    reconciliations = [e.get("payload", {}) for e in read_log(log_path)
+    reconciliations = [e.get("payload", {}) for e in events
                        if e.get("kind") == "exception"
                        and (e.get("payload") or {}).get("action") == "feasibility_reconciled"]
     for reconciliation in reconciliations:
@@ -777,7 +963,7 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
         consumed.add(sd)
         scan_kind[sd] = (kind, ncount)
 
-    for event in read_log(log_path):
+    for event in events:
         if event.get("kind") == "certification_crossing":
             marker = dict(event.get("payload") or {})
             if marker.get("hkl") is not None and marker.get("production_batch_fingerprint"):
@@ -1231,7 +1417,8 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                     certification_eligible=bool((proposal.meta or {}).get(
                         "certification_eligible", True)),
                     acquisition_id=proposal.acquisition_id))
-                scan_kind[(r.get("scan"), r.get("detector"))] = (proposal.kind, proposal.ncount)
+                scan_kind[(r.get("scan"), r.get("detector"))] = (
+                    proposal.kind, proposal.ncount, proposal.acquisition_id)
             _m["n_rows"] = len(rows)
         # Embed the subprocess stage-timing snapshot (best-effort) + the folded rows' outcomes.
         timings = _read_run_timings(workspace)
@@ -1241,6 +1428,9 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         if timings is not None:
             analyze_payload["timings"] = timings
         log_event(log_path, "analyze", analyze_payload)
+        _record_pooled_master_update(
+            workspace, cfg.calibration, proposal, log_path=log_path,
+            observations=observations)
 
         if promoted:
             # escalate_fit OUTCOME (spec §5.1): did the full-tier promotion seat a certifiable

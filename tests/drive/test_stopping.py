@@ -291,6 +291,41 @@ def test_successful_recenter_resolves_its_logical_acquisition():
     assert grid[0].best_omega0 is not None
 
 
+def _master_update(exposure, halfwidth, **overrides):
+    update = {"kind": "pooled_master_update", "hkl": (2.1, 0.0, 0.0),
+              "candidate_id": "optic:0.1:lowest_energy", "branch_id": "optic",
+              "interval_method": "profile", "exposure_bucket": "global",
+              "calibration_version": "v1", "effective_exposure": exposure,
+              "diagnostic_halfwidth": halfwidth}
+    update.update(overrides)
+    return update
+
+
+def test_empirical_interval_floor_requires_three_comparable_updates_and_doubled_exposure():
+    obj = _obj()
+    updates = [_master_update(100.0, 1.0), _master_update(150.0, 0.99),
+               _master_update(210.0, 0.96)]
+    grid = st.summarize_grid(obj, updates)
+    assert grid[0].interval_floored is True
+    assert grid[0].stuck_reason == "interval_floored"
+
+    insufficient_exposure = updates[:-1] + [_master_update(190.0, 0.96)]
+    assert not st.summarize_grid(obj, insufficient_exposure)[0].interval_floored
+    real_improvement = updates[:-1] + [_master_update(210.0, 0.90)]
+    assert not st.summarize_grid(obj, real_improvement)[0].interval_floored
+
+
+def test_empirical_interval_floor_requires_finite_matching_provenance():
+    obj = _obj()
+    base = [_master_update(100.0, 1.0), _master_update(150.0, 1.01),
+            _master_update(220.0, 1.02)]
+    assert st.summarize_grid(obj, base)[0].interval_floored  # widening is zero improvement
+    changed = base[:-1] + [_master_update(220.0, 1.02, calibration_version="v2")]
+    assert not st.summarize_grid(obj, changed)[0].interval_floored
+    missing = base[:-1] + [_master_update(220.0, None)]
+    assert not st.summarize_grid(obj, missing)[0].interval_floored
+
+
 def test_master_over_tolerance_keeps_accumulating():
     obj = _obj()
     # One master still over tolerance (needs more pooled scans) → continue.

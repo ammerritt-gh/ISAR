@@ -165,6 +165,10 @@ class GridQ:
     requires_crossing_guard: bool = False
     crossing_fingerprints: list[str] = field(default_factory=list)
     max_production_batches: int = MAX_PROD_ATTEMPTS
+    master_updates: list[dict] = field(default_factory=list)
+    interval_floor_window: int = 3
+    interval_floor_min_improvement: float = 0.05
+    interval_floor_min_exposure_ratio: float = 2.0
 
     @property
     def visited(self) -> bool:
@@ -228,6 +232,41 @@ class GridQ:
         return voi_saturated(sigma, self.tolerance, self.counts_spent, self.last_prod_cost)
 
     @property
+    def interval_floored(self) -> bool:
+        """Empirical non-shrinkage brake over comparable chronological pooled-master updates."""
+        if self.converged or len(self.master_updates) < self.interval_floor_window:
+            return False
+        latest = self.master_updates[-1]
+        key_fields = ("candidate_id", "branch_id", "interval_method", "exposure_bucket",
+                      "calibration_version")
+        if latest.get("candidate_id") is None or latest.get("branch_id") is None:
+            return False
+        key = tuple(latest.get(field) for field in key_fields)
+        comparable = [update for update in self.master_updates
+                      if tuple(update.get(field) for field in key_fields) == key
+                      and update.get("diagnostic_halfwidth") is not None
+                      and update.get("effective_exposure") is not None]
+        window = comparable[-self.interval_floor_window:]
+        if len(window) < self.interval_floor_window:
+            return False
+        try:
+            first_hw = float(window[0]["diagnostic_halfwidth"])
+            last_hw = float(window[-1]["diagnostic_halfwidth"])
+            first_exposure = float(window[0]["effective_exposure"])
+            last_exposure = float(window[-1]["effective_exposure"])
+        except (TypeError, ValueError):
+            return False
+        if not all(math.isfinite(value) for value in (
+                first_hw, last_hw, first_exposure, last_exposure)):
+            return False
+        if first_hw <= 0.0 or first_exposure <= 0.0:
+            return False
+        if last_exposure / first_exposure < self.interval_floor_min_exposure_ratio:
+            return False
+        improvement = max((first_hw - last_hw) / first_hw, 0.0)
+        return improvement < self.interval_floor_min_improvement
+
+    @property
     def signal_seen(self) -> bool:
         """Whether this q has positive signal evidence, including an unresolved branch candidate."""
         return bool(self.best_omega0 is not None or self.n_uncertifiable > 0
@@ -242,7 +281,8 @@ class GridQ:
         if self.converged:
             return False
         no_signal_exhausted = self.n_decline >= MAX_DECLINES and not self.signal_seen
-        return (no_signal_exhausted or self.n_production >= self.max_production_batches
+        return (no_signal_exhausted or self.interval_floored
+                or self.n_production >= self.max_production_batches
                 or self.info_saturated)
 
     @property
@@ -257,6 +297,8 @@ class GridQ:
         existed here)."""
         if not self.stuck:
             return None
+        if self.interval_floored:
+            return "interval_floored"
         # Floored: a genuinely CERTIFIABLE interval exists but cannot shrink below tolerance.
         if self.n_production >= self.max_production_batches and self.cert_halfwidth is not None:
             return "interval_floored"
@@ -297,6 +339,8 @@ def _logical_observations(observations: list[dict], target_branch: str) -> list[
     """
     groups: dict[tuple, list[dict]] = {}
     for index, observation in enumerate(observations):
+        if observation.get("kind") == "pooled_master_update":
+            continue
         if observation.get("kind") == "certification_crossing":
             groups[("crossing", index)] = [observation]
             continue
@@ -348,9 +392,21 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
     crossing_guard = bool(getattr(objective, "hypotheses", None))
     max_batches = int((getattr(objective, "steering", None) or {}).get(
         "maximum_production_batches_per_q", MAX_PROD_ATTEMPTS))
+    policy = getattr(objective, "steering", None) or {}
     grid = [GridQ(index=i, hkl=tuple(path[i]), q=scalars[i], tolerance=objective.tolerance_meV,
-                  requires_crossing_guard=crossing_guard, max_production_batches=max_batches)
+                  requires_crossing_guard=crossing_guard, max_production_batches=max_batches,
+                  interval_floor_window=int(policy.get("interval_floor_window", 3)),
+                  interval_floor_min_improvement=float(policy.get(
+                      "interval_floor_min_improvement", 0.05)),
+                  interval_floor_min_exposure_ratio=float(policy.get(
+                      "interval_floor_min_exposure_ratio", 2.0)))
             for i in range(len(path))]
+    for update in observations:
+        if update.get("kind") != "pooled_master_update" or update.get("hkl") is None:
+            continue
+        i = match_grid_index(tuple(update["hkl"]), path)
+        if i is not None:
+            grid[i].master_updates.append(dict(update))
     for obs in _logical_observations(observations, target_branch):
         # A classification probe may deliberately sit off the requested path.  Its branch evidence is
         # retained elsewhere, but it must never seat or penalize a certification point — even when an
@@ -543,6 +599,10 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                       "n_production": g.n_production, "n_decline": g.n_decline,
                       "n_uncertifiable": g.n_uncertifiable,
                       "n_branch_ambiguous": g.n_branch_ambiguous,
+                      "interval_floored": g.interval_floored,
+                      "n_master_updates": len(g.master_updates),
+                      "diagnostic_halfwidth": (g.master_updates[-1].get("diagnostic_halfwidth")
+                                               if g.master_updates else None),
                       "reason": reason, "stuck": g.stuck})
 
     # Tolerance below the systematic floor is unmeetable by construction — check before "met".

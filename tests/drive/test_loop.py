@@ -28,7 +28,7 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
 from isar.drive.acquisition.acquire import ScanProposal, points_in_window
 from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
 from isar.drive.session_log import log_event, read_log
-from isar.drive.supervisor.stopping import PRODUCTION_NCOUNT, QUICKLOOK_NCOUNT
+from isar.drive.supervisor.stopping import PRODUCTION_NCOUNT, QUICKLOOK_NCOUNT, summarize_grid
 from isar.schema.hypotheses import content_fingerprint
 
 _UNITY_CAL = Calibration.from_dict({"inflation": 1.0, "buckets": [], "center_pull_mean": 0.0})
@@ -365,7 +365,7 @@ def test_invalid_effective_exposure_is_not_replaced_by_submitted_ncount():
         "production", PRODUCTION_NCOUNT, _UNITY_CAL)
     assert o["effective_exposure"] == 0.0
     assert o["exposure_source"] == "invalid_effective_exposure"
-    assert o["exposure_bucket"] == "invalid"
+    assert o["exposure_bucket"] == "global"
 
 
 def test_observation_gamma_at_bound_is_uncertifiable():
@@ -969,6 +969,77 @@ def test_resume_state_attributes_per_row_kinds_not_hkl_lock(tmp_path):
     cost_rows = [o for o in obs if o["proposal_cost"] > 0]
     assert len(cost_rows) == 1 and cost_rows[0]["kind"] == "production"
     assert sum(o["proposal_cost"] for o in obs) == pytest.approx(5.0e8 + 6.0e9 + 7.0e9)
+
+
+def test_detailed_resume_replays_changing_ncount_and_master_updates_chronologically(tmp_path):
+    ws = tmp_path / "ws-detailed"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    for index, ncount in enumerate((10_000_000, 40_000_000, 160_000_000), start=1):
+        submission = {"job_id": f"j{index}", "state": "done",
+                      "eta": {"estimated_seconds": float(index)},
+                      "kind": "quicklook" if index == 1 else "production",
+                      "ncount": ncount, "submitted_ncount": ncount, "n_points": 10,
+                      "hkl": [2.1, 0.0, 0.0], "cost": 10.0 * ncount,
+                      "acquisition_id": f"A{index}", "driver_inserted": False,
+                      "certification_eligible": True}
+        log_event(log, "run", submission)
+        log_event(log, "physical_submission", submission)
+        log_event(log, "pooled_master_update", {
+            "kind": "pooled_master_update", "hkl": [2.1, 0.0, 0.0],
+            "acquisition_id": f"A{index}", "candidate_id": "optic:0.1:lowest_energy",
+            "branch_id": "optic", "interval_method": "profile",
+            "exposure_bucket": "global", "calibration_version": "v1",
+            "effective_exposure": float(ncount), "diagnostic_halfwidth": 1.0 / index})
+    base = {"h": 2.1, "k": 0.0, "l": 0.0, "status": "fitted",
+            "verdict": "resolved", "disposition": "resolved", "omega0": 6.0,
+            "interval_lo": 5.8, "interval_hi": 6.2, "interval_reliable": True}
+    _write_results(ws, [{"scan": scan, "detector": "det", **base} for scan in (1, 2, 3)])
+
+    resumed = _resume_state(ws, log, _UNITY_CAL)
+    physical = [item for item in resumed["observations"]
+                if item.get("kind") != "pooled_master_update"]
+    assert [item["submitted_ncount"] for item in physical] == [
+        10_000_000, 40_000_000, 160_000_000]
+    assert [item["acquisition_id"] for item in physical] == ["A1", "A2", "A3"]
+    assert [item["proposal_cost"] for item in physical] == [
+        100_000_000.0, 400_000_000.0, 1_600_000_000.0]
+    assert [item.get("kind") for item in resumed["observations"]] == [
+        "quicklook", "pooled_master_update", "production", "pooled_master_update",
+        "production", "pooled_master_update"]
+    assert resumed["scan_counter"] == 3
+
+
+def test_detailed_resume_keeps_legacy_prefix_and_charges_multidetector_scan_once(tmp_path):
+    ws = tmp_path / "ws-mixed-ledger"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    legacy = {"job_id": "old", "state": "done", "kind": "quicklook",
+              "ncount": 10_000_000, "n_points": 10, "hkl": [2.1, 0.0, 0.0],
+              "cost": 100_000_000.0, "eta": {"estimated_seconds": 1.0}}
+    detailed = {"job_id": "new", "state": "done", "kind": "production",
+                "ncount": 40_000_000, "submitted_ncount": 40_000_000, "n_points": 10,
+                "hkl": [2.1, 0.0, 0.0], "cost": 400_000_000.0,
+                "eta": {"estimated_seconds": 2.0}, "acquisition_id": "A2"}
+    log_event(log, "run", legacy)
+    log_event(log, "run", detailed)
+    log_event(log, "physical_submission", detailed)
+    base = {"h": 2.1, "k": 0.0, "l": 0.0, "status": "fitted",
+            "verdict": "resolved", "disposition": "resolved", "omega0": 6.0,
+            "interval_lo": 5.8, "interval_hi": 6.2, "interval_reliable": True}
+    _write_results(ws, [
+        {"scan": 1, "detector": "d1", **base},
+        {"scan": 2, "detector": "d1", **base},
+        {"scan": 2, "detector": "d2", **base},
+    ])
+    resumed = _resume_state(ws, log, _UNITY_CAL)
+    assert resumed["scan_counter"] == 2
+    assert resumed["neutrons"] == pytest.approx(500_000_000.0)
+    assert resumed["seconds"] == pytest.approx(3.0)
+    new_rows = [row for row in resumed["observations"] if row.get("acquisition_id") == "A2"]
+    assert len(new_rows) == 2
+    assert sum(row["proposal_cost"] for row in new_rows) == pytest.approx(400_000_000.0)
+    assert summarize_grid(_objective(), resumed["observations"])[0].n_production == 1
 
 
 def test_resume_state_restores_driver_inserted_certification_provenance(tmp_path):
