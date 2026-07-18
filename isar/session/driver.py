@@ -1607,7 +1607,10 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
         deliver = BA.deliver_branch(qoi) and aligned
         posterior = qoi.get("posterior")
         assigned = max(posterior, key=posterior.get) if posterior else None
-        candidate_id = f"{target_branch}:{u:.6f}:{selector}"
+        # Stable across q so neighboring measurements update the same scientific hypothesis.  The q
+        # remains on every evidence record; it is not part of the candidate's identity.
+        energy_key = (f"{float(target_energy):.6g}" if target_energy is not None else "unspecified")
+        candidate_id = f"{target_branch}:{selector}:{energy_key}"
         return {"deliver": bool(deliver), "branch_id": assigned,
                 "weight": float(qoi.get("p_branch", 0.0)), "entropy": ent,
                 "resolvable": bool(qoi.get("resolvable")), "posterior": posterior,

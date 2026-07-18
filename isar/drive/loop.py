@@ -578,12 +578,41 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         "diagnostic_halfwidth": diagnostic_hw, "interval_method": diagnostic_method,
         "calibration_version": _calibration_version(calibration),
         "branch_id": row.get("branch_id"), "branch_posterior": row.get("branch_posterior"),
+        "target_branch": row.get("target_branch"),
         "candidate_id": row.get("candidate_id"), "candidate_state": row.get("candidate_state"),
         # Chain of custody: the member scan labels behind this pooled value (readers coerce the CSV
         # cell to a list). members_field_present distinguishes "old results.csv lacked the column"
         # (guard skipped) from "column present but empty" (guard fires).
         "members": row.get("members"), "members_field_present": ("members" in row),
     }
+
+
+def _candidate_evidence_state(observations: list[dict], update: dict) -> tuple[str, dict]:
+    """Apply the two-acquisition + neighboring-q Bayesian rejection rule."""
+    candidate_id = update.get("candidate_id")
+    evidence = [item for item in observations
+                if item.get("kind") == "pooled_master_update"
+                and item.get("candidate_id") == candidate_id]
+    evidence.append(update)
+    acquisitions = {item.get("acquisition_id") for item in evidence
+                    if item.get("acquisition_id") is not None}
+    positions = {tuple(round(float(value), 8) for value in item.get("hkl", ()))
+                 for item in evidence if item.get("hkl") is not None}
+    posterior = update.get("branch_posterior")
+    target_branch = update.get("target_branch")
+    state = str(update.get("candidate_state") or "provisional")
+    p_target = competitor = None
+    if isinstance(posterior, dict) and target_branch:
+        p_target = float(posterior.get(target_branch, 0.0))
+        competitor = max(float(posterior.get("acoustic", 0.0)),
+                         float(posterior.get("new", posterior.get("unmodeled", 0.0))))
+        if (state == "provisional" and p_target <= 0.05 and competitor >= 0.6
+                and len(acquisitions) >= 2 and len(positions) >= 2):
+            state = "rejected"
+    diagnostics = {"n_logical_acquisitions": len(acquisitions),
+                   "n_q_positions": len(positions), "p_target": p_target,
+                   "p_competitor": competitor}
+    return state, diagnostics
 
 
 def _record_pooled_master_update(workspace, calibration: Calibration, proposal, *,
@@ -597,8 +626,16 @@ def _record_pooled_master_update(workspace, calibration: Calibration, proposal, 
     payload = {**master, "kind": "pooled_master_update",
                "acquisition_id": proposal.acquisition_id,
                "acquisition_target_energy": float(proposal.e_pred)}
+    payload["candidate_state"], payload["candidate_evidence"] = _candidate_evidence_state(
+        observations, payload)
     observations.append(payload)
     log_event(log_path, "pooled_master_update", payload)
+    if payload["candidate_state"] == "rejected":
+        log_event(log_path, "candidate_update", {
+            "candidate_id": payload.get("candidate_id"), "state": "rejected",
+            "target_branch": payload.get("target_branch"), "hkl": payload.get("hkl"),
+            "branch_posterior": payload.get("branch_posterior"),
+            "evidence": payload.get("candidate_evidence")})
     return payload
 
 

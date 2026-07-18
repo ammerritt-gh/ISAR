@@ -73,6 +73,10 @@ def test_optic_cold_start_keeps_lowest_candidate_provisional_with_bayesian_evide
     assert acoustic["branch_id"] == "acoustic"
     assert acoustic["candidate_state"] == "provisional"
     assert acoustic["posterior"]["acoustic"] > acoustic["posterior"].get("optic", 0.0)
+    neighbor = driver._assign_and_triage(
+        {"omega0": 1.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
+        q=[2.2, 0.0, 0.0], t_round=5.0, near_gamma=False)
+    assert neighbor["candidate_id"] == acoustic["candidate_id"]
 
 
 def test_optic_cold_start_nearest_energy_can_deliver_supported_mode():

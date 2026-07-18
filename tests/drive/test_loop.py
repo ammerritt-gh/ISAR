@@ -368,6 +368,35 @@ def test_invalid_effective_exposure_is_not_replaced_by_submitted_ncount():
     assert o["exposure_bucket"] == "global"
 
 
+def test_candidate_rejection_requires_two_acquisitions_and_neighboring_q():
+    base = {"kind": "pooled_master_update", "candidate_id": "optic:lowest_energy:unspecified",
+            "candidate_state": "provisional", "target_branch": "optic",
+            "branch_posterior": {"optic": 0.04, "acoustic": 0.8, "new": 0.16}}
+    first = {**base, "hkl": [2.1, 0.0, 0.0], "acquisition_id": "A1"}
+    state, evidence = loop_mod._candidate_evidence_state([], first)
+    assert state == "provisional" and evidence["n_logical_acquisitions"] == 1
+
+    same_q = {**base, "hkl": [2.1, 0.0, 0.0], "acquisition_id": "A2"}
+    state, _ = loop_mod._candidate_evidence_state([first], same_q)
+    assert state == "provisional"
+    neighbor = {**base, "hkl": [2.2, 0.0, 0.0], "acquisition_id": "A2"}
+    state, evidence = loop_mod._candidate_evidence_state([first], neighbor)
+    assert state == "rejected"
+    assert evidence["n_logical_acquisitions"] == evidence["n_q_positions"] == 2
+
+    supported = {**neighbor, "branch_posterior": {"optic": 0.06, "acoustic": 0.8, "new": 0.14}}
+    assert loop_mod._candidate_evidence_state([first], supported)[0] == "provisional"
+    boundary = {**neighbor, "branch_posterior": {"optic": 0.05, "acoustic": 0.6, "new": 0.35}}
+    assert loop_mod._candidate_evidence_state([first], boundary)[0] == "rejected"
+    weak_competitor = {**neighbor,
+                       "branch_posterior": {"optic": 0.05, "acoustic": 0.59, "new": 0.36}}
+    assert loop_mod._candidate_evidence_state([first], weak_competitor)[0] == "provisional"
+    accepted = {**neighbor, "candidate_state": "accepted"}
+    assert loop_mod._candidate_evidence_state([first], accepted)[0] == "accepted"
+    unknown = {**neighbor, "candidate_state": "unknown"}
+    assert loop_mod._candidate_evidence_state([first], unknown)[0] == "unknown"
+
+
 def test_observation_gamma_at_bound_is_uncertifiable():
     # interval_reliable=False with a profile fallback: _pick_interval says ok, but the flag makes it
     # uncertifiable — it must not seat convergence (the mid-zone hole).

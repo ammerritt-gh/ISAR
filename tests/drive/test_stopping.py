@@ -326,6 +326,13 @@ def test_empirical_interval_floor_requires_finite_matching_provenance():
     assert not st.summarize_grid(obj, missing)[0].interval_floored
 
 
+def test_posterior_rejected_candidate_is_a_terminal_q_reason():
+    update = _master_update(100.0, 1.0, candidate_state="rejected")
+    grid = st.summarize_grid(_obj(), [update])
+    assert grid[0].candidate_rejected
+    assert grid[0].stuck_reason == "posterior_rejected"
+
+
 def test_master_over_tolerance_keeps_accumulating():
     obj = _obj()
     # One master still over tolerance (needs more pooled scans) → continue.

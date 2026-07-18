@@ -147,6 +147,33 @@ def test_third_generic_no_signal_attempt_grows_above_production_floor():
     assert proposal.ncount == 200_000_000
 
 
+def test_adequate_provisional_candidate_sends_next_scan_to_max_information_neighbor():
+    source = acq.GridQ(
+        index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5, n_quicklook=1,
+        master={"candidate_id": "optic:lowest_energy:unspecified",
+                "candidate_state": "provisional", "diagnostic_halfwidth": 0.4})
+    low_info = acq.GridQ(index=1, hkl=(2.0, 0.1, 0.0), q=0.1, tolerance=0.5)
+    high_info = acq.GridQ(index=2, hkl=(2.0, 0.2, 0.0), q=0.2, tolerance=0.5)
+    picked, kind, reason, score = acq._select_target(
+        [source, low_info, high_info], acq_model.fit([]),
+        classify=lambda candidate: candidate.q)
+    assert picked is high_info and kind == "quicklook"
+    assert "neighboring-q" in reason
+    assert score.purpose == "differentiate"
+
+
+def test_statistics_limited_provisional_candidate_pools_same_q_first():
+    source = acq.GridQ(
+        index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5, n_quicklook=1,
+        master={"candidate_id": "optic:lowest_energy:unspecified",
+                "candidate_state": "provisional", "diagnostic_halfwidth": 0.8})
+    neighbor = acq.GridQ(index=1, hkl=(2.0, 0.1, 0.0), q=0.1, tolerance=0.5)
+    picked, kind, reason, _score = acq._select_target(
+        [source, neighbor], acq_model.fit([]), classify=lambda candidate: candidate.q + 1.0)
+    assert picked is source and kind == "production"
+    assert "pool more exposure" in reason
+
+
 def _master(hkl, hw, disp="resolved", reliable=True, n=2):
     return {"hkl": hkl, "omega0": 3.0, "halfwidth": hw, "reliable": reliable,
             "usable": disp in ("resolved", "flagged"), "disposition": disp, "n_members": n}

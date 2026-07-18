@@ -377,7 +377,42 @@ def _select_target(grid: list[GridQ], model, *,
     value-of-information saturated) are abandoned. ``score`` carries ``cost=0``/``eig_per_cost=None``;
     :func:`propose_scan` fills the actual ΔC once the window is known.
     """
+    for source in grid:
+        master = source.master or {}
+        diagnostic_hw = master.get("diagnostic_halfwidth")
+        statistics_limited = (diagnostic_hw is None
+                              or float(diagnostic_hw) > source.tolerance)
+        if (source.visited and not source.converged and not source.stuck
+                and master.get("candidate_state") == "provisional" and statistics_limited):
+            candidate_id = master.get("candidate_id") or "unknown"
+            reason = (f"statistics-limited provisional candidate {candidate_id} at q={source.q:g} "
+                      f"(hkl={list(source.hkl)}); pool more exposure before branch discrimination")
+            return source, "production", reason, ProposalScore(
+                method="deficit", sigma_prior=_finite_or_none(_q_sigma(source)),
+                c_spent=float(source.counts_spent), reason=reason,
+                purpose="target_or_classification")
     unvisited = [g for g in grid if not g.visited]
+    if unvisited and classify is not None:
+        for source in grid:
+            master = source.master or {}
+            diagnostic_hw = master.get("diagnostic_halfwidth")
+            evidence_ready = (source.interval_floored or
+                              (diagnostic_hw is not None
+                               and float(diagnostic_hw) <= source.tolerance))
+            if master.get("candidate_state") != "provisional" or not evidence_ready:
+                continue
+            options = [candidate for candidate in unvisited if candidate.hkl != source.hkl]
+            if not options:
+                continue
+            pick = max(options, key=lambda candidate: max(float(classify(candidate)), 0.0))
+            information = max(float(classify(pick)), 0.0)
+            candidate_id = master.get("candidate_id") or "unknown"
+            reason = (f"neighboring-q quicklook for provisional candidate {candidate_id}; "
+                      f"q={pick.q:g} (hkl={list(pick.hkl)}) maximizes branch information")
+            return pick, "quicklook", reason, ProposalScore(
+                method="classification", c_spent=float(pick.counts_spent), reason=reason,
+                classification_eig=_finite_or_none(information),
+                combined_information=_finite_or_none(information), purpose="differentiate")
     if unvisited:
         pick = min(unvisited, key=opening) if opening is not None else max(
             unvisited, key=lambda g: model.predict(g.q)[1])
@@ -389,6 +424,37 @@ def _select_target(grid: list[GridQ], model, *,
     candidates = [g for g in grid if not (g.converged or g.stuck)]
     if not candidates:
         return None, "", "all grid q converged or abandoned (stuck)", None
+
+    # A statistically adequate (or empirically floored) provisional candidate needs branch evidence,
+    # not more counts at the same q. Prefer an untested neighboring q by expected classification
+    # information; this is evidence collection, never a hard acoustic/optic exclusion.
+    for source in grid:
+        master = source.master or {}
+        candidate_id = master.get("candidate_id")
+        diagnostic_hw = master.get("diagnostic_halfwidth")
+        evidence_ready = (source.interval_floored or
+                          (diagnostic_hw is not None and float(diagnostic_hw) <= source.tolerance))
+        if master.get("candidate_state") != "provisional" or not candidate_id or not evidence_ready:
+            continue
+        measured = {tuple(update.get("hkl") or ()) for point in grid
+                    for update in point.master_updates
+                    if update.get("candidate_id") == candidate_id}
+        neighbors = [candidate for candidate in candidates
+                     if tuple(candidate.hkl) not in measured and candidate.hkl != source.hkl]
+        if not neighbors:
+            continue
+        if classify is not None:
+            pick = max(neighbors, key=lambda candidate: max(float(classify(candidate)), 0.0))
+            information = max(float(classify(pick)), 0.0)
+        else:
+            pick = min(neighbors, key=lambda candidate: abs(candidate.q - source.q))
+            information = None
+        reason = (f"neighboring-q evidence for provisional candidate {candidate_id}; "
+                  f"q={pick.q:g} (hkl={list(pick.hkl)}) discriminates branch hypotheses")
+        return pick, "production", reason, ProposalScore(
+            method="classification", c_spent=float(pick.counts_spent), reason=reason,
+            classification_eig=_finite_or_none(information), combined_information=_finite_or_none(information),
+            purpose="differentiate")
 
     # Baseline-first: a workable q with no usable ω₀ yet gets a production scan to establish one
     # (unchanged behaviour — these carry a +inf σ-deficit and win outright).

@@ -273,6 +273,10 @@ class GridQ:
                     or self.n_unmodeled > 0 or self.n_branch_ambiguous > 0)
 
     @property
+    def candidate_rejected(self) -> bool:
+        return bool(self.master_updates and self.master_updates[-1].get("candidate_state") == "rejected")
+
+    @property
     def stuck(self) -> bool:
         """Abandoned: can't get signal (``MAX_DECLINES`` consecutive junk fits), delivered centers but
         every calibrated interval is uncertifiable ``MAX_DECLINES``× (S3: γ-at-bound or fast-tier-only),
@@ -281,7 +285,7 @@ class GridQ:
         if self.converged:
             return False
         no_signal_exhausted = self.n_decline >= MAX_DECLINES and not self.signal_seen
-        return (no_signal_exhausted or self.interval_floored
+        return (no_signal_exhausted or self.candidate_rejected or self.interval_floored
                 or self.n_production >= self.max_production_batches
                 or self.info_saturated)
 
@@ -297,6 +301,8 @@ class GridQ:
         existed here)."""
         if not self.stuck:
             return None
+        if self.candidate_rejected:
+            return "posterior_rejected"
         if self.interval_floored:
             return "interval_floored"
         # Floored: a genuinely CERTIFIABLE interval exists but cannot shrink below tolerance.
@@ -565,6 +571,8 @@ def _stuck_why(g: GridQ) -> str:
     if reason == "branch_ambiguity":
         return (f"detected feature(s), but {g.n_branch_ambiguous} assignment(s) could not certify "
                 "the requested branch — branch ambiguity, not no-signal")
+    if reason == "posterior_rejected":
+        return "candidate rejected by neighboring-q Bayesian evidence"
     return f"declined {g.n_decline}× (no signal)"
 
 
