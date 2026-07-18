@@ -39,6 +39,29 @@ def test_omega0_profile_brackets_fit():
     assert lo < fit.omega0 < hi
 
 
+def test_omega0_profile_executor_preserves_side_order():
+    class OrderedExecutor:
+        def map(self, fn, tasks):
+            return [fn(task) for task in tasks]
+
+    hyp, ctx, fit = _fitted()
+    assert P.omega0_profile_interval(hyp, ctx, fit, executor=OrderedExecutor()) == \
+        P.omega0_profile_interval(hyp, ctx, fit)
+
+
+def test_omega0_profile_parallel_path_preserves_unavailable_side(monkeypatch):
+    class OrderedExecutor:
+        def map(self, fn, tasks):
+            return [fn(task) for task in tasks]
+
+    hyp, ctx, fit = _fitted()
+    monkeypatch.setattr(P, "_omega0_profile_crossing",
+                        lambda _h, _c, _r, direction, _delta=1.0:
+                        float("nan") if direction < 0 else 6.0)
+    lo, hi = P.omega0_profile_interval(hyp, ctx, fit, executor=OrderedExecutor())
+    assert np.isnan(lo) and hi == 6.0
+
+
 def test_omega0_profile_near_bootstrap_when_well_counted():
     hyp, ctx, fit = _fitted()
     lo, hi = P.omega0_profile_interval(hyp, ctx, fit)

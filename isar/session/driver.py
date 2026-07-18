@@ -474,8 +474,11 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     run_fast = errors_tier == "fast"     # HESSE ω₀ interval + trust flag, no bootstrap (fast loop)
     run_bayes = errors_tier == "bayes"   # full + nested-sampling posterior on the prelim-best label
     _t_two_stage = time.perf_counter()
+    # Candidate enumeration is point-estimation only. Full-tier MINOS is authoritative only after
+    # the preliminary AIC pass and runs once per survivor in errors.attach_batch below.
     results, structure_skipped = loop.fit_structures_two_stage_hinted(
-        ctx, minos=run_full, peaks=peaks, structure_hint=structure_hint)
+        ctx, minos=False, peaks=peaks, structure_hint=structure_hint,
+        executor=boot_executor)
     two_stage_seconds = round(time.perf_counter() - _t_two_stage, 4)
     # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
     by_hyp = {h.label: h for h in enumerate_structures(ctx)}
@@ -496,14 +499,16 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     errors_attach_seconds = 0.0
     if run_full:
         _t_errors = time.perf_counter()
+        survivor_items = []
         for label in prelim.survivors:
             r = fits.get(label)
             if r is not None and r.optimizer_converged and label in by_hyp:
-                errors.attach(r, by_hyp[label], ctx, M=M, seed=seed, with_profile=True,
-                              with_bayes=(run_bayes and label == prelim.best),
-                              prior=_bayes_prior_for(prior, card),
-                              boot_workers=boot_workers, boot_executor=boot_executor,
-                              boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
+                survivor_items.append((r, by_hyp[label], ctx))
+        errors.attach_batch(
+            survivor_items, M=M, seed=seed, with_profile=True,
+            bayes_label=(prelim.best if run_bayes else None),
+            prior=_bayes_prior_for(prior, card), boot_workers=boot_workers,
+            executor=boot_executor, boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
         errors_attach_seconds = round(time.perf_counter() - _t_errors, 4)
     sel = select.select_models(results)
     sv = verdict.classify(results, ctx, sel, prior=prior, descriptor=descriptor)
@@ -610,17 +615,24 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # within_model["method_seconds"]). Populated on the full/bayes tiers; 0.0 elsewhere
     # (no attach ran). The existing errors_attach_seconds lump is kept untouched.
     bootstrap_seconds = minos_seconds = profile_seconds = bayes_seconds = 0.0
+    profile_method_seconds = []
+    profile_batch_seconds = []
     for label in prelim.survivors:
         r = fits.get(label)
         wm_r = getattr(r, "within_model", None) if r is not None else None
         msec = (wm_r or {}).get("method_seconds") or {}
         bootstrap_seconds += float(msec.get("bootstrap", 0.0))
         minos_seconds += float(msec.get("minos", 0.0))
-        profile_seconds += float(msec.get("profile", 0.0))
+        profile_method_seconds.append(float(msec.get("profile", 0.0)))
+        if "profile_batch" in msec:
+            profile_batch_seconds.append(float(msec["profile_batch"]))
         bayes_seconds += float(msec.get("bayes", 0.0))
     bootstrap_seconds = round(bootstrap_seconds, 4)
     minos_seconds = round(minos_seconds, 4)
-    profile_seconds = round(profile_seconds, 4)
+    # attach_batch fans every survivor's profile work onto the shared pool together; its wall
+    # contribution is the critical path. The executor-free compatibility path remains additive.
+    profile_seconds = round((max(profile_batch_seconds) if profile_batch_seconds
+                             else sum(profile_method_seconds)), 4)
     bayes_seconds = round(bayes_seconds, 4)
 
     n_modes = int(best.n_modes) if best is not None else 1

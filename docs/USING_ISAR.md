@@ -65,7 +65,9 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   needs LLMM, the co-located local LLM service, running — see
   [LLMM_INTEGRATION_HANDOFF.md](archive/LLMM_INTEGRATION_HANDOFF.md)), `--M N` (bootstrap size; default
   200, use ~60 for a fast first look), `--detectors ana7` (restrict which analyzers are fitted
-  this run).
+  this run), and `--workers N` (the total fitting CPU budget; default `min(30, cpu-2)`, also settable
+  with `ISAR_WORKERS`). ISAR assigns that budget across scans for a large batch or within a promoted
+  full/Bayes fit for a small workorder; it does not nest the two kinds of process pool.
 - **`isar ingest <data>... --workspace DIR [--json]`** — parse data into the ledger **without
   fitting**. It discovers and classifies the files, parses and dedups the scans, and upserts one
   `ingested` ledger entry per `(exp, scan, detector)` — so parsed scans are visible (through

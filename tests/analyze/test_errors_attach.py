@@ -4,7 +4,7 @@ import numpy as np
 
 from isar.analyze import loop
 from isar.analyze.context import ScanContext
-from isar.analyze.errors import attach
+from isar.analyze.errors import attach, attach_batch
 from isar.analyze.errors.bayes import BayesResult
 from isar.analyze.structures import enumerate_structures
 from isar.synth._ff import convolute_voigt_dho
@@ -68,6 +68,22 @@ def test_method_seconds_all_methods(monkeypatch):
     for key in ("bootstrap", "minos", "profile", "bayes"):
         assert key in ms
         assert ms[key] >= 0
+
+
+def test_attach_batch_matches_serial_scientific_outputs():
+    ctx = _ctx()
+    hyp, serial = _fitted(ctx)
+    _hyp, batched = _fitted(ctx)
+    attach(serial, hyp, ctx, M=24, seed=2, with_profile=True)
+    attach_batch([(batched, hyp, ctx)], M=24, seed=2, with_profile=True)
+    for key in ("freq_interval", "gamma_interval", "n_converged", "M", "bimodal",
+                "profile_interval", "minos"):
+        left, right = serial.within_model[key], batched.within_model[key]
+        if isinstance(left, np.ndarray):
+            assert np.array_equal(left, right)
+        else:
+            assert left == right
+    assert batched.profile_ok == serial.profile_ok
 
 
 def test_bayes_diagnostics_keys(monkeypatch):

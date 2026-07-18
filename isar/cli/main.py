@@ -66,8 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--formats", default="html,markdown", help="report formats (comma-separated)")
     pr.add_argument("--detectors", default=None, help="restrict fitted detectors (comma-separated)")
     pr.add_argument("--workers", type=int, default=None,
-                    help="parallel fit workers across scans (default min(30, cpu-2); "
-                         "env ISAR_WORKERS; 1 = serial)")
+                    help="total fitting worker budget, assigned across scans or within a promoted "
+                         "fit (default min(30, cpu-2); env ISAR_WORKERS; 1 = serial)")
     pr.add_argument("--errors", default="full", choices=["full", "fast", "cheap", "bayes"],
                     help="uncertainty depth: 'full' (MINOS+bootstrap+profile, default), "
                          "'fast' (HESSE ω₀ interval + trust flag, no bootstrap), "

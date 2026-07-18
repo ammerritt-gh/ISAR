@@ -167,6 +167,34 @@ def test_two_stage_offers_multimode_when_two_peaks_declared():
     assert "stokes2+bg" in {r.label for r in results}
 
 
+def _scientific_signature(results):
+    """Fields whose order/value must not depend on candidate scheduling."""
+    return [(r.label, r.optimizer_converged, r.cost, r.k, r.params, r.modes)
+            for r in results]
+
+
+def test_two_stage_parallel_candidates_are_ordered_and_identical():
+    from concurrent.futures import ProcessPoolExecutor
+
+    ctx = _one_peak_ctx()
+    serial = loop.fit_structures_two_stage(ctx, minos=False)
+    with ProcessPoolExecutor(max_workers=2) as executor:
+        parallel = loop.fit_structures_two_stage(ctx, minos=False, executor=executor)
+    assert _scientific_signature(parallel) == _scientific_signature(serial)
+
+
+def test_candidate_pool_failure_logs_and_retries_serially(caplog):
+    class BrokenExecutor:
+        def map(self, *_args, **_kwargs):
+            raise RuntimeError("worker vanished")
+
+    ctx = _one_peak_ctx()
+    expected = loop.fit_structures_two_stage(ctx, minos=False)
+    actual = loop.fit_structures_two_stage(ctx, minos=False, executor=BrokenExecutor())
+    assert _scientific_signature(actual) == _scientific_signature(expected)
+    assert "retrying serially" in caplog.text
+
+
 # --- FIX 1: greedy-IC "seed robustness" was really a MIGRAD call-budget starvation ----------
 
 def _sparse_two_peak_ctx(seed=208, o1=5.7, o2=7.9, a1=12.0, a2=8.0, g=0.5, bg=0.05, n=44):

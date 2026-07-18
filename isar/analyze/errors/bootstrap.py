@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+import logging
 
 import numpy as np
 
@@ -22,6 +23,7 @@ from isar.synth import backends, estimators
 # Only spin up a process pool for the M-replicate loop when there is enough work to amortize the
 # (Windows-spawn) worker startup. Below this, the serial path is faster.
 _BOOT_PARALLEL_MIN_M = 16
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -219,7 +221,13 @@ def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 1234
                 for ch in chunks]
         out: list = [None] * n
         if executor is not None:                       # shared pool: never closed by the callee
-            for ci, chunk_res in enumerate(executor.map(_bootstrap_chunk, args)):
+            try:
+                chunk_results = list(executor.map(_bootstrap_chunk, args))
+            except Exception as exc:  # noqa: BLE001 — pure chunks are safe to repeat
+                log.warning("parallel bootstrap failed; retrying serially: %s: %s",
+                            type(exc).__name__, exc)
+                chunk_results = [_bootstrap_chunk(arg) for arg in args]
+            for ci, chunk_res in enumerate(chunk_results):
                 out[ci::n_chunks] = chunk_res
         else:
             with ProcessPoolExecutor(max_workers=n_chunks) as ex:
