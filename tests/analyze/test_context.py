@@ -83,3 +83,33 @@ def test_from_scan_sources_quasielastic_fwhm_from_tas_card():
     ctx = CTX.ScanContext.from_scan(rec, "ana5", card,
                                     center=0.0, gauss_fwhm=0.6, lorentz_fwhm=0.0)
     assert ctx.quasielastic_fwhm == 1.5
+
+
+def test_effective_exposure_is_peak_local_and_has_deterministic_fallback():
+    x = np.arange(-3.0, 4.0)
+    monitor = np.array([10.0, 20.0, 30.0, 100.0, 110.0, 120.0, 130.0])
+    mask = np.ones(x.size, dtype=bool)
+    local = CTX.effective_exposure(x, monitor, mask, target_center=1.0, resolution_fwhm=1.0)
+    assert local["value"] == 110.0
+    assert local["source"] == "target_window" and not local["fallback"]
+    fallback = CTX.effective_exposure(x, monitor, mask, target_center=20.0, resolution_fwhm=1.0)
+    assert fallback["value"] == 100.0
+    assert fallback["source"] == "kept_window" and fallback["fallback"]
+
+
+def test_zero_exposure_is_masked_without_touching_raw_counts():
+    values = np.array([10.0, 0.0, 30.0])
+    scale, reference = CTX.normalized_exposure(values, np.ones(3, dtype=bool))
+    assert reference == 20.0
+    assert np.array_equal(scale, np.array([0.5, 0.0, 1.5]))
+
+
+def test_from_scan_prefers_monitor_exposure_even_in_time_counting_mode():
+    rec = _stub_record()
+    monitor = np.linspace(1.0, 3.0, 41)
+    rec.normalization = SimpleNamespace(
+        counting_mode="time", monitor=monitor, time=np.full(41, 10.0))
+    card = SimpleNamespace(policy=SimpleNamespace(instrument="S30", quasielastic_fwhm=None))
+    ctx = CTX.ScanContext.from_scan(rec, "ana5", card,
+                                    center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0)
+    assert np.allclose(ctx.exposure_scale, monitor / np.median(monitor))

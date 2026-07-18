@@ -58,6 +58,21 @@ def test_fit_hypothesis_recovers_truth_on_clean_spectrum():
     assert res.optimizer_converged
 
 
+def test_fit_hypothesis_recovers_truth_with_unequal_exposure():
+    base = _spectrum_ctx()
+    scale = np.linspace(0.35, 2.4, base.x.size)
+    exposed = ScanContext(
+        x=base.x, counts=base.counts * scale, mask=base.mask, T=base.T, center=base.center,
+        gauss_fwhm=base.gauss_fwhm, lorentz_fwhm=base.lorentz_fwhm,
+        instrument=base.instrument, energy_status=base.energy_status, exposure_scale=scale)
+    hyp = _by_label(exposed)["elastic+stokes+bg"]
+    result = loop.fit_hypothesis(hyp, exposed, minos=False)
+    assert result.optimizer_converged
+    assert abs(result.omega0 - 5.0) < 0.1
+    assert abs(result.gamma - 0.45) < 0.1
+    assert np.array_equal(exposed.counts, base.counts * scale)
+
+
 def test_result_separates_convergence_from_covariance():
     """A converged fit whose HESSE covariance failed must stay usable (review F2)."""
     comp = CompositeModel([PhononDHO(), ConstantBackground()])  # k = 4

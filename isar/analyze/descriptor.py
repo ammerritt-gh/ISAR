@@ -41,6 +41,7 @@ def _sigma_from_p(p: float) -> float:
 
 
 def describe_spectrum(x, counts, *, center, gauss_fwhm, lorentz_fwhm=0.0, mask=None,
+                      exposure_scale=None,
                       alpha: float = 0.05, elastic_excl_fwhm: float = 1.5) -> ScanDescriptor:
     """Model-free peak descriptor for one spectrum (raw Poisson counts).
 
@@ -50,11 +51,18 @@ def describe_spectrum(x, counts, *, center, gauss_fwhm, lorentz_fwhm=0.0, mask=N
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(counts, dtype=float)
+    exposure = (None if exposure_scale is None else np.asarray(exposure_scale, dtype=float))
     if mask is not None:
         m = np.asarray(mask, dtype=bool)
         x, y = x[m], y[m]
+        if exposure is not None:
+            exposure = exposure[m]
     order = np.argsort(x)
     x, y = x[order], y[order]
+    if exposure is not None:
+        exposure = exposure[order]
+        if exposure.shape != y.shape or np.any(~np.isfinite(exposure)) or np.any(exposure <= 0):
+            raise ValueError("kept exposure_scale values must be finite and positive")
     n = x.size
     if n < MIN_POINTS:
         return ScanDescriptor(peaks=(), background=0.0, n_res=0.0, alpha=alpha, n_points=n)
@@ -65,8 +73,8 @@ def describe_spectrum(x, counts, *, center, gauss_fwhm, lorentz_fwhm=0.0, mask=N
     hw_bins = max(1, int(round(0.5 * res / dx)))          # half-window in bins (~one resolution FWHM)
 
     # Robust flat background (peaks are a minority of the window).
-    background = float(np.median(y))
-    lam_win = max(background, 1e-9) * (2 * hw_bins + 1)   # expected background counts in a window
+    rate = y if exposure is None else y / exposure
+    background = float(np.median(rate))
 
     # Searched region: exclude the elastic line + edge windows without full support.
     excl = elastic_excl_fwhm * res
@@ -87,6 +95,9 @@ def describe_spectrum(x, counts, *, center, gauss_fwhm, lorentz_fwhm=0.0, mask=N
     for i in idx:
         w = y[i - hw_bins:i + hw_bins + 1]
         n_obs = float(w.sum())
+        w_exposure = ((2 * hw_bins + 1) if exposure is None
+                      else float(exposure[i - hw_bins:i + hw_bins + 1].sum()))
+        lam_win = max(background, 1e-9) * w_exposure
         p = float(poisson.sf(n_obs - 1, lam_win)) if lam_win > 0 else (0.0 if n_obs > 0 else 1.0)
         if p < p_thresh:
             cand.append((i, p, n_obs))
@@ -110,11 +121,13 @@ def describe_spectrum(x, counts, *, center, gauss_fwhm, lorentz_fwhm=0.0, mask=N
     peaks = []
     for i in chosen:
         lo, hi = i - hw_bins, i + hw_bins + 1
+        w_exposure = ((hi - lo) if exposure is None else float(exposure[lo:hi].sum()))
+        lam_win = max(background, 1e-9) * w_exposure
         excess = float(y[lo:hi].sum() - lam_win)
         w = y[lo:hi]
         p = float(poisson.sf(float(w.sum()) - 1, lam_win)) if lam_win > 0 else 0.0
         peaks.append(DescriptorPeak(
-            energy=float(x[i]), width=_estimate_fwhm(x, y, i, background, res, dx),
+            energy=float(x[i]), width=_estimate_fwhm(x, rate, i, background, res, dx),
             integrated_intensity=excess, significance=_sigma_from_p(p), p_value=p))
     return ScanDescriptor(peaks=tuple(peaks), background=background, n_res=n_res,
                           alpha=alpha, n_points=n)

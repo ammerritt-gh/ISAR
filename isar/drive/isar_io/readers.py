@@ -33,6 +33,7 @@ _NUMERIC_COLUMNS = frozenset({
     "gamma", "cost_per_dof",
     "zero", "gauss_fwhm", "lorentz_fwhm", "prior_omega", "prior_sigma",
     "secondary_omega0", "secondary_omega0_err",
+    "effective_exposure",
 })
 _INT_COLUMNS = frozenset({"scan", "prior_n", "n_modes", "n_members"})
 # Coerced to bool ("True"/"False" → True/False; "" → None). ISAR writes Python bool reprs.
@@ -41,7 +42,7 @@ _BOOL_COLUMNS = frozenset({"interval_reliable", "pooled", "hesse_trusted", "reso
 _LIST_COLUMNS = frozenset({"members"})
 # JSON-encoded structured columns (GUI Phase 0): the amplitudes dict and candidate table. Parsed
 # with json.loads; "" / None → None; a malformed cell is left as the raw string (never raises).
-_JSON_COLUMNS = frozenset({"amplitudes", "candidates"})
+_JSON_COLUMNS = frozenset({"amplitudes", "candidates", "exposure_provenance", "branch_posterior"})
 
 
 def _report_dir(workspace: str | Path) -> Path:

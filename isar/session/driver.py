@@ -26,7 +26,7 @@ import numpy as np
 
 from isar.analyze import errors, loop, select, verdict
 from isar.analyze import gold as gold_mod
-from isar.analyze.context import ScanContext
+from isar.analyze.context import ScanContext, effective_exposure, normalized_exposure
 from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.reduce import collate as collate_mod
@@ -148,6 +148,12 @@ class FitOutcome:
     candidates: list | None = None
     target_branch: str = "acoustic"
     target_label: str = "acoustic"
+    effective_exposure: float | None = None
+    exposure_provenance: dict | None = None
+    branch_posterior: dict | None = None
+    candidate_id: str | None = None
+    candidate_state: str | None = None
+    acquisition_id: str | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -303,6 +309,29 @@ def _intensity_measure(rec, ctx, fit) -> dict | None:
         instrument=str(ctx.instrument)).to_dict()
 
 
+def _effective_exposure_for(rec, ctx, fit, *, absolute_exposure=None,
+                            submitted_ncount: int | None = None) -> dict:
+    """One exposure definition for single scans and pooled masters."""
+    target = fit.get("omega0")
+    if target is None or not np.isfinite(target):
+        target = getattr(ctx, "acoustic_omega", None)
+    if target is None or not np.isfinite(target):
+        target = getattr(ctx, "prior_omega", None)
+    if target is None or not np.isfinite(target):
+        target = 0.5 * (float(ctx.window[0]) + float(ctx.window[1]))
+    exposure = absolute_exposure
+    if exposure is None and rec is not None:
+        norm = getattr(rec, "normalization", None)
+        if norm is not None:
+            exposure = getattr(norm, "monitor", None)
+            if exposure is None:
+                exposure = getattr(norm, "time", None)
+    return effective_exposure(
+        ctx.x, exposure, ctx.mask, target_center=float(target),
+        resolution_fwhm=float(ctx.gauss_fwhm) + float(ctx.lorentz_fwhm),
+        submitted_ncount=submitted_ncount)
+
+
 def _build_descriptor(ctx):
     """The model-free L0 :class:`ScanDescriptor` for this scan, or None on any failure — a report
     aid + Phase-4 falsification input, never a reason to fail a fit. Built once per scan and reused
@@ -310,7 +339,8 @@ def _build_descriptor(ctx):
     hard-fix retry, so one object serves both)."""
     try:
         return describe_spectrum(ctx.x, ctx.counts, center=ctx.center, gauss_fwhm=ctx.gauss_fwhm,
-                                 lorentz_fwhm=ctx.lorentz_fwhm, mask=ctx.mask)
+                                 lorentz_fwhm=ctx.lorentz_fwhm, mask=ctx.mask,
+                                 exposure_scale=ctx.exposure_scale)
     except Exception:  # noqa: BLE001
         return None
 
@@ -1371,6 +1401,12 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
     x = np.asarray(ms.energy, dtype=float)
     counts = np.asarray(ms.intensity, dtype=float)
     mask = np.asarray(ms.mask, dtype=bool)
+    raw_monitor = getattr(ms, "monitor", None)
+    monitor = None if raw_monitor is None else np.asarray(raw_monitor, dtype=float)
+    exposure_scale, _reference_exposure = ((None, None) if monitor is None
+                                           else normalized_exposure(monitor, mask))
+    if exposure_scale is not None:
+        mask = mask & (exposure_scale > 0)
     if int(mask.sum()) < g.min_fit_points:
         return ScanEntry(status="non_result",
                          reasons=[f"{master_id}: undersampled pool ({int(mask.sum())} < "
@@ -1399,7 +1435,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                       gauss_fwhm=calres.gauss_fwhm, lorentz_fwhm=calres.lorentz_fwhm,
                       instrument=card.policy.instrument, energy_status=card.policy.energy_status,
                       prior_omega=ic_ao, quasielastic_fwhm=card.policy.quasielastic_fwhm,
-                      acoustic_omega=ao)
+                      acoustic_omega=ao, exposure_scale=exposure_scale)
     near_gamma = (target_branch == "acoustic" and ao is not None
                   and ao < BA.RESOLVABLE_FWHM_FACTOR * calres.gauss_fwhm)
     descriptor = _build_descriptor(ctx)
@@ -1422,6 +1458,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         near_gamma=near_gamma, master=True)
 
     disposition = gold_mod.verdict_disposition(fit["verdict"])
+    exposure_info = _effective_exposure_for(None, ctx, fit, absolute_exposure=monitor)
     outcome = FitOutcome(
         detector_id=det, verdict=fit["verdict"], disposition=disposition,
         confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
@@ -1446,7 +1483,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         bayes_prior_driven=fit.get("bayes_prior_driven", False),
         bayes_fork_suspected=fit.get("bayes_fork_suspected", False),
         bayes_unconstrained=fit.get("bayes_unconstrained", False),
-        target_branch=target_branch, target_label=target_label)
+        target_branch=target_branch, target_label=target_label,
+        effective_exposure=exposure_info.get("value"), exposure_provenance=exposure_info)
     entry = ScanEntry(status="fitted", **base)
     entry.detectors[det] = outcome.to_dict()
     entry.provenance = {"pooled": True, "n_members": int(ms.n_members),
@@ -1815,6 +1853,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
                       "n_neighbors": n_neighbors, "source": prior_source}
 
     target_branch, target_label, _energy_search = _campaign_target(card)
+    exposure_info = _effective_exposure_for(rec, ctx, fit)
     outcome = FitOutcome(
         detector_id=det, verdict=fit["verdict"], disposition=disposition,
         confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
@@ -1840,7 +1879,8 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         bayes_prior_driven=fit.get("bayes_prior_driven", False),
         bayes_fork_suspected=fit.get("bayes_fork_suspected", False),
         bayes_unconstrained=fit.get("bayes_unconstrained", False),
-        target_branch=target_branch, target_label=target_label)
+        target_branch=target_branch, target_label=target_label,
+        effective_exposure=exposure_info.get("value"), exposure_provenance=exposure_info)
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is
@@ -1946,6 +1986,9 @@ _CSV_COLUMNS = [
     # consumers must route detector data using this full ledger key. Appended for old positional CSV
     # consumers, which continue seeing every existing column in its original order.
     "scan_id", "target_branch", "target_label",
+    # Dynamic-exposure / branch-candidate provenance (additive v2 columns).
+    "effective_exposure", "exposure_provenance", "branch_posterior",
+    "candidate_id", "candidate_state", "acquisition_id",
 ]
 
 
@@ -2009,6 +2052,13 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "scan_id": e.scan_id, "scan": e.scan_number, "detector": det, "sample": oc.get("sample"),
                 "target_branch": oc.get("target_branch", "acoustic"),
                 "target_label": oc.get("target_label", oc.get("target_branch", "acoustic")),
+                "effective_exposure": oc.get("effective_exposure"),
+                "exposure_provenance": (json.dumps(oc.get("exposure_provenance"), sort_keys=True)
+                                        if oc.get("exposure_provenance") is not None else None),
+                "branch_posterior": (json.dumps(oc.get("branch_posterior"), sort_keys=True)
+                                     if oc.get("branch_posterior") is not None else None),
+                "candidate_id": oc.get("candidate_id"), "candidate_state": oc.get("candidate_state"),
+                "acquisition_id": oc.get("acquisition_id"),
                 "T": oc.get("T"), "h": q[0], "k": q[1], "l": q[2], "status": e.status,
                 "verdict": oc.get("verdict"), "disposition": oc.get("disposition"),
                 "confidence": oc.get("confidence"), "omega0": oc.get("omega0"),
@@ -2055,7 +2105,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 # readers.read_results_csv json.loads them back. sort_keys keeps the cell stable.
                 "amplitudes": (json.dumps(oc.get("amplitudes"), sort_keys=True)
                                if oc.get("amplitudes") is not None else None),
-                "candidates": (json.dumps(oc.get("candidates"))
+                "candidates": (json.dumps(oc.get("candidates"), sort_keys=True)
                                if oc.get("candidates") is not None else None),
             })
     with open(path, "w", newline="", encoding="utf-8") as f:

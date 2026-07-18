@@ -206,6 +206,9 @@ class CompositeModel:
         total = np.zeros_like(x)
         for comp, local in zip(self.components, self._split(theta)):
             total = total + comp.evaluate(x, local, ctx)
+        exposure = getattr(ctx, "exposure_for", lambda _x: None)(x)
+        if exposure is not None:
+            total = total * exposure
         return total
 
     def evaluate_components(self, x, theta, ctx) -> list[tuple[str, np.ndarray]]:
@@ -213,8 +216,12 @@ class CompositeModel:
 
         Useful for plotting the model decomposition and for residual diagnosis."""
         x = np.asarray(x, dtype=float)
-        return [(comp.prefix, comp.evaluate(x, local, ctx))
-                for comp, local in zip(self.components, self._split(theta))]
+        exposure = getattr(ctx, "exposure_for", lambda _x: None)(x)
+        parts = [(comp.prefix, comp.evaluate(x, local, ctx))
+                 for comp, local in zip(self.components, self._split(theta))]
+        if exposure is not None:
+            parts = [(name, values * exposure) for name, values in parts]
+        return parts
 
     def nnls_basis(self, x, nonlinear_global: dict, ctx):
         """Stack each linear amplitude's unit column → (phi, linear_global_names).
@@ -230,6 +237,9 @@ class CompositeModel:
                 names.append(self._global(comp, n))
                 cols.append(np.asarray(unit[n], dtype=float))
         phi = np.column_stack(cols) if cols else np.empty((np.size(x), 0))
+        exposure = getattr(ctx, "exposure_for", lambda _x: None)(np.asarray(x, dtype=float))
+        if exposure is not None:
+            phi = phi * exposure[:, None]
         return phi, names
 
     # -- derived quantities --------------------------------------------------

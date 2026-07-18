@@ -165,6 +165,25 @@ def test_results_csv_roundtrips_amplitudes_and_candidates(tmp_path):
     assert winner["label"] == row["best_model"]
 
 
+def test_results_csv_roundtrips_exposure_and_candidate_provenance(tmp_path):
+    outcome = _outcome_with(None, None)
+    outcome.effective_exposure = 125_000_000.0
+    outcome.exposure_provenance = {
+        "source": "target_window", "fallback": False, "center": 5.0, "half_width": 1.0,
+        "value": 125_000_000.0}
+    outcome.branch_posterior = {"acoustic": 0.15, "optic": 0.8, "new": 0.05}
+    outcome.candidate_id = "optic:0"
+    outcome.candidate_state = "provisional"
+    outcome.acquisition_id = "acq-7"
+    row = _write_read(tmp_path, outcome)
+    assert row["effective_exposure"] == pytest.approx(125_000_000.0)
+    assert row["exposure_provenance"] == outcome.exposure_provenance
+    assert row["branch_posterior"] == outcome.branch_posterior
+    assert row["candidate_id"] == "optic:0"
+    assert row["candidate_state"] == "provisional"
+    assert row["acquisition_id"] == "acq-7"
+
+
 def test_results_csv_none_when_absent(tmp_path):
     row = _write_read(tmp_path, _outcome_with(None, None))
     assert row["amplitudes"] is None
