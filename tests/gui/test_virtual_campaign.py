@@ -107,8 +107,9 @@ def _start_virtual(w, goal="map the branch"):
     envelope_path = Path(argv[argv.index("--compile-only") + 1])
     envelope_path.parent.mkdir(parents=True, exist_ok=True)
     envelope_path.write_text(json.dumps({
-        "schema": "isar.objective-envelope/1",
+        "schema": "isar.objective-envelope/2",
         "objective": {
+            "schema": "isar.objective/2",
             "path": [[2.0, 0.0, 0.0], [2.5, 0.0, 0.0]],
             "tolerance_meV": 0.5,
             "budget": {"kind": "neutrons", "amount": 1e9},
@@ -140,6 +141,14 @@ def test_cold_window_has_the_campaign_entry(cold):
     assert w.campaign_dock is not None
     assert "Campaign" in w._docks
     assert "virtual campaign" in w._empty_hint.text()
+
+
+def test_pending_recovery_completion_status_is_resumable(cold):
+    cold._on_drive_finished(5, True)
+    message = cold.statusBar().currentMessage()
+    assert "recovery pending" in message
+    assert "Resume" in message
+    assert "failed" not in message.lower()
 
 
 # ---- reserve → launch → carry the form ----------------------------------------

@@ -16,17 +16,191 @@ import types
 
 import isar.drive.loop as loop_mod
 from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_point_count,
+                             _campaign_summary,
+                             _declined_observation,
+                             _executed_point_count, _feasible_point_count,
                              _errors_arg_for, _errors_tier_for, _extract_max_points, _full_tier,
-                             _guard_point_count,
+                             _finalize_proposal, _guard_point_count,
+                             _make_classification_providers, _record_eligible_crossings,
                              _master_obs_from_row, _observation_from_row, _pick_interval,
-                             _preflight_max_points, _resume_state, _run_nonce, _validate_body,
+                             _pooled_target_delivered,
+                             _preflight_instrument_limits, _preflight_max_points,
+                             _reconcile_budget_points, _resume_state,
+                             _run_nonce, _target_supporting_feasible_points, _validate_body,
                              run_campaign)
 from isar.drive.acquisition.acquire import ScanProposal, points_in_window
-from isar.drive.objective import ObjectiveSpec
+from isar.drive.acquisition.eig import counts_eig
+from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
+from isar.drive.instrument.tavi_client import TaviError
+from isar.drive.isar_io.scan_writer import save_scan_json
 from isar.drive.session_log import log_event, read_log
-from isar.drive.supervisor.stopping import PRODUCTION_NCOUNT, QUICKLOOK_NCOUNT
+from isar.drive.supervisor.stopping import (
+    GridQ,
+    PRODUCTION_NCOUNT,
+    QUICKLOOK_NCOUNT,
+    StopDecision,
+    summarize_grid,
+)
+from isar.schema.hypotheses import content_fingerprint
 
 _UNITY_CAL = Calibration.from_dict({"inflation": 1.0, "buckets": [], "center_pull_mean": 0.0})
+
+
+def test_feasible_point_count_prefers_tavi_contract_fields():
+    assert _feasible_point_count({"feasible_points": 2,
+                                  "planned_feasible_mask": [True, True, True]}, 9) == 2
+    assert _feasible_point_count({"planned_feasible_mask": [True, False, True]}, 9) == 2
+    assert _feasible_point_count({}, 9) == 9
+
+
+def test_executed_point_count_uses_frozen_execution_mask():
+    data = {"result": {"executed_feasible_mask": [True, False, True]}}
+    assert _executed_point_count(data, 9) == 2
+    assert _executed_point_count({"result": {}}, 9) == 9
+
+
+def test_target_support_preflight_counts_only_feasible_bins_inside_credible_band():
+    validation = {"point_manifest": [
+        {"feasible": True, "values": {"deltaE": 5.8}},
+        {"feasible": False, "values": {"deltaE": 6.0}},
+        {"feasible": True, "values": {"deltaE": 6.2}},
+        {"feasible": True, "values": {"deltaE": 10.0}},  # feasible background is not support
+    ]}
+    assert _target_supporting_feasible_points(validation, (6.0, 0.2)) == 2
+    assert _target_supporting_feasible_points({}, (6.0, 0.2)) is None
+    malformed = {"point_manifest": [{"feasible": True, "values": {"deltaE": "bad"}}]}
+    assert _target_supporting_feasible_points(malformed, (6.0, 0.2)) == 0
+
+
+def test_classification_uses_latest_complete_temperature_for_active_sample_only():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    objective = ObjectiveSpec.segment(
+        q_start=(2.0, 0.0, 0.0), q_end=(2.0, 0.1, 0.0), step_rlu=0.1,
+        tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 1e12},
+        target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+
+    def row(sample, temperature, branch, energy):
+        return {"sample": sample, "t_bin": temperature, "branch_id": branch,
+                "anchors": [{"u": u, "omega0": energy, "weight": 1.0}
+                            for u in (0.0, 0.1, 0.2)],
+                "n_anchors": 3, "period": None,
+                "parameter_prior": next(h for h in objective.hypotheses
+                                        if h["name"] == branch)}
+
+    selected_acoustic = row("active", 200.0, "acoustic", 2.0)
+    state = {"branch_belief_models": [
+        row("active", 100.0, "acoustic", 1.0), row("active", 100.0, "optic", 6.0),
+        selected_acoustic, row("active", 200.0, "optic", 7.0),
+        row("active", 300.0, "optic", 8.0),  # newest but incomplete: never mix with 200 K
+        row("other", 400.0, "acoustic", 9.0), row("other", 400.0, "optic", 10.0),
+    ]}
+    classify, rival = _make_classification_providers(
+        state, objective, 1.0, sample="active")
+    gridq = types.SimpleNamespace(hkl=(2.0, 0.0, 0.0), q=0.0)
+    assert classify(gridq) >= 0.0
+    from isar.drive.acquisition.classify_eig import belief_predict
+    assert rival(gridq) == pytest.approx(belief_predict(selected_acoustic, 0.0))
+    fallback, fallback_rival = _make_classification_providers(
+        state, objective, 1.0, sample="missing")
+    assert fallback is not None and fallback_rival is not None
+
+    state["branch_tracks"] = {"assignments": [{
+        "q": [2.0, 0.0, 0.0], "acoustic_candidate_index": 0,
+        "candidates": [{"probabilities": {"acoustic": 0.999, "optic": 0.0005,
+                                            "new": 0.0005}}],
+    }]}
+    resolved_classify, _ = _make_classification_providers(
+        state, objective, 1.0, sample="active")
+    assert resolved_classify(gridq) == 0.0
+
+
+def test_scan_declines_do_not_make_a_tracked_frontier_terminal():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    objective = ObjectiveSpec(
+        path=[(2.0, 0.0, 0.0), (2.05, 0.0, 0.0)], tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e12}, target_branch="optic",
+        target_selector="tracked_branch", **frozen)
+    anchor = GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5)
+    anchor.track_state = "ambiguous"
+    anchor.n_decline = 3
+    neighbor = GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5)
+    decision = loop_mod._blocked_frontier_decision(
+        objective, [anchor, neighbor], StopDecision("continue", [], []))
+    assert decision.state == "continue"
+    assert decision.reasons == []
+
+
+def test_pooled_selected_optic_suppresses_false_missed_window_from_acoustic_individual():
+    proposal = ScanProposal(
+        h=2.05, k=0.0, l=0.0, e_lo=-2.0, e_hi=8.0, e_step=0.25,
+        ncount=25_000_000, kind="production", reason="frontier revisit",
+        e_pred=6.0, acquisition_id="acq-1")
+    observations = [{
+        "kind": "pooled_master_update", "acquisition_id": "acq-1",
+        "hkl": [2.05, 0.0, 0.0], "usable": True, "branch_id": "optic",
+        "selected_candidate_index": 1, "omega0": 6.2,
+        "branch_candidates": [{"energy_meV": 0.46}, {"energy_meV": 6.2}],
+    }]
+    assert _pooled_target_delivered(observations, proposal, "optic")
+    assert not _pooled_target_delivered(observations, proposal, "acoustic")
+
+
+def test_crossing_recorder_records_transitions_not_every_eligible_batch(tmp_path):
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    objective = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
+                              budget={"kind": "neutrons", "amount": 1e12},
+                              target_branch="optic", **frozen)
+
+    def update(halfwidth):
+        return {"kind": "pooled_master_update", "hkl": (2.0, 0.0, 0.0),
+                "branch_id": "optic", "halfwidth": halfwidth, "usable": True,
+                "certifiable": True}
+
+    def master(members, halfwidth=0.3):
+        return {"hkl": (2.0, 0.0, 0.0), "branch_id": "optic", "halfwidth": halfwidth,
+                "usable": True, "reliable": True, "certifiable": True, "omega0": 6.0,
+                "members": members}
+
+    observations = [update(0.3)]
+    grid = summarize_grid(objective, observations, [master(["A"])])
+    assert _record_eligible_crossings(grid, observations, tmp_path / "crossings.jsonl") == 1
+    observations.append(update(0.25))
+    grid = summarize_grid(objective, observations, [master(["A", "B"], 0.25)])
+    assert _record_eligible_crossings(grid, observations) == 0
+    assert grid[0].converged
+    observations.extend([update(0.8), update(0.3)])
+    grid = summarize_grid(objective, observations, [master(["A"], 0.3)])
+    assert _record_eligible_crossings(grid, observations) == 1
+
+
+def test_budget_reconciliation_charges_only_executed_points():
+    budget = {"kind": "neutrons", "neutrons": 300.0, "seconds": 0.0, "spent": 300.0}
+    _reconcile_budget_points(budget, ncount=100, planned=3, executed=2)
+    assert budget == {"kind": "neutrons", "neutrons": 200.0,
+                      "seconds": 0.0, "spent": 200.0}
+
+
+def test_budget_reconciliation_scales_time_and_returns_durable_deltas():
+    budget = {"kind": "counting_seconds", "neutrons": 300.0,
+              "seconds": 30.0, "spent": 30.0}
+    deltas = _reconcile_budget_points(budget, ncount=100, planned=3, executed=2, eta=30.0)
+    assert deltas == pytest.approx((-100.0, -10.0))
+    assert budget["neutrons"] == pytest.approx(200.0)
+    assert budget["seconds"] == pytest.approx(20.0)
+    assert budget["spent"] == pytest.approx(20.0)
+
+
+def test_campaign_summary_persists_hypothesis_mismatch_not_just_a_log(monkeypatch, tmp_path):
+    mismatch = {"active": True, "comparison": "prior_vs_data_only_posterior_predictive"}
+    monkeypatch.setattr(loop_mod, "read_card_state", lambda _workspace: {
+        "dispersion_prior": [], "branch_belief": [{"branch_id": "optic"}],
+        "hypothesis_mismatch": mismatch})
+    decision = types.SimpleNamespace(to_dict=lambda: {"state": "continue", "reasons": [], "per_q": []})
+    summary = _campaign_summary(_objective(), [], decision,
+                                {"kind": "neutrons", "spent": 0}, tmp_path,
+                                tmp_path / "session.jsonl", 0)
+    assert summary["hypothesis_mismatch"] == mismatch
+    assert summary["branch_beliefs"][0]["branch_id"] == "optic"
 
 
 def _parse_grid(scan_command):
@@ -70,6 +244,16 @@ class MockTavi:
 
     def get_resolution(self, h, k, l, deltaE):
         return {"ok": True, "fwhm": {"dE": 0.8}}
+
+
+class _SubmitFailingTavi(MockTavi):
+    def submit_scan(self, body, idempotency_key=None):
+        raise TaviError(503, "POST /scan -> HTTP 503: instrument unavailable")
+
+
+class _WaitFailingTavi(MockTavi):
+    def wait_scan(self, job_id, timeout=0.0, **kw):
+        raise TaviError(None, f"GET /scan/{job_id} -> transport error: connection lost")
 
 
 import math as _math
@@ -125,6 +309,8 @@ def make_mock_runner(omega_true, *, window_gate=True, hesse_only=False, blank_me
             mrow = {"scan": master_scan, "detector": "det", "h": h, "k": 0.0, "l": 0.0,
                     "status": "fitted", "verdict": "resolved", "disposition": "resolved",
                     "omega0": true, "interval_reliable": True, "pooled": True, "n_members": npool,
+                    "model_interval_lo": true - hw, "model_interval_med": true,
+                    "model_interval_hi": true + hw, "model_robust": True,
                     # Chain of custody: member labels (";"-joined). blank_members leaves the cell
                     # empty while n_members>0 to exercise the summary's evidence-chain guard.
                     "members": ("" if blank_members else ";".join(str(i) for i in range(npool))),
@@ -140,12 +326,151 @@ def make_mock_runner(omega_true, *, window_gate=True, hesse_only=False, blank_me
         cols = ["scan", "detector", "h", "k", "l", "status", "verdict", "disposition",
                 "confidence", "omega0", "omega0_err", "interval_lo", "interval_hi",
                 "interval_reliable", "hesse_lo", "hesse_hi", "hesse_trusted",
-                "pooled", "n_members", "members", "reasons"]
+                "pooled", "n_members", "members", "model_interval_lo", "model_interval_med",
+                "model_interval_hi", "model_robust", "reasons"]
         with open(report / "results.csv", "w", newline="", encoding="utf-8") as fh:
             w = csv.DictWriter(fh, fieldnames=cols)
             w.writeheader()
             for r in rows:
                 w.writerow({c: r.get(c) for c in cols})
+    return runner
+
+
+class BranchAwareOpticTavi(MockTavi):
+    """Deterministic two-branch spectrum: acoustic rises from zero; optic stays near 6 meV."""
+
+    @staticmethod
+    def optic(k):
+        return 6.0 + 0.4 * float(k)
+
+    @staticmethod
+    def acoustic(k):
+        return 12.0 * abs(float(k))
+
+    def get_scan_data(self, job_id):
+        body = self.jobs[job_id]
+        params = body["parameters"]
+        grid = _parse_grid(params["scan_command1"])
+        optic = self.optic(params["K"])
+        acoustic = self.acoustic(params["K"])
+        counts = [1.0 + 75.0 * _math.exp(-((energy - optic) / 0.35) ** 2)
+                  + 120.0 * _math.exp(-((energy - acoustic) / 0.30) ** 2)
+                  for energy in grid]
+        return {"job_id": job_id, "state": "done",
+                "result": {"counts": counts, "scan_values_1": grid},
+                "launch": {"parameters": params}}
+
+
+def make_branch_aware_optic_runner(objective):
+    """Analysis seam for the orchestration regression, with durable two-branch beliefs."""
+    assigned: dict[str, int] = {}
+    priors = {row["name"]: row for row in objective.hypotheses}
+    quicklook_floor = int(objective.steering.get("quicklook_ncount", QUICKLOOK_NCOUNT))
+    if not {"optic", "acoustic"} <= set(priors):
+        raise AssertionError("two-branch optic fixture requires optic and acoustic hypotheses")
+
+    def runner(workspace, data_paths, **_kwargs):
+        data_dir = Path(data_paths[0])
+        rows = []
+        production: dict[tuple[str, float, float, float], list[int]] = {}
+        anchors = {"optic": {}, "acoustic": {}}
+        for path in sorted(data_dir.glob("*.json")):
+            document = json.loads(path.read_text(encoding="utf-8"))
+            params = document.get("launch", {}).get("parameters", {})
+            h, k, l = map(float, (params["H"], params["K"], params["L"]))
+            ncount = int(params["number_neutrons"])
+            if path.stem not in assigned:
+                assigned[path.stem] = len(assigned) + 1
+            scan_id = assigned[path.stem]
+            energy_grid = _parse_grid(params["scan_command1"])
+            optic = BranchAwareOpticTavi.optic(k)
+            acoustic = BranchAwareOpticTavi.acoustic(k)
+            for branch_id, energy in (("optic", optic), ("acoustic", acoustic)):
+                if energy_grid[0] <= energy <= energy_grid[-1]:
+                    anchors[branch_id][round(k, 8)] = {
+                        "u": k, "omega0": energy, "weight": 0.05,
+                    }
+            optic_contained = energy_grid[0] <= optic <= energy_grid[-1]
+            optic_row = {"scan": scan_id, "detector": "det-optic", "h": h, "k": k, "l": l,
+                         "status": "fitted", "interval_reliable": True, "branch_id": "optic"}
+            if not optic_contained:
+                optic_row.update({"verdict": "no_signal", "disposition": "declined", "omega0": None,
+                                  "interval_lo": None, "interval_hi": None,
+                                  "reasons": "optic peak outside window"})
+            else:
+                halfwidth = 0.6 if ncount <= quicklook_floor else 0.3
+                optic_row.update({"verdict": "resolved", "disposition": "resolved", "omega0": optic,
+                                  "interval_lo": optic - halfwidth, "interval_hi": optic + halfwidth,
+                                  "confidence": 0.95, "reasons": "optic branch resolved"})
+                if ncount > quicklook_floor:
+                    production.setdefault(("optic", h, k, l), []).append(scan_id)
+            rows.append(optic_row)
+
+            # A second resolved candidate models the stronger acoustic peak in the same spectrum.  It
+            # is intentionally present in results.csv so branch filtering—not fixture omission—keeps
+            # it out of optic certification and the final dispersion.
+            if energy_grid[0] <= acoustic <= energy_grid[-1]:
+                halfwidth = 0.5 if ncount <= quicklook_floor else 0.25
+                rows.append({
+                    "scan": scan_id, "detector": "det-acoustic", "h": h, "k": k, "l": l,
+                    "status": "fitted", "interval_reliable": True, "branch_id": "acoustic",
+                    "verdict": "resolved", "disposition": "resolved", "omega0": acoustic,
+                    "interval_lo": acoustic - halfwidth, "interval_hi": acoustic + halfwidth,
+                    "confidence": 0.97, "reasons": "strong acoustic branch resolved",
+                })
+                if ncount > quicklook_floor:
+                    production.setdefault(("acoustic", h, k, l), []).append(scan_id)
+
+        master_scan = 9_100_000
+        for (branch_id, h, k, l), members in sorted(production.items()):
+            energy = (BranchAwareOpticTavi.optic(k) if branch_id == "optic"
+                      else BranchAwareOpticTavi.acoustic(k))
+            halfwidth = (0.3 if branch_id == "optic" else 0.25) / _math.sqrt(len(members))
+            rows.append({
+                "scan": master_scan, "detector": f"det-{branch_id}", "h": h, "k": k, "l": l,
+                "status": "fitted", "verdict": "resolved", "disposition": "resolved",
+                "omega0": energy, "interval_lo": energy - halfwidth,
+                "interval_hi": energy + halfwidth, "interval_reliable": True,
+                "model_interval_lo": energy - halfwidth, "model_interval_med": energy,
+                "model_interval_hi": energy + halfwidth, "model_robust": True,
+                "pooled": True, "n_members": len(members),
+                "members": ";".join(map(str, members)), "branch_id": branch_id,
+                "confidence": 0.95, "reasons": f"pooled {branch_id} master",
+            })
+            master_scan += 1
+
+        report = Path(workspace) / "report"
+        report.mkdir(parents=True, exist_ok=True)
+        columns = ["scan", "detector", "h", "k", "l", "status", "verdict", "disposition",
+                   "confidence", "omega0", "interval_lo", "interval_hi", "interval_reliable",
+                   "pooled", "n_members", "members", "branch_id", "model_interval_lo",
+                   "model_interval_med", "model_interval_hi", "model_robust", "reasons"]
+        with open(report / "results.csv", "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=columns)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({column: row.get(column) for column in columns})
+
+        belief_models = []
+        flat_beliefs = []
+        for branch_id in ("optic", "acoustic"):
+            branch_anchors = [anchors[branch_id][key] for key in sorted(anchors[branch_id])]
+            belief_models.append({
+                "sample": "Al_phonon_DFT", "t_bin": 200.0, "branch_id": branch_id,
+                "anchors": branch_anchors, "n_anchors": len(branch_anchors), "period": None,
+                "parameter_prior": priors[branch_id],
+            })
+            flat_beliefs.append({
+                "sample": "Al_phonon_DFT", "t_bin": 200.0, "branch_id": branch_id,
+                "label_probabilities": {branch_id: 0.95},
+                "p_is_target": 0.95 if branch_id == "optic" else 0.05,
+                "n_anchors": len(branch_anchors),
+            })
+        (Path(workspace) / "card.state.json").write_text(json.dumps({
+            "schema_version": 1, "branch_belief_models": belief_models,
+            "branch_belief": flat_beliefs, "dispersion_prior": [],
+        }, indent=2), encoding="utf-8")
+
     return runner
 
 
@@ -161,6 +486,45 @@ def test_observation_reliable_bootstrap_is_certifiable():
         _urow(interval_lo=4.9, interval_hi=5.1, interval_reliable=True),
         "production", PRODUCTION_NCOUNT, _UNITY_CAL)
     assert o["certifiable"] is True and o["uncertifiable_kind"] is None
+
+
+def test_invalid_effective_exposure_is_not_replaced_by_submitted_ncount():
+    o = _observation_from_row(
+        _urow(interval_lo=4.9, interval_hi=5.1, interval_reliable=True,
+              effective_exposure=0.0),
+        "production", PRODUCTION_NCOUNT, _UNITY_CAL)
+    assert o["effective_exposure"] == 0.0
+    assert o["exposure_source"] == "invalid_effective_exposure"
+    assert o["exposure_bucket"] == "global"
+
+
+def test_candidate_rejection_requires_two_acquisitions_and_neighboring_q():
+    base = {"kind": "pooled_master_update", "candidate_id": "optic:lowest_energy:unspecified",
+            "candidate_state": "provisional", "target_branch": "optic",
+            "branch_posterior": {"optic": 0.04, "acoustic": 0.8, "new": 0.16}}
+    first = {**base, "hkl": [2.1, 0.0, 0.0], "acquisition_id": "A1"}
+    state, evidence = loop_mod._candidate_evidence_state([], first)
+    assert state == "provisional" and evidence["n_logical_acquisitions"] == 1
+
+    same_q = {**base, "hkl": [2.1, 0.0, 0.0], "acquisition_id": "A2"}
+    state, _ = loop_mod._candidate_evidence_state([first], same_q)
+    assert state == "provisional"
+    neighbor = {**base, "hkl": [2.2, 0.0, 0.0], "acquisition_id": "A2"}
+    state, evidence = loop_mod._candidate_evidence_state([first], neighbor)
+    assert state == "rejected"
+    assert evidence["n_logical_acquisitions"] == evidence["n_q_positions"] == 2
+
+    supported = {**neighbor, "branch_posterior": {"optic": 0.06, "acoustic": 0.8, "new": 0.14}}
+    assert loop_mod._candidate_evidence_state([first], supported)[0] == "provisional"
+    boundary = {**neighbor, "branch_posterior": {"optic": 0.05, "acoustic": 0.6, "new": 0.35}}
+    assert loop_mod._candidate_evidence_state([first], boundary)[0] == "rejected"
+    weak_competitor = {**neighbor,
+                       "branch_posterior": {"optic": 0.05, "acoustic": 0.59, "new": 0.36}}
+    assert loop_mod._candidate_evidence_state([first], weak_competitor)[0] == "provisional"
+    accepted = {**neighbor, "candidate_state": "accepted"}
+    assert loop_mod._candidate_evidence_state([first], accepted)[0] == "accepted"
+    unknown = {**neighbor, "candidate_state": "unknown"}
+    assert loop_mod._candidate_evidence_state([first], unknown)[0] == "unknown"
 
 
 def test_observation_gamma_at_bound_is_uncertifiable():
@@ -189,12 +553,15 @@ def test_observation_untrusted_fast_tier_is_uncertifiable():
     assert o["certifiable"] is False and o["uncertifiable_kind"] == "fast_tier"
 
 
-def test_master_gamma_at_bound_is_uncertifiable():
+def test_master_gamma_at_bound_certifies_when_model_robust_omega_is_identified():
     m = _master_obs_from_row(
         _urow(disposition="flagged", interval_lo=4.999, interval_hi=5.001, interval_reliable=False,
-              omega0_profile_lo=4.99, omega0_profile_hi=5.01),
+              omega0_profile_lo=4.99, omega0_profile_hi=5.01,
+              model_interval_lo=4.98, model_interval_med=5.0, model_interval_hi=5.02,
+              model_robust=True, gamma_at_bound=True),
         _UNITY_CAL)
-    assert m["reliable"] is True and m["certifiable"] is False
+    assert m["reliable"] is True and m["certifiable"] is True
+    assert m["halfwidth"] == pytest.approx(0.02)
 
 
 def test_pick_interval_prefers_bootstrap_when_reliable():
@@ -484,6 +851,115 @@ def test_campaign_reaches_met(tmp_path):
     assert (ws / "report" / "campaign_summary.json").exists()
 
 
+def test_optic_campaign_tracks_target_amid_acoustic_distractor_deterministically(
+        tmp_path, monkeypatch):
+    """End-to-end steering regression for the failure that motivated branch-aware campaigns."""
+    _no_subprocess(monkeypatch)
+
+    def execute(root):
+        frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+        frozen["steering"] = {**frozen["steering"],
+                              "differentiation_tolerance_meV": 1.2,
+                              "quicklook_ncount": 50_000_000,
+                              "production_batch_ncount": 100_000_000}
+        frozen["hypothesis_fingerprint"] = content_fingerprint(
+            frozen["hypotheses"], frozen["steering"])
+        objective = ObjectiveSpec.segment(
+            q_start=(2.0, 0.0, 0.0), q_end=(2.0, 0.5, 0.0), step_rlu=0.1,
+            tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 2.0e12},
+            name="optic-two-branch", target_branch="optic", target_label="transverse optic",
+            energy_search_meV=(-2.0, 12.0), **frozen)
+        client = BranchAwareOpticTavi(lambda _h: 0.0)
+        summary, workspace = _run(
+            root, objective, client, make_branch_aware_optic_runner(objective), max_iters=60)
+        events = read_log(summary["session_log"])
+        proposals = [event["payload"] for event in events if event["kind"] == "propose"]
+        return summary, proposals, workspace
+
+    first_summary, first_proposals, first_workspace = execute(tmp_path / "first")
+    second_summary, second_proposals, _ = execute(tmp_path / "second")
+
+    # Optic campaigns begin at Γ and never waste the first scan on the Bragg/elastic position.
+    first = first_proposals[0]
+    assert first["hkl"] == [2.0, 0.0, 0.0]
+    assert first["e_lo"] > 0.0 and first["e_lo"] < 6.0 < first["e_hi"]
+    assert first["ncount"] == 50_000_000
+    assert any(proposal["kind"] == "production" and proposal["ncount"] >= 100_000_000
+               for proposal in first_proposals)
+
+    # The resolved dispersion stays on the ~6 meV optic branch; the strong acoustic distractor rises
+    # from zero to 6 meV but never becomes the reported target (no acoustic/optic sawtooth).
+    energies = [row["omega0"] for row in first_summary["dispersion"]]
+    assert len(energies) == 6 and min(energies) >= 5.9
+    assert all(abs(right - left) < 0.2 for left, right in zip(energies, energies[1:]))
+    with open(first_workspace / "report" / "results.csv", newline="", encoding="utf-8") as handle:
+        result_rows = list(csv.DictReader(handle))
+    assert any(row["branch_id"] == "acoustic" and row["disposition"] == "resolved"
+               for row in result_rows)
+    assert any(float(row["omega0"] or 0.0) < 5.0 for row in result_rows
+               if row["branch_id"] == "acoustic")
+
+    # Once requested points are seeded, at least one explicitly non-certifying probe wins on branch
+    # information and exposes the MI in its score; rival support also reaches the scan window.
+    inserted = [proposal for proposal in first_proposals
+                if proposal["meta"].get("driver_inserted")]
+    assert inserted
+    assert all(not proposal["meta"]["certification_eligible"] for proposal in inserted)
+    assert any((proposal["meta"]["score"].get("classification_eig") or 0.0) > 0.0
+               for proposal in inserted)
+    assert any(proposal["meta"].get("rival_band") is not None for proposal in first_proposals[1:])
+
+    # Branch beliefs survive into the human/machine terminal artifact, and terminal success is honest:
+    # every requested point—not a diagnostic probe—is converged.
+    assert {row["branch_id"] for row in first_summary["branch_beliefs"]} == {"optic", "acoustic"}
+    assert first_summary["stop"]["state"] == "met"
+    assert all(row["converged"] for row in first_summary["grid"])
+    final_events = read_log(first_summary["session_log"])
+    assert len([event for event in final_events
+                if event["kind"] == "certification_crossing"]) == len(first_summary["grid"])
+    assert not any(event["kind"] == "exception"
+                   and (event.get("payload") or {}).get("action") == "certify_regression"
+                   for event in final_events)
+    persisted = json.loads(
+        (first_workspace / "report" / "campaign_summary.json").read_text(encoding="utf-8"))
+    assert persisted["stop"]["state"] == "met" and persisted["branch_beliefs"]
+
+    # Fixed objective, spectra, priors, and seed produce the same acquisition sequence on a fresh run.
+    signature = lambda proposals: [
+        (tuple(proposal["hkl"]), proposal["kind"], proposal["meta"].get("driver_inserted"),
+         round(proposal["e_lo"], 8), round(proposal["e_hi"], 8))
+        for proposal in proposals]
+    assert signature(second_proposals) == signature(first_proposals)
+    assert second_summary["stop"]["state"] == first_summary["stop"]["state"]
+
+
+def test_optic_campaign_with_supplied_energy_runs_nearest_selector(tmp_path, monkeypatch):
+    """The scientist-facing supplied-energy mode traverses the complete campaign loop."""
+    _no_subprocess(monkeypatch)
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    frozen["steering"] = {**frozen["steering"],
+                          "quicklook_ncount": 50_000_000,
+                          "production_batch_ncount": 100_000_000}
+    frozen["hypothesis_fingerprint"] = content_fingerprint(
+        frozen["hypotheses"], frozen["steering"])
+    objective = ObjectiveSpec.segment(
+        q_start=(2.0, 0.0, 0.0), q_end=(2.0, 0.2, 0.0), step_rlu=0.1,
+        tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 1.0e12},
+        name="optic-nearest", target_branch="optic", target_label="transverse optic",
+        target_energy_meV=6.1, energy_search_meV=(-2.0, 12.0), **frozen)
+    assert objective.target_selector == "nearest_energy"
+
+    summary, _workspace = _run(
+        tmp_path, objective, BranchAwareOpticTavi(lambda _h: 0.0),
+        make_branch_aware_optic_runner(objective), max_iters=40)
+    proposals = [event["payload"] for event in read_log(summary["session_log"])
+                 if event["kind"] == "propose"]
+    assert proposals[0]["e_lo"] < 6.1 < proposals[0]["e_hi"]
+    assert proposals[0]["ncount"] == 50_000_000
+    assert summary["stop"]["state"] == "met"
+    assert all(abs(row["omega0"] - 6.1) <= 0.2 for row in summary["dispersion"])
+
+
 def test_session_log_shows_propose_analyze_decide_stop_chain(tmp_path):
     omega = lambda h: (h - 2.0) * 2.0
     client = MockTavi(omega)
@@ -508,11 +984,11 @@ def test_starts_with_quicklooks_then_escalates(tmp_path):
     assert "production" in later
 
 
-def test_campaign_unmeetable_on_budget(tmp_path):
+def test_campaign_incomplete_on_budget(tmp_path):
     omega = lambda h: (h - 2.0) * 2.0
     client = MockTavi(omega)
     summary, ws = _run(tmp_path, _objective(amount=1.0), client, make_mock_runner(omega))
-    assert summary["stop"]["state"] == "unmeetable"
+    assert summary["stop"]["state"] == "incomplete"
     assert any("budget" in r for r in summary["stop"]["reasons"])
 
 
@@ -528,6 +1004,23 @@ def test_missed_window_triggers_recenter(tmp_path):
     recenters = [e for e in events if e["kind"] == "exception"
                  and e["payload"].get("action") == "recenter"]
     assert recenters, "a missed window should have logged a recenter action"
+    submissions = [e["payload"] for e in events if e["kind"] == "physical_submission"]
+    assert submissions
+    by_acquisition = {}
+    for submission in submissions:
+        by_acquisition.setdefault(submission["acquisition_id"], []).append(submission)
+    retried = next(group for group in by_acquisition.values() if len(group) > 1)
+    assert [item["attempt"] for item in retried[:2]] == [0, 1]
+    assert all(item["submitted_ncount"] == item["ncount"] for item in submissions)
+    state = json.loads((ws / "card.state.json").read_text(encoding="utf-8"))
+    provenance = state["acquisition_provenance"]
+    assert {item["job_id"] for item in provenance} == {item["job_id"] for item in submissions}
+    by_job = {item["job_id"]: item for item in provenance}
+    for submission in submissions:
+        saved = by_job[submission["job_id"]]
+        assert saved["acquisition_id"] == submission["acquisition_id"]
+        assert saved["submitted_ncount"] == submission["submitted_ncount"]
+        assert saved["scan_kind"] == submission["kind"]
 
 
 # --------------------------------------------------------------------------- escalate_fit logging
@@ -604,7 +1097,8 @@ def test_full_tier_promotion_logs_paired_escalate_fit_events(tmp_path):
     # No escalate_fit event was logged as an unknown kind (the vocabulary now includes it).
     assert not any(e.get("kind_unknown") for e in esc)
     # Every in-loop promote (iter not None) is to the full tier with the documented reason.
-    inloop = [p for p in promotes if p["payload"].get("iter") is not None]
+    inloop = [p for p in promotes if p["payload"].get("iter") is not None
+              and p["payload"].get("reason") == "untrusted_hesse_no_reliable_interval"]
     assert inloop
     for p in inloop:
         assert p["payload"]["to_tier"] == "full"
@@ -612,8 +1106,9 @@ def test_full_tier_promotion_logs_paired_escalate_fit_events(tmp_path):
     # Each in-loop promotion is paired with exactly one outcome at the same iteration, carrying a valid
     # enum and a job_id that traces back to a real run event.
     run_job_ids = {(e["payload"] or {}).get("job_id") for e in events if e["kind"] == "run"}
-    assert len(outcomes) == len(inloop)
-    for o in outcomes:
+    paired_outcomes = [o for o in outcomes if o["payload"].get("job_id")]
+    assert len(paired_outcomes) == len(inloop)
+    for o in paired_outcomes:
         assert o["payload"]["outcome"] in ("seated", "failed", "superseded")
         assert o["payload"]["job_id"] in run_job_ids
         assert any(p["payload"].get("iter") == o["payload"]["iter"] for p in inloop)
@@ -681,12 +1176,275 @@ def test_resume_state_attributes_per_row_kinds_not_hkl_lock(tmp_path):
     assert sum(o["proposal_cost"] for o in obs) == pytest.approx(5.0e8 + 6.0e9 + 7.0e9)
 
 
+def test_detailed_resume_replays_changing_ncount_and_master_updates_chronologically(tmp_path):
+    ws = tmp_path / "ws-detailed"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    for index, ncount in enumerate((10_000_000, 40_000_000, 160_000_000), start=1):
+        submission = {"job_id": f"j{index}", "state": "done",
+                      "eta": {"estimated_seconds": float(index)},
+                      "kind": "quicklook" if index == 1 else "production",
+                      "ncount": ncount, "submitted_ncount": ncount, "n_points": 10,
+                      "hkl": [2.1, 0.0, 0.0], "cost": 10.0 * ncount,
+                      "acquisition_id": f"A{index}", "driver_inserted": False,
+                      "certification_eligible": True}
+        log_event(log, "run", submission)
+        log_event(log, "physical_submission", submission)
+        log_event(log, "pooled_master_update", {
+            "kind": "pooled_master_update", "hkl": [2.1, 0.0, 0.0],
+            "acquisition_id": f"A{index}", "candidate_id": "optic:0.1:lowest_energy",
+            "branch_id": "optic", "interval_method": "profile",
+            "exposure_bucket": "global", "calibration_version": "v1",
+            "effective_exposure": float(ncount), "diagnostic_halfwidth": 1.0 / index})
+    base = {"h": 2.1, "k": 0.0, "l": 0.0, "status": "fitted",
+            "verdict": "resolved", "disposition": "resolved", "omega0": 6.0,
+            "interval_lo": 5.8, "interval_hi": 6.2, "interval_reliable": True}
+    _write_results(ws, [{"scan": scan, "detector": "det", **base} for scan in (1, 2, 3)])
+
+    resumed = _resume_state(ws, log, _UNITY_CAL)
+    physical = [item for item in resumed["observations"]
+                if item.get("kind") != "pooled_master_update"]
+    assert [item["submitted_ncount"] for item in physical] == [
+        10_000_000, 40_000_000, 160_000_000]
+    assert [item["acquisition_id"] for item in physical] == ["A1", "A2", "A3"]
+    assert [item["proposal_cost"] for item in physical] == [
+        100_000_000.0, 400_000_000.0, 1_600_000_000.0]
+    assert [item.get("kind") for item in resumed["observations"]] == [
+        "quicklook", "pooled_master_update", "production", "pooled_master_update",
+        "production", "pooled_master_update"]
+    assert resumed["scan_counter"] == 3
+
+
+def test_detailed_resume_keeps_legacy_prefix_and_charges_multidetector_scan_once(tmp_path):
+    ws = tmp_path / "ws-mixed-ledger"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    legacy = {"job_id": "old", "state": "done", "kind": "quicklook",
+              "ncount": 10_000_000, "n_points": 10, "hkl": [2.1, 0.0, 0.0],
+              "cost": 100_000_000.0, "eta": {"estimated_seconds": 1.0}}
+    detailed = {"job_id": "new", "state": "done", "kind": "production",
+                "ncount": 40_000_000, "submitted_ncount": 40_000_000, "n_points": 10,
+                "hkl": [2.1, 0.0, 0.0], "cost": 400_000_000.0,
+                "eta": {"estimated_seconds": 2.0}, "acquisition_id": "A2"}
+    log_event(log, "run", legacy)
+    log_event(log, "run", detailed)
+    log_event(log, "physical_submission", detailed)
+    base = {"h": 2.1, "k": 0.0, "l": 0.0, "status": "fitted",
+            "verdict": "resolved", "disposition": "resolved", "omega0": 6.0,
+            "interval_lo": 5.8, "interval_hi": 6.2, "interval_reliable": True}
+    _write_results(ws, [
+        {"scan": 1, "detector": "d1", **base},
+        {"scan": 2, "detector": "d1", **base},
+        {"scan": 2, "detector": "d2", **base},
+    ])
+    resumed = _resume_state(ws, log, _UNITY_CAL)
+    assert resumed["scan_counter"] == 2
+    assert resumed["neutrons"] == pytest.approx(500_000_000.0)
+    assert resumed["seconds"] == pytest.approx(3.0)
+    new_rows = [row for row in resumed["observations"] if row.get("acquisition_id") == "A2"]
+    assert len(new_rows) == 2
+    assert sum(row["proposal_cost"] for row in new_rows) == pytest.approx(400_000_000.0)
+    assert summarize_grid(_objective(), resumed["observations"])[0].n_production == 1
+
+
+def test_resume_state_restores_driver_inserted_certification_provenance(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    log_event(log, "run", {
+        "job_id": "probe", "state": "done", "eta": {"estimated_seconds": 1.0},
+        "kind": "quicklook", "ncount": QUICKLOOK_NCOUNT, "n_points": 20,
+        "hkl": [2.15, 0.0, 0.0], "cost": 2.0e8,
+        "driver_inserted": True, "certification_eligible": False,
+        "insertion_purpose": "differentiate",
+    })
+    _write_results(ws, [{"scan": 1, "detector": "det", "h": 2.15, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "verdict": "resolved", "disposition": "resolved",
+                         "omega0": 6.0, "interval_lo": 5.8, "interval_hi": 6.2,
+                         "interval_reliable": True}])
+    resumed = _resume_state(ws, log, _UNITY_CAL)
+    assert len(resumed["observations"]) == 1
+    observation = resumed["observations"][0]
+    assert observation["driver_inserted"] is True
+    assert observation["certification_eligible"] is False
+
+
+def test_declined_inserted_observation_keeps_noncertification_provenance():
+    proposal = _scan_proposal(1.0, 2.0, 0.1)
+    proposal.meta.update({"driver_inserted": True, "certification_eligible": False,
+                          "insertion_purpose": "differentiate"})
+    observation = _declined_observation(proposal, "validation_rejected")
+    assert observation["driver_inserted"] is True
+    assert observation["certification_eligible"] is False
+
+
+def test_resume_keeps_nearby_probe_provenance_ledgers_distinct(tmp_path):
+    ws = tmp_path / "ws-nearby"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    for job_id, h, inserted in (("probe", 2.15001, True), ("grid", 2.15004, False)):
+        log_event(log, "run", {
+            "job_id": job_id, "state": "done", "kind": "quicklook",
+            "ncount": QUICKLOOK_NCOUNT, "n_points": 20, "hkl": [h, 0.0, 0.0],
+            "cost": 2.0e8, "driver_inserted": inserted,
+            "certification_eligible": not inserted,
+        })
+    base = {"detector": "det", "k": 0.0, "l": 0.0, "status": "fitted",
+            "verdict": "resolved", "disposition": "resolved", "omega0": 6.0,
+            "interval_lo": 5.8, "interval_hi": 6.2, "interval_reliable": True}
+    _write_results(ws, [{"scan": 1, "h": 2.15001, **base},
+                        {"scan": 2, "h": 2.15004, **base}])
+    observations = _resume_state(ws, log, _UNITY_CAL)["observations"]
+    by_h = {round(observation["hkl"][0], 5): observation for observation in observations}
+    assert by_h[2.15001]["driver_inserted"] is True
+    assert by_h[2.15001]["certification_eligible"] is False
+    assert by_h[2.15004]["driver_inserted"] is False
+    assert by_h[2.15004]["certification_eligible"] is True
+
+
 def test_cold_workspace_resumes_to_fresh(tmp_path):
     ws = tmp_path / "ws"
     (ws / "report").mkdir(parents=True)
     r = _resume_state(ws, ws / "report" / "session_log.jsonl", _UNITY_CAL)
     assert r == {"observations": [], "consumed": set(), "scan_kind": {},
-                 "scan_counter": 0, "neutrons": 0.0, "seconds": 0.0}
+                 "scan_counter": 0, "neutrons": 0.0, "seconds": 0.0,
+                 "proposal_counter": 0,
+                 "unmatched_submissions": []}
+
+
+def _seed_unmatched_submission(ws, *, job_id="old-job", state="queued"):
+    (ws / "report").mkdir(parents=True, exist_ok=True)
+    ncount = PRODUCTION_NCOUNT
+    payload = {
+        "job_id": job_id, "state": state, "eta": {"estimated_seconds": 5.0},
+        "kind": "production", "ncount": ncount, "submitted_ncount": ncount,
+        "requested_points": 21, "n_points": 21, "hkl": [2.1, 0.0, 0.0],
+        "cost": 21.0 * ncount, "acquisition_id": "A-recover",
+        "acquisition_target_energy": 0.2, "driver_inserted": False,
+        "certification_eligible": True,
+    }
+    log = ws / "report" / "session_log.jsonl"
+    log_event(log, "run", payload)
+    log_event(log, "physical_submission", payload)
+    body = {"parameters": {"H": 2.1, "K": 0.0, "L": 0.0,
+                           "scan_command1": "deltaE -0.8 1.2 0.1",
+                           "number_neutrons": ncount, "sample": "Al_phonon_DFT"}}
+    return payload, body
+
+
+class _RecoveryTavi(MockTavi):
+    def __init__(self, body, *, state="done", wait_state=None, unreachable=False):
+        super().__init__(lambda _h: 0.2)
+        self.jobs = {"old-job": body}
+        self.state = state
+        self.wait_state = wait_state if wait_state is not None else state
+        self.unreachable = unreachable
+        self.submit_calls = 0
+        self.wait_calls = 0
+
+    def submit_scan(self, body, idempotency_key=None):
+        self.submit_calls += 1
+        return super().submit_scan(body, idempotency_key=idempotency_key)
+
+    def get_scan(self, job_id):
+        if self.unreachable:
+            raise RuntimeError("instrument offline")
+        return {"job_id": job_id, "state": self.state}
+
+    def wait_scan(self, job_id, timeout=0.0, **kw):
+        self.wait_calls += 1
+        return {"job_id": job_id, "state": self.wait_state}
+
+
+def _recovery_config(ws, client, omega, *, max_iters=0):
+    return {"workspace": ws, "client": client, "run_isar": make_mock_runner(omega),
+            "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8},
+            "seed": 7, "max_iters": max_iters}
+
+
+def test_resume_reconstructs_analyzed_zero_rows_and_terminal_failure(tmp_path):
+    for suffix, event, expected in [
+        ("zero", ("analyze", {"job_id": "old-job", "n_rows": 0}), "analysis_no_result"),
+        ("failed", ("exception", {"action": "scan_not_done", "job_id": "old-job",
+                                   "state": "failed"}), "failed"),
+    ]:
+        ws = tmp_path / suffix
+        _seed_unmatched_submission(ws)
+        log_event(ws / "report" / "session_log.jsonl", event[0], event[1])
+        resumed = _resume_state(ws, ws / "report" / "session_log.jsonl", _UNITY_CAL)
+        assert resumed["unmatched_submissions"] == []
+        assert len(resumed["observations"]) == 1
+        assert resumed["observations"][0]["verdict"] == expected
+        assert resumed["observations"][0]["acquisition_id"] == "A-recover"
+
+
+def test_resume_keeps_latest_same_q_submission_unmatched(tmp_path):
+    ws = tmp_path / "same-q"
+    first, _body = _seed_unmatched_submission(ws, job_id="j1")
+    log = ws / "report" / "session_log.jsonl"
+    log_event(log, "analyze", {"job_id": "j1", "n_rows": 1})
+    second = {**first, "job_id": "j2", "acquisition_id": "A2"}
+    log_event(log, "run", second)
+    log_event(log, "physical_submission", second)
+    _write_results(ws, [{"scan": 1, "detector": "det", "h": 2.1, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "verdict": "resolved", "disposition": "resolved",
+                         "omega0": 0.2, "interval_lo": 0.05, "interval_hi": 0.35,
+                         "interval_reliable": True}])
+    resumed = _resume_state(ws, log, _UNITY_CAL)
+    assert [item["payload"]["job_id"] for item in resumed["unmatched_submissions"]] == ["j2"]
+    physical = [item for item in resumed["observations"]
+                if item.get("kind") != "pooled_master_update"]
+    assert len(physical) == 1 and physical[0]["acquisition_id"] == "A-recover"
+
+
+def test_resume_recovers_remote_completed_job_without_resubmission(tmp_path, monkeypatch):
+    _no_subprocess(monkeypatch)
+    ws = tmp_path / "remote"
+    _payload, body = _seed_unmatched_submission(ws)
+    client = _RecoveryTavi(body, state="done")
+    summary = run_campaign(
+        _objective(), _recovery_config(ws, client, lambda _h: 0.2))
+    events = read_log(summary["session_log"])
+    assert summary["stop"]["state"] != "pending_recovery"
+    assert client.submit_calls == 0 and client.wait_calls == 0
+    assert (ws / "data" / "old-job.json").exists()
+    assert any(event["kind"] == "recovery_completed" for event in events)
+    assert any(event["kind"] == "analyze"
+               and event["payload"].get("job_id") == "old-job" for event in events)
+
+
+def test_resume_reuses_saved_raw_job_without_contact_or_resubmission(tmp_path, monkeypatch):
+    _no_subprocess(monkeypatch)
+    ws = tmp_path / "raw"
+    _payload, body = _seed_unmatched_submission(ws)
+    client = _RecoveryTavi(body, unreachable=True)
+    save_scan_json(client.get_scan_data("old-job"), ws / "data")
+    summary = run_campaign(
+        _objective(), _recovery_config(ws, client, lambda _h: 0.2))
+    assert summary["stop"]["state"] != "pending_recovery"
+    assert client.submit_calls == 0 and client.wait_calls == 0
+
+
+@pytest.mark.parametrize("unreachable,state,wait_state", [
+    (False, "running", "running"),
+    (True, "queued", None),
+])
+def test_resume_pending_recovery_never_submits_new_scan(
+        tmp_path, monkeypatch, unreachable, state, wait_state):
+    _no_subprocess(monkeypatch)
+    ws = tmp_path / ("offline" if unreachable else "running")
+    _payload, body = _seed_unmatched_submission(ws)
+    client = _RecoveryTavi(
+        body, state=state, wait_state=wait_state, unreachable=unreachable)
+    summary = run_campaign(
+        _objective(), _recovery_config(ws, client, lambda _h: 0.2, max_iters=5))
+    assert summary["stop"]["state"] == "pending_recovery"
+    assert client.submit_calls == 0
+    assert client.wait_calls == (0 if unreachable else 1)
+    events = read_log(summary["session_log"])
+    pending = [event for event in events if event["kind"] == "recovery_pending"]
+    assert pending and pending[-1]["payload"]["decline"] is False
+    assert not any(event["kind"] == "propose" for event in events)
 
 
 # --------------------------------------------------------------------------- profiling / timing (step 4)
@@ -883,7 +1641,88 @@ def test_guard_leaves_at_limit_proposal_untouched(tmp_path):
     step_before = p.e_step
     assert _guard_point_count(p, 200, "get_state", log, it=0) is False
     assert p.e_step == step_before
+    assert p.n_points == 200
     assert not read_log(log)                            # nothing logged for an in-limit proposal
+
+
+def test_proposal_finalizer_uses_smaller_policy_cap_and_reclamps_neutron_count(tmp_path):
+    p = ScanProposal(h=2.1, k=0.0, l=0.0, e_lo=0.0, e_hi=20.0, e_step=0.1,
+                     ncount=200, kind="production", reason="test", n_points=100)
+    objective = types.SimpleNamespace(steering={"max_scan_points": 10,
+                                                "production_batch_ncount": 10,
+                                                "dynamic_ncount": True})
+    cfg = types.SimpleNamespace(max_points=50, max_points_source="get_state",
+                                log_path=tmp_path / "log.jsonl")
+    _finalize_proposal(
+        p, objective, cfg, {"kind": "neutrons", "amount": 1_000.0, "spent": 0.0}, it=2)
+    assert p.n_points == 10 and _emitted_point_count(p.e_lo, p.e_hi, p.e_step) == 10
+    assert p.ncount == 100
+    p.ncount = 5
+    _finalize_proposal(
+        p, objective, cfg, {"kind": "neutrons", "amount": 1_000.0, "spent": 0.0}, it=3)
+    assert p.ncount == 10
+    with pytest.raises(loop_mod.BudgetInsufficientForMinimumBatch,
+                       match="budget_insufficient_for_minimum_batch"):
+        _finalize_proposal(
+            p, objective, cfg, {"kind": "neutrons", "amount": 99.0, "spent": 0.0}, it=4)
+
+
+def test_finalizer_composes_per_point_and_queue_limits_for_hour_budget(tmp_path):
+    p = ScanProposal(h=2.1, k=0.0, l=0.0, e_lo=0.0, e_hi=9.0, e_step=1.0,
+                     ncount=400_000_000, kind="production", reason="test", n_points=10,
+                     meta={"score": {"eig": 2.0, "cost": 4_000_000_000.0}})
+    objective = types.SimpleNamespace(steering={"max_scan_points": 20,
+                                                "production_batch_ncount": 100_000_000,
+                                                "max_ncount_per_scan": 4_000_000_000})
+    cfg = types.SimpleNamespace(
+        max_points=20, max_points_source="get_state", log_path=tmp_path / "log.jsonl",
+        instrument_limits={"max_points": 20, "max_neutrons_per_point": 150_000_000,
+                           "queue_neutron_budget": 1_000_000_000, "max_queued": 4,
+                           "sources": {"max_points": "get_state",
+                                       "max_neutrons_per_point": "get_state",
+                                       "queue_neutron_budget": "get_schema",
+                                       "max_queued": "get_schema"}})
+    _finalize_proposal(
+        p, objective, cfg, {"kind": "counting_seconds", "amount": 60.0, "spent": 0.0}, it=7)
+    assert p.ncount == 100_000_000
+    assert p.meta["score"]["cost"] == 1_000_000_000.0
+    clamp = [e["payload"] for e in read_log(cfg.log_path)
+             if (e.get("payload") or {}).get("action") == "proposal_ncount_clamped_to_limit"]
+    assert len(clamp) == 1
+    assert clamp[0]["requested_ncount"] == 400_000_000
+    assert clamp[0]["effective_ncount"] == 100_000_000
+    assert clamp[0]["n_points"] == 10
+
+    cfg.instrument_limits["queue_neutron_budget"] = 900_000_000
+    with pytest.raises(loop_mod.InstrumentLimitBelowMinimumBatch,
+                       match="instrument_limit_below_minimum_batch"):
+        _finalize_proposal(
+            p, objective, cfg, {"kind": "counting_seconds", "amount": 60.0, "spent": 0.0}, it=8)
+
+
+def test_neutron_affordability_clamp_renormalizes_score(tmp_path):
+    p = ScanProposal(
+        h=2.1, k=0.0, l=0.0, e_lo=0.0, e_hi=9.0, e_step=1.0,
+        ncount=400, kind="production", reason="test", n_points=10,
+        meta={"score": {"method": "counts", "sigma_prior": 1.0, "c_spent": 1_000.0,
+                         "classification_eig": 0.0, "classification_weight": 0.0,
+                         "eig": 0.1, "combined_information": 0.1,
+                         "cost": 4_000.0, "eig_per_cost": 0.1 / 4_000.0}})
+    objective = types.SimpleNamespace(
+        tolerance_meV=0.5,
+        steering={"max_scan_points": 20, "production_batch_ncount": 10,
+                  "max_ncount_per_scan": 1_000})
+    cfg = types.SimpleNamespace(max_points=20, max_points_source="default",
+                                instrument_limits=None, log_path=tmp_path / "log.jsonl")
+    _finalize_proposal(
+        p, objective, cfg, {"kind": "neutrons", "amount": 1_000.0, "spent": 0.0}, it=1)
+    score = p.meta["score"]
+    expected_eig = counts_eig(1.0, 0.5, 1_000.0, 1_000.0)
+    assert p.ncount == 100
+    assert score["cost"] == 1_000.0
+    assert score["eig"] == pytest.approx(expected_eig)
+    assert score["sigma_scan"] == pytest.approx(math.sqrt(0.5))
+    assert score["eig_per_cost"] == pytest.approx(expected_eig / 1_000.0)
 
 
 def test_preflight_reads_limit_from_state_limits_dict():
@@ -891,6 +1730,34 @@ def test_preflight_reads_limit_from_state_limits_dict():
         def get_state(self):
             return {"mode": "allow", "busy": False, "limits": {"max_points": 128}}
     assert _preflight_max_points(_C()) == (128, "get_state")
+
+
+def test_preflight_resolves_each_limit_from_state_then_schema():
+    class _C:
+        def get_state(self):
+            return {"limits": {"max_points": 37, "max_neutrons_per_point": 100_000_000,
+                               "queue_neutron_budget": "malformed"}}
+
+        def get_schema(self):
+            return {"limits": {"max_points": 99, "queue_neutron_budget": 1_000_000_000,
+                               "max_queued": 4}}
+
+    snapshot = _preflight_instrument_limits(_C())
+    assert snapshot == {
+        "max_points": 37, "max_neutrons_per_point": 100_000_000,
+        "queue_neutron_budget": 1_000_000_000, "max_queued": 4,
+        "sources": {"max_points": "get_state", "max_neutrons_per_point": "get_state",
+                    "queue_neutron_budget": "get_schema", "max_queued": "get_schema"}}
+
+
+def test_resume_restores_logical_proposal_counter_without_submissions(tmp_path):
+    ws = tmp_path / "ws"
+    log = ws / "report" / "session_log.jsonl"
+    log_event(log, "propose", {"acquisition_id": "nonce:00000000"})
+    log_event(log, "propose", {"acquisition_id": "nonce:00000001"})
+    resumed = _resume_state(ws, log, _UNITY_CAL)
+    assert resumed["proposal_counter"] == 2
+    assert resumed["scan_counter"] == 0
 
 
 def test_preflight_reads_top_level_limit_key():
@@ -924,6 +1791,10 @@ def test_extract_max_points_ignores_non_positive_and_bool():
     assert _extract_max_points({"max_points": 0}) is None
     assert _extract_max_points({"max_points": True}) is None      # bool is not a real limit
     assert _extract_max_points({"max_points": 200}) == 200
+    assert _extract_max_points({"max_points": 0.5}) is None
+    assert _extract_max_points({"max_points": 1.2}) is None
+    assert _extract_max_points({"max_points": 1.0}) == 1
+    assert _extract_max_points({"max_points": 1e8}) == 100_000_000
     assert _extract_max_points("nope") is None
 
 
@@ -941,6 +1812,79 @@ class _StateTavi(MockTavi):
     def submit_scan(self, body, idempotency_key=None):
         self.submitted_cmds.append(body["parameters"]["scan_command1"])
         return super().submit_scan(body, idempotency_key=idempotency_key)
+
+
+class _NcountLimitedTavi(MockTavi):
+    def __init__(self, omega):
+        super().__init__(omega)
+        self.validated_ncounts = []
+        self.submitted_ncounts = []
+
+    def get_state(self):
+        return {"limits": {"max_points": 200,
+                           "max_neutrons_per_point": 100_000_000,
+                           "queue_neutron_budget": 20_000_000_000,
+                           "max_queued": 4}}
+
+    def validate(self, body):
+        self.validated_ncounts.append(body["parameters"]["number_neutrons"])
+        return super().validate(body)
+
+    def submit_scan(self, body, idempotency_key=None):
+        self.submitted_ncounts.append(body["parameters"]["number_neutrons"])
+        return super().submit_scan(body, idempotency_key=idempotency_key)
+
+
+def test_campaign_clamps_dynamic_400m_batch_and_publishes_limit_envelope(
+        tmp_path, monkeypatch):
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _NcountLimitedTavi(omega)
+
+    def desired_400m(*_args, **_kwargs):
+        return ScanProposal(
+            h=2.1, k=0.0, l=0.0, e_lo=-2.0, e_hi=7.0, e_step=0.1,
+            ncount=400_000_000, kind="production", reason="dynamic tolerance request",
+            e_pred=0.2, n_points=91,
+            meta={"score": {"method": "deficit", "cost": 36_400_000_000.0},
+                  "count_diagnostics": {"dynamic_ncount": True,
+                                        "requested_before_runtime_limit": 400_000_000}})
+
+    monkeypatch.setattr(loop_mod, "propose_scan", desired_400m)
+    summary, _ws = _run(
+        tmp_path, _objective(), client, make_mock_runner(omega), max_iters=1)
+    assert client.validated_ncounts == [100_000_000]
+    assert client.submitted_ncounts == [100_000_000]
+    events = read_log(summary["session_log"])
+    start = next(e["payload"] for e in events
+                 if (e.get("payload") or {}).get("action") == "campaign_start")
+    assert start["instrument_limits"]["discovered"]["max_neutrons_per_point"] == 100_000_000
+    assert summary["instrument_limits"] == start["instrument_limits"]
+    clamps = [e["payload"] for e in events
+              if (e.get("payload") or {}).get("action") == "proposal_ncount_clamped_to_limit"]
+    assert len(clamps) == 1
+    assert clamps[0]["requested_ncount"] == 400_000_000
+    assert clamps[0]["effective_ncount"] == 100_000_000
+
+
+class _RejectingTavi(MockTavi):
+    def validate(self, body):
+        return {"would_queue": False, "blockers": ["unknown refusal"],
+                "requested_points": _cmd_points(body["parameters"]["scan_command1"]),
+                "feasible_points": _cmd_points(body["parameters"]["scan_command1"])}
+
+
+def test_validation_refusals_use_distinct_logical_acquisitions(tmp_path):
+    client = _RejectingTavi()
+    summary, _ws = _run(
+        tmp_path, _objective(), client, make_mock_runner(lambda h: (h - 2.0) * 2.0),
+        max_iters=20)
+    proposals = [e["payload"] for e in read_log(summary["session_log"])
+                 if e["kind"] == "propose"]
+    # Operational refusals are not scientific evidence that the q is infeasible. The global
+    # iteration limit is the guardrail when the instrument never accepts a proposal.
+    assert len(proposals) == 20
+    assert len({proposal["acquisition_id"] for proposal in proposals}) == 20
+    assert client.n == 0
 
 
 def _cmd_points(cmd):
@@ -963,7 +1907,8 @@ def test_campaign_never_submits_over_limit_scan(tmp_path):
     clamps = [e for e in read_log(summary["session_log"])
               if e["kind"] == "exception" and (e["payload"] or {}).get("action") == "proposal_clamped"]
     assert clamps, "a widening recenter should have tripped the point-count guard"
-    assert all(c["payload"]["limit"] == 50 and c["payload"]["limit_source"] == "get_state"
+    assert all(c["payload"]["limit"] == 50
+               and c["payload"]["limit_source"] == "policy+get_state"
                for c in clamps)
 
 
@@ -982,6 +1927,37 @@ def test_campaign_submit_idempotency_key_contains_run_nonce(tmp_path):
     nonce = (ws / ".run_nonce").read_text(encoding="utf-8").strip()
     assert calls
     assert all(nonce in key for key in calls)
+
+
+def test_submission_failure_finishes_with_terminal_summary_instead_of_sticking(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, _ws = _run(
+        tmp_path, _objective(), _SubmitFailingTavi(omega), make_mock_runner(omega), max_iters=1)
+
+    assert summary["stop"]["state"] == "incomplete"
+    assert any("instrument submission failed" in reason
+               for reason in summary["stop"]["reasons"])
+    events = read_log(summary["session_log"])
+    failures = [event for event in events if event["kind"] == "exception"
+                and (event.get("payload") or {}).get("action") == "instrument_submission_failed"]
+    assert len(failures) == 1 and failures[0]["payload"]["status"] == 503
+    assert events[-1]["kind"] == "stop"
+
+
+def test_post_submission_failure_remains_pending_for_resume_recovery(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, _ws = _run(
+        tmp_path, _objective(), _WaitFailingTavi(omega), make_mock_runner(omega), max_iters=1)
+
+    assert summary["stop"]["state"] == "pending_recovery"
+    assert any("press Resume" in reason for reason in summary["stop"]["reasons"])
+    events = read_log(summary["session_log"])
+    assert any(event["kind"] == "physical_submission" for event in events)
+    pending = [event for event in events if event["kind"] == "recovery_pending"]
+    assert len(pending) == 1 and pending[0]["payload"]["job_id"] == "j-1"
+    assert not any((event.get("payload") or {}).get("action")
+                   == "instrument_submission_failed" for event in events)
+    assert events[-1]["kind"] == "stop"
 
 
 # --------------------------------------------------------------------------- cooperative operator stop
@@ -1029,7 +2005,7 @@ def test_operator_stop_completes_iteration_then_exits_cleanly(tmp_path, monkeypa
 
     assert summary["stop"]["state"] == "operator_stopped"
     assert "grid_state" in summary["stop"] and summary["stop"]["grid_state"]["state"] in (
-        "continue", "met", "unmeetable")
+        "continue", "met", "incomplete", "infeasible")
     reasons = summary["stop"]["reasons"]
     assert any("iteration" in r for r in reasons) and any(token in r for r in reasons)
 

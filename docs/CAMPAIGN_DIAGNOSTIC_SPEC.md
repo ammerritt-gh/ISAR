@@ -18,7 +18,7 @@ may *later* be added on top, clearly marked, off the critical path.
 
 ## 1. Trigger & placement
 
-- Generated at the end of every `isar drive` campaign (success, unmeetable, budget-stop, or crash
+- Generated at the end of every `isar drive` campaign (met, incomplete, infeasible, operator stop, or crash
   — a partial report from a crashed campaign is more valuable, not less).
 - Written to `<workspace>/report/CAMPAIGN_DIAGNOSTIC.md` with figures under
   `<workspace>/report/figures/`.
@@ -28,14 +28,15 @@ may *later* be added on top, clearly marked, off the critical path.
 
 ## 2. Report structure (fixed section order)
 
-1. **Objective** — the NL goal, the formalized spec (path, tolerance, budget, tier), pass criteria.
-2. **Outcome at a glance** — one table: converged n/N, stop state, budget spent, wall time split
+1. **Objective** — the NL goal, formalized path/tolerance/tier, optional measurement budget, analysis
+   limit, and pass criteria.
+2. **Outcome at a glance** — one table: certified masters n/N, outcome, both configured clocks, wall time split
    (fitting vs instrument vs overhead), center accuracy vs truth (when scored), interval health.
 3. **What the driver did** — the loop narrative in ≤ 10 numbered steps: seeding, model updates,
    escalations, retries, the stop decision. Derived from `session_log.jsonl` event counts and
    first/last exemplars, not prose invention.
-4. **Delivered dispersion vs truth** — table + the dispersion figure; flagged-interval values
-   visibly marked (see §4).
+4. **Delivered dispersion vs truth** — table + dispersion figure; physical points are provenance,
+   while pooled masters and their model-robust intervals are decision-bearing (see §4).
 5. **Failure dossier** — one subsection per failure *zone* (contiguous q sharing a mechanism),
    each with: the claim, the evidence rows, the figure(s), the diagnosis, the TODO/fix mapping.
    This is where the reader's attention budget is spent.
@@ -49,9 +50,9 @@ may *later* be added on top, clearly marked, off the critical path.
 Figures are the natural record of what happened; the *report* stays within a human attention
 budget by tiering them:
 
-- **Always rendered, always inline:** dispersion vs truth (delivered points, calibrated
-  halfwidths, truth curve, converged/uncertifiable/stuck markers); per-q scan-spend bar
-  (production/confirm/declined per q); budget & timing summary.
+- **Always rendered, always inline:** dispersion vs truth (physical provenance points, pooled master
+  intervals, truth curve, certification/diagnostic markers); per-q measurement-spend bar; separate
+  measurement and analysis-clock summaries.
 - **Dossier figures, inline:** for every scan cited as evidence in §5 — data + fit components +
   residual, in the style of a per-scan quicklook. Failures are *always* figured; successes only
   as representative contrast (1–2 per zone).
@@ -65,6 +66,8 @@ budget by tiering them:
 
 ## 4. Interval honesty in presentation
 
+- A campaign certification interval is the pooled master's model-weighted predictive ω interval.
+  A narrow individual-fit interval is never substituted for it.
 - Any interval with `interval_reliable == False` is rendered as `(unreliable)` — never as a
   numeric range, never `[3.15, 3.15]`, and never with a confidence that implies certification.
 - Collate-only rows (`branch_continuation`) are **not** listed row-by-row in this report; they
@@ -80,45 +83,44 @@ to seat* or *never fired*. That is a logging failure. Required additions to `ses
 1. **`escalate_fit`** — emitted whenever a scan is promoted from a cheap tier to a fuller error
    tier. Payload: `scan_id`, `from_tier`, `to_tier`, `reason`, and on completion an outcome
    record (`seated` / `failed` / `superseded`) so the promotion and its result are both in the log.
-2. **Stop-reason taxonomy.** Per-q stop reasons become an enum, not free text. Minimum states:
-   - `no_signal` — descriptor finds no significant peak in repeated scans;
-   - `signal_unmodeled` — signal present, model cannot account for it;
-   - `uncertifiable_interval` — fits deliver centers but every interval is `interval_reliable=False`
-     (γ-at-bound); *this is not "no signal" and must never be reported as such*;
-   - `interval_floored` — certified interval exists but floors above tolerance (the confirm-churn
-     case);
-   - `fast_tier_only` — no fit ever reached the certifying tier (should co-occur with
-     `escalate_fit` records explaining why);
-   - `infeasible` — the point is unreachable by the instrument.
-   The human-readable stop message is *generated from* the enum + counts, not hand-written.
+2. **Master assessment taxonomy.** Per-q state is `unmeasured`, `uncertified`, `certified`, or
+   independently established `infeasible`. Separate diagnostics include `diminishing_returns`,
+   `interval_nonshrinking`, `model_ambiguous`, `pool_inconsistent`,
+   `linewidth_resolution_limited`, and `analysis_failed`. Diagnostics do not autonomously stop q.
 3. **`recenter` guard.** Recenter proposals log the proposed new center and the guard decision:
    recentering onto |ΔE| ≲ the resolution FWHM is refused and logged as
    `recenter_refused_elastic` (the MVP-16 log shows the driver re-aiming at ΔE = 0.009 meV — on a
    real instrument that is beam spent pointing at the elastic line).
 4. **`decide` payloads get an `action` field** (the audit had to fingerprint payload strings to
    count actions).
+5. **`analysis_clock`** — durable start/checkpoint/end records with stable operation ID and cumulative
+   monotonic elapsed seconds. Diagnostics replay the maximum per operation and report unmatched spans.
+6. **`model_update.per_q`** — each latest row carries master revision, assessment, exact continue/stop
+   reason, consistency, model/branch and Γ state, expected next information, and diagnostics.
+7. **Certification status** — `report/certification/<fingerprint>/progress.json` records durable
+   master units, reuse source, active count, phase, remaining guardrail allowance, and publication
+   state. A current marker is complete only when its hashes match `session.json`, `card.state.json`,
+   and `results.csv`; version-1 physical-scan checkpoints are retained history, not reusable work.
 
 ## 6. Convergence-rule requirement (report-adjacent, logged here so it isn't lost)
 
-The `interval_reliable` flag must be enforced **uniformly** in the convergence rule: a flagged
-interval never seats convergence *and* never counts toward the decline budget as "no signal" —
-it routes the q to the `uncertifiable_interval` state. In MVP 16 the flag was fatal at the zone
-boundary and ignored mid-zone, producing both fictional mid-zone precision and falsely-labeled
-boundary failures from one inconsistency. (Fix lives in `isar/drive/`; the report simply makes
-the inconsistency impossible to hide.)
+Convergence consumes only a published pooled master revision. It requires a valid certifying method,
+a model-robust ω interval within tolerance, no unresolved ω identity ambiguity, confirmed target track
+where applicable, and a passing pool-consistency check. Γ at its resolution boundary is a diagnostic,
+not a blocker when ω remains identifiable after marginalization. No individual fit, decline count,
+candidate rejection, low-gain estimate, or production count can provide a fallback or abandon q.
 
 ## 7. Acceptance criteria
 
 Generated against the MVP-16 workspace, the report must let a reader answer, without opening any
 other file:
 
-1. What was the objective, and was it met? (10/21, `unmeetable`)
-2. For every unconverged q: *which* enum state, with evidence rows and at least one figure.
+1. What was the objective, and did it end `met`, `incomplete`, or `infeasible`?
+2. For every uncertified q: which master state and diagnostics, with evidence and a master figure.
 3. Were delivered centers accurate? (median |Δω₀| vs truth, when a truth source exists.)
 4. Which intervals are certified vs unreliable, at a glance.
-5. Where did the time and budget go, and do the two ledgers (wall clock, counting seconds) look
-   sane against each other? — the MVP-16 budget ledger (10.6 of 28 800 s spent) is flagged
-   **verify-units** until confirmed.
+5. Where did measurement spend and cumulative analysis time go, and does each configured clock replay
+   consistently from its durable ledger?
 
 A characterization test pins the renderer against a frozen copy of the MVP-16 workspace: same
 inputs → same report (modulo timestamps).

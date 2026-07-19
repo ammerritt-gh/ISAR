@@ -6,6 +6,8 @@ is never triggered).
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import hashlib
 
 import pytest
@@ -48,11 +50,12 @@ class _Ops:
 
     def request_drive_compile(self, opts, *, env=None):
         self.compile_requests.append((opts, dict(env or {})))
-        objective = {"path": [[2, 0, 0], [2, 0.5, 0]], "target_branch": "optic",
+        objective = {"schema": "isar.objective/2",
+                     "path": [[2, 0, 0], [2, 0.5, 0]], "target_branch": "optic",
                      "target_label": "transverse optic", "energy_search_meV": [-2, 12],
                      "tolerance_meV": 0.5,
                      "budget": {"kind": "neutrons", "amount": 1e9}}
-        self.drive_compiled.emit({"schema": "isar.objective-envelope/1",
+        self.drive_compiled.emit({"schema": "isar.objective-envelope/2",
                                   "objective": objective, "source": {"kind": "goal"}},
                                  "frozen-objective.json")
         return True
@@ -325,6 +328,36 @@ def test_status_lines_for_terminal_states(dock_env, make_ws):
     assert "press Resume" in dock._status_line.text()
 
 
+def test_selected_master_shows_revision_consistent_reasoning(dock_env):
+    dock, vm, _ops, ws, root = dock_env
+    path = root / "report" / "session_log.jsonl"
+    log_event(path, "decide", {"event": "campaign_start", "action": "campaign_start",
+                               "objective": {}, "source": {"kind": "spec", "sha256": "x"}})
+    log_event(path, "decide", {"event": "model_update", "action": "model_update", "per_q": [{
+        "hkl": [2.5, 0, 0], "assessment_state": "uncertified", "omega0": 6.25,
+        "calibrated_halfwidth": 0.12, "tolerance": 0.05, "master_revision": "rev-7",
+        "uncertainty_method": "model_averaged_predictive", "track_state": "confirmed",
+        "linewidth_state": "resolution_limited", "pool_consistent": True,
+        "expected_next_information": {"expected_information_nats": 0.031},
+        "diagnostics": ["diminishing_returns"],
+        "reason": "continue — master interval remains above tolerance",
+    }]})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+    dock.set_selected_fit(SimpleNamespace(q=(2.5, 0.0, 0.0)))
+    text = dock._master_detail.text()
+    assert "revision rev-7" in text
+    assert "ω: 6.25 meV" in text and "target ±0.05 meV" in text
+    assert "Γ resolution_limited" in text and "pool consistency pass" in text
+    assert "continue — master interval remains above tolerance" in text
+    log_event(path, "stop", {"state": "pending_recovery", "reasons": ["job still running"],
+                             "grid_state": {"state": "continue", "reasons": [], "per_q": []}})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+    assert "no new scan was submitted" in dock._status_line.text()
+    assert "press Resume" in dock._status_line.text()
+
+
 def test_feed_renders_and_filters_exceptions(dock_env):
     dock, vm, ops, ws, root = dock_env
     path = root / "report" / "session_log.jsonl"
@@ -351,7 +384,7 @@ def test_feed_copy_selection_copy_all_and_save_text(dock_env, tmp_path, monkeypa
     ws.refresh()
     vm.on_workspace_changed({"events"})
 
-    dock._feed.item(1).setSelected(True)
+    dock._feed.item(0).setSelected(True)  # newest-first visible order
     dock._copy_feed_selection()
     assert "proposal_clamped" in QApplication.clipboard().text()
     dock._copy_feed_all()

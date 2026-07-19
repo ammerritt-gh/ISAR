@@ -56,6 +56,7 @@ class DispersionViewModel(ViewModel):
         self._excluded_count = 0
         self._temperatures: list = []
         self._projection = None
+        self._status_points: list[dict] = []
         self._rebuild()
 
     # ---- public state -----------------------------------------------------
@@ -78,6 +79,21 @@ class DispersionViewModel(ViewModel):
     @property
     def projection(self):
         return self._projection
+
+    @property
+    def status_points(self) -> list[dict]:
+        return [dict(point) for point in self._status_points]
+
+    def activate_status(self, index: int) -> None:
+        if not (0 <= index < len(self._status_points)):
+            return
+        point = self._status_points[index]
+        hkl = point.get("hkl")
+        candidates = [fit for fit in self._ws.results if fit.pooled and fit.q and hkl
+                      and len(fit.q) == len(hkl)
+                      and np.allclose(fit.q, hkl, atol=self._hkl_round_step() / 2.0)]
+        if candidates:
+            self.point_activated.emit(max(candidates, key=lambda fit: fit.n_members or 0))
 
     # ---- slots ------------------------------------------------------------
     def refresh(self) -> None:
@@ -141,6 +157,7 @@ class DispersionViewModel(ViewModel):
         return float(getattr(pol, "hkl_round_step", None) or 0.05)
 
     def _rebuild(self) -> None:
+        self._status_points = self._latest_per_q()
         step = self._hkl_round_step()
         cands, stale = projection.restrict_or_clear(
             projection.candidates(self._ws.results), self._restriction)
@@ -166,6 +183,17 @@ class DispersionViewModel(ViewModel):
 
         self._spec = self._build_spec(in_window, varying, modal, step)
 
+    def _latest_per_q(self) -> list[dict]:
+        for event in reversed(list(self._ws.session_events(kind="decide"))):
+            payload = event.get("payload") or {}
+            if payload.get("action") == "model_update" and isinstance(payload.get("per_q"), list):
+                return [dict(point) for point in payload["per_q"] if isinstance(point, dict)]
+        events = list(self._ws.session_events(kind="stop"))
+        if events:
+            grid = (events[-1].get("payload") or {}).get("grid_state") or {}
+            return [dict(point) for point in grid.get("per_q") or () if isinstance(point, dict)]
+        return []
+
     def _empty_spec(self):
         # No projection can be declared with no in-window scans, so this is the one spec allowed
         # without a ProjectionLegend (nothing to project); dispersion_spec would (correctly) reject
@@ -182,9 +210,24 @@ class DispersionViewModel(ViewModel):
         prior = projection.prior_curve(
             list(getattr(bm, "dispersion_prior", None) or []) if bm is not None else [],
             varying, sample=sample, T=T, t_round=_T_ROUND, want_sigma=True)
-        branch = projection.prior_curve(
-            list(getattr(bm, "branch_belief", None) or []) if bm is not None else [],
-            varying, sample=sample, T=T, t_round=_T_ROUND)
+        belief_rows = list(getattr(bm, "branch_belief", None) or []) if bm is not None else []
+        belief_rows = projection.filter_prior_rows(
+            belief_rows, sample=sample, T=T, t_round=_T_ROUND)
+        track_payload = getattr(bm, "branch_tracks", None) if bm is not None else None
+        branches = projection.branch_track_overlays(
+            track_payload, varying, sample=sample, T=T, t_round=_T_ROUND,
+            modal=modal, step=step)
+        if not branches:
+            # Compatibility with pre-track workspaces: old branch-belief anchors still render as
+            # their historical continuous curves.
+            branch_ids = sorted({str(row.get("branch_id") or "branch") for row in belief_rows})
+            for branch_id in branch_ids:
+                curve = projection.prior_curve(
+                    [row for row in belief_rows
+                     if str(row.get("branch_id") or "branch") == branch_id],
+                    varying, sample=sample, T=T, t_round=_T_ROUND)
+                if curve is not None:
+                    branches.append((f"{branch_id} belief", curve[0], curve[1]))
 
         points, entropy = [], []
         self._points = []
@@ -202,22 +245,32 @@ class DispersionViewModel(ViewModel):
                     if cert is not None and len(cert) >= 2 else None)
             points.append({"q": x, "omega": y, "yerr": half, "entropy": ent,
                            "verdict": fv.verdict, "pooled": bool(fv.pooled),
-                           "n_members": fv.n_members})
+                           "n_members": fv.n_members,
+                           "interval_reliable": fv.interval_reliable,
+                           "track_state": getattr(fv, "track_state", None)})
+            points.extend(projection.unselected_candidate_points(fv, x))
 
         prior_xy = None if prior is None else (prior[0], prior[1])
         off_curve = self._off_curve(points, prior)
-        branches = [] if branch is None else [("branch belief", branch[0], branch[1])]
-
         plane = self._projection.plane
         title = "dispersion ω̂(q) · " + plane + (f" · T={_g(T)} K" if T is not None else "")
+        meta = {"varying": varying, "modal": modal, "temperature": T,
+                "excluded_count": self._excluded_count,
+                "branch_label_uncertainty": [
+                    {"q": row.get("q"), "branch_id": row.get("branch_id"),
+                     "label_probabilities": row.get("label_probabilities"),
+                     "assignment_entropy": row.get("assignment_entropy"),
+                     "p_is_target": row.get("p_is_target")}
+                    for row in belief_rows],
+                "omega_hat_entropy_all": entropy}
+        if isinstance(track_payload, dict) and track_payload:
+            meta["branch_track_revision"] = track_payload.get("revision")
+            meta["branch_frontiers"] = track_payload.get("frontiers")
         return builders.dispersion_spec(
             points=points, projection=self._projection, prior=prior_xy,
             branches=branches, off_curve=off_curve, title=title,
             xlabel=f"{projection.AXIS[varying]} (rlu)",
-            meta={"varying": varying, "modal": modal, "temperature": T,
-                  "excluded_count": self._excluded_count,
-                  # every plotted ω̂ (members + pooled masters), aligned to the full population.
-                  "omega_hat_entropy_all": entropy},
+            meta=meta,
         )
 
     @staticmethod
@@ -233,6 +286,8 @@ class DispersionViewModel(ViewModel):
         # prior_curve sorts its anchors ascending, so xs_p[0]/xs_p[-1] bound the prior's q-domain.
         flagged = []
         for p in points:
+            if p.get("selected") is False:
+                continue
             x, y = p["q"], p["omega"]
             # Outside the prior's q-domain np.interp would clamp to an end anchor, comparing ω̂
             # against a value the prior never actually asserts there -> a bogus flag. Skip it.

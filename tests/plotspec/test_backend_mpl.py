@@ -127,6 +127,27 @@ def test_per_point_entropy_colours_the_scatter():
         plt.close(fig)
 
 
+def test_pooled_master_draws_above_legacy_same_position_verdict():
+    """Even an old spec carrying both glyphs cannot let the verdict hide the pooled square."""
+    spec = ps.PlotSpec(
+        title="t", xlabel="q", ylabel="E",
+        series=[ps.Series(x=np.array([2.0]), y=np.array([6.0]), yerr=np.array([0.2]),
+                          role=ps.Role.DATA, state=ps.State.POOLED,
+                          style="verdict_resolved", label="pooled")],
+        markers=[ps.Marker(x=2.0, y=6.0, kind=ps.MarkerKind.VERDICT_RESOLVED,
+                           label="legacy verdict")],
+    )
+    from matplotlib.collections import PathCollection
+    fig, ax = plt.subplots()
+    try:
+        mpl._render_onto(ax, spec)
+        pooled_z = max(line.get_zorder() for line in ax.lines)
+        verdict_z = max(c.get_zorder() for c in ax.collections if isinstance(c, PathCollection))
+        assert pooled_z > verdict_z
+    finally:
+        plt.close(fig)
+
+
 def test_render_png_on_minimal_spec():
     png = mpl.render_png(ps.PlotSpec(title="t", xlabel="x", ylabel="y",
                                      series=[ps.Series(x=np.array([0.0, 1.0]),

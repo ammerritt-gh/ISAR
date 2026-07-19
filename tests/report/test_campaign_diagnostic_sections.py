@@ -58,24 +58,25 @@ def test_zones_split_on_gap():
 
 
 def test_zones_separate_different_reasons():
-    rows = [_pq(0.1, "no_signal"), _pq(0.15, "uncertifiable_interval")]
+    rows = [_pq(0.1, "model_ambiguous"), _pq(0.15, "pool_inconsistent")]
     zones = _zones(rows)
-    assert [z[0] for z in zones] == ["no_signal", "uncertifiable_interval"]
+    assert [z[0] for z in zones] == ["model_ambiguous", "pool_inconsistent"]
     # None / met reasons never form a zone
     assert _zones([_pq(0.1, None), _pq(0.15, "met")]) == []
 
 
-# --------------------------------------------------------------------- pre-S3 reason derivation
-def test_per_q_derives_reasons_when_summary_lacks_them():
-    # per_q rows with NO 'reason' field (pre-S3 log)
+# --------------------------------------------------------------------- master-assessment reason derivation
+def test_per_q_classifies_master_assessment_without_individual_fit_votes():
     summary = {"stop": {"reasons": [], "per_q": [
-        {"hkl": [2.2, 0, 0], "q": 0.2, "converged": True, "calibrated_halfwidth": 0.05,
-         "omega0": 1.8, "n_production": 4, "n_decline": 0, "n_uncertifiable": 0},
-        {"hkl": [3.0, 0, 0], "q": 1.0, "converged": False, "n_production": 3, "n_decline": 0,
-         "n_uncertifiable": 0},        # has flagged deliveries in results → uncertifiable
-        {"hkl": [2.0, 0, 0], "q": 0.0, "converged": False, "n_production": 0, "n_decline": 4,
-         "n_uncertifiable": 0},        # declines only → no_signal
+        {"hkl": [2.2, 0, 0], "q": 0.2, "converged": True, "assessment_state": "certified",
+         "source": "master", "calibrated_halfwidth": 0.05, "omega0": 1.8},
+        {"hkl": [3.0, 0, 0], "q": 1.0, "converged": False,
+         "assessment_state": "uncertified", "source": "master",
+         "diagnostics": ["model_ambiguous"]},
+        {"hkl": [2.0, 0, 0], "q": 0.0, "converged": False,
+         "assessment_state": "unmeasured", "source": None},
     ]}}
+    # A physical fit at q=1 is deliberately irrelevant to classification.
     results = [
         {"h": 3.0, "k": 0.0, "l": 0.0, "scan": 5, "detector": "det", "omega0": 6.1,
          "interval_reliable": False, "disposition": "resolved"},
@@ -83,29 +84,30 @@ def test_per_q_derives_reasons_when_summary_lacks_them():
     defects = []
     rows = _per_q(summary, results, defects)
     by_q = {r["q"]: r for r in rows}
-    assert by_q[0.2]["reason"] == "met" and by_q[0.2]["reason_source"] == "derived (pre-S3)"
-    assert by_q[1.0]["reason"] == "uncertifiable_interval"
-    assert by_q[0.0]["reason"] == "no_signal"
-    assert all(r["reason_source"] == "derived (pre-S3)" for r in rows)
+    assert by_q[0.2]["reason"] == "met"
+    assert by_q[1.0]["reason"] == "model_ambiguous"
+    assert by_q[0.0]["reason"] == "unmeasured"
+    assert all(r["reason_source"] == "master_assessment" for r in rows)
 
 
-def test_per_q_logged_reason_is_tagged_logged():
+def test_per_q_preserves_logged_reason_as_detail():
     summary = {"stop": {"reasons": [], "per_q": [
         {"hkl": [2.2, 0, 0], "q": 0.2, "converged": True, "reason": "met",
          "calibrated_halfwidth": 0.05, "omega0": 1.8}]}}
     rows = _per_q(summary, [], [])
-    assert rows[0]["reason_source"] == "logged"
+    assert rows[0]["reason_source"] == "master_assessment"
+    assert rows[0]["reason"] == "met" and rows[0]["reason_detail"] == "met"
 
 
-def test_stop_reason_contradiction_defect_fires():
-    # summary narrative claims "no signal" at a q that DID deliver flagged fits → §6 defect
-    summary = {"stop": {"reasons": ["q=1.0 declined 3x (no signal)"], "per_q": [
-        {"hkl": [3.0, 0, 0], "q": 1.0, "converged": False, "n_production": 3, "n_decline": 3}]}}
+def test_pool_inconsistency_is_not_overridden_by_individual_fit_evidence():
+    summary = {"stop": {"reasons": [], "per_q": [
+        {"hkl": [3.0, 0, 0], "q": 1.0, "converged": False,
+         "assessment_state": "uncertified", "source": "master", "pool_consistent": False}]}}
     results = [{"h": 3.0, "k": 0.0, "l": 0.0, "scan": 5, "detector": "det", "omega0": 6.1,
                 "interval_reliable": False, "disposition": "resolved"}]
     defects = []
-    _per_q(summary, results, defects)
-    assert any("contradict results.csv" in d for d in defects)
+    rows = _per_q(summary, results, defects)
+    assert rows[0]["reason"] == "pool_inconsistent" and defects == []
 
 
 # --------------------------------------------------------------------- §3 escalate_fit phrasing
@@ -140,6 +142,32 @@ def test_driver_counts_escalations_when_present():
     out = _render_driver(events)
     assert "2 full-tier promotions" in out
     assert "seated" in out and "failed" in out
+
+
+def _render_tracked_dispersion(assignments):
+    di = DiagInputs(workspace=None, card_state={"branch_tracks": {
+        "revision": 1, "anchor_index": 0,
+        "frontiers": {"confirmed_indices": [0], "frontier_blocked": False},
+        "assignments": assignments,
+    }})
+    doc = FindingsDoc("t")
+    cd._section_dispersion(doc, di, [])
+    return doc.render()
+
+
+def test_tracked_dispersion_only_claims_acoustic_when_rival_resolved():
+    unresolved = _render_tracked_dispersion([{
+        "path_index": 0, "q": [2.0, 0.0, 0.0], "candidates": [{"energy_meV": 6.0}],
+        "optic_candidate_index": 0, "acoustic_candidate_index": None,
+    }])
+    assert "Acoustic identified" not in unresolved
+
+    resolved = _render_tracked_dispersion([{
+        "path_index": 0, "q": [2.0, 0.0, 0.0],
+        "candidates": [{"energy_meV": 2.0}, {"energy_meV": 6.0}],
+        "optic_candidate_index": 1, "acoustic_candidate_index": 0,
+    }])
+    assert "Acoustic identified; retained as non-target context." in resolved
 
 
 # --------------------------------------------------------------------- §6 verify-units defect

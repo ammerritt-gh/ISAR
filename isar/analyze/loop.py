@@ -11,9 +11,12 @@ HESSE-propagated and **provisional** (review F4); the authoritative interval is 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 from typing import Callable
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 from isar.analyze.ic import EPS_OMEGA_D, greedy_multimode_ic, structure_ic
 from isar.analyze.structures import (
@@ -158,6 +161,9 @@ class StructureFitResult:
     prior_penalty: float | None = None      # None ⇒ unconstrained (posterior_cost == cost)
     posterior_cost: float | None = None
     fit_kind: str = "unconstrained"         # unconstrained|soft_prior|branch_conditional|stokes_only|descriptor_only
+    # Full fitted-parameter covariance in ``params`` insertion order.  Retained for posterior-
+    # predictive acquisition; a missing/untrusted covariance is represented by ``None``.
+    parameter_covariance: list | None = None
 
 
 def build_problem(hyp, ctx, *, x0=None) -> Problem:
@@ -354,6 +360,7 @@ def result_from_backend(label, composite, costv, n_used, k, br,
         gamma=gamma, gamma_err=gamma_err, omega0=omega0, omega0_err_hesse=omega0_err,
         message=br.message, modes=modes, n_modes=n_modes, gamma_at_bound=gamma_at_bound,
         prior_penalty=prior_penalty, posterior_cost=posterior_cost, fit_kind=fit_kind,
+        parameter_covariance=(np.asarray(cov, dtype=float).tolist() if cov is not None else None),
     )
 
 
@@ -370,19 +377,40 @@ def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False, x0=None) -> Stru
                                penalty=prob.penalty, hard_fixed=prob.is_hard_fixed)
 
 
+def _fit_hypothesis_task(args):
+    """Picklable process-worker entry point for one independent candidate fit."""
+    hyp, ctx, backend, minos, x0 = args
+    return fit_hypothesis(hyp, ctx, backend=backend, minos=minos, x0=x0)
+
+
+def _fit_hypothesis_batch(tasks, executor=None, *, phase="candidate"):
+    """Fit an ordered pure-task batch, with visible deterministic serial recovery."""
+    if executor is None or len(tasks) < 2:
+        return [_fit_hypothesis_task(task) for task in tasks]
+    try:
+        return list(executor.map(_fit_hypothesis_task, tasks))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("parallel %s fit failed; retrying serially: %s: %s",
+                    phase, type(exc).__name__, exc)
+        return [_fit_hypothesis_task(task) for task in tasks]
+
+
 def fit_admissible_structures(ctx, *, backend="iminuit", minos=False, errors=False,
-                              M=200, seed=12345) -> list[StructureFitResult]:
+                              M=200, seed=12345, executor=None) -> list[StructureFitResult]:
     """Enumerate the admissible structures and fit each (the §2→§3 loop). Step-2 model
     selection will consume this list; step 1 just returns it.
 
     With ``errors=True`` the frequentist error layer (bootstrap, §5.2) is attached to each
     converged result's ``within_model``. Off by default so step 1's fast path is unchanged."""
     hyps = enumerate_structures(ctx)
-    results = [fit_hypothesis(h, ctx, backend=backend, minos=minos) for h in hyps]
+    tasks = [(h, ctx, backend, minos, None) for h in hyps]
+    results = _fit_hypothesis_batch(tasks, executor, phase="admissible-candidate")
     if errors:
         from isar.analyze import errors as _errors  # lazy: errors imports loop
-        for r, h in zip(results, hyps):
-            _errors.attach(r, h, ctx, M=M, seed=seed, backend=backend)
+        items = [(r, h, ctx) for r, h in zip(results, hyps)]
+        _errors.attach_batch(
+            items, M=M, seed=seed, backend=backend,
+            boot_workers=(max(2, len(items)) if executor is not None else 1), executor=executor)
     return results
 
 
@@ -410,29 +438,36 @@ def _offer_multimode(results, ctx) -> bool:
     return bool(pull is not None and _residual_structured(pull))
 
 
-def _enumerate_and_fit(ctx, *, backend="iminuit", minos=False, peaks=None):
+def _enumerate_and_fit(ctx, *, backend="iminuit", minos=False, peaks=None, executor=None):
     """The full two-stage enumeration: fit the 1-mode set, escalate to the 2-mode set when the
     gate fires or ``peaks`` declares ≥2 peaks. Returns ``[(result, hypothesis), ...]`` (both stages
     unioned). Split out of :func:`fit_structures_two_stage` so the structure-hint shortcut
     (:func:`fit_structures_two_stage_hinted`) can fall back to it verbatim."""
     one_hyps = enumerate_structures(ctx)
-    pairs = [(fit_hypothesis(h, ctx, backend=backend, minos=minos), h) for h in one_hyps]
+    one_tasks = [(h, ctx, backend, minos, None) for h in one_hyps]
+    one_results = _fit_hypothesis_batch(one_tasks, executor, phase="one-mode candidate")
+    pairs = list(zip(one_results, one_hyps))
 
     expected_two = peaks is not None and len(peaks) >= 2
     if _offer_multimode([r for r, _ in pairs], ctx) or expected_two:
         best_one = _best_converged([r for r, _ in pairs])
         n_used = int(ctx.x_used.size)
+        multi_hyps = []
+        multi_tasks = []
         for h in enumerate_multimode(ctx):
             if n_used - h.k <= 0:                     # ndof guard: no positive dof
                 continue
             x0 = greedy_multimode_ic(h.build(), ctx, best_one, peaks=peaks)
-            r = fit_hypothesis(h, ctx, backend=backend, minos=minos, x0=x0)
-            pairs.append((r, h))
+            multi_hyps.append(h)
+            multi_tasks.append((h, ctx, backend, minos, x0))
+        multi_results = _fit_hypothesis_batch(
+            multi_tasks, executor, phase="multi-mode candidate")
+        pairs.extend(zip(multi_results, multi_hyps))
     return pairs
 
 
 def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors=False,
-                             M=200, seed=12345, peaks=None) -> list[StructureFitResult]:
+                             M=200, seed=12345, peaks=None, executor=None) -> list[StructureFitResult]:
     """Two-stage, data-gated structure enumeration (§ multiplicity). Fit the 1-mode set; if the
     gate (:func:`_offer_multimode`) fires OR ``peaks`` declares ≥2 expected peaks, also fit the
     2-mode set (:func:`~isar.analyze.structures.enumerate_multimode`) seeded by
@@ -444,12 +479,15 @@ def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors
 
     With ``with_errors`` the bootstrap error layer is attached to every returned fit (so the
     select pass can pool survivors from both stages)."""
-    pairs = _enumerate_and_fit(ctx, backend=backend, minos=minos, peaks=peaks)
+    pairs = _enumerate_and_fit(
+        ctx, backend=backend, minos=minos, peaks=peaks, executor=executor)
     results = [r for r, _ in pairs]
     if with_errors:
         from isar.analyze import errors as _errors  # lazy: errors imports loop
-        for r, h in pairs:
-            _errors.attach(r, h, ctx, M=M, seed=seed, backend=backend)
+        items = [(r, h, ctx) for r, h in pairs]
+        _errors.attach_batch(
+            items, M=M, seed=seed, backend=backend,
+            boot_workers=(max(2, len(items)) if executor is not None else 1), executor=executor)
     return results
 
 
@@ -501,7 +539,7 @@ def _try_structure_hint(ctx, structure_hint, *, backend="iminuit", minos=False):
 
 
 def fit_structures_two_stage_hinted(ctx, *, backend="iminuit", minos=False, peaks=None,
-                                    structure_hint=None) -> tuple[list[StructureFitResult], bool]:
+                                    structure_hint=None, executor=None) -> tuple[list[StructureFitResult], bool]:
     """:func:`fit_structures_two_stage` with an optional ``structure_hint``. Returns
     ``(results, structure_skipped)``.
 
@@ -521,4 +559,5 @@ def fit_structures_two_stage_hinted(ctx, *, backend="iminuit", minos=False, peak
         hinted = _try_structure_hint(ctx, structure_hint, backend=backend, minos=minos)
         if hinted is not None:
             return hinted, True
-    return [r for r, _ in _enumerate_and_fit(ctx, backend=backend, minos=minos, peaks=peaks)], False
+    return [r for r, _ in _enumerate_and_fit(
+        ctx, backend=backend, minos=minos, peaks=peaks, executor=executor)], False

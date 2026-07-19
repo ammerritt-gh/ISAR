@@ -12,7 +12,7 @@ action** rather than crashing:
   should not happen; if it does, log it honestly.
 - **budget** — warn as the budget nears the cap; report exhaustion (the stopping criterion turns this
   into ``unmeetable``).
-- **validation rejection** — TAVI ``would_queue == false``: repair via ``allow_partial`` or drop.
+- **validation rejection** — TAVI ``would_queue == false``: drop the unavailable proposal.
 
 Handlers are pure: they return an :class:`ExceptionAction` the loop acts on and logs as an ``exception``
 event (:mod:`isar.drive.session_log`). None of them fits a peak or produces a number.
@@ -61,8 +61,8 @@ class ExceptionAction:
 
     ``action`` vocabulary: ``recenter`` (re-run with a new window), ``escalate`` (hand to the human /
     give up on this q), ``accept_no_converge`` (keep the number, do not converge), ``schedule_context``
-    (run a calibration/sample scan first), ``warn`` / ``exhausted`` (budget), ``repair`` (resubmit with
-    ``allow_partial``), ``drop`` (skip this point).
+    (run a calibration/sample scan first), ``warn`` / ``exhausted`` (budget), ``repair`` (modify a
+    rejected proposal and retry it), and ``drop`` (skip this point without resubmitting it).
     """
 
     action: str
@@ -193,14 +193,9 @@ def handle_budget(budget_state: dict, *, warn_fraction: float = BUDGET_WARN_FRAC
     return None
 
 
-def handle_validation_rejection(blockers: Sequence[str], *,
-                                allow_partial_ok: bool = True) -> ExceptionAction:
-    """A ``would_queue == false``: repair via ``allow_partial`` (some points feasible) or drop the point."""
+def handle_validation_rejection(blockers: Sequence[str]) -> ExceptionAction:
+    """A ``would_queue == false`` means no requested point can run."""
     blockers = list(blockers or [])
-    if allow_partial_ok and blockers:
-        return ExceptionAction("repair",
-                               f"validation rejected ({len(blockers)} blocker(s)); resubmitting the "
-                               "feasible points with allow_partial", {"blockers": blockers})
     return ExceptionAction("drop",
-                           f"validation rejected ({len(blockers)} blocker(s)) and not partially "
-                           "feasible; dropping this point", {"blockers": blockers})
+                           f"validation rejected ({len(blockers)} blocker(s)); no executable "
+                           "scan remains", {"blockers": blockers})

@@ -23,7 +23,8 @@ from PySide6.QtWidgets import (
 )
 
 from isar_gui.plotspec_pg import clear_render, render_into
-from isar_gui.viewmodels.campaign import budget_readout
+from isar_gui.viewmodels.campaign import (analysis_readout, budget_readout, current_activity_text,
+                                          terminal_status_text)
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +60,10 @@ class CampaignMonitor(QWidget):
         self._budget_bar.setRange(0, 1000)
         self._budget_bar.setTextVisible(True)
         outer.addWidget(self._budget_bar)
+        self._analysis_bar = QProgressBar(self)
+        self._analysis_bar.setRange(0, 1000)
+        self._analysis_bar.setTextVisible(True)
+        outer.addWidget(self._analysis_bar)
 
         self._glw = pg.GraphicsLayoutWidget(self)
         self._glw.setMinimumHeight(120)
@@ -104,7 +109,7 @@ class CampaignMonitor(QWidget):
         running = self._operations.is_running_campaign()
         # The current-scan line is state-derived (not feed-driven): this widget is created lazily
         # on compact-entry, possibly mid-scan, and must not say "no scan yet" until the next event.
-        self._current.setText(state.last_scan or "no scan yet")
+        self._current.setText(current_activity_text(state))
         if running:
             it = state.iteration
             # state.iteration is the log's zero-based index; operators count from 1.
@@ -112,7 +117,7 @@ class CampaignMonitor(QWidget):
             if self._operations.is_stop_pending():
                 text += " — stopping after the current scan…"
         elif state.stop_state:
-            text = f"campaign {state.stop_state}"
+            text = terminal_status_text(state)
         elif state.has_campaign:
             text = "campaign idle"
         else:
@@ -121,8 +126,13 @@ class CampaignMonitor(QWidget):
             text += f"   ({state.converged}/{state.n_grid} converged)"
         self._status.setText(text)
         permille, fmt = budget_readout(state)
+        self._budget_bar.setVisible(state.budget_amount is not None)
         self._budget_bar.setValue(permille)
         self._budget_bar.setFormat(fmt)
+        analysis_permille, analysis_fmt = analysis_readout(state)
+        self._analysis_bar.setVisible(state.analysis_limit_seconds is not None)
+        self._analysis_bar.setValue(analysis_permille)
+        self._analysis_bar.setFormat(analysis_fmt)
         self._stop_btn.setEnabled(running and not self._operations.is_stop_pending())
 
     def _on_stop(self) -> None:

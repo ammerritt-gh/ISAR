@@ -1,9 +1,12 @@
 """The acquisition function: target selection, escalation ladder, and the energy-window rule."""
+import math
+
 import pytest
 
 from isar.drive.acquisition import model as acq_model
 from isar.drive.acquisition import acquire as acq
-from isar.drive.objective import ObjectiveSpec
+from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
+from isar.schema.hypotheses import content_fingerprint
 
 
 def _obj(tol=0.5):
@@ -37,21 +40,227 @@ def test_unvisited_q_preferred_over_escalation():
     assert (p.h, p.k, p.l) == (2.4, 0.0, 0.0)
 
 
-def test_picks_worst_deficit_q_for_production():
+def test_individual_quicklook_intervals_do_not_rank_production_targets():
     obj = _obj()
-    # All quick-looked; (2.3,0,0) has the widest calibrated half-width -> largest deficit.
     obs = [_obs((2.1, 0.0, 0.0), "quicklook", 0.6),
            _obs((2.2, 0.0, 0.0), "quicklook", 0.7),
            _obs((2.3, 0.0, 0.0), "quicklook", 1.5),
            _obs((2.4, 0.0, 0.0), "quicklook", 0.65)]
     p = acq.propose_scan(obj, _model(obs), obs, {"fwhm_dE": 0.8}, {})
-    assert (p.h, p.k, p.l) == (2.3, 0.0, 0.0)
+    assert (p.h, p.k, p.l) == (2.1, 0.0, 0.0)
     assert p.kind == "production" and p.ncount == acq.PRODUCTION_NCOUNT
+
+
+def test_dynamic_count_request_uses_remainder_ladder_growth_and_scan_cap():
+    g = acq.GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
+                  last_submitted_ncount=100_000_000,
+                  master={"halfwidth": 1.0, "effective_exposure": 100_000_000})
+    policy = {"dynamic_ncount": True, "production_batch_ncount": 100_000_000,
+              "tolerance_margin": 0.8, "ncount_growth_cap": 4.0,
+              "max_ncount_per_scan": 4_000_000_000}
+    requested, diagnostics = acq._count_request(
+        g, kind="production", n_points=10, tolerance=0.5, policy=policy,
+        budget_state={"kind": "counting_seconds", "amount": 1.0, "spent": 1.0})
+    assert diagnostics["exposure_required"] == pytest.approx(625_000_000)
+    assert diagnostics["exposure_remaining"] == pytest.approx(525_000_000)
+    assert requested == 400_000_000  # 800M ladder request, clamped to 4x the last submission
+
+    legal, limited = acq._count_request(
+        g, kind="production", n_points=10, tolerance=0.5, policy=policy,
+        budget_state={"kind": "counting_seconds", "amount": 1.0, "spent": 1.0},
+        runtime_ncount_limit=100_000_000)
+    assert legal == 100_000_000
+    assert limited["requested_before_runtime_limit"] == 400_000_000
+    assert limited["runtime_ncount_limit"] == 100_000_000
+
+    g.last_submitted_ncount = 2_000_000_000
+    g.master = {"halfwidth": 10.0, "effective_exposure": 4_000_000_000}
+    capped, _ = acq._count_request(
+        g, kind="production", n_points=10, tolerance=0.5, policy=policy,
+        budget_state={"kind": "counting_seconds", "amount": 0.0, "spent": 0.0})
+    assert capped == 4_000_000_000
+
+
+def test_dynamic_count_request_clamps_only_neutron_budget_and_requires_floor():
+    g = acq.GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5)
+    policy = {"dynamic_ncount": True, "production_batch_ncount": 100_000_000,
+              "ncount_growth_cap": 4.0, "max_ncount_per_scan": 4_000_000_000}
+    with pytest.raises(acq.BudgetInsufficientForMinimumBatch,
+                       match="budget_insufficient_for_minimum_batch"):
+        acq._count_request(
+            g, kind="production", n_points=10, tolerance=0.5, policy=policy,
+            budget_state={"kind": "neutrons", "amount": 999_999_990, "spent": 0.0})
+
+    requested, diagnostics = acq._count_request(
+        g, kind="production", n_points=10, tolerance=0.5, policy=policy,
+        budget_state={"kind": "neutrons", "amount": 1_500_000_000, "spent": 0.0})
+    assert requested == 100_000_000
+    assert diagnostics["neutron_budget_clamp"] == 150_000_000
+
+    with pytest.raises(acq.InstrumentLimitBelowMinimumBatch,
+                       match="instrument_limit_below_minimum_batch"):
+        acq._count_request(
+            g, kind="production", n_points=10, tolerance=0.5, policy=policy,
+            budget_state={"kind": "counting_seconds", "amount": 1.0, "spent": 0.0},
+            runtime_ncount_limit=99_999_999)
+
+
+def test_static_policy_retains_fixed_production_count():
+    g = acq.GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
+                  master={"halfwidth": 10.0, "effective_exposure": 1_000_000_000})
+    requested, diagnostics = acq._count_request(
+        g, kind="production", n_points=10, tolerance=0.5,
+        policy={"dynamic_ncount": False, "production_batch_ncount": 25_000_000},
+        budget_state={"kind": "counting_seconds", "amount": 0.0, "spent": 0.0})
+    assert requested == 25_000_000
+    assert diagnostics["dynamic_ncount"] is False
+
+
+def test_dynamic_proposal_uses_pooled_exposure_and_authoritative_halfwidth():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    frozen["steering"] = {**frozen["steering"],
+                          "quicklook_ncount": 50_000_000,
+                          "production_batch_ncount": 100_000_000}
+    frozen["hypothesis_fingerprint"] = content_fingerprint(
+        frozen["hypotheses"], frozen["steering"])
+    obj = ObjectiveSpec.segment(
+        q_start=(2, 0, 0), q_end=(2, 0, 0), step_rlu=0.1, tolerance_meV=0.5,
+        budget={"kind": "counting_seconds", "amount": 1.0},
+        target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    obs = [_obs((2.0, 0.0, 0.0), "production", 1.0, omega0=6.0)]
+    obs[0].update({"submitted_ncount": 100_000_000, "proposal_cost": 1.0})
+    master = _master((2.0, 0.0, 0.0), 1.0)
+    master["effective_exposure"] = 100_000_000
+    proposal = acq.propose_scan(
+        obj, _model(obs), obs, {"fwhm_dE": 0.8},
+        {"kind": "counting_seconds", "amount": 1.0, "spent": 1.0},
+        master_rows=[master])
+    assert proposal.ncount == 400_000_000
+    assert proposal.meta["count_diagnostics"]["exposure_required"] == pytest.approx(625_000_000)
+
+    limited = acq.propose_scan(
+        obj, _model(obs), obs, {"fwhm_dE": 0.8},
+        {"kind": "counting_seconds", "amount": 1.0, "spent": 1.0},
+        master_rows=[master], runtime_limits={"max_neutrons_per_point": 100_000_000})
+    score = limited.meta["score"]
+    final_cost = float(limited.n_points) * 100_000_000.0
+    expected_eig = acq.counts_eig(score["sigma_prior"], obj.tolerance_meV,
+                                  score["c_spent"], final_cost)
+    assert limited.ncount == 100_000_000
+    assert score["ranking_cost"] != final_cost
+    assert score["cost"] == final_cost
+    assert score["eig"] == pytest.approx(expected_eig)
+    assert score["sigma_scan"] == pytest.approx(acq.predicted_sigma_after(
+        score["sigma_prior"], score["c_spent"], final_cost))
+    assert score["eig_per_cost"] == pytest.approx(expected_eig / final_cost)
+
+
+def test_third_generic_no_signal_attempt_grows_above_production_floor():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    frozen["steering"] = {**frozen["steering"], "production_batch_ncount": 100_000_000}
+    frozen["hypothesis_fingerprint"] = content_fingerprint(
+        frozen["hypotheses"], frozen["steering"])
+    obj = ObjectiveSpec.segment(
+        q_start=(2, 0, 0), q_end=(2, 0, 0), step_rlu=0.1, tolerance_meV=0.5,
+        budget={"kind": "counting_seconds", "amount": 10.0},
+        target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    obs = [
+        {**_obs((2.0, 0.0, 0.0), "quicklook", None, resolved=False, disp="declined"),
+         "acquisition_id": "A", "submitted_ncount": 50_000_000, "proposal_cost": 1.0},
+        {**_obs((2.0, 0.0, 0.0), "production", None, resolved=False, disp="declined"),
+         "acquisition_id": "B", "submitted_ncount": 100_000_000, "proposal_cost": 1.0},
+    ]
+    proposal = acq.propose_scan(
+        obj, acq_model.fit([]), obs, {"fwhm_dE": 0.8},
+        {"kind": "counting_seconds", "amount": 10.0, "spent": 0.0})
+    assert proposal.kind == "production"
+    assert proposal.ncount == 200_000_000
+
+
+def test_adequate_provisional_candidate_sends_next_scan_to_max_information_neighbor():
+    source = acq.GridQ(
+        index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5, n_quicklook=1,
+        master={"candidate_id": "optic:lowest_energy:unspecified",
+                "candidate_state": "provisional", "diagnostic_halfwidth": 0.4})
+    low_info = acq.GridQ(index=1, hkl=(2.0, 0.1, 0.0), q=0.1, tolerance=0.5)
+    high_info = acq.GridQ(index=2, hkl=(2.0, 0.2, 0.0), q=0.2, tolerance=0.5)
+    picked, kind, reason, score = acq._select_target(
+        [source, low_info, high_info], acq_model.fit([]),
+        classify=lambda candidate: candidate.q)
+    assert picked is high_info and kind == "quicklook"
+    assert "neighboring-q" in reason
+    assert score.purpose == "differentiate"
+
+
+def test_statistics_limited_provisional_candidate_pools_same_q_first():
+    source = acq.GridQ(
+        index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5, n_quicklook=1,
+        master={"candidate_id": "optic:lowest_energy:unspecified",
+                "candidate_state": "provisional", "diagnostic_halfwidth": 0.8})
+    neighbor = acq.GridQ(index=1, hkl=(2.0, 0.1, 0.0), q=0.1, tolerance=0.5)
+    picked, kind, reason, _score = acq._select_target(
+        [source, neighbor], acq_model.fit([]), classify=lambda candidate: candidate.q + 1.0)
+    assert picked is source and kind == "production"
+    assert "pool more exposure" in reason
 
 
 def _master(hkl, hw, disp="resolved", reliable=True, n=2):
     return {"hkl": hkl, "omega0": 3.0, "halfwidth": hw, "reliable": reliable,
             "usable": disp in ("resolved", "flagged"), "disposition": disp, "n_members": n}
+
+
+def test_master_predictive_ranking_advances_common_random_levels_until_distinguishable():
+    def diagnostics(info, stderr, count, reduction):
+        return {"usable": True, "expected_information_nats": info,
+                "omega_information_nats": info * 0.7,
+                "model_branch_information_nats": info * 0.3,
+                "expected_omega_halfwidth_reduction_meV": reduction,
+                "score_standard_error_nats": stderr, "simulation_count": count}
+
+    first = acq.GridQ(index=0, hkl=(2.1, 0.0, 0.0), q=0.0, tolerance=0.2,
+                      n_quicklook=1)
+    second = acq.GridQ(index=1, hkl=(2.2, 0.0, 0.0), q=0.1, tolerance=0.2,
+                       n_quicklook=1)
+    for point, levels in (
+            (first, [diagnostics(0.50, 0.30, 128, 0.08),
+                     diagnostics(0.50, 0.01, 512, 0.08)]),
+            (second, [diagnostics(0.45, 0.30, 128, 0.07),
+                      diagnostics(0.30, 0.01, 512, 0.07)])):
+        point.master = {**_master(point.hkl, 0.8), "diagnostic_halfwidth": 0.8,
+                        "expected_next_information": levels[0],
+                        "predictive": {"predicted_analysis_seconds": 1.0,
+                                       "score_levels": levels}}
+    picked, kind, _reason, score = acq._select_target(
+        [first, second], acq_model.fit([]), ranking_cost_kind="analysis")
+    assert picked is first and kind == "production"
+    assert score.method == "master_predictive" and score.simulation_count == 512
+
+
+def test_live_predictive_scoring_honors_zero_allowance_after_initial_level():
+    models = [{
+        "weight": 1.0, "omega0_draws": [2.0, 2.2],
+        "expected_counts": [[20.0, 2.0, 1.0], [18.0, 3.0, 1.0]],
+    }]
+    points = [
+        acq.GridQ(index=index, hkl=(2.1 + index / 10, 0.0, 0.0), q=index / 10,
+                  tolerance=0.2, n_quicklook=1)
+        for index in range(2)
+    ]
+    for point in points:
+        initial = {"usable": True, "expected_information_nats": 0.1,
+                   "score_standard_error_nats": 0.1, "simulation_count": 128,
+                   "common_random_seed": 940301}
+        point.master = {**_master(point.hkl, 0.8), "diagnostic_halfwidth": 0.8,
+                        "expected_next_information": initial,
+                        "predictive": {"predicted_analysis_seconds": 1.0,
+                                       "diagnostics": initial, "models": models}}
+
+    _picked, _kind, _reason, score = acq._select_target(
+        points, acq_model.fit([]), ranking_cost_kind="analysis",
+        scoring_allowance_seconds=0.0)
+
+    assert score.method == "master_predictive"
+    assert score.simulation_count == 128
 
 
 def test_keeps_producing_when_both_master_and_single_over_tolerance():
@@ -132,3 +341,107 @@ def test_scan_command_grammar():
     p = acq.propose_scan(_obj(), acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
     assert p.scan_command().startswith("deltaE ")
     assert len(p.scan_command().split()) == 4
+
+
+def test_optic_hypothesis_starts_at_zone_center_in_positive_energy_band():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    obj = ObjectiveSpec.segment(q_start=(2, 0, 0), q_end=(2, 0.2, 0), step_rlu=0.1,
+                                tolerance_meV=0.5,
+                                budget={"kind": "neutrons", "amount": 1e12},
+                                target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    p = acq.propose_scan(obj, acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
+    assert (p.h, p.k, p.l) == (2.0, 0.0, 0.0)
+    assert p.e_lo > 0.0 and p.e_lo <= 1.0
+    assert p.e_hi == pytest.approx(12.0)
+    assert p.meta["purpose"] == "hypothesis_check"
+
+
+def test_rival_band_and_absent_signal_widening_remain_point_capped():
+    e_lo, e_hi, _step, npts = acq._energy_window(
+        6.0, 0.5, 0.5, energy_search_meV=(-2.0, 12.0), rival_band=(3.0, 1.0), widen=2.5)
+    assert e_lo <= 1.0
+    assert e_hi == 12.0
+    assert npts <= acq.MAX_POINTS
+
+
+def test_hypothesis_scan_respects_frozen_point_cap():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    frozen["steering"] = {**frozen["steering"], "max_scan_points": 24}
+    frozen["hypothesis_fingerprint"] = content_fingerprint(
+        frozen["hypotheses"], frozen["steering"])
+    obj = ObjectiveSpec.segment(q_start=(2, 0, 0), q_end=(2, 0.1, 0), step_rlu=0.1,
+                                tolerance_meV=0.5,
+                                budget={"kind": "neutrons", "amount": 1e12},
+                                target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    proposal = acq.propose_scan(obj, acq_model.fit([]), [], {"fwhm_dE": 0.5}, {})
+    assert proposal.n_points == 24
+    assert proposal.meta["max_scan_points"] == 24
+    assert acq.points_in_window(
+        proposal.e_lo, proposal.e_hi, proposal.e_step,
+        max_points=proposal.meta["max_scan_points"]) == 24
+
+
+def test_higher_value_classification_probe_can_leave_certification_segment():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    obj = ObjectiveSpec.segment(q_start=(2, 0, 0), q_end=(2, 0.2, 0), step_rlu=0.1,
+                                tolerance_meV=0.5,
+                                budget={"kind": "neutrons", "amount": 1e12},
+                                target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    observations = [_obs(tuple(point), "quicklook", 0.8, omega0=6.0) for point in obj.path]
+    from isar.drive.supervisor.stopping import model_points, summarize_grid
+    model = acq_model.fit(model_points(summarize_grid(obj, observations)))
+
+    def classification_value(candidate):
+        return 1.0 if candidate.hkl[1] <= 0.2 + 1e-9 else 2.0
+
+    proposal = acq.propose_scan(
+        obj, model, observations, {"fwhm_dE": 0.5}, {}, classify=classification_value)
+    assert proposal.h == 2.0 and proposal.k > 0.2
+    assert proposal.meta["driver_inserted"] is True
+    assert proposal.meta["certification_eligible"] is False
+    assert proposal.meta["purpose"] == proposal.meta["insertion_purpose"] == "differentiate"
+    assert proposal.meta["score"]["classification_eig"] == pytest.approx(2.0)
+    assert proposal.meta["score"]["combined_information"] > 0.0
+
+    # Persisted evidence at that Q makes resume advance to a different candidate, never repeat it.
+    observations.append(_obs((proposal.h, proposal.k, proposal.l), "quicklook", 0.8, omega0=6.0))
+    resumed = acq.propose_scan(
+        obj, model, observations, {"fwhm_dE": 0.5}, {}, classify=classification_value)
+    assert (resumed.h, resumed.k, resumed.l) != (proposal.h, proposal.k, proposal.l)
+
+
+def test_driver_insertion_stays_clear_of_extremely_fine_certification_grid():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    obj = ObjectiveSpec.segment(q_start=(2, 0, 0), q_end=(2, 0.00005, 0), step_rlu=0.00005,
+                                tolerance_meV=0.5,
+                                budget={"kind": "neutrons", "amount": 1e12},
+                                target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    observations = [_obs(tuple(point), "quicklook", 0.8, omega0=6.0) for point in obj.path]
+    from isar.drive.supervisor.stopping import model_points, summarize_grid
+    model = acq_model.fit(model_points(summarize_grid(obj, observations)))
+    proposal = acq.propose_scan(
+        obj, model, observations, {"fwhm_dE": 0.5}, {}, classify=lambda _candidate: 2.0)
+    assert proposal is not None
+    assert proposal.meta["driver_inserted"] is False
+    assert any(math.dist((proposal.h, proposal.k, proposal.l), tuple(point)) <= 1e-4
+               for point in obj.path)
+
+
+def test_driver_insertion_requires_finite_requested_grid_comparison():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    obj = ObjectiveSpec.segment(q_start=(2, 0, 0), q_end=(2, 0.2, 0), step_rlu=0.1,
+                                tolerance_meV=0.5,
+                                budget={"kind": "neutrons", "amount": 1e12},
+                                target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    observations = [_obs(tuple(point), "quicklook", 0.8, omega0=6.0) for point in obj.path]
+    from isar.drive.supervisor.stopping import model_points, summarize_grid
+    model = acq_model.fit(model_points(summarize_grid(obj, observations)))
+
+    def classification_value(candidate):
+        on_grid = any(math.dist(candidate.hkl, tuple(point)) <= 1e-4 for point in obj.path)
+        return float("nan") if on_grid else 2.0
+
+    proposal = acq.propose_scan(
+        obj, model, observations, {"fwhm_dE": 0.5}, {}, classify=classification_value)
+    assert proposal is not None
+    assert proposal.meta["driver_inserted"] is False

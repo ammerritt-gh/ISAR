@@ -27,6 +27,7 @@ class RunResult:
     stdout: str
     stderr: str
     timings: dict | None = None
+    completed: bool = True
 
 
 class IsarRunError(RuntimeError):
@@ -62,6 +63,8 @@ def _exec_run(cmd: Sequence[str], timeout: float | None) -> RunResult:
     The single subprocess-execution point shared by :class:`SubprocessRunner` and the legacy
     :func:`run_isar` wrapper, so both preserve identical error semantics."""
     proc = subprocess.run(list(cmd), capture_output=True, text=True, timeout=timeout)
+    if proc.returncode == 75:
+        return RunResult(proc.returncode, proc.stdout, proc.stderr, completed=False)
     if proc.returncode != 0:
         raise IsarRunError(proc.returncode, proc.stdout, proc.stderr, cmd)
     return RunResult(proc.returncode, proc.stdout, proc.stderr)
@@ -74,8 +77,14 @@ class SubprocessRunner:
     Boundary: the child process IS the analysis boundary; nothing here imports a fit internal.
     """
 
+    supports_master_certification = True
+
     def run(self, workspace: str | Path, data_paths: Sequence[str | Path], *, force: bool = False,
-            errors_tier: str = "full", render: bool = True, timeout: float | None = None) -> RunResult:
+            errors_tier: str = "full", render: bool = True, timeout: float | None = None,
+            certification_manifest: str | Path | None = None,
+            certification_request: str | Path | None = None,
+            analysis_allowance_seconds: float | None = None,
+            finish_initial_wave: bool = False) -> RunResult:
         """Run ``isar run <data...> --workspace <workspace> [--force] --errors <tier>``.
 
         Args:
@@ -99,6 +108,14 @@ class SubprocessRunner:
         cmd.extend(["--errors", str(errors_tier)])
         if not render:
             cmd.append("--no-render")
+        if certification_manifest is not None:
+            cmd.extend(["--certification-manifest", str(certification_manifest)])
+        if certification_request is not None:
+            cmd.extend(["--certification-request", str(certification_request)])
+        if analysis_allowance_seconds is not None:
+            cmd.extend(["--analysis-allowance-seconds", str(float(analysis_allowance_seconds))])
+        if finish_initial_wave:
+            cmd.append("--finish-initial-wave")
         return _exec_run(cmd, timeout)
 
     def close(self) -> None:
@@ -115,11 +132,19 @@ class _CallableRunner:
     :class:`subprocess.CompletedProcess`, a :class:`RunResult`, ...) is coerced to a :class:`RunResult`.
     """
 
+    # Bare historical hooks only receive ``extra_args`` and cannot implement the frozen manifest
+    # protocol. They remain a test/integration seam; production runners advertise v2 support.
+    supports_master_certification = False
+
     def __init__(self, fn):
         self._fn = fn
 
     def run(self, workspace, data_paths, *, force: bool = False, errors_tier: str = "full",
-            render: bool = True, timeout: float | None = None) -> RunResult:
+            render: bool = True, timeout: float | None = None,
+            certification_manifest: str | Path | None = None,
+            certification_request: str | Path | None = None,
+            analysis_allowance_seconds: float | None = None,
+            finish_initial_wave: bool = False) -> RunResult:
         # ``render`` is accepted for protocol parity but deliberately NOT reflected into ``extra_args``:
         # bare callables (config["run_isar"] hooks / test fakes) don't parse argv, and the extra_args
         # contract was frozen at the Stage-1 shape (--errors <tier> [--force]). Adding --no-render here

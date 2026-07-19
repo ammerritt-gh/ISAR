@@ -163,6 +163,19 @@ def projection_legend(varying, modal, step) -> ps.ProjectionLegend:
     return ps.ProjectionLegend(plane=plane, integration=", ".join(integ))
 
 
+def filter_prior_rows(points, *, sample=None, T=None, t_round) -> list[dict]:
+    """Apply the shared sample/temperature slice used by curves and their metadata."""
+    rows = []
+    for point in points or []:
+        if sample is not None and point.get("sample") != sample:
+            continue
+        point_T = point.get("t_bin", point.get("T"))
+        if T is not None and point_T is not None and abs(float(point_T) - float(T)) > t_round:
+            continue
+        rows.append(point)
+    return rows
+
+
 def prior_curve(points, varying, *, sample=None, T=None, t_round, want_sigma=False):
     """Reduce a list of PriorPoint-shaped dicts (``{sample, t_bin/T, q, omega0, sigma, ...}``) to the
     sorted ω(q) curve for one sample + temperature bin, projected onto the ``varying`` q component.
@@ -172,12 +185,7 @@ def prior_curve(points, varying, *, sample=None, T=None, t_round, want_sigma=Fal
     heatmap's exact degrade rule, shared so prior + branch overlays degrade identically). Anchors are
     matched to ``sample`` (when given) and to within ``t_round`` of ``T`` (when both given)."""
     rows = []
-    for p in points or []:
-        if sample is not None and p.get("sample") != sample:
-            continue
-        pt = p.get("t_bin", p.get("T"))
-        if T is not None and pt is not None and abs(float(pt) - float(T)) > t_round:
-            continue
+    for p in filter_prior_rows(points, sample=sample, T=T, t_round=t_round):
         q = p.get("q")
         w = p.get("omega0")
         if q is None or len(q) <= varying or w is None:
@@ -191,6 +199,149 @@ def prior_curve(points, varying, *, sample=None, T=None, t_round, want_sigma=Fal
     if want_sigma:
         return xs, ys, np.array([s for _, _, s in rows])
     return xs, ys
+
+
+def branch_track_overlays(payload, varying, *, sample=None, T=None, t_round=5.0,
+                          modal=None, step=None) -> list[dict]:
+    """Project additive ``card.state.branch_tracks`` into segmented plotspec branch dictionaries.
+
+    Accepts both the current dictionary root (``{"tracks": [...]}``) and early list-shaped
+    prototypes.  Each persisted segment remains a separate segment; ambiguous/missing states are
+    retained for the builder to suppress, so the view can never join confirmed islands across a
+    frontier gap.
+    """
+    if isinstance(payload, dict):
+        tracks = payload.get("tracks")
+        target = payload.get("target_branch")
+    else:
+        tracks, target = payload, None
+    if not isinstance(tracks, list):
+        return []
+    out = []
+    branch_numbers = {str(track.get("branch_id") or "branch"): index + 1
+                      for index, track in enumerate(sorted(
+                          (track for track in tracks if isinstance(track, dict)),
+                          key=lambda item: str(item.get("branch_id") or "branch")))}
+    for track in tracks:
+        if not isinstance(track, dict):
+            continue
+        if sample is not None and track.get("sample") not in (None, sample):
+            continue
+        track_t = track.get("t_bin", track.get("T"))
+        if T is not None and track_t is not None and abs(float(track_t) - float(T)) > t_round:
+            continue
+        branch_id = str(track.get("branch_id") or "branch")
+        role = str(track.get("role") or "").lower()
+        if not role:
+            role = ("target" if target is not None and branch_id == str(target) else
+                    "rival" if target is not None else "branch")
+        raw_segments = track.get("segments")
+        if not isinstance(raw_segments, list):
+            raw_segments = [track]
+        confirmed = bool(raw_segments) and all(
+            str(segment.get("state", "confirmed")).lower() == "confirmed"
+            for segment in raw_segments if isinstance(segment, dict))
+        label = track.get("label")
+        if not confirmed:
+            label = f"Branch {branch_numbers.get(branch_id, 1)}"
+        elif not label:
+            physical = branch_id.replace("_", " ").title()
+            if role == "target":
+                label = f"{physical} target"
+            elif role in {"rival", "context"}:
+                label = f"{physical} (non-target context)"
+            else:
+                label = physical
+        segments = []
+        for segment in raw_segments:
+            if not isinstance(segment, dict):
+                continue
+            rows = []
+            for point in segment.get("points") or []:
+                if not isinstance(point, dict):
+                    continue
+                point_t = point.get("t_bin", point.get("T"))
+                if T is not None and point_t is not None \
+                        and abs(float(point_t) - float(T)) > t_round:
+                    continue
+                # Persisted tracks carry both path-distance ``q`` and crystallographic ``hkl``.
+                # This view's x axis is an H/K/L component, so the explicit HKL wins whenever it is
+                # available; scalar q remains the fallback for early projected prototypes.
+                hkl = point.get("hkl")
+                q = hkl if isinstance(hkl, (list, tuple, np.ndarray)) else point.get("q")
+                if isinstance(q, (list, tuple, np.ndarray)):
+                    if len(q) <= varying:
+                        continue
+                    if modal is not None and step is not None:
+                        fixed = [i for i in range(min(3, len(q))) if i != varying]
+                        if any(abs(float(q[i]) - float(modal[i])) > float(step) + 1e-9
+                               for i in fixed):
+                            continue
+                    x = q[varying]
+                else:
+                    x = point.get("x", q)
+                energy = point.get("energy_meV", point.get("omega0", point.get("omega")))
+                try:
+                    if x is not None and energy is not None:
+                        rows.append((float(x), float(energy)))
+                except (TypeError, ValueError):
+                    continue
+            segments.append({
+                "state": segment.get("state", "confirmed"),
+                "x": [r[0] for r in rows], "y": [r[1] for r in rows],
+            })
+        endpoints = [(segment["x"][-1], segment["y"][-1]) for segment in segments
+                     if segment.get("x") and segment.get("y")
+                     and str(segment.get("state", "confirmed")).lower() == "confirmed"]
+        out.append({"branch_id": branch_id, "label": str(label), "role": role,
+                    "segments": segments, "endpoint": (endpoints[-1] if endpoints else None)})
+    return out
+
+
+def unselected_candidate_points(fv, x: float) -> list[dict]:
+    """View-only points for fitted modes not selected as the row's authoritative answer."""
+    candidates = getattr(fv, "branch_candidates", None) or []
+    if not candidates:
+        return []
+    selected = getattr(fv, "selected_candidate_index", None)
+    energies = [_candidate_energy(candidate) for candidate in candidates]
+    if selected is None and getattr(fv, "omega0", None) is not None:
+        viable = [(abs(e - float(fv.omega0)), i) for i, e in enumerate(energies) if e is not None]
+        selected = min(viable)[1] if viable else None
+    out = []
+    for index, (candidate, energy) in enumerate(zip(candidates, energies)):
+        if index == selected or energy is None or not isinstance(candidate, dict):
+            continue
+        out.append({"q": float(x), "omega": energy,
+                    "yerr": _candidate_error(candidate), "selected": False,
+                    "candidate_index": index})
+    return out
+
+
+def _candidate_energy(candidate) -> float | None:
+    if not isinstance(candidate, dict):
+        return None
+    value = candidate.get("energy_meV", candidate.get("omega0", candidate.get("omega")))
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _candidate_error(candidate) -> float | None:
+    value = candidate.get("omega0_err", candidate.get("energy_err", candidate.get("sigma")))
+    try:
+        if value is not None:
+            return abs(float(value))
+    except (TypeError, ValueError):
+        return None
+    interval = candidate.get("interval")
+    try:
+        if isinstance(interval, (list, tuple)) and len(interval) >= 2:
+            return abs(float(interval[-1]) - float(interval[0])) / 2.0
+    except (TypeError, ValueError):
+        return None
+    return None
 
 
 def _f_or_nan(v) -> float:

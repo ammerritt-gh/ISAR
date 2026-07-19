@@ -35,8 +35,10 @@ _OMEGA = lambda h: (h - 2.0) * 2.0
 # Fields that legitimately vary run-to-run (wall clock, per-workspace absolute paths) or are pure
 # profiling noise. They are excluded from the identity comparison so the guard tracks *decisions*,
 # not timing or the tmp-dir a run happened to land in. ``probe`` is the absolute path of the init
-# data file (embeds the workspace dir); it is workspace-dependent, not a decision.
-_VOLATILE_KEYS = frozenset({"ts", "seconds", "eta", "timings", "probe"})
+# data file (embeds the workspace dir); it is workspace-dependent, not a decision.  The logical
+# acquisition ID embeds the persisted per-workspace run nonce so independent campaigns cannot collide;
+# its suffix/order is tested elsewhere, while the scientific proposal remains deterministic here.
+_VOLATILE_KEYS = frozenset({"ts", "seconds", "eta", "timings", "probe", "acquisition_id"})
 _DECISION_KINDS = ("propose", "validate", "run", "analyze")
 
 

@@ -134,6 +134,17 @@ class ProposalScore:
     sigma_scan: float | None = None   # predicted σ(ω₀) after the scan (meV)
     c_spent: float = 0.0              # C_q accumulated cost at this q before the scan
     reason: str = ""
+    classification_eig: float | None = None  # branch-label mutual information (nats)
+    classification_weight: float = 0.0
+    combined_information: float | None = None
+    purpose: str | None = None
+    ranking_cost: float | None = None  # ΔC proxy used to choose the q before its window was emitted
+    ranking_ncount: int | None = None  # per-point exposure used by an exposure-aware ranking screen
+    omega_halfwidth_reduction: float | None = None
+    model_entropy_reduction: float | None = None
+    score_standard_error: float | None = None
+    simulation_count: int | None = None
+    conservative_utility: float | None = None
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)

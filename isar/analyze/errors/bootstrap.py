@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+import logging
 
 import numpy as np
 
@@ -22,6 +23,7 @@ from isar.synth import backends, estimators
 # Only spin up a process pool for the M-replicate loop when there is enough work to amortize the
 # (Windows-spawn) worker startup. Below this, the serial path is faster.
 _BOOT_PARALLEL_MIN_M = 16
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -35,6 +37,8 @@ class BootstrapResult:
     interval_type: str
     bimodal: bool
     seed: int
+    parameter_names: tuple[str, ...]
+    parameter_samples: np.ndarray
 
 
 def _percentile_interval(samples: np.ndarray, level: float) -> tuple[float, float, float]:
@@ -126,7 +130,8 @@ def _refit_replicate(counts_b, composite, x, ctx, theta_fit, bounds, be_names,
     w0 = np.array([np.sqrt(float(br.x[i]) ** 2 + float(br.x[i + 1]) ** 2) for i in phonon_i])
     sel_pos = phonon_i[int(np.argsort(w0)[prim_rank])]  # global index of the primary mode
     od_b, g_b = float(br.x[sel_pos]), float(br.x[sel_pos + 1])
-    return (float(np.sqrt(od_b ** 2 + g_b ** 2)), g_b)
+    return (float(np.sqrt(od_b ** 2 + g_b ** 2)), g_b,
+            np.asarray(br.x, dtype=float))
 
 
 def _bootstrap_chunk(args):
@@ -219,12 +224,24 @@ def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 1234
                 for ch in chunks]
         out: list = [None] * n
         if executor is not None:                       # shared pool: never closed by the callee
-            for ci, chunk_res in enumerate(executor.map(_bootstrap_chunk, args)):
+            try:
+                chunk_results = list(executor.map(_bootstrap_chunk, args))
+            except Exception as exc:  # noqa: BLE001 — pure chunks are safe to repeat
+                log.warning("parallel bootstrap failed; retrying serially: %s: %s",
+                            type(exc).__name__, exc)
+                chunk_results = [_bootstrap_chunk(arg) for arg in args]
+            for ci, chunk_res in enumerate(chunk_results):
                 out[ci::n_chunks] = chunk_res
         else:
-            with ProcessPoolExecutor(max_workers=n_chunks) as ex:
-                for ci, chunk_res in enumerate(ex.map(_bootstrap_chunk, args)):
-                    out[ci::n_chunks] = chunk_res
+            try:
+                with ProcessPoolExecutor(max_workers=n_chunks) as ex:
+                    chunk_results = list(ex.map(_bootstrap_chunk, args))
+            except Exception as exc:  # noqa: BLE001 — pure chunks are safe to repeat
+                log.warning("parallel bootstrap failed; retrying serially: %s: %s",
+                            type(exc).__name__, exc)
+                chunk_results = [_bootstrap_chunk(arg) for arg in args]
+            for ci, chunk_res in enumerate(chunk_results):
+                out[ci::n_chunks] = chunk_res
         return out
 
     if adaptive:
@@ -256,6 +273,7 @@ def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 1234
 
     o_samples = [r[0] for r in results if r is not None]
     g_samples = [r[1] for r in results if r is not None]
+    parameter_samples = [r[2] for r in results if r is not None]
     n_conv = len(o_samples)
 
     o = np.array(o_samples, dtype=float)
@@ -266,4 +284,7 @@ def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 1234
         omega0_samples=o, gamma_samples=g,
         n_converged=n_conv, M=len(results), interval_type=interval,
         bimodal=is_bimodal(o), seed=int(seed),
+        parameter_names=tuple(names),
+        parameter_samples=(np.asarray(parameter_samples, dtype=float)
+                           if parameter_samples else np.empty((0, len(names)), dtype=float)),
     )

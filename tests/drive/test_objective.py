@@ -1,7 +1,26 @@
 """ObjectiveSpec — the machine objective the supervisor produces and the loop consumes."""
 import pytest
 
-from isar.drive.objective import ObjectiveSpec
+from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
+from isar.schema.hypotheses import SteeringPolicy, content_fingerprint
+
+
+def test_dual_clock_defaults_are_tier_specific():
+    deterministic = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.2, budget=None)
+    assert deterministic.budget is None
+    assert deterministic.analysis_limit_seconds == 3600.0
+
+    measurement_dominated = ObjectiveSpec(
+        path=[(2.0, 0.0, 0.0)], tolerance_meV=0.2, budget=None, tier="mcstas")
+    assert measurement_dominated.budget == {
+        "kind": "counting_seconds", "amount": 8.0 * 3600.0}
+    assert measurement_dominated.analysis_limit_seconds is None
+
+
+def test_explicit_analysis_limit_none_survives_round_trip():
+    spec = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.2, budget=None,
+                         analysis_limit_seconds=None)
+    assert ObjectiveSpec.from_dict(spec.to_dict()).analysis_limit_seconds is None
 
 
 def _spec():
@@ -26,6 +45,20 @@ def test_round_trip_dict():
     assert back.tier == spec.tier
     assert back.name == spec.name
     assert back.meta == spec.meta
+
+
+def test_persisted_objective_requires_prerelease_v2_schema():
+    old = _spec().to_dict()
+    old.pop("schema")
+    with pytest.raises(ValueError, match="isar.objective/2"):
+        ObjectiveSpec.from_dict(old)
+
+
+def test_persisted_objective_rejects_malformed_q_with_clear_error():
+    malformed = _spec().to_dict()
+    malformed["path"] = [[1.0, 0.0]]
+    with pytest.raises(ValueError, match="exactly three coordinates"):
+        ObjectiveSpec.from_dict(malformed)
 
 
 def test_path_normalized_to_float_triples():
@@ -92,6 +125,29 @@ def test_generic_segment_uses_step_as_a_maximum_and_includes_endpoints():
     assert spec.path[-1] == (2.0, 0.5, 0.0)
     assert max(spec.path[i + 1][1] - spec.path[i][1] for i in range(10)) <= 0.05 + 1e-12
     assert spec.energy_search_meV == (-2.0, 12.0)
+    assert spec.target_selector == "lowest_energy"
+
+
+def test_target_selector_defaults_and_validation():
+    common = dict(path=[(2, 0, 0)], tolerance_meV=0.5,
+                  budget={"kind": "neutrons", "amount": 1}, target_branch="optic")
+    assert ObjectiveSpec(**common).target_selector == "lowest_energy"
+    nearest = ObjectiveSpec(**common, target_energy_meV=7.25)
+    assert nearest.target_selector == "nearest_energy" and nearest.target_energy_meV == 7.25
+    tracked = ObjectiveSpec(**common, target_selector="tracked_branch")
+    assert tracked.target_selector == "tracked_branch" and tracked.target_energy_meV is None
+    with pytest.raises(ValueError, match="requires target_branch='optic'"):
+        ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
+                      budget={"kind": "neutrons", "amount": 1e6},
+                      target_branch="acoustic", target_selector="tracked_branch")
+    with pytest.raises(ValueError, match="requires target_energy_meV"):
+        ObjectiveSpec(**common, target_selector="nearest_energy")
+    with pytest.raises(ValueError, match="target_selector"):
+        ObjectiveSpec(**common, target_selector="brightest")
+    with pytest.raises(ValueError, match="finite"):
+        ObjectiveSpec(**common, target_energy_meV=float("nan"))
+    with pytest.raises(ValueError, match="finite"):
+        ObjectiveSpec(**common, target_energy_meV=float("inf"))
 
 
 def test_explicit_degenerate_segment_remains_a_valid_single_point():
@@ -99,3 +155,71 @@ def test_explicit_degenerate_segment_remains_a_valid_single_point():
                                  tolerance_meV=0.5,
                                  budget={"kind": "neutrons", "amount": 1})
     assert spec.path == [(2.0, 0.0, 0.0)]
+
+
+def test_old_style_objective_has_no_implicit_null_hypothesis():
+    spec = _spec()
+    assert spec.hypotheses == []
+    assert spec.target_hypothesis is None
+    assert spec.steering == {}
+
+
+def test_frozen_hypothesis_snapshot_round_trips_and_detects_tampering():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    spec = ObjectiveSpec(path=[(2, 0, 0)], tolerance_meV=0.5,
+                         budget={"kind": "neutrons", "amount": 1},
+                         target_branch="optic", **frozen)
+    assert ObjectiveSpec.from_dict(spec.to_dict()).to_dict() == spec.to_dict()
+    tampered = spec.to_dict()
+    tampered["hypotheses"][0]["confidence"] = 0.01
+    with pytest.raises(ValueError, match="fingerprint"):
+        ObjectiveSpec.from_dict(tampered)
+
+
+def test_new_snapshots_enable_dynamic_counting_but_legacy_fingerprint_stays_exact():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    assert frozen["steering"]["dynamic_ncount"] is True
+    assert frozen["steering"]["maximum_bridge_steps"] == 1
+
+    old_policy = SteeringPolicy().to_dict()
+    for key in ("dynamic_ncount", "max_ncount_per_scan", "ncount_growth_cap",
+                "tolerance_margin", "interval_floor_window",
+                "interval_floor_min_improvement", "interval_floor_min_exposure_ratio",
+                "maximum_bridge_steps"):
+        old_policy.pop(key)
+    old_fingerprint = content_fingerprint(frozen["hypotheses"], old_policy)
+    legacy = ObjectiveSpec(
+        path=[(2, 0, 0)], tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1}, target_branch="optic",
+        hypotheses=frozen["hypotheses"], target_hypothesis="optic",
+        hypothesis_source="shipped_preset", hypothesis_fingerprint=old_fingerprint,
+        steering=old_policy)
+    assert legacy.hypothesis_fingerprint == old_fingerprint
+    assert legacy.steering == old_policy
+
+
+def test_pre_bridge_snapshot_with_dynamic_counting_keeps_exact_fingerprint():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    old_policy = dict(frozen["steering"])
+    old_policy.pop("maximum_bridge_steps")
+    old_fingerprint = content_fingerprint(frozen["hypotheses"], old_policy)
+    legacy = ObjectiveSpec(
+        path=[(2, 0, 0)], tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1}, target_branch="optic",
+        hypotheses=frozen["hypotheses"], target_hypothesis="optic",
+        hypothesis_source="shipped_preset", hypothesis_fingerprint=old_fingerprint,
+        steering=old_policy)
+    assert legacy.hypothesis_fingerprint == old_fingerprint
+    assert legacy.steering == old_policy
+    assert ObjectiveSpec.from_dict(legacy.to_dict()).hypothesis_fingerprint == old_fingerprint
+
+
+@pytest.mark.parametrize("names, message", [
+    (["optic", "optic"], "duplicate"), (["optic", ""], "non-empty"),
+])
+def test_frozen_hypothesis_names_must_be_nonempty_and_unique(names, message):
+    hypotheses = [{"name": name} for name in names]
+    with pytest.raises(ValueError, match=message):
+        ObjectiveSpec(path=[(2, 0, 0)], tolerance_meV=0.5,
+                      budget={"kind": "neutrons", "amount": 1}, target_branch="optic",
+                      hypotheses=hypotheses, target_hypothesis="optic")

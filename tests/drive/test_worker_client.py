@@ -118,6 +118,32 @@ def test_happy_path_returns_worker_result(fake_env, monkeypatch):
         r.close()
 
 
+def test_finish_initial_wave_reaches_warm_worker_without_allowance(fake_env, monkeypatch):
+    monkeypatch.setenv("ISAR_FAKE_MODE", "echo")
+    r = _runner(fake_env)
+    sent = []
+    original_send = r._send
+
+    def recording_send(message):
+        sent.append(dict(message))
+        original_send(message)
+
+    monkeypatch.setattr(r, "_send", recording_send)
+    try:
+        result = r.run(
+            fake_env.ws,
+            [fake_env.ws / "data"],
+            render=False,
+            finish_initial_wave=True,
+        )
+        assert result.returncode == 0
+        run_request = next(message for message in sent if message.get("cmd") == "run")
+        assert run_request["finish_initial_wave"] is True
+        assert "analysis_allowance_seconds" not in run_request
+    finally:
+        r.close()
+
+
 def test_timeout_falls_back_and_respawns(fake_env, monkeypatch):
     monkeypatch.setenv("ISAR_FAKE_MODE", "timeout")
     r = _runner(fake_env, job_timeout=0.6, max_respawns=5)

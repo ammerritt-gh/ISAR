@@ -8,6 +8,7 @@ they disagree the scan is out of the asymptotic regime (see :mod:`~isar.analyze.
 """
 from __future__ import annotations
 
+import logging
 import numpy as np
 from scipy.optimize import brentq
 from scipy.optimize import minimize as _scipy_minimize
@@ -16,6 +17,7 @@ from isar.analyze import loop
 from isar.synth import backends, estimators
 
 _OD_FLOOR = 1e-6  # keep Ω_d = √(ω₀²−Γ²) strictly real/positive in the constrained profile
+log = logging.getLogger(__name__)
 
 
 def _cost_closure(prob, ctx):
@@ -57,8 +59,8 @@ def minos_intervals(hyp, ctx, fit_result, *, backend="iminuit") -> dict:
     return out
 
 
-def omega0_profile_interval(hyp, ctx, fit_result, *, delta: float = 1.0) -> tuple[float, float]:
-    """Exact 1-D profile interval on ω₀ (Δcost = `delta`; 1σ at delta=1)."""
+def _omega0_profile_crossing(hyp, ctx, fit_result, direction, delta: float = 1.0) -> float:
+    """One independent side of the exact ω₀ profile (picklable worker body)."""
     prob = loop.build_problem(hyp, ctx)
     names = prob.free_names
     bounds = dict(zip(names, prob.bounds))
@@ -128,4 +130,28 @@ def omega0_profile_interval(hyp, ctx, fit_result, *, delta: float = 1.0) -> tupl
             prev, step = nxt, step * 1.4
         return float("nan")
 
-    return (crossing(-1), crossing(+1))
+    return crossing(direction)
+
+
+def _omega0_profile_side(args):
+    """Picklable entry point for one profile side."""
+    hyp, ctx, fit_result, direction, delta = args
+    return _omega0_profile_crossing(hyp, ctx, fit_result, direction, delta)
+
+
+def omega0_profile_interval(hyp, ctx, fit_result, *, delta: float = 1.0,
+                            executor=None) -> tuple[float, float]:
+    """Exact 1-D profile interval on ω₀ (Δcost = `delta`; 1σ at delta=1).
+
+    When supplied, ``executor`` evaluates the independent lower and upper crossings on the
+    caller-owned pool and restores their canonical ``(lower, upper)`` order. A failed process
+    batch is logged and recomputed serially from the same pure inputs.
+    """
+    tasks = [(hyp, ctx, fit_result, -1, delta), (hyp, ctx, fit_result, +1, delta)]
+    if executor is not None:
+        try:
+            return tuple(executor.map(_omega0_profile_side, tasks))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("parallel omega0 profile failed; retrying serially: %s: %s",
+                        type(exc).__name__, exc)
+    return tuple(_omega0_profile_side(task) for task in tasks)

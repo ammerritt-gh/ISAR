@@ -1,0 +1,182 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+
+import pytest
+
+from isar.session.certification import (CheckpointStore, create_analysis_manifest,
+                                        master_fit_fingerprint, tier_satisfies)
+from isar.session import driver
+from isar.session.state import ScanEntry
+
+
+def _manifest(tmp_path, **extra):
+    payload = {
+        "schema": "isar.certification/1", "tier": "full",
+        "inputs": {"policy_sha256": "a" * 64},
+        "seeds": {"scan_seed_base": 6000, "bayes_seed_offset": 1_000_003},
+        "worklist": [{"hkl": [2.0, 0, 0]}, {"hkl": [2.1, 0, 0]}],
+        **extra,
+    }
+    fingerprint = hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    payload["fingerprint"] = fingerprint
+    revision = tmp_path / fingerprint
+    revision.mkdir(parents=True)
+    path = revision / "manifest.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _entry(scan_id="tavi:7:det", content_hash="content"):
+    return ScanEntry(scan_id=scan_id, scan_number=7, scan_type="measurement",
+                     status="fitted", content_hash=content_hash,
+                     guidelines_hash="guide", detectors={"det": {"omega0": 5.0}},
+                     provenance={"seed": 6007})
+
+
+def test_checkpoint_round_trip_skips_valid_completed_unit(tmp_path):
+    store = CheckpointStore(_manifest(tmp_path))
+    entry = _entry()
+    path = store.save("scan:tavi:7:det", entry)
+    loaded = store.load("scan:tavi:7:det", content_hash="content", guidelines_hash="guide")
+    assert loaded == entry
+    assert store.save("scan:tavi:7:det", entry) == path
+    store.mark_complete(unit_keys=["scan:tavi:7:det"])
+    assert (store.root / "complete.json").exists()
+
+
+def test_checkpoint_revision_never_overwrites_changed_unit(tmp_path):
+    store = CheckpointStore(_manifest(tmp_path))
+    store.save("scan:tavi:7:det", _entry())
+    assert store.load("scan:tavi:7:det", content_hash="changed",
+                      guidelines_hash="guide") is None
+    with pytest.raises(ValueError, match="new manifest fingerprint"):
+        store.save("scan:tavi:7:det", _entry(content_hash="changed"))
+
+
+def test_corrupt_checkpoint_is_rerun_and_atomically_repaired(tmp_path):
+    store = CheckpointStore(_manifest(tmp_path))
+    path = store._unit_path("scan:tavi:7:det")
+    path.parent.mkdir(parents=True)
+    path.write_text("{broken", encoding="utf-8")
+    assert store.load("scan:tavi:7:det", content_hash="content",
+                      guidelines_hash="guide") is None
+    store.save("scan:tavi:7:det", _entry())
+    assert store.load("scan:tavi:7:det", content_hash="content",
+                      guidelines_hash="guide") == _entry()
+
+
+def test_structurally_wrapped_but_invalid_checkpoint_payload_is_repaired(tmp_path):
+    store = CheckpointStore(_manifest(tmp_path))
+    path = store._unit_path("scan:tavi:7:det")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "schema": "isar.certification.unit/2",
+        "unit_key": "scan:tavi:7:det",
+        "manifest_fingerprint": store.manifest["fingerprint"],
+        "entry": {"scan_number": "not-an-integer"},
+    }), encoding="utf-8")
+
+    assert store.load("scan:tavi:7:det", content_hash="content",
+                      guidelines_hash="guide") is None
+    store.save("scan:tavi:7:det", _entry())
+
+    assert store.load("scan:tavi:7:det", content_hash="content",
+                      guidelines_hash="guide") == _entry()
+
+
+def test_manifest_tamper_and_wrong_revision_are_rejected(tmp_path):
+    path = _manifest(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["tier"] = "bayes"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="fingerprint"):
+        CheckpointStore(path)
+
+    other = _manifest(tmp_path / "other")
+    moved = other.parent.parent / "wrong" / "manifest.json"
+    moved.parent.mkdir()
+    moved.write_text(other.read_text(encoding="utf-8"), encoding="utf-8")
+    with pytest.raises(ValueError, match="fingerprinted revision"):
+        CheckpointStore(moved)
+
+
+def test_progress_reporting_appends_session_owned_advisory_event(tmp_path):
+    store = CheckpointStore(_manifest(tmp_path))
+    log_path = tmp_path / "report" / "session_log.jsonl"
+    (store.root / "runtime.json").write_text(json.dumps({
+        "activity_id": "cert-1", "log_path": str(log_path), "total": 2,
+    }), encoding="utf-8")
+
+    store.report_progress(7)
+
+    event = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert event["kind"] == "activity_progress"
+    assert event["payload"]["activity_id"] == "cert-1"
+    assert event["payload"]["completed"] == 2
+    assert event["payload"]["total"] == 2
+    assert event["payload"]["progress_unit"] == "points"
+    assert event["payload"]["phase"] == "fitting"
+    progress = json.loads((store.root / "progress.json").read_text(encoding="utf-8"))
+    assert progress["schema"] == "isar.certification.progress/1"
+    assert progress["completed"] == 2 and progress["published"] is False
+
+
+def test_ordinary_analysis_manifest_is_content_addressed_and_reusable(tmp_path):
+    payload = {"tier": "full", "inputs": {"policy_sha256": "a" * 64},
+               "worklist": {"scans": [{"unit_key": "scan:1"}], "masters": []}}
+    first = create_analysis_manifest(tmp_path, payload)
+    second = create_analysis_manifest(tmp_path, payload)
+    assert first == second
+    assert first.parent.parent.name == "analysis"
+    assert CheckpointStore(first).manifest["schema"] == "isar.analysis_work/1"
+
+
+def test_soft_deadline_finishes_active_wave_then_stops_dispatch(monkeypatch):
+    completed = []
+
+    def fake_process(*_args, **_kwargs):
+        return object()
+
+    monkeypatch.setattr(driver, "_process_one", fake_process)
+    tasks = [
+        (None, "det", [2.0, 0, 0], 300.0, "sample", f"scan:{index}",
+         f"content:{index}", "guide", 6000 + index)
+        for index in range(2)
+    ]
+    gate = driver._AnalysisDeadline(time.monotonic() - 1.0, force_initial_wave=True)
+    with pytest.raises(driver.AnalysisWorkIncomplete, match="1/2 scan fit units"):
+        driver._run_tasks(
+            tasks, object(), object(), object(), set(), M=10, errors_tier="full",
+            boot_workers=1, use_pool=False, scan_workers=1,
+            on_complete=completed.append, deadline_gate=gate)
+    assert len(completed) == 1
+
+
+def test_master_fingerprint_covers_numerical_dependencies_but_not_execution_order():
+    base = {
+        "spectrum_digest": "a" * 64, "policy": {"model": "phonon"},
+        "resolved_guidelines": {"min_fit_points": 8, "monitor_frac": 0.5},
+        "resolved_calibration": {"center": 0.0, "gauss_fwhm": 1.2},
+        "frozen_state": {"dispersion_prior": [{"omega0": 5.0}]},
+        "errors_tier": "full", "M": 200, "seed": 9006000,
+        "boot_adaptive": True,
+        "bayes_opts": {"n_live": 250, "dlogz": 0.5, "max_iter": 30000},
+    }
+    expected = master_fit_fingerprint(**base)
+    for key, replacement in (
+            ("spectrum_digest", "b" * 64), ("policy", {"model": "phonon2"}),
+            ("resolved_guidelines", {"min_fit_points": 9, "monitor_frac": 0.5}),
+            ("resolved_calibration", {"center": 0.1, "gauss_fwhm": 1.2}),
+            ("frozen_state", {"dispersion_prior": [{"omega0": 5.1}]}),
+            ("errors_tier", "bayes"), ("M", 201), ("seed", 9006001),
+            ("boot_adaptive", False),
+            ("bayes_opts", {"n_live": 251, "dlogz": 0.5, "max_iter": 30000})):
+        changed = {**base, key: replacement}
+        assert master_fit_fingerprint(**changed) != expected
+    # Worker count, completion order, and allowance are deliberately absent from the API.
+    assert tier_satisfies("bayes", "full")
+    assert not tier_satisfies("full", "bayes")

@@ -47,7 +47,8 @@ from PySide6.QtWidgets import (
 )
 
 from isar_gui.commands import DriveOptions, source_fingerprint
-from isar_gui.viewmodels.campaign import budget_readout
+from isar_gui.viewmodels.campaign import (analysis_readout, budget_readout, current_activity_text,
+                                          terminal_status_text)
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ class CampaignDock(QDockWidget):
         self._workspace_state = workspace_state or (lambda: "ready")
         self._tavi_status = "down"
         self._feed_items: list = []
+        self._selected_hkl: tuple[float, ...] | None = None
         self._loading_form = False   # _load_form sets widgets; their signals must not write back
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -119,7 +121,9 @@ class CampaignDock(QDockWidget):
         self._tier = QComboBox(body)
         self._tier.addItems(["deterministic", "mcstas"])
         self._budget = QLineEdit(body)
-        self._budget.setPlaceholderText("8h | 1e10n (optional)")
+        self._budget.setPlaceholderText("measurement: 8h | 1e10n (optional)")
+        self._analysis_limit = QLineEdit(body)
+        self._analysis_limit.setPlaceholderText("analysis: 1h | none")
         self._seed = QSpinBox(body)
         self._seed.setRange(0, 99_999_999)
         self._max_iters = QSpinBox(body)
@@ -127,7 +131,8 @@ class CampaignDock(QDockWidget):
         self._max_iters.setValue(200)
         self._max_iters.setToolTip("Iteration cap PER INVOCATION — a resume gets a fresh cap.")
         form.addRow("Tier", self._tier)
-        form.addRow("Budget", self._budget)
+        form.addRow("Measurement budget", self._budget)
+        form.addRow("Analysis limit", self._analysis_limit)
         form.addRow("Seed", self._seed)
         form.addRow("Max iters", self._max_iters)
         outer.addLayout(form)
@@ -185,12 +190,27 @@ class CampaignDock(QDockWidget):
         self._budget_bar.setTextVisible(True)
         self._budget_bar.setRange(0, 1000)
         self._budget_bar.setValue(0)
+        self._analysis_bar = QProgressBar(body)
+        self._analysis_bar.setTextVisible(True)
+        self._analysis_bar.setRange(0, 1000)
+        self._analysis_bar.setValue(0)
         self._converge_label = QLabel("", body)
+        self._master_detail = QLabel("Select a pooled master to inspect its decision state.", body)
+        self._master_detail.setWordWrap(True)
+        self._master_detail.setStyleSheet(
+            "background: #f5f5f5; border: 1px solid #c7c7c7; padding: 5px;")
         outer.addWidget(self._iter_label)
         outer.addWidget(self._budget_bar)
+        outer.addWidget(self._analysis_bar)
         outer.addWidget(self._converge_label)
+        outer.addWidget(self._master_detail)
 
         # ---- Feed ------------------------------------------------------------
+        self._now_label = QLabel("Now: campaign idle", body)
+        self._now_label.setWordWrap(True)
+        self._now_label.setStyleSheet(
+            "font-weight: bold; background: #e8f1fb; border: 1px solid #9abbd8; padding: 5px;")
+        outer.addWidget(self._now_label)
         self._exceptions_only = QCheckBox("exceptions only", body)
         self._exceptions_only.toggled.connect(self._rebuild_feed)
         feed_tools = QHBoxLayout()
@@ -227,12 +247,17 @@ class CampaignDock(QDockWidget):
         self._goal.textChanged.connect(self._on_form_edited)
         self._spec_path.textChanged.connect(self._on_form_edited)
         self._budget.textChanged.connect(self._on_form_edited)
+        self._analysis_limit.textChanged.connect(self._on_form_edited)
         self._src_goal.toggled.connect(self._on_form_edited)
         self._tier.currentTextChanged.connect(self._on_form_edited)
         self._seed.valueChanged.connect(self._on_form_edited)
         self._max_iters.valueChanged.connect(self._on_form_edited)
 
         self._load_form()
+        self._activity_timer = QTimer(self)
+        self._activity_timer.setInterval(1000)
+        self._activity_timer.timeout.connect(self._sync_status)
+        self._activity_timer.start()
         self._sync_status()
 
     # ---- form persistence (typed GuiStore accessors) --------------------------
@@ -262,6 +287,7 @@ class CampaignDock(QDockWidget):
         if self._tier.findText(tier) >= 0:
             self._tier.setCurrentText(tier)
         self._budget.setText(str(form.get("budget", "")))
+        self._analysis_limit.setText(str(form.get("analysis_limit", "")))
         try:
             self._seed.setValue(int(form.get("seed", 0)))
             self._max_iters.setValue(max(1, int(form.get("max_iters", 200))))
@@ -277,6 +303,7 @@ class CampaignDock(QDockWidget):
             "spec_path": self._spec_path.text(),
             "tier": self._tier.currentText(),
             "budget": self._budget.text(),
+            "analysis_limit": self._analysis_limit.text(),
             "seed": self._seed.value(),
             "max_iters": self._max_iters.value(),
         }
@@ -335,6 +362,7 @@ class CampaignDock(QDockWidget):
         objective (the CLI ignores it on resume); budget/seed/max-iters still apply per run."""
         opts = DriveOptions(resume_latest=True, tier=self._tier.currentText(),
                             budget=self._budget.text().strip() or None,
+                            analysis_limit=self._analysis_limit.text().strip() or None,
                             seed=self._seed.value(), max_iters=self._max_iters.value())
         if not self._operations.request_drive(opts, env=dict(self._llm_env())):
             self._status_line.setText("could not start — workspace not ready")
@@ -347,16 +375,19 @@ class CampaignDock(QDockWidget):
     def _on_start_clicked(self) -> None:
         _label, resume = self._resume_decision()
         budget = self._budget.text().strip() or None
+        analysis_limit = self._analysis_limit.text().strip() or None
         if resume:
             self._launch_resume()
             return
         if self._src_spec.isChecked():
             opts = DriveOptions(spec_path=self._spec_path.text().strip(),
                                 tier=self._tier.currentText(), budget=budget,
+                                analysis_limit=analysis_limit,
                                 seed=self._seed.value(), max_iters=self._max_iters.value())
         else:
             opts = DriveOptions(goal=self._goal.toPlainText().strip(),
                                 tier=self._tier.currentText(), budget=budget,
+                                analysis_limit=analysis_limit,
                                 seed=self._seed.value(), max_iters=self._max_iters.value())
         if not hasattr(self._operations, "request_drive_compile"):
             self._status_line.setText("could not compile objective — coordinator is unavailable")
@@ -394,6 +425,7 @@ class CampaignDock(QDockWidget):
     def dispose(self) -> None:
         """Disconnect persistent coordinator signals before a workspace rebind deletes this dock."""
         self._save_timer.stop()
+        self._activity_timer.stop()
         connections = [
             (self._operations.drive_started, self._sync_status),
             (self._operations.drive_finished, self._on_drive_finished),
@@ -422,6 +454,7 @@ class CampaignDock(QDockWidget):
             f"Energy search: {objective.get('energy_search_meV')} meV",
             f"Tolerance: ±{objective.get('tolerance_meV')} meV",
             f"Budget: {budget.get('amount')} {budget.get('kind')}",
+            f"Analysis limit: {objective.get('analysis_limit_seconds')} seconds",
             "",
             "Frozen envelope:",
             json.dumps(envelope, indent=2),
@@ -456,6 +489,43 @@ class CampaignDock(QDockWidget):
 
     def _on_activity(self, _state: dict) -> None:
         self._sync_status()
+
+    def set_selected_fit(self, fit) -> None:
+        """Follow browser/plot selection with one revision-consistent master assessment."""
+        q = getattr(fit, "q", None) if fit is not None else None
+        self._selected_hkl = (tuple(float(value) for value in q)
+                              if q is not None and len(q) >= 3 else None)
+        self._sync_status()
+
+    def _selected_master_text(self, state) -> str:
+        if self._selected_hkl is None:
+            return "Select a pooled master to inspect its decision state."
+        selected = next((row for row in state.per_q
+                         if len(row.get("hkl") or ()) >= 3
+                         and all(abs(float(left) - float(right)) <= 1e-6
+                                 for left, right in zip(row["hkl"], self._selected_hkl))), None)
+        q_text = ", ".join(f"{value:g}" for value in self._selected_hkl[:3])
+        if selected is None:
+            return f"Selected q ({q_text}) is outside the current campaign objective."
+        omega = selected.get("omega0")
+        halfwidth = selected.get("calibrated_halfwidth")
+        tolerance = selected.get("tolerance")
+        interval = ("unavailable" if halfwidth is None else f"±{float(halfwidth):.4g} meV")
+        target = "—" if tolerance is None else f"±{float(tolerance):.4g} meV"
+        consistency = selected.get("pool_consistent")
+        consistency_text = ("pass" if consistency is True else
+                            "FAIL — review required" if consistency is False else "not assessed")
+        info = selected.get("expected_next_information") or {}
+        info_text = (f"{float(info.get('expected_information_nats')):.4g} nats"
+                     if info.get("expected_information_nats") is not None else "unavailable")
+        revision = selected.get("master_revision") or "—"
+        diagnostics = ", ".join(selected.get("diagnostics") or ()) or "none"
+        return (f"Master at ({q_text}) — revision {revision}\n"
+                f"ω: {'—' if omega is None else f'{float(omega):.5g} meV'}; interval {interval}; "
+                f"target {target}; method {selected.get('uncertainty_method') or '—'}\n"
+                f"track {selected.get('track_state') or '—'}; Γ {selected.get('linewidth_state') or '—'}; "
+                f"pool consistency {consistency_text}; next information {info_text}\n"
+                f"{selected.get('reason') or 'continue'}; diagnostics: {diagnostics}")
 
     # ---- backend health (window-fed) --------------------------------------------
     def set_backend_status(self, backend: str, status: str, detail: str = "") -> None:
@@ -531,9 +601,11 @@ class CampaignDock(QDockWidget):
                 + ("  — stopping after the current scan…" if self._stop_pending() else ""))
         elif state.stop_state == "operator_stopped":
             self._status_line.setText("stopped by operator — press Resume to continue")
-        elif state.stop_state:
+        elif state.stop_state == "pending_recovery":
             self._status_line.setText(
-                f"{state.stop_state}: " + "; ".join(state.stop_reasons))
+                "scan recovery pending — no new scan was submitted; press Resume to retry")
+        elif state.stop_state:
+            self._status_line.setText(terminal_status_text(state))
         elif state.has_campaign:
             self._status_line.setText("campaign idle — press Resume to continue")
         else:
@@ -544,28 +616,35 @@ class CampaignDock(QDockWidget):
             f"iteration: {it + 1 if it is not None else '—'}   scans: {state.scan_count}   "
             f"observations: {state.n_observations if state.n_observations is not None else '—'}")
         permille, text = budget_readout(state)
+        self._budget_bar.setVisible(state.budget_amount is not None)
         self._budget_bar.setValue(permille)
         self._budget_bar.setFormat(text)
+        analysis_permille, analysis_text = analysis_readout(state)
+        self._analysis_bar.setVisible(state.analysis_limit_seconds is not None)
+        self._analysis_bar.setValue(analysis_permille)
+        self._analysis_bar.setFormat(analysis_text)
         verdicts = getattr(self._vm, "scan_verdicts", {}) or {}
         conv = (f"converged {state.converged}/{state.n_grid}"
                 if state.converged is not None and state.n_grid else "convergence: —")
         vt = "  ·  scan verdicts: " + ", ".join(
             f"{k} {v}" for k, v in sorted(verdicts.items())) if verdicts else ""
         self._converge_label.setText(conv + vt)
+        self._now_label.setText(current_activity_text(state))
+        self._master_detail.setText(self._selected_master_text(state))
 
     def _stop_pending(self) -> bool:
         return bool(self._operations.is_stop_pending())
 
     # ---- feed -----------------------------------------------------------------------
     def _append_feed(self, items: list) -> None:
-        self._feed_items.extend(items)
-        del self._feed_items[:-_MAX_FEED_ROWS]
+        self._feed_items = list(reversed(items)) + self._feed_items
+        del self._feed_items[_MAX_FEED_ROWS:]
         show_all = not self._exceptions_only.isChecked()
         for item in items:
             if not show_all and item.severity not in ("warn", "terminal"):
                 continue
-            self._add_row(item)
-        self._feed.scrollToBottom()
+            self._add_row(item, prepend=True)
+        self._feed.scrollToTop()
 
     def _clear_feed(self) -> None:
         self._feed_items.clear()
@@ -577,9 +656,9 @@ class CampaignDock(QDockWidget):
         for item in self._feed_items:
             if show_all or item.severity in ("warn", "terminal"):
                 self._add_row(item)
-        self._feed.scrollToBottom()
+        self._feed.scrollToTop()
 
-    def _add_row(self, item) -> None:
+    def _add_row(self, item, *, prepend=False) -> None:
         row = QListWidgetItem(item.text)
         bg = _SEVERITY_BG.get(item.severity)
         if bg is not None:
@@ -589,9 +668,12 @@ class CampaignDock(QDockWidget):
             font.setBold(True)
             row.setFont(font)
         row.setToolTip(f"{item.kind} @ {item.ts:.0f}")
-        self._feed.addItem(row)
+        if prepend:
+            self._feed.insertItem(0, row)
+        else:
+            self._feed.addItem(row)
         while self._feed.count() > _MAX_FEED_ROWS:
-            self._feed.takeItem(0)
+            self._feed.takeItem(self._feed.count() - 1)
         # QListWidgetItem alignment default is fine; keep rows compact and selectable/copyable.
 
     def _copy_feed_selection(self) -> None:

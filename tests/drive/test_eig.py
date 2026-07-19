@@ -13,7 +13,6 @@ from isar.drive.acquisition.eig import (
     counts_eig,
     eig_per_cost,
     fisher_eig,
-    fisher_information,
     predicted_sigma_after,
     sigma_omega0,
     voi_saturated,
@@ -76,7 +75,9 @@ def test_voi_saturated_needs_baseline_and_fires_when_pool_huge():
 # --------------------------------------------------------------------------- EIG-ranked selection
 def _prod_gridq(hkl, q, sigma, *, tol=0.2, C=2e10, dC=1e10, n_prod=2):
     return GridQ(index=0, hkl=hkl, q=q, tolerance=tol, n_production=n_prod,
-                 best_prod_halfwidth=sigma, best_prod_omega0=3.0,
+                 master={"omega0": 3.0, "halfwidth": sigma, "diagnostic_halfwidth": sigma,
+                         "usable": True, "reliable": True, "certifiable": True,
+                         "n_members": n_prod},
                  counts_spent=C, last_prod_cost=dC)
 
 
@@ -118,16 +119,14 @@ def test_fisher_tier_ranks_grounded_candidates_and_falls_back():
 
 
 # --------------------------------------------------------------------------- durable VOI stop
-def test_info_saturated_makes_q_stuck_and_unmeetable():
-    # A non-converged q whose enormous pool means the next scan barely helps is info-saturated →
-    # stuck → the campaign reports it unmeetable with the VOI reason (durable: pure GridQ property).
+def test_info_saturated_is_visible_but_nonterminal():
     g = _prod_gridq((2.1, 0.0, 0.0), 0.0, 0.30, tol=0.2, C=1e14, dC=1e10)
-    assert g.info_saturated and g.stuck and not g.converged
+    assert g.info_saturated and not g.stuck and not g.converged
+    assert "diminishing_returns" in g.diagnostics
     obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.1, step=0.1, tolerance_meV=0.2,
                                 budget={"kind": "neutrons", "amount": 1e18})
     dec = evaluate_stop(obj, [g], {"kind": "neutrons", "amount": 1e18, "spent": 0.0})
-    assert dec.state == "unmeetable"
-    assert any("value-of-information saturated" in r for r in dec.reasons)
+    assert dec.state == "continue"
 
 
 def test_info_saturated_dormant_without_cost_history():
@@ -162,22 +161,6 @@ def test_proposal_carries_json_safe_score():
     json.dumps(p.to_dict())     # must not raise (Infinity is not strict JSON)
 
 
-# --------------------------------------------------------------------------- 5b Poisson-Fisher screen
-def _grid():
-    return np.linspace(-6.0, 6.0, 61)
-
-
-def test_fisher_sigma_omega0_follows_sqrt_n():
-    # σ(ω₀) ∝ 1/√ncount: 4× the amplitude (∝ counts, signal-dominated) halves σ.
-    x = _grid()
-    base = (3.0, 0.3, 200.0, 0.0, 0.5)
-    quad = (3.0, 0.3, 800.0, 0.0, 0.5)
-    s1 = sigma_omega0(base, fisher_information(base, x, 0.5, 0.1, 100.0))
-    s4 = sigma_omega0(quad, fisher_information(quad, x, 0.5, 0.1, 100.0))
-    assert math.isfinite(s1) and math.isfinite(s4)
-    assert s4 / s1 == pytest.approx(0.5, rel=0.08)
-
-
 def test_sigma_omega0_matches_delta_method_on_diagonal():
     # With a diagonal (no nuisance coupling) Fisher matrix, the Schur+delta σ(ω₀) equals the analytic
     # covariance propagation the fit uses (isar.synth.fit.omega0_value_error).
@@ -197,18 +180,6 @@ def test_sigma_omega0_infinite_when_unidentifiable_never_zero():
     # A well-posed matrix gives a small positive σ, never zero.
     s = sigma_omega0(theta, np.diag([1e4, 1e4, 1.0, 1.0, 1.0]))
     assert 0.0 < s < 1.0
-
-
-def test_fisher_prior_precision_rescues_unidentifiable():
-    # A scan whose standalone Fisher cannot pin Γ becomes identifiable once the branch soft-precision on
-    # Γ (and A) is added — the low-q rescue the screen must reflect.
-    theta = (0.4, 0.4, 150.0, 5.0, 2.0)                 # near the elastic line — Ω_d/Γ/elastic merge
-    x = _grid()
-    bare = sigma_omega0(theta, fisher_information(theta, x, 0.6, 0.1, 200.0))
-    with_prior = sigma_omega0(theta, fisher_information(theta, x, 0.6, 0.1, 200.0,
-                                                        prior_precision={1: 1.0 / 0.05 ** 2,
-                                                                         2: 1.0 / (0.3 * 150.0) ** 2}))
-    assert with_prior <= bare        # the prior can only tighten σ(ω₀)
 
 
 def test_fisher_eig_edges():
@@ -235,3 +206,48 @@ def test_production_proposal_scored_by_counts_method():
     assert p.meta["score"]["method"] == "counts"
     assert p.meta["score"]["sigma_prior"] == pytest.approx(0.9)
     json.dumps(p.to_dict())
+
+
+def test_fisher_score_recomputes_for_runtime_clamped_exposure():
+    obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.1, step=0.1, tolerance_meV=0.5,
+                                budget={"kind": "counting_seconds", "amount": 60.0})
+    obs = [
+        {"hkl": (2.1, 0.0, 0.0), "kind": "production", "calibrated_halfwidth": 0.9,
+         "resolved": True, "disposition": "resolved", "omega0": 3.0,
+         "proposal_cost": 1e10},
+    ]
+    master = [{"hkl": (2.1, 0.0, 0.0), "omega0": 3.0, "halfwidth": 0.9,
+               "reliable": True, "usable": True, "disposition": "resolved", "n_members": 1}]
+    model = acq_model.fit([(g.q, g.best_omega0, g.best_halfwidth)
+                           for g in summarize_grid(obj, obs, master) if g.best_omega0 is not None])
+    calls = []
+
+    def fisher(_g, _w0, _sp, exposure=None):
+        actual = 400_000_000 if exposure is None else int(exposure)
+        calls.append(actual)
+        return 0.4 * math.sqrt(400_000_000 / actual)
+
+    fisher.supports_exposure = True
+    fisher.default_exposure = 400_000_000
+    p = acq.propose_scan(
+        obj, model, obs, {"fwhm_dE": 0.8}, {}, master_rows=master, fisher=fisher,
+        runtime_limits={"max_neutrons_per_point": 100_000_000})
+    score = p.meta["score"]
+    expected_sigma = 0.8
+    expected_eig = fisher_eig(0.9, expected_sigma)
+    assert calls == [400_000_000, 100_000_000]
+    assert p.ncount == 100_000_000
+    assert score["ranking_ncount"] == 400_000_000
+    assert score["sigma_scan"] == pytest.approx(expected_sigma)
+    assert score["eig"] == pytest.approx(expected_eig)
+    assert score["combined_information"] == pytest.approx(expected_eig)
+    assert score["eig_per_cost"] == pytest.approx(expected_eig / score["cost"])
+
+
+def test_bound_legacy_fisher_method_is_not_misdetected_as_exposure_aware():
+    class LegacyProvider:
+        def fisher(self, _g, _w0, _sp):
+            return 0.5
+
+    provider = LegacyProvider()
+    assert acq._fisher_supports_exposure(provider.fisher) is False

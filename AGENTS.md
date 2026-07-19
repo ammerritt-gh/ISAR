@@ -77,6 +77,7 @@ area.
 | Card / schema across facilities | `docs/SCHEMA_LANDSCAPE.md`, `docs/DATA_SCHEME_RESEARCH.md` |
 | Flag adjudication (opt-in LLM) | `docs/ADJUDICATION.md` |
 | The autonomous driver (`isar drive`) | `docs/MEASUREMENT_STEERING.md` |
+| Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
 | Campaign diagnostic report | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` |
 | Why a decision was made | `docs/DECISIONS.md` (IDs P*/D*/V/R/S/O/T/W are stable, safe to cite) |
 | What happened in a run (historical, never load-bearing) | `docs/campaigns/` |
@@ -90,7 +91,8 @@ combine-before-divide, collate) · `calibrate` (elastic fits, versioned energy-z
 prior/branch-model assembly) · `cli` · `drive` (autonomous loop, EIG acquisition, TAVI I/O) ·
 `report` · `synth` (Phase-1 synthetic core) · `workspace_api` / `geometry` / `plotspec` (Qt-free) ·
 `isar_gui` (read-only viewer). The Stage II ↔ III boundary is a **frozen file contract**
-(`report/results.csv`, `report.json`, `card.state.json`) — the driver never imports fit internals;
+(`report/results.csv`, `report.json`, `card.state.json`) — the driver never imports fit internals.
+The one pre-release v1→v2 clean break was authorized on 2026-07-17 (DECISIONS O12); from v2 onward,
 contract changes are additive only (DESIGN §4).
 
 ## Verification (cheapest first)

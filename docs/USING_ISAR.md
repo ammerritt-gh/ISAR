@@ -53,8 +53,8 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
 
 | File | Who writes it | What it is |
 |---|---|---|
-| `card.policy.toml` | **You** (ISAR scaffolds it once, then never touches it) | Every per-experiment decision: detectors, column names, collation rules, calibration method, and your fitting guidelines. Commented — the comments are the documentation. |
-| `card.state.json` | ISAR | Accumulated experiment state: energy-zero series, resolution versions, the running dispersion prior, sample map, exclusions, corrections audit trail. Don't hand-edit; don't delete. |
+| `card.policy.toml` | **You** (ISAR scaffolds it once, then never touches it) | Every per-experiment decision: detectors, column names, collation rules, calibration method, fitting guidelines, and declared branch hypotheses for autonomous campaigns ([HYPOTHESES.md](HYPOTHESES.md)). Commented — the comments are the documentation. |
+| `card.state.json` | ISAR | Accumulated experiment state: energy-zero series, resolution versions, the running dispersion prior, resolved hypothesis snapshot and mismatch evidence, sample map, exclusions, corrections audit trail. Don't hand-edit; don't delete. |
 | `session.json` | ISAR | Bookkeeping: which files were seen, which scans were processed and how. Safe to delete — a re-run rebuilds it (refitting everything once). |
 | `report/` | ISAR | The product: `report.html`/`.md`, `results.csv`, figures, plus `reduction.*` (the QC-level detail report). |
 
@@ -65,7 +65,9 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   needs LLMM, the co-located local LLM service, running — see
   [LLMM_INTEGRATION_HANDOFF.md](archive/LLMM_INTEGRATION_HANDOFF.md)), `--M N` (bootstrap size; default
   200, use ~60 for a fast first look), `--detectors ana7` (restrict which analyzers are fitted
-  this run).
+  this run), and `--workers N` (the total fitting CPU budget; default `min(30, cpu-2)`, also settable
+  with `ISAR_WORKERS`). ISAR assigns that budget across scans for a large batch or within a promoted
+  full/Bayes fit for a small workorder; it does not nest the two kinds of process pool.
 - **`isar ingest <data>... --workspace DIR [--json]`** — parse data into the ledger **without
   fitting**. It discovers and classifies the files, parses and dedups the scans, and upserts one
   `ingested` ledger entry per `(exp, scan, detector)` — so parsed scans are visible (through
@@ -154,6 +156,13 @@ Three things to know about how guidelines behave:
 - **This is also the correction channel.** ISAR mis-fits a scan → add an override or exclusion →
   `isar run` again. Only the affected scans are refitted. The report's provenance column always
   says whether a fit was seeded by *you* or by the *auto prior*.
+
+Autonomous campaigns additionally read human-owned `[hypotheses.<name>]` tables from
+`card.policy.toml`. Branch hypotheses are implemented: they seed Bayesian branch beliefs, opening
+moves, classification, and scan selection without forcing a fit. Zone-centre energies use
+lower-truncated-normal priors (the zero-mean acoustic case is half-normal). `level` and `continuum`
+remain declared plugin surfaces rather than implemented acquisition models; see
+[HYPOTHESES.md](HYPOTHESES.md) for the complete contract.
 
 `[fitting]` also carries one performance toggle, `reuse_master_structure` (default `false`):
 

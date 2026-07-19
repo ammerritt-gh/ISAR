@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from isar.probability import lower_truncated_normal_moments
+
 from isar.analyze.truth import _fold
 
 # --- tunables (module-level so tests / a future card can override) ---------------------------
@@ -135,6 +137,7 @@ class BranchBelief:
     ws: np.ndarray
     zone_anchor: bool = False
     window_k: int = WINDOW_K
+    parameter_prior: dict | None = None
 
     @property
     def n_anchors(self) -> int:
@@ -165,6 +168,8 @@ class BranchBelief:
         Gaussian locality), so σ shrinks where anchors are dense/precise and grows on extrapolation.
         With only the zone anchor (acoustic cold start) ``mu≈0`` and ``sigma`` grows as
         ``ACOUSTIC_MAX_SLOPE·u`` — tight enough near Γ to reject a 6-meV feature, honest far out."""
+        if self.parameter_prior:
+            return self._predict_with_parameter_prior(float(u), include_prior=True)
         u = float(u)
         us, ys, prec = self._anchors()
         n = us.size
@@ -204,9 +209,55 @@ class BranchBelief:
         frac = (umin - u) / span if u < umin else (u - umax) / span if u > umax else 0.0
         return mu, max(math.sqrt(max(var, 0.0)), SIGMA_SLACK) * (1.0 + max(frac, 0.0))
 
+    def predict_data_only(self, u: float) -> tuple[float, float]:
+        """Prediction from measured anchors only; never lets a prior confirm itself."""
+        if not self.parameter_prior:
+            return self.predict(u)
+        return self._predict_with_parameter_prior(float(u), include_prior=False)
+
+    def _predict_with_parameter_prior(self, u: float, *, include_prior: bool) -> tuple[float, float]:
+        """Local linear Gaussian update followed by non-negative marginal truncation moments."""
+        if self.us.size:
+            d = np.abs(self.us - u)
+            idx = np.argsort(d, kind="stable")[:min(self.us.size, self.window_k)]
+            wu, wy = self.us[idx], self.ys[idx]
+            weights = (np.maximum(self.ws[idx], 0.0) / (SIGMA_SLACK ** 2)
+                       * np.exp(-0.5 * (d[idx] / LOCALITY_BW) ** 2))
+            X = np.column_stack([np.ones_like(wu), wu])
+            precision = X.T @ (weights[:, None] * X)
+            rhs = X.T @ (weights * wy)
+        else:
+            precision = np.zeros((2, 2), dtype=float)
+            rhs = np.zeros(2, dtype=float)
+        if include_prior:
+            prior = self.parameter_prior or {}
+            confidence = max(float(prior.get("confidence", 0.0)), 0.0)
+            gap = prior.get("zc_energy") or {}
+            slope = prior.get("slope_zc") or {}
+            means = np.array([float(gap.get("mean", gap.get("mode", 0.0))),
+                              float(slope.get("mean", 0.0))])
+            sigmas = np.array([max(float(gap.get("sigma", 1e3)), 1e-9),
+                               max(float(slope.get("sigma", 1e3)), 1e-9)])
+            prior_precision = confidence / np.square(sigmas)
+            precision += np.diag(prior_precision)
+            rhs += prior_precision * means
+        if not np.any(precision):
+            return 0.0, 1e3
+        try:
+            cov = np.linalg.pinv(precision, hermitian=True)
+            beta = cov @ rhs
+        except np.linalg.LinAlgError:
+            return 0.0, 1e3
+        xq = np.array([1.0, u])
+        mu = float(xq @ beta)
+        sigma = max(math.sqrt(max(float(xq @ cov @ xq), 0.0)), SIGMA_SLACK)
+        if not include_prior:
+            return mu, sigma
+        return lower_truncated_normal_moments(mu, sigma)
+
 
 def build_beliefs(points, *, sample, t_bin, period: float,
-                  t_round: float = 5.0) -> dict[str, BranchBelief]:
+                  t_round: float = 5.0, hypotheses: list[dict] | None = None) -> dict[str, BranchBelief]:
     """Build ``{branch_id: BranchBelief}`` from ``state.dispersion_prior`` points for one (sample,
     T-bin). Each point carries ``q``, ``omega0``, ``branch_id`` (default ``"acoustic"``) and a soft
     assignment ``weight`` (default 1.0). The acoustic belief always exists (zone anchor), even with
@@ -224,15 +275,25 @@ def build_beliefs(points, *, sample, t_bin, period: float,
         bid = p.get("branch_id") or ACOUSTIC
         by.setdefault(bid, []).append(
             (reduced_q(p["q"], period), float(w), float(p.get("weight", 1.0))))
+    resolved = {str(h.get("name")): h for h in (hypotheses or []) if isinstance(h, dict)}
     beliefs: dict[str, BranchBelief] = {}
     for bid, rows in by.items():
         us = np.array([r[0] for r in rows], dtype=float)
         ys = np.array([r[1] for r in rows], dtype=float)
         ws = np.array([r[2] for r in rows], dtype=float)
-        beliefs[bid] = BranchBelief(bid, us, ys, ws, zone_anchor=(bid == ACOUSTIC))
+        prior = resolved.get(bid)
+        beliefs[bid] = BranchBelief(bid, us, ys, ws,
+                                    zone_anchor=(bid == ACOUSTIC and prior is None),
+                                    parameter_prior=prior)
+    for bid, prior in resolved.items():
+        if bid not in beliefs and bid != "null":
+            empty = np.array([], dtype=float)
+            beliefs[bid] = BranchBelief(bid, empty, empty, empty, parameter_prior=prior)
     if ACOUSTIC not in beliefs:
         empty = np.array([], dtype=float)
-        beliefs[ACOUSTIC] = BranchBelief(ACOUSTIC, empty, empty, empty, zone_anchor=True)
+        prior = resolved.get(ACOUSTIC)
+        beliefs[ACOUSTIC] = BranchBelief(ACOUSTIC, empty, empty, empty,
+                                         zone_anchor=prior is None, parameter_prior=prior)
     return beliefs
 
 
@@ -259,6 +320,26 @@ def assignment_posterior(features, beliefs, u: float) -> list[dict]:
     return out
 
 
+def condition_on_target_energy(features, posterior, branch_id: str, *, target_energy: float,
+                               sigma: float) -> list[dict]:
+    """Update branch odds from a scientist-supplied approximate target energy.
+
+    This is prior evidence about branch identity, not a dispersion anchor and not a selector. A
+    matching feature gains odds for ``branch_id`` relative to the flat new-feature likelihood; a
+    distant feature loses those odds. Every competing hypothesis remains present and normalized.
+    """
+    conditioned: list[dict] = []
+    width = max(float(sigma), SIGMA_SLACK)
+    for feature, probs in zip(features, posterior):
+        scores = dict(probs)
+        evidence_ratio = _gauss(feature.energy, float(target_energy), width) / NEW_LEVEL
+        scores[branch_id] = scores.get(branch_id, 0.0) * max(evidence_ratio, 1e-12)
+        total = sum(scores.values())
+        conditioned.append({key: value / total for key, value in scores.items()}
+                           if total > 0.0 else {NEW: 1.0})
+    return conditioned
+
+
 def _entropy(probs: dict) -> float:
     return float(-sum(p * math.log(p) for p in probs.values() if p > 0.0))
 
@@ -276,7 +357,8 @@ def acoustic_qoi(features, posterior, *, gauss_fwhm: float,
     wa = np.array([p.get(ACOUSTIC, 0.0) for p in posterior], dtype=float)
     if wa.sum() < W_MIN or not features:
         return {"omega0": None, "sigma": None, "p_acoustic": float(wa.max() if wa.size else 0.0),
-                "entropy": float("inf"), "dominance": 0.0, "resolvable": False, "feature": None}
+                "entropy": float("inf"), "dominance": 0.0, "resolvable": False,
+                "feature": None, "posterior": None, "feature_index": None}
     j = int(np.argmax(wa))
     mu = float(features[j].energy)
     wn = wa / wa.sum()
@@ -287,7 +369,7 @@ def acoustic_qoi(features, posterior, *, gauss_fwhm: float,
             "p_acoustic": float(wa[j]), "entropy": _entropy(posterior[j]),
             "dominance": float(wa[j] / wa.sum()),
             "resolvable": bool(mu >= resolvable_factor * float(gauss_fwhm)),
-            "feature": features[j]}
+            "feature": features[j], "posterior": dict(posterior[j]), "feature_index": j}
 
 
 def branch_qoi(features, posterior, branch_id: str, *, gauss_fwhm: float) -> dict:
@@ -307,6 +389,42 @@ def branch_qoi(features, posterior, branch_id: str, *, gauss_fwhm: float) -> dic
             "dominance": float(weights[j] / weights.sum()),
             "resolvable": bool(feature.energy >= RESOLVABLE_FWHM_FACTOR * float(gauss_fwhm)),
             "feature": feature}
+
+
+def selected_branch_qoi(features, posterior, branch_id: str, *, gauss_fwhm: float,
+                        selector: str = "lowest_energy", target_energy: float | None = None,
+                        energy_search: tuple[float, float] | None = None) -> dict:
+    """QoI for the scientist-selected candidate without overriding branch probabilities.
+
+    Selection answers *which feature to investigate*; ``assignment_posterior`` still answers what
+    that feature most likely is.  Thus a lowest-energy acoustic leak remains a low-probability optic
+    candidate and causes abstention/evidence collection instead of being forced onto either branch.
+    """
+    candidates = list(range(len(features)))
+    if energy_search is not None:
+        lo, hi = map(float, energy_search)
+        candidates = [i for i in candidates if lo <= float(features[i].energy) <= hi]
+    if not candidates:
+        return {"omega0": None, "sigma": None, "p_branch": 0.0, "entropy": float("inf"),
+                "dominance": 0.0, "resolvable": False, "feature": None,
+                "posterior": None, "feature_index": None}
+    if selector == "lowest_energy":
+        selected = min(candidates, key=lambda i: float(features[i].energy))
+    elif selector == "highest_energy":
+        selected = max(candidates, key=lambda i: float(features[i].energy))
+    elif selector == "nearest_energy" and target_energy is not None:
+        selected = min(candidates, key=lambda i: abs(float(features[i].energy) - float(target_energy)))
+    else:
+        raise ValueError(f"invalid target selector {selector!r}")
+    feature = features[selected]
+    probs = dict(posterior[selected])
+    weights = np.asarray([p.get(branch_id, 0.0) for p in posterior], dtype=float)
+    p_branch = float(weights[selected])
+    dominance = float(p_branch / weights.sum()) if weights.sum() > 0 else 0.0
+    return {"omega0": float(feature.energy), "sigma": float(feature.sigma_e),
+            "p_branch": p_branch, "entropy": _entropy(probs), "dominance": dominance,
+            "resolvable": bool(feature.energy >= RESOLVABLE_FWHM_FACTOR * float(gauss_fwhm)),
+            "feature": feature, "posterior": probs, "feature_index": selected}
 
 
 def deliver_branch(qoi: dict, *, p_min: float = P_ACOUSTIC_MIN,
@@ -368,8 +486,11 @@ def secondary_branch_points(features, posterior, qoi, *, gauss_fwhm: float,
             continue
         if f.energy < float(gauss_fwhm) or f.energy <= w_acoustic:
             continue
+        probabilities = dict(p)
         out.append({"omega0": float(f.energy), "branch_id": "optic",
-                    "weight": float(1.0 - p.get(ACOUSTIC, 0.0))})
+                    "weight": float(1.0 - p.get(ACOUSTIC, 0.0)),
+                    "branch_posterior": probabilities,
+                    "assignment_entropy": _entropy(probabilities)})
     return out
 
 

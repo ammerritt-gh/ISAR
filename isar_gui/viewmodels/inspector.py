@@ -281,11 +281,13 @@ class InspectorViewModel(ViewModel):
         ws = self._ws
         pooled = bool(fit.pooled)
         try:
-            # A pooled master's member spectrum is never drawn under its title (honesty law below),
-            # so we never read scan_data for it — a data file whose number happens to collide with
-            # the master's scan_number must not seed the fine grid (it would also be a wasted read).
             if pooled:
-                energy = counts = yerr = mask = axis = None
+                pooled_data = ws.pooled_spectrum(fit)
+                if pooled_data is None:  # legacy workspace: honest curve-only fallback below
+                    energy = counts = yerr = mask = axis = None
+                else:
+                    energy, counts, yerr = pooled_data.x, pooled_data.counts, pooled_data.yerr
+                    mask, axis = pooled_data.mask, None
             else:
                 unit = ws.unit_data(fit.unit_id) if fit.unit_id else None
                 if unit is not None:
@@ -319,9 +321,9 @@ class InspectorViewModel(ViewModel):
                 st.curve_error = "no energy grid available for this scan"
                 return
             try:
-                curve = ws.evaluate_model(fit.unit_id or fit.scan_number, fit.detector_id, x_eval=fine)
+                curve = ws.evaluate_fit(fit, x_eval=fine)
             except (KeyError, ValueError, OSError) as exc:
-                if not pooled and energy is not None and energy.size:
+                if energy is not None and energy.size:
                     st.main_spec = builders.fit_overlay_spec(
                         x=energy, counts=counts, yerr=yerr, mask=mask,
                         x_fit=None, total=None, components=None,
@@ -342,13 +344,8 @@ class InspectorViewModel(ViewModel):
         # not bootstrap-regardless — so an uncertified ω₀ never draws a numeric whisker.
         cert_interval = certify.certifying_interval(fit)
 
-        # Honesty law: a pooled master's true spectrum is not persisted, so we NEVER draw a member's
-        # data/*.json counts under a "pooled" title. Render curve-only + a "member data not shown"
-        # annotation (the builder enforces this); no residuals without the pooled data.
-        data_x = None if pooled else energy
-        data_counts = None if pooled else counts
-        data_yerr = None if pooled else yerr
-        data_mask = None if pooled else mask
+        # Legacy pooled fits remain curve-only; new fits use the exact persisted merged spectrum.
+        data_x, data_counts, data_yerr, data_mask = energy, counts, yerr, mask
         xlabel = self._axis_label(axis) if axis else "energy transfer (meV)"
         try:
             st.main_spec = builders.fit_overlay_spec(
@@ -358,12 +355,13 @@ class InspectorViewModel(ViewModel):
                 interval_reliable=(cert_interval is not None),
                 scan_number=fit.scan_number, det_id=fit.detector_id, q=fit.q,
                 pooled=pooled, members=fit.members, n_members=fit.n_members,
+                pooled_data=bool(pooled and fit.spectrum_ref and energy is not None),
                 xlabel=xlabel,
             )
         except ValueError as exc:
             st.curve_error = f"invalid fitted unit data: {exc}"
             return
-        if not pooled and energy is not None and energy.size:
+        if energy is not None and energy.size:
             total_on_data = np.interp(energy, np.asarray(curve.x, float),
                                       np.asarray(curve.total, float))
             st.residuals_spec = builders.residuals_spec(
@@ -440,4 +438,13 @@ class InspectorViewModel(ViewModel):
                 d["pooled"] = f"pooled ({fit.n_members} members)" if fit.n_members else "pooled"
             if fit.members:
                 d["members"] = [str(m) for m in fit.members]
+            if fit.master_revision:
+                d["master_revision"] = fit.master_revision
+            d["linewidth_state"] = fit.linewidth_state or "unknown"
+            d["pool_consistency"] = (
+                "pass" if fit.pool_consistent is True else
+                "fail" if fit.pool_consistent is False else "not available")
+            if fit.consistency_pvalue is not None:
+                d["pool_consistency_p"] = f"{fit.consistency_pvalue:.4g}"
+            d["predictive_ensemble"] = (fit.predictive_ref or "not available")
         return d

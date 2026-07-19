@@ -34,3 +34,15 @@ def test_policy_text_never_raises_for_wrong_detector_field_types():
         _POLICY_TOML.replace('detector_id = "det"', 'detector_id = ["not", "a-string"]'))
     assert not unhashable_id.is_valid
     assert "detector_id" in unhashable_id.errors[0]
+
+
+def test_policy_text_parses_and_validates_hypothesis_tables():
+    valid = validate_policy_text(
+        _POLICY_TOML + '\n[hypotheses.optic]\nzc_energy = { mode = 6.0, sigma = 1.0 }\n')
+    assert valid.is_valid
+    assert valid.policy.hypotheses["optic"]["zc_energy"]["mode"] == 6.0
+
+    invalid = validate_policy_text(
+        _POLICY_TOML + '\n[hypotheses.optic]\nzc_energy = { mode = -1.0, sigma = 1.0 }\n')
+    assert not invalid.is_valid
+    assert "non-negative" in invalid.errors[0]

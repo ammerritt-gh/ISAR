@@ -52,7 +52,8 @@ _PRIOR = [
 ]
 
 
-def _make(make_ws, *, prior=None, branch=None, specs=_SPECS, with_master=False) -> Workspace:
+def _make(make_ws, *, prior=None, branch=None, tracks=None, specs=_SPECS,
+          with_master=False) -> Workspace:
     scans, rows, data = {}, [], []
     for s in specs:
         oc = _outcome(h=s["h"], k=s["k"], l=s["l"], omega0=s["omega0"],
@@ -81,6 +82,8 @@ def _make(make_ws, *, prior=None, branch=None, specs=_SPECS, with_master=False) 
         state["dispersion_prior"] = prior
     if branch is not None:
         state["branch_belief"] = branch
+    if tracks is not None:
+        state["branch_tracks"] = tracks
     root = make_ws(scans=scans, rows=rows, data_files=data, state=state)
     return Workspace.open(root)
 
@@ -123,6 +126,11 @@ def test_pooled_master_marked_and_members_still_shown(make_ws):
     # the master is clickable -> routes to its own FitView
     with_master_scan = [fv for _, _, fv in vm._points if fv.scan_number == 10]
     assert with_master_scan and with_master_scan[0].pooled
+    # One resolved verdict belongs to the member at this coordinate; the pooled master's verdict is
+    # composed into its square instead of adding a second occluding circle.
+    at_master = [m for m in vm.spec.markers if m.kind is MarkerKind.VERDICT_RESOLVED
+                 and abs(m.x - 2.1) < 1e-9 and abs(m.y - 5.0) < 1e-9]
+    assert len(at_master) == 1
 
 
 def test_prior_and_branch_curves(make_ws):
@@ -134,6 +142,56 @@ def test_prior_and_branch_curves(make_ws):
     vm = DispersionViewModel(ws)
     roles = [s.role for s in vm.spec.series]
     assert Role.PRIOR in roles and Role.BRANCH in roles
+
+
+def test_branch_uncertainty_metadata_uses_the_plotted_sample_temperature_slice(make_ws):
+    branch = [
+        {"sample": "tavi", "t_bin": 200.0, "q": [2.0, 0.0, 0.0], "omega0": 4.2,
+         "branch_id": "optic", "assignment_entropy": 0.1},
+        {"sample": "tavi", "t_bin": 200.0, "q": [2.2, 0.0, 0.0], "omega0": 6.2,
+         "branch_id": "optic", "assignment_entropy": 0.2},
+        {"sample": "other", "t_bin": 200.0, "q": [2.1, 0.0, 0.0], "omega0": 9.0,
+         "branch_id": "optic", "assignment_entropy": 9.0},
+        {"sample": "tavi", "t_bin": 300.0, "q": [2.1, 0.0, 0.0], "omega0": 8.0,
+         "branch_id": "optic", "assignment_entropy": 8.0},
+    ]
+    vm = DispersionViewModel(_make(make_ws, branch=branch))
+    metadata = vm.spec.meta["branch_label_uncertainty"]
+    assert [item["assignment_entropy"] for item in metadata] == [0.1, 0.2]
+
+
+def test_segmented_tracks_render_target_islands_and_dashed_acoustic_context(make_ws):
+    tracks = {"revision": 4, "target_branch": "optic", "tracks": [
+        {"branch_id": "optic", "role": "target", "segments": [
+            {"state": "confirmed", "points": [
+                {"q": 0.0, "hkl": [2.0, 0.0, 0.0], "energy_meV": 6.0},
+                {"q": 0.1, "hkl": [2.1, 0.0, 0.0], "energy_meV": 6.2},
+            ]},
+            {"state": "ambiguous", "points": [
+                {"q": 0.1, "hkl": [2.1, 0.0, 0.0], "energy_meV": 6.2},
+                {"q": 0.8, "hkl": [2.8, 0.0, 0.0], "energy_meV": 7.8},
+            ]},
+            {"state": "confirmed", "points": [
+                {"q": 0.8, "hkl": [2.8, 0.0, 0.0], "energy_meV": 7.8},
+                {"q": 0.9, "hkl": [2.9, 0.0, 0.0], "energy_meV": 8.0},
+            ]},
+        ]},
+        {"branch_id": "acoustic", "role": "rival", "segments": [
+            {"state": "confirmed", "points": [
+                {"q": 0.0, "hkl": [2.0, 0.0, 0.0], "energy_meV": 0.0},
+                {"q": 0.1, "hkl": [2.1, 0.0, 0.0], "energy_meV": 1.0},
+            ]},
+        ]},
+    ]}
+    vm = DispersionViewModel(_make(make_ws, tracks=tracks))
+    curves = [s for s in vm.spec.series if s.role is Role.BRANCH]
+    optic = [s for s in curves if "rival" not in (s.style or "")]
+    assert len(optic) == 2
+    assert all(np.max(s.x) - np.min(s.x) <= 0.11 for s in optic)
+    assert sorted(round(float(x), 1) for s in optic for x in s.x) == [2.0, 2.1, 2.8, 2.9]
+    acoustic = next(s for s in curves if "rival" in (s.style or ""))
+    assert "non-target context" in (acoustic.label or "")
+    assert vm.spec.meta["branch_track_revision"] == 4
 
 
 def test_prior_degrades_when_fewer_than_two_points(make_ws):
@@ -195,6 +253,18 @@ def test_point_click_activates_fit(qtbot, make_ws):
     with qtbot.waitSignal(vm.point_activated, timeout=1000) as blocker:
         vm.activate_at(2.1, 5.0)
     assert blocker.args[0].scan_number == 2
+
+
+def test_status_activation_skips_malformed_hkl_length(make_ws):
+    from isar.drive.session_log import log_event
+
+    ws = _make(make_ws, with_master=True)
+    log_event(ws.root / "report" / "session_log.jsonl", "decide", {
+        "action": "model_update", "per_q": [{"hkl": [2.1, 0.0]}],
+    })
+    ws.refresh()
+    vm = DispersionViewModel(ws)
+    vm.activate_status(0)  # must not pass mismatched shapes to np.allclose
 
 
 def test_dock_renders_and_routes_click(qtbot, make_ws):

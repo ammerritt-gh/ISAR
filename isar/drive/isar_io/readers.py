@@ -33,15 +33,22 @@ _NUMERIC_COLUMNS = frozenset({
     "gamma", "cost_per_dof",
     "zero", "gauss_fwhm", "lorentz_fwhm", "prior_omega", "prior_sigma",
     "secondary_omega0", "secondary_omega0_err",
+    "effective_exposure", "consistency_statistic", "consistency_pvalue",
+    "consistency_alpha", "model_interval_lo", "model_interval_med", "model_interval_hi",
+    "model_entropy",
 })
-_INT_COLUMNS = frozenset({"scan", "prior_n", "n_modes", "n_members"})
+_INT_COLUMNS = frozenset({"scan", "prior_n", "n_modes", "n_members",
+                          "selected_candidate_index", "track_revision", "consistency_seed"})
 # Coerced to bool ("True"/"False" → True/False; "" → None). ISAR writes Python bool reprs.
-_BOOL_COLUMNS = frozenset({"interval_reliable", "pooled", "hesse_trusted", "resolvable"})
+_BOOL_COLUMNS = frozenset({"interval_reliable", "pooled", "hesse_trusted", "resolvable",
+                           "gamma_at_bound", "pool_consistent", "model_robust"})
 # Split on ";" into a list of labels ("" → None; missing column → key absent via DictReader).
 _LIST_COLUMNS = frozenset({"members"})
 # JSON-encoded structured columns (GUI Phase 0): the amplitudes dict and candidate table. Parsed
 # with json.loads; "" / None → None; a malformed cell is left as the raw string (never raises).
-_JSON_COLUMNS = frozenset({"amplitudes", "candidates"})
+_JSON_COLUMNS = frozenset({"amplitudes", "candidates", "model_manifest",
+                           "exposure_provenance", "branch_posterior",
+                           "branch_candidates"})
 
 
 def _report_dir(workspace: str | Path) -> Path:

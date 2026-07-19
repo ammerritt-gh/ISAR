@@ -19,3 +19,4 @@ ISAR.code-workspace
 examples/
 .isar-local/
 .codex-validation/
+test_workspaces/

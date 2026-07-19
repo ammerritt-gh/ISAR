@@ -5,6 +5,7 @@ importorskip, xdist-safe (each test stamps its own workspace)."""
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import numpy as np
 import pytest
@@ -179,6 +180,47 @@ def test_pooled_master_does_not_read_scan_data_and_uses_omega_window(make_ws, mo
     xs = np.asarray(fit_total[0].x, dtype=float)
     assert xs.min() == pytest.approx(-5.0)  # ω₀±10 window, not the file grid ([-2, 8])
     assert xs.max() == pytest.approx(15.0)
+
+
+def test_op3_shaped_two_mode_master_shows_pooled_data_components_and_residuals(make_ws):
+    from isar.plotspec.spec import Role
+
+    manifest = {
+        "schema": "isar.model_manifest/1",
+        "components": [
+            {"type": "phonon_dho", "prefix": "phonon", "peak": "stokes+astokes"},
+            {"type": "phonon_dho", "prefix": "phonon2", "peak": "stokes+astokes"},
+            {"type": "constant_background", "prefix": "bg"},
+        ],
+        "parameters": {
+            "phonon.Omega_d": 3.9, "phonon.Gamma": 0.3, "phonon.A": 350.0,
+            "phonon2.Omega_d": 6.2, "phonon2.Gamma": 0.4, "phonon2.A": 220.0,
+            "bg.BG": 20.0,
+        },
+    }
+    ws = _ws_with(make_ws, _outcome(
+        pooled=True, n_members=5, members=["10", "11", "12", "13", "14"],
+        spectrum_ref="data/pooled/op3.json", best_label="phonon+phonon2+bg",
+        model_manifest=manifest, n_modes=2,
+        modes=[{"omega0": 3.91, "gamma": 0.3}, {"omega0": 6.21, "gamma": 0.4}]))
+    pooled_path = ws.root / "data" / "pooled" / "op3.json"
+    pooled_path.parent.mkdir(parents=True, exist_ok=True)
+    pooled_path.write_text(json.dumps({
+            "schema": "isar.pooled_spectrum/1", "energy": list(_X),
+            "counts": list(_COUNTS), "variance": list(_COUNTS),
+            "monitor": [1.0] * len(_X),
+            "mask": [True] * len(_X),
+        "members": [["tavi", number, "det"] for number in range(10, 15)],
+    }), encoding="utf-8")
+
+    vm = InspectorViewModel(ws)
+    vm.set_fit(_fit(ws))
+    state = vm.state
+    assert state.curve_error is None
+    assert state.residuals_spec is not None
+    assert any(series.role is Role.DATA for series in state.main_spec.series)
+    assert any(series.role is Role.FIT for series in state.main_spec.series)
+    assert sum(series.role is Role.COMPONENT for series in state.main_spec.series) >= 2
 
 
 # ---- Widget rendering -------------------------------------------------------
@@ -359,7 +401,7 @@ def test_fitted_inspector_keeps_raw_counts_when_model_evaluation_fails(make_ws, 
     from isar.plotspec.spec import Role
 
     ws = _ws_with(make_ws, _outcome())
-    monkeypatch.setattr(ws, "evaluate_model",
+    monkeypatch.setattr(ws, "evaluate_fit",
                         lambda *_args, **_kwargs: (_ for _ in ()).throw(
                             ValueError("no stored amplitudes and no re-parseable context")))
     vm = InspectorViewModel(ws)

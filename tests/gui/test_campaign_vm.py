@@ -16,7 +16,8 @@ pytest.importorskip("PySide6")
 from isar.drive.session_log import log_event
 from isar.workspace_api import Workspace
 from isar_gui.viewmodels.campaign import (
-    CampaignState, CampaignViewModel, budget_readout, reduce_campaign, render_feed_item)
+    CampaignState, CampaignViewModel, budget_readout, current_activity_text, terminal_status_text,
+    reduce_campaign, render_feed_item)
 
 
 def _log_path(root):
@@ -144,6 +145,15 @@ def test_budget_readout_time_budgets_use_the_engine_dichotomy():
     assert budget_readout(CampaignState())[1] == "budget: —"     # no budget -> honest dash
 
 
+def test_terminal_outcome_text_names_the_exhausted_clock_exactly():
+    assert terminal_status_text(CampaignState(
+        stop_state="incomplete", stop_reasons=("analysis limit exhausted (3600/3600s)",))) == (
+            "Incomplete — analysis limit exhausted")
+    assert terminal_status_text(CampaignState(
+        stop_state="incomplete", stop_reasons=("budget exhausted (8/8 h)",))) == (
+            "Incomplete — measurement budget exhausted")
+
+
 # ---- feed rendering ----------------------------------------------------------
 def test_feed_renders_kinds_and_skips_timing():
     assert render_feed_item({"kind": "timing", "payload": {"stage": "x"}, "ts": 1}) is None
@@ -155,6 +165,81 @@ def test_feed_renders_kinds_and_skips_timing():
     assert stop.severity == "terminal" and "operator_stopped" in stop.text
     unknown = render_feed_item({"kind": "mystery", "ts": 1, "payload": {}})
     assert unknown is not None                       # unknown kinds surface, never vanish
+
+
+def test_now_panel_exact_activity_strings_and_per_q_join(make_ws):
+    root = make_ws(rows=[])
+    path = _log_path(root)
+    _start_event(path)
+    log_event(path, "decide", {"event": "model_update", "action": "model_update",
+                                "per_q": [{"hkl": [2.5, 0, 0], "state": "continue"}]})
+    log_event(path, "activity_start", {
+        "activity_id": "fit-1", "stage": "full_fit", "q": [2.5, 0, 0],
+        "fit_tier": "full", "started_ts": 100.0, "completed": 0,
+        "total": 8, "progress_unit": "fits"}, ts=100.0)
+    log_event(path, "activity_progress", {
+        "activity_id": "fit-1", "completed": 3, "total": 8,
+        "progress_unit": "fits"}, ts=150.0)
+    state = reduce_campaign(list(Workspace.open(root).session_events()))
+    assert state.per_q == ({"hkl": [2.5, 0, 0], "state": "continue"},)
+    assert current_activity_text(state, now=202.0) == (
+        "Now: Full fit at (2.50, 0, 0) — 3/8 fits — 01:42 elapsed")
+
+
+def test_final_certification_exact_live_publishing_and_interrupted_strings():
+    live = CampaignState(active_activity={
+        "activity_id": "cert-1", "stage": "final_certification", "started_ts": 100.0,
+        "completed": 7, "total": 21, "progress_unit": "points", "active": 14,
+        "remaining_analysis_seconds": 18 * 60 + 42, "phase": "fitting",
+    })
+    assert current_activity_text(live, now=352.0) == (
+        "Now: Final certification — 7/21 points checkpointed — 14 active — "
+        "18:42 analysis left — 04:12 elapsed")
+    publishing = CampaignState(active_activity={
+        **live.active_activity, "completed": 21, "active": 0, "phase": "publishing",
+    })
+    assert current_activity_text(publishing, now=352.0) == (
+        "Now: Final certification — 21/21 points checkpointed — publishing — 04:12 elapsed")
+    unlimited = CampaignState(active_activity={
+        **live.active_activity, "remaining_analysis_seconds": None,
+    })
+    assert "analysis left" not in current_activity_text(unlimited, now=352.0)
+    malformed = CampaignState(active_activity={
+        **live.active_activity, "remaining_analysis_seconds": "not-a-clock",
+    })
+    assert "analysis left" not in current_activity_text(malformed, now=352.0)
+    interrupted = CampaignState(certification_status={
+        "completed": 7, "total": 21, "phase": "interrupted", "published": False,
+    })
+    assert current_activity_text(interrupted) == (
+        "Final certification interrupted — 7/21 checkpoints retained")
+
+
+def test_unmatched_activity_before_resume_is_not_current(make_ws):
+    root = make_ws(rows=[])
+    path = _log_path(root)
+    _start_event(path)
+    log_event(path, "activity_start", {
+        "activity_id": "old", "stage": "scan", "q": [2.2, 0, 0]}, ts=10.0)
+    _start_event(path, sha="b" * 64, kind="resume")
+    state = reduce_campaign(list(Workspace.open(root).session_events()))
+    assert state.active_activity is None
+
+
+def test_interrupted_certification_end_is_retained_for_durable_status_join(make_ws):
+    root = make_ws(rows=[])
+    path = _log_path(root)
+    _start_event(path)
+    log_event(path, "activity_start", {
+        "activity_id": "cert-old", "stage": "final_certification", "total": 21}, ts=10.0)
+    log_event(path, "activity_end", {
+        "activity_id": "cert-old", "stage": "final_certification",
+        "status": "interrupted"}, ts=11.0)
+
+    state = reduce_campaign(list(Workspace.open(root).session_events()))
+
+    assert state.active_activity is None
+    assert state.certification_end_status == "interrupted"
 
 
 # ---- viewmodel: cursor + liveness + terminal summary --------------------------

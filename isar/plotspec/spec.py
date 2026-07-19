@@ -67,6 +67,8 @@ class State(str, Enum):
 class MarkerKind(str, Enum):
     """Single-glyph markers (verdict glyphs, warnings, shown-not-hidden points)."""
     WARNING = "warning"                # hollow warning glyph (e.g. unreliable point)
+    POOLED_UNCERTIFIED = "pooled_uncertified"  # neutral hollow square: no certifying interval
+    POOLED_WARNING = "pooled_warning"  # red hollow square: explicitly unreliable pooled result
     MASKED = "masked"                  # QC-masked point, shown not deleted (red x)
     COSMIC_RAY = "cosmic_ray"          # cosmic-ray-cleaned point, ringed
     VERDICT_RESOLVED = "verdict_resolved"

@@ -60,11 +60,15 @@ def parent_script(tmp_path):
 def _launch(qtbot, script, mode: str):
     runner = ProcessRunner()
     pids: list[int] = []
+    finished: list[int] = []
     runner.line.connect(lambda ln: pids.extend(int(x) for x in ln.split()[1:])
                         if ln.startswith("PIDS ") else None)
+    # Subscribe before start: an ``exit`` parent can finish immediately after its PIDS line, before
+    # the caller regains control from waitUntil and has a chance to install a signal waiter.
+    runner.finished.connect(finished.append)
     runner.start([sys.executable, "-u", str(script), mode])
     qtbot.waitUntil(lambda: len(pids) == 2, timeout=15000)
-    return runner, pids
+    return runner, pids, finished
 
 
 def test_normal_completion_no_leak(qtbot):
@@ -76,7 +80,7 @@ def test_normal_completion_no_leak(qtbot):
 
 
 def test_kill_tree_kills_parent_and_child(qtbot, parent_script):
-    runner, pids = _launch(qtbot, parent_script, "stay")
+    runner, pids, _finished = _launch(qtbot, parent_script, "stay")
     try:
         assert all(_alive(p) for p in pids)
         with qtbot.waitSignal(runner.finished, timeout=15000):
@@ -87,7 +91,7 @@ def test_kill_tree_kills_parent_and_child(qtbot, parent_script):
 
 
 def test_runner_destruction_reaps_tree(qtbot, parent_script):
-    runner, pids = _launch(qtbot, parent_script, "stay")
+    runner, pids, _finished = _launch(qtbot, parent_script, "stay")
     try:
         # deleteLater → destroyed → the job handle closes → kill-on-close reaps the whole tree.
         # (Qt prints a "Destroyed while process is still running" warning here — expected: this
@@ -100,7 +104,7 @@ def test_runner_destruction_reaps_tree(qtbot, parent_script):
 
 def test_assignment_failure_falls_back_to_taskkill(qtbot, parent_script, monkeypatch):
     monkeypatch.setattr(_WinJob, "create", classmethod(lambda cls: None))
-    runner, pids = _launch(qtbot, parent_script, "stay")
+    runner, pids, _finished = _launch(qtbot, parent_script, "stay")
     try:
         assert runner._job is None   # the job path is really off; kill_tree must use taskkill
         with qtbot.waitSignal(runner.finished, timeout=15000):
@@ -111,10 +115,10 @@ def test_assignment_failure_falls_back_to_taskkill(qtbot, parent_script, monkeyp
 
 
 def test_root_exit_reaps_surviving_child(qtbot, parent_script):
-    runner, pids = _launch(qtbot, parent_script, "exit")
+    runner, pids, finished = _launch(qtbot, parent_script, "exit")
     try:
-        with qtbot.waitSignal(runner.finished, timeout=15000):
-            pass   # the parent returns on its own right after printing
+        qtbot.waitUntil(lambda: bool(finished), timeout=15000)
+        assert finished == [0]
         _assert_dead(qtbot, pids)   # child must not survive the root's normal exit
     finally:
         _sweep(pids)

@@ -136,7 +136,8 @@ occurrence. *(Implemented; see `docs/UNIFICATION_DESIGN.md` for the full treatme
 
 **The Stage II ↔ Stage III boundary is a frozen file contract.** The driver consumes analysis
 only via the `isar run` subprocess and its products — `report/results.csv`, `report.json`,
-`card.state.json` — and never imports fit internals. Contract changes are additive. This boundary
+`card.state.json` — and never imports fit internals. The pre-release v1→v2 objective/campaign reset
+was authorized on 2026-07-17 (O12); additive-only evolution resumes from v2. This boundary
 is what lets the stages be independently useful and independently testable, and it is what makes
 the asynchronous loop (§8) possible.
 
@@ -240,14 +241,12 @@ constantly; **never certifies**) → profile likelihood (asymmetric, analytic) �
 "credible" belongs to the Bayesian tier when it exists.
 
 **The γ-at-bound pathology.** Near a parameter bound the Hessian lies (its parabola crosses the
-wall); *on* the bound the bootstrap degenerates (every replica refits to the wall; the ω₀
-distribution collapses; a zero-width interval is degeneracy, not precision). `interval_reliable`
-marks this, and it is enforced **uniformly** in convergence: a flagged interval never seats
-convergence and never counts as a "no signal" decline — it routes to the `uncertifiable_interval`
-state. Escape hatches: the branch-conditional Γ freeze (Implemented), a Γ prior via the Bayesian
-tier (Planned). *(Flag Implemented; uniform enforcement Implemented 2026-07-10 per S3 — a
-delivered-but-uncertifiable fit is a third state: never seats convergence, never counts as a
-no-signal decline, budgeted toward stuck with reason `uncertifiable_interval`.)*
+wall); *on* the bound the bootstrap may degenerate. That makes Γ resolution-limited, but does not by
+itself make ω unknowable. A pooled master may certify when its model-robust ω interval remains
+identified after marginalizing Γ and model uncertainty; the GUI reports
+`linewidth_state=resolution_limited`. Physical-scan interval failures remain visible diagnostics and
+never vote on convergence or abandon a q. Escape hatches include the branch-conditional Γ freeze
+(Implemented) and the Bayesian tier. *(Master-authoritative rule Implemented 2026-07-19 — O18.)*
 
 **Where "Bayesian" is earned.** The branch layer: soft priors from the dispersion model
 (`prior_omega`/`prior_sigma`) make the fit a MAP estimate, and acoustic-vs-optic assignment is a
@@ -275,28 +274,41 @@ parsed from a natural-language goal into a formal spec (`goal_to_spec`). The mod
 objective (ARIANE-style: maximize improvement of the dispersion model, interpolation allowed) is
 a named future tier. *(Per-point Implemented; model-level Planned.)*
 
-**Budget (v1): wall-clock instrument session, all overhead included.** "You have 8 hours
-overnight" means instrument moves, alignment, and any blocking compute count against it.
-Simulation tiers may run a virtual clock but must label it as such — the ledger and the report
-state which clock they speak in. *(Partial: accounting exists; unit discipline and the
-verify-units audit are open — DECISIONS O2.)*
+**Two clocks, two limits.** `budget` is an optional measurement budget (`counting_seconds` or
+`neutrons`); `analysis_limit_seconds` is a cumulative monotonic-wall guardrail around serialized
+top-level analysis operations. Deterministic campaigns default to no measurement budget and one hour
+of analysis. Measurement-dominated tiers default to eight measurement hours and no analysis limit.
+Durable ten-second `analysis_clock` checkpoints replay by stable operation ID, so worker time is not
+multiplied and resume neither resets nor double-charges the ceiling. An acquired scan always finishes
+or checkpoints its current reduction wave. *(Implemented 2026-07-19 — DECISIONS O19.)*
 
-**Acquisition.** Quick-look seeding of unvisited q, then cost-normalized expected information
-gain against the branch model, with per-q decline budgets, window recentering (guarded: never
-recenter onto |ΔE| ≲ the resolution FWHM), tier escalation with logged outcomes, and supervisor
-escalation instead of burning beam on repeated misses. *(Implemented; the elastic recenter guard
-and its `recenter_refused_elastic` refusal logging landed 2026-07-10 — previously claimed here but
-absent — and the remaining R4 logging additions (escalate_fit outcomes, decide.action) landed the
-same day.)*
+**Acquisition.** The combine-before-divide `(q,T)` master is the sole scientific decision unit.
+Physical fits remain inspectable provenance but never vote on ω, branch identity, convergence, the
+dispersion prior, or stopping. Each usable master retains a bounded full-parameter, model-weighted
+predictive ensemble; candidates rank by expected information about target ω plus model/branch identity,
+per predicted analysis second in deterministic mode (per measurement cost in measurement-dominated
+tiers). Missing predictive draws trigger one full-tier master escalation before another scan. Low gain,
+poor fits, ambiguity, and count caps remain visible strategy diagnostics but do not abandon q. Missed
+windows recenter from the pooled spectrum rather than the last individual fit. *(Implemented
+2026-07-19 — DECISIONS O18/O20.)*
 
-**Stop states.** `met` · `unmeetable` (statistics cannot deliver; refuse to spend the rest) ·
-`budget_exhausted` · **`diminishing_returns`** (best available marginal EIG per second below
-threshold — the morning report states what the remaining budget would have bought) · plus per-q
-reasons from the enum {no_signal, signal_unmodeled, uncertifiable_interval, interval_floored,
-fast_tier_only, infeasible}. Stop messages are generated from the enum, never hand-written
-canned text. *(met/unmeetable/budget Implemented; reason enum Partial — no_signal,
-uncertifiable_interval, interval_floored, fast_tier_only + info_saturated implemented as per-q
-`reason` 2026-07-10; signal_unmodeled, infeasible, diminishing_returns Planned — DECISIONS O4, R4.)*
+**Branch-identity-aware acquisition** *(branch-hypothesis slice Implemented 2026-07-17;
+`level`/`continuum` plugins Partial — DECISIONS O6–O12, MEASUREMENT_STEERING §4.5,
+`docs/HYPOTHESES.md`)*: scan value is two-term (target-ω₀ EIG +
+λ × branch-assignment-entropy reduction); user-declared excitation hypotheses in
+`card.policy.toml` weight — never force — belief seeding, classification, opening moves, and
+energy windows (which stop unconditionally excluding the rival branch); the compiled path
+becomes first-guess (driver-inserted classification q, which never seat convergence); rivals
+are measured only to a looser differentiation tolerance; hypothesis mismatch is detected and
+flagged, and the resolved hypothesis is content-hashed into `card.state.json`.
+
+**Campaign outcomes.** `met` means every requested master certified. `incomplete` means a measurement
+budget, analysis limit, or global iteration limit ended the run. `infeasible` is reserved for an
+independently established geometry/instrument/calibration impossibility or a tolerance below a
+declared floor. Operator stop and pending recovery remain explicit. Per-q master states are
+`unmeasured`, `uncertified`, `certified`, or `infeasible`; diagnostics include diminishing returns,
+nonshrinking intervals, model ambiguity, pool inconsistency, resolution-limited linewidth, and
+analysis failure. Diagnostics never become autonomous terminal states. *(Implemented 2026-07-19.)*
 
 **Contract (v1): stop and report**, best-effort deliveries included. Mid-campaign renegotiation
 ("I can do ±0.15 meV at these four q within budget — accept?") is future work and the design
@@ -407,12 +419,20 @@ DECISIONS W1–W3.)*
 | Interval ladder through bootstrap; `interval_reliable` flag | Implemented |
 | Uniform `interval_reliable` convergence rule | Implemented (2026-07-10) |
 | Pooled-fit member provenance | Implemented (2026-07-10) |
+| Persisted content-addressed pooled spectra + master/member browser | Implemented (2026-07-19; additive v2 fallback for legacy curve-only masters) |
+| Master-authoritative assessment, prior, branch tracking, and stopping | Implemented (2026-07-19) |
+| Pooled member homogeneity bootstrap | Implemented (2026-07-19; seeded exposure-scaled Poisson deviance, α=0.01) |
+| Full-parameter master-predictive artifacts + model-discriminating information ranking | Implemented (2026-07-19) |
 | γ-at-bound calibration v2; Γ prior | Planned |
 | `tas4d` convolution (TAVI-supplied ellipsoids) | Planned |
 | Stage III: per-point objective, EIG acquisition, stop-and-report | Implemented (analytic tier certified) |
-| Wall-clock budget discipline; ledger audit | **Partial** (O2) |
+| Exposure-aware pooling + tolerance-driven dynamic `ncount` | **Partial** (O13, 2026-07-18; raw counts/ΣN retained and deterministic interval scaling/brakes/replay Implemented, Fisher/sample-based dwell optimisation Planned) |
+| Bayesian optic cold-start + selector-driven provisional evidence | **Partial** (2026-07-18; posterior assignment, neighboring-q evidence and probabilistic rejection implemented, sampled Stage-C MI Planned) |
+| Separate measurement budget + cumulative analysis guardrail | Implemented (2026-07-19; durable ten-second checkpoints) |
 | Stop-reason enum (full) + R4 log events (escalate_fit, recenter guard, decide.action) | Implemented (2026-07-10) |
-| `diminishing_returns` stop state | Planned (O4) |
+| Live activity events, newest-first GUI feed, per-q status ribbon | Implemented (2026-07-19) |
+| Master-only restart-invariant final certification | Implemented (2026-07-19; one requested pooled master/unit, completion-order checkpoints, complete-generation hash marker, append-only revisions) |
+| `diminishing_returns` strategy diagnostic (nonterminal) | Implemented (2026-07-19; O18) |
 | Async one-step-stale loop | Planned |
 | TAVI-as-backend campaign (the SVP) | **Partial** (deterministic rung 2026-07-10; clocks + McStas Planned) |
 | Campaign diagnostic report (`isar diagnose`) | Implemented (2026-07-10) |
@@ -421,6 +441,7 @@ DECISIONS W1–W3.)*
 | Bayesian interval tier | Planned |
 | Renegotiation protocol | Planned (design door open) |
 | Model-level (ARIANE-style) objective tier | Planned |
+| Branch-identity-aware acquisition (two-term scan value; excitation hypotheses; first-guess path) | Implemented for branch hypotheses (O6–O9/O11–O12, 2026-07-17; level/continuum plugins remain O10-Partial) |
 
 **Genuinely open:** wrap an existing 4D-convolution engine (ResLib/Tobyfit lineage) vs implement
 the Cooper–Nathans projection against TAVI ellipsoids directly — decide when `tas4d` is
@@ -434,6 +455,7 @@ scheduled. Cross-T dispersion-prior pooling near transitions — revisit with da
 | The statistics (and the seminar) | `docs/STATS_PRIMER.md` (+ generated gallery, `docs/stats/`) |
 | Workspace/session/CLI internals | `docs/UNIFICATION_DESIGN.md` |
 | Steering research & drive internals | `docs/MEASUREMENT_STEERING.md` |
+| Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
 | Flag adjudication | `docs/ADJUDICATION.md` |
 | Card/schema survey across facilities | `docs/SCHEMA_LANDSCAPE.md`, `docs/DATA_SCHEME_RESEARCH.md` |
 | Reports the runs owe us | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` |

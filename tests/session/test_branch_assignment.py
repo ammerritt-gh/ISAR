@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from isar.session import branch_assignment as BA
+from isar.schema.hypotheses import preset
 
 FWHM = 1.366   # the deterministic-tier Cooper-Nathans resolution
 
@@ -67,6 +68,29 @@ def test_real_anchor_outvotes_zone_prior():
     u = BA.reduced_q([2.45, 0, 0], 2.0)        # 0.45 → truth acoustic ≈ 4.1
     post = BA.assignment_posterior([BA.Feature(4.1, 0.4, 100.0, np.inf, "mode")], beliefs, u)
     assert post[0][BA.ACOUSTIC] > 0.8
+
+
+def test_parameter_priors_create_beliefs_without_creating_occupancy():
+    hypotheses = [preset("acoustic").to_dict(), preset("optic").to_dict()]
+    beliefs = BA.build_beliefs([], sample="S", t_bin=200.0, period=2.0,
+                               hypotheses=hypotheses)
+    assert beliefs["acoustic"].n_anchors == 0
+    assert beliefs["optic"].n_anchors == 0
+    optic_mu, _ = beliefs["optic"].predict(0.0)
+    assert 6.0 < optic_mu < 7.0  # non-negative truncation shifts the 6 meV mode upward
+    assert beliefs["optic"].predict_data_only(0.0) == (0.0, 1000.0)
+
+
+def test_real_data_outvotes_wrong_optic_prior_and_data_only_never_sees_it():
+    hypotheses = [preset("optic").to_dict()]
+    pts = [_pt(f"O:{i}", q, energy, branch_id="optic")
+           for i, (q, energy) in enumerate(((0.0, 3.0), (0.1, 3.1), (0.2, 3.2), (0.3, 3.3)))]
+    belief = BA.build_beliefs(pts, sample="S", t_bin=200.0, period=2.0,
+                              hypotheses=hypotheses)["optic"]
+    combined, _ = belief.predict(0.0)
+    data_only, _ = belief.predict_data_only(0.0)
+    assert data_only == pytest.approx(3.0, abs=0.1)
+    assert combined < 3.5
 
 
 # ---------------------------------------------------------------- QoI + triage
@@ -268,3 +292,51 @@ def test_fold_does_not_relax_the_zone_anchor():
     assert post[0][BA.ACOUSTIC] < 0.1           # and it still cannot read acoustic near Γ
     qoi = BA.acoustic_qoi(feats, post, gauss_fwhm=FWHM)
     assert not BA.deliver_acoustic(qoi)
+
+
+def test_target_selector_chooses_candidate_without_changing_its_posterior():
+    feats = [BA.Feature(1.0, 0.1, 10.0, np.inf, "mode"),
+             BA.Feature(6.0, 0.1, 8.0, np.inf, "mode"),
+             BA.Feature(9.0, 0.1, 5.0, np.inf, "mode")]
+    posterior = [
+        {"acoustic": 0.94, "optic": 0.01, "new": 0.05},
+        {"acoustic": 0.05, "optic": 0.9, "new": 0.05},
+        {"acoustic": 0.1, "optic": 0.2, "new": 0.7},
+    ]
+    snapshot = [dict(row) for row in posterior]
+    low = BA.selected_branch_qoi(feats, posterior, "optic", gauss_fwhm=0.5,
+                                 selector="lowest_energy")
+    near = BA.selected_branch_qoi(feats, posterior, "optic", gauss_fwhm=0.5,
+                                  selector="nearest_energy", target_energy=6.4)
+    high = BA.selected_branch_qoi(feats, posterior, "optic", gauss_fwhm=0.5,
+                                  selector="highest_energy")
+    assert low["omega0"] == 1.0 and low["posterior"] == posterior[0]
+    assert near["omega0"] == 6.0 and near["posterior"] == posterior[1]
+    assert high["omega0"] == 9.0 and high["posterior"] == posterior[2]
+    assert not BA.deliver_branch(low)
+    assert BA.deliver_branch(near)
+    assert posterior == snapshot
+
+
+def test_scientist_target_energy_conditions_branch_odds_without_removing_rivals():
+    features = [BA.Feature(1.0, 0.1, 10.0, 10.0, "mode"),
+                BA.Feature(6.0, 0.1, 10.0, 10.0, "mode")]
+    posterior = [
+        {"acoustic": 0.7, "optic": 0.2, "new": 0.1},
+        {"acoustic": 0.2, "optic": 0.5, "new": 0.3},
+    ]
+    result = BA.condition_on_target_energy(
+        features, posterior, "optic", target_energy=6.0, sigma=1.0)
+    assert result[0]["optic"] < posterior[0]["optic"]
+    assert result[1]["optic"] > posterior[1]["optic"]
+    for conditioned in result:
+        assert set(conditioned) == {"acoustic", "optic", "new"}
+        assert sum(conditioned.values()) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("mu,sigma", [(-20.0, 1.0), (-100.0, 2.0)])
+def test_lower_truncated_prior_is_concentrated_above_zero_in_far_tail(mu, sigma):
+    mean, std = BA.lower_truncated_normal_moments(mu, sigma)
+    alpha = -mu / sigma
+    assert 0.0 < mean < 2.0 * sigma / alpha
+    assert 0.0 < std < 2.0 * sigma / alpha

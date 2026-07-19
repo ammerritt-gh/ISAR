@@ -54,6 +54,45 @@ def test_bootstrap_seed_reproducible():
     assert a.omega0_interval == b.omega0_interval
 
 
+def test_shared_executor_failure_logs_and_retries_identically(caplog):
+    class BrokenExecutor:
+        def map(self, *_args, **_kwargs):
+            raise RuntimeError("pool broken")
+
+    ctx = _spectrum_ctx(n=41)
+    hyp, fit = _fitted(ctx)
+    serial = B.parametric_bootstrap(hyp, ctx, fit, M=16, seed=7, workers=1)
+    recovered = B.parametric_bootstrap(
+        hyp, ctx, fit, M=16, seed=7, workers=2, executor=BrokenExecutor())
+    assert np.array_equal(serial.omega0_samples, recovered.omega0_samples)
+    assert serial.omega0_interval == recovered.omega0_interval
+    assert "retrying serially" in caplog.text
+
+
+def test_self_created_pool_failure_logs_and_retries_identically(monkeypatch, caplog):
+    class BrokenPool:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def map(self, *_args, **_kwargs):
+            raise RuntimeError("owned pool broken")
+
+    ctx = _spectrum_ctx(n=41)
+    hyp, fit = _fitted(ctx)
+    serial = B.parametric_bootstrap(hyp, ctx, fit, M=16, seed=7, workers=1)
+    monkeypatch.setattr(B, "ProcessPoolExecutor", BrokenPool)
+    recovered = B.parametric_bootstrap(hyp, ctx, fit, M=16, seed=7, workers=2)
+    assert np.array_equal(serial.omega0_samples, recovered.omega0_samples)
+    assert serial.omega0_interval == recovered.omega0_interval
+    assert "retrying serially" in caplog.text
+
+
 def test_adaptive_no_early_stop_matches_fixed():
     # rel_eps=0 never declares stability → runs to M; block draws come off the same RNG in the same
     # order as the fixed path → bit-identical samples and interval.

@@ -103,19 +103,21 @@ def _load(workspace: str | Path) -> DiagInputs:
 # Shared helpers
 # ---------------------------------------------------------------------------------------------------
 
-# Known driver stop-reason enums (S3 taxonomy). Order used for the fixed diagnosis templates in §5.
-_REASON_ENUMS = ("no_signal", "signal_unmodeled", "uncertifiable_interval", "interval_floored",
-                 "fast_tier_only", "infeasible", "info_saturated")
+# Master-assessment diagnostics. Order is used for the fixed diagnosis templates in §5.
+_REASON_ENUMS = ("unmeasured", "interval_above_tolerance", "model_ambiguous",
+                 "pool_inconsistent", "linewidth_resolution_limited", "analysis_failed",
+                 "diminishing_returns", "infeasible")
 
 # Static reason → TODO mapping (§5 / §7).
 _REASON_TODO = {
-    "uncertifiable_interval": "γ-at-bound calibration v2 / tas4d",
-    "fast_tier_only": "escalation logging + tier policy",
-    "interval_floored": "confirm-churn floor detection",
-    "no_signal": "objective-aware Γ exclusion (if near Γ)",
-    "infeasible": "proposal feasibility feedback",
-    "signal_unmodeled": "model-structure escalation",
-    "info_saturated": "(new)",
+    "unmeasured": "acquire the first feasible master member",
+    "interval_above_tolerance": "continue by master-predictive information ranking",
+    "model_ambiguous": "prefer model/branch-discriminating measurements",
+    "pool_inconsistent": "review drift/normalization; acquire independent evidence without exclusion",
+    "linewidth_resolution_limited": "retain Γ as resolution-limited; certify ω when model-robust",
+    "analysis_failed": "resume the fingerprinted analysis revision",
+    "diminishing_returns": "continue until a configured global limit",
+    "infeasible": "verify the independent geometry/instrument/calibration proof",
 }
 
 # Dispositions that must never show a fitted ω₀ in a summary table (§4).
@@ -134,7 +136,11 @@ class EventCounts:
 
 
 _KNOWN_KINDS = frozenset({"propose", "validate", "run", "analyze", "decide", "escalate_fit",
-                          "exception", "stop", "timing"})
+                          "branch_track_update", "branch_reassignment", "frontier_blocked",
+                          "exception", "stop", "timing", "activity_start",
+                          "activity_progress", "activity_end", "analysis_clock",
+                          "physical_submission", "pooled_master_update", "candidate_update",
+                          "certification_crossing", "recovery_pending", "recovery_completed"})
 
 
 def _event_counts(events: list) -> EventCounts:
@@ -262,30 +268,14 @@ def _hkl_key(hkl) -> tuple:
 
 
 def _per_q(summary: dict, results: list, defects: list) -> list:
-    """Per-q rows from ``summary["stop"]["per_q"]`` (or the ``grid`` fallback), each carrying a stop
-    ``reason`` and a ``reason_source`` tag.
-
-    A row lacking ``reason`` (pre-S3 log) gets one DERIVED from the evidence:
-      - ``met`` when converged;
-      - else ``uncertifiable_interval`` when results.csv shows delivered rows at that q with
-        ``interval_reliable=False`` OR the row already counts ``n_uncertifiable>0``;
-      - else ``no_signal`` when ``n_decline>0``;
-      - else ``None`` (still in progress).
-    Derived rows are tagged ``reason_source="derived (pre-S3)"`` vs ``"logged"``.
-
-    The correction is not silent: when a summary free-text reason claims *no signal* at a q whose
-    results.csv proves flagged deliveries, the contradiction is recorded as a §6 defect."""
+    """Per-q rows classified exclusively from the persisted master assessment snapshot."""
     stop = summary.get("stop") or {}
     rows = list(stop.get("per_q") or [])
     if not rows:
         rows = list(summary.get("grid") or [])
     by_hkl = _results_by_hkl(results)
 
-    # The free-text stop reasons (for the contradiction check).
-    reason_texts = " ".join(str(x) for x in (stop.get("reasons") or []))
-
     out: list = []
-    contradiction_hit = False
     for row in rows:
         r = dict(row)
         hkl = r.get("hkl") or []
@@ -295,39 +285,37 @@ def _per_q(summary: dict, results: list, defects: list) -> list:
         flagged = [x for x in prod_rows
                    if x.get("omega0") is not None and x.get("interval_reliable") is False]
 
-        logged_reason = r.get("reason")
-        if logged_reason is not None:
-            r["reason_source"] = "logged"
+        detail = r.get("reason")
+        diagnostics = list(r.get("diagnostics") or [])
+        if r.get("converged") or r.get("assessment_state") == "certified":
+            reason = "met"
+        elif r.get("assessment_state") == "infeasible":
+            reason = "infeasible"
+        elif r.get("assessment_state") == "unmeasured" or r.get("source") is None:
+            reason = "unmeasured"
+        elif r.get("pool_consistent") is False or "pool_inconsistent" in diagnostics:
+            reason = "pool_inconsistent"
+        elif "analysis_failed" in diagnostics:
+            reason = "analysis_failed"
+        elif ("model_ambiguous" in diagnostics
+              or r.get("track_state") in {"ambiguous", "provisional", "missing", "blocked"}):
+            reason = "model_ambiguous"
+        elif "diminishing_returns" in diagnostics or "interval_nonshrinking" in diagnostics:
+            reason = "diminishing_returns"
+        elif r.get("linewidth_state") == "resolution_limited":
+            reason = "linewidth_resolution_limited"
         else:
-            converged = bool(r.get("converged"))
-            n_unc = int(r.get("n_uncertifiable") or 0)
-            n_dec = int(r.get("n_decline") or 0)
-            if converged:
-                derived = "met"
-            elif flagged or n_unc > 0:
-                derived = "uncertifiable_interval"
-            elif n_dec > 0:
-                derived = "no_signal"
-            else:
-                derived = None
-            r["reason"] = derived
-            r["reason_source"] = "derived (pre-S3)"
-
-        # Contradiction: the summary narrative says "no signal" for a q that DID deliver flagged fits.
-        if flagged and "no signal" in reason_texts.lower():
-            contradiction_hit = True
+            reason = "interval_above_tolerance"
+        r["reason_detail"] = detail
+        r["reason"] = reason
+        r["reason_source"] = "master_assessment"
 
         # Interval-honesty flags used by _fmt_interval in downstream tables.
-        reason = r.get("reason")
         r["interval_reliable"] = (reason == "met" and r.get("calibrated_halfwidth") is not None)
         r["_n_flagged"] = len(flagged)
         r["_n_collate"] = sum(1 for x in by_hkl.get(key, []) if x.get("pooled")) if key else 0
         out.append(r)
 
-    if contradiction_hit:
-        defects.append("stop reasons in campaign_summary.json contradict results.csv evidence — "
-                       "pre-S3 log: a q reported 'no signal' has delivered fits flagged "
-                       "interval_reliable=False (that is uncertifiable, not absence of signal)")
     return out
 
 
@@ -337,17 +325,16 @@ def _per_q(summary: dict, results: list, defects: list) -> list:
 
 
 def scan_spend_figure(events: list, per_q_rows: list, results: list):
-    """Per-q stacked bar of scan spend by kind (quicklook/production/confirm/declined).
+    """Per-q stacked bar of physical acquisition spend by kind.
 
     Primary source: ``run`` events (each carries ``hkl`` + ``kind``). Fallback (logs without run
-    events): results.csv rows + per-q ``n_production``/``n_decline``."""
+    events): results.csv rows + per-q ``n_production``."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    kinds = ["quicklook", "production", "confirm", "declined"]
-    colors = {"quicklook": "#9ecae1", "production": "#2266cc", "confirm": "#08519c",
-              "declined": "#cc3333"}
+    kinds = ["quicklook", "production", "confirm"]
+    colors = {"quicklook": "#9ecae1", "production": "#2266cc", "confirm": "#08519c"}
 
     runs = _run_events(events)
     counts: dict = {}
@@ -370,7 +357,6 @@ def scan_spend_figure(events: list, per_q_rows: list, results: list):
             key = _hkl_key(hkl)
             c = counts.setdefault(key, Counter())
             c["production"] += int(r.get("n_production") or 0)
-            c["declined"] += int(r.get("n_decline") or 0)
         source = "results.csv + per-q counts"
 
     fig, ax = plt.subplots(figsize=(7.2, 4.2))
@@ -769,7 +755,7 @@ def _section_driver(doc: FindingsDoc, di: DiagInputs, per_q: list, ec: EventCoun
 def _q_omega_cell(row: dict) -> str:
     """ω₀ for §4 — honesty: reject/junk/no-signal q never show a fitted number."""
     reason = row.get("reason")
-    if reason in ("no_signal", "infeasible", "signal_unmodeled") or row.get("omega0") is None:
+    if reason in ("unmeasured", "infeasible", "analysis_failed") or row.get("omega0") is None:
         return "—"
     return _num(row.get("omega0"), 4)
 
@@ -789,6 +775,40 @@ def _truth_lookup(score: dict | None) -> dict:
 
 def _section_dispersion(doc: FindingsDoc, di: DiagInputs, per_q: list) -> None:
     doc.section("4. Delivered dispersion vs truth")
+    tracks = (di.card_state or {}).get("branch_tracks") or {}
+    if tracks:
+        frontier = tracks.get("frontiers") or {}
+        assignments = tracks.get("assignments") or []
+        has_acoustic = any(
+            isinstance(assignment.get("acoustic_candidate_index"), int)
+            and 0 <= assignment["acoustic_candidate_index"]
+            < len(assignment.get("candidates") or [])
+            for assignment in assignments)
+        doc.para(
+            f"Tracked-branch revision {tracks.get('revision', '—')}; anchor path index "
+            f"{tracks.get('anchor_index', '—')}; connected target points: "
+            f"{len(frontier.get('confirmed_indices') or [])}. "
+            + ("The connected frontier is blocked by unresolved identity. "
+               if frontier.get("frontier_blocked") else "The reachable identity frontier is connected. ")
+            + ("Acoustic identified; retained as non-target context." if has_acoustic else ""))
+        assignment_rows = []
+        for assignment in assignments:
+            candidates = assignment.get("candidates") or []
+            oi = assignment.get("optic_candidate_index")
+            ai = assignment.get("acoustic_candidate_index")
+            optic = candidates[oi] if isinstance(oi, int) and 0 <= oi < len(candidates) else {}
+            acoustic = candidates[ai] if isinstance(ai, int) and 0 <= ai < len(candidates) else {}
+            assignment_rows.append([
+                assignment.get("path_index"), _hkl_str(assignment.get("q")),
+                _num(optic.get("energy_meV")),
+                _num((optic.get("probabilities") or {}).get("optic"), 3),
+                _num(acoustic.get("energy_meV")),
+                _num((acoustic.get("probabilities") or {}).get("acoustic"), 3),
+                assignment.get("track_state") or "—",
+            ])
+        if assignment_rows:
+            doc.table(["path", "hkl", "target ω", "P(target)", "rival ω", "P(acoustic)",
+                       "frontier state"], assignment_rows)
     truth = _truth_lookup(di.score)
     have_truth = bool(truth)
     headers = ["q", "hkl", "ω₀ (meV)", "halfwidth", "source", "reason", "n_prod", "collate-only"]
@@ -850,26 +870,22 @@ def _zones(per_q: list) -> list:
 
 
 _DIAGNOSIS = {
-    "no_signal": ("The descriptor found no significant peak across {n} q — an acoustic ω₀→0 under the "
-                  "elastic line is structurally unmeasurable. If these q sit near Γ the objective "
-                  "should exclude them at parse time rather than spend {n_dec} declines discovering it."),
-    "signal_unmodeled": ("Signal is present at {n} q but the model cannot account for it "
-                         "(disposition 'unmodeled', high cost/dof) — a model-structure problem, not "
-                         "absence of signal."),
-    "uncertifiable_interval": ("Fits deliver centers at {n} q but every interval flags "
-                               "interval_reliable=False (γ-at-bound: a resolution-limited spike whose "
-                               "bootstrap ω₀ collapses). This is uncertifiable, NOT no-signal — the "
-                               "centers are usable, the bars are not."),
-    "interval_floored": ("A certified interval exists at {n} q but floors above tolerance "
-                         "(confirm-churn: a q whose achievable halfwidth sits at tolerance re-confirms "
-                         "forever)."),
-    "fast_tier_only": ("No fit at {n} q ever reached the certifying tier — every delivery stayed on "
-                       "the untrusted fast HESSE tier. Should co-occur with escalate_fit records "
-                       "explaining why the promotion never seated."),
-    "infeasible": ("All proposals at {n} q were validation-rejected — the point is unreachable by the "
-                   "instrument geometry."),
-    "info_saturated": ("Expected information gain at {n} q hit diminishing returns before the interval "
-                       "reached tolerance."),
+    "unmeasured": ("No pooled master has been published at {n} q. Individual scan fits cannot stand in "
+                   "for it; acquire/collate at least one feasible member."),
+    "interval_above_tolerance": ("The model-robust pooled ω interval remains above tolerance at {n} q. "
+                                 "Continue with the best master-predictive acquisition."),
+    "model_ambiguous": ("Pooled evidence at {n} q leaves model or branch identity unresolved. Prefer "
+                        "measurements that reduce model/branch entropy."),
+    "pool_inconsistent": ("Member spectra fail the seeded exposure-scaled Poisson consistency check at "
+                          "{n} q. No data were excluded; review drift/normalization and gather evidence."),
+    "linewidth_resolution_limited": ("Γ is resolution-limited at {n} q. This is diagnostic rather than "
+                                     "terminal; ω may certify when its model-marginal interval is robust."),
+    "analysis_failed": ("Master analysis failed at {n} q. Resume the fingerprinted checkpoint revision "
+                        "before requesting another scan when no predictive basis exists."),
+    "diminishing_returns": ("Expected information is small or the master interval is not shrinking at "
+                            "{n} q. This remains nonterminal until a global limit is reached."),
+    "infeasible": ("An independent instrument/geometry/calibration proof marks {n} q infeasible; poor "
+                   "fits or target absence alone are insufficient for this state."),
 }
 
 
@@ -971,8 +987,7 @@ def _section_dossier(doc: FindingsDoc, di: DiagInputs, per_q: list, records: dic
         # diagnosis (fixed per-enum template)
         tmpl = _DIAGNOSIS.get(reason)
         if tmpl:
-            n_dec = sum(int(r.get("n_decline") or 0) for r in zrows)
-            doc.para("**Diagnosis.** " + tmpl.format(n=len(zrows), n_dec=n_dec))
+            doc.para("**Diagnosis.** " + tmpl.format(n=len(zrows)))
         todo = _REASON_TODO.get(reason, "(new)")
         doc.para(f"**Fix →** TODO: {todo}")
 
@@ -987,10 +1002,10 @@ def _section_defects(doc: FindingsDoc, di: DiagInputs, per_q: list, ec: EventCou
     doc.section("6. Defects uncovered")
 
     # additional predicates (budget verify-units + stop-reason contradiction already appended)
-    # fast_tier_only zone with zero escalate_fit records
-    if "fast_tier_only" in reasons_seen and ec.kind["escalate_fit"] == 0:
-        di.defects.append("a fast_tier_only failure zone exists but the log has zero escalate_fit "
-                          "records — the tier promotion never fired or predates the event log")
+    # A master analysis failure with no escalation record is a genuine observability defect.
+    if "analysis_failed" in reasons_seen and ec.kind["escalate_fit"] == 0:
+        di.defects.append("an analysis_failed master zone exists but the log has zero escalate_fit "
+                          "records — the master-analysis escalation is not observable")
     # kind_unknown
     if ec.kind_unknown > 0:
         di.defects.append(f"{ec.kind_unknown} session-log events carry an out-of-vocabulary kind "
@@ -1081,6 +1096,14 @@ def _section_verdict(doc: FindingsDoc, di: DiagInputs, per_q: list, reasons_seen
 def _section_provenance(doc: FindingsDoc, di: DiagInputs, n_dossier_figs: int, n_buried: int,
                         n_nonreconstructable: int) -> None:
     doc.section("8. Provenance")
+    checkpoint_root = di.workspace / "report" / "certification"
+    checkpoint_files = ([path for path in checkpoint_root.rglob("*") if path.is_file()]
+                        if checkpoint_root.exists() else [])
+    checkpoint_bytes = sum(path.stat().st_size for path in checkpoint_files)
+    analysis_root = di.workspace / "report" / "analysis"
+    analysis_files = ([path for path in analysis_root.rglob("*") if path.is_file()]
+                      if analysis_root.exists() else [])
+    analysis_bytes = sum(path.stat().st_size for path in analysis_files)
     rows = [
         ("§1 objective, §2 budget/stop, §4 per-q status", "report/campaign_summary.json"),
         ("§2 wall split, §3 driver narrative, event counts", "report/session_log.jsonl"),
@@ -1091,10 +1114,20 @@ def _section_provenance(doc: FindingsDoc, di: DiagInputs, n_dossier_figs: int, n
          f"{n_dossier_figs} rendered under report/figures/dossier/"),
         ("buried per-scan set — every non-pooled fitted row, same reconstruct_curve path",
          f"{n_buried} rendered under report/figures/scans/"),
+        ("final-certification manifests and derived checkpoints",
+         f"report/certification/ — {len(checkpoint_files)} files, "
+         f"{checkpoint_bytes / (1024 * 1024):.2f} MiB"),
+        ("ordinary analysis manifests and derived checkpoints",
+         f"report/analysis/ — {len(analysis_files)} files, "
+         f"{analysis_bytes / (1024 * 1024):.2f} MiB"),
     ]
     doc.table(["section", "source"], rows)
     doc.para("No number in this report was produced by refitting or re-scoring; every value is a "
              "re-presentation of what the campaign already recorded.")
+    doc.para("Certification and ordinary-analysis revisions are retained indefinitely. They are "
+             "derived artifacts; an "
+             "operator may manually prune an old revision only after confirming that no published "
+             "result references it. ISAR performs no automatic deletion.")
     if n_nonreconstructable:
         doc.para(f"*{n_nonreconstructable} fitted rows were genuinely non-reconstructable (a "
                  "reconstruction parameter — γ / zero / resolution — was absent) and were skipped "

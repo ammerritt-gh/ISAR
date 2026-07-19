@@ -5,11 +5,28 @@
 > falsification, cost-normalised EIG acquisition, and the anti-Stokes fold + rival-branch banking
 > are implemented (`isar/analyze/descriptor.py`, `isar/session/branch_model.py` /
 > `branch_assignment.py`, `isar/drive/acquisition/eig.py`); what ran and what failed is recorded in
-> `campaigns/2026-06_MVP_FIRST_RUN.md` and `campaigns/2026-07_MVP_ZONE_RETEST.md`. This document remains the durable record of *why*
+> `campaigns/2026-06_MVP_FIRST_RUN.md` and `campaigns/2026-07_MVP_ZONE_RETEST.md`.
+> **Branch-identity-aware acquisition (§2 fourth consequence, §4.1 item 7, §4.5): first
+> implementation landed 2026-07-17** (DECISIONS O6–O12; user-facing reference
+> `docs/HYPOTHESES.md`); joint gap-aware tracking and the connected frontier landed 2026-07-18
+> (O15). Dynamic tolerance-driven exposure and Bayesian optic cold-start are Partial
+> as of 2026-07-18 (O13); sampled Stage-C information and Fisher dwell optimisation remain planned.
+> This document remains the durable record of *why*
 > the loop steers the way it does — what the literature actually says and the design options we
 > considered — behind the "R" in ISAR that acts to *resolve a measurement problem* (`DESIGN.md`). Where a claim rests on a paper we
 > give the citation; citation-confidence flags are collected at the end (the reference list is meant
 > to seed a reading library).
+
+### Tracked-branch frontier semantics (2026-07-18)
+
+`target_selector="tracked_branch"` makes identity coverage precede final precision. The driver first
+confirms the target at the path point nearest reduced q=0, then walks only to an adjacent q connected
+to that confirmed component. One unresolved point permits at most `maximum_bridge_steps=1` provisional
+quicklook beyond it; the bridge supplies evidence for a joint forward/backward reassignment but cannot
+seed the prior, certify the objective, or extend a plotted line. If the ambiguity survives the attempt
+cap, the durable outcome is `branch_ambiguity` plus `frontier_blocked`, never a sparse long-range jump.
+Once the acoustic rival's identity entropy is below the stopping threshold, it remains labeled context
+and receives no target-precision acquisition value.
 
 ---
 
@@ -20,14 +37,24 @@ energy with an honest verdict, and flag what needs a human (`docs/READING_GUIDE.
 driver (`isar drive`, `docs/campaigns/2026-06_MVP_FIRST_RUN.md`) closes the loop — from a goal it proposes scans, drives
 the instrument, fits, and decides where to remeasure and when to stop.
 
-The first autonomous campaign exposed two failure zones, and thinking about them exposed a deeper risk.
+The first autonomous campaigns exposed three failure zones, and thinking about them exposed a deeper risk.
 
-**The concrete failures (MVP):**
+**The concrete failures (MVP + TA slice):**
 - **Low q** (H≈2.05, near the zone centre): the acoustic peak merges with the elastic line. Γ (damping)
   and A (intensity) become unidentifiable and the fit is *confidently wrong*.
 - **High q** (H>2.4, low temperature): the signal is weak and the anti-Stokes side is Bose-suppressed.
-  The prior-agnostic excursion gate discards recoverable 4–6 meV signal as `no_signal`, and after a few
-  declines the q is abandoned.
+  In the old scan-authoritative loop, the prior-agnostic excursion gate discarded recoverable 4–6 meV
+  signal as `no_signal`, and after a few declines abandoned q. O18 removes that stopping behavior.
+- **Branch confusion (TA campaign, 2026-07-17): branch identity is only a triage filter, never a
+  steering signal.** The Bayesian assignment posterior exists (`branch_assignment.py`) but the
+  acquisition knows nothing of it: energy windows are deliberately target-tight (`e_pred +
+  1.5·FWHM`), treating the rival branch as contamination to *exclude* rather than information to
+  *buy cheaply*; near Γ, where the acoustic is unresolvable, the strong ~6.5 meV optic features
+  were absorbed as *acoustic* anchors and the branch model sawtoothed between the two branches;
+  and a clearly visible optic mode at the zone centre carried **zero** acquisition value because
+  it was not the target's ω₀ — the loop never spent a scan establishing what it was. The fix is
+  the branch-identity-aware acquisition (§2 fourth consequence, §4.1 item 7, §4.5; implemented
+  through the O15 joint tracker and connected frontier).
 
 **The deeper risk (what must not happen):** the natural fix — build a phonon dispersion model and lean
 on it — would lock ISAR into being **phonon-only and model-required**. A triage tool cannot assume it
@@ -71,7 +98,7 @@ changes as belief sharpens. That gives the **confidence ladder**:
 | **B. Inference** (rough → result) | the physics parameters ω₀, Γ | ω₀ (marginal EIG / Fisher-information design) | Durant, Nabika |
 | **C. Discrimination** (rival models) | the *model index* (1 vs 2 peaks; phonon vs magnetic vs unknown) | where the models' predictions most disagree | Box–Hill, McCluskey |
 
-Three consequences worth stating plainly:
+Four consequences worth stating plainly:
 
 - **The original phonon rescue is Stage B, made principled.** A cross-q "branch" prior over (ω₀, Γ, A) is
   the evolving prior; constraining Γ and A at low q is that prior's Bayesian update; a Stokes-only fit at
@@ -87,6 +114,14 @@ Three consequences worth stating plainly:
   n+1), magnetic scattering falls with Q (form factor) and has a different T-law, an elastic line is
   ~T-independent, a quasi-elastic line broadens with T; those are the levers the loop should *choose* to
   pull.
+- **Branch identity is part of the quantity of interest** *(first implementation 2026-07-17; O6/O8/O11)*.
+  Stage-C discrimination applies *within* a campaign, not only between fit models: the
+  branch-assignment entropy is a QoI the acquisition must be allowed to buy down. Knowing that a
+  rival feature *is* the acoustic branch is precisely what certifies the target as the optic — so
+  a cheap scan that labels a rival can legitimately outrank another polish scan on an
+  already-labeled branch, and once a rival is confidently labeled not-the-target the loop stops
+  spending on it. This is your "we scan other branches only to establish that they are not the
+  target," made mechanical (§4.1 item 7, §4.5).
 
 ---
 
@@ -123,6 +158,8 @@ counts or fewer. Here the **count is the bottleneck and compute is nearly free p
   candidates; escalate estimator honesty (HESSE → bootstrap → nested sampling) exactly where the posterior
   is non-Gaussian; and lean hard on the misspecification guards, because at low counts the data cannot
   strongly contradict a wrong model.
+
+  User i input: tier 3 we may want to choose the second-best point: scan immediately, recompute based on previous scan, wait for next point to arrive; this is better for very fast scanning.
 
 **Why the middle matters.** Tier 1 is where the acquisition *math* is developed and given ground truth;
 Tier 2 is where the *decisions* are validated against known truth and confidence is calibrated; Tier 3 is
@@ -181,19 +218,34 @@ So the chosen engine is:
    heavy rank (light for simulation/proof-of-concept, heavy where it matters). The **acquisition unit is a
    whole constant-Q scan**: rank scan proposals by EIG-per-cost first; per-energy-bin dwell optimisation
    is a later refinement.
-4. **Counting time is a design variable:** rank **EIG-per-second** (Snoek EI/cost; Poisson information is
-   linear in time, so per-second information at a point is `(∂λ/∂θ)²/λ`), and decide keep-counting-here
-   vs move with an OCBA / value-of-information stopping rule (Chen 2000; Wald 1945) — generalising ISAR's
-   existing σ ≤ tolerance stop.
+4. **Counting time is a design variable** *(Partial 2026-07-18 — DECISIONS O13)*. **Implemented
+   subset:** newly compiled objectives treat quicklook/production `ncount` as floors. Pooled fits use
+   summed per-point monitor exposure in the raw-count Poisson mean, and refinement requests scale from
+   the authoritative pooled interval toward the requested tolerance, subject to deterministic
+   ladder/growth/cap/budget brakes and an empirical interval-floor stop. The ledger preserves every
+   physical submission and pooled update for exact replay. **Planned remainder:** rank
+   **EIG-per-second** (Snoek EI/cost; Poisson information is linear in time, so per-second information
+   at a point is `(∂λ/∂θ)²/λ`) and decide keep-counting-here vs move with a Fisher/sample-based OCBA or
+   value-of-information rule (Chen 2000; Wald 1945).
 5. **Escalate estimator honesty where the posterior is non-Gaussian** (weak signal): HESSE/Laplace when
    clean → bootstrap / nested sampling when not. ISAR already has all three; wire the acquisition to the
    same ladder.
 6. **Model-average the EIG** over competing hypotheses so the loop does not optimise for one possibly-wrong
    model (see §4.2 and §6).
+7. **Two-term scan value** *(Implemented 2026-07-17 — DECISIONS O6)*:
+   The shipped master-authoritative path draws incremental Poisson counts from every retained
+   plausible model in `isar.master_predictive/1` and estimates mutual information about the joint
+   target-ω/model/branch state. It reports expected ω-half-width reduction and model/branch-identity
+   entropy reduction separately; neither is converted into the other's units by a λ weight. Common
+   random numbers make candidate comparisons deterministic, with progressively larger simulation
+   batches when the leading candidates are not separated. The older λ-weighted deterministic
+   branch-confusion proxy remains only in the explicit classification/opening-move fallback where a
+   master predictive artifact does not yet exist; it is not the acquisition score for a usable master.
 
 **Honest limit:** at single-digit counts the information is simply not there; no method conjures it.
-Correct behaviour is to report low confidence honestly and let EIG decide *count more here / move /
-abandon*. That is the deliverable, not a failure.
+Correct behaviour is to report low confidence honestly and let EIG decide *count more here / move*;
+low utility remains diagnostic and acquisition continues until a global limit. That is the deliverable,
+not a failure.
 
 ### 4.2 Falsification — deciding a model is wrong / the signal doesn't match
 
@@ -241,6 +293,75 @@ implementation must keep them apart or the prior silently corrupts model selecti
   descriptor) are not interchangeable with an ordinary `resolved` phonon fit in reports, priors, or
   acquisition. A constrained or demoted fit **never feeds the prior it was constrained by** — that
   self-reinforcement is exactly the confident-wrong feedback loop (§6).
+
+### 4.5 Excitation hypotheses — physics vs tactics *(branch slice Implemented 2026-07-17;
+`level`/`continuum` Partial; DECISIONS O7–O11)*
+
+The user's physics expectations ("we think the target is an optic phonon with a ~10 ± 2 meV
+zone-centre gap, roughly flat — but we may be wrong") must **weight** the Bayesian machinery —
+seeding, classification, scan selection — and never **force** it. Two interfaces, deliberately
+separate:
+
+- **`ExcitationHypothesis` — what the excitation looks like.** Declared in human-owned
+  `card.policy.toml` (`[hypotheses.<name>]` tables — a hypothesis *is* hand-edited human intent;
+  code never writes it). Parameters: `dispersion_type` (`branch` / `level` / `continuum`), a
+  **non-negative** zone-centre energy prior (a lower-truncated normal; the zero-mean acoustic
+  case is half-normal), shape priors (slope-at-ZC, flatness, fold periodicity), and a `confidence` that
+  scales prior precision. `acoustic`, `optic`, and `null` ship as **named presets-as-data**; the
+  full TOML reference lives in `docs/HYPOTHESES.md`.
+- **`SteeringPolicy` — what the planner does about it.** Opening moves, energy-search bands, λ.
+  The hypothesis *suggests* defaults (optic → scan the zone centre first at positive E — scanning
+  the Bragg peak tells you nothing; acoustic → start at the smallest q whose predicted ω is
+  resolvable, trace toward Γ later); the planner owns the decisions and the objective's
+  `steering` block can override them. Physics and tactics never live in one object.
+
+**How the prior enters — priors on parameters, never pseudo-data.** A hypothesis becomes a prior
+mean + precision on the branch-belief regression's *parameters* (intercept = gap, slope at ZC),
+added directly into the weighted-least-squares normal equations. It is never injected as fake
+anchor points: pseudo-data double-counts evidence, and worse, feeds the classifier features the
+prior itself painted in — a circular loop in which the hypothesis starts forcing instead of
+weighting (the §6 misspecification-under-adaptivity trap, self-inflicted). The existing acoustic
+zone anchor migrates into this form. Corollaries: prior influence decays automatically as real
+data precision accumulates; classification likelihoods and branch-occupancy counts are computed
+from **real anchors only**; a prior-only belief (a declared hypothesis with no data yet) predicts
+from its parameters with honest width, which is what lets a declared optic hypothesis claim a
+6.5 meV zone-centre feature cold instead of the acoustic belief absorbing it.
+
+**Three-tier extensibility — "character" is a point in parameter space, not a code branch.**
+1. **Tier 1 — new character, no code.** Anything branch-shaped is a new preset of the shared
+   parameters, declarable inline in the policy TOML (a gapped magnon is optic-shaped in
+   dispersion terms with different intensity expectations).
+2. **Tier 2 — new mechanics, registry plugin.** Code only when the *machinery* changes: a
+   `continuum` is not a curve (density estimation, not regression); a crystal-field `level`
+   disables the slope prior; a new classification feature (intensity-vs-Q, polarization) must be
+   supplied by the fitter. Each `dispersion_type` is a registry entry with a small interface —
+   prior contribution, likelihood features, steering defaults. The first slice implements
+   `branch` only and declares the interface, so `level`/`continuum` are additions, never rebuilds.
+3. **Tier 3 — the truly unknown, at runtime, no declaration.** The assignment posterior's `new`
+   class plus the `null` hypothesis: a feature matching no declared hypothesis is banked as an
+   agnostic branch with wide priors and *reported plainly* ("a third feature near 8 meV matches
+   none of your hypotheses"). The human closes the loop after the beamtime by naming it and
+   writing a Tier-1 preset. The system never needs to understand new physics mid-flight — it
+   needs to notice it, not force it, and hand it to the human.
+
+**The hypothesis may be wrong — mechanically, not rhetorically.** Three guards, none optional:
+a mandatory **sanity-check opening move** that probes the declared hypothesis's most
+discriminating feature first (for "optic, gap ≈ 10 meV": the zone centre at the claimed gap
+± 2σ); a **deterministic search-band widening schedule** when the pooled evidence misses the expected
+signal; and a **posterior-predictive
+disagreement check** (prior-prediction vs data-only prediction) whose verdict is flagged in
+machine-owned `card.state.json` and stated in the report — loudly, because silently fitting a
+wrong model to the end of a beamtime is the §6 failure this section exists to prevent.
+
+**Path is first-guess** *(DECISIONS O9)*: the compiled Q path remains the certification set —
+"done" still means *the user's* q points converged on the target branch — but the driver may
+insert or extend q without restriction when classification value warrants (a zone-centre
+classification scan, a disambiguation point where two branches approach), each logged as
+driver-inserted with a machine-readable purpose. Driver-inserted q never seat convergence.
+
+**Reproducibility**: the resolved hypothesis (parameters + preset version) is content-hashed
+into `card.state.json` at campaign start — templates are part of the determinism chain; "same
+TOML, same steering" must survive preset evolution.
 
 ---
 
@@ -371,11 +492,15 @@ The confidence ladder maps directly onto ISAR's layers, mostly by *extending* wh
   its Bayesian update. Requires generalising the `Ω_d`-only IC grid, the phonon-suffix bounds, and the
   `isinstance(PhononDHO)` reporting. The branch prior is keyed on objective-path **arclength + an explicit
   branch id** (reusing `path_scalars`), not the current dominant-varying-Q heuristic, and never spans a
-  branch crossing.
+  branch crossing. *(Implemented branch slice, §4.5: per-branch beliefs carry the declared
+  hypothesis's parameter prior — priors on the regression's intercept/slope, never pseudo-anchors;
+  `level`/`continuum` belief plugins remain O10-Partial.)*
 - **L3 — falsification**: heuristic gate → evidence when ambiguous → demote + flag; model-averaged.
-- **Acquisition**: marginal-EIG-on-ω₀-per-second, exact-Poisson-likelihood but **sample-estimated** and
-  **scan-level** (rank scan proposals), Fisher-screened, OCBA-stopped — replacing/augmenting the current
-  σ-deficit `_select_target`.
+- **Acquisition**: sampled posterior-predictive information about joint target-ω/model/branch state,
+  ranked per predicted analysis second or measurement cost at the **scan-proposal** level. Expected
+  ω-half-width and identity-entropy reductions are reported separately. Character-aware opening moves,
+  rival-covering windows, and purpose-tagged driver-inserted classification q remain deterministic
+  fallbacks and never seat convergence.
 - **Engineering invariants (§4.4):** the data-cost / posterior-cost split, provenance-bearing normalised
   intensity, and the `fit_kind` tag are load-bearing — and their serializable schemas (descriptor,
   branch-prior point, `ScanContext` constraints, acquisition observation, report fields) are defined
@@ -406,11 +531,11 @@ The loop gained a small, additive operator-control contract (GUI_DESIGN.md G19 h
   `--max-iters 1` that post-exhaustion boundary is the only one that can see it). Present → one
   acknowledgement `decide` event (`action="operator_stop"`), the in-flight iteration having
   already completed (wait → persist → analyze), then a clean exit with the first-class terminal
-  state **`operator_stopped`** (CLI exit **4**; met 0 / unmeetable 3 / error 2 unchanged):
+  state **`operator_stopped`** (CLI exit **4**; met 0 / incomplete 3 / infeasible 6 / error 2):
   certification is skipped, the final grid is still evaluated honestly and recorded as
   `stop["grid_state"]`, exactly one terminal `stop` event stays last in the log, and the control
   file is retained (nothing is ever deleted; other tokens' files are inert). No token → no
-  checks, byte-identical behavior. A campaign that ends on its own (met/unmeetable/budget) at a
+  checks, byte-identical behavior. A campaign that ends on its own (met/incomplete/infeasible) at a
   boundary where no stop was yet visible reports its true state — the stop check always runs
   before, never after, that decision.
 - **`--max-iters` is a per-invocation cap.** `run_campaign` restarts iteration numbering at zero
@@ -445,9 +570,89 @@ The objective carries additive `target_branch`, `target_label`, and `energy_sear
 objectives default to acoustic and `[-2, 7]` meV. An optic objective defaults to `[-2, 12]` meV; that
 range drives the cold survey, while the acoustic-only near-Γ and Fisher advisory paths stay disabled for
 the optic slice. Branch assignment, prior seeding, pooled delivery, and stopping certify only the
-requested branch. Clean folds may seed that branch; ambiguous forks still may not. Terminal reporting
-distinguishes branch ambiguity, no signal, and an uncertifiable interval. The active target is copied
+requested branch. Clean pooled folds may seed that branch; ambiguous forks still may not. Terminal
+reporting uses master diagnostics such as model ambiguity, pool inconsistency, analysis failure,
+resolution-limited linewidth, and interval above tolerance. The active target is copied
 only into machine-owned `card.state.json`; `card.policy.toml` remains human-owned.
+
+### 7.3 Instrument-limit-aware batching (implemented, 2026-07-18)
+
+At campaign start the driver snapshots TAVI's advertised `max_points`,
+`max_neutrons_per_point`, `queue_neutron_budget`, and `max_queued` values from `/state`, then fills
+missing fields from `/schema`. Each field retains its source; only `max_points` has a legacy-safe
+fallback (200) when discovery is unavailable. The frozen objective remains human intent and keeps its
+fingerprint unchanged.
+
+Proposal generation and the final pre-validation checkpoint apply the smaller policy/instrument
+ceiling. The queue neutron budget is converted to a per-point ceiling using the emitted point count;
+it constrains one serial submission and is not charged as campaign spend. A larger statistical request
+therefore becomes repeated legal batches whose evidence is pooled. Clamps are recorded as
+`proposal_ncount_clamped_to_limit`, while a live ceiling below the applicable quicklook/production
+floor terminates explicitly as `instrument_limit_below_minimum_batch`. Campaign starts and summaries
+carry the discovered/effective envelope. Logical acquisition IDs use a separately resumed proposal
+counter, so validation refusals are distinct acquisitions while physical recenter retries still share
+one ID.
+
+### 7.4 Live observability and resumable certification (implemented, 2026-07-19)
+
+The append-only session log now carries durable activity boundaries for scanning, fast/full fitting,
+pooled updates, and final certification. Progress records are advisory and non-fsynced; starts and ends
+are durable. Resume emits an `interrupted` end for every unmatched start before new work begins. The GUI
+joins the active activity to the already-persisted `model_update.per_q` snapshot, displays fixed
+activity-specific units (`fits` or `points`) without an ETA, and renders the human feed newest-first
+without changing chronological JSONL storage. Spend and resume readers ignore all activity kinds.
+
+Final certification passes a Qt-free `isar.certification.request/1` through the runner seam. The
+session side resolves it against the workspace into an immutable `isar.certification/2` manifest,
+so the decision-only drive process never imports fit/session internals. The manifest contains exactly
+one unit per requested pooled master in objective-path order—never one unit per physical scan. Its
+fingerprint closes over the pooled spectrum and ordered membership, policy/model
+space, resolved calibration/resolution, frozen prior/branch/target state, fit tier/settings, effective
+seeds, and algorithm contract. Parsing, QC, and collation reconstruct and validate the frozen pools;
+physical fitting and physical-ledger mutation are skipped.
+
+An exact ordinary master or valid checkpoint is reusable (`bayes` satisfies `full`; `full` cannot
+satisfy `bayes`), including a deterministic scientific non-result. Corrupt, missing, or exception-
+aborted units rerun. Missing masters dispatch in worker-sized waves, checkpoint individually in
+completion order, and reduce by immutable canonical index. `progress.json` records durable completed,
+reuse, fitted, active, phase, and publication state; advisory activity events mirror it for the live
+GUI. Canonical `session.json`, `card.state.json`, and `results.csv` are staged only after every unit
+exists, then atomically replaced and covered by a hash-bearing current-publication marker written
+last. A restart therefore changes neither fit inputs nor the published generation. Changed inputs
+create a new revision. Checkpoints remain under
+`report/certification/<fingerprint>/`; diagnostics report their size. They are retained by default and
+may be manually pruned only when no published result refers to the revision; ISAR never deletes them.
+Ordinary deadline-bounded analysis uses the same pure-unit contract under
+`report/analysis/<fingerprint>/`: dispatch is limited to one worker-sized wave, completed units are
+checkpointed, and no scan/master generation publishes until its canonical worklist is complete.
+
+### 7.5 Master-authoritative steering and dual clocks (implemented, 2026-07-19)
+
+The scientific reducer now has one authority per requested `(q,T)`: the latest published
+combine-before-divide master revision. Physical rows update acquisition counts, exposure, raw-QC and
+cost provenance only. They cannot provide a fallback ω, interval, branch assignment, convergence vote,
+decline counter, or prior point. The target tracker likewise sees only consistent pooled folds; an
+absent master remains an explicit gap.
+
+Each merged pool carries a seeded exposure-scaled Poisson-deviance homogeneity result. Failure at the
+default α=0.01 blocks certification and requests review without excluding a member or ending the
+q-point. A usable master also publishes an `isar.master_predictive/1` artifact containing bounded full
+parameter draws and weights for every retained plausible model/branch. Nested draws win, then full-fit
+bootstrap draws, then a trusted multivariate HESSE/Laplace approximation. The model-weighted ω interval
+is the certification interval; therefore Γ may be `resolution_limited` without blocking an otherwise
+identified ω. Missing simulation-grade draws trigger a single full-tier escalation for that revision.
+
+Acquisition estimates information about the joint target-ω/model/branch latent state from incremental
+Poisson counts. Deterministic mode ranks per predicted analysis second; measurement-dominated tiers use
+the active measurement cost. ω-width and identity-entropy reductions remain separately reported.
+Uncertain or low utility is diagnostic, not a reason to abandon q.
+
+The outer limits are independent. `budget` is optional measurement spend. `analysis_limit_seconds`
+charges monotonic wall time around serialized fitting, pooling, consistency, predictive scoring and
+certification operations, with one enclosing charge for parallel workers. Deterministic campaigns
+default to 3600 analysis seconds and no measurement budget; measurement-dominated campaigns default to
+eight measurement hours and no analysis limit. Durable checkpoints make both ceilings cumulative over
+resume. Limits stop dispatching new work; acquired data finish or checkpoint their active wave.
 
 ---
 
@@ -466,6 +671,19 @@ only into machine-owned `card.state.json`; `card.policy.toml` remains human-owne
   leak into model selection or goodness-of-fit, the crossed-scan intensity must be normalisation-portable,
   and constrained/demoted fits must not feed their own prior. These need explicit regression tests, not
   only review.
+- **Prior-forcing circularity (§4.5)** — a hypothesis prior expressed as pseudo-data feeds the
+  classifier features the prior itself painted in, and the hypothesis starts forcing instead of
+  weighting. The parameter-prior form plus data-only classification features is the structural
+  defence; the regression tests must include the observed failure (a rival's zone-centre feature
+  absorbed into the acoustic belief).
+- **Hypothesis mismatch under adaptivity** — a wrong declared hypothesis steers the opening moves
+  before any posterior exists to correct it. The sanity-check opening move, deterministic band
+  widening, and the posterior-predictive disagreement flag (§4.5) are designed but unproven;
+  Tier-1/Tier-2 campaigns with deliberately wrong hypotheses are the validation.
+- **Rival-spend runaway** — with no hard caps, the λ term must genuinely decay: λ falls with label
+  confidence, the per-q classification term zeroes at the differentiation tolerance, and the
+  budget stop is the outer bound. The synthetic two-branch campaign must show rival spending
+  peaking early and dying off, not tracking the target to the end.
 
 ---
 

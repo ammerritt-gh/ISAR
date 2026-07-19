@@ -702,6 +702,20 @@ class ScansViewModel(ViewModel):
     def rows(self) -> list[ScanUnit]:
         return list(self._rows)
 
+    def master_groups(self):
+        """Derived pooled masters from the Qt-free facade, filtered to currently visible members."""
+        visible = {row.key for row in self._rows}
+        groups = []
+        for group in getattr(self._ws, "master_groups", ()) or ():
+            members = tuple(member for member in group.members
+                            if getattr(member, "unit_id", None) in visible)
+            if members or not self._filter.is_active():
+                groups.append((group, members))
+        return groups
+
+    def request_master_inspect(self, fit) -> None:
+        self.inspect_requested.emit(fit)
+
     def available_keys(self) -> set[str]:
         """Stable unit identities present in the ledger (independent of the active filter)."""
         return {u.key for u in self._all_rows}

@@ -6,7 +6,7 @@ Wires the three parts into the §8 loop:
         acquisition proposes a scan → POST /validate → POST /scan (isolated, seeded) → wait →
         save scan JSON → `isar run` (subprocess) → read results.csv / card.state.json →
         fold into the ω(q) model → stopping check + exception branches
-    } → stop (met / unmeetable) → campaign summary
+    } → stop (met / incomplete / infeasible) → campaign summary
 
 The loop is **decision-only**: numbers come only from ISAR's ``results.csv`` (read through the file
 contract), never from a fit imported here. It LOOKS at raw counts solely to re-center a missed window
@@ -24,28 +24,44 @@ from pathlib import Path
 from typing import Any, Callable
 
 import json
+import hashlib
+import inspect
+import logging
 import math
+import os
 import subprocess
 import sys
 import uuid
 
-import numpy as np
-
 from isar.drive.acquisition import model as acq_model
-from isar.drive.acquisition.acquire import points_in_window, propose_scan
+from isar.drive.acquisition.acquire import (
+    MAX_POINTS,
+    BudgetInsufficientForMinimumBatch,
+    InstrumentLimitBelowMinimumBatch,
+    ScanProposal,
+    normalize_proposal_score,
+    points_in_window,
+    propose_scan,
+)
 from isar.drive.acquisition.calibration import Calibration, load_calibration
-from isar.drive.instrument.tavi_client import TaviClient
+from isar.drive.instrument.tavi_client import TaviClient, TaviError
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
 from isar.drive.isar_io.runner import SubprocessRunner, as_runner
 from isar.drive.isar_io.runner import init_isar as _default_init_isar
 from isar.drive.isar_io.worker_client import WorkerRunner
-from isar.drive.isar_io.scan_writer import save_scan_json
+from isar.drive.isar_io.scan_writer import save_scan_json, scan_json_path
 from isar.drive.objective import ObjectiveSpec
-from isar.drive.session_log import log_event, read_log, timed
+from isar.drive.session_log import (AnalysisLimitExceeded, activity, analysis_clock_state,
+                                    analysis_operation, close_interrupted_activities,
+                                    close_interrupted_analysis, log_activity_progress,
+                                    log_event, read_log, timed)
 from isar.drive.supervisor import exceptions as exc
 from isar.drive.supervisor.stopping import (
+    FIRST_CROSSING_MARGIN,
     PRODUCTION_KINDS,
     PRODUCTION_NCOUNT,
+    QUICKLOOK_NCOUNT,
+    StopDecision,
     USABLE_DISPOSITIONS as _USABLE,
     evaluate_stop,
     model_points,
@@ -63,23 +79,69 @@ DEFAULT_WAIT_TIMEOUT = 600.0
 DEFAULT_MAX_POINTS = 200
 # Candidate keys a TAVI /state or /schema payload might carry the point-count limit under.
 _MAX_POINTS_KEYS = ("max_points", "maxPoints", "scan_max_points", "max_scan_points", "points_max")
+_LIMIT_KEYS = {
+    "max_points": _MAX_POINTS_KEYS,
+    "max_neutrons_per_point": ("max_neutrons_per_point", "maxNeutronsPerPoint",
+                                "max_ncount", "max_ncount_per_point"),
+    "queue_neutron_budget": ("queue_neutron_budget", "queueNeutronBudget",
+                              "max_queue_neutrons", "queue_neutrons"),
+    "max_queued": ("max_queued", "maxQueued", "max_queue_size", "queue_max_scans"),
+}
 _DEFAULT_CALIBRATION = (Path(__file__).resolve().parents[2] / "calibration"
                         / "phonon_dft_deterministic.json")
+_LOG = logging.getLogger(__name__)
+
+
+def _extract_limit(payload: Any, keys: tuple[str, ...]) -> int | None:
+    """Extract a positive integral limit from a top-level or nested TAVI limits document."""
+    if not isinstance(payload, dict):
+        return None
+    scopes = [payload]
+    for key in ("limits", "instrument_limits", "queue_limits"):
+        if isinstance(payload.get(key), dict):
+            scopes.append(payload[key])
+    for scope in scopes:
+        for key in keys:
+            value = scope.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+                return int(value)
+            if (isinstance(value, float) and math.isfinite(value)
+                    and value >= 1.0 and value.is_integer()):
+                return int(value)
+    return None
 
 
 def _extract_max_points(payload: Any) -> int | None:
     """Pull a positive integer point-count limit out of a TAVI /state or /schema body, checking the
     known key names at the top level and inside a nested ``limits`` dict. Returns ``None`` when no
     recognizable limit is present (the caller then falls back to :data:`DEFAULT_MAX_POINTS`)."""
-    if not isinstance(payload, dict):
-        return None
-    nested = payload.get("limits")
-    for scope in (payload, nested if isinstance(nested, dict) else {}):
-        for k in _MAX_POINTS_KEYS:
-            v = scope.get(k)
-            if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
-                return int(v)
-    return None
+    return _extract_limit(payload, _MAX_POINTS_KEYS)
+
+
+def _preflight_instrument_limits(client) -> dict[str, Any]:
+    """Resolve the additive TAVI limit snapshot once, preferring /state field by field."""
+    values: dict[str, int | None] = {name: None for name in _LIMIT_KEYS}
+    sources: dict[str, str] = {name: "unavailable" for name in _LIMIT_KEYS}
+    for method in ("get_state", "get_schema"):
+        fn = getattr(client, method, None)
+        if not callable(fn):
+            continue
+        try:
+            payload = fn()
+        except Exception as error:   # noqa: BLE001 — discovery is best-effort and fallback-safe
+            _LOG.warning("TAVI instrument-limit discovery via %s failed: %s", method, error)
+            continue
+        for name, keys in _LIMIT_KEYS.items():
+            if values[name] is not None:
+                continue
+            value = _extract_limit(payload, keys)
+            if value is not None:
+                values[name] = value
+                sources[name] = method
+    if values["max_points"] is None:
+        values["max_points"] = DEFAULT_MAX_POINTS
+        sources["max_points"] = "default"
+    return {**values, "sources": sources}
 
 
 def _preflight_max_points(client) -> tuple[int, str]:
@@ -89,18 +151,59 @@ def _preflight_max_points(client) -> tuple[int, str]:
     preflight failure — endpoint unreachable, method absent on the client seam, or no limit present —
     must never break the campaign: it falls back silently to :data:`DEFAULT_MAX_POINTS`, recording the
     fallback via the ``source`` so the eventual clamp event states where the limit came from."""
-    for method in ("get_state", "get_schema"):
-        fn = getattr(client, method, None)
-        if not callable(fn):
-            continue
-        try:
-            payload = fn()
-        except Exception:   # noqa: BLE001 — preflight is best-effort; never fail a campaign on it
-            continue
-        mp = _extract_max_points(payload)
-        if mp is not None:
-            return mp, method
-    return DEFAULT_MAX_POINTS, "default"
+    snapshot = _preflight_instrument_limits(client)
+    return int(snapshot["max_points"]), str(snapshot["sources"]["max_points"])
+
+
+def _runtime_limits(cfg, objective, n_points: int | None = None) -> dict[str, Any]:
+    policy = dict(getattr(objective, "steering", None) or {})
+    instrument = dict(getattr(cfg, "instrument_limits", None) or {})
+    instrument.setdefault("max_points", int(getattr(cfg, "max_points", DEFAULT_MAX_POINTS)))
+    instrument.setdefault("sources", {"max_points": getattr(cfg, "max_points_source", "default")})
+    result = dict(instrument)
+    result["instrument_max_neutrons_per_point"] = instrument.get("max_neutrons_per_point")
+    result["max_points"] = min(int(policy.get("max_scan_points", MAX_POINTS)),
+                               int(instrument["max_points"]))
+    policy_ncount = int(policy.get("max_ncount_per_scan", 4_000_000_000))
+    candidates = [(policy_ncount, "policy")]
+    if instrument.get("max_neutrons_per_point") is not None:
+        candidates.append((int(instrument["max_neutrons_per_point"]),
+                           instrument["sources"].get("max_neutrons_per_point", "instrument")))
+    if n_points and instrument.get("queue_neutron_budget") is not None:
+        candidates.append((int(math.floor(float(instrument["queue_neutron_budget"]) /
+                                          max(int(n_points), 1))),
+                           instrument["sources"].get("queue_neutron_budget", "instrument")))
+    result["max_neutrons_per_point"] = min(value for value, _source in candidates)
+    result["effective_ncount_sources"] = [source for value, source in candidates
+                                           if value == result["max_neutrons_per_point"]]
+    return result
+
+
+def _analysis_runner_kwargs(cfg, objective, *, finish_initial_wave: bool = False) -> dict:
+    """Deadline allowance supported by the runner seam, without imposing it on old test doubles."""
+    limit = objective.analysis_limit_seconds
+    if limit is None:
+        return {}
+    spent = float(analysis_clock_state(cfg.log_path)["spent_seconds"])
+    remaining = max(float(limit) - spent, 0.0)
+    parameters = inspect.signature(cfg.runner.run).parameters
+    accepts_kwargs = any(item.kind == inspect.Parameter.VAR_KEYWORD
+                         for item in parameters.values())
+    result = {}
+    if "analysis_allowance_seconds" in parameters or accepts_kwargs:
+        result["analysis_allowance_seconds"] = remaining
+    if "finish_initial_wave" in parameters or accepts_kwargs:
+        result["finish_initial_wave"] = bool(finish_initial_wave)
+    return result
+
+
+def _require_complete_analysis(result, objective) -> None:
+    """Turn a soft runner checkpoint stop into the campaign's explicit incomplete outcome."""
+    if getattr(result, "completed", True):
+        return
+    limit = float(objective.analysis_limit_seconds or 0.0)
+    raise AnalysisLimitExceeded(
+        f"analysis limit exhausted; active fit wave checkpointed (limit {limit:.1f}s)")
 
 
 def _emitted_point_count(e_lo: float, e_hi: float, e_step: float) -> int:
@@ -126,12 +229,13 @@ def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int
     Returns ``True`` when it clamped."""
     n_emitted = _emitted_point_count(proposal.e_lo, proposal.e_hi, proposal.e_step)
     if n_emitted <= max_points:
+        proposal.n_points = n_emitted
         return False
     old_step = float(proposal.e_step)
     span = max(float(proposal.e_hi) - float(proposal.e_lo), 0.0)
     new_step = span / max(int(max_points) - 1, 1)   # exactly max_points points across the kept window
     proposal.e_step = new_step
-    proposal.n_points = points_in_window(proposal.e_lo, proposal.e_hi, new_step)
+    proposal.n_points = _emitted_point_count(proposal.e_lo, proposal.e_hi, new_step)
     log_event(log_path, "exception", {
         "action": "proposal_clamped",
         "hkl": [proposal.h, proposal.k, proposal.l],
@@ -142,6 +246,76 @@ def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int
         "iter": it,
     })
     return True
+
+
+def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int) -> None:
+    """Normalize one proposal immediately before validation/submission.
+
+    The frozen steering ceiling and the live instrument ceiling are both authoritative.  Once the
+    true emitted point count is known, neutron affordability is recalculated against it; hour budgets
+    remain scan-boundary-only because ISAR has no invented ncount-to-seconds conversion.
+    """
+    policy = dict(getattr(objective, "steering", None) or {})
+    limits = _runtime_limits(cfg, objective)
+    cap = int(limits["max_points"])
+    source = f"policy+{limits['sources'].get('max_points', 'default')}"
+    _guard_point_count(proposal, cap, source, cfg.log_path, it)
+    n_points = int(proposal.n_points or 0)
+    limits = _runtime_limits(cfg, objective, n_points)
+    minimum = int(policy.get(
+        "quicklook_ncount" if proposal.kind == "quicklook" else "production_batch_ncount",
+        QUICKLOOK_NCOUNT if proposal.kind == "quicklook" else PRODUCTION_NCOUNT))
+    instrument_cap = int(limits["max_neutrons_per_point"])
+    if instrument_cap < minimum:
+        raise InstrumentLimitBelowMinimumBatch(
+            f"instrument_limit_below_minimum_batch: {instrument_cap:g} neutrons/point "
+            f"is below the {minimum:g} {proposal.kind} floor")
+    diagnostics = (proposal.meta or {}).get("count_diagnostics")
+    preclamp_requested = (diagnostics.get("requested_before_runtime_limit")
+                          if isinstance(diagnostics, dict) else None)
+    if int(proposal.ncount) > instrument_cap or (
+            preclamp_requested is not None and not diagnostics.get("limit_clamp_logged")):
+        requested = max(int(proposal.ncount), int(preclamp_requested or 0))
+        proposal.ncount = instrument_cap
+        if isinstance(diagnostics, dict):
+            diagnostics["runtime_ncount_limit"] = instrument_cap
+            diagnostics["limit_clamp_logged"] = True
+        log_event(cfg.log_path, "exception", {
+            "action": "proposal_ncount_clamped_to_limit",
+            "hkl": [proposal.h, proposal.k, proposal.l],
+            "requested_ncount": requested, "effective_ncount": instrument_cap,
+            "policy_limit": int(policy.get("max_ncount_per_scan", 4_000_000_000)),
+            "instrument_limits": {
+                "max_neutrons_per_point": limits.get("instrument_max_neutrons_per_point"),
+                "queue_neutron_budget": limits.get("queue_neutron_budget")},
+            "limit_sources": limits.get("effective_ncount_sources", []),
+            "n_points": n_points, "iter": it})
+    budget = dict(budget_state or {})
+    if budget.get("kind") != "neutrons" or budget.get("amount") is None:
+        normalize_proposal_score(proposal, float(getattr(objective, "tolerance_meV", 0.0)))
+        return
+    if bool(policy.get("dynamic_ncount", False)) and int(proposal.ncount) < minimum:
+        old_ncount = int(proposal.ncount)
+        proposal.ncount = minimum
+        log_event(cfg.log_path, "exception", {
+            "action": "proposal_ncount_raised_to_floor",
+            "hkl": [proposal.h, proposal.k, proposal.l],
+            "old_ncount": old_ncount, "new_ncount": minimum,
+            "n_points": n_points, "iter": it})
+    remaining = max(float(budget["amount"]) - float(budget.get("spent", 0.0)), 0.0)
+    affordable = int(math.floor(remaining / max(n_points, 1)))
+    if affordable < minimum:
+        raise BudgetInsufficientForMinimumBatch(
+            f"budget_insufficient_for_minimum_batch: need {minimum * max(n_points, 1):g} "
+            f"neutrons, have {remaining:g}")
+    if int(proposal.ncount) > affordable:
+        old_ncount = int(proposal.ncount)
+        proposal.ncount = affordable
+        log_event(cfg.log_path, "exception", {
+            "action": "proposal_ncount_clamped", "hkl": [proposal.h, proposal.k, proposal.l],
+            "old_ncount": old_ncount, "new_ncount": affordable, "n_points": n_points,
+            "remaining_neutrons": remaining, "iter": it})
+    normalize_proposal_score(proposal, float(getattr(objective, "tolerance_meV", 0.0)))
 
 
 def _resolve_calibration(cfg_value) -> Calibration:
@@ -163,59 +337,91 @@ def _make_resolution_cb(client, override):
     return cb
 
 
-def _make_fisher_provider(card_state: dict, resolution_cb):
-    """The 5b Poisson-Fisher screen provider ``(gridq, omega0_pred, sigma_prior) -> σ_scan|None`` built
-    from the branch(es) the session persisted into ``card.state.json`` (durable / crash-safe — the drive
-    reads the file, never a live session object). Returns ``None`` when no branch exists yet (cold
-    campaign) → the acquisition falls back to the 5a counts tier.
+def _make_classification_providers(card_state: dict, objective, resolution_cb, *, sample: str):
+    """Build MI/rival providers from one complete active-sample temperature slice."""
+    from isar.drive.acquisition.acquire import _resolve_fwhm
+    from isar.drive.acquisition.classify_eig import assignment_mi, belief_predict
 
-    A candidate q is **Fisher-grounded** only when its last fit was ``unconstrained`` AND the branch
-    covers its predicted ω₀ *in* the anchor range (the misspecification guard: a mistrusted/extrapolated
-    rate never drives a confident Fisher EIG). Given that, it predicts the scan's λ(E) from the branch
-    (Γ, A∝1/ω) at production exposure, adds the branch soft-constraint precision the low-q fit will use,
-    and returns the identifiability-aware σ(ω₀) — or ``None`` when ω₀ is unidentifiable even with the
-    prior (σ=∞). Boundary-clean: imports only isar.drive + isar.synth (both permitted)."""
-    branch_models = (card_state or {}).get("branch_models") or []
-    if not branch_models:
-        return None
+    rows = [dict(row) for row in (card_state.get("branch_belief_models") or [])
+            if isinstance(row, dict) and str(row.get("sample", "")) == str(sample)]
+    slices: dict[float, list[dict]] = {}
+    for row in rows:
+        try:
+            temperature = float(row.get("t_bin"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(temperature):
+            slices.setdefault(temperature, []).append(row)
+    complete = [temperature for temperature, group in slices.items()
+                if len({row.get("branch_id") for row in group if row.get("branch_id")}) >= 2]
+    selected = slices[max(complete)] if complete else []
+    if not selected:
+        # A common prior-only slice is safe across samples/T; unrelated measured slices are not.
+        selected = [{"branch_id": h.get("name"), "anchors": [], "n_anchors": 0,
+                     "parameter_prior": h, "period": None}
+                    for h in (getattr(objective, "hypotheses", []) or [])
+                    if h.get("name") not in (None, "null")]
+    if len({row.get("branch_id") for row in selected if row.get("branch_id")}) < 2:
+        return None, None
+    target = getattr(objective, "target_hypothesis", None)
+    policy = dict(getattr(objective, "steering", {}) or {})
+    entropy_stop = float(policy.get("assignment_entropy_stop_nats", 0.2))
+    rival_resolved_hkls = []
+    for assignment in ((card_state.get("branch_tracks") or {}).get("assignments") or []):
+        candidates = assignment.get("candidates") or []
+        candidate_index = assignment.get("acoustic_candidate_index")
+        if not isinstance(candidate_index, int) or not 0 <= candidate_index < len(candidates):
+            continue
+        probabilities = (candidates[candidate_index].get("probabilities") or {})
+        acoustic = float(probabilities.get("acoustic", 0.0))
+        optic = float(probabilities.get("optic", 0.0))
+        known_total = acoustic + optic
+        known = ([acoustic / known_total, optic / known_total] if known_total > 0.0 else [])
+        identity_entropy = -sum(value * math.log(value) for value in known if value > 0.0)
+        if acoustic >= 0.85 and identity_entropy <= entropy_stop and assignment.get("q"):
+            rival_resolved_hkls.append(tuple(float(value) for value in assignment["q"]))
 
-    from isar.drive.acquisition.acquire import _energy_window, _resolve_fwhm
-    from isar.drive.acquisition.branch_view import predict_branch, select_branch
-    from isar.drive.acquisition.eig import fisher_information, sigma_omega0
-    from isar.synth.fit import omega_d_from      # isar.synth is boundary-allowed
-
-    def provider(g, omega0_pred, sigma_prior):
-        if getattr(g, "last_fit_kind", None) != "unconstrained":
+    def reduced(hkl, period):
+        if not period:
             return None
-        if omega0_pred is None or not math.isfinite(omega0_pred) or omega0_pred <= 0:
-            return None
-        branch = select_branch(branch_models, omega0_pred)
-        if branch is None:
-            return None
-        pred = predict_branch(branch, float(omega0_pred))
-        if not pred.in_anchor_range or pred.gamma <= 0:
-            return None
-        T = float(branch.get("t_bin", 0.0))         # the branch carries its own T-bin
-        exposure = float(PRODUCTION_NCOUNT)
-        amp = float(pred.amplitude_norm) * exposure
-        gamma = float(pred.gamma)
-        od = omega_d_from(float(omega0_pred), gamma)
-        h, k, l = g.hkl
-        fwhm = _resolve_fwhm(resolution_cb, h, k, l, float(omega0_pred))
-        e_lo, e_hi, _step, n_points = _energy_window(float(omega0_pred), fwhm)
-        x_grid = np.linspace(e_lo, e_hi, max(int(n_points), 2))
-        g_sig = max(float(pred.gamma_sigma), 1e-6)
-        a_sig = max(float(pred.amplitude_rel_sigma) * amp, 1e-6)
-        prior_prec = {1: 1.0 / g_sig ** 2, 2: 1.0 / a_sig ** 2}   # branch soft precision on Γ, A
-        theta = (od, gamma, amp, 0.0, 1.0)                        # E=0, nominal flat background
-        info = fisher_information(theta, x_grid, fwhm, 0.0, T, center=0.0, prior_precision=prior_prec)
-        ss = sigma_omega0(theta, info)
-        return ss if math.isfinite(ss) else None
+        folded = [((float(v) + 0.5 * period) % period) - 0.5 * period for v in hkl]
+        return math.sqrt(sum(v * v for v in folded))
 
-    return provider
+    def components(g):
+        out = []
+        for row in selected:
+            u = reduced(g.hkl, row.get("period"))
+            mu, sigma = belief_predict(row, g.q if u is None else u)
+            out.append({"branch_id": row.get("branch_id"), "mean": mu, "sigma": sigma,
+                        "probability": float(row.get("n_anchors", 0)) + 1.0})
+        total = sum(item["probability"] for item in out) or 1.0
+        for item in out:
+            item["probability"] /= total
+        return out
+
+    def classify(g):
+        if any(math.dist(g.hkl, hkl) <= 1e-5 for hkl in rival_resolved_hkls):
+            return 0.0  # labeled acoustic context has no target-precision acquisition value
+        parts = components(g)
+        target_part = next((part for part in parts if part["branch_id"] == target), parts[0])
+        fwhm = _resolve_fwhm(resolution_cb, *g.hkl, max(target_part["mean"], 0.0))
+        tolerance = policy.get("differentiation_tolerance_meV")
+        if tolerance is None:
+            tolerance = max(3.0 * float(objective.tolerance_meV), fwhm / 2.3548)
+        return assignment_mi(parts, meas_sigma=fwhm / 2.3548,
+                             differentiation_tolerance_meV=float(tolerance))
+
+    def rival_band(g):
+        parts = [part for part in components(g) if part["branch_id"] != target]
+        if not parts:
+            return None
+        rival = max(parts, key=lambda part: part["probability"])
+        return rival["mean"], rival["sigma"]
+
+    return classify, rival_band
 
 
-def _validate_body(proposal, *, sample: str, allow_partial: bool = False) -> dict[str, Any]:
+def _validate_body(proposal, *, sample: str) -> dict[str, Any]:
     """The ``POST /validate`` body — ``parameters`` only (engine/seed/isolated are scan-only fields)."""
     body: dict[str, Any] = {
         "parameters": {
@@ -235,16 +441,64 @@ def _validate_body(proposal, *, sample: str, allow_partial: bool = False) -> dic
             "sample": sample,
         },
     }
-    if allow_partial:
-        body["allow_partial"] = True
     return body
 
 
-def _scan_body(proposal, engine: str, seed: int, *, sample: str, allow_partial: bool = False) -> dict[str, Any]:
+def _scan_body(proposal, engine: str, seed: int, *, sample: str) -> dict[str, Any]:
     """The ``POST /scan`` body — the validate body plus the isolated/seeded engine selection."""
-    body = _validate_body(proposal, sample=sample, allow_partial=allow_partial)
+    body = _validate_body(proposal, sample=sample)
     body.update({"engine": engine, "seed": int(seed), "isolated": True})
     return body
+
+
+def _feasible_point_count(validation: dict, fallback: int) -> int:
+    """Executable point count from TAVI's frozen feasibility manifest."""
+    value = validation.get("feasible_points") if isinstance(validation, dict) else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        return int(value)
+    mask = validation.get("planned_feasible_mask") if isinstance(validation, dict) else None
+    if isinstance(mask, list):
+        return sum(bool(item) for item in mask)
+    return max(int(fallback), 0)
+
+
+def _executed_point_count(data: dict, fallback: int) -> int:
+    result = data.get("result") if isinstance(data, dict) else None
+    if not isinstance(result, dict):
+        return max(int(fallback), 0)
+    mask = result.get("executed_feasible_mask")
+    if isinstance(mask, list) and mask:
+        return sum(bool(item) for item in mask)
+    return max(int(fallback), 0)
+
+
+def _target_supporting_feasible_points(validation: dict, target_band) -> int | None:
+    """Feasible bins inside the target's 95%-credible energy support; None without a manifest."""
+    manifest = validation.get("point_manifest") if isinstance(validation, dict) else None
+    if not isinstance(manifest, list) or target_band is None:
+        return None
+    mean, sigma = map(float, target_band)
+    lo, hi = mean - 2.0 * sigma, mean + 2.0 * sigma
+    count = 0
+    for point in manifest:
+        if not isinstance(point, dict) or not point.get("feasible", False):
+            continue
+        values = point.get("values") or {}
+        energy = values.get("deltaE") if isinstance(values, dict) else None
+        if (isinstance(energy, (int, float)) and not isinstance(energy, bool)
+                and math.isfinite(float(energy)) and lo <= float(energy) <= hi):
+            count += 1
+    return count
+
+
+def _tavi_error_code(error: TaviError) -> str | None:
+    """Best-effort structured code from a TAVI error envelope."""
+    try:
+        payload = json.loads(error.body)
+    except (TypeError, ValueError):
+        return None
+    detail = payload.get("error") if isinstance(payload, dict) else None
+    return detail.get("code") if isinstance(detail, dict) else None
 
 
 def _row_hkl(row: dict):
@@ -328,12 +582,70 @@ def _calibrated_hw(row: dict, calibration: Calibration, bucket: str) -> float | 
         return None
     try:
         return calibration.calibrated_halfwidth(lo, hi, bucket=bucket)
-    except Exception:   # noqa: BLE001  (bad interval → treat as un-calibratable, not a crash)
+    except Exception:   # noqa: BLE001  (bad interval -> treat as un-calibratable, not a crash)
         return None
 
 
+def _diagnostic_interval(row: dict) -> tuple[Any, Any, str | None]:
+    """Best finite interval available before the certifiability gate, with method provenance."""
+    for lo_key, hi_key, method in (
+            ("interval_lo", "interval_hi", "bootstrap"),
+            ("omega0_profile_lo", "omega0_profile_hi", "profile"),
+            ("hesse_lo", "hesse_hi", "hesse"),
+            ("bayes_lo", "bayes_hi", "bayesian")):
+        lo, hi = row.get(lo_key), row.get(hi_key)
+        if lo is not None and hi is not None:
+            try:
+                if math.isfinite(float(lo)) and math.isfinite(float(hi)) and float(hi) >= float(lo):
+                    return lo, hi, method
+            except (TypeError, ValueError):
+                continue
+    return None, None, None
+
+
+def _calibration_version(calibration: Calibration) -> str:
+    raw = calibration.raw or {}
+    return str(raw.get("version") or raw.get("schema") or calibration.truth_source or "unversioned")
+
+
+def _diagnostic_halfwidth(row: dict, calibration: Calibration,
+                          bucket: str) -> tuple[float | None, str | None]:
+    lo, hi, method = _diagnostic_interval(row)
+    if method is None:
+        return None, None
+    try:
+        value = calibration.calibrated_halfwidth(lo, hi, bucket=bucket)
+    except Exception:  # noqa: BLE001 - diagnostic absence must not become a delivery interval
+        return None, method
+    return (float(value) if math.isfinite(float(value)) else None), method
+
+
+def _effective_exposure_bucket(row: dict, submitted_ncount: int) -> tuple[str, float, str]:
+    """Deterministic calibration/steering exposure key with a submitted-count fallback."""
+    value = row.get("effective_exposure")
+    if value is None:
+        fallback = float(submitted_ncount)
+        return str(int(round(fallback))), fallback, "submitted_ncount"
+    try:
+        exposure = float(value)
+    except (TypeError, ValueError):
+        return "invalid", 0.0, "invalid_effective_exposure"
+    if math.isfinite(exposure) and exposure > 0.0:
+        return str(int(round(exposure))), exposure, "effective_exposure"
+    return "invalid", exposure, "invalid_effective_exposure"
+
+
+def _calibration_bucket(calibration: Calibration, exposure_key: str) -> tuple[str, str | None]:
+    """Record the bucket actually used; unmatched exposures use the global calibration."""
+    if exposure_key in calibration.buckets:
+        return exposure_key, exposure_key
+    return "global", None
+
+
 def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibration,
-                          proposal_cost: float = 0.0) -> dict:
+                          proposal_cost: float = 0.0, *, driver_inserted: bool = False,
+                          certification_eligible: bool = True,
+                          acquisition_id: str | None = None) -> dict:
     disp = row.get("disposition")
     verdict = row.get("verdict")
     # `flagged` (model_incomplete) still carries a usable ω₀ — for an ω₀-tolerance objective the flag
@@ -345,8 +657,10 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
     # S3 third state: a usable delivery with no certifiable interval. Classify WHY (γ-at-bound vs
     # fast-tier-only) so the stop taxonomy can name it; only meaningful for a usable, uncertifiable fit.
     uncertifiable_kind = _uncertifiable_kind(row) if (usable and not certifiable) else None
+    exposure_key, effective_exposure, exposure_source = _effective_exposure_bucket(row, ncount)
+    bucket, calibration_arg = _calibration_bucket(calibration, exposure_key)
     if usable and ok:
-        hw = _calibrated_hw(row, calibration, str(ncount))
+        hw = _calibrated_hw(row, calibration, calibration_arg)
     elif usable and kind == "quicklook":
         # Cheap-tier quicklooks carry only a HESSE omega0_err (no bootstrap interval). Good enough to
         # SEED the ω(q) acquisition model (steering only); it never reaches the stop rule, which
@@ -355,7 +669,7 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         if err is not None and w0 is not None and float(err) > 0:
             try:
                 hw = calibration.calibrated_halfwidth(float(w0) - float(err), float(w0) + float(err),
-                                                      bucket=str(ncount))
+                                                      bucket=calibration_arg)
             except Exception:   # noqa: BLE001
                 hw = None
     return {
@@ -365,28 +679,145 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         "certifiable": certifiable, "uncertifiable_kind": uncertifiable_kind,
         "omega0": row.get("omega0"), "scan": row.get("scan"), "detector": row.get("detector"),
         "proposal_cost": float(proposal_cost), "fit_kind": row.get("fit_kind"),
+        "submitted_ncount": int(ncount), "acquisition_id": acquisition_id,
+        "effective_exposure": effective_exposure, "exposure_source": exposure_source,
+        "exposure_bucket": bucket,
         "branch_id": row.get("branch_id"),   # Phase A: only acoustic (or null) rows steer ω(q)
+        "branch_candidates": row.get("branch_candidates"),
+        "selected_candidate_index": row.get("selected_candidate_index"),
+        "track_state": row.get("track_state"), "track_revision": row.get("track_revision"),
+        "modality": row.get("modality"),
+        "gamma_at_bound": bool(row.get("gamma_at_bound", False)),
+        "linewidth_state": row.get("linewidth_state"),
+        "pool_consistent": row.get("pool_consistent"),
+        "consistency_pvalue": row.get("consistency_pvalue"),
+        "consistency_deviance": row.get("consistency_deviance"),
+        "consistency_alpha": row.get("consistency_alpha"),
+        "spectrum_ref": row.get("spectrum_ref"),
+        "predictive_ref": row.get("predictive_ref"),
+        "content_hash": row.get("content_hash"),
+        "master_revision": row.get("master_revision"),
+        "fit_kind": row.get("fit_kind"),
+        # Driver-inserted probes inform branch classification but never occupy a requested grid point
+        # or contribute to its production/certification counters.  Persisted run-event provenance
+        # restores these flags after a crash rather than relying on an hkl-nearness inference.
+        "driver_inserted": bool(driver_inserted),
+        "certification_eligible": bool(certification_eligible),
     }
 
 
 def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
-    """A master (pooled) fit → the convergence observation for its q. The calibrated half-width uses
-    the reliable interval (profile when the bootstrap is Γ-at-bound) at the production count bucket."""
-    ok = _pick_interval(row)[2]
-    hw = _calibrated_hw(row, calibration, str(PRODUCTION_NCOUNT))
+    """A pooled fit → its sole decision-bearing, model-robust master assessment."""
+    exposure_key, effective_exposure, exposure_source = _effective_exposure_bucket(
+        row, PRODUCTION_NCOUNT)
+    bucket, calibration_arg = _calibration_bucket(calibration, exposure_key)
+    model_lo, model_med, model_hi = (row.get("model_interval_lo"),
+                                         row.get("model_interval_med"),
+                                         row.get("model_interval_hi"))
+    model_robust = bool(row.get("model_robust") is True and model_lo is not None
+                        and model_hi is not None)
+    hw = None
+    if model_robust:
+        try:
+            hw = calibration.calibrated_halfwidth(model_lo, model_hi, bucket=calibration_arg)
+        except Exception:  # noqa: BLE001 — an invalid robust interval cannot certify
+            model_robust = False
+    diagnostic_hw, diagnostic_method = _diagnostic_halfwidth(row, calibration, calibration_arg)
+    if model_robust:
+        diagnostic_hw, diagnostic_method = hw, "model_averaged_predictive"
     disp = row.get("disposition")
     return {
-        "hkl": _row_hkl(row), "omega0": row.get("omega0"), "halfwidth": hw,
-        # S3: `reliable` (== ok) kept for back-compat; `certifiable` is the convergence gate — a
-        # γ-at-bound master (interval_reliable=False) never seats, even via a profile fallback.
-        "reliable": bool(ok), "certifiable": _is_certifiable(row, ok),
+        "hkl": _row_hkl(row),
+        "omega0": (model_med if model_robust and model_med is not None else row.get("omega0")),
+        "halfwidth": hw,
+        "reliable": model_robust, "certifiable": model_robust,
+        "model_robust": model_robust, "model_entropy": row.get("model_entropy"),
+        "model_interval": ([model_lo, model_med, model_hi] if model_robust else None),
         "usable": (disp in _USABLE and row.get("omega0") is not None),
         "disposition": disp, "n_members": row.get("n_members"),
+        "effective_exposure": effective_exposure, "exposure_source": exposure_source,
+        "exposure_bucket": bucket,
+        "diagnostic_halfwidth": diagnostic_hw, "interval_method": diagnostic_method,
+        "calibration_version": _calibration_version(calibration),
+        "branch_id": row.get("branch_id"), "branch_posterior": row.get("branch_posterior"),
+        "assignment_entropy": row.get("assignment_entropy"),
+        "target_branch": row.get("target_branch"),
+        "candidate_id": row.get("candidate_id"), "candidate_state": row.get("candidate_state"),
+        "branch_candidates": row.get("branch_candidates"),
+        "selected_candidate_index": row.get("selected_candidate_index"),
+        "track_state": row.get("track_state"), "track_revision": row.get("track_revision"),
+        "modality": row.get("modality"),
+        "gamma_at_bound": bool(row.get("gamma_at_bound", False)),
+        "linewidth_state": row.get("linewidth_state"),
+        "pool_consistent": row.get("pool_consistent"),
+        "consistency_statistic": row.get("consistency_statistic"),
+        "consistency_pvalue": row.get("consistency_pvalue"),
+        "consistency_alpha": row.get("consistency_alpha"),
+        "spectrum_ref": row.get("spectrum_ref"),
+        "predictive_ref": row.get("predictive_ref"),
+        "content_hash": row.get("content_hash"),
+        "master_revision": row.get("master_revision"),
+        "fit_kind": row.get("fit_kind"),
         # Chain of custody: the member scan labels behind this pooled value (readers coerce the CSV
         # cell to a list). members_field_present distinguishes "old results.csv lacked the column"
         # (guard skipped) from "column present but empty" (guard fires).
         "members": row.get("members"), "members_field_present": ("members" in row),
     }
+
+
+def _candidate_evidence_state(observations: list[dict], update: dict) -> tuple[str, dict]:
+    """Apply the two-acquisition + neighboring-q Bayesian rejection rule."""
+    candidate_id = update.get("candidate_id")
+    evidence = [item for item in observations
+                if item.get("kind") == "pooled_master_update"
+                and item.get("candidate_id") == candidate_id]
+    evidence.append(update)
+    acquisitions = {item.get("acquisition_id") for item in evidence
+                    if item.get("acquisition_id") is not None}
+    positions = {tuple(round(float(value), 8) for value in item.get("hkl", ()))
+                 for item in evidence if item.get("hkl") is not None}
+    posterior = update.get("branch_posterior")
+    target_branch = update.get("target_branch")
+    state = str(update.get("candidate_state") or "provisional")
+    p_target = competitor = None
+    if isinstance(posterior, dict) and target_branch:
+        p_target = float(posterior.get(target_branch, 0.0))
+        competitor = max(float(posterior.get("acoustic", 0.0)),
+                         float(posterior.get("new", posterior.get("unmodeled", 0.0))))
+        if (state == "provisional" and p_target <= 0.05 and competitor >= 0.6
+                and len(acquisitions) >= 2 and len(positions) >= 2):
+            state = "rejected"
+    diagnostics = {"n_logical_acquisitions": len(acquisitions),
+                   "n_q_positions": len(positions), "p_target": p_target,
+                   "p_competitor": competitor}
+    return state, diagnostics
+
+
+def _record_pooled_master_update(workspace, calibration: Calibration, proposal, *,
+                                 target_branch: str, log_path,
+                                 observations: list[dict]) -> dict | None:
+    """Persist the current pooled master for the submitted q as chronological replay evidence."""
+    matching = [row for row in _read_master_rows(workspace, calibration)
+                if _hkl_close(row.get("hkl"), (proposal.h, proposal.k, proposal.l))
+                and row.get("branch_id") == target_branch]
+    if not matching:
+        return None
+    master = max(matching, key=lambda row: int(row.get("n_members") or 0))
+    payload = {**master, "kind": "pooled_master_update",
+               "acquisition_id": proposal.acquisition_id,
+               "acquisition_target_energy": float(proposal.e_pred)}
+    payload["candidate_state"], payload["candidate_evidence"] = _candidate_evidence_state(
+        observations, payload)
+    observations.append(payload)
+    log_event(log_path, "pooled_master_update", payload)
+    if payload["candidate_state"] == "rejected":
+        log_event(log_path, "candidate_update", {
+            "candidate_id": payload.get("candidate_id"), "state": "rejected",
+            "target_branch": payload.get("target_branch"), "hkl": payload.get("hkl"),
+            "branch_posterior": payload.get("branch_posterior"),
+            "assignment_entropy": payload.get("assignment_entropy"),
+            "evidence": payload.get("candidate_evidence")})
+    return payload
 
 
 def _read_master_rows(workspace, calibration: Calibration) -> list[dict]:
@@ -399,7 +830,22 @@ def _read_master_rows(workspace, calibration: Calibration) -> list[dict]:
     out = []
     for r in rows:
         if r.get("pooled") and _row_hkl(r) is not None:
-            out.append(_master_obs_from_row(r, calibration))
+            master = _master_obs_from_row(r, calibration)
+            ref = r.get("predictive_ref")
+            if ref:
+                candidate = (Path(workspace) / str(ref)).resolve()
+                root = (Path(workspace) / "data" / "master_predictive").resolve()
+                try:
+                    candidate.relative_to(root)
+                    predictive = json.loads(candidate.read_text(encoding="utf-8"))
+                    if predictive.get("schema") == "isar.master_predictive/1":
+                        master["predictive"] = predictive
+                        master["expected_next_information"] = predictive.get("diagnostics")
+                except (ValueError, OSError, json.JSONDecodeError) as error:
+                    log_event(Path(workspace) / "report" / "session_log.jsonl", "exception", {
+                        "action": "predictive_artifact_unavailable", "reference": str(ref),
+                        "error": str(error)})
+            out.append(master)
     return out
 
 
@@ -411,6 +857,69 @@ def _grid_state(objective, observations: list[dict], workspace, calibration: Cal
     master_rows = _read_master_rows(workspace, calibration)
     grid = summarize_grid(objective, observations, master_rows)
     return master_rows, grid
+
+
+def _predictive_escalation_candidate(grid, log_path):
+    """First usable unresolved master that has no simulation-grade predictive ensemble.
+
+    Each published revision is escalated at most once, including across resume.  A failed full-tier
+    attempt therefore remains visible but cannot trap the campaign in analysis-only retry loops.
+    """
+    attempted = {
+        str((record.get("payload") or {}).get("revision_key"))
+        for record in read_log(log_path)
+        if record.get("kind") == "escalate_fit"
+        and (record.get("payload") or {}).get("reason") == "master_predictive_basis_missing"
+        and (record.get("payload") or {}).get("phase") == "outcome"
+    }
+    for item in grid:
+        master = item.master or {}
+        if item.converged or not master.get("usable") or master.get("predictive"):
+            continue
+        revision_key = ":".join(str(value or "unknown") for value in (
+            master.get("content_hash") or master.get("production_batch_fingerprint"),
+            master.get("master_revision") or master.get("track_revision")))
+        if revision_key not in attempted:
+            return item, revision_key
+    return None
+
+
+def _record_eligible_crossings(grid, observations: list[dict], log_path=None) -> int:
+    """Record each initial/re-crossing chronologically; unchanged pools never duplicate."""
+    def eligible(update, tolerance) -> bool:
+        halfwidth = update.get("halfwidth")
+        certifiable = update.get("certifiable", update.get("reliable", False))
+        try:
+            return bool(update.get("usable") and certifiable and halfwidth is not None
+                        and FIRST_CROSSING_MARGIN * float(halfwidth) <= float(tolerance))
+        except (TypeError, ValueError):
+            return False
+
+    added = 0
+    for g in grid:
+        if not g.requires_crossing_guard:
+            continue
+        master = g.master or {}
+        fingerprint = master.get("production_batch_fingerprint")
+        halfwidth = g._master_hw
+        if (not fingerprint or halfwidth is None
+                or FIRST_CROSSING_MARGIN * halfwidth > g.tolerance):
+            continue
+        previous = g.master_updates[-2] if len(g.master_updates) >= 2 else None
+        if previous is not None and eligible(previous, g.tolerance):
+            continue
+        if previous is None and g.crossing_fingerprints \
+                and g.crossing_fingerprints[-1] == fingerprint:
+            continue
+        marker = {"hkl": g.hkl, "kind": "certification_crossing",
+                  "production_batch_fingerprint": fingerprint,
+                  "calibrated_halfwidth": halfwidth,
+                  "n_members": master.get("n_members")}
+        observations.append(marker)
+        if log_path is not None:
+            log_event(log_path, "certification_crossing", marker)
+        added += 1
+    return added
 
 
 def _hkl_close(a, b, tol: float = 1e-4) -> bool:
@@ -486,10 +995,208 @@ def _recertified_observations(workspace, calibration: Calibration, scan_kind: di
     for r in rows:
         if r.get("pooled") or _row_hkl(r) is None:
             continue
-        kind, ncount = scan_kind.get((r.get("scan"), r.get("detector")),
-                                     ("production", PRODUCTION_NCOUNT))
-        out.append(_observation_from_row(r, kind, ncount, calibration))
+        submitted = scan_kind.get((r.get("scan"), r.get("detector")),
+                                  ("production", PRODUCTION_NCOUNT, None))
+        kind, ncount = submitted[:2]
+        acquisition_id = submitted[2] if len(submitted) > 2 else None
+        out.append(_observation_from_row(
+            r, kind, ncount, calibration, acquisition_id=acquisition_id))
     return out
+
+
+def _proposal_from_submission(payload: dict) -> ScanProposal:
+    """Rebuild the analysis-facing proposal fields from a durable physical submission."""
+    hkl = payload.get("hkl") or (0.0, 0.0, 0.0)
+    meta = {
+        "driver_inserted": bool(payload.get("driver_inserted", False)),
+        "certification_eligible": bool(payload.get("certification_eligible", True)),
+    }
+    if payload.get("insertion_purpose") is not None:
+        meta["insertion_purpose"] = payload.get("insertion_purpose")
+    return ScanProposal(
+        h=float(hkl[0]), k=float(hkl[1]), l=float(hkl[2]),
+        e_lo=0.0, e_hi=0.0, e_step=1.0,
+        ncount=int(payload.get("submitted_ncount") or payload.get("ncount")
+                   or PRODUCTION_NCOUNT),
+        kind=str(payload.get("kind") or "production"),
+        reason="recovered physical submission",
+        e_pred=float(payload.get("acquisition_target_energy") or 0.0),
+        n_points=int(payload.get("n_points") or payload.get("requested_points") or 0),
+        acquisition_id=(str(payload["acquisition_id"])
+                        if payload.get("acquisition_id") is not None else None),
+        meta=meta,
+    )
+
+
+def _resume_detailed_events(workspace, events: list[dict], calibration: Calibration) -> dict:
+    """Replay additive physical-submission/master-update events in chronological order."""
+    def hkl_key(hkl) -> tuple:
+        return tuple(round(float(value), 8) for value in hkl)
+
+    physical_job_ids = {
+        str((event.get("payload") or {}).get("job_id"))
+        for event in events if event.get("kind") == "physical_submission"
+        and (event.get("payload") or {}).get("job_id") is not None
+    }
+    submissions = []
+    by_job: dict[str, dict] = {}
+    for order, event in enumerate(events):
+        kind = event.get("kind")
+        payload = dict(event.get("payload") or {})
+        is_detailed = kind == "physical_submission"
+        is_legacy_prefix = (kind == "run" and
+                            (payload.get("job_id") is None
+                             or str(payload.get("job_id")) not in physical_job_ids))
+        if not (is_detailed or is_legacy_prefix):
+            continue
+        record = {"order": order, "payload": payload, "detailed": is_detailed,
+                  "cost": float(payload.get("cost") or 0.0), "seconds_delta": 0.0,
+                  "reconciled": False, "has_result_rows": False}
+        submissions.append(record)
+        if payload.get("job_id") is not None:
+            by_job[str(payload["job_id"])] = record
+    for event in events:
+        payload = event.get("payload") or {}
+        if (event.get("kind") != "exception"
+                or payload.get("action") != "feasibility_reconciled"):
+            continue
+        record = by_job.get(str(payload.get("job_id")))
+        if record is not None:
+            record["cost"] += float(payload.get("neutron_delta") or 0.0)
+            record["seconds_delta"] += float(payload.get("seconds_delta") or 0.0)
+            record["reconciled"] = True
+
+    analyzed_by_job: dict[str, tuple[int, dict]] = {}
+    terminal_by_job: dict[str, tuple[int, dict]] = {}
+    for order, event in enumerate(events):
+        payload = dict(event.get("payload") or {})
+        job_id = payload.get("job_id")
+        if job_id is None:
+            continue
+        if event.get("kind") == "analyze":
+            analyzed_by_job[str(job_id)] = (order, payload)
+        elif (event.get("kind") == "exception"
+              and payload.get("action") == "scan_not_done"):
+            terminal_by_job[str(job_id)] = (order, payload)
+
+    neutrons = sum(record["cost"] for record in submissions)
+    seconds = 0.0
+    submissions_by_hkl: dict[tuple, list[dict]] = {}
+    for record in submissions:
+        payload = record["payload"]
+        eta = payload.get("eta")
+        if isinstance(eta, dict) and eta.get("estimated_seconds") is not None:
+            seconds += float(eta["estimated_seconds"])
+        seconds += record["seconds_delta"]
+        if payload.get("hkl") is not None:
+            submissions_by_hkl.setdefault(hkl_key(payload["hkl"]), []).append(record)
+
+    try:
+        rows = read_results_csv(workspace)
+    except FileNotFoundError:
+        rows = []
+    result_rows = [row for row in rows if not row.get("pooled") and _row_hkl(row) is not None]
+    scan_groups: dict[tuple, list[dict]] = {}
+    scan_group_order: list[tuple] = []
+    for row in result_rows:
+        key = (hkl_key(_row_hkl(row)), str(row.get("scan")))
+        if key not in scan_groups:
+            scan_groups[key] = []
+            scan_group_order.append(key)
+        scan_groups[key].append(row)
+    groups_by_hkl: dict[tuple, list[tuple]] = {}
+    for key in scan_group_order:
+        groups_by_hkl.setdefault(key[0], []).append(key)
+
+    ordered_observations: list[tuple[float, int, dict]] = []
+    consumed: set = set()
+    scan_kind: dict = {}
+    sequence = 0
+    for key, group_keys in groups_by_hkl.items():
+        ledger = submissions_by_hkl.get(key, [])
+        explicitly_analyzed = [
+            record for record in ledger
+            if ((analysis := analyzed_by_job.get(str(record["payload"].get("job_id"))))
+                is not None and int(analysis[1].get("n_rows") or 0) > 0)]
+        unexplained = [
+            record for record in ledger
+            if str(record["payload"].get("job_id")) not in analyzed_by_job
+            and str(record["payload"].get("job_id")) not in terminal_by_job]
+        remaining = max(len(group_keys) - len(explicitly_analyzed), 0)
+        row_ledger = sorted(
+            [*explicitly_analyzed, *unexplained[:remaining]], key=lambda record: record["order"])
+        for group_index, group_key in enumerate(group_keys):
+            record = row_ledger[group_index] if group_index < len(row_ledger) else None
+            if record is not None:
+                record["has_result_rows"] = True
+            payload = record["payload"] if record is not None else {}
+            kind = payload.get("kind") or "production"
+            ncount = int(payload.get("submitted_ncount") or payload.get("ncount")
+                         or PRODUCTION_NCOUNT)
+            acquisition_id = payload.get("acquisition_id")
+            provenance = {
+                "driver_inserted": bool(payload.get("driver_inserted", False)),
+                "certification_eligible": bool(payload.get("certification_eligible", True)),
+            }
+            cost = record["cost"] if record is not None else 0.0
+            order = float(record["order"]) if record is not None else -1.0 + sequence * 1e-6
+            for detector_index, row in enumerate(scan_groups[group_key]):
+                observation = _observation_from_row(
+                    row, kind, ncount, calibration,
+                    proposal_cost=cost if detector_index == 0 else 0.0,
+                    acquisition_id=acquisition_id, **provenance)
+                ordered_observations.append((order, sequence, observation))
+                sequence += 1
+                scan_detector = (row.get("scan"), row.get("detector"))
+                consumed.add(scan_detector)
+                scan_kind[scan_detector] = (kind, ncount, acquisition_id)
+
+    unmatched_submissions: list[dict] = []
+    for record in submissions:
+        if not record["detailed"] or record["has_result_rows"]:
+            continue
+        payload = record["payload"]
+        job_key = str(payload.get("job_id"))
+        analysis = analyzed_by_job.get(job_key)
+        terminal = terminal_by_job.get(job_key)
+        if analysis is not None and int(analysis[1].get("n_rows") or 0) == 0:
+            ordered_observations.append((float(analysis[0]), sequence,
+                                         _declined_observation(
+                                             _proposal_from_submission(payload),
+                                             "analysis_no_result")))
+            sequence += 1
+            continue
+        if terminal is not None:
+            verdict = str(terminal[1].get("state") or "scan_not_done")
+            ordered_observations.append((float(terminal[0]), sequence,
+                                         _declined_observation(
+                                             _proposal_from_submission(payload), verdict)))
+            sequence += 1
+            continue
+        unmatched_submissions.append({
+            "order": record["order"], "payload": dict(payload),
+            "reconciled": bool(record["reconciled"]),
+        })
+
+    for order, event in enumerate(events):
+        if event.get("kind") == "pooled_master_update":
+            marker = dict(event.get("payload") or {})
+            marker["kind"] = "pooled_master_update"
+            ordered_observations.append((float(order), sequence, marker))
+            sequence += 1
+        elif event.get("kind") == "certification_crossing":
+            marker = dict(event.get("payload") or {})
+            if marker.get("hkl") is not None and marker.get("production_batch_fingerprint"):
+                marker["kind"] = "certification_crossing"
+                ordered_observations.append((float(order), sequence, marker))
+                sequence += 1
+    ordered_observations.sort(key=lambda item: (item[0], item[1]))
+    return {"observations": [item[2] for item in ordered_observations],
+            "consumed": consumed, "scan_kind": scan_kind,
+            "scan_counter": len(submissions), "neutrons": neutrons, "seconds": seconds,
+            "proposal_counter": max(len(submissions),
+                                    sum(1 for event in events if event.get("kind") == "propose")),
+            "unmatched_submissions": unmatched_submissions}
 
 
 def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
@@ -510,11 +1217,21 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
     row when the q has one (``summarize_grid`` reads cost>0 rows to set ``last_prod_cost``), else the
     first row (quicklook-only q). A cold workspace (no log / no results.csv) returns the fresh-start
     tuple."""
-    runs = [e.get("payload", {}) for e in read_log(log_path) if e.get("kind") == "run"]
+    events = read_log(log_path)
+    if any(event.get("kind") == "physical_submission" for event in events):
+        return _resume_detailed_events(workspace, events, calibration)
+
+    def resume_hkl_key(hkl) -> tuple:
+        # Preserve enough precision to keep nearby diagnostic probes distinct while absorbing only
+        # serialization-level float noise.  Four decimals merged legitimate sub-1e-4 scan points.
+        return tuple(round(float(x), 8) for x in hkl)
+
+    runs = [e.get("payload", {}) for e in events if e.get("kind") == "run"]
     scan_counter = len(runs)                        # one run event per submitted scan
     neutrons = seconds = 0.0
     cost_by_hkl: dict = {}
     kinds_by_hkl: dict = {}                         # per-q kind ledger, in submission order
+    provenance_by_hkl: dict = {}                    # aligned driver-insertion/certification ledger
     ncount_by_hkl: dict = {}
     for r in runs:
         cost = float(r.get("cost")) if r.get("cost") is not None else 0.0
@@ -525,10 +1242,27 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
         hkl = r.get("hkl")
         if hkl is None:
             continue
-        key = tuple(round(float(x), 4) for x in hkl)
+        key = resume_hkl_key(hkl)
         cost_by_hkl[key] = cost_by_hkl.get(key, 0.0) + cost
         kinds_by_hkl.setdefault(key, []).append(r.get("kind") or "production")
+        provenance_by_hkl.setdefault(key, []).append({
+            "driver_inserted": bool(r.get("driver_inserted", False)),
+            "certification_eligible": bool(r.get("certification_eligible", True)),
+        })
         ncount_by_hkl[key] = r.get("ncount") or ncount_by_hkl.get(key)
+
+    reconciliations = [e.get("payload", {}) for e in events
+                       if e.get("kind") == "exception"
+                       and (e.get("payload") or {}).get("action") == "feasibility_reconciled"]
+    for reconciliation in reconciliations:
+        neutron_delta = float(reconciliation.get("neutron_delta") or 0.0)
+        seconds_delta = float(reconciliation.get("seconds_delta") or 0.0)
+        neutrons += neutron_delta
+        seconds += seconds_delta
+        hkl = reconciliation.get("hkl")
+        if hkl is not None:
+            key = resume_hkl_key(hkl)
+            cost_by_hkl[key] = cost_by_hkl.get(key, 0.0) + neutron_delta
 
     try:
         rows = read_results_csv(workspace)
@@ -542,22 +1276,27 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
     # old quicklook. A ledger shorter than the rows defaults the leading rows to "production", as before.
     count_by_hkl: dict = {}
     for row in result_rows:
-        key = tuple(round(float(x), 4) for x in _row_hkl(row))
+        key = resume_hkl_key(_row_hkl(row))
         count_by_hkl[key] = count_by_hkl.get(key, 0) + 1
     row_kinds: list = []
+    row_provenance: list[dict] = []
     cursor: dict = {}
     for row in result_rows:
-        key = tuple(round(float(x), 4) for x in _row_hkl(row))
+        key = resume_hkl_key(_row_hkl(row))
         ledger = kinds_by_hkl.get(key, [])
         i = cursor.get(key, 0)
         li = (len(ledger) - count_by_hkl[key]) + i     # tail-align rows against the per-q ledger
         row_kinds.append(ledger[li] if 0 <= li < len(ledger) else "production")
+        provenance = provenance_by_hkl.get(key, [])
+        row_provenance.append(provenance[li] if 0 <= li < len(provenance) else {
+            "driver_inserted": False, "certification_eligible": True,
+        })
         cursor[key] = i + 1
     # Choose the row each q's summed cost lands on: the first PRODUCTION row if the q has one, else its
     # first row (stamping the full sum onto a quicklook row would mis-set last_prod_cost).
     cost_target: dict = {}
-    for idx, (row, kind) in enumerate(zip(result_rows, row_kinds)):
-        key = tuple(round(float(x), 4) for x in _row_hkl(row))
+    for idx, (row, kind, provenance) in enumerate(zip(result_rows, row_kinds, row_provenance)):
+        key = resume_hkl_key(_row_hkl(row))
         if key not in cost_target:
             cost_target[key] = idx
         elif kind in PRODUCTION_KINDS and row_kinds[cost_target[key]] not in PRODUCTION_KINDS:
@@ -566,17 +1305,28 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
     observations: list[dict] = []
     consumed: set = set()
     scan_kind: dict = {}
-    for idx, (row, kind) in enumerate(zip(result_rows, row_kinds)):
-        key = tuple(round(float(x), 4) for x in _row_hkl(row))
+    for idx, (row, kind, provenance) in enumerate(zip(result_rows, row_kinds, row_provenance)):
+        key = resume_hkl_key(_row_hkl(row))
         ncount = int(ncount_by_hkl.get(key) or PRODUCTION_NCOUNT)
         pc = cost_by_hkl.get(key, 0.0) if cost_target.get(key) == idx else 0.0
-        observations.append(_observation_from_row(row, kind, ncount, calibration, proposal_cost=pc))
+        observations.append(_observation_from_row(
+            row, kind, ncount, calibration, proposal_cost=pc, **provenance))
         sd = (row.get("scan"), row.get("detector"))
         consumed.add(sd)
         scan_kind[sd] = (kind, ncount)
 
+    for event in events:
+        if event.get("kind") == "certification_crossing":
+            marker = dict(event.get("payload") or {})
+            if marker.get("hkl") is not None and marker.get("production_batch_fingerprint"):
+                marker["kind"] = "certification_crossing"
+                observations.append(marker)
+
     return {"observations": observations, "consumed": consumed, "scan_kind": scan_kind,
-            "scan_counter": scan_counter, "neutrons": neutrons, "seconds": seconds}
+            "scan_counter": scan_counter, "neutrons": neutrons, "seconds": seconds,
+            "proposal_counter": max(scan_counter,
+                                    sum(1 for event in events if event.get("kind") == "propose")),
+            "unmatched_submissions": []}
 
 
 def _read_run_timings(workspace) -> dict | None:
@@ -618,6 +1368,48 @@ def _rows_missed(rows: list[dict]) -> bool:
         return True
     return not any(r.get("disposition") in _USABLE or r.get("disposition") == "branch_continuation"
                    for r in rows)
+
+
+def _pooled_target_delivered(observations: list[dict], proposal, target_branch: str) -> bool:
+    """Whether analysis found the requested mode even if an individual row favored the rival.
+
+    The pooled master is the identity authority.  A two-mode fit with a usable selected optic must
+    never be called a missed window merely because the individual fit's dominant scalar feature was
+    the much stronger acoustic peak.
+    """
+    for update in reversed(observations):
+        if update.get("kind") != "pooled_master_update":
+            continue
+        if update.get("acquisition_id") != proposal.acquisition_id:
+            continue
+        if not _hkl_close(update.get("hkl"), (proposal.h, proposal.k, proposal.l)):
+            continue
+        return bool(update.get("usable") and update.get("branch_id") == target_branch
+                    and update.get("selected_candidate_index") is not None
+                    and update.get("omega0") is not None)
+    return False
+
+
+def _pooled_recenter_inputs(workspace, hkl) -> tuple[list, list] | None:
+    """Combined counts/energy for the latest master at ``hkl``, with a validated local reference."""
+    try:
+        rows = [row for row in read_results_csv(workspace)
+                if row.get("pooled") and _hkl_close(_row_hkl(row), hkl)
+                and row.get("spectrum_ref")]
+        if not rows:
+            return None
+        row = max(rows, key=lambda item: int(item.get("n_members") or 0))
+        candidate = (Path(workspace) / str(row["spectrum_ref"])).resolve()
+        root = (Path(workspace) / "data" / "pooled").resolve()
+        candidate.relative_to(root)
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+        if payload.get("schema") != "isar.pooled_spectrum/1":
+            raise ValueError("unsupported pooled spectrum schema")
+        return list(payload.get("counts") or []), list(payload.get("energy") or [])
+    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError) as error:
+        log_event(Path(workspace) / "report" / "session_log.jsonl", "exception", {
+            "action": "pooled_recenter_unavailable", "hkl": list(hkl), "error": str(error)})
+        return None
 
 
 @dataclass(frozen=True)
@@ -693,6 +1485,8 @@ class CampaignConfig:
     # Instrument point-count ceiling, read once per campaign (GET /state|/schema), else DEFAULT_MAX_POINTS.
     max_points: int = DEFAULT_MAX_POINTS
     max_points_source: str = "default"
+    # Complete live limit envelope; additive and independent of the frozen objective policy.
+    instrument_limits: dict | None = None
     sample: str = "Al_phonon_DFT"
     bayes_errors: bool = False
     # Cooperative operator stop (GUI subprocess control). When set, each iteration's top checks for
@@ -753,7 +1547,9 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
     calibration = _resolve_calibration(config.get("calibration"))
     # Read the instrument's point-count ceiling once per campaign (falls back silently to
     # DEFAULT_MAX_POINTS if the endpoint is unreachable / carries no limit).
-    max_points, max_points_source = _preflight_max_points(client)
+    instrument_limits = _preflight_instrument_limits(client)
+    max_points = int(instrument_limits["max_points"])
+    max_points_source = str(instrument_limits["sources"]["max_points"])
     return CampaignConfig(
         workspace=workspace,
         data_dir=Path(config.get("data_dir", workspace / "data")),
@@ -773,6 +1569,7 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
         run_nonce=_run_nonce(workspace),
         max_points=max_points,
         max_points_source=max_points_source,
+        instrument_limits=instrument_limits,
         sample=str(config.get("sample", "Al_phonon_DFT")),
         bayes_errors=bool(config.get("bayes_errors", False)),
         control_token=(str(config["control_token"]) if config.get("control_token") else None),
@@ -784,9 +1581,14 @@ def _declined_observation(proposal, verdict: str) -> dict:
     """The observation appended when a proposed scan yields no fit — validation rejected it, or the
     scan job never reached ``done``. Identical shape at both sites; only ``verdict`` differs
     (``"validation_rejected"`` vs the terminal job state)."""
+    meta = proposal.meta or {}
     return {"hkl": (proposal.h, proposal.k, proposal.l), "kind": proposal.kind,
             "calibrated_halfwidth": None, "resolved": False, "disposition": "declined",
-            "verdict": verdict, "omega0": None}
+            "verdict": verdict, "omega0": None,
+            "submitted_ncount": int(proposal.ncount),
+            "acquisition_id": proposal.acquisition_id,
+            "driver_inserted": bool(meta.get("driver_inserted", False)),
+            "certification_eligible": bool(meta.get("certification_eligible", True))}
 
 
 def _persist_campaign_target(workspace: Path, objective) -> None:
@@ -800,10 +1602,269 @@ def _persist_campaign_target(workspace: Path, objective) -> None:
     card = Card.load(policy_path, state_path)
     target = {"branch": getattr(objective, "target_branch", "acoustic"),
               "label": getattr(objective, "target_label", "acoustic"),
-              "energy_search_meV": list(getattr(objective, "energy_search_meV", (-2.0, 7.0)))}
-    if card.state.campaign_target != target:
+              "selector": getattr(objective, "target_selector", "lowest_energy"),
+              "target_energy_meV": getattr(objective, "target_energy_meV", None),
+              "energy_search_meV": list(getattr(objective, "energy_search_meV", (-2.0, 7.0))),
+              # The session identity tracker needs the frozen scientific path order; sorting fitted
+              # q after the fact would silently turn a looped path into a different experiment.
+              "path": [list(q) for q in getattr(objective, "path", [])]}
+    snapshot = ({"hypotheses": list(getattr(objective, "hypotheses", []) or []),
+                 "target_hypothesis": getattr(objective, "target_hypothesis", None),
+                 "source": getattr(objective, "hypothesis_source", None),
+                 "fingerprint": getattr(objective, "hypothesis_fingerprint", None),
+                 "steering": dict(getattr(objective, "steering", {}) or {})}
+                if getattr(objective, "hypotheses", None) else {})
+    if card.state.campaign_target != target or card.state.hypothesis_snapshot != snapshot:
         card.state.campaign_target = target
+        card.state.hypothesis_snapshot = snapshot
         card.save_state(state_path)
+
+
+def _persist_acquisition_provenance(workspace: Path, payload: dict) -> None:
+    """Append the TAVI job→logical acquisition map before analysis consumes the raw scan."""
+    policy_path = workspace / "card.policy.toml"
+    state_path = workspace / "card.state.json"
+    if not policy_path.exists():
+        return
+    job_id = payload.get("job_id")
+    acquisition_id = payload.get("acquisition_id")
+    if job_id is None or acquisition_id is None:
+        return
+    card = Card.load(policy_path, state_path)
+    existing = getattr(card.state, "acquisition_provenance", None) or []
+    if any(str(item.get("job_id")) == str(job_id) for item in existing):
+        return
+    card.state.acquisition_provenance.append({
+        "job_id": str(job_id),
+        "acquisition_id": str(acquisition_id),
+        "acquisition_target_energy": float(payload["acquisition_target_energy"]),
+        "submitted_ncount": int(payload["submitted_ncount"]),
+        "scan_kind": str(payload["kind"]),
+    })
+    card.save_state(state_path)
+
+
+def _read_branch_tracks(workspace: Path) -> dict:
+    policy_path = workspace / "card.policy.toml"
+    state_path = workspace / "card.state.json"
+    if not policy_path.exists():
+        return {}
+    try:
+        return dict(Card.load(policy_path, state_path).state.branch_tracks or {})
+    except (OSError, ValueError, TypeError) as exc:
+        logging.getLogger(__name__).warning("could not read branch tracks from %s: %s", state_path, exc)
+        return {}
+
+
+def _workspace_zone_period(workspace: Path) -> float | None:
+    """Read the scientist-owned reduced-zone period without mutating either card file."""
+    policy_path = workspace / "card.policy.toml"
+    if not policy_path.exists():
+        return None
+    try:
+        card = Card.load(policy_path, workspace / "card.state.json")
+        value = (card.policy.dispersion or {}).get("zone_period")
+        return float(value) if value is not None else None
+    except (OSError, ValueError, TypeError) as exc:
+        logging.getLogger(__name__).warning("could not read zone period from %s: %s", policy_path, exc)
+        return None
+
+
+def _blocked_frontier_decision(objective, grid, decision: StopDecision) -> StopDecision:
+    """Tracked ambiguity is diagnostic; it no longer becomes a terminal stuck decision."""
+    return decision
+
+
+def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
+                                   submission_payload: dict, budget_state: dict,
+                                   observations: list[dict], consumed: set, scan_kind: dict,
+                                   it: int | None, attempt: int = 0,
+                                   data: dict | None = None,
+                                   reconciliation_applied: bool = False) -> tuple[list[dict], dict]:
+    """Turn one completed physical job into the authoritative analyzed evidence.
+
+    Live scans and crash recovery both enter here.  The function never submits or waits for a job;
+    it owns the common fetch/save, executed-cost reconciliation, workspace/provenance update,
+    analysis, folding, and pooled-master ledger tail.
+    """
+    job_id = str(submission_payload["job_id"])
+    planned_points = int(submission_payload.get("n_points")
+                         or submission_payload.get("requested_points") or proposal.n_points or 0)
+    eta_doc = submission_payload.get("eta")
+    eta = eta_doc.get("estimated_seconds") if isinstance(eta_doc, dict) else None
+    with timed(cfg.log_path, "fetch_save", iteration=it):
+        document = data if data is not None else cfg.client.get_scan_data(job_id)
+        scan_path = save_scan_json(document, cfg.data_dir)
+    executed_points = _executed_point_count(document, planned_points)
+    if executed_points != planned_points and not reconciliation_applied:
+        neutron_delta, seconds_delta = _reconcile_budget_points(
+            budget_state, proposal.ncount, planned_points, executed_points, eta=eta)
+        log_event(cfg.log_path, "exception", {
+            "action": "feasibility_reconciled", "job_id": job_id,
+            "hkl": [proposal.h, proposal.k, proposal.l],
+            "planned_points": planned_points, "executed_points": executed_points,
+            "ncount": int(proposal.ncount),
+            "executed_cost": float(executed_points) * float(proposal.ncount),
+            "neutron_delta": neutron_delta, "seconds_delta": seconds_delta, "iter": it,
+        })
+
+    if not (cfg.workspace / "card.policy.toml").exists():
+        with timed(cfg.log_path, "isar_init", iteration=it):
+            cfg.init_isar(cfg.workspace, scan_path)
+        log_event(cfg.log_path, "decide", {
+            "event": "workspace_init", "action": "workspace_init",
+            "probe": str(scan_path), "iter": it})
+    _persist_campaign_target(cfg.workspace, objective)
+    _persist_acquisition_provenance(cfg.workspace, submission_payload)
+    tracks_before = _read_branch_tracks(cfg.workspace)
+
+    tier = _errors_tier_for(proposal, cfg.workspace, cfg)
+    promoted = proposal.kind in PRODUCTION_KINDS and tier == "full"
+    if promoted:
+        log_event(cfg.log_path, "escalate_fit", {
+            "phase": "promote", "iter": it, "attempt": attempt,
+            "hkl": [proposal.h, proposal.k, proposal.l], "from_tier": "fast",
+            "to_tier": "full", "reason": "untrusted_hesse_no_reliable_interval"})
+    stage = "full_fit" if tier in ("full", "bayes") else "fast_fit"
+    with activity(cfg.log_path, stage, q=[proposal.h, proposal.k, proposal.l],
+                  job_id=job_id, fit_tier=tier, iteration=it):
+        with timed(cfg.log_path, "isar_run", iteration=it, errors_tier=tier, attempt=attempt):
+            with analysis_operation(
+                    cfg.log_path, f"reduce:{proposal.acquisition_id}:{tier}:{attempt}",
+                    "pooled_reduction_and_fit",
+                    limit_seconds=objective.analysis_limit_seconds,
+                    allow_overrun_start=True, iteration=it, q=[proposal.h, proposal.k, proposal.l]):
+                run_result = cfg.runner.run(
+                    cfg.workspace, [cfg.data_dir], errors_tier=tier, render=False,
+                    **_analysis_runner_kwargs(cfg, objective, finish_initial_wave=True))
+                _require_complete_analysis(run_result, objective)
+    tracks_after = _read_branch_tracks(cfg.workspace)
+    if tracks_after and tracks_after.get("revision") != tracks_before.get("revision"):
+        log_event(cfg.log_path, "branch_track_update", {
+            "iter": it, "revision": tracks_after.get("revision"),
+            "anchor_index": tracks_after.get("anchor_index"),
+            "frontiers": tracks_after.get("frontiers") or {}})
+        for reassignment in tracks_after.get("reassignments") or []:
+            log_event(cfg.log_path, "branch_reassignment", {
+                "iter": it, "revision": tracks_after.get("revision"), **dict(reassignment)})
+        if (tracks_after.get("frontiers") or {}).get("frontier_blocked"):
+            log_event(cfg.log_path, "frontier_blocked", {
+                "iter": it, "revision": tracks_after.get("revision"),
+                "blocked_indices": (tracks_after.get("frontiers") or {}).get("blocked_indices") or []})
+
+    with timed(cfg.log_path, "fold_rows", iteration=it) as metrics:
+        rows = _new_rows(cfg.workspace, consumed)
+        scan_cost = float(executed_points) * float(proposal.ncount)
+        for index, row in enumerate(rows):
+            observations.append(_observation_from_row(
+                row, proposal.kind, proposal.ncount, cfg.calibration,
+                proposal_cost=scan_cost if index == 0 else 0.0,
+                driver_inserted=bool((proposal.meta or {}).get("driver_inserted", False)),
+                certification_eligible=bool((proposal.meta or {}).get(
+                    "certification_eligible", True)),
+                acquisition_id=proposal.acquisition_id))
+            scan_kind[(row.get("scan"), row.get("detector"))] = (
+                proposal.kind, proposal.ncount, proposal.acquisition_id)
+        metrics["n_rows"] = len(rows)
+
+    timings = _read_run_timings(cfg.workspace)
+    analyze_payload = {"job_id": job_id, "errors_tier": tier, "iter": it,
+                       "n_rows": len(rows),
+                       "dispositions": [row.get("disposition") or row.get("verdict")
+                                        for row in rows]}
+    if timings is not None:
+        analyze_payload["timings"] = timings
+    log_event(cfg.log_path, "analyze", analyze_payload)
+    with activity(cfg.log_path, "pooled_update", q=[proposal.h, proposal.k, proposal.l],
+                  job_id=job_id, iteration=it):
+        _record_pooled_master_update(
+            cfg.workspace, cfg.calibration, proposal, target_branch=objective.target_branch,
+            log_path=cfg.log_path, observations=observations)
+
+    if promoted:
+        outcome = ("superseded" if not rows else
+                   "seated" if any(_row_certifiable(row) for row in rows) else "failed")
+        log_event(cfg.log_path, "escalate_fit", {
+            "phase": "outcome", "iter": it, "job_id": job_id,
+            "hkl": [proposal.h, proposal.k, proposal.l], "to_tier": "full",
+            "outcome": outcome, "n_rows": len(rows),
+            "dispositions": [row.get("disposition") or row.get("verdict") for row in rows]})
+    return rows, document
+
+
+def _recover_unmatched_submissions(*, cfg: CampaignConfig, objective,
+                                   unmatched: list[dict], budget_state: dict,
+                                   observations: list[dict], consumed: set,
+                                   scan_kind: dict) -> str | None:
+    """Recover durable physical submissions without ever issuing another submission.
+
+    Returns a human reason when one job remains non-terminal or unreachable.  The caller must stop as
+    ``pending_recovery`` in that case; completed and terminal-failure jobs are finalized in order.
+    """
+    for item in sorted(unmatched, key=lambda entry: int(entry.get("order", 0))):
+        payload = dict(item.get("payload") or {})
+        job_id = str(payload.get("job_id") or "")
+        proposal = _proposal_from_submission(payload)
+        data = None
+        raw_path = scan_json_path(job_id, cfg.data_dir)
+        if raw_path.exists():
+            try:
+                data = json.loads(raw_path.read_text(encoding="utf-8"))
+                if str(data.get("job_id")) != job_id or "result" not in data:
+                    raise ValueError("saved raw scan does not match the submitted job")
+            except (OSError, ValueError) as error:
+                data = None
+                log_event(cfg.log_path, "exception", {
+                    "action": "recovery_raw_read_failed", "job_id": job_id,
+                    "path": str(raw_path), "error": str(error), "iter": None})
+
+        state = "done" if data is not None else None
+        if state is None:
+            try:
+                snapshot = cfg.client.get_scan(job_id)
+                state = str(snapshot.get("state") or "")
+                if state not in {"done", "failed", "stopped", "cancelled"}:
+                    snapshot = cfg.client.wait_scan(job_id, timeout=cfg.wait_timeout)
+                    state = str(snapshot.get("state") or "")
+            except Exception as error:  # noqa: BLE001 — uncertainty must stop, never resubmit
+                reason = f"job {job_id} recovery is pending: instrument unreachable ({error})"
+                log_event(cfg.log_path, "recovery_pending", {
+                    "job_id": job_id, "state": state or "unknown", "decline": False,
+                    "reason": reason, "acquisition_id": proposal.acquisition_id})
+                return reason
+
+        if state in {"failed", "stopped", "cancelled"}:
+            observations.append(_declined_observation(proposal, state))
+            log_event(cfg.log_path, "exception", {
+                "action": "scan_not_done", "job_id": job_id, "state": state,
+                "error": "reconstructed during recovery", "iter": None})
+            continue
+        if state != "done":
+            reason = f"job {job_id} recovery is pending: instrument state {state or 'unknown'}"
+            log_event(cfg.log_path, "recovery_pending", {
+                "job_id": job_id, "state": state or "unknown", "decline": False,
+                "reason": reason, "acquisition_id": proposal.acquisition_id})
+            return reason
+
+        if data is None:
+            try:
+                data = cfg.client.get_scan_data(job_id)
+            except Exception as error:  # noqa: BLE001 — completed job data remains safely retryable
+                reason = f"job {job_id} recovery is pending: scan data unavailable ({error})"
+                log_event(cfg.log_path, "recovery_pending", {
+                    "job_id": job_id, "state": "done", "decline": False,
+                    "reason": reason, "acquisition_id": proposal.acquisition_id})
+                return reason
+
+        rows, _document = _finalize_completed_submission(
+            cfg=cfg, objective=objective, proposal=proposal,
+            submission_payload=payload, budget_state=budget_state,
+            observations=observations, consumed=consumed, scan_kind=scan_kind,
+            it=None, data=data, reconciliation_applied=bool(item.get("reconciled", False)))
+        log_event(cfg.log_path, "recovery_completed", {
+            "job_id": job_id, "state": "done", "n_rows": len(rows),
+            "acquisition_id": proposal.acquisition_id, "resubmitted": False})
+    return None
 
 
 def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan_counter: int,
@@ -820,149 +1881,145 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
     client, runner = cfg.client, cfg.runner
     log_path, workspace, data_dir = cfg.log_path, cfg.workspace, cfg.data_dir
     # ---- run this proposal, with bounded missed-window re-centering (a LOOK, §1) ----------
-    allow_partial = False
     attempt = 0
     rows: list[dict] = []
-    # Tracks an in-flight full-tier promotion whose outcome has not yet been logged (escalate_fit,
-    # spec §5.1): set when a production q is promoted to the full error tier, cleared the moment its
-    # outcome record is written (at the fold, or as `superseded` if the retry declines first).
-    promoted = False
+    support_adjusted = False
     while True:
-        # Point-count guard (single checkpoint before ANY validate/submit): a missed-window recenter
-        # widens e_lo/e_hi without recomputing the tight e_step, so the emitted `deltaE lo hi step`
-        # command can exceed TAVI's max_points and latch its validator. Coarsen the step to keep the
-        # full window and fit the limit; a no-op on a proposal that already fits.
-        _guard_point_count(proposal, cfg.max_points, cfg.max_points_source, log_path, it)
+        # Single checkpoint before EVERY validate/submit, including support/recenter retries.
+        _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
         with timed(log_path, "validate", iteration=it, attempt=attempt):
-            val = client.validate(_validate_body(proposal, sample=cfg.sample, allow_partial=allow_partial))
+            val = client.validate(_validate_body(proposal, sample=cfg.sample))
+        feasible_points = _feasible_point_count(val, proposal.n_points or 1)
+        target_band = (proposal.meta or {}).get("target_band")
+        min_support = int((getattr(objective, "steering", None) or {}).get(
+            "minimum_target_support_points", 0))
+        target_support = _target_supporting_feasible_points(val, target_band)
         log_event(log_path, "validate", {"would_queue": val.get("would_queue"),
                                           "blockers": val.get("blockers"), "eta": val.get("eta"),
+                                          "requested_points": val.get("requested_points"),
+                                          "feasible_points": feasible_points,
+                                          "target_supporting_feasible_points": target_support,
+                                          "partial": val.get("partial"),
+                                          "feasible_segments": val.get("feasible_segments"),
+                                          "infeasible": val.get("infeasible"),
                                           "iter": it})
+        if (min_support > 0 and target_support is not None and target_support < min_support
+                and val.get("would_queue", False)):
+            mean, sigma = map(float, target_band)
+            desired_step = max((4.0 * sigma) / max(min_support - 1, 1), 1e-6)
+            if not support_adjusted and desired_step < proposal.e_step:
+                old_step = proposal.e_step
+                proposal.e_step = desired_step
+                _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+                support_adjusted = True
+                log_event(log_path, "exception", {
+                    "action": "increase_target_support", "hkl": [proposal.h, proposal.k, proposal.l],
+                    "old_step": old_step, "requested_step": desired_step,
+                    "new_step": proposal.e_step, "finalized_step": proposal.e_step,
+                    "target_supporting_feasible_points": target_support,
+                    "required": min_support, "iter": it})
+                continue
+            log_event(log_path, "exception", {
+                "action": "insufficient_target_support", "hkl": [proposal.h, proposal.k, proposal.l],
+                "target_supporting_feasible_points": target_support,
+                "required": min_support, "iter": it})
+            observations.append(_declined_observation(proposal, "insufficient_target_support"))
+            break
         if not val.get("would_queue", False):
+            if feasible_points <= 0 and int(val.get("requested_points") or proposal.n_points or 0) > 0:
+                log_event(log_path, "exception", {
+                    "action": "geometry_unreachable", "phase": "validation",
+                    "hkl": [proposal.h, proposal.k, proposal.l], "blockers": val.get("blockers"),
+                    "iter": it})
+                observations.append(_declined_observation(proposal, "geometry_unreachable"))
+                break
             v_act = exc.handle_validation_rejection(val.get("blockers") or [])
             log_event(log_path, "exception", {**v_act.to_dict(), "iter": it})
-            if v_act.action == "repair" and not allow_partial:
-                allow_partial = True
-                continue
-            if promoted:   # a promoted retry that now declines before folding — supersede the promotion
-                log_event(log_path, "escalate_fit",
-                          {"phase": "outcome", "iter": it, "job_id": None,
-                           "hkl": [proposal.h, proposal.k, proposal.l], "to_tier": "full",
-                           "outcome": "superseded", "n_rows": 0, "dispositions": []})
-                promoted = False
             observations.append(_declined_observation(proposal, "validation_rejected"))
             break
 
         with timed(log_path, "submit", iteration=it, attempt=attempt) as _m:
             body = _scan_body(proposal, cfg.engine, cfg.base_seed + scan_counter,
-                               sample=cfg.sample, allow_partial=allow_partial)
-            submit = client.submit_scan(
-                body, idempotency_key=f"{objective.name or 'campaign'}-{cfg.run_nonce}-{scan_counter}")
+                               sample=cfg.sample)
+            try:
+                submit = client.submit_scan(
+                    body,
+                    idempotency_key=(
+                        f"{objective.name or 'campaign'}-{cfg.run_nonce}-{scan_counter}"))
+            except TaviError as error:
+                code = _tavi_error_code(error)
+                if error.status == 400 and code == "all_points_infeasible":
+                    log_event(log_path, "exception", {
+                        "action": "geometry_unreachable",
+                        "error": str(error),
+                        "hkl": [proposal.h, proposal.k, proposal.l],
+                        "iter": it,
+                    })
+                    observations.append(
+                        _declined_observation(proposal, "geometry_unreachable"))
+                    break
+                raise
             scan_counter += 1
             job_id = submit.get("job_id")
             _m["job_id"] = job_id
         eta = (submit.get("eta") or {}).get("estimated_seconds")
-        _charge_budget(budget_state, proposal, eta)
+        _charge_budget(budget_state, proposal, eta, n_points=feasible_points)
         # The run event doubles as the durable SPEND LEDGER for crash resume: kind/ncount/n_points/
         # hkl + the charged cost (= n_points×ncount) let a restart recover budget + scan_counter.
-        log_event(log_path, "run", {"job_id": job_id, "state": submit.get("state"),
-                                    "eta": submit.get("eta"), "attempt": attempt,
-                                    "kind": proposal.kind, "ncount": int(proposal.ncount),
-                                    "n_points": int(proposal.n_points or 0),
-                                    "hkl": [proposal.h, proposal.k, proposal.l],
-                                    "cost": float(proposal.n_points or 1) * float(proposal.ncount),
-                                    "iter": it})
+        submission_payload = {
+            "job_id": job_id, "state": submit.get("state"), "eta": submit.get("eta"),
+            "attempt": attempt, "acquisition_id": proposal.acquisition_id,
+            "kind": proposal.kind, "ncount": int(proposal.ncount),
+            "submitted_ncount": int(proposal.ncount),
+            "requested_points": int(proposal.n_points or 0), "n_points": feasible_points,
+            "hkl": [proposal.h, proposal.k, proposal.l],
+            "acquisition_target_energy": float(proposal.e_pred),
+            "driver_inserted": bool((proposal.meta or {}).get("driver_inserted", False)),
+            "certification_eligible": bool((proposal.meta or {}).get(
+                "certification_eligible", True)),
+            "insertion_purpose": (proposal.meta or {}).get("insertion_purpose"),
+            "cost": float(feasible_points) * float(proposal.ncount), "iter": it,
+        }
+        log_event(log_path, "run", submission_payload)
+        log_event(log_path, "physical_submission", submission_payload)
 
-        with timed(log_path, "wait_scan", iteration=it, job_id=job_id) as _m:
-            snap = client.wait_scan(job_id, timeout=cfg.wait_timeout)
-            _m["state"] = snap.get("state")
+        with activity(log_path, "scan", q=[proposal.h, proposal.k, proposal.l],
+                      job_id=job_id, iteration=it):
+            with timed(log_path, "wait_scan", iteration=it, job_id=job_id) as _m:
+                snap = client.wait_scan(job_id, timeout=cfg.wait_timeout)
+                _m["state"] = snap.get("state")
         if snap.get("state") != "done":
             log_event(log_path, "exception", {"action": "scan_not_done", "job_id": job_id,
                                               "state": snap.get("state"), "error": snap.get("error"),
                                               "iter": it})
-            if promoted:   # a promoted retry whose scan never reached done — supersede the promotion
-                log_event(log_path, "escalate_fit",
-                          {"phase": "outcome", "iter": it, "job_id": job_id,
-                           "hkl": [proposal.h, proposal.k, proposal.l], "to_tier": "full",
-                           "outcome": "superseded", "n_rows": 0, "dispositions": []})
-                promoted = False
             observations.append(_declined_observation(proposal, str(snap.get("state"))))
             break
 
-        with timed(log_path, "fetch_save", iteration=it):
-            data = client.get_scan_data(job_id)
-            scan_path = save_scan_json(data, data_dir)
-        # Lazy `isar init`: the instrument card can only be scaffolded from a recognizable
-        # data file, which first exists NOW. Subprocess keeps the analysis boundary.
-        if not (workspace / "card.policy.toml").exists():
-            with timed(log_path, "isar_init", iteration=it):
-                cfg.init_isar(workspace, scan_path)
-            log_event(log_path, "decide", {"event": "workspace_init", "action": "workspace_init",
-                                           "probe": str(scan_path), "iter": it})
-        _persist_campaign_target(workspace, objective)
-        # Error tier per the escalation ladder: quicklook → cheap (steer only), production →
-        # fast (HESSE interval + trust flag), escalating to full (bootstrap+profile) only where an
-        # untrusted-HESSE q needs the reliable interval. The bootstrap fires only where needed.
-        tier = _errors_tier_for(proposal, workspace, cfg)
-        # escalate_fit PROMOTE (spec §5.1): a production/confirm q bumped to the full (bootstrap+
-        # profile) tier because its only interval is an untrusted HESSE one. Paired with an OUTCOME
-        # record after the fold so the promotion and its result are both in the log.
-        if proposal.kind in PRODUCTION_KINDS and tier == "full":
-            promoted = True
-            log_event(log_path, "escalate_fit",
-                      {"phase": "promote", "iter": it, "attempt": attempt,
-                       "hkl": [proposal.h, proposal.k, proposal.l], "from_tier": "fast",
-                       "to_tier": "full", "reason": "untrusted_hesse_no_reliable_interval"})
-        with timed(log_path, "isar_run", iteration=it, errors_tier=tier, attempt=attempt):
-            # render=False: skip the per-invocation report (report layer / matplotlib import is the
-            # dominant cost and nothing mid-campaign reads it); the campaign re-renders once at the end.
-            runner.run(workspace, [data_dir], errors_tier=tier, render=False)
+        rows, data = _finalize_completed_submission(
+            cfg=cfg, objective=objective, proposal=proposal,
+            submission_payload=submission_payload, budget_state=budget_state,
+            observations=observations, consumed=consumed, scan_kind=scan_kind,
+            it=it, attempt=attempt)
 
-        with timed(log_path, "fold_rows", iteration=it) as _m:
-            rows = _new_rows(workspace, consumed)
-            # The scan's actual monitor cost (n_points reflects any recenter; charged once per scan,
-            # onto the first detector row so counts_spent per q is not multiplied by detector count).
-            scan_cost = float(proposal.n_points or 1) * float(proposal.ncount)
-            for j, r in enumerate(rows):
-                observations.append(_observation_from_row(
-                    r, proposal.kind, proposal.ncount, cfg.calibration,
-                    proposal_cost=scan_cost if j == 0 else 0.0))
-                scan_kind[(r.get("scan"), r.get("detector"))] = (proposal.kind, proposal.ncount)
-            _m["n_rows"] = len(rows)
-        # Embed the subprocess stage-timing snapshot (best-effort) + the folded rows' outcomes.
-        timings = _read_run_timings(workspace)
-        analyze_payload = {"job_id": job_id, "errors_tier": tier, "iter": it,
-                           "n_rows": len(rows),
-                           "dispositions": [r.get("disposition") or r.get("verdict") for r in rows]}
-        if timings is not None:
-            analyze_payload["timings"] = timings
-        log_event(log_path, "analyze", analyze_payload)
-
-        if promoted:
-            # escalate_fit OUTCOME (spec §5.1): did the full-tier promotion seat a certifiable
-            # interval? `seated` (≥1 folded row certifiable), `failed` (rows folded, none certifiable),
-            # `superseded` (no rows folded at all). `_row_certifiable` is the SAME predicate that seats
-            # convergence in `_observation_from_row`, so promotion accounting cannot drift from it.
-            if not rows:
-                outcome = "superseded"
-            elif any(_row_certifiable(r) for r in rows):
-                outcome = "seated"
-            else:
-                outcome = "failed"
-            log_event(log_path, "escalate_fit",
-                      {"phase": "outcome", "iter": it, "job_id": job_id,
-                       "hkl": [proposal.h, proposal.k, proposal.l], "to_tier": "full",
-                       "outcome": outcome, "n_rows": len(rows),
-                       "dispositions": [r.get("disposition") or r.get("verdict") for r in rows]})
-            promoted = False
-
-        if not _rows_missed(rows):
+        target_delivered = _pooled_target_delivered(
+            observations, proposal, getattr(objective, "target_branch", "acoustic"))
+        if not _rows_missed(rows) or target_delivered:
+            if target_delivered and _rows_missed(rows):
+                log_event(log_path, "decide", {
+                    "event": "missed_window_suppressed", "action": "missed_window_suppressed",
+                    "reason": "pooled master delivered the selected target mode",
+                    "hkl": [proposal.h, proposal.k, proposal.l], "iter": it})
             break
         # Missed window: LOOK at the counts to re-center + widen, up to the attempt cap.
         with timed(log_path, "missed_window", iteration=it):
             result = data.get("result") or {}
+            pooled_inputs = _pooled_recenter_inputs(
+                cfg.workspace, (proposal.h, proposal.k, proposal.l))
+            recenter_counts, recenter_energy = (pooled_inputs if pooled_inputs is not None else
+                                                (result.get("counts") or [],
+                                                 result.get("scan_values_1") or []))
             act = exc.handle_missed_window(
-                result.get("counts") or [], result.get("scan_values_1") or [],
+                recenter_counts, recenter_energy,
                 e_lo=proposal.e_lo, e_hi=proposal.e_hi, attempt=attempt,
                 resolution_fwhm=(proposal.fwhm_dE or None))
         log_event(log_path, "exception", {**act.to_dict(), "iter": it})
@@ -973,21 +2030,142 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             break
         proposal.e_lo = act.params["e_lo"]
         proposal.e_hi = act.params["e_hi"]
-        proposal.n_points = points_in_window(proposal.e_lo, proposal.e_hi, proposal.e_step)
+        _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
         attempt += 1
 
     return rows, scan_counter
 
 
-def _certify(*, cfg: CampaignConfig, decision, observations: list[dict],
-             scan_kind: dict) -> tuple[list[dict], bool]:
+def _certification_request(cfg: CampaignConfig, objective: ObjectiveSpec,
+                           decision, tier: str, *, activity_id: str) -> Path:
+    """Persist the drive-owned request; the session runner resolves the scientific manifest."""
+    M = 200
+    bayes_opts = {"n_live": 250, "dlogz": 0.5, "max_iter": 30_000}
+    for key, env_name, cast in (
+            ("n_live", "ISAR_BAYES_NLIVE", int),
+            ("dlogz", "ISAR_BAYES_DLOGZ", float),
+            ("max_iter", "ISAR_BAYES_MAXITER", int)):
+        raw_value = os.environ.get(env_name)
+        if raw_value not in (None, ""):
+            try:
+                bayes_opts[key] = cast(raw_value)
+            except (TypeError, ValueError):
+                _LOG.warning("ignoring invalid %s=%r while freezing certification settings",
+                             env_name, raw_value)
+    boot_adaptive = tier in {"full", "bayes"}
+    decision_points = list(decision.per_q or ())
+    if len(decision_points) != len(objective.path):
+        raise ValueError(
+            "final decision does not contain exactly one state for each objective-path point")
+    requested_points: list[dict[str, list[float]]] = []
+    for canonical_index, (objective_hkl, point) in enumerate(zip(objective.path, decision_points)):
+        raw_hkl = point.get("hkl") if isinstance(point, dict) else None
+        if not isinstance(raw_hkl, (list, tuple)) or len(raw_hkl) != 3:
+            raise ValueError(f"invalid q in final decision at path index {canonical_index}")
+        hkl = [float(value) for value in raw_hkl]
+        if any(abs(left - float(right)) > 1e-8
+               for left, right in zip(hkl, objective_hkl)):
+            raise ValueError(
+                f"final decision q {hkl} does not match objective path index "
+                f"{canonical_index}: {list(objective_hkl)}")
+        requested_points.append({"hkl": hkl})
+    payload = {
+        "schema": "isar.certification.request/1",
+        "tier": tier,
+        "objective_path": [list(hkl) for hkl in objective.path],
+        "per_q": requested_points,
+        "fit_options": {"M": M, "boot_adaptive": boot_adaptive,
+                        "bayes_opts": bayes_opts},
+        "calibration": {"inflation": cfg.calibration.inflation, "floor_meV": cfg.floor},
+        "seeds": {
+            "scan_seed_base": 6000,
+            "scan_rule": "6000 + scan_number",
+            "master_rule": "6000 + persisted master scan_number",
+            "error_attachment_default": 12345,
+            "bayes_seed_offset": 1_000_003,
+        },
+        "runtime": {"activity_id": activity_id, "log_path": str(cfg.log_path),
+                    "total": len(decision_points)},
+    }
+    fingerprint_body = dict(payload)
+    fingerprint_body.pop("runtime", None)
+    canonical = json.dumps(
+        fingerprint_body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    fingerprint = hashlib.sha256(canonical).hexdigest()
+    payload["fingerprint"] = fingerprint
+    request = cfg.workspace / "report" / "certification" / "requests" / f"{fingerprint}.json"
+    if request.exists():
+        existing = json.loads(request.read_text(encoding="utf-8"))
+        existing_contract = dict(existing)
+        existing_contract.pop("runtime", None)
+        new_contract = dict(payload)
+        new_contract.pop("runtime", None)
+        if existing_contract != new_contract:
+            raise ValueError(f"certification request collision at {request}")
+        if existing == payload:
+            return request
+    request.parent.mkdir(parents=True, exist_ok=True)
+    temporary = request.with_suffix(".json.tmp")
+    with open(temporary, "w", encoding="utf-8") as stream:
+        json.dump(payload, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, request)
+    return request
+
+
+def _verify_certification_publication(request_path: Path, workspace: Path) -> Path:
+    """Fail closed unless the runner published this exact complete canonical generation."""
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request_fingerprint = request.get("fingerprint")
+    current_path = workspace / "report" / "certification" / "current.json"
+    current = json.loads(current_path.read_text(encoding="utf-8"))
+    revision = str(current.get("revision") or "")
+    manifest_path = workspace / "report" / "certification" / revision / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    fingerprint = manifest.get("fingerprint")
+    if manifest.get("request_fingerprint") != request_fingerprint:
+        raise RuntimeError("final certification publication does not match this drive request")
+    expected_units = [str(unit["unit_key"]) for unit in manifest.get("worklist") or ()]
+    complete_path = manifest_path.parent / "complete.json"
+    complete = json.loads(complete_path.read_text(encoding="utf-8"))
+    if (complete.get("schema") != "isar.certification.complete/2"
+            or complete.get("fingerprint") != fingerprint
+            or complete.get("unit_keys") != expected_units):
+        raise RuntimeError("final certification has no complete canonical checkpoint generation")
+    if (current.get("schema") != "isar.certification.current/1"
+            or current.get("fingerprint") != fingerprint
+            or current.get("revision") != manifest_path.parent.name):
+        raise RuntimeError("final certification publication marker does not select this revision")
+    complete_hashes = complete.get("published_hashes") or {}
+    current_hashes = current.get("published_hashes") or {}
+    paths = {
+        "session.json": workspace / "session.json",
+        "card.state.json": workspace / "card.state.json",
+        "results.csv": workspace / "report" / "results.csv",
+        "card.policy.toml": workspace / "card.policy.toml",
+    }
+    if not complete_hashes or current_hashes != complete_hashes:
+        raise RuntimeError("final certification publication hashes are absent or inconsistent")
+    for name, path in paths.items():
+        if (not path.is_file()
+                or hashlib.sha256(path.read_bytes()).hexdigest() != complete_hashes.get(name)):
+            raise RuntimeError(f"final certification canonical artifact mismatch: {name}")
+    return manifest_path
+
+
+def _certify(*, cfg: CampaignConfig, objective: ObjectiveSpec, decision,
+             observations: list[dict], scan_kind: dict) -> tuple[list[dict], bool]:
     """The end-of-campaign certification pass (the "one bootstrap to certify" decision).
 
     When the loop stopped ``met``, run ONE forced full (bootstrap+profile) ``isar run`` so every
     reported ω₀ interval is bootstrap-backed, then rebuild ``observations`` from the certified
-    ``results.csv``. Best-effort: a certification hiccup logs ``certify_failed`` and reports
-    ``ran_certify=False`` rather than losing a met campaign. Returns ``(observations, ran_certify)`` —
-    the (possibly rebuilt) observations plus whether certification actually completed."""
+    ``results.csv``. A certification hiccup logs ``certify_failed`` and reports
+    ``ran_certify=False``; the caller converts the provisional ``met`` state to ``incomplete`` so a
+    failed final analysis can never masquerade as a certified campaign. Returns
+    ``(observations, ran_certify)`` — the unchanged physical-fit provenance plus whether the master
+    generation was published."""
     log_path, workspace, data_dir = cfg.log_path, cfg.workspace, cfg.data_dir
     ran_certify = decision is not None and decision.state == "met"
     if not ran_certify:
@@ -1001,9 +2179,37 @@ def _certify(*, cfg: CampaignConfig, decision, observations: list[dict],
               {"phase": "promote", "iter": None, "hkl": None, "from_tier": "fast",
                "to_tier": full_tier, "reason": "certify_pass"})
     try:
-        with timed(log_path, "certify", iteration=None):
-            cfg.runner.run(workspace, [data_dir], errors_tier=full_tier, force=True, render=False)
-        observations = _recertified_observations(workspace, cfg.calibration, scan_kind)
+        total_points = len(decision.per_q or ())
+        master_only = bool(getattr(cfg.runner, "supports_master_certification", True))
+        with activity(log_path, "final_certification", fit_tier=full_tier,
+                      total=total_points, progress_unit="points") as activity_id:
+            request_path = (_certification_request(
+                cfg, objective, decision, full_tier, activity_id=activity_id)
+                if master_only else None)
+            log_activity_progress(log_path, activity_id, completed=0, total=total_points,
+                                  progress_unit="points")
+            with timed(log_path, "certify", iteration=None):
+                run_kwargs = {"errors_tier": full_tier,
+                              "force": not master_only, "render": False}
+                parameters = inspect.signature(cfg.runner.run).parameters
+                if (request_path is not None and ("certification_request" in parameters
+                        or any(p.kind == inspect.Parameter.VAR_KEYWORD
+                               for p in parameters.values()))):
+                    run_kwargs["certification_request"] = request_path
+                with analysis_operation(
+                        log_path, (f"certification:{request_path.stem}"
+                                   if request_path is not None else "certification:callable-seam"),
+                        "final_certification", limit_seconds=objective.analysis_limit_seconds):
+                    run_kwargs.update(_analysis_runner_kwargs(cfg, objective))
+                    run_result = cfg.runner.run(workspace, [data_dir], **run_kwargs)
+                    _require_complete_analysis(run_result, objective)
+            if request_path is not None:
+                _verify_certification_publication(request_path, workspace)
+            log_activity_progress(log_path, activity_id, completed=total_points,
+                                  total=total_points, progress_unit="points")
+        # Physical rows are deliberately unchanged by master-only certification. Steering
+        # observations therefore remain the same provenance ledger; final stop evaluation reads the
+        # newly published pooled masters directly from results.csv.
         # Embed the certification subprocess timings (iter=None — the certify pass is reported
         # separately, never averaged into per-iteration stats).
         timings = _read_run_timings(workspace)
@@ -1016,7 +2222,11 @@ def _certify(*, cfg: CampaignConfig, decision, observations: list[dict],
         log_event(log_path, "analyze", analyze_payload)
         log_event(log_path, "decide", {"event": "certify_done", "action": "certify_done"})
         return observations, True
-    except Exception as e:   # noqa: BLE001 — never lose a met campaign to a certification hiccup
+    except AnalysisLimitExceeded:
+        log_event(log_path, "exception", {
+            "action": "certify_checkpointed", "reason": "analysis_limit"})
+        raise
+    except Exception as e:   # noqa: BLE001 — record the boundary failure; caller reports incomplete
         log_event(log_path, "exception", {"action": "certify_failed", "error": str(e)})
         return observations, False
 
@@ -1104,24 +2314,36 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     # Crash-safe resume: recover the spend ledger + folded rows + observations from the durable files
     # (session_log + results.csv). A cold workspace yields the fresh-start values.
     resumed = _resume_state(cfg.workspace, cfg.log_path, cfg.calibration)
-    budget = dict(objective.budget)
-    budget_state = {"kind": budget["kind"], "amount": budget["amount"],
+    close_interrupted_activities(cfg.log_path)
+    close_interrupted_analysis(cfg.log_path)
+    budget = dict(objective.budget or {})
+    budget_state = {"kind": budget.get("kind"), "amount": budget.get("amount"),
                     "neutrons": resumed["neutrons"], "seconds": resumed["seconds"], "spent": 0.0}
-    budget_state["spent"] = (budget_state["neutrons"] if budget_state["kind"] == "neutrons"
-                             else budget_state["seconds"])
+    budget_state["spent"] = (budget_state["neutrons"] if budget_state["kind"] == "neutrons" else
+                             budget_state["seconds"] if budget_state["kind"] == "counting_seconds"
+                             else 0.0)
 
     observations: list[dict] = resumed["observations"]
     consumed: set = resumed["consumed"]
     scan_kind: dict = resumed["scan_kind"]   # (scan, detector) -> (kind, ncount), to rebuild obs after certify
     scan_counter = resumed["scan_counter"]
+    proposal_counter = resumed.get("proposal_counter", 0)
+    limit_envelope = {
+        "discovered": dict(cfg.instrument_limits or {}),
+        "effective": _runtime_limits(cfg, objective),
+    }
 
     start_payload = {"event": "campaign_start", "action": "campaign_start",
                      "objective": objective.to_dict(),
                      "calibration": {"inflation": cfg.calibration.inflation,
                                      "floor_meV": cfg.floor},
+                     "instrument_limits": limit_envelope,
                      "resumed": {"scan_counter": scan_counter,
+                                 "proposal_counter": proposal_counter,
                                  "n_observations": len(observations),
-                                 "spent": budget_state["spent"]}}
+                                 "spent": budget_state["spent"],
+                                 "analysis_spent_seconds": analysis_clock_state(
+                                     cfg.log_path)["spent_seconds"]}}
     if cfg.source is not None:
         start_payload["source"] = cfg.source           # provenance fingerprint (goal/spec/resume + sha256)
     log_event(cfg.log_path, "decide", start_payload)
@@ -1129,12 +2351,18 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     decision = None
     operator_stop = False        # set when a cooperative operator-stop file is found at an iteration top
     op_stop_iter: int | None = None
+    pending_recovery_reason: str | None = None
     try:
+        pending_recovery_reason = _recover_unmatched_submissions(
+            cfg=cfg, objective=objective,
+            unmatched=list(resumed.get("unmatched_submissions") or []),
+            budget_state=budget_state, observations=observations,
+            consumed=consumed, scan_kind=scan_kind)
         # Instrumentation only (no logic change): each stage runs inside a ``timed`` span that appends a
         # "timing" event (resume-inert — _resume_state reads only "run" events), and every in-loop
         # log_event carries the iteration index ``it``. The outer ``timed(... "iteration")`` covers the
         # whole body including all break paths (a break exits the span normally, ok=True).
-        for it in range(cfg.max_iters):
+        for it in range(0 if pending_recovery_reason is not None else cfg.max_iters):
             with timed(cfg.log_path, "iteration", iteration=it):
                 # Cooperative operator stop: honoured at the iteration boundary so the previous
                 # iteration's scan is already persisted/analysed (no stranded in-flight spend). Log ONE
@@ -1148,25 +2376,128 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     break
                 with timed(cfg.log_path, "stop_eval", iteration=it):
                     master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
+                    if _record_eligible_crossings(grid, observations, cfg.log_path):
+                        master_rows, grid = _grid_state(
+                            objective, observations, cfg.workspace, cfg.calibration)
                     decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
                 if decision.state != "continue":
                     break
+                analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
+                if (objective.analysis_limit_seconds is not None
+                        and analysis_spent >= float(objective.analysis_limit_seconds)):
+                    decision = StopDecision(
+                        "incomplete",
+                        [f"analysis limit exhausted ({analysis_spent:.1f}/"
+                         f"{float(objective.analysis_limit_seconds):.1f}s)"],
+                        decision.per_q)
+                    break
+
+                predictive_escalation = _predictive_escalation_candidate(grid, cfg.log_path)
+                if predictive_escalation is not None:
+                    item, revision_key = predictive_escalation
+                    full_tier = _full_tier(cfg)
+                    log_event(cfg.log_path, "escalate_fit", {
+                        "phase": "promote", "iter": it, "hkl": list(item.hkl),
+                        "from_tier": (item.master or {}).get("fit_kind"),
+                        "to_tier": full_tier, "reason": "master_predictive_basis_missing",
+                        "revision_key": revision_key})
+                    try:
+                        with activity(cfg.log_path, "full_fit", q=list(item.hkl),
+                                      fit_tier=full_tier, iteration=it):
+                            with analysis_operation(
+                                    cfg.log_path, f"predictive-escalation:{revision_key}",
+                                    "master_predictive_escalation",
+                                    limit_seconds=objective.analysis_limit_seconds,
+                                    iteration=it, q=list(item.hkl)):
+                                run_result = cfg.runner.run(
+                                    cfg.workspace, [cfg.data_dir], errors_tier=full_tier,
+                                    force=True, render=False,
+                                    **_analysis_runner_kwargs(cfg, objective))
+                                _require_complete_analysis(run_result, objective)
+                        log_event(cfg.log_path, "escalate_fit", {
+                            "phase": "outcome", "iter": it, "hkl": list(item.hkl),
+                            "to_tier": full_tier, "reason": "master_predictive_basis_missing",
+                            "revision_key": revision_key, "outcome": "completed"})
+                        continue
+                    except AnalysisLimitExceeded as error:
+                        decision = StopDecision("incomplete", [str(error)], decision.per_q)
+                        break
+                    except Exception as error:  # noqa: BLE001 — visible failure, then measure again
+                        log_event(cfg.log_path, "escalate_fit", {
+                            "phase": "outcome", "iter": it, "hkl": list(item.hkl),
+                            "to_tier": full_tier, "reason": "master_predictive_basis_missing",
+                            "revision_key": revision_key, "outcome": "failed",
+                            "error": str(error)})
 
                 with timed(cfg.log_path, "model_fit", iteration=it):
                     model = acq_model.fit(model_points(grid))
-                # 5b Fisher tier: read the branch the session persisted into card.state.json FRESH each
-                # iteration (durable / crash-safe — a file, never a live session object). No branch yet →
-                # provider is None → propose_scan falls back to the 5a counts tier.
-                with timed(cfg.log_path, "fisher_provider", iteration=it):
-                    fisher = (None if objective.target_branch != "acoustic" else
-                              _make_fisher_provider(read_card_state(cfg.workspace), cfg.resolution_cb))
+                # Classification still consumes durable branch state. Expected-count acquisition is
+                # supplied exclusively by each master's frozen predictive artifact; the driver never
+                # reconstructs an analysis model from branch summaries.
+                with timed(cfg.log_path, "classification_provider", iteration=it):
+                    durable_state = read_card_state(cfg.workspace)
+                    classify, rival_band = _make_classification_providers(
+                        durable_state, objective, cfg.resolution_cb, sample=cfg.sample)
                 with timed(cfg.log_path, "propose", iteration=it):
-                    proposal = propose_scan(objective, model, observations, cfg.resolution_cb, budget_state,
-                                            master_rows=master_rows, fisher=fisher)
+                    try:
+                        analysis_remaining = (float("inf") if objective.analysis_limit_seconds is None
+                                              else max(float(objective.analysis_limit_seconds) -
+                                                       float(analysis_clock_state(
+                                                           cfg.log_path)["spent_seconds"]), 0.0))
+                        scoring_allowance = min(60.0, 0.05 * analysis_remaining)
+                        with analysis_operation(
+                                cfg.log_path, f"score:{cfg.run_nonce}:{proposal_counter}",
+                                "predictive_scoring",
+                                limit_seconds=objective.analysis_limit_seconds, iteration=it):
+                            proposal = propose_scan(
+                                objective, model, observations, cfg.resolution_cb, budget_state,
+                                master_rows=master_rows, fisher=None,
+                                classify=classify, rival_band=rival_band,
+                                runtime_limits=_runtime_limits(cfg, objective),
+                                track_anchor_index=((durable_state.get("branch_tracks") or {}).get(
+                                    "anchor_index")),
+                                track_zone_period=_workspace_zone_period(cfg.workspace),
+                                scoring_allowance_seconds=scoring_allowance)
+                        if proposal is not None:
+                            _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+                    except AnalysisLimitExceeded as error:
+                        decision = StopDecision("incomplete", [str(error)], decision.per_q)
+                        proposal = None
+                    except (BudgetInsufficientForMinimumBatch,
+                            InstrumentLimitBelowMinimumBatch) as error:
+                        log_event(cfg.log_path, "exception", {
+                            "action": ("instrument_limit_below_minimum_batch"
+                                       if isinstance(error, InstrumentLimitBelowMinimumBatch)
+                                       else "budget_insufficient_for_minimum_batch"),
+                            "error": str(error), "iter": it})
+                        decision = StopDecision(
+                            ("infeasible" if isinstance(error, InstrumentLimitBelowMinimumBatch)
+                             else "incomplete"), [str(error)],
+                            evaluate_stop(objective, grid, budget_state,
+                                          calibration=cfg.calibration, floor=cfg.floor).per_q)
+                        proposal = None
                 if proposal is None:
-                    decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
+                    if decision is None or decision.state == "continue":
+                        decision = evaluate_stop(
+                            objective, grid, budget_state,
+                            calibration=cfg.calibration, floor=cfg.floor)
+                    decision = _blocked_frontier_decision(objective, grid, decision)
                     break
+                proposal.acquisition_id = (proposal.acquisition_id
+                                           or f"{cfg.run_nonce}:{proposal_counter:08d}")
+                proposal_counter += 1
                 log_event(cfg.log_path, "propose", {**proposal.to_dict(), "iter": it})
+
+                analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
+                if (objective.analysis_limit_seconds is not None
+                        and analysis_spent >= float(objective.analysis_limit_seconds)):
+                    decision = StopDecision(
+                        "incomplete",
+                        [f"analysis limit exhausted ({analysis_spent:.1f}/"
+                         f"{float(objective.analysis_limit_seconds):.1f}s) before measurement submission"],
+                        evaluate_stop(objective, grid, budget_state,
+                                      calibration=cfg.calibration, floor=cfg.floor).per_q)
+                    break
 
                 b_act = exc.handle_budget(budget_state)
                 if b_act is not None:
@@ -1174,10 +2505,57 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     if b_act.action == "exhausted":
                         break
 
-                rows, scan_counter = _execute_proposal(
-                    cfg=cfg, objective=objective, proposal=proposal, it=it, scan_counter=scan_counter,
-                    budget_state=budget_state, observations=observations, consumed=consumed,
-                    scan_kind=scan_kind)
+                try:
+                    rows, scan_counter = _execute_proposal(
+                        cfg=cfg, objective=objective, proposal=proposal, it=it,
+                        scan_counter=scan_counter, budget_state=budget_state,
+                        observations=observations, consumed=consumed, scan_kind=scan_kind)
+                except AnalysisLimitExceeded as error:
+                    decision = StopDecision(
+                        "incomplete", [str(error)],
+                        evaluate_stop(objective, grid, budget_state,
+                                      calibration=cfg.calibration, floor=cfg.floor).per_q)
+                    break
+                except TaviError as error:
+                    # A communication failure after ``physical_submission`` is not a failed submit:
+                    # the job may still be running or its data may already be retrievable.  Preserve
+                    # the durable unmatched submission and use the normal Resume recovery contract.
+                    recovery_state = _resume_state(
+                        cfg.workspace, cfg.log_path, cfg.calibration)
+                    unmatched = [item for item in recovery_state.get("unmatched_submissions", [])
+                                 if (item.get("payload") or {}).get("acquisition_id")
+                                 == proposal.acquisition_id]
+                    if unmatched:
+                        payload = unmatched[-1].get("payload") or {}
+                        pending_recovery_reason = (
+                            f"job {payload.get('job_id')} recovery is pending after instrument "
+                            f"communication failed ({error})")
+                        log_event(cfg.log_path, "recovery_pending", {
+                            "job_id": payload.get("job_id"), "state": "unknown",
+                            "decline": False, "reason": pending_recovery_reason,
+                            "acquisition_id": proposal.acquisition_id, "iter": it})
+                        break
+                    log_event(cfg.log_path, "exception", {
+                        "action": "instrument_submission_failed", "error": str(error),
+                        "status": error.status, "iter": it})
+                    decision = StopDecision(
+                        "incomplete", [f"instrument submission failed: {error}"],
+                        evaluate_stop(objective, grid, budget_state,
+                                      calibration=cfg.calibration, floor=cfg.floor).per_q)
+                    break
+                except (BudgetInsufficientForMinimumBatch,
+                        InstrumentLimitBelowMinimumBatch) as error:
+                    log_event(cfg.log_path, "exception", {
+                        "action": ("instrument_limit_below_minimum_batch"
+                                   if isinstance(error, InstrumentLimitBelowMinimumBatch)
+                                   else "budget_insufficient_for_minimum_batch"),
+                        "error": str(error), "iter": it})
+                    decision = StopDecision(
+                        ("infeasible" if isinstance(error, InstrumentLimitBelowMinimumBatch)
+                         else "incomplete"), [str(error)],
+                        evaluate_stop(objective, grid, budget_state,
+                                      calibration=cfg.calibration, floor=cfg.floor).per_q)
+                    break
 
                 # ---- exception branch on the final verdict (flagged / held) ----------------------------
                 with timed(cfg.log_path, "verdict_exceptions", iteration=it):
@@ -1192,28 +2570,55 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
 
                 with timed(cfg.log_path, "model_update", iteration=it):
                     master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
+                    grid_snapshot = evaluate_stop(
+                        objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
                 log_event(cfg.log_path, "decide", {"event": "model_update", "action": "model_update",
                                                    "n_observations": len(observations),
                                                    "converged": sum(1 for g in grid if g.converged),
-                                                   "n_grid": len(grid), "iter": it})
+                                                   "n_grid": len(grid), "per_q": grid_snapshot.per_q,
+                                                   "iter": it})
         else:
             # The loop exhausted max_iters without a break, so the top-of-iteration check will never
             # run again — but the boundary AFTER the final allowed iteration is still an iteration
             # boundary, and a stop requested during that last scan must be honoured there (with
             # --max-iters 1 it is the ONLY boundary that can see it). Same ordering rule as in-loop:
             # the stop wins before any terminal bookkeeping (certification must not run). The break
-            # paths (met/unmeetable/no-proposal/budget) deliberately get no post-check — their
+            # paths (met/incomplete/infeasible/no-proposal/budget) deliberately get no post-check — their
             # boundary check already ran before the decision, and a campaign that ended on its own
             # reports its true state. ``iter`` is cfg.max_iters, the would-be next iteration (the
             # loop variable is unbound when max_iters == 0, so it is never referenced here).
-            if _operator_stop_requested(cfg, cfg.max_iters):
+            if pending_recovery_reason is None and _operator_stop_requested(cfg, cfg.max_iters):
                 log_event(cfg.log_path, "decide",
                           {"event": "operator_stop", "action": "operator_stop",
                            "iter": cfg.max_iters, "token": cfg.control_token})
                 operator_stop = True
                 op_stop_iter = cfg.max_iters
+            elif pending_recovery_reason is None:
+                master_rows, grid = _grid_state(
+                    objective, observations, cfg.workspace, cfg.calibration)
+                snapshot = evaluate_stop(
+                    objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
+                decision = StopDecision(
+                    "incomplete", [f"global iteration limit exhausted ({cfg.max_iters})"],
+                    snapshot.per_q)
 
-        if operator_stop:
+        if pending_recovery_reason is not None:
+            master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
+            snapshot = evaluate_stop(
+                objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
+            stop_override = {
+                "state": "pending_recovery",
+                "reasons": [pending_recovery_reason, "press Resume to retry recovery"],
+                "per_q": list(snapshot.per_q),
+                "grid_state": snapshot.to_dict(),
+            }
+            summary = _campaign_summary(
+                objective, grid, snapshot, budget_state, cfg.workspace,
+                cfg.log_path, len(observations), stop_override=stop_override,
+                instrument_limits=limit_envelope)
+            stop_payload = {"state": "pending_recovery", "reasons": stop_override["reasons"],
+                            "grid_state": stop_override["grid_state"]}
+        elif operator_stop:
             # Operator-stop terminal state (part B): an honest snapshot WITHOUT certification — a stop
             # request must never trigger the end-of-campaign certify bootstrap. Recompute the final grid
             # + evaluate_stop for a truthful picture, but record it under stop.grid_state; the terminal
@@ -1230,7 +2635,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                 "grid_state": snapshot.to_dict(),
             }
             summary = _campaign_summary(objective, grid, snapshot, budget_state, cfg.workspace,
-                                        cfg.log_path, len(observations), stop_override=stop_override)
+                                        cfg.log_path, len(observations), stop_override=stop_override,
+                                        instrument_limits=limit_envelope)
             stop_payload = {"state": "operator_stopped", "reasons": stop_override["reasons"],
                             "grid_state": stop_override["grid_state"]}
         else:
@@ -1239,21 +2645,47 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             # certify" decision). Bounded — once, at the end, only when the objective is met. Then
             # re-evaluate honestly: if a q's bootstrap-certified interval crosses tolerance the summary
             # reflects that, not the optimistic fast-tier stop (the triage tool reports the certified truth).
-            observations, ran_certify = _certify(cfg=cfg, decision=decision, observations=observations,
-                                                 scan_kind=scan_kind)
+            analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
+            if (decision is not None and decision.state == "met"
+                    and objective.analysis_limit_seconds is not None
+                    and analysis_spent >= float(objective.analysis_limit_seconds)):
+                decision = StopDecision(
+                    "incomplete",
+                    [f"analysis limit exhausted before final certification ({analysis_spent:.1f}/"
+                     f"{float(objective.analysis_limit_seconds):.1f}s)"], decision.per_q)
+            try:
+                observations, ran_certify = _certify(
+                    cfg=cfg, objective=objective, decision=decision, observations=observations,
+                    scan_kind=scan_kind)
+            except AnalysisLimitExceeded as error:
+                ran_certify = False
+                decision = StopDecision("incomplete", [str(error)], decision.per_q)
+
+            if decision is not None and decision.state == "met" and not ran_certify:
+                decision = StopDecision(
+                    "incomplete",
+                    ["final certification did not complete; checkpoints retained"],
+                    decision.per_q)
 
             # Recompute the stop decision on the FINAL grid unconditionally: the in-loop decision is from
             # the top of the last iteration, so a campaign that exhausts max_iters (or breaks on budget)
             # would otherwise report a stale pre-scan verdict in the summary.
             master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
-            decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
+            final_decision = evaluate_stop(
+                objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
+            # A prospective neutron-budget refusal occurs before spend reaches the nominal amount; a
+            # plain final budget evaluation therefore still says "continue". Preserve that terminal
+            # decision while retaining ordinary recomputation for every measured-scan exit path.
+            if not (decision is not None and decision.state in {"incomplete", "infeasible"}):
+                decision = final_decision
             if ran_certify and decision.state != "met":
                 log_event(cfg.log_path, "exception",
                           {"action": "certify_regression", "state": decision.state,
                            "note": "a q's bootstrap-certified interval exceeded the fast-tier stop"})
 
             summary = _campaign_summary(objective, grid, decision, budget_state, cfg.workspace,
-                                        cfg.log_path, len(observations))
+                                        cfg.log_path, len(observations),
+                                        instrument_limits=limit_envelope)
             stop_payload = {"state": decision.state, "reasons": decision.reasons}
 
         (cfg.workspace / "report").mkdir(parents=True, exist_ok=True)
@@ -1271,23 +2703,39 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     return summary
 
 
-def _charge_budget(budget_state: dict, proposal, eta) -> None:
-    budget_state["neutrons"] += float(proposal.ncount) * float(proposal.n_points or 1)
+def _charge_budget(budget_state: dict, proposal, eta, *, n_points: int | None = None) -> None:
+    points = int(proposal.n_points or 1) if n_points is None else max(int(n_points), 0)
+    budget_state["neutrons"] += float(proposal.ncount) * float(points)
     if eta is not None:
         budget_state["seconds"] += float(eta)
-    budget_state["spent"] = (budget_state["neutrons"] if budget_state["kind"] == "neutrons"
-                             else budget_state["seconds"])
+    budget_state["spent"] = (budget_state["neutrons"] if budget_state["kind"] == "neutrons" else
+                             budget_state["seconds"] if budget_state["kind"] == "counting_seconds"
+                             else 0.0)
+
+
+def _reconcile_budget_points(budget_state: dict, ncount: int, planned: int, executed: int,
+                             *, eta: float | None = None) -> tuple[float, float]:
+    """Replace planned point/time cost with executed cost; return durable ledger deltas."""
+    delta = float(ncount) * float(int(executed) - int(planned))
+    budget_state["neutrons"] = max(0.0, float(budget_state["neutrons"]) + delta)
+    seconds_delta = 0.0
+    if eta is not None and int(planned) > 0:
+        seconds_delta = float(eta) * (float(executed) / float(planned) - 1.0)
+        budget_state["seconds"] = max(0.0, float(budget_state["seconds"]) + seconds_delta)
+    budget_state["spent"] = (budget_state["neutrons"] if budget_state["kind"] == "neutrons" else
+                             budget_state["seconds"] if budget_state["kind"] == "counting_seconds"
+                             else 0.0)
+    return delta, seconds_delta
 
 
 def _campaign_summary(objective, grid, decision, budget_state, workspace, log_path, n_obs,
-                      *, stop_override: dict | None = None) -> dict:
-    # The certified number per q is the tightest trustworthy fit (master pooled OR best single
-    # production, whichever is smaller); fall back to the best quick-look estimate for an un-pooled q.
+                      *, stop_override: dict | None = None,
+                      instrument_limits: dict | None = None) -> dict:
     def _omega0(g):
-        return g.cert_omega0 if g.cert_omega0 is not None else g.best_omega0
+        return (g.master or {}).get("omega0")
 
     def _hw(g):
-        return g.cert_halfwidth if g.cert_halfwidth is not None else g.best_halfwidth
+        return (g.master or {}).get("halfwidth")
 
     dispersion = []
     for g in grid:
@@ -1310,24 +2758,37 @@ def _campaign_summary(objective, grid, decision, budget_state, workspace, log_pa
     try:
         card = read_card_state(workspace)
         prior_points = card.get("dispersion_prior") or []
-    except Exception:   # noqa: BLE001
+        mismatch = dict(card.get("hypothesis_mismatch") or {})
+        branch_beliefs = list(card.get("branch_belief") or [])
+    except Exception as error:   # noqa: BLE001
+        log_event(log_path, "exception", {"event": "summary_state_read_failed",
+                                           "error": str(error)})
         prior_points = []
+        mismatch = {}
+        branch_beliefs = []
+    analysis = analysis_clock_state(log_path)
+    analysis["limit_seconds"] = objective.analysis_limit_seconds
     return {
         "objective": objective.to_dict(),
         # ``stop_override`` carries the operator_stopped terminal state (+ grid_state snapshot); the
         # default is the honest StopDecision. Additive — the dict shape is otherwise unchanged.
         "stop": stop_override if stop_override is not None else decision.to_dict(),
         "grid": [{"hkl": list(g.hkl), "q": g.q, "converged": g.converged,
+                  "assessment_state": g.assessment_state,
                   "calibrated_halfwidth": g.cert_halfwidth, "omega0": _omega0(g),
                   "master_halfwidth": (g.master or {}).get("halfwidth"),
-                  "single_prod_halfwidth": g.best_prod_halfwidth,
+                  "master_revision": g.master_revision,
                   "n_members": (g.master or {}).get("n_members"),
                   "members": (g.master or {}).get("members"),
-                  "n_production": g.n_production, "n_decline": g.n_decline,
-                  "stuck": g.stuck} for g in grid],
+                  "n_production": g.n_production, "diagnostics": g.diagnostics,
+                  "linewidth_state": g.linewidth_state, "stuck": False} for g in grid],
         "dispersion": dispersion,
         "dispersion_prior_points": len(prior_points),
+        "branch_beliefs": branch_beliefs,
+        "hypothesis_mismatch": mismatch,
         "budget": dict(budget_state),
+        "analysis": analysis,
+        "instrument_limits": dict(instrument_limits or {}),
         "n_observations": n_obs,
         "session_log": str(log_path),
     }

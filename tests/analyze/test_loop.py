@@ -58,6 +58,21 @@ def test_fit_hypothesis_recovers_truth_on_clean_spectrum():
     assert res.optimizer_converged
 
 
+def test_fit_hypothesis_recovers_truth_with_unequal_exposure():
+    base = _spectrum_ctx()
+    scale = np.linspace(0.35, 2.4, base.x.size)
+    exposed = ScanContext(
+        x=base.x, counts=base.counts * scale, mask=base.mask, T=base.T, center=base.center,
+        gauss_fwhm=base.gauss_fwhm, lorentz_fwhm=base.lorentz_fwhm,
+        instrument=base.instrument, energy_status=base.energy_status, exposure_scale=scale)
+    hyp = _by_label(exposed)["elastic+stokes+bg"]
+    result = loop.fit_hypothesis(hyp, exposed, minos=False)
+    assert result.optimizer_converged
+    assert abs(result.omega0 - 5.0) < 0.1
+    assert abs(result.gamma - 0.45) < 0.1
+    assert np.array_equal(exposed.counts, base.counts * scale)
+
+
 def test_result_separates_convergence_from_covariance():
     """A converged fit whose HESSE covariance failed must stay usable (review F2)."""
     comp = CompositeModel([PhononDHO(), ConstantBackground()])  # k = 4
@@ -150,6 +165,61 @@ def test_two_stage_offers_multimode_when_two_peaks_declared():
     peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
     results = loop.fit_structures_two_stage(ctx, minos=False, peaks=peaks)
     assert "stokes2+bg" in {r.label for r in results}
+
+
+def _scientific_signature(results):
+    """Fields whose order/value must not depend on candidate scheduling."""
+    return [(r.label, r.optimizer_converged, r.cost, r.k, r.params, r.modes)
+            for r in results]
+
+
+def test_two_stage_parallel_candidates_are_ordered_and_identical():
+    from concurrent.futures import ProcessPoolExecutor
+
+    ctx = _one_peak_ctx()
+    serial = loop.fit_structures_two_stage(ctx, minos=False)
+    with ProcessPoolExecutor(max_workers=2) as executor:
+        parallel = loop.fit_structures_two_stage(ctx, minos=False, executor=executor)
+    assert _scientific_signature(parallel) == _scientific_signature(serial)
+
+
+def test_candidate_pool_failure_logs_and_retries_serially(caplog):
+    class BrokenExecutor:
+        def map(self, *_args, **_kwargs):
+            raise RuntimeError("worker vanished")
+
+    ctx = _one_peak_ctx()
+    expected = loop.fit_structures_two_stage(ctx, minos=False)
+    actual = loop.fit_structures_two_stage(ctx, minos=False, executor=BrokenExecutor())
+    assert _scientific_signature(actual) == _scientific_signature(expected)
+    assert "retrying serially" in caplog.text
+
+
+def test_error_paths_reuse_candidate_executor_and_preserve_pairing(monkeypatch):
+    from isar.analyze import errors
+
+    class InlineExecutor:
+        def map(self, fn, items):
+            return map(fn, items)
+
+    executor = InlineExecutor()
+    calls = []
+
+    def _capture(items, **kwargs):
+        calls.append((list(items), kwargs))
+
+    monkeypatch.setattr(errors, "attach_batch", _capture)
+    admissible = loop.fit_admissible_structures(
+        _one_peak_ctx(), errors=True, M=12, seed=4, executor=executor)
+    two_stage = loop.fit_structures_two_stage(
+        _one_peak_ctx(), with_errors=True, M=12, seed=4, executor=executor)
+
+    assert len(calls) == 2
+    for results, (items, kwargs) in zip((admissible, two_stage), calls):
+        assert [result for result, _hyp, _ctx in items] == results
+        assert [result.label for result, hyp, _ctx in items] == [hyp.label for _, hyp, _ in items]
+        assert kwargs["executor"] is executor
+        assert kwargs["boot_workers"] >= 2
 
 
 # --- FIX 1: greedy-IC "seed robustness" was really a MIGRAD call-budget starvation ----------

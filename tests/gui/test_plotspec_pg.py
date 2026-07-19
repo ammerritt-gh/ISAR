@@ -254,6 +254,53 @@ def test_pooled_series_square_glyph_parity(qtbot):
     assert _mpl_series_marker(member) == "o"
 
 
+def test_muted_whiskered_series_is_filled_and_provisional_stays_hollow(qtbot):
+    import matplotlib.pyplot as plt
+    from isar.plotspec.backends.mpl import _render_onto
+
+    def _spec(style):
+        return PlotSpec(
+            title="t", xlabel="x", ylabel="y",
+            series=[Series(x=np.array([1.0]), y=np.array([2.0]), yerr=np.array([0.1]),
+                           role=Role.DATA, style=style)],
+        )
+
+    for style, hollow in (("muted", False), ("provisional", True)):
+        glw, plot = _new_plot()
+        qtbot.addWidget(glw)
+        rendered = render_into(plot, _spec(style))
+        line = next(item for item in rendered.items
+                    if isinstance(item, pg.PlotDataItem) and item.opts.get("symbol"))
+        assert (line.opts.get("symbolBrush") is None) is hollow
+
+        fig, ax = plt.subplots()
+        try:
+            _render_onto(ax, _spec(style))
+            marker = next(container.lines[0] for container in ax.containers
+                          if getattr(container, "lines", None))
+            assert (marker.get_markerfacecolor() == "none") is hollow
+        finally:
+            plt.close(fig)
+
+
+def test_pooled_master_draws_above_legacy_same_position_verdict(qtbot):
+    glw, plot = _new_plot()
+    qtbot.addWidget(glw)
+    spec = PlotSpec(
+        title="t", xlabel="q", ylabel="E",
+        series=[Series(x=np.array([2.0]), y=np.array([6.0]), yerr=np.array([0.2]),
+                       role=Role.DATA, state=State.POOLED,
+                       style="verdict_resolved", label="pooled")],
+        markers=[Marker(x=2.0, y=6.0, kind=MarkerKind.VERDICT_RESOLVED,
+                        label="legacy verdict")],
+    )
+    rs = render_into(plot, spec)
+    pooled = next(it for it in rs.items
+                  if isinstance(it, pg.PlotDataItem) and it.opts.get("symbol") == "s")
+    verdict = next(it for it in rs.items if isinstance(it, pg.ScatterPlotItem))
+    assert pooled.zValue() > verdict.zValue()
+
+
 def test_unanchored_corner_notes_are_stacked_not_overlapping(qtbot):
     """Multiple un-anchored corner notes must NOT all anchor at the same bottom-right point — each is
     offset a row higher so they don't overlap (the offsets differ by the per-note step)."""

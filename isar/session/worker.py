@@ -64,10 +64,28 @@ def _run_job(workspace_path, req) -> tuple[dict, dict]:
     errors_tier = req.get("errors_tier", "full")
     M = int(req.get("M") or 200)
     workers = req.get("workers")
+    certification_manifest = req.get("certification_manifest")
+    certification_request = req.get("certification_request")
+    analysis_allowance_seconds = req.get("analysis_allowance_seconds")
+    finish_initial_wave = bool(req.get("finish_initial_wave", False))
 
     timer = StageTimer(errors_tier=errors_tier, M=M, worker_job=True, job_id=req.get("id"))
-    summary = driver.run_batch(ws, data_paths, force=force, M=M, workers=workers,
-                               errors_tier=errors_tier, formats=(), timer=timer)
+    run_kwargs = {"force": force, "M": M, "workers": workers,
+                  "errors_tier": errors_tier, "formats": (), "timer": timer}
+    # Omit the additive extension entirely for normal jobs so legacy in-process adapters and test
+    # doubles continue to satisfy the runner boundary unchanged.
+    if certification_request is not None:
+        if certification_manifest is not None:
+            raise ValueError("certification request and manifest are mutually exclusive")
+        from isar.session.certification import create_master_certification_manifest
+        certification_manifest = create_master_certification_manifest(
+            ws.root, certification_request)
+    if certification_manifest is not None:
+        run_kwargs["certification_manifest"] = certification_manifest
+    if analysis_allowance_seconds is not None:
+        run_kwargs["analysis_allowance_seconds"] = float(analysis_allowance_seconds)
+        run_kwargs["finish_initial_wave"] = finish_initial_wave
+    summary = driver.run_batch(ws, data_paths, **run_kwargs)
     # Persist run_timings.json (same contract as isar.cli.run_cmd.run — the loop reads it off disk),
     # then read it back so the inline reply timings are byte-identical to the file (timing contract).
     timings_path = ws.report_dir / "run_timings.json"
@@ -84,6 +102,7 @@ def _run_job(workspace_path, req) -> tuple[dict, dict]:
         "n_outcomes": len(summary.outcomes),
         "n_gaps": len(summary.gaps),
         "context_lines": list(summary.context_lines),
+        "analysis_incomplete": bool(getattr(summary, "analysis_incomplete", False)),
     }
     return reply_summary, timings
 

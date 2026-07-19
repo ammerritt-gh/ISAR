@@ -127,6 +127,7 @@ class DriveOptions:
     resume_latest: bool = False
     tier: str = "deterministic"       # deterministic | mcstas
     budget: str | None = None         # '<amount><unit>' e.g. '8h', '1e10n'; None => from spec/goal
+    analysis_limit: str | None = None # duration or 'none'; None => tier default/frozen objective
     seed: int = 0
     max_iters: int | None = None      # per-invocation loop cap (>= 1); None => the loop's built-in cap
     tavi_url: str | None = None
@@ -167,8 +168,10 @@ def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list
     # still receive an explicit budget override for the new invocation.
     if opts.tier != "deterministic" and not (opts.resume_latest or opts.envelope_path):
         cmd += ["--tier", opts.tier]
-    if opts.budget and not opts.envelope_path:
+    if opts.budget:
         cmd += ["--budget", opts.budget]
+    if opts.analysis_limit:
+        cmd += ["--analysis-limit", opts.analysis_limit]
     if opts.calibration:
         cmd += ["--calibration", str(opts.calibration)]
     if opts.tavi_url:
@@ -195,6 +198,8 @@ def build_compile_command(python: str, opts: DriveOptions, output_path: str) -> 
         cmd += ["--tier", opts.tier]
     if opts.budget:
         cmd += ["--budget", opts.budget]
+    if opts.analysis_limit:
+        cmd += ["--analysis-limit", opts.analysis_limit]
     return cmd
 
 

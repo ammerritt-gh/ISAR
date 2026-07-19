@@ -259,7 +259,7 @@ def test_build_drive_command_frozen_envelope():
     cmd = commands.build_drive_command(
         "py", "ws", DriveOptions(envelope_path="objective.json", tier="mcstas", budget="8h"))
     assert cmd == ["py", "-m", "isar", "drive", "--envelope", "objective.json",
-                   "--workspace", "ws"]
+                   "--workspace", "ws", "--budget", "8h"]
 
 
 def test_build_compile_command_has_no_workspace_or_measurement_flags():

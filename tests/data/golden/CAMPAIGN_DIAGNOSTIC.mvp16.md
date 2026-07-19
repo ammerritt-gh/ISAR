@@ -68,10 +68,10 @@
 
 | q | hkl | ω₀ (meV) | halfwidth | source | reason | n_prod | collate-only | ω_true | Δ | in interval |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 0 | (2, 0, 0) | — | — | — | no_signal | 0 | 0 | — | — | — |
-| 0.05 | (2.05, 0, 0) | — | — | — | no_signal | 2 | 1 | — | — | — |
-| 0.1 | (2.1, 0, 0) | — | — | — | no_signal | 2 | 1 | — | — | — |
-| 0.15 | (2.15, 0, 0) | — | — | — | no_signal | 2 | 1 | — | — | — |
+| 0 | (2, 0, 0) | — | — | — | unmeasured | 0 | 0 | — | — | — |
+| 0.05 | (2.05, 0, 0) | — | — | — | unmeasured | 2 | 1 | — | — | — |
+| 0.1 | (2.1, 0, 0) | — | — | — | unmeasured | 2 | 1 | — | — | — |
+| 0.15 | (2.15, 0, 0) | — | — | — | unmeasured | 2 | 1 | — | — | — |
 | 0.2 | (2.2, 0, 0) | 1.875 | 0.0001727 | single_production | met | 4 | 1 | 1.854 | 0.0209 | no |
 | 0.25 | (2.25, 0, 0) | 2.375 | 0.0004926 | single_production | met | 2 | 1 | 2.296 | 0.0789 | no |
 | 0.3 | (2.3, 0, 0) | 2.75 | 0.0004426 | single_production | met | 2 | 1 | 2.724 | 0.0259 | no |
@@ -79,21 +79,21 @@
 | 0.4 | (2.4, 0, 0) | 3.55 | 0.0007947 | single_production | met | 2 | 1 | 3.527 | 0.0233 | no |
 | 0.45 | (2.45, 0, 0) | 3.826 | 0.002023 | single_production | met | 1 | 1 | 3.897 | -0.0705 | no |
 | 0.5 | (2.5, 0, 0) | 4.25 | 0.005258 | single_production | met | 2 | 1 | 4.243 | 0.00785 | no |
-| 0.55 | (2.55, 0, 0) | — | — | — | uncertifiable_interval | 5 | 1 | — | — | — |
+| 0.55 | (2.55, 0, 0) | — | — | — | unmeasured | 5 | 1 | — | — | — |
 | 0.6 | (2.6, 0, 0) | 4.834 | 0.04457 | single_production | met | 4 | 1 | 4.854 | -0.0203 | yes |
 | 0.65 | (2.65, 0, 0) | 5.054 | 0.09357 | single_production | met | 2 | 1 | 5.116 | -0.0617 | yes |
-| 0.7 | (2.7, 0, 0) | — | — | — | uncertifiable_interval | 5 | 1 | — | — | — |
+| 0.7 | (2.7, 0, 0) | — | — | — | unmeasured | 5 | 1 | — | — | — |
 | 0.75 | (2.75, 0, 0) | 5.507 | 0.0964 | single_production | met | 2 | 1 | 5.543 | -0.0365 | yes |
-| 0.8 | (2.8, 0, 0) | 5.602 | (unreliable) | single_production | uncertifiable_interval | 8 | 1 | 5.706 | -0.104 | no |
-| 0.85 | (2.85, 0, 0) | — | — | — | uncertifiable_interval | 3 | 1 | — | — | — |
-| 0.9 | (2.9, 0, 0) | — | — | — | no_signal | 2 | 0 | — | — | — |
-| 0.95 | (2.95, 0, 0) | — | — | — | uncertifiable_interval | 3 | 0 | — | — | — |
-| 1 | (3, 0, 0) | — | — | — | uncertifiable_interval | 6 | 0 | — | — | — |
+| 0.8 | (2.8, 0, 0) | 5.602 | (unreliable) | single_production | interval_above_tolerance | 8 | 1 | 5.706 | -0.104 | no |
+| 0.85 | (2.85, 0, 0) | — | — | — | unmeasured | 3 | 1 | — | — | — |
+| 0.9 | (2.9, 0, 0) | — | — | — | unmeasured | 2 | 0 | — | — | — |
+| 0.95 | (2.95, 0, 0) | — | — | — | unmeasured | 3 | 0 | — | — | — |
+| 1 | (3, 0, 0) | — | — | — | unmeasured | 6 | 0 | — | — | — |
 
 
 ## 5. Failure dossier
 
-### 5.1 q=0..0.15 (4 points): no_signal
+### 5.1 q=0..0.15 (4 points): unmeasured
 
 | q | scan | det | disposition | verdict | ω₀ | interval |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -113,11 +113,11 @@
 
 *Terms:* **pull** — a difference divided by its error bar (a normalized residual); pull 1 = one σ away; **residual** — data minus fit; flat noise is good, leftover structure means the model missed something; **reconstructed** — the curve is rebuilt from the reported ω₀/Γ/resolution, not fitted again — presentation only
 
-**Diagnosis.** The descriptor found no significant peak across 4 q — an acoustic ω₀→0 under the elastic line is structurally unmeasurable. If these q sit near Γ the objective should exclude them at parse time rather than spend 13 declines discovering it.
+**Diagnosis.** No pooled master has been published at 4 q. Individual scan fits cannot stand in for it; acquire/collate at least one feasible member.
 
-**Fix →** TODO: objective-aware Γ exclusion (if near Γ)
+**Fix →** TODO: acquire the first feasible master member
 
-### 5.2 q=0.55..0.55 (1 point): uncertifiable_interval
+### 5.2 q=0.55..0.55 (1 point): unmeasured
 
 | q | scan | det | disposition | verdict | ω₀ | interval |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -150,11 +150,11 @@
 
 *Terms:* **pull** — a difference divided by its error bar (a normalized residual); pull 1 = one σ away; **residual** — data minus fit; flat noise is good, leftover structure means the model missed something; **reconstructed** — the curve is rebuilt from the reported ω₀/Γ/resolution, not fitted again — presentation only
 
-**Diagnosis.** Fits deliver centers at 1 q but every interval flags interval_reliable=False (γ-at-bound: a resolution-limited spike whose bootstrap ω₀ collapses). This is uncertifiable, NOT no-signal — the centers are usable, the bars are not.
+**Diagnosis.** No pooled master has been published at 1 q. Individual scan fits cannot stand in for it; acquire/collate at least one feasible member.
 
-**Fix →** TODO: γ-at-bound calibration v2 / tas4d
+**Fix →** TODO: acquire the first feasible master member
 
-### 5.3 q=0.7..0.7 (1 point): uncertifiable_interval
+### 5.3 q=0.7..0.7 (1 point): unmeasured
 
 | q | scan | det | disposition | verdict | ω₀ | interval |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -187,20 +187,19 @@
 
 *Terms:* **pull** — a difference divided by its error bar (a normalized residual); pull 1 = one σ away; **residual** — data minus fit; flat noise is good, leftover structure means the model missed something; **reconstructed** — the curve is rebuilt from the reported ω₀/Γ/resolution, not fitted again — presentation only
 
-**Diagnosis.** Fits deliver centers at 1 q but every interval flags interval_reliable=False (γ-at-bound: a resolution-limited spike whose bootstrap ω₀ collapses). This is uncertifiable, NOT no-signal — the centers are usable, the bars are not.
+**Diagnosis.** No pooled master has been published at 1 q. Individual scan fits cannot stand in for it; acquire/collate at least one feasible member.
 
-**Fix →** TODO: γ-at-bound calibration v2 / tas4d
+**Fix →** TODO: acquire the first feasible master member
 
-### 5.4 q=0.8..0.85 (2 points): uncertifiable_interval
+### 5.4 q=0.8..0.8 (1 point): interval_above_tolerance
 
 | q | scan | det | disposition | verdict | ω₀ | interval |
 | --- | --- | --- | --- | --- | --- | --- |
 | 0.8 | 483 | det | resolved | resolved | 5.72 | (unreliable) |
 | 0.8 | 514 | det | resolved | resolved | 5.7 | (unreliable) |
 | 0.8 | 533 | det | resolved | resolved | 5.6 | [5.505, 5.675] |
-| 0.85 | 482 | det | resolved | resolved | 5.86 | (unreliable) |
 
-*(+9 collate-only branch_continuation rows at these q — see results.csv; not listed individually.)*
+*(+6 collate-only branch_continuation rows at these q — see results.csv; not listed individually.)*
 
 ![scan 483 evidence](figures/dossier/scan_483_det.png)
 
@@ -218,7 +217,7 @@
 
 *Terms:* **pull** — a difference divided by its error bar (a normalized residual); pull 1 = one σ away; **residual** — data minus fit; flat noise is good, leftover structure means the model missed something; **reconstructed** — the curve is rebuilt from the reported ω₀/Γ/resolution, not fitted again — presentation only
 
-![scan 482 evidence](figures/dossier/scan_482_det.png)
+![scan 533 evidence](figures/dossier/scan_533_det.png)
 
 **One scan, reconstructed** — raw counts (±√N) for one scan/detector with the fit REBUILT from the stored parameters (an NNLS amplitude solve, not a refit) drawn as total + components, and a pull-residual strip beneath; the title carries the disposition/verdict and the honest interval string.
 
@@ -234,27 +233,28 @@
 
 *Terms:* **pull** — a difference divided by its error bar (a normalized residual); pull 1 = one σ away; **residual** — data minus fit; flat noise is good, leftover structure means the model missed something; **reconstructed** — the curve is rebuilt from the reported ω₀/Γ/resolution, not fitted again — presentation only
 
-**Diagnosis.** Fits deliver centers at 2 q but every interval flags interval_reliable=False (γ-at-bound: a resolution-limited spike whose bootstrap ω₀ collapses). This is uncertifiable, NOT no-signal — the centers are usable, the bars are not.
+**Diagnosis.** The model-robust pooled ω interval remains above tolerance at 1 q. Continue with the best master-predictive acquisition.
 
-**Fix →** TODO: γ-at-bound calibration v2 / tas4d
+**Fix →** TODO: continue by master-predictive information ranking
 
-### 5.5 q=0.9..0.9 (1 point): no_signal
-
-*(+3 collate-only branch_continuation rows at these q — see results.csv; not listed individually.)*
-
-**Diagnosis.** The descriptor found no significant peak across 1 q — an acoustic ω₀→0 under the elastic line is structurally unmeasurable. If these q sit near Γ the objective should exclude them at parse time rather than spend 3 declines discovering it.
-
-**Fix →** TODO: objective-aware Γ exclusion (if near Γ)
-
-### 5.6 q=0.95..1 (2 points): uncertifiable_interval
+### 5.5 q=0.85..1 (4 points): unmeasured
 
 | q | scan | det | disposition | verdict | ω₀ | interval |
 | --- | --- | --- | --- | --- | --- | --- |
+| 0.85 | 482 | det | resolved | resolved | 5.86 | (unreliable) |
 | 0.95 | 480 | det | resolved | resolved | 6.36 | (unreliable) |
 | 1 | 477 | det | resolved | resolved | 6.32 | (unreliable) |
 | 1 | 526 | det | resolved | resolved | 6.1 | (unreliable) |
 
-*(+8 collate-only branch_continuation rows at these q — see results.csv; not listed individually.)*
+*(+14 collate-only branch_continuation rows at these q — see results.csv; not listed individually.)*
+
+![scan 482 evidence](figures/dossier/scan_482_det.png)
+
+**One scan, reconstructed** — raw counts (±√N) for one scan/detector with the fit REBUILT from the stored parameters (an NNLS amplitude solve, not a refit) drawn as total + components, and a pull-residual strip beneath; the title carries the disposition/verdict and the honest interval string.
+
+*What good looks like:* the reconstructed curve overlays the data and the pull is flat noise — the delivered ω₀ is supported by the counts; where a scan was declined you can see why in the residual.
+
+*Terms:* **pull** — a difference divided by its error bar (a normalized residual); pull 1 = one σ away; **residual** — data minus fit; flat noise is good, leftover structure means the model missed something; **reconstructed** — the curve is rebuilt from the reported ω₀/Γ/resolution, not fitted again — presentation only
 
 ![scan 480 evidence](figures/dossier/scan_480_det.png)
 
@@ -272,38 +272,26 @@
 
 *Terms:* **pull** — a difference divided by its error bar (a normalized residual); pull 1 = one σ away; **residual** — data minus fit; flat noise is good, leftover structure means the model missed something; **reconstructed** — the curve is rebuilt from the reported ω₀/Γ/resolution, not fitted again — presentation only
 
-![scan 526 evidence](figures/dossier/scan_526_det.png)
+**Diagnosis.** No pooled master has been published at 4 q. Individual scan fits cannot stand in for it; acquire/collate at least one feasible member.
 
-**One scan, reconstructed** — raw counts (±√N) for one scan/detector with the fit REBUILT from the stored parameters (an NNLS amplitude solve, not a refit) drawn as total + components, and a pull-residual strip beneath; the title carries the disposition/verdict and the honest interval string.
-
-*What good looks like:* the reconstructed curve overlays the data and the pull is flat noise — the delivered ω₀ is supported by the counts; where a scan was declined you can see why in the residual.
-
-*Terms:* **pull** — a difference divided by its error bar (a normalized residual); pull 1 = one σ away; **residual** — data minus fit; flat noise is good, leftover structure means the model missed something; **reconstructed** — the curve is rebuilt from the reported ω₀/Γ/resolution, not fitted again — presentation only
-
-**Diagnosis.** Fits deliver centers at 2 q but every interval flags interval_reliable=False (γ-at-bound: a resolution-limited spike whose bootstrap ω₀ collapses). This is uncertifiable, NOT no-signal — the centers are usable, the bars are not.
-
-**Fix →** TODO: γ-at-bound calibration v2 / tas4d
+**Fix →** TODO: acquire the first feasible master member
 
 
 ## 6. Defects uncovered
 
 > ⚠ **Caveat —** The items below are machinery (logging / accounting / presentation) defects surfaced mechanically — not physics failures.
 
-1. stop reasons in campaign_summary.json contradict results.csv evidence — pre-S3 log: a q reported 'no signal' has delivered fits flagged interval_reliable=False (that is uncertifiable, not absence of signal)
-2. budget ledger reports counting-seconds spent < 1% of the amount while 85 run events exist (10.56 / 2.88e+04 s) — flag verify-units until the deterministic-tier virtual clock is confirmed
-3. 21 per-q rows lack a stop reason in campaign_summary.json (pre-S3 summary) — reasons back-derived from results.csv evidence here
-4. decide events carry no 'action' field (pre-Part-1 log) — actions were fingerprinted from the legacy 'event' field
+1. budget ledger reports counting-seconds spent < 1% of the amount while 85 run events exist (10.56 / 2.88e+04 s) — flag verify-units until the deterministic-tier virtual clock is confirmed
+2. decide events carry no 'action' field (pre-Part-1 log) — actions were fingerprinted from the legacy 'event' field
 
 
 ## 7. Verdict & recommended actions
 
 Stop state **unmeetable**; 10/21 grid q converged. Priority actions, most impactful first:
 
-- Resolve `no_signal` zones → TODO: objective-aware Γ exclusion (if near Γ)
-- Resolve `uncertifiable_interval` zones → TODO: γ-at-bound calibration v2 / tas4d
-- stop reasons in campaign_summary.json contradict results.csv evidence → TODO: logging/accounting fix
+- Resolve `unmeasured` zones → TODO: acquire the first feasible master member
+- Resolve `interval_above_tolerance` zones → TODO: continue by master-predictive information ranking
 - budget ledger reports counting-seconds spent < 1% of the amount while 85 run events exist (10.56 / 2.88e+04 s) → TODO: logging/accounting fix
-- 21 per-q rows lack a stop reason in campaign_summary.json (pre-S3 summary) → TODO: logging/accounting fix
 - decide events carry no 'action' field (pre-Part-1 log) → TODO: logging/accounting fix
 
 
@@ -318,5 +306,9 @@ Stop state **unmeetable**; 10/21 grid q converged. Priority actions, most impact
 | physics model / dispersion prior | card.state.json |
 | §5 dossier figures — results.csv params + data/*.json re-parse, reconstruct_curve | 14 rendered under report/figures/dossier/ |
 | buried per-scan set — every non-pooled fitted row, same reconstruct_curve path | 36 rendered under report/figures/scans/ |
+| final-certification manifests and derived checkpoints | report/certification/ — 0 files, 0.00 MiB |
+| ordinary analysis manifests and derived checkpoints | report/analysis/ — 0 files, 0.00 MiB |
 
 No number in this report was produced by refitting or re-scoring; every value is a re-presentation of what the campaign already recorded.
+
+Certification and ordinary-analysis revisions are retained indefinitely. They are derived artifacts; an operator may manually prune an old revision only after confirming that no published result references it. ISAR performs no automatic deletion.

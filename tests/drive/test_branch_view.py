@@ -1,12 +1,8 @@
-"""Phase 5b-live Part B — the drive reads the persisted branch boundary-cleanly and grounds the Fisher
-provider. The drift guard keeps the drive-local predict in lockstep with the session's."""
-import math
+"""The drive-local persisted-branch view stays in lockstep with the session's."""
 
 import pytest
 
-from isar.drive import loop
 from isar.drive.acquisition.branch_view import BranchView, predict_branch, select_branch
-from isar.drive.supervisor.stopping import GridQ
 from isar.session import branch_model
 
 
@@ -47,30 +43,3 @@ def test_select_branch_by_coverage_then_nearest_else_none():
     assert select_branch([b_lo, b_hi], 9.0) is b_hi          # none covers → nearest edge
     assert select_branch([], 5.0) is None
     assert select_branch([{"branch_id": "magnon", "w_min": 4.0, "w_max": 8.0}], 5.0) is None
-
-
-# --------------------------------------------------------------------------- live Fisher provider
-def _gridq(fit_kind):
-    return GridQ(index=0, hkl=(2.1, 0.0, 0.0), q=0.0, tolerance=0.1, n_production=2,
-                 best_prod_halfwidth=0.4, best_prod_omega0=5.0, counts_spent=2e10,
-                 last_prod_cost=1e10, last_fit_kind=fit_kind)
-
-
-def test_fisher_provider_grounds_unconstrained_in_range():
-    card = {"branch_models": [_branch()]}
-    provider = loop._make_fisher_provider(card, {"fwhm_dE": 0.5})
-    assert provider is not None
-    ss = provider(_gridq("unconstrained"), 5.0, 0.3)         # ω₀=5 in [4,6], last fit unconstrained
-    assert ss is not None and math.isfinite(ss) and ss > 0
-
-
-def test_fisher_provider_declines_when_ungrounded():
-    card = {"branch_models": [_branch()]}
-    provider = loop._make_fisher_provider(card, {"fwhm_dE": 0.5})
-    assert provider(_gridq("soft_prior"), 5.0, 0.3) is None      # last fit not unconstrained
-    assert provider(_gridq("unconstrained"), 50.0, 0.3) is None  # ω₀ far outside anchor range
-
-
-def test_no_branch_yields_no_provider():
-    assert loop._make_fisher_provider({"branch_models": []}, {"fwhm_dE": 0.5}) is None
-    assert loop._make_fisher_provider({}, {"fwhm_dE": 0.5}) is None

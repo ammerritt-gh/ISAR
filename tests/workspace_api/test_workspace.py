@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import csv
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +11,8 @@ import numpy as np
 import pytest
 
 from isar.workspace_api import Workspace, WorkspaceNotFound
-from isar.workspace_api.evaluate import _load_scan_arrays, evaluate_model
+from isar.workspace_api.evaluate import (UnsupportedFitView, _compose_manifest,
+                                         _load_scan_arrays, evaluate_model)
 from isar.workspace_api.views import FitView
 
 from .conftest import OLD_COLUMNS, detector_outcome, scan_entry
@@ -30,7 +32,8 @@ def test_open_and_surfaces_present(make_ws):
                "l": 0.0, "status": "fitted", "verdict": "resolved", "omega0": 5.1, "gamma": 0.3}],
         scans={"tavi:7:det": scan_entry(7, detectors={"det": detector_outcome(omega0=5.1, gamma=0.3)})},
         state={"dispersion_prior": [{"q_value": 0.5, "omega0": 5.1}], "branch_models": [{"id": "b0"}],
-               "branch_belief": [{"entropy": 0.1}], "lattice_epochs": []},
+               "branch_belief": [{"entropy": 0.1}],
+               "branch_tracks": {"revision": 2, "tracks": []}, "lattice_epochs": []},
     )
     ws = Workspace.open(root)
     assert ws.schema_version == 1
@@ -38,6 +41,7 @@ def test_open_and_surfaces_present(make_ws):
     assert len(ws.scans) == 1
     assert ws.card.collation["key"] == ["sample", "q", "T"]
     assert ws.branch_model.dispersion_prior and ws.branch_model.branch_models
+    assert ws.branch_model.branch_tracks["revision"] == 2
     assert ws.snapshot is not None
     assert ws.warnings == []
 
@@ -91,6 +95,134 @@ def test_results_none_degradation_on_old_format(make_ws):
     assert fv.candidates is None
     assert fv.members is None
     assert fv.modality is None
+
+
+def test_master_groups_and_pooled_spectrum_round_trip(make_ws):
+    physical = detector_outcome(omega0=5.0, gamma=0.3, q=[2.0, 0.0, 0.0])
+    root = make_ws(
+        rows=[
+            {"scan_id": "tavi:7:det", "scan": 7, "detector": "det", "status": "fitted",
+             "h": 2.0, "k": 0.0, "l": 0.0, "omega0": 5.0},
+            {"scan_id": "master:q2", "scan": 9000001, "detector": "det", "status": "fitted",
+             "h": 2.0, "k": 0.0, "l": 0.0, "T": 200.0, "omega0": 5.1,
+             "pooled": "True", "n_members": 1, "members": "7",
+             "spectrum_ref": "data/pooled/abc.json"},
+        ],
+        scans={"tavi:7:det": scan_entry(7, detectors={"det": physical})})
+    pooled = root / "data" / "pooled" / "abc.json"
+    pooled.parent.mkdir(parents=True)
+    pooled.write_text(json.dumps({
+        "schema": "isar.pooled_spectrum/1", "energy": [-1.0, 0.0, 1.0],
+        "counts": [0.0, 4.0, 9.0], "variance": [0.0, 4.0, 9.0],
+        "monitor": [10.0, 10.0, 10.0], "mask": [True, False, True],
+        "members": [["tavi", 7, "det"]], "n_members": 1,
+    }), encoding="utf-8")
+
+    ws = Workspace.open(root)
+    assert len(ws.master_groups) == 1
+    assert ws.master_groups[0].master.unit_id == "master:q2"
+    assert [member.unit_id for member in ws.master_groups[0].members] == ["tavi:7:det"]
+    spectrum = ws.pooled_spectrum(ws.master_groups[0].master)
+    assert spectrum.counts.tolist() == [0.0, 4.0, 9.0]
+    assert spectrum.yerr.tolist() == [0.0, 2.0, 3.0]  # no zero-count floor
+    assert spectrum.mask.tolist() == [True, False, True]
+
+
+def test_master_group_marks_unpublished_acquisition_stale(make_ws):
+    lines = [
+        json.dumps({"ts": 1.0, "kind": "physical_submission", "payload": {
+            "job_id": "pending", "hkl": [2.000000001, 0.0, 0.0]}}),
+        json.dumps({"ts": 2.0, "kind": "physical_submission", "payload": {
+            "job_id": "published", "hkl": [2.0, 0.0, 0.0]}}),
+        json.dumps({"ts": 3.0, "kind": "analyze", "payload": {"job_id": "published"}}),
+        json.dumps({"ts": 4.0, "kind": "physical_submission", "payload": {
+            "job_id": "failed", "hkl": [2.0, 0.0, 0.0]}}),
+        json.dumps({"ts": 5.0, "kind": "exception", "payload": {
+            "action": "scan_not_done", "job_id": "failed"}}),
+    ]
+    root = make_ws(rows=[{
+        "scan_id": "master:q2", "scan": 9000001, "detector": "det", "status": "fitted",
+        "h": 2.0, "k": 0.0, "l": 0.0, "pooled": "True", "n_members": 0,
+    }], log_lines=lines)
+
+    group = Workspace.open(root).master_groups[0]
+
+    assert group.pending_acquisitions == ("pending",)
+    assert group.stale_count == 1
+
+
+def test_pooled_spectrum_rejects_workspace_escape(make_ws):
+    ws = Workspace.open(make_ws())
+    with pytest.raises(ValueError, match="escapes"):
+        ws.pooled_spectrum("../outside.json")
+
+
+def test_pooled_spectrum_rejects_misaligned_artifact(make_ws):
+    root = make_ws()
+    pooled = root / "data" / "pooled" / "bad.json"
+    pooled.parent.mkdir(parents=True)
+    pooled.write_text(json.dumps({
+        "schema": "isar.pooled_spectrum/1",
+        "energy": [0.0, 1.0],
+        "counts": [1.0],
+        "variance": [1.0],
+        "monitor": [1.0],
+        "mask": [True],
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="not aligned"):
+        Workspace.open(root).pooled_spectrum("data/pooled/bad.json")
+
+
+def test_master_predictive_accepts_no_phonon_model(make_ws):
+    root = make_ws()
+    artifact = root / "data" / "master_predictive" / "null-model.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(json.dumps({
+        "schema": "isar.master_predictive/1",
+        "models": [{"weight": 1.0, "parameter_names": ["a"],
+                    "parameter_draws": [[1.0]], "omega0_draws": [],
+                    "expected_counts": [[1.0]]}],
+    }), encoding="utf-8")
+    payload = Workspace.open(root).master_predictive(
+        "data/master_predictive/null-model.json")
+    assert payload["models"][0]["omega0_draws"] == []
+
+
+def test_master_predictive_rejects_malformed_model(make_ws):
+    root = make_ws()
+    artifact = root / "data" / "master_predictive" / "bad.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(json.dumps({
+        "schema": "isar.master_predictive/1",
+        "models": [{"weight": 1.0, "parameter_names": ["a"],
+                    "parameter_draws": [[1.0]], "omega0_draws": [],
+                    "expected_counts": [[1.0], [2.0]]}],
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid master predictive model"):
+        Workspace.open(root).master_predictive("data/master_predictive/bad.json")
+
+
+def test_master_groups_records_invalid_spectrum_metadata_warning(make_ws):
+    root = make_ws(rows=[{
+        "scan_id": "master:q2", "scan": 9000001, "detector": "det", "status": "fitted",
+        "h": 2.0, "k": 0.0, "l": 0.0, "pooled": "True", "n_members": 1,
+        "spectrum_ref": "../outside.json",
+    }])
+    ws = Workspace.open(root)
+    assert len(ws.master_groups) == 1
+    assert any("pooled spectrum metadata unavailable" in warning for warning in ws.warnings)
+
+
+def test_additive_branch_tracking_fields_decode_from_flat_row():
+    fv = FitView.from_row({
+        "scan": 7, "detector": "det",
+        "branch_candidates": json.dumps([{"energy_meV": 5.0}, {"energy_meV": 7.8}]),
+        "selected_candidate_index": "1", "track_state": "confirmed", "track_revision": "4",
+    })
+    assert fv.branch_candidates == [{"energy_meV": 5.0}, {"energy_meV": 7.8}]
+    assert fv.selected_candidate_index == 1
+    assert fv.track_state == "confirmed"
+    assert fv.track_revision == 4
 
 
 def test_results_enriched_from_session_detector(make_ws):
@@ -284,6 +416,54 @@ def test_session_events_filters_and_truncation(make_ws):
     assert any("truncated" in w for w in ws.warnings)
 
 
+def test_master_assessments_use_latest_durable_model_snapshot(make_ws):
+    lines = [
+        json.dumps({"ts": 1.0, "kind": "decide", "payload": {
+            "event": "model_update", "per_q": [{"hkl": [2.1, 0, 0],
+            "assessment_state": "unmeasured", "converged": False}]}}),
+        json.dumps({"ts": 2.0, "kind": "decide", "payload": {
+            "event": "model_update", "per_q": [{"hkl": [2.1, 0, 0],
+            "q": 0.0, "tolerance": 0.2, "assessment_state": "certified",
+            "converged": True, "omega0": 5.0, "calibrated_halfwidth": 0.1,
+            "master_revision": "rev-2", "master_n_members": 7,
+            "diagnostics": ["linewidth_resolution_limited"]}]}}),
+    ]
+    assessment = Workspace.open(make_ws(log_lines=lines)).master_assessments[0]
+    assert assessment.state == "certified" and assessment.converged
+    assert assessment.master_revision == "rev-2" and assessment.n_members == 7
+    assert assessment.halfwidth == pytest.approx(0.1)
+
+
+def test_certification_status_validates_publication_hashes(make_ws):
+    root = make_ws(rows=[])
+    revision = root / "report" / "certification" / ("a" * 64)
+    revision.mkdir(parents=True)
+    progress = {
+        "schema": "isar.certification.progress/1", "fingerprint": "a" * 64,
+        "completed": 21, "total": 21, "phase": "publishing", "published": False,
+        "updated_ts": 12.0,
+    }
+    (revision / "progress.json").write_text(json.dumps(progress), encoding="utf-8")
+    paths = {
+        "session.json": root / "session.json",
+        "card.state.json": root / "card.state.json",
+        "results.csv": root / "report" / "results.csv",
+        "card.policy.toml": root / "card.policy.toml",
+    }
+    hashes = {name: hashlib.sha256(path.read_bytes()).hexdigest()
+              for name, path in paths.items()}
+    current = root / "report" / "certification" / "current.json"
+    current.write_text(json.dumps({
+        "schema": "isar.certification.current/1", "fingerprint": "a" * 64,
+        "published_hashes": hashes,
+    }), encoding="utf-8")
+    assert Workspace.open(root).certification_status.published is True
+
+    (root / "session.json").write_text("{}", encoding="utf-8")
+    status = Workspace.open(root).certification_status
+    assert status.published is False and status.phase == "publishing"
+
+
 # ---------------------------------------------------------------------------
 # partial-write tolerance
 # ---------------------------------------------------------------------------
@@ -355,6 +535,22 @@ def test_evaluate_pure_quasielastic_branch(make_ws):
     assert np.all(np.isfinite(out.total))
     qe_values = dict(out.components)["qe"]
     assert np.any(qe_values != 0.0)
+
+
+@pytest.mark.parametrize("manifest, message", [
+    ({"schema": "isar.model_manifest/1", "components": ["phonon"], "parameters": {}},
+     "must be an object"),
+    ({"schema": "isar.model_manifest/1",
+      "components": [{"type": "phonon_dho"}], "parameters": {}},
+     "valid prefix"),
+    ({"schema": "isar.model_manifest/1",
+      "components": [{"type": "constant_background", "prefix": "bg"}],
+      "parameters": {"bg.BG": "not-a-number"}},
+     "must be numeric"),
+])
+def test_manifest_reconstruction_reports_malformed_artifacts(manifest, message):
+    with pytest.raises(UnsupportedFitView, match=message):
+        _compose_manifest(manifest, None)
 
 
 # ---------------------------------------------------------------------------

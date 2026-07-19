@@ -154,6 +154,9 @@ def test_pooled_master_on_overlay_but_not_strips(make_ws):
     assert len(members) == 1 and len(members[0].x) == 2
     # ...and the master contributes NO strip (no persisted spectrum): still 3 strips.
     assert len(vm.spec.strips) == 3
+    at_master = [m for m in vm.spec.markers if m.kind is MarkerKind.VERDICT_RESOLVED
+                 and abs(m.x - 2.1) < 1e-9 and abs(m.y - 5.0) < 1e-9]
+    assert len(at_master) == 1  # member only; pooled verdict is composed into the square
 
 
 def test_verdict_glyphs_present(make_ws):

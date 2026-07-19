@@ -82,12 +82,81 @@ explicitly reopened; "future" means designed-for but not v1.
   n−1 and queue proposal n+1 for the instant the instrument idles. On real instruments counting
   dominates fitting by 20–100×, so compute hides entirely; "fitting-bound" is a TAVI-tier
   artifact only.
+- **O6.** (2026-07-17, Implemented) Scan value is **two-term**: deficit-weighted EIG on the target's
+  ω₀ **plus** λ × expected reduction of branch-assignment entropy. λ decays with label
+  confidence; the per-q classification term zeroes once the rival band at that q reaches a
+  looser **differentiation tolerance** (default `max(3 × tolerance_meV, resolution σ)`) — a
+  rival is never driven to the target tolerance. **No hard rival-spend caps**: branch MI is
+  bounded by current label entropy and therefore self-throttles; the budget stop supplies the
+  hard bound. "Done" is unchanged — the user path certified on the target branch. The committed
+  component-wise GH32 estimator and its version are part of the objective fingerprint.
+- **O7.** (2026-07-17, Partial) **Hypothesis/policy split.** `ExcitationHypothesis` = physics
+  character; declared in human-owned `card.policy.toml` (`[hypotheses.<name>]`); code never
+  writes it. `SteeringPolicy` = tactics (opening moves, search bands, λ); the hypothesis
+  suggests defaults, the planner owns decisions, the objective's `steering` block overrides.
+  `acoustic` / `optic` / `null` ship as named presets-as-data. New goal compiles freeze shipped
+  presets; policy tables parse and validate, while card-vs-goal resolution precedence remains.
+  Reference: `docs/HYPOTHESES.md`, MEASUREMENT_STEERING §4.5.
+- **O8.** (2026-07-17, Implemented) Hypothesis priors enter the branch-belief regression as **priors
+  on parameters** (mean + precision on intercept and slope-at-ZC in the WLS normal equations),
+  never as pseudo-anchors — pseudo-data double-counts evidence and feeds the classifier features
+  the prior painted in (circularity). The acoustic zone anchor migrates to this form.
+  Classification likelihoods and occupancy counts use real anchors only. Zone-centre energy
+  priors are lower-truncated normals; the zero-mean acoustic case is half-normal.
+- **O9.** (2026-07-17, Implemented) **Path is first-guess.** The driver may insert/extend q without
+  restriction when classification value warrants, each logged as driver-inserted with a
+  machine-readable purpose. The compiled user path remains the certification set;
+  driver-inserted q never seat convergence.
+- **O10.** (2026-07-17, Partial) **Three-tier extensibility.** New excitation characters are
+  Tier-1 *data* (parameter presets in TOML), never code branches. `dispersion_type`
+  (`branch` / `level` / `continuum`) is a Tier-2 registry plugin interface — declared with the
+  first slice, `branch` only implemented. The assignment posterior's `new` class + the `null`
+  hypothesis are the Tier-3 agnostic runtime track: notice the unknown, don't force it, hand it
+  to the human (who writes a Tier-1 preset for the next campaign).
+- **O11.** (2026-07-17, Implemented) **Mismatch detection + reproducibility.** Mandatory sanity-check
+  opening move probing the declared hypothesis's most discriminating feature; deterministic
+  search-band widening when the expected signal is absent (pure function of the persisted
+  decline counter); posterior-predictive prior-vs-data disagreement flagged in
+  `card.state.json` and stated in the report. The resolved hypothesis + preset version is
+  content-hashed into `card.state.json` at campaign start — presets are part of the determinism
+  chain.
+- **O12.** (2026-07-17, Implemented) **Pre-release clean break.** With no external ISAR users or
+  saved-campaign compatibility obligation, branch-aware steering starts a v2 contract:
+  `isar.objective/2` inside `isar.objective-envelope/2`; v1 envelopes and frozen objectives are
+  rejected rather than migrated. All in-repository consumers and characterization goldens move in
+  the same change. The Stage II↔III additive-only rule resumes at v2. W1's v1 evidence remains
+  historical evidence, not a load-bearing v2 fixture.
+- **O13.** (2026-07-18, Partial) **Counting time is tolerance-driven and dynamic.** In newly compiled
+  objectives, configured quicklook and production `ncount` values are floors rather than fixed
+  prescriptions. Pooled raw counts are fit with their summed per-point monitor exposure in the
+  Poisson model mean; observations and their ΣN variance are never rescaled. Refinement requests are
+  derived from the authoritative pooled interval, request only the remaining exposure, and are
+  bounded by the production ladder, per-scan growth/cap, neutron budget, and an empirical
+  interval-floor brake. Legacy/direct policies remain static unless they opt in. **Implemented
+  subset:** exposure-aware pooled Poisson fitting, deterministic tolerance scaling/brakes, and exact
+  replay. **Planned remainder:** Fisher/sample-based value-of-information dwell optimisation.
+- **O14.** (2026-07-18, Implemented) **Live instrument limits bound batches, not intent.** The frozen
+  objective retains the operator's policy and fingerprint. At campaign start ISAR snapshots TAVI's
+  point, per-point neutron, queue-neutron, and queue-depth limits with field-level provenance; runtime
+  proposals use the smaller policy/live ceiling and split larger tolerance-driven requests into legal
+  pooled batches. `/validate` remains final feasibility authority. A live ceiling below the policy
+  floor is explicitly unmeetable. Logical proposal IDs advance independently of physical submissions,
+  so refusals count separately while recenter retries remain one acquisition.
+- **O15.** (2026-07-18, Implemented) **A branch is an identity sequence, not a nearest-energy
+  sequence.** Natural-language optic energies anchor only the zone-centre hypothesis; only explicit
+  “nearest at every q” wording selects legacy `nearest_energy`. `tracked_branch` preserves all fitted
+  modes, assigns optic/acoustic/new/missing jointly over the frozen path after pooled updates, and
+  rebuilds the prior from connected, high-confidence folds. Acquisition confirms the ZC first, moves
+  outward by adjacency, permits one provisional bridge, and blocks certification and plotting across
+  unresolved gaps. Acoustic is retained as labeled non-target context rather than polished to the
+  optic tolerance.
 
 ## Workspace hygiene
 
-- **W1.** `out/` is disposable EXCEPT: archive `out/mvp_zone_test16` (frozen characterization
-  baseline for the diagnostic renderer + provenance fix) and `out/phase3_gold` (validation
-  evidence cited by docs) to a blessed location before deletion.
+- **W1.** `out/` is disposable EXCEPT: archive `out/mvp_zone_test16` (frozen v1 characterization
+  baseline for the diagnostic renderer + provenance fix) and `out/phase3_gold` (v1 validation
+  evidence cited by docs) to a blessed location before deletion. Under O12 these preserve history;
+  they do not block regenerated v2 fixtures or serve as v2 compatibility requirements.
 - **W2.** Every entry point writes a `run_manifest.json` (purpose, command line, config hashes,
   date, products, outcome); promote-or-archive policy collapses iteration churn.
 - **W3.** Pedagogical/validation figures live under `docs/` generated by script from the frozen
@@ -206,8 +275,9 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   binding semantics (unreliable-never-whiskers, pooled labeling + members, tier labeling,
   certifying-primary, truth-gated legend notes, strip = measured/no interpolation, per-point
   color channel); backends map tokens only. Certifying-tier derivation is canonical in
-  `isar_gui/viewmodels/certify.py`; pooled masters never overlay member data and appear in ω̂
-  overlays as marked points (strips excluded). Implemented (Phase 0/A).
+  `isar_gui/viewmodels/certify.py`; pooled masters overlay their persisted combined spectrum,
+  never a substituted member scan, and appear in ω̂ overlays as marked points (strips excluded).
+  Legacy masters without `spectrum_ref` remain explicitly curve-only. Implemented (Phase 0/A).
 - **G18.** Center view host (GUI Pass 3): the five display surfaces (fit inspector, waterfall,
   plane, dispersion, sandbox) are switchable pages of one central host; docks are tool panels
   only. Auto-follow (selection → scan page, campaign start → plane page) is user-overridable;
@@ -225,14 +295,66 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   (Job Object, best-effort, synchronous-taskkill fallback) is operator-fired escalation only.
   Resume never re-compiles a goal through the LLM: `--resume-latest` reuses the frozen
   objective from the last `campaign_start`; start fingerprints (`source: {kind, sha256}`) make
-  the Resume-vs-Start decision comparable. Live UI state is ledger-honest: aggregates only
-  (per-q live state needs an additive event-contract change first — GUI_DESIGN §16.6).
+  the Resume-vs-Start decision comparable. Live UI state is ledger-honest: the existing durable
+  `model_update.per_q` snapshot supplies persistent point state, joined in the viewer with the
+  additive activity-event overlay described by G22.
   Implemented (Pass 3).
 - **G20.** Compact campaign monitor (GUI Pass 3): the small window is an explicit mode — same
   window, dock layout stashed in memory, central stack swapped to a glanceable read-only card
   (status, current scan, budget, mini plane, log ticker, cooperative Stop). The session file
   always carries the full layout (snapshots guarded while compact; close expands first).
   Implemented (Pass 3).
+- **G21.** (2026-07-19, Implemented) **Pooled masters are first-class derived objects, not scan
+  chips.** Home presents a scrollable master/member tree. Masters select their persisted combined
+  spectrum and fit but cannot be dragged into manual groups; only physical children carry the
+  existing scan MIME payload. Reduce/collate publishes content-addressed pooled blobs before the
+  atomic results row containing `spectrum_ref`; old and crash-orphaned blobs are retained. Legacy
+  workspaces explicitly fall back to curve-only master display.
+- **G22.** (2026-07-19, Implemented) **Live work is an additive event overlay.** Durable
+  `activity_start`/`activity_end` and advisory `activity_progress` events describe scan, fit,
+  pooling, and certification work; chronological JSONL remains canonical while the GUI feed is
+  newest-first. Resume closes unmatched starts as `interrupted`, and viewers independently treat
+  pre-resume starts as stale. Persistent per-q state remains the existing `StopDecision.per_q`.
+- **O16.** (2026-07-19, Implemented) **Final certification is a master-only canonical generation.**
+  Drive submits a `isar.certification.request/1`; the session runner resolves it without crossing the
+  decision-only import boundary. `isar.certification/2` then contains one immutable unit per requested
+  pooled master in objective-path order. Its fingerprint covers pooled data/provenance, policy/model space, resolved calibration and
+  resolution, frozen prior/branch/target state, tier, settings, seeds, and the algorithm contract.
+  Exact ordinary master results and valid checkpoints are reused (`bayes` may satisfy `full`, never
+  the reverse); missing units run without fitting or mutating physical rows and checkpoint in
+  completion order. Canonical session/state/results files publish only after every unit exists, with
+  a hash-bearing marker written last. Revisions under `report/certification/<fingerprint>/` are
+  derived artifacts retained indefinitely; ISAR never garbage-collects them. An operator may
+  manually prune an unreferenced old revision. Version-1 scan checkpoints remain retained but are
+  not reusable by version 2.
+- **O17.** (2026-07-19) **No shutdown redesign from the OP2 interruption.** The retained GUI log has
+  no `via taskkill` fallback line, but external `taskkill`, an operator escalation, and silent Job
+  Object teardown cannot be distinguished from the retained evidence. Kill-on-close and the current
+  crash/resume contract remain unchanged.
+- **O18.** (2026-07-19, Implemented) **The pooled master is the sole scientific decision unit.**
+  Physical scans contribute counts, exposure, response, masks, cost, and provenance. Their fitted
+  parameters, intervals, branch labels, and verdicts cannot seed the prior, assign the authoritative
+  track, certify, or stop a q-point. Scan-quality counters, low information, candidate rejection, and
+  production caps are nonterminal diagnostics. Campaign outcomes are `met`, `incomplete`, and
+  independently proven `infeasible`; poor or ambiguous fits continue until a global limit.
+- **O19.** (2026-07-19, Implemented) **Measurement and analysis are separate cumulative clocks.**
+  Deterministic mode defaults to no measurement budget and a 3600-second analysis ceiling;
+  measurement-dominated tiers default to eight measurement hours and no analysis ceiling. Serialized
+  top-level analysis spans emit durable ten-second checkpoints keyed by stable operation ID. Replay
+  takes the maximum cumulative elapsed value per operation, closes unmatched spans as interrupted,
+  and never multiplies child-worker time. Limits gate new work, not an active fit wave or recovery of
+  already acquired data. Ordinary fit batches use immutable revisions under
+  `report/analysis/<fingerprint>/`: at most one worker-sized wave is dispatched at once, completed
+  units are atomically checkpointed, and scan/master results publish only after the canonical
+  worklist is complete. These derived revisions follow O16's retain-by-default/manual-prune policy.
+- **O20.** (2026-07-19, Implemented) **Acquisition is master-predictive and model-robust.** Every usable
+  master retains a content-addressed, bounded ensemble of full parameter draws from nested sampling,
+  bootstrap, or trusted Laplace covariance. Candidate scans estimate information about target ω and
+  plausible model/branch identity with deterministic common seeds. Missing draws cause a one-time
+  full-tier master escalation. A seeded exposure-scaled Poisson-deviance bootstrap (default α=0.01)
+  tests member homogeneity; inconsistency blocks certification and requests review but never removes
+  data or terminates q. Γ at the resolution boundary is diagnostic only when model-marginalized ω
+  remains identifiable.
 
 ## Session status update
 

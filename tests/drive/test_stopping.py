@@ -2,7 +2,7 @@
 import pytest
 
 from isar.drive.acquisition.calibration import Calibration
-from isar.drive.objective import ObjectiveSpec
+from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
 from isar.drive.supervisor import stopping as st
 
 _BUDGET = {"kind": "neutrons", "amount": 1e12, "spent": 0.0}
@@ -44,12 +44,67 @@ def test_per_q_carries_master_members():
     assert all(q["master_members"] == ["473", "493", "494"] for q in per_q)
 
 
+def test_summarize_grid_skips_unlocated_rows_and_does_not_mutate_master_input():
+    obj = _obj()
+    master = _master((2.1, 0.0, 0.0), 0.3, members=["a", "b"])
+
+    grid = st.summarize_grid(obj, [{"kind": "production", "hkl": None}], [master, {"hkl": None}])
+
+    assert grid[0].master["production_batch_fingerprint"]
+    assert "production_batch_fingerprint" not in master
+    assert all(point.n_production == 0 for point in grid)
+
+
+def test_interval_floor_window_is_clamped_to_one():
+    obj = _obj()
+    obj.steering["interval_floor_window"] = 0
+
+    assert all(point.interval_floor_window == 1 for point in st.summarize_grid(obj, []))
+
+
 # --------------------------------------------------------------------------- master convergence
 def test_met_when_all_masters_within_tolerance():
     obj = _obj()
     masters = [_master((h, 0.0, 0.0), 0.30) for h in (2.1, 2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, [], masters)
     assert st.evaluate_stop(obj, grid, _BUDGET).state == "met"
+
+
+def test_hypothesis_campaign_requires_new_production_pool_between_crossings():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    obj = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
+                        budget={"kind": "neutrons", "amount": 1e12},
+                        target_branch="optic", **frozen)
+    first = _master((2.0, 0.0, 0.0), 0.3, members=["batch-1"])
+    grid = st.summarize_grid(obj, [], [first])
+    fingerprint = grid[0].master["production_batch_fingerprint"]
+    assert not grid[0].converged
+    marker = {"hkl": (2.0, 0.0, 0.0), "kind": "certification_crossing",
+              "production_batch_fingerprint": fingerprint}
+    # Re-evaluating the unchanged pool cannot produce the second crossing.
+    assert not st.summarize_grid(obj, [marker], [first])[0].converged
+    second = _master((2.0, 0.0, 0.0), 0.25, members=["batch-1", "batch-2"])
+    assert st.summarize_grid(obj, [marker], [second])[0].converged
+
+
+def test_crossing_history_compares_only_latest_and_preserves_repeated_fingerprints():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    obj = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
+                        budget={"kind": "neutrons", "amount": 1e12},
+                        target_branch="optic", **frozen)
+    master = _master((2.0, 0.0, 0.0), 0.3, members=["batch-a"])
+    fingerprint = st.summarize_grid(obj, [], [master])[0].master["production_batch_fingerprint"]
+    markers = [
+        {"hkl": (2.0, 0.0, 0.0), "kind": "certification_crossing",
+         "production_batch_fingerprint": fingerprint},
+        {"hkl": (2.0, 0.0, 0.0), "kind": "certification_crossing",
+         "production_batch_fingerprint": "intervening"},
+        {"hkl": (2.0, 0.0, 0.0), "kind": "certification_crossing",
+         "production_batch_fingerprint": fingerprint},
+    ]
+    grid = st.summarize_grid(obj, markers, [master])
+    assert grid[0].crossing_fingerprints == [fingerprint, "intervening", fingerprint]
+    assert not grid[0].converged
 
 
 def test_flagged_master_with_reliable_interval_converges():
@@ -69,14 +124,55 @@ def test_unreliable_master_does_not_converge():
     assert st.evaluate_stop(obj, grid, _BUDGET).state != "met"
 
 
-def test_single_production_converges_when_master_degraded():
-    # Model-limited q: pooling degrades the fit so the master is junk (unusable), but a single
-    # production fit is flagged + reliable + within tolerance → converge on the single fit.
+def test_single_production_cannot_rescue_degraded_master():
     obj = _obj()
     obs = [_obs((h, 0.0, 0.0), "production", 0.3, disp="flagged") for h in (2.1, 2.2, 2.3, 2.4)]
     masters = [_master((h, 0.0, 0.0), 0.001, disp="junk", reliable=False) for h in (2.1, 2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
-    assert st.evaluate_stop(obj, grid, _BUDGET).state == "met"
+    assert st.evaluate_stop(obj, grid, _BUDGET).state == "continue"
+    assert all(not point.converged and point.best_prod_halfwidth is None for point in grid)
+
+
+def test_driver_inserted_observation_cannot_occupy_or_penalize_requested_q():
+    obj = _obj()
+    probe = _obs((2.10000001, 0.0, 0.0), "production", 0.01)
+    probe.update({"driver_inserted": True, "certification_eligible": False,
+                  "proposal_cost": 1234.0})
+    first = st.summarize_grid(obj, [probe])[0]
+    assert first.n_production == 0
+    assert first.n_decline == 0
+    assert first.counts_spent == 0.0
+    assert first.best_prod_halfwidth is None
+    assert not first.visited and not first.converged
+
+
+def test_unpooled_track_state_blocks_scalar_convergence_and_model_seeding():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    obj = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
+                        budget={"kind": "neutrons", "amount": 1e12},
+                        target_branch="optic", target_selector="tracked_branch", **frozen)
+    obs = _obs((2.0, 0.0, 0.0), "production", 0.2)
+    obs.update({"branch_id": "optic", "track_state": "ambiguous", "track_revision": 2})
+    # The individual ambiguity cannot become authority; the target master still lacks confirmation.
+    grid = st.summarize_grid(obj, [obs], [_master((2.0, 0.0, 0.0), 0.1)])
+    assert grid[0].track_state is None
+    assert not grid[0].converged
+    assert st.model_points(grid) == []
+
+
+def test_malformed_master_numerics_do_not_seed_dispersion_model():
+    malformed = _master((2.1, 0.0, 0.0), 0.1)
+    malformed["omega0"] = "not-a-number"
+    grid = st.summarize_grid(
+        _obj(),
+        [],
+        [malformed],
+    )
+    assert st.model_points(grid) == []
+
+    grid[0].master["omega0"] = 6.0
+    grid[0].master["halfwidth"] = float("inf")
+    assert st.model_points(grid) == []
 
 
 # --------------------------------------------------------------------------- S3 uncertifiable state
@@ -102,52 +198,44 @@ def test_flagged_master_with_profile_does_not_converge():
     assert st.evaluate_stop(obj, grid, _BUDGET).state != "met"
 
 
-def test_uncertifiable_delivery_is_third_state_then_stuck():
-    # A delivered-but-uncertifiable production fit: no convergence, decline counter UNTOUCHED,
-    # n_uncertifiable increments; after the budget the q is stuck with reason uncertifiable_interval,
-    # and the why-string names γ-at-bound / uncertifiable, NOT "no signal".
+def test_scan_uncertifiability_never_becomes_master_state_or_stuck():
     obj = _obj()
     obs = [_obs((2.1, 0.0, 0.0), "production", 0.001, disp="flagged",
-                certifiable=False, uncertifiable_kind="gamma_at_bound") for _ in range(st.MAX_DECLINES)]
+                certifiable=False, uncertifiable_kind="gamma_at_bound")
+           for _ in range(st.MAX_PROD_ATTEMPTS)]
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]   # the other three converge
     grid = st.summarize_grid(obj, obs, masters)
     g0 = grid[0]
-    assert g0.n_decline == 0 and g0.n_uncertifiable == st.MAX_DECLINES
-    assert not g0.converged and g0.stuck and g0.stuck_reason == "uncertifiable_interval"
+    assert g0.n_decline == 0 and g0.n_uncertifiable == 0
+    assert not g0.converged and not g0.stuck and g0.stuck_reason is None
     d = st.evaluate_stop(obj, grid, _BUDGET)
-    assert d.state == "unmeetable"
-    joined = " ".join(d.reasons).lower()
-    assert "uncertifiable" in joined and "no signal" not in joined
+    assert d.state == "continue"
     per_q = {tuple(q["hkl"]): q for q in d.to_dict()["per_q"]}
-    assert per_q[(2.1, 0.0, 0.0)]["reason"] == "uncertifiable_interval"
+    assert per_q[(2.1, 0.0, 0.0)]["assessment_state"] == "unmeasured"
 
 
-def test_uncertifiable_does_not_reset_declines():
-    # An uncertifiable delivery is NOT evidence of signal absence but also NOT a certifiable delivery:
-    # it must neither increment nor RESET the no-signal decline counter.
+def test_scan_fit_quality_does_not_update_decline_counters():
     obj = _obj()
     obs = ([_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="junk"),
             _obs((2.1, 0.0, 0.0), "production", 0.001, disp="flagged",
                  certifiable=False, uncertifiable_kind="gamma_at_bound")])
     grid = st.summarize_grid(obj, obs)
-    assert grid[0].n_decline == 1 and grid[0].n_uncertifiable == 1
+    assert grid[0].n_decline == 0 and grid[0].n_uncertifiable == 0
 
 
-def test_fast_tier_only_stuck_reason():
-    # A q whose fits never left the untrusted fast tier → stuck with reason fast_tier_only.
+def test_fast_tier_scan_sequence_never_abandons_q():
     obj = _obj()
     obs = [_obs((2.1, 0.0, 0.0), "production", None, disp="resolved",
-                certifiable=False, uncertifiable_kind="fast_tier") for _ in range(st.MAX_DECLINES)]
+                certifiable=False, uncertifiable_kind="fast_tier")
+           for _ in range(st.MAX_PROD_ATTEMPTS)]
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
-    assert grid[0].stuck and grid[0].stuck_reason == "fast_tier_only"
+    assert not grid[0].stuck and grid[0].stuck_reason is None
     d = st.evaluate_stop(obj, grid, _BUDGET)
-    assert any("fast" in r.lower() for r in d.reasons)
+    assert d.state == "continue"
 
 
-def test_all_validation_rejected_declines_is_infeasible():
-    # Every decline was a TAVI validation rejection (verdict validation_rejected) → the point is
-    # unreachable by the instrument, not merely quiet: stuck reason `infeasible`, not `no_signal`.
+def test_scan_validation_verdicts_do_not_establish_physical_infeasibility():
     obj = _obj()
     obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
            for _ in range(st.MAX_DECLINES)]
@@ -155,31 +243,25 @@ def test_all_validation_rejected_declines_is_infeasible():
         o["verdict"] = "validation_rejected"
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
-    assert grid[0].n_infeasible == st.MAX_DECLINES and grid[0].n_decline == st.MAX_DECLINES
-    assert grid[0].stuck and grid[0].stuck_reason == "infeasible"
+    assert grid[0].n_infeasible == 0 and grid[0].n_decline == 0
+    assert not grid[0].stuck
     d = st.evaluate_stop(obj, grid, _BUDGET)
-    joined = " ".join(d.reasons).lower()
-    assert "unreachable by the instrument" in joined and "no signal" not in joined
+    assert d.state == "continue"
 
 
-def test_unmodeled_declines_is_signal_unmodeled():
-    # Signal present but the model cannot fit it (disposition 'unmodeled') → stuck reason
-    # `signal_unmodeled` (a model problem), never `no_signal`.
+def test_unmodeled_individual_fits_do_not_abandon_q():
     obj = _obj()
     obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="unmodeled")
-           for _ in range(st.MAX_DECLINES)]
+           for _ in range(st.MAX_PROD_ATTEMPTS)]
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
-    assert grid[0].n_unmodeled == st.MAX_DECLINES
-    assert grid[0].stuck and grid[0].stuck_reason == "signal_unmodeled"
+    assert grid[0].n_unmodeled == 0
+    assert not grid[0].stuck
     d = st.evaluate_stop(obj, grid, _BUDGET)
-    joined = " ".join(d.reasons).lower()
-    assert "model cannot account for it" in joined and "no signal" not in joined
+    assert d.state == "continue"
 
 
-def test_mixed_declines_falls_back_to_no_signal():
-    # A mix of a validation rejection and a plain junk decline is neither ALL-infeasible nor
-    # unmodeled → the terminal reason stays `no_signal`.
+def test_mixed_individual_verdicts_remain_acquisition_provenance_only():
     obj = _obj()
     obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined"),
            _obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined"),
@@ -187,18 +269,17 @@ def test_mixed_declines_falls_back_to_no_signal():
     obs[0]["verdict"] = obs[1]["verdict"] = "validation_rejected"
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
-    assert grid[0].n_infeasible == 2 and grid[0].n_decline == 3
-    assert grid[0].stuck and grid[0].stuck_reason == "no_signal"
+    assert grid[0].n_infeasible == 0 and grid[0].n_decline == 0
+    assert not grid[0].stuck
 
 
-def test_no_usable_fits_is_still_no_signal():
-    # Genuine no-usable-fits q → stuck reason no_signal (existing behavior preserved).
+def test_no_usable_individual_fits_still_does_not_abandon_q():
     obj = _obj()
     obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="junk") for _ in range(3)]
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
-    assert grid[0].stuck and grid[0].stuck_reason == "no_signal"
-    assert any("no signal" in r for r in st.evaluate_stop(obj, grid, _BUDGET).reasons)
+    assert not grid[0].stuck and grid[0].stuck_reason is None
+    assert st.evaluate_stop(obj, grid, _BUDGET).state == "continue"
 
 
 def test_optic_objective_certifies_only_optic_observations_and_master():
@@ -214,23 +295,120 @@ def test_optic_objective_certifies_only_optic_observations_and_master():
     right_master["branch_id"] = "optic"
     grid = st.summarize_grid(obj, [acoustic, optic], [wrong_master, right_master])
     assert grid[0].best_prod_halfwidth is None
-    assert grid[1].best_prod_halfwidth == pytest.approx(0.1)
+    assert grid[1].best_prod_halfwidth is None
     assert grid[2].master is None
-    assert grid[3].master is right_master
+    assert grid[3].master["hkl"] == right_master["hkl"]
+    assert grid[3].master["branch_id"] == "optic"
 
 
-def test_branch_continuation_reports_branch_ambiguity_not_no_signal():
+def test_individual_branch_continuation_does_not_become_terminal_state():
     obj = _obj()
     obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False,
-                disp="branch_continuation") for _ in range(st.MAX_DECLINES)]
+                disp="branch_continuation") for _ in range(st.MAX_PROD_ATTEMPTS)]
     for row in obs:
         row["verdict"] = "branch_continuation"
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
-    assert grid[0].stuck_reason == "branch_ambiguity"
+    assert grid[0].stuck_reason is None
     decision = st.evaluate_stop(obj, grid, _BUDGET)
-    joined = " ".join(decision.reasons).lower()
-    assert "branch ambiguity" in joined and "no-signal" in joined
+    assert decision.state == "continue"
+
+
+def test_recenter_rows_share_one_logical_attempt_and_one_decline():
+    obj = _obj()
+    obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
+           for _ in range(3)]
+    for row in obs:
+        row.update({"acquisition_id": "A1", "submitted_ncount": 100,
+                    "proposal_cost": 1_000.0})
+    grid = st.summarize_grid(obj, obs)
+    assert grid[0].n_production == 1
+    assert grid[0].n_decline == 0
+    assert grid[0].counts_spent == pytest.approx(3_000.0)
+    assert grid[0].submitted_exposure == pytest.approx(300.0)
+
+
+def test_logical_exposure_and_last_ncount_do_not_depend_on_representative_row():
+    declined = _obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
+    declined.update({"acquisition_id": "A1", "submitted_ncount": 125,
+                     "proposal_cost": 1_250.0})
+    resolved = _obs((2.1, 0.0, 0.0), "production", 0.4, resolved=True, disp="resolved")
+    resolved.update({"acquisition_id": "A1", "submitted_ncount": None,
+                     "proposal_cost": 0.0})
+    grid = st.summarize_grid(_obj(), [declined, resolved])
+    assert grid[0].last_submitted_ncount == 125
+    assert grid[0].submitted_exposure == pytest.approx(125.0)
+
+
+def test_successful_recenter_resolves_its_logical_acquisition():
+    obj = _obj()
+    missed = _obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
+    found = _obs((2.1, 0.0, 0.0), "production", 0.4, resolved=True, disp="resolved")
+    for row in (missed, found):
+        row["acquisition_id"] = "A1"
+    grid = st.summarize_grid(obj, [missed, found])
+    assert grid[0].n_production == 1
+    assert grid[0].n_decline == 0
+    assert grid[0].best_omega0 is None
+
+
+def _master_update(exposure, halfwidth, **overrides):
+    update = {"kind": "pooled_master_update", "hkl": (2.1, 0.0, 0.0),
+              "candidate_id": "acoustic:0.1:lowest_energy", "branch_id": "acoustic",
+              "interval_method": "profile", "exposure_bucket": "global",
+              "calibration_version": "v1", "effective_exposure": exposure,
+              "diagnostic_halfwidth": halfwidth, "certifiable": True}
+    update.update(overrides)
+    return update
+
+
+def test_empirical_interval_floor_requires_three_comparable_updates_and_doubled_exposure():
+    obj = _obj()
+    updates = [_master_update(100.0, 1.0), _master_update(150.0, 0.99),
+               _master_update(210.0, 0.96)]
+    grid = st.summarize_grid(obj, updates)
+    assert grid[0].interval_floored is True
+    assert "interval_nonshrinking" in grid[0].diagnostics and not grid[0].stuck
+
+    insufficient_exposure = updates[:-1] + [_master_update(190.0, 0.96)]
+    assert not st.summarize_grid(obj, insufficient_exposure)[0].interval_floored
+    real_improvement = updates[:-1] + [_master_update(210.0, 0.90)]
+    assert not st.summarize_grid(obj, real_improvement)[0].interval_floored
+
+
+def test_empirical_interval_floor_requires_finite_matching_provenance():
+    obj = _obj()
+    base = [_master_update(100.0, 1.0), _master_update(150.0, 1.01),
+            _master_update(220.0, 1.02)]
+    assert st.summarize_grid(obj, base)[0].interval_floored  # widening is zero improvement
+    changed = base[:-1] + [_master_update(220.0, 1.02, calibration_version="v2")]
+    assert not st.summarize_grid(obj, changed)[0].interval_floored
+    missing = base[:-1] + [_master_update(220.0, None)]
+    assert not st.summarize_grid(obj, missing)[0].interval_floored
+
+
+def test_posterior_rejected_candidate_is_a_visible_nonterminal_diagnostic():
+    update = _master_update(100.0, 1.0, candidate_state="rejected")
+    grid = st.summarize_grid(_obj(), [update])
+    assert grid[0].candidate_rejected
+    assert "model_ambiguous" in grid[0].diagnostics
+    assert grid[0].stuck_reason is None and not grid[0].stuck
+
+
+def test_wrong_branch_master_updates_cannot_trigger_floor_or_rejection():
+    updates = [_master_update(100.0, 1.0, branch_id="optic"),
+               _master_update(150.0, 1.0, branch_id="optic"),
+               _master_update(220.0, 1.0, branch_id="optic", candidate_state="rejected")]
+    grid = st.summarize_grid(_obj(), updates)
+    assert grid[0].master_updates == []
+    assert not grid[0].interval_floored and not grid[0].candidate_rejected
+
+
+def test_production_cap_without_master_does_not_abandon_q():
+    obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
+           for _ in range(st.MAX_PROD_ATTEMPTS)]
+    grid = st.summarize_grid(_obj(), obs)
+    assert not grid[0].stuck and grid[0].stuck_reason is None
 
 
 def test_master_over_tolerance_keeps_accumulating():
@@ -248,54 +426,51 @@ def test_continue_when_underdetermined():
 
 
 # --------------------------------------------------------------------------- unmeetable branches
-def test_unmeetable_on_budget_exhaustion():
+def test_incomplete_on_budget_exhaustion():
     obj = _obj()
     grid = st.summarize_grid(obj, [_obs((2.1, 0.0, 0.0), "quicklook", 0.9)])
     d = st.evaluate_stop(obj, grid, {"kind": "neutrons", "amount": 100.0, "spent": 100.0})
-    assert d.state == "unmeetable"
+    assert d.state == "incomplete"
     assert any("budget" in r for r in d.reasons)
 
 
-def test_unmeetable_when_tolerance_below_floor():
+def test_infeasible_when_tolerance_below_declared_floor():
     obj = _obj(tol=0.05)
     cal = Calibration.from_dict({"inflation": 2.0, "buckets": [], "center_pull_mean": 0.117})
     grid = st.summarize_grid(obj, [])
     d = st.evaluate_stop(obj, grid, _BUDGET, calibration=cal)
-    assert d.state == "unmeetable"
+    assert d.state == "infeasible"
+    assert all(item["assessment_state"] == "infeasible" for item in d.per_q)
     assert any("floor" in r for r in d.reasons)
 
 
-def test_stuck_via_declines_is_skipped_not_campaign_fatal():
-    # One q gives no signal 3x while others are still workable (unvisited): the campaign continues.
+def test_declines_are_nonterminal_strategy_inputs():
     obj = _obj()
     obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="junk") for _ in range(3)]
     grid = st.summarize_grid(obj, obs)
     d = st.evaluate_stop(obj, grid, _BUDGET)
     assert d.state == "continue"
-    assert grid[0].stuck and not grid[1].stuck
+    assert not any(point.stuck for point in grid)
 
 
-def test_stuck_via_max_prod_attempts():
-    # A q pooled MAX_PROD_ATTEMPTS times with its master still over tolerance is abandoned.
+def test_max_production_count_is_not_a_terminal_cap():
     obj = _obj()
     obs = [_obs((2.1, 0.0, 0.0), "production", 0.9) for _ in range(st.MAX_PROD_ATTEMPTS)]
     masters = [_master((2.1, 0.0, 0.0), 0.9)] + [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
-    assert grid[0].stuck
+    assert not grid[0].stuck
     d = st.evaluate_stop(obj, grid, _BUDGET)
-    assert d.state == "unmeetable"
-    assert any("converged 3/4" in r for r in d.reasons)
+    assert d.state == "continue"
 
 
-def test_unmeetable_when_every_remaining_q_is_stuck():
+def test_unresolved_q_continues_until_global_limit():
     obj = _obj()
     obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="junk") for _ in range(3)]
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]   # the other three converge
     grid = st.summarize_grid(obj, obs, masters)
     d = st.evaluate_stop(obj, grid, _BUDGET)
-    assert d.state == "unmeetable"
-    assert any("no signal" in r for r in d.reasons)
-    assert any("converged 3/4" in r for r in d.reasons)
+    assert d.state == "continue"
+    assert not grid[0].stuck
 
 
 def test_path_scalars_are_arclength():

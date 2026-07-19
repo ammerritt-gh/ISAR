@@ -12,12 +12,16 @@ state instead of hardcoded. Nothing in `isar/analyze/` is modified (§4).
 from __future__ import annotations
 
 import csv
+import copy
+import hashlib
 import json
 import logging
+import math
 import os
 import time
+import tempfile
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -25,15 +29,19 @@ import numpy as np
 
 from isar.analyze import errors, loop, select, verdict
 from isar.analyze import gold as gold_mod
-from isar.analyze.context import ScanContext
+from isar.analyze.context import (
+    ScanContext, effective_exposure, normalized_exposure, select_exposure,
+)
 from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
+from isar.predictive import predictive_score as _predictive_score
 from isar.schema.card import Card
+from isar.schema.hypotheses import preset as hypothesis_preset
 from isar.schema.steering import IntensityMeasure, ParamConstraints
 from isar.session import branch_assignment as BA
-from isar.session import branch_model, calibrations, guidelines as guide_mod, ingest, router, session_prior
+from isar.session import branch_model, branch_tracking, calibrations, guidelines as guide_mod, ingest, router, session_prior
 
 # Steering Phase 2c: apply the low-q branch soft-constraint when the dispersion prior predicts a
 # phonon within this many resolution FWHM of the elastic line (the merging regime where Γ/A go
@@ -44,7 +52,7 @@ LOW_Q_FWHM_FACTOR = 2.0
 # posterior on the prelim-best label (diagnostics-only; the bootstrap interval stays authoritative).
 FULL_TIERS = ("full", "bayes")
 from isar.session import unit_data
-from isar.session.state import ScanEntry, SessionState, content_hash
+from isar.session.state import ScanEntry, SessionState, canonical_hash, content_hash
 from isar.session.timing import NullTimer
 from isar.session.workspace import Workspace
 
@@ -145,8 +153,37 @@ class FitOutcome:
     # older ledgers, when there is no delivered fit, or when nothing converged.
     amplitudes: dict | None = None
     candidates: list | None = None
+    # Declarative, versioned description of the delivered model.  This is the read-only viewer's
+    # reconstruction contract: registered component kinds + prefixes + the exact fitted parameter
+    # vector, never a pickled Python object or import path.
+    model_manifest: dict | None = None
     target_branch: str = "acoustic"
     target_label: str = "acoustic"
+    effective_exposure: float | None = None
+    exposure_provenance: dict | None = None
+    branch_posterior: dict | None = None
+    candidate_id: str | None = None
+    candidate_state: str | None = None
+    acquisition_id: str | None = None
+    # Additive tracked-branch contract. Every fitted mode remains an unordered candidate; the joint
+    # path tracker records which one is currently selected without erasing earlier alternatives.
+    branch_candidates: list | None = None
+    selected_candidate_index: int | None = None
+    track_state: str | None = None
+    track_revision: int | None = None
+    spectrum_ref: str | None = None
+    predictive_ref: str | None = None
+    master_revision: str | None = None
+    model_interval: tuple | None = None
+    model_robust: bool | None = None
+    model_entropy: float | None = None
+    gamma_at_bound: bool = False
+    linewidth_state: str | None = None
+    pool_consistent: bool | None = None
+    consistency_statistic: float | None = None
+    consistency_pvalue: float | None = None
+    consistency_alpha: float | None = None
+    consistency_seed: int | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -154,6 +191,7 @@ class FitOutcome:
         d["omega0_profile"] = list(self.omega0_profile) if self.omega0_profile is not None else None
         d["hesse_interval"] = list(self.hesse_interval) if self.hesse_interval is not None else None
         d["bayes_interval"] = list(self.bayes_interval) if self.bayes_interval is not None else None
+        d["model_interval"] = list(self.model_interval) if self.model_interval is not None else None
         return d
 
 
@@ -166,6 +204,33 @@ class RunSummary:
     n_fitted_this_run: int = 0     # scans that reached the fit/non-result stage this run
     n_reprocessed: int = 0         # scans (re)processed this run, any outcome (incl. excluded/held)
     collation: object = None
+    analysis_incomplete: bool = False  # checkpointed work exists; no ledger/results generation published
+
+
+class AnalysisWorkIncomplete(RuntimeError):
+    """The soft analysis deadline stopped dispatch before the canonical worklist completed."""
+
+
+@dataclass
+class _AnalysisDeadline:
+    """Shared wave gate for scan and master fits in one top-level runner invocation."""
+
+    deadline: float | None
+    force_initial_wave: bool = False
+    waves_started: int = 0
+
+    def begin_wave(self) -> bool:
+        now = time.monotonic()
+        permitted = (self.deadline is None or now < self.deadline
+                     or (self.force_initial_wave and self.waves_started == 0))
+        if permitted:
+            self.waves_started += 1
+        return permitted
+
+    def remaining_seconds(self) -> float | None:
+        if self.deadline is None:
+            return None
+        return max(self.deadline - time.monotonic(), 0.0)
 
 
 # ===========================================================================
@@ -264,10 +329,14 @@ def _exposure_per_point(rec, ctx) -> tuple[float, str]:
     norm = getattr(rec, "normalization", None)
     if norm is None:
         return float("nan"), ""
-    mode = getattr(norm, "counting_mode", "") or ""
-    arr = norm.monitor if mode == "monitor" else norm.time
+    # The mask is the fit-window shape authority and remains available on lightweight consumers
+    # that intentionally omit the acquisition grid (for example portable intensity reconstruction).
+    selected = select_exposure(norm, np.asarray(ctx.mask, dtype=bool).shape, ctx.mask)
+    mode = selected.source or (getattr(norm, "counting_mode", "") or "")
+    if selected.absolute is None:
+        return float("nan"), mode
     try:
-        a = np.asarray(arr, dtype=float)
+        a = np.asarray(selected.absolute, dtype=float)
         m = np.asarray(ctx.mask, dtype=bool)
         if a.size == m.size and m.any():
             a = a[m]
@@ -302,6 +371,51 @@ def _intensity_measure(rec, ctx, fit) -> dict | None:
         instrument=str(ctx.instrument)).to_dict()
 
 
+def _effective_exposure_for(rec, ctx, fit, *, absolute_exposure=None,
+                            absolute_exposure_source=None, target_center=None,
+                            acquisition_target_energy=None,
+                            submitted_ncount: int | None = None) -> dict:
+    """One exposure definition for single scans and pooled masters."""
+    target = target_center
+    if target is None or not np.isfinite(target):
+        target = fit.get("omega0")
+    if target is None or not np.isfinite(target):
+        target = acquisition_target_energy
+    if target is None or not np.isfinite(target):
+        target = getattr(ctx, "acoustic_omega", None)
+    if target is None or not np.isfinite(target):
+        target = getattr(ctx, "prior_omega", None)
+    if target is None or not np.isfinite(target):
+        target = 0.5 * (float(ctx.window[0]) + float(ctx.window[1]))
+    exposure = absolute_exposure
+    normalization_source = absolute_exposure_source
+    if exposure is None and rec is not None:
+        norm = getattr(rec, "normalization", None)
+        selected = select_exposure(norm, np.asarray(ctx.x).shape, ctx.mask)
+        exposure = selected.absolute
+        normalization_source = selected.source
+    info = effective_exposure(
+        ctx.x, exposure, ctx.mask, target_center=float(target),
+        resolution_fwhm=float(ctx.gauss_fwhm) + float(ctx.lorentz_fwhm),
+        submitted_ncount=submitted_ncount)
+    info["normalization_source"] = normalization_source
+    return info
+
+
+def _acquisition_provenance_for(rec, card, scan_id: str) -> tuple[str, dict | None]:
+    """Resolve a driven TAVI scan through machine state, else return its stable standalone ID."""
+    raw = getattr(rec, "raw_header", None) or {}
+    tavi = raw.get("tavi") if isinstance(raw, dict) else None
+    job_id = tavi.get("job_id") if isinstance(tavi, dict) else None
+    if job_id is not None:
+        for item in reversed(getattr(card.state, "acquisition_provenance", None) or []):
+            if str(item.get("job_id")) == str(job_id):
+                acquisition_id = item.get("acquisition_id")
+                if acquisition_id:
+                    return str(acquisition_id), item
+    return f"scan:{scan_id}", None
+
+
 def _build_descriptor(ctx):
     """The model-free L0 :class:`ScanDescriptor` for this scan, or None on any failure — a report
     aid + Phase-4 falsification input, never a reason to fail a fit. Built once per scan and reused
@@ -309,7 +423,8 @@ def _build_descriptor(ctx):
     hard-fix retry, so one object serves both)."""
     try:
         return describe_spectrum(ctx.x, ctx.counts, center=ctx.center, gauss_fwhm=ctx.gauss_fwhm,
-                                 lorentz_fwhm=ctx.lorentz_fwhm, mask=ctx.mask)
+                                 lorentz_fwhm=ctx.lorentz_fwhm, mask=ctx.mask,
+                                 exposure_scale=ctx.exposure_scale)
     except Exception:  # noqa: BLE001
         return None
 
@@ -352,6 +467,41 @@ def _amplitudes_of(best, by_hyp) -> dict | None:
     return {n: float(best.params[n]) for n in hyp.build().linear_names() if n in best.params}
 
 
+def _model_manifest_of(best, by_hyp) -> dict | None:
+    """Declarative ``isar.model_manifest/1`` payload for the delivered structure.
+
+    The manifest intentionally names only component kinds owned by ISAR.  It is sufficient for a
+    Qt-free reader to reconstruct multi-mode curves without importing a hypothesis class or solving
+    amplitudes again.  An unknown future component is omitted by returning ``None`` rather than
+    publishing a plausible but incomplete model.
+    """
+    if best is None:
+        return None
+    hyp = by_hyp.get(best.label)
+    if hyp is None:
+        return None
+    from isar.analyze.components import (ConstantBackground, Elastic, PhononDHO,
+                                         QuasiElastic)
+    kinds = {PhononDHO: "phonon_dho", Elastic: "elastic",
+             QuasiElastic: "quasielastic", ConstantBackground: "constant_background"}
+    components = []
+    composite = hyp.build()
+    for component in composite.components:
+        kind = kinds.get(type(component))
+        if kind is None:
+            return None
+        item = {"type": kind, "prefix": str(component.prefix)}
+        if isinstance(component, PhononDHO):
+            item["peak"] = str(component.peak)
+        components.append(item)
+    parameters = {name: float(best.params[name]) for name in composite.param_names()
+                  if name in best.params}
+    if set(parameters) != set(composite.param_names()):
+        return None
+    return {"schema": "isar.model_manifest/1", "components": components,
+            "parameters": parameters}
+
+
 def _candidate_rows(scores, fits) -> list | None:
     """The model-selection candidate table (P0-4): one compact row per SCORED structure. ``scores``
     is ``select.score_models``'s output (the exact ranking the driver selects on — AIC = cost + 2k,
@@ -387,7 +537,8 @@ def _candidate_rows(scores, fits) -> list | None:
 
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
             errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False,
-            descriptor=None, structure_hint=None, bayes_opts=None):
+            descriptor=None, structure_hint=None, bayes_opts=None,
+            predictive_n_members: int | None = None):
     """Two-stage structure fit (§ multiplicity), optionally narrowed by guideline labels, then
     select + verdict. Mirrors docs/phase3_gold*_check.run_pipeline; returns extracted fields.
 
@@ -414,8 +565,11 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     run_fast = errors_tier == "fast"     # HESSE ω₀ interval + trust flag, no bootstrap (fast loop)
     run_bayes = errors_tier == "bayes"   # full + nested-sampling posterior on the prelim-best label
     _t_two_stage = time.perf_counter()
+    # Candidate enumeration is point-estimation only. Full-tier MINOS is authoritative only after
+    # the preliminary AIC pass and runs once per survivor in errors.attach_batch below.
     results, structure_skipped = loop.fit_structures_two_stage_hinted(
-        ctx, minos=run_full, peaks=peaks, structure_hint=structure_hint)
+        ctx, minos=False, peaks=peaks, structure_hint=structure_hint,
+        executor=boot_executor)
     two_stage_seconds = round(time.perf_counter() - _t_two_stage, 4)
     # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
     by_hyp = {h.label: h for h in enumerate_structures(ctx)}
@@ -436,14 +590,16 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     errors_attach_seconds = 0.0
     if run_full:
         _t_errors = time.perf_counter()
+        survivor_items = []
         for label in prelim.survivors:
             r = fits.get(label)
             if r is not None and r.optimizer_converged and label in by_hyp:
-                errors.attach(r, by_hyp[label], ctx, M=M, seed=seed, with_profile=True,
-                              with_bayes=(run_bayes and label == prelim.best),
-                              prior=_bayes_prior_for(prior, card),
-                              boot_workers=boot_workers, boot_executor=boot_executor,
-                              boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
+                survivor_items.append((r, by_hyp[label], ctx))
+        errors.attach_batch(
+            survivor_items, M=M, seed=seed, with_profile=True,
+            bayes_label=(prelim.best if run_bayes else None),
+            prior=_bayes_prior_for(prior, card), boot_workers=boot_workers,
+            executor=boot_executor, boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
         errors_attach_seconds = round(time.perf_counter() - _t_errors, 4)
     sel = select.select_models(results)
     sv = verdict.classify(results, ctx, sel, prior=prior, descriptor=descriptor)
@@ -550,17 +706,24 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # within_model["method_seconds"]). Populated on the full/bayes tiers; 0.0 elsewhere
     # (no attach ran). The existing errors_attach_seconds lump is kept untouched.
     bootstrap_seconds = minos_seconds = profile_seconds = bayes_seconds = 0.0
+    profile_method_seconds = []
+    profile_batch_seconds = []
     for label in prelim.survivors:
         r = fits.get(label)
         wm_r = getattr(r, "within_model", None) if r is not None else None
         msec = (wm_r or {}).get("method_seconds") or {}
         bootstrap_seconds += float(msec.get("bootstrap", 0.0))
         minos_seconds += float(msec.get("minos", 0.0))
-        profile_seconds += float(msec.get("profile", 0.0))
+        profile_method_seconds.append(float(msec.get("profile", 0.0)))
+        if "profile_batch" in msec:
+            profile_batch_seconds.append(float(msec["profile_batch"]))
         bayes_seconds += float(msec.get("bayes", 0.0))
     bootstrap_seconds = round(bootstrap_seconds, 4)
     minos_seconds = round(minos_seconds, 4)
-    profile_seconds = round(profile_seconds, 4)
+    # attach_batch fans every survivor's profile work onto the shared pool together; its wall
+    # contribution is the critical path. The executor-free compatibility path remains additive.
+    profile_seconds = round((max(profile_batch_seconds) if profile_batch_seconds
+                             else sum(profile_method_seconds)), 4)
     bayes_seconds = round(bayes_seconds, 4)
 
     n_modes = int(best.n_modes) if best is not None else 1
@@ -569,7 +732,11 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # amplitudes and the model-selection candidate table. Built from the FINAL selection (``sel``)
     # and the delivered ``best`` — so an escalated re-fit (its own fit_one call) carries its own.
     amplitudes = _amplitudes_of(best, by_hyp)
+    model_manifest = _model_manifest_of(best, by_hyp)
     candidates = _candidate_rows(sel.scores, fits)
+    predictive_ensemble = (_predictive_ensemble(
+        best, sel.scores, fits, by_hyp, ctx, seed=seed,
+        n_members=int(predictive_n_members)) if predictive_n_members is not None else None)
 
     # Phase 4a — under-model falsification: the descriptor localised real signal the phonon model
     # can't fit. This is NOT an ω₀ measurement (machine contract): null the number/intervals and
@@ -599,6 +766,8 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "cost_per_dof": (best.cost_per_dof if best else None),
         "n_modes": n_modes, "modes": modes,
         "amplitudes": amplitudes, "candidates": candidates,
+        "model_manifest": model_manifest,
+        "predictive_ensemble": predictive_ensemble,
         "fit_kind": fit_kind,
         "gamma_at_bound": bool(getattr(best, "gamma_at_bound", False)) if best else False,
         "two_stage_seconds": two_stage_seconds,
@@ -725,7 +894,7 @@ def _process_one_task(args):
 
 def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_workers,
                use_pool, scan_workers, boot_executor=None, boot_adaptive=False,
-               bayes_opts=None) -> list:
+               bayes_opts=None, on_complete=None, deadline_gate=None) -> list:
     """Fit the fresh scan-detectors, serially or over a process pool, preserving submission order.
 
     ``boot_executor`` (a shared bootstrap pool) is threaded only through the SERIAL path — an
@@ -740,28 +909,60 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
     if not use_pool:
         out = []
         for a in arg_list:
+            if deadline_gate is not None and not deadline_gate.begin_wave():
+                raise AnalysisWorkIncomplete(
+                    f"analysis deadline reached after {len(out)}/{len(arg_list)} scan fit units")
             (rec, det, q, T, sample, scan_id, card_, g_, runcal_, exclusions_, chash, ghash,
              M_, tier_, seed, bw, adaptive_, bopts_) = a
-            out.append(_process_one(rec, det, q, T, sample, scan_id, card_, g_, runcal_,
-                                    exclusions_, chash, ghash, M=M_, seed=seed, errors_tier=tier_,
-                                    boot_workers=bw, boot_executor=boot_executor,
-                                    boot_adaptive=adaptive_, bayes_opts=bopts_))
+            entry = _process_one(rec, det, q, T, sample, scan_id, card_, g_, runcal_,
+                                 exclusions_, chash, ghash, M=M_, seed=seed, errors_tier=tier_,
+                                 boot_workers=bw, boot_executor=boot_executor,
+                                 boot_adaptive=adaptive_, bayes_opts=bopts_)
+            if on_complete is not None:
+                on_complete(entry)
+            out.append(entry)
         return out
     max_workers = min(scan_workers, len(arg_list))
-    # map preserves order → results align with `tasks`, keeping prior-seeding + row order deterministic.
+    # Dispatch bounded waves.  map preserves order within each wave, so cached-unit reduction remains
+    # canonical while the soft deadline can stop *new* work without killing active processes.
     with ProcessPoolExecutor(max_workers=max_workers) as ex:
-        return list(ex.map(_process_one_task, arg_list))
+        out = []
+        for offset in range(0, len(arg_list), max_workers):
+            if deadline_gate is not None and not deadline_gate.begin_wave():
+                raise AnalysisWorkIncomplete(
+                    f"analysis deadline reached after {len(out)}/{len(arg_list)} scan fit units")
+            wave = arg_list[offset:offset + max_workers]
+            for entry in ex.map(_process_one_task, wave):
+                if on_complete is not None:
+                    on_complete(entry)
+                out.append(entry)
+        return out
 
 
 def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200,
               detectors=None, formats=("html", "markdown"), workers=None,
-              errors_tier="full", bayes_cli=None, timer=None) -> RunSummary:
+              errors_tier="full", bayes_cli=None, timer=None,
+              certification_manifest=None, analysis_allowance_seconds=None,
+              finish_initial_wave=False) -> RunSummary:
     timer = timer or NullTimer()
     with timer.stage("workspace_load"):
         card, session = workspace.load()
-    for p in map(str, data_paths):
-        if p not in session.data_paths:
-            session.data_paths.append(p)
+    checkpoint_store = None
+    if certification_manifest is not None:
+        from isar.session.certification import CheckpointStore
+        checkpoint_store = CheckpointStore(certification_manifest)
+    master_certification = bool(
+        checkpoint_store is not None and checkpoint_store.is_master_certification)
+    if master_certification and force:
+        raise ValueError("force=True is invalid for isar.certification/2 master-only runs")
+    deadline_gate = _AnalysisDeadline(
+        None if analysis_allowance_seconds is None
+        else time.monotonic() + max(float(analysis_allowance_seconds), 0.0),
+        force_initial_wave=bool(finish_initial_wave))
+    if not master_certification:
+        for p in map(str, data_paths):
+            if p not in session.data_paths:
+                session.data_paths.append(p)
 
     with timer.stage("ingest_parse") as _m_ingest:
         plan = ingest.discover(data_paths, card)
@@ -777,33 +978,34 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
             qc.qc_record(rec, card)
 
     # File-manifest bookkeeping.
-    for f in plan.measurement_files + plan.companion_files:
-        rp = str(Path(f).resolve())
-        try:
-            stat = Path(f).stat()
-            # Merge, not replace: ingest may have written richer rows (n_scans/scan_ids) for these
-            # keys — preserve them so an `isar ingest` before an `isar run` survives the run.
-            session.files.setdefault(rp, {}).update(
-                {"size": stat.st_size, "mtime": stat.st_mtime,
-                 "format": "companion" if f in plan.companion_files else "measurement"})
-        except OSError as exc:
-            log.warning("run: could not stat %s (%s); manifest row skipped", f, exc)
+    if not master_certification:
+        for f in plan.measurement_files + plan.companion_files:
+            rp = str(Path(f).resolve())
+            try:
+                stat = Path(f).stat()
+                # Merge, not replace: ingest may have written richer rows (n_scans/scan_ids) for
+                # these keys — preserve them across an ordinary ingest-then-run workflow.
+                session.files.setdefault(rp, {}).update(
+                    {"size": stat.st_size, "mtime": stat.st_mtime,
+                     "format": "companion" if f in plan.companion_files else "measurement"})
+            except OSError as exc:
+                log.warning("run: could not stat %s (%s); manifest row skipped", f, exc)
 
     # Context updates BEFORE measurements (calibration/alignment/environment).
     with timer.stage("route_context"):
         routed = router.route(records)
-        ctx_lines = router.apply_context_updates(
-            routed, card, session, companion_files=plan.companion_files)
+        ctx_lines = ([] if master_certification else router.apply_context_updates(
+            routed, card, session, companion_files=plan.companion_files))
 
         # Optional LLM adjudication (off critical path; degrade, never stall).
-        if llm or (card.policy.adjudication or {}).get("enabled"):
+        if not master_certification and (llm or (card.policy.adjudication or {}).get("enabled")):
             ctx_lines += _maybe_adjudicate(routed.measurements, card)
 
     # Per-unit data files for the GUI inspector, exactly as `isar ingest` writes them — so a run-only
     # workspace (never ingested) still has a counts plot per unit. Reduced+QC'd records; failures are
     # logged and skipped, never fatal. (unit_data.write_unit_data mirrors the ingest contract.)
     _unit_data_dir = getattr(workspace, "root", None)
-    if _unit_data_dir is not None:
+    if _unit_data_dir is not None and not master_certification:
         _unit_data_dir = Path(_unit_data_dir) / "data"
         for rec in routed.measurements:
             for det_id in rec.spectra:
@@ -820,6 +1022,15 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
     seed_base = 6000
 
     summary = RunSummary(gaps=ingest.file_gaps(records), context_lines=ctx_lines)
+
+    if master_certification:
+        fit_options = dict(checkpoint_store.manifest.get("fit_options") or {})
+        return _run_master_certification(
+            workspace, card, session, records, runcal, g, checkpoint_store,
+            summary=summary, M=int(fit_options.get("M", M)), errors_tier=errors_tier,
+            workers=_resolve_workers(workers),
+            bayes_opts=dict(fit_options.get("bayes_opts") or _resolve_bayes_opts(bayes_cli)),
+            deadline_gate=deadline_gate, timer=timer)
 
     # --- Pass 1: split fresh scan-detectors (to fit) from carried ones, preserving report order. ---
     from isar.session.state import canonical_hash
@@ -853,6 +1064,60 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
             tasks.append((rec, det, q, T, sample, scan_id, chash, ghash, seed_base + scan))
             plan.append(("task", scan, det, task_idx))
 
+    # Ordinary deadline-bounded work uses the same immutable/checkpointed reduction contract as final
+    # certification.  The fingerprint freezes every parsed record plus policy/state and the canonical
+    # scan/master worklist; worker count and the remaining allowance may change harmlessly on resume.
+    if checkpoint_store is None and analysis_allowance_seconds is not None:
+        from isar.session.certification import CheckpointStore, create_analysis_manifest
+
+        def _file_sha256(path):
+            candidate = Path(path)
+            return hashlib.sha256(candidate.read_bytes()).hexdigest() if candidate.exists() else None
+
+        master_worklist = []
+        try:
+            preview = collate_mod.collate(records, card)
+            for group in sorted(getattr(preview, "groups", ()), key=lambda item: str(item.key)):
+                merged = getattr(group, "merged", None)
+                if merged is None:
+                    continue
+                master_worklist.append({
+                    "key": list(group.key),
+                    "members": [list(member) for member in merged.members],
+                })
+        except Exception as exc:  # noqa: BLE001 — the ordinary run keeps collation best-effort
+            log.warning("could not preview master worklist for analysis checkpoints: %s", exc)
+
+        manifest_path = create_analysis_manifest(workspace.root, {
+            "tier": errors_tier,
+            "force": bool(force),
+            "M": int(M),
+            "inputs": {
+                "policy_sha256": _file_sha256(workspace.root / "card.policy.toml"),
+                "state_sha256": _file_sha256(workspace.root / "card.state.json"),
+                "records": [
+                    {"experiment_id": rec.experiment_id, "scan_number": rec.scan_number,
+                     "content_hash": content_hash(rec)}
+                    for rec in records
+                ],
+            },
+            "seeds": {"scan_seed_base": seed_base, "scan_rule": "6000 + scan_number",
+                      "master_rule": "6000 + canonical_group_index",
+                      "error_attachment_default": 12345,
+                      "bayes_seed_offset": 1_000_003},
+            "worklist": {
+                "scans": [
+                    {"unit_key": f"scan:{task[5]}", "content_hash": task[6],
+                     "guidelines_hash": task[7], "seed": task[8]}
+                    for task in tasks
+                ],
+                "masters": master_worklist,
+            },
+        })
+        checkpoint_store = CheckpointStore(manifest_path)
+        summary.context_lines.append(
+            f"analysis checkpoints: {manifest_path.parent.relative_to(workspace.root)}")
+
     # --- Fit the fresh scans (parallel across scans when it pays; §performance). ---
     # Only the `full` tier bootstraps. When a full batch is small enough that the Layer-A scan pool
     # would idle cores (each per-scan bootstrap forced serial), bypass Layer A: fit serially in the
@@ -878,10 +1143,35 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
     try:
         with timer.stage("fit_scans", n_tasks=len(tasks), use_pool=use_pool,
                          boot_workers=boot_workers) as _m_fit:
-            entries = _run_tasks(tasks, card, g, runcal, exclusions, M=M, errors_tier=errors_tier,
-                                 boot_workers=boot_workers, use_pool=use_pool,
-                                 scan_workers=scan_workers, boot_executor=shared_pool,
-                                 boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
+            cached: dict[int, ScanEntry] = {}
+            remaining = []
+            remaining_indices = []
+            if checkpoint_store is not None:
+                for task_index, task in enumerate(tasks):
+                    scan_id, chash, ghash = task[5], task[6], task[7]
+                    entry = checkpoint_store.load(
+                        f"scan:{scan_id}", content_hash=chash, guidelines_hash=ghash)
+                    if entry is not None:
+                        cached[task_index] = entry
+                    else:
+                        remaining.append(task)
+                        remaining_indices.append(task_index)
+            else:
+                remaining = list(tasks)
+                remaining_indices = list(range(len(tasks)))
+
+            def checkpoint_entry(entry):
+                if checkpoint_store is not None:
+                    checkpoint_store.save(f"scan:{entry.scan_id}", entry)
+
+            fresh_entries = _run_tasks(
+                remaining, card, g, runcal, exclusions, M=M, errors_tier=errors_tier,
+                boot_workers=boot_workers, use_pool=use_pool,
+                scan_workers=scan_workers, boot_executor=shared_pool,
+                boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
+                on_complete=checkpoint_entry, deadline_gate=deadline_gate)
+            cached.update(zip(remaining_indices, fresh_entries))
+            entries = [cached[index] for index in range(len(tasks))]
             _m_fit["per_task"] = [
                 {"scan_id": e.scan_id,
                  "seconds": e.provenance.get("fit_seconds"),
@@ -892,11 +1182,21 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
                  "profile_seconds": e.provenance.get("profile_seconds"),
                  "bayes_seconds": e.provenance.get("bayes_seconds")}
                 for e in entries if e.provenance.get("fit_seconds") is not None]
+        completed_master_keys: list[str] = []
         _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                           workspace, force=force, M=M, seed_base=seed_base, errors_tier=errors_tier,
                           master_boot_workers=master_boot_workers, boot_executor=shared_pool,
                           boot_adaptive=boot_adaptive, scan_workers=scan_workers,
-                          bayes_opts=bayes_opts, timer=timer, source_by_name=source_by_name)
+                          bayes_opts=bayes_opts, timer=timer, source_by_name=source_by_name,
+                          checkpoint_store=checkpoint_store,
+                          completed_master_keys=completed_master_keys,
+                          deadline_gate=deadline_gate)
+        if checkpoint_store is not None:
+            checkpoint_store.mark_complete(
+                unit_keys=[f"scan:{entry.scan_id}" for entry in entries] + completed_master_keys)
+    except AnalysisWorkIncomplete as exc:
+        summary.analysis_incomplete = True
+        summary.context_lines.append(f"checkpointed incomplete analysis: {exc}")
     finally:
         if shared_pool is not None:
             shared_pool.shutdown()
@@ -937,6 +1237,137 @@ def _store_branch_models(state, t_round: float) -> None:
         state.branch_models.append(bm)
 
 
+def _store_branch_beliefs(state, t_round: float, *, period: float | None,
+                          hypotheses: list[dict] | None = None) -> None:
+    """Persist the data/prior ingredients of every branch belief for the Qt-free drive/viewers."""
+    if period is None:
+        state.branch_belief = []
+        state.branch_belief_models = []
+        return
+    points = state.dispersion_prior or []
+    keys: list[tuple[str, float]] = []
+    for point in points:
+        sample = point.get("sample")
+        tb = point.get("t_bin", point.get("T"))
+        if sample is None or tb is None:
+            continue
+        tb = round(float(tb) / t_round) * t_round if t_round else float(tb)
+        key = (str(sample), float(tb))
+        if key not in keys:
+            keys.append(key)
+    if not keys and hypotheses:
+        # A prior-only snapshot is useful but has no sample/T identity until the first scan lands.
+        state.branch_belief = []
+        state.branch_belief_models = []
+        return
+    rows: list[dict] = []
+    for sample, tb in keys:
+        beliefs = BA.build_beliefs(points, sample=sample, t_bin=tb, period=period,
+                                   t_round=t_round, hypotheses=hypotheses)
+        for branch_id, belief in sorted(beliefs.items()):
+            anchors = [{"u": float(u), "omega0": float(y), "weight": float(w)}
+                       for u, y, w in zip(belief.us, belief.ys, belief.ws)]
+            rows.append({"sample": sample, "t_bin": tb, "branch_id": branch_id,
+                         "period": float(period), "anchors": anchors,
+                         "n_anchors": belief.n_anchors,
+                         "parameter_prior": dict(belief.parameter_prior or {}),
+                         "label_probabilities": {}})
+    state.branch_belief_models = rows
+    target = (getattr(state, "hypothesis_snapshot", None) or {}).get("target_hypothesis")
+    point_rows: list[dict] = []
+    for point in sorted(points, key=lambda item: (
+            str(item.get("sample", "")), float(item.get("t_bin", item.get("T", 0.0))),
+            tuple(float(value) for value in (item.get("q") or ())),
+            str(item.get("scan_id", "")))):
+        branch_id = str(point.get("branch_id") or BA.ACOUSTIC)
+        probability = min(max(float(point.get("weight", 1.0)), 0.0), 1.0)
+        complete = point.get("branch_posterior")
+        probabilities = None
+        if isinstance(complete, dict):
+            usable = {}
+            for key, value in complete.items():
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if np.isfinite(numeric) and numeric >= 0.0:
+                    usable[str(key)] = numeric
+            total = sum(usable.values())
+            if usable and total > 0.0:
+                probabilities = {key: value / total for key, value in usable.items()}
+        if probabilities is None:
+            # Compatibility for points persisted before complete vectors were additive.
+            probabilities = {branch_id: probability, BA.NEW: 1.0 - probability}
+        entropy = -sum(value * math.log(value) for value in probabilities.values() if value > 0.0)
+        point_rows.append({
+            "sample": point.get("sample"), "t_bin": point.get("t_bin", point.get("T")),
+            "q": list(point.get("q") or []), "omega0": point.get("omega0"),
+            "sigma": BA.SIGMA_SLACK / math.sqrt(max(probability, 1e-9)),
+            "branch_id": branch_id, "label_probabilities": probabilities,
+            "assignment_entropy": entropy,
+            "p_is_target": float(probabilities.get(target, 0.0)) if target is not None else 0.0,
+            "resolvable": None, "scan_id": point.get("scan_id")})
+    state.branch_belief = point_rows
+
+
+def _update_hypothesis_mismatch(state, t_round: float, *, period: float | None,
+                                hypotheses: list[dict] | None = None) -> None:
+    """Persist O11's prior-vs-data-only posterior-predictive mismatch assessment."""
+    snapshot = getattr(state, "hypothesis_snapshot", None) or {}
+    target = snapshot.get("target_hypothesis")
+    policy = snapshot.get("steering") or {}
+    threshold = float(policy.get("mismatch_z_threshold", 3.0))
+    hypothesis = next((h for h in (hypotheses or []) if h.get("name") == target), None)
+    if period is None or hypothesis is None:
+        state.hypothesis_mismatch = {}
+        return
+    target_points = [p for p in (state.dispersion_prior or []) if p.get("branch_id") == target]
+    groups: dict[tuple[str, float], list[dict]] = {}
+    for point in target_points:
+        sample_value = point.get("sample")
+        tb_value = point.get("t_bin", point.get("T"))
+        if sample_value is None or tb_value is None:
+            continue
+        tb = round(float(tb_value) / t_round) * t_round if t_round else float(tb_value)
+        groups.setdefault((str(sample_value), float(tb)), []).append(point)
+    eligible = {key: rows for key, rows in groups.items() if len(rows) >= 2}
+    if not eligible:
+        state.hypothesis_mismatch = {
+            "active": False, "evaluated": False, "target_hypothesis": target,
+            "comparison": "prior_vs_data_only_posterior_predictive",
+            "reason": "fewer_than_two_real_anchors", "threshold_z": threshold,
+            "fingerprint": snapshot.get("fingerprint")}
+        return
+    sample, tb = max(sorted(eligible), key=lambda key: (len(eligible[key]), key))
+    points = sorted(eligible[(sample, tb)], key=lambda point: (
+        tuple(float(value) for value in (point.get("q") or ())),
+        str(point.get("scan_id", ""))))
+    belief = BA.build_beliefs(points, sample=sample, t_bin=tb, period=period,
+                              t_round=t_round, hypotheses=hypotheses).get(target)
+    prior_only = BA.BranchBelief(target, np.array([]), np.array([]), np.array([]),
+                                 parameter_prior=hypothesis)
+    comparisons = []
+    for u in sorted(set(float(value) for value in belief.us)):
+        prior_mu, prior_sigma = prior_only.predict(u)
+        data_mu, data_sigma = belief.predict_data_only(u)
+        denom = math.sqrt(prior_sigma ** 2 + data_sigma ** 2)
+        z = abs(prior_mu - data_mu) / max(denom, 1e-12)
+        comparisons.append({"u": u, "prior_mean": prior_mu, "prior_sigma": prior_sigma,
+                            "data_mean": data_mu, "data_sigma": data_sigma, "z": z})
+    worst = max(comparisons, key=lambda row: row["z"])
+    active = bool(worst["z"] >= threshold)
+    state.hypothesis_mismatch = {
+        "active": active, "evaluated": True, "target_hypothesis": target,
+        "comparison": "prior_vs_data_only_posterior_predictive",
+        "max_z": worst["z"], "threshold_z": threshold,
+        "evaluated_points": len(comparisons), "worst": worst,
+        "sample": sample, "t_bin": tb,
+        "point_ids": [str(point.get("scan_id", "")) for point in points],
+        "fingerprint": snapshot.get("fingerprint"),
+        "message": (f"declared {target} hypothesis disagrees with data-only branch prediction"
+                    if active else "declared hypothesis remains compatible with data-only prediction")}
+
+
 def _core_provenance(rec, det, source_by_name=None) -> dict:
     """The ingest-parity core provenance keys for one (record, detector), reused from the Phase-2
     helper so `isar run` on a workspace that was never `isar ingest`-ed still carries per-unit q, T,
@@ -959,10 +1390,392 @@ def _core_provenance(rec, det, source_by_name=None) -> dict:
     return core
 
 
+def _tracked_selector(card) -> bool:
+    return _campaign_selector(card)[0] == "tracked_branch"
+
+
+def _mode_candidates(scan_id: str, detector: str, outcome: dict) -> list[dict]:
+    """Materialise every fitted mode with its own uncertainty and provenance.
+
+    Full profile/bootstrap/Bayes intervals currently belong to the fit's scalar primary mode. They
+    are copied only to that matching candidate; a secondary receives its own HESSE interval, never
+    the primary mode's interval (which would be numerically tidy and scientifically wrong).
+    """
+    # A tracking revision may have rewritten the backwards-compatible scalar omega0 to a secondary
+    # mode. The previously materialised table is immutable fit evidence and remembers which mode
+    # actually owned the fitter's profile/bootstrap/Bayes intervals. Reuse it on carry/no-op reruns;
+    # a genuine refit replaces the whole outcome and arrives without this table.
+    stored = outcome.get("branch_candidates")
+    if isinstance(stored, list) and stored:
+        rows = []
+        for candidate in stored:
+            if not isinstance(candidate, dict):
+                continue
+            row = dict(candidate)
+            row.pop("probabilities", None)  # assignment evidence is recomputed from the whole path
+            rows.append(row)
+        if rows:
+            return rows
+    modes = list(outcome.get("modes") or [])
+    if not modes and outcome.get("omega0") is not None:
+        modes = [{"omega0": outcome.get("omega0"), "omega0_err": outcome.get("omega0_err"),
+                  "gamma": outcome.get("gamma"), "amplitude": None}]
+    primary = outcome.get("omega0")
+    rows = []
+    for index, mode in enumerate(modes):
+        energy = mode.get("omega0")
+        if energy is None:
+            continue
+        try:
+            energy = float(energy)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(energy):
+            continue
+        error = mode.get("omega0_err")
+        try:
+            error = float(error)
+        except (TypeError, ValueError):
+            error = None
+        if error is not None and (not np.isfinite(error) or error <= 0.0):
+            error = None
+        is_primary = primary is not None and abs(float(primary) - energy) <= 1e-6
+        hesse = ([energy - error, energy + error] if error is not None else None)
+        row = {
+            "candidate_ref": f"{scan_id}:{detector}:mode:{index}", "source_scan_id": scan_id,
+            "detector": detector, "mode_index": index, "energy_meV": energy,
+            "omega0_err": error, "sigma_meV": error, "gamma": mode.get("gamma"),
+            "gamma_err": mode.get("gamma_err"), "amplitude": mode.get("amplitude"),
+            "interval": (list(outcome.get("interval")) if is_primary and outcome.get("interval") else None),
+            "profile_interval": (list(outcome.get("omega0_profile"))
+                                 if is_primary and outcome.get("omega0_profile") else None),
+            "hesse_interval": (list(outcome.get("hesse_interval"))
+                               if is_primary and outcome.get("hesse_interval") else hesse),
+            "bayes_interval": (list(outcome.get("bayes_interval"))
+                               if is_primary and outcome.get("bayes_interval") else None),
+            "reliable": bool(outcome.get("interval_reliable", True)),
+            "pooled": bool(outcome.get("pooled")), "n_members": outcome.get("n_members"),
+            "fit_kind": outcome.get("fit_kind"), "model": outcome.get("best_label"),
+            "verdict": outcome.get("verdict"), "modality": outcome.get("modality"),
+        }
+        rows.append(row)
+    return rows
+
+
+def _bounded_parameter_draws(result, *, seed: int, maximum: int = 64):
+    """Strongest valid full-parameter draw basis for one fitted candidate."""
+    within = result.within_model or {}
+    if within.get("bayes_ok") and within.get("bayes_parameter_samples") is not None:
+        names = tuple(within.get("bayes_parameter_names") or ())
+        samples = np.asarray(within["bayes_parameter_samples"], dtype=float)
+        basis = "nested_sampling"
+    elif within.get("parameter_samples") is not None:
+        names = tuple(within.get("parameter_names") or ())
+        samples = np.asarray(within["parameter_samples"], dtype=float)
+        basis = "parametric_bootstrap"
+    elif result.covariance_ok and result.parameter_covariance is not None:
+        names = tuple(result.params)
+        mean = np.asarray([result.params[name] for name in names], dtype=float)
+        covariance = np.asarray(result.parameter_covariance, dtype=float)
+        try:
+            samples = np.random.default_rng(int(seed)).multivariate_normal(
+                mean, covariance, size=int(maximum), check_valid="raise")
+        except (ValueError, np.linalg.LinAlgError):
+            return None
+        basis = "laplace_hesse"
+    else:
+        return None
+    if samples.ndim != 2 or samples.shape[1] != len(names) or samples.shape[0] == 0:
+        return None
+    samples = samples[np.all(np.isfinite(samples), axis=1)]
+    if samples.shape[0] == 0:
+        return None
+    if samples.shape[0] > maximum:
+        samples = samples[np.linspace(0, samples.shape[0] - 1, maximum, dtype=int)]
+    for column, name in enumerate(names):
+        if name.endswith((".Omega_d", ".Gamma", ".A", ".E", ".QE", ".BG")):
+            samples[:, column] = np.maximum(samples[:, column], 0.0)
+    return names, samples, basis
+
+
+_PREDICTIVE_SCORE_SEED = 940_301
+
+
+def _predictive_ensemble(best, scores, fits, by_hyp, ctx, *, seed: int,
+                         n_members: int) -> dict | None:
+    """Bounded model-weighted full-parameter ensemble retained with a master revision."""
+    models = []
+    weights = {score.label: float(score.weight) for score in scores}
+    for model_index, label in enumerate(sorted(weights)):
+        result = fits.get(label)
+        hyp = by_hyp.get(label)
+        if result is None or hyp is None or weights[label] <= 0.0:
+            continue
+        draws = _bounded_parameter_draws(result, seed=seed + 7919 * (model_index + 1))
+        manifest = _model_manifest_of(result, by_hyp)
+        if draws is None or manifest is None:
+            continue
+        names, samples, basis = draws
+        composite = hyp.build()
+        expected = []
+        omega0_draws = []
+        phonon_indices = composite.phonon_indices()
+        try:
+            point_omega = float(result.omega0)
+        except (TypeError, ValueError):
+            point_omega = float("nan")
+        retain_omega = bool(phonon_indices) and math.isfinite(point_omega)
+        for sample in samples:
+            expected.append((np.maximum(composite.evaluate(ctx.x_used, sample, ctx), 0.0) /
+                             max(int(n_members), 1)).tolist())
+            if retain_omega:
+                candidates = [math.sqrt(float(sample[i]) ** 2 + float(sample[i + 1]) ** 2)
+                              for i in phonon_indices]
+                omega0_draws.append(min(candidates, key=lambda value: abs(value - point_omega)))
+        models.append({"label": label, "weight": weights[label], "basis": basis,
+                       "parameter_names": list(names), "parameter_draws": samples.tolist(),
+                       "model_manifest": manifest, "omega0_draws": omega0_draws,
+                       "expected_counts": expected})
+    if not models:
+        return None
+    total_weight = sum(model["weight"] for model in models)
+    for model in models:
+        model["weight"] /= total_weight
+    omega_values, omega_weights = [], []
+    for model in models:
+        draws = [float(value) for value in model["omega0_draws"] if math.isfinite(float(value))]
+        if not draws:
+            continue
+        omega_values.extend(draws)
+        omega_weights.extend([float(model["weight"]) / len(draws)] * len(draws))
+    omega_interval = None
+    if omega_values:
+        order = np.argsort(np.asarray(omega_values, dtype=float))
+        values = np.asarray(omega_values, dtype=float)[order]
+        weights_array = np.asarray(omega_weights, dtype=float)[order]
+        cumulative = np.cumsum(weights_array)
+        cumulative /= cumulative[-1]
+        omega_interval = [float(np.interp(q, cumulative, values)) for q in (0.16, 0.5, 0.84)]
+    model_entropy = -sum(float(model["weight"]) * math.log(max(float(model["weight"]), 1e-300))
+                         for model in models)
+    diagnostics = _predictive_score(models, seed=_PREDICTIVE_SCORE_SEED, n_simulations=128)
+    return {"schema": "isar.master_predictive/1", "models": models,
+            "uncertainty_basis": sorted(set(model["basis"] for model in models)),
+            "seed": int(seed), "omega_interval": omega_interval,
+            "model_entropy_nats": float(model_entropy),
+            # The ensemble itself is master-seeded; the simulated future-count stream deliberately
+            # uses one campaign-independent seed so candidates share random numbers during ranking.
+            "diagnostics": diagnostics}
+
+
+def _path_index(q: list, path: list[list[float]], tolerance: float = 1e-5) -> int | None:
+    if not q or not path:
+        return None
+    distances = [math.dist([float(value) for value in q], point) for point in path]
+    index = int(np.argmin(distances))
+    return index if distances[index] <= tolerance else None
+
+
+def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tuple[list[dict], dict]:
+    """Return one authoritative fit per path point and all outcome references.
+
+    Only a published, internally consistent pooled master may be an identity authority.  Physical
+    fits remain in ``refs`` so the GUI can display their candidate tables, but they never fill a gap
+    in the authoritative track and never vote on a master assignment.
+    """
+    by_index: dict[int, list[tuple]] = {}
+    refs: dict[str, tuple] = {}
+    for order, entry in enumerate(session.scans.values()):
+        for detector, outcome in entry.detectors.items():
+            candidates = _mode_candidates(entry.scan_id, detector, outcome)
+            outcome["branch_candidates"] = candidates or None
+            key = f"{entry.scan_id}:{detector}"
+            refs[key] = (entry, detector, outcome)
+            index = _path_index(outcome.get("q") or [], path)
+            if (index is not None and candidates and outcome.get("pooled")
+                    and outcome.get("pool_consistent") is not False):
+                exposure = outcome.get("effective_exposure")
+                try:
+                    exposure = float(exposure)
+                except (TypeError, ValueError):
+                    exposure = 0.0
+                rank = (int(outcome.get("n_members") or 0), exposure, order)
+                by_index.setdefault(index, []).append((rank, key, candidates))
+    observations = []
+    for index in range(len(path)):
+        choices = by_index.get(index) or []
+        if not choices:
+            observations.append({"candidates": [], "authority": None})
+            continue
+        _rank, key, candidates = max(choices, key=lambda item: item[0])
+        observations.append({"candidates": [dict(candidate) for candidate in candidates],
+                             "authority": key})
+    return observations, refs
+
+
+def _select_mode(outcome: dict, candidate: dict, candidate_index: int, assignment: dict,
+                 revision: int) -> None:
+    outcome["selected_candidate_index"] = int(candidate_index)
+    outcome["track_state"] = assignment.get("track_state")
+    outcome["track_revision"] = int(revision)
+    outcome["candidate_state"] = assignment.get("track_state")
+    outcome["candidate_id"] = candidate.get("candidate_ref")
+    outcome["omega0"] = candidate.get("energy_meV")
+    outcome["omega0_err"] = candidate.get("omega0_err")
+    outcome["gamma"] = candidate.get("gamma")
+    outcome["interval"] = candidate.get("interval")
+    outcome["omega0_profile"] = candidate.get("profile_interval")
+    outcome["hesse_interval"] = candidate.get("hesse_interval")
+    outcome["bayes_interval"] = candidate.get("bayes_interval")
+    outcome["interval_reliable"] = bool(candidate.get("reliable", False))
+    probabilities = dict(candidate.get("probabilities") or {})
+    outcome["branch_id"] = "optic"
+    outcome["branch_posterior"] = probabilities
+    outcome["branch_weight"] = float(probabilities.get("optic", 0.0))
+    outcome["assignment_entropy"] = assignment.get("assignment_entropy")
+
+
+def _clear_tracked_selection(outcome: dict, assignment: dict, revision: int) -> None:
+    """Persist a missing/ambiguous target without leaving an old scalar selection certifiable."""
+    outcome["selected_candidate_index"] = None
+    outcome["track_state"] = assignment.get("track_state")
+    outcome["track_revision"] = int(revision)
+    outcome["candidate_state"] = assignment.get("track_state")
+    outcome["candidate_id"] = None
+    outcome["branch_id"] = None
+    outcome["branch_posterior"] = None
+    outcome["branch_weight"] = None
+    outcome["assignment_entropy"] = assignment.get("assignment_entropy")
+    # The immutable branch_candidates table remains the complete fit evidence and can restore these
+    # mode-specific values after a later reassignment.  The scalar compatibility view must abstain.
+    for field in ("omega0", "omega0_err", "gamma", "interval", "omega0_profile",
+                  "hesse_interval", "bayes_interval"):
+        outcome[field] = None
+    outcome["interval_reliable"] = False
+
+
+def _rebuild_tracked_prior(card, session: SessionState, track: dict, observations: list[dict],
+                           refs: dict, *, t_round: float) -> None:
+    source_ids = {key.rsplit(":", 1)[0] for row in observations
+                  for key in [row.get("authority")] if key}
+    # Replace only derived points sourced from fits participating in this tracked campaign. Raw fit
+    # evidence remains in the ledger/candidate tables and reassignment history remains in the track.
+    card.state.dispersion_prior = [point for point in (card.state.dispersion_prior or [])
+                                   if str(point.get("scan_id", "")).split("#", 1)[0] not in source_ids]
+    revision = int(track.get("revision", 0))
+    for assignment, observation in zip(track.get("assignments") or [], observations):
+        if assignment.get("track_state") != "confirmed" or not observation.get("authority"):
+            continue
+        _entry, _detector, outcome = refs[observation["authority"]]
+        if (not outcome.get("pooled") or outcome.get("modality") != "fold"
+                or outcome.get("pool_consistent") is False):
+            continue
+        for branch in ("optic", "acoustic"):
+            candidate_index = assignment.get(f"{branch}_candidate_index")
+            if candidate_index is None:
+                continue
+            candidate = assignment["candidates"][candidate_index]
+            probability = float((candidate.get("probabilities") or {}).get(branch, 0.0))
+            if probability < branch_tracking.CONFIRMED_PROBABILITY:
+                continue
+            session_prior.add_point(
+                card.state,
+                scan_id=f"{candidate['source_scan_id']}#tracked:{branch}",
+                sample=outcome.get("sample"), T=outcome.get("T"), q=outcome.get("q"),
+                omega0=candidate.get("energy_meV"), modality="fold", verdict="resolved",
+                gamma=candidate.get("gamma"), gamma_err=candidate.get("gamma_err"),
+                intensity=(outcome.get("intensity") if branch == "optic" else None),
+                fit_kind=outcome.get("fit_kind"), branch_id=branch, weight=probability,
+                branch_posterior=candidate.get("probabilities"),
+                assignment_entropy=assignment.get("assignment_entropy"), t_round=t_round,
+                require_fold=True)
+    for point in card.state.dispersion_prior:
+        if "#tracked:" in str(point.get("scan_id", "")):
+            point["track_revision"] = revision
+
+
+def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dict | None:
+    if not _tracked_selector(card):
+        return None
+    target = getattr(card.state, "campaign_target", None) or {}
+    path = target.get("path") or []
+    if not path:
+        log.warning("tracked_branch requested without a persisted objective path; assignment deferred")
+        return None
+    path = [[float(value) for value in q] for q in path]
+    observations, refs = _tracked_authorities(session, path)
+    policy = (getattr(card.state, "hypothesis_snapshot", None) or {}).get("steering") or {}
+    previous = getattr(card.state, "branch_tracks", None) or {}
+    track = branch_tracking.track_path(
+        path, observations, period=_dispersion_period(card), hypotheses=_campaign_hypotheses(card),
+        target_branch=_campaign_target(card)[0], previous=previous,
+        assignment_entropy_stop_nats=float(policy.get("assignment_entropy_stop_nats", 0.2)),
+        maximum_bridge_steps=int(policy.get("maximum_bridge_steps", 1)))
+    revision = int(track["revision"])
+    for assignment, observation in zip(track["assignments"], observations):
+        key = observation.get("authority")
+        selected = assignment.get("selected_candidate_index")
+        if not key:
+            continue
+        _entry, _detector, outcome = refs[key]
+        outcome["branch_candidates"] = assignment["candidates"]
+        if selected is None:
+            _clear_tracked_selection(outcome, assignment, revision)
+            for _other_key, (_other_entry, _other_detector, other) in refs.items():
+                if other is outcome or _path_index(other.get("q") or [], path) != assignment["path_index"]:
+                    continue
+                local_assignment = dict(assignment)
+                local_assignment["track_state"] = "individual"
+                _clear_tracked_selection(other, local_assignment, revision)
+            continue
+        _select_mode(outcome, assignment["candidates"][selected], selected, assignment, revision)
+        # Individual fits at the same q remain muted evidence but follow the current identity for
+        # backwards-compatible scalar columns, using their own nearest fitted mode.
+        for _other_key, (_other_entry, _other_detector, other) in refs.items():
+            if other is outcome or _path_index(other.get("q") or [], path) != assignment["path_index"]:
+                continue
+            candidates = other.get("branch_candidates") or []
+            if not candidates:
+                continue
+            nearest = min(range(len(candidates)), key=lambda index: abs(
+                float(candidates[index]["energy_meV"]) - float(outcome["omega0"])))
+            local_assignment = dict(assignment)
+            local_assignment["track_state"] = "individual"
+            _select_mode(other, candidates[nearest], nearest, local_assignment, revision)
+    _rebuild_tracked_prior(card, session, track, observations, refs, t_round=t_round)
+    card.state.branch_tracks = track
+    return track
+
+
+def _rebuild_pooled_prior(card, session: SessionState, session_prior, *, t_round: float) -> None:
+    """Rebuild the non-tracked running dispersion prior from pooled masters only."""
+    if _tracked_selector(card):
+        return
+    source_ids = set(session.scans)
+    card.state.dispersion_prior = [
+        point for point in (card.state.dispersion_prior or [])
+        if str(point.get("scan_id", "")).split("#", 1)[0] not in source_ids]
+    for entry in sorted(session.scans.values(), key=lambda item: item.scan_number):
+        for outcome in entry.detectors.values():
+            if (not outcome.get("pooled") or outcome.get("modality") != "fold"
+                    or outcome.get("pool_consistent") is False):
+                continue
+            session_prior.add_point(
+                card.state, scan_id=entry.scan_id, sample=outcome.get("sample"),
+                T=outcome.get("T"), q=outcome.get("q"), omega0=outcome.get("omega0"),
+                modality="fold", verdict=outcome.get("verdict"), gamma=outcome.get("gamma"),
+                intensity=outcome.get("intensity"), fit_kind=outcome.get("fit_kind"),
+                branch_id=outcome.get("branch_id"), weight=outcome.get("branch_weight"),
+                branch_posterior=outcome.get("branch_posterior"),
+                assignment_entropy=outcome.get("assignment_entropy"), t_round=t_round,
+                require_fold=True)
+
+
 def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                       workspace, *, force, M, seed_base, errors_tier, master_boot_workers,
                       boot_executor, boot_adaptive, scan_workers=1, bayes_opts=None, timer=None,
-                      source_by_name=None):
+                      source_by_name=None, checkpoint_store=None, completed_master_keys=None,
+                      deadline_gate=None):
     """Pass 2 (ledger + prior) → collate → master fits → tally → write. Split out so the shared
     bootstrap pool from :func:`run_batch` stays open across the whole full-tier batch."""
     timer = timer or NullTimer()
@@ -1000,45 +1813,7 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
         summary.n_fitted_this_run += 1 if entry.status in ("fitted", "non_result") else 0
         oc = entry.detectors.get(det)
         if oc:
-            g_err = None
-            _modes, _w0 = oc.get("modes"), oc.get("omega0")
-            if _modes and _w0 is not None:
-                _pm = min(_modes, key=lambda m: abs(float(m.get("omega0", 1e18)) - float(_w0)))
-                g_err = _pm.get("gamma_err")
-            # A Phase-A triaged acoustic delivery carries its own hygiene (assignment posterior's
-            # P/dominance/entropy gates), so it may seed from an unpooled quicklook — without this
-            # the acoustic prior only fills from late fold productions while optic banking (below)
-            # fills immediately, and the occupancy prior lets the optic outvote a still-anchorless
-            # acoustic for its own features (the v15 mid-band deadlock). Forks stay excluded.
-            session_prior.add_point(card.state, scan_id=entry.scan_id, sample=oc.get("sample"),
-                                    T=oc.get("T"), q=oc.get("q"), omega0=oc.get("omega0"),
-                                    modality=oc.get("modality"), verdict=oc.get("verdict"),
-                                    gamma=oc.get("gamma"), gamma_err=g_err,
-                                    intensity=oc.get("intensity"),
-                                    fit_kind=oc.get("fit_kind"), branch_id=oc.get("branch_id"),
-                                    weight=oc.get("branch_weight"), t_round=t_round,
-                                    require_fold=True)
-            # Rival-branch anchors from this DELIVERED scan's other features (optic banking):
-            # stored under suffixed scan_ids; purge first so a refit with fewer secondaries
-            # leaves no stale points behind.
-            card.state.dispersion_prior = [p for p in card.state.dispersion_prior
-                                           if not str(p.get("scan_id", "")).startswith(f"{entry.scan_id}#")]
-            for i, sf in enumerate(oc.get("secondary_features") or []):
-                session_prior.add_point(card.state, scan_id=f"{entry.scan_id}#{sf['branch_id']}{i}",
-                                        sample=oc.get("sample"), T=oc.get("T"), q=oc.get("q"),
-                                        omega0=sf.get("omega0"), modality=oc.get("modality"),
-                                        # A banked rival anchor is an unconstrained DETECTION of the
-                                        # other branch (secondary_branch_points contract) — it must
-                                        # not inherit the primary fit's constrained fit_kind.
-                                        verdict=oc.get("verdict"), fit_kind="unconstrained",
-                                        branch_id=sf.get("branch_id"), weight=sf.get("weight"),
-                                        t_round=t_round, require_fold=False)
             summary.outcomes.append((scan, FitOutcome(**oc) if not isinstance(oc, FitOutcome) else oc))
-
-    # Persist the cross-q branch(es) from the now-complete prior into card.state so the DRIVE — a
-    # separate, crash-prone process that cannot import isar.session — reads the prediction durably from
-    # card.state.json (steering Phase 5b-live).
-    _store_branch_models(card.state, t_round)
 
     # Collate (all records, whole-experiment view).
     with timer.stage("collate"):
@@ -1057,16 +1832,42 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
             # Masters fit serially w.r.t. each other; only their refits hit the pool.
             per_master: list = []
             n_masters = _fit_masters(summary.collation, records, card, runcal, g, session,
+                                     data_dir=workspace.root / "data",
                                      M=M, seed_base=seed_base, errors_tier=errors_tier, force=force,
                                      boot_workers=master_boot_workers, boot_executor=boot_executor,
                                      boot_adaptive=boot_adaptive, scan_workers=scan_workers,
-                                     bayes_opts=bayes_opts, per_master=per_master)
+                                     bayes_opts=bayes_opts, per_master=per_master,
+                                     checkpoint_store=checkpoint_store,
+                                     completed_master_keys=completed_master_keys,
+                                     deadline_gate=deadline_gate)
             _m_masters["n_masters"] = n_masters
             _m_masters["per_master"] = per_master
             if n_masters:
                 summary.context_lines.append(f"fit {n_masters} merged master scan(s)")
-        except Exception as exc:  # noqa: BLE001 — master fitting is additive; a failure never kills the batch
+        except Exception as exc:  # noqa: BLE001 — ordinary master fitting is additive
+            # Certification must fail closed: suppressing a corrupt/mismatched checkpoint here
+            # would let the runner publish a superficially complete revision with a missing unit.
+            if checkpoint_store is not None:
+                raise
             summary.context_lines.append(f"master fitting skipped: {exc}")
+
+    _rebuild_pooled_prior(card, session, session_prior, t_round=t_round)
+    # Identity assignment is deliberately after pooled-master updates. It reads the complete
+    # candidate field, may revise earlier labels, then rebuilds the connected fold-only prior.
+    track = _apply_tracked_branch(session, card, t_round=t_round)
+    if track is not None:
+        summary.context_lines.append(
+            f"branch track revision {track['revision']}: "
+            f"{len(track['frontiers']['confirmed_indices'])} connected point(s)")
+        if track["frontiers"].get("frontier_blocked"):
+            summary.context_lines.append("branch_ambiguity; frontier_blocked")
+
+    # Persist cross-q views only after the authoritative prior has been rebuilt.
+    _store_branch_models(card.state, t_round)
+    _store_branch_beliefs(card.state, t_round, period=_dispersion_period(card),
+                          hypotheses=_campaign_hypotheses(card))
+    _update_hypothesis_mismatch(card.state, t_round, period=_dispersion_period(card),
+                                hypotheses=_campaign_hypotheses(card))
 
     summary.counts = _tally(session)
     session.last_run = {"counts": summary.counts,
@@ -1093,6 +1894,86 @@ def _member_labels(members) -> list[str]:
     return [str(m[1]) if counts[m[1]] == 1 else f"{m[0]}:{m[1]}:{m[2]}" for m in members]
 
 
+def _json_fingerprint(value) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str,
+                         separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+_MASTER_FIT_CONTRACT = "isar.master_fit/2"
+
+
+def _master_fit_fingerprint(ms, card, calres, g, prior, *, errors_tier, M, seed,
+                            boot_adaptive, bayes_opts) -> str:
+    """Fingerprint the complete numerical input closure of one pooled-master fit."""
+    from isar.session.certification import master_fit_fingerprint
+
+    state = getattr(card, "state", None)
+    target = getattr(state, "campaign_target", None) or {}
+    frozen_state = {
+        "dispersion_prior": getattr(state, "dispersion_prior", None),
+        "branch_models": getattr(state, "branch_models", None),
+        "branch_belief": getattr(state, "branch_belief", None),
+        "branch_belief_models": getattr(state, "branch_belief_models", None),
+        "branch_tracks": getattr(state, "branch_tracks", None),
+        "hypothesis_snapshot": getattr(state, "hypothesis_snapshot", None),
+        "campaign_target": target,
+    }
+    return master_fit_fingerprint(
+        spectrum_digest=collate_mod.merged_spectrum_digest(ms),
+        policy=card.policy,
+        resolved_guidelines={
+            "min_fit_points": g.min_fit_points,
+            "monitor_frac": g.monitor_frac,
+        },
+        resolved_calibration=calres.summary(), frozen_state=frozen_state,
+        errors_tier=errors_tier, M=M, seed=seed,
+        boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
+
+
+def _persist_master_predictive(data_dir, payload: dict) -> str:
+    """Blob-first, content-addressed publication of one predictive ensemble."""
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    root = Path(data_dir) / "master_predictive"
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / f"{digest}.json"
+    if not target.exists():
+        fd, temporary = tempfile.mkstemp(prefix=f".{digest}.", suffix=".tmp", dir=root)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError as cleanup_error:
+                log.warning("could not remove incomplete predictive artifact %s: %s",
+                            temporary, cleanup_error)
+            raise
+    return target.relative_to(Path(data_dir).parent).as_posix()
+
+
+def _predicted_master_analysis_seconds(payload: dict) -> float:
+    """Deterministic seconds estimate for ranking future master-analysis work.
+
+    Observed fit wall time depends on worker placement and host load, so persisting it inside a
+    content-addressed scientific artifact made serial and parallel reductions hash differently.
+    The stable proxy scales with the plausible-model parameter dimensions and evaluated energy
+    bins—the dominant repeatable work dimensions—while remaining explicitly an estimate.
+    """
+    complexity = 0
+    for model in payload.get("models") or ():
+        n_parameters = max(len(model.get("parameter_names") or ()), 1)
+        expected = model.get("expected_counts") or ()
+        n_points = len(expected[0]) if expected and isinstance(expected[0], list) else 1
+        complexity += n_parameters * max(n_points, 1)
+    return round(max(0.1, 0.1 + 0.00015 * complexity), 4)
+
+
 def _fit_master_group_task(args):
     """Top-level (picklable) entry point for a master-group pool worker: fit one merged group.
 
@@ -1113,9 +1994,315 @@ def _fit_master_group_task(args):
                              bayes_opts=bayes_opts, **hint_kw)
 
 
-def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
+def _stamp_master_analysis(entry: ScanEntry, *, errors_tier: str,
+                           fit_fingerprint: str | None,
+                           spectrum_digest: str | None) -> ScanEntry:
+    entry.provenance = {
+        **(entry.provenance or {}),
+        "analysis_tier": errors_tier,
+        "master_fit_contract": _MASTER_FIT_CONTRACT,
+    }
+    if fit_fingerprint is not None:
+        entry.provenance["master_fit_fingerprint"] = fit_fingerprint
+    if spectrum_digest is not None:
+        entry.provenance["spectrum_digest"] = spectrum_digest
+    return entry
+
+
+def _certification_entry_reusable(entry: ScanEntry | None, *, content_hash_value: str,
+                                  spectrum_digest: str, fit_fingerprint: str,
+                                  requested_tier: str) -> bool:
+    """Integrity and scientific-completion gate shared by workspace/checkpoint reuse."""
+    from isar.session.certification import tier_satisfies
+
+    if entry is None or entry.content_hash != content_hash_value:
+        return False
+    provenance = entry.provenance or {}
+    if provenance.get("spectrum_digest") != spectrum_digest:
+        return False
+    if provenance.get("master_fit_fingerprint") != fit_fingerprint:
+        return False
+    if not tier_satisfies(provenance.get("analysis_tier"), requested_tier):
+        return False
+    # A deterministic scientific non-result is complete.  A caught fit exception is not: retry it.
+    if entry.status == "non_result" and any("fit error (" in reason for reason in entry.reasons):
+        return False
+    if entry.status == "fitted":
+        pooled = [outcome for outcome in entry.detectors.values() if outcome.get("pooled")]
+        return len(pooled) == 1 and pooled[0].get("n_members") is not None
+    return entry.status == "non_result"
+
+
+def _publication_hashes(workspace: Workspace) -> dict[str, str]:
+    result = {}
+    for name, path in (("session.json", workspace.session_path),
+                       ("card.state.json", workspace.state_path),
+                       ("results.csv", workspace.report_dir / "results.csv"),
+                       ("card.policy.toml", workspace.policy_path)):
+        result[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return result
+
+
+def _run_master_certification(workspace, card, session, records, runcal, g, checkpoint_store,
+                              *, summary, M, errors_tier, workers, bayes_opts,
+                              deadline_gate, timer) -> RunSummary:
+    """Execute an ``isar.certification/2`` worklist without fitting or mutating physical rows."""
+    manifest = checkpoint_store.manifest
+    requested_tier = str(manifest.get("tier") or errors_tier)
+    if requested_tier != errors_tier:
+        raise ValueError(
+            f"certification tier mismatch: manifest={requested_tier!r}, run={errors_tier!r}")
+    worklist = list(manifest.get("worklist") or ())
+    worklist.sort(key=lambda unit: int(unit.get("canonical_index", -1)))
+    if [int(unit.get("canonical_index", -1)) for unit in worklist] != list(range(len(worklist))):
+        raise ValueError("certification worklist canonical indices must be contiguous and unique")
+    unit_keys = [str(unit.get("unit_key") or "") for unit in worklist]
+    master_ids = [str(unit.get("master_id") or "") for unit in worklist]
+    if (not all(unit_keys) or len(set(unit_keys)) != len(unit_keys)
+            or not all(master_ids) or len(set(master_ids)) != len(master_ids)):
+        raise ValueError("certification worklist has missing or duplicate unit/master IDs")
+
+    with timer.stage("collate"):
+        collation = collate_mod.collate(records, card)
+    summary.collation = collation
+    sorted_groups = sorted(collation.groups, key=lambda item: str(item.key))
+    groups_by_id = {
+        "master:" + "_".join(str(value) for value in group.key): (index, group)
+        for index, group in enumerate(sorted_groups)
+        if getattr(group, "merged", None) is not None
+    }
+    rec_by_member = {
+        (str(rec.experiment_id), int(rec.scan_number), str(detector)): (rec, detector)
+        for rec in records for detector in rec.spectra
+    }
+
+    fit_card = copy.deepcopy(card)
+    frozen_state = (manifest.get("inputs") or {}).get("frozen_state")
+    if not isinstance(frozen_state, dict):
+        raise ValueError("certification manifest lacks its frozen scientific state")
+    for field_name, value in frozen_state.items():
+        if hasattr(fit_card.state, field_name):
+            setattr(fit_card.state, field_name, copy.deepcopy(value))
+
+    prepared = []
+    boot_adaptive = requested_tier in FULL_TIERS
+    for unit in worklist:
+        master_id = str(unit["master_id"])
+        matched = groups_by_id.get(master_id)
+        if matched is None:
+            raise ValueError(f"certification master is missing from frozen collation: {master_id}")
+        group_index, group = matched
+        merged = group.merged
+        members = [list(member) for member in merged.members]
+        digest = collate_mod.merged_spectrum_digest(merged)
+        if members != list(unit.get("ordered_members") or ()):
+            raise ValueError(f"certification member drift for {master_id}")
+        if digest != unit.get("spectrum_digest"):
+            raise ValueError(f"certification spectrum drift for {master_id}")
+        if int(unit.get("group_index", -1)) != group_index:
+            raise ValueError(f"certification group-index drift for {master_id}")
+        spectrum_ref = str(unit.get("spectrum_ref") or "")
+        spectrum_path = (workspace.root / spectrum_ref).resolve()
+        root = workspace.root.resolve()
+        if not spectrum_ref or not spectrum_path.is_relative_to(root) or not spectrum_path.is_file():
+            raise ValueError(f"certification spectrum reference is missing or invalid for {master_id}")
+        if hashlib.sha256(spectrum_path.read_bytes()).hexdigest() != digest:
+            raise ValueError(f"certification spectrum blob digest mismatch for {master_id}")
+        first_member = tuple(merged.members[0]) if merged.members else None
+        if first_member is None or first_member not in rec_by_member:
+            raise ValueError(f"certification master has no unique source member: {master_id}")
+        member_rec, member_det = rec_by_member[first_member]
+        calres = calibrations.resolve(member_rec, member_det, fit_card, runcal)
+        if _json_fingerprint(calres.summary()) != _json_fingerprint(
+                dict(unit.get("resolved_calibration") or {})):
+            raise ValueError(f"certification calibration drift for {master_id}")
+        seed = int(unit["seed"])
+        expected_fingerprint = _master_fit_fingerprint(
+            merged, fit_card, calres, g, None, errors_tier=requested_tier, M=M, seed=seed,
+            boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
+        if unit.get("master_fit_fingerprint") != expected_fingerprint:
+            raise ValueError(f"certification fit fingerprint drift for {master_id}")
+        chash = canonical_hash(members)
+        prepared.append({
+            "unit": unit, "group": group, "merged": merged, "group_index": group_index,
+            "member_rec": member_rec, "member_det": member_det, "content_hash": chash,
+            "spectrum_digest": digest, "fit_fingerprint": expected_fingerprint,
+        })
+
+    reusable_workspace = reusable_checkpoint = 0
+    completed: dict[int, ScanEntry] = {}
+    missing = []
+    for item in prepared:
+        unit = item["unit"]
+        index = int(unit["canonical_index"])
+        existing = session.get(str(unit["master_id"]))
+        if _certification_entry_reusable(
+                existing, content_hash_value=item["content_hash"],
+                spectrum_digest=item["spectrum_digest"],
+                fit_fingerprint=item["fit_fingerprint"], requested_tier=requested_tier):
+            completed[index] = copy.deepcopy(existing)
+            reusable_workspace += 1
+            continue
+        cached = checkpoint_store.load(
+            str(unit["unit_key"]), content_hash=item["content_hash"], guidelines_hash="",
+            fit_fingerprint=item["fit_fingerprint"], requested_tier=requested_tier)
+        if _certification_entry_reusable(
+                cached, content_hash_value=item["content_hash"],
+                spectrum_digest=item["spectrum_digest"],
+                fit_fingerprint=item["fit_fingerprint"], requested_tier=requested_tier):
+            completed[index] = cached
+            reusable_checkpoint += 1
+        else:
+            missing.append(item)
+
+    def progress(*, active=0, last_hkl=None, phase="fitting", published=False):
+        checkpoint_store.report_progress(
+            len(completed), reused_workspace=reusable_workspace,
+            reused_checkpoint=reusable_checkpoint,
+            newly_fitted=max(len(completed) - reusable_workspace - reusable_checkpoint, 0),
+            active=active, last_hkl=last_hkl, phase=phase,
+            remaining_analysis_seconds=deadline_gate.remaining_seconds(), published=published)
+
+    progress()
+    if missing:
+        max_workers = min(max(int(workers), 1), len(missing))
+        for offset in range(0, len(missing), max_workers):
+            wave = missing[offset:offset + max_workers]
+            if not deadline_gate.begin_wave():
+                progress(phase="interrupted")
+                summary.analysis_incomplete = True
+                summary.context_lines.append(
+                    f"checkpointed incomplete certification: {len(completed)}/{len(worklist)} masters")
+                return summary
+            args = [(
+                item["merged"], item["group"], item["member_rec"], item["member_det"],
+                fit_card, runcal, g, str(item["unit"]["master_id"]),
+                _MASTER_SCAN_BASE + item["group_index"], item["content_hash"], M,
+                int(item["unit"]["seed"]), requested_tier, boot_adaptive, None, bayes_opts,
+            ) for item in wave]
+            progress(active=len(wave))
+            pool = None
+            failures = []
+
+            def accept_completion(entry, item, active_count):
+                unit = item["unit"]
+                if not _certification_entry_reusable(
+                        entry, content_hash_value=item["content_hash"],
+                        spectrum_digest=item["spectrum_digest"],
+                        fit_fingerprint=item["fit_fingerprint"],
+                        requested_tier=requested_tier):
+                    # A deterministic non-result is reusable; an exception-aborted fit is not.
+                    if not (entry.status == "non_result"
+                            and not any("fit error (" in reason for reason in entry.reasons)):
+                        raise RuntimeError(
+                            f"certification fit did not produce a durable outcome: {entry.scan_id}")
+                checkpoint_store.save(str(unit["unit_key"]), entry)
+                completed[int(unit["canonical_index"])] = entry
+                active_count -= 1
+                progress(active=active_count, last_hkl=unit.get("hkl"))
+                return active_count
+
+            try:
+                active = len(wave)
+                if len(wave) == 1 or max_workers == 1:
+                    active = accept_completion(_fit_master_group_task(args[0]), wave[0], active)
+                else:
+                    pool = ProcessPoolExecutor(max_workers=len(wave))
+                    future_items = {pool.submit(_fit_master_group_task, arg): item
+                                    for arg, item in zip(args, wave)}
+                    for future in as_completed(future_items):
+                        item = future_items[future]
+                        try:
+                            active = accept_completion(future.result(), item, active)
+                        except Exception as exc:  # drain the wave; preserve every other result
+                            failures.append((item, exc))
+                            active -= 1
+                            progress(active=active, last_hkl=item["unit"].get("hkl"))
+            finally:
+                if pool is not None:
+                    pool.shutdown()
+            if failures:
+                progress(active=0, phase="failed")
+                failed_unit, error = failures[0]
+                raise RuntimeError(
+                    f"certification worker failed for {failed_unit['unit']['master_id']}: {error}"
+                ) from error
+
+    if len(completed) != len(worklist):
+        raise RuntimeError("certification worklist completed without every canonical unit")
+
+    progress(phase="publishing")
+    physical_rows = {
+        key: copy.deepcopy(value) for key, value in session.scans.items()
+        if not key.startswith("master:")
+    }
+    for item in prepared:
+        unit = item["unit"]
+        entry = completed[int(unit["canonical_index"])]
+        spectrum_ref = collate_mod.persist_merged_spectrum(workspace.root / "data", item["merged"])
+        for outcome in entry.detectors.values():
+            if outcome.get("pooled"):
+                outcome["spectrum_ref"] = spectrum_ref
+        entry.provenance["spectrum_ref"] = spectrum_ref
+        predictive_payload = entry.provenance.pop("predictive_payload", None)
+        if predictive_payload is not None:
+            predictive_payload["predicted_analysis_seconds"] = (
+                _predicted_master_analysis_seconds(predictive_payload))
+            predictive_ref = _persist_master_predictive(workspace.root / "data", predictive_payload)
+            for outcome in entry.detectors.values():
+                if outcome.get("pooled"):
+                    outcome["predictive_ref"] = predictive_ref
+            entry.provenance["predictive_ref"] = predictive_ref
+        session.put(entry)
+
+    t_round = float((card.policy.collation or {}).get("t_round", 5.0))
+    _rebuild_pooled_prior(card, session, session_prior, t_round=t_round)
+    track = _apply_tracked_branch(session, card, t_round=t_round)
+    # Tracking may annotate individual rows for display. Certification is master-only, so restore
+    # their exact pre-publication ledger payload after the master-derived state has been rebuilt.
+    for key, entry in physical_rows.items():
+        session.scans[key] = entry
+    _store_branch_models(card.state, t_round)
+    _store_branch_beliefs(card.state, t_round, period=_dispersion_period(card),
+                          hypotheses=_campaign_hypotheses(card))
+    _update_hypothesis_mismatch(card.state, t_round, period=_dispersion_period(card),
+                                hypotheses=_campaign_hypotheses(card))
+    summary.counts = _tally(session)
+    summary.context_lines.append(
+        f"certified {len(worklist)} pooled master(s); fitted {len(missing)}, "
+        f"reused {reusable_workspace + reusable_checkpoint}")
+    if track is not None:
+        summary.context_lines.append(f"branch track revision {track['revision']}")
+    session.last_run = {
+        "counts": summary.counts,
+        "scan_gaps": [f"{experiment}: {start}->{end}"
+                      for experiment, start, end in summary.gaps],
+        "n_fitted_this_run": 0,
+        "certification_fingerprint": manifest["fingerprint"],
+    }
+    publication_root = checkpoint_store.root / "publication"
+    staged_workspace = Workspace.open(publication_root)
+    _write_results_csv(staged_workspace, session)
+    staged_workspace.save(card, session)
+    checkpoint_store.begin_publication()
+    workspace.root.mkdir(parents=True, exist_ok=True)
+    workspace.report_dir.mkdir(parents=True, exist_ok=True)
+    # Every payload is complete and fsynced before the first replacement. The current marker is
+    # already non-published, so a crash between these atomic replaces is visible and repairable.
+    os.replace(staged_workspace.session_path, workspace.session_path)
+    os.replace(staged_workspace.state_path, workspace.state_path)
+    os.replace(staged_workspace.report_dir / "results.csv",
+               workspace.report_dir / "results.csv")
+    hashes = _publication_hashes(workspace)
+    checkpoint_store.mark_published(unit_keys=unit_keys, published_hashes=hashes)
+    progress(phase="completed", published=True)
+    return summary
+
+
+def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None, M, seed_base,
                  errors_tier="full", force=False, boot_workers=1, boot_executor=None,
-                 boot_adaptive=False, scan_workers=1, bayes_opts=None, per_master=None) -> int:
+                 boot_adaptive=False, scan_workers=1, bayes_opts=None, per_master=None,
+                 checkpoint_store=None, completed_master_keys=None, deadline_gate=None) -> int:
     """Fit the merged master scan for each (Q,T) group; returns how many were (re)fit this run.
 
     Runs only when the card opts in (``collation.merge == "merge"``). Each group's pooled
@@ -1163,6 +2350,13 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
                     oc["members"] = _member_labels(ms.members)
             if prev.provenance and "members" not in prev.provenance:
                 prev.provenance["members"] = [list(m) for m in ms.members]
+            if data_dir is not None and not any(
+                    oc.get("spectrum_ref") for oc in prev.detectors.values() if oc.get("pooled")):
+                spectrum_ref = collate_mod.persist_merged_spectrum(data_dir, ms)
+                for oc in prev.detectors.values():
+                    if oc.get("pooled"):
+                        oc["spectrum_ref"] = spectrum_ref
+                prev.provenance["spectrum_ref"] = spectrum_ref
             continue
         member_scan, member_det = ms.members[0][1], ms.members[0][2]
         # Structure hint: the previous entry's best_label, iff it was a completed (fitted) master
@@ -1175,17 +2369,44 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
     if not refits:
         return 0
 
+    cached_entries: dict[int, ScanEntry] = {}
+    pending_refits = []
+    for refit_index, refit in enumerate(refits):
+        _idx, _grp, _ms, master_id, chash, _rec, _det, _hint = refit
+        cached = (None if checkpoint_store is None else checkpoint_store.load(
+            f"master:{master_id}", content_hash=chash, guidelines_hash=""))
+        if cached is None:
+            pending_refits.append((refit_index, refit))
+        else:
+            cached_entries[refit_index] = cached
+    master_completed = len(cached_entries)
+    if checkpoint_store is not None and master_completed:
+        checkpoint_store.report_progress(master_completed)
+    pending = [refit for _index, refit in pending_refits]
+    fresh_entries: list[ScanEntry] = []
+
     # --- Fit the refits: parallel across groups when it pays, else serial in-process. ---
-    if len(refits) > 1 and scan_workers > 1:
+    if len(pending) > 1 and scan_workers > 1:
         # Parallel: bootstrap forced serial in each child (boot_workers=1, no shared pool). map
         # preserves order → entries[k] aligns with refits[k], keeping the serial ledger order.
         arg_list = [(ms, grp, member_rec, member_det, card, runcal, g, master_id,
                      _MASTER_SCAN_BASE + idx, chash, M, seed_base + _MASTER_SCAN_BASE + idx,
                      errors_tier, boot_adaptive, hint, bayes_opts)
-                    for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in refits]
+                    for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in pending]
         max_workers = min(scan_workers, len(arg_list))
         with ProcessPoolExecutor(max_workers=max_workers) as ex_pool:
-            entries = list(ex_pool.map(_fit_master_group_task, arg_list))
+            for offset in range(0, len(arg_list), max_workers):
+                if deadline_gate is not None and not deadline_gate.begin_wave():
+                    raise AnalysisWorkIncomplete(
+                        f"analysis deadline reached after {len(fresh_entries)}/{len(arg_list)} "
+                        "master fit units")
+                wave = arg_list[offset:offset + max_workers]
+                for entry in ex_pool.map(_fit_master_group_task, wave):
+                    if checkpoint_store is not None:
+                        checkpoint_store.save(f"master:{entry.scan_id}", entry)
+                        master_completed += 1
+                        checkpoint_store.report_progress(master_completed)
+                    fresh_entries.append(entry)
     else:
         # Serial (normal iteration, ≤1 refit, or single worker) — hot path unchanged. Reuse the
         # batch's shared bootstrap pool when given; else open one for the master pass (only the full
@@ -1196,22 +2417,52 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
             own_pool = ProcessPoolExecutor(max_workers=boot_workers)
             ex = own_pool
         try:
-            entries = [
-                _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id,
-                                  _MASTER_SCAN_BASE + idx, chash, M=M,
-                                  seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier,
-                                  boot_workers=boot_workers, boot_executor=ex,
-                                  boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
-                                  # hint kwarg only when set → off-path call is byte-identical.
-                                  **({"structure_hint": hint} if hint is not None else {}))
-                for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in refits]
+            for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in pending:
+                if deadline_gate is not None and not deadline_gate.begin_wave():
+                    raise AnalysisWorkIncomplete(
+                        f"analysis deadline reached after {len(fresh_entries)}/{len(pending)} "
+                        "master fit units")
+                entry = _fit_master_group(
+                    ms, grp, member_rec, member_det, card, runcal, g, master_id,
+                    _MASTER_SCAN_BASE + idx, chash, M=M,
+                    seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier,
+                    boot_workers=boot_workers, boot_executor=ex,
+                    boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
+                    **({"structure_hint": hint} if hint is not None else {}))
+                if checkpoint_store is not None:
+                    checkpoint_store.save(f"master:{entry.scan_id}", entry)
+                    master_completed += 1
+                    checkpoint_store.report_progress(master_completed)
+                fresh_entries.append(entry)
         finally:
             if own_pool is not None:
                 own_pool.shutdown()
 
+    for (refit_index, _refit), entry in zip(pending_refits, fresh_entries):
+        cached_entries[refit_index] = entry
+    entries = [cached_entries[index] for index in range(len(refits))]
+
     # Apply ledger mutations + timing entries serially, in the original sorted-group order.
     for (idx, grp, ms, master_id, chash, member_rec, member_det, hint), entry in zip(refits, entries):
+        # Blob-first publication means interruption can leave an orphan, never a dangling ref.
+        if data_dir is not None:
+            spectrum_ref = collate_mod.persist_merged_spectrum(data_dir, ms)
+            for outcome in entry.detectors.values():
+                if outcome.get("pooled"):
+                    outcome["spectrum_ref"] = spectrum_ref
+            entry.provenance["spectrum_ref"] = spectrum_ref
+            predictive_payload = entry.provenance.pop("predictive_payload", None)
+            if predictive_payload is not None:
+                predictive_payload["predicted_analysis_seconds"] = (
+                    _predicted_master_analysis_seconds(predictive_payload))
+                predictive_ref = _persist_master_predictive(data_dir, predictive_payload)
+                for outcome in entry.detectors.values():
+                    if outcome.get("pooled"):
+                        outcome["predictive_ref"] = predictive_ref
+                entry.provenance["predictive_ref"] = predictive_ref
         session.put(entry)
+        if completed_master_keys is not None:
+            completed_master_keys.append(f"master:{master_id}")
         if per_master is not None:
             per_master.append(
                 {"master_id": master_id,
@@ -1240,23 +2491,22 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
     q = list(grp.key_fields.get("q") or [0.0, 0.0, 0.0])
     T_disp = grp.key_fields.get("T")
     T = float(T_disp) if T_disp is not None else float("nan")
+    spectrum_digest = collate_mod.merged_spectrum_digest(ms)
     if member_rec is None:
-        return ScanEntry(status="non_result", reasons=[f"{master_id}: no member record for resolution"],
-                         **base)
+        return _stamp_master_analysis(
+            ScanEntry(status="non_result",
+                      reasons=[f"{master_id}: no member record for resolution"], **base),
+            errors_tier=errors_tier, fit_fingerprint=None,
+            spectrum_digest=spectrum_digest)
     try:
         calres = calibrations.resolve(member_rec, member_det, card, runcal)
     except Exception as exc:  # noqa: BLE001
-        return ScanEntry(status="non_result", reasons=[f"{master_id}: resolution failed ({exc})"], **base)
+        return _stamp_master_analysis(
+            ScanEntry(status="non_result",
+                      reasons=[f"{master_id}: resolution failed ({exc})"], **base),
+            errors_tier=errors_tier, fit_fingerprint=None,
+            spectrum_digest=spectrum_digest)
 
-    x = np.asarray(ms.energy, dtype=float)
-    counts = np.asarray(ms.intensity, dtype=float)
-    mask = np.asarray(ms.mask, dtype=bool)
-    if int(mask.sum()) < g.min_fit_points:
-        return ScanEntry(status="non_result",
-                         reasons=[f"{master_id}: undersampled pool ({int(mask.sum())} < "
-                                  f"{g.min_fit_points} kept points)"], **base)
-    # Pooled spectrum → ScanContext directly (bypasses build_context: a merged group has no single
-    # ScanRecord/normalization; MergedSpectrum.mask already encodes monitor validity).
     sample = str(grp.key_fields.get("sample", ""))
     period = _dispersion_period(card)
     t_round = float((card.policy.collation or {}).get("t_round", 5.0))
@@ -1264,13 +2514,34 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
     prior = (session_prior.prior_for(card.state, sample=sample, T=T, q=q, period=period,
                                      t_round=t_round, branch_id=target_branch)
              if period is not None else None)
+    fit_fingerprint = _master_fit_fingerprint(
+        ms, card, calres, g, prior, errors_tier=errors_tier, M=M, seed=seed,
+        boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
+
+    x = np.asarray(ms.energy, dtype=float)
+    counts = np.asarray(ms.intensity, dtype=float)
+    mask = np.asarray(ms.mask, dtype=bool)
+    raw_monitor = getattr(ms, "monitor", None)
+    monitor = None if raw_monitor is None else np.asarray(raw_monitor, dtype=float)
+    exposure_scale, _reference_exposure = ((None, None) if monitor is None
+                                           else normalized_exposure(monitor, mask))
+    if exposure_scale is not None:
+        mask = mask & (exposure_scale > 0)
+    if int(mask.sum()) < g.min_fit_points:
+        return _stamp_master_analysis(
+            ScanEntry(status="non_result",
+                      reasons=[f"{master_id}: undersampled pool ({int(mask.sum())} < "
+                               f"{g.min_fit_points} kept points)"], **base),
+            errors_tier=errors_tier, fit_fingerprint=fit_fingerprint,
+            spectrum_digest=spectrum_digest)
+    # Pooled spectrum → ScanContext directly (bypasses build_context: a merged group has no single
+    # ScanRecord/normalization; MergedSpectrum.mask already encodes monitor validity).
     prior_ao = float(prior.omega0) if (prior is not None and np.isfinite(prior.omega0)) else None
     target_anchors = _target_fold_anchor_count(card, sample=sample, branch=target_branch)
     established = target_branch == "acoustic" or target_anchors >= branch_model.MIN_ANCHORS
-    # Before an optic branch has a slope, a flat one-anchor prediction can sit closer to the acoustic
-    # mode at the far endpoint. Keep the IC broad but tell primary_phonon_index to choose the upper
-    # finite-energy mode; this is the cold-start meaning of an explicit optic-family objective.
-    ao = (prior_ao if established else float(energy_search[1]))
+    # A cold optic target has no numeric anchor.  Keep both the IC and primary-mode choice broad;
+    # Bayesian assignment below will select a candidate without forcing the upper-energy mode.
+    ao = prior_ao if established else None
     # Narrow the IC only when the belief is confident (see _PRIOR_NARROW_SIGMA); else keep the acoustic
     # mode hint but a wide IC so the pooled fit still finds the resolvable acoustic.
     ic_ao = (prior_ao if (established and prior_ao is not None
@@ -1279,7 +2550,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                       gauss_fwhm=calres.gauss_fwhm, lorentz_fwhm=calres.lorentz_fwhm,
                       instrument=card.policy.instrument, energy_status=card.policy.energy_status,
                       prior_omega=ic_ao, quasielastic_fwhm=card.policy.quasielastic_fwhm,
-                      acoustic_omega=ao)
+                      acoustic_omega=ao, exposure_scale=exposure_scale)
     near_gamma = (target_branch == "acoustic" and ao is not None
                   and ao < BA.RESOLVABLE_FWHM_FACTOR * calres.gauss_fwhm)
     descriptor = _build_descriptor(ctx)
@@ -1287,21 +2558,32 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, errors_tier=errors_tier,
                       boot_workers=boot_workers, boot_executor=boot_executor,
                       boot_adaptive=boot_adaptive, descriptor=descriptor,
-                      structure_hint=structure_hint, bayes_opts=bayes_opts)
+                      structure_hint=structure_hint, bayes_opts=bayes_opts,
+                      predictive_n_members=int(ms.n_members))
     except Exception as exc:  # noqa: BLE001 — one unfittable pool must not kill the batch (N=16 wrinkle)
-        return ScanEntry(status="non_result",
-                         reasons=[f"{master_id}: fit error ({type(exc).__name__}): {exc}"], **base)
+        return _stamp_master_analysis(
+            ScanEntry(status="non_result",
+                      reasons=[f"{master_id}: fit error ({type(exc).__name__}): {exc}"], **base),
+            errors_tier=errors_tier, fit_fingerprint=fit_fingerprint,
+            spectrum_digest=spectrum_digest)
 
     # Phase A: the pooled master runs the SAME branch triage as a per-scan fit — the acoustic hint
     # (ctx.acoustic_omega) makes primary_phonon_index report the acoustic mode (not the brighter optic),
     # and the triage withholds a non-acoustic/unresolvable pool as branch_continuation. Without this a
     # boundary master delivers the optic as the acoustic ω₀.
-    (branch_id, assignment_entropy, branch_weight, resolvable,
-     secondary_features) = _apply_branch_triage(
+    (branch_id, assignment_entropy, branch_weight, resolvable, secondary_features,
+     branch_posterior, candidate_id, candidate_state, selected_energy) = _apply_branch_triage(
         fit, descriptor, ctx, card=card, sample=sample, T=T, q=q, t_round=t_round,
         near_gamma=near_gamma, master=True)
 
     disposition = gold_mod.verdict_disposition(fit["verdict"])
+    exposure_info = _effective_exposure_for(
+        None, ctx, fit, absolute_exposure=monitor,
+        absolute_exposure_source=("monitor" if monitor is not None else None),
+        target_center=selected_energy)
+    predictive_payload = fit.get("predictive_ensemble")
+    model_interval = ((predictive_payload or {}).get("omega_interval")
+                      if predictive_payload is not None else None)
     outcome = FitOutcome(
         detector_id=det, verdict=fit["verdict"], disposition=disposition,
         confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
@@ -1311,14 +2593,28 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         q=q, T=T, sample=str(grp.key_fields.get("sample", "")), prior_used=None,
         calib=calres.summary(), reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
         amplitudes=fit.get("amplitudes"), candidates=fit.get("candidates"),
+        model_manifest=fit.get("model_manifest"),
         interval_reliable=fit.get("interval_reliable", True), omega0_profile=fit.get("omega0_profile"),
         hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
         pooled=True, n_members=int(ms.n_members), members=_member_labels(ms.members),
+        master_revision=chash, gamma_at_bound=bool(fit.get("gamma_at_bound", False)),
+        model_interval=(tuple(model_interval) if model_interval is not None else None),
+        model_robust=bool(model_interval is not None and fit.get("modality") != "fork"),
+        model_entropy=((predictive_payload or {}).get("model_entropy_nats")
+                       if predictive_payload is not None else None),
+        linewidth_state=("resolution_limited" if fit.get("gamma_at_bound") else "identified"),
+        pool_consistent=getattr(ms, "pool_consistent", None),
+        consistency_statistic=getattr(ms, "consistency_statistic", None),
+        consistency_pvalue=getattr(ms, "consistency_pvalue", None),
+        consistency_alpha=getattr(ms, "consistency_alpha", None),
+        consistency_seed=getattr(ms, "consistency_seed", None),
         descriptor=(descriptor.to_dict() if descriptor is not None else None),
         fit_kind=fit.get("fit_kind", "unconstrained"),
         branch_id=branch_id, assignment_entropy=assignment_entropy,
         resolvable=resolvable, branch_weight=branch_weight,
         secondary_features=secondary_features,
+        branch_posterior=branch_posterior, candidate_id=candidate_id,
+        candidate_state=candidate_state,
         bayes_interval=fit.get("bayes_interval"), bayes_ok=fit.get("bayes_ok"),
         bayes_ess=fit.get("bayes_ess"), bayes_fail_reason=fit.get("bayes_fail_reason"),
         log_evidence=fit.get("log_evidence"), log_evidence_err=fit.get("log_evidence_err"),
@@ -1326,7 +2622,9 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         bayes_prior_driven=fit.get("bayes_prior_driven", False),
         bayes_fork_suspected=fit.get("bayes_fork_suspected", False),
         bayes_unconstrained=fit.get("bayes_unconstrained", False),
-        target_branch=target_branch, target_label=target_label)
+        target_branch=target_branch, target_label=target_label,
+        effective_exposure=exposure_info.get("value"), exposure_provenance=exposure_info,
+        acquisition_id=f"pooled:{chash}")
     entry = ScanEntry(status="fitted", **base)
     entry.detectors[det] = outcome.to_dict()
     entry.provenance = {"pooled": True, "n_members": int(ms.n_members),
@@ -1335,9 +2633,22 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                         "two_stage_seconds": fit.get("two_stage_seconds"),
                         "errors_attach_seconds": fit.get("errors_attach_seconds"),
                         **_timing_provenance(fit)}
+    if predictive_payload is not None:
+        predictive_payload.update({
+            "master_content_hash": chash,
+            "calibration_fingerprint": _json_fingerprint(calres.summary()),
+            "policy_fingerprint": _json_fingerprint(card.policy),
+            "prior_fingerprint": _json_fingerprint(
+                None if prior is None else {"omega0": prior.omega0,
+                                            "omega0_sigma": prior.omega0_sigma}),
+            "q": q, "T": T, "members": [list(member) for member in ms.members],
+        })
+        entry.provenance["predictive_payload"] = predictive_payload
     if fit.get("structure_skipped"):
         entry.provenance["structure_skipped"] = True
-    return entry
+    return _stamp_master_analysis(
+        entry, errors_tier=errors_tier, fit_fingerprint=fit_fingerprint,
+        spectrum_digest=spectrum_digest)
 
 
 # Phase A branch assignment: near a zone centre the acoustic ω₀ is unresolvable BY POSITION (below
@@ -1372,6 +2683,20 @@ def _campaign_target(card) -> tuple[str, str, tuple[float, float]]:
     return branch, label, (float(energy[0]), float(energy[1]))
 
 
+def _campaign_selector(card) -> tuple[str, float | None]:
+    target = getattr(getattr(card, "state", None), "campaign_target", None) or {}
+    selector = str(target.get("selector") or "lowest_energy")
+    energy = target.get("target_energy_meV")
+    return selector, (float(energy) if energy is not None else None)
+
+
+def _campaign_hypotheses(card) -> list[dict]:
+    state = getattr(card, "state", None)
+    snapshot = getattr(state, "hypothesis_snapshot", None) or {}
+    value = snapshot.get("hypotheses") or []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
 def _target_fold_anchor_count(card, *, sample: str, branch: str) -> int:
     """Count trusted target-branch anchors while accepting pre-target legacy cards."""
     state = getattr(card, "state", None)
@@ -1394,8 +2719,15 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
     if period is None:
         return None
     t_bin = round(float(T) / t_round) * t_round if t_round else float(T)
+    target_branch, _target_label, energy_search = _campaign_target(card)
+    hypotheses = _campaign_hypotheses(card)
+    if target_branch != BA.ACOUSTIC and not any(h.get("name") == target_branch for h in hypotheses):
+        # Transition tolerance for old campaign state: create a broad shipped hypothesis, never an
+        # assignment or anchor.  Its zero occupancy remains weak evidence in the posterior.
+        hypotheses.append(hypothesis_preset(target_branch, energy_search).to_dict())
     beliefs = BA.build_beliefs(card.state.dispersion_prior, sample=sample, t_bin=t_bin,
-                               period=period, t_round=t_round)
+                               period=period, t_round=t_round,
+                               hypotheses=hypotheses)
     modes = fit.get("modes")
     if not modes and fit.get("omega0") is not None:
         modes = [{"omega0": fit["omega0"], "omega0_err": fit.get("omega0_err"),
@@ -1403,9 +2735,17 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
     feats = BA.features_from(modes or [], descriptor, gauss_fwhm=ctx.gauss_fwhm)
     if not feats:
         return {"deliver": bool(fit.get("omega0") is not None), "branch_id": None,
-                "weight": None, "entropy": None, "resolvable": None}
+                "weight": None, "entropy": None, "resolvable": None,
+                "selected_energy": fit.get("omega0")}
+    selector, target_energy = _campaign_selector(card)
+    if selector == "tracked_branch":
+        # Preserve the fit as unordered evidence. The authoritative branch label is assigned only
+        # after every pooled master has updated, using the whole objective path in both directions.
+        return {"deliver": True, "branch_id": None, "weight": None, "entropy": None,
+                "resolvable": None, "selected_energy": fit.get("omega0"),
+                "candidate_id": f"{target_branch}:tracked_branch",
+                "candidate_state": "provisional"}
     u = BA.reduced_q(q, period)
-    target_branch, _target_label, energy_search = _campaign_target(card)
     if target_branch != BA.ACOUSTIC:
         # A fitted mode and the model-free descriptor commonly report the same physical peak.  Do
         # branch assignment from the fitted modes when they exist: counting both representations as
@@ -1413,28 +2753,29 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
         # descriptor remains the honest fallback when no model mode survived.
         target_feats = [feature for feature in feats if feature.source == "mode"] or feats
         target_post = BA.assignment_posterior(target_feats, beliefs, u)
-        belief = beliefs.get(target_branch)
-        if belief is None or belief.n_anchors < branch_model.MIN_ANCHORS:
-            eligible = [f for f in target_feats if energy_search[0] <= f.energy <= energy_search[1]
-                        and f.energy >= BA.RESOLVABLE_FWHM_FACTOR * ctx.gauss_fwhm
-                        and (f.source == "mode" or f.significance >= BA.SECONDARY_MIN_SIGNIFICANCE)]
-            feature = max(eligible, key=lambda f: f.energy) if eligible else None
-            if feature is None:
-                return {"deliver": False, "branch_id": target_branch, "weight": 0.0,
-                        "entropy": None, "resolvable": False}
-            aligned = fit.get("omega0") is not None and abs(float(fit["omega0"]) - feature.energy) \
-                <= 0.5 * ctx.gauss_fwhm
-            return {"deliver": bool(aligned), "branch_id": target_branch, "weight": 1.0,
-                    "entropy": 0.0, "resolvable": True}
-        qoi = BA.branch_qoi(target_feats, target_post, target_branch,
-                            gauss_fwhm=ctx.gauss_fwhm)
+        if target_energy is not None:
+            target_post = BA.condition_on_target_energy(
+                target_feats, target_post, target_branch, target_energy=target_energy,
+                sigma=max(float(ctx.gauss_fwhm), BA.SIGMA_SLACK))
+        qoi = BA.selected_branch_qoi(
+            target_feats, target_post, target_branch, gauss_fwhm=ctx.gauss_fwhm,
+            selector=selector, target_energy=target_energy, energy_search=energy_search)
         ent = float(qoi["entropy"]) if np.isfinite(qoi["entropy"]) else None
         aligned = fit.get("omega0") is not None and qoi.get("omega0") is not None \
             and abs(float(fit["omega0"]) - float(qoi["omega0"])) <= 0.5 * ctx.gauss_fwhm
         deliver = BA.deliver_branch(qoi) and aligned
-        return {"deliver": bool(deliver), "branch_id": target_branch,
+        posterior = qoi.get("posterior")
+        assigned = max(posterior, key=posterior.get) if posterior else None
+        # Stable across q so neighboring measurements update the same scientific hypothesis.  The q
+        # remains on every evidence record; it is not part of the candidate's identity.
+        energy_key = (f"{float(target_energy):.6g}" if target_energy is not None else "unspecified")
+        candidate_id = f"{target_branch}:{selector}:{energy_key}"
+        return {"deliver": bool(deliver), "branch_id": assigned,
                 "weight": float(qoi.get("p_branch", 0.0)), "entropy": ent,
-                "resolvable": bool(qoi.get("resolvable"))}
+                "resolvable": bool(qoi.get("resolvable")), "posterior": posterior,
+                "selected_energy": qoi.get("omega0"),
+                "candidate_id": candidate_id,
+                "candidate_state": ("accepted" if deliver else "provisional")}
     post = BA.assignment_posterior(feats, beliefs, u)
     qoi = BA.acoustic_qoi(feats, post, gauss_fwhm=ctx.gauss_fwhm)
     ent = float(qoi["entropy"]) if np.isfinite(qoi["entropy"]) else None
@@ -1454,6 +2795,7 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
         # acoustic dominance (the post-Phase-A abstention deadlock at mid-band q).
         return {"deliver": True, "branch_id": "acoustic", "weight": float(qoi["p_acoustic"]),
                 "entropy": ent, "resolvable": bool(qoi["resolvable"]),
+                "posterior": qoi.get("posterior"), "selected_energy": qoi.get("omega0"),
                 "secondary_points": BA.secondary_branch_points(feats, post, qoi,
                                                                gauss_fwhm=ctx.gauss_fwhm)}
     bid = "optic"
@@ -1461,7 +2803,8 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
         bid, _ = BA.assign_label(fit["omega0"], fit.get("omega0_err") or 0.3 * ctx.gauss_fwhm,
                                  beliefs, u, gauss_fwhm=ctx.gauss_fwhm)
     return {"deliver": False, "branch_id": bid, "weight": 0.0, "entropy": ent,
-            "resolvable": bool(qoi["resolvable"])}
+            "resolvable": bool(qoi["resolvable"]), "posterior": qoi.get("posterior"),
+            "selected_energy": qoi.get("omega0")}
 
 
 def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, near_gamma,
@@ -1469,11 +2812,12 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
     """Run branch assignment + honest triage over ``fit`` and apply its verdict (Phase A). Shared by
     the per-scan (:func:`_finish_outcome`) and pooled-master (:func:`_fit_master_group`) paths.
 
-    Returns ``(branch_id, assignment_entropy, branch_weight, resolvable, secondary_features)`` — all
+    Returns branch assignment, candidate posterior/state, and secondary features — all
     None when the posterior is off or the fit is a ``signal_unmodeled`` descriptor result. When the
     triage declines delivery it mutates ``fit`` in place: flips the verdict to ``branch_continuation``,
     nulls the ω₀ fields, and appends a reason (worded per ``master``)."""
     branch_id = assignment_entropy = branch_weight = resolvable = None
+    branch_posterior = candidate_id = candidate_state = selected_energy = None
     secondary_features = None
     if fit.get("verdict") != "signal_unmodeled":
         triage = _assign_and_triage(fit, descriptor, ctx, card=card, sample=sample, T=T, q=q,
@@ -1484,6 +2828,10 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
             branch_weight = triage.get("weight")
             resolvable = triage.get("resolvable")
             secondary_features = triage.get("secondary_points") or None
+            branch_posterior = triage.get("posterior")
+            selected_energy = triage.get("selected_energy")
+            candidate_id = triage.get("candidate_id")
+            candidate_state = triage.get("candidate_state")
             if triage.get("deliver") is False and fit.get("omega0") is not None:
                 target_branch, _target_label, _energy = _campaign_target(card)
                 if master:
@@ -1499,7 +2847,8 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
                 fit["omega0_profile"] = fit["hesse_interval"] = None
                 fit["bayes_interval"] = None
                 fit["interval_reliable"] = False
-    return branch_id, assignment_entropy, branch_weight, resolvable, secondary_features
+    return (branch_id, assignment_entropy, branch_weight, resolvable, secondary_features,
+            branch_posterior, candidate_id, candidate_state, selected_energy)
 
 
 def _gate_scan(rec, det, card, g, runcal, exclusions, base) -> tuple:
@@ -1597,7 +2946,7 @@ def _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres,
     target_anchors = _target_fold_anchor_count(card, sample=sample, branch=target_branch)
     established = target_branch == "acoustic" or target_anchors >= branch_model.MIN_ANCHORS
     if target_branch == "optic" and not established:
-        ctx = replace(ctx, acoustic_omega=float(energy_search[1]), prior_omega=None)
+        ctx = replace(ctx, acoustic_omega=None, prior_omega=None)
     elif period is not None and prior is not None and np.isfinite(prior.omega0):
         confident = float(prior.omega0_sigma or 1e9) <= _PRIOR_NARROW_SIGMA
         ctx = replace(ctx, acoustic_omega=float(prior.omega0),
@@ -1667,8 +3016,8 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
     # deliverable ACOUSTIC measurement or must abstain, and tag the branch it was assigned to so an
     # optic/spurious feature can never seed or be scored as the acoustic branch. Skipped for
     # signal_unmodeled (already a non-ω₀ descriptor result) and when the posterior is off (period None).
-    (branch_id, assignment_entropy, branch_weight, resolvable,
-     secondary_features) = _apply_branch_triage(
+    (branch_id, assignment_entropy, branch_weight, resolvable, secondary_features,
+     branch_posterior, candidate_id, candidate_state, selected_energy) = _apply_branch_triage(
         fit, descriptor, ctx, card=card, sample=sample, T=T, q=q, t_round=t_round,
         near_gamma=near_gamma, master=False)
 
@@ -1687,6 +3036,12 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
                       "n_neighbors": n_neighbors, "source": prior_source}
 
     target_branch, target_label, _energy_search = _campaign_target(card)
+    acquisition_id, acquisition = _acquisition_provenance_for(rec, card, base["scan_id"])
+    acquisition_target = (acquisition or {}).get("acquisition_target_energy")
+    submitted_ncount = (acquisition or {}).get("submitted_ncount")
+    exposure_info = _effective_exposure_for(
+        rec, ctx, fit, target_center=selected_energy,
+        acquisition_target_energy=acquisition_target, submitted_ncount=submitted_ncount)
     outcome = FitOutcome(
         detector_id=det, verdict=fit["verdict"], disposition=disposition,
         confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
@@ -1696,6 +3051,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         q=q, T=T, sample=sample, prior_used=prior_used, calib=calres.summary(),
         reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
         amplitudes=fit.get("amplitudes"), candidates=fit.get("candidates"),
+        model_manifest=fit.get("model_manifest"),
         interval_reliable=fit.get("interval_reliable", True),
         omega0_profile=fit.get("omega0_profile"),
         hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
@@ -1705,6 +3061,8 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         branch_id=branch_id, assignment_entropy=assignment_entropy,
         resolvable=resolvable, branch_weight=branch_weight,
         secondary_features=secondary_features,
+        branch_posterior=branch_posterior, candidate_id=candidate_id,
+        candidate_state=candidate_state,
         bayes_interval=fit.get("bayes_interval"), bayes_ok=fit.get("bayes_ok"),
         bayes_ess=fit.get("bayes_ess"), bayes_fail_reason=fit.get("bayes_fail_reason"),
         log_evidence=fit.get("log_evidence"), log_evidence_err=fit.get("log_evidence_err"),
@@ -1712,7 +3070,9 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         bayes_prior_driven=fit.get("bayes_prior_driven", False),
         bayes_fork_suspected=fit.get("bayes_fork_suspected", False),
         bayes_unconstrained=fit.get("bayes_unconstrained", False),
-        target_branch=target_branch, target_label=target_label)
+        target_branch=target_branch, target_label=target_label,
+        effective_exposure=exposure_info.get("value"), exposure_provenance=exposure_info,
+        acquisition_id=acquisition_id)
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is
@@ -1805,7 +3165,7 @@ _CSV_COLUMNS = [
     "bayes_freq_ratio", "hesse_freq_ratio", "bayes_prior_driven", "bayes_fork_suspected",
     "bayes_unconstrained", "log_evidence", "log_evidence_err",
     "pooled", "n_members", "members",
-    "gamma", "gamma_provisional", "n_modes", "secondary_omega0", "secondary_omega0_err",
+    "gamma", "gamma_provisional", "modality", "n_modes", "secondary_omega0", "secondary_omega0_err",
     "best_model", "cost_per_dof", "fit_kind", "branch_id", "assignment_entropy", "resolvable",
     "descriptor_n_peaks", "descriptor_peaks",
     "zero", "zero_source", "gauss_fwhm",
@@ -1813,11 +3173,20 @@ _CSV_COLUMNS = [
     "prior_n", "prior_source", "reasons",
     # GUI Phase 0 (P0-3/P0-4), appended so older readers/CSVs are unaffected. JSON-encoded strings:
     # the amplitudes dict and the model-selection candidate table.
-    "amplitudes", "candidates",
+    "amplitudes", "candidates", "model_manifest",
     # Additive atomic identity: scan numbers are not globally unique across experiments, so new
     # consumers must route detector data using this full ledger key. Appended for old positional CSV
     # consumers, which continue seeing every existing column in its original order.
     "scan_id", "target_branch", "target_label",
+    # Dynamic-exposure / branch-candidate provenance (additive v2 columns).
+    "effective_exposure", "exposure_provenance", "branch_posterior",
+    "candidate_id", "candidate_state", "acquisition_id",
+    "branch_candidates", "selected_candidate_index", "track_state", "track_revision",
+    "spectrum_ref", "predictive_ref", "master_revision", "model_interval_lo",
+    "model_interval_med", "model_interval_hi", "model_robust", "model_entropy",
+    "gamma_at_bound", "linewidth_state",
+    "pool_consistent", "consistency_statistic", "consistency_pvalue", "consistency_alpha",
+    "consistency_seed",
 ]
 
 
@@ -1865,6 +3234,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
             piv = oc.get("omega0_profile")
             hiv = oc.get("hesse_interval")
             biv = oc.get("bayes_interval")
+            miv = oc.get("model_interval")
             cal = oc.get("calib") or {}
             pr = oc.get("prior_used") or {}
             # Member provenance (chain of custody): pooled masters join their member labels with ";".
@@ -1881,6 +3251,32 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "scan_id": e.scan_id, "scan": e.scan_number, "detector": det, "sample": oc.get("sample"),
                 "target_branch": oc.get("target_branch", "acoustic"),
                 "target_label": oc.get("target_label", oc.get("target_branch", "acoustic")),
+                "effective_exposure": oc.get("effective_exposure"),
+                "exposure_provenance": (json.dumps(oc.get("exposure_provenance"), sort_keys=True)
+                                        if oc.get("exposure_provenance") is not None else None),
+                "branch_posterior": (json.dumps(oc.get("branch_posterior"), sort_keys=True)
+                                     if oc.get("branch_posterior") is not None else None),
+                "candidate_id": oc.get("candidate_id"), "candidate_state": oc.get("candidate_state"),
+                "acquisition_id": oc.get("acquisition_id"),
+                "branch_candidates": (json.dumps(oc.get("branch_candidates"), sort_keys=True)
+                                      if oc.get("branch_candidates") is not None else None),
+                "selected_candidate_index": oc.get("selected_candidate_index"),
+                "track_state": oc.get("track_state"), "track_revision": oc.get("track_revision"),
+                "spectrum_ref": oc.get("spectrum_ref"),
+                "predictive_ref": oc.get("predictive_ref"),
+                "master_revision": oc.get("master_revision"),
+                "model_interval_lo": (miv[0] if miv else None),
+                "model_interval_med": (miv[1] if miv and len(miv) > 2 else None),
+                "model_interval_hi": (miv[-1] if miv else None),
+                "model_robust": oc.get("model_robust"),
+                "model_entropy": oc.get("model_entropy"),
+                "gamma_at_bound": oc.get("gamma_at_bound"),
+                "linewidth_state": oc.get("linewidth_state"),
+                "pool_consistent": oc.get("pool_consistent"),
+                "consistency_statistic": oc.get("consistency_statistic"),
+                "consistency_pvalue": oc.get("consistency_pvalue"),
+                "consistency_alpha": oc.get("consistency_alpha"),
+                "consistency_seed": oc.get("consistency_seed"),
                 "T": oc.get("T"), "h": q[0], "k": q[1], "l": q[2], "status": e.status,
                 "verdict": oc.get("verdict"), "disposition": oc.get("disposition"),
                 "confidence": oc.get("confidence"), "omega0": oc.get("omega0"),
@@ -1906,6 +3302,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "pooled": oc.get("pooled") or None, "n_members": oc.get("n_members"),
                 "members": (";".join(members) if members else None),
                 "gamma": oc.get("gamma"), "gamma_provisional": oc.get("gamma_provisional"),
+                "modality": oc.get("modality"),
                 "n_modes": oc.get("n_modes") or 1,
                 "secondary_omega0": _secondary_mode(oc)[0],
                 "secondary_omega0_err": _secondary_mode(oc)[1],
@@ -1927,12 +3324,18 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 # readers.read_results_csv json.loads them back. sort_keys keeps the cell stable.
                 "amplitudes": (json.dumps(oc.get("amplitudes"), sort_keys=True)
                                if oc.get("amplitudes") is not None else None),
-                "candidates": (json.dumps(oc.get("candidates"))
+                "candidates": (json.dumps(oc.get("candidates"), sort_keys=True)
                                if oc.get("candidates") is not None else None),
+                "model_manifest": (json.dumps(oc.get("model_manifest"), sort_keys=True)
+                                   if oc.get("model_manifest") is not None else None),
             })
-    with open(path, "w", newline="", encoding="utf-8") as f:
+    temporary = path.with_name(path.name + ".tmp")
+    with open(temporary, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=_CSV_COLUMNS)
         w.writeheader()
         for r in rows:
             w.writerow({k: r.get(k) for k in _CSV_COLUMNS})
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(temporary, path)
     return path

@@ -16,6 +16,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QEvent, QMimeData, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import QTreeWidgetItemIterator
 
 from isar_gui.gui_store import GuiStore
 from isar_gui.mime import (
@@ -28,7 +29,7 @@ from isar_gui.mime import (
     encode_scan_ids,
 )
 from isar_gui.viewmodels.scans import ScansViewModel
-from isar_gui.views.scans_dock import ScansDock
+from isar_gui.views.scans_dock import ScansDock, _DIMMED_ROLE, _UNIT_KEY_ROLE
 
 
 # --------------------------------------------------------------------------- fixtures
@@ -59,6 +60,16 @@ def _box(dock, box_id):
 
 def _home(dock):
     dock._tabs.setCurrentIndex(list(dock._pages).index("Manual"))
+
+
+def _tree_item(dock, key):
+    iterator = QTreeWidgetItemIterator(dock._pool_tree)
+    while iterator.value():
+        item = iterator.value()
+        if item.data(0, _UNIT_KEY_ROLE) == key:
+            return item
+        iterator += 1
+    raise AssertionError(f"tree child {key!r} not found")
 
 
 class _Drop:
@@ -148,6 +159,7 @@ def test_merge_onto_foldered_chip_adds_to_that_folder(qtbot, tmp_path):
 
 def test_chip_drop_gated_by_dwell(qtbot, tmp_path):
     vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
+    gid = vm.create_group_from("g", ["s30:12:ana1"])
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
     _home(dock)
@@ -161,11 +173,12 @@ def test_chip_drop_gated_by_dwell(qtbot, tmp_path):
     # Arm (the dwell timeout seam) then drop -> merge requested with the other key only.
     target._arm_merge()
     target.dropEvent(_Drop(["s30:12:ana2", "s30:12:ana1"]))
-    assert fired == [("s30:12:ana1", ["s30:12:ana2"], "")]
+    assert fired == [("s30:12:ana1", ["s30:12:ana2"], gid)]
 
 
 def test_self_only_drag_never_arms(qtbot, tmp_path):
     vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
+    vm.create_group_from("g", ["s30:12:ana1"])
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
     _home(dock)
@@ -182,6 +195,7 @@ def _ScanChip_dragged_others(chip, keys):
 def test_folder_header_drag_never_merges_a_chip(qtbot, tmp_path):
     # A folder-header drag carries a group ref; a chip must not treat it as a merge.
     vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
+    vm.create_group_from("g", ["s30:12:ana1"])
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
     _home(dock)
@@ -200,8 +214,7 @@ def test_drag_out_removes_from_origin_only_with_overlap(qtbot, tmp_path):
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
     _home(dock)
-    ung = _box(dock, "ungrouped")
-    ung.dropEvent(_Drop(["s30:12:ana1"], origin=a))   # drag ana1 OUT of group A
+    dock._pool_tree.dropEvent(_Drop(["s30:12:ana1"], origin=a))
     assert "s30:12:ana1" not in set(vm.member_keys(a))
     assert "s30:12:ana1" in set(vm.member_keys(b))    # untouched in B
 
@@ -212,8 +225,7 @@ def test_drag_out_of_loose_chip_is_noop(qtbot, tmp_path):
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
     _home(dock)
-    ung = _box(dock, "ungrouped")
-    ung.dropEvent(_Drop(["s30:12:ana5"], origin=""))   # loose chip -> nothing to leave
+    dock._pool_tree.dropEvent(_Drop(["s30:12:ana5"], origin=""))
     assert set(vm.member_keys(gid)) == {"s30:12:ana1"}
 
 
@@ -240,14 +252,8 @@ def test_lens_dims_non_matching_and_respects_precedence(qtbot, tmp_path):
     out_key = next(u.key for u in vm.rows() if u.key not in keys)
     dock._lens_dim, dock._lens_bin = "ana", label
     dock._sync_lens()
-    assert dock._chips_by_key[in_key][0]._dimmed is False
-    assert dock._chips_by_key[out_key][0]._dimmed is True
-    # Precedence: an inspected (active) chip is never *painted* dimmed even when outside the bin —
-    # the greyed text colour is applied only on the (dimmed and not active) branch of _apply_style.
-    out_chip = dock._chips_by_key[out_key][0]
-    out_chip.set_active(True)
-    dock._sync_lens()
-    assert "#b0b0b0" not in out_chip.styleSheet()   # active border wins over the lens dim
+    assert _tree_item(dock, in_key).data(0, _DIMMED_ROLE) is False
+    assert _tree_item(dock, out_key).data(0, _DIMMED_ROLE) is True
 
 
 def test_lens_resets_on_data_refresh(qtbot, tmp_path):
@@ -261,7 +267,7 @@ def test_lens_resets_on_data_refresh(qtbot, tmp_path):
     dock._sync_lens()
     vm.refresh()                       # emits refreshed -> lens reset + rebuild
     assert dock._lens_dim is None and dock._lens_bin is None
-    assert all(not c._dimmed for chips in dock._chips_by_key.values() for c in chips)
+    assert all(not _tree_item(dock, u.key).data(0, _DIMMED_ROLE) for u in vm.rows())
 
 
 # --------------------------------------------------------------------------- inline rename (R4/R5)
@@ -343,13 +349,10 @@ def test_pool_lists_all_scans_including_boxed_ones(qtbot, tmp_path):
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
     _home(dock)
-    pool = next(b for b in dock._boxes if b.box_id == "ungrouped")
-    assert {c.key for c in pool.chips} == {f"s30:12:ana{i}" for i in range(1, 10)}  # all 9
-    # the boxed scan's POOL chip carries a membership badge; a loose one does not
-    boxed = next(c for c in pool.chips if c.key == "s30:12:ana1")
-    loose = next(c for c in pool.chips if c.key == "s30:12:ana2")
-    assert boxed._badge == 1 and not boxed._badge_label.isHidden()
-    assert loose._badge == 0 and loose._badge_label.isHidden()
+    assert {_tree_item(dock, f"s30:12:ana{i}").data(0, _UNIT_KEY_ROLE)
+            for i in range(1, 10)} == {f"s30:12:ana{i}" for i in range(1, 10)}
+    assert "A" in _tree_item(dock, "s30:12:ana1").text(5).split(", ")
+    assert "A" not in _tree_item(dock, "s30:12:ana2").text(5).split(", ")
 
 
 def test_new_box_tile_drop_creates_group_and_opens_rename(qtbot, tmp_path):
@@ -417,8 +420,8 @@ def test_home_is_pool_workbench_splitter(qtbot, tmp_path):
     splitters = host.findChildren(QSplitter)
     assert splitters and splitters[0].count() == 2          # Pool pane + Workbench pane
     assert host.findChildren(_NewBoxTile)                    # + tile present in the workbench
-    pool = next(b for b in dock._boxes if b.box_id == "ungrouped")
-    assert len(pool.chips) == 9                              # pool = all scans
+    assert sum(1 for i in range(1, 10)
+               if _tree_item(dock, f"s30:12:ana{i}")) == 9  # hierarchy = all scans
 
 
 def test_active_home_tab_persists_by_id(qtbot, tmp_path):

@@ -8,6 +8,7 @@ and repeatable (the parsing/caching lives in :mod:`isar.workspace_api.workspace`
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -58,6 +59,16 @@ def _seq_or_none(v):
     if isinstance(v, (list, tuple)):
         return tuple(v)
     return None
+
+
+def _json_value(v):
+    """Decode an additive structured CSV cell while preserving already-decoded ledger values."""
+    if not isinstance(v, str):
+        return v
+    try:
+        return json.loads(v)
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +291,55 @@ class FitView:
             return list(v)
         return None
 
+    @property
+    def spectrum_ref(self) -> str | None:
+        value = self._pick("spectrum_ref", "spectrum_ref")
+        return str(value) if value not in (None, "") else None
+
+    @property
+    def predictive_ref(self) -> str | None:
+        value = self._pick("predictive_ref", "predictive_ref")
+        return str(value) if value not in (None, "") else None
+
+    @property
+    def master_revision(self) -> str | None:
+        value = self._pick("master_revision", "master_revision")
+        return str(value) if value not in (None, "") else None
+
+    @property
+    def model_interval(self) -> tuple | None:
+        value = self._outcome.get("model_interval")
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            return tuple(_f(item) for item in value)
+        lo = _f(self._row.get("model_interval_lo"))
+        med = _f(self._row.get("model_interval_med"))
+        hi = _f(self._row.get("model_interval_hi"))
+        return (lo, med, hi) if lo is not None and hi is not None else None
+
+    @property
+    def model_robust(self) -> bool | None:
+        return _b(self._pick("model_robust", "model_robust"))
+
+    @property
+    def model_entropy(self) -> float | None:
+        return _f(self._pick("model_entropy", "model_entropy"))
+
+    @property
+    def gamma_at_bound(self) -> bool | None:
+        return _b(self._pick("gamma_at_bound", "gamma_at_bound"))
+
+    @property
+    def linewidth_state(self) -> str | None:
+        return self._pick("linewidth_state", "linewidth_state")
+
+    @property
+    def pool_consistent(self) -> bool | None:
+        return _b(self._pick("pool_consistent", "pool_consistent"))
+
+    @property
+    def consistency_pvalue(self) -> float | None:
+        return _f(self._pick("consistency_pvalue", "consistency_pvalue"))
+
     # -- branch --------------------------------------------------------------
     @property
     def branch_id(self) -> str | None:
@@ -297,11 +357,41 @@ class FitView:
     def branch_weight(self) -> float | None:
         return _f(self._pick(None, "branch_weight"))
 
+    @property
+    def branch_candidates(self) -> list | None:
+        v = _json_value(self._pick("branch_candidates", "branch_candidates"))
+        return list(v) if isinstance(v, (list, tuple)) else None
+
+    @property
+    def selected_candidate_index(self) -> int | None:
+        v = self._pick("selected_candidate_index", "selected_candidate_index")
+        try:
+            return int(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def track_state(self) -> str | None:
+        return self._pick("track_state", "track_state")
+
+    @property
+    def track_revision(self) -> int | None:
+        v = self._pick("track_revision", "track_revision")
+        try:
+            return int(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
     # -- structured payloads -------------------------------------------------
     @property
     def amplitudes(self) -> dict | None:
         v = self._pick("amplitudes", "amplitudes")
         return v if isinstance(v, dict) else None
+
+    @property
+    def model_manifest(self) -> dict | None:
+        v = _json_value(self._pick("model_manifest", "model_manifest"))
+        return dict(v) if isinstance(v, dict) else None
 
     @property
     def candidates(self) -> list | None:
@@ -377,6 +467,124 @@ class FitView:
 
 
 # ---------------------------------------------------------------------------
+# MasterGroupView — one pooled master plus resolved physical members
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class MasterGroupView:
+    master: FitView
+    members: tuple[FitView, ...]
+    unresolved_members: tuple[str, ...] = ()
+    updated_at: float | None = None
+    pending_members: tuple[FitView, ...] = ()
+    pending_acquisitions: tuple[str, ...] = ()
+
+    @property
+    def stale_count(self) -> int:
+        return len(self.pending_members) + len(self.pending_acquisitions)
+
+    @property
+    def q(self):
+        return self.master.q
+
+    @property
+    def T(self):  # noqa: N802
+        return self.master.T
+
+
+# ---------------------------------------------------------------------------
+# MasterAssessmentView — authoritative campaign state for one requested q
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class MasterAssessmentView:
+    """One immutable projection of the latest durable ``model_update.per_q`` row.
+
+    Physical-scan conclusions are intentionally absent: this is the published pooled-master
+    revision on which steering acted. ``raw`` retains additive future fields for consumers that
+    understand them.
+    """
+
+    hkl: tuple[float, float, float]
+    q: float | None = None
+    state: str = "unmeasured"
+    converged: bool = False
+    omega0: float | None = None
+    halfwidth: float | None = None
+    tolerance: float | None = None
+    master_revision: str | None = None
+    n_members: int = 0
+    track_state: str | None = None
+    linewidth_state: str | None = None
+    pool_consistent: bool | None = None
+    consistency_pvalue: float | None = None
+    uncertainty_method: str | None = None
+    expected_next_information: dict | None = None
+    diagnostics: tuple[str, ...] = ()
+    reason: str | None = None
+    raw: dict = field(default_factory=dict, compare=False, repr=False)
+
+    @classmethod
+    def from_dict(cls, value: dict) -> "MasterAssessmentView":
+        hkl = tuple(float(item) for item in (value.get("hkl") or (0.0, 0.0, 0.0)))
+        if len(hkl) != 3:
+            hkl = (0.0, 0.0, 0.0)
+        return cls(
+            hkl=hkl, q=_f(value.get("q")),
+            state=str(value.get("assessment_state") or "unmeasured"),
+            converged=bool(value.get("converged", False)),
+            omega0=_f(value.get("omega0")),
+            halfwidth=_f(value.get("calibrated_halfwidth")
+                         if value.get("calibrated_halfwidth") is not None
+                         else value.get("master_halfwidth")),
+            tolerance=_f(value.get("tolerance")),
+            master_revision=(str(value["master_revision"])
+                             if value.get("master_revision") is not None else None),
+            n_members=int(value.get("master_n_members") or 0),
+            track_state=value.get("track_state"),
+            linewidth_state=value.get("linewidth_state"),
+            pool_consistent=_b(value.get("pool_consistent")),
+            consistency_pvalue=_f(value.get("consistency_pvalue")),
+            uncertainty_method=value.get("uncertainty_method"),
+            expected_next_information=(dict(value.get("expected_next_information"))
+                                       if isinstance(value.get("expected_next_information"), dict)
+                                       else None),
+            diagnostics=tuple(str(item) for item in (value.get("diagnostics") or ())),
+            reason=value.get("reason"), raw=dict(value))
+
+
+@dataclass(frozen=True)
+class CertificationStatusView:
+    """Latest durable master-certification progress, independent of GUI log delivery."""
+
+    fingerprint: str
+    total: int = 0
+    completed: int = 0
+    reused_workspace: int = 0
+    reused_checkpoint: int = 0
+    newly_fitted: int = 0
+    active: int = 0
+    last_hkl: tuple | None = None
+    phase: str = "fitting"
+    remaining_analysis_seconds: float | None = None
+    published: bool = False
+    updated_ts: float | None = None
+    raw: dict = field(default_factory=dict, compare=False, repr=False)
+
+    @classmethod
+    def from_dict(cls, value: dict) -> "CertificationStatusView":
+        hkl = value.get("last_hkl")
+        return cls(
+            fingerprint=str(value.get("fingerprint") or ""),
+            total=int(value.get("total") or 0), completed=int(value.get("completed") or 0),
+            reused_workspace=int(value.get("reused_workspace") or 0),
+            reused_checkpoint=int(value.get("reused_checkpoint") or 0),
+            newly_fitted=int(value.get("newly_fitted") or 0), active=int(value.get("active") or 0),
+            last_hkl=(tuple(hkl) if isinstance(hkl, (list, tuple)) else None),
+            phase=str(value.get("phase") or "fitting"),
+            remaining_analysis_seconds=_f(value.get("remaining_analysis_seconds")),
+            published=bool(value.get("published", False)),
+            updated_ts=_f(value.get("updated_ts")), raw=dict(value))
+
+
 # ScanView — one ledger row (ScanEntry) with epoch-resolved HKL
 # ---------------------------------------------------------------------------
 @dataclass
@@ -466,6 +674,7 @@ class BranchModelView:
     dispersion_prior: list = field(default_factory=list)   # PriorPoint dicts
     branch_models: list = field(default_factory=list)
     branch_belief: list = field(default_factory=list)      # per-point entropy/resolvable
+    branch_tracks: Any = field(default_factory=dict)       # additive segmented target/rival tracks
 
 
 @dataclass

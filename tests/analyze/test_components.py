@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from isar.analyze import components as C
+from isar.analyze.context import ScanContext
 from isar.synth._ff import Voigt, convolute_voigt_dho
 from isar.synth.fit import omega0_from, omega0_value_error
 
@@ -207,3 +208,42 @@ def test_composite_evaluate_components_sum_to_total():
     assert [label for label, _ in parts] == ["phonon", "elastic", "bg"]
     total = np.sum([arr for _, arr in parts], axis=0)
     assert np.allclose(total, comp.evaluate(x, theta, ctx))
+
+
+def test_exposure_scales_composite_mean_components_and_nnls_only():
+    x = np.linspace(-4.0, 8.0, 25)
+    mask = np.ones(x.size, dtype=bool)
+    scale = np.linspace(0.5, 2.0, x.size)
+    legacy = ScanContext(x=x, counts=np.zeros_like(x), mask=mask, T=100.0, center=0.0,
+                         gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="synthetic",
+                         energy_status="absolute")
+    exposed = ScanContext(x=x, counts=np.zeros_like(x), mask=mask, T=100.0, center=0.0,
+                          gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="synthetic",
+                          energy_status="absolute", exposure_scale=scale)
+    comp = C.CompositeModel([C.PhononDHO(), C.ConstantBackground()])
+    theta = np.array([4.0, 0.4, 200.0, 7.0])
+    base = comp.evaluate(x, theta, legacy)
+    assert np.array_equal(comp.evaluate(x, theta, legacy), base)
+    assert np.allclose(comp.evaluate(x, theta, exposed), base * scale)
+    parts = comp.evaluate_components(x, theta, exposed)
+    assert np.allclose(sum(values for _name, values in parts), base * scale)
+    nonlinear = {"phonon.Omega_d": 4.0, "phonon.Gamma": 0.4}
+    phi0, names0 = comp.nnls_basis(x, nonlinear, legacy)
+    phi1, names1 = comp.nnls_basis(x, nonlinear, exposed)
+    assert names0 == names1
+    assert np.allclose(phi1, phi0 * scale[:, None])
+
+
+def test_uniform_exposure_is_regression_identical():
+    x = np.linspace(-4.0, 8.0, 25)
+    mask = np.ones(x.size, dtype=bool)
+    base_ctx = ScanContext(x=x, counts=np.zeros_like(x), mask=mask, T=100.0, center=0.0,
+                           gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="synthetic",
+                           energy_status="absolute")
+    uniform_ctx = ScanContext(x=x, counts=np.zeros_like(x), mask=mask, T=100.0, center=0.0,
+                              gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="synthetic",
+                              energy_status="absolute", exposure_scale=np.ones_like(x))
+    comp = C.CompositeModel([C.PhononDHO(), C.ConstantBackground()])
+    theta = np.array([4.0, 0.4, 200.0, 7.0])
+    assert np.array_equal(comp.evaluate(x, theta, base_ctx),
+                          comp.evaluate(x, theta, uniform_ctx))

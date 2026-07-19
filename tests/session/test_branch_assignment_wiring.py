@@ -41,6 +41,43 @@ def test_add_point_stores_branch_id_and_weight():
     assert p["branch_id"] == "acoustic" and p["weight"] == pytest.approx(0.9)
 
 
+def test_add_point_stores_complete_branch_evidence_additively():
+    state = CardState()
+    posterior = {"acoustic": 0.2, "optic": 0.7, "new": 0.1}
+    assert SP.add_point(
+        state, scan_id="O0", sample="S", T=200.0, q=[0.1, 0.0, 0.0], omega0=6.0,
+        modality="fold", verdict="resolved", branch_id="optic", weight=0.7,
+        branch_posterior=posterior, assignment_entropy=0.8)
+    assert state.dispersion_prior[0]["branch_posterior"] == posterior
+    assert state.dispersion_prior[0]["assignment_entropy"] == pytest.approx(0.8)
+
+
+def test_acquisition_provenance_resolves_driven_and_standalone_scans():
+    state = CardState(acquisition_provenance=[{
+        "job_id": "j-0042", "acquisition_id": "logical:7",
+        "acquisition_target_energy": 6.25, "submitted_ncount": 100_000_000,
+        "scan_kind": "production"}])
+    card = SimpleNamespace(state=state)
+    assert CardState.from_dict(state.to_dict()).acquisition_provenance == state.acquisition_provenance
+    driven = SimpleNamespace(raw_header={"tavi": {"job_id": "j-0042"}})
+    acquisition_id, provenance = driver._acquisition_provenance_for(driven, card, "S:42")
+    assert acquisition_id == "logical:7"
+    assert provenance["acquisition_target_energy"] == pytest.approx(6.25)
+    standalone = SimpleNamespace(raw_header={})
+    assert driver._acquisition_provenance_for(standalone, card, "S:9") == ("scan:S:9", None)
+
+
+def test_effective_exposure_uses_preserved_selected_center_after_triage_withholds_fit():
+    ctx = SimpleNamespace(
+        x=[0.0, 1.0, 2.0, 3.0], mask=[True] * 4, gauss_fwhm=0.1,
+        lorentz_fwhm=0.0, acoustic_omega=None, prior_omega=None, window=(0.0, 3.0))
+    info = driver._effective_exposure_for(
+        None, ctx, {"omega0": None}, absolute_exposure=[10.0, 20.0, 80.0, 160.0],
+        target_center=2.0)
+    assert info["center"] == pytest.approx(2.0)
+    assert info["value"] == pytest.approx(80.0)
+
+
 def test_prior_for_can_select_optic_branch():
     st = CardState()
     _add(st, "A0", 0.20, 1.85, branch_id="acoustic")
@@ -51,7 +88,7 @@ def test_prior_for_can_select_optic_branch():
     assert pr is not None and pr.omega0 == pytest.approx(6.3, abs=0.5)
 
 
-def test_optic_cold_start_delivers_optic_and_rejects_acoustic_fit():
+def test_optic_cold_start_keeps_lowest_candidate_provisional_with_bayesian_evidence():
     state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
                                       "energy_search_meV": [-2.0, 12.0]})
     card = SimpleNamespace(
@@ -65,16 +102,40 @@ def test_optic_cold_start_delivers_optic_and_rejects_acoustic_fit():
     ]
     optic = driver._assign_and_triage(
         {"omega0": 6.0, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
-        q=[2.0, 0.0, 0.0], t_round=5.0, near_gamma=False)
+        q=[2.1, 0.0, 0.0], t_round=5.0, near_gamma=False)
     acoustic = driver._assign_and_triage(
         {"omega0": 1.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
-        q=[2.0, 0.0, 0.0], t_round=5.0, near_gamma=False)
-    assert optic["deliver"] is True and optic["branch_id"] == "optic"
-    assert acoustic["deliver"] is False
+        q=[2.1, 0.0, 0.0], t_round=5.0, near_gamma=False)
+    assert optic["deliver"] is False and acoustic["deliver"] is False
+    assert acoustic["branch_id"] == "acoustic"
+    assert acoustic["candidate_state"] == "provisional"
+    assert acoustic["posterior"]["acoustic"] > acoustic["posterior"].get("optic", 0.0)
+    neighbor = driver._assign_and_triage(
+        {"omega0": 1.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
+        q=[2.2, 0.0, 0.0], t_round=5.0, near_gamma=False)
+    assert neighbor["candidate_id"] == acoustic["candidate_id"]
 
 
-def test_optic_bootstrap_keeps_upper_mode_until_branch_is_established():
+def test_optic_cold_start_nearest_energy_can_deliver_supported_mode():
     state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
+                                      "selector": "nearest_energy", "target_energy_meV": 6.0,
+                                      "energy_search_meV": [-2.0, 12.0]})
+    card = SimpleNamespace(state=state, policy=SimpleNamespace(dispersion={"zone_period": 2.0}))
+    ctx = SimpleNamespace(gauss_fwhm=1.0)
+    modes = [
+        {"omega0": 1.2, "omega0_err": 0.1, "gamma": 0.2, "amplitude": 900.0},
+        {"omega0": 6.0, "omega0_err": 0.1, "gamma": 0.3, "amplitude": 300.0},
+    ]
+    result = driver._assign_and_triage(
+        {"omega0": 6.0, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
+        q=[2.0, 0.0, 0.0], t_round=5.0, near_gamma=False)
+    assert result["deliver"] is True and result["branch_id"] == "optic"
+    assert result["candidate_state"] == "accepted"
+
+
+def test_explicit_highest_selector_keeps_unsupported_upper_mode_provisional():
+    state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
+                                      "selector": "highest_energy",
                                       "energy_search_meV": [-2.0, 12.0]})
     _add(state, "O0", 0.0, 6.0, branch_id="optic")
     card = SimpleNamespace(
@@ -94,12 +155,14 @@ def test_optic_bootstrap_keeps_upper_mode_until_branch_is_established():
         {"omega0": 4.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
         q=[2.0, 0.5, 0.0], t_round=5.0, near_gamma=False)
 
-    assert optic["deliver"] is True and optic["branch_id"] == "optic"
+    assert optic["deliver"] is False and optic["branch_id"] == "optic"
+    assert optic["candidate_state"] == "provisional"
     assert acoustic["deliver"] is False
 
 
 def test_established_optic_uses_fitted_modes_before_descriptor_rivals():
     state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
+                                      "selector": "nearest_energy", "target_energy_meV": 7.4,
                                       "energy_search_meV": [-2.0, 12.0]})
     _add(state, "O0", 0.0, 6.0, branch_id="optic")
     _add(state, "O1", 0.25, 6.7, branch_id="optic")
