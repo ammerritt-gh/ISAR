@@ -73,6 +73,15 @@ a cheap-first/escalate-on-distrust policy, but nothing implements it).
   tolerance-driven formula is a small change to `_count_request()` and directly encodes the
   "5 counts won't cut it" instinct. Note this is a *floor*, not a target — the tolerance logic
   still owns the ceiling.
+  **Owner clarification (2026-07-19):** this must stay a *per-request floor*, never a
+  "count-until-peak-reaches-X" loop. ISAR runs scan-by-scan and re-decides after every scan;
+  statistics accumulate through the pooled masters, so the right mechanism is: floor each
+  submitted request, then let acquisition decide stay-vs-move on the pooled evidence. Grinding
+  one q in a closed loop against a count target invites timing pathologies and forfeits
+  ISAR's real advantage — e.g. when two phonons blend at one q, scanning *neighboring* q where
+  they separate, then returning with tight neighbor priors, resolves the blend better than any
+  amount of additional dwell at the original point. Breadth-with-priors is a first-class
+  alternative to depth, and the EIG move-vs-stay logic is where that trade belongs.
 - **Close the rate loop.** After each scan, compare observed integrated counts to predicted;
   carry a per-q (or global) rate-scale factor into the next `_count_request()`. Cheap, and it
   converts the ladder from open-loop to closed-loop.
