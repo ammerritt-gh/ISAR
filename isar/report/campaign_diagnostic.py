@@ -134,7 +134,9 @@ class EventCounts:
 
 
 _KNOWN_KINDS = frozenset({"propose", "validate", "run", "analyze", "decide", "escalate_fit",
-                          "exception", "stop", "timing"})
+                          "branch_track_update", "branch_reassignment", "frontier_blocked",
+                          "exception", "stop", "timing", "activity_start",
+                          "activity_progress", "activity_end"})
 
 
 def _event_counts(events: list) -> EventCounts:
@@ -789,6 +791,40 @@ def _truth_lookup(score: dict | None) -> dict:
 
 def _section_dispersion(doc: FindingsDoc, di: DiagInputs, per_q: list) -> None:
     doc.section("4. Delivered dispersion vs truth")
+    tracks = (di.card_state or {}).get("branch_tracks") or {}
+    if tracks:
+        frontier = tracks.get("frontiers") or {}
+        assignments = tracks.get("assignments") or []
+        has_acoustic = any(
+            isinstance(assignment.get("acoustic_candidate_index"), int)
+            and 0 <= assignment["acoustic_candidate_index"]
+            < len(assignment.get("candidates") or [])
+            for assignment in assignments)
+        doc.para(
+            f"Tracked-branch revision {tracks.get('revision', '—')}; anchor path index "
+            f"{tracks.get('anchor_index', '—')}; connected target points: "
+            f"{len(frontier.get('confirmed_indices') or [])}. "
+            + ("The connected frontier is blocked by unresolved identity. "
+               if frontier.get("frontier_blocked") else "The reachable identity frontier is connected. ")
+            + ("Acoustic identified; retained as non-target context." if has_acoustic else ""))
+        assignment_rows = []
+        for assignment in assignments:
+            candidates = assignment.get("candidates") or []
+            oi = assignment.get("optic_candidate_index")
+            ai = assignment.get("acoustic_candidate_index")
+            optic = candidates[oi] if isinstance(oi, int) and 0 <= oi < len(candidates) else {}
+            acoustic = candidates[ai] if isinstance(ai, int) and 0 <= ai < len(candidates) else {}
+            assignment_rows.append([
+                assignment.get("path_index"), _hkl_str(assignment.get("q")),
+                _num(optic.get("energy_meV")),
+                _num((optic.get("probabilities") or {}).get("optic"), 3),
+                _num(acoustic.get("energy_meV")),
+                _num((acoustic.get("probabilities") or {}).get("acoustic"), 3),
+                assignment.get("track_state") or "—",
+            ])
+        if assignment_rows:
+            doc.table(["path", "hkl", "target ω", "P(target)", "rival ω", "P(acoustic)",
+                       "frontier state"], assignment_rows)
     truth = _truth_lookup(di.score)
     have_truth = bool(truth)
     headers = ["q", "hkl", "ω₀ (meV)", "halfwidth", "source", "reason", "n_prod", "collate-only"]
@@ -1081,6 +1117,10 @@ def _section_verdict(doc: FindingsDoc, di: DiagInputs, per_q: list, reasons_seen
 def _section_provenance(doc: FindingsDoc, di: DiagInputs, n_dossier_figs: int, n_buried: int,
                         n_nonreconstructable: int) -> None:
     doc.section("8. Provenance")
+    checkpoint_root = di.workspace / "report" / "certification"
+    checkpoint_files = ([path for path in checkpoint_root.rglob("*") if path.is_file()]
+                        if checkpoint_root.exists() else [])
+    checkpoint_bytes = sum(path.stat().st_size for path in checkpoint_files)
     rows = [
         ("§1 objective, §2 budget/stop, §4 per-q status", "report/campaign_summary.json"),
         ("§2 wall split, §3 driver narrative, event counts", "report/session_log.jsonl"),
@@ -1091,10 +1131,16 @@ def _section_provenance(doc: FindingsDoc, di: DiagInputs, n_dossier_figs: int, n
          f"{n_dossier_figs} rendered under report/figures/dossier/"),
         ("buried per-scan set — every non-pooled fitted row, same reconstruct_curve path",
          f"{n_buried} rendered under report/figures/scans/"),
+        ("final-certification manifests and derived checkpoints",
+         f"report/certification/ — {len(checkpoint_files)} files, "
+         f"{checkpoint_bytes / (1024 * 1024):.2f} MiB"),
     ]
     doc.table(["section", "source"], rows)
     doc.para("No number in this report was produced by refitting or re-scoring; every value is a "
              "re-presentation of what the campaign already recorded.")
+    doc.para("Certification revisions are retained indefinitely. They are derived artifacts; an "
+             "operator may manually prune an old revision only after confirming that no published "
+             "result references it. ISAR performs no automatic deletion.")
     if n_nonreconstructable:
         doc.para(f"*{n_nonreconstructable} fitted rows were genuinely non-reconstructable (a "
                  "reconstruction parameter — γ / zero / resolution — was absent) and were skipped "

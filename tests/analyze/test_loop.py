@@ -195,6 +195,33 @@ def test_candidate_pool_failure_logs_and_retries_serially(caplog):
     assert "retrying serially" in caplog.text
 
 
+def test_error_paths_reuse_candidate_executor_and_preserve_pairing(monkeypatch):
+    from isar.analyze import errors
+
+    class InlineExecutor:
+        def map(self, fn, items):
+            return map(fn, items)
+
+    executor = InlineExecutor()
+    calls = []
+
+    def _capture(items, **kwargs):
+        calls.append((list(items), kwargs))
+
+    monkeypatch.setattr(errors, "attach_batch", _capture)
+    admissible = loop.fit_admissible_structures(
+        _one_peak_ctx(), errors=True, M=12, seed=4, executor=executor)
+    two_stage = loop.fit_structures_two_stage(
+        _one_peak_ctx(), with_errors=True, M=12, seed=4, executor=executor)
+
+    assert len(calls) == 2
+    for results, (items, kwargs) in zip((admissible, two_stage), calls):
+        assert [result for result, _hyp, _ctx in items] == results
+        assert [result.label for result, hyp, _ctx in items] == [hyp.label for _, hyp, _ in items]
+        assert kwargs["executor"] is executor
+        assert kwargs["boot_workers"] >= 2
+
+
 # --- FIX 1: greedy-IC "seed robustness" was really a MIGRAD call-budget starvation ----------
 
 def _sparse_two_peak_ctx(seed=208, o1=5.7, o2=7.9, a1=12.0, a2=8.0, g=0.5, bg=0.05, n=44):

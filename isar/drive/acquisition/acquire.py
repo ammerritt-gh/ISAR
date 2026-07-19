@@ -415,9 +415,74 @@ def _driver_inserted_candidate(objective, grid: list[GridQ], observations: list[
     return best
 
 
+def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1,
+                             anchor_index: int | None = None):
+    """Opening walk for a tracked branch: anchor, adjacent frontier, at most one bridge."""
+    if not grid:
+        return None
+    anchor_index = 0 if anchor_index is None else max(0, min(int(anchor_index), len(grid) - 1))
+    anchor = grid[anchor_index]
+    if not anchor.visited:
+        return anchor, "quicklook", "tracked branch: establish optic identity at the zone-centre anchor"
+    if anchor.track_state != "confirmed":
+        if anchor.stuck:
+            return None
+        # Repeating the anchor is the one deliberate opening-walk exception: without a usable ZC
+        # identity there is no branch from which neighboring evidence can be propagated.
+        return anchor, "production", "tracked branch: zone-centre optic identity is not yet confirmed"
+
+    actions = []
+    for direction in (-1, 1):
+        frontier_index = anchor_index + direction
+        while (0 <= frontier_index < len(grid)
+               and grid[frontier_index].track_state == "confirmed"):
+            frontier_index += direction
+        if not 0 <= frontier_index < len(grid):
+            continue
+        frontier = grid[frontier_index]
+        if not frontier.visited:
+            actions.append((0, frontier.index, frontier, "quicklook",
+                            "tracked branch: extend the connected optic frontier by one adjacent q"))
+            continue
+        bridge_index = frontier_index + direction
+        if maximum_bridge_steps > 0 and 0 <= bridge_index < len(grid):
+            bridge = grid[bridge_index]
+            if not bridge.visited:
+                actions.append((1, bridge.index, bridge, "quicklook",
+                                "tracked branch: one provisional adjacent bridge to resolve the ambiguous frontier"))
+                continue
+        if not frontier.stuck:
+            actions.append((2, frontier.index, frontier, "production",
+                            "tracked branch: revisit the ambiguous frontier using evidence from both adjacent q"))
+    if not actions:
+        return None
+    _priority, _path_order, pick, kind, reason = min(actions, key=lambda item: (item[0], item[1]))
+    return pick, kind, reason
+
+
+def tracked_anchor_index(path, period: float | None = None) -> int:
+    """Nearest reduced-zone centre, with path order as the deterministic tie-breaker.
+
+    A cold workspace may not have a card yet.  In that one case reciprocal-lattice integers are the
+    only available reduced-coordinate convention; initialized campaigns pass their declared period.
+    """
+    points = [tuple(float(value) for value in q) for q in path]
+    if not points:
+        return 0
+    spans = [max(point[axis] for point in points) - min(point[axis] for point in points)
+             for axis in range(len(points[0]))]
+    axis = max(range(len(spans)), key=lambda item: spans[item])
+    valid_period = period is not None and math.isfinite(float(period)) and float(period) > 0.0
+    scale = float(period) if valid_period else 1.0
+    reduced = [abs(point[axis] - round(point[axis] / scale) * scale) for point in points]
+    return min(range(len(points)), key=lambda index: (reduced[index], index))
+
+
 def _select_target(grid: list[GridQ], model, *,
                    fisher=None, opening=None, classify=None,
-                   classification_weight: float = 0.0) -> tuple[GridQ | None, str, str, ProposalScore | None]:
+                   classification_weight: float = 0.0, tracked_branch: bool = False,
+                   maximum_bridge_steps: int = 1,
+                   track_anchor_index: int | None = None) -> tuple[GridQ | None, str, str, ProposalScore | None]:
     """Pick the next grid q and its scan kind. Returns ``(gridq, kind, reason, score)``.
 
     Tiers, most-specific first:
@@ -437,6 +502,22 @@ def _select_target(grid: list[GridQ], model, *,
     value-of-information saturated) are abandoned. ``score`` carries ``cost=0``/``eig_per_cost=None``;
     :func:`propose_scan` fills the actual ΔC once the window is known.
     """
+    if tracked_branch:
+        opening_pick = _tracked_frontier_target(
+            grid, maximum_bridge_steps=maximum_bridge_steps, anchor_index=track_anchor_index)
+        if opening_pick is not None:
+            pick, kind, reason = opening_pick
+            return pick, kind, reason, ProposalScore(
+                method="classification" if "ambiguous" in reason or "bridge" in reason else "explore",
+                c_spent=float(pick.counts_spent), reason=reason,
+                purpose="differentiate" if "ambiguous" in reason or "bridge" in reason else "hypothesis_check")
+        # Coverage is complete only when every point belongs to the connected component. Precision
+        # optimization below is then allowed. A blocked/stuck frontier yields no illegal far-q jump.
+        if any(point.stuck and point.track_state != "confirmed" for point in grid):
+            return None, "", "tracked branch frontier blocked at the existing attempt cap", None
+        if any(point.track_state not in (None, "confirmed") and not point.converged for point in grid):
+            return None, "", "tracked branch frontier blocked by unresolved identity", None
+
     for source in grid:
         master = source.master or {}
         diagnostic_hw = master.get("diagnostic_halfwidth")
@@ -595,7 +676,9 @@ def _select_target(grid: list[GridQ], model, *,
 def propose_scan(objective, model, results_so_far: list[dict], resolution_info=None,
                  budget_state: dict | None = None, master_rows: list[dict] | None = None,
                  fisher=None, classify=None, rival_band=None,
-                 runtime_limits: dict | None = None) -> ScanProposal | None:
+                 runtime_limits: dict | None = None,
+                 track_anchor_index: int | None = None,
+                 track_zone_period: float | None = None) -> ScanProposal | None:
     """Propose the next scan (Q, energy window, neutron count), or ``None`` if nothing remains.
 
     Args:
@@ -612,6 +695,11 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
             (5b). Returns the predicted post-scan σ(ω₀) when the q is Fisher-grounded, else ``None``.
     """
     grid = summarize_grid(objective, results_so_far or [], master_rows or [])
+    if (getattr(objective, "target_selector", None) == "tracked_branch"
+            and track_anchor_index is None):
+        declared_period = (getattr(objective, "meta", None) or {}).get("zone_period")
+        track_anchor_index = tracked_anchor_index(
+            objective.path, track_zone_period if track_zone_period is not None else declared_period)
     target_hypothesis = next((h for h in getattr(objective, "hypotheses", [])
                               if h.get("name") == getattr(objective, "target_hypothesis", None)), None)
     opening = None
@@ -631,7 +719,10 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
         grid = [*grid, inserted]
     pick, kind, reason, score = _select_target(
         grid, model, fisher=fisher, opening=opening, classify=classify,
-        classification_weight=classification_weight)
+        classification_weight=classification_weight,
+        tracked_branch=(getattr(objective, "target_selector", None) == "tracked_branch"),
+        maximum_bridge_steps=int(policy.get("maximum_bridge_steps", 1)),
+        track_anchor_index=track_anchor_index)
     if pick is None:
         return None
     driver_inserted = not any(math.dist(pick.hkl, tuple(point)) <= 1e-4 for point in objective.path)

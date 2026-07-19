@@ -290,13 +290,85 @@ class Workspace:
         return self._views["groups"]
 
     @property
+    def master_groups(self) -> list:
+        """Pooled masters with member fits resolved from their provenance labels."""
+        if "master_groups" in self._views:
+            return self._views["master_groups"]
+        from .views import MasterGroupView
+
+        physical = [fit for fit in self.results if not fit.pooled]
+        by_unit = {fit.unit_id: fit for fit in physical if fit.unit_id}
+        by_scan: dict[int, list] = {}
+        for fit in physical:
+            if fit.scan_number is not None:
+                by_scan.setdefault(int(fit.scan_number), []).append(fit)
+        groups = []
+        for master in (fit for fit in self.results if fit.pooled):
+            resolved, unresolved = [], []
+            for raw_label in master.members or ():
+                label = str(raw_label)
+                match = by_unit.get(label)
+                if match is None:
+                    try:
+                        candidates = by_scan.get(int(label), [])
+                    except ValueError:
+                        candidates = []
+                    match = candidates[0] if len(candidates) == 1 else None
+                if match is None:
+                    unresolved.append(label)
+                elif match not in resolved:
+                    resolved.append(match)
+            updated_at = None
+            if master.spectrum_ref:
+                spectrum_path = (self.root / master.spectrum_ref).resolve()
+                pooled_root = (self.root / "data" / "pooled").resolve()
+                try:
+                    spectrum_path.relative_to(pooled_root)
+                    updated_at = spectrum_path.stat().st_mtime
+                except (ValueError, OSError) as exc:
+                    self.warnings.append(
+                        f"pooled spectrum metadata unavailable for {master.spectrum_ref!r}: {exc}")
+            groups.append(MasterGroupView(
+                master=master, members=tuple(resolved),
+                unresolved_members=tuple(unresolved), updated_at=updated_at))
+        self._views["master_groups"] = groups
+        return groups
+
+    def pooled_spectrum(self, fit_or_ref):
+        """Load one validated pooled-spectrum blob; return ``None`` for a legacy master."""
+        from types import SimpleNamespace
+        import numpy as np
+
+        ref = (fit_or_ref.spectrum_ref if hasattr(fit_or_ref, "spectrum_ref") else fit_or_ref)
+        if not ref:
+            return None
+        candidate = (self.root / str(ref)).resolve()
+        pooled_root = (self.root / "data" / "pooled").resolve()
+        try:
+            candidate.relative_to(pooled_root)
+        except ValueError as exc:
+            raise ValueError(f"pooled spectrum reference escapes data/pooled: {ref!r}") from exc
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+        if payload.get("schema") != "isar.pooled_spectrum/1":
+            raise ValueError(f"unsupported pooled spectrum schema in {ref!r}")
+        counts = np.asarray(payload.get("counts") or [], dtype=float)
+        variance = np.asarray(payload.get("variance") or [], dtype=float)
+        return SimpleNamespace(
+            x=np.asarray(payload.get("energy") or [], dtype=float), counts=counts,
+            yerr=np.sqrt(np.clip(variance, 0.0, None)), variance=variance,
+            monitor=np.asarray(payload.get("monitor") or [], dtype=float),
+            mask=np.asarray(payload.get("mask") or [], dtype=bool),
+            members=tuple(tuple(item) for item in payload.get("members") or ()))
+
+    @property
     def branch_model(self) -> BranchModelView:
         if "branch_model" not in self._views:
             st = self._state()
             self._views["branch_model"] = BranchModelView(
                 dispersion_prior=list(getattr(st, "dispersion_prior", None) or []),
                 branch_models=list(getattr(st, "branch_models", None) or []),
-                branch_belief=list(getattr(st, "branch_belief", None) or []))
+                branch_belief=list(getattr(st, "branch_belief", None) or []),
+                branch_tracks=getattr(st, "branch_tracks", None) or {})
         return self._views["branch_model"]
 
     @property

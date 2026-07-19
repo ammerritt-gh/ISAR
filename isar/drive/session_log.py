@@ -16,6 +16,9 @@ Event ``kind``s (the documented vocabulary):
 - ``decide``       — the supervisor updated the ω(q) model or chose the next action.
 - ``escalate_fit`` — a fit was promoted from a cheap error tier to a fuller one (``phase="promote"``),
   and the promotion's result (``phase="outcome"``: ``seated`` / ``failed`` / ``superseded``).
+- ``branch_track_update`` — a pooled update caused a new joint path-assignment revision.
+- ``branch_reassignment`` — neighboring evidence changed a candidate's branch identity.
+- ``frontier_blocked`` — an unresolved identity gap currently prevents outward certification.
 - ``exception``    — a non-routine branch (missed window, flagged/held, budget, validation rejection).
 - ``stop``         — the terminal decision: met / unmeetable, with reasons.
 - ``timing``       — a profiling span: how long a named stage took (``stage``, ``iter``, ``seconds``, ``ok``).
@@ -25,12 +28,14 @@ from __future__ import annotations
 import json
 import os
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-EVENT_KINDS = ("propose", "validate", "run", "analyze", "decide", "escalate_fit", "exception",
-               "stop", "timing")
+EVENT_KINDS = ("propose", "validate", "run", "analyze", "decide", "escalate_fit",
+               "branch_track_update", "branch_reassignment", "frontier_blocked", "exception",
+               "stop", "timing", "activity_start", "activity_progress", "activity_end")
 
 
 def log_event(path: str | Path, kind: str, payload: dict[str, Any], *, ts: float | None = None) -> dict[str, Any]:
@@ -56,7 +61,7 @@ def log_event(path: str | Path, kind: str, payload: dict[str, Any], *, ts: float
         f.flush()
         # Skip the fsync for advisory "timing" spans (~16/iteration): _resume_state reads only "run"
         # events, so their durability buys nothing; fsync every other kind for ledger/crash-safety.
-        if kind != "timing":
+        if kind not in ("timing", "activity_progress"):
             os.fsync(f.fileno())
     return record
 
@@ -106,3 +111,45 @@ def timed(path: str | Path, stage: str, *, iteration: int | None = None, **meta:
         }
         payload.update(meta)
         log_event(path, "timing", payload)
+
+
+@contextmanager
+def activity(path: str | Path, stage: str, *, q=None, job_id=None, fit_tier=None,
+             total=None, progress_unit=None, **meta: Any):
+    """Durable start/end pair for one operator-visible operation."""
+    activity_id = uuid.uuid4().hex
+    payload = {"activity_id": activity_id, "stage": stage, "q": q, "job_id": job_id,
+               "fit_tier": fit_tier, "total": total, "progress_unit": progress_unit, **meta}
+    payload = {key: value for key, value in payload.items() if value is not None}
+    log_event(path, "activity_start", payload)
+    try:
+        yield activity_id
+    except BaseException as exc:
+        log_event(path, "activity_end", {**payload, "status": "failed",
+                                          "error": f"{type(exc).__name__}: {exc}"})
+        raise
+    else:
+        log_event(path, "activity_end", {**payload, "status": "completed"})
+
+
+def log_activity_progress(path: str | Path, activity_id: str, *, completed: int,
+                          total: int, progress_unit: str, **meta: Any) -> dict[str, Any]:
+    return log_event(path, "activity_progress", {
+        "activity_id": activity_id, "completed": int(completed), "total": int(total),
+        "progress_unit": str(progress_unit), **meta})
+
+
+def close_interrupted_activities(path: str | Path) -> None:
+    """Close durable starts left unmatched by a killed previous invocation."""
+    events = read_log(path)
+    starts = {str((event.get("payload") or {}).get("activity_id")): event
+              for event in events if event.get("kind") == "activity_start"
+              and (event.get("payload") or {}).get("activity_id")}
+    ended = {str((event.get("payload") or {}).get("activity_id"))
+             for event in events if event.get("kind") == "activity_end"}
+    for activity_id, event in starts.items():
+        if activity_id in ended:
+            continue
+        original = dict(event.get("payload") or {})
+        log_event(path, "activity_end", {**original, "activity_id": activity_id,
+                                          "status": "interrupted"})

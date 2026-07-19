@@ -11,7 +11,13 @@ The output feeds the report (`isar/report`): the catalogue, the coverage map, an
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import os
+import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -47,6 +53,46 @@ class MergedSpectrum:
     mask: object                 # ΣM != 0
     members: list                # [(experiment_id, scan_number, detector_id), …] that contributed
     n_members: int = 0
+
+
+def persist_merged_spectrum(data_dir, merged: MergedSpectrum) -> str:
+    """Atomically persist a pooled spectrum and return its workspace-relative content address."""
+    def _values(value):
+        return value.tolist() if hasattr(value, "tolist") else list(value)
+
+    payload = {
+        "schema": "isar.pooled_spectrum/1",
+        "energy": _values(merged.energy),
+        "counts": _values(merged.intensity),
+        "variance": _values(merged.variance),
+        "monitor": _values(merged.monitor),
+        "mask": [bool(v) for v in _values(merged.mask)],
+        "members": [list(member) for member in merged.members],
+        "n_members": int(merged.n_members),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    data_path = Path(data_dir)
+    pooled_dir = data_path / "pooled"
+    pooled_dir.mkdir(parents=True, exist_ok=True)
+    target = pooled_dir / f"{digest}.json"
+    if not target.exists():
+        fd, temporary = tempfile.mkstemp(prefix=f".{digest}.", suffix=".tmp", dir=pooled_dir)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError as cleanup_error:
+                log.warning("could not remove incomplete pooled spectrum %s: %s",
+                            temporary, cleanup_error)
+            raise
+    return target.relative_to(data_path.parent).as_posix()
 
 
 @dataclass
@@ -271,3 +317,4 @@ def merge_before_divide(n_list, m_list):
     np.divide(N, M, out=intensity, where=valid)
     np.divide(N, M * M, out=variance, where=valid)
     return intensity, variance, valid
+log = logging.getLogger(__name__)

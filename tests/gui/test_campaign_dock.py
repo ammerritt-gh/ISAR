@@ -358,7 +358,7 @@ def test_feed_copy_selection_copy_all_and_save_text(dock_env, tmp_path, monkeypa
     ws.refresh()
     vm.on_workspace_changed({"events"})
 
-    dock._feed.item(1).setSelected(True)
+    dock._feed.item(0).setSelected(True)  # newest-first visible order
     dock._copy_feed_selection()
     assert "proposal_clamped" in QApplication.clipboard().text()
     dock._copy_feed_all()

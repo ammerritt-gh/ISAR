@@ -94,6 +94,7 @@ class SteeringPolicy:
     quicklook_ncount: int = 10_000_000
     production_batch_ncount: int = 25_000_000
     maximum_production_batches_per_q: int = 12
+    maximum_bridge_steps: int = 1
     dynamic_ncount: bool = False
     max_ncount_per_scan: int = 4_000_000_000
     ncount_growth_cap: float = 4.0
@@ -127,6 +128,7 @@ class SteeringPolicy:
             "quicklook_ncount": self.quicklook_ncount,
             "production_batch_ncount": self.production_batch_ncount,
             "maximum_production_batches_per_q": self.maximum_production_batches_per_q,
+            "maximum_bridge_steps": self.maximum_bridge_steps,
             "max_ncount_per_scan": self.max_ncount_per_scan,
             "interval_floor_window": self.interval_floor_window,
         }
@@ -155,6 +157,8 @@ class SteeringPolicy:
             raise ValueError("count batches must be positive")
         if int(self.maximum_production_batches_per_q) < 2:
             raise ValueError("maximum_production_batches_per_q must be at least two")
+        if int(self.maximum_bridge_steps) < 0:
+            raise ValueError("maximum_bridge_steps must be non-negative")
         if int(self.max_ncount_per_scan) < int(self.production_batch_ncount):
             raise ValueError("max_ncount_per_scan must be at least the production batch floor")
         if float(self.ncount_growth_cap) < 1.0:

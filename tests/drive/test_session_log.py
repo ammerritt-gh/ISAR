@@ -4,7 +4,9 @@ import json
 import pytest
 
 from isar.drive import session_log
-from isar.drive.session_log import EVENT_KINDS, log_event, read_log, timed
+from isar.drive.session_log import (
+    EVENT_KINDS, activity, close_interrupted_activities, log_activity_progress,
+    log_event, read_log, timed)
 
 
 def test_append_and_read(tmp_path):
@@ -109,3 +111,27 @@ def test_timed_meta_mutation_is_logged(tmp_path):
     pay = read_log(p)[0]["payload"]
     assert pay["attempt"] == 0
     assert pay["n_rows"] == 12  # mutation inside the with-block rides into the payload
+
+
+def test_activity_lifecycle_and_progress_are_additive(tmp_path):
+    path = tmp_path / "log.jsonl"
+    with activity(path, "full_fit", q=[2.5, 0, 0], fit_tier="full",
+                  total=8, progress_unit="fits") as activity_id:
+        log_activity_progress(path, activity_id, completed=3, total=8,
+                              progress_unit="fits")
+    events = read_log(path)
+    assert [event["kind"] for event in events] == [
+        "activity_start", "activity_progress", "activity_end"]
+    assert events[1]["payload"]["completed"] == 3
+    assert events[-1]["payload"]["status"] == "completed"
+
+
+def test_resume_closes_unmatched_activity_as_interrupted(tmp_path):
+    path = tmp_path / "log.jsonl"
+    log_event(path, "activity_start", {
+        "activity_id": "dangling", "stage": "scan", "q": [2.2, 0, 0]})
+    close_interrupted_activities(path)
+    end = read_log(path)[-1]
+    assert end["kind"] == "activity_end"
+    assert end["payload"] == {"activity_id": "dangling", "stage": "scan",
+                               "q": [2.2, 0, 0], "status": "interrupted"}

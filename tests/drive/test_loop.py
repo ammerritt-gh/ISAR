@@ -23,6 +23,7 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
                              _finalize_proposal, _guard_point_count,
                              _make_classification_providers, _record_eligible_crossings,
                              _master_obs_from_row, _observation_from_row, _pick_interval,
+                             _pooled_target_delivered,
                              _preflight_instrument_limits, _preflight_max_points,
                              _reconcile_budget_points, _resume_state,
                              _run_nonce, _target_supporting_feasible_points, _validate_body,
@@ -30,9 +31,16 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
 from isar.drive.acquisition.acquire import ScanProposal, points_in_window
 from isar.drive.acquisition.eig import counts_eig
 from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
+from isar.drive.instrument.tavi_client import TaviError
 from isar.drive.isar_io.scan_writer import save_scan_json
 from isar.drive.session_log import log_event, read_log
-from isar.drive.supervisor.stopping import PRODUCTION_NCOUNT, QUICKLOOK_NCOUNT, summarize_grid
+from isar.drive.supervisor.stopping import (
+    GridQ,
+    PRODUCTION_NCOUNT,
+    QUICKLOOK_NCOUNT,
+    StopDecision,
+    summarize_grid,
+)
 from isar.schema.hypotheses import content_fingerprint
 
 _UNITY_CAL = Calibration.from_dict({"inflation": 1.0, "buckets": [], "center_pull_mean": 0.0})
@@ -95,6 +103,46 @@ def test_classification_uses_latest_complete_temperature_for_active_sample_only(
     fallback, fallback_rival = _make_classification_providers(
         state, objective, 1.0, sample="missing")
     assert fallback is not None and fallback_rival is not None
+
+    state["branch_tracks"] = {"assignments": [{
+        "q": [2.0, 0.0, 0.0], "acoustic_candidate_index": 0,
+        "candidates": [{"probabilities": {"acoustic": 0.999, "optic": 0.0005,
+                                            "new": 0.0005}}],
+    }]}
+    resolved_classify, _ = _make_classification_providers(
+        state, objective, 1.0, sample="active")
+    assert resolved_classify(gridq) == 0.0
+
+
+def test_no_proposal_at_stuck_tracked_frontier_is_not_reported_as_continue():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    objective = ObjectiveSpec(
+        path=[(2.0, 0.0, 0.0), (2.05, 0.0, 0.0)], tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e12}, target_branch="optic",
+        target_selector="tracked_branch", **frozen)
+    anchor = GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5)
+    anchor.track_state = "ambiguous"
+    anchor.n_decline = 3
+    neighbor = GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5)
+    decision = loop_mod._blocked_frontier_decision(
+        objective, [anchor, neighbor], StopDecision("continue", [], []))
+    assert decision.state == "unmeetable"
+    assert any("frontier_blocked" in reason for reason in decision.reasons)
+
+
+def test_pooled_selected_optic_suppresses_false_missed_window_from_acoustic_individual():
+    proposal = ScanProposal(
+        h=2.05, k=0.0, l=0.0, e_lo=-2.0, e_hi=8.0, e_step=0.25,
+        ncount=25_000_000, kind="production", reason="frontier revisit",
+        e_pred=6.0, acquisition_id="acq-1")
+    observations = [{
+        "kind": "pooled_master_update", "acquisition_id": "acq-1",
+        "hkl": [2.05, 0.0, 0.0], "usable": True, "branch_id": "optic",
+        "selected_candidate_index": 1, "omega0": 6.2,
+        "branch_candidates": [{"energy_meV": 0.46}, {"energy_meV": 6.2}],
+    }]
+    assert _pooled_target_delivered(observations, proposal, "optic")
+    assert not _pooled_target_delivered(observations, proposal, "acoustic")
 
 
 def test_crossing_recorder_records_transitions_not_every_eligible_batch(tmp_path):
@@ -196,6 +244,16 @@ class MockTavi:
 
     def get_resolution(self, h, k, l, deltaE):
         return {"ok": True, "fwhm": {"dE": 0.8}}
+
+
+class _SubmitFailingTavi(MockTavi):
+    def submit_scan(self, body, idempotency_key=None):
+        raise TaviError(503, "POST /scan -> HTTP 503: instrument unavailable")
+
+
+class _WaitFailingTavi(MockTavi):
+    def wait_scan(self, job_id, timeout=0.0, **kw):
+        raise TaviError(None, f"GET /scan/{job_id} -> transport error: connection lost")
 
 
 import math as _math
@@ -1857,6 +1915,37 @@ def test_campaign_submit_idempotency_key_contains_run_nonce(tmp_path):
     nonce = (ws / ".run_nonce").read_text(encoding="utf-8").strip()
     assert calls
     assert all(nonce in key for key in calls)
+
+
+def test_submission_failure_finishes_with_terminal_summary_instead_of_sticking(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, _ws = _run(
+        tmp_path, _objective(), _SubmitFailingTavi(omega), make_mock_runner(omega), max_iters=1)
+
+    assert summary["stop"]["state"] == "unmeetable"
+    assert any("instrument submission failed" in reason
+               for reason in summary["stop"]["reasons"])
+    events = read_log(summary["session_log"])
+    failures = [event for event in events if event["kind"] == "exception"
+                and (event.get("payload") or {}).get("action") == "instrument_submission_failed"]
+    assert len(failures) == 1 and failures[0]["payload"]["status"] == 503
+    assert events[-1]["kind"] == "stop"
+
+
+def test_post_submission_failure_remains_pending_for_resume_recovery(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, _ws = _run(
+        tmp_path, _objective(), _WaitFailingTavi(omega), make_mock_runner(omega), max_iters=1)
+
+    assert summary["stop"]["state"] == "pending_recovery"
+    assert any("press Resume" in reason for reason in summary["stop"]["reasons"])
+    events = read_log(summary["session_log"])
+    assert any(event["kind"] == "physical_submission" for event in events)
+    pending = [event for event in events if event["kind"] == "recovery_pending"]
+    assert len(pending) == 1 and pending[0]["payload"]["job_id"] == "j-1"
+    assert not any((event.get("payload") or {}).get("action")
+                   == "instrument_submission_failed" for event in events)
+    assert events[-1]["kind"] == "stop"
 
 
 # --------------------------------------------------------------------------- cooperative operator stop

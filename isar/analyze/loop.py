@@ -403,8 +403,10 @@ def fit_admissible_structures(ctx, *, backend="iminuit", minos=False, errors=Fal
     results = _fit_hypothesis_batch(tasks, executor, phase="admissible-candidate")
     if errors:
         from isar.analyze import errors as _errors  # lazy: errors imports loop
-        for r, h in zip(results, hyps):
-            _errors.attach(r, h, ctx, M=M, seed=seed, backend=backend)
+        items = [(r, h, ctx) for r, h in zip(results, hyps)]
+        _errors.attach_batch(
+            items, M=M, seed=seed, backend=backend,
+            boot_workers=(max(2, len(items)) if executor is not None else 1), executor=executor)
     return results
 
 
@@ -478,8 +480,10 @@ def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors
     results = [r for r, _ in pairs]
     if with_errors:
         from isar.analyze import errors as _errors  # lazy: errors imports loop
-        for r, h in pairs:
-            _errors.attach(r, h, ctx, M=M, seed=seed, backend=backend)
+        items = [(r, h, ctx) for r, h in pairs]
+        _errors.attach_batch(
+            items, M=M, seed=seed, backend=backend,
+            boot_workers=(max(2, len(items)) if executor is not None else 1), executor=executor)
     return results
 
 

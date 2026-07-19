@@ -27,7 +27,7 @@ from isar.schema.hypotheses import (
 # is TAVI's fast analytic engine (develop the loop); "mcstas" is the full Monte-Carlo (validate).
 TIERS = ("deterministic", "mcstas")
 TARGET_BRANCHES = ("acoustic", "optic")
-TARGET_SELECTORS = ("lowest_energy", "highest_energy", "nearest_energy")
+TARGET_SELECTORS = ("lowest_energy", "highest_energy", "nearest_energy", "tracked_branch")
 OBJECTIVE_SCHEMA = "isar.objective/2"
 
 
@@ -84,6 +84,8 @@ class ObjectiveSpec:
             raise ValueError(f"target_selector {self.target_selector!r} not in {TARGET_SELECTORS}")
         if self.target_selector == "nearest_energy" and self.target_energy_meV is None:
             raise ValueError("nearest_energy target_selector requires target_energy_meV")
+        if self.target_selector == "tracked_branch" and self.target_branch != "optic":
+            raise ValueError("tracked_branch target_selector currently requires target_branch='optic'")
         # Normalize path entries to plain float triples so round-trips are stable.
         norm: list[tuple[float, float, float]] = []
         for p in self.path:
@@ -119,15 +121,14 @@ class ObjectiveSpec:
             if not self.target_hypothesis or self.target_hypothesis not in names:
                 raise ValueError("target_hypothesis must name one of the frozen hypotheses")
             supplied_steering = dict(self.steering)
-            policy = SteeringPolicy(**supplied_steering)
-            # v2 objective snapshots created before dynamic counting contain the complete old policy
-            # dictionary and its fingerprint.  Validate those values without expanding the dictionary;
-            # newly compiled objectives explicitly carry dynamic_ncount and freeze the complete policy.
-            self.steering = (policy.to_dict() if "dynamic_ncount" in supplied_steering
-                             else supplied_steering)
-            expected = content_fingerprint(self.hypotheses, self.steering)
+            SteeringPolicy(**supplied_steering)
+            # A frozen objective's hash covers the exact steering dictionary written at compile time.
+            # Validate that historical dictionary with current typed defaults, but do not expand it:
+            # adding a later runtime default must not invalidate or silently rewrite an old snapshot.
+            expected = content_fingerprint(self.hypotheses, supplied_steering)
             if self.hypothesis_fingerprint is not None and self.hypothesis_fingerprint != expected:
                 raise ValueError("hypothesis_fingerprint does not match the frozen hypothesis snapshot")
+            self.steering = supplied_steering
             self.hypothesis_fingerprint = expected
         elif any((self.target_hypothesis, self.hypothesis_source, self.hypothesis_fingerprint,
                   self.steering)):

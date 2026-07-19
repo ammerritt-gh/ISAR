@@ -16,7 +16,8 @@ pytest.importorskip("PySide6")
 from isar.drive.session_log import log_event
 from isar.workspace_api import Workspace
 from isar_gui.viewmodels.campaign import (
-    CampaignState, CampaignViewModel, budget_readout, reduce_campaign, render_feed_item)
+    CampaignState, CampaignViewModel, budget_readout, current_activity_text,
+    reduce_campaign, render_feed_item)
 
 
 def _log_path(root):
@@ -155,6 +156,36 @@ def test_feed_renders_kinds_and_skips_timing():
     assert stop.severity == "terminal" and "operator_stopped" in stop.text
     unknown = render_feed_item({"kind": "mystery", "ts": 1, "payload": {}})
     assert unknown is not None                       # unknown kinds surface, never vanish
+
+
+def test_now_panel_exact_activity_strings_and_per_q_join(make_ws):
+    root = make_ws(rows=[])
+    path = _log_path(root)
+    _start_event(path)
+    log_event(path, "decide", {"event": "model_update", "action": "model_update",
+                                "per_q": [{"hkl": [2.5, 0, 0], "state": "continue"}]})
+    log_event(path, "activity_start", {
+        "activity_id": "fit-1", "stage": "full_fit", "q": [2.5, 0, 0],
+        "fit_tier": "full", "started_ts": 100.0, "completed": 0,
+        "total": 8, "progress_unit": "fits"}, ts=100.0)
+    log_event(path, "activity_progress", {
+        "activity_id": "fit-1", "completed": 3, "total": 8,
+        "progress_unit": "fits"}, ts=150.0)
+    state = reduce_campaign(list(Workspace.open(root).session_events()))
+    assert state.per_q == ({"hkl": [2.5, 0, 0], "state": "continue"},)
+    assert current_activity_text(state, now=202.0) == (
+        "Now: Full fit at (2.50, 0, 0) — 3/8 fits — 01:42 elapsed")
+
+
+def test_unmatched_activity_before_resume_is_not_current(make_ws):
+    root = make_ws(rows=[])
+    path = _log_path(root)
+    _start_event(path)
+    log_event(path, "activity_start", {
+        "activity_id": "old", "stage": "scan", "q": [2.2, 0, 0]}, ts=10.0)
+    _start_event(path, sha="b" * 64, kind="resume")
+    state = reduce_campaign(list(Workspace.open(root).session_events()))
+    assert state.active_activity is None
 
 
 # ---- viewmodel: cursor + liveness + terminal summary --------------------------

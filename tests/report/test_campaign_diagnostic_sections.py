@@ -142,6 +142,32 @@ def test_driver_counts_escalations_when_present():
     assert "seated" in out and "failed" in out
 
 
+def _render_tracked_dispersion(assignments):
+    di = DiagInputs(workspace=None, card_state={"branch_tracks": {
+        "revision": 1, "anchor_index": 0,
+        "frontiers": {"confirmed_indices": [0], "frontier_blocked": False},
+        "assignments": assignments,
+    }})
+    doc = FindingsDoc("t")
+    cd._section_dispersion(doc, di, [])
+    return doc.render()
+
+
+def test_tracked_dispersion_only_claims_acoustic_when_rival_resolved():
+    unresolved = _render_tracked_dispersion([{
+        "path_index": 0, "q": [2.0, 0.0, 0.0], "candidates": [{"energy_meV": 6.0}],
+        "optic_candidate_index": 0, "acoustic_candidate_index": None,
+    }])
+    assert "Acoustic identified" not in unresolved
+
+    resolved = _render_tracked_dispersion([{
+        "path_index": 0, "q": [2.0, 0.0, 0.0],
+        "candidates": [{"energy_meV": 2.0}, {"energy_meV": 6.0}],
+        "optic_candidate_index": 1, "acoustic_candidate_index": 0,
+    }])
+    assert "Acoustic identified; retained as non-target context." in resolved
+
+
 # --------------------------------------------------------------------- §6 verify-units defect
 def test_verify_units_defect_fires_on_tiny_spend():
     summary = {"objective": {"tier": "deterministic"},

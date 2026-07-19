@@ -24,8 +24,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 import json
+import hashlib
+import inspect
 import logging
 import math
+import os
 import subprocess
 import sys
 import uuid
@@ -50,7 +53,8 @@ from isar.drive.isar_io.runner import init_isar as _default_init_isar
 from isar.drive.isar_io.worker_client import WorkerRunner
 from isar.drive.isar_io.scan_writer import save_scan_json, scan_json_path
 from isar.drive.objective import ObjectiveSpec
-from isar.drive.session_log import log_event, read_log, timed
+from isar.drive.session_log import (activity, close_interrupted_activities, log_activity_progress,
+                                    log_event, read_log, timed)
 from isar.drive.supervisor import exceptions as exc
 from isar.drive.supervisor.stopping import (
     FIRST_CROSSING_MARGIN,
@@ -391,6 +395,21 @@ def _make_classification_providers(card_state: dict, objective, resolution_cb, *
         return None, None
     target = getattr(objective, "target_hypothesis", None)
     policy = dict(getattr(objective, "steering", {}) or {})
+    entropy_stop = float(policy.get("assignment_entropy_stop_nats", 0.2))
+    rival_resolved_hkls = []
+    for assignment in ((card_state.get("branch_tracks") or {}).get("assignments") or []):
+        candidates = assignment.get("candidates") or []
+        candidate_index = assignment.get("acoustic_candidate_index")
+        if not isinstance(candidate_index, int) or not 0 <= candidate_index < len(candidates):
+            continue
+        probabilities = (candidates[candidate_index].get("probabilities") or {})
+        acoustic = float(probabilities.get("acoustic", 0.0))
+        optic = float(probabilities.get("optic", 0.0))
+        known_total = acoustic + optic
+        known = ([acoustic / known_total, optic / known_total] if known_total > 0.0 else [])
+        identity_entropy = -sum(value * math.log(value) for value in known if value > 0.0)
+        if acoustic >= 0.85 and identity_entropy <= entropy_stop and assignment.get("q"):
+            rival_resolved_hkls.append(tuple(float(value) for value in assignment["q"]))
 
     def reduced(hkl, period):
         if not period:
@@ -411,6 +430,8 @@ def _make_classification_providers(card_state: dict, objective, resolution_cb, *
         return out
 
     def classify(g):
+        if any(math.dist(g.hkl, hkl) <= 1e-5 for hkl in rival_resolved_hkls):
+            return 0.0  # labeled acoustic context has no target-precision acquisition value
         parts = components(g)
         target_part = next((part for part in parts if part["branch_id"] == target), parts[0])
         fwhm = _resolve_fwhm(resolution_cb, *g.hkl, max(target_part["mean"], 0.0))
@@ -692,6 +713,9 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         "effective_exposure": effective_exposure, "exposure_source": exposure_source,
         "exposure_bucket": bucket,
         "branch_id": row.get("branch_id"),   # Phase A: only acoustic (or null) rows steer ω(q)
+        "branch_candidates": row.get("branch_candidates"),
+        "selected_candidate_index": row.get("selected_candidate_index"),
+        "track_state": row.get("track_state"), "track_revision": row.get("track_revision"),
         # Driver-inserted probes inform branch classification but never occupy a requested grid point
         # or contribute to its production/certification counters.  Persisted run-event provenance
         # restores these flags after a crash rather than relying on an hkl-nearness inference.
@@ -725,6 +749,9 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         "assignment_entropy": row.get("assignment_entropy"),
         "target_branch": row.get("target_branch"),
         "candidate_id": row.get("candidate_id"), "candidate_state": row.get("candidate_state"),
+        "branch_candidates": row.get("branch_candidates"),
+        "selected_candidate_index": row.get("selected_candidate_index"),
+        "track_state": row.get("track_state"), "track_revision": row.get("track_revision"),
         # Chain of custody: the member scan labels behind this pooled value (readers coerce the CSV
         # cell to a list). members_field_present distinguishes "old results.csv lacked the column"
         # (guard skipped) from "column present but empty" (guard fires).
@@ -1297,6 +1324,26 @@ def _rows_missed(rows: list[dict]) -> bool:
                    for r in rows)
 
 
+def _pooled_target_delivered(observations: list[dict], proposal, target_branch: str) -> bool:
+    """Whether analysis found the requested mode even if an individual row favored the rival.
+
+    The pooled master is the identity authority.  A two-mode fit with a usable selected optic must
+    never be called a missed window merely because the individual fit's dominant scalar feature was
+    the much stronger acoustic peak.
+    """
+    for update in reversed(observations):
+        if update.get("kind") != "pooled_master_update":
+            continue
+        if update.get("acquisition_id") != proposal.acquisition_id:
+            continue
+        if not _hkl_close(update.get("hkl"), (proposal.h, proposal.k, proposal.l)):
+            continue
+        return bool(update.get("usable") and update.get("branch_id") == target_branch
+                    and update.get("selected_candidate_index") is not None
+                    and update.get("omega0") is not None)
+    return False
+
+
 @dataclass(frozen=True)
 class CampaignConfig:
     """The resolved configuration for one :func:`run_campaign` invocation — every ``config`` key
@@ -1489,7 +1536,10 @@ def _persist_campaign_target(workspace: Path, objective) -> None:
               "label": getattr(objective, "target_label", "acoustic"),
               "selector": getattr(objective, "target_selector", "lowest_energy"),
               "target_energy_meV": getattr(objective, "target_energy_meV", None),
-              "energy_search_meV": list(getattr(objective, "energy_search_meV", (-2.0, 7.0)))}
+              "energy_search_meV": list(getattr(objective, "energy_search_meV", (-2.0, 7.0))),
+              # The session identity tracker needs the frozen scientific path order; sorting fitted
+              # q after the fact would silently turn a looped path into a different experiment.
+              "path": [list(q) for q in getattr(objective, "path", [])]}
     snapshot = ({"hypotheses": list(getattr(objective, "hypotheses", []) or []),
                  "target_hypothesis": getattr(objective, "target_hypothesis", None),
                  "source": getattr(objective, "hypothesis_source", None),
@@ -1524,6 +1574,50 @@ def _persist_acquisition_provenance(workspace: Path, payload: dict) -> None:
         "scan_kind": str(payload["kind"]),
     })
     card.save_state(state_path)
+
+
+def _read_branch_tracks(workspace: Path) -> dict:
+    policy_path = workspace / "card.policy.toml"
+    state_path = workspace / "card.state.json"
+    if not policy_path.exists():
+        return {}
+    try:
+        return dict(Card.load(policy_path, state_path).state.branch_tracks or {})
+    except (OSError, ValueError, TypeError) as exc:
+        logging.getLogger(__name__).warning("could not read branch tracks from %s: %s", state_path, exc)
+        return {}
+
+
+def _workspace_zone_period(workspace: Path) -> float | None:
+    """Read the scientist-owned reduced-zone period without mutating either card file."""
+    policy_path = workspace / "card.policy.toml"
+    if not policy_path.exists():
+        return None
+    try:
+        card = Card.load(policy_path, workspace / "card.state.json")
+        value = (card.policy.dispersion or {}).get("zone_period")
+        return float(value) if value is not None else None
+    except (OSError, ValueError, TypeError) as exc:
+        logging.getLogger(__name__).warning("could not read zone period from %s: %s", policy_path, exc)
+        return None
+
+
+def _blocked_frontier_decision(objective, grid, decision: StopDecision) -> StopDecision:
+    """Turn proposal exhaustion at a tracked, stuck frontier into an honest terminal result."""
+    if (decision.state != "continue"
+            or getattr(objective, "target_selector", None) != "tracked_branch"):
+        return decision
+    blocked = [point for point in grid
+               if point.stuck and point.track_state != "confirmed"]
+    if not blocked:
+        return decision
+    point = min(blocked, key=lambda item: item.index)
+    return StopDecision(
+        "unmeetable",
+        [f"branch_ambiguity at q={point.q:g} (hkl={list(point.hkl)}): identity remained "
+         "unresolved at the existing attempt cap",
+         "frontier_blocked: no scan beyond the unresolved connected frontier was certified"],
+        decision.per_q)
 
 
 def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
@@ -1567,6 +1661,7 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
             "probe": str(scan_path), "iter": it})
     _persist_campaign_target(cfg.workspace, objective)
     _persist_acquisition_provenance(cfg.workspace, submission_payload)
+    tracks_before = _read_branch_tracks(cfg.workspace)
 
     tier = _errors_tier_for(proposal, cfg.workspace, cfg)
     promoted = proposal.kind in PRODUCTION_KINDS and tier == "full"
@@ -1575,8 +1670,24 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
             "phase": "promote", "iter": it, "attempt": attempt,
             "hkl": [proposal.h, proposal.k, proposal.l], "from_tier": "fast",
             "to_tier": "full", "reason": "untrusted_hesse_no_reliable_interval"})
-    with timed(cfg.log_path, "isar_run", iteration=it, errors_tier=tier, attempt=attempt):
-        cfg.runner.run(cfg.workspace, [cfg.data_dir], errors_tier=tier, render=False)
+    stage = "full_fit" if tier in ("full", "bayes") else "fast_fit"
+    with activity(cfg.log_path, stage, q=[proposal.h, proposal.k, proposal.l],
+                  job_id=job_id, fit_tier=tier, iteration=it):
+        with timed(cfg.log_path, "isar_run", iteration=it, errors_tier=tier, attempt=attempt):
+            cfg.runner.run(cfg.workspace, [cfg.data_dir], errors_tier=tier, render=False)
+    tracks_after = _read_branch_tracks(cfg.workspace)
+    if tracks_after and tracks_after.get("revision") != tracks_before.get("revision"):
+        log_event(cfg.log_path, "branch_track_update", {
+            "iter": it, "revision": tracks_after.get("revision"),
+            "anchor_index": tracks_after.get("anchor_index"),
+            "frontiers": tracks_after.get("frontiers") or {}})
+        for reassignment in tracks_after.get("reassignments") or []:
+            log_event(cfg.log_path, "branch_reassignment", {
+                "iter": it, "revision": tracks_after.get("revision"), **dict(reassignment)})
+        if (tracks_after.get("frontiers") or {}).get("frontier_blocked"):
+            log_event(cfg.log_path, "frontier_blocked", {
+                "iter": it, "revision": tracks_after.get("revision"),
+                "blocked_indices": (tracks_after.get("frontiers") or {}).get("blocked_indices") or []})
 
     with timed(cfg.log_path, "fold_rows", iteration=it) as metrics:
         rows = _new_rows(cfg.workspace, consumed)
@@ -1601,9 +1712,11 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
     if timings is not None:
         analyze_payload["timings"] = timings
     log_event(cfg.log_path, "analyze", analyze_payload)
-    _record_pooled_master_update(
-        cfg.workspace, cfg.calibration, proposal, target_branch=objective.target_branch,
-        log_path=cfg.log_path, observations=observations)
+    with activity(cfg.log_path, "pooled_update", q=[proposal.h, proposal.k, proposal.l],
+                  job_id=job_id, iteration=it):
+        _record_pooled_master_update(
+            cfg.workspace, cfg.calibration, proposal, target_branch=objective.target_branch,
+            log_path=cfg.log_path, observations=observations)
 
     if promoted:
         outcome = ("superseded" if not rows else
@@ -1807,9 +1920,11 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         log_event(log_path, "run", submission_payload)
         log_event(log_path, "physical_submission", submission_payload)
 
-        with timed(log_path, "wait_scan", iteration=it, job_id=job_id) as _m:
-            snap = client.wait_scan(job_id, timeout=cfg.wait_timeout)
-            _m["state"] = snap.get("state")
+        with activity(log_path, "scan", q=[proposal.h, proposal.k, proposal.l],
+                      job_id=job_id, iteration=it):
+            with timed(log_path, "wait_scan", iteration=it, job_id=job_id) as _m:
+                snap = client.wait_scan(job_id, timeout=cfg.wait_timeout)
+                _m["state"] = snap.get("state")
         if snap.get("state") != "done":
             log_event(log_path, "exception", {"action": "scan_not_done", "job_id": job_id,
                                               "state": snap.get("state"), "error": snap.get("error"),
@@ -1823,7 +1938,14 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             observations=observations, consumed=consumed, scan_kind=scan_kind,
             it=it, attempt=attempt)
 
-        if not _rows_missed(rows):
+        target_delivered = _pooled_target_delivered(
+            observations, proposal, getattr(objective, "target_branch", "acoustic"))
+        if not _rows_missed(rows) or target_delivered:
+            if target_delivered and _rows_missed(rows):
+                log_event(log_path, "decide", {
+                    "event": "missed_window_suppressed", "action": "missed_window_suppressed",
+                    "reason": "pooled master delivered the selected target mode",
+                    "hkl": [proposal.h, proposal.k, proposal.l], "iter": it})
             break
         # Missed window: LOOK at the counts to re-center + widen, up to the attempt cap.
         with timed(log_path, "missed_window", iteration=it):
@@ -1844,6 +1966,68 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         attempt += 1
 
     return rows, scan_counter
+
+
+def _certification_manifest(cfg: CampaignConfig, decision, tier: str) -> Path:
+    """Create/reuse the immutable runner manifest for the frozen final-fit snapshot."""
+    policy_path = cfg.workspace / "card.policy.toml"
+    state_path = cfg.workspace / "card.state.json"
+
+    def file_sha(path: Path) -> str | None:
+        return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+
+    state = read_card_state(cfg.workspace)
+    pooled = []
+    for row in read_results_csv(cfg.workspace):
+        if not row.get("pooled"):
+            continue
+        pooled.append({
+            "scan_id": row.get("scan_id"),
+            "hkl": [row.get("h"), row.get("k"), row.get("l")],
+            "T": row.get("T"), "members": list(row.get("members") or []),
+        })
+    pooled.sort(key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":")))
+    payload = {
+        "schema": "isar.certification/1",
+        "tier": tier,
+        "inputs": {
+            "policy_sha256": file_sha(policy_path),
+            "state_sha256": file_sha(state_path),
+            "prior": state.get("dispersion_prior") or [],
+            "calibration": {
+                "inflation": cfg.calibration.inflation,
+                "floor_meV": cfg.floor,
+            },
+            "pooled_membership": pooled,
+        },
+        "seeds": {
+            "scan_seed_base": 6000,
+            "scan_rule": "6000 + scan_number",
+            "master_rule": "6000 + canonical_group_index",
+            "error_attachment_default": 12345,
+            "bayes_seed_offset": 1_000_003,
+        },
+        "worklist": [dict(item) for item in (decision.per_q or [])],
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    fingerprint = hashlib.sha256(canonical).hexdigest()
+    payload["fingerprint"] = fingerprint
+    revision = cfg.workspace / "report" / "certification" / fingerprint
+    manifest = revision / "manifest.json"
+    if manifest.exists():
+        existing = json.loads(manifest.read_text(encoding="utf-8"))
+        if existing != payload:
+            raise ValueError(f"certification manifest collision at {manifest}")
+        return manifest
+    revision.mkdir(parents=True, exist_ok=True)
+    temporary = manifest.with_suffix(".json.tmp")
+    with open(temporary, "w", encoding="utf-8") as stream:
+        json.dump(payload, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, manifest)
+    return manifest
 
 
 def _certify(*, cfg: CampaignConfig, decision, observations: list[dict],
@@ -1868,8 +2052,31 @@ def _certify(*, cfg: CampaignConfig, decision, observations: list[dict],
               {"phase": "promote", "iter": None, "hkl": None, "from_tier": "fast",
                "to_tier": full_tier, "reason": "certify_pass"})
     try:
-        with timed(log_path, "certify", iteration=None):
-            cfg.runner.run(workspace, [data_dir], errors_tier=full_tier, force=True, render=False)
+        total_points = len(decision.per_q or ())
+        manifest_path = _certification_manifest(cfg, decision, full_tier)
+        with activity(log_path, "final_certification", fit_tier=full_tier,
+                      total=total_points, progress_unit="points") as activity_id:
+            runtime_path = manifest_path.parent / "runtime.json"
+            runtime_tmp = runtime_path.with_suffix(".json.tmp")
+            with open(runtime_tmp, "w", encoding="utf-8") as runtime_stream:
+                json.dump({"activity_id": activity_id, "log_path": str(log_path),
+                           "total": total_points}, runtime_stream, sort_keys=True)
+                runtime_stream.write("\n")
+                runtime_stream.flush()
+                os.fsync(runtime_stream.fileno())
+            os.replace(runtime_tmp, runtime_path)
+            log_activity_progress(log_path, activity_id, completed=0, total=total_points,
+                                  progress_unit="points")
+            with timed(log_path, "certify", iteration=None):
+                run_kwargs = {"errors_tier": full_tier, "force": True, "render": False}
+                parameters = inspect.signature(cfg.runner.run).parameters
+                if ("certification_manifest" in parameters
+                        or any(p.kind == inspect.Parameter.VAR_KEYWORD
+                               for p in parameters.values())):
+                    run_kwargs["certification_manifest"] = manifest_path
+                cfg.runner.run(workspace, [data_dir], **run_kwargs)
+            log_activity_progress(log_path, activity_id, completed=total_points,
+                                  total=total_points, progress_unit="points")
         # Rebuilding folded rows must not erase steering-only provenance or the two-crossing evidence
         # that made the hypothesis campaign eligible for certification in the first place.
         provenance = {
@@ -1987,6 +2194,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     # Crash-safe resume: recover the spend ledger + folded rows + observations from the durable files
     # (session_log + results.csv). A cold workspace yields the fresh-start values.
     resumed = _resume_state(cfg.workspace, cfg.log_path, cfg.calibration)
+    close_interrupted_activities(cfg.log_path)
     budget = dict(objective.budget)
     budget_state = {"kind": budget["kind"], "amount": budget["amount"],
                     "neutrons": resumed["neutrons"], "seconds": resumed["seconds"], "spent": 0.0}
@@ -2071,7 +2279,10 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                             objective, model, observations, cfg.resolution_cb, budget_state,
                             master_rows=master_rows, fisher=fisher,
                             classify=classify, rival_band=rival_band,
-                            runtime_limits=_runtime_limits(cfg, objective))
+                            runtime_limits=_runtime_limits(cfg, objective),
+                            track_anchor_index=((durable_state.get("branch_tracks") or {}).get(
+                                "anchor_index")),
+                            track_zone_period=_workspace_zone_period(cfg.workspace))
                         if proposal is not None:
                             _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
                     except (BudgetInsufficientForMinimumBatch,
@@ -2091,6 +2302,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                         decision = evaluate_stop(
                             objective, grid, budget_state,
                             calibration=cfg.calibration, floor=cfg.floor)
+                    decision = _blocked_frontier_decision(objective, grid, decision)
                     threshold = float((getattr(objective, "steering", None) or {}).get(
                         "minimum_information_per_cost", 0.0))
                     if decision.state == "continue" and threshold > 0.0:
@@ -2115,6 +2327,33 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                         cfg=cfg, objective=objective, proposal=proposal, it=it,
                         scan_counter=scan_counter, budget_state=budget_state,
                         observations=observations, consumed=consumed, scan_kind=scan_kind)
+                except TaviError as error:
+                    # A communication failure after ``physical_submission`` is not a failed submit:
+                    # the job may still be running or its data may already be retrievable.  Preserve
+                    # the durable unmatched submission and use the normal Resume recovery contract.
+                    recovery_state = _resume_state(
+                        cfg.workspace, cfg.log_path, cfg.calibration)
+                    unmatched = [item for item in recovery_state.get("unmatched_submissions", [])
+                                 if (item.get("payload") or {}).get("acquisition_id")
+                                 == proposal.acquisition_id]
+                    if unmatched:
+                        payload = unmatched[-1].get("payload") or {}
+                        pending_recovery_reason = (
+                            f"job {payload.get('job_id')} recovery is pending after instrument "
+                            f"communication failed ({error})")
+                        log_event(cfg.log_path, "recovery_pending", {
+                            "job_id": payload.get("job_id"), "state": "unknown",
+                            "decline": False, "reason": pending_recovery_reason,
+                            "acquisition_id": proposal.acquisition_id, "iter": it})
+                        break
+                    log_event(cfg.log_path, "exception", {
+                        "action": "instrument_submission_failed", "error": str(error),
+                        "status": error.status, "iter": it})
+                    decision = StopDecision(
+                        "unmeetable", [f"instrument submission failed: {error}"],
+                        evaluate_stop(objective, grid, budget_state,
+                                      calibration=cfg.calibration, floor=cfg.floor).per_q)
+                    break
                 except (BudgetInsufficientForMinimumBatch,
                         InstrumentLimitBelowMinimumBatch) as error:
                     log_event(cfg.log_path, "exception", {
@@ -2141,10 +2380,13 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
 
                 with timed(cfg.log_path, "model_update", iteration=it):
                     master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
+                    grid_snapshot = evaluate_stop(
+                        objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
                 log_event(cfg.log_path, "decide", {"event": "model_update", "action": "model_update",
                                                    "n_observations": len(observations),
                                                    "converged": sum(1 for g in grid if g.converged),
-                                                   "n_grid": len(grid), "iter": it})
+                                                   "n_grid": len(grid), "per_q": grid_snapshot.per_q,
+                                                   "iter": it})
         else:
             # The loop exhausted max_iters without a break, so the top-of-iteration check will never
             # run again — but the boundary AFTER the final allowed iteration is still an iteration
@@ -2220,7 +2462,9 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             if not (decision is not None and decision.state == "unmeetable"
                     and any(marker in reason for reason in decision.reasons
                             for marker in ("budget_insufficient_for_minimum_batch",
-                                           "instrument_limit_below_minimum_batch"))):
+                                           "instrument_limit_below_minimum_batch",
+                                           "instrument submission failed",
+                                           "frontier_blocked"))):
                 decision = final_decision
             if ran_certify and decision.state != "met":
                 log_event(cfg.log_path, "exception",

@@ -8,6 +8,7 @@ and repeatable (the parsing/caching lives in :mod:`isar.workspace_api.workspace`
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -58,6 +59,16 @@ def _seq_or_none(v):
     if isinstance(v, (list, tuple)):
         return tuple(v)
     return None
+
+
+def _json_value(v):
+    """Decode an additive structured CSV cell while preserving already-decoded ledger values."""
+    if not isinstance(v, str):
+        return v
+    try:
+        return json.loads(v)
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +291,11 @@ class FitView:
             return list(v)
         return None
 
+    @property
+    def spectrum_ref(self) -> str | None:
+        value = self._pick("spectrum_ref", "spectrum_ref")
+        return str(value) if value not in (None, "") else None
+
     # -- branch --------------------------------------------------------------
     @property
     def branch_id(self) -> str | None:
@@ -296,6 +312,31 @@ class FitView:
     @property
     def branch_weight(self) -> float | None:
         return _f(self._pick(None, "branch_weight"))
+
+    @property
+    def branch_candidates(self) -> list | None:
+        v = _json_value(self._pick("branch_candidates", "branch_candidates"))
+        return list(v) if isinstance(v, (list, tuple)) else None
+
+    @property
+    def selected_candidate_index(self) -> int | None:
+        v = self._pick("selected_candidate_index", "selected_candidate_index")
+        try:
+            return int(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def track_state(self) -> str | None:
+        return self._pick("track_state", "track_state")
+
+    @property
+    def track_revision(self) -> int | None:
+        v = self._pick("track_revision", "track_revision")
+        try:
+            return int(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
 
     # -- structured payloads -------------------------------------------------
     @property
@@ -377,6 +418,24 @@ class FitView:
 
 
 # ---------------------------------------------------------------------------
+# MasterGroupView — one pooled master plus resolved physical members
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class MasterGroupView:
+    master: FitView
+    members: tuple[FitView, ...]
+    unresolved_members: tuple[str, ...] = ()
+    updated_at: float | None = None
+
+    @property
+    def q(self):
+        return self.master.q
+
+    @property
+    def T(self):  # noqa: N802
+        return self.master.T
+
+
 # ScanView — one ledger row (ScanEntry) with epoch-resolved HKL
 # ---------------------------------------------------------------------------
 @dataclass
@@ -466,6 +525,7 @@ class BranchModelView:
     dispersion_prior: list = field(default_factory=list)   # PriorPoint dicts
     branch_models: list = field(default_factory=list)
     branch_belief: list = field(default_factory=list)      # per-point entropy/resolvable
+    branch_tracks: Any = field(default_factory=dict)       # additive segmented target/rival tracks
 
 
 @dataclass

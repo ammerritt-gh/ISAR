@@ -88,6 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
                          "card.state.json are still written. Used by the driver, which re-renders once "
                          "at end of campaign — most run time savings come from not importing the report "
                          "layer / matplotlib per invocation")
+    pr.add_argument("--certification-manifest", default=None, help=argparse.SUPPRESS)
 
     ps = sub.add_parser("status", help="summarize a workspace's ledger without reprocessing")
     ps.add_argument("--workspace", required=True)

@@ -69,7 +69,7 @@ def _interval_at(x, y, x0):
 def fit_overlay_spec(*, x, counts, yerr, x_fit, total, components, mask=None,
                      omega0=None, interval=None, interval_reliable=True,
                      scan_number=None, det_id=None, q=None, pooled=False,
-                     members=None, n_members=None, title=None,
+                     members=None, n_members=None, pooled_data=False, title=None,
                      xlabel="energy transfer (meV)",
                      ylabel="counts (raw; Poisson sqrt N errors)"):
     """The C2 data+fit overlay as a :class:`~isar.plotspec.spec.PlotSpec`.
@@ -78,10 +78,11 @@ def fit_overlay_spec(*, x, counts, yerr, x_fit, total, components, mask=None,
     ``(x_fit, total)`` and its ``components`` (a list of ``(name, values)`` over ``x_fit``); ω₀ with
     its interval + reliability flag; pooled/members provenance for the honesty channel.
 
-    Rendering discipline (binding): a **pooled master** NEVER draws a raw-data overlay — the true
-    pooled spectrum is not persisted, so drawing any single member's counts under a "pooled" title
-    would mislead. A pooled spec is curve-only and carries a "member data not shown" annotation; its
-    members are still enumerated in ``meta``. The ω₀ marker shows an interval whisker ONLY when the
+    Rendering discipline (binding): a **pooled master** draws a data overlay only when its validated,
+    persisted combined spectrum was supplied. It never substitutes one member's counts under a
+    "pooled" title. A legacy pooled spec remains curve-only and carries a "member data not shown"
+    annotation; its members are still enumerated in ``meta``. The ω₀ marker shows an interval whisker
+    ONLY when the
     interval is reliable — an unreliable ω₀ is the sanctioned warning-marker + ``"(unreliable)"``
     annotation (via :func:`~isar.plotspec.spec.mark_unreliable`), never a numeric whisker.
     """
@@ -89,7 +90,7 @@ def fit_overlay_spec(*, x, counts, yerr, x_fit, total, components, mask=None,
     annotations: list[ps.Annotation] = []
     # Honesty law: a pooled master shows no member counts (curve-only + a note). Per-scan fits draw
     # their measured data with Poisson whiskers.
-    if pooled:
+    if pooled and not pooled_data:
         n = n_members if n_members else "?"
         annotations.append(ps.Annotation(
             text=f"pooled master — member data not shown ({n} members)", xy=None,
@@ -120,7 +121,7 @@ def fit_overlay_spec(*, x, counts, yerr, x_fit, total, components, mask=None,
                                     role=ps.Role.COMPONENT))
 
     markers: list[ps.Marker] = []
-    if not pooled and counts is not None:
+    if counts is not None and (not pooled or pooled_data):
         markers.extend(ps.Marker(x=float(px), y=float(py), kind=ps.MarkerKind.MASKED,
                                  label="masked (shown, not used in fit)")
                        for px, py in zip(x[~shown], counts[~shown]))
@@ -151,15 +152,20 @@ def fit_overlay_spec(*, x, counts, yerr, x_fit, total, components, mask=None,
             base += f"  {det_id}"
         title = f"pooled — {base}" if pooled else base
 
+    meta = {"scan_number": scan_number, "det_id": det_id,
+            "q": None if q is None else list(q),
+            "pooled": bool(pooled), "n_members": n_members,
+            "members": list(members) if members else None,
+            "omega0": None if omega0 is None else float(omega0),
+            "interval": None if interval is None else [float(v) for v in interval],
+            "interval_reliable": bool(interval_reliable)}
+    # Keep the legacy PlotSpec byte-for-byte stable unless pooled data is genuinely available.
+    if pooled_data:
+        meta["pooled_data"] = True
     return ps.PlotSpec(
         title=title, xlabel=xlabel, ylabel=ylabel,
         series=series, markers=markers, annotations=annotations, projection=projection,
-        meta={"scan_number": scan_number, "det_id": det_id, "q": None if q is None else list(q),
-              "pooled": bool(pooled), "n_members": n_members,
-              "members": list(members) if members else None,
-              "omega0": None if omega0 is None else float(omega0),
-              "interval": None if interval is None else [float(v) for v in interval],
-              "interval_reliable": bool(interval_reliable)},
+        meta=meta,
     )
 
 
@@ -208,7 +214,11 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
     annotations: list[ps.Annotation] = []
 
     rel_x, rel_y, rel_err, rel_ent = [], [], [], []
-    pool_x, pool_y, pool_err, pool_ent, pool_n = [], [], [], [], []
+    provisional_x, provisional_y, provisional_err = [], [], []
+    candidate_x, candidate_y = [], []
+    uncertified_x, uncertified_y = [], []
+    candidate_err_x, candidate_err_y, candidate_err = [], [], []
+    pool_groups: dict[tuple[str, str], dict[str, list]] = {}
     any_unreliable = False
     for p in points or []:
         x = float(p["q"])
@@ -216,30 +226,63 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
         ent = p.get("entropy")
         ent = None if ent is None else float(ent)
         yerr = p.get("yerr")
+        if p.get("selected") is False:
+            # Candidate modes remain visible as context, but never masquerade as the delivered
+            # branch answer and never receive verdict glyphs.
+            if yerr is None:
+                candidate_x.append(x)
+                candidate_y.append(y)
+            else:
+                candidate_err_x.append(x)
+                candidate_err_y.append(y)
+                candidate_err.append(float(yerr))
+            continue
         if p.get("pooled"):
             # Pooled master: its OWN interval (not a member's) whiskers it, per certify law; no
-            # certifying interval → the same warning-marker form as any uncertified ω̂.
+            # certifying interval → a pooled hollow-square warning.  Verdict is folded into this
+            # single glyph rather than painted as a second marker on top of it.
+            verdict = (p.get("verdict") or "").lower()
+            track_state = (p.get("track_state") or "").lower()
             if yerr is not None:
-                pool_x.append(x)
-                pool_y.append(y)
-                pool_err.append(float(yerr))
-                pool_ent.append(ent)
-                pool_n.append(p.get("n_members"))
+                group = pool_groups.setdefault((verdict, track_state), {
+                    "x": [], "y": [], "err": [], "ent": [], "n": []})
+                group["x"].append(x)
+                group["y"].append(y)
+                group["err"].append(float(yerr))
+                group["ent"].append(ent)
+                group["n"].append(p.get("n_members"))
             else:
+                explicitly_unreliable = p.get("interval_reliable") is False
+                suffix = f" · verdict: {verdict}" if verdict else ""
+                if explicitly_unreliable:
+                    any_unreliable = True
+                    markers.append(ps.Marker(x=x, y=y, kind=ps.MarkerKind.POOLED_WARNING,
+                                             label=f"pooled ω̂ (unreliable){suffix}"))
+                else:
+                    markers.append(ps.Marker(
+                        x=x, y=y, kind=ps.MarkerKind.POOLED_UNCERTIFIED,
+                        label=f"pooled master (no certifying interval){suffix}"))
+        elif yerr is not None:
+            if str(p.get("track_state") or "").lower() == "provisional":
+                provisional_x.append(x)
+                provisional_y.append(y)
+                provisional_err.append(float(yerr))
+            else:
+                rel_x.append(x)
+                rel_y.append(y)
+                rel_err.append(float(yerr))
+                rel_ent.append(ent)
+        else:
+            if p.get("interval_reliable") is False:
                 any_unreliable = True
                 markers.append(ps.Marker(x=x, y=y, kind=ps.MarkerKind.WARNING,
-                                         label="pooled ω̂ (unreliable)"))
-        elif yerr is not None:
-            rel_x.append(x)
-            rel_y.append(y)
-            rel_err.append(float(yerr))
-            rel_ent.append(ent)
-        else:
-            any_unreliable = True
-            markers.append(ps.Marker(x=x, y=y, kind=ps.MarkerKind.WARNING,
-                                     label="ω̂ (unreliable)"))
+                                         label="ω̂ (unreliable)"))
+            else:
+                uncertified_x.append(x)
+                uncertified_y.append(y)
         kind = _VERDICT_MARKER.get((p.get("verdict") or "").lower())
-        if kind is not None:
+        if (kind is not None and not p.get("pooled")
+                and str(p.get("track_state") or "").lower() != "provisional"):
             markers.append(ps.Marker(x=x, y=y, kind=kind, label=f"verdict: {p['verdict']}"))
 
     # Prior + branch overlays first (drawn under the scatter).
@@ -247,9 +290,29 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
         px, py = prior
         series.append(ps.Series(x=np.asarray(px, float), y=np.asarray(py, float),
                                 label="dispersion prior", role=ps.Role.PRIOR))
-    for label, bx, by in (branches or []):
-        series.append(ps.Series(x=np.asarray(bx, float), y=np.asarray(by, float),
-                                label=str(label), role=ps.Role.BRANCH))
+    series.extend(_branch_series(branches))
+    for branch in branches or ():
+        if isinstance(branch, dict) and branch.get("endpoint") is not None:
+            endpoint = branch["endpoint"]
+            annotations.append(ps.Annotation(
+                text=str(branch.get("label") or branch.get("branch_id") or "branch"),
+                xy=(float(endpoint[0]), float(endpoint[1]))))
+
+    if candidate_err_x:
+        series.append(ps.Series(
+            x=np.asarray(candidate_err_x, float), y=np.asarray(candidate_err_y, float),
+            yerr=np.asarray(candidate_err, float), label="unselected candidates",
+            role=ps.Role.DATA, style="muted"))
+    if candidate_x:
+        series.append(ps.Series(
+            x=np.asarray(candidate_x, float), y=np.asarray(candidate_y, float),
+            label=(None if candidate_err_x else "unselected candidates"),
+            role=ps.Role.DATA, style="muted"))
+    if uncertified_x:
+        series.append(ps.Series(
+            x=np.asarray(uncertified_x, float), y=np.asarray(uncertified_y, float),
+            label="individual estimates (no certifying interval)",
+            role=ps.Role.DATA, style="muted"))
 
     # The entropy colour channel rides ONLY on the certifying (whiskered) scatter; attach it — and
     # its legend note — ONLY when at least one such point carries an entropy value.
@@ -261,21 +324,32 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
             state=(ps.State.ENTROPY if colored else None),
             color_values=(list(rel_ent) if colored else None),
             color_norm=((color_norm if color_norm is not None else ps.LN2) if colored else None)))
-    if pool_x:
-        # Masters usually carry no assignment entropy (n/a); colour the pooled scatter only when at
-        # least one master actually has one — same truth-gating as the member channel.
-        p_colored = any(e is not None for e in pool_ent)
-        ns = [n for n in pool_n if n is not None]
-        if len(pool_x) == 1 and ns:
+    if provisional_x:
+        series.append(ps.Series(
+            x=np.asarray(provisional_x, float), y=np.asarray(provisional_y, float),
+            yerr=np.asarray(provisional_err, float), label="provisional bridge",
+            role=ps.Role.DATA, style="provisional"))
+    for (verdict, track_state), group in pool_groups.items():
+        # A style group keeps verdict/provisional semantics on the square itself; unlike the old
+        # separate verdict marker, it cannot obscure the authoritative pooled master.
+        p_colored = any(e is not None for e in group["ent"])
+        ns = [n for n in group["n"] if n is not None]
+        if len(group["x"]) == 1 and ns:
             plabel = f"pooled ({int(ns[0])})"
         elif ns:
-            plabel = f"pooled masters ({len(pool_x)})"
+            plabel = f"pooled masters ({len(group['x'])})"
         else:
             plabel = "pooled master"
+        styles = []
+        if verdict in _VERDICT_MARKER:
+            styles.append(f"verdict_{verdict}")
+        if track_state == "provisional":
+            styles.append("provisional")
         series.append(ps.Series(
-            x=np.asarray(pool_x, float), y=np.asarray(pool_y, float),
-            yerr=np.asarray(pool_err, float), label=plabel, role=ps.Role.DATA, state=ps.State.POOLED,
-            color_values=(list(pool_ent) if p_colored else None),
+            x=np.asarray(group["x"], float), y=np.asarray(group["y"], float),
+            yerr=np.asarray(group["err"], float), label=plabel, role=ps.Role.DATA,
+            state=ps.State.POOLED, style=" ".join(styles) or None,
+            color_values=(list(group["ent"]) if p_colored else None),
             color_norm=((color_norm if color_norm is not None else ps.LN2) if p_colored else None)))
         colored = colored or p_colored
 
@@ -296,6 +370,85 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
         projection=projection, value_label=value_label, meta=dict(meta or {}))
 
 
+def _branch_series(branches) -> list[ps.Series]:
+    """Normalize old ``(label, x, y)`` branches and additive segmented track dictionaries.
+
+    A segment is a deliberate connectivity assertion.  Missing/ambiguous/blocked segments are not
+    rendered as curves, so two confirmed islands can never be joined by an invented line.  Rival
+    (normally acoustic) tracks are dashed; provisional segments are dashed independently and carry
+    their own series, never extending a confirmed segment.
+    """
+    out: list[ps.Series] = []
+    for branch in branches or []:
+        if not isinstance(branch, dict):
+            label, bx, by = branch
+            out.append(ps.Series(x=np.asarray(bx, float), y=np.asarray(by, float),
+                                 label=str(label), role=ps.Role.BRANCH))
+            continue
+        label = str(branch.get("label") or branch.get("branch_id") or "branch")
+        role = str(branch.get("role") or "").lower()
+        base_style = "rival" if role in {"rival", "context", "acoustic"} \
+            or str(branch.get("branch_id") or "").lower() == "acoustic" else ""
+        segments = branch.get("segments")
+        if not isinstance(segments, list):
+            segments = [branch]
+        labeled = False
+        for segment in segments:
+            if not isinstance(segment, dict):
+                continue
+            state = str(segment.get("state") or branch.get("state") or "confirmed").lower()
+            if state in {"missing", "ambiguous", "blocked", "frontier_blocked"}:
+                continue
+            xy = _segment_xy(segment)
+            if xy is None:
+                continue
+            sx, sy = xy
+            if len(sx) < 2:
+                continue
+            styles = [base_style] if base_style else []
+            if state == "provisional":
+                styles.append("provisional")
+            out.append(ps.Series(
+                x=sx, y=sy, label=(label if not labeled else None), role=ps.Role.BRANCH,
+                style=" ".join(styles) or None))
+            labeled = True
+    return out
+
+
+def _segment_xy(segment) -> tuple[np.ndarray, np.ndarray] | None:
+    """Extract one branch segment from either explicit arrays or a point dictionary list."""
+    xs = segment.get("x", segment.get("q"))
+    ys = segment.get("y", segment.get("omega", segment.get("energy_meV")))
+    if xs is not None and ys is not None and not isinstance(xs, dict):
+        try:
+            xa, ya = np.asarray(xs, float), np.asarray(ys, float)
+            if xa.ndim == ya.ndim == 1 and xa.shape == ya.shape:
+                return xa, ya
+        except (TypeError, ValueError):
+            pass
+    points = segment.get("points")
+    if not isinstance(points, list):
+        return None
+    pairs = []
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+        x = point.get("x", point.get("q"))
+        if isinstance(x, (list, tuple, np.ndarray)):
+            # Projected callers should normally provide scalar x; accepting the first component
+            # keeps a standalone builder useful for the common H path without guessing a plane.
+            x = x[0] if len(x) else None
+        y = point.get("y", point.get("omega", point.get("energy_meV")))
+        try:
+            if x is not None and y is not None:
+                pairs.append((float(x), float(y)))
+        except (TypeError, ValueError):
+            continue
+    if not pairs:
+        return None
+    return np.asarray([p[0] for p in pairs]), np.asarray([p[1] for p in pairs])
+
+
 def waterfall_spec(*, traces, offset_step, q=None, axis_label=None,
                    title="waterfall", xlabel="energy transfer (meV)",
                    ylabel="counts (offset per trace)", meta=None) -> ps.PlotSpec:
@@ -311,10 +464,9 @@ def waterfall_spec(*, traces, offset_step, q=None, axis_label=None,
     rule for stacked plots. ``yerr`` is preserved at its true magnitude (NOT shifted) since it is a
     property of the data, not of the display offset.
 
-    A **pooled** trace mirrors the Task-10/``fit_overlay_spec`` honesty rule verbatim: its true
-    pooled spectrum is not persisted, so it draws NO data series (curve-only); its fit-curve label
-    carries ``"pooled (N) — member data not shown"`` so the missing counts are never silently implied
-    to be a real measured trace.
+    A **pooled** waterfall trace remains curve-only until this trace contract carries a validated
+    combined spectrum. Its fit-curve label carries ``"pooled (N) — member data not shown"`` so the
+    missing counts are never silently implied to be a real measured trace.
 
     ``q``/``axis_label`` (optional) add the fixed-q honesty declaration as a :class:`ProjectionLegend`
     (this view fixes q and varies T — the ``dispersion_spec`` mandatory-projection rule doesn't apply

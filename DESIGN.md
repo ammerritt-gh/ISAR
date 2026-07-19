@@ -418,6 +418,7 @@ DECISIONS W1–W3.)*
 | Interval ladder through bootstrap; `interval_reliable` flag | Implemented |
 | Uniform `interval_reliable` convergence rule | Implemented (2026-07-10) |
 | Pooled-fit member provenance | Implemented (2026-07-10) |
+| Persisted content-addressed pooled spectra + master/member browser | Implemented (2026-07-19; additive v2 fallback for legacy curve-only masters) |
 | γ-at-bound calibration v2; Γ prior | Planned |
 | `tas4d` convolution (TAVI-supplied ellipsoids) | Planned |
 | Stage III: per-point objective, EIG acquisition, stop-and-report | Implemented (analytic tier certified) |
@@ -425,6 +426,8 @@ DECISIONS W1–W3.)*
 | Bayesian optic cold-start + selector-driven provisional evidence | **Partial** (2026-07-18; posterior assignment, neighboring-q evidence and probabilistic rejection implemented, sampled Stage-C MI Planned) |
 | Wall-clock budget discipline; ledger audit | **Partial** (O2) |
 | Stop-reason enum (full) + R4 log events (escalate_fit, recenter guard, decide.action) | Implemented (2026-07-10) |
+| Live activity events, newest-first GUI feed, per-q status ribbon | Implemented (2026-07-19) |
+| Restart-invariant final-certification checkpoints | Implemented (2026-07-19; append-only revisions, manual pruning only) |
 | `diminishing_returns` stop state | Planned (O4) |
 | Async one-step-stale loop | Planned |
 | TAVI-as-backend campaign (the SVP) | **Partial** (deterministic rung 2026-07-10; clocks + McStas Planned) |

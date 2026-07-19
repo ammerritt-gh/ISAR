@@ -26,6 +26,12 @@ hypothesis only tells the *steering* where to look first and what the features i
 plausibly are. If the data disagrees with your hypothesis, the system is designed to notice and
 say so (see *When you're wrong*, below), not to fit your expectation anyway.
 
+For a tracked optic branch, “around 6 meV” is a **zone-centre identity prior**, not an instruction
+to pick whichever peak lies nearest 6 meV at every q. The global-nearest behavior remains available
+only through the explicit `nearest_energy` selector. `tracked_branch` jointly assigns the optic,
+acoustic rival, new, and missing states over the ordered path; every fitted mode remains evidence and
+may be reassigned when a neighboring pooled fit arrives.
+
 ## Declaring hypotheses in `card.policy.toml`
 
 ```toml
@@ -69,6 +75,10 @@ is a fully custom Tier-1 hypothesis.
 - **Opening book.** The first scans probe the hypothesis's most discriminating feature — for a
   gapped target, the zone centre at the claimed gap ± 2σ (the *sanity-check opening move*, O11).
   A grossly wrong prior is caught in the first scans, not at the end of the night.
+- **Connected frontier.** Once the zone-centre optic is identified, acquisition moves one adjacent
+  q at a time. An ambiguous point permits one provisional adjacent bridge, then must be revisited
+  with evidence from both sides. An unresolved frontier cannot seed the dispersion prior, certify a
+  farther point, or be crossed by a plotted branch line.
 - **Belief seeding.** Each declared hypothesis gets a branch belief carrying the hypothesis as a
   prior on the regression parameters (gap, slope) — *never* as fake data points (O8). With zero
   measurements the belief predicts from the prior with honest width; with data, the data wins.
@@ -124,6 +134,19 @@ Resolution precedence is deterministic: an energy/gap stated in the natural-lang
 otherwise a matching `[hypotheses.<target>]` card declaration wins; otherwise the shipped preset is
 frozen. `hypothesis_source` records which source won. Frozen objectives use `isar.objective/2` inside
 `isar.objective-envelope/2`; pre-release v1 campaign files are intentionally rejected (O12).
+
+## Viewer labels versus acquisition capability
+
+Branch names in the viewer are presentation derived from persisted identity, never hard-coded fit
+outcomes. A `confirmed` track with a known physical assignment is labelled `Acoustic`, `Optic`, and so
+on; provisional or ambiguous identities receive stable `Branch N` labels. The active target is styled
+solid and context/rival branches dashed. Viewer metadata tolerates no target role and then styles all
+branches equally.
+
+This does not expand the current objective engine: arbitrary named targets continue to use the existing
+target semantics, while target-free “map every visible dispersion” acquisition remains Planned. The
+viewer tolerance is the compatibility door for that future mode, not an assertion that it can already
+be requested.
 
 ---
 

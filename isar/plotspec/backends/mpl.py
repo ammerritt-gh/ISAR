@@ -42,6 +42,16 @@ def _png_bytes(fig) -> bytes:
 
 
 def _series_color(s) -> str:
+    styles = set((s.style or "").split())
+    if "muted" in styles:
+        return "0.6"
+    if s.state is State.POOLED:
+        if "verdict_resolved" in styles:
+            return "green"
+        if "verdict_flagged" in styles:
+            return "darkorange"
+        if "verdict_held" in styles:
+            return "0.35"
     if s.tier is not None:
         return _TIER_COLOR.get(s.tier, "C0")
     return _ROLE_COLOR.get(s.role, "C0")
@@ -49,16 +59,24 @@ def _series_color(s) -> str:
 
 def _draw_series(ax, s) -> None:
     color = _series_color(s)
+    styles = set((s.style or "").split())
     # Certifying tier is visually primary (heavier, on top); non-certifying tiers recede.
     lw = 2.2 if s.certifying else 1.0
     z = 6 if s.certifying else 2
     # A pooled (combine-before-divide) master gets a distinct SQUARE glyph so it stays visually
     # separable from per-scan member points even in the degenerate no-entropy case (both backends).
     marker = "s" if s.state is State.POOLED else "o"
+    if s.state is State.POOLED:
+        lw = max(lw, 1.8)
+        z = 9
+    elif "muted" in styles:
+        z = 1
+    dashed = bool(styles & {"rival", "provisional", "dashed"})
+    hollow = "provisional" in styles
     label = s.label
     if s.tier is not None and label is None:
         label = f"{s.tier.value}{' (certifying)' if s.certifying else ''}"
-    if s.role is Role.SANDBOX:
+    if s.role is Role.SANDBOX or (s.yerr is None and dashed):
         # Sandbox results are ephemeral and unmistakably marked (G7): dashed.
         ax.plot(s.x, s.y, ls="--", lw=lw, color=color, zorder=z, label=label)
     elif s.yerr is not None and s.color_values is not None:
@@ -66,13 +84,22 @@ def _draw_series(ax, s) -> None:
         # point coloured calm->alarm by its own value (the legend note explains the encoding).
         rgb = entropy_rgb(s.color_values, s.color_norm)
         ax.errorbar(s.x, s.y, yerr=s.yerr, fmt="none", ecolor="0.5", lw=lw, zorder=z)
-        ax.scatter(s.x, s.y, c=rgb, s=36, marker=marker, edgecolors="0.2", linewidths=0.5,
-                   zorder=z + 1, label=label)
+        edge = color if s.state is State.POOLED else "0.2"
+        size = 72 if s.state is State.POOLED else (24 if "muted" in styles else 36)
+        kwargs = ({"facecolors": "none"} if hollow else {"c": rgb})
+        ax.scatter(s.x, s.y, s=size, marker=marker, edgecolors=edge, linewidths=1.2,
+                   zorder=z + 1, label=label, **kwargs)
     elif s.yerr is not None:
-        ax.errorbar(s.x, s.y, yerr=s.yerr, fmt=f"{marker}-", ms=3, lw=lw, color=color,
+        size = 7 if s.state is State.POOLED else (3 if "muted" in styles else 4)
+        ax.errorbar(s.x, s.y, yerr=s.yerr, fmt=marker, ms=size, lw=lw, color=color,
+                    markerfacecolor=("none" if hollow else color), linestyle="none",
                     zorder=z, label=label)
     else:
-        ax.plot(s.x, s.y, lw=lw, color=color, zorder=z, label=label)
+        if "muted" in styles:
+            ax.scatter(s.x, s.y, marker=marker, s=18, facecolors="none", edgecolors=color,
+                       linewidths=0.8, zorder=z, label=label)
+        else:
+            ax.plot(s.x, s.y, lw=lw, color=color, zorder=z, label=label)
 
 
 def _draw_band(ax, b) -> None:
@@ -99,6 +126,12 @@ def _draw_marker(ax, m, label=None) -> None:
     elif m.kind is MarkerKind.WARNING:
         ax.scatter([m.x], [m.y], marker="D", s=70, facecolors="none", edgecolors="red",
                    linewidths=1.6, zorder=6, label=label)
+    elif m.kind is MarkerKind.POOLED_WARNING:
+        ax.scatter([m.x], [m.y], marker="s", s=85, facecolors="none", edgecolors="red",
+                   linewidths=1.8, zorder=9, label=label)
+    elif m.kind is MarkerKind.POOLED_UNCERTIFIED:
+        ax.scatter([m.x], [m.y], marker="s", s=85, facecolors="none", edgecolors="0.35",
+                   linewidths=1.8, zorder=9, label=label)
     elif m.kind is MarkerKind.VERDICT_RESOLVED:
         ax.scatter([m.x], [m.y], marker="o", s=60, color="green", zorder=6, label=label)
     elif m.kind is MarkerKind.VERDICT_FLAGGED:

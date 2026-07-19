@@ -318,5 +318,8 @@ Stop state **unmeetable**; 10/21 grid q converged. Priority actions, most impact
 | physics model / dispersion prior | card.state.json |
 | §5 dossier figures — results.csv params + data/*.json re-parse, reconstruct_curve | 14 rendered under report/figures/dossier/ |
 | buried per-scan set — every non-pooled fitted row, same reconstruct_curve path | 36 rendered under report/figures/scans/ |
+| final-certification manifests and derived checkpoints | report/certification/ — 0 files, 0.00 MiB |
 
 No number in this report was produced by refitting or re-scoring; every value is a re-presentation of what the campaign already recorded.
+
+Certification revisions are retained indefinitely. They are derived artifacts; an operator may manually prune an old revision only after confirming that no published result references it. ISAR performs no automatic deletion.

@@ -28,17 +28,15 @@ def test_projection_legend_mandatory():
         builders.dispersion_spec(points=_pts(), projection=None)
 
 
-def test_reliable_points_are_whiskered_scatter_unreliable_is_warning():
+def test_reliable_points_are_whiskered_and_uncertified_estimate_stays_neutral():
     spec = builders.dispersion_spec(points=_pts(), projection=_PROJ)
     data = [s for s in spec.series if s.role is ps.Role.DATA and s.yerr is not None]
     assert len(data) == 1
     assert len(data[0].x) == 2   # two certifying points; the yerr=None one is NOT whiskered
     assert set(np.round(data[0].x, 3)) == {2.0, 2.1}
-    # the uncertified point is a single warning marker + one "(unreliable)" note (not per point)
-    warn = [m for m in spec.markers if m.kind is ps.MarkerKind.WARNING]
-    assert len(warn) == 1 and abs(warn[0].x - 2.2) < 1e-9
-    unrel = [a for a in spec.annotations if a.role is ps.State.UNRELIABLE]
-    assert len(unrel) == 1 and unrel[0].xy is None
+    neutral = next(s for s in spec.series if s.label and "individual estimates" in s.label)
+    assert neutral.x.tolist() == [2.2] and "muted" in (neutral.style or "")
+    assert not any(m.kind is ps.MarkerKind.WARNING for m in spec.markers)
     assert json.loads(json.dumps(spec.to_dict())) == spec.to_dict()
 
 
@@ -108,10 +106,66 @@ def test_pooled_master_is_marked_and_whiskered_separately_from_members():
     assert len(data.x) == 2
 
 
-def test_pooled_master_without_certifying_interval_is_a_warning():
+def test_pooled_master_without_certifying_interval_is_a_neutral_hollow_square():
     pts = [{"q": 2.0, "omega": 4.0, "yerr": 0.4},
            {"q": 2.1, "omega": 5.0, "yerr": 0.4},
            {"q": 2.15, "omega": 5.2, "yerr": None, "pooled": True, "n_members": 3}]
     spec = builders.dispersion_spec(points=pts, projection=_PROJ)
     assert not any(s.state is ps.State.POOLED for s in spec.series)  # no whiskered pooled series
-    assert any(m.kind is ps.MarkerKind.WARNING and "pooled" in (m.label or "") for m in spec.markers)
+    assert any(m.kind is ps.MarkerKind.POOLED_UNCERTIFIED and "no certifying" in (m.label or "")
+               for m in spec.markers)
+
+
+def test_explicitly_unreliable_pooled_master_is_red_warning():
+    spec = builders.dispersion_spec(points=[{
+        "q": 2.15, "omega": 5.2, "yerr": None, "pooled": True, "n_members": 3,
+        "interval_reliable": False, "verdict": "flagged",
+    }], projection=_PROJ)
+    assert any(m.kind is ps.MarkerKind.POOLED_WARNING and "unreliable" in (m.label or "")
+               for m in spec.markers)
+    assert any(a.role is ps.State.UNRELIABLE for a in spec.annotations)
+
+
+def test_pooled_master_composes_verdict_without_an_occluding_marker():
+    pts = [
+        {"q": 2.1, "omega": 5.0, "yerr": 0.4, "verdict": "resolved"},
+        {"q": 2.1, "omega": 5.1, "yerr": 0.2, "pooled": True,
+         "n_members": 3, "verdict": "resolved"},
+    ]
+    spec = builders.dispersion_spec(points=pts, projection=_PROJ)
+    pooled = next(s for s in spec.series if s.state is ps.State.POOLED)
+    assert "verdict_resolved" in (pooled.style or "")
+    assert not any(m.kind is ps.MarkerKind.VERDICT_RESOLVED and m.x == pytest.approx(2.1)
+                   and m.y == pytest.approx(5.1) for m in spec.markers)
+
+
+def test_segmented_target_and_acoustic_rival_do_not_bridge_a_gap():
+    branches = [
+        {"branch_id": "optic", "label": "optic target", "role": "target", "segments": [
+            {"state": "confirmed", "x": [2.0, 2.1], "y": [6.0, 6.2]},
+            {"state": "ambiguous", "x": [2.1, 2.4], "y": [6.2, 7.0]},
+            {"state": "confirmed", "x": [2.8, 2.9], "y": [7.8, 8.0]},
+        ]},
+        {"branch_id": "acoustic", "label": "acoustic (non-target context)",
+         "role": "rival", "segments": [
+             {"state": "confirmed", "x": [2.0, 2.1], "y": [0.0, 1.0]},
+         ]},
+    ]
+    spec = builders.dispersion_spec(points=[], projection=_PROJ, branches=branches)
+    optic = [s for s in spec.series if s.role is ps.Role.BRANCH
+             and "rival" not in (s.style or "")]
+    # Two independent confirmed optic islands, never one [2.0 ... 2.9] polyline.
+    assert len(optic) == 2
+    assert all(np.max(s.x) - np.min(s.x) <= 0.11 for s in optic)
+    acoustic = next(s for s in spec.series if s.label and s.label.startswith("acoustic"))
+    assert "rival" in (acoustic.style or "")
+
+
+def test_provisional_bridge_is_one_hollow_series_without_verdict_overlay():
+    spec = builders.dispersion_spec(points=[{
+        "q": 2.5, "omega": 7.0, "yerr": 0.2, "track_state": "provisional",
+        "verdict": "resolved",
+    }], projection=_PROJ)
+    bridge = next(s for s in spec.series if "provisional" in (s.style or ""))
+    assert bridge.label == "provisional bridge"
+    assert not any(m.kind is ps.MarkerKind.VERDICT_RESOLVED for m in spec.markers)

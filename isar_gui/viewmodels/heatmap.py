@@ -198,10 +198,10 @@ class HeatmapViewModel(ViewModel):
     # ---- the spec ---------------------------------------------------------
     def _build_spec(self, fits, varying, modal, fixed, step) -> ps.PlotSpec:
         strips, strip_fits = self._strips(fits, varying, step)
-        series, markers, annotations, points, entropy = self._overlays(fits, varying)
-        branch = self._branch_series(fits, varying)
-        if branch is not None:
-            series.insert(0, branch)
+        series, markers, annotations, points, entropy = self._branch_first_overlays(fits, varying)
+        branch = self._branch_series(fits, varying, modal, step)
+        if branch:
+            series[0:0] = branch
         self._points = points
 
         projection = self._projection_legend(varying, modal, fixed, step)
@@ -211,17 +211,21 @@ class HeatmapViewModel(ViewModel):
 
         axis = _AXIS[varying]
         T = self._temperature
+        bm = getattr(self._ws, "branch_model", None)
+        track_payload = getattr(bm, "branch_tracks", None) if bm is not None else None
         title = f"(q, E) plane · {projection.plane}" + (f" · T={_g(T)} K" if T is not None else "")
+        meta = {"varying": varying, "modal": modal, "temperature": T,
+                "excluded_count": self._excluded_count,
+                "omega_hat_entropy_all": entropy,
+                "scan_ids": [s.meta.get("scan_id") for s in strips]}
+        if isinstance(track_payload, dict) and track_payload:
+            meta["branch_track_revision"] = track_payload.get("revision")
+            meta["branch_frontiers"] = track_payload.get("frontiers")
         return ps.PlotSpec(
             title=title, xlabel=f"{axis} (rlu)", ylabel="energy transfer (meV)",
             series=series, markers=markers, annotations=annotations, strips=strips,
             projection=projection, value_label=self._value_label(),
-            meta={"varying": varying, "modal": modal, "temperature": T,
-                  "excluded_count": self._excluded_count,
-                  "omega_hat_entropy_all": entropy,   # every plotted ω̂ (members + masters); a
-                  #                        diagnostics list kept in meta even when the colour channel
-                  #                        is not shown (so downstream tools can read entropy per ω̂)
-                  "scan_ids": [s.meta.get("scan_id") for s in strips]},
+            meta=meta,
         )
 
     def _strips(self, fits, varying, step):
@@ -248,6 +252,36 @@ class HeatmapViewModel(ViewModel):
                            meta={"scan_id": sid})
                   for (x, e, c, sid) in rows]
         return strips, rows
+
+    def _branch_first_overlays(self, fits, varying):
+        """Build the shared ω̂ overlay, including additive unselected branch candidates."""
+        from isar.plotspec import builders
+
+        overlay_points = []
+        hit_points = []
+        entropy = []
+        for fv in fits:
+            if fv.omega0 is None:
+                continue
+            x, y = float(fv.q[varying]), float(fv.omega0)
+            hit_points.append((x, y, fv))
+            ent = fv.assignment_entropy
+            ent = None if ent is None else float(ent)
+            entropy.append(ent)
+            cert = certify.certifying_interval(fv)
+            half = (abs(float(cert[-1]) - float(cert[0])) / 2.0
+                    if cert is not None and len(cert) >= 2 else None)
+            overlay_points.append({
+                "q": x, "omega": y, "yerr": half, "entropy": ent,
+                "verdict": fv.verdict, "pooled": bool(fv.pooled),
+                "n_members": fv.n_members, "track_state": getattr(fv, "track_state", None),
+                "interval_reliable": fv.interval_reliable,
+            })
+            overlay_points.extend(projection.unselected_candidate_points(fv, x))
+        overlay = builders.dispersion_spec(
+            points=overlay_points,
+            projection=ps.ProjectionLegend(plane="overlay", integration="overlay"))
+        return overlay.series, overlay.markers, overlay.annotations, hit_points, entropy
 
     def _overlays(self, fits, varying):
         """ω̂ scatter (whisker only where a tier certifies), warning markers for uncertified ω̂,
@@ -334,18 +368,28 @@ class HeatmapViewModel(ViewModel):
                 text="color = assignment entropy (ln 2 = undecided)", xy=None))
         return series, markers, annotations, points, entropy
 
-    def _branch_series(self, fits, varying):
-        """The dispersion/branch curve ω_b(q) from the accumulated branch anchors (Task 4's
-        ``branch_model.dispersion_prior``), matched to this plane's sample + temperature bin. Degrades
-        to ``None`` when there are fewer than two distinct anchors."""
+    def _branch_series(self, fits, varying, modal, step):
+        """Segmented target/rival tracks, with the legacy dispersion prior as fallback."""
+        from isar.plotspec import builders
+
         bm = getattr(self._ws, "branch_model", None)
+        sample = projection.modal_sample(fits)
+        tracks = projection.branch_track_overlays(
+            getattr(bm, "branch_tracks", None) if bm is not None else None,
+            varying, sample=sample, T=self._temperature, t_round=_T_ROUND,
+            modal=modal, step=step)
+        if tracks:
+            overlay = builders.dispersion_spec(
+                points=[], branches=tracks,
+                projection=ps.ProjectionLegend(plane="overlay", integration="overlay"))
+            return [s for s in overlay.series if s.role is ps.Role.BRANCH]
         pts = list(getattr(bm, "dispersion_prior", None) or []) if bm is not None else []
-        curve = projection.prior_curve(pts, varying, sample=projection.modal_sample(fits),
+        curve = projection.prior_curve(pts, varying, sample=sample,
                                        T=self._temperature, t_round=_T_ROUND)
         if curve is None:
-            return None
+            return []
         xs, ws = curve
-        return ps.Series(x=xs, y=ws, label="branch model", role=ps.Role.BRANCH)
+        return [ps.Series(x=xs, y=ws, label="branch model", role=ps.Role.BRANCH)]
 
     def _projection_legend(self, varying, modal, fixed, step) -> ps.ProjectionLegend:
         return projection.projection_legend(varying, modal, step)

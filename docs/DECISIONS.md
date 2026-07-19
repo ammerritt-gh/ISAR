@@ -142,6 +142,14 @@ explicitly reopened; "future" means designed-for but not v1.
   pooled batches. `/validate` remains final feasibility authority. A live ceiling below the policy
   floor is explicitly unmeetable. Logical proposal IDs advance independently of physical submissions,
   so refusals count separately while recenter retries remain one acquisition.
+- **O15.** (2026-07-18, Implemented) **A branch is an identity sequence, not a nearest-energy
+  sequence.** Natural-language optic energies anchor only the zone-centre hypothesis; only explicit
+  “nearest at every q” wording selects legacy `nearest_energy`. `tracked_branch` preserves all fitted
+  modes, assigns optic/acoustic/new/missing jointly over the frozen path after pooled updates, and
+  rebuilds the prior from connected, high-confidence folds. Acquisition confirms the ZC first, moves
+  outward by adjacency, permits one provisional bridge, and blocks certification and plotting across
+  unresolved gaps. Acoustic is retained as labeled non-target context rather than polished to the
+  optic tolerance.
 
 ## Workspace hygiene
 
@@ -267,8 +275,9 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   binding semantics (unreliable-never-whiskers, pooled labeling + members, tier labeling,
   certifying-primary, truth-gated legend notes, strip = measured/no interpolation, per-point
   color channel); backends map tokens only. Certifying-tier derivation is canonical in
-  `isar_gui/viewmodels/certify.py`; pooled masters never overlay member data and appear in ω̂
-  overlays as marked points (strips excluded). Implemented (Phase 0/A).
+  `isar_gui/viewmodels/certify.py`; pooled masters overlay their persisted combined spectrum,
+  never a substituted member scan, and appear in ω̂ overlays as marked points (strips excluded).
+  Legacy masters without `spectrum_ref` remain explicitly curve-only. Implemented (Phase 0/A).
 - **G18.** Center view host (GUI Pass 3): the five display surfaces (fit inspector, waterfall,
   plane, dispersion, sandbox) are switchable pages of one central host; docks are tool panels
   only. Auto-follow (selection → scan page, campaign start → plane page) is user-overridable;
@@ -286,14 +295,36 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   (Job Object, best-effort, synchronous-taskkill fallback) is operator-fired escalation only.
   Resume never re-compiles a goal through the LLM: `--resume-latest` reuses the frozen
   objective from the last `campaign_start`; start fingerprints (`source: {kind, sha256}`) make
-  the Resume-vs-Start decision comparable. Live UI state is ledger-honest: aggregates only
-  (per-q live state needs an additive event-contract change first — GUI_DESIGN §16.6).
+  the Resume-vs-Start decision comparable. Live UI state is ledger-honest: the existing durable
+  `model_update.per_q` snapshot supplies persistent point state, joined in the viewer with the
+  additive activity-event overlay described by G22.
   Implemented (Pass 3).
 - **G20.** Compact campaign monitor (GUI Pass 3): the small window is an explicit mode — same
   window, dock layout stashed in memory, central stack swapped to a glanceable read-only card
   (status, current scan, budget, mini plane, log ticker, cooperative Stop). The session file
   always carries the full layout (snapshots guarded while compact; close expands first).
   Implemented (Pass 3).
+- **G21.** (2026-07-19, Implemented) **Pooled masters are first-class derived objects, not scan
+  chips.** Home presents a scrollable master/member tree. Masters select their persisted combined
+  spectrum and fit but cannot be dragged into manual groups; only physical children carry the
+  existing scan MIME payload. Reduce/collate publishes content-addressed pooled blobs before the
+  atomic results row containing `spectrum_ref`; old and crash-orphaned blobs are retained. Legacy
+  workspaces explicitly fall back to curve-only master display.
+- **G22.** (2026-07-19, Implemented) **Live work is an additive event overlay.** Durable
+  `activity_start`/`activity_end` and advisory `activity_progress` events describe scan, fit,
+  pooling, and certification work; chronological JSONL remains canonical while the GUI feed is
+  newest-first. Resume closes unmatched starts as `interrupted`, and viewers independently treat
+  pre-resume starts as stale. Persistent per-q state remains the existing `StopDecision.per_q`.
+- **O16.** (2026-07-19, Implemented) **Final certification reduces pure checkpoints in canonical
+  manifest order.** The immutable fingerprint covers policy/state, frozen prior, calibration,
+  pooled membership, worklist, and the fitter's effective existing seed rules. Scan and master
+  units are written atomically before ledger mutation; valid units are skipped after restart.
+  Revisions under `report/certification/<fingerprint>/` are derived artifacts retained indefinitely;
+  ISAR never garbage-collects them. An operator may manually prune an unreferenced old revision.
+- **O17.** (2026-07-19) **No shutdown redesign from the OP2 interruption.** The retained GUI log has
+  no `via taskkill` fallback line, but external `taskkill`, an operator escalation, and silent Job
+  Object teardown cannot be distinguished from the retained evidence. Kill-on-close and the current
+  crash/resume contract remain unchanged.
 
 ## Session status update
 

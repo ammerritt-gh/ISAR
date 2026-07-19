@@ -74,7 +74,8 @@ class WorkerRunner:
 
     # ----------------------------------------------------------------- runner protocol
     def run(self, workspace, data_paths: Sequence, *, force: bool = False, errors_tier: str = "full",
-            render: bool = True, timeout: float | None = None) -> RunResult:
+            render: bool = True, timeout: float | None = None,
+            certification_manifest: str | Path | None = None) -> RunResult:
         """Run one analysis job on the worker, falling back to the cold runner on transport failure.
 
         ``render`` is accepted for seam parity and ignored — the worker never renders. Returns a
@@ -86,13 +87,16 @@ class WorkerRunner:
             raise ValueError(
                 f"WorkerRunner is bound to workspace {self._workspace}; got {workspace}")
         if self._degraded:
-            return self._fallback_run(workspace, data_paths, force, errors_tier, render, timeout)
+            return self._fallback_run(workspace, data_paths, force, errors_tier, render, timeout,
+                                      certification_manifest)
 
         job_timeout = self._job_timeout if timeout is None else float(timeout)
-        reply = self._try_round_trip(data_paths, force, errors_tier, job_timeout)
+        reply = self._try_round_trip(data_paths, force, errors_tier, job_timeout,
+                                     certification_manifest)
         if reply is _TRANSPORT_FAIL:
             self._on_transport_failure()
-            return self._fallback_run(workspace, data_paths, force, errors_tier, render, timeout)
+            return self._fallback_run(workspace, data_paths, force, errors_tier, render, timeout,
+                                      certification_manifest)
 
         # A clean reply (ok or not) means transport is healthy → reset the failure streak.
         self._consecutive_failures = 0
@@ -130,7 +134,8 @@ class WorkerRunner:
         self.close()
 
     # ----------------------------------------------------------------- worker round-trip
-    def _try_round_trip(self, data_paths, force, errors_tier, job_timeout):
+    def _try_round_trip(self, data_paths, force, errors_tier, job_timeout,
+                        certification_manifest=None):
         """Ensure a live worker, send one ``run`` request, await its reply.
 
         Returns the parsed reply dict, or :data:`_TRANSPORT_FAIL` on any spawn/pipe/timeout/EOF/parse
@@ -141,6 +146,8 @@ class WorkerRunner:
         self._next_id += 1
         req = {"id": req_id, "cmd": "run", "data_paths": [str(p) for p in data_paths],
                "force": bool(force), "errors_tier": errors_tier}
+        if certification_manifest is not None:
+            req["certification_manifest"] = str(certification_manifest)
         try:
             self._send(req)
         except Exception:  # noqa: BLE001 — broken stdin pipe: worker died
@@ -222,12 +229,17 @@ class WorkerRunner:
                 except Exception:  # noqa: BLE001 — a logging hiccup never breaks the runner
                     pass
 
-    def _fallback_run(self, workspace, data_paths, force, errors_tier, render, timeout) -> RunResult:
+    def _fallback_run(self, workspace, data_paths, force, errors_tier, render, timeout,
+                      certification_manifest=None) -> RunResult:
         if self._fallback is None:
             raise IsarRunError(1, "", "worker transport failed and no fallback runner is configured",
                                ["python", "-m", "isar.session.worker", "run"])
-        return self._fallback.run(workspace, data_paths, force=force, errors_tier=errors_tier,
-                                  render=render, timeout=timeout)
+        kwargs = {"force": force, "errors_tier": errors_tier,
+                  "render": render, "timeout": timeout}
+        # Preserve the pre-extension runner protocol for ordinary jobs and legacy adapters.
+        if certification_manifest is not None:
+            kwargs["certification_manifest"] = certification_manifest
+        return self._fallback.run(workspace, data_paths, **kwargs)
 
     @staticmethod
     def _terminate(proc) -> None:

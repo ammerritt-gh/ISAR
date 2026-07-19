@@ -11,10 +11,13 @@ No geometry, no workspace access — the pane is dumb, the heatmap pane's 1-D si
 from __future__ import annotations
 
 import pyqtgraph as pg
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -45,6 +48,17 @@ class DispersionPane(GroupDropMixin, QWidget):
         t_l.addStretch(1)
         outer.addWidget(self._t_row)
 
+        self._status_scroll = QScrollArea(self)
+        self._status_scroll.setWidgetResizable(True)
+        self._status_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._status_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._status_host = QWidget(self._status_scroll)
+        self._status_layout = QHBoxLayout(self._status_host)
+        self._status_layout.setContentsMargins(2, 2, 2, 2)
+        self._status_scroll.setWidget(self._status_host)
+        self._status_scroll.setMaximumHeight(48)
+        outer.addWidget(self._status_scroll)
+
         # --- plot -----------------------------------------------------------
         self._glw = pg.GraphicsLayoutWidget()
         self._plot = self._glw.addPlot(row=0, col=0)
@@ -64,10 +78,37 @@ class DispersionPane(GroupDropMixin, QWidget):
     def refresh(self) -> None:
         spec = self._vm.spec
         self._sync_t_combo()
+        self._sync_status_ribbon()
         if spec is not None:
             render_into(self._plot, spec)
         else:
             clear_render(self._plot)  # no spec -> don't retain the previous (stale) render
+
+    def _sync_status_ribbon(self) -> None:
+        while self._status_layout.count():
+            item = self._status_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        reasons = {
+            None: "in progress", "met": "converged", "interval_floored": "interval floored",
+            "info_saturated": "information saturated",
+            "uncertifiable_interval": "uncertifiable interval", "fast_tier_only": "fast tier only",
+            "infeasible": "instrument infeasible", "signal_unmodeled": "signal unmodeled",
+            "branch_ambiguity": "branch ambiguity", "posterior_rejected": "posterior rejected",
+            "no_signal": "no signal",
+        }
+        points = self._vm.status_points
+        for index, point in enumerate(points):
+            reason = point.get("reason")
+            q = point.get("q")
+            button = QPushButton("?" if q is None else f"{float(q):g}", self._status_host)
+            button.setToolTip(reasons.get(reason, str(reason)) + "\n" + str(point))
+            color = "#2e7d32" if reason == "met" else "#c62828" if point.get("stuck") else "#b8860b"
+            button.setStyleSheet(f"border-bottom: 4px solid {color}; padding: 2px 5px;")
+            button.clicked.connect(lambda _checked=False, i=index: self._vm.activate_status(i))
+            self._status_layout.addWidget(button)
+        self._status_layout.addStretch(1)
+        self._status_scroll.setVisible(bool(points))
 
     def _sync_t_combo(self) -> None:
         temps = self._vm.temperatures

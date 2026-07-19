@@ -61,6 +61,16 @@ _TIER_COLOR = {
 # *set* is identical across backends (the parity pin).
 # ---------------------------------------------------------------------------
 def _series_color(s) -> str:
+    styles = set((s.style or "").split())
+    if "muted" in styles:
+        return "#999999"
+    if s.state is State.POOLED:
+        if "verdict_resolved" in styles:
+            return "green"
+        if "verdict_flagged" in styles:
+            return "darkorange"
+        if "verdict_held" in styles:
+            return "#595959"
     if s.tier is not None:
         return _TIER_COLOR.get(s.tier, _C["C0"])
     return _ROLE_COLOR.get(s.role, _C["C0"])
@@ -160,16 +170,24 @@ def _pen(color, width, dashed=False) -> QtGui.QPen:
 
 def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
     color = _series_color(s)
+    styles = set((s.style or "").split())
     width = 2.2 if s.certifying else 1.0
     z = 6 if s.certifying else 2
     # A pooled (combine-before-divide) master gets a distinct SQUARE glyph so it stays visually
     # separable from per-scan member points even in the degenerate no-entropy case (mirrors mpl).
     symbol = "s" if s.state is State.POOLED else "o"
+    if s.state is State.POOLED:
+        width = max(width, 1.8)
+        z = 9
+    elif "muted" in styles:
+        z = 1
+    dashed = bool(styles & {"rival", "provisional", "dashed"})
+    hollow = "provisional" in styles
     label = _series_label(s)
     x = np.asarray(s.x, dtype=float)
     y = np.asarray(s.y, dtype=float)
 
-    if s.role is Role.SANDBOX:
+    if s.role is Role.SANDBOX or (s.yerr is None and dashed):
         # Sandbox results are ephemeral and unmistakably marked (G7): dashed.
         item = pg.PlotDataItem(x, y, pen=_pen(color, width, dashed=True))
         item.setZValue(z)
@@ -185,8 +203,11 @@ def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
                    for r, g, b in rgb]
         err = pg.ErrorBarItem(x=x, y=y, top=yerr, bottom=yerr, pen=_pen(_GREY_04, width), beam=0.0)
         err.setZValue(z)
-        scat = pg.ScatterPlotItem(x=x, y=y, symbol=symbol, size=10, brush=brushes,
-                                  pen=pg.mkPen(_GREY_03, width=0.5))
+        edge = color if s.state is State.POOLED else _GREY_03
+        size = 13 if s.state is State.POOLED else (7 if "muted" in styles else 10)
+        scat = pg.ScatterPlotItem(x=x, y=y, symbol=symbol, size=size,
+                                  brush=(None if hollow else brushes),
+                                  pen=pg.mkPen(edge, width=1.2))
         scat.setZValue(z + 1)
         rs._add_data(err)
         rs._add_data(scat)
@@ -195,8 +216,9 @@ def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
     elif s.yerr is not None:
         yerr = np.asarray(s.yerr, dtype=float)
         line = pg.PlotDataItem(
-            x, y, pen=_pen(color, width), symbol=symbol, symbolSize=5,
-            symbolBrush=color, symbolPen=color,
+            x, y, pen=(None if s.role is Role.DATA else _pen(color, width)), symbol=symbol,
+            symbolSize=(12 if s.state is State.POOLED else (6 if "muted" in styles else 8)),
+            symbolBrush=(None if hollow else color), symbolPen=_pen(color, width),
         )
         line.setZValue(z)
         err = pg.ErrorBarItem(x=x, y=y, top=yerr, bottom=yerr, pen=_pen(color, width), beam=0.0)
@@ -206,7 +228,11 @@ def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
         if label is not None:
             legend_entries.append((line, label))
     else:
-        item = pg.PlotDataItem(x, y, pen=_pen(color, width))
+        if "muted" in styles:
+            item = pg.PlotDataItem(x, y, pen=None, symbol=symbol, symbolSize=6,
+                                   symbolBrush=None, symbolPen=_pen(color, width))
+        else:
+            item = pg.PlotDataItem(x, y, pen=_pen(color, width, dashed=dashed))
         item.setZValue(z)
         rs._add_data(item)
         if label is not None:
@@ -245,6 +271,10 @@ def _marker_style(kind: MarkerKind):
         return "o", "darkorange", None, 14
     if kind is MarkerKind.WARNING:
         return "d", "red", None, 12
+    if kind is MarkerKind.POOLED_WARNING:
+        return "s", "red", None, 14
+    if kind is MarkerKind.POOLED_UNCERTIFIED:
+        return "s", _GREY_03, None, 14
     if kind is MarkerKind.VERDICT_RESOLVED:
         return "o", "green", "green", 11
     if kind is MarkerKind.VERDICT_FLAGGED:
@@ -261,7 +291,8 @@ def _draw_marker(rs: RenderedSpec, m, label, legend_entries: list) -> None:
         x=[float(m.x)], y=[float(m.y)], symbol=symbol, size=size,
         pen=pg.mkPen(pen_c, width=1.6), brush=brush,
     )
-    scatter.setZValue(6)
+    scatter.setZValue(9 if m.kind in (
+        MarkerKind.POOLED_WARNING, MarkerKind.POOLED_UNCERTIFIED) else 6)
     rs._add_data(scatter)
     if label is not None:
         legend_entries.append((scatter, label))

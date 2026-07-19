@@ -1,17 +1,15 @@
 """ScansDock — atomic scan-units as draggable chips, split across dimension tabs (Pass 2b).
 
-The chip is the fundamental visible unit: one *scan × analyzer* (a ledger entry). A chip shows what is
-truly per-unit — the analyzer, its OWN q, and status — coloured at its left edge by ledger status and
-carrying a top accent shared by every analyzer of the same source scan (a sibling cue: siblings share
-monitor/timing/environment systematics, so correlated units stay visible). Chips are draggable
-(``MIME_SCAN_IDS``); a chip lights up in EVERY box it appears in when its unit is selected, and hovering
-a chip soft-highlights its siblings everywhere.
+Home's fundamental browser row is either a pooled master or one physical *scan × analyzer* child.
+Physical children show their own q/status and carry the established ``MIME_SCAN_IDS`` drag payload;
+masters are selectable derived objects and deliberately cannot be dragged into manual groups. The
+workbench and preset views continue to use scan chips for group manipulation.
 
 Layout is a :class:`~PySide6.QtWidgets.QTabWidget` — **Home** leads, then read-only preset lenses:
-  * **Home** (id ``"Manual"``) — the workbench: a **Pool** box holding EVERY scan (a boxed scan still
-    appears, with a membership badge), the persisted manual groups as editable **trays**, and an
-    always-visible **＋ new box** tile. Drops mutate the GuiStore; picking up a chip reveals the trays
-    (drag-reveal). The flat "All" view is retired — the Pool is the all-scans view.
+  * **Home** (id ``"Manual"``) — a scrollable hierarchical master/physical-scan browser above the
+    persisted manual groups as editable **trays**, with an always-visible **＋ new box** tile. Group
+    membership appears on physical rows; dragging a child reveals the valid tray targets. The flat
+    "All" view is retired — the hierarchy is the all-scans view.
   * **Scans** — source-scan groups (``scan NN — #Q [...]``; scan-level metadata lives on the header).
   * **T** / **q** / **Analyzer** / **B** — auto-groups over each dimension (locked lenses, not
     editable trays). Analyzer is hidden on a single-detector workspace; B appears only with field data.
@@ -22,11 +20,13 @@ interaction only. The active tab is persisted (by id) as a GuiStore ui-scrap.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QDrag, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtGui import QBrush, QColor, QDrag, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
+    QAbstractItemView,
     QDockWidget,
     QFrame,
     QHBoxLayout,
@@ -39,6 +39,9 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSplitter,
     QTabWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QTreeWidgetItemIterator,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -61,6 +64,118 @@ from isar_gui.viewmodels.scans import sibling_hue, status_color, status_text
 log = logging.getLogger(__name__)
 
 _DRAG_THRESHOLD = 12
+_MASTER_FIT_ROLE = Qt.ItemDataRole.UserRole + 20
+_UNIT_KEY_ROLE = Qt.ItemDataRole.UserRole + 21
+_DIMMED_ROLE = Qt.ItemDataRole.UserRole + 22
+
+
+class _MasterTree(QTreeWidget):
+    """Scrollable master/member browser; only physical children can be dragged."""
+
+    master_activated = Signal(object)
+    unit_activated = Signal(str)
+    fit_requested = Signal(str)
+    drag_session = Signal(bool, object)
+
+    def __init__(self, vm, parent=None):
+        super().__init__(parent)
+        self._vm = vm
+        self.setColumnCount(8)
+        self.setHeaderLabels(["Master / scan", "q / HKL", "T", "Branch", "omega / interval",
+                              "Members / groups", "State", "Updated"])
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setRootIsDecorated(True)
+        self.setAlternatingRowColors(True)
+        self.setUniformRowHeights(True)
+        self.itemClicked.connect(self._activate)
+
+    def _activate(self, item, _column):
+        key = item.data(0, _UNIT_KEY_ROLE)
+        if key:
+            keys = [str(node.data(0, _UNIT_KEY_ROLE)) for node in self.selectedItems()
+                    if node.data(0, _UNIT_KEY_ROLE)]
+            self._vm.select_keys(keys or [str(key)])
+            self.unit_activated.emit(str(key))
+            return
+        fit = item.data(0, _MASTER_FIT_ROLE)
+        if fit is not None:
+            self.master_activated.emit(fit)
+
+    def startDrag(self, supported_actions):  # noqa: N802
+        keys = [str(item.data(0, _UNIT_KEY_ROLE)) for item in self.selectedItems()
+                if item.data(0, _UNIT_KEY_ROLE)]
+        if not keys:
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(MIME_SCAN_IDS, encode_scan_ids(keys))
+        mime.setData(MIME_DRAG_ORIGIN, encode_drag_origin(""))
+        drag.setMimeData(mime)
+        self.drag_session.emit(True, keys)
+        try:
+            drag.exec(Qt.DropAction.CopyAction)
+        finally:
+            self.drag_session.emit(False, keys)
+
+    def dragEnterEvent(self, event):  # noqa: N802
+        if event.mimeData().hasFormat(MIME_SCAN_IDS):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):  # noqa: N802
+        if event.mimeData().hasFormat(MIME_SCAN_IDS):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):  # noqa: N802
+        mime = event.mimeData()
+        origin = decode_drag_origin(mime.data(MIME_DRAG_ORIGIN).data()) \
+            if mime.hasFormat(MIME_DRAG_ORIGIN) else ""
+        keys = decode_scan_ids(mime.data(MIME_SCAN_IDS).data())
+        if origin and keys:
+            self._vm.remove_from_group(origin, keys)
+        event.acceptProposedAction()
+
+    def contextMenuEvent(self, event):  # noqa: N802
+        """Preserve physical-scan context actions on the hierarchical browser.
+
+        Master rows deliberately have no scan actions: they are derived objects and cannot acquire
+        manual-group membership.  Child actions use the same VM operations as the former chips.
+        """
+        item = self.itemAt(event.pos())
+        key = None if item is None else item.data(0, _UNIT_KEY_ROLE)
+        if not key:
+            return
+        menu = QMenu(self)
+        menu.addAction("Select siblings").setData("siblings")
+        menu.addAction("Select in table").setData("select")
+        menu.addAction("Copy scan id").setData("copy")
+        menu.addSeparator()
+        menu.addAction("Fit (sandbox preview)").setData("fit_sandbox")
+        menu.addAction("New group from selection…").setData("new_group")
+        chosen = menu.exec(event.globalPos())
+        self._apply_unit_action(chosen.data() if chosen is not None else None, str(key))
+
+    def _apply_unit_action(self, action, key: str) -> None:
+        """Dispatch a physical-child context action; kept as a small testable seam."""
+        if action == "siblings":
+            self._vm.select_siblings(key, clear=True)
+        elif action == "select":
+            self._vm.select_keys([key], clear=True)
+        elif action == "copy":
+            from PySide6.QtWidgets import QApplication
+            QApplication.clipboard().setText(key)
+        elif action == "fit_sandbox":
+            self.fit_requested.emit(key)
+        elif action == "new_group":
+            selected = set(self._vm.selected_keys())
+            keys = sorted(selected) if key in selected else [key]
+            suggested = self._vm.suggest_group_name(keys)
+            name, ok = QInputDialog.getText(
+                self, "New group from selection", "Group name:", text=suggested)
+            if ok and name.strip():
+                self._vm.create_group_from(name.strip(), keys)
 
 # The dimension tabs, in fixed order: (persisted_id, display_label, auto-group ``dim``). The id is
 # the stable persistence key (GuiStore.scans_tab, page-dict keys); the label is display-only, so the
@@ -1322,7 +1437,10 @@ class ScansDock(QDockWidget):
         splitter = QSplitter(Qt.Orientation.Vertical, host)
         splitter.setChildrenCollapsible(False)
 
-        pool_scroll, self._pool_layout, _pc = self._make_scroll()
+        pool_host = QWidget(splitter)
+        self._pool_layout = QVBoxLayout(pool_host)
+        self._pool_layout.setContentsMargins(2, 2, 2, 2)
+        self._pool_layout.setSpacing(4)
 
         work_host = QWidget()
         self._work_pinned_layout = QVBoxLayout(work_host)
@@ -1340,7 +1458,7 @@ class ScansDock(QDockWidget):
         work_scroll.setWidget(work_content)
         self._work_pinned_layout.addWidget(work_scroll, 1)
 
-        splitter.addWidget(pool_scroll)
+        splitter.addWidget(pool_host)
         splitter.addWidget(work_host)
         splitter.setSizes([550, 450])
         v.addWidget(splitter, 1)
@@ -1367,6 +1485,7 @@ class ScansDock(QDockWidget):
         self._page_content = {}
         self._built = set()
         self._chips_by_key = {}
+        self._pool_tree = None
 
         self._tab_dims: dict[str, str | None] = {}
         for tab_id, label, dim in want:
@@ -1428,16 +1547,19 @@ class ScansDock(QDockWidget):
         """Populate the Home splitter: Pool (all scans) on top, Workbench (＋ tile + trays) below (R15)."""
         name = _TAB_MANUAL
         parent = self._page_content[name]
-        # Pool pane — the lens sits atop the Pool (it dims pool chips). Pool holds EVERY scan and is
-        # the drag-OUT (remove-from-origin) target for detaching a chip from a tray (R9).
+        # Master browser replaces the flat chip river. Physical children preserve the exact existing
+        # drag payload and remain the drop-out target for detaching a tray member.
         self._add_lens_bar(name, self._pool_layout)
-        self._add_section_label(self._pool_layout, "Pool — all scans")
-        pool = _GroupBox("ungrouped", "Pool", self._vm, kind="ungrouped", remove_target=True)
-        self._populate(name, pool, rows, pool=True)
-        self._add_box(name, self._pool_layout, pool)
+        self._add_section_label(self._pool_layout, "Pooled masters — expand for physical scans")
+        self._pool_tree = _MasterTree(self._vm, parent)
+        self._pool_tree.master_activated.connect(self._vm.request_master_inspect)
+        self._pool_tree.unit_activated.connect(self._vm.request_inspect)
+        self._pool_tree.fit_requested.connect(self.fit_requested)
+        self._pool_tree.drag_session.connect(self._on_drag_session)
+        self._populate_master_tree(self._pool_tree, rows)
+        self._pool_layout.addWidget(self._pool_tree, 1)
         if self._vm.filter().is_active() and not rows:
             self._add_filter_empty(name, self._pool_layout)
-        self._pool_layout.addStretch(1)
         # Workbench pane — the ＋ new-box tile pinned at the top (always visible), trays scroll below.
         self._new_box_tile = _NewBoxTile(parent)
         self._new_box_tile.create_requested.connect(self._create_box)
@@ -1449,6 +1571,75 @@ class ScansDock(QDockWidget):
             self._add_box(name, self._work_layout, box)
             box.set_full_member_count(len(self._vm.member_keys(g.id)))
         self._work_layout.addStretch(1)
+
+    def _populate_master_tree(self, tree: _MasterTree, rows) -> None:
+        by_key = {row.key: row for row in rows}
+        assigned: set[str] = set()
+        groups = list(self._vm.master_groups())
+        branch_ids = sorted({str(group.master.branch_id) for group, _members in groups
+                             if group.master.branch_id})
+        branch_number = {branch: index + 1 for index, branch in enumerate(branch_ids)}
+        for group, members in sorted(
+                groups,
+                key=lambda pair: tuple(pair[0].master.q or (float("inf"),) * 3)):
+            fit = group.master
+            q = _q_compact(fit.q)
+            branch = str(fit.branch_id or "")
+            if str(fit.track_state or "").lower() == "confirmed" and branch:
+                label = branch.replace("_", " ").title()
+            else:
+                label = f"Branch {branch_number.get(branch, 1)}"
+            interval = fit.interval
+            omega = "—" if fit.omega0 is None else f"{float(fit.omega0):.3g} meV"
+            if interval and len(interval) >= 2:
+                omega += f" [{float(interval[0]):.3g}, {float(interval[-1]):.3g}]"
+            certifying = bool(fit.interval_reliable and interval)
+            state = "certified" if certifying else "no certifying interval"
+            if (fit.disposition or "").lower() not in ("", "resolved"):
+                state = f"{state}; {fit.disposition}"
+            top = QTreeWidgetItem([
+                "Master", q, "" if fit.T is None else f"{float(fit.T):g} K", label, omega,
+                str(fit.n_members or len(members)), state,
+                (datetime.fromtimestamp(group.updated_at).strftime("%H:%M:%S")
+                 if getattr(group, "updated_at", None) is not None else "—")])
+            top.setData(0, _MASTER_FIT_ROLE, fit)
+            top.setToolTip(6, "; ".join(str(reason) for reason in (fit.reasons or ())) or state)
+            top.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            tree.addTopLevelItem(top)
+            for member in members:
+                key = getattr(member, "unit_id", None)
+                row = by_key.get(key)
+                if row is None:
+                    continue
+                assigned.add(row.key)
+                groups_text = ", ".join(self._vm.group_labels_for_key(row.key))
+                child = QTreeWidgetItem([
+                    f"scan {row.scan_number}" + (f" · {row.det}" if row.det else ""),
+                    _q_compact(row.q), "" if row.T is None else f"{row.T:g} K",
+                    str(getattr(member, "branch_id", None) or ""),
+                    "" if member.omega0 is None else f"{float(member.omega0):.3g} meV",
+                    groups_text, status_text(row.status), ""])
+                child.setData(0, _UNIT_KEY_ROLE, row.key)
+                child.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable |
+                               Qt.ItemFlag.ItemIsDragEnabled)
+                top.addChild(child)
+        loose = [row for row in rows if row.key not in assigned]
+        if loose:
+            top = QTreeWidgetItem(["Unpooled scans", "", "", "", "", str(len(loose)), "", ""])
+            top.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            tree.addTopLevelItem(top)
+            for row in loose:
+                child = QTreeWidgetItem([
+                    f"scan {row.scan_number}" + (f" · {row.det}" if row.det else ""),
+                    _q_compact(row.q), "" if row.T is None else f"{row.T:g} K", "", "",
+                    ", ".join(self._vm.group_labels_for_key(row.key)), status_text(row.status), ""])
+                child.setData(0, _UNIT_KEY_ROLE, row.key)
+                child.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable |
+                               Qt.ItemFlag.ItemIsDragEnabled)
+                top.addChild(child)
+        tree.expandToDepth(0)
+        for column in range(tree.columnCount()):
+            tree.resizeColumnToContents(column)
 
     def _finish_build(self) -> None:
         self._sync_selection()
@@ -1521,6 +1712,16 @@ class ScansDock(QDockWidget):
     # ---- selection + highlight sync (a unit lights up in every box) ----
     def _sync_selection(self, *_args) -> None:
         selected = set(self._vm.selected_keys())
+        tree = getattr(self, "_pool_tree", None)
+        if tree is not None:
+            tree.blockSignals(True)
+            iterator = QTreeWidgetItemIterator(tree)
+            while iterator.value():
+                item = iterator.value()
+                key = item.data(0, _UNIT_KEY_ROLE)
+                item.setSelected(bool(key and str(key) in selected))
+                iterator += 1
+            tree.blockSignals(False)
         for key, chips in self._chips_by_key.items():
             on = key in selected
             for chip in chips:
@@ -1566,6 +1767,9 @@ class ScansDock(QDockWidget):
         return self._page_boxes.get(name, [])
 
     def _set_all_collapsed(self, flag: bool) -> None:
+        tree = getattr(self, "_pool_tree", None)
+        if tree is not None:
+            tree.collapseAll() if flag else tree.expandAll()
         for box in self._current_boxes():
             box._set_body_visible(not flag)
             self._vm.set_collapsed(box.box_id, flag)
@@ -1703,10 +1907,10 @@ class ScansDock(QDockWidget):
         self._lens_bin = None
 
     def _sync_lens(self) -> None:
-        """Dim every chip outside the active lens bin; nothing dims when no bin is selected (R7).
+        """Dim every physical scan outside the active lens bin; nothing dims without a lens (R7).
 
-        The lens is a Home-grid affordance (its control lives only there), so it never dims the
-        read-only preset tabs — leaving Home undims everything, returning re-applies it."""
+        The Home hierarchy and any workbench chips reflect the same lens. Read-only preset tabs stay
+        untouched — leaving Home undims everything, returning re-applies it."""
         idx = self._tabs.currentIndex()
         ids = list(self._pages)
         on_home = 0 <= idx < len(ids) and ids[idx] == _TAB_MANUAL
@@ -1716,6 +1920,18 @@ class ScansDock(QDockWidget):
                 if label == self._lens_bin:
                     match = keys
                     break
+        tree = getattr(self, "_pool_tree", None)
+        if tree is not None:
+            iterator = QTreeWidgetItemIterator(tree)
+            while iterator.value():
+                item = iterator.value()
+                key = item.data(0, _UNIT_KEY_ROLE)
+                dim = bool(key and match is not None and str(key) not in match)
+                item.setData(0, _DIMMED_ROLE, dim)
+                brush = QBrush(QColor("#b0b0b0")) if dim else QBrush()
+                for column in range(tree.columnCount()):
+                    item.setForeground(column, brush)
+                iterator += 1
         for key, chips in self._chips_by_key.items():
             dim = match is not None and key not in match
             for chip in chips:

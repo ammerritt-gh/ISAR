@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 from isar_gui.commands import DriveOptions, source_fingerprint
-from isar_gui.viewmodels.campaign import budget_readout
+from isar_gui.viewmodels.campaign import budget_readout, current_activity_text
 
 log = logging.getLogger(__name__)
 
@@ -191,6 +191,11 @@ class CampaignDock(QDockWidget):
         outer.addWidget(self._converge_label)
 
         # ---- Feed ------------------------------------------------------------
+        self._now_label = QLabel("Now: campaign idle", body)
+        self._now_label.setWordWrap(True)
+        self._now_label.setStyleSheet(
+            "font-weight: bold; background: #e8f1fb; border: 1px solid #9abbd8; padding: 5px;")
+        outer.addWidget(self._now_label)
         self._exceptions_only = QCheckBox("exceptions only", body)
         self._exceptions_only.toggled.connect(self._rebuild_feed)
         feed_tools = QHBoxLayout()
@@ -233,6 +238,10 @@ class CampaignDock(QDockWidget):
         self._max_iters.valueChanged.connect(self._on_form_edited)
 
         self._load_form()
+        self._activity_timer = QTimer(self)
+        self._activity_timer.setInterval(1000)
+        self._activity_timer.timeout.connect(self._sync_status)
+        self._activity_timer.start()
         self._sync_status()
 
     # ---- form persistence (typed GuiStore accessors) --------------------------
@@ -394,6 +403,7 @@ class CampaignDock(QDockWidget):
     def dispose(self) -> None:
         """Disconnect persistent coordinator signals before a workspace rebind deletes this dock."""
         self._save_timer.stop()
+        self._activity_timer.stop()
         connections = [
             (self._operations.drive_started, self._sync_status),
             (self._operations.drive_finished, self._on_drive_finished),
@@ -555,20 +565,21 @@ class CampaignDock(QDockWidget):
         vt = "  ·  scan verdicts: " + ", ".join(
             f"{k} {v}" for k, v in sorted(verdicts.items())) if verdicts else ""
         self._converge_label.setText(conv + vt)
+        self._now_label.setText(current_activity_text(state))
 
     def _stop_pending(self) -> bool:
         return bool(self._operations.is_stop_pending())
 
     # ---- feed -----------------------------------------------------------------------
     def _append_feed(self, items: list) -> None:
-        self._feed_items.extend(items)
-        del self._feed_items[:-_MAX_FEED_ROWS]
+        self._feed_items = list(reversed(items)) + self._feed_items
+        del self._feed_items[_MAX_FEED_ROWS:]
         show_all = not self._exceptions_only.isChecked()
         for item in items:
             if not show_all and item.severity not in ("warn", "terminal"):
                 continue
-            self._add_row(item)
-        self._feed.scrollToBottom()
+            self._add_row(item, prepend=True)
+        self._feed.scrollToTop()
 
     def _clear_feed(self) -> None:
         self._feed_items.clear()
@@ -580,9 +591,9 @@ class CampaignDock(QDockWidget):
         for item in self._feed_items:
             if show_all or item.severity in ("warn", "terminal"):
                 self._add_row(item)
-        self._feed.scrollToBottom()
+        self._feed.scrollToTop()
 
-    def _add_row(self, item) -> None:
+    def _add_row(self, item, *, prepend=False) -> None:
         row = QListWidgetItem(item.text)
         bg = _SEVERITY_BG.get(item.severity)
         if bg is not None:
@@ -592,9 +603,12 @@ class CampaignDock(QDockWidget):
             font.setBold(True)
             row.setFont(font)
         row.setToolTip(f"{item.kind} @ {item.ts:.0f}")
-        self._feed.addItem(row)
+        if prepend:
+            self._feed.insertItem(0, row)
+        else:
+            self._feed.addItem(row)
         while self._feed.count() > _MAX_FEED_ROWS:
-            self._feed.takeItem(0)
+            self._feed.takeItem(self._feed.count() - 1)
         # QListWidgetItem alignment default is fine; keep rows compact and selectable/copyable.
 
     def _copy_feed_selection(self) -> None:

@@ -63,7 +63,8 @@ LLM_GOAL_SCHEMA = {
         "target_branch": {"type": "string", "enum": ["acoustic", "optic"]},
         "target_label": {"type": "string"},
         "target_selector": {"type": "string",
-                            "enum": ["lowest_energy", "highest_energy", "nearest_energy"]},
+                            "enum": ["lowest_energy", "highest_energy", "nearest_energy",
+                                     "tracked_branch"]},
         "target_energy_meV": {"type": "number"},
         "energy_search_meV": {"type": "array", "items": {"type": "number"},
                               "minItems": 2, "maxItems": 2},
@@ -92,6 +93,7 @@ FILE_SPEC_SCHEMA["properties"]["steering"] = {
         "quicklook_ncount": {"type": "integer"},
         "production_batch_ncount": {"type": "integer"},
         "maximum_production_batches_per_q": {"type": "integer"},
+        "maximum_bridge_steps": {"type": "integer"},
         "dynamic_ncount": {"type": "boolean"},
         "max_ncount_per_scan": {"type": "integer"},
         "ncount_growth_cap": {"type": "number"},
@@ -121,8 +123,11 @@ SYSTEM = (
     "OR budget_neutrons ('overnight' ≈ 8 hours; if no budget is stated, use budget_hours = 8). "
     "Set target_branch to optic when the user asks for an optic or transverse optic phonon, otherwise "
     "acoustic; retain their wording in target_label. For an unspecified optic target use "
-    "target_selector='lowest_energy'. If the user supplies a target energy, put it in "
-    "target_energy_meV and use target_selector='nearest_energy'. If the user explicitly asks for the "
+    "target_selector='lowest_energy'. An energy stated as the identity of an optic branch (for "
+    "example 'the optic phonon around 6 meV') is a zone-centre anchor: put it in "
+    "target_zc_energy_meV and use target_selector='tracked_branch'; do not set target_energy_meV. "
+    "Only when the user explicitly requests the feature nearest an energy at every q or throughout "
+    "the path, put that energy in target_energy_meV and use target_selector='nearest_energy'. If the user explicitly asks for the "
     "highest optic mode use target_selector='highest_energy'. If the user states a zone-centre or gap energy, "
     "put it in target_zc_energy_meV and put an explicitly stated uncertainty in "
     "target_zc_energy_sigma_meV. For optic goals use energy_search_meV [-2,12] unless the user "
@@ -247,25 +252,35 @@ def _build_spec(data: dict, merged: dict, *,
     target_energy = data.get("target_energy_meV")
     selector = data.get("target_selector")
     if selector is None:
-        selector = "nearest_energy" if target_energy is not None else "lowest_energy"
+        selector = ("nearest_energy" if target_energy is not None else
+                    "tracked_branch" if data.get("target_zc_energy_meV") is not None else
+                    "lowest_energy")
     if selector == "nearest_energy" and target_energy is None:
         raise GoalParseError("nearest_energy target_selector requires target_energy_meV")
+    # The tracked selector identifies a dispersing branch.  Accept target_energy_meV as an input
+    # alias for its zone-centre anchor, but never carry that value into the global nearest-energy
+    # field consumed at every q.
+    tracked_anchor_energy = None
+    if selector == "tracked_branch" and target_energy is not None:
+        tracked_anchor_energy = target_energy
+        target_energy = None
     energy = data.get("energy_search_meV")
     resolved_energy = tuple(energy) if energy is not None else (
         (-2.0, 12.0) if branch == "optic" else (-2.0, 7.0))
     goal_override = None
+    target_zc_energy = data.get("target_zc_energy_meV", tracked_anchor_energy)
     if (data.get("target_zc_energy_sigma_meV") is not None
-            and data.get("target_zc_energy_meV") is None):
+            and target_zc_energy is None):
         raise GoalParseError(
             "target_zc_energy_sigma_meV requires target_zc_energy_meV")
-    if data.get("target_zc_energy_meV") is not None:
+    if target_zc_energy is not None:
         shipped_sigma = max((float(resolved_energy[1]) - max(float(resolved_energy[0]), 0.0)) / 4.0,
                             1e-6)
         explicit_sigma = data.get("target_zc_energy_sigma_meV")
         if explicit_sigma is not None and float(explicit_sigma) <= 0.0:
             raise GoalParseError("target_zc_energy_sigma_meV must be positive")
         goal_override = {"zc_energy": {
-            "mean": float(data["target_zc_energy_meV"]),
+            "mean": float(target_zc_energy),
             "sigma": float(explicit_sigma if explicit_sigma is not None else shipped_sigma),
         }}
     frozen = resolve_hypothesis_snapshot(

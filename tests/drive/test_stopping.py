@@ -129,6 +129,20 @@ def test_driver_inserted_observation_cannot_occupy_or_penalize_requested_q():
     assert not first.visited and not first.converged
 
 
+def test_unpooled_track_state_blocks_scalar_convergence_and_model_seeding():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    obj = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
+                        budget={"kind": "neutrons", "amount": 1e12},
+                        target_branch="optic", target_selector="tracked_branch", **frozen)
+    obs = _obs((2.0, 0.0, 0.0), "production", 0.2)
+    obs.update({"branch_id": "optic", "track_state": "ambiguous", "track_revision": 2})
+    # A legacy pooled row with no track metadata must not erase the newer individual authority.
+    grid = st.summarize_grid(obj, [obs], [_master((2.0, 0.0, 0.0), 0.1)])
+    assert grid[0].track_state == "ambiguous"
+    assert not grid[0].converged
+    assert st.model_points(grid) == []
+
+
 # --------------------------------------------------------------------------- S3 uncertifiable state
 def test_unreliable_best_prod_does_not_converge():
     # The mid-zone hole (§5.3): a usable single-production fit with an UNCERTIFIABLE interval

@@ -169,6 +169,8 @@ class GridQ:
     interval_floor_window: int = 3
     interval_floor_min_improvement: float = 0.05
     interval_floor_min_exposure_ratio: float = 2.0
+    track_state: str | None = None
+    track_revision: int | None = None
 
     @property
     def visited(self) -> bool:
@@ -207,6 +209,8 @@ class GridQ:
     @property
     def converged(self) -> bool:
         """A trustworthy ω₀ interval (master OR best single production) is within tolerance."""
+        if self.track_state is not None and self.track_state != "confirmed":
+            return False
         hw = self.cert_halfwidth
         if hw is None or hw > self.tolerance:
             return False
@@ -434,6 +438,18 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
         if i is None:
             continue
         g = grid[i]
+        # The current selected result is authoritative even when no pooled master exists yet.  Ignore
+        # the deliberately muted ``individual`` label and retain only the newest assignment revision.
+        track_state = obs.get("track_state")
+        if track_state in {"confirmed", "ambiguous", "missing", "provisional", "blocked"}:
+            try:
+                track_revision = (int(obs["track_revision"])
+                                  if obs.get("track_revision") is not None else 0)
+            except (TypeError, ValueError):
+                track_revision = 0
+            if g.track_revision is None or track_revision >= g.track_revision:
+                g.track_state = track_state
+                g.track_revision = track_revision
         kind = obs.get("kind")
         if kind == "certification_crossing":
             fingerprint = obs.get("production_batch_fingerprint")
@@ -518,6 +534,17 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                 master["production_batch_fingerprint"] = hashlib.sha256(
                     encoded.encode("utf-8")).hexdigest()
             grid[i].master = master
+            try:
+                master_revision = (int(master["track_revision"])
+                                   if master.get("track_revision") is not None else 0)
+            except (TypeError, ValueError):
+                master_revision = 0
+            master_state = master.get("track_state")
+            if (master_state in {"confirmed", "ambiguous", "missing", "provisional", "blocked"}
+                    and (grid[i].track_revision is None
+                         or master_revision >= grid[i].track_revision)):
+                grid[i].track_state = master_state
+                grid[i].track_revision = master_revision
     return grid
 
 
@@ -525,7 +552,8 @@ def model_points(grid: list[GridQ]) -> list[tuple[float, float, float]]:
     """The ``(q, omega0, halfwidth)`` triples for the ω(q) model — one per grid point with a usable fit."""
     pts = []
     for g in grid:
-        if g.best_resolved and g.best_omega0 is not None and g.best_halfwidth is not None:
+        if (g.track_state in (None, "confirmed") and g.best_resolved
+                and g.best_omega0 is not None and g.best_halfwidth is not None):
             pts.append((g.q, g.best_omega0, g.best_halfwidth))
     return pts
 

@@ -230,9 +230,15 @@ def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 1234
             for ci, chunk_res in enumerate(chunk_results):
                 out[ci::n_chunks] = chunk_res
         else:
-            with ProcessPoolExecutor(max_workers=n_chunks) as ex:
-                for ci, chunk_res in enumerate(ex.map(_bootstrap_chunk, args)):
-                    out[ci::n_chunks] = chunk_res
+            try:
+                with ProcessPoolExecutor(max_workers=n_chunks) as ex:
+                    chunk_results = list(ex.map(_bootstrap_chunk, args))
+            except Exception as exc:  # noqa: BLE001 — pure chunks are safe to repeat
+                log.warning("parallel bootstrap failed; retrying serially: %s: %s",
+                            type(exc).__name__, exc)
+                chunk_results = [_bootstrap_chunk(arg) for arg in args]
+            for ci, chunk_res in enumerate(chunk_results):
+                out[ci::n_chunks] = chunk_res
         return out
 
     if adaptive:

@@ -115,6 +115,49 @@ def test_supplied_target_energy_implies_nearest_selector():
     assert spec.target_selector == "nearest_energy" and spec.target_energy_meV == 7.5
 
 
+def test_optic_energy_identity_compiles_as_zone_center_tracked_branch():
+    payload = {"q_start": [2, 0, 0], "q_end": [2.5, 0, 0], "step_rlu": 0.05,
+               "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic",
+               "target_selector": "tracked_branch", "target_zc_energy_meV": 6.0}
+    spec = g2s.goal_to_spec(
+        "map the optic phonon around 6 meV",
+        dispatcher=_FakeDispatcher(DispatchResult(structured=payload)))
+    optic = next(h for h in spec.hypotheses if h["name"] == "optic")
+    assert spec.target_selector == "tracked_branch"
+    assert spec.target_energy_meV is None
+    assert optic["zc_energy"]["mean"] == 6.0
+
+
+def test_zone_center_energy_implies_tracked_branch_when_selector_is_omitted():
+    payload = {"q_start": [2, 0, 0], "q_end": [2.5, 0, 0], "step_rlu": 0.05,
+               "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic",
+               "target_zc_energy_meV": 6.0}
+    spec = g2s.spec_from_dict(payload)
+    assert spec.target_selector == "tracked_branch"
+    assert spec.target_energy_meV is None
+
+
+def test_tracked_branch_promotes_target_energy_alias_without_global_selector():
+    payload = {"q_start": [2, 0, 0], "q_end": [2.5, 0, 0], "step_rlu": 0.05,
+               "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic",
+               "target_selector": "tracked_branch", "target_energy_meV": 6.0}
+    spec = g2s.spec_from_dict(payload)
+    optic = next(h for h in spec.hypotheses if h["name"] == "optic")
+    assert spec.target_energy_meV is None
+    assert optic["zc_energy"]["mean"] == 6.0
+
+
+def test_explicit_nearest_energy_throughout_remains_global_nearest():
+    payload = {"q_start": [2, 0, 0], "q_end": [2.5, 0, 0], "step_rlu": 0.05,
+               "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic",
+               "target_selector": "nearest_energy", "target_energy_meV": 6.0}
+    spec = g2s.goal_to_spec(
+        "at every q, measure the feature nearest 6 meV",
+        dispatcher=_FakeDispatcher(DispatchResult(structured=payload)))
+    assert spec.target_selector == "nearest_energy"
+    assert spec.target_energy_meV == 6.0
+
+
 def test_file_schema_accepts_operator_steering_but_llm_schema_does_not():
     payload = {"q_start": [2, 0, 0], "q_end": [2, 0.5, 0], "step_rlu": 0.05,
                "tolerance_meV": 0.5, "budget_hours": 8,
@@ -124,6 +167,7 @@ def test_file_schema_accepts_operator_steering_but_llm_schema_does_not():
     spec = g2s.spec_from_dict(payload)
     assert spec.steering["quicklook_ncount"] == 50_000_000
     assert spec.steering["dynamic_ncount"] is True
+    assert spec.steering["maximum_bridge_steps"] == 1
 
 
 def test_hypothesis_resolution_precedence_goal_then_card_then_shipped():

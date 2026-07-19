@@ -51,6 +51,7 @@ def _tab_names(dock):
 
 def _show_tab(dock, name):
     dock._tabs.setCurrentIndex(_tab_names(dock).index(name))
+    dock._build_page(name)
 
 
 def _box(dock, box_id):
@@ -89,23 +90,21 @@ def test_plain_chip_click_routes_to_inspector(qtbot, tmp_path):
     qtbot.addWidget(dock)
     got = []
     vm.inspect_requested.connect(got.append)
-    chip = dock._chips_by_key["in8:1:det"][0]
-    chip.clicked.emit("in8:1:det", Qt.KeyboardModifier.NoModifier)
+    child = dock._pool_tree.topLevelItem(0).child(0)
+    dock._pool_tree._activate(child, 0)
     assert got == ["in8:1:det"]                       # ingested -> routes the unit key
 
 
-def test_modified_chip_click_does_not_route_to_inspector(qtbot, tmp_path):
-    # Ctrl/shift multi-select builds a set — it must NOT steal the inspector focus.
+def test_master_tree_preserves_multi_selection(qtbot, tmp_path):
     vm = ScansViewModel(_ws([_sv("in8", 1, "det"), _sv("in8", 2, "det")]),
                         store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    got = []
-    vm.inspect_requested.connect(got.append)
-    chip = dock._chips_by_key["in8:1:det"][0]
-    chip.clicked.emit("in8:1:det", Qt.KeyboardModifier.ControlModifier)
-    chip.clicked.emit("in8:1:det", Qt.KeyboardModifier.ShiftModifier)
-    assert got == []
+    top = dock._pool_tree.topLevelItem(0)
+    top.child(0).setSelected(True)
+    top.child(1).setSelected(True)
+    dock._pool_tree._activate(top.child(1), 0)
+    assert set(vm.selected_keys()) == {"in8:1:det", "in8:2:det"}
 
 
 def test_analyzer_tab_hidden_for_single_detector(qtbot, tmp_path):
@@ -128,9 +127,9 @@ def test_all_tab_lists_every_unit(qtbot, tmp_path):
     vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    _show_tab(dock, "Manual")
-    all_box = _box(dock, "ungrouped")
-    assert len(all_box.chips) == 9
+    _show_tab(dock, "Scans")
+    assert dock._pool_tree.topLevelItemCount() == 1
+    assert dock._pool_tree.topLevelItem(0).childCount() == 9
 
 
 def test_scans_tab_groups_by_source_scan(qtbot, tmp_path):
@@ -182,10 +181,10 @@ def test_cross_tab_selection_lights_every_chip(qtbot, tmp_path):
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
     # Build two pages so the unit appears in more than one box.
-    _show_tab(dock, "Manual")
+    _show_tab(dock, "Scans")
     _show_tab(dock, "Analyzer")
     chips = dock._chips_by_key["s30:12:ana1"]
-    assert len(chips) >= 2                  # one on All, one on Analyzer
+    assert len(chips) >= 2                  # one on Scans, one on Analyzer
     vm.select_keys(["s30:12:ana1"], clear=True)
     assert all(c._selected for c in chips)
 
@@ -194,7 +193,7 @@ def test_active_chip_is_distinct_from_selected_group(qtbot, tmp_path):
     vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    _show_tab(dock, "Manual")
+    _show_tab(dock, "Scans")
     # Group/multi-selection is intentionally independent from the one detector in the inspector.
     vm.select_keys(["s30:12:ana1", "s30:12:ana2"], clear=True)
     dock.set_active_key("s30:12:ana1")
@@ -210,16 +209,15 @@ def test_chip_status_is_not_colour_only(qtbot, tmp_path):
     vm = ScansViewModel(_ws([_sv("in8", 1, "det")]), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    chip = dock._chips_by_key["in8:1:det"][0]
-    assert "parsed" in chip._sub_label.text()
-    assert "status: parsed" in chip.toolTip()
+    child = dock._pool_tree.topLevelItem(0).child(0)
+    assert child.text(6) == "parsed"
 
 
 def test_chip_click_updates_shared_selection(qtbot, tmp_path):
     vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    _show_tab(dock, "Manual")
+    _show_tab(dock, "Scans")
     chip = dock._chips_by_key["s30:12:ana1"][0]
     chip.clicked.emit("s30:12:ana1", Qt.KeyboardModifier.NoModifier)
     assert vm.selected_keys() == ["s30:12:ana1"]
@@ -229,7 +227,7 @@ def test_hover_soft_highlights_siblings(qtbot, tmp_path):
     vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    _show_tab(dock, "Manual")
+    _show_tab(dock, "Scans")
     dock._on_chip_hovered("s30:12:ana1", True)
     # Every sibling chip is soft-highlighted while hovering one.
     assert all(dock._chips_by_key[f"s30:12:ana{i}"][0]._sibling for i in range(1, 10))
@@ -254,7 +252,7 @@ def test_multi_detector_chip_shows_analyzer_suffix(qtbot, tmp_path):
     vm = ScansViewModel(_ws(_nine()), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    _show_tab(dock, "Manual")
+    _show_tab(dock, "Scans")
     chip = dock._chips_by_key["s30:12:ana3"][0]
     assert chip._num_label.text() == "12·ana3"
 
@@ -263,9 +261,8 @@ def test_single_detector_chip_shows_scan_only(qtbot, tmp_path):
     vm = ScansViewModel(_ws([_sv("in8", 5, "det")]), store=GuiStore.load(tmp_path))
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
-    _show_tab(dock, "Manual")
-    chip = dock._chips_by_key["in8:5:det"][0]
-    assert chip._num_label.text() == "5"
+    child = dock._pool_tree.topLevelItem(0).child(0)
+    assert child.text(0) == "scan 5 · det"
 
 
 def test_home_has_pool_and_new_box_tile(qtbot, tmp_path):
@@ -276,7 +273,36 @@ def test_home_has_pool_and_new_box_tile(qtbot, tmp_path):
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
     _show_tab(dock, "Manual")
-    pool = _box(dock, "ungrouped")
-    assert pool._title.text() == "Pool" and len(pool.chips) == 9   # every scan is in the pool
+    assert dock._pool_tree.topLevelItem(0).text(0) == "Unpooled scans"
+    assert dock._pool_tree.topLevelItem(0).childCount() == 9
     assert dock.findChildren(_NewBoxTile)                          # the make-a-group tile exists
     assert not dock.findChildren(QLabel, "manualHint")             # no instructional paragraph
+
+
+def test_master_browser_is_hierarchical_scrollable_and_only_children_drag(qtbot, tmp_path):
+    scans = [_sv("tavi", index, "det", hkl=(2.0 + index / 100, 0, 0))
+             for index in range(1, 61)]
+    groups = []
+    for index, scan in enumerate(scans, start=1):
+        member = SimpleNamespace(unit_id=scan.scan_id, branch_id="optic", omega0=6.0)
+        master = SimpleNamespace(
+            q=scan.hkl, T=300.0, branch_id="optic", track_state="confirmed",
+            interval=[5.8, 6.2], omega0=6.0, interval_reliable=True,
+            disposition="resolved", n_members=1, reasons=())
+        groups.append(SimpleNamespace(master=master, members=(member,)))
+    ws = SimpleNamespace(scans=scans, master_groups=groups)
+    vm = ScansViewModel(ws, store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    dock.resize(480, 320)
+    qtbot.addWidget(dock)
+    dock.show()
+    qtbot.wait(20)
+
+    tree = dock._pool_tree
+    assert tree.topLevelItemCount() == 60
+    top = tree.topLevelItem(0)
+    child = top.child(0)
+    assert top.text(0) == "Master" and child.text(0).startswith("scan ")
+    assert not (top.flags() & Qt.ItemFlag.ItemIsDragEnabled)
+    assert child.flags() & Qt.ItemFlag.ItemIsDragEnabled
+    assert tree.verticalScrollBar().maximum() > 0

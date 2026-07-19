@@ -143,10 +143,10 @@ def test_freeze_unknown_auto_id_is_noop(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Dock: "New group from selection…" chip action (dialog mocked)
+# Dock: "New group from selection…" physical-child action (dialog mocked)
 #
 # QMenu.exec is a real modal that ignores Python-level patching (it hangs the offscreen suite), so the
-# context-menu tests drive the action-dispatch seam (``_apply_chip_action`` / ``_apply_header_action``)
+# context-menu tests drive the action-dispatch seam (``_apply_unit_action`` / ``_apply_header_action``)
 # that the menu triggers, exactly as clicking that entry would — only the QInputDialog is mocked.
 # ---------------------------------------------------------------------------
 def test_chip_menu_new_group_from_selection(qtbot, tmp_path, monkeypatch):
@@ -163,7 +163,7 @@ def test_chip_menu_new_group_from_selection(qtbot, tmp_path, monkeypatch):
         return "My cold set", True
 
     monkeypatch.setattr(QInputDialog, "getText", staticmethod(_fake_get_text))
-    _box(dock, "ungrouped")._apply_chip_action("new_group", "s30:12:ana1")
+    dock._pool_tree._apply_unit_action("new_group", "s30:12:ana1")
     assert seen["text"] == "T = 300 K"                 # dialog pre-filled from the suggestion
     g = store.groups()[0]
     assert g.name == "My cold set"
@@ -178,7 +178,7 @@ def test_chip_menu_new_group_cancelled_creates_nothing(qtbot, tmp_path, monkeypa
     _show_tab(dock, "Manual")
     monkeypatch.setattr(QInputDialog, "getText",
                         staticmethod(lambda *a, **k: ("", False)))   # user hit Cancel
-    _box(dock, "ungrouped")._apply_chip_action("new_group", "s30:12:ana1")
+    dock._pool_tree._apply_unit_action("new_group", "s30:12:ana1")
     assert store.groups() == []
 
 
@@ -191,7 +191,7 @@ def test_chip_new_group_from_single_chip_when_unselected(qtbot, tmp_path, monkey
     _show_tab(dock, "Manual")
     monkeypatch.setattr(QInputDialog, "getText",
                         staticmethod(lambda *a, **k: ("Solo", True)))
-    _box(dock, "ungrouped")._apply_chip_action("new_group", "s30:12:ana5")
+    dock._pool_tree._apply_unit_action("new_group", "s30:12:ana5")
     assert store.groups()[0].members == ["s30:12:ana5"]
 
 

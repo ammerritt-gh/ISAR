@@ -59,3 +59,9 @@ def test_steering_policy_rejects_non_finite_numeric_values(field):
 def test_steering_policy_rejects_invalid_widening_and_boolean(kwargs):
     with pytest.raises(ValueError):
         SteeringPolicy(**kwargs)
+
+
+def test_bridge_policy_defaults_to_one_step_and_rejects_negative_values():
+    assert SteeringPolicy().maximum_bridge_steps == 1
+    with pytest.raises(ValueError, match="maximum_bridge_steps"):
+        SteeringPolicy(maximum_bridge_steps=-1)

@@ -75,7 +75,8 @@ class SubprocessRunner:
     """
 
     def run(self, workspace: str | Path, data_paths: Sequence[str | Path], *, force: bool = False,
-            errors_tier: str = "full", render: bool = True, timeout: float | None = None) -> RunResult:
+            errors_tier: str = "full", render: bool = True, timeout: float | None = None,
+            certification_manifest: str | Path | None = None) -> RunResult:
         """Run ``isar run <data...> --workspace <workspace> [--force] --errors <tier>``.
 
         Args:
@@ -99,6 +100,8 @@ class SubprocessRunner:
         cmd.extend(["--errors", str(errors_tier)])
         if not render:
             cmd.append("--no-render")
+        if certification_manifest is not None:
+            cmd.extend(["--certification-manifest", str(certification_manifest)])
         return _exec_run(cmd, timeout)
 
     def close(self) -> None:
@@ -119,7 +122,8 @@ class _CallableRunner:
         self._fn = fn
 
     def run(self, workspace, data_paths, *, force: bool = False, errors_tier: str = "full",
-            render: bool = True, timeout: float | None = None) -> RunResult:
+            render: bool = True, timeout: float | None = None,
+            certification_manifest: str | Path | None = None) -> RunResult:
         # ``render`` is accepted for protocol parity but deliberately NOT reflected into ``extra_args``:
         # bare callables (config["run_isar"] hooks / test fakes) don't parse argv, and the extra_args
         # contract was frozen at the Stage-1 shape (--errors <tier> [--force]). Adding --no-render here

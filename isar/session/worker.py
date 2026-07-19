@@ -64,10 +64,16 @@ def _run_job(workspace_path, req) -> tuple[dict, dict]:
     errors_tier = req.get("errors_tier", "full")
     M = int(req.get("M") or 200)
     workers = req.get("workers")
+    certification_manifest = req.get("certification_manifest")
 
     timer = StageTimer(errors_tier=errors_tier, M=M, worker_job=True, job_id=req.get("id"))
-    summary = driver.run_batch(ws, data_paths, force=force, M=M, workers=workers,
-                               errors_tier=errors_tier, formats=(), timer=timer)
+    run_kwargs = {"force": force, "M": M, "workers": workers,
+                  "errors_tier": errors_tier, "formats": (), "timer": timer}
+    # Omit the additive extension entirely for normal jobs so legacy in-process adapters and test
+    # doubles continue to satisfy the runner boundary unchanged.
+    if certification_manifest is not None:
+        run_kwargs["certification_manifest"] = certification_manifest
+    summary = driver.run_batch(ws, data_paths, **run_kwargs)
     # Persist run_timings.json (same contract as isar.cli.run_cmd.run — the loop reads it off disk),
     # then read it back so the inline reply timings are byte-identical to the file (timing contract).
     timings_path = ws.report_dir / "run_timings.json"

@@ -37,7 +37,7 @@ from isar.schema.card import Card
 from isar.schema.hypotheses import preset as hypothesis_preset
 from isar.schema.steering import IntensityMeasure, ParamConstraints
 from isar.session import branch_assignment as BA
-from isar.session import branch_model, calibrations, guidelines as guide_mod, ingest, router, session_prior
+from isar.session import branch_model, branch_tracking, calibrations, guidelines as guide_mod, ingest, router, session_prior
 
 # Steering Phase 2c: apply the low-q branch soft-constraint when the dispersion prior predicts a
 # phonon within this many resolution FWHM of the elastic line (the merging regime where Γ/A go
@@ -157,6 +157,13 @@ class FitOutcome:
     candidate_id: str | None = None
     candidate_state: str | None = None
     acquisition_id: str | None = None
+    # Additive tracked-branch contract. Every fitted mode remains an unordered candidate; the joint
+    # path tracker records which one is currently selected without erasing earlier alternatives.
+    branch_candidates: list | None = None
+    selected_candidate_index: int | None = None
+    track_state: str | None = None
+    track_revision: int | None = None
+    spectrum_ref: str | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -797,7 +804,7 @@ def _process_one_task(args):
 
 def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_workers,
                use_pool, scan_workers, boot_executor=None, boot_adaptive=False,
-               bayes_opts=None) -> list:
+               bayes_opts=None, on_complete=None) -> list:
     """Fit the fresh scan-detectors, serially or over a process pool, preserving submission order.
 
     ``boot_executor`` (a shared bootstrap pool) is threaded only through the SERIAL path — an
@@ -814,23 +821,36 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
         for a in arg_list:
             (rec, det, q, T, sample, scan_id, card_, g_, runcal_, exclusions_, chash, ghash,
              M_, tier_, seed, bw, adaptive_, bopts_) = a
-            out.append(_process_one(rec, det, q, T, sample, scan_id, card_, g_, runcal_,
-                                    exclusions_, chash, ghash, M=M_, seed=seed, errors_tier=tier_,
-                                    boot_workers=bw, boot_executor=boot_executor,
-                                    boot_adaptive=adaptive_, bayes_opts=bopts_))
+            entry = _process_one(rec, det, q, T, sample, scan_id, card_, g_, runcal_,
+                                 exclusions_, chash, ghash, M=M_, seed=seed, errors_tier=tier_,
+                                 boot_workers=bw, boot_executor=boot_executor,
+                                 boot_adaptive=adaptive_, bayes_opts=bopts_)
+            if on_complete is not None:
+                on_complete(entry)
+            out.append(entry)
         return out
     max_workers = min(scan_workers, len(arg_list))
     # map preserves order → results align with `tasks`, keeping prior-seeding + row order deterministic.
     with ProcessPoolExecutor(max_workers=max_workers) as ex:
-        return list(ex.map(_process_one_task, arg_list))
+        out = []
+        for entry in ex.map(_process_one_task, arg_list):
+            if on_complete is not None:
+                on_complete(entry)
+            out.append(entry)
+        return out
 
 
 def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200,
               detectors=None, formats=("html", "markdown"), workers=None,
-              errors_tier="full", bayes_cli=None, timer=None) -> RunSummary:
+              errors_tier="full", bayes_cli=None, timer=None,
+              certification_manifest=None) -> RunSummary:
     timer = timer or NullTimer()
     with timer.stage("workspace_load"):
         card, session = workspace.load()
+    checkpoint_store = None
+    if certification_manifest is not None:
+        from isar.session.certification import CheckpointStore
+        checkpoint_store = CheckpointStore(certification_manifest)
     for p in map(str, data_paths):
         if p not in session.data_paths:
             session.data_paths.append(p)
@@ -950,10 +970,35 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
     try:
         with timer.stage("fit_scans", n_tasks=len(tasks), use_pool=use_pool,
                          boot_workers=boot_workers) as _m_fit:
-            entries = _run_tasks(tasks, card, g, runcal, exclusions, M=M, errors_tier=errors_tier,
-                                 boot_workers=boot_workers, use_pool=use_pool,
-                                 scan_workers=scan_workers, boot_executor=shared_pool,
-                                 boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
+            cached: dict[int, ScanEntry] = {}
+            remaining = []
+            remaining_indices = []
+            if checkpoint_store is not None:
+                for task_index, task in enumerate(tasks):
+                    scan_id, chash, ghash = task[5], task[6], task[7]
+                    entry = checkpoint_store.load(
+                        f"scan:{scan_id}", content_hash=chash, guidelines_hash=ghash)
+                    if entry is not None:
+                        cached[task_index] = entry
+                    else:
+                        remaining.append(task)
+                        remaining_indices.append(task_index)
+            else:
+                remaining = list(tasks)
+                remaining_indices = list(range(len(tasks)))
+
+            def checkpoint_entry(entry):
+                if checkpoint_store is not None:
+                    checkpoint_store.save(f"scan:{entry.scan_id}", entry)
+
+            fresh_entries = _run_tasks(
+                remaining, card, g, runcal, exclusions, M=M, errors_tier=errors_tier,
+                boot_workers=boot_workers, use_pool=use_pool,
+                scan_workers=scan_workers, boot_executor=shared_pool,
+                boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
+                on_complete=checkpoint_entry)
+            cached.update(zip(remaining_indices, fresh_entries))
+            entries = [cached[index] for index in range(len(tasks))]
             _m_fit["per_task"] = [
                 {"scan_id": e.scan_id,
                  "seconds": e.provenance.get("fit_seconds"),
@@ -964,11 +1009,17 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
                  "profile_seconds": e.provenance.get("profile_seconds"),
                  "bayes_seconds": e.provenance.get("bayes_seconds")}
                 for e in entries if e.provenance.get("fit_seconds") is not None]
+        completed_master_keys: list[str] = []
         _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                           workspace, force=force, M=M, seed_base=seed_base, errors_tier=errors_tier,
                           master_boot_workers=master_boot_workers, boot_executor=shared_pool,
                           boot_adaptive=boot_adaptive, scan_workers=scan_workers,
-                          bayes_opts=bayes_opts, timer=timer, source_by_name=source_by_name)
+                          bayes_opts=bayes_opts, timer=timer, source_by_name=source_by_name,
+                          checkpoint_store=checkpoint_store,
+                          completed_master_keys=completed_master_keys)
+        if checkpoint_store is not None:
+            checkpoint_store.mark_complete(
+                unit_keys=[f"scan:{entry.scan_id}" for entry in entries] + completed_master_keys)
     finally:
         if shared_pool is not None:
             shared_pool.shutdown()
@@ -1162,10 +1213,260 @@ def _core_provenance(rec, det, source_by_name=None) -> dict:
     return core
 
 
+def _tracked_selector(card) -> bool:
+    return _campaign_selector(card)[0] == "tracked_branch"
+
+
+def _mode_candidates(scan_id: str, detector: str, outcome: dict) -> list[dict]:
+    """Materialise every fitted mode with its own uncertainty and provenance.
+
+    Full profile/bootstrap/Bayes intervals currently belong to the fit's scalar primary mode. They
+    are copied only to that matching candidate; a secondary receives its own HESSE interval, never
+    the primary mode's interval (which would be numerically tidy and scientifically wrong).
+    """
+    # A tracking revision may have rewritten the backwards-compatible scalar omega0 to a secondary
+    # mode. The previously materialised table is immutable fit evidence and remembers which mode
+    # actually owned the fitter's profile/bootstrap/Bayes intervals. Reuse it on carry/no-op reruns;
+    # a genuine refit replaces the whole outcome and arrives without this table.
+    stored = outcome.get("branch_candidates")
+    if isinstance(stored, list) and stored:
+        rows = []
+        for candidate in stored:
+            if not isinstance(candidate, dict):
+                continue
+            row = dict(candidate)
+            row.pop("probabilities", None)  # assignment evidence is recomputed from the whole path
+            rows.append(row)
+        if rows:
+            return rows
+    modes = list(outcome.get("modes") or [])
+    if not modes and outcome.get("omega0") is not None:
+        modes = [{"omega0": outcome.get("omega0"), "omega0_err": outcome.get("omega0_err"),
+                  "gamma": outcome.get("gamma"), "amplitude": None}]
+    primary = outcome.get("omega0")
+    rows = []
+    for index, mode in enumerate(modes):
+        energy = mode.get("omega0")
+        if energy is None:
+            continue
+        try:
+            energy = float(energy)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(energy):
+            continue
+        error = mode.get("omega0_err")
+        try:
+            error = float(error)
+        except (TypeError, ValueError):
+            error = None
+        if error is not None and (not np.isfinite(error) or error <= 0.0):
+            error = None
+        is_primary = primary is not None and abs(float(primary) - energy) <= 1e-6
+        hesse = ([energy - error, energy + error] if error is not None else None)
+        row = {
+            "candidate_ref": f"{scan_id}:{detector}:mode:{index}", "source_scan_id": scan_id,
+            "detector": detector, "mode_index": index, "energy_meV": energy,
+            "omega0_err": error, "sigma_meV": error, "gamma": mode.get("gamma"),
+            "gamma_err": mode.get("gamma_err"), "amplitude": mode.get("amplitude"),
+            "interval": (list(outcome.get("interval")) if is_primary and outcome.get("interval") else None),
+            "profile_interval": (list(outcome.get("omega0_profile"))
+                                 if is_primary and outcome.get("omega0_profile") else None),
+            "hesse_interval": (list(outcome.get("hesse_interval"))
+                               if is_primary and outcome.get("hesse_interval") else hesse),
+            "bayes_interval": (list(outcome.get("bayes_interval"))
+                               if is_primary and outcome.get("bayes_interval") else None),
+            "reliable": bool(outcome.get("interval_reliable", True)),
+            "pooled": bool(outcome.get("pooled")), "n_members": outcome.get("n_members"),
+            "fit_kind": outcome.get("fit_kind"), "model": outcome.get("best_label"),
+            "verdict": outcome.get("verdict"), "modality": outcome.get("modality"),
+        }
+        rows.append(row)
+    return rows
+
+
+def _path_index(q: list, path: list[list[float]], tolerance: float = 1e-5) -> int | None:
+    if not q or not path:
+        return None
+    distances = [math.dist([float(value) for value in q], point) for point in path]
+    index = int(np.argmin(distances))
+    return index if distances[index] <= tolerance else None
+
+
+def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tuple[list[dict], dict]:
+    """Return one authoritative fit per path point and all outcome references.
+
+    A pooled master supersedes its individual members for identity assignment. If no master exists,
+    the strongest individual fit (effective exposure, then ledger order) is used. All outcomes still
+    retain their own candidate table for audit and display.
+    """
+    by_index: dict[int, list[tuple]] = {}
+    refs: dict[str, tuple] = {}
+    for order, entry in enumerate(session.scans.values()):
+        for detector, outcome in entry.detectors.items():
+            candidates = _mode_candidates(entry.scan_id, detector, outcome)
+            outcome["branch_candidates"] = candidates or None
+            key = f"{entry.scan_id}:{detector}"
+            refs[key] = (entry, detector, outcome)
+            index = _path_index(outcome.get("q") or [], path)
+            if index is not None and candidates:
+                exposure = outcome.get("effective_exposure")
+                try:
+                    exposure = float(exposure)
+                except (TypeError, ValueError):
+                    exposure = 0.0
+                rank = (1 if outcome.get("pooled") else 0,
+                        int(outcome.get("n_members") or 0), exposure, order)
+                by_index.setdefault(index, []).append((rank, key, candidates))
+    observations = []
+    for index in range(len(path)):
+        choices = by_index.get(index) or []
+        if not choices:
+            observations.append({"candidates": [], "authority": None})
+            continue
+        _rank, key, candidates = max(choices, key=lambda item: item[0])
+        observations.append({"candidates": [dict(candidate) for candidate in candidates],
+                             "authority": key})
+    return observations, refs
+
+
+def _select_mode(outcome: dict, candidate: dict, candidate_index: int, assignment: dict,
+                 revision: int) -> None:
+    outcome["selected_candidate_index"] = int(candidate_index)
+    outcome["track_state"] = assignment.get("track_state")
+    outcome["track_revision"] = int(revision)
+    outcome["candidate_state"] = assignment.get("track_state")
+    outcome["candidate_id"] = candidate.get("candidate_ref")
+    outcome["omega0"] = candidate.get("energy_meV")
+    outcome["omega0_err"] = candidate.get("omega0_err")
+    outcome["gamma"] = candidate.get("gamma")
+    outcome["interval"] = candidate.get("interval")
+    outcome["omega0_profile"] = candidate.get("profile_interval")
+    outcome["hesse_interval"] = candidate.get("hesse_interval")
+    outcome["bayes_interval"] = candidate.get("bayes_interval")
+    outcome["interval_reliable"] = bool(candidate.get("reliable", False))
+    probabilities = dict(candidate.get("probabilities") or {})
+    outcome["branch_id"] = "optic"
+    outcome["branch_posterior"] = probabilities
+    outcome["branch_weight"] = float(probabilities.get("optic", 0.0))
+    outcome["assignment_entropy"] = assignment.get("assignment_entropy")
+
+
+def _clear_tracked_selection(outcome: dict, assignment: dict, revision: int) -> None:
+    """Persist a missing/ambiguous target without leaving an old scalar selection certifiable."""
+    outcome["selected_candidate_index"] = None
+    outcome["track_state"] = assignment.get("track_state")
+    outcome["track_revision"] = int(revision)
+    outcome["candidate_state"] = assignment.get("track_state")
+    outcome["candidate_id"] = None
+    outcome["branch_id"] = None
+    outcome["branch_posterior"] = None
+    outcome["branch_weight"] = None
+    outcome["assignment_entropy"] = assignment.get("assignment_entropy")
+    # The immutable branch_candidates table remains the complete fit evidence and can restore these
+    # mode-specific values after a later reassignment.  The scalar compatibility view must abstain.
+    for field in ("omega0", "omega0_err", "gamma", "interval", "omega0_profile",
+                  "hesse_interval", "bayes_interval"):
+        outcome[field] = None
+    outcome["interval_reliable"] = False
+
+
+def _rebuild_tracked_prior(card, session: SessionState, track: dict, observations: list[dict],
+                           refs: dict, *, t_round: float) -> None:
+    source_ids = {key.rsplit(":", 1)[0] for row in observations
+                  for key in [row.get("authority")] if key}
+    # Replace only derived points sourced from fits participating in this tracked campaign. Raw fit
+    # evidence remains in the ledger/candidate tables and reassignment history remains in the track.
+    card.state.dispersion_prior = [point for point in (card.state.dispersion_prior or [])
+                                   if str(point.get("scan_id", "")).split("#", 1)[0] not in source_ids]
+    revision = int(track.get("revision", 0))
+    for assignment, observation in zip(track.get("assignments") or [], observations):
+        if assignment.get("track_state") != "confirmed" or not observation.get("authority"):
+            continue
+        _entry, _detector, outcome = refs[observation["authority"]]
+        if outcome.get("modality") != "fold":
+            continue
+        for branch in ("optic", "acoustic"):
+            candidate_index = assignment.get(f"{branch}_candidate_index")
+            if candidate_index is None:
+                continue
+            candidate = assignment["candidates"][candidate_index]
+            probability = float((candidate.get("probabilities") or {}).get(branch, 0.0))
+            if probability < branch_tracking.CONFIRMED_PROBABILITY:
+                continue
+            session_prior.add_point(
+                card.state,
+                scan_id=f"{candidate['source_scan_id']}#tracked:{branch}",
+                sample=outcome.get("sample"), T=outcome.get("T"), q=outcome.get("q"),
+                omega0=candidate.get("energy_meV"), modality="fold", verdict="resolved",
+                gamma=candidate.get("gamma"), gamma_err=candidate.get("gamma_err"),
+                intensity=(outcome.get("intensity") if branch == "optic" else None),
+                fit_kind=outcome.get("fit_kind"), branch_id=branch, weight=probability,
+                branch_posterior=candidate.get("probabilities"),
+                assignment_entropy=assignment.get("assignment_entropy"), t_round=t_round,
+                require_fold=True)
+    for point in card.state.dispersion_prior:
+        if "#tracked:" in str(point.get("scan_id", "")):
+            point["track_revision"] = revision
+
+
+def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dict | None:
+    if not _tracked_selector(card):
+        return None
+    target = getattr(card.state, "campaign_target", None) or {}
+    path = target.get("path") or []
+    if not path:
+        log.warning("tracked_branch requested without a persisted objective path; assignment deferred")
+        return None
+    path = [[float(value) for value in q] for q in path]
+    observations, refs = _tracked_authorities(session, path)
+    policy = (getattr(card.state, "hypothesis_snapshot", None) or {}).get("steering") or {}
+    previous = getattr(card.state, "branch_tracks", None) or {}
+    track = branch_tracking.track_path(
+        path, observations, period=_dispersion_period(card), hypotheses=_campaign_hypotheses(card),
+        target_branch=_campaign_target(card)[0], previous=previous,
+        assignment_entropy_stop_nats=float(policy.get("assignment_entropy_stop_nats", 0.2)),
+        maximum_bridge_steps=int(policy.get("maximum_bridge_steps", 1)))
+    revision = int(track["revision"])
+    for assignment, observation in zip(track["assignments"], observations):
+        key = observation.get("authority")
+        selected = assignment.get("selected_candidate_index")
+        if not key:
+            continue
+        _entry, _detector, outcome = refs[key]
+        outcome["branch_candidates"] = assignment["candidates"]
+        if selected is None:
+            _clear_tracked_selection(outcome, assignment, revision)
+            for _other_key, (_other_entry, _other_detector, other) in refs.items():
+                if other is outcome or _path_index(other.get("q") or [], path) != assignment["path_index"]:
+                    continue
+                local_assignment = dict(assignment)
+                local_assignment["track_state"] = "individual"
+                _clear_tracked_selection(other, local_assignment, revision)
+            continue
+        _select_mode(outcome, assignment["candidates"][selected], selected, assignment, revision)
+        # Individual fits at the same q remain muted evidence but follow the current identity for
+        # backwards-compatible scalar columns, using their own nearest fitted mode.
+        for _other_key, (_other_entry, _other_detector, other) in refs.items():
+            if other is outcome or _path_index(other.get("q") or [], path) != assignment["path_index"]:
+                continue
+            candidates = other.get("branch_candidates") or []
+            if not candidates:
+                continue
+            nearest = min(range(len(candidates)), key=lambda index: abs(
+                float(candidates[index]["energy_meV"]) - float(outcome["omega0"])))
+            local_assignment = dict(assignment)
+            local_assignment["track_state"] = "individual"
+            _select_mode(other, candidates[nearest], nearest, local_assignment, revision)
+    _rebuild_tracked_prior(card, session, track, observations, refs, t_round=t_round)
+    card.state.branch_tracks = track
+    return track
+
+
 def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
                       workspace, *, force, M, seed_base, errors_tier, master_boot_workers,
                       boot_executor, boot_adaptive, scan_workers=1, bayes_opts=None, timer=None,
-                      source_by_name=None):
+                      source_by_name=None, checkpoint_store=None, completed_master_keys=None):
     """Pass 2 (ledger + prior) → collate → master fits → tally → write. Split out so the shared
     bootstrap pool from :func:`run_batch` stays open across the whole full-tier batch."""
     timer = timer or NullTimer()
@@ -1213,43 +1514,33 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
             # the acoustic prior only fills from late fold productions while optic banking (below)
             # fills immediately, and the occupancy prior lets the optic outvote a still-anchorless
             # acoustic for its own features (the v15 mid-band deadlock). Forks stay excluded.
-            session_prior.add_point(card.state, scan_id=entry.scan_id, sample=oc.get("sample"),
-                                    T=oc.get("T"), q=oc.get("q"), omega0=oc.get("omega0"),
-                                    modality=oc.get("modality"), verdict=oc.get("verdict"),
-                                    gamma=oc.get("gamma"), gamma_err=g_err,
-                                    intensity=oc.get("intensity"),
-                                    fit_kind=oc.get("fit_kind"), branch_id=oc.get("branch_id"),
-                                    weight=oc.get("branch_weight"),
-                                    branch_posterior=oc.get("branch_posterior"),
-                                    assignment_entropy=oc.get("assignment_entropy"), t_round=t_round,
-                                    require_fold=True)
-            # Rival-branch anchors from this DELIVERED scan's other features (optic banking):
-            # stored under suffixed scan_ids; purge first so a refit with fewer secondaries
-            # leaves no stale points behind.
-            card.state.dispersion_prior = [p for p in card.state.dispersion_prior
-                                           if not str(p.get("scan_id", "")).startswith(f"{entry.scan_id}#")]
-            for i, sf in enumerate(oc.get("secondary_features") or []):
-                session_prior.add_point(card.state, scan_id=f"{entry.scan_id}#{sf['branch_id']}{i}",
-                                        sample=oc.get("sample"), T=oc.get("T"), q=oc.get("q"),
-                                        omega0=sf.get("omega0"), modality=oc.get("modality"),
-                                        # A banked rival anchor is an unconstrained DETECTION of the
-                                        # other branch (secondary_branch_points contract) — it must
-                                        # not inherit the primary fit's constrained fit_kind.
-                                        verdict=oc.get("verdict"), fit_kind="unconstrained",
-                                        branch_id=sf.get("branch_id"), weight=sf.get("weight"),
-                                        branch_posterior=sf.get("branch_posterior"),
-                                        assignment_entropy=sf.get("assignment_entropy"),
-                                        t_round=t_round, require_fold=False)
+            if not _tracked_selector(card):
+                session_prior.add_point(card.state, scan_id=entry.scan_id, sample=oc.get("sample"),
+                                        T=oc.get("T"), q=oc.get("q"), omega0=oc.get("omega0"),
+                                        modality=oc.get("modality"), verdict=oc.get("verdict"),
+                                        gamma=oc.get("gamma"), gamma_err=g_err,
+                                        intensity=oc.get("intensity"),
+                                        fit_kind=oc.get("fit_kind"), branch_id=oc.get("branch_id"),
+                                        weight=oc.get("branch_weight"),
+                                        branch_posterior=oc.get("branch_posterior"),
+                                        assignment_entropy=oc.get("assignment_entropy"), t_round=t_round,
+                                        require_fold=True)
+                # Legacy rival banking remains unchanged. Tracked campaigns instead preserve all
+                # modes and rebuild both branches jointly after pooled masters have updated.
+                card.state.dispersion_prior = [p for p in card.state.dispersion_prior
+                                               if not str(p.get("scan_id", "")).startswith(
+                                                   f"{entry.scan_id}#")]
+                for i, sf in enumerate(oc.get("secondary_features") or []):
+                    session_prior.add_point(
+                        card.state, scan_id=f"{entry.scan_id}#{sf['branch_id']}{i}",
+                        sample=oc.get("sample"), T=oc.get("T"), q=oc.get("q"),
+                        omega0=sf.get("omega0"), modality=oc.get("modality"),
+                        verdict=oc.get("verdict"), fit_kind="unconstrained",
+                        branch_id=sf.get("branch_id"), weight=sf.get("weight"),
+                        branch_posterior=sf.get("branch_posterior"),
+                        assignment_entropy=sf.get("assignment_entropy"),
+                        t_round=t_round, require_fold=False)
             summary.outcomes.append((scan, FitOutcome(**oc) if not isinstance(oc, FitOutcome) else oc))
-
-    # Persist the cross-q branch(es) from the now-complete prior into card.state so the DRIVE — a
-    # separate, crash-prone process that cannot import isar.session — reads the prediction durably from
-    # card.state.json (steering Phase 5b-live).
-    _store_branch_models(card.state, t_round)
-    _store_branch_beliefs(card.state, t_round, period=_dispersion_period(card),
-                          hypotheses=_campaign_hypotheses(card))
-    _update_hypothesis_mismatch(card.state, t_round, period=_dispersion_period(card),
-                                hypotheses=_campaign_hypotheses(card))
 
     # Collate (all records, whole-experiment view).
     with timer.stage("collate"):
@@ -1268,16 +1559,40 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
             # Masters fit serially w.r.t. each other; only their refits hit the pool.
             per_master: list = []
             n_masters = _fit_masters(summary.collation, records, card, runcal, g, session,
+                                     data_dir=workspace.root / "data",
                                      M=M, seed_base=seed_base, errors_tier=errors_tier, force=force,
                                      boot_workers=master_boot_workers, boot_executor=boot_executor,
                                      boot_adaptive=boot_adaptive, scan_workers=scan_workers,
-                                     bayes_opts=bayes_opts, per_master=per_master)
+                                     bayes_opts=bayes_opts, per_master=per_master,
+                                     checkpoint_store=checkpoint_store,
+                                     completed_master_keys=completed_master_keys)
             _m_masters["n_masters"] = n_masters
             _m_masters["per_master"] = per_master
             if n_masters:
                 summary.context_lines.append(f"fit {n_masters} merged master scan(s)")
-        except Exception as exc:  # noqa: BLE001 — master fitting is additive; a failure never kills the batch
+        except Exception as exc:  # noqa: BLE001 — ordinary master fitting is additive
+            # Certification must fail closed: suppressing a corrupt/mismatched checkpoint here
+            # would let the runner publish a superficially complete revision with a missing unit.
+            if checkpoint_store is not None:
+                raise
             summary.context_lines.append(f"master fitting skipped: {exc}")
+
+    # Identity assignment is deliberately after pooled-master updates. It reads the complete
+    # candidate field, may revise earlier labels, then rebuilds the connected fold-only prior.
+    track = _apply_tracked_branch(session, card, t_round=t_round)
+    if track is not None:
+        summary.context_lines.append(
+            f"branch track revision {track['revision']}: "
+            f"{len(track['frontiers']['confirmed_indices'])} connected point(s)")
+        if track["frontiers"].get("frontier_blocked"):
+            summary.context_lines.append("branch_ambiguity; frontier_blocked")
+
+    # Persist cross-q views only after the authoritative prior has been rebuilt.
+    _store_branch_models(card.state, t_round)
+    _store_branch_beliefs(card.state, t_round, period=_dispersion_period(card),
+                          hypotheses=_campaign_hypotheses(card))
+    _update_hypothesis_mismatch(card.state, t_round, period=_dispersion_period(card),
+                                hypotheses=_campaign_hypotheses(card))
 
     summary.counts = _tally(session)
     session.last_run = {"counts": summary.counts,
@@ -1324,9 +1639,10 @@ def _fit_master_group_task(args):
                              bayes_opts=bayes_opts, **hint_kw)
 
 
-def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
+def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None, M, seed_base,
                  errors_tier="full", force=False, boot_workers=1, boot_executor=None,
-                 boot_adaptive=False, scan_workers=1, bayes_opts=None, per_master=None) -> int:
+                 boot_adaptive=False, scan_workers=1, bayes_opts=None, per_master=None,
+                 checkpoint_store=None, completed_master_keys=None) -> int:
     """Fit the merged master scan for each (Q,T) group; returns how many were (re)fit this run.
 
     Runs only when the card opts in (``collation.merge == "merge"``). Each group's pooled
@@ -1374,6 +1690,13 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
                     oc["members"] = _member_labels(ms.members)
             if prev.provenance and "members" not in prev.provenance:
                 prev.provenance["members"] = [list(m) for m in ms.members]
+            if data_dir is not None and not any(
+                    oc.get("spectrum_ref") for oc in prev.detectors.values() if oc.get("pooled")):
+                spectrum_ref = collate_mod.persist_merged_spectrum(data_dir, ms)
+                for oc in prev.detectors.values():
+                    if oc.get("pooled"):
+                        oc["spectrum_ref"] = spectrum_ref
+                prev.provenance["spectrum_ref"] = spectrum_ref
             continue
         member_scan, member_det = ms.members[0][1], ms.members[0][2]
         # Structure hint: the previous entry's best_label, iff it was a completed (fitted) master
@@ -1386,17 +1709,38 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
     if not refits:
         return 0
 
+    cached_entries: dict[int, ScanEntry] = {}
+    pending_refits = []
+    for refit_index, refit in enumerate(refits):
+        _idx, _grp, _ms, master_id, chash, _rec, _det, _hint = refit
+        cached = (None if checkpoint_store is None else checkpoint_store.load(
+            f"master:{master_id}", content_hash=chash, guidelines_hash=""))
+        if cached is None:
+            pending_refits.append((refit_index, refit))
+        else:
+            cached_entries[refit_index] = cached
+    master_completed = len(cached_entries)
+    if checkpoint_store is not None and master_completed:
+        checkpoint_store.report_progress(master_completed)
+    pending = [refit for _index, refit in pending_refits]
+    fresh_entries: list[ScanEntry] = []
+
     # --- Fit the refits: parallel across groups when it pays, else serial in-process. ---
-    if len(refits) > 1 and scan_workers > 1:
+    if len(pending) > 1 and scan_workers > 1:
         # Parallel: bootstrap forced serial in each child (boot_workers=1, no shared pool). map
         # preserves order → entries[k] aligns with refits[k], keeping the serial ledger order.
         arg_list = [(ms, grp, member_rec, member_det, card, runcal, g, master_id,
                      _MASTER_SCAN_BASE + idx, chash, M, seed_base + _MASTER_SCAN_BASE + idx,
                      errors_tier, boot_adaptive, hint, bayes_opts)
-                    for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in refits]
+                    for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in pending]
         max_workers = min(scan_workers, len(arg_list))
         with ProcessPoolExecutor(max_workers=max_workers) as ex_pool:
-            entries = list(ex_pool.map(_fit_master_group_task, arg_list))
+            for entry in ex_pool.map(_fit_master_group_task, arg_list):
+                if checkpoint_store is not None:
+                    checkpoint_store.save(f"master:{entry.scan_id}", entry)
+                    master_completed += 1
+                    checkpoint_store.report_progress(master_completed)
+                fresh_entries.append(entry)
     else:
         # Serial (normal iteration, ≤1 refit, or single worker) — hot path unchanged. Reuse the
         # batch's shared bootstrap pool when given; else open one for the master pass (only the full
@@ -1407,22 +1751,39 @@ def _fit_masters(collation, records, card, runcal, g, session, *, M, seed_base,
             own_pool = ProcessPoolExecutor(max_workers=boot_workers)
             ex = own_pool
         try:
-            entries = [
-                _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id,
-                                  _MASTER_SCAN_BASE + idx, chash, M=M,
-                                  seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier,
-                                  boot_workers=boot_workers, boot_executor=ex,
-                                  boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
-                                  # hint kwarg only when set → off-path call is byte-identical.
-                                  **({"structure_hint": hint} if hint is not None else {}))
-                for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in refits]
+            for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in pending:
+                entry = _fit_master_group(
+                    ms, grp, member_rec, member_det, card, runcal, g, master_id,
+                    _MASTER_SCAN_BASE + idx, chash, M=M,
+                    seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier,
+                    boot_workers=boot_workers, boot_executor=ex,
+                    boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
+                    **({"structure_hint": hint} if hint is not None else {}))
+                if checkpoint_store is not None:
+                    checkpoint_store.save(f"master:{entry.scan_id}", entry)
+                    master_completed += 1
+                    checkpoint_store.report_progress(master_completed)
+                fresh_entries.append(entry)
         finally:
             if own_pool is not None:
                 own_pool.shutdown()
 
+    for (refit_index, _refit), entry in zip(pending_refits, fresh_entries):
+        cached_entries[refit_index] = entry
+    entries = [cached_entries[index] for index in range(len(refits))]
+
     # Apply ledger mutations + timing entries serially, in the original sorted-group order.
     for (idx, grp, ms, master_id, chash, member_rec, member_det, hint), entry in zip(refits, entries):
+        # Blob-first publication means interruption can leave an orphan, never a dangling ref.
+        if data_dir is not None:
+            spectrum_ref = collate_mod.persist_merged_spectrum(data_dir, ms)
+            for outcome in entry.detectors.values():
+                if outcome.get("pooled"):
+                    outcome["spectrum_ref"] = spectrum_ref
+            entry.provenance["spectrum_ref"] = spectrum_ref
         session.put(entry)
+        if completed_master_keys is not None:
+            completed_master_keys.append(f"master:{master_id}")
         if per_master is not None:
             per_master.append(
                 {"master_id": master_id,
@@ -1650,6 +2011,14 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
         return {"deliver": bool(fit.get("omega0") is not None), "branch_id": None,
                 "weight": None, "entropy": None, "resolvable": None,
                 "selected_energy": fit.get("omega0")}
+    selector, target_energy = _campaign_selector(card)
+    if selector == "tracked_branch":
+        # Preserve the fit as unordered evidence. The authoritative branch label is assigned only
+        # after every pooled master has updated, using the whole objective path in both directions.
+        return {"deliver": True, "branch_id": None, "weight": None, "entropy": None,
+                "resolvable": None, "selected_energy": fit.get("omega0"),
+                "candidate_id": f"{target_branch}:tracked_branch",
+                "candidate_state": "provisional"}
     u = BA.reduced_q(q, period)
     if target_branch != BA.ACOUSTIC:
         # A fitted mode and the model-free descriptor commonly report the same physical peak.  Do
@@ -1658,7 +2027,6 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
         # descriptor remains the honest fallback when no model mode survived.
         target_feats = [feature for feature in feats if feature.source == "mode"] or feats
         target_post = BA.assignment_posterior(target_feats, beliefs, u)
-        selector, target_energy = _campaign_selector(card)
         if target_energy is not None:
             target_post = BA.condition_on_target_energy(
                 target_feats, target_post, target_branch, target_energy=target_energy,
@@ -2086,6 +2454,8 @@ _CSV_COLUMNS = [
     # Dynamic-exposure / branch-candidate provenance (additive v2 columns).
     "effective_exposure", "exposure_provenance", "branch_posterior",
     "candidate_id", "candidate_state", "acquisition_id",
+    "branch_candidates", "selected_candidate_index", "track_state", "track_revision",
+    "spectrum_ref",
 ]
 
 
@@ -2156,6 +2526,11 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                                      if oc.get("branch_posterior") is not None else None),
                 "candidate_id": oc.get("candidate_id"), "candidate_state": oc.get("candidate_state"),
                 "acquisition_id": oc.get("acquisition_id"),
+                "branch_candidates": (json.dumps(oc.get("branch_candidates"), sort_keys=True)
+                                      if oc.get("branch_candidates") is not None else None),
+                "selected_candidate_index": oc.get("selected_candidate_index"),
+                "track_state": oc.get("track_state"), "track_revision": oc.get("track_revision"),
+                "spectrum_ref": oc.get("spectrum_ref"),
                 "T": oc.get("T"), "h": q[0], "k": q[1], "l": q[2], "status": e.status,
                 "verdict": oc.get("verdict"), "disposition": oc.get("disposition"),
                 "confidence": oc.get("confidence"), "omega0": oc.get("omega0"),
@@ -2205,9 +2580,13 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "candidates": (json.dumps(oc.get("candidates"), sort_keys=True)
                                if oc.get("candidates") is not None else None),
             })
-    with open(path, "w", newline="", encoding="utf-8") as f:
+    temporary = path.with_name(path.name + ".tmp")
+    with open(temporary, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=_CSV_COLUMNS)
         w.writeheader()
         for r in rows:
             w.writerow({k: r.get(k) for k in _CSV_COLUMNS})
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(temporary, path)
     return path

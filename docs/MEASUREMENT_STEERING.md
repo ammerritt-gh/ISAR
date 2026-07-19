@@ -8,13 +8,25 @@
 > `campaigns/2026-06_MVP_FIRST_RUN.md` and `campaigns/2026-07_MVP_ZONE_RETEST.md`.
 > **Branch-identity-aware acquisition (§2 fourth consequence, §4.1 item 7, §4.5): first
 > implementation landed 2026-07-17** (DECISIONS O6–O12; user-facing reference
-> `docs/HYPOTHESES.md`). Dynamic tolerance-driven exposure and Bayesian optic cold-start are Partial
+> `docs/HYPOTHESES.md`); joint gap-aware tracking and the connected frontier landed 2026-07-18
+> (O15). Dynamic tolerance-driven exposure and Bayesian optic cold-start are Partial
 > as of 2026-07-18 (O13); sampled Stage-C information and Fisher dwell optimisation remain planned.
 > This document remains the durable record of *why*
 > the loop steers the way it does — what the literature actually says and the design options we
 > considered — behind the "R" in ISAR that acts to *resolve a measurement problem* (`DESIGN.md`). Where a claim rests on a paper we
 > give the citation; citation-confidence flags are collected at the end (the reference list is meant
 > to seed a reading library).
+
+### Tracked-branch frontier semantics (2026-07-18)
+
+`target_selector="tracked_branch"` makes identity coverage precede final precision. The driver first
+confirms the target at the path point nearest reduced q=0, then walks only to an adjacent q connected
+to that confirmed component. One unresolved point permits at most `maximum_bridge_steps=1` provisional
+quicklook beyond it; the bridge supplies evidence for a joint forward/backward reassignment but cannot
+seed the prior, certify the objective, or extend a plotted line. If the ambiguity survives the attempt
+cap, the durable outcome is `branch_ambiguity` plus `frontier_blocked`, never a sparse long-range jump.
+Once the acoustic rival's identity entropy is below the stopping threshold, it remains labeled context
+and receives no target-precision acquisition value.
 
 ---
 
@@ -41,8 +53,8 @@ The first autonomous campaigns exposed three failure zones, and thinking about t
   were absorbed as *acoustic* anchors and the branch model sawtoothed between the two branches;
   and a clearly visible optic mode at the zone centre carried **zero** acquisition value because
   it was not the target's ω₀ — the loop never spent a scan establishing what it was. The fix is
-  the branch-identity-aware acquisition (§2 fourth consequence, §4.1 item 7, §4.5 — design
-  locked, Planned).
+  the branch-identity-aware acquisition (§2 fourth consequence, §4.1 item 7, §4.5; implemented
+  through the O15 joint tracker and connected frontier).
 
 **The deeper risk (what must not happen):** the natural fix — build a phonon dispersion model and lean
 on it — would lock ISAR into being **phonon-only and model-required**. A triage tool cannot assume it
@@ -580,6 +592,24 @@ floor terminates explicitly as `instrument_limit_below_minimum_batch`. Campaign 
 carry the discovered/effective envelope. Logical acquisition IDs use a separately resumed proposal
 counter, so validation refusals are distinct acquisitions while physical recenter retries still share
 one ID.
+
+### 7.4 Live observability and resumable certification (implemented, 2026-07-19)
+
+The append-only session log now carries durable activity boundaries for scanning, fast/full fitting,
+pooled updates, and final certification. Progress records are advisory and non-fsynced; starts and ends
+are durable. Resume emits an `interrupted` end for every unmatched start before new work begins. The GUI
+joins the active activity to the already-persisted `model_update.per_q` snapshot, displays fixed
+activity-specific units (`fits` or `points`) without an ETA, and renders the human feed newest-first
+without changing chronological JSONL storage. Spend and resume readers ignore all activity kinds.
+
+Final certification passes an immutable manifest path through the runner seam. Its fingerprint captures
+the frozen policy/state, prior, calibration, pooled membership, canonical q worklist, and the effective
+existing scan/master/error/Bayes seed rules. Pure scan and pooled-master fit units are atomically
+checkpointed before any parent ledger/prior mutation, loaded only when content and guideline hashes
+match, and reduced in canonical worklist order. A restart therefore changes neither the fit inputs nor
+the published result. Changed inputs create a new revision. Checkpoints remain under
+`report/certification/<fingerprint>/`; diagnostics report their size. They are retained by default and
+may be manually pruned only when no published result refers to the revision; ISAR never deletes them.
 
 ---
 

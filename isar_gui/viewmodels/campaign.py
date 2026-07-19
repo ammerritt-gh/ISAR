@@ -23,6 +23,7 @@ they are not per-q objective-grid state, which today's event contract cannot hon
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import Signal
@@ -67,6 +68,8 @@ class CampaignState:
     #: The honest grid snapshot behind an operator stop — the loop writes StopDecision.to_dict()
     #: ({state, reasons, per_q}), never a bare string (isar/drive/loop.py's stop payload).
     grid_state: dict | None = None
+    per_q: tuple[dict, ...] = ()
+    active_activity: dict | None = None
     exception_count: int = 0
     stage_seconds: dict = field(default_factory=dict)
     # Whole-log spend (all segments — the engine's resume accounting reads the same way).
@@ -125,6 +128,8 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
     stop_state = None
     stop_reasons: tuple[str, ...] = ()
     grid_state = None
+    per_q: tuple[dict, ...] = ()
+    activities: dict[str, dict] = {}
     last_scan = None
     exceptions = 0
     stage_seconds: dict = {}
@@ -137,12 +142,22 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
             iteration = int(it) if iteration is None else max(iteration, int(it))
         if kind in ("propose", "run"):
             last_scan = _scan_text(kind, p)
+        if kind == "activity_start" and p.get("activity_id"):
+            activities[str(p["activity_id"])] = {**p, "started_ts": rec.get("ts")}
+        elif kind == "activity_progress" and p.get("activity_id"):
+            activity_id = str(p["activity_id"])
+            if activity_id in activities:
+                activities[activity_id].update(p)
+        elif kind == "activity_end" and p.get("activity_id"):
+            activities.pop(str(p["activity_id"]), None)
         if kind == "decide":
             action = p.get("action")
             if action == "model_update":
                 n_obs = p.get("n_observations", n_obs)
                 converged = p.get("converged", converged)
                 n_grid = p.get("n_grid", n_grid)
+                if isinstance(p.get("per_q"), list):
+                    per_q = tuple(dict(item) for item in p["per_q"] if isinstance(item, dict))
                 last_decision = (f"model update: {'?' if converged is None else converged}"
                                  f"/{'?' if n_grid is None else n_grid} converged, "
                                  f"{'?' if n_obs is None else n_obs} obs")
@@ -158,6 +173,9 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
             reasons = p.get("reasons")
             stop_reasons = tuple(str(r) for r in reasons) if isinstance(reasons, list) else ()
             grid_state = p.get("grid_state")
+            if isinstance(grid_state, dict) and isinstance(grid_state.get("per_q"), list):
+                per_q = tuple(dict(item) for item in grid_state["per_q"]
+                              if isinstance(item, dict))
         elif kind == "timing":
             stage = p.get("stage")
             try:
@@ -170,7 +188,9 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
         has_campaign=True, objective=objective, source=start.get("source"),
         resumed=start.get("resumed"), iteration=iteration, last_decision=last_decision,
         n_observations=n_obs, converged=converged, n_grid=n_grid, stop_state=stop_state,
-        stop_reasons=stop_reasons, grid_state=grid_state, last_scan=last_scan,
+        stop_reasons=stop_reasons, grid_state=grid_state, per_q=per_q,
+        active_activity=(list(activities.values())[-1] if activities else None),
+        last_scan=last_scan,
         exception_count=exceptions,
         stage_seconds=stage_seconds, spent_neutrons=neutrons, spent_seconds=seconds,
         scan_count=scans,
@@ -243,9 +263,20 @@ def render_feed_item(rec: dict) -> FeedItem | None:
             return FeedItem(ts, kind, text, "info")
         return FeedItem(ts, kind, str(action).replace("_", " ") + tail, "info")
     if kind == "escalate_fit":
+        q = f" at {_fmt_hkl(p.get('hkl'))}" if p.get("hkl") is not None else ""
         text = (f"fit escalated {p.get('from_tier')}→{p.get('to_tier')} "
-                f"({p.get('phase', p.get('outcome', '?'))})")
+                f"{q} ({p.get('phase', p.get('outcome', '?'))})")
         return FeedItem(ts, kind, text + tail, "info")
+    if kind == "activity_start":
+        stage = str(p.get("stage", "activity")).replace("_", " ")
+        q = f" at {_fmt_hkl(p.get('q'))}" if p.get("q") is not None else ""
+        return FeedItem(ts, kind, f"{stage} started{q}", "notice")
+    if kind == "activity_progress":
+        return None
+    if kind == "activity_end":
+        stage = str(p.get("stage", "activity")).replace("_", " ")
+        return FeedItem(ts, kind, f"{stage}: {p.get('status', 'completed')}",
+                        "warn" if p.get("status") in ("failed", "interrupted") else "info")
     if kind == "exception":
         return FeedItem(ts, kind, f"{p.get('action', 'exception')}{tail}", "warn")
     if kind == "stop":
@@ -273,6 +304,33 @@ def budget_readout(state: CampaignState) -> tuple[int, str]:
                                       f"{amount_s / 3600.0:.2f} h")
         return int(frac * 1000), f"budget: {state.spent_seconds:.0f}s / {amount_s:.0f}s"
     return 0, "budget: —"
+
+
+def current_activity_text(state: CampaignState, *, now: float | None = None) -> str:
+    activity = state.active_activity
+    if not activity:
+        return "Now: campaign idle"
+    stage = str(activity.get("stage") or "activity")
+    labels = {"scan": "Scanning", "fast_fit": "Fast fit", "full_fit": "Full fit",
+              "final_certification": "Final certification", "pooled_update": "Pooling"}
+    text = labels.get(stage, stage.replace("_", " ").title())
+    if activity.get("q") is not None:
+        try:
+            coords = [float(value) for value in activity["q"]]
+            q_text = "(" + ", ".join("0" if value == 0 else f"{value:.2f}"
+                                      for value in coords) + ")"
+        except (TypeError, ValueError):
+            q_text = _fmt_hkl(activity["q"])
+        text += f" at {q_text}"
+    completed, total = activity.get("completed"), activity.get("total")
+    unit = activity.get("progress_unit")
+    if completed is not None and total is not None and unit:
+        text += f" — {completed}/{total} {unit}"
+    if activity.get("started_ts") is not None:
+        elapsed = max(0, int((time.time() if now is None else now)
+                             - float(activity["started_ts"])))
+        text += f" — {elapsed // 60:02d}:{elapsed % 60:02d} elapsed"
+    return "Now: " + text
 
 
 class CampaignViewModel(ViewModel):

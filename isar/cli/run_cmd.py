@@ -33,7 +33,8 @@ def run(args) -> int:
             ws, args.data, force=args.force, llm=args.llm, M=args.M,
             detectors=args.detectors, formats=formats,
             workers=getattr(args, "workers", None), errors_tier=errors_tier,
-            bayes_cli=bayes_cli, timer=timer)
+            bayes_cli=bayes_cli, timer=timer,
+            certification_manifest=getattr(args, "certification_manifest", None))
 
         # Try the rich report (build step 6); the CSV that run_batch always writes is the fallback.
         report_note = f"results: {ws.report_dir / 'results.csv'}"

@@ -146,6 +146,7 @@ class CardState:
     branch_models: list = field(default_factory=list)        # BranchModel dicts (steering, Phase 2+)
     branch_belief: list = field(default_factory=list)        # flat per-Q rows for viewer/report contract
     branch_belief_models: list = field(default_factory=list) # regression ingredients for drive scoring
+    branch_tracks: dict = field(default_factory=dict)        # joint path assignment + connected segments
     campaign_target: dict = field(default_factory=dict)      # active frozen objective branch/search
     hypothesis_snapshot: dict = field(default_factory=dict)  # resolved set + source + content fingerprint
     hypothesis_mismatch: dict = field(default_factory=dict)  # persisted prior-vs-data PPC warning (O11)

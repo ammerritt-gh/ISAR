@@ -30,7 +30,8 @@ def test_open_and_surfaces_present(make_ws):
                "l": 0.0, "status": "fitted", "verdict": "resolved", "omega0": 5.1, "gamma": 0.3}],
         scans={"tavi:7:det": scan_entry(7, detectors={"det": detector_outcome(omega0=5.1, gamma=0.3)})},
         state={"dispersion_prior": [{"q_value": 0.5, "omega0": 5.1}], "branch_models": [{"id": "b0"}],
-               "branch_belief": [{"entropy": 0.1}], "lattice_epochs": []},
+               "branch_belief": [{"entropy": 0.1}],
+               "branch_tracks": {"revision": 2, "tracks": []}, "lattice_epochs": []},
     )
     ws = Workspace.open(root)
     assert ws.schema_version == 1
@@ -38,6 +39,7 @@ def test_open_and_surfaces_present(make_ws):
     assert len(ws.scans) == 1
     assert ws.card.collation["key"] == ["sample", "q", "T"]
     assert ws.branch_model.dispersion_prior and ws.branch_model.branch_models
+    assert ws.branch_model.branch_tracks["revision"] == 2
     assert ws.snapshot is not None
     assert ws.warnings == []
 
@@ -91,6 +93,66 @@ def test_results_none_degradation_on_old_format(make_ws):
     assert fv.candidates is None
     assert fv.members is None
     assert fv.modality is None
+
+
+def test_master_groups_and_pooled_spectrum_round_trip(make_ws):
+    physical = detector_outcome(omega0=5.0, gamma=0.3, q=[2.0, 0.0, 0.0])
+    root = make_ws(
+        rows=[
+            {"scan_id": "tavi:7:det", "scan": 7, "detector": "det", "status": "fitted",
+             "h": 2.0, "k": 0.0, "l": 0.0, "omega0": 5.0},
+            {"scan_id": "master:q2", "scan": 9000001, "detector": "det", "status": "fitted",
+             "h": 2.0, "k": 0.0, "l": 0.0, "T": 200.0, "omega0": 5.1,
+             "pooled": "True", "n_members": 1, "members": "7",
+             "spectrum_ref": "data/pooled/abc.json"},
+        ],
+        scans={"tavi:7:det": scan_entry(7, detectors={"det": physical})})
+    pooled = root / "data" / "pooled" / "abc.json"
+    pooled.parent.mkdir(parents=True)
+    pooled.write_text(json.dumps({
+        "schema": "isar.pooled_spectrum/1", "energy": [-1.0, 0.0, 1.0],
+        "counts": [0.0, 4.0, 9.0], "variance": [0.0, 4.0, 9.0],
+        "monitor": [10.0, 10.0, 10.0], "mask": [True, False, True],
+        "members": [["tavi", 7, "det"]], "n_members": 1,
+    }), encoding="utf-8")
+
+    ws = Workspace.open(root)
+    assert len(ws.master_groups) == 1
+    assert ws.master_groups[0].master.unit_id == "master:q2"
+    assert [member.unit_id for member in ws.master_groups[0].members] == ["tavi:7:det"]
+    spectrum = ws.pooled_spectrum(ws.master_groups[0].master)
+    assert spectrum.counts.tolist() == [0.0, 4.0, 9.0]
+    assert spectrum.yerr.tolist() == [0.0, 2.0, 3.0]  # no zero-count floor
+    assert spectrum.mask.tolist() == [True, False, True]
+
+
+def test_pooled_spectrum_rejects_workspace_escape(make_ws):
+    ws = Workspace.open(make_ws())
+    with pytest.raises(ValueError, match="escapes"):
+        ws.pooled_spectrum("../outside.json")
+
+
+def test_master_groups_records_invalid_spectrum_metadata_warning(make_ws):
+    root = make_ws(rows=[{
+        "scan_id": "master:q2", "scan": 9000001, "detector": "det", "status": "fitted",
+        "h": 2.0, "k": 0.0, "l": 0.0, "pooled": "True", "n_members": 1,
+        "spectrum_ref": "../outside.json",
+    }])
+    ws = Workspace.open(root)
+    assert len(ws.master_groups) == 1
+    assert any("pooled spectrum metadata unavailable" in warning for warning in ws.warnings)
+
+
+def test_additive_branch_tracking_fields_decode_from_flat_row():
+    fv = FitView.from_row({
+        "scan": 7, "detector": "det",
+        "branch_candidates": json.dumps([{"energy_meV": 5.0}, {"energy_meV": 7.8}]),
+        "selected_candidate_index": "1", "track_state": "confirmed", "track_revision": "4",
+    })
+    assert fv.branch_candidates == [{"energy_meV": 5.0}, {"energy_meV": 7.8}]
+    assert fv.selected_candidate_index == 1
+    assert fv.track_state == "confirmed"
+    assert fv.track_revision == 4
 
 
 def test_results_enriched_from_session_detector(make_ws):
