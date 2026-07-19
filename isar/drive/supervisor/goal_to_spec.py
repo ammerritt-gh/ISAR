@@ -76,6 +76,7 @@ LLM_GOAL_SCHEMA = {
 # File specs are an additive superset.  Operator acquisition policy is deliberately absent from the
 # LLM schema, so the supervisor can express scientific intent but cannot invent beam-time limits.
 FILE_SPEC_SCHEMA = copy.deepcopy(LLM_GOAL_SCHEMA)
+FILE_SPEC_SCHEMA["properties"]["analysis_limit_seconds"] = {"type": ["number", "null"]}
 FILE_SPEC_SCHEMA["properties"]["steering"] = {
     "type": "object", "additionalProperties": False,
     "properties": {
@@ -119,8 +120,8 @@ SYSTEM = (
     "driver. Express a general reciprocal-space line as q_start [h,k,l], q_end [h,k,l], and "
     "step_rlu (the maximum point spacing, default 0.05 if unstated). The legacy path/step_h shape is "
     "also valid for a segment purely along H. Extract tolerance_meV (the per-point target on the "
-    "phonon energy ω₀; map '±X meV' to X, 'less than X meV' to X), and a budget as EITHER budget_hours "
-    "OR budget_neutrons ('overnight' ≈ 8 hours; if no budget is stated, use budget_hours = 8). "
+    "phonon energy ω₀; map '±X meV' to X). Include a measurement budget as EITHER budget_hours "
+    "OR budget_neutrons only when the user states one; analysis time is a separate guardrail. "
     "Set target_branch to optic when the user asks for an optic or transverse optic phonon, otherwise "
     "acoustic; retain their wording in target_label. For an unspecified optic target use "
     "target_selector='lowest_energy'. An energy stated as the identity of an optic branch (for "
@@ -246,7 +247,8 @@ def envelope_from_json(path: str | Path) -> tuple[ObjectiveSpec, dict, str | Non
 # --------------------------------------------------------------------------- shared
 def _build_spec(data: dict, merged: dict, *,
                 card_hypotheses: dict[str, Any] | None = None) -> ObjectiveSpec:
-    budget = _budget(data)
+    tier = str(merged.get("tier", "deterministic"))
+    budget = _budget(data, tier=tier)
     branch = str(data.get("target_branch", "acoustic"))
     label = str(data.get("target_label") or branch)
     target_energy = data.get("target_energy_meV")
@@ -287,7 +289,10 @@ def _build_spec(data: dict, merged: dict, *,
         branch, resolved_energy, card_hypotheses=card_hypotheses, goal_override=goal_override,
         steering_override=data.get("steering"))
     common = dict(tolerance_meV=float(data["tolerance_meV"]), budget=budget,
-                  tier=str(merged.get("tier", "deterministic")),
+                  tier=tier,
+                  analysis_limit_seconds=(data.get("analysis_limit_seconds", 3600.0)
+                                          if tier == "deterministic" else
+                                          data.get("analysis_limit_seconds")),
                   name=str(data.get("notes", "")),
                   meta={"source": "goal_to_spec", "raw": data}, target_branch=branch,
                   target_label=label, target_selector=str(selector),
@@ -309,12 +314,14 @@ def _build_spec(data: dict, merged: dict, *,
         step=float(data.get("step_h") or merged.get("step_h") or 0.05), **common)
 
 
-def _budget(data: dict) -> dict[str, Any]:
+def _budget(data: dict, *, tier: str) -> dict[str, Any] | None:
     if data.get("budget_neutrons"):
         return {"kind": "neutrons", "amount": float(data["budget_neutrons"])}
     if data.get("budget_hours"):
         return {"kind": "counting_seconds", "amount": float(data["budget_hours"]) * 3600.0}
-    raise GoalParseError("goal spec has no budget (need budget_hours or budget_neutrons)")
+    if tier != "deterministic":
+        return {"kind": "counting_seconds", "amount": 8.0 * 3600.0}
+    return None
 
 
 def _extract(res) -> dict | None:
@@ -354,6 +361,10 @@ def _conforms(value, schema) -> bool:
     t = schema.get("type")
     if t is None:
         return not schema
+    if isinstance(t, list):
+        return any(_conforms(value, {**schema, "type": option}) for option in t)
+    if t == "null":
+        return value is None
     if t == "object":
         if not isinstance(value, dict):
             return False

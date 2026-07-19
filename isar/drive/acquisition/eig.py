@@ -29,7 +29,7 @@ import numpy as np
 # VOI stop-floor: a non-converged q whose next scan shrinks σ(ω₀) by less than this *fraction* is
 # "info-saturated" — one more scan barely helps, so stop escalating it (GridQ.info_saturated → stuck).
 # Conservative under the 5a √N model (which, assuming σ ∝ 1/√C, always predicts eventual convergence,
-# so this mostly stays dormant behind MAX_PROD_ATTEMPTS); it gains teeth in 5b, where the Fisher σ_post
+# so this mostly stays a weak diagnostic); it gains teeth in 5b, where the Fisher σ_post
 # does NOT shrink when ω₀ is unidentifiable, so the fraction goes to ~0 and the gate fires at once.
 VOI_SIGMA_FRAC = 0.01
 
@@ -113,83 +113,14 @@ def voi_saturated(sigma_now, tolerance, c_spent, dc, *, frac: float = VOI_SIGMA_
 
 
 # ============================================================================================
-# 5b — Poisson-Fisher forward-model screen (identifiability-aware σ(ω₀))
+# Fisher-matrix reduction helpers (no forward-model construction in the acquisition layer)
 # ============================================================================================
-# The 5a counts-EIG assumes σ ∝ 1/√C. That is wrong exactly where it matters most — the low-q merge,
-# where the Stokes peak overlaps Γ/A/the elastic line and ω₀ is (nearly) unidentifiable, so σ(ω₀) does
-# NOT shrink with counts. 5b computes the exact Poisson Fisher information of a *proposed* scan on the
-# forward model the fit will actually use, adds the branch soft-constraint precision the fit will use,
-# marginalizes the nuisances honestly (Schur complement, never a bare pinv that fakes small variance in
-# null directions), and projects to σ(ω₀) via the exact ∂ω₀/∂θ Jacobian — returning ∞ when ω₀ is
-# unidentifiable from that scan + prior, never a falsely-tight number.
-#
-# Parameter order is the production fit's: θ = (Ω_d, Γ, A, E, BG)  (isar.synth.config.FIT_PARAM_ORDER).
-# ω₀ = √(Ω_d²+Γ²) is derived; the primary block is (Ω_d, Γ) [indices 0,1], nuisances (A, E, BG) [2,3,4].
+# The live driver consumes expected-count draws from its frozen master-predictive artifact. These
+# pure reduction helpers remain for callers that already own an information matrix; this module must
+# not reconstruct an analysis model or import isar.synth to manufacture rates.
 
 _PRIMARY = (0, 1)                       # Ω_d, Γ — the ω₀-bearing params
 _NUISANCE = (2, 3, 4)                   # A, E, BG
-# Finite-difference steps (convolute_voigt_dho is non-differentiable — numpy FFT + interpolation).
-_FD_REL = 1e-3
-_FD_ABS = (1e-3, 1e-3, None, None, None)  # position params get an absolute floor; amplitudes scale
-
-
-def predicted_lambda(theta, x_grid, gauss_fwhm, lorentz_fwhm, T, center=0.0):
-    """Expected counts λ(E) of a proposed scan, from the exact production forward model.
-
-    Reuses :func:`isar.synth.fit.make_model` (the same DHO⊗Voigt convolution the fit runs) so the
-    Fisher screen sees the model it is screening. ``theta = (Ω_d, Γ, A, E, BG)``. λ is clipped ≥0
-    (the Poisson rate; mirrors the bootstrap).
-    """
-    from isar.synth.fit import make_model
-    model = make_model(np.asarray(x_grid, dtype=float), gauss_fwhm, lorentz_fwhm, T, center=center)
-    return np.clip(np.asarray(model(np.asarray(theta, dtype=float)), dtype=float), 0.0, None)
-
-
-def _fd_step(theta) -> np.ndarray:
-    theta = np.asarray(theta, dtype=float)
-    h = np.empty_like(theta)
-    for j in range(len(theta)):
-        floor = _FD_ABS[j] if j < len(_FD_ABS) and _FD_ABS[j] is not None else _FD_REL
-        h[j] = max(_FD_REL * abs(theta[j]), floor)
-    return h
-
-
-def fisher_information(theta, x_grid, gauss_fwhm, lorentz_fwhm, T, center=0.0, *,
-                       prior_precision=None):
-    """The Poisson Fisher information matrix of a proposed scan on θ = (Ω_d, Γ, A, E, BG).
-
-    ``I_scan[j,k] = Σ_E (∂λ/∂θ_j)(∂λ/∂θ_k)/max(λ,1)`` with central finite-difference derivatives.
-    ``prior_precision`` (a full 5×5 matrix or a ``{index: precision}`` dict) is **added** — this is the
-    branch soft-constraint precision (``1/σ_Γ²`` on Γ, ``1/σ_A²`` on A) the low-q fit will actually use,
-    so ``σ(ω₀)`` reflects "how much does this scan improve ω₀ *given the prior*", not a standalone scan
-    that is usually singular at low q. Returns the 5×5 ``I = I_scan + I_prior``.
-    """
-    theta = np.asarray(theta, dtype=float)
-    n = len(theta)
-    lam = predicted_lambda(theta, x_grid, gauss_fwhm, lorentz_fwhm, T, center=center)
-    lam_safe = np.maximum(lam, 1.0)
-    h = _fd_step(theta)
-    d = np.empty((n, len(lam)), dtype=float)
-    for j in range(n):
-        tp = theta.copy(); tp[j] += h[j]
-        tm = theta.copy(); tm[j] -= h[j]
-        lp = predicted_lambda(tp, x_grid, gauss_fwhm, lorentz_fwhm, T, center=center)
-        lm = predicted_lambda(tm, x_grid, gauss_fwhm, lorentz_fwhm, T, center=center)
-        d[j] = (lp - lm) / (2.0 * h[j])
-    info = (d / lam_safe) @ d.T
-    info = 0.5 * (info + info.T)         # symmetrize away finite-difference asymmetry
-    if prior_precision is not None:
-        info = info + _as_precision_matrix(prior_precision, n)
-    return info
-
-
-def _as_precision_matrix(prior, n) -> np.ndarray:
-    if isinstance(prior, dict):
-        m = np.zeros((n, n), dtype=float)
-        for idx, prec in prior.items():
-            m[int(idx), int(idx)] += float(prec)
-        return m
-    return np.asarray(prior, dtype=float)
 
 
 def sigma_omega0(theta, info) -> float:

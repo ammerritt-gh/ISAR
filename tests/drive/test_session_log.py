@@ -5,7 +5,8 @@ import pytest
 
 from isar.drive import session_log
 from isar.drive.session_log import (
-    EVENT_KINDS, activity, close_interrupted_activities, log_activity_progress,
+    EVENT_KINDS, activity, analysis_clock_state, analysis_operation,
+    close_interrupted_activities, close_interrupted_analysis, log_activity_progress,
     log_event, read_log, timed)
 
 
@@ -135,3 +136,41 @@ def test_resume_closes_unmatched_activity_as_interrupted(tmp_path):
     assert end["kind"] == "activity_end"
     assert end["payload"] == {"activity_id": "dangling", "stage": "scan",
                                "q": [2.2, 0, 0], "status": "interrupted"}
+
+
+def test_analysis_clock_replay_uses_max_per_operation_not_worker_sum(tmp_path):
+    path = tmp_path / "log.jsonl"
+    for operation_id, values in (("fit-a", (0.0, 10.0, 8.0)), ("fit-b", (0.0, 3.0, 3.0))):
+        log_event(path, "analysis_clock", {"phase": "start", "operation_id": operation_id,
+                                            "elapsed_seconds": values[0]})
+        log_event(path, "analysis_clock", {"phase": "checkpoint", "operation_id": operation_id,
+                                            "elapsed_seconds": values[1]})
+        log_event(path, "analysis_clock", {"phase": "end", "operation_id": operation_id,
+                                            "elapsed_seconds": values[2]})
+    state = analysis_clock_state(path)
+    assert state["operations"] == {"fit-a": 10.0, "fit-b": 3.0}
+    assert state["spent_seconds"] == 13.0 and state["unmatched"] == []
+
+
+def test_analysis_clock_resume_carries_elapsed_and_closes_latest_unmatched(tmp_path, monkeypatch):
+    path = tmp_path / "log.jsonl"
+    log_event(path, "analysis_clock", {"phase": "start", "operation_id": "same",
+                                        "elapsed_seconds": 0.0})
+    log_event(path, "analysis_clock", {"phase": "checkpoint", "operation_id": "same",
+                                        "elapsed_seconds": 7.0})
+    close_interrupted_analysis(path)
+    assert analysis_clock_state(path)["unmatched"] == []
+
+    ticks = iter((100.0, 105.0))
+    monkeypatch.setattr(session_log.time, "monotonic", lambda: next(ticks))
+    with analysis_operation(path, "same", "full_fit", limit_seconds=100.0,
+                            checkpoint_seconds=60.0):
+        pass
+    assert analysis_clock_state(path)["operations"]["same"] == pytest.approx(12.0)
+
+    # A later start for that same ID is unmatched even though an older end exists.
+    log_event(path, "analysis_clock", {"phase": "start", "operation_id": "same",
+                                        "elapsed_seconds": 12.0})
+    assert analysis_clock_state(path)["unmatched"] == ["same"]
+    close_interrupted_analysis(path)
+    assert read_log(path)[-1]["payload"]["status"] == "interrupted"

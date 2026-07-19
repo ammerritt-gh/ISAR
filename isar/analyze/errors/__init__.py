@@ -50,6 +50,8 @@ def attach(result, hyp, ctx, *, M=200, seed=12345, backend="iminuit",
         "M": boot.M,
         "bimodal": boot.bimodal,
         "omega0_samples": boot.omega0_samples,
+        "parameter_names": boot.parameter_names,
+        "parameter_samples": boot.parameter_samples,
         "method_seconds": method_seconds,
     }
     minos = prof = bres = None
@@ -80,6 +82,8 @@ def attach(result, hyp, ctx, *, M=200, seed=12345, backend="iminuit",
         within["bayes_fail_reason"] = bres.fail_reason
         within["bayes_n_live"] = bres.n_live
         within["bayes_seed"] = bres.seed
+        within["bayes_parameter_names"] = bres.parameter_names
+        within["bayes_parameter_samples"] = bres.parameter_samples
     if with_profile or with_bayes:
         from isar.analyze.errors import agree as _agree
         within["agreement"] = _agree.agreement(
@@ -191,6 +195,8 @@ def attach_batch(items, *, M=200, seed=12345, backend="iminuit", with_profile=Fa
                 "bayes_fail_reason": bres.fail_reason,
                 "bayes_n_live": bres.n_live,
                 "bayes_seed": bres.seed,
+                "bayes_parameter_names": bres.parameter_names,
+                "bayes_parameter_samples": bres.parameter_samples,
             })
         if with_profile or bres is not None:
             # Reconstruct the BootstrapResult expected by agreement without repeating any work.
@@ -198,7 +204,11 @@ def attach_batch(items, *, M=200, seed=12345, backend="iminuit", with_profile=Fa
                 omega0_interval=within["freq_interval"], gamma_interval=within["gamma_interval"],
                 omega0_samples=within["omega0_samples"], gamma_samples=np.empty(0),
                 n_converged=within["n_converged"], M=within["M"],
-                interval_type="percentile", bimodal=within["bimodal"], seed=int(seed))
+                interval_type="percentile", bimodal=within["bimodal"], seed=int(seed),
+                parameter_names=tuple(within.get("parameter_names") or ()),
+                parameter_samples=np.asarray(
+                    within["parameter_samples"] if within.get("parameter_samples") is not None
+                    else np.empty((0, 0))))
             within["agreement"] = _agree.agreement(
                 boot, minos, profile_omega0=prof, bayes=bres, prior=prior,
                 hesse_omega0_sigma=result.omega0_err_hesse)

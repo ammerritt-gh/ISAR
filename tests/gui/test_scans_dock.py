@@ -306,3 +306,58 @@ def test_master_browser_is_hierarchical_scrollable_and_only_children_drag(qtbot,
     assert not (top.flags() & Qt.ItemFlag.ItemIsDragEnabled)
     assert child.flags() & Qt.ItemFlag.ItemIsDragEnabled
     assert tree.verticalScrollBar().maximum() > 0
+
+
+def test_live_refresh_preserves_master_browser_view_state(qtbot, tmp_path):
+    scans = [_sv("tavi", index, "det", hkl=(2.0 + index / 100, 0, 0))
+             for index in range(1, 61)]
+
+    def group_for(scan):
+        member = SimpleNamespace(unit_id=scan.scan_id, branch_id="optic", omega0=6.0)
+        master = SimpleNamespace(
+            q=scan.hkl, T=300.0, branch_id="optic", track_state="confirmed",
+            interval=[5.8, 6.2], omega0=6.0, interval_reliable=True,
+            disposition="resolved", n_members=1, reasons=())
+        return SimpleNamespace(master=master, members=(member,))
+
+    ws = SimpleNamespace(scans=scans, master_groups=[group_for(scan) for scan in scans])
+    vm = ScansViewModel(ws, store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    dock.resize(480, 320)
+    qtbot.addWidget(dock)
+    dock.show()
+    qtbot.waitUntil(lambda: dock._pool_tree.verticalScrollBar().maximum() > 0)
+
+    old_tree = dock._pool_tree
+    old_tree.topLevelItem(0).setExpanded(False)
+    selected = old_tree.topLevelItem(35)
+    selected.setSelected(True)
+    old_tree.setCurrentItem(selected)
+    selected_q = selected.text(1)
+    bar = old_tree.verticalScrollBar()
+    bar.setValue(max(1, bar.maximum() // 2))
+    old_scroll = bar.value()
+    old_splitter_sizes = dock._home_splitter.sizes()
+
+    arriving = _sv("tavi", 61, "det", hkl=(2.61, 0, 0))
+    ws.scans.append(arriving)
+    ws.master_groups.append(group_for(arriving))
+    vm.refresh()
+    # A second notification can arrive before Qt services the deferred scrollbar restore.
+    arriving_again = _sv("tavi", 62, "det", hkl=(2.62, 0, 0))
+    ws.scans.append(arriving_again)
+    ws.master_groups.append(group_for(arriving_again))
+    vm.refresh()
+
+    qtbot.waitUntil(lambda: dock._pool_tree is not old_tree)
+    qtbot.waitUntil(lambda: dock._pool_tree.verticalScrollBar().value() == old_scroll)
+    tree = dock._pool_tree
+    assert tree.topLevelItemCount() == 62
+    assert not tree.topLevelItem(0).isExpanded()
+    assert tree.currentItem() is not None
+    assert tree.currentItem().text(1) == selected_q
+    assert tree.currentItem().isSelected()
+    new_splitter_sizes = dock._home_splitter.sizes()
+    old_ratio = old_splitter_sizes[0] / sum(old_splitter_sizes)
+    new_ratio = new_splitter_sizes[0] / sum(new_splitter_sizes)
+    assert new_ratio == pytest.approx(old_ratio, abs=0.05)

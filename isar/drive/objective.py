@@ -29,6 +29,7 @@ TIERS = ("deterministic", "mcstas")
 TARGET_BRANCHES = ("acoustic", "optic")
 TARGET_SELECTORS = ("lowest_energy", "highest_energy", "nearest_energy", "tracked_branch")
 OBJECTIVE_SCHEMA = "isar.objective/2"
+_DEFAULT_ANALYSIS_LIMIT = object()
 
 
 @dataclass
@@ -53,7 +54,7 @@ class ObjectiveSpec:
 
     path: list[tuple[float, float, float]]
     tolerance_meV: float
-    budget: dict[str, Any]
+    budget: dict[str, Any] | None
     tier: str = "deterministic"
     name: str = ""
     meta: dict[str, Any] = field(default_factory=dict)
@@ -67,6 +68,7 @@ class ObjectiveSpec:
     hypothesis_source: str | None = None
     hypothesis_fingerprint: str | None = None
     steering: dict[str, Any] = field(default_factory=dict)
+    analysis_limit_seconds: float | None | object = _DEFAULT_ANALYSIS_LIMIT
 
     def __post_init__(self) -> None:
         if self.tier not in TIERS:
@@ -97,8 +99,19 @@ class ObjectiveSpec:
         self.path = norm
         if not self.path:
             raise ValueError("path must contain at least one Q point")
-        if not isinstance(self.budget, dict) or "kind" not in self.budget or "amount" not in self.budget:
-            raise ValueError("budget must be a dict with 'kind' and 'amount' keys")
+        if self.budget is not None:
+            if (not isinstance(self.budget, dict) or "kind" not in self.budget
+                    or "amount" not in self.budget):
+                raise ValueError("budget must be None or a dict with 'kind' and 'amount' keys")
+            self.budget = dict(self.budget)
+        elif self.tier != "deterministic":
+            self.budget = {"kind": "counting_seconds", "amount": 8.0 * 3600.0}
+        if self.analysis_limit_seconds is _DEFAULT_ANALYSIS_LIMIT:
+            self.analysis_limit_seconds = 3600.0 if self.tier == "deterministic" else None
+        elif self.analysis_limit_seconds is not None:
+            self.analysis_limit_seconds = float(self.analysis_limit_seconds)
+            if not math.isfinite(self.analysis_limit_seconds) or self.analysis_limit_seconds <= 0.0:
+                raise ValueError("analysis_limit_seconds must be positive or None")
         if self.energy_search_meV is None:
             self.energy_search_meV = (-2.0, 12.0) if self.target_branch == "optic" else (-2.0, 7.0)
         else:
@@ -137,7 +150,8 @@ class ObjectiveSpec:
     # ---- constructors ------------------------------------------------------
     @classmethod
     def along_h(cls, *, h_start: float, h_end: float, step: float, k: float = 0.0, l: float = 0.0,
-                tolerance_meV: float, budget: dict[str, Any], tier: str = "deterministic",
+                tolerance_meV: float, budget: dict[str, Any] | None = None,
+                tier: str = "deterministic",
                 name: str = "", meta: dict[str, Any] | None = None,
                 target_branch: str = "acoustic", target_label: str = "acoustic",
                 target_selector: str | None = None, target_energy_meV: float | None = None,
@@ -145,7 +159,8 @@ class ObjectiveSpec:
                 hypotheses: list[dict[str, Any]] | None = None,
                 target_hypothesis: str | None = None, hypothesis_source: str | None = None,
                 hypothesis_fingerprint: str | None = None,
-                steering: dict[str, Any] | None = None) -> "ObjectiveSpec":
+                steering: dict[str, Any] | None = None,
+                analysis_limit_seconds: float | None | object = _DEFAULT_ANALYSIS_LIMIT) -> "ObjectiveSpec":
         """A path that walks H from ``h_start`` to ``h_end`` in increments of ``step`` at fixed K, L.
 
         The endpoint is included when it lands on the grid (within a tolerance of ``step``). ``step``
@@ -157,18 +172,19 @@ class ObjectiveSpec:
         n = int(round(abs(span) / step))
         sign = 1.0 if span >= 0 else -1.0
         pts = [(h_start + sign * step * i, k, l) for i in range(n + 1)]
-        return cls(path=pts, tolerance_meV=float(tolerance_meV), budget=dict(budget),
+        return cls(path=pts, tolerance_meV=float(tolerance_meV),
+                   budget=(dict(budget) if budget is not None else None),
                    tier=tier, name=name, meta=dict(meta or {}), target_branch=target_branch,
                    target_label=target_label, target_selector=target_selector,
                    target_energy_meV=target_energy_meV, energy_search_meV=energy_search_meV,
                    hypotheses=list(hypotheses or []), target_hypothesis=target_hypothesis,
                    hypothesis_source=hypothesis_source,
                    hypothesis_fingerprint=hypothesis_fingerprint,
-                   steering=dict(steering or {}))
+                   steering=dict(steering or {}), analysis_limit_seconds=analysis_limit_seconds)
 
     @classmethod
     def segment(cls, *, q_start, q_end, step_rlu: float, tolerance_meV: float,
-                budget: dict[str, Any], tier: str = "deterministic", name: str = "",
+                budget: dict[str, Any] | None = None, tier: str = "deterministic", name: str = "",
                 meta: dict[str, Any] | None = None, target_branch: str = "acoustic",
                 target_label: str = "acoustic",
                 target_selector: str | None = None, target_energy_meV: float | None = None,
@@ -176,7 +192,8 @@ class ObjectiveSpec:
                 hypotheses: list[dict[str, Any]] | None = None,
                 target_hypothesis: str | None = None, hypothesis_source: str | None = None,
                 hypothesis_fingerprint: str | None = None,
-                steering: dict[str, Any] | None = None) -> "ObjectiveSpec":
+                steering: dict[str, Any] | None = None,
+                analysis_limit_seconds: float | None | object = _DEFAULT_ANALYSIS_LIMIT) -> "ObjectiveSpec":
         """A straight reciprocal-space segment whose intervals never exceed ``step_rlu``.
 
         Unlike :meth:`along_h`, this uses ``ceil`` and evenly divides the complete vector so the
@@ -194,14 +211,15 @@ class ObjectiveSpec:
         n = max(1, int(math.ceil(distance / float(step_rlu)))) if distance else 0
         pts = ([start] if n == 0 else
                [tuple(a + d * (i / n) for a, d in zip(start, delta)) for i in range(n + 1)])
-        return cls(path=pts, tolerance_meV=float(tolerance_meV), budget=dict(budget), tier=tier,
+        return cls(path=pts, tolerance_meV=float(tolerance_meV),
+                   budget=(dict(budget) if budget is not None else None), tier=tier,
                    name=name, meta=dict(meta or {}), target_branch=target_branch,
                    target_label=target_label, target_selector=target_selector,
                    target_energy_meV=target_energy_meV, energy_search_meV=energy_search_meV,
                    hypotheses=list(hypotheses or []), target_hypothesis=target_hypothesis,
                    hypothesis_source=hypothesis_source,
                    hypothesis_fingerprint=hypothesis_fingerprint,
-                   steering=dict(steering or {}))
+                   steering=dict(steering or {}), analysis_limit_seconds=analysis_limit_seconds)
 
     # ---- (de)serialization -------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
@@ -209,7 +227,8 @@ class ObjectiveSpec:
             "schema": OBJECTIVE_SCHEMA,
             "path": [list(p) for p in self.path],
             "tolerance_meV": self.tolerance_meV,
-            "budget": dict(self.budget),
+            "budget": (dict(self.budget) if self.budget is not None else None),
+            "analysis_limit_seconds": self.analysis_limit_seconds,
             "tier": self.tier,
             "name": self.name,
             "meta": dict(self.meta),
@@ -232,7 +251,7 @@ class ObjectiveSpec:
         return cls(
             path=[tuple(p) for p in d["path"]],
             tolerance_meV=float(d["tolerance_meV"]),
-            budget=dict(d["budget"]),
+            budget=(dict(d["budget"]) if d.get("budget") is not None else None),
             tier=d.get("tier", "deterministic"),
             name=d.get("name", ""),
             meta=dict(d.get("meta", {})),
@@ -247,6 +266,8 @@ class ObjectiveSpec:
             hypothesis_source=d.get("hypothesis_source"),
             hypothesis_fingerprint=d.get("hypothesis_fingerprint"),
             steering=dict(d.get("steering") or {}),
+            analysis_limit_seconds=(d["analysis_limit_seconds"]
+                                    if "analysis_limit_seconds" in d else _DEFAULT_ANALYSIS_LIMIT),
         )
 
 

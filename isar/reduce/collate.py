@@ -53,14 +53,19 @@ class MergedSpectrum:
     mask: object                 # ΣM != 0
     members: list                # [(experiment_id, scan_number, detector_id), …] that contributed
     n_members: int = 0
+    consistency_statistic: float | None = None
+    consistency_pvalue: float | None = None
+    consistency_alpha: float = 0.01
+    pool_consistent: bool | None = None
+    consistency_seed: int | None = None
 
 
-def persist_merged_spectrum(data_dir, merged: MergedSpectrum) -> str:
-    """Atomically persist a pooled spectrum and return its workspace-relative content address."""
+def merged_spectrum_payload(merged: MergedSpectrum) -> dict:
+    """Canonical, JSON-compatible scientific payload for one pooled spectrum."""
     def _values(value):
         return value.tolist() if hasattr(value, "tolist") else list(value)
 
-    payload = {
+    return {
         "schema": "isar.pooled_spectrum/1",
         "energy": _values(merged.energy),
         "counts": _values(merged.intensity),
@@ -69,10 +74,27 @@ def persist_merged_spectrum(data_dir, merged: MergedSpectrum) -> str:
         "mask": [bool(v) for v in _values(merged.mask)],
         "members": [list(member) for member in merged.members],
         "n_members": int(merged.n_members),
+        "consistency_statistic": merged.consistency_statistic,
+        "consistency_pvalue": merged.consistency_pvalue,
+        "consistency_alpha": merged.consistency_alpha,
+        "pool_consistent": merged.pool_consistent,
+        "consistency_seed": merged.consistency_seed,
     }
+
+
+def merged_spectrum_digest(merged: MergedSpectrum) -> str:
+    """Content digest shared by persistence, manifests, and fit fingerprints."""
+    encoded = json.dumps(merged_spectrum_payload(merged), ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def persist_merged_spectrum(data_dir, merged: MergedSpectrum) -> str:
+    """Atomically persist a pooled spectrum and return its workspace-relative content address."""
+    payload = merged_spectrum_payload(merged)
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True,
                          separators=(",", ":")).encode("utf-8")
-    digest = hashlib.sha256(encoded).hexdigest()
+    digest = merged_spectrum_digest(merged)
     data_path = Path(data_dir)
     pooled_dir = data_path / "pooled"
     pooled_dir.mkdir(parents=True, exist_ok=True)
@@ -172,7 +194,54 @@ def _auto_energy_tol(energy) -> float:
     return max(0.25 * float(np.median(np.diff(uniq))), 1e-9)
 
 
-def _merge_group(members, *, energy_tol: float = 0.0) -> MergedSpectrum:
+def _poisson_deviance(observed, expected) -> float:
+    observed = np.asarray(observed, dtype="float64")
+    expected = np.asarray(expected, dtype="float64")
+    valid = expected > 0.0
+    if np.any((observed > 0.0) & ~valid):
+        return float("inf")
+    term = np.zeros_like(observed)
+    positive = valid & (observed > 0.0)
+    term[positive] = observed[positive] * np.log(observed[positive] / expected[positive])
+    term[valid] -= observed[valid] - expected[valid]
+    return float(2.0 * np.sum(term[valid]))
+
+
+def _member_consistency(counts, monitors, *, seed: int, alpha: float,
+                        bootstrap_samples: int = 512) -> tuple[float, float, bool]:
+    """Exposure-scaled Poisson-deviance homogeneity test for one pooled group.
+
+    Conditioning each energy bin on its observed total removes the unknown common spectrum.  The
+    seeded multinomial bootstrap is the corresponding parametric Poisson bootstrap with that
+    nuisance profile fitted, and remains well-defined for zero-count bins.
+    """
+    counts = np.asarray(counts, dtype="float64")
+    monitors = np.asarray(monitors, dtype="float64")
+    if counts.shape[0] < 2:
+        return 0.0, 1.0, True
+    total_counts = counts.sum(axis=0)
+    total_monitor = monitors.sum(axis=0)
+    usable = total_monitor > 0.0
+    probabilities = np.zeros_like(monitors)
+    np.divide(monitors, total_monitor, out=probabilities, where=usable)
+    expected = probabilities * total_counts
+    observed_stat = _poisson_deviance(counts[:, usable], expected[:, usable])
+    rng = np.random.default_rng(int(seed))
+    exceed = 0
+    for _ in range(max(int(bootstrap_samples), 1)):
+        simulated = np.zeros_like(counts)
+        for column in np.flatnonzero(usable):
+            n = int(round(max(total_counts[column], 0.0)))
+            if n:
+                simulated[:, column] = rng.multinomial(n, probabilities[:, column])
+        stat = _poisson_deviance(simulated[:, usable], expected[:, usable])
+        exceed += int(stat >= observed_stat)
+    pvalue = float((exceed + 1) / (max(int(bootstrap_samples), 1) + 1))
+    return observed_stat, pvalue, bool(pvalue >= float(alpha))
+
+
+def _merge_group(members, *, energy_tol: float = 0.0, consistency_alpha: float = 0.01,
+                 consistency_bootstrap_samples: int = 512) -> MergedSpectrum:
     """Combine-before-divide: align members on a common energy grid, then SUM counts and monitors.
 
     The merged signal stays RAW COUNTS (intensity=ΣN, variance=ΣN) with the summed monitor preserved —
@@ -183,8 +252,12 @@ def _merge_group(members, *, energy_tol: float = 0.0) -> MergedSpectrum:
         e = np.asarray(ref.energy, dtype="float64")
         n = np.asarray(ref.spectrum.intensity, dtype="float64")
         mon = np.asarray(ref.normalization.monitor, dtype="float64")
-        w = min(len(e), len(n), len(mon))
-        Es.append(e[:w]); Ns.append(n[:w]); Ms.append(mon[:w])
+        keep = np.asarray(ref.spectrum.mask, dtype=bool)
+        w = min(len(e), len(n), len(mon), len(keep))
+        valid = keep[:w] & np.isfinite(e[:w]) & np.isfinite(n[:w]) & np.isfinite(mon[:w])
+        Es.append(e[:w])
+        Ns.append(np.where(valid, n[:w], 0.0))
+        Ms.append(np.where(valid, mon[:w], 0.0))
     E = np.concatenate(Es) if Es else np.empty(0)
     N = np.concatenate(Ns) if Ns else np.empty(0)
     M = np.concatenate(Ms) if Ms else np.empty(0)
@@ -192,18 +265,35 @@ def _merge_group(members, *, energy_tol: float = 0.0) -> MergedSpectrum:
 
     keys = np.round(E / tol).astype("int64") if len(E) else np.empty(0, dtype="int64")
     out_e, out_n, out_m = [], [], []
-    for kk in sorted(set(keys.tolist())):
+    member_n = np.zeros((len(members), len(set(keys.tolist()))), dtype="float64")
+    member_m = np.zeros_like(member_n)
+    for column, kk in enumerate(sorted(set(keys.tolist()))):
         sel = keys == kk
         out_e.append(float(E[sel].mean()))
         out_n.append(float(N[sel].sum()))
         out_m.append(float(M[sel].sum()))
+        offset = 0
+        for row, (e_values, n_values, m_values) in enumerate(zip(Es, Ns, Ms)):
+            width = len(e_values)
+            local = sel[offset:offset + width]
+            member_n[row, column] = float(n_values[local].sum())
+            member_m[row, column] = float(m_values[local].sum())
+            offset += width
     energy = np.array(out_e, dtype="float64")
     Nsum = np.array(out_n, dtype="float64")
     Msum = np.array(out_m, dtype="float64")
+    seed_payload = json.dumps([list((m.experiment_id, m.scan_number, m.detector_id))
+                               for m in members], sort_keys=True).encode("utf-8")
+    consistency_seed = int.from_bytes(hashlib.sha256(seed_payload).digest()[:8], "big") & 0x7fffffff
+    statistic, pvalue, consistent = _member_consistency(
+        member_n, member_m, seed=consistency_seed, alpha=consistency_alpha,
+        bootstrap_samples=consistency_bootstrap_samples)
     return MergedSpectrum(
         energy=energy, intensity=Nsum, variance=Nsum.copy(), monitor=Msum, mask=(Msum != 0),
         members=[(m.experiment_id, m.scan_number, m.detector_id) for m in members],
-        n_members=len(members))
+        n_members=len(members), consistency_statistic=statistic,
+        consistency_pvalue=pvalue, consistency_alpha=float(consistency_alpha),
+        pool_consistent=consistent, consistency_seed=consistency_seed)
 
 
 def _group_component(name: str, ref: SpectrumRef):
@@ -226,6 +316,8 @@ def collate(records, card) -> Collation:
     merge = collation.get("merge", "separate")
     t_round = collation.get("t_round", 0.1)
     energy_tol = collation.get("energy_round", 0.0)
+    consistency_alpha = float(collation.get("master_consistency_alpha", 0.01))
+    consistency_bootstrap_samples = int(collation.get("master_consistency_bootstrap_samples", 512))
 
     measurements = [r for r in records if r.scan_type == "measurement"]
     refs = [ref for r in measurements for ref in _spectrum_refs(r, step, t_round)]
@@ -241,7 +333,9 @@ def collate(records, card) -> Collation:
 
     if merge == "merge":
         for g in groups.values():
-            g.merged = _merge_group(g.members, energy_tol=energy_tol)
+            g.merged = _merge_group(
+                g.members, energy_tol=energy_tol, consistency_alpha=consistency_alpha,
+                consistency_bootstrap_samples=consistency_bootstrap_samples)
 
     return Collation(
         groups=list(groups.values()),

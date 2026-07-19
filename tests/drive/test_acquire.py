@@ -40,15 +40,14 @@ def test_unvisited_q_preferred_over_escalation():
     assert (p.h, p.k, p.l) == (2.4, 0.0, 0.0)
 
 
-def test_picks_worst_deficit_q_for_production():
+def test_individual_quicklook_intervals_do_not_rank_production_targets():
     obj = _obj()
-    # All quick-looked; (2.3,0,0) has the widest calibrated half-width -> largest deficit.
     obs = [_obs((2.1, 0.0, 0.0), "quicklook", 0.6),
            _obs((2.2, 0.0, 0.0), "quicklook", 0.7),
            _obs((2.3, 0.0, 0.0), "quicklook", 1.5),
            _obs((2.4, 0.0, 0.0), "quicklook", 0.65)]
     p = acq.propose_scan(obj, _model(obs), obs, {"fwhm_dE": 0.8}, {})
-    assert (p.h, p.k, p.l) == (2.3, 0.0, 0.0)
+    assert (p.h, p.k, p.l) == (2.1, 0.0, 0.0)
     assert p.kind == "production" and p.ncount == acq.PRODUCTION_NCOUNT
 
 
@@ -208,6 +207,60 @@ def test_statistics_limited_provisional_candidate_pools_same_q_first():
 def _master(hkl, hw, disp="resolved", reliable=True, n=2):
     return {"hkl": hkl, "omega0": 3.0, "halfwidth": hw, "reliable": reliable,
             "usable": disp in ("resolved", "flagged"), "disposition": disp, "n_members": n}
+
+
+def test_master_predictive_ranking_advances_common_random_levels_until_distinguishable():
+    def diagnostics(info, stderr, count, reduction):
+        return {"usable": True, "expected_information_nats": info,
+                "omega_information_nats": info * 0.7,
+                "model_branch_information_nats": info * 0.3,
+                "expected_omega_halfwidth_reduction_meV": reduction,
+                "score_standard_error_nats": stderr, "simulation_count": count}
+
+    first = acq.GridQ(index=0, hkl=(2.1, 0.0, 0.0), q=0.0, tolerance=0.2,
+                      n_quicklook=1)
+    second = acq.GridQ(index=1, hkl=(2.2, 0.0, 0.0), q=0.1, tolerance=0.2,
+                       n_quicklook=1)
+    for point, levels in (
+            (first, [diagnostics(0.50, 0.30, 128, 0.08),
+                     diagnostics(0.50, 0.01, 512, 0.08)]),
+            (second, [diagnostics(0.45, 0.30, 128, 0.07),
+                      diagnostics(0.30, 0.01, 512, 0.07)])):
+        point.master = {**_master(point.hkl, 0.8), "diagnostic_halfwidth": 0.8,
+                        "expected_next_information": levels[0],
+                        "predictive": {"predicted_analysis_seconds": 1.0,
+                                       "score_levels": levels}}
+    picked, kind, _reason, score = acq._select_target(
+        [first, second], acq_model.fit([]), ranking_cost_kind="analysis")
+    assert picked is first and kind == "production"
+    assert score.method == "master_predictive" and score.simulation_count == 512
+
+
+def test_live_predictive_scoring_honors_zero_allowance_after_initial_level():
+    models = [{
+        "weight": 1.0, "omega0_draws": [2.0, 2.2],
+        "expected_counts": [[20.0, 2.0, 1.0], [18.0, 3.0, 1.0]],
+    }]
+    points = [
+        acq.GridQ(index=index, hkl=(2.1 + index / 10, 0.0, 0.0), q=index / 10,
+                  tolerance=0.2, n_quicklook=1)
+        for index in range(2)
+    ]
+    for point in points:
+        initial = {"usable": True, "expected_information_nats": 0.1,
+                   "score_standard_error_nats": 0.1, "simulation_count": 128,
+                   "common_random_seed": 940301}
+        point.master = {**_master(point.hkl, 0.8), "diagnostic_halfwidth": 0.8,
+                        "expected_next_information": initial,
+                        "predictive": {"predicted_analysis_seconds": 1.0,
+                                       "diagnostics": initial, "models": models}}
+
+    _picked, _kind, _reason, score = acq._select_target(
+        points, acq_model.fit([]), ranking_cost_kind="analysis",
+        scoring_allowance_seconds=0.0)
+
+    assert score.method == "master_predictive"
+    assert score.simulation_count == 128
 
 
 def test_keeps_producing_when_both_master_and_single_over_tolerance():

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from PySide6.QtCore import Signal
 
@@ -78,6 +78,10 @@ class CampaignState:
     scan_count: int = 0
     budget_kind: str | None = None
     budget_amount: float | None = None
+    analysis_spent_seconds: float = 0.0
+    analysis_limit_seconds: float | None = None
+    certification_status: dict | None = None
+    certification_end_status: str | None = None
 
 
 def _is_campaign_start(rec: dict) -> bool:
@@ -95,8 +99,20 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
     # Whole-log spend from every run event, mirroring isar.drive.loop._resume_state (do not
     # import it — the sums are trivial and the GUI must not couple to loop internals).
     neutrons = seconds = 0.0
+    analysis_operations: dict[str, float] = {}
     scans = 0
     for rec in events:
+        if rec.get("kind") == "analysis_clock":
+            p = rec.get("payload") or {}
+            operation_id = p.get("operation_id")
+            if operation_id:
+                try:
+                    elapsed = max(float(p.get("elapsed_seconds") or 0.0), 0.0)
+                    key = str(operation_id)
+                    analysis_operations[key] = max(analysis_operations.get(key, 0.0), elapsed)
+                except (TypeError, ValueError):
+                    log.debug("analysis clock carried non-numeric elapsed %r — skipped",
+                              p.get("elapsed_seconds"))
         if rec.get("kind") != "run":
             continue
         p = rec.get("payload") or {}
@@ -117,7 +133,8 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
                           eta.get("estimated_seconds"))
 
     if start_idx is None:
-        return CampaignState(spent_neutrons=neutrons, spent_seconds=seconds, scan_count=scans)
+        return CampaignState(spent_neutrons=neutrons, spent_seconds=seconds, scan_count=scans,
+                             analysis_spent_seconds=sum(analysis_operations.values()))
 
     start = (events[start_idx].get("payload") or {})
     objective = start.get("objective")
@@ -130,6 +147,7 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
     grid_state = None
     per_q: tuple[dict, ...] = ()
     activities: dict[str, dict] = {}
+    certification_end_status = None
     last_scan = None
     exceptions = 0
     stage_seconds: dict = {}
@@ -144,12 +162,17 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
             last_scan = _scan_text(kind, p)
         if kind == "activity_start" and p.get("activity_id"):
             activities[str(p["activity_id"])] = {**p, "started_ts": rec.get("ts")}
+            if p.get("stage") == "final_certification":
+                certification_end_status = None
         elif kind == "activity_progress" and p.get("activity_id"):
             activity_id = str(p["activity_id"])
             if activity_id in activities:
                 activities[activity_id].update(p)
         elif kind == "activity_end" and p.get("activity_id"):
-            activities.pop(str(p["activity_id"]), None)
+            ended = activities.pop(str(p["activity_id"]), None)
+            if p.get("stage") == "final_certification" or (
+                    ended and ended.get("stage") == "final_certification"):
+                certification_end_status = str(p.get("status") or "completed")
         if kind == "decide":
             action = p.get("action")
             if action == "model_update":
@@ -194,7 +217,10 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
         exception_count=exceptions,
         stage_seconds=stage_seconds, spent_neutrons=neutrons, spent_seconds=seconds,
         scan_count=scans,
-        budget_kind=budget.get("kind"), budget_amount=budget.get("amount"))
+        budget_kind=budget.get("kind"), budget_amount=budget.get("amount"),
+        analysis_spent_seconds=sum(analysis_operations.values()),
+        analysis_limit_seconds=(objective or {}).get("analysis_limit_seconds"),
+        certification_end_status=certification_end_status)
 
 
 def _fmt_hkl(hkl) -> str:
@@ -235,7 +261,7 @@ def render_feed_item(rec: dict) -> FeedItem | None:
     ts = float(rec.get("ts") or 0.0)
     it = p.get("iter")
     tail = f"  [iter {it}]" if it is not None else ""
-    if kind == "timing":
+    if kind in ("timing", "analysis_clock"):
         return None                       # ~16/iteration profiling spans — noise in a feed
     if kind in ("propose", "run"):
         return FeedItem(ts, kind, _scan_text(kind, p), "info")
@@ -306,10 +332,41 @@ def budget_readout(state: CampaignState) -> tuple[int, str]:
     return 0, "budget: —"
 
 
+def analysis_readout(state: CampaignState) -> tuple[int, str]:
+    limit = state.analysis_limit_seconds
+    if limit is None:
+        return 0, "analysis: no limit"
+    limit = float(limit)
+    fraction = min(state.analysis_spent_seconds / limit, 1.0) if limit > 0 else 0.0
+    return int(fraction * 1000), (f"analysis: {state.analysis_spent_seconds / 60.0:.1f} / "
+                                  f"{limit / 60.0:.1f} min")
+
+
+def terminal_status_text(state: CampaignState) -> str:
+    """Stable operator-facing terminal outcome, separate from low-level reason detail."""
+    reasons = "; ".join(state.stop_reasons)
+    lowered = reasons.lower()
+    if state.stop_state == "incomplete":
+        if "analysis limit" in lowered:
+            return "Incomplete — analysis limit exhausted"
+        if "budget" in lowered:
+            return "Incomplete — measurement budget exhausted"
+        if "iteration" in lowered:
+            return "Incomplete — iteration limit exhausted"
+        return "Incomplete" + (f" — {reasons}" if reasons else "")
+    if state.stop_state == "infeasible":
+        return "Infeasible" + (f" — {reasons}" if reasons else "")
+    if state.stop_state == "met":
+        return "Met — every requested master certified"
+    return f"{state.stop_state}: {reasons}" if state.stop_state else "campaign idle"
+
+
 def current_activity_text(state: CampaignState, *, now: float | None = None) -> str:
     activity = state.active_activity
+    if not activity and state.certification_status and not state.certification_status.get("published"):
+        activity = {"stage": "final_certification", **state.certification_status}
     if not activity:
-        return "Now: campaign idle"
+        return "Now: " + state.last_scan if state.last_scan else "Now: campaign idle"
     stage = str(activity.get("stage") or "activity")
     labels = {"scan": "Scanning", "fast_fit": "Fast fit", "full_fit": "Full fit",
               "final_certification": "Final certification", "pooled_update": "Pooling"}
@@ -324,7 +381,26 @@ def current_activity_text(state: CampaignState, *, now: float | None = None) -> 
         text += f" at {q_text}"
     completed, total = activity.get("completed"), activity.get("total")
     unit = activity.get("progress_unit")
-    if completed is not None and total is not None and unit:
+    if stage == "final_certification" and completed is not None and total is not None:
+        phase = activity.get("phase")
+        if phase == "interrupted":
+            return (f"Final certification interrupted — {completed}/{total} "
+                    "checkpoints retained")
+        text += f" — {completed}/{total} points checkpointed"
+        if phase == "publishing":
+            text += " — publishing"
+        elif activity.get("active"):
+            text += f" — {activity['active']} active"
+        remaining = activity.get("remaining_analysis_seconds")
+        if remaining is not None and phase != "publishing":
+            try:
+                remaining = max(int(float(remaining)), 0)
+            except (TypeError, ValueError):
+                log.debug("certification progress carried non-numeric remaining allowance %r — omitted",
+                          remaining)
+            else:
+                text += f" — {remaining // 60:02d}:{remaining % 60:02d} analysis left"
+    elif completed is not None and total is not None and unit:
         text += f" — {completed}/{total} {unit}"
     if activity.get("started_ts") is not None:
         elapsed = max(0, int((time.time() if now is None else now)
@@ -375,10 +451,28 @@ class CampaignViewModel(ViewModel):
             return
         if not changed or "events" in changed or "card_state" in changed:
             self._consume_events()
+            self._join_certification_status()
         if not changed or "results" in changed:
             self._recount_verdicts()
         self.status_changed.emit()
         self.refreshed.emit()
+
+    def _join_certification_status(self) -> None:
+        status = getattr(self._ws, "certification_status", None)
+        if status is None:
+            return
+        durable = dict(status.raw)
+        active = self.state.active_activity
+        if (not durable.get("published") and not active
+                and self.state.certification_end_status == "interrupted"):
+            durable["phase"] = "interrupted"
+        if (active and active.get("stage") == "final_certification"
+                and durable.get("activity_id") == active.get("activity_id")):
+            self.state = replace(
+                self.state, active_activity={**active, **durable},
+                certification_status=durable)
+        else:
+            self.state = replace(self.state, certification_status=durable)
 
     def _consume_events(self) -> None:
         events = list(self._ws.session_events())

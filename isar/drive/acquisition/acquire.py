@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import inspect
 import math
+import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
@@ -35,6 +36,7 @@ from isar.drive.acquisition.eig import (
     predicted_sigma_after,
 )
 from isar.drive.acquisition.classify_eig import widen_factor
+from isar.predictive import predictive_score
 from isar.drive.supervisor.stopping import (
     PRODUCTION_NCOUNT,
     QUICKLOOK_NCOUNT,
@@ -172,7 +174,7 @@ def _count_request(gridq: GridQ, *, kind: str, n_points: int, tolerance: float,
         master = gridq.master or {}
         halfwidth = master.get("diagnostic_halfwidth", master.get("halfwidth"))
         if halfwidth is None:
-            halfwidth = gridq.cert_halfwidth if gridq.cert_halfwidth is not None else gridq.best_halfwidth
+            halfwidth = gridq.cert_halfwidth
         current = master.get("effective_exposure")
         if current is None:
             current = gridq.submitted_exposure
@@ -326,9 +328,10 @@ def _energy_window(e_pred: float, fwhm: float, e_sigma: float = 0.0,
 
 
 def _q_sigma(g: GridQ) -> float | None:
-    """The q's current ω₀ half-width belief: the certified (master/best-production) half-width, else
-    the best per-scan/quick-look estimate — ``None`` if the q has never been usably fit."""
-    return g.cert_halfwidth if g.cert_halfwidth is not None else g.best_halfwidth
+    """The current pooled-master ω₀ half-width belief, never an individual-fit fallback."""
+    master = g.master or {}
+    value = master.get("diagnostic_halfwidth", master.get("halfwidth"))
+    return float(value) if value is not None else None
 
 
 def _q_next_cost(g: GridQ) -> float:
@@ -482,14 +485,21 @@ def _select_target(grid: list[GridQ], model, *,
                    fisher=None, opening=None, classify=None,
                    classification_weight: float = 0.0, tracked_branch: bool = False,
                    maximum_bridge_steps: int = 1,
-                   track_anchor_index: int | None = None) -> tuple[GridQ | None, str, str, ProposalScore | None]:
+                   track_anchor_index: int | None = None,
+                   ranking_cost_kind: str = "measurement",
+                   scoring_allowance_seconds: float = 60.0) -> tuple[GridQ | None, str, str, ProposalScore | None]:
     """Pick the next grid q and its scan kind. Returns ``(gridq, kind, reason, score)``.
 
     Tiers, most-specific first:
 
     1. **Unvisited** q → a quick-look (largest model-predicted σ) to seed the ω(q) model + count rate.
     2. **No-baseline** workable q → a PRODUCTION scan to establish a first usable ω₀ (largest σ-deficit).
-    3. **Baselined** workable q → ranked by **cost-normalized EIG on ω₀**:
+    3. **Baselined** workable q → ranked first by the pooled master's model-weighted posterior-
+       predictive information about joint ω/model/branch identity, normalized by analysis time in
+       deterministic mode or measurement cost in measurement-dominated mode. Conservative utility,
+       expected ω-width reduction, and canonical q order break unresolved Monte Carlo ties.
+    4. A compatibility fallback uses the older Fisher/counts tiers only when no master-predictive
+       artifact is available:
        - **Fisher tier (5b)** — when a ``fisher`` provider grounds any candidate (an in-anchor branch +
          an unconstrained last fit), rank *only* the grounded candidates by
          ``fisher_eig(σ_prior, σ_scan)/ΔC`` (the identifiability-aware screen). No silent method-mixing:
@@ -498,8 +508,8 @@ def _select_target(grid: list[GridQ], model, *,
          a measured cost history; otherwise the σ-deficit ranking (regression-safe for hand-built /
          pre-Phase-5 callers).
 
-    Stuck q (``MAX_DECLINES`` no-signal, ``MAX_PROD_ATTEMPTS`` pooled without converging, or
-    value-of-information saturated) are abandoned. ``score`` carries ``cost=0``/``eig_per_cost=None``;
+    Low utility is a visible ``diminishing_returns`` diagnostic, not an abandon rule. ``score`` carries
+    ``cost=0``/``eig_per_cost=None`` where the window cost is not yet known;
     :func:`propose_scan` fills the actual ΔC once the window is known.
     """
     if tracked_branch:
@@ -511,12 +521,8 @@ def _select_target(grid: list[GridQ], model, *,
                 method="classification" if "ambiguous" in reason or "bridge" in reason else "explore",
                 c_spent=float(pick.counts_spent), reason=reason,
                 purpose="differentiate" if "ambiguous" in reason or "bridge" in reason else "hypothesis_check")
-        # Coverage is complete only when every point belongs to the connected component. Precision
-        # optimization below is then allowed. A blocked/stuck frontier yields no illegal far-q jump.
-        if any(point.stuck and point.track_state != "confirmed" for point in grid):
-            return None, "", "tracked branch frontier blocked at the existing attempt cap", None
-        if any(point.track_state not in (None, "confirmed") and not point.converged for point in grid):
-            return None, "", "tracked branch frontier blocked by unresolved identity", None
+        # Ambiguous identity is evidence to collect, not a terminal frontier.  The ordinary ranking
+        # below remains allowed to choose the best feasible discriminating measurement.
 
     for source in grid:
         master = source.master or {}
@@ -564,7 +570,7 @@ def _select_target(grid: list[GridQ], model, *,
             method="explore", c_spent=float(pick.counts_spent), reason=reason, purpose=purpose)
     candidates = [g for g in grid if not (g.converged or g.stuck)]
     if not candidates:
-        return None, "", "all grid q converged or abandoned (stuck)", None
+        return None, "", "all grid q converged", None
 
     # A statistically adequate (or empirically floored) provisional candidate needs branch evidence,
     # not more counts at the same q. Prefer an untested neighboring q by expected classification
@@ -606,6 +612,72 @@ def _select_target(grid: list[GridQ], model, *,
                   f"scan to establish the master")
         return pick, "production", reason, ProposalScore(
             method="explore", c_spent=float(pick.counts_spent), reason=reason)
+
+    predictive = []
+    for candidate in candidates:
+        master = candidate.master or {}
+        diagnostics = master.get("expected_next_information") or {}
+        if not diagnostics.get("usable"):
+            continue
+        artifact = master.get("predictive") or {}
+        levels = list(artifact.get("score_levels") or [diagnostics])
+        cost = (float(artifact.get("predicted_analysis_seconds") or 1.0)
+                if ranking_cost_kind == "analysis" else max(_q_next_cost(candidate), 1.0))
+        predictive.append((candidate, artifact, levels, cost))
+    if predictive:
+        # Consume the precomputed common-random-number levels in lockstep. Stop as soon as the best
+        # candidate's conservative lower bound clears every competitor's upper bound; otherwise use
+        # the largest bounded level and the documented deterministic tie-breaks.
+        ranked = []
+        scoring_started = time.monotonic()
+        allowance = min(max(float(scoring_allowance_seconds), 0.0), 60.0)
+        simulation_counts = (128, 512, 2048)
+        max_levels = (len(simulation_counts) if any(item[1].get("models") for item in predictive)
+                      else max(len(item[2]) for item in predictive))
+        for level_index in range(max_levels):
+            ranked = []
+            for candidate, artifact, levels, cost in predictive:
+                if artifact.get("models"):
+                    common_seed = int((artifact.get("diagnostics") or {}).get(
+                        "common_random_seed", 940_301))
+                    diagnostics = predictive_score(
+                        artifact["models"], seed=common_seed,
+                        n_simulations=simulation_counts[level_index])
+                else:
+                    diagnostics = levels[min(level_index, len(levels) - 1)]
+                information = float(diagnostics.get("expected_information_nats") or 0.0)
+                stderr = float(diagnostics.get("score_standard_error_nats") or 0.0)
+                lower = max(information - 2.0 * stderr, 0.0)
+                upper = max(information + 2.0 * stderr, 0.0)
+                ranked.append((candidate, diagnostics, lower, upper, cost))
+            ranked.sort(key=lambda item: (
+                item[2] / item[4],
+                float(item[1].get("expected_omega_halfwidth_reduction_meV") or 0.0),
+                tuple(-value for value in item[0].hkl)), reverse=True)
+            if len(ranked) == 1 or ranked[0][2] / ranked[0][4] > ranked[1][3] / ranked[1][4]:
+                break
+            if time.monotonic() - scoring_started >= allowance:
+                break
+        pick, diagnostics, lower, _upper, cost = ranked[0]
+        joint = float(diagnostics.get("expected_information_nats") or 0.0)
+        omega_info = float(diagnostics.get("omega_information_nats") or 0.0)
+        identity_info = float(diagnostics.get("model_branch_information_nats") or 0.0)
+        reduction = float(diagnostics.get("expected_omega_halfwidth_reduction_meV") or 0.0)
+        reason = (f"master-predictive EIG q={pick.q:g} (hkl={list(pick.hkl)}); "
+                  f"joint={joint:.4g} nats, expected ω half-width reduction={reduction:.4g} meV, "
+                  f"model/branch entropy reduction={identity_info:.4g} nats")
+        return pick, "production", reason, ProposalScore(
+            method="master_predictive", eig=_finite_or_none(omega_info),
+            classification_eig=_finite_or_none(identity_info),
+            combined_information=_finite_or_none(joint), reason=reason,
+            purpose="target_or_classification", ranking_cost=float(cost),
+            eig_per_cost=_finite_or_none(joint / cost),
+            omega_halfwidth_reduction=_finite_or_none(reduction),
+            model_entropy_reduction=_finite_or_none(identity_info),
+            score_standard_error=_finite_or_none(
+                float(diagnostics.get("score_standard_error_nats") or 0.0)),
+            simulation_count=int(diagnostics.get("simulation_count") or 0),
+            conservative_utility=_finite_or_none(lower / cost))
 
     # Fisher tier (5b): rank the identifiability-aware EIG for the candidates a grounded rate model can
     # score. Grounding (in-anchor branch + unconstrained last fit) lives entirely in the provider.
@@ -678,7 +750,8 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
                  fisher=None, classify=None, rival_band=None,
                  runtime_limits: dict | None = None,
                  track_anchor_index: int | None = None,
-                 track_zone_period: float | None = None) -> ScanProposal | None:
+                 track_zone_period: float | None = None,
+                 scoring_allowance_seconds: float = 60.0) -> ScanProposal | None:
     """Propose the next scan (Q, energy window, neutron count), or ``None`` if nothing remains.
 
     Args:
@@ -722,7 +795,10 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
         classification_weight=classification_weight,
         tracked_branch=(getattr(objective, "target_selector", None) == "tracked_branch"),
         maximum_bridge_steps=int(policy.get("maximum_bridge_steps", 1)),
-        track_anchor_index=track_anchor_index)
+        track_anchor_index=track_anchor_index,
+        ranking_cost_kind=("analysis" if getattr(objective, "tier", None) == "deterministic"
+                           else "measurement"),
+        scoring_allowance_seconds=scoring_allowance_seconds)
     if pick is None:
         return None
     driver_inserted = not any(math.dist(pick.hkl, tuple(point)) <= 1e-4 for point in objective.path)
@@ -804,5 +880,5 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
     epc = normalized_score.get("eig_per_cost")
     threshold = float(policy.get("minimum_information_per_cost", 0.0))
     if epc is not None and threshold > 0.0 and epc < threshold:
-        return None
+        proposal.meta.setdefault("diagnostics", []).append("diminishing_returns")
     return proposal

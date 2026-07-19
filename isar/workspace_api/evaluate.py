@@ -18,15 +18,26 @@ comparable); pass ``x_eval`` for a finer grid.
 from __future__ import annotations
 
 import json
+import math
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 
-# prefixes we can rebuild purely; anything else (e.g. a 2nd phonon "phonon2") -> fall back
-_KNOWN_PREFIXES = {"phonon", "elastic", "qe", "bg"}
-_COMPONENT_ORDER = ("phonon", "elastic", "qe", "bg")
+class UnsupportedFitView(ValueError):
+    """The persisted delivered model cannot be reconstructed by this reader."""
+
+
+def _finite_float(value, label: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise UnsupportedFitView(f"{label} must be numeric") from exc
+    if not math.isfinite(result):
+        raise UnsupportedFitView(f"{label} must be finite")
+    return result
 
 
 def _find_data_file(data_dir: Path, scan_number) -> Path | None:
@@ -90,35 +101,106 @@ def _load_scan_arrays(data_dir: Path, scan_number):
         return None, None
 
 
-def _compose(amplitudes: dict, quasielastic_fwhm):
-    """Build the CompositeModel implied by the amplitude keys, or ``None`` if not purely rebuildable.
+def _component_manifest(fit, quasielastic_fwhm):
+    """Return a model manifest, deriving the pre-manifest multi-mode form when possible."""
+    manifest = getattr(fit, "model_manifest", None)
+    if manifest is not None:
+        if not isinstance(manifest, Mapping):
+            raise UnsupportedFitView("model manifest must be an object")
+        return manifest
+    amplitudes = fit.amplitudes or {}
+    prefixes = {str(key).split(".")[0] for key in amplitudes}
+    phonons = sorted((p for p in prefixes if re.fullmatch(r"phonon\d*", p)),
+                     key=lambda p: (p != "phonon", int(p[6:] or 1)))
+    unknown = prefixes - set(phonons) - {"elastic", "qe", "bg"}
+    if unknown:
+        raise UnsupportedFitView(f"unsupported stored component prefixes: {sorted(unknown)}")
+    if not phonons:
+        return None
+    modes = []
+    for index, mode in enumerate(getattr(fit, "modes", None) or []):
+        if not isinstance(mode, Mapping):
+            raise UnsupportedFitView(f"stored mode {index} must be an object")
+        if mode.get("omega0") is None:
+            continue
+        normalized = dict(mode)
+        normalized["omega0"] = _finite_float(mode["omega0"], f"stored mode {index} omega0")
+        if mode.get("gamma") is not None:
+            normalized["gamma"] = _finite_float(mode["gamma"], f"stored mode {index} gamma")
+        modes.append(normalized)
+    modes.sort(key=lambda mode: mode["omega0"])
+    if not modes and fit.omega0 is not None:
+        modes = [{"omega0": fit.omega0, "gamma": fit.gamma}]
+    if len(modes) < len(phonons):
+        raise UnsupportedFitView(
+            f"stored {len(phonons)} phonon components but only {len(modes)} mode parameter sets")
+    components = [{"type": "phonon_dho", "prefix": prefix,
+                   "peak": "stokes+astokes"} for prefix in phonons]
+    components.extend({"type": kind, "prefix": prefix} for prefix, kind in (
+        ("elastic", "elastic"), ("qe", "quasielastic"),
+        ("bg", "constant_background")) if prefix in prefixes)
+    parameters = dict(amplitudes)
+    for prefix, mode in zip(phonons, modes):
+        omega0 = _finite_float(mode["omega0"], f"{prefix} omega0")
+        gamma = _finite_float(
+            mode.get("gamma") if mode.get("gamma") is not None else fit.gamma or 0.0,
+            f"{prefix} gamma",
+        )
+        parameters[f"{prefix}.Omega_d"] = math.sqrt(max(omega0 * omega0 - gamma * gamma, 1e-6))
+        parameters[f"{prefix}.Gamma"] = gamma
+    return {"schema": "isar.model_manifest/1", "components": components,
+            "parameters": parameters}
 
-    Returns ``None`` when an unknown / multi-mode prefix appears, when there is no phonon (so the
-    stored ω₀/Γ have nothing to drive), or when a quasi-elastic amplitude is present but no width is
-    available to place it.
-    """
+
+def _compose_manifest(manifest: dict, quasielastic_fwhm):
+    """Build a registered composite and parameter vector from declarative persisted data."""
     from isar.analyze.components import (CompositeModel, ConstantBackground, Elastic,
                                          PhononDHO, QuasiElastic)
-    prefixes = {str(k).split(".")[0] for k in amplitudes.keys()}
-    if not prefixes or not prefixes <= _KNOWN_PREFIXES:
-        return None
-    if "phonon" not in prefixes:
-        return None
-    if "qe" in prefixes and quasielastic_fwhm is None:
-        return None
-    comps = []
-    for p in _COMPONENT_ORDER:
-        if p not in prefixes:
-            continue
-        if p == "phonon":
-            comps.append(PhononDHO())
-        elif p == "elastic":
-            comps.append(Elastic())
-        elif p == "qe":
-            comps.append(QuasiElastic())
-        elif p == "bg":
-            comps.append(ConstantBackground())
-    return CompositeModel(comps)
+    if not isinstance(manifest, Mapping):
+        raise UnsupportedFitView("model manifest must be an object")
+    if manifest.get("schema") != "isar.model_manifest/1":
+        raise UnsupportedFitView(f"unsupported model manifest schema {manifest.get('schema')!r}")
+    factories = {
+        "phonon_dho": lambda item: PhononDHO(prefix=str(item["prefix"]),
+                                               peak=str(item.get("peak", "stokes+astokes"))),
+        "elastic": lambda item: Elastic(),
+        "quasielastic": lambda item: QuasiElastic(),
+        "constant_background": lambda item: ConstantBackground(),
+    }
+    components = []
+    seen_prefixes = set()
+    for index, item in enumerate(manifest.get("components") or []):
+        if not isinstance(item, Mapping):
+            raise UnsupportedFitView(f"model component {index} must be an object")
+        kind = str(item.get("type"))
+        if kind not in factories:
+            raise UnsupportedFitView(f"unsupported model component type {kind!r}")
+        prefix = item.get("prefix")
+        if not isinstance(prefix, str) or not prefix:
+            raise UnsupportedFitView(f"model component {index} has no valid prefix")
+        if prefix in seen_prefixes:
+            raise UnsupportedFitView(f"duplicate model component prefix {prefix!r}")
+        seen_prefixes.add(prefix)
+        component = factories[kind](item)
+        if str(component.prefix) != str(item.get("prefix")):
+            raise UnsupportedFitView(
+                f"component {kind!r} cannot use prefix {item.get('prefix')!r}")
+        components.append(component)
+    if not components:
+        raise UnsupportedFitView("model manifest contains no components")
+    composite = CompositeModel(components)
+    if any(isinstance(component, QuasiElastic) for component in components) \
+            and quasielastic_fwhm is None:
+        raise UnsupportedFitView("quasielastic component has no persisted width")
+    values = manifest.get("parameters") or {}
+    if not isinstance(values, Mapping):
+        raise UnsupportedFitView("model manifest parameters must be an object")
+    missing = [name for name in composite.param_names() if name not in values]
+    if missing:
+        raise UnsupportedFitView(f"model manifest is missing parameters {missing}")
+    theta = [_finite_float(values[name], f"model parameter {name}")
+             for name in composite.param_names()]
+    return composite, theta
 
 
 def evaluate_model(fit, data_dir, *, quasielastic_fwhm=None, x_eval=None):
@@ -136,22 +218,19 @@ def evaluate_model(fit, data_dir, *, quasielastic_fwhm=None, x_eval=None):
     omega0, gamma = fit.omega0, fit.gamma
 
     # --- pure path ---------------------------------------------------------
-    amps = fit.amplitudes
-    if amps and omega0 is not None and gamma is not None and res is not None and x is not None:
+    manifest = _component_manifest(fit, quasielastic_fwhm)
+    if manifest is not None and res is not None and x is not None:
         # An explicit override wins; otherwise fall back to a width the resolution context itself
         # carries, so a stored quasielastic_fwhm is not lost (which would make _compose refuse a qe
         # component present in the amplitudes).
         effective_qe = quasielastic_fwhm if quasielastic_fwhm is not None \
             else res.get("quasielastic_fwhm")
-        comp = _compose(amps, effective_qe)
-        if comp is not None:
-            from isar.report.audit import assemble_curve
-            # Strip the key from res before building ctx so the resolved width (explicit precedence)
-            # is the single source, never a duplicate keyword.
-            res = {k: v for k, v in res.items() if k != "quasielastic_fwhm"}
-            ctx = SimpleNamespace(quasielastic_fwhm=effective_qe, **res)
-            rc = assemble_curve(comp, x, omega0=omega0, gamma=gamma, amp=amps, ctx=ctx)
-            return SimpleNamespace(x=rc.x, total=rc.total, components=rc.components, pure=True)
+        comp, theta = _compose_manifest(manifest, effective_qe)
+        res = {k: v for k, v in res.items() if k != "quasielastic_fwhm"}
+        ctx = SimpleNamespace(quasielastic_fwhm=effective_qe, **res)
+        total = comp.evaluate(x, theta, ctx)
+        return SimpleNamespace(x=x, total=total,
+                               components=comp.evaluate_components(x, theta, ctx), pure=True)
 
     # --- fallback path -----------------------------------------------------
     if (energy is None or counts is None or energy.size == 0

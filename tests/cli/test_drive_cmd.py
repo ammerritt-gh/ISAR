@@ -179,11 +179,13 @@ def test_pending_recovery_maps_to_exit_code_5(tmp_path, monkeypatch):
     assert rc == 5
 
 
-def test_unmeetable_and_met_exit_codes(tmp_path, monkeypatch):
+def test_incomplete_infeasible_and_met_exit_codes(tmp_path, monkeypatch):
     _stub_run_campaign(monkeypatch, state="met")
     assert main(["drive", "--spec", str(_spec_file(tmp_path)), "--workspace", str(tmp_path / "w1")]) == 0
-    _stub_run_campaign(monkeypatch, state="unmeetable")
+    _stub_run_campaign(monkeypatch, state="incomplete")
     assert main(["drive", "--spec", str(_spec_file(tmp_path)), "--workspace", str(tmp_path / "w2")]) == 3
+    _stub_run_campaign(monkeypatch, state="infeasible")
+    assert main(["drive", "--spec", str(_spec_file(tmp_path)), "--workspace", str(tmp_path / "w3")]) == 6
 
 
 def test_compile_only_writes_frozen_envelope_without_running_campaign(tmp_path, monkeypatch):
@@ -213,7 +215,7 @@ def test_envelope_start_preserves_original_source_fingerprint(tmp_path, monkeypa
     assert captured[0][1]["source"]["original_goal"] == "map transverse optic"
 
 
-def test_envelope_start_ignores_budget_override_and_uses_frozen_objective(tmp_path, monkeypatch):
+def test_envelope_start_applies_absolute_budget_override(tmp_path, monkeypatch):
     spec = ObjectiveSpec.segment(q_start=[2, 0, 0], q_end=[2, 0.5, 0], step_rlu=0.05,
                                  tolerance_meV=0.5,
                                  budget={"kind": "neutrons", "amount": 1234},
@@ -227,4 +229,4 @@ def test_envelope_start_ignores_budget_override_and_uses_frozen_objective(tmp_pa
     rc = main(["drive", "--envelope", str(path), "--workspace", str(tmp_path / "ws"),
                "--budget", "8h"])
     assert rc == 0
-    assert captured[0][0].budget == {"kind": "neutrons", "amount": 1234}
+    assert captured[0][0].budget == {"kind": "counting_seconds", "amount": 8 * 3600.0}

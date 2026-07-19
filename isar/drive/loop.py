@@ -6,7 +6,7 @@ Wires the three parts into the §8 loop:
         acquisition proposes a scan → POST /validate → POST /scan (isolated, seeded) → wait →
         save scan JSON → `isar run` (subprocess) → read results.csv / card.state.json →
         fold into the ω(q) model → stopping check + exception branches
-    } → stop (met / unmeetable) → campaign summary
+    } → stop (met / incomplete / infeasible) → campaign summary
 
 The loop is **decision-only**: numbers come only from ISAR's ``results.csv`` (read through the file
 contract), never from a fit imported here. It LOOKS at raw counts solely to re-center a missed window
@@ -33,8 +33,6 @@ import subprocess
 import sys
 import uuid
 
-import numpy as np
-
 from isar.drive.acquisition import model as acq_model
 from isar.drive.acquisition.acquire import (
     MAX_POINTS,
@@ -53,7 +51,9 @@ from isar.drive.isar_io.runner import init_isar as _default_init_isar
 from isar.drive.isar_io.worker_client import WorkerRunner
 from isar.drive.isar_io.scan_writer import save_scan_json, scan_json_path
 from isar.drive.objective import ObjectiveSpec
-from isar.drive.session_log import (activity, close_interrupted_activities, log_activity_progress,
+from isar.drive.session_log import (AnalysisLimitExceeded, activity, analysis_clock_state,
+                                    analysis_operation, close_interrupted_activities,
+                                    close_interrupted_analysis, log_activity_progress,
                                     log_event, read_log, timed)
 from isar.drive.supervisor import exceptions as exc
 from isar.drive.supervisor.stopping import (
@@ -177,6 +177,33 @@ def _runtime_limits(cfg, objective, n_points: int | None = None) -> dict[str, An
     result["effective_ncount_sources"] = [source for value, source in candidates
                                            if value == result["max_neutrons_per_point"]]
     return result
+
+
+def _analysis_runner_kwargs(cfg, objective, *, finish_initial_wave: bool = False) -> dict:
+    """Deadline allowance supported by the runner seam, without imposing it on old test doubles."""
+    limit = objective.analysis_limit_seconds
+    if limit is None:
+        return {}
+    spent = float(analysis_clock_state(cfg.log_path)["spent_seconds"])
+    remaining = max(float(limit) - spent, 0.0)
+    parameters = inspect.signature(cfg.runner.run).parameters
+    accepts_kwargs = any(item.kind == inspect.Parameter.VAR_KEYWORD
+                         for item in parameters.values())
+    result = {}
+    if "analysis_allowance_seconds" in parameters or accepts_kwargs:
+        result["analysis_allowance_seconds"] = remaining
+    if "finish_initial_wave" in parameters or accepts_kwargs:
+        result["finish_initial_wave"] = bool(finish_initial_wave)
+    return result
+
+
+def _require_complete_analysis(result, objective) -> None:
+    """Turn a soft runner checkpoint stop into the campaign's explicit incomplete outcome."""
+    if getattr(result, "completed", True):
+        return
+    limit = float(objective.analysis_limit_seconds or 0.0)
+    raise AnalysisLimitExceeded(
+        f"analysis limit exhausted; active fit wave checkpointed (limit {limit:.1f}s)")
 
 
 def _emitted_point_count(e_lo: float, e_hi: float, e_step: float) -> int:
@@ -308,63 +335,6 @@ def _make_resolution_cb(client, override):
         except Exception:   # noqa: BLE001  (any transport/refusal → advisory default FWHM)
             return {"ok": False}
     return cb
-
-
-def _make_fisher_provider(card_state: dict, resolution_cb, *,
-                          production_ncount: int = PRODUCTION_NCOUNT):
-    """The 5b Poisson-Fisher screen provider ``(gridq, omega0_pred, sigma_prior) -> σ_scan|None`` built
-    from the branch(es) the session persisted into ``card.state.json`` (durable / crash-safe — the drive
-    reads the file, never a live session object). Returns ``None`` when no branch exists yet (cold
-    campaign) → the acquisition falls back to the 5a counts tier.
-
-    A candidate q is **Fisher-grounded** only when its last fit was ``unconstrained`` AND the branch
-    covers its predicted ω₀ *in* the anchor range (the misspecification guard: a mistrusted/extrapolated
-    rate never drives a confident Fisher EIG). Given that, it predicts the scan's λ(E) from the branch
-    (Γ, A∝1/ω) at production exposure, adds the branch soft-constraint precision the low-q fit will use,
-    and returns the identifiability-aware σ(ω₀) — or ``None`` when ω₀ is unidentifiable even with the
-    prior (σ=∞). Boundary-clean: imports only isar.drive + isar.synth (both permitted)."""
-    branch_models = (card_state or {}).get("branch_models") or []
-    if not branch_models:
-        return None
-
-    from isar.drive.acquisition.acquire import _energy_window, _resolve_fwhm
-    from isar.drive.acquisition.branch_view import predict_branch, select_branch
-    from isar.drive.acquisition.eig import fisher_information, sigma_omega0
-    from isar.synth.fit import omega_d_from      # isar.synth is boundary-allowed
-
-    def provider(g, omega0_pred, sigma_prior, exposure_override=None):
-        if getattr(g, "last_fit_kind", None) != "unconstrained":
-            return None
-        if omega0_pred is None or not math.isfinite(omega0_pred) or omega0_pred <= 0:
-            return None
-        branch = select_branch(branch_models, omega0_pred)
-        if branch is None:
-            return None
-        pred = predict_branch(branch, float(omega0_pred))
-        if not pred.in_anchor_range or pred.gamma <= 0:
-            return None
-        T = float(branch.get("t_bin", 0.0))         # the branch carries its own T-bin
-        # Match the frozen campaign policy's incremental production batch.  Using the legacy 1e8
-        # exposure here would overstate information for hypothesis campaigns that submit 2.5e7.
-        exposure = float(production_ncount if exposure_override is None else exposure_override)
-        amp = float(pred.amplitude_norm) * exposure
-        gamma = float(pred.gamma)
-        od = omega_d_from(float(omega0_pred), gamma)
-        h, k, l = g.hkl
-        fwhm = _resolve_fwhm(resolution_cb, h, k, l, float(omega0_pred))
-        e_lo, e_hi, _step, n_points = _energy_window(float(omega0_pred), fwhm)
-        x_grid = np.linspace(e_lo, e_hi, max(int(n_points), 2))
-        g_sig = max(float(pred.gamma_sigma), 1e-6)
-        a_sig = max(float(pred.amplitude_rel_sigma) * amp, 1e-6)
-        prior_prec = {1: 1.0 / g_sig ** 2, 2: 1.0 / a_sig ** 2}   # branch soft precision on Γ, A
-        theta = (od, gamma, amp, 0.0, 1.0)                        # E=0, nominal flat background
-        info = fisher_information(theta, x_grid, fwhm, 0.0, T, center=0.0, prior_precision=prior_prec)
-        ss = sigma_omega0(theta, info)
-        return ss if math.isfinite(ss) else None
-
-    provider.supports_exposure = True
-    provider.default_exposure = int(production_ncount)
-    return provider
 
 
 def _make_classification_providers(card_state: dict, objective, resolution_cb, *, sample: str):
@@ -716,6 +686,18 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         "branch_candidates": row.get("branch_candidates"),
         "selected_candidate_index": row.get("selected_candidate_index"),
         "track_state": row.get("track_state"), "track_revision": row.get("track_revision"),
+        "modality": row.get("modality"),
+        "gamma_at_bound": bool(row.get("gamma_at_bound", False)),
+        "linewidth_state": row.get("linewidth_state"),
+        "pool_consistent": row.get("pool_consistent"),
+        "consistency_pvalue": row.get("consistency_pvalue"),
+        "consistency_deviance": row.get("consistency_deviance"),
+        "consistency_alpha": row.get("consistency_alpha"),
+        "spectrum_ref": row.get("spectrum_ref"),
+        "predictive_ref": row.get("predictive_ref"),
+        "content_hash": row.get("content_hash"),
+        "master_revision": row.get("master_revision"),
+        "fit_kind": row.get("fit_kind"),
         # Driver-inserted probes inform branch classification but never occupy a requested grid point
         # or contribute to its production/certification counters.  Persisted run-event provenance
         # restores these flags after a crash rather than relying on an hkl-nearness inference.
@@ -725,20 +707,32 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
 
 
 def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
-    """A master (pooled) fit → the convergence observation for its q. The calibrated half-width uses
-    the reliable interval (profile when the bootstrap is Γ-at-bound) at the production count bucket."""
-    ok = _pick_interval(row)[2]
+    """A pooled fit → its sole decision-bearing, model-robust master assessment."""
     exposure_key, effective_exposure, exposure_source = _effective_exposure_bucket(
         row, PRODUCTION_NCOUNT)
     bucket, calibration_arg = _calibration_bucket(calibration, exposure_key)
-    hw = _calibrated_hw(row, calibration, calibration_arg)
+    model_lo, model_med, model_hi = (row.get("model_interval_lo"),
+                                         row.get("model_interval_med"),
+                                         row.get("model_interval_hi"))
+    model_robust = bool(row.get("model_robust") is True and model_lo is not None
+                        and model_hi is not None)
+    hw = None
+    if model_robust:
+        try:
+            hw = calibration.calibrated_halfwidth(model_lo, model_hi, bucket=calibration_arg)
+        except Exception:  # noqa: BLE001 — an invalid robust interval cannot certify
+            model_robust = False
     diagnostic_hw, diagnostic_method = _diagnostic_halfwidth(row, calibration, calibration_arg)
+    if model_robust:
+        diagnostic_hw, diagnostic_method = hw, "model_averaged_predictive"
     disp = row.get("disposition")
     return {
-        "hkl": _row_hkl(row), "omega0": row.get("omega0"), "halfwidth": hw,
-        # S3: `reliable` (== ok) kept for back-compat; `certifiable` is the convergence gate — a
-        # γ-at-bound master (interval_reliable=False) never seats, even via a profile fallback.
-        "reliable": bool(ok), "certifiable": _is_certifiable(row, ok),
+        "hkl": _row_hkl(row),
+        "omega0": (model_med if model_robust and model_med is not None else row.get("omega0")),
+        "halfwidth": hw,
+        "reliable": model_robust, "certifiable": model_robust,
+        "model_robust": model_robust, "model_entropy": row.get("model_entropy"),
+        "model_interval": ([model_lo, model_med, model_hi] if model_robust else None),
         "usable": (disp in _USABLE and row.get("omega0") is not None),
         "disposition": disp, "n_members": row.get("n_members"),
         "effective_exposure": effective_exposure, "exposure_source": exposure_source,
@@ -752,6 +746,18 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         "branch_candidates": row.get("branch_candidates"),
         "selected_candidate_index": row.get("selected_candidate_index"),
         "track_state": row.get("track_state"), "track_revision": row.get("track_revision"),
+        "modality": row.get("modality"),
+        "gamma_at_bound": bool(row.get("gamma_at_bound", False)),
+        "linewidth_state": row.get("linewidth_state"),
+        "pool_consistent": row.get("pool_consistent"),
+        "consistency_statistic": row.get("consistency_statistic"),
+        "consistency_pvalue": row.get("consistency_pvalue"),
+        "consistency_alpha": row.get("consistency_alpha"),
+        "spectrum_ref": row.get("spectrum_ref"),
+        "predictive_ref": row.get("predictive_ref"),
+        "content_hash": row.get("content_hash"),
+        "master_revision": row.get("master_revision"),
+        "fit_kind": row.get("fit_kind"),
         # Chain of custody: the member scan labels behind this pooled value (readers coerce the CSV
         # cell to a list). members_field_present distinguishes "old results.csv lacked the column"
         # (guard skipped) from "column present but empty" (guard fires).
@@ -824,7 +830,22 @@ def _read_master_rows(workspace, calibration: Calibration) -> list[dict]:
     out = []
     for r in rows:
         if r.get("pooled") and _row_hkl(r) is not None:
-            out.append(_master_obs_from_row(r, calibration))
+            master = _master_obs_from_row(r, calibration)
+            ref = r.get("predictive_ref")
+            if ref:
+                candidate = (Path(workspace) / str(ref)).resolve()
+                root = (Path(workspace) / "data" / "master_predictive").resolve()
+                try:
+                    candidate.relative_to(root)
+                    predictive = json.loads(candidate.read_text(encoding="utf-8"))
+                    if predictive.get("schema") == "isar.master_predictive/1":
+                        master["predictive"] = predictive
+                        master["expected_next_information"] = predictive.get("diagnostics")
+                except (ValueError, OSError, json.JSONDecodeError) as error:
+                    log_event(Path(workspace) / "report" / "session_log.jsonl", "exception", {
+                        "action": "predictive_artifact_unavailable", "reference": str(ref),
+                        "error": str(error)})
+            out.append(master)
     return out
 
 
@@ -836,6 +857,31 @@ def _grid_state(objective, observations: list[dict], workspace, calibration: Cal
     master_rows = _read_master_rows(workspace, calibration)
     grid = summarize_grid(objective, observations, master_rows)
     return master_rows, grid
+
+
+def _predictive_escalation_candidate(grid, log_path):
+    """First usable unresolved master that has no simulation-grade predictive ensemble.
+
+    Each published revision is escalated at most once, including across resume.  A failed full-tier
+    attempt therefore remains visible but cannot trap the campaign in analysis-only retry loops.
+    """
+    attempted = {
+        str((record.get("payload") or {}).get("revision_key"))
+        for record in read_log(log_path)
+        if record.get("kind") == "escalate_fit"
+        and (record.get("payload") or {}).get("reason") == "master_predictive_basis_missing"
+        and (record.get("payload") or {}).get("phase") == "outcome"
+    }
+    for item in grid:
+        master = item.master or {}
+        if item.converged or not master.get("usable") or master.get("predictive"):
+            continue
+        revision_key = ":".join(str(value or "unknown") for value in (
+            master.get("content_hash") or master.get("production_batch_fingerprint"),
+            master.get("master_revision") or master.get("track_revision")))
+        if revision_key not in attempted:
+            return item, revision_key
+    return None
 
 
 def _record_eligible_crossings(grid, observations: list[dict], log_path=None) -> int:
@@ -1344,6 +1390,28 @@ def _pooled_target_delivered(observations: list[dict], proposal, target_branch: 
     return False
 
 
+def _pooled_recenter_inputs(workspace, hkl) -> tuple[list, list] | None:
+    """Combined counts/energy for the latest master at ``hkl``, with a validated local reference."""
+    try:
+        rows = [row for row in read_results_csv(workspace)
+                if row.get("pooled") and _hkl_close(_row_hkl(row), hkl)
+                and row.get("spectrum_ref")]
+        if not rows:
+            return None
+        row = max(rows, key=lambda item: int(item.get("n_members") or 0))
+        candidate = (Path(workspace) / str(row["spectrum_ref"])).resolve()
+        root = (Path(workspace) / "data" / "pooled").resolve()
+        candidate.relative_to(root)
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+        if payload.get("schema") != "isar.pooled_spectrum/1":
+            raise ValueError("unsupported pooled spectrum schema")
+        return list(payload.get("counts") or []), list(payload.get("energy") or [])
+    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError) as error:
+        log_event(Path(workspace) / "report" / "session_log.jsonl", "exception", {
+            "action": "pooled_recenter_unavailable", "hkl": list(hkl), "error": str(error)})
+        return None
+
+
 @dataclass(frozen=True)
 class CampaignConfig:
     """The resolved configuration for one :func:`run_campaign` invocation — every ``config`` key
@@ -1603,21 +1671,8 @@ def _workspace_zone_period(workspace: Path) -> float | None:
 
 
 def _blocked_frontier_decision(objective, grid, decision: StopDecision) -> StopDecision:
-    """Turn proposal exhaustion at a tracked, stuck frontier into an honest terminal result."""
-    if (decision.state != "continue"
-            or getattr(objective, "target_selector", None) != "tracked_branch"):
-        return decision
-    blocked = [point for point in grid
-               if point.stuck and point.track_state != "confirmed"]
-    if not blocked:
-        return decision
-    point = min(blocked, key=lambda item: item.index)
-    return StopDecision(
-        "unmeetable",
-        [f"branch_ambiguity at q={point.q:g} (hkl={list(point.hkl)}): identity remained "
-         "unresolved at the existing attempt cap",
-         "frontier_blocked: no scan beyond the unresolved connected frontier was certified"],
-        decision.per_q)
+    """Tracked ambiguity is diagnostic; it no longer becomes a terminal stuck decision."""
+    return decision
 
 
 def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
@@ -1674,7 +1729,15 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
     with activity(cfg.log_path, stage, q=[proposal.h, proposal.k, proposal.l],
                   job_id=job_id, fit_tier=tier, iteration=it):
         with timed(cfg.log_path, "isar_run", iteration=it, errors_tier=tier, attempt=attempt):
-            cfg.runner.run(cfg.workspace, [cfg.data_dir], errors_tier=tier, render=False)
+            with analysis_operation(
+                    cfg.log_path, f"reduce:{proposal.acquisition_id}:{tier}:{attempt}",
+                    "pooled_reduction_and_fit",
+                    limit_seconds=objective.analysis_limit_seconds,
+                    allow_overrun_start=True, iteration=it, q=[proposal.h, proposal.k, proposal.l]):
+                run_result = cfg.runner.run(
+                    cfg.workspace, [cfg.data_dir], errors_tier=tier, render=False,
+                    **_analysis_runner_kwargs(cfg, objective, finish_initial_wave=True))
+                _require_complete_analysis(run_result, objective)
     tracks_after = _read_branch_tracks(cfg.workspace)
     if tracks_after and tracks_after.get("revision") != tracks_before.get("revision"):
         log_event(cfg.log_path, "branch_track_update", {
@@ -1950,8 +2013,13 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         # Missed window: LOOK at the counts to re-center + widen, up to the attempt cap.
         with timed(log_path, "missed_window", iteration=it):
             result = data.get("result") or {}
+            pooled_inputs = _pooled_recenter_inputs(
+                cfg.workspace, (proposal.h, proposal.k, proposal.l))
+            recenter_counts, recenter_energy = (pooled_inputs if pooled_inputs is not None else
+                                                (result.get("counts") or [],
+                                                 result.get("scan_values_1") or []))
             act = exc.handle_missed_window(
-                result.get("counts") or [], result.get("scan_values_1") or [],
+                recenter_counts, recenter_energy,
                 e_lo=proposal.e_lo, e_hi=proposal.e_hi, attempt=attempt,
                 resolution_fwhm=(proposal.fwhm_dE or None))
         log_event(log_path, "exception", {**act.to_dict(), "iter": it})
@@ -1968,77 +2036,136 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
     return rows, scan_counter
 
 
-def _certification_manifest(cfg: CampaignConfig, decision, tier: str) -> Path:
-    """Create/reuse the immutable runner manifest for the frozen final-fit snapshot."""
-    policy_path = cfg.workspace / "card.policy.toml"
-    state_path = cfg.workspace / "card.state.json"
-
-    def file_sha(path: Path) -> str | None:
-        return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
-
-    state = read_card_state(cfg.workspace)
-    pooled = []
-    for row in read_results_csv(cfg.workspace):
-        if not row.get("pooled"):
-            continue
-        pooled.append({
-            "scan_id": row.get("scan_id"),
-            "hkl": [row.get("h"), row.get("k"), row.get("l")],
-            "T": row.get("T"), "members": list(row.get("members") or []),
-        })
-    pooled.sort(key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":")))
+def _certification_request(cfg: CampaignConfig, objective: ObjectiveSpec,
+                           decision, tier: str, *, activity_id: str) -> Path:
+    """Persist the drive-owned request; the session runner resolves the scientific manifest."""
+    M = 200
+    bayes_opts = {"n_live": 250, "dlogz": 0.5, "max_iter": 30_000}
+    for key, env_name, cast in (
+            ("n_live", "ISAR_BAYES_NLIVE", int),
+            ("dlogz", "ISAR_BAYES_DLOGZ", float),
+            ("max_iter", "ISAR_BAYES_MAXITER", int)):
+        raw_value = os.environ.get(env_name)
+        if raw_value not in (None, ""):
+            try:
+                bayes_opts[key] = cast(raw_value)
+            except (TypeError, ValueError):
+                _LOG.warning("ignoring invalid %s=%r while freezing certification settings",
+                             env_name, raw_value)
+    boot_adaptive = tier in {"full", "bayes"}
+    decision_points = list(decision.per_q or ())
+    if len(decision_points) != len(objective.path):
+        raise ValueError(
+            "final decision does not contain exactly one state for each objective-path point")
+    requested_points: list[dict[str, list[float]]] = []
+    for canonical_index, (objective_hkl, point) in enumerate(zip(objective.path, decision_points)):
+        raw_hkl = point.get("hkl") if isinstance(point, dict) else None
+        if not isinstance(raw_hkl, (list, tuple)) or len(raw_hkl) != 3:
+            raise ValueError(f"invalid q in final decision at path index {canonical_index}")
+        hkl = [float(value) for value in raw_hkl]
+        if any(abs(left - float(right)) > 1e-8
+               for left, right in zip(hkl, objective_hkl)):
+            raise ValueError(
+                f"final decision q {hkl} does not match objective path index "
+                f"{canonical_index}: {list(objective_hkl)}")
+        requested_points.append({"hkl": hkl})
     payload = {
-        "schema": "isar.certification/1",
+        "schema": "isar.certification.request/1",
         "tier": tier,
-        "inputs": {
-            "policy_sha256": file_sha(policy_path),
-            "state_sha256": file_sha(state_path),
-            "prior": state.get("dispersion_prior") or [],
-            "calibration": {
-                "inflation": cfg.calibration.inflation,
-                "floor_meV": cfg.floor,
-            },
-            "pooled_membership": pooled,
-        },
+        "objective_path": [list(hkl) for hkl in objective.path],
+        "per_q": requested_points,
+        "fit_options": {"M": M, "boot_adaptive": boot_adaptive,
+                        "bayes_opts": bayes_opts},
+        "calibration": {"inflation": cfg.calibration.inflation, "floor_meV": cfg.floor},
         "seeds": {
             "scan_seed_base": 6000,
             "scan_rule": "6000 + scan_number",
-            "master_rule": "6000 + canonical_group_index",
+            "master_rule": "6000 + persisted master scan_number",
             "error_attachment_default": 12345,
             "bayes_seed_offset": 1_000_003,
         },
-        "worklist": [dict(item) for item in (decision.per_q or [])],
+        "runtime": {"activity_id": activity_id, "log_path": str(cfg.log_path),
+                    "total": len(decision_points)},
     }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    fingerprint_body = dict(payload)
+    fingerprint_body.pop("runtime", None)
+    canonical = json.dumps(
+        fingerprint_body, sort_keys=True, separators=(",", ":")).encode("utf-8")
     fingerprint = hashlib.sha256(canonical).hexdigest()
     payload["fingerprint"] = fingerprint
-    revision = cfg.workspace / "report" / "certification" / fingerprint
-    manifest = revision / "manifest.json"
-    if manifest.exists():
-        existing = json.loads(manifest.read_text(encoding="utf-8"))
-        if existing != payload:
-            raise ValueError(f"certification manifest collision at {manifest}")
-        return manifest
-    revision.mkdir(parents=True, exist_ok=True)
-    temporary = manifest.with_suffix(".json.tmp")
+    request = cfg.workspace / "report" / "certification" / "requests" / f"{fingerprint}.json"
+    if request.exists():
+        existing = json.loads(request.read_text(encoding="utf-8"))
+        existing_contract = dict(existing)
+        existing_contract.pop("runtime", None)
+        new_contract = dict(payload)
+        new_contract.pop("runtime", None)
+        if existing_contract != new_contract:
+            raise ValueError(f"certification request collision at {request}")
+        if existing == payload:
+            return request
+    request.parent.mkdir(parents=True, exist_ok=True)
+    temporary = request.with_suffix(".json.tmp")
     with open(temporary, "w", encoding="utf-8") as stream:
         json.dump(payload, stream, indent=2, sort_keys=True)
         stream.write("\n")
         stream.flush()
         os.fsync(stream.fileno())
-    os.replace(temporary, manifest)
-    return manifest
+    os.replace(temporary, request)
+    return request
 
 
-def _certify(*, cfg: CampaignConfig, decision, observations: list[dict],
-             scan_kind: dict) -> tuple[list[dict], bool]:
+def _verify_certification_publication(request_path: Path, workspace: Path) -> Path:
+    """Fail closed unless the runner published this exact complete canonical generation."""
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request_fingerprint = request.get("fingerprint")
+    current_path = workspace / "report" / "certification" / "current.json"
+    current = json.loads(current_path.read_text(encoding="utf-8"))
+    revision = str(current.get("revision") or "")
+    manifest_path = workspace / "report" / "certification" / revision / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    fingerprint = manifest.get("fingerprint")
+    if manifest.get("request_fingerprint") != request_fingerprint:
+        raise RuntimeError("final certification publication does not match this drive request")
+    expected_units = [str(unit["unit_key"]) for unit in manifest.get("worklist") or ()]
+    complete_path = manifest_path.parent / "complete.json"
+    complete = json.loads(complete_path.read_text(encoding="utf-8"))
+    if (complete.get("schema") != "isar.certification.complete/2"
+            or complete.get("fingerprint") != fingerprint
+            or complete.get("unit_keys") != expected_units):
+        raise RuntimeError("final certification has no complete canonical checkpoint generation")
+    if (current.get("schema") != "isar.certification.current/1"
+            or current.get("fingerprint") != fingerprint
+            or current.get("revision") != manifest_path.parent.name):
+        raise RuntimeError("final certification publication marker does not select this revision")
+    complete_hashes = complete.get("published_hashes") or {}
+    current_hashes = current.get("published_hashes") or {}
+    paths = {
+        "session.json": workspace / "session.json",
+        "card.state.json": workspace / "card.state.json",
+        "results.csv": workspace / "report" / "results.csv",
+        "card.policy.toml": workspace / "card.policy.toml",
+    }
+    if not complete_hashes or current_hashes != complete_hashes:
+        raise RuntimeError("final certification publication hashes are absent or inconsistent")
+    for name, path in paths.items():
+        if (not path.is_file()
+                or hashlib.sha256(path.read_bytes()).hexdigest() != complete_hashes.get(name)):
+            raise RuntimeError(f"final certification canonical artifact mismatch: {name}")
+    return manifest_path
+
+
+def _certify(*, cfg: CampaignConfig, objective: ObjectiveSpec, decision,
+             observations: list[dict], scan_kind: dict) -> tuple[list[dict], bool]:
     """The end-of-campaign certification pass (the "one bootstrap to certify" decision).
 
     When the loop stopped ``met``, run ONE forced full (bootstrap+profile) ``isar run`` so every
     reported ω₀ interval is bootstrap-backed, then rebuild ``observations`` from the certified
-    ``results.csv``. Best-effort: a certification hiccup logs ``certify_failed`` and reports
-    ``ran_certify=False`` rather than losing a met campaign. Returns ``(observations, ran_certify)`` —
-    the (possibly rebuilt) observations plus whether certification actually completed."""
+    ``results.csv``. A certification hiccup logs ``certify_failed`` and reports
+    ``ran_certify=False``; the caller converts the provisional ``met`` state to ``incomplete`` so a
+    failed final analysis can never masquerade as a certified campaign. Returns
+    ``(observations, ran_certify)`` — the unchanged physical-fit provenance plus whether the master
+    generation was published."""
     log_path, workspace, data_dir = cfg.log_path, cfg.workspace, cfg.data_dir
     ran_certify = decision is not None and decision.state == "met"
     if not ran_certify:
@@ -2053,47 +2180,36 @@ def _certify(*, cfg: CampaignConfig, decision, observations: list[dict],
                "to_tier": full_tier, "reason": "certify_pass"})
     try:
         total_points = len(decision.per_q or ())
-        manifest_path = _certification_manifest(cfg, decision, full_tier)
+        master_only = bool(getattr(cfg.runner, "supports_master_certification", True))
         with activity(log_path, "final_certification", fit_tier=full_tier,
                       total=total_points, progress_unit="points") as activity_id:
-            runtime_path = manifest_path.parent / "runtime.json"
-            runtime_tmp = runtime_path.with_suffix(".json.tmp")
-            with open(runtime_tmp, "w", encoding="utf-8") as runtime_stream:
-                json.dump({"activity_id": activity_id, "log_path": str(log_path),
-                           "total": total_points}, runtime_stream, sort_keys=True)
-                runtime_stream.write("\n")
-                runtime_stream.flush()
-                os.fsync(runtime_stream.fileno())
-            os.replace(runtime_tmp, runtime_path)
+            request_path = (_certification_request(
+                cfg, objective, decision, full_tier, activity_id=activity_id)
+                if master_only else None)
             log_activity_progress(log_path, activity_id, completed=0, total=total_points,
                                   progress_unit="points")
             with timed(log_path, "certify", iteration=None):
-                run_kwargs = {"errors_tier": full_tier, "force": True, "render": False}
+                run_kwargs = {"errors_tier": full_tier,
+                              "force": not master_only, "render": False}
                 parameters = inspect.signature(cfg.runner.run).parameters
-                if ("certification_manifest" in parameters
+                if (request_path is not None and ("certification_request" in parameters
                         or any(p.kind == inspect.Parameter.VAR_KEYWORD
-                               for p in parameters.values())):
-                    run_kwargs["certification_manifest"] = manifest_path
-                cfg.runner.run(workspace, [data_dir], **run_kwargs)
+                               for p in parameters.values()))):
+                    run_kwargs["certification_request"] = request_path
+                with analysis_operation(
+                        log_path, (f"certification:{request_path.stem}"
+                                   if request_path is not None else "certification:callable-seam"),
+                        "final_certification", limit_seconds=objective.analysis_limit_seconds):
+                    run_kwargs.update(_analysis_runner_kwargs(cfg, objective))
+                    run_result = cfg.runner.run(workspace, [data_dir], **run_kwargs)
+                    _require_complete_analysis(run_result, objective)
+            if request_path is not None:
+                _verify_certification_publication(request_path, workspace)
             log_activity_progress(log_path, activity_id, completed=total_points,
                                   total=total_points, progress_unit="points")
-        # Rebuilding folded rows must not erase steering-only provenance or the two-crossing evidence
-        # that made the hypothesis campaign eligible for certification in the first place.
-        provenance = {
-            (observation.get("scan"), observation.get("detector")): {
-                "driver_inserted": bool(observation.get("driver_inserted", False)),
-                "certification_eligible": bool(observation.get("certification_eligible", True)),
-            }
-            for observation in observations
-            if observation.get("scan") is not None and observation.get("detector") is not None
-        }
-        crossing_markers = [dict(observation) for observation in observations
-                            if observation.get("kind") == "certification_crossing"]
-        certified = _recertified_observations(workspace, cfg.calibration, scan_kind)
-        for observation in certified:
-            observation.update(provenance.get(
-                (observation.get("scan"), observation.get("detector")), {}))
-        observations = [*certified, *crossing_markers]
+        # Physical rows are deliberately unchanged by master-only certification. Steering
+        # observations therefore remain the same provenance ledger; final stop evaluation reads the
+        # newly published pooled masters directly from results.csv.
         # Embed the certification subprocess timings (iter=None — the certify pass is reported
         # separately, never averaged into per-iteration stats).
         timings = _read_run_timings(workspace)
@@ -2106,7 +2222,11 @@ def _certify(*, cfg: CampaignConfig, decision, observations: list[dict],
         log_event(log_path, "analyze", analyze_payload)
         log_event(log_path, "decide", {"event": "certify_done", "action": "certify_done"})
         return observations, True
-    except Exception as e:   # noqa: BLE001 — never lose a met campaign to a certification hiccup
+    except AnalysisLimitExceeded:
+        log_event(log_path, "exception", {
+            "action": "certify_checkpointed", "reason": "analysis_limit"})
+        raise
+    except Exception as e:   # noqa: BLE001 — record the boundary failure; caller reports incomplete
         log_event(log_path, "exception", {"action": "certify_failed", "error": str(e)})
         return observations, False
 
@@ -2195,11 +2315,13 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     # (session_log + results.csv). A cold workspace yields the fresh-start values.
     resumed = _resume_state(cfg.workspace, cfg.log_path, cfg.calibration)
     close_interrupted_activities(cfg.log_path)
-    budget = dict(objective.budget)
-    budget_state = {"kind": budget["kind"], "amount": budget["amount"],
+    close_interrupted_analysis(cfg.log_path)
+    budget = dict(objective.budget or {})
+    budget_state = {"kind": budget.get("kind"), "amount": budget.get("amount"),
                     "neutrons": resumed["neutrons"], "seconds": resumed["seconds"], "spent": 0.0}
-    budget_state["spent"] = (budget_state["neutrons"] if budget_state["kind"] == "neutrons"
-                             else budget_state["seconds"])
+    budget_state["spent"] = (budget_state["neutrons"] if budget_state["kind"] == "neutrons" else
+                             budget_state["seconds"] if budget_state["kind"] == "counting_seconds"
+                             else 0.0)
 
     observations: list[dict] = resumed["observations"]
     consumed: set = resumed["consumed"]
@@ -2219,7 +2341,9 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                      "resumed": {"scan_counter": scan_counter,
                                  "proposal_counter": proposal_counter,
                                  "n_observations": len(observations),
-                                 "spent": budget_state["spent"]}}
+                                 "spent": budget_state["spent"],
+                                 "analysis_spent_seconds": analysis_clock_state(
+                                     cfg.log_path)["spent_seconds"]}}
     if cfg.source is not None:
         start_payload["source"] = cfg.source           # provenance fingerprint (goal/spec/resume + sha256)
     log_event(cfg.log_path, "decide", start_payload)
@@ -2258,33 +2382,87 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
                 if decision.state != "continue":
                     break
+                analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
+                if (objective.analysis_limit_seconds is not None
+                        and analysis_spent >= float(objective.analysis_limit_seconds)):
+                    decision = StopDecision(
+                        "incomplete",
+                        [f"analysis limit exhausted ({analysis_spent:.1f}/"
+                         f"{float(objective.analysis_limit_seconds):.1f}s)"],
+                        decision.per_q)
+                    break
+
+                predictive_escalation = _predictive_escalation_candidate(grid, cfg.log_path)
+                if predictive_escalation is not None:
+                    item, revision_key = predictive_escalation
+                    full_tier = _full_tier(cfg)
+                    log_event(cfg.log_path, "escalate_fit", {
+                        "phase": "promote", "iter": it, "hkl": list(item.hkl),
+                        "from_tier": (item.master or {}).get("fit_kind"),
+                        "to_tier": full_tier, "reason": "master_predictive_basis_missing",
+                        "revision_key": revision_key})
+                    try:
+                        with activity(cfg.log_path, "full_fit", q=list(item.hkl),
+                                      fit_tier=full_tier, iteration=it):
+                            with analysis_operation(
+                                    cfg.log_path, f"predictive-escalation:{revision_key}",
+                                    "master_predictive_escalation",
+                                    limit_seconds=objective.analysis_limit_seconds,
+                                    iteration=it, q=list(item.hkl)):
+                                run_result = cfg.runner.run(
+                                    cfg.workspace, [cfg.data_dir], errors_tier=full_tier,
+                                    force=True, render=False,
+                                    **_analysis_runner_kwargs(cfg, objective))
+                                _require_complete_analysis(run_result, objective)
+                        log_event(cfg.log_path, "escalate_fit", {
+                            "phase": "outcome", "iter": it, "hkl": list(item.hkl),
+                            "to_tier": full_tier, "reason": "master_predictive_basis_missing",
+                            "revision_key": revision_key, "outcome": "completed"})
+                        continue
+                    except AnalysisLimitExceeded as error:
+                        decision = StopDecision("incomplete", [str(error)], decision.per_q)
+                        break
+                    except Exception as error:  # noqa: BLE001 — visible failure, then measure again
+                        log_event(cfg.log_path, "escalate_fit", {
+                            "phase": "outcome", "iter": it, "hkl": list(item.hkl),
+                            "to_tier": full_tier, "reason": "master_predictive_basis_missing",
+                            "revision_key": revision_key, "outcome": "failed",
+                            "error": str(error)})
 
                 with timed(cfg.log_path, "model_fit", iteration=it):
                     model = acq_model.fit(model_points(grid))
-                # 5b Fisher tier: read the branch the session persisted into card.state.json FRESH each
-                # iteration (durable / crash-safe — a file, never a live session object). No branch yet →
-                # provider is None → propose_scan falls back to the 5a counts tier.
-                with timed(cfg.log_path, "fisher_provider", iteration=it):
+                # Classification still consumes durable branch state. Expected-count acquisition is
+                # supplied exclusively by each master's frozen predictive artifact; the driver never
+                # reconstructs an analysis model from branch summaries.
+                with timed(cfg.log_path, "classification_provider", iteration=it):
                     durable_state = read_card_state(cfg.workspace)
-                    fisher = (None if objective.target_branch != "acoustic" else
-                              _make_fisher_provider(
-                                  durable_state, cfg.resolution_cb,
-                                  production_ncount=int((getattr(objective, "steering", None) or {}).get(
-                                      "production_batch_ncount", PRODUCTION_NCOUNT))))
                     classify, rival_band = _make_classification_providers(
                         durable_state, objective, cfg.resolution_cb, sample=cfg.sample)
                 with timed(cfg.log_path, "propose", iteration=it):
                     try:
-                        proposal = propose_scan(
-                            objective, model, observations, cfg.resolution_cb, budget_state,
-                            master_rows=master_rows, fisher=fisher,
-                            classify=classify, rival_band=rival_band,
-                            runtime_limits=_runtime_limits(cfg, objective),
-                            track_anchor_index=((durable_state.get("branch_tracks") or {}).get(
-                                "anchor_index")),
-                            track_zone_period=_workspace_zone_period(cfg.workspace))
+                        analysis_remaining = (float("inf") if objective.analysis_limit_seconds is None
+                                              else max(float(objective.analysis_limit_seconds) -
+                                                       float(analysis_clock_state(
+                                                           cfg.log_path)["spent_seconds"]), 0.0))
+                        scoring_allowance = min(60.0, 0.05 * analysis_remaining)
+                        with analysis_operation(
+                                cfg.log_path, f"score:{cfg.run_nonce}:{proposal_counter}",
+                                "predictive_scoring",
+                                limit_seconds=objective.analysis_limit_seconds, iteration=it):
+                            proposal = propose_scan(
+                                objective, model, observations, cfg.resolution_cb, budget_state,
+                                master_rows=master_rows, fisher=None,
+                                classify=classify, rival_band=rival_band,
+                                runtime_limits=_runtime_limits(cfg, objective),
+                                track_anchor_index=((durable_state.get("branch_tracks") or {}).get(
+                                    "anchor_index")),
+                                track_zone_period=_workspace_zone_period(cfg.workspace),
+                                scoring_allowance_seconds=scoring_allowance)
                         if proposal is not None:
                             _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+                    except AnalysisLimitExceeded as error:
+                        decision = StopDecision("incomplete", [str(error)], decision.per_q)
+                        proposal = None
                     except (BudgetInsufficientForMinimumBatch,
                             InstrumentLimitBelowMinimumBatch) as error:
                         log_event(cfg.log_path, "exception", {
@@ -2293,7 +2471,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                        else "budget_insufficient_for_minimum_batch"),
                             "error": str(error), "iter": it})
                         decision = StopDecision(
-                            "unmeetable", [str(error)],
+                            ("infeasible" if isinstance(error, InstrumentLimitBelowMinimumBatch)
+                             else "incomplete"), [str(error)],
                             evaluate_stop(objective, grid, budget_state,
                                           calibration=cfg.calibration, floor=cfg.floor).per_q)
                         proposal = None
@@ -2303,18 +2482,22 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                             objective, grid, budget_state,
                             calibration=cfg.calibration, floor=cfg.floor)
                     decision = _blocked_frontier_decision(objective, grid, decision)
-                    threshold = float((getattr(objective, "steering", None) or {}).get(
-                        "minimum_information_per_cost", 0.0))
-                    if decision.state == "continue" and threshold > 0.0:
-                        decision = StopDecision(
-                            "diminishing_returns",
-                            [f"best available marginal information/cost is below {threshold:g}"],
-                            decision.per_q)
                     break
                 proposal.acquisition_id = (proposal.acquisition_id
                                            or f"{cfg.run_nonce}:{proposal_counter:08d}")
                 proposal_counter += 1
                 log_event(cfg.log_path, "propose", {**proposal.to_dict(), "iter": it})
+
+                analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
+                if (objective.analysis_limit_seconds is not None
+                        and analysis_spent >= float(objective.analysis_limit_seconds)):
+                    decision = StopDecision(
+                        "incomplete",
+                        [f"analysis limit exhausted ({analysis_spent:.1f}/"
+                         f"{float(objective.analysis_limit_seconds):.1f}s) before measurement submission"],
+                        evaluate_stop(objective, grid, budget_state,
+                                      calibration=cfg.calibration, floor=cfg.floor).per_q)
+                    break
 
                 b_act = exc.handle_budget(budget_state)
                 if b_act is not None:
@@ -2327,6 +2510,12 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                         cfg=cfg, objective=objective, proposal=proposal, it=it,
                         scan_counter=scan_counter, budget_state=budget_state,
                         observations=observations, consumed=consumed, scan_kind=scan_kind)
+                except AnalysisLimitExceeded as error:
+                    decision = StopDecision(
+                        "incomplete", [str(error)],
+                        evaluate_stop(objective, grid, budget_state,
+                                      calibration=cfg.calibration, floor=cfg.floor).per_q)
+                    break
                 except TaviError as error:
                     # A communication failure after ``physical_submission`` is not a failed submit:
                     # the job may still be running or its data may already be retrievable.  Preserve
@@ -2350,7 +2539,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                         "action": "instrument_submission_failed", "error": str(error),
                         "status": error.status, "iter": it})
                     decision = StopDecision(
-                        "unmeetable", [f"instrument submission failed: {error}"],
+                        "incomplete", [f"instrument submission failed: {error}"],
                         evaluate_stop(objective, grid, budget_state,
                                       calibration=cfg.calibration, floor=cfg.floor).per_q)
                     break
@@ -2362,7 +2551,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                    else "budget_insufficient_for_minimum_batch"),
                         "error": str(error), "iter": it})
                     decision = StopDecision(
-                        "unmeetable", [str(error)],
+                        ("infeasible" if isinstance(error, InstrumentLimitBelowMinimumBatch)
+                         else "incomplete"), [str(error)],
                         evaluate_stop(objective, grid, budget_state,
                                       calibration=cfg.calibration, floor=cfg.floor).per_q)
                     break
@@ -2393,7 +2583,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             # boundary, and a stop requested during that last scan must be honoured there (with
             # --max-iters 1 it is the ONLY boundary that can see it). Same ordering rule as in-loop:
             # the stop wins before any terminal bookkeeping (certification must not run). The break
-            # paths (met/unmeetable/no-proposal/budget) deliberately get no post-check — their
+            # paths (met/incomplete/infeasible/no-proposal/budget) deliberately get no post-check — their
             # boundary check already ran before the decision, and a campaign that ended on its own
             # reports its true state. ``iter`` is cfg.max_iters, the would-be next iteration (the
             # loop variable is unbound when max_iters == 0, so it is never referenced here).
@@ -2403,6 +2593,14 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                            "iter": cfg.max_iters, "token": cfg.control_token})
                 operator_stop = True
                 op_stop_iter = cfg.max_iters
+            elif pending_recovery_reason is None:
+                master_rows, grid = _grid_state(
+                    objective, observations, cfg.workspace, cfg.calibration)
+                snapshot = evaluate_stop(
+                    objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
+                decision = StopDecision(
+                    "incomplete", [f"global iteration limit exhausted ({cfg.max_iters})"],
+                    snapshot.per_q)
 
         if pending_recovery_reason is not None:
             master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
@@ -2447,8 +2645,27 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             # certify" decision). Bounded — once, at the end, only when the objective is met. Then
             # re-evaluate honestly: if a q's bootstrap-certified interval crosses tolerance the summary
             # reflects that, not the optimistic fast-tier stop (the triage tool reports the certified truth).
-            observations, ran_certify = _certify(cfg=cfg, decision=decision, observations=observations,
-                                                 scan_kind=scan_kind)
+            analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
+            if (decision is not None and decision.state == "met"
+                    and objective.analysis_limit_seconds is not None
+                    and analysis_spent >= float(objective.analysis_limit_seconds)):
+                decision = StopDecision(
+                    "incomplete",
+                    [f"analysis limit exhausted before final certification ({analysis_spent:.1f}/"
+                     f"{float(objective.analysis_limit_seconds):.1f}s)"], decision.per_q)
+            try:
+                observations, ran_certify = _certify(
+                    cfg=cfg, objective=objective, decision=decision, observations=observations,
+                    scan_kind=scan_kind)
+            except AnalysisLimitExceeded as error:
+                ran_certify = False
+                decision = StopDecision("incomplete", [str(error)], decision.per_q)
+
+            if decision is not None and decision.state == "met" and not ran_certify:
+                decision = StopDecision(
+                    "incomplete",
+                    ["final certification did not complete; checkpoints retained"],
+                    decision.per_q)
 
             # Recompute the stop decision on the FINAL grid unconditionally: the in-loop decision is from
             # the top of the last iteration, so a campaign that exhausts max_iters (or breaks on budget)
@@ -2459,12 +2676,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             # A prospective neutron-budget refusal occurs before spend reaches the nominal amount; a
             # plain final budget evaluation therefore still says "continue". Preserve that terminal
             # decision while retaining ordinary recomputation for every measured-scan exit path.
-            if not (decision is not None and decision.state == "unmeetable"
-                    and any(marker in reason for reason in decision.reasons
-                            for marker in ("budget_insufficient_for_minimum_batch",
-                                           "instrument_limit_below_minimum_batch",
-                                           "instrument submission failed",
-                                           "frontier_blocked"))):
+            if not (decision is not None and decision.state in {"incomplete", "infeasible"}):
                 decision = final_decision
             if ran_certify and decision.state != "met":
                 log_event(cfg.log_path, "exception",
@@ -2496,8 +2708,9 @@ def _charge_budget(budget_state: dict, proposal, eta, *, n_points: int | None = 
     budget_state["neutrons"] += float(proposal.ncount) * float(points)
     if eta is not None:
         budget_state["seconds"] += float(eta)
-    budget_state["spent"] = (budget_state["neutrons"] if budget_state["kind"] == "neutrons"
-                             else budget_state["seconds"])
+    budget_state["spent"] = (budget_state["neutrons"] if budget_state["kind"] == "neutrons" else
+                             budget_state["seconds"] if budget_state["kind"] == "counting_seconds"
+                             else 0.0)
 
 
 def _reconcile_budget_points(budget_state: dict, ncount: int, planned: int, executed: int,
@@ -2509,21 +2722,20 @@ def _reconcile_budget_points(budget_state: dict, ncount: int, planned: int, exec
     if eta is not None and int(planned) > 0:
         seconds_delta = float(eta) * (float(executed) / float(planned) - 1.0)
         budget_state["seconds"] = max(0.0, float(budget_state["seconds"]) + seconds_delta)
-    budget_state["spent"] = (budget_state["neutrons"] if budget_state["kind"] == "neutrons"
-                             else budget_state["seconds"])
+    budget_state["spent"] = (budget_state["neutrons"] if budget_state["kind"] == "neutrons" else
+                             budget_state["seconds"] if budget_state["kind"] == "counting_seconds"
+                             else 0.0)
     return delta, seconds_delta
 
 
 def _campaign_summary(objective, grid, decision, budget_state, workspace, log_path, n_obs,
                       *, stop_override: dict | None = None,
                       instrument_limits: dict | None = None) -> dict:
-    # The certified number per q is the tightest trustworthy fit (master pooled OR best single
-    # production, whichever is smaller); fall back to the best quick-look estimate for an un-pooled q.
     def _omega0(g):
-        return g.cert_omega0 if g.cert_omega0 is not None else g.best_omega0
+        return (g.master or {}).get("omega0")
 
     def _hw(g):
-        return g.cert_halfwidth if g.cert_halfwidth is not None else g.best_halfwidth
+        return (g.master or {}).get("halfwidth")
 
     dispersion = []
     for g in grid:
@@ -2554,24 +2766,28 @@ def _campaign_summary(objective, grid, decision, budget_state, workspace, log_pa
         prior_points = []
         mismatch = {}
         branch_beliefs = []
+    analysis = analysis_clock_state(log_path)
+    analysis["limit_seconds"] = objective.analysis_limit_seconds
     return {
         "objective": objective.to_dict(),
         # ``stop_override`` carries the operator_stopped terminal state (+ grid_state snapshot); the
         # default is the honest StopDecision. Additive — the dict shape is otherwise unchanged.
         "stop": stop_override if stop_override is not None else decision.to_dict(),
         "grid": [{"hkl": list(g.hkl), "q": g.q, "converged": g.converged,
+                  "assessment_state": g.assessment_state,
                   "calibrated_halfwidth": g.cert_halfwidth, "omega0": _omega0(g),
                   "master_halfwidth": (g.master or {}).get("halfwidth"),
-                  "single_prod_halfwidth": g.best_prod_halfwidth,
+                  "master_revision": g.master_revision,
                   "n_members": (g.master or {}).get("n_members"),
                   "members": (g.master or {}).get("members"),
-                  "n_production": g.n_production, "n_decline": g.n_decline,
-                  "stuck": g.stuck} for g in grid],
+                  "n_production": g.n_production, "diagnostics": g.diagnostics,
+                  "linewidth_state": g.linewidth_state, "stuck": False} for g in grid],
         "dispersion": dispersion,
         "dispersion_prior_points": len(prior_points),
         "branch_beliefs": branch_beliefs,
         "hypothesis_mismatch": mismatch,
         "budget": dict(budget_state),
+        "analysis": analysis,
         "instrument_limits": dict(instrument_limits or {}),
         "n_observations": n_obs,
         "session_log": str(log_path),

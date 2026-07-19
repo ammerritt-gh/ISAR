@@ -128,11 +128,16 @@ def test_provenance_stamped_when_fit_reports_skip(monkeypatch):
     card = SimpleNamespace(policy=SimpleNamespace(
         instrument="S30", energy_status="needs_zero", quasielastic_fwhm=None, dispersion={},
         collation={}))
-    ms = SimpleNamespace(energy=np.linspace(-8.0, 16.0, 40), intensity=np.full(40, 30.0),
+    counts = np.full(40, 30.0)
+    ms = SimpleNamespace(energy=np.linspace(-8.0, 16.0, 40), intensity=counts,
+                         variance=counts.copy(), monitor=np.ones(40),
                          mask=np.ones(40, dtype=bool), n_members=3,
+                         consistency_statistic=None, consistency_pvalue=None,
+                         consistency_alpha=0.01, pool_consistent=True,
+                         consistency_seed=12345,
                          members=[("tavi", 1, "det"), ("tavi", 2, "det"), ("tavi", 3, "det")])
     grp = _Grp(("tavi", "42", 200.0), ms)
-    g = SimpleNamespace(min_fit_points=6)
+    g = SimpleNamespace(min_fit_points=6, monitor_frac=0.5)
 
     monkeypatch.setattr(driver, "fit_one", make_fit(True))
     e = driver._fit_master_group(ms, grp, object(), "det", card, None, g, "master:x", 9_000_000,

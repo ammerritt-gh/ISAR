@@ -287,7 +287,7 @@ class HeatmapViewModel(ViewModel):
         """ω̂ scatter (whisker only where a tier certifies), warning markers for uncertified ω̂,
         verdict glyphs, and the per-point assignment-entropy channel (kept in meta; 0→calm, ln2→
         undecided). Returns (series, markers, annotations, points, entropy)."""
-        rel_x, rel_y, rel_err, rel_ent = [], [], [], []
+        rel_x, rel_y, rel_ent = [], [], []
         pool_x, pool_y, pool_err, pool_ent, pool_n = [], [], [], [], []
         markers: list[ps.Marker] = []
         annotations: list[ps.Annotation] = []
@@ -304,8 +304,14 @@ class HeatmapViewModel(ViewModel):
             ent = None if ent is None else float(ent)
             entropy.append(ent)
             cert = certify.certifying_interval(fv)
+            genuinely_unreliable = bool(
+                fv.interval_reliable is False or
+                (fv.pooled and (fv.pool_consistent is False or fv.modality == "fork")))
+            certifying = bool(cert is not None and not genuinely_unreliable
+                              and fv.track_state not in {
+                                  "ambiguous", "missing", "provisional", "blocked"})
             half = (abs(float(cert[-1]) - float(cert[0])) / 2.0
-                    if cert is not None and len(cert) >= 2 else None)
+                    if certifying and len(cert) >= 2 else None)
             if fv.pooled:
                 # The delivered per-q master: shown on its OWN whiskered scatter (its own interval,
                 # certify law), marked POOLED, so it is visible AND distinct from the member points.
@@ -315,22 +321,17 @@ class HeatmapViewModel(ViewModel):
                     pool_err.append(half)
                     pool_ent.append(ent)
                     pool_n.append(fv.n_members)
-                else:
+                elif genuinely_unreliable:
                     any_unreliable = True
-                    markers.append(ps.Marker(x=x, y=y, kind=ps.MarkerKind.WARNING,
-                                             label="pooled ω̂ (unreliable)"))
-            elif half is not None:
+                    markers.append(ps.Marker(x=x, y=y, kind=ps.MarkerKind.POOLED_WARNING,
+                                             label="pooled master (unreliable)"))
+                else:
+                    markers.append(ps.Marker(x=x, y=y, kind=ps.MarkerKind.POOLED_UNCERTIFIED,
+                                             label="pooled master (not certifying)"))
+            else:
                 rel_x.append(x)
                 rel_y.append(y)
-                rel_err.append(half)
                 rel_ent.append(ent)
-            else:
-                any_unreliable = True
-                markers.append(ps.Marker(x=x, y=y, kind=ps.MarkerKind.WARNING,
-                                         label="ω̂ (unreliable)"))
-            kind = _VERDICT_MARKER.get((fv.verdict or "").lower())
-            if kind is not None:
-                markers.append(ps.Marker(x=x, y=y, kind=kind, label=f"verdict: {fv.verdict}"))
 
         # The entropy colour channel only rides on the certifying-ω̂ scatter (the whiskered points);
         # attach it — and the legend note explaining it — ONLY when at least one such point carries an
@@ -339,8 +340,9 @@ class HeatmapViewModel(ViewModel):
         series: list[ps.Series] = []
         if rel_x:
             series.append(ps.Series(
-                x=np.array(rel_x), y=np.array(rel_y), yerr=np.array(rel_err),
-                label="ω̂ (certifying interval)", role=ps.Role.DATA,
+                x=np.array(rel_x), y=np.array(rel_y),
+                label="individual scan fits (provenance)", role=ps.Role.DATA,
+                style="muted",
                 state=(ps.State.ENTROPY if colored else None),
                 color_values=(list(rel_ent) if colored else None),
                 color_norm=(ps.LN2 if colored else None)))

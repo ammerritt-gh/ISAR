@@ -59,13 +59,14 @@ def test_tracked_opening_never_precision_polishes_a_confirmed_point_ahead_of_cov
     assert (pick.index, kind) == (1, "quicklook")
 
 
-def test_stuck_zone_centre_blocks_instead_of_jumping_to_a_distant_q():
+def test_scan_declines_cannot_block_master_authoritative_zone_centre():
     grid = _grid()
     grid[0].n_quicklook = 1
     grid[0].n_decline = 3
-    pick, _kind, reason, score = _pick(grid)
-    assert pick is None and score is None
-    assert "frontier blocked" in reason
+    pick, kind, reason, score = _pick(grid)
+    assert (pick.index, kind) == (0, "production")
+    assert score is not None
+    assert "not yet confirmed" in reason
 
 
 def test_persisted_reduced_zone_anchor_can_be_inside_the_path():

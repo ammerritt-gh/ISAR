@@ -6,6 +6,8 @@ is never triggered).
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import hashlib
 
 import pytest
@@ -324,6 +326,30 @@ def test_status_lines_for_terminal_states(dock_env, make_ws):
     ws.refresh()
     vm.on_workspace_changed({"events"})
     assert "press Resume" in dock._status_line.text()
+
+
+def test_selected_master_shows_revision_consistent_reasoning(dock_env):
+    dock, vm, _ops, ws, root = dock_env
+    path = root / "report" / "session_log.jsonl"
+    log_event(path, "decide", {"event": "campaign_start", "action": "campaign_start",
+                               "objective": {}, "source": {"kind": "spec", "sha256": "x"}})
+    log_event(path, "decide", {"event": "model_update", "action": "model_update", "per_q": [{
+        "hkl": [2.5, 0, 0], "assessment_state": "uncertified", "omega0": 6.25,
+        "calibrated_halfwidth": 0.12, "tolerance": 0.05, "master_revision": "rev-7",
+        "uncertainty_method": "model_averaged_predictive", "track_state": "confirmed",
+        "linewidth_state": "resolution_limited", "pool_consistent": True,
+        "expected_next_information": {"expected_information_nats": 0.031},
+        "diagnostics": ["diminishing_returns"],
+        "reason": "continue — master interval remains above tolerance",
+    }]})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+    dock.set_selected_fit(SimpleNamespace(q=(2.5, 0.0, 0.0)))
+    text = dock._master_detail.text()
+    assert "revision rev-7" in text
+    assert "ω: 6.25 meV" in text and "target ±0.05 meV" in text
+    assert "Γ resolution_limited" in text and "pool consistency pass" in text
+    assert "continue — master interval remains above tolerance" in text
     log_event(path, "stop", {"state": "pending_recovery", "reasons": ["job still running"],
                              "grid_state": {"state": "continue", "reasons": [], "per_q": []}})
     ws.refresh()

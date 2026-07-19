@@ -315,16 +315,46 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   pooling, and certification work; chronological JSONL remains canonical while the GUI feed is
   newest-first. Resume closes unmatched starts as `interrupted`, and viewers independently treat
   pre-resume starts as stale. Persistent per-q state remains the existing `StopDecision.per_q`.
-- **O16.** (2026-07-19, Implemented) **Final certification reduces pure checkpoints in canonical
-  manifest order.** The immutable fingerprint covers policy/state, frozen prior, calibration,
-  pooled membership, worklist, and the fitter's effective existing seed rules. Scan and master
-  units are written atomically before ledger mutation; valid units are skipped after restart.
-  Revisions under `report/certification/<fingerprint>/` are derived artifacts retained indefinitely;
-  ISAR never garbage-collects them. An operator may manually prune an unreferenced old revision.
+- **O16.** (2026-07-19, Implemented) **Final certification is a master-only canonical generation.**
+  Drive submits a `isar.certification.request/1`; the session runner resolves it without crossing the
+  decision-only import boundary. `isar.certification/2` then contains one immutable unit per requested
+  pooled master in objective-path order. Its fingerprint covers pooled data/provenance, policy/model space, resolved calibration and
+  resolution, frozen prior/branch/target state, tier, settings, seeds, and the algorithm contract.
+  Exact ordinary master results and valid checkpoints are reused (`bayes` may satisfy `full`, never
+  the reverse); missing units run without fitting or mutating physical rows and checkpoint in
+  completion order. Canonical session/state/results files publish only after every unit exists, with
+  a hash-bearing marker written last. Revisions under `report/certification/<fingerprint>/` are
+  derived artifacts retained indefinitely; ISAR never garbage-collects them. An operator may
+  manually prune an unreferenced old revision. Version-1 scan checkpoints remain retained but are
+  not reusable by version 2.
 - **O17.** (2026-07-19) **No shutdown redesign from the OP2 interruption.** The retained GUI log has
   no `via taskkill` fallback line, but external `taskkill`, an operator escalation, and silent Job
   Object teardown cannot be distinguished from the retained evidence. Kill-on-close and the current
   crash/resume contract remain unchanged.
+- **O18.** (2026-07-19, Implemented) **The pooled master is the sole scientific decision unit.**
+  Physical scans contribute counts, exposure, response, masks, cost, and provenance. Their fitted
+  parameters, intervals, branch labels, and verdicts cannot seed the prior, assign the authoritative
+  track, certify, or stop a q-point. Scan-quality counters, low information, candidate rejection, and
+  production caps are nonterminal diagnostics. Campaign outcomes are `met`, `incomplete`, and
+  independently proven `infeasible`; poor or ambiguous fits continue until a global limit.
+- **O19.** (2026-07-19, Implemented) **Measurement and analysis are separate cumulative clocks.**
+  Deterministic mode defaults to no measurement budget and a 3600-second analysis ceiling;
+  measurement-dominated tiers default to eight measurement hours and no analysis ceiling. Serialized
+  top-level analysis spans emit durable ten-second checkpoints keyed by stable operation ID. Replay
+  takes the maximum cumulative elapsed value per operation, closes unmatched spans as interrupted,
+  and never multiplies child-worker time. Limits gate new work, not an active fit wave or recovery of
+  already acquired data. Ordinary fit batches use immutable revisions under
+  `report/analysis/<fingerprint>/`: at most one worker-sized wave is dispatched at once, completed
+  units are atomically checkpointed, and scan/master results publish only after the canonical
+  worklist is complete. These derived revisions follow O16's retain-by-default/manual-prune policy.
+- **O20.** (2026-07-19, Implemented) **Acquisition is master-predictive and model-robust.** Every usable
+  master retains a content-addressed, bounded ensemble of full parameter draws from nested sampling,
+  bootstrap, or trusted Laplace covariance. Candidate scans estimate information about target ω and
+  plausible model/branch identity with deterministic common seeds. Missing draws cause a one-time
+  full-tier master escalation. A seeded exposure-scaled Poisson-deviance bootstrap (default α=0.01)
+  tests member homogeneity; inconsistency blocks certification and requests review but never removes
+  data or terminates q. Γ at the resolution boundary is diagnostic only when model-marginalized ω
+  remains identifiable.
 
 ## Session status update
 

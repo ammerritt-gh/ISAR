@@ -67,6 +67,7 @@ _DRAG_THRESHOLD = 12
 _MASTER_FIT_ROLE = Qt.ItemDataRole.UserRole + 20
 _UNIT_KEY_ROLE = Qt.ItemDataRole.UserRole + 21
 _DIMMED_ROLE = Qt.ItemDataRole.UserRole + 22
+_MASTER_VIEW_KEY_ROLE = Qt.ItemDataRole.UserRole + 23
 
 
 class _MasterTree(QTreeWidget):
@@ -1306,6 +1307,7 @@ class ScansDock(QDockWidget):
         self._pool_layout = None                     # the Pool pane's box layout
         self._work_layout = None                     # the Workbench pane's tray layout (scrolls)
         self._work_pinned_layout = None              # the Workbench pane's pinned top (the + tile)
+        self._home_splitter = None                   # preserve operator sizing across live refreshes
         self._built: set[str] = set()                # names of pages whose chips are populated
         self._chips_by_key: dict[str, list[_ScanChip]] = {}
         self._active_key: str | None = None          # inspected unit; not the multi-selection
@@ -1435,6 +1437,7 @@ class ScansDock(QDockWidget):
         v.setContentsMargins(2, 2, 2, 2)
         v.setSpacing(4)
         splitter = QSplitter(Qt.Orientation.Vertical, host)
+        self._home_splitter = splitter
         splitter.setChildrenCollapsible(False)
 
         pool_host = QWidget(splitter)
@@ -1466,6 +1469,7 @@ class ScansDock(QDockWidget):
 
     # ---- rebuild ---------------------------------------------------------
     def _rebuild(self) -> None:
+        master_view_state = self._capture_master_view_state()
         want = self._visible_tabs()
         prev = self._tabs.currentIndex()
         # Tabs are keyed by id (not the display label), so read the previous id from the page order.
@@ -1512,6 +1516,101 @@ class ScansDock(QDockWidget):
             idx = list(self._pages).index(target)
         self._tabs.setCurrentIndex(idx)
         self._build_page(list(self._pages)[idx])
+        self._restore_master_view_state(master_view_state)
+
+    @staticmethod
+    def _master_view_key(fit) -> str:
+        """Stable pooled-group identity across revisions of the same ``(q, T, branch)`` master."""
+        try:
+            q = ",".join(f"{float(value):.12g}" for value in (getattr(fit, "q", None) or ()))
+        except (TypeError, ValueError):
+            q = repr(getattr(fit, "q", None))
+        try:
+            raw_temperature = getattr(fit, "T", None)
+            temperature = "" if raw_temperature is None else f"{float(raw_temperature):.12g}"
+        except (TypeError, ValueError):
+            temperature = repr(getattr(fit, "T", None))
+        return "|".join((str(getattr(fit, "sample", None) or ""), q, temperature,
+                         str(getattr(fit, "branch_id", None) or ""),
+                         str(getattr(fit, "detector_id", None) or "")))
+
+    @staticmethod
+    def _tree_item_view_key(item):
+        unit_key = item.data(0, _UNIT_KEY_ROLE)
+        if unit_key:
+            return ("unit", str(unit_key))
+        master_key = item.data(0, _MASTER_VIEW_KEY_ROLE)
+        return ("master", str(master_key)) if master_key else None
+
+    def _capture_master_view_state(self):
+        """Snapshot operator-owned tree state before a live data refresh destroys the widgets."""
+        tree = getattr(self, "_pool_tree", None)
+        if tree is None:
+            return None
+        expanded = set()
+        iterator = QTreeWidgetItemIterator(tree)
+        while iterator.value():
+            item = iterator.value()
+            key = self._tree_item_view_key(item)
+            if key is not None and item.isExpanded():
+                expanded.add(key)
+            iterator += 1
+        current = self._tree_item_view_key(tree.currentItem()) if tree.currentItem() else None
+        selected = {key for key in (self._tree_item_view_key(item)
+                                    for item in tree.selectedItems()) if key is not None}
+        splitter = getattr(self, "_home_splitter", None)
+        return {
+            "expanded": expanded,
+            "current": current,
+            "selected": selected,
+            "vertical": tree.verticalScrollBar().value(),
+            "horizontal": tree.horizontalScrollBar().value(),
+            "columns": [tree.columnWidth(column) for column in range(tree.columnCount())],
+            "splitter": splitter.sizes() if splitter is not None else None,
+        }
+
+    def _restore_master_view_state(self, state) -> None:
+        """Restore a captured master-browser view without following newly arrived scans."""
+        tree = getattr(self, "_pool_tree", None)
+        if not state or tree is None:
+            return
+        by_key = {}
+        iterator = QTreeWidgetItemIterator(tree)
+        while iterator.value():
+            item = iterator.value()
+            key = self._tree_item_view_key(item)
+            if key is not None:
+                by_key[key] = item
+                if item.childCount():
+                    item.setExpanded(key in state["expanded"])
+            iterator += 1
+        tree.clearSelection()
+        for key in state["selected"]:
+            if key in by_key:
+                by_key[key].setSelected(True)
+        if state["current"] in by_key:
+            tree.setCurrentItem(by_key[state["current"]])
+        for column, width in enumerate(state["columns"]):
+            if column < tree.columnCount():
+                tree.setColumnWidth(column, width)
+        splitter = getattr(self, "_home_splitter", None)
+        if splitter is not None and state["splitter"]:
+            splitter.setSizes(state["splitter"])
+
+        # Apply once immediately as well: if two workspace notifications are coalesced before the
+        # event loop runs, the second rebuild must capture the operator's position, not a transient 0.
+        tree.verticalScrollBar().setValue(state["vertical"])
+        tree.horizontalScrollBar().setValue(state["horizontal"])
+
+        # Scroll ranges settle after the replacement tree has been laid out. Guard the callback so
+        # a second rapid refresh cannot apply this generation's position to a newer tree.
+        def restore_scrollbars():
+            if getattr(self, "_pool_tree", None) is not tree:
+                return
+            tree.verticalScrollBar().setValue(state["vertical"])
+            tree.horizontalScrollBar().setValue(state["horizontal"])
+
+        QTimer.singleShot(0, restore_scrollbars)
 
     def _build_page(self, name: str) -> None:
         if name in self._built or name not in self._page_content:
@@ -1593,8 +1692,22 @@ class ScansDock(QDockWidget):
             omega = "—" if fit.omega0 is None else f"{float(fit.omega0):.3g} meV"
             if interval and len(interval) >= 2:
                 omega += f" [{float(interval[0]):.3g}, {float(interval[-1]):.3g}]"
-            certifying = bool(fit.interval_reliable and interval)
-            state = "certified" if certifying else "no certifying interval"
+            pool_consistent = getattr(fit, "pool_consistent", None)
+            modality = getattr(fit, "modality", None)
+            linewidth_state = getattr(fit, "linewidth_state", None)
+            certifying = bool(fit.interval_reliable and interval
+                              and pool_consistent is not False
+                              and modality != "fork"
+                              and fit.track_state not in {"ambiguous", "missing", "provisional", "blocked"})
+            state = "certifying interval" if certifying else "uncertified"
+            if pool_consistent is False:
+                state += "; pool inconsistent"
+            if modality == "fork":
+                state += "; multimodal"
+            if linewidth_state == "resolution_limited":
+                state += "; Γ resolution-limited"
+            if getattr(group, "stale_count", 0):
+                state += f"; {group.stale_count} scans awaiting collation"
             if (fit.disposition or "").lower() not in ("", "resolved"):
                 state = f"{state}; {fit.disposition}"
             top = QTreeWidgetItem([
@@ -1603,7 +1716,10 @@ class ScansDock(QDockWidget):
                 (datetime.fromtimestamp(group.updated_at).strftime("%H:%M:%S")
                  if getattr(group, "updated_at", None) is not None else "—")])
             top.setData(0, _MASTER_FIT_ROLE, fit)
-            top.setToolTip(6, "; ".join(str(reason) for reason in (fit.reasons or ())) or state)
+            top.setData(0, _MASTER_VIEW_KEY_ROLE, self._master_view_key(fit))
+            revision = getattr(fit, "master_revision", None) or "unknown"
+            top.setToolTip(6, (f"Master revision {revision}; {state}. "
+                               + "; ".join(str(reason) for reason in (fit.reasons or ()))))
             top.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             tree.addTopLevelItem(top)
             for member in members:
@@ -1626,6 +1742,7 @@ class ScansDock(QDockWidget):
         loose = [row for row in rows if row.key not in assigned]
         if loose:
             top = QTreeWidgetItem(["Unpooled scans", "", "", "", "", str(len(loose)), "", ""])
+            top.setData(0, _MASTER_VIEW_KEY_ROLE, "unpooled")
             top.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             tree.addTopLevelItem(top)
             for row in loose:

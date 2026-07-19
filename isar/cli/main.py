@@ -89,6 +89,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "at end of campaign — most run time savings come from not importing the report "
                          "layer / matplotlib per invocation")
     pr.add_argument("--certification-manifest", default=None, help=argparse.SUPPRESS)
+    pr.add_argument("--certification-request", default=None, help=argparse.SUPPRESS)
+    pr.add_argument("--analysis-allowance-seconds", type=float, default=None,
+                    help=argparse.SUPPRESS)
+    pr.add_argument("--finish-initial-wave", action="store_true", help=argparse.SUPPRESS)
 
     ps = sub.add_parser("status", help="summarize a workspace's ledger without reprocessing")
     ps.add_argument("--workspace", required=True)
@@ -157,6 +161,8 @@ def build_parser() -> argparse.ArgumentParser:
                          "--resume-latest: the tier is frozen with the resumed objective")
     pd.add_argument("--budget", default=None,
                     help="override budget as '<amount><unit>' e.g. '8h', '1e10n' (else from the spec/goal)")
+    pd.add_argument("--analysis-limit", default=None,
+                    help="absolute cumulative analysis ceiling, e.g. '1h', '3600s', or 'none'")
     pd.add_argument("--calibration", default=None,
                     help="σ-calibration artifact path (default the repo phonon_dft_deterministic.json)")
     pd.add_argument("--tavi", default=None, help="TAVI API base URL (default http://127.0.0.1:8642/api/v1)")
@@ -183,6 +189,15 @@ def _parse_budget(text: str) -> dict:
         num = s.rstrip("secs").rstrip("s")
         return {"kind": "counting_seconds", "amount": float(num)}
     return {"kind": "counting_seconds", "amount": float(s)}
+
+
+def _parse_analysis_limit(text: str) -> float | None:
+    if str(text).strip().lower() == "none":
+        return None
+    parsed = _parse_budget(text)
+    if parsed["kind"] != "counting_seconds":
+        raise ValueError("--analysis-limit accepts a duration or 'none', not neutrons")
+    return float(parsed["amount"])
 
 
 def main(argv=None) -> int:
@@ -282,12 +297,12 @@ def main(argv=None) -> int:
                     card_hypotheses=card_hypotheses)
                 source = {"kind": "goal",
                           "sha256": hashlib.sha256(args.goal.encode("utf-8")).hexdigest()}
-            if args.budget and not args.envelope:
+            if args.budget:
                 objective.budget = _parse_budget(args.budget)
                 objective.__post_init__()
-            elif args.budget and args.envelope:
-                print("isar drive: note — --budget is frozen with the confirmed objective envelope; "
-                      "the override is ignored", file=sys.stderr)
+            if args.analysis_limit is not None:
+                objective.analysis_limit_seconds = _parse_analysis_limit(args.analysis_limit)
+                objective.__post_init__()
             if args.compile_only:
                 original_goal = args.goal if args.goal is not None else None
                 envelope = make_envelope(objective, source=source, original_goal=original_goal)
@@ -311,8 +326,8 @@ def main(argv=None) -> int:
             return 2
         state = summary["stop"]["state"]
         print(f"isar drive: {state} — {'; '.join(summary['stop']['reasons'])}")
-        return {"met": 0, "unmeetable": 3, "operator_stopped": 4,
-                "pending_recovery": 5}.get(state, 2)
+        return {"met": 0, "incomplete": 3, "operator_stopped": 4,
+                "pending_recovery": 5, "infeasible": 6}.get(state, 2)
     print(f"unknown command: {cmd}", file=sys.stderr)
     return 2
 

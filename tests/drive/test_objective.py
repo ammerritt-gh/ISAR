@@ -5,6 +5,24 @@ from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
 from isar.schema.hypotheses import SteeringPolicy, content_fingerprint
 
 
+def test_dual_clock_defaults_are_tier_specific():
+    deterministic = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.2, budget=None)
+    assert deterministic.budget is None
+    assert deterministic.analysis_limit_seconds == 3600.0
+
+    measurement_dominated = ObjectiveSpec(
+        path=[(2.0, 0.0, 0.0)], tolerance_meV=0.2, budget=None, tier="mcstas")
+    assert measurement_dominated.budget == {
+        "kind": "counting_seconds", "amount": 8.0 * 3600.0}
+    assert measurement_dominated.analysis_limit_seconds is None
+
+
+def test_explicit_analysis_limit_none_survives_round_trip():
+    spec = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.2, budget=None,
+                         analysis_limit_seconds=None)
+    assert ObjectiveSpec.from_dict(spec.to_dict()).analysis_limit_seconds is None
+
+
 def _spec():
     return ObjectiveSpec(
         path=[(1.0, 0.0, 0.0), (1.5, 0.0, 0.0), (2.0, 0.0, 0.0)],

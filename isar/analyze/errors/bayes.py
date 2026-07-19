@@ -62,6 +62,8 @@ class BayesResult:
     seed: int
     prior_used: bool
     fail_reason: str | None = None
+    parameter_names: tuple[str, ...] = ()
+    parameter_samples: np.ndarray | None = None
 
 
 def _gauss_logpdf(x: float, mu: float, sigma: float) -> float:
@@ -122,7 +124,8 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, seed: int = 12345,
                            omega0_samples=np.empty(0), gamma_samples=np.empty(0),
                            log_evidence=float("nan"), log_evidence_err=float("nan"),
                            ess=0.0, bimodal=False, converged=False, n_live=int(n_live),
-                           seed=int(seed), prior_used=prior_used, fail_reason=reason)
+                           seed=int(seed), prior_used=prior_used, fail_reason=reason,
+                           parameter_samples=np.empty((0, 0)))
 
     if not fit_result.optimizer_converged:
         return _failed("fit did not converge")
@@ -183,4 +186,5 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, seed: int = 12345,
                        log_evidence=logz, log_evidence_err=logzerr, ess=ess,
                        bimodal=is_bimodal(omega0_samples), converged=ok,
                        n_live=int(n_live), seed=int(seed), prior_used=prior_used,
-                       fail_reason=reason)
+                       fail_reason=reason, parameter_names=tuple(names),
+                       parameter_samples=np.asarray(eq, dtype=float))

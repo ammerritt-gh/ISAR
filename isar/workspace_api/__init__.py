@@ -16,8 +16,8 @@ fallback, which pulls scipy lazily.
 """
 from __future__ import annotations
 
-from .views import (BranchModelView, CampaignView, CardView, FitView, GroupView, MasterGroupView,
-                    ScanView)
+from .views import (BranchModelView, CampaignView, CardView, CertificationStatusView, FitView,
+                    GroupView, MasterAssessmentView, MasterGroupView, ScanView)
 from .workspace import SCHEMA_VERSION, Workspace, WorkspaceNotFound
 from .scan_keys import scan_prefix, split_key, unit_key
 from .config_gates import (DEFAULT_CLOUD_FALLBACK_MODEL, PolicyValidation, validate_endpoint,
@@ -32,6 +32,8 @@ __all__ = [
     "FitView",
     "GroupView",
     "MasterGroupView",
+    "MasterAssessmentView",
+    "CertificationStatusView",
     "BranchModelView",
     "CampaignView",
     "unit_key",

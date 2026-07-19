@@ -30,9 +30,9 @@ def _session_path(module: str) -> Path | None:
     return package_path if package_path.exists() else None
 
 
-def _imported_modules(module: str, tree: ast.AST) -> set[str]:
+def _imported_modules(module: str, tree: ast.AST, *, is_package: bool = False) -> set[str]:
     found = set()
-    package = module.rsplit(".", 1)[0]
+    package = module if is_package else module.rsplit(".", 1)[0]
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found.update(alias.name for alias in node.names)
@@ -59,7 +59,7 @@ def test_worker_transitive_session_imports_no_drive_cli_or_matplotlib():
             continue
         seen.add(module)
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for imported in _imported_modules(module, tree):
+        for imported in _imported_modules(module, tree, is_package=path.name == "__init__.py"):
             if _is_forbidden(imported):
                 offenders.append((path.relative_to(SESSION_ROOT), imported))
                 continue
@@ -67,3 +67,11 @@ def test_worker_transitive_session_imports_no_drive_cli_or_matplotlib():
             if imported_path is not None and imported not in seen:
                 pending.append((imported, imported_path))
     assert not offenders, f"worker-reachable session modules import forbidden modules: {offenders}"
+
+
+def test_relative_import_resolution_distinguishes_package_init_from_module():
+    tree = ast.parse("from .child import value\n")
+    assert "isar.session.package.child" in _imported_modules(
+        "isar.session.package", tree, is_package=True)
+    assert "isar.session.child" in _imported_modules(
+        "isar.session.module", tree, is_package=False)

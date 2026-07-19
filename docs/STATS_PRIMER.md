@@ -260,6 +260,30 @@ Verify:
 python docs/stats/make_figures.py --only wall --workspace <path-to-mvp_zone_test16>
 ```
 
+### 4.1 Campaign certification is a pooled, model-robust statement
+
+A scan verdict and a campaign decision answer different questions. Individual fits are useful
+diagnostics, but repeated measurements at the same `(q,T)` are one combine-before-divide Poisson
+observation. Only that pooled master can certify ω or update the authoritative dispersion prior.
+
+Before certification, ISAR checks that exposure-scaled member spectra are homogeneous with a seeded
+parametric-bootstrap Poisson deviance test (default α=0.01). The test masks rather than removes bad
+points and treats zero counts exactly. A failure says “this pool is internally inconsistent”; it does
+not license automatic exclusion or prove the requested physics infeasible.
+
+The certifying ω interval is taken across the retained model-weighted full-parameter predictive
+ensemble, not from whichever individual scan or single fitted structure happened to look best. That
+distinction resolves the Γ wall correctly: Γ can sit at the instrumental resolution boundary while ω
+remains identifiable after marginalizing over Γ and model uncertainty. Conversely, unresolved ω
+multimodality, label switching, target-track ambiguity, or pool inconsistency blocks certification no
+matter how narrow one model's HESSE bar looks.
+
+The final-certification computation preserves that statistical unit. It refits—or exactly reuses—one
+frozen pooled master per requested `(q,T)`, never the physical scans that contributed its counts.
+Completed master units checkpoint immediately, but the authoritative generation is published only
+when the entire objective-path worklist is complete. Thus interruption changes elapsed time, not the
+sample, seed, model inputs, reduction order, or reported interval.
+
 ## 5. The earned Bayesian pieces
 
 Chapter 0 reserved the word *credible* for actual posteriors. ISAR has two, and only two.

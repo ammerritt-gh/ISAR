@@ -15,6 +15,7 @@ fallback pulls scipy, lazily).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -24,8 +25,8 @@ from isar.session.workspace import (POLICY_NAME, SESSION_NAME, STATE_NAME, REPOR
 
 from .evaluate import evaluate_model as _evaluate_model
 from .scan_keys import split_key
-from .views import (BranchModelView, CampaignView, CardView, FileView, FitView, GroupView,
-                    LastIngestView, ScanView)
+from .views import (BranchModelView, CampaignView, CardView, CertificationStatusView, FileView,
+                    FitView, GroupView, LastIngestView, MasterAssessmentView, ScanView)
 
 # The read-surface contract version. Bump when the FitView/ScanView/etc. surface changes in a way
 # a consumer must branch on (additive fields do NOT require a bump).
@@ -302,6 +303,37 @@ class Workspace:
         for fit in physical:
             if fit.scan_number is not None:
                 by_scan.setdefault(int(fit.scan_number), []).append(fit)
+        events = self._session_events()
+        analyzed_jobs = {
+            str((event.get("payload") or {}).get("job_id"))
+            for event in events if event.get("kind") == "analyze"
+            and (event.get("payload") or {}).get("job_id") is not None
+        }
+        failed_jobs = {
+            str((event.get("payload") or {}).get("job_id"))
+            for event in events if event.get("kind") == "exception"
+            and (event.get("payload") or {}).get("action") == "scan_not_done"
+            and (event.get("payload") or {}).get("job_id") is not None
+        }
+        pending_by_q: dict[tuple[float, float, float], list[str]] = {}
+        seen_pending_jobs: set[str] = set()
+        for event in events:
+            if event.get("kind") != "physical_submission":
+                continue
+            payload = event.get("payload") or {}
+            job_id = payload.get("job_id")
+            hkl = payload.get("hkl")
+            if job_id is None or not isinstance(hkl, (list, tuple)) or len(hkl) != 3:
+                continue
+            job_key = str(job_id)
+            if job_key in analyzed_jobs or job_key in failed_jobs or job_key in seen_pending_jobs:
+                continue
+            try:
+                q_key = tuple(round(float(value), 8) for value in hkl)
+            except (TypeError, ValueError):
+                continue
+            pending_by_q.setdefault(q_key, []).append(job_key)
+            seen_pending_jobs.add(job_key)
         groups = []
         for master in (fit for fit in self.results if fit.pooled):
             resolved, unresolved = [], []
@@ -328,9 +360,17 @@ class Workspace:
                 except (ValueError, OSError) as exc:
                     self.warnings.append(
                         f"pooled spectrum metadata unavailable for {master.spectrum_ref!r}: {exc}")
+            try:
+                master_q_key = tuple(round(float(value), 8) for value in master.q)
+            except (TypeError, ValueError):
+                master_q_key = ()
             groups.append(MasterGroupView(
                 master=master, members=tuple(resolved),
-                unresolved_members=tuple(unresolved), updated_at=updated_at))
+                unresolved_members=tuple(unresolved), updated_at=updated_at,
+                pending_members=tuple(
+                    fit for fit in physical if fit not in resolved and fit.q == master.q
+                    and (fit.T == master.T or fit.T is None or master.T is None)),
+                pending_acquisitions=tuple(pending_by_q.get(master_q_key, ()))))
         self._views["master_groups"] = groups
         return groups
 
@@ -349,16 +389,82 @@ class Workspace:
         except ValueError as exc:
             raise ValueError(f"pooled spectrum reference escapes data/pooled: {ref!r}") from exc
         payload = json.loads(candidate.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"pooled spectrum payload must be an object in {ref!r}")
         if payload.get("schema") != "isar.pooled_spectrum/1":
             raise ValueError(f"unsupported pooled spectrum schema in {ref!r}")
-        counts = np.asarray(payload.get("counts") or [], dtype=float)
-        variance = np.asarray(payload.get("variance") or [], dtype=float)
+        try:
+            energy = np.asarray(payload.get("energy") or [], dtype=float)
+            counts = np.asarray(payload.get("counts") or [], dtype=float)
+            variance = np.asarray(payload.get("variance") or [], dtype=float)
+            monitor = np.asarray(payload.get("monitor") or [], dtype=float)
+            raw_mask = payload.get("mask") or []
+            if not all(isinstance(value, (bool, np.bool_)) for value in raw_mask):
+                raise ValueError("mask values must be booleans")
+            mask = np.asarray(raw_mask, dtype=bool)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"malformed pooled spectrum arrays in {ref!r}: {exc}") from exc
+        arrays = (energy, counts, variance, monitor, mask)
+        if any(array.ndim != 1 for array in arrays):
+            raise ValueError(f"pooled spectrum arrays must be one-dimensional in {ref!r}")
+        if len({array.shape for array in arrays}) != 1:
+            raise ValueError(f"pooled spectrum arrays are not aligned in {ref!r}")
+        if (not np.all(np.isfinite(energy)) or not np.all(np.isfinite(counts))
+                or not np.all(np.isfinite(variance)) or not np.all(np.isfinite(monitor))):
+            raise ValueError(f"pooled spectrum arrays contain non-finite values in {ref!r}")
+        if np.any(counts < 0.0) or np.any(variance < 0.0) or np.any(monitor < 0.0):
+            raise ValueError(f"pooled spectrum counts, variance, and monitor must be nonnegative in {ref!r}")
         return SimpleNamespace(
-            x=np.asarray(payload.get("energy") or [], dtype=float), counts=counts,
+            x=energy, counts=counts,
             yerr=np.sqrt(np.clip(variance, 0.0, None)), variance=variance,
-            monitor=np.asarray(payload.get("monitor") or [], dtype=float),
-            mask=np.asarray(payload.get("mask") or [], dtype=bool),
+            monitor=monitor, mask=mask,
             members=tuple(tuple(item) for item in payload.get("members") or ()))
+
+    def master_predictive(self, fit_or_ref):
+        """Load one validated, Qt-free posterior-predictive artifact."""
+        import numpy as np
+
+        ref = (fit_or_ref.predictive_ref if hasattr(fit_or_ref, "predictive_ref") else fit_or_ref)
+        if not ref:
+            return None
+        candidate = (self.root / str(ref)).resolve()
+        predictive_root = (self.root / "data" / "master_predictive").resolve()
+        try:
+            candidate.relative_to(predictive_root)
+        except ValueError as exc:
+            raise ValueError(f"master predictive reference escapes data/master_predictive: {ref!r}") from exc
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"master predictive payload must be an object in {ref!r}")
+        if payload.get("schema") != "isar.master_predictive/1":
+            raise ValueError(f"unsupported master predictive schema in {ref!r}")
+        models = payload.get("models")
+        if not isinstance(models, list):
+            raise ValueError(f"master predictive models must be a list in {ref!r}")
+        weights = []
+        for index, model in enumerate(models):
+            if not isinstance(model, dict):
+                raise ValueError(f"master predictive model {index} must be an object in {ref!r}")
+            try:
+                weight = float(model["weight"])
+                names = model["parameter_names"]
+                draws = np.asarray(model["parameter_draws"], dtype=float)
+                omega = np.asarray(model["omega0_draws"], dtype=float)
+                expected = np.asarray(model["expected_counts"], dtype=float)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"malformed master predictive model {index} in {ref!r}") from exc
+            if (not np.isfinite(weight) or weight <= 0.0 or not isinstance(names, list)
+                    or draws.ndim != 2 or expected.ndim != 2 or omega.ndim != 1
+                    or draws.shape[0] != expected.shape[0] or expected.shape[0] == 0
+                    or omega.size not in (0, expected.shape[0])
+                    or draws.shape[1] != len(names)
+                    or not np.all(np.isfinite(draws)) or not np.all(np.isfinite(omega))
+                    or not np.all(np.isfinite(expected)) or np.any(expected < 0.0)):
+                raise ValueError(f"invalid master predictive model {index} in {ref!r}")
+            weights.append(weight)
+        if weights and not np.isclose(sum(weights), 1.0, rtol=1e-6, atol=1e-9):
+            raise ValueError(f"master predictive model weights are not normalized in {ref!r}")
+        return payload
 
     @property
     def branch_model(self) -> BranchModelView:
@@ -381,6 +487,66 @@ class Workspace:
             view = CampaignView(objective=raw.get("objective"), budget=raw.get("budget"),
                                 stop=raw.get("stop"), raw=raw)
         self._views["campaign_view"] = view
+        return view
+
+    @property
+    def master_assessments(self) -> list[MasterAssessmentView]:
+        """Latest durable pooled-master assessment snapshot, in objective-path order."""
+        if "master_assessments" in self._views:
+            return self._views["master_assessments"]
+        per_q = []
+        for record in reversed(self._session_events()):
+            if record.get("kind") != "decide":
+                continue
+            payload = record.get("payload") or {}
+            if payload.get("event") == "model_update" or payload.get("action") == "model_update":
+                per_q = payload.get("per_q") or []
+                break
+        views = [MasterAssessmentView.from_dict(value) for value in per_q if isinstance(value, dict)]
+        self._views["master_assessments"] = views
+        return views
+
+    @property
+    def certification_status(self) -> CertificationStatusView | None:
+        """Newest durable certification status; checkpoint layout stays behind the facade."""
+        if "certification_status" in self._views:
+            return self._views["certification_status"]
+
+        def _load():
+            root = self._report_dir / "certification"
+            candidates = list(root.glob("*/progress.json"))
+            if not candidates:
+                raise FileNotFoundError(root)
+            rows = []
+            for path in candidates:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if payload.get("schema") != "isar.certification.progress/1":
+                    continue
+                rows.append(payload)
+            if not rows:
+                raise FileNotFoundError(root)
+            latest = max(rows, key=lambda value: float(value.get("updated_ts") or 0.0))
+            current_path = root / "current.json"
+            if current_path.exists():
+                current = json.loads(current_path.read_text(encoding="utf-8"))
+                expected = current.get("published_hashes") or {}
+                paths = {
+                    "session.json": self.root / "session.json",
+                    "card.state.json": self.root / "card.state.json",
+                    "results.csv": self._report_dir / "results.csv",
+                    "card.policy.toml": self.root / "card.policy.toml",
+                }
+                hashes_match = bool(expected) and all(
+                    path.is_file()
+                    and hashlib.sha256(path.read_bytes()).hexdigest() == expected.get(name)
+                    for name, path in paths.items())
+                if current.get("fingerprint") == latest.get("fingerprint") and hashes_match:
+                    latest = {**latest, "published": True, "phase": "completed"}
+            return latest
+
+        raw = self._parse("certification_status", _load, None)
+        view = CertificationStatusView.from_dict(raw) if isinstance(raw, dict) else None
+        self._views["certification_status"] = view
         return view
 
     # ---- session events ---------------------------------------------------
@@ -449,10 +615,22 @@ class Workspace:
         fit = self._find_fit(scan_id, detector_id)
         if fit is None:
             raise KeyError(f"no fit for scan_id={scan_id!r} detector={detector_id!r}")
+        return self.evaluate_fit(fit, x_eval=x_eval)
+
+    def evaluate_fit(self, fit, x_eval=None):
+        """Evaluate a supplied :class:`FitView`, including a pooled master.
+
+        Unlike :meth:`evaluate_model`, this interface performs no scan-identity lookup.  When the
+        caller omits ``x_eval`` for a pooled fit, its persisted combined spectrum supplies the grid.
+        """
         qe = None
         pol = self._policy()
         if pol is not None:
             qe = getattr(pol, "quasielastic_fwhm", None)
+        if x_eval is None and getattr(fit, "pooled", False):
+            pooled = self.pooled_spectrum(fit)
+            if pooled is not None:
+                x_eval = pooled.x
         return _evaluate_model(fit, self._data_dir, quasielastic_fwhm=qe, x_eval=x_eval)
 
     def scan_data(self, scan_id):

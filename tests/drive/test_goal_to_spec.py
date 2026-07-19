@@ -170,6 +170,19 @@ def test_file_schema_accepts_operator_steering_but_llm_schema_does_not():
     assert spec.steering["maximum_bridge_steps"] == 1
 
 
+def test_file_schema_accepts_explicitly_disabled_analysis_limit():
+    payload = {**_GOOD, "analysis_limit_seconds": None}
+    spec = g2s.spec_from_dict(payload, defaults={"tier": "deterministic"})
+    assert spec.analysis_limit_seconds is None
+
+
+def test_file_schema_still_rejects_invalid_analysis_limit_type():
+    payload = {**_GOOD, "analysis_limit_seconds": "none"}
+    assert not g2s._conforms(payload, g2s.FILE_SPEC_SCHEMA)
+    with pytest.raises(g2s.GoalParseError):
+        g2s.spec_from_dict(payload, defaults={"tier": "deterministic"})
+
+
 def test_hypothesis_resolution_precedence_goal_then_card_then_shipped():
     base = {"q_start": [2, 0, 0], "q_end": [2, 0.5, 0], "step_rlu": 0.05,
             "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic"}

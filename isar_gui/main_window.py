@@ -554,6 +554,7 @@ class MainWindow(QMainWindow):
 
         self.browser_dock = BrowserDock(
             self.browser_vm, self, unit_key_for_fit=self._unit_key_for_fit)
+        self.browser_vm.selection_changed.connect(self.campaign_dock.set_selected_fit)
         self.active_units.active_changed.connect(self.browser_dock.set_active_key)
         self.browser_dock.set_active_key(self.active_units.key)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.browser_dock)
@@ -1277,7 +1278,8 @@ class MainWindow(QMainWindow):
         if not live_workspace:
             self.log("stale campaign completion ignored — workspace changed")
             return
-        msg = {0: "Campaign met its objective", 3: "Campaign unmeetable — see the feed",
+        msg = {0: "Campaign met its objective", 3: "Campaign incomplete — see the feed",
+               6: "Campaign infeasible — see the feed",
                4: "Campaign stopped by operator"}.get(int(code), f"Campaign failed (exit {code})")
         self.statusBar().showMessage(msg)
         self._sync_run_actions()

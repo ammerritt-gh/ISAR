@@ -120,6 +120,34 @@ def test_subprocess_runner_argv_force(monkeypatch):
     assert cmd[cmd.index("--errors") + 1] == "full"
 
 
+def test_subprocess_runner_soft_deadline_is_a_checkpointed_nonerror(monkeypatch):
+    captured = {}
+
+    class _CP:
+        returncode = 75
+        stdout = "checkpointed incomplete analysis"
+        stderr = ""
+
+    monkeypatch.setattr(runner_mod.subprocess, "run",
+                        lambda cmd, **_kwargs: (captured.__setitem__("cmd", list(cmd)), _CP())[1])
+    result = SubprocessRunner().run(
+        "ws", ["d"], errors_tier="full", analysis_allowance_seconds=12.5,
+        finish_initial_wave=True)
+    assert not result.completed and result.returncode == 75
+    assert captured["cmd"][captured["cmd"].index("--analysis-allowance-seconds") + 1] == "12.5"
+    assert "--finish-initial-wave" in captured["cmd"]
+
+
+def test_subprocess_runner_passes_session_owned_certification_request(monkeypatch):
+    captured = _capture_subprocess(monkeypatch)
+
+    SubprocessRunner().run(
+        "ws", ["d"], errors_tier="full", certification_request="request.json")
+
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--certification-request") + 1] == "request.json"
+
+
 def test_subprocess_runner_argv_bayes_tier(monkeypatch):
     # The new "bayes" tier (Stage 6 campaign opt-in) round-trips verbatim to `--errors bayes`, exactly
     # like every other tier string — SubprocessRunner does not validate tier membership.

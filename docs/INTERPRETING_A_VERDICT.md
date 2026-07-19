@@ -55,6 +55,24 @@ When ISAR pools the candidate models it reports the shape of the answer:
   data are genuinely ambiguous, and ISAR is refusing to average two real possibilities into one wrong
   number. *Look at both.*
 
+## A scan verdict does not stop a campaign
+
+During an autonomous campaign, individual scan fits are provenance and troubleshooting aids. They do
+not vote on the final ω, branch identity, convergence, or whether to abandon a q-point. ISAR combines
+all accepted raw counts at the same `(q,T)` first and assesses that pooled **master**. A string of
+`junk`, `underpowered`, `no_signal`, or ambiguous individual fits therefore cannot terminate the point
+while the master may still improve with more information.
+
+The master browser is the decision view: it shows the combined counts and fit, model-weighted ω
+interval, member consistency, branch/track state, linewidth state, members, revision, and expected next
+information. Campaign states are `met`, `incomplete`, or independently proven `infeasible`. “Poor fit”
+and “low gain” mean continue until a configured global limit, not “unmeetable.”
+
+Final certification does not reopen the individual verdicts. It freezes one job per requested master,
+reuses an exact full/Bayes master when available, and otherwise checkpoints that master as soon as it
+finishes. Until every requested master has a durable unit and the hash-bearing publication marker is
+written, the GUI says `checkpointed` rather than implying that a partial generation is final.
+
 ## The one promise
 
 **Flag, don't delete.** Whatever the verdict, the raw data stays and the reason is recorded. ISAR's job

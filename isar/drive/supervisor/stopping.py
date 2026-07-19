@@ -2,27 +2,19 @@
 
 Teixeira Parente et al. (2022) name the stopping criterion as the untested gap in autonomous TAS; the
 driver makes it a first-class, testable output. This module holds the *deterministic* core (no LLM):
-path bookkeeping, per-grid-q convergence, and the overall ``met`` / ``unmeetable`` / ``continue``
+path bookkeeping, per-grid-q convergence, and the overall ``met`` / ``incomplete`` /
+``infeasible`` / ``continue``
 decision. The LLM supervisor consumes the decision; it does not compute it.
 
-**Per-grid-q convergence** (all three required):
+**Per-grid-q convergence.** A published, internally consistent pooled master must carry a reliable
+model-robust ω interval within tolerance and, for named targets, confirmed track identity. Individual
+fit intervals and verdicts never vote. Γ may remain resolution-limited when ω is identifiable after
+model/Γ marginalization.
 
-1. the **calibrated** half-width — ``inflation × (interval_hi − interval_lo) / 2`` from
-   :mod:`isar.drive.acquisition.calibration`, **never** ISAR's floored prior sigma — is ≤ tolerance;
-2. the disposition is **resolved**;
-3. it is **confirmed on a dedicated production/confirm scan**: the criterion holds on **two
-   consecutive production fits**, and the FIRST crossing carries a conservative margin (``k = 1.2`` on
-   the half-width). This is the peeking / optional-stopping-bias guard (ISAR ``docs/campaigns/PHASE_4_NOTES.md``):
-   the live shrinking interval preferentially stops on downward fluctuations, so a single lucky
-   crossing must be reproduced by a second scan before it counts.
-
-**Overall decision.** ``met`` when every grid q is converged. ``unmeetable`` (with reasons) when the
-budget is exhausted with the path still under-determined, the tolerance is below the resolution-
-asymmetry systematic **floor** (default the calibration's ``center_pull_mean``), or every remaining
-q is **stuck** (declined ``max_declines``× without converging). A stuck q is abandoned — the
-acquisition engine skips it and the campaign keeps mapping the rest — so a single hopeless point
-(e.g. Γ, where the acoustic branch is degenerate with the elastic line) does not abort the map.
-Otherwise ``continue``.
+**Overall decision.** ``met`` means every requested master certified. A global measurement budget,
+analysis limit, or iteration limit yields ``incomplete``. ``infeasible`` is reserved for independently
+established instrument/geometry/calibration impossibility or a tolerance below the declared floor.
+Poor fits, low information, ambiguity, and repeated scans are diagnostics; they never abandon q.
 """
 from __future__ import annotations
 
@@ -32,7 +24,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-MAX_DECLINES = 3              # a q that declines (no signal) this many CONSECUTIVE times is abandoned
+MAX_DECLINES = 3              # compatibility/diagnostic threshold; never a stop condition
 FIRST_CROSSING_MARGIN = 1.2  # retained for back-compat (legacy q_converged); unused by the master path
 _HKL_TOL = 1e-4              # r.l.u. tolerance for matching an observation to a path grid point
 _BIG = float("inf")
@@ -116,9 +108,8 @@ def next_kind_for_q(prod_fits: list[dict], tolerance: float, *,
 # error, and the systematic floor guards accuracy. `resolved` and `flagged` both carry a usable ω₀.
 USABLE_DISPOSITIONS = frozenset({"resolved", "flagged"})
 
-# A q that has pooled this many production scans without converging is abandoned (its master interval
-# has stopped shrinking below tolerance — a systematic floor, not a counts problem).
-MAX_PROD_ATTEMPTS = 8
+# Historical strategy threshold retained for policy parsing and diagnostics only.
+MAX_PROD_ATTEMPTS = 8         # compatibility/diagnostic threshold; never a stop condition
 
 
 # --------------------------------------------------------------------------- grid summary
@@ -126,9 +117,9 @@ MAX_PROD_ATTEMPTS = 8
 class GridQ:
     """A per-grid-point rollup the acquisition function and the stopping criterion both consume.
 
-    Convergence is decided by the q's **master** (pooled) fit — the combine-before-divide fit of all
-    production scans at this q, which ISAR refits as each new scan lands. Per-scan fits feed the ω(q)
-    steering model and the abandon counters, but the number the campaign certifies is the master's.
+    The published combine-before-divide **master** is the sole scientific authority. Physical scan
+    rows are retained only for acquisition cost/provenance; their fitted numbers and verdicts never
+    affect ω, branch identity, convergence, or stopping.
     """
 
     index: int
@@ -137,17 +128,12 @@ class GridQ:
     tolerance: float
     n_production: int = 0          # production scans taken at this q (each grows the pool)
     n_quicklook: int = 0
-    n_decline: int = 0             # consecutive per-scan fits with no usable ω₀ (junk/no_signal)
-    # Decline sub-labels (subsets of n_decline — abandon-count semantics unchanged, labeling only):
-    # a validation-rejected proposal (unreachable by the instrument) vs a signal the model could not
-    # account for (disposition "unmodeled"). Used only to refine the terminal stuck_reason.
+    # Retained zero-valued compatibility fields for report readers predating master authority. The
+    # reducer never increments them and no scientific decision reads them.
+    n_decline: int = 0
     n_infeasible: int = 0
     n_unmodeled: int = 0
     n_branch_ambiguous: int = 0
-    # S3 (DECISIONS): the THIRD state. A production/confirm delivery whose ω₀ interval is
-    # interval_reliable=False (γ-at-bound) or never left the untrusted fast tier — it delivers a
-    # center but carries no certifiable interval. Counted here, NOT as a no-signal decline (it is not
-    # evidence of signal absence) and NOT as a convergence (its interval is degenerate, not precise).
     n_uncertifiable: int = 0
     saw_uncertifiable_gamma: bool = False   # ≥1 uncertifiable delivery was γ-at-bound (flagged interval)
     saw_uncertifiable_fast: bool = False    # ≥1 uncertifiable delivery stayed on the untrusted fast tier
@@ -159,10 +145,11 @@ class GridQ:
     best_omega0: float | None = None
     best_halfwidth: float | None = None
     best_resolved: bool = False
-    best_prod_halfwidth: float | None = None  # tightest usable+reliable SINGLE production fit
+    best_prod_halfwidth: float | None = None  # compatibility only; never populated or consulted
     best_prod_omega0: float | None = None
     master: dict | None = None     # {"omega0","halfwidth","reliable","usable","disposition","n_members"}
     requires_crossing_guard: bool = False
+    requires_confirmed_track: bool = False
     crossing_fingerprints: list[str] = field(default_factory=list)
     max_production_batches: int = MAX_PROD_ATTEMPTS
     master_updates: list[dict] = field(default_factory=list)
@@ -174,12 +161,50 @@ class GridQ:
 
     @property
     def visited(self) -> bool:
-        return self.n_quicklook > 0 or self.n_production > 0 or self.n_decline > 0
+        return self.master is not None or self.n_quicklook > 0 or self.n_production > 0
+
+    @property
+    def master_revision(self) -> str | None:
+        m = self.master or {}
+        value = m.get("content_hash") or m.get("production_batch_fingerprint")
+        return str(value) if value else None
+
+    @property
+    def linewidth_state(self) -> str:
+        return "resolution_limited" if (self.master or {}).get("gamma_at_bound") else "resolved"
+
+    @property
+    def diagnostics(self) -> list[str]:
+        m = self.master or {}
+        out = []
+        if self.interval_floored:
+            out.append("interval_nonshrinking")
+        if self.info_saturated:
+            out.append("diminishing_returns")
+        if self.candidate_rejected or m.get("modality") == "fork" or self.track_state in {
+                "ambiguous", "missing", "provisional", "blocked"}:
+            out.append("model_ambiguous")
+        if m.get("pool_consistent") is False:
+            out.append("pool_inconsistent")
+        if m and m.get("model_robust") is False:
+            out.append("model_ambiguous")
+        if m.get("gamma_at_bound"):
+            out.append("linewidth_resolution_limited")
+        if m and not m.get("usable"):
+            out.append("analysis_failed")
+        return list(dict.fromkeys(out))
+
+    @property
+    def assessment_state(self) -> str:
+        if self.master is None:
+            return "unmeasured"
+        return "certified" if self.converged else "uncertified"
 
     @property
     def _master_hw(self) -> float | None:
         m = self.master
-        if not m or not m.get("usable") or m.get("halfwidth") is None:
+        if (not m or not m.get("usable") or m.get("halfwidth") is None
+                or m.get("pool_consistent") is False or m.get("modality") == "fork"):
             return None
         # S3: convergence seats only on a CERTIFIABLE interval. `certifiable` (reliable interval AND
         # interval_reliable≠False, or a trusted-HESSE fallback) is authoritative; fall back to the
@@ -192,23 +217,18 @@ class GridQ:
 
     @property
     def cert_halfwidth(self) -> float | None:
-        """The tightest trustworthy ω₀ half-width for this q: the master (pooled) fit when it is
-        usable+reliable, OR the best single production fit — whichever is smaller. A single production
-        fit is the fallback when pooling to higher statistics DEGRADES a model-limited q (the pooled
-        residual reads as junk), where accumulating more counts cannot help — only a better model can."""
-        cands = [h for h in (self._master_hw, self.best_prod_halfwidth) if h is not None]
-        return min(cands) if cands else None
+        """The certifying pooled-master half-width; physical scans never provide a fallback."""
+        return self._master_hw
 
     @property
     def cert_omega0(self) -> float | None:
-        mh, ph = self._master_hw, self.best_prod_halfwidth
-        if mh is not None and (ph is None or mh <= ph):
-            return (self.master or {}).get("omega0")
-        return self.best_prod_omega0
+        return (self.master or {}).get("omega0") if self._master_hw is not None else None
 
     @property
     def converged(self) -> bool:
-        """A trustworthy ω₀ interval (master OR best single production) is within tolerance."""
+        """A trustworthy pooled-master ω₀ interval is within tolerance."""
+        if self.requires_confirmed_track and self.track_state != "confirmed":
+            return False
         if self.track_state is not None and self.track_state != "confirmed":
             return False
         hw = self.cert_halfwidth
@@ -230,7 +250,9 @@ class GridQ:
         (which does not shrink when ω₀ is unidentifiable) feeds it teeth."""
         if self.converged:
             return False
-        sigma = self.cert_halfwidth if self.cert_halfwidth is not None else self.best_halfwidth
+        sigma = self.cert_halfwidth
+        if sigma is None and (self.master or {}).get("diagnostic_halfwidth") is not None:
+            sigma = float(self.master["diagnostic_halfwidth"])
         if sigma is None or self.last_prod_cost is None or self.counts_spent <= 0.0:
             return False
         from isar.drive.acquisition.eig import voi_saturated
@@ -249,7 +271,8 @@ class GridQ:
         key = tuple(latest.get(field) for field in key_fields)
         comparable = [update for update in self.master_updates
                       if tuple(update.get(field) for field in key_fields) == key
-                      and update.get("diagnostic_halfwidth") is not None
+                       and bool(update.get("certifiable", update.get("reliable", False)))
+                       and update.get("diagnostic_halfwidth") is not None
                       and update.get("effective_exposure") is not None]
         window = comparable[-self.interval_floor_window:]
         if len(window) < self.interval_floor_window:
@@ -274,8 +297,7 @@ class GridQ:
     @property
     def signal_seen(self) -> bool:
         """Whether this q has positive signal evidence, including an unresolved branch candidate."""
-        return bool(self.best_omega0 is not None or self.n_uncertifiable > 0
-                    or self.n_unmodeled > 0 or self.n_branch_ambiguous > 0)
+        return bool((self.master or {}).get("usable"))
 
     @property
     def candidate_rejected(self) -> bool:
@@ -283,60 +305,20 @@ class GridQ:
 
     @property
     def stuck(self) -> bool:
-        """Abandoned: can't get signal (``MAX_DECLINES`` consecutive junk fits), delivered centers but
-        every calibrated interval is uncertifiable ``MAX_DECLINES``× (S3: γ-at-bound or fast-tier-only),
-        the master has pooled ``MAX_PROD_ATTEMPTS`` scans without converging (interval floored above
-        tolerance), or the q is value-of-information saturated (:attr:`info_saturated`)."""
-        if self.converged:
-            return False
-        no_signal_exhausted = self.n_decline >= MAX_DECLINES and not self.signal_seen
-        return (no_signal_exhausted or self.candidate_rejected or self.interval_floored
-                or self.n_production >= self.max_production_batches
-                or self.info_saturated)
+        """Compatibility surface: diagnostics no longer autonomously abandon a q-point."""
+        return False
 
     @property
     def stuck_reason(self) -> str | None:
-        """The machine-readable reason this q is stuck (S3 stop-state taxonomy), or ``None`` if it is
-        not stuck. One of: ``interval_floored`` (a certifiable interval sits above tolerance after many
-        pooled scans), ``info_saturated`` (VOI diminishing returns), ``uncertifiable_interval``
-        (delivered centers, every interval flagged γ-at-bound), ``fast_tier_only`` (delivered centers,
-        no fit ever left the untrusted fast tier), ``infeasible`` (every decline was a validation
-        rejection — the point is unreachable by the instrument), ``signal_unmodeled`` (signal present
-        but the model could not fit it, disposition ``unmodeled``), ``no_signal`` (no usable fit ever
-        existed here)."""
-        if not self.stuck:
-            return None
-        if self.candidate_rejected:
-            return "posterior_rejected"
-        if self.interval_floored:
-            return "interval_floored"
-        # Floored: a genuinely CERTIFIABLE interval exists but cannot shrink below tolerance.
-        if self.n_production >= self.max_production_batches and self.cert_halfwidth is not None:
-            return "interval_floored"
-        if self.info_saturated:
-            return "info_saturated"
-        # Uncertifiable third state — a usable center was delivered, but no certifiable interval.
-        if self.saw_uncertifiable_gamma or self.saw_uncertifiable_fast or self.n_uncertifiable > 0:
-            return "uncertifiable_interval" if self.saw_uncertifiable_gamma else "fast_tier_only"
-        if self.n_unmodeled > 0:
-            return "signal_unmodeled"
-        if self.n_branch_ambiguous > 0:
-            return "branch_ambiguity"
-        # Terminal no-signal fall-through, refined by decline sub-labels: ALL declines being
-        # validation rejections means the point is instrument-infeasible; an "unmodeled" disposition
-        # means the signal is present but unfit. Otherwise it is a genuine no-signal q.
-        if self.n_infeasible > 0 and self.n_infeasible >= self.n_decline:
-            return "infeasible"
-        return "no_signal"
+        """Compatibility surface; scientific diagnostics live in :attr:`diagnostics`."""
+        return None
 
     @property
     def deficit(self) -> float:
-        """Calibrated σ-above-tolerance deficit; ``+inf`` if never fit. Uses the certified half-width
-        (master or best single production), falling back to the best per-scan/quick-look estimate for
-        a q that has only been quick-looked."""
+        """Master interval-above-tolerance deficit; ``+inf`` before a usable master exists."""
         hw = self.cert_halfwidth
-        if hw is None:
-            hw = self.best_halfwidth
+        if hw is None and (self.master or {}).get("diagnostic_halfwidth") is not None:
+            hw = float(self.master["diagnostic_halfwidth"])
         return _BIG if hw is None else hw - self.tolerance
 
 
@@ -394,15 +376,15 @@ def _logical_observations(observations: list[dict], target_branch: str) -> list[
 def summarize_grid(objective, observations: list[dict], master_rows: list[dict] | None = None):
     """One :class:`GridQ` per objective grid point from the per-scan ``observations`` + ``master_rows``.
 
-    Per-scan observations ``{"hkl","kind","calibrated_halfwidth","resolved","disposition","omega0"}``
-    feed the ω(q) steering model and the abandon counters. ``master_rows`` (the pooled fits, read fresh
-    each iteration — their interval shrinks as scans accumulate) decide convergence. Both match to a
-    grid point by nearest hkl; off-grid entries are ignored.
+    Per-scan observations contribute acquisition count/cost provenance only. ``master_rows`` (the
+    pooled fits, read fresh each iteration) exclusively provide ω, interval, branch, convergence, and
+    diagnostics. Both match to a grid point by nearest hkl; off-grid entries are ignored.
     """
     path = objective.path
     target_branch = getattr(objective, "target_branch", "acoustic") or "acoustic"
     scalars = path_scalars(path)
     crossing_guard = bool(getattr(objective, "hypotheses", None))
+    confirmed_track_required = getattr(objective, "target_selector", None) == "tracked_branch"
     def branch_matches(item: dict) -> bool:
         if "branch_id" not in item:
             return True                  # legacy event predating additive branch provenance
@@ -414,7 +396,8 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
     policy = getattr(objective, "steering", None) or {}
     grid = [GridQ(index=i, hkl=tuple(path[i]), q=scalars[i], tolerance=objective.tolerance_meV,
                   requires_crossing_guard=crossing_guard, max_production_batches=max_batches,
-                  interval_floor_window=int(policy.get("interval_floor_window", 3)),
+                  requires_confirmed_track=confirmed_track_required,
+                  interval_floor_window=max(1, int(policy.get("interval_floor_window", 3))),
                   interval_floor_min_improvement=float(policy.get(
                       "interval_floor_min_improvement", 0.05)),
                   interval_floor_min_exposure_ratio=float(policy.get(
@@ -434,32 +417,20 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
         # unusually fine path places it within the nearest-hkl matching tolerance.
         if obs.get("certification_eligible") is False or obs.get("driver_inserted") is True:
             continue
+        if obs.get("hkl") is None:
+            continue
         i = match_grid_index(tuple(obs["hkl"]), path)
         if i is None:
             continue
         g = grid[i]
-        # The current selected result is authoritative even when no pooled master exists yet.  Ignore
-        # the deliberately muted ``individual`` label and retain only the newest assignment revision.
-        track_state = obs.get("track_state")
-        if track_state in {"confirmed", "ambiguous", "missing", "provisional", "blocked"}:
-            try:
-                track_revision = (int(obs["track_revision"])
-                                  if obs.get("track_revision") is not None else 0)
-            except (TypeError, ValueError):
-                track_revision = 0
-            if g.track_revision is None or track_revision >= g.track_revision:
-                g.track_state = track_state
-                g.track_revision = track_revision
         kind = obs.get("kind")
         if kind == "certification_crossing":
             fingerprint = obs.get("production_batch_fingerprint")
             if fingerprint:
                 g.crossing_fingerprints.append(str(fingerprint))
             continue
-        # `resolved` on the observation is "usable for steering" — set by loop._observation_from_row
-        # for resolved-or-flagged fits carrying a calibrated half-width.
-        usable = bool(obs.get("resolved"))
-        hw = obs.get("calibrated_halfwidth")
+        # Physical observations update only acquisition accounting. Their fitted numbers, branch
+        # labels, and verdicts deliberately do not enter this reducer's scientific state.
         cost = float(obs.get("proposal_cost") or 0.0)   # actual submitted scan cost (Phase 5)
         g.counts_spent += cost
         submitted_ncount = obs.get("submitted_ncount")
@@ -474,59 +445,12 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                 g.last_prod_cost = cost                 # the next production scan's ΔC proxy
         elif kind == "quicklook":
             g.n_quicklook += 1
-        # Only the REQUESTED branch steers the ω(q) model / certifies a q. ``None`` is permissive
-        # DELIBERATELY for legacy
-        # ledgers and posterior-off mode (no [dispersion] zone_period ⇒ branch_id is None for every
-        # row) carry no branch assignment, and this gate is then fully permissive by design. It only
-        # bites once branch assignment is active (posterior on), rejecting rows tagged non-acoustic.
-        requested_branch = obs.get("branch_id") in (None, target_branch)
-        is_prod = kind in PRODUCTION_KINDS
-        # S3: `certifiable` (loop._observation_from_row) is True only for a reliable interval
-        # (interval_reliable≠False, or a trusted-HESSE fast fallback). Default True keeps synthetic /
-        # pre-S3 observations behaving as before (additive contract).
-        certifiable = obs.get("certifiable", True)
-        if not usable or not requested_branch:
-            # Sub-label the decline (abandon-count semantics unchanged — both still increment
-            # n_decline): a validation-rejected proposal is instrument-infeasible; an "unmodeled"
-            # disposition is signal the model could not fit. Only refines the terminal stuck_reason.
-            if obs.get("verdict") == "validation_rejected":
-                g.n_infeasible += 1
-            if obs.get("disposition") == "unmodeled":
-                g.n_unmodeled += 1
-            if (obs.get("verdict") == "branch_continuation"
-                    or obs.get("disposition") == "branch_continuation"
-                    or (usable and not requested_branch)):
-                g.n_branch_ambiguous += 1
-            g.n_decline += 1
-        elif is_prod and not certifiable:
-            # THIRD STATE: a delivered production/confirm center whose interval is uncertifiable. It
-            # neither converges (no calibrated interval) NOR declines (a center WAS delivered — not
-            # evidence of signal absence). n_decline is left untouched (not reset, not incremented).
-            g.n_uncertifiable += 1
-            if obs.get("uncertifiable_kind") == "fast_tier":
-                g.saw_uncertifiable_fast = True
-            else:
-                g.saw_uncertifiable_gamma = True
-        else:
-            g.n_decline = 0        # a certifiable fit (or a steering quicklook) proves the q CAN deliver
-            if obs.get("fit_kind"):
-                g.last_fit_kind = obs.get("fit_kind")   # provenance of the most recent usable fit
-            if requested_branch and obs.get("omega0") is not None and (g.best_halfwidth is None
-                                                  or (hw is not None and hw < g.best_halfwidth)):
-                g.best_omega0 = float(obs["omega0"])
-                g.best_halfwidth = hw
-                g.best_resolved = True
-            # A usable single PRODUCTION fit with a real (reliable, certifiable) interval is a
-            # convergence candidate in its own right — it beats the master when pooling degrades a
-            # model-limited q. Uncertifiable production fits were routed above and never reach here.
-            if requested_branch and is_prod and hw is not None and obs.get("omega0") is not None and (
-                    g.best_prod_halfwidth is None or hw < g.best_prod_halfwidth):
-                g.best_prod_halfwidth = hw
-                g.best_prod_omega0 = float(obs["omega0"])
     for mr in (master_rows or []):
+        if mr.get("hkl") is None:
+            continue
         i = match_grid_index(tuple(mr["hkl"]), path)
         if i is not None and branch_matches(mr):
-            master = mr
+            master = dict(mr)
             members = master.get("members") or []
             if members:
                 encoded = json.dumps(sorted(str(member) for member in members),
@@ -549,19 +473,31 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
 
 
 def model_points(grid: list[GridQ]) -> list[tuple[float, float, float]]:
-    """The ``(q, omega0, halfwidth)`` triples for the ω(q) model — one per grid point with a usable fit."""
+    """Authoritative pooled-master ``(q, omega0, halfwidth)`` triples for the ω(q) model."""
     pts = []
     for g in grid:
-        if (g.track_state in (None, "confirmed") and g.best_resolved
-                and g.best_omega0 is not None and g.best_halfwidth is not None):
-            pts.append((g.q, g.best_omega0, g.best_halfwidth))
+        master = g.master or {}
+        halfwidth = master.get("halfwidth")
+        track_ok = (g.track_state == "confirmed" if g.requires_confirmed_track
+                    else g.track_state in (None, "confirmed"))
+        if (track_ok and master.get("usable")
+                and master.get("omega0") is not None and halfwidth is not None):
+            try:
+                omega0 = float(master["omega0"])
+                numeric_halfwidth = float(halfwidth)
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(omega0) and math.isfinite(numeric_halfwidth)
+                    and numeric_halfwidth >= 0.0):
+                continue
+            pts.append((g.q, omega0, numeric_halfwidth))
     return pts
 
 
 # --------------------------------------------------------------------------- the decision
 @dataclass
 class StopDecision:
-    """The terminal-or-not verdict: ``state`` in ``continue`` | ``met`` | ``unmeetable`` + reasons."""
+    """Campaign verdict: ``continue`` | ``met`` | ``incomplete`` | ``infeasible``."""
 
     state: str
     reasons: list[str] = field(default_factory=list)
@@ -575,7 +511,7 @@ def systematic_floor(calibration=None, floor: float | None = None) -> float:
     """The tolerance floor: an explicit ``floor``, else the calibration's ``|center_pull_mean|``, else 0.
 
     Below this the resolution-asymmetry systematic swamps the statistical half-width, so a tighter
-    tolerance is unmeetable by construction.
+    tolerance is physically infeasible by construction.
     """
     if floor is not None:
         return float(floor)
@@ -586,39 +522,10 @@ def systematic_floor(calibration=None, floor: float | None = None) -> float:
     return 0.0
 
 
-def _stuck_why(g: GridQ) -> str:
-    """The human why-string for a stuck q, DERIVED from :attr:`GridQ.stuck_reason` (S3 §6.1: stop
-    messages must be generated from the classification, never canned). One line, no leading q label."""
-    reason = g.stuck_reason
-    if reason == "interval_floored":
-        return f"pooled {g.n_production} scans without converging (interval floored above tolerance)"
-    if reason == "info_saturated":
-        return ("value-of-information saturated (another scan would shrink σ(ω₀) by less than "
-                "the VOI floor — diminishing returns)")
-    if reason == "uncertifiable_interval":
-        return (f"delivered ω₀ center(s) but every calibrated interval is unreliable "
-                f"(γ-at-bound: resolution-limited spike, degenerate bootstrap) — uncertifiable, "
-                f"not no-signal")
-    if reason == "fast_tier_only":
-        return ("delivered ω₀ center(s) but no fit produced a trusted interval (stayed on the "
-                "untrusted fast HESSE tier) — uncertifiable, not no-signal")
-    if reason == "infeasible":
-        return f"unreachable by the instrument: all {g.n_infeasible} proposals validation-rejected"
-    if reason == "signal_unmodeled":
-        return ("signal present but the model cannot account for it (disposition 'unmodeled') — "
-                "model problem, not absence of signal")
-    if reason == "branch_ambiguity":
-        return (f"detected feature(s), but {g.n_branch_ambiguous} assignment(s) could not certify "
-                "the requested branch — branch ambiguity, not no-signal")
-    if reason == "posterior_rejected":
-        return "candidate rejected by neighboring-q Bayesian evidence"
-    return f"declined {g.n_decline}× (no signal)"
-
-
 def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                   calibration=None, floor: float | None = None,
                   max_declines: int = MAX_DECLINES) -> StopDecision:
-    """Decide ``met`` / ``unmeetable`` / ``continue`` for the whole objective.
+    """Decide ``met`` / ``incomplete`` / ``infeasible`` / ``continue``.
 
     Args:
         objective: the :class:`~isar.drive.objective.ObjectiveSpec` (path + tolerance).
@@ -626,42 +533,58 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
         budget_state: ``{"kind", "amount", "spent"}`` — neutrons or counting-seconds consumed.
         calibration: the loaded σ-calibration (its ``center_pull_mean`` supplies the default floor).
         floor: explicit systematic floor override (meV).
-        max_declines: kept for signature back-compat; the abandon rule lives in ``GridQ.stuck``.
+        max_declines: retained only for call compatibility; scan-decline abandonment no longer exists.
     """
     tol = objective.tolerance_meV
     fl = systematic_floor(calibration, floor)
     per_q = []
     for g in grid:
         m = g.master or {}
-        # S3 machine-readable stop-state per q: the stuck reason for a stuck q, "met" when converged,
-        # else None (in progress). Human why-strings below are DERIVED from the same classification.
-        reason = g.stuck_reason if g.stuck else ("met" if g.converged else None)
-        per_q.append({"hkl": list(g.hkl), "q": g.q, "converged": g.converged,
+        if g.converged:
+            reason = "certified master interval meets tolerance"
+        elif g.master is None:
+            reason = "continue — no pooled master published"
+        elif (g.master or {}).get("pool_consistent") is False:
+            reason = "continue — pooled members are inconsistent; review and acquire more evidence"
+        elif (g.master or {}).get("model_robust") is False:
+            reason = "continue — model/branch uncertainty is unresolved"
+        else:
+            reason = "continue — master interval remains above tolerance"
+        per_q.append({"hkl": list(g.hkl), "q": g.q, "tolerance": g.tolerance,
+                      "converged": g.converged,
+                      "assessment_state": g.assessment_state,
                       "calibrated_halfwidth": g.cert_halfwidth, "omega0": g.cert_omega0,
                       "master_halfwidth": m.get("halfwidth"), "master_n_members": m.get("n_members"),
                       "master_members": m.get("members"),
-                      "single_prod_halfwidth": g.best_prod_halfwidth,
-                      "source": ("master" if (g._master_hw is not None and g.cert_halfwidth == g._master_hw)
-                                 else "single_production" if g.cert_halfwidth is not None else None),
-                      "n_production": g.n_production, "n_decline": g.n_decline,
-                      "n_uncertifiable": g.n_uncertifiable,
-                      "n_branch_ambiguous": g.n_branch_ambiguous,
+                      "master_revision": g.master_revision,
+                      "source": "master" if g.master is not None else None,
+                      "track_state": g.track_state, "track_revision": g.track_revision,
+                      "linewidth_state": g.linewidth_state,
+                      "pool_consistent": m.get("pool_consistent"),
+                      "consistency_pvalue": m.get("consistency_pvalue"),
+                      "uncertainty_method": m.get("interval_method"),
+                      "expected_next_information": m.get("expected_next_information"),
+                      "diagnostics": g.diagnostics,
+                      "n_production": g.n_production,
                       "interval_floored": g.interval_floored,
                       "n_master_updates": len(g.master_updates),
                       "diagnostic_halfwidth": (g.master_updates[-1].get("diagnostic_halfwidth")
                                                if g.master_updates else None),
-                      "reason": reason, "stuck": g.stuck})
+                      "reason": reason, "stuck": False})
 
-    # Tolerance below the systematic floor is unmeetable by construction — check before "met".
+    # Tolerance below the systematic floor is infeasible by construction — check before "met".
     if tol < fl:
-        return StopDecision("unmeetable",
+        for status in per_q:
+            status["assessment_state"] = "infeasible"
+            status["reason"] = "requested tolerance is below the declared systematic floor"
+        return StopDecision("infeasible",
                             [f"tolerance {tol:g} meV is below the resolution-asymmetry systematic "
                              f"floor {fl:g} meV (calibration center_pull_mean) — unreachable"], per_q)
 
     if grid and all(g.converged for g in grid):
         return StopDecision("met",
                             [f"all {len(grid)} grid q converged: a certified ω₀ interval "
-                             f"(pooled master or best production fallback, inflation-calibrated) "
+                             f"(pooled master, inflation-calibrated) "
                              f"≤ {tol:g} meV at each point"], per_q)
 
     reasons: list[str] = []
@@ -671,17 +594,6 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
         n_unconverged = sum(1 for g in grid if not g.converged)
         reasons.append(f"budget exhausted ({spent:g}/{amount:g} {budget_state.get('kind', '')}) "
                        f"with {n_unconverged} grid q still under-determined")
-        return StopDecision("unmeetable", reasons, per_q)
-
-    # A stuck q is abandoned, not campaign-fatal: the acquisition engine skips it and the campaign
-    # keeps mapping the rest. Terminal only when no workable (non-converged, non-stuck) q remains.
-    stuck = [g for g in grid if g.stuck]
-    workable = [g for g in grid if not g.converged and not g.stuck]
-    if stuck and not workable:
-        n_conv = sum(1 for g in grid if g.converged)
-        reasons.append(f"converged {n_conv}/{len(grid)} grid q; the rest cannot deliver the statistics:")
-        for g in stuck:
-            reasons.append(f"q={g.q:g} (hkl={list(g.hkl)}) {_stuck_why(g)}")
-        return StopDecision("unmeetable", reasons, per_q)
+        return StopDecision("incomplete", reasons, per_q)
 
     return StopDecision("continue", [], per_q)

@@ -3,11 +3,15 @@
 Orchestration + idempotency are tested with the per-group fit STUBBED (real pooled fitting is slow
 and is exercised live); a real S30 batch confirms the ``merge="separate"`` gate produces no masters.
 """
+import copy
+import json
+import types
+from concurrent.futures import Future
 from pathlib import Path
 
 import pytest
 
-from isar.session import driver
+from isar.session import certification, driver
 from isar.session.state import ScanEntry, SessionState
 from isar.session.workspace import Workspace
 from isar.synth_format import run_builder
@@ -257,6 +261,162 @@ def test_parallel_masters_match_serial_end_to_end(tmp_path):
     driver.run_batch(ws, [data], M=10, detectors="ana5")
     _card, session = ws.load()
     assert not any(k.startswith("master:") for k in session.scans)
+
+
+def test_master_only_certification_fits_no_physical_rows_and_reuses_publication(
+        tmp_path, monkeypatch):
+    from isar.drive import loop as drive_loop
+
+    data = _in8_file(tmp_path, "CERT", 57000, 2.25)
+    ws = Workspace.open(tmp_path / "cert-ws")
+    ws.root.mkdir(parents=True)
+    ws.policy_path.write_text(Path(ill_in8._CARD_PATH).read_text(encoding="utf-8"),
+                              encoding="utf-8")
+    driver.run_batch(ws, [data], M=25, detectors="det0", formats=(), workers=1,
+                     errors_tier="fast")
+    _card, before = ws.load()
+    masters = [entry for entry in before.scans.values() if entry.scan_id.startswith("master:")]
+    assert len(masters) == 1
+    master = masters[0]
+    outcome = next(value for value in master.detectors.values() if value.get("pooled"))
+    physical_before = {
+        key: copy.deepcopy(entry) for key, entry in before.scans.items()
+        if not key.startswith("master:")
+    }
+    decision = types.SimpleNamespace(per_q=[{"hkl": list(outcome["q"])}])
+    objective = types.SimpleNamespace(path=[tuple(outcome["q"])])
+    cfg = types.SimpleNamespace(
+        workspace=ws.root, log_path=ws.report_dir / "session_log.jsonl",
+        calibration=types.SimpleNamespace(inflation=1.0), floor=0.0)
+    request_path = drive_loop._certification_request(
+        cfg, objective, decision, "full", activity_id="test-certification")
+    manifest_path = certification.create_master_certification_manifest(ws.root, request_path)
+    resumed_request = drive_loop._certification_request(
+        cfg, objective, decision, "full", activity_id="test-certification-resumed")
+    assert resumed_request == request_path
+    assert certification.create_master_certification_manifest(
+        ws.root, resumed_request) == manifest_path
+    assert json.loads((manifest_path.parent / "runtime.json").read_text(
+        encoding="utf-8"))["activity_id"] == "test-certification-resumed"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    unit = manifest["worklist"][0]
+    calls = []
+
+    def fake_master_task(args):
+        calls.append(args[7])
+        entry = copy.deepcopy(master)
+        entry.content_hash = args[9]
+        entry.provenance = {
+            **entry.provenance,
+            "analysis_tier": "full",
+            "master_fit_contract": "isar.master_fit/2",
+            "master_fit_fingerprint": unit["master_fit_fingerprint"],
+            "spectrum_digest": unit["spectrum_digest"],
+        }
+        return entry
+
+    monkeypatch.setattr(driver, "_fit_master_group_task", fake_master_task)
+    with pytest.raises(ValueError, match="force=True"):
+        driver.run_batch(
+            ws, [data], M=200, detectors="det0", formats=(), workers=1,
+            errors_tier="full", certification_manifest=manifest_path, force=True)
+    summary = driver.run_batch(
+        ws, [data], M=200, detectors="det0", formats=(), workers=1,
+        errors_tier="full", certification_manifest=manifest_path)
+    assert not summary.analysis_incomplete
+    assert calls == [master.scan_id]
+    _card, after = ws.load()
+    assert {key: entry for key, entry in after.scans.items()
+            if not key.startswith("master:")} == physical_before
+    assert after.scans[master.scan_id].provenance["analysis_tier"] == "full"
+    current = json.loads(
+        (ws.report_dir / "certification" / "current.json").read_text(encoding="utf-8"))
+    assert current["fingerprint"] == manifest["fingerprint"]
+    assert set(current["published_hashes"]) == {
+        "session.json", "card.state.json", "results.csv", "card.policy.toml"}
+
+    calls.clear()
+    second = driver.run_batch(
+        ws, [data], M=200, detectors="det0", formats=(), workers=1,
+        errors_tier="full", certification_manifest=manifest_path)
+    assert not second.analysis_incomplete
+    assert calls == []
+    progress = json.loads((manifest_path.parent / "progress.json").read_text(encoding="utf-8"))
+    assert progress["completed"] == 1 and progress["reused_workspace"] == 1
+
+
+def test_master_certification_drains_wave_and_checkpoints_success_after_worker_failure(
+        tmp_path, monkeypatch):
+    from isar.drive import loop as drive_loop
+
+    first_data = _in8_file(tmp_path, "FAILA", 58000, 2.15)
+    second_data = _in8_file(tmp_path, "FAILB", 59000, 2.55)
+    ws = Workspace.open(tmp_path / "failure-ws")
+    ws.root.mkdir(parents=True)
+    ws.policy_path.write_text(Path(ill_in8._CARD_PATH).read_text(encoding="utf-8"),
+                              encoding="utf-8")
+    driver.run_batch(ws, [first_data, second_data], M=25, detectors="det0", formats=(),
+                     workers=1, errors_tier="fast")
+    _card, session = ws.load()
+    masters = sorted(
+        (entry for entry in session.scans.values() if entry.scan_id.startswith("master:")),
+        key=lambda entry: next(iter(entry.detectors.values()))["q"][0])
+    decision = types.SimpleNamespace(per_q=[
+        {"hkl": list(next(iter(entry.detectors.values()))["q"])} for entry in masters])
+    objective = types.SimpleNamespace(path=[
+        tuple(next(iter(entry.detectors.values()))["q"]) for entry in masters])
+    cfg = types.SimpleNamespace(
+        workspace=ws.root, log_path=ws.report_dir / "session_log.jsonl",
+        calibration=types.SimpleNamespace(inflation=1.0), floor=0.0)
+    request_path = drive_loop._certification_request(
+        cfg, objective, decision, "full", activity_id="test-certification-failure")
+    manifest_path = certification.create_master_certification_manifest(ws.root, request_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    units = {unit["master_id"]: unit for unit in manifest["worklist"]}
+    by_id = {entry.scan_id: entry for entry in masters}
+
+    def fake_master_task(args):
+        master_id = args[7]
+        if master_id == masters[0].scan_id:
+            raise RuntimeError("deliberate worker failure")
+        entry = copy.deepcopy(by_id[master_id])
+        unit = units[master_id]
+        entry.content_hash = args[9]
+        entry.provenance.update({
+            "analysis_tier": "full", "master_fit_contract": "isar.master_fit/2",
+            "master_fit_fingerprint": unit["master_fit_fingerprint"],
+            "spectrum_digest": unit["spectrum_digest"],
+        })
+        return entry
+
+    class FakePool:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+
+        def submit(self, fn, arg):
+            future = Future()
+            try:
+                future.set_result(fn(arg))
+            except BaseException as exc:
+                future.set_exception(exc)
+            return future
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(driver, "_fit_master_group_task", fake_master_task)
+    monkeypatch.setattr(driver, "ProcessPoolExecutor", FakePool)
+    monkeypatch.setattr(
+        driver, "as_completed",
+        lambda futures: sorted(futures, key=lambda future: future.exception() is None))
+    with pytest.raises(RuntimeError, match="deliberate worker failure"):
+        driver.run_batch(
+            ws, [first_data, second_data], M=200, detectors="det0", formats=(), workers=2,
+            errors_tier="full", certification_manifest=manifest_path)
+
+    progress = json.loads((manifest_path.parent / "progress.json").read_text(encoding="utf-8"))
+    assert progress["completed"] == 1 and progress["phase"] == "failed"
+    assert len(list((manifest_path.parent / "units").glob("*.json"))) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -161,6 +161,9 @@ class StructureFitResult:
     prior_penalty: float | None = None      # None ⇒ unconstrained (posterior_cost == cost)
     posterior_cost: float | None = None
     fit_kind: str = "unconstrained"         # unconstrained|soft_prior|branch_conditional|stokes_only|descriptor_only
+    # Full fitted-parameter covariance in ``params`` insertion order.  Retained for posterior-
+    # predictive acquisition; a missing/untrusted covariance is represented by ``None``.
+    parameter_covariance: list | None = None
 
 
 def build_problem(hyp, ctx, *, x0=None) -> Problem:
@@ -357,6 +360,7 @@ def result_from_backend(label, composite, costv, n_used, k, br,
         gamma=gamma, gamma_err=gamma_err, omega0=omega0, omega0_err_hesse=omega0_err,
         message=br.message, modes=modes, n_modes=n_modes, gamma_at_bound=gamma_at_bound,
         prior_penalty=prior_penalty, posterior_cost=posterior_cost, fit_kind=fit_kind,
+        parameter_covariance=(np.asarray(cov, dtype=float).tolist() if cov is not None else None),
     )
 
 

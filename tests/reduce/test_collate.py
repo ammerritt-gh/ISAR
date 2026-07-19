@@ -5,6 +5,7 @@ combine-before-divide primitive (for IN8/future merges) sums counts AND monitors
 import json
 
 import numpy as np
+import pytest
 
 from isar.parsers import ill_in8, spec_s30_raw
 from isar.reduce import collate, combine
@@ -156,3 +157,29 @@ def test_persist_merged_spectrum_is_content_addressed_and_keeps_zero_uncertainty
     assert payload["schema"] == "isar.pooled_spectrum/1"
     assert payload["members"] == [list(member) for member in merged.members]
     assert payload["variance"] == np.asarray(merged.variance, dtype=float).tolist()
+
+
+def test_master_consistency_bootstrap_is_seeded_zero_safe_and_detects_drift():
+    monitors = np.array([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]])
+    homogeneous = np.array([[10.0, 0.0, 20.0], [20.0, 0.0, 40.0]])
+    first = collate._member_consistency(
+        homogeneous, monitors, seed=12345, alpha=0.01, bootstrap_samples=256)
+    second = collate._member_consistency(
+        homogeneous, monitors, seed=12345, alpha=0.01, bootstrap_samples=256)
+    assert first == second
+    assert np.isfinite(first[0]) and first[2] is True
+
+    drifted = np.array([[10.0, 0.0, 20.0], [200.0, 0.0, 1.0]])
+    statistic, pvalue, consistent = collate._member_consistency(
+        drifted, monitors, seed=12345, alpha=0.01, bootstrap_samples=256)
+    assert statistic > first[0] and pvalue < 0.01 and consistent is False
+
+
+def test_master_merge_applies_qc_masks_without_deleting_energy_bins(tmp_path):
+    run = run_builder.build_in8_run("DIR-MASK", n_scans=2, seed0=7)
+    records, card = _in8_records(run, tmp_path)
+    records[0].spectra["det0"].mask[0] = False
+    expected = float(records[1].spectra["det0"].intensity[0])
+    merged = collate.collate(records, card).groups[0].merged
+    assert merged.intensity[0] == pytest.approx(expected)
+    assert len(merged.energy) == len(records[0].spectra["det0"].intensity)

@@ -29,8 +29,9 @@ say so (see *When you're wrong*, below), not to fit your expectation anyway.
 For a tracked optic branch, “around 6 meV” is a **zone-centre identity prior**, not an instruction
 to pick whichever peak lies nearest 6 meV at every q. The global-nearest behavior remains available
 only through the explicit `nearest_energy` selector. `tracked_branch` jointly assigns the optic,
-acoustic rival, new, and missing states over the ordered path; every fitted mode remains evidence and
-may be reassigned when a neighboring pooled fit arrives.
+acoustic rival, new, and missing states over the ordered path. Only modes from a published, consistent
+pooled master are authoritative track evidence; physical-fit modes remain inspectable diagnostics.
+Assignments may be revised when a neighboring pooled master arrives.
 
 ## Declaring hypotheses in `card.policy.toml`
 
@@ -82,8 +83,10 @@ is a fully custom Tier-1 hypothesis.
 - **Belief seeding.** Each declared hypothesis gets a branch belief carrying the hypothesis as a
   prior on the regression parameters (gap, slope) — *never* as fake data points (O8). With zero
   measurements the belief predicts from the prior with honest width; with data, the data wins.
-- **Scan value.** The acquisition ranks scans by information about the target's energy *plus* a
-  λ-weighted term for reducing branch-label uncertainty (O6). That is what buys the cheap
+- **Scan value.** The acquisition simulates incremental Poisson counts from every retained plausible
+  master model and ranks mutual information about the joint target-energy/model/branch state. Expected
+  ω-width reduction and identity-entropy reduction are reported separately rather than mixed with an
+  arbitrary unit-conversion weight. That is what buys the cheap
   "establish what the zone-centre feature is" scan, widens a window over a rival where branches
   approach, and stops spending on a rival once it is confidently labeled not-the-target. Rivals
   are only ever measured to a looser *differentiation tolerance* — enough to tell them apart

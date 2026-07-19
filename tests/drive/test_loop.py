@@ -114,7 +114,7 @@ def test_classification_uses_latest_complete_temperature_for_active_sample_only(
     assert resolved_classify(gridq) == 0.0
 
 
-def test_no_proposal_at_stuck_tracked_frontier_is_not_reported_as_continue():
+def test_scan_declines_do_not_make_a_tracked_frontier_terminal():
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
     objective = ObjectiveSpec(
         path=[(2.0, 0.0, 0.0), (2.05, 0.0, 0.0)], tolerance_meV=0.5,
@@ -126,8 +126,8 @@ def test_no_proposal_at_stuck_tracked_frontier_is_not_reported_as_continue():
     neighbor = GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5)
     decision = loop_mod._blocked_frontier_decision(
         objective, [anchor, neighbor], StopDecision("continue", [], []))
-    assert decision.state == "unmeetable"
-    assert any("frontier_blocked" in reason for reason in decision.reasons)
+    assert decision.state == "continue"
+    assert decision.reasons == []
 
 
 def test_pooled_selected_optic_suppresses_false_missed_window_from_acoustic_individual():
@@ -309,6 +309,8 @@ def make_mock_runner(omega_true, *, window_gate=True, hesse_only=False, blank_me
             mrow = {"scan": master_scan, "detector": "det", "h": h, "k": 0.0, "l": 0.0,
                     "status": "fitted", "verdict": "resolved", "disposition": "resolved",
                     "omega0": true, "interval_reliable": True, "pooled": True, "n_members": npool,
+                    "model_interval_lo": true - hw, "model_interval_med": true,
+                    "model_interval_hi": true + hw, "model_robust": True,
                     # Chain of custody: member labels (";"-joined). blank_members leaves the cell
                     # empty while n_members>0 to exercise the summary's evidence-chain guard.
                     "members": ("" if blank_members else ";".join(str(i) for i in range(npool))),
@@ -324,7 +326,8 @@ def make_mock_runner(omega_true, *, window_gate=True, hesse_only=False, blank_me
         cols = ["scan", "detector", "h", "k", "l", "status", "verdict", "disposition",
                 "confidence", "omega0", "omega0_err", "interval_lo", "interval_hi",
                 "interval_reliable", "hesse_lo", "hesse_hi", "hesse_trusted",
-                "pooled", "n_members", "members", "reasons"]
+                "pooled", "n_members", "members", "model_interval_lo", "model_interval_med",
+                "model_interval_hi", "model_robust", "reasons"]
         with open(report / "results.csv", "w", newline="", encoding="utf-8") as fh:
             w = csv.DictWriter(fh, fieldnames=cols)
             w.writeheader()
@@ -428,6 +431,8 @@ def make_branch_aware_optic_runner(objective):
                 "status": "fitted", "verdict": "resolved", "disposition": "resolved",
                 "omega0": energy, "interval_lo": energy - halfwidth,
                 "interval_hi": energy + halfwidth, "interval_reliable": True,
+                "model_interval_lo": energy - halfwidth, "model_interval_med": energy,
+                "model_interval_hi": energy + halfwidth, "model_robust": True,
                 "pooled": True, "n_members": len(members),
                 "members": ";".join(map(str, members)), "branch_id": branch_id,
                 "confidence": 0.95, "reasons": f"pooled {branch_id} master",
@@ -438,7 +443,8 @@ def make_branch_aware_optic_runner(objective):
         report.mkdir(parents=True, exist_ok=True)
         columns = ["scan", "detector", "h", "k", "l", "status", "verdict", "disposition",
                    "confidence", "omega0", "interval_lo", "interval_hi", "interval_reliable",
-                   "pooled", "n_members", "members", "branch_id", "reasons"]
+                   "pooled", "n_members", "members", "branch_id", "model_interval_lo",
+                   "model_interval_med", "model_interval_hi", "model_robust", "reasons"]
         with open(report / "results.csv", "w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=columns)
             writer.writeheader()
@@ -547,12 +553,15 @@ def test_observation_untrusted_fast_tier_is_uncertifiable():
     assert o["certifiable"] is False and o["uncertifiable_kind"] == "fast_tier"
 
 
-def test_master_gamma_at_bound_is_uncertifiable():
+def test_master_gamma_at_bound_certifies_when_model_robust_omega_is_identified():
     m = _master_obs_from_row(
         _urow(disposition="flagged", interval_lo=4.999, interval_hi=5.001, interval_reliable=False,
-              omega0_profile_lo=4.99, omega0_profile_hi=5.01),
+              omega0_profile_lo=4.99, omega0_profile_hi=5.01,
+              model_interval_lo=4.98, model_interval_med=5.0, model_interval_hi=5.02,
+              model_robust=True, gamma_at_bound=True),
         _UNITY_CAL)
-    assert m["reliable"] is True and m["certifiable"] is False
+    assert m["reliable"] is True and m["certifiable"] is True
+    assert m["halfwidth"] == pytest.approx(0.02)
 
 
 def test_pick_interval_prefers_bootstrap_when_reliable():
@@ -975,11 +984,11 @@ def test_starts_with_quicklooks_then_escalates(tmp_path):
     assert "production" in later
 
 
-def test_campaign_unmeetable_on_budget(tmp_path):
+def test_campaign_incomplete_on_budget(tmp_path):
     omega = lambda h: (h - 2.0) * 2.0
     client = MockTavi(omega)
     summary, ws = _run(tmp_path, _objective(amount=1.0), client, make_mock_runner(omega))
-    assert summary["stop"]["state"] == "unmeetable"
+    assert summary["stop"]["state"] == "incomplete"
     assert any("budget" in r for r in summary["stop"]["reasons"])
 
 
@@ -1088,7 +1097,8 @@ def test_full_tier_promotion_logs_paired_escalate_fit_events(tmp_path):
     # No escalate_fit event was logged as an unknown kind (the vocabulary now includes it).
     assert not any(e.get("kind_unknown") for e in esc)
     # Every in-loop promote (iter not None) is to the full tier with the documented reason.
-    inloop = [p for p in promotes if p["payload"].get("iter") is not None]
+    inloop = [p for p in promotes if p["payload"].get("iter") is not None
+              and p["payload"].get("reason") == "untrusted_hesse_no_reliable_interval"]
     assert inloop
     for p in inloop:
         assert p["payload"]["to_tier"] == "full"
@@ -1096,8 +1106,9 @@ def test_full_tier_promotion_logs_paired_escalate_fit_events(tmp_path):
     # Each in-loop promotion is paired with exactly one outcome at the same iteration, carrying a valid
     # enum and a job_id that traces back to a real run event.
     run_job_ids = {(e["payload"] or {}).get("job_id") for e in events if e["kind"] == "run"}
-    assert len(outcomes) == len(inloop)
-    for o in outcomes:
+    paired_outcomes = [o for o in outcomes if o["payload"].get("job_id")]
+    assert len(paired_outcomes) == len(inloop)
+    for o in paired_outcomes:
         assert o["payload"]["outcome"] in ("seated", "failed", "superseded")
         assert o["payload"]["job_id"] in run_job_ids
         assert any(p["payload"].get("iter") == o["payload"]["iter"] for p in inloop)
@@ -1869,9 +1880,10 @@ def test_validation_refusals_use_distinct_logical_acquisitions(tmp_path):
         max_iters=20)
     proposals = [e["payload"] for e in read_log(summary["session_log"])
                  if e["kind"] == "propose"]
-    # Four requested q values, each abandoned after three distinct refusals (12), not max_iters (20).
-    assert len(proposals) == 12
-    assert len({proposal["acquisition_id"] for proposal in proposals}) == 12
+    # Operational refusals are not scientific evidence that the q is infeasible. The global
+    # iteration limit is the guardrail when the instrument never accepts a proposal.
+    assert len(proposals) == 20
+    assert len({proposal["acquisition_id"] for proposal in proposals}) == 20
     assert client.n == 0
 
 
@@ -1922,7 +1934,7 @@ def test_submission_failure_finishes_with_terminal_summary_instead_of_sticking(t
     summary, _ws = _run(
         tmp_path, _objective(), _SubmitFailingTavi(omega), make_mock_runner(omega), max_iters=1)
 
-    assert summary["stop"]["state"] == "unmeetable"
+    assert summary["stop"]["state"] == "incomplete"
     assert any("instrument submission failed" in reason
                for reason in summary["stop"]["reasons"])
     events = read_log(summary["session_log"])
@@ -1993,7 +2005,7 @@ def test_operator_stop_completes_iteration_then_exits_cleanly(tmp_path, monkeypa
 
     assert summary["stop"]["state"] == "operator_stopped"
     assert "grid_state" in summary["stop"] and summary["stop"]["grid_state"]["state"] in (
-        "continue", "met", "unmeetable")
+        "continue", "met", "incomplete", "infeasible")
     reasons = summary["stop"]["reasons"]
     assert any("iteration" in r for r in reasons) and any(token in r for r in reasons)
 

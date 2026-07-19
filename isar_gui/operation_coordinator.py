@@ -456,7 +456,8 @@ class WorkspaceOperationCoordinator(QObject):
             runner.deleteLater()
         # Exit 4 is the loop's operator_stopped state — an intentional, resumable outcome. A
         # force-kill exits with an arbitrary code; without the flag it would read as a failure.
-        outcome = {0: "campaign met its objective", 3: "campaign stopped: objective unmeetable",
+        outcome = {0: "campaign met its objective", 3: "campaign incomplete",
+                   6: "campaign infeasible",
                    4: "campaign stopped by operator (resumable)"}.get(int(code))
         if outcome is None and self._drive_force_stopped:
             outcome = "campaign force-stopped by operator (resumable; the in-flight scan may be re-measured)"
