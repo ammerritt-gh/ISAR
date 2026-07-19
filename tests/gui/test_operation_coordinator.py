@@ -363,6 +363,18 @@ def test_drive_finished_classifies_operator_stop(qtbot, coordinator):
     assert not any("failed" in ln for ln in lines)
 
 
+def test_drive_finished_classifies_pending_recovery_as_resumable(qtbot, coordinator):
+    lines = []
+    coordinator._log = lines.append
+    results = []
+    coordinator.drive_finished.connect(lambda code, live: results.append((code, live)))
+    coordinator.request_drive(_drive_opts())
+    _Runner.instances[0].complete(5)
+    qtbot.waitUntil(lambda: results == [(5, True)])
+    assert any("recovery pending" in ln and "resumable" in ln for ln in lines)
+    assert not any("failed" in ln for ln in lines)
+
+
 def test_force_stop_exit_code_is_not_logged_as_failure(qtbot, coordinator):
     lines = []
     coordinator._log = lines.append

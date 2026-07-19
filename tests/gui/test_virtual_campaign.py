@@ -143,6 +143,14 @@ def test_cold_window_has_the_campaign_entry(cold):
     assert "virtual campaign" in w._empty_hint.text()
 
 
+def test_pending_recovery_completion_status_is_resumable(cold):
+    cold._on_drive_finished(5, True)
+    message = cold.statusBar().currentMessage()
+    assert "recovery pending" in message
+    assert "Resume" in message
+    assert "failed" not in message.lower()
+
+
 # ---- reserve → launch → carry the form ----------------------------------------
 def test_virtual_start_reserves_a_temp_workspace_and_launches(cold):
     w = cold

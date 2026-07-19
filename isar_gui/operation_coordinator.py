@@ -454,11 +454,12 @@ class WorkspaceOperationCoordinator(QObject):
             except (RuntimeError, TypeError) as exc:
                 log.debug("drive runner signals already detached: %s", exc)
             runner.deleteLater()
-        # Exit 4 is the loop's operator_stopped state — an intentional, resumable outcome. A
-        # force-kill exits with an arbitrary code; without the flag it would read as a failure.
+        # Exits 4 and 5 are intentional, resumable outcomes (operator stop and pending recovery).
+        # A force-kill exits with an arbitrary code; without the flag it would read as a failure.
         outcome = {0: "campaign met its objective", 3: "campaign incomplete",
-                   6: "campaign infeasible",
-                   4: "campaign stopped by operator (resumable)"}.get(int(code))
+                   4: "campaign stopped by operator (resumable)",
+                   5: "campaign scan recovery pending (resumable)",
+                   6: "campaign infeasible"}.get(int(code))
         if outcome is None and self._drive_force_stopped:
             outcome = "campaign force-stopped by operator (resumable; the in-flight scan may be re-measured)"
         self._log(outcome if outcome else f"campaign failed (exit {code}) — see the drive log")

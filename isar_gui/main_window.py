@@ -1279,8 +1279,10 @@ class MainWindow(QMainWindow):
             self.log("stale campaign completion ignored — workspace changed")
             return
         msg = {0: "Campaign met its objective", 3: "Campaign incomplete — see the feed",
-               6: "Campaign infeasible — see the feed",
-               4: "Campaign stopped by operator"}.get(int(code), f"Campaign failed (exit {code})")
+               4: "Campaign stopped by operator",
+               5: "Campaign scan recovery pending — press Resume to retry",
+               6: "Campaign infeasible — see the feed"}.get(
+                   int(code), f"Campaign failed (exit {code})")
         self.statusBar().showMessage(msg)
         self._sync_run_actions()
 
