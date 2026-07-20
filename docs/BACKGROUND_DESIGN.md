@@ -16,6 +16,8 @@ information cheaply.
 A `DECISIONS.md` entry is part of this workstream: background becomes an owned design
 area (it currently has no decision ID anywhere).
 
+USER NOTE: before working on this, it is critical to add some background to TAVI in analytic mode (and possibly Monte Carlo mode). I am thinking a possible "requested background" that has TAVI give a certain background profile, e.g. a large flat background and/or elastic lines. Only once we can get a background included can we start working on fitting it.
+
 ---
 
 ## 1. Baseline (verified 2026-07-19, checkup §3)
