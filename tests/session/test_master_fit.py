@@ -231,6 +231,39 @@ def test_run_batch_routes_scan_and_master_bootstrap_caps_by_role(tmp_path, monke
     assert observed == {"scan_M": 17, "master_M": 123}
 
 
+def test_run_batch_routes_optional_error_tiers_by_role_and_keeps_legacy_default(
+        tmp_path, monkeypatch):
+    data = _in8_file(tmp_path, "ROLET", 54600, 2.25)
+
+    def execute(name, **tier_kwargs):
+        ws = Workspace.open(tmp_path / name)
+        ws.root.mkdir(parents=True, exist_ok=True)
+        ws.policy_path.write_text(Path(ill_in8._CARD_PATH).read_text(encoding="utf-8"),
+                                  encoding="utf-8")
+        observed = {}
+        real_run_tasks = driver._run_tasks
+        real_fit_masters = driver._fit_masters
+
+        def scan_spy(*args, **kwargs):
+            observed["scan"] = kwargs["errors_tier"]
+            return real_run_tasks(*args, **kwargs)
+
+        def master_spy(*args, **kwargs):
+            observed["master"] = kwargs["errors_tier"]
+            return real_fit_masters(*args, **kwargs)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(driver, "_run_tasks", scan_spy)
+            scoped.setattr(driver, "_fit_masters", master_spy)
+            driver.run_batch(ws, [data], M=10, detectors="det0", formats=(), workers=1,
+                             errors_tier="cheap", **tier_kwargs)
+        return observed
+
+    assert execute("legacy") == {"scan": "cheap", "master": "cheap"}
+    assert execute("split", scan_errors_tier="fast", master_errors_tier="cheap") == {
+        "scan": "fast", "master": "cheap"}
+
+
 def test_parallel_masters_match_serial_end_to_end(tmp_path):
     # Real multiprocessing gate: two IN8 files → two (Q,T) master groups, both refit on a cold run.
     # Serial (workers=1) vs parallel-masters (workers=4) on fresh workspaces must produce identical

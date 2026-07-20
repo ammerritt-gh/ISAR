@@ -1016,13 +1016,16 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
 
 def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200, scan_M=None,
               detectors=None, formats=("html", "markdown"), workers=None,
-              errors_tier="full", bayes_cli=None, timer=None,
+              errors_tier="full", scan_errors_tier=None, master_errors_tier=None,
+              bayes_cli=None, timer=None,
               certification_manifest=None, analysis_allowance_seconds=None,
               finish_initial_wave=False) -> RunSummary:
     timer = timer or NullTimer()
     scan_M = 50 if scan_M is None else int(scan_M)
     if scan_M <= 0 or int(M) <= 0:
         raise ValueError("M and scan_M must be positive")
+    scan_tier = errors_tier if scan_errors_tier is None else str(scan_errors_tier)
+    master_tier = errors_tier if master_errors_tier is None else str(master_errors_tier)
     with timer.stage("workspace_load"):
         card, session = workspace.load()
     checkpoint_store = None
@@ -1033,6 +1036,12 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
         checkpoint_store is not None and checkpoint_store.is_master_certification)
     if master_certification and force:
         raise ValueError("force=True is invalid for isar.certification/2 master-only runs")
+    if master_certification:
+        unresolved = unresolved_current_promotions(workspace.root, session)
+        if unresolved:
+            ids = ", ".join(str(record.get("promotion_id")) for record in unresolved)
+            raise RuntimeError(
+                f"certification refused: unresolved current master promotion(s): {ids}")
     deadline_gate = _AnalysisDeadline(
         None if analysis_allowance_seconds is None
         else time.monotonic() + max(float(analysis_allowance_seconds), 0.0),
@@ -1168,6 +1177,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
 
         manifest_path = create_analysis_manifest(workspace.root, {
             "tier": errors_tier,
+            **({"scan_errors_tier": scan_tier} if scan_errors_tier is not None else {}),
+            **({"master_errors_tier": master_tier} if master_errors_tier is not None else {}),
             "force": bool(force),
             "M": int(M),
             "scan_M": int(scan_M),
@@ -1204,7 +1215,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
     # (the workorder — one spawn, not N). Large full reprocess batches (tasks > workers, where Layer
     # A already saturates) and the fast/cheap tiers (no bootstrap) keep the Layer-A parallel-fit path.
     scan_workers = _resolve_workers(workers)
-    is_full = errors_tier in FULL_TIERS
+    is_full = scan_tier in FULL_TIERS
     bayes_opts = _resolve_bayes_opts(bayes_cli)
     use_workorder = is_full and len(tasks) <= scan_workers
     if use_workorder:
@@ -1215,7 +1226,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
         boot_workers = 1 if use_pool else _resolve_boot_workers(scan_workers)
     # ``auto`` may promote after its HESSE-first point estimate; promoted bootstrap uses the same
     # deterministic adaptive rule as an explicitly full fit.
-    boot_adaptive = is_full or errors_tier == "auto"
+    scan_boot_adaptive = is_full or scan_tier == "auto"
+    master_boot_adaptive = master_tier in FULL_TIERS or master_tier == "auto"
     master_boot_workers = _resolve_boot_workers(scan_workers)
 
     shared_pool = None
@@ -1246,10 +1258,10 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
                     checkpoint_store.save(f"scan:{entry.scan_id}", entry)
 
             fresh_entries = _run_tasks(
-                remaining, card, g, runcal, exclusions, M=scan_M, errors_tier=errors_tier,
+                remaining, card, g, runcal, exclusions, M=scan_M, errors_tier=scan_tier,
                 boot_workers=boot_workers, use_pool=use_pool,
                 scan_workers=scan_workers, boot_executor=shared_pool,
-                boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
+                boot_adaptive=scan_boot_adaptive, bayes_opts=bayes_opts,
                 on_complete=checkpoint_entry, deadline_gate=deadline_gate)
             cached.update(zip(remaining_indices, fresh_entries))
             entries = [cached[index] for index in range(len(tasks))]
@@ -1267,9 +1279,9 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
                 for e in entries if e.provenance.get("fit_seconds") is not None]
         completed_master_keys: list[str] = []
         _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
-                          workspace, force=force, M=M, seed_base=seed_base, errors_tier=errors_tier,
+                          workspace, force=force, M=M, seed_base=seed_base, errors_tier=master_tier,
                           master_boot_workers=master_boot_workers, boot_executor=shared_pool,
-                          boot_adaptive=boot_adaptive, scan_workers=scan_workers,
+                          boot_adaptive=master_boot_adaptive, scan_workers=scan_workers,
                           bayes_opts=bayes_opts, timer=timer, source_by_name=source_by_name,
                           checkpoint_store=checkpoint_store,
                           completed_master_keys=completed_master_keys,
@@ -2098,6 +2110,8 @@ def _record_master_promotion(data_dir, entry: ScanEntry, *, source_revision: str
     store.begin(key, escalation_reasons=reasons)
     store.complete(key, asdict(entry))
     record = store.resolve_publication(key, current_revision=source_revision)
+    if record["status"] == "published":
+        store.supersede_other_attempts(key)
     entry.provenance.update({
         "promotion_id": key.digest,
         "promotion_state": record["status"],
@@ -2105,6 +2119,21 @@ def _record_master_promotion(data_dir, entry: ScanEntry, *, source_revision: str
         "promotion_publication_outcome": record["publication_outcome"],
         "point_fit_fingerprint": point_fingerprint,
     })
+
+
+def current_master_revisions(session: SessionState) -> dict[str, str]:
+    """Return the authoritative published content revision for every pooled master."""
+    return {
+        master_id: str(entry.content_hash)
+        for master_id, entry in session.scans.items()
+        if master_id.startswith("master:") and entry.content_hash
+    }
+
+
+def unresolved_current_promotions(workspace_root, session: SessionState) -> list[dict]:
+    """Reconcile stale attempts and return promotions blocking a terminal/certification action."""
+    from isar.session.promotions import PromotionStore
+    return PromotionStore(workspace_root).reconcile(current_master_revisions(session))
 
 
 def _fit_master_group_task(args):

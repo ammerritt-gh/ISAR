@@ -184,6 +184,25 @@ def test_verify_units_defect_fires_on_tiny_spend():
     assert "⚠ verify-units" in doc.render()
 
 
+def test_outcome_renders_certification_critical_path(tmp_path, monkeypatch):
+    di = DiagInputs(workspace=tmp_path, summary={"stop": {"state": "met"}}, events=[])
+    monkeypatch.setattr(cd, "certification_pass_breakdown", lambda _workspace, _events: [{
+        "requested_points": 21, "carried_points": 18, "newly_fitted": 3,
+        "reused_checkpoint": 0, "wall_seconds": 40.0, "critical_unit_seconds": 35.0,
+        "slowest_hkl": [2.7, 0.0, 0.0],
+        "critical_method_seconds": {"bootstrap_seconds": 25.0},
+    }])
+    doc = FindingsDoc("t")
+
+    cd._section_outcome(doc, di, [], _event_counts([]))
+
+    text = doc.render()
+    assert "Certification passes" in text
+    assert "parallel-unit critical path" in text
+    assert "bootstrap 25 s" in text
+    assert "(2.7, 0, 0)" in text
+
+
 # --------------------------------------------------------------------- render-status accounting
 def test_render_scan_figure_categorizes_skip_vs_fail(tmp_path, monkeypatch):
     import types

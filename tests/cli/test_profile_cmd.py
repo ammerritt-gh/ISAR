@@ -30,7 +30,8 @@ def _write_campaign(log_path):
         t += 40.0
         # analyze carrying embedded subprocess timings
         log_event(log_path, "analyze",
-                  {"job_id": f"j-{it}", "errors_tier": "full", "n_rows": 3,
+                  {"job_id": f"j-{it}", "errors_tier": "full",
+                   "scan_errors_tier": "fast", "master_errors_tier": "full", "n_rows": 3,
                    "dispositions": {"ok": 3}, "iter": it,
                    "timings": {"total_seconds": 35.0, "argv": ["isar", "run"],
                                "errors_tier": "full",
@@ -176,6 +177,26 @@ def test_subprocess_overhead_includes_certification_parent(tmp_path, capsys):
     assert "-18.000s" not in out
 
 
+def test_certification_table_reports_critical_path_not_summed_work(
+        tmp_path, capsys, monkeypatch):
+    log = tmp_path / "report" / "session_log.jsonl"
+    _write_campaign(log)
+    monkeypatch.setattr(profile_cmd, "certification_pass_breakdown", lambda _workspace, _events: [{
+        "requested_points": 21, "carried_points": 18, "newly_fitted": 3,
+        "reused_checkpoint": 0, "wall_seconds": 40.0, "unit_work_seconds": 102.0,
+        "critical_unit_seconds": 35.0, "slowest_hkl": [2.7, 0.0, 0.0],
+        "slowest_master_id": "master:q2.7",
+        "critical_method_seconds": {"bootstrap_seconds": 25.0, "profile_seconds": 8.0},
+    }])
+
+    assert profile_cmd.run(_args(tmp_path)) == 0
+    out = capsys.readouterr().out
+    assert "Certification passes (parallel-unit critical path)" in out
+    assert "21" in out and "18" in out and "40.000" in out and "35.000" in out
+    assert "master:q2.7" in out
+    assert "fitted-unit seconds overlap" in out
+
+
 def test_top_limits_rows(tmp_path, capsys):
     log = tmp_path / "report" / "session_log.jsonl"
     _write_campaign(log)
@@ -199,7 +220,7 @@ def test_iterations_table(tmp_path, capsys):
     assert "Per-iteration breakdown" in out
     # proposal kind + hkl and errors tier surface in the table
     assert "production" in out
-    assert "full" in out
+    assert "fast/full" in out
     # dominant stage of each iteration is isar_run (40s >> model_fit 1.5s)
     assert "isar_run" in out
 

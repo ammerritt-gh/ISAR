@@ -78,6 +78,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "'cheap' (HESSE only — quick-look verdict + rough ω₀, no interval), or "
                          "'bayes' = full + nested-sampling posterior interval (slow; three-method "
                          "cross-check)")
+    pr.add_argument("--scan-errors", dest="scan_errors_tier", default=None,
+                    choices=["auto", "full", "fast", "cheap", "bayes"], help=argparse.SUPPRESS)
+    pr.add_argument("--master-errors", dest="master_errors_tier", default=None,
+                    choices=["auto", "full", "fast", "cheap", "bayes"], help=argparse.SUPPRESS)
     pr.add_argument("--bayes-nlive", dest="bayes_nlive", type=int, default=None,
                     help="bayes tier: dynesty live-point budget (default 250; env ISAR_BAYES_NLIVE). "
                          "Benchmark caveat: on very-high-count scans 250 can give narrower credible "

@@ -20,7 +20,8 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
                              _terminalize_certification_regression,
                              _declined_observation,
                              _executed_point_count, _feasible_point_count,
-                             _errors_arg_for, _errors_tier_for, _extract_max_points, _full_tier,
+                             _errors_arg_for, _errors_tier_for, _errors_tiers_for,
+                             _extract_max_points, _full_tier,
                              _finalize_proposal, _guard_point_count,
                              _make_classification_providers, _record_eligible_crossings,
                              _pending_certification_indices, _record_certification_acceptance,
@@ -662,16 +663,50 @@ def test_errors_tier_ladder_fast_by_default_escalates_on_untrusted_hesse(tmp_pat
     assert _errors_arg_for(_prop(2.1, "quicklook"), ws) == ["--errors", "cheap"]
     # No prior fit at this q → production runs fast.
     assert _errors_arg_for(_prop(2.1), ws) == ["--errors", "fast"]
-    # A usable fit whose only error is an untrusted HESSE → escalate to full (needs the reliable interval).
+    # A physical scan is provisional evidence and cannot trigger authoritative escalation.
     _write_results(ws, [{"scan": 1, "detector": "det", "h": 2.1, "k": 0.0, "l": 0.0,
                          "status": "fitted", "disposition": "flagged", "omega0": 0.95,
                          "hesse_lo": 0.94, "hesse_hi": 0.96, "hesse_trusted": False}])
+    assert _errors_arg_for(_prop(2.1), ws) == ["--errors", "fast"]
+    # The same untrusted result on the pooled master authoritatively promotes only the master tier.
+    _write_results(ws, [{"scan": 9000000, "detector": "merged", "h": 2.1, "k": 0.0, "l": 0.0,
+                         "status": "fitted", "disposition": "flagged", "omega0": 0.95,
+                         "pooled": True,
+                         "hesse_lo": 0.94, "hesse_hi": 0.96, "hesse_trusted": False}])
     assert _errors_arg_for(_prop(2.1), ws) == ["--errors", "full"]
+    assert _errors_tiers_for(_prop(2.1), ws) == ("fast", "full")
+    assert _errors_tiers_for(_prop(2.1, "quicklook"), ws) == ("cheap", "cheap")
     # A trusted-HESSE q stays on the cheap fast tier.
     _write_results(ws, [{"scan": 2, "detector": "det", "h": 2.2, "k": 0.0, "l": 0.0,
                          "status": "fitted", "disposition": "resolved", "omega0": 1.1,
-                         "hesse_lo": 1.09, "hesse_hi": 1.11, "hesse_trusted": True}])
+                         "pooled": True, "hesse_lo": 1.09, "hesse_hi": 1.11,
+                         "hesse_trusted": True}])
     assert _errors_arg_for(_prop(2.2), ws) == ["--errors", "fast"]
+
+
+def test_errors_tier_ladder_uses_master_when_physical_and_pooled_rows_disagree(tmp_path):
+    ws = tmp_path / "ws"
+    _write_results(ws, [
+        {"scan": 1, "detector": "det", "h": 2.1, "k": 0.0, "l": 0.0,
+         "status": "fitted", "disposition": "resolved", "omega0": 0.95,
+         "hesse_lo": 0.94, "hesse_hi": 0.96, "hesse_trusted": True},
+        {"scan": 9000000, "detector": "merged", "h": 2.1, "k": 0.0, "l": 0.0,
+         "status": "fitted", "disposition": "flagged", "omega0": 0.95,
+         "pooled": True, "hesse_lo": 0.94, "hesse_hi": 0.96,
+         "hesse_trusted": False},
+    ])
+    assert _errors_tiers_for(_prop(2.1), ws) == ("fast", "full")
+
+    _write_results(ws, [
+        {"scan": 2, "detector": "det", "h": 2.2, "k": 0.0, "l": 0.0,
+         "status": "fitted", "disposition": "flagged", "omega0": 1.05,
+         "hesse_lo": 1.04, "hesse_hi": 1.06, "hesse_trusted": False},
+        {"scan": 9000001, "detector": "merged", "h": 2.2, "k": 0.0, "l": 0.0,
+         "status": "fitted", "disposition": "resolved", "omega0": 1.05,
+         "pooled": True, "hesse_lo": 1.04, "hesse_hi": 1.06,
+         "hesse_trusted": True},
+    ])
+    assert _errors_tiers_for(_prop(2.2), ws) == ("fast", "fast")
 
 
 def test_full_tier_helper():
@@ -691,13 +726,15 @@ def test_errors_tier_ladder_with_bayes_errors_flag_escalates_to_bayes(tmp_path):
     # A usable fit whose only error is an untrusted HESSE → escalate to "bayes" (not "full") when opted in.
     _write_results(ws, [{"scan": 1, "detector": "det", "h": 2.1, "k": 0.0, "l": 0.0,
                          "status": "fitted", "disposition": "flagged", "omega0": 0.95,
-                         "hesse_lo": 0.94, "hesse_hi": 0.96, "hesse_trusted": False}])
+                         "pooled": True, "hesse_lo": 0.94, "hesse_hi": 0.96,
+                         "hesse_trusted": False}])
     assert _errors_tier_for(_prop(2.1), ws, cfg) == "bayes"
     assert _errors_arg_for(_prop(2.1), ws, cfg) == ["--errors", "bayes"]
     # A trusted-HESSE q stays on the cheap fast tier, same as without the flag.
     _write_results(ws, [{"scan": 2, "detector": "det", "h": 2.2, "k": 0.0, "l": 0.0,
                          "status": "fitted", "disposition": "resolved", "omega0": 1.1,
-                         "hesse_lo": 1.09, "hesse_hi": 1.11, "hesse_trusted": True}])
+                         "pooled": True, "hesse_lo": 1.09, "hesse_hi": 1.11,
+                         "hesse_trusted": True}])
     assert _errors_tier_for(_prop(2.2), ws, cfg) == "fast"
 
 
@@ -710,7 +747,8 @@ def test_errors_tier_ladder_flag_off_is_byte_identical_to_no_cfg(tmp_path):
     assert _errors_tier_for(_prop(2.1), ws, cfg_off) == _errors_tier_for(_prop(2.1), ws, None) == "fast"
     _write_results(ws, [{"scan": 1, "detector": "det", "h": 2.1, "k": 0.0, "l": 0.0,
                          "status": "fitted", "disposition": "flagged", "omega0": 0.95,
-                         "hesse_lo": 0.94, "hesse_hi": 0.96, "hesse_trusted": False}])
+                         "pooled": True, "hesse_lo": 0.94, "hesse_hi": 0.96,
+                         "hesse_trusted": False}])
     assert _errors_tier_for(_prop(2.1), ws, cfg_off) == _errors_tier_for(_prop(2.1), ws, None) == "full"
 
 
@@ -780,6 +818,25 @@ def _run(tmp_path, objective, client, runner, **extra):
     cfg = {"workspace": ws, "client": client, "run_isar": runner, "calibration": _UNITY_CAL,
            "resolution": {"fwhm_dE": 0.8}, "seed": 7, **extra}
     return run_campaign(objective, cfg), ws
+
+
+def test_terminal_and_certification_refuse_unresolved_current_promotion(tmp_path, monkeypatch):
+    _no_subprocess(monkeypatch)
+    pending = {"promotion_id": "promotion-current", "status": "pending"}
+    monkeypatch.setattr(loop_mod, "_unresolved_current_promotions", lambda _workspace: [pending])
+    omega = lambda h: (h - 2.0) * 2.0
+
+    summary, _ws = _run(
+        tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega, hesse_only=True))
+
+    assert summary["stop"]["state"] == "incomplete"
+    assert "promotion-current" in summary["stop"]["reasons"][0]
+    events = read_log(summary["session_log"])
+    assert any(event["kind"] == "recovery_pending"
+               and (event.get("payload") or {}).get("action") == "master_promotion_pending"
+               for event in events)
+    assert not any((event.get("payload") or {}).get("event") == "certify_start"
+                   for event in events if event["kind"] == "decide")
 
 
 def _widen_last_pooled_master(workspace, halfwidth=0.75):
@@ -1325,6 +1382,23 @@ def test_full_tier_promotion_logs_paired_escalate_fit_events(tmp_path):
     assert decides
     for d in decides:
         assert d.get("action") == d.get("event")
+
+
+def test_bayes_master_promotion_logs_actual_tier_and_outcome(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, _ws = _run(
+        tmp_path, _objective(), MockTavi(omega), make_untrusted_hesse_runner(omega),
+        max_iters=80, bayes_errors=True)
+    events = read_log(summary["session_log"])
+    promoted = [event for event in events if event["kind"] == "escalate_fit"
+                and (event.get("payload") or {}).get("phase") == "promote"
+                and (event.get("payload") or {}).get("iter") is not None]
+    outcomes = [event for event in events if event["kind"] == "escalate_fit"
+                and (event.get("payload") or {}).get("phase") == "outcome"
+                and (event.get("payload") or {}).get("iter") is not None]
+    assert promoted
+    assert len(outcomes) == len(promoted)
+    assert all(event["payload"]["to_tier"] == "bayes" for event in promoted + outcomes)
 
 
 # --------------------------------------------------------------------------- crash-safe resume (Part C)

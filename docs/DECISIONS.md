@@ -375,6 +375,19 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   runner still publishes that dirty master-only generation atomically and preserves all untouched
   masters. A tier, policy, calibration, or master-revision change invalidates acceptance. Repeating
   the same failed scientific state without intervening progress stops honestly instead of looping.
+- **O23.** (2026-07-20, Implemented) **Full live uncertainty attaches only to authoritative pooled
+  masters.** OP7 showed that the compatibility escalation router spent 254.9 seconds attaching full
+  errors to provisional physical scans during 20 master escalations. Physical rows cannot seat
+  convergence or refresh the prior, so the drive now splits fit tiers by role: the provisional scan
+  remains `fast` while the changed master receives the required `full`/`bayes` work. Generic
+  `run_batch` callers retain their historical single-tier behavior unless they opt into additive
+  role overrides. Fresh-master `auto` remains shadow-gated under O21; certification remains full and
+  independent. Certification profiling reports pass wall and the slowest parallel unit rather than
+  misrepresenting summed worker time as elapsed wall. The same-machine role-split rerun reduced OP7
+  wall from 1412.7 to 1210.6 seconds and removed provisional scan error attachment entirely. Fresh
+  TAVI identities make that run performance evidence rather than a strict frozen shadow replay;
+  all 21 endpoints certified and the operator accepted the small numeric/model-selection variation
+  as scientifically equivalent. The strict comparator remains the gate for true frozen replays.
 
 ## Session status update
 

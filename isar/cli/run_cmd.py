@@ -74,6 +74,8 @@ def run(args) -> int:
         print(f"warning: unknown card section [{unknown}] — ignored (typo?)", file=sys.stderr)
 
     errors_tier = getattr(args, "errors", "full")
+    scan_errors_tier = getattr(args, "scan_errors_tier", None)
+    master_errors_tier = getattr(args, "master_errors_tier", None)
     # Bayes-tier sampler knobs: pass only the explicitly-set (non-None) CLI overrides; the driver
     # merges CLI > env > defaults. Empty dict on every other tier / when no override was given.
     bayes_cli = {k: v for k, v in (("n_live", getattr(args, "bayes_nlive", None)),
@@ -81,8 +83,13 @@ def run(args) -> int:
                                    ("max_iter", getattr(args, "bayes_maxiter", None)))
                  if v is not None}
     scan_M = getattr(args, "scan_M", None)
-    timer = StageTimer(errors_tier=errors_tier, M=args.M,
-                       scan_M=(50 if scan_M is None else scan_M), argv=list(sys.argv))
+    timer_meta = {"errors_tier": errors_tier, "M": args.M,
+                  "scan_M": (50 if scan_M is None else scan_M), "argv": list(sys.argv)}
+    if scan_errors_tier is not None:
+        timer_meta["scan_errors_tier"] = scan_errors_tier
+    if master_errors_tier is not None:
+        timer_meta["master_errors_tier"] = master_errors_tier
+    timer = StageTimer(**timer_meta)
     run_id = uuid.uuid4().hex
     # Invalidate any prior canonical report before results can change.  Readers may see a compact
     # running-status document, but never a successful report describing an older results.csv.
@@ -98,6 +105,11 @@ def run(args) -> int:
             from isar.session.certification import create_master_certification_manifest
             certification_manifest = create_master_certification_manifest(
                 ws.root, certification_request)
+        role_kwargs = {}
+        if scan_errors_tier is not None:
+            role_kwargs["scan_errors_tier"] = scan_errors_tier
+        if master_errors_tier is not None:
+            role_kwargs["master_errors_tier"] = master_errors_tier
         summary = driver.run_batch(
             ws, args.data, force=args.force, llm=args.llm, M=args.M, scan_M=scan_M,
             detectors=args.detectors, formats=formats,
@@ -105,7 +117,8 @@ def run(args) -> int:
             bayes_cli=bayes_cli, timer=timer,
             certification_manifest=certification_manifest,
             analysis_allowance_seconds=getattr(args, "analysis_allowance_seconds", None),
-            finish_initial_wave=bool(getattr(args, "finish_initial_wave", False)))
+            finish_initial_wave=bool(getattr(args, "finish_initial_wave", False)),
+            **role_kwargs)
         analysis_incomplete = bool(getattr(summary, "analysis_incomplete", False))
         analysis_revision = _results_revision(ws.report_dir)
 

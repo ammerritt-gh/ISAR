@@ -2,12 +2,13 @@ import json
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from isar.analyze.context import ScanContext
 from isar.schema import card as card_mod
 from isar.session import driver
 from isar.session.promotions import PromotionKey, PromotionStore
-from isar.session.state import ScanEntry
+from isar.session.state import ScanEntry, SessionState
 from isar.synth._ff import convolute_voigt_dho
 
 
@@ -110,6 +111,58 @@ def test_promotion_store_resume_and_superseded_guard(tmp_path):
     assert superseded["status"] == "superseded"
     assert superseded["result"]["scan_id"] == "master:q"
     assert json.loads(store.path_for(key).read_text(encoding="utf-8")) == superseded
+
+
+def test_pending_promotion_resumes_from_a_new_store_instance(tmp_path):
+    key = PromotionKey("master:q", "rev-a", "spectrum", "point", "full", 200, 9)
+    PromotionStore(tmp_path).begin(key, escalation_reasons=["untrusted_hesse"])
+
+    resumed = PromotionStore(tmp_path)
+    assert [record["promotion_id"] for record in resumed.pending()] == [key.digest]
+    resumed.complete(key, {"scan_id": "master:q", "content_hash": "rev-a"})
+    published = resumed.resolve_publication(key, current_revision="rev-a")
+    assert published["status"] == "published"
+    assert resumed.pending() == []
+
+
+def test_reconcile_keeps_current_pending_and_supersedes_stale(tmp_path):
+    current = PromotionKey("master:q", "rev-b", "spectrum-b", "point-b", "full", 200, 9)
+    stale = PromotionKey("master:q", "rev-a", "spectrum-a", "point-a", "full", 200, 9)
+    store = PromotionStore(tmp_path)
+    store.begin(stale, escalation_reasons=["untrusted_hesse"])
+    store.begin(current, escalation_reasons=["untrusted_hesse"])
+
+    session = SessionState(scans={
+        "master:q": ScanEntry("master:q", 1, "measurement", "fitted",
+                              content_hash="rev-b")})
+    unresolved = driver.unresolved_current_promotions(tmp_path, session)
+    assert [record["promotion_id"] for record in unresolved] == [current.digest]
+    assert store.load(stale)["status"] == "superseded"
+    assert store.load(current)["status"] == "pending"
+
+
+def test_published_retry_supersedes_other_pending_attempt_for_same_revision(tmp_path):
+    abandoned = PromotionKey("master:q", "rev-a", "spectrum", "point-old", "full", 200, 8)
+    retry = PromotionKey("master:q", "rev-a", "spectrum", "point-new", "full", 200, 9)
+    store = PromotionStore(tmp_path)
+    store.begin(abandoned, escalation_reasons=["untrusted_hesse"])
+    store.begin(retry, escalation_reasons=["untrusted_hesse"])
+    store.complete(retry, {"scan_id": "master:q", "content_hash": "rev-a"})
+    assert store.resolve_publication(retry, current_revision="rev-a")["status"] == "published"
+
+    changed = store.supersede_other_attempts(retry)
+    assert [record["promotion_id"] for record in changed] == [abandoned.digest]
+    assert store.load(abandoned)["superseded_by"] == retry.digest
+
+
+def test_current_promotion_reconciliation_fails_closed_on_unreadable_record(tmp_path, caplog):
+    store = PromotionStore(tmp_path)
+    store.root.mkdir(parents=True)
+    (store.root / "broken.json").write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="unreadable promotion record"):
+        store.reconcile({"master:q": "rev-a"})
+    assert "could not read promotion record" in caplog.text
 
 
 def test_prior_admission_requires_full_or_trusted_hesse():

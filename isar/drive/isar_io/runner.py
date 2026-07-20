@@ -81,6 +81,7 @@ class SubprocessRunner:
 
     def run(self, workspace: str | Path, data_paths: Sequence[str | Path], *, force: bool = False,
             errors_tier: str = "full", render: bool = True, timeout: float | None = None,
+            scan_errors_tier: str | None = None, master_errors_tier: str | None = None,
             certification_manifest: str | Path | None = None,
             certification_request: str | Path | None = None,
             analysis_allowance_seconds: float | None = None,
@@ -106,6 +107,10 @@ class SubprocessRunner:
         if force:
             cmd.append("--force")
         cmd.extend(["--errors", str(errors_tier)])
+        if scan_errors_tier is not None:
+            cmd.extend(["--scan-errors", str(scan_errors_tier)])
+        if master_errors_tier is not None:
+            cmd.extend(["--master-errors", str(master_errors_tier)])
         if not render:
             cmd.append("--no-render")
         if certification_manifest is not None:
@@ -141,6 +146,7 @@ class _CallableRunner:
 
     def run(self, workspace, data_paths, *, force: bool = False, errors_tier: str = "full",
             render: bool = True, timeout: float | None = None,
+            scan_errors_tier: str | None = None, master_errors_tier: str | None = None,
             certification_manifest: str | Path | None = None,
             certification_request: str | Path | None = None,
             analysis_allowance_seconds: float | None = None,
@@ -150,6 +156,10 @@ class _CallableRunner:
         # contract was frozen at the Stage-1 shape (--errors <tier> [--force]). Adding --no-render here
         # would break every fake that asserts on extra_args. A real fake never renders anyway.
         extra_args = ["--errors", str(errors_tier)]
+        if scan_errors_tier is not None:
+            extra_args.extend(["--scan-errors", str(scan_errors_tier)])
+        if master_errors_tier is not None:
+            extra_args.extend(["--master-errors", str(master_errors_tier)])
         if force:
             extra_args.append("--force")
         result = self._fn(workspace, data_paths, extra_args=extra_args)

@@ -97,18 +97,34 @@ open. Risk: none (no intended steering behavior change). Everything later is mea
 
 ## 3. Phase 2 — Escalate-on-distrust error tiers in the live loop
 
-*Status: Partial 2026-07-20. HESSE-first `auto`, in-place error attachment, provenance, and the
-atomic promotion-record API are implemented. Runtime pending-work recovery, real supersession
-publication checks, asynchronous scheduling, and drive-default enablement remain open and blocked
-by the shadow gate.*
+For analytic campaigns, scan acquisition is nearly instantaneous, so fitting, error attachment,
+and certification will naturally dominate the percentage breakdown. The optimization target is
+absolute end-to-end campaign wall time; percentages only locate the elapsed-time critical path.
+
+*Status: Partial 2026-07-20. HESSE-first `auto`, in-place error attachment, provenance, the atomic
+promotion-record API, lossless scan/master tier splitting, pending-work recovery, supersession
+publication checks, and terminal/certification barriers are implemented. Crash-safe asynchronous
+scheduling and fresh-master `auto` drive enablement remain open and blocked by the shadow gate.
+The synchronous path is authoritative until reusable candidates have a durable work artifact; a
+crash never causes an older revision to publish. OP7 and role-split evidence is recorded in
+`docs/campaigns/2026-07-20_op7_speedup_checkpoint.md`.*
 
 ### 3.1 Policy
 
 Extend the existing drive-level HESSE-first router rather than introducing a second policy:
 
 - quicklooks remain `cheap`;
-- production scans and changed master revisions run `auto`;
+- provisional production scans remain `fast`; they are non-authoritative and never receive full
+  errors merely because their changed pooled master requires promotion;
+- changed master revisions run `auto` after the shadow gate; until then the lossless compatibility
+  router preserves the lagged escalation decision but applies `full` only to the master role;
 - certification remains explicitly `full` or `bayes`.
+
+This is the OP7 evidence amendment to the original scan-and-master `auto` proposal. In the frozen
+controlled batch, 80/81 provisional scans promoted because individual-scan HESSE was untrusted.
+Those full scan intervals cannot seat convergence or refresh the prior, so promoting them spent
+time without serving an authoritative consumer. Generic `run_batch(errors_tier="auto")` retains
+its existing meaning for compatibility; the drive opts into role-specific tiers additively.
 
 `auto` performs structure enumeration and point estimation once, publishes a fresh HESSE master,
 and promotes that frozen revision to full errors when any of these deterministic conditions holds:
@@ -134,6 +150,10 @@ needed. Terminal stopping and certification wait for all required promotions.
 Every result adds `fit_role`, requested/effective tier, ordered escalation reasons, promotion state,
 requested/effective bootstrap M, source revision, and publication outcome without changing any
 existing Stage II↔III field.
+
+The profiler and campaign diagnostic report certification separately as a parallel critical path:
+pass wall, selected/carried point counts, and the slowest unit/methods. Summed certification-unit
+seconds are work, not elapsed campaign wall, and must never be added to the disjoint live-loop table.
 
 Final certification is untouched: it already re-fits frozen pools at full honesty
 (MEASUREMENT_STEERING §7.4); this phase changes only what the live loop computes.

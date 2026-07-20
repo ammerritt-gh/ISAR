@@ -941,6 +941,8 @@ def _q_needs_full_errors(workspace, hkl) -> bool:
     for r in rows:
         if not _hkl_close(_row_hkl(r), hkl):
             continue
+        if not r.get("pooled"):
+            continue
         if r.get("disposition") not in _USABLE or r.get("omega0") is None:
             continue
         if _pick_interval(r)[2]:
@@ -978,9 +980,51 @@ def _errors_tier_for(proposal, workspace, cfg=None) -> str:
     return "fast"
 
 
+def _errors_tiers_for(proposal, workspace, cfg=None) -> tuple[str, str]:
+    """Return ``(scan, master)`` tiers for one drive analysis.
+
+    Physical production scans remain provisional HESSE fits even when the authoritative pooled
+    master at this q needs promotion. Omitting role tiers at lower layers preserves the historical
+    single-tier contract for non-drive callers.
+    """
+    master_tier = _errors_tier_for(proposal, workspace, cfg)
+    if proposal.kind == "quicklook":
+        return "cheap", "cheap"
+    return "fast", master_tier
+
+
 def _errors_arg_for(proposal, workspace, cfg=None) -> list[str]:
     """Back-compat wrapper: the tier from :func:`_errors_tier_for` as ``["--errors", <tier>]`` argv."""
     return ["--errors", _errors_tier_for(proposal, workspace, cfg)]
+
+
+def _unresolved_current_promotions(workspace) -> list[dict]:
+    """Reconcile promotion manifests against the frozen results contract at a loop boundary."""
+    from isar.promotion_contract import PromotionStore
+
+    store = PromotionStore(workspace)
+    if not store.root.exists():
+        return []
+    revisions = {}
+    try:
+        rows = read_results_csv(workspace)
+    except (OSError, UnicodeError, ValueError) as error:
+        _LOG.warning("could not read current master revisions for promotion gate: %s: %s",
+                     type(error).__name__, error)
+        return [record for record in store.records()
+                if record.get("status") in ("pending", "completed")]
+    for row in rows:
+        if not row.get("pooled"):
+            continue
+        master_id = row.get("scan_id")
+        revision = row.get("master_revision")
+        if master_id and revision:
+            revisions[str(master_id)] = str(revision)
+    try:
+        return store.reconcile(revisions)
+    except RuntimeError as error:
+        _LOG.warning("promotion reconciliation failed closed: %s", error)
+        return [{"promotion_id": "unreadable-promotion-record", "status": "pending"}]
 
 
 def _recertified_observations(workspace, calibration: Calibration, scan_kind: dict) -> list[dict]:
@@ -1718,13 +1762,13 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
     _persist_acquisition_provenance(cfg.workspace, submission_payload)
     tracks_before = _read_branch_tracks(cfg.workspace)
 
-    tier = _errors_tier_for(proposal, cfg.workspace, cfg)
-    promoted = proposal.kind in PRODUCTION_KINDS and tier == "full"
+    scan_tier, tier = _errors_tiers_for(proposal, cfg.workspace, cfg)
+    promoted = proposal.kind in PRODUCTION_KINDS and tier in ("full", "bayes")
     if promoted:
         log_event(cfg.log_path, "escalate_fit", {
             "phase": "promote", "iter": it, "attempt": attempt,
             "hkl": [proposal.h, proposal.k, proposal.l], "from_tier": "fast",
-            "to_tier": "full", "reason": "untrusted_hesse_no_reliable_interval"})
+            "to_tier": tier, "reason": "untrusted_hesse_no_reliable_interval"})
     stage = "full_fit" if tier in ("full", "bayes") else "fast_fit"
     with activity(cfg.log_path, stage, q=[proposal.h, proposal.k, proposal.l],
                   job_id=job_id, fit_tier=tier, iteration=it):
@@ -1735,7 +1779,8 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
                     limit_seconds=objective.analysis_limit_seconds,
                     allow_overrun_start=True, iteration=it, q=[proposal.h, proposal.k, proposal.l]):
                 run_result = cfg.runner.run(
-                    cfg.workspace, [cfg.data_dir], errors_tier=tier, render=False,
+                    cfg.workspace, [cfg.data_dir], errors_tier=tier,
+                    scan_errors_tier=scan_tier, master_errors_tier=tier, render=False,
                     **_analysis_runner_kwargs(cfg, objective, finish_initial_wave=True))
                 _require_complete_analysis(run_result, objective)
     tracks_after = _read_branch_tracks(cfg.workspace)
@@ -1768,7 +1813,8 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
         metrics["n_rows"] = len(rows)
 
     timings = _read_run_timings(cfg.workspace)
-    analyze_payload = {"job_id": job_id, "errors_tier": tier, "iter": it,
+    analyze_payload = {"job_id": job_id, "errors_tier": tier,
+                       "scan_errors_tier": scan_tier, "master_errors_tier": tier, "iter": it,
                        "n_rows": len(rows),
                        "dispositions": [row.get("disposition") or row.get("verdict")
                                         for row in rows]}
@@ -1786,7 +1832,7 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
                    "seated" if any(_row_certifiable(row) for row in rows) else "failed")
         log_event(cfg.log_path, "escalate_fit", {
             "phase": "outcome", "iter": it, "job_id": job_id,
-            "hkl": [proposal.h, proposal.k, proposal.l], "to_tier": "full",
+            "hkl": [proposal.h, proposal.k, proposal.l], "to_tier": tier,
             "outcome": outcome, "n_rows": len(rows),
             "dispositions": [row.get("disposition") or row.get("verdict") for row in rows]})
     return rows, document
@@ -2552,6 +2598,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     op_stop_iter: int | None = None
     pending_recovery_reason: str | None = None
     certified_terminal = False
+    promotion_terminal_blocked = False
     last_regression_basis: tuple | None = None
     try:
         pending_recovery_reason = _recover_unmatched_submissions(
@@ -2582,6 +2629,20 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                             objective, observations, cfg.workspace, cfg.calibration)
                     decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
                 if decision.state == "met":
+                    unresolved_promotions = _unresolved_current_promotions(cfg.workspace)
+                    if unresolved_promotions:
+                        promotion_ids = [str(record.get("promotion_id"))
+                                         for record in unresolved_promotions]
+                        decision = StopDecision(
+                            "incomplete",
+                            ["terminal decision refused: unresolved current master promotion(s): "
+                             + ", ".join(promotion_ids)], decision.per_q)
+                        log_event(cfg.log_path, "recovery_pending", {
+                            "action": "master_promotion_pending", "promotion_ids": promotion_ids,
+                            "reason": ("terminal stopping and certification require resolved "
+                                       "promotions"), "iter": it})
+                        promotion_terminal_blocked = True
+                        break
                     certification_basis = _certification_decision_signature(decision)
                     if (last_regression_basis is not None
                             and certification_basis == last_regression_basis):
@@ -2669,6 +2730,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                     iteration=it, q=list(item.hkl)):
                                 run_result = cfg.runner.run(
                                     cfg.workspace, [cfg.data_dir], errors_tier=full_tier,
+                                    scan_errors_tier="fast", master_errors_tier=full_tier,
                                     force=True, render=False,
                                     **_analysis_runner_kwargs(cfg, objective))
                                 _require_complete_analysis(run_result, objective)
@@ -2903,6 +2965,20 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             # certify" decision). Bounded — once, at the end, only when the objective is met. Then
             # re-evaluate honestly: if a q's bootstrap-certified interval crosses tolerance the summary
             # reflects that, not the optimistic fast-tier stop (the triage tool reports the certified truth).
+            unresolved_promotions = ([] if promotion_terminal_blocked else
+                                     _unresolved_current_promotions(cfg.workspace))
+            promotion_blocked = promotion_terminal_blocked or bool(unresolved_promotions)
+            if unresolved_promotions:
+                promotion_ids = [str(record.get("promotion_id"))
+                                 for record in unresolved_promotions]
+                prior_rows = [] if decision is None else decision.per_q
+                decision = StopDecision(
+                    "incomplete",
+                    ["terminal decision refused: unresolved current master promotion(s): "
+                     + ", ".join(promotion_ids)], prior_rows)
+                log_event(cfg.log_path, "recovery_pending", {
+                    "action": "master_promotion_pending", "promotion_ids": promotion_ids,
+                    "reason": "terminal stopping and certification require resolved promotions"})
             analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
             if (not certified_terminal and decision is not None and decision.state == "met"
                     and objective.analysis_limit_seconds is not None
@@ -2911,7 +2987,9 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     "incomplete",
                     [f"analysis limit exhausted before final certification ({analysis_spent:.1f}/"
                      f"{float(objective.analysis_limit_seconds):.1f}s)"], decision.per_q)
-            if certified_terminal:
+            if promotion_blocked:
+                ran_certify = False
+            elif certified_terminal:
                 ran_certify = True
             else:
                 try:

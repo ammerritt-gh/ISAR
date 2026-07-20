@@ -26,6 +26,148 @@ log = logging.getLogger(__name__)
 _ERROR_METHOD_KEYS = ("bootstrap_seconds", "minos_seconds", "profile_seconds", "bayes_seconds")
 
 
+def _read_timing_json(path: Path) -> dict[str, Any] | None:
+    """Read one advisory timing/checkpoint document, warning and failing closed on damage."""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("top-level value is not an object")
+        return value
+    except (OSError, ValueError, TypeError) as exc:
+        log.warning("could not read timing data from %s: %s: %s",
+                    path, type(exc).__name__, exc)
+        return None
+
+
+def certification_pass_breakdown(workspace: str | Path | None, events) -> list[dict[str, Any]]:
+    """Return critical-path-aware metrics for durable certification revisions.
+
+    Certification units run in parallel, so their summed ``fit_seconds`` is work, not campaign
+    wall.  Each row therefore keeps both the activity wall span and the slowest unit (the closest
+    persisted approximation to the pass critical path), along with selective-certification reuse.
+    Older campaigns without durable manifests simply return an empty list.
+    """
+    if workspace is None:
+        return []
+    root = Path(workspace) / "report" / "certification"
+    if not root.exists():
+        return []
+    summary_path = Path(workspace) / "report" / "campaign_summary.json"
+    summary = (_read_timing_json(summary_path) or {}) if summary_path.exists() else {}
+    campaign_path = (summary.get("objective") or {}).get("path") or []
+    campaign_points = len(campaign_path) if isinstance(campaign_path, list) else 0
+
+    activities: dict[str, dict[str, Any]] = {}
+    for index, event in enumerate(events):
+        if not isinstance(event, dict):
+            log.warning("session event %d is not an object while reading certification timings",
+                        index)
+            continue
+        payload = event.get("payload") or {}
+        if not isinstance(payload, dict):
+            log.warning("session event %d has non-object payload while reading certification timings",
+                        index)
+            continue
+        activity_id = payload.get("activity_id")
+        if not activity_id or payload.get("stage") != "final_certification":
+            continue
+        record = activities.setdefault(str(activity_id), {})
+        if event.get("kind") == "activity_start":
+            record["start_ts"] = event.get("ts")
+        elif event.get("kind") == "activity_end":
+            record["end_ts"] = event.get("ts")
+
+    rows: list[dict[str, Any]] = []
+    for revision in root.iterdir():
+        if not revision.is_dir() or revision.name == "requests":
+            continue
+        manifest_path = revision / "manifest.json"
+        if not manifest_path.exists():
+            continue
+        manifest = _read_timing_json(manifest_path)
+        if manifest is None:
+            continue
+        runtime_path = revision / "runtime.json"
+        progress_path = revision / "progress.json"
+        runtime = (_read_timing_json(runtime_path) or {}) if runtime_path.exists() else {}
+        progress = (_read_timing_json(progress_path) or {}) if progress_path.exists() else {}
+        request = None
+        request_fingerprint = manifest.get("request_fingerprint")
+        if request_fingerprint:
+            request_path = root / "requests" / f"{request_fingerprint}.json"
+            if request_path.exists():
+                request = _read_timing_json(request_path)
+        request = request or {}
+
+        worklist = manifest.get("worklist") or []
+        if not isinstance(worklist, list):
+            log.warning("certification manifest %s has non-list worklist; skipped", manifest_path)
+            continue
+        work_by_key = {str(item.get("unit_key")): item for item in worklist
+                       if isinstance(item, dict) and item.get("unit_key")}
+        units: list[dict[str, Any]] = []
+        units_dir = revision / "units"
+        if units_dir.exists():
+            for unit_path in units_dir.glob("*.json"):
+                unit = _read_timing_json(unit_path)
+                if unit is None:
+                    continue
+                entry = unit.get("entry") or {}
+                provenance = entry.get("provenance") or {}
+                if not isinstance(entry, dict) or not isinstance(provenance, dict):
+                    log.warning("certification unit %s has malformed entry/provenance; skipped",
+                                unit_path)
+                    continue
+                try:
+                    fit_seconds = float(provenance.get("fit_seconds") or 0.0)
+                    methods = {key: float(provenance.get(key) or 0.0)
+                               for key in _ERROR_METHOD_KEYS}
+                except (TypeError, ValueError) as exc:
+                    log.warning("certification unit %s has malformed timings; skipped: %s",
+                                unit_path, exc)
+                    continue
+                work = work_by_key.get(str(unit.get("unit_key")), {})
+                units.append({"unit_key": unit.get("unit_key"),
+                              "master_id": entry.get("scan_id"),
+                              "hkl": work.get("hkl"),
+                              "fit_seconds": max(fit_seconds, 0.0),
+                              "method_seconds": methods})
+
+        objective_points = request.get("objective_path") or request.get("per_q") or []
+        request_points = (len(objective_points)
+                          if isinstance(objective_points, list) else len(worklist))
+        requested = campaign_points or request_points
+        selected = len(worklist)
+        activity_id = str(runtime.get("activity_id") or progress.get("activity_id") or "")
+        activity = activities.get(activity_id, {})
+        start_ts, end_ts = activity.get("start_ts"), activity.get("end_ts")
+        wall_seconds = None
+        if isinstance(start_ts, (int, float)) and isinstance(end_ts, (int, float)):
+            wall_seconds = max(float(end_ts) - float(start_ts), 0.0)
+        slowest = max(units, key=lambda item: item["fit_seconds"], default=None)
+        rows.append({
+            "fingerprint": str(manifest.get("fingerprint") or revision.name),
+            "activity_id": activity_id or None,
+            "requested_points": requested,
+            "selected_points": selected,
+            "carried_points": max(requested - selected, 0),
+            "newly_fitted": int(progress.get("newly_fitted", len(units)) or 0),
+            "reused_checkpoint": int(progress.get("reused_checkpoint", 0) or 0),
+            "reused_workspace": int(progress.get("reused_workspace", 0) or 0),
+            "wall_seconds": wall_seconds,
+            "unit_work_seconds": sum(item["fit_seconds"] for item in units),
+            "critical_unit_seconds": slowest["fit_seconds"] if slowest else None,
+            "slowest_hkl": slowest.get("hkl") if slowest else None,
+            "slowest_master_id": slowest.get("master_id") if slowest else None,
+            "critical_method_seconds": slowest.get("method_seconds") if slowest else {},
+            "sort_ts": float(start_ts) if isinstance(start_ts, (int, float)) else float("inf"),
+        })
+    rows.sort(key=lambda row: (row["sort_ts"], row["fingerprint"]))
+    for row in rows:
+        row.pop("sort_ts", None)
+    return rows
+
+
 def embedded_run_timings(events, *, fallback_path: str | Path | None = None) -> list[dict[str, Any]]:
     """Extract valid embedded ``isar run`` timing documents from session-log events.
 
@@ -48,14 +190,8 @@ def embedded_run_timings(events, *, fallback_path: str | Path | None = None) -> 
     path = Path(fallback_path)
     if not path.exists():
         return []
-    try:
-        timing = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(timing, dict):
-            raise ValueError("top-level timing value is not an object")
-        return [timing]
-    except (OSError, ValueError, TypeError) as exc:
-        log.warning("could not read timing data from %s: %s: %s", path, type(exc).__name__, exc)
-        return []
+    timing = _read_timing_json(path)
+    return [timing] if timing is not None else []
 
 
 def fit_timing_breakdown(timings) -> dict[str, Any] | None:

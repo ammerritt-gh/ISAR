@@ -13,7 +13,8 @@ from pathlib import Path
 
 from isar.drive.session_log import read_log
 from isar.session.shadow import compare_workspaces
-from isar.session.timing import embedded_run_timings, fit_timing_breakdown
+from isar.session.timing import (certification_pass_breakdown, embedded_run_timings,
+                                 fit_timing_breakdown)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -139,6 +140,32 @@ def _print_disjoint_fit_breakdown(events, log_path, wall):
         print(f"  {labels[key]:36s} {seconds:10.3f} {wall_pct:6.1f}% {fit_pct:6.1f}%")
 
 
+def _print_certification_passes(workspace, events):
+    passes = certification_pass_breakdown(workspace, events)
+    if not passes:
+        return
+    print()
+    print("Certification passes (parallel-unit critical path):")
+    print(f"  {'pass':>4s} {'requested':>9s} {'carried':>7s} {'fitted':>7s} "
+          f"{'checkpoint':>10s} {'wall_s':>9s} {'critical_s':>10s} {'slowest_q':>16s}")
+    for index, item in enumerate(passes, 1):
+        wall = item.get("wall_seconds")
+        critical = item.get("critical_unit_seconds")
+        print(f"  {index:4d} {item['requested_points']:9d} {item['carried_points']:7d} "
+              f"{item['newly_fitted']:7d} {item['reused_checkpoint']:10d} "
+              f"{wall if wall is not None else 0.0:9.3f} "
+              f"{critical if critical is not None else 0.0:10.3f} "
+              f"{_fmt_hkl(item.get('slowest_hkl')):>16s}")
+        methods = item.get("critical_method_seconds") or {}
+        method_text = ", ".join(
+            f"{key.removesuffix('_seconds')}={float(seconds):.3f}s"
+            for key, seconds in methods.items() if float(seconds) > 0.0)
+        if method_text:
+            print(f"       slowest unit: {item.get('slowest_master_id') or '?'}; {method_text}")
+    print("  Note: fitted-unit seconds overlap across workers; pass wall and the slowest unit expose "
+          "the elapsed-time critical path.")
+
+
 def _print_iterations(events):
     iters: dict[int, dict] = {}
     for e in events:
@@ -159,7 +186,11 @@ def _print_iterations(events):
         elif kind == "propose":
             d["prop"] = (pay.get("kind", "?"), pay.get("hkl"))
         elif kind == "analyze":
-            if pay.get("errors_tier"):
+            scan_tier = pay.get("scan_errors_tier")
+            master_tier = pay.get("master_errors_tier")
+            if scan_tier or master_tier:
+                d["tier"] = f"{scan_tier or '?'}/{master_tier or '?'}"
+            elif pay.get("errors_tier"):
                 d["tier"] = pay.get("errors_tier")
         elif kind == "exception":
             d["exc"] += 1
@@ -172,7 +203,7 @@ def _print_iterations(events):
     print()
     print("Per-iteration breakdown:")
     print(f"  {'iter':>4s} {'total_s':>9s} {'dominant':18s} "
-          f"{'proposal':28s} {'tier':6s} {'exc':>3s}")
+          f"{'proposal':28s} {'scan/master tier':16s} {'exc':>3s}")
     for it in sorted(iters):
         d = iters[it]
         total_s = f"{d['total']:9.3f}" if d["total"] is not None else f"{'-':>9s}"
@@ -182,7 +213,8 @@ def _print_iterations(events):
             prop = f"{k} {_fmt_hkl(hkl)}"
         else:
             prop = "-"
-        print(f"  {it:4d} {total_s} {dom:18s} {prop:28s} {(d['tier'] or '-'):6s} {d['exc']:3d}")
+        print(f"  {it:4d} {total_s} {dom:18s} {prop:28s} "
+              f"{(d['tier'] or '-'):16s} {d['exc']:3d}")
 
 
 def _print_gap_estimates(events, wall):
@@ -255,6 +287,8 @@ def run(args) -> int:
     _print_disjoint_fit_breakdown(events, log_path, wall)
 
     _print_error_method_breakdown(events, log_path, wall, args.top)
+
+    _print_certification_passes(args.workspace, events)
 
     if getattr(args, "iterations", False):
         _print_iterations(events)

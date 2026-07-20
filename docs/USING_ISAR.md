@@ -131,9 +131,12 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   campaign's `report/session_log.jsonl` timing events and prints a stage breakdown (propose /
   validate / submit / wait_scan / isar_run / fold / analyze …), the embedded `isar run` subprocess
   sub-stages (including per-scan interpreter/matplotlib startup overhead), and — with
-  `--iterations` — a per-iteration table. `--log PATH` points at a different log; `--top N` shows
-  only the N slowest stages. Logs written before timing instrumentation degrade to approximate
-  per-kind gap estimates from event timestamps.
+  `--iterations` — a per-iteration table. Current campaigns also show each certification pass:
+  total grid points, selectively carried points, newly fitted points, elapsed pass wall, and the
+  slowest parallel unit with its method split. Summed certification-worker seconds are deliberately
+  not presented as elapsed wall. `--log PATH` points at a different log; `--top N` shows only the N
+  slowest stages. Logs written before timing instrumentation degrade to approximate per-kind gap
+  estimates from event timestamps.
 
 ## Telling ISAR what you know — the `[fitting]` guidelines
 

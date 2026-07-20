@@ -120,6 +120,23 @@ def test_subprocess_runner_argv_force(monkeypatch):
     assert cmd[cmd.index("--errors") + 1] == "full"
 
 
+def test_runner_seams_forward_optional_role_tiers_without_changing_legacy_shape(monkeypatch):
+    captured = _capture_subprocess(monkeypatch)
+    SubprocessRunner().run(
+        "ws", ["d"], errors_tier="full", scan_errors_tier="fast",
+        master_errors_tier="full")
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--scan-errors") + 1] == "fast"
+    assert cmd[cmd.index("--master-errors") + 1] == "full"
+
+    calls = []
+    runner = as_runner(lambda workspace, paths, extra_args=None: calls.append(list(extra_args)))
+    runner.run("ws", ["d"], errors_tier="full", scan_errors_tier="fast",
+               master_errors_tier="bayes")
+    assert calls == [["--errors", "full", "--scan-errors", "fast",
+                      "--master-errors", "bayes"]]
+
+
 def test_subprocess_runner_soft_deadline_is_a_checkpointed_nonerror(monkeypatch):
     captured = {}
 

@@ -62,6 +62,8 @@ def _run_job(workspace_path, req) -> tuple[dict, dict]:
     data_paths = req.get("data_paths") or []
     force = bool(req.get("force", False))
     errors_tier = req.get("errors_tier", "full")
+    scan_errors_tier = req.get("scan_errors_tier")
+    master_errors_tier = req.get("master_errors_tier")
     M = int(req.get("M") or 200)
     workers = req.get("workers")
     certification_manifest = req.get("certification_manifest")
@@ -69,9 +71,19 @@ def _run_job(workspace_path, req) -> tuple[dict, dict]:
     analysis_allowance_seconds = req.get("analysis_allowance_seconds")
     finish_initial_wave = bool(req.get("finish_initial_wave", False))
 
-    timer = StageTimer(errors_tier=errors_tier, M=M, worker_job=True, job_id=req.get("id"))
+    timer_meta = {"errors_tier": errors_tier, "M": M, "worker_job": True,
+                  "job_id": req.get("id")}
+    if scan_errors_tier is not None:
+        timer_meta["scan_errors_tier"] = scan_errors_tier
+    if master_errors_tier is not None:
+        timer_meta["master_errors_tier"] = master_errors_tier
+    timer = StageTimer(**timer_meta)
     run_kwargs = {"force": force, "M": M, "workers": workers,
                   "errors_tier": errors_tier, "formats": (), "timer": timer}
+    if scan_errors_tier is not None:
+        run_kwargs["scan_errors_tier"] = scan_errors_tier
+    if master_errors_tier is not None:
+        run_kwargs["master_errors_tier"] = master_errors_tier
     # Omit the additive extension entirely for normal jobs so legacy in-process adapters and test
     # doubles continue to satisfy the runner boundary unchanged.
     if certification_request is not None:
