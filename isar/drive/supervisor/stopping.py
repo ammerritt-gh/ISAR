@@ -156,6 +156,12 @@ class GridQ:
     maximum_bridge_steps: int = 1
     master_updates: list[dict] = field(default_factory=list)
     evidence_updates: list[dict] = field(default_factory=list)
+    # Chronological positions in the durable observation stream.  These are decision-local
+    # bookkeeping, not a second scientific authority: they let acquisition prove that a same-q
+    # identity revisit was unlocked by a *newer* neighboring pooled-master revision.
+    production_sequences: list[int] = field(default_factory=list)
+    identity_revisit_sequences: list[int] = field(default_factory=list)
+    evidence_update_sequences: list[int] = field(default_factory=list)
     clamped_productions: int = 0
     clamped_effective_ncounts: list[int] = field(default_factory=list)
     interval_floor_window: int = 3
@@ -357,6 +363,8 @@ def _logical_observations(observations: list[dict], target_branch: str) -> list[
     logical result. Legacy observations without an acquisition ID remain one-for-one.
     """
     groups: dict[tuple, list[dict]] = {}
+    sequence_by_object = {id(observation): sequence
+                          for sequence, observation in enumerate(observations)}
     for index, observation in enumerate(observations):
         if observation.get("kind") == "pooled_master_update":
             continue
@@ -389,6 +397,7 @@ def _logical_observations(observations: list[dict], target_branch: str) -> list[
                         or item.get("verdict") == "branch_continuation"]
             representative = positive[-1] if positive else group[-1]
         folded = dict(representative)
+        folded["_observation_sequence"] = max(sequence_by_object[id(item)] for item in group)
         folded["proposal_cost"] = sum(float(item.get("proposal_cost") or 0.0) for item in group)
         folded["submitted_exposure_increment"] = sum(
             float(item.get("submitted_ncount") or 0.0) for item in group
@@ -433,15 +442,17 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                   interval_floor_min_exposure_ratio=float(policy.get(
                       "interval_floor_min_exposure_ratio", 2.0)))
             for i in range(len(path))]
-    for update in observations:
+    for sequence, update in enumerate(observations):
         if update.get("kind") != "pooled_master_update" or update.get("hkl") is None:
             continue
         i = match_grid_index(tuple(update["hkl"]), path)
         if i is not None:
             grid[i].evidence_updates.append(dict(update))
+            grid[i].evidence_update_sequences.append(sequence)
             if branch_matches(update):
                 grid[i].master_updates.append(dict(update))
-    for obs in _logical_observations(observations, target_branch):
+    logical_observations = _logical_observations(observations, target_branch)
+    for obs in logical_observations:
         # A classification probe may deliberately sit off the requested path.  Its branch evidence is
         # retained elsewhere, but it must never seat or penalize a certification point — even when an
         # unusually fine path places it within the nearest-hkl matching tolerance.
@@ -471,6 +482,14 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                     obs.get("submitted_exposure_increment", submitted_ncount))
         if kind in PRODUCTION_KINDS:
             g.n_production += 1
+            # ``_logical_observations`` preserves group insertion order.  Locate the latest physical
+            # row for this logical acquisition so a later pooled update compares after the scan, not
+            # after an arbitrary reducer pass.
+            sequence = obs.get("_observation_sequence")
+            if sequence is not None:
+                g.production_sequences.append(int(sequence))
+                if obs.get("acquisition_action_role") == "classification":
+                    g.identity_revisit_sequences.append(int(sequence))
             if obs.get("ncount_clamped"):
                 g.clamped_productions += 1
                 if submitted_ncount is not None:

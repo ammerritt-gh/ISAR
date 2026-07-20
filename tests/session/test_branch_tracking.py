@@ -33,7 +33,7 @@ def test_anchor_is_nearest_reduced_zone_centre_with_path_order_tie_break():
     assert anchor_index(path, 2.0) == 1
 
 
-def test_acoustic_anchor_is_nearest_point_with_resolvable_candidate():
+def test_unlabeled_local_lowest_candidate_does_not_define_acoustic_anchor():
     path = [[2.0, 0, 0], [2.05, 0, 0], [2.1, 0, 0], [2.15, 0, 0]]
     observations = [
         {"gauss_fwhm": 0.8, "candidates": [_candidate("a0", 0.1)]},
@@ -41,7 +41,81 @@ def test_acoustic_anchor_is_nearest_point_with_resolvable_candidate():
         {"gauss_fwhm": 0.8, "candidates": [_candidate("a2", 1.1)]},
         {"gauss_fwhm": 0.8, "candidates": [_candidate("a3", 1.7)]},
     ]
-    assert anchor_index(path, 2.0, target_branch="acoustic", observations=observations) == 2
+    assert anchor_index(path, 2.0, target_branch="acoustic", observations=observations) == 0
+
+
+def test_first_acoustic_anchor_uses_only_observed_hypothesis_resolvable_seed():
+    path = [[2.0, 0, 0], [2.05, 0, 0], [2.1, 0, 0], [2.15, 0, 0]]
+    observations = [{"candidates": []}, {"candidates": []}, {"candidates": []},
+                    {"gauss_fwhm": 0.8, "candidates": [_candidate("seed", 1.4),
+                                                          _candidate("optic", 6.4)]}]
+    assert anchor_index(
+        path, 2.0, target_branch="acoustic", observations=observations,
+        acoustic_hypothesis=HYPOTHESES[1]) == 3
+
+
+def test_persisted_acoustic_anchor_does_not_drift_to_new_nearer_q_candidate():
+    path = [[2.0, 0, 0], [2.05, 0, 0], [2.1, 0, 0], [2.15, 0, 0]]
+    first_observations = [{"candidates": []}, {"candidates": []}, {"candidates": []},
+                          {"gauss_fwhm": 0.8,
+                           "candidates": [_candidate("seed:a", 1.4),
+                                          _candidate("seed:o", 6.4)]}]
+    before = track_path(path, first_observations, period=2.0, hypotheses=HYPOTHESES,
+                        target_branch="acoustic", assignment_entropy_stop_nats=1.0)
+    assert before["anchor_index"] == 3
+    assert before["acquisition_seed_index"] == 3
+    assert before["reduced_q_origin_index"] == 0
+
+    after = track_path(
+        path,
+        [{"gauss_fwhm": 0.8, "candidates": [_candidate("zc:optic", 5.98)]},
+         {"candidates": []},
+         {"gauss_fwhm": 0.8, "candidates": [_candidate("q10:a", 0.95),
+                                               _candidate("q10:o", 6.2)]},
+         first_observations[3]],
+        period=2.0, hypotheses=HYPOTHESES, target_branch="acoustic", previous=before,
+        assignment_entropy_stop_nats=1.0)
+    assert after["anchor_index"] == 3
+    zc = after["assignments"][0]
+    assert zc["track_state"] != "confirmed"
+
+
+def test_acoustic_transition_geometry_is_measured_from_physical_zone_centre():
+    path = [[2.0, 0, 0], [2.05, 0, 0], [2.1, 0, 0], [2.15, 0, 0]]
+    observations = [
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("zc:o", 6.0)]},
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("q05:a", 0.5),
+                                             _candidate("q05:o", 6.1)]},
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("q10:a", 1.0),
+                                             _candidate("q10:o", 6.2)]},
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("q15:a", 1.5),
+                                             _candidate("q15:o", 6.3)]},
+    ]
+    track = track_path(path, observations, period=2.0, hypotheses=HYPOTHESES,
+                       target_branch="acoustic", previous={"target_branch": "acoustic",
+                                                            "anchor_index": 3})
+    assert [row["acoustic_candidate_index"] for row in track["assignments"]] == [None, 0, 0, 0]
+
+
+def test_acoustic_transition_geometry_has_physical_sign_on_both_sides_of_zone_centre():
+    path = [[1.9, 0, 0], [1.95, 0, 0], [2.0, 0, 0], [2.05, 0, 0], [2.1, 0, 0]]
+    observations = [
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("lm:a", 1.0),
+                                               _candidate("lm:o", 6.2)]},
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("ln:a", 0.5),
+                                               _candidate("ln:o", 6.1)]},
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("zc:o", 6.0)]},
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("rn:a", 0.5),
+                                               _candidate("rn:o", 6.1)]},
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("rm:a", 1.0),
+                                               _candidate("rm:o", 6.2)]},
+    ]
+    track = track_path(
+        path, observations, period=2.0, hypotheses=HYPOTHESES,
+        target_branch="acoustic",
+        previous={"target_branch": "acoustic", "acquisition_seed_index": 4})
+    assert track["reduced_q_origin_index"] == 2
+    assert [row["acoustic_candidate_index"] for row in track["assignments"]] == [0, 0, None, 0, 0]
 
 
 def test_acoustic_tracking_selects_low_connected_branch_and_labels_it_target():
@@ -240,6 +314,39 @@ def test_missing_revision_clears_stale_scalar_selection_but_preserves_candidates
     assert len(outcome["branch_candidates"]) == 2
 
 
+def test_ambiguous_optic_like_mode_is_evidence_not_acoustic_delivery():
+    path = [[2.0, 0.0, 0.0]]
+    state = CardState(
+        campaign_target={"branch": "acoustic", "label": "acoustic",
+                         "selector": "tracked_branch", "target_energy_meV": None,
+                         "energy_search_meV": [-2.0, 7.0], "path": path},
+        hypothesis_snapshot={"hypotheses": HYPOTHESES, "target_hypothesis": "acoustic",
+                             "steering": {"assignment_entropy_stop_nats": 0.2,
+                                          "maximum_bridge_steps": 1}})
+    card = SimpleNamespace(state=state, policy=SimpleNamespace(
+        dispersion={"zone_period": 2.0}, collation={"t_round": 5.0}))
+    outcome = {
+        "detector_id": "det0", "q": path[0], "T": 200.0, "sample": "sample",
+        "omega0": 5.98, "omega0_err": 0.03, "gamma": 0.3,
+        "interval": [5.92, 6.04], "hesse_interval": [5.95, 6.01],
+        "interval_reliable": True, "pooled": True, "n_members": 3,
+        "fit_kind": "unconstrained", "best_label": "stokes+bg", "verdict": "resolved",
+        "modality": "fold", "gauss_fwhm": 0.8,
+        "modes": [{"omega0": 5.98, "omega0_err": 0.03, "gamma": 0.3,
+                   "gamma_err": 0.02, "amplitude": 10.0}],
+    }
+    session = SessionState()
+    session.put(ScanEntry(scan_id="master:q0", scan_number=9_000_000, scan_type="energy",
+                          status="fitted", detectors={"det0": outcome}))
+
+    track = _apply_tracked_branch(session, card, t_round=5.0)
+
+    assert track["assignments"][0]["track_state"] == "ambiguous"
+    assert outcome["branch_candidates"][0]["probabilities"]["acoustic"] < 0.15
+    assert outcome["omega0"] is None and outcome["branch_id"] is None
+    assert outcome["selected_candidate_index"] is None
+
+
 def test_session_wiring_recomputes_after_masters_and_rebuilds_connected_prior():
     path = [[2.0, 0.0, 0.0], [2.1, 0.0, 0.0]]
     state = CardState(
@@ -277,3 +384,21 @@ def test_session_wiring_recomputes_after_masters_and_rebuilds_connected_prior():
     assert session.scans["master:q1"].detectors["det0"]["gamma"] == 0.7
     assert all(point["branch_id"] in {"optic", "acoustic"} for point in state.dispersion_prior)
     assert {point["branch_id"] for point in state.dispersion_prior} == {"optic", "acoustic"}
+
+    revision = track["revision"]
+    # A new physical/provisional fit is display evidence only. Without a changed pooled authority it
+    # must neither rerun joint assignment nor advance the durable track revision.
+    provisional = {
+        "detector_id": "det0", "q": path[1], "T": 200.0, "sample": "sample",
+        "omega0": 3.2, "omega0_err": 0.05, "gamma": 0.2,
+        "interval_reliable": True, "pooled": False, "best_label": "stokes+bg",
+        "verdict": "resolved", "modality": "fold",
+        "modes": [{"omega0": 3.2, "omega0_err": 0.05, "gamma": 0.2,
+                   "amplitude": 2.0}],
+    }
+    session.put(ScanEntry(scan_id="physical:provisional", scan_number=17,
+                          scan_type="energy", status="fitted", detectors={"det0": provisional}))
+    unchanged = _apply_tracked_branch(session, card, t_round=5.0)
+    assert unchanged["revision"] == revision
+    assert unchanged["authoritative_evidence_signature"] == track[
+        "authoritative_evidence_signature"]

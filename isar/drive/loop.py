@@ -248,6 +248,28 @@ def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int
     return True
 
 
+def _stamp_proposal_provenance(proposal) -> None:
+    """Freeze the additive decision identity after all window/count clamps are known."""
+    meta = proposal.meta if isinstance(proposal.meta, dict) else {}
+    proposal.meta = meta
+    action_role = meta.get("acquisition_action_role")
+    if action_role is None:
+        action_role = ("classification" if meta.get("purpose") == "differentiate" else
+                       "discovery" if proposal.kind == "quicklook" else "production")
+        meta["acquisition_action_role"] = action_role
+    basis = {
+        "hkl": [float(proposal.h), float(proposal.k), float(proposal.l)],
+        "energy_window": [float(proposal.e_lo), float(proposal.e_hi), float(proposal.e_step)],
+        "ncount": int(proposal.ncount), "kind": str(proposal.kind),
+        "action_role": str(action_role),
+        "target_branch_role": meta.get("target_branch_role"),
+        "rival_branch_role": meta.get("rival_branch_role"),
+        "authoritative_evidence_revision": meta.get("authoritative_evidence_revision"),
+    }
+    encoded = json.dumps(basis, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    meta["proposal_fingerprint"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int) -> None:
     """Normalize one proposal immediately before validation/submission.
 
@@ -293,6 +315,7 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int)
     budget = dict(budget_state or {})
     if budget.get("kind") != "neutrons" or budget.get("amount") is None:
         normalize_proposal_score(proposal, float(getattr(objective, "tolerance_meV", 0.0)))
+        _stamp_proposal_provenance(proposal)
         return
     if bool(policy.get("dynamic_ncount", False)) and int(proposal.ncount) < minimum:
         old_ncount = int(proposal.ncount)
@@ -316,6 +339,7 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int)
             "old_ncount": old_ncount, "new_ncount": affordable, "n_points": n_points,
             "remaining_neutrons": remaining, "iter": it})
     normalize_proposal_score(proposal, float(getattr(objective, "tolerance_meV", 0.0)))
+    _stamp_proposal_provenance(proposal)
 
 
 def _resolve_calibration(cfg_value) -> Calibration:
@@ -363,13 +387,16 @@ def _make_classification_providers(card_state: dict, objective, resolution_cb, *
                     if h.get("name") not in (None, "null")]
     if len({row.get("branch_id") for row in selected if row.get("branch_id")}) < 2:
         return None, None
-    target = getattr(objective, "target_hypothesis", None)
+    target = (getattr(objective, "target_hypothesis", None)
+              or getattr(objective, "target_branch", None))
     policy = dict(getattr(objective, "steering", {}) or {})
     entropy_stop = float(policy.get("assignment_entropy_stop_nats", 0.2))
+    target_branch = getattr(objective, "target_branch", None) or target
+    rival_branch = "acoustic" if target_branch == "optic" else "optic"
     rival_resolved_hkls = []
     for assignment in ((card_state.get("branch_tracks") or {}).get("assignments") or []):
         candidates = assignment.get("candidates") or []
-        candidate_index = assignment.get("acoustic_candidate_index")
+        candidate_index = assignment.get(f"{rival_branch}_candidate_index")
         if not isinstance(candidate_index, int) or not 0 <= candidate_index < len(candidates):
             continue
         probabilities = (candidates[candidate_index].get("probabilities") or {})
@@ -378,7 +405,8 @@ def _make_classification_providers(card_state: dict, objective, resolution_cb, *
         known_total = acoustic + optic
         known = ([acoustic / known_total, optic / known_total] if known_total > 0.0 else [])
         identity_entropy = -sum(value * math.log(value) for value in known if value > 0.0)
-        if acoustic >= 0.85 and identity_entropy <= entropy_stop and assignment.get("q"):
+        if (float(probabilities.get(rival_branch, 0.0)) >= 0.85
+                and identity_entropy <= entropy_stop and assignment.get("q")):
             rival_resolved_hkls.append(tuple(float(value) for value in assignment["q"]))
 
     def reduced(hkl, period):
@@ -401,7 +429,7 @@ def _make_classification_providers(card_state: dict, objective, resolution_cb, *
 
     def classify(g):
         if any(math.dist(g.hkl, hkl) <= 1e-5 for hkl in rival_resolved_hkls):
-            return 0.0  # labeled acoustic context has no target-precision acquisition value
+            return 0.0  # labeled rival context has no target-precision acquisition value
         parts = components(g)
         target_part = next((part for part in parts if part["branch_id"] == target), parts[0])
         fwhm = _resolve_fwhm(resolution_cb, *g.hkl, max(target_part["mean"], 0.0))
@@ -646,7 +674,12 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
                           proposal_cost: float = 0.0, *, driver_inserted: bool = False,
                           certification_eligible: bool = True,
                           acquisition_id: str | None = None,
-                          count_diagnostics: dict | None = None) -> dict:
+                          count_diagnostics: dict | None = None,
+                          acquisition_action_role: str | None = None,
+                          target_branch_role: str | None = None,
+                          rival_branch_role: str | None = None,
+                          authoritative_evidence_revision: str | None = None,
+                          proposal_fingerprint: str | None = None) -> dict:
     disp = row.get("disposition")
     verdict = row.get("verdict")
     # `flagged` (model_incomplete) still carries a usable ω₀ — for an ω₀-tolerance objective the flag
@@ -682,6 +715,11 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         "omega0": row.get("omega0"), "scan": row.get("scan"), "detector": row.get("detector"),
         "proposal_cost": float(proposal_cost), "fit_kind": row.get("fit_kind"),
         "submitted_ncount": int(ncount), "acquisition_id": acquisition_id,
+        "acquisition_action_role": acquisition_action_role,
+        "target_branch_role": target_branch_role,
+        "rival_branch_role": rival_branch_role,
+        "authoritative_evidence_revision": authoritative_evidence_revision,
+        "proposal_fingerprint": proposal_fingerprint,
         "requested_ncount": count_diagnostics.get("requested_before_runtime_limit", ncount),
         "runtime_ncount_limit": count_diagnostics.get("runtime_ncount_limit"),
         "ncount_clamped": bool(count_diagnostics.get("requested_before_runtime_limit") is not None),
@@ -820,7 +858,12 @@ def _record_pooled_master_update(workspace, calibration: Calibration, proposal, 
     )
     payload = {**master, "kind": "pooled_master_update",
                "acquisition_id": proposal.acquisition_id,
-               "acquisition_target_energy": float(proposal.e_pred)}
+               "acquisition_target_energy": float(proposal.e_pred),
+               "acquisition_action_role": (proposal.meta or {}).get(
+                   "acquisition_action_role"),
+               "target_branch_role": (proposal.meta or {}).get("target_branch_role"),
+               "rival_branch_role": (proposal.meta or {}).get("rival_branch_role"),
+               "proposal_fingerprint": (proposal.meta or {}).get("proposal_fingerprint")}
     payload["candidate_state"], payload["candidate_evidence"] = _candidate_evidence_state(
         observations, payload)
     observations.append(payload)
@@ -1080,6 +1123,11 @@ def _proposal_from_submission(payload: dict) -> ScanProposal:
         "driver_inserted": bool(payload.get("driver_inserted", False)),
         "certification_eligible": bool(payload.get("certification_eligible", True)),
         "count_diagnostics": dict(payload.get("count_diagnostics") or {}),
+        "acquisition_action_role": payload.get("acquisition_action_role"),
+        "target_branch_role": payload.get("target_branch_role"),
+        "rival_branch_role": payload.get("rival_branch_role"),
+        "authoritative_evidence_revision": payload.get("authoritative_evidence_revision"),
+        "proposal_fingerprint": payload.get("proposal_fingerprint"),
     }
     if payload.get("insertion_purpose") is not None:
         meta["insertion_purpose"] = payload.get("insertion_purpose")
@@ -1223,6 +1271,12 @@ def _resume_detailed_events(workspace, events: list[dict], calibration: Calibrat
                 "driver_inserted": bool(payload.get("driver_inserted", False)),
                 "certification_eligible": bool(payload.get("certification_eligible", True)),
                 "count_diagnostics": payload.get("count_diagnostics") or {},
+                "acquisition_action_role": payload.get("acquisition_action_role"),
+                "target_branch_role": payload.get("target_branch_role"),
+                "rival_branch_role": payload.get("rival_branch_role"),
+                "authoritative_evidence_revision": payload.get(
+                    "authoritative_evidence_revision"),
+                "proposal_fingerprint": payload.get("proposal_fingerprint"),
             }
             cost = record["cost"] if record is not None else 0.0
             order = float(record["order"]) if record is not None else -1.0 + sequence * 1e-6
@@ -1334,6 +1388,11 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
         provenance_by_hkl.setdefault(key, []).append({
             "driver_inserted": bool(r.get("driver_inserted", False)),
             "certification_eligible": bool(r.get("certification_eligible", True)),
+            "acquisition_action_role": r.get("acquisition_action_role"),
+            "target_branch_role": r.get("target_branch_role"),
+            "rival_branch_role": r.get("rival_branch_role"),
+            "authoritative_evidence_revision": r.get("authoritative_evidence_revision"),
+            "proposal_fingerprint": r.get("proposal_fingerprint"),
         })
         ncount_by_hkl[key] = r.get("ncount") or ncount_by_hkl.get(key)
 
@@ -1673,6 +1732,11 @@ def _declined_observation(proposal, verdict: str) -> dict:
             "verdict": verdict, "omega0": None,
             "submitted_ncount": int(proposal.ncount),
             "acquisition_id": proposal.acquisition_id,
+            "acquisition_action_role": meta.get("acquisition_action_role"),
+            "target_branch_role": meta.get("target_branch_role"),
+            "rival_branch_role": meta.get("rival_branch_role"),
+            "authoritative_evidence_revision": meta.get("authoritative_evidence_revision"),
+            "proposal_fingerprint": meta.get("proposal_fingerprint"),
             "driver_inserted": bool(meta.get("driver_inserted", False)),
             "certification_eligible": bool(meta.get("certification_eligible", True))}
 
@@ -1726,6 +1790,11 @@ def _persist_acquisition_provenance(workspace: Path, payload: dict) -> None:
         "acquisition_target_energy": float(payload["acquisition_target_energy"]),
         "submitted_ncount": int(payload["submitted_ncount"]),
         "scan_kind": str(payload["kind"]),
+        "acquisition_action_role": payload.get("acquisition_action_role"),
+        "target_branch_role": payload.get("target_branch_role"),
+        "rival_branch_role": payload.get("rival_branch_role"),
+        "authoritative_evidence_revision": payload.get("authoritative_evidence_revision"),
+        "proposal_fingerprint": payload.get("proposal_fingerprint"),
     })
     card.save_state(state_path)
 
@@ -1757,8 +1826,31 @@ def _workspace_zone_period(workspace: Path) -> float | None:
 
 
 def _blocked_frontier_decision(objective, grid, decision: StopDecision) -> StopDecision:
-    """Tracked ambiguity is diagnostic; it no longer becomes a terminal stuck decision."""
-    return decision
+    """Turn a proposal-less tracked identity frontier into an honest incomplete outcome."""
+    if (decision.state != "continue"
+            or getattr(objective, "target_selector", None) != "tracked_branch"):
+        return decision
+    blocked = [point for point in grid
+               if point.visited and point.track_state in {
+                   "ambiguous", "missing", "provisional", "blocked"}]
+    if not blocked:
+        return decision
+    # This helper runs only after the acquisition controller returned no proposal.  That controller
+    # has already checked local statistics, newer-neighbor revisit tokens, every unvisited requested
+    # point ranked by branch information, and saturation.  Duplicating an approximate route test here
+    # previously let the loop break while still reporting ``continue``.
+    indices = ", ".join(str(point.index) for point in blocked)
+    per_q = [dict(row) for row in decision.per_q]
+    for point in blocked:
+        if point.index < len(per_q):
+            per_q[point.index]["assessment_state"] = "incomplete"
+            per_q[point.index]["reason"] = (
+                "branch_ambiguity; frontier_blocked after identity-route allowance was exhausted")
+    return StopDecision(
+        "incomplete",
+        [f"branch_ambiguity; frontier_blocked at path index/indices {indices}: "
+         "the connected classification route and identity-revisit allowance were exhausted"],
+        per_q)
 
 
 def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
@@ -1830,6 +1922,8 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
         log_event(cfg.log_path, "branch_track_update", {
             "iter": it, "revision": tracks_after.get("revision"),
             "anchor_index": tracks_after.get("anchor_index"),
+            "acquisition_seed_index": tracks_after.get("acquisition_seed_index"),
+            "reduced_q_origin_index": tracks_after.get("reduced_q_origin_index"),
             "frontiers": tracks_after.get("frontiers") or {}})
         for reassignment in tracks_after.get("reassignments") or []:
             log_event(cfg.log_path, "branch_reassignment", {
@@ -1850,7 +1944,13 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
                 certification_eligible=bool((proposal.meta or {}).get(
                     "certification_eligible", True)),
                 acquisition_id=proposal.acquisition_id,
-                count_diagnostics=(proposal.meta or {}).get("count_diagnostics")))
+                count_diagnostics=(proposal.meta or {}).get("count_diagnostics"),
+                acquisition_action_role=(proposal.meta or {}).get("acquisition_action_role"),
+                target_branch_role=(proposal.meta or {}).get("target_branch_role"),
+                rival_branch_role=(proposal.meta or {}).get("rival_branch_role"),
+                authoritative_evidence_revision=(proposal.meta or {}).get(
+                    "authoritative_evidence_revision"),
+                proposal_fingerprint=(proposal.meta or {}).get("proposal_fingerprint")))
             scan_kind[(row.get("scan"), row.get("detector"))] = (
                 proposal.kind, proposal.ncount, proposal.acquisition_id)
         metrics["n_rows"] = len(rows)
@@ -2068,6 +2168,12 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                 "certification_eligible", True)),
             "insertion_purpose": (proposal.meta or {}).get("insertion_purpose"),
             "count_diagnostics": dict((proposal.meta or {}).get("count_diagnostics") or {}),
+            "acquisition_action_role": (proposal.meta or {}).get("acquisition_action_role"),
+            "target_branch_role": (proposal.meta or {}).get("target_branch_role"),
+            "rival_branch_role": (proposal.meta or {}).get("rival_branch_role"),
+            "authoritative_evidence_revision": (proposal.meta or {}).get(
+                "authoritative_evidence_revision"),
+            "proposal_fingerprint": (proposal.meta or {}).get("proposal_fingerprint"),
             "cost": float(feasible_points) * float(proposal.ncount), "iter": it,
         }
         log_event(log_path, "run", submission_payload)
@@ -2819,7 +2925,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                 classify=classify, rival_band=rival_band,
                                 runtime_limits=_runtime_limits(cfg, objective),
                                 track_anchor_index=((durable_state.get("branch_tracks") or {}).get(
-                                    "anchor_index")),
+                                    "acquisition_seed_index",
+                                    (durable_state.get("branch_tracks") or {}).get("anchor_index"))),
                                 track_zone_period=_workspace_zone_period(cfg.workspace),
                                 scoring_allowance_seconds=scoring_allowance)
                         if proposal is not None:

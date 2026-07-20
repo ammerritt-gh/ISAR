@@ -20,6 +20,11 @@ def _pick(grid):
     return _select_target(grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
 
 
+def _authoritative_evidence(point, sequence):
+    point.evidence_updates.append(dict(point.evidence_master or {}))
+    point.evidence_update_sequences.append(sequence)
+
+
 def test_tracked_opening_is_anchor_then_strictly_adjacent():
     grid = _grid()
     pick, kind, _reason, _score = _pick(grid)
@@ -37,6 +42,10 @@ def test_ambiguous_frontier_gets_one_bridge_then_is_revisited():
     grid[0].track_state = "confirmed"
     grid[1].n_quicklook = 1
     grid[1].track_state = "ambiguous"
+    grid[1].evidence_master = {
+        "diagnostic_halfwidth": 0.1,
+        "branch_candidates": [{"energy_meV": 1.0, "sigma_meV": 0.1}],
+    }
 
     pick, kind, reason, _score = _pick(grid)
     assert (pick.index, kind) == (2, "quicklook")
@@ -44,6 +53,10 @@ def test_ambiguous_frontier_gets_one_bridge_then_is_revisited():
 
     grid[2].n_quicklook = 1
     grid[2].track_state = "provisional"
+    grid[2].evidence_master = {
+        "branch_candidates": [{"energy_meV": 1.2, "sigma_meV": 0.03}],
+    }
+    _authoritative_evidence(grid[2], 10)
     pick, kind, reason, _score = _pick(grid)
     assert (pick.index, kind) == (1, "production")
     assert "revisit" in reason
@@ -55,9 +68,13 @@ def test_ambiguous_frontier_does_not_revisit_after_visited_bridge_without_fitted
     grid[0].track_state = "confirmed"
     grid[1].n_quicklook = 1
     grid[1].track_state = "ambiguous"
+    grid[1].evidence_master = {
+        "diagnostic_halfwidth": 0.1,
+        "branch_candidates": [{"energy_meV": 1.0, "sigma_meV": 0.1}],
+    }
     grid[2].n_quicklook = 1
     pick, _kind, _reason, _score = _pick(grid)
-    assert pick.index != 1
+    assert pick is None or pick.index != 1
 
 
 def test_tracked_opening_never_precision_polishes_a_confirmed_point_ahead_of_coverage():
@@ -223,6 +240,30 @@ def test_adequate_ambiguous_anchor_uses_path_order_to_break_classification_tie()
     assert (pick.index, kind) == (2, "quicklook")
 
 
+def test_ap1_ambiguous_two_mode_state_uses_global_branch_information_for_breadth():
+    grid = _grid()
+    anchor = _ambiguous_anchor(grid)
+    for neighbor in (grid[2], grid[4]):
+        neighbor.n_quicklook = 1
+        neighbor.track_state = "ambiguous"
+        neighbor.evidence_master = {
+            "branch_candidates": [
+                {"energy_meV": 1.0, "sigma_meV": 0.05},
+                {"energy_meV": 6.2, "sigma_meV": 0.05},
+            ],
+        }
+        _authoritative_evidence(neighbor, 4)
+    # No neighboring revision is newer than the anchor's last production, so another same-q scan is
+    # forbidden. Of the remaining survey points, q-index 6 has the highest branch information.
+    anchor.n_production = 1
+    anchor.production_sequences = [10]
+    pick, kind, reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1,
+        track_anchor_index=3, classify=lambda point: float(point.index))
+    assert (pick.index, kind) == (6, "quicklook")
+    assert "broaden" in reason
+
+
 def test_statistics_limited_ambiguous_anchor_may_receive_more_same_q_exposure():
     grid = _grid()
     _ambiguous_anchor(grid, precision=0.8)
@@ -254,18 +295,21 @@ def test_ambiguous_anchor_revisit_requires_neighboring_evidence_and_obeys_bridge
         neighbor.evidence_master = {
             "branch_candidates": [{"energy_meV": 1.2, "sigma_meV": 0.03}],
         }
-    anchor.n_production = anchor.max_production_batches
+        _authoritative_evidence(neighbor, 10 + neighbor.index)
+    anchor.n_production = 0
     pick, kind, reason, _score = _select_target(
         grid, _Model(), tracked_branch=True, maximum_bridge_steps=1,
         track_anchor_index=3)
     assert (pick.index, kind) == (3, "production")
     assert "using neighboring identity evidence" in reason
 
-    anchor.n_production += 1
+    anchor.n_production = 1
+    anchor.production_sequences = [20]
+    anchor.identity_revisit_sequences = [20]
     pick, _kind, _reason, _score = _select_target(
         grid, _Model(), tracked_branch=True, maximum_bridge_steps=1,
         track_anchor_index=3)
-    assert pick.index not in {3}
+    assert pick is None or pick.index != 3
 
 
 def test_ambiguous_anchor_does_not_revisit_after_neighbor_scan_without_fitted_evidence():
@@ -275,8 +319,87 @@ def test_ambiguous_anchor_does_not_revisit_after_neighbor_scan_without_fitted_ev
     grid[4].n_quicklook = 1
     grid[2].evidence_master = {}
     grid[4].evidence_master = {}
-    anchor.n_production = anchor.max_production_batches
+    anchor.n_production = 0
     pick, _kind, _reason, _score = _select_target(
         grid, _Model(), tracked_branch=True, maximum_bridge_steps=1,
         track_anchor_index=3)
-    assert pick.index != 3
+    assert pick is None or pick.index != 3
+
+
+def test_ap2_half_mev_sequence_broadens_after_one_middle_point_identity_revisit():
+    grid = _grid()[:4]
+    assert all(point.tolerance == 0.5 for point in grid)
+    proposals = []
+
+    pick, kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1,
+        track_anchor_index=3)
+    proposals.append((pick.hkl[0], kind))
+    assert proposals[-1] == (2.15, "quicklook")
+
+    grid[3].n_quicklook = 1                       # H=2.15 acquisition seed
+    grid[3].track_state = "confirmed"
+    grid[3].evidence_master = {
+        "branch_candidates": [{"energy_meV": 1.4, "sigma_meV": 0.08}],
+    }
+    _authoritative_evidence(grid[3], 2)
+
+    pick, kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1,
+        track_anchor_index=3)
+    proposals.append((pick.hkl[0], kind))
+    assert proposals[-1] == (2.10, "quicklook")
+
+    middle = grid[2]                              # H=2.10 ambiguous target frontier
+    middle.n_quicklook = 1
+    middle.track_state = "ambiguous"
+    middle.evidence_master = {
+        "diagnostic_halfwidth": 0.08,
+        "branch_candidates": [
+            {"energy_meV": 0.95, "sigma_meV": 0.08},
+            {"energy_meV": 6.2, "sigma_meV": 0.05},
+        ],
+    }
+    _authoritative_evidence(middle, 4)
+
+    pick, kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1,
+        track_anchor_index=3)
+    proposals.append((pick.hkl[0], kind))
+    assert proposals[-1] == (2.05, "quicklook")
+
+    grid[1].n_quicklook = 1                       # H=2.05 neighboring evidence
+    grid[1].track_state = "provisional"
+    grid[1].evidence_master = {
+        "branch_candidates": [
+            {"energy_meV": 0.48, "sigma_meV": 0.07},
+            {"energy_meV": 6.08, "sigma_meV": 0.05},
+        ],
+    }
+    _authoritative_evidence(grid[1], 6)
+
+    pick, kind, reason, score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1,
+        track_anchor_index=3)
+    proposals.append((pick.hkl[0], kind))
+    assert (pick.index, kind) == (2, "production")
+    assert "revisit" in reason
+    assert score.purpose == "differentiate"
+    assert score.evidence_transition["authoritative_evidence_revision"]
+
+    # The H=2.10 revisit consumes the bridge allowance. Unchanged identity evidence must broaden
+    # to H=2.00, rather than emitting scans 2..13 at the middle point.
+    middle.n_production = 1
+    middle.production_sequences.append(7)
+    middle.identity_revisit_sequences.append(7)
+    _authoritative_evidence(middle, 8)
+    pick, kind, reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1,
+        track_anchor_index=3)
+    proposals.append((pick.hkl[0], kind))
+    assert (pick.index, kind) == (0, "quicklook")
+    assert "broaden" in reason
+    assert proposals == [
+        (2.15, "quicklook"), (2.10, "quicklook"), (2.05, "quicklook"),
+        (2.10, "production"), (2.00, "quicklook"),
+    ]

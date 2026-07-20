@@ -136,6 +136,20 @@ def test_classification_uses_latest_complete_temperature_for_active_sample_only(
         state, objective, 1.0, sample="active")
     assert resolved_classify(gridq) == 0.0
 
+    acoustic_objective = ObjectiveSpec.segment(
+        q_start=(2.0, 0.0, 0.0), q_end=(2.0, 0.1, 0.0), step_rlu=0.1,
+        tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 1e12},
+        target_branch="acoustic", energy_search_meV=(-2.0, 12.0),
+        **shipped_hypothesis_snapshot("acoustic", (-2.0, 12.0)))
+    state["branch_tracks"] = {"assignments": [{
+        "q": [2.0, 0.0, 0.0], "optic_candidate_index": 0,
+        "candidates": [{"probabilities": {"acoustic": 0.0005, "optic": 0.999,
+                                            "new": 0.0005}}],
+    }]}
+    acoustic_classify, _ = _make_classification_providers(
+        state, acoustic_objective, 1.0, sample="active")
+    assert acoustic_classify(gridq) == 0.0
+
 
 def test_scan_declines_do_not_make_a_tracked_frontier_terminal():
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
@@ -151,6 +165,27 @@ def test_scan_declines_do_not_make_a_tracked_frontier_terminal():
         objective, [anchor, neighbor], StopDecision("continue", [], []))
     assert decision.state == "continue"
     assert decision.reasons == []
+
+
+def test_exhausted_tracked_identity_route_is_honestly_incomplete():
+    frozen = shipped_hypothesis_snapshot("acoustic", (-2.0, 12.0))
+    objective = ObjectiveSpec(
+        path=[(2.0, 0.0, 0.0), (2.05, 0.0, 0.0)], tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e12}, target_branch="acoustic",
+        target_selector="tracked_branch", **frozen)
+    anchor = GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
+                   n_quicklook=1, n_production=1, track_state="ambiguous")
+    anchor.evidence_master = {
+        "branch_candidates": [{"energy_meV": 5.98, "sigma_meV": 0.05}],
+        "diagnostic_halfwidth": 0.05,
+    }
+    neighbor = GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
+                     n_quicklook=1, track_state="blocked")
+    decision = loop_mod._blocked_frontier_decision(
+        objective, [anchor, neighbor], StopDecision("continue", [], []))
+    assert decision.state == "incomplete"
+    assert "branch_ambiguity" in decision.reasons[0]
+    assert "classification route" in decision.reasons[0]
 
 
 def test_pooled_selected_optic_suppresses_false_missed_window_from_acoustic_individual():
@@ -194,6 +229,35 @@ def test_crossing_recorder_records_transitions_not_every_eligible_batch(tmp_path
     observations.extend([update(0.8), update(0.3)])
     grid = summarize_grid(objective, observations, [master(["A"], 0.3)])
     assert _record_eligible_crossings(grid, observations) == 1
+
+
+def test_grid_summary_replays_authoritative_revision_and_identity_revisit_chronology():
+    frozen = shipped_hypothesis_snapshot("acoustic", (-2.0, 12.0))
+    objective = ObjectiveSpec(
+        path=[(2.05, 0.0, 0.0), (2.10, 0.0, 0.0)], tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e12}, target_branch="acoustic",
+        target_selector="tracked_branch", **frozen)
+    candidates = [{"energy_meV": 0.9, "sigma_meV": 0.08}]
+    observations = [
+        {"hkl": [2.10, 0.0, 0.0], "kind": "production", "acquisition_id": "initial",
+         "acquisition_action_role": "production", "resolved": False},
+        {"hkl": [2.10, 0.0, 0.0], "kind": "pooled_master_update",
+         "branch_candidates": candidates, "content_hash": "middle-r1"},
+        {"hkl": [2.05, 0.0, 0.0], "kind": "quicklook", "acquisition_id": "neighbor",
+         "acquisition_action_role": "classification", "resolved": False},
+        {"hkl": [2.05, 0.0, 0.0], "kind": "pooled_master_update",
+         "branch_candidates": candidates, "content_hash": "neighbor-r1"},
+        {"hkl": [2.10, 0.0, 0.0], "kind": "production", "acquisition_id": "revisit",
+         "acquisition_action_role": "classification", "resolved": False},
+        {"hkl": [2.10, 0.0, 0.0], "kind": "pooled_master_update",
+         "branch_candidates": candidates, "content_hash": "middle-r2"},
+    ]
+    grid = summarize_grid(objective, observations, [])
+    middle = grid[1]
+    assert middle.production_sequences == [0, 4]
+    assert middle.identity_revisit_sequences == [4]
+    assert middle.evidence_update_sequences == [1, 5]
+    assert grid[0].evidence_update_sequences == [3]
 
 
 def test_budget_reconciliation_charges_only_executed_points():
@@ -1981,6 +2045,46 @@ def test_proposal_finalizer_uses_smaller_policy_cap_and_reclamps_neutron_count(t
                        match="budget_insufficient_for_minimum_batch"):
         _finalize_proposal(
             p, objective, cfg, {"kind": "neutrons", "amount": 99.0, "spent": 0.0}, it=4)
+
+
+def test_proposal_fingerprint_persists_action_evidence_and_original_branch_roles(tmp_path):
+    objective = types.SimpleNamespace(
+        tolerance_meV=0.5,
+        steering={"max_scan_points": 20, "production_batch_ncount": 10,
+                  "max_ncount_per_scan": 1_000})
+    cfg = types.SimpleNamespace(max_points=20, max_points_source="default",
+                                instrument_limits=None, log_path=tmp_path / "log.jsonl")
+
+    def finalized(target, rival):
+        proposal = ScanProposal(
+            h=2.1, k=0.0, l=0.0, e_lo=-2.0, e_hi=7.0, e_step=0.5,
+            ncount=10, kind="production", reason="identity revisit", n_points=19,
+            meta={"acquisition_action_role": "classification",
+                  "authoritative_evidence_revision": "neighbor-master-r7",
+                  "target_branch_role": target, "rival_branch_role": rival})
+        _finalize_proposal(
+            proposal, objective, cfg,
+            {"kind": "neutrons", "amount": 10_000.0, "spent": 0.0}, it=1)
+        return proposal
+
+    acoustic = finalized("acoustic", "optic")
+    optic = finalized("optic", "acoustic")
+    assert acoustic.meta["acquisition_action_role"] == "classification"
+    assert acoustic.meta["authoritative_evidence_revision"] == "neighbor-master-r7"
+    assert len(acoustic.meta["proposal_fingerprint"]) == 64
+    assert acoustic.meta["proposal_fingerprint"] != optic.meta["proposal_fingerprint"]
+
+    restored = loop_mod._proposal_from_submission({
+        "hkl": [2.1, 0.0, 0.0], "kind": "production", "submitted_ncount": 10,
+        "acquisition_action_role": acoustic.meta["acquisition_action_role"],
+        "authoritative_evidence_revision": acoustic.meta["authoritative_evidence_revision"],
+        "target_branch_role": acoustic.meta["target_branch_role"],
+        "rival_branch_role": acoustic.meta["rival_branch_role"],
+        "proposal_fingerprint": acoustic.meta["proposal_fingerprint"],
+    })
+    assert restored.meta["target_branch_role"] == "acoustic"
+    assert restored.meta["rival_branch_role"] == "optic"
+    assert restored.meta["proposal_fingerprint"] == acoustic.meta["proposal_fingerprint"]
 
 
 def test_finalizer_composes_per_point_and_queue_limits_for_hour_budget(tmp_path):

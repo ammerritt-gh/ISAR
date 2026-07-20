@@ -481,13 +481,66 @@ def _adjacent_classification_pick(grid: list[GridQ], source_index: int, classify
     return grid[pick_index], _finite_or_none(information)
 
 
-def _has_neighboring_identity_evidence(point: GridQ) -> bool:
-    """Whether a measured neighbor contributed fitted evidence usable by path tracking."""
-    evidence = point.evidence_master or point.master or {}
-    return bool(
-        point.track_state in {"confirmed", "provisional"}
-        or (evidence and evidence.get("branch_candidates"))
-    )
+def _fitted_evidence_sequences(point: GridQ) -> list[tuple[int, dict]]:
+    """Chronological authoritative revisions that actually carry fitted mode evidence."""
+    return [
+        (int(sequence), update)
+        for sequence, update in zip(point.evidence_update_sequences, point.evidence_updates)
+        if update.get("branch_candidates")
+    ]
+
+
+def _identity_revisit_basis(grid: list[GridQ], source_index: int) -> dict | None:
+    """Newest adjacent pooled evidence acquired after the source's latest production scan."""
+    source = grid[source_index]
+    last_production = max(source.production_sequences, default=-1)
+    revisions = []
+    for index in (source_index - 1, source_index + 1):
+        if not 0 <= index < len(grid):
+            continue
+        for sequence, update in _fitted_evidence_sequences(grid[index]):
+            if sequence > last_production:
+                revision = (update.get("content_hash")
+                            or update.get("production_batch_fingerprint")
+                            or update.get("track_revision") or sequence)
+                revisions.append((sequence, index, str(revision)))
+    if not revisions:
+        return None
+    sequence, index, revision = max(revisions)
+    return {
+        "source_last_production_sequence": last_production,
+        "neighbor_path_index": index,
+        "neighbor_evidence_sequence": sequence,
+        "authoritative_evidence_revision": revision,
+    }
+
+
+def _identity_revisit_count(grid: list[GridQ], source_index: int) -> int:
+    """Identity-classification productions already charged to the bridge allowance."""
+    return len(grid[source_index].identity_revisit_sequences)
+
+
+def _same_q_evidence_advanced(point: GridQ) -> bool:
+    """Whether another statistics scan is justified by a newer local authoritative revision."""
+    if point.exposure_saturated:
+        return False
+    if not point.production_sequences:
+        return point.n_production == 0 or not point.evidence_update_sequences
+    return max(point.evidence_update_sequences, default=-1) > max(point.production_sequences)
+
+
+def _broadening_classification_pick(grid: list[GridQ], source_index: int, classify):
+    """Best unvisited requested point once the local identity route stops making progress."""
+    options = [point for point in grid if not point.visited]
+    if not options:
+        return None, None
+    if classify is None:
+        pick = min(options, key=lambda point: (abs(point.index - source_index), point.index))
+        return pick, None
+    scored = [(max(float(classify(point)), 0.0), point) for point in options]
+    information, pick = max(
+        scored, key=lambda item: (item[0], -abs(item[1].index - source_index), -item[1].index))
+    return pick, _finite_or_none(information)
 
 
 def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1,
@@ -517,25 +570,35 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
                     "transition_reason": "adequate_candidates_ambiguous_identity",
                 }
                 return pick, "quicklook", reason, transition
-            adjacent_evidence = any(
-                0 <= index < len(grid) and _has_neighboring_identity_evidence(grid[index])
-                for index in (anchor_index - 1, anchor_index + 1))
-            revisit_limit = anchor.max_production_batches + maximum_bridge_steps
-            if (adjacent_evidence and not anchor.stuck
-                    and anchor.n_production < revisit_limit):
+            basis = _identity_revisit_basis(grid, anchor_index)
+            if (basis is not None and not anchor.stuck
+                    and _identity_revisit_count(grid, anchor_index) < maximum_bridge_steps):
                 return (anchor, "production",
                         "tracked branch: revisit the ambiguous anchor using neighboring identity evidence",
-                        None)
+                        {**evidence, **basis,
+                         "transition_reason": "new_neighbor_revision_unlocked_identity_revisit"})
+            pick, information = _broadening_classification_pick(grid, anchor_index, classify)
+            if pick is not None:
+                return (pick, "quicklook",
+                        "tracked branch: broaden ambiguous identity to the most informative unvisited q",
+                        {**evidence, "source_hkl": list(anchor.hkl),
+                         "selected_probe_hkl": list(pick.hkl),
+                         "classification_information": information,
+                         "transition_reason": "local_identity_route_exhausted_broaden"})
             return None
-        if anchor.n_production >= anchor.max_production_batches:
-            for distance in range(1, maximum_bridge_steps + 1):
-                choices = [index for index in (anchor_index - distance, anchor_index + distance)
-                           if 0 <= index < len(grid) and not grid[index].visited]
-                if choices:
-                    pick = grid[min(choices)]
-                    return (pick, "quicklook",
-                            "tracked branch: strategy ceiling reached; differentiation probe "
-                            "at an untried adjacent q", None)
+        if (anchor.n_production >= anchor.max_production_batches
+                or not _same_q_evidence_advanced(anchor)):
+            pick, information = _broadening_classification_pick(grid, anchor_index, classify)
+            if pick is not None:
+                reason = ("tracked branch: strategy ceiling reached; broaden to an untried q"
+                          if anchor.n_production >= anchor.max_production_batches else
+                          "tracked branch: same-q evidence did not advance; broaden to an untried q")
+                return (pick, "quicklook",
+                        reason,
+                        {**evidence, "source_hkl": list(anchor.hkl),
+                         "selected_probe_hkl": list(pick.hkl),
+                         "classification_information": information,
+                         "transition_reason": "unchanged_authoritative_evidence_broaden"})
             return None
         return (anchor, "production",
                 "tracked branch: anchor candidate evidence is not yet statistically adequate", None)
@@ -553,24 +616,41 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
             actions.append((0, frontier.index, frontier, "quicklook",
                             "tracked branch: extend the connected target frontier by one adjacent q"))
             continue
+        master = frontier.evidence_master or frontier.master or {}
+        evidence = _tracked_evidence(master, frontier)
+        if (not evidence["adequate"] and not frontier.stuck
+                and frontier.n_production < frontier.max_production_batches
+                and _same_q_evidence_advanced(frontier)):
+            actions.append((1, frontier.index, frontier, "production",
+                            "tracked branch: frontier candidate evidence is not yet statistically adequate"))
+            continue
         bridge_index = frontier_index + direction
-        bridge_has_evidence = False
         if maximum_bridge_steps > 0 and 0 <= bridge_index < len(grid):
             bridge = grid[bridge_index]
             if not bridge.visited:
-                actions.append((1, bridge.index, bridge, "quicklook",
+                actions.append((2, bridge.index, bridge, "quicklook",
                                 "tracked branch: one provisional adjacent bridge to resolve the ambiguous frontier"))
                 continue
-            bridge_has_evidence = _has_neighboring_identity_evidence(bridge)
-        revisit_limit = frontier.max_production_batches + maximum_bridge_steps
-        if (bridge_has_evidence and not frontier.stuck
-                and frontier.n_production < revisit_limit):
-            actions.append((2, frontier.index, frontier, "production",
-                            "tracked branch: revisit the ambiguous frontier using evidence from both adjacent q"))
+        basis = _identity_revisit_basis(grid, frontier_index)
+        if (basis is not None and not frontier.stuck
+                and _identity_revisit_count(grid, frontier_index) < maximum_bridge_steps):
+            actions.append((3, frontier.index, frontier, "production",
+                            "tracked branch: revisit the ambiguous frontier using newer adjacent identity evidence",
+                            basis))
+            continue
+        pick, information = _broadening_classification_pick(grid, frontier_index, classify)
+        if pick is not None:
+            actions.append((4, pick.index, pick, "quicklook",
+                            "tracked branch: broaden ambiguous frontier to the most informative unvisited q",
+                            {**evidence, "source_hkl": list(frontier.hkl),
+                             "selected_probe_hkl": list(pick.hkl),
+                             "classification_information": information,
+                             "transition_reason": "local_frontier_exhausted_broaden"}))
     if not actions:
         return None
-    _priority, _path_order, pick, kind, reason = min(actions, key=lambda item: (item[0], item[1]))
-    return pick, kind, reason, None
+    _priority, _path_order, pick, kind, reason, *transition = min(
+        actions, key=lambda item: (item[0], item[1]))
+    return pick, kind, reason, transition[0] if transition else None
 
 
 def tracked_anchor_index(path, period: float | None = None, *, target_branch: str = "optic",
@@ -666,8 +746,12 @@ def _select_target(grid: list[GridQ], model, *,
                 c_spent=float(pick.counts_spent), reason=reason,
                 purpose="differentiate" if differentiation else "hypothesis_check",
                 evidence_transition=evidence_transition)
-        # Ambiguous identity is evidence to collect, not a terminal frontier.  The ordinary ranking
-        # below remains allowed to choose the best feasible discriminating measurement.
+        # Once a connected identity frontier has no admissible action, global deficit ranking must
+        # not jump to a locally attractive mode and silently relabel it.  The caller turns this
+        # exhausted identity route into an honest incomplete result.  After identity coverage is
+        # complete, ordinary ranking remains available for target-precision production.
+        if any(point.visited and point.track_state not in (None, "confirmed") for point in grid):
+            return None, "", "tracked branch identity frontier exhausted", None
 
     for source in grid:
         master = source.evidence_master or source.master or {}
@@ -1000,6 +1084,18 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
         policy=policy, budget_state=budget_state,
         runtime_ncount_limit=runtime_ncount_limit)
 
+    selected_evidence = pick.evidence_master or pick.master or {}
+    evidence_revision = ((score.evidence_transition or {}).get(
+        "authoritative_evidence_revision")
+        or selected_evidence.get("content_hash")
+        or selected_evidence.get("production_batch_fingerprint")
+        or selected_evidence.get("track_revision"))
+    action_role = ("classification" if score.purpose == "differentiate" else
+                   "discovery" if kind == "quicklook" else "production")
+    target_branch = getattr(objective, "target_branch", None)
+    rival_branch = ("acoustic" if target_branch == "optic" else
+                    "optic" if target_branch == "acoustic" else None)
+
     score_recompute = None
     if score.method == "fisher" and _fisher_supports_exposure(fisher):
         sigma_prior = score.sigma_prior
@@ -1019,6 +1115,11 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
         reason=reason, e_pred=float(e_pred), fwhm_dE=float(fwhm), n_points=n_points,
         meta={"e_sigma": _finite_or_none(e_sigma), "q": pick.q, "score": score.to_dict(),
               "purpose": score.purpose, "widen_factor": widen,
+              "acquisition_action_role": action_role,
+              "target_branch_role": target_branch,
+              "rival_branch_role": rival_branch,
+              "authoritative_evidence_revision": (
+                  str(evidence_revision) if evidence_revision is not None else None),
               "evidence_transition": score.evidence_transition,
               "driver_inserted": driver_inserted,
               "certification_eligible": not driver_inserted,

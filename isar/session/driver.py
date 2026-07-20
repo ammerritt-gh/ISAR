@@ -1507,7 +1507,9 @@ def _mode_candidates(scan_id: str, detector: str, outcome: dict) -> list[dict]:
             if not isinstance(candidate, dict):
                 continue
             row = dict(candidate)
-            row.pop("probabilities", None)  # assignment evidence is recomputed from the whole path
+            # Assignment probabilities are derived state, never fit evidence.  Keeping them in the
+            # next Viterbi input would let yesterday's assignment masquerade as a new local label.
+            row.pop("probabilities", None)
             rows.append(row)
         if rows:
             return rows
@@ -1711,6 +1713,30 @@ def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tupl
     return observations, refs
 
 
+def _tracked_authority_signature(observations: list[dict], *, target_branch: str,
+                                 period: float | None, hypotheses: list[dict],
+                                 entropy_stop: float, maximum_bridge_steps: int) -> str:
+    """Stable identity input; derived probabilities are deliberately excluded."""
+    authorities = []
+    for observation in observations:
+        candidates = []
+        for candidate in observation.get("candidates") or []:
+            fitted = dict(candidate)
+            fitted.pop("probabilities", None)
+            candidates.append(fitted)
+        authorities.append({
+            "authority": observation.get("authority"),
+            "gauss_fwhm": observation.get("gauss_fwhm"),
+            "candidates": candidates,
+        })
+    return canonical_hash({
+        "authorities": authorities, "target_branch": target_branch,
+        "period": period, "hypotheses": hypotheses,
+        "assignment_entropy_stop_nats": float(entropy_stop),
+        "maximum_bridge_steps": int(maximum_bridge_steps),
+    })
+
+
 def _materialize_branch_candidates(session: SessionState) -> None:
     """Persist unordered fitted-mode evidence independently of target delivery.
 
@@ -1818,11 +1844,24 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
     policy = (getattr(card.state, "hypothesis_snapshot", None) or {}).get("steering") or {}
     previous = getattr(card.state, "branch_tracks", None) or {}
     target_branch = _campaign_target(card)[0]
-    track = branch_tracking.track_path(
-        path, observations, period=_dispersion_period(card), hypotheses=_campaign_hypotheses(card),
-        target_branch=target_branch, previous=previous,
-        assignment_entropy_stop_nats=float(policy.get("assignment_entropy_stop_nats", 0.2)),
-        maximum_bridge_steps=int(policy.get("maximum_bridge_steps", 1)))
+    period = _dispersion_period(card)
+    hypotheses = _campaign_hypotheses(card)
+    entropy_stop = float(policy.get("assignment_entropy_stop_nats", 0.2))
+    maximum_bridge_steps = int(policy.get("maximum_bridge_steps", 1))
+    authority_signature = _tracked_authority_signature(
+        observations, target_branch=target_branch, period=period, hypotheses=hypotheses,
+        entropy_stop=entropy_stop, maximum_bridge_steps=maximum_bridge_steps)
+    if (previous.get("authoritative_evidence_signature") == authority_signature
+            and previous.get("target_branch") == target_branch
+            and previous.get("assignments") is not None):
+        track = previous
+    else:
+        track = branch_tracking.track_path(
+            path, observations, period=period, hypotheses=hypotheses,
+            target_branch=target_branch, previous=previous,
+            assignment_entropy_stop_nats=entropy_stop,
+            maximum_bridge_steps=maximum_bridge_steps)
+        track["authoritative_evidence_signature"] = authority_signature
     revision = int(track["revision"])
     for assignment, observation in zip(track["assignments"], observations):
         key = observation.get("authority")
@@ -1831,7 +1870,9 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
             continue
         _entry, _detector, outcome = refs[key]
         outcome["branch_candidates"] = assignment["candidates"]
-        if selected is None:
+        # A MAP state is still only an assignment hypothesis.  Ambiguous/provisional/blocked target
+        # rows remain candidate evidence and must not publish a scalar target delivery.
+        if selected is None or assignment.get("track_state") != "confirmed":
             _clear_tracked_selection(outcome, assignment, revision)
             for _other_key, (_other_entry, _other_detector, other) in refs.items():
                 if other is outcome or _path_index(other.get("q") or [], path) != assignment["path_index"]:
