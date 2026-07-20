@@ -1,9 +1,11 @@
 # Smarter Steering — workstream design
 
-**Status: design approved 2026-07-19; implementation not started; sequenced third,**
-after the speedup sprint (`docs/SPEEDUP_DESIGN.md`) and the background workstream
-(`docs/BACKGROUND_DESIGN.md`) — both of which it builds on: fast campaigns make its
-validation cheap, and honest backgrounds make its priors trustworthy. Companions: the
+**Status: design approved 2026-07-19; Phase 0 correctness repair in progress 2026-07-20;
+sub-phases A → B → C remain Planned and sequenced third,** after the speedup sprint
+(`docs/SPEEDUP_DESIGN.md`) and the background workstream (`docs/BACKGROUND_DESIGN.md`) —
+both of which they build on: fast campaigns make validation cheap, and honest backgrounds
+make the physics nudges trustworthy. Phase 0 is an urgent repair to the current controller,
+not an early start on A, B, or C. Companions: the
 audit that motivated it (`docs/handoffs/HANDOFF_statistics_contract_checkup.md` §2, §4),
 `docs/MEASUREMENT_STEERING.md` (the research foundation this workstream executes slices
 of), `docs/HYPOTHESES.md` (the Tier-2 extensibility seam sub-phase B fills).
@@ -13,10 +15,11 @@ branch assignment, fold-only admission — but the physics *content* is thin. IS
 incorporate as much physics information as possible (dispersion shape, Brillouin zones,
 structure factors, transverse vs longitudinal character) **as nudges to probabilities and
 priors, never hardcoded rules**, and spend beam time with maximal efficiency. Three
-sub-phases: **A. a curvature-capable dispersion prior**, **B. physics content as Bayesian
-nudges**, **C. scan economy**.
+planned sub-phases: **A. a curvature-capable dispersion prior**, **B. physics content as
+Bayesian nudges**, **C. scan economy**.
 
-A `DECISIONS.md` entry opens each sub-phase when its implementation starts.
+A `DECISIONS.md` entry opens each sub-phase when its implementation starts. O25 opens only
+the Phase 0 repair and corrects O24's false implementation claim.
 
 ---
 
@@ -58,7 +61,53 @@ wrong-hypothesis campaigns still recovering (nudge, never force).
 
 ---
 
-## 2. Sub-phase A — Curvature-capable dispersion prior
+## 2. Phase 0 — AP1/AP2 branch-controller correctness repair (in progress)
+
+AP1 and AP2 falsified O24's claim that the connected tracker had bounded ambiguous-frontier
+revisits. AP1 surveyed successfully and then repeated one ambiguous point. AP2 started with
+three classification probes but then submitted H=2.10 for production thirteen times before
+moving to H=2.00. This is a controller correctness failure, not a request for more production
+dwell and not evidence that acoustic campaigns require a separate acquisition architecture.
+
+The repair keeps four states distinct:
+
+- the persisted off-centre **acquisition seed**, chosen because the target is expected to be
+  resolvable there;
+- the physical **reduced-q origin and period** declared by the branch hypothesis, which define
+  how an acoustic energy approaches zero at the zone centre;
+- **unordered fitted candidates**, which are evidence even when no target identity is confirmed;
+- **confirmed target delivery**, the only state allowed to publish target `omega0`, certify,
+  seed the target prior, or join the target curve.
+
+Branch identity is recomputed jointly over accumulated path evidence only after an authoritative
+pooled-master revision. The controller must never assign an acoustic identity from the locally
+lowest or only candidate, move the acquisition seed to such a candidate, or treat an ambiguous
+maximum-posterior assignment as delivered truth. Target/rival roles are symmetric: the declared
+target determines which branch is delivery and which is rival in both acoustic and optic
+campaigns.
+
+Each proposal persists the authoritative evidence revision, a deterministic proposal fingerprint,
+and a concrete action role beneath the canonical confidence-ladder stage (Discovery, Inference,
+or Discrimination). An equivalent same-q identity revisit is permitted only after newer fitted
+neighboring evidence exists and only within the existing `maximum_bridge_steps` allowance. Phase 0
+adds no competing revisit cap. With unchanged evidence, local ambiguity must instead invoke the
+existing O6/O9 branch-information ranking and buy the best feasible unvisited differentiation
+point. Exhausted bridge and saturation routes end honestly as `incomplete` with
+`branch_ambiguity` / `frontier_blocked`.
+
+The objective and persisted-state changes are additive from v2. Existing frozen envelopes retain
+their replay semantics; newly compiled named acoustic and optic objectives share the corrected
+controller. Target-free discovery remains Planned.
+
+Phase 0's acceptance gate is a deterministic AP2 replay with the actual 0.5 meV objective and
+proposal sequence, plus AP1's two-candidate deadlock, acoustic geometry on both sides of the
+physical zone centre, acoustic/optic role symmetry, provisional-fit non-authority, unchanged-
+evidence repeat rejection, and honest exhausted-frontier stopping. Until those tests pass, this
+section remains **in progress**, not Implemented.
+
+---
+
+## 3. Sub-phase A — Curvature-capable dispersion prior
 
 ### A.1 Functional form
 
@@ -105,7 +154,7 @@ never span a branch crossing.
 
 ---
 
-## 3. Sub-phase B — Physics content as Bayesian nudges
+## 4. Sub-phase B — Physics content as Bayesian nudges
 
 Everything in this sub-phase lands through the **HYPOTHESES Tier-2 registry seam** — a
 `dispersion_type`/feature plugin supplying prior contributions, likelihood features, and
@@ -163,7 +212,7 @@ intensity predictions in different zones/directions, and Stage-C discrimination
 
 ---
 
-## 4. Sub-phase C — Scan economy (the O13 remainder, made concrete)
+## 5. Sub-phase C — Scan economy (the O13 remainder, made concrete)
 
 - **Per-second information.** Rank candidates by EIG **per second**, not per neutron:
   Poisson information is linear in time (`I = t·(∂λ/∂θ)²/λ`), so per-second information
@@ -195,7 +244,7 @@ intensity predictions in different zones/directions, and Stage-C discrimination
 
 ---
 
-## 5. Validation
+## 6. Validation
 
 Synthetic-first, on the fast campaigns the speedup sprint delivers:
 
@@ -213,7 +262,10 @@ Synthetic-first, on the fast campaigns the speedup sprint delivers:
    few-long vs many-short choice in the planted regime that favors each.
 4. Full-suite regression: `pytest -m "not slow"` green at each sub-phase boundary.
 
-## 6. Guardrails
+Phase 0 is gated separately and immediately by its AP1/AP2 replays in §2. Passing that gate does
+not advance the status of A, B, or C.
+
+## 7. Guardrails
 
 - Fold-only prior admission; forks never enter; constrained/demoted fits never feed the
   prior that constrained them.
@@ -224,7 +276,7 @@ Synthetic-first, on the fast campaigns the speedup sprint delivers:
 - All schema/report additions additive; AGENTS.md hard rules untouched; no LLM in the
   runtime path of a number.
 
-## 7. Out of scope (explicitly deferred)
+## 8. Out of scope (explicitly deferred)
 
 - The GP intensity-field survey map (full L0) and non-phonon physics plugins (magnon,
   crystal-field `level`, `continuum` completion) — behind the same Tier-2 seam, later.
@@ -234,10 +286,11 @@ Synthetic-first, on the fast campaigns the speedup sprint delivers:
   once movement-aware cost exists; sub-phase C deliberately stops at scan granularity.
 - The Bayesian credible-interval rung (STATS_PRIMER Planned item) — orthogonal.
 
-## 8. Sequencing within the workstream
+## 9. Sequencing within the workstream
 
-A → B → C, each validated before the next: B's cross-zone intensity features need A's
-zone keying; C's neighbor-q economy needs A's curvature-capable prior to value breadth
+After the independent Phase 0 repair, A → B → C remains the approved sequence behind the
+speedup and background prerequisites, each validated before the next: B's cross-zone intensity
+features need A's zone keying; C's neighbor-q economy needs A's curvature-capable prior to value breadth
 correctly, and benefits from B's identity features to know *which* neighbor is
 informative. A is independently shippable (better prior, no new physics declarations
 required). Each sub-phase ends with its validation evidence committed under

@@ -405,6 +405,24 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   consumes the bounded bridge allowance. Demonstrated
   exposure saturation plus exhausted bridge/revisit opportunities terminates honestly as `incomplete`
   (`branch_ambiguity` / `frontier_blocked`) rather than pausing or blindly acquiring the same q.
+- **O25.** (2026-07-20, Partial; supersedes O24's implementation claim) **AP1/AP2 prove the
+  connected branch controller still conflates acquisition seed, physical reduced-q geometry,
+  unordered evidence, and target delivery.** AP2's 0.5 meV objective proposed H=2.15, H=2.10,
+  and H=2.05 quicklooks, then repeated H=2.10 for thirteen production submissions before moving
+  to H=2.00. O24's described repeat guard and ambiguous-frontier broadening were therefore not
+  Implemented. Phase 0 repairs the controller before the approved A → B → C Smarter Steering
+  sequence: persist the off-centre acquisition seed separately from the branch-period origin;
+  rerun joint identity only on authoritative pooled-master evidence; and allow only confirmed
+  target assignments to publish `omega0`, certify, seed the target prior, or enter the target
+  curve. Local lowest-energy/only-candidate ordering never establishes acoustic identity, and
+  target/rival roles apply symmetrically to acoustic and optic objectives. An equivalent same-q
+  identity revisit requires a newer fitted neighboring-evidence revision and consumes the existing
+  `maximum_bridge_steps` allowance; unchanged evidence broadens through O6/O9 information ranking
+  or ends honestly as `incomplete` when no feasible route remains. Additive state records the
+  authoritative evidence revision, proposal fingerprint, acquisition action role, and role-aware
+  identity. Phase 0 remains in progress until AP1/AP2 replay gates pass. Curvature/zones,
+  confidence-scaled physics nudges, and per-second OCBA/VOI economy remain Planned sub-phases
+  A, B, and C behind their recorded prerequisites.
 
 ## Session status update
 
