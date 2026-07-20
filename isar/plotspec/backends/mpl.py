@@ -132,6 +132,9 @@ def _draw_marker(ax, m, label=None) -> None:
     elif m.kind is MarkerKind.POOLED_UNCERTIFIED:
         ax.scatter([m.x], [m.y], marker="s", s=85, facecolors="none", edgecolors="0.35",
                    linewidths=1.8, zorder=9, label=label)
+    elif m.kind is MarkerKind.AMBIGUOUS_CANDIDATE:
+        ax.scatter([m.x], [m.y], marker="o", s=55, facecolors="none", edgecolors="0.45",
+                   linewidths=1.4, zorder=7, label=label)
     elif m.kind is MarkerKind.VERDICT_RESOLVED:
         ax.scatter([m.x], [m.y], marker="o", s=60, color="green", zorder=6, label=label)
     elif m.kind is MarkerKind.VERDICT_FLAGGED:

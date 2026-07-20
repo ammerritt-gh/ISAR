@@ -145,6 +145,7 @@ class ProposalScore:
     score_standard_error: float | None = None
     simulation_count: int | None = None
     conservative_utility: float | None = None
+    evidence_transition: dict | None = None  # evidence/identity routing provenance for tracked branches
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)

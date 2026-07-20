@@ -1703,13 +1703,28 @@ def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tupl
             observations.append({"candidates": [], "authority": None})
             continue
         _rank, key, candidates = max(choices, key=lambda item: item[0])
+        _entry, _detector, outcome = refs[key]
         observations.append({"candidates": [dict(candidate) for candidate in candidates],
-                             "authority": key})
+                             "authority": key,
+                             "gauss_fwhm": (outcome.get("gauss_fwhm")
+                                             or (outcome.get("calib") or {}).get("gauss_fwhm"))})
     return observations, refs
 
 
+def _materialize_branch_candidates(session: SessionState) -> None:
+    """Persist unordered fitted-mode evidence independently of target delivery.
+
+    Local branch triage may deliberately clear the scalar omega0.  Keeping the immutable candidate
+    table means the viewer and a later connected tracker can still see what was actually fitted.
+    """
+    for entry in session.scans.values():
+        for detector, outcome in entry.detectors.items():
+            candidates = _mode_candidates(entry.scan_id, detector, outcome)
+            outcome["branch_candidates"] = candidates or None
+
+
 def _select_mode(outcome: dict, candidate: dict, candidate_index: int, assignment: dict,
-                 revision: int) -> None:
+                 revision: int, target_branch: str = "optic") -> None:
     outcome["selected_candidate_index"] = int(candidate_index)
     outcome["track_state"] = assignment.get("track_state")
     outcome["track_revision"] = int(revision)
@@ -1724,9 +1739,9 @@ def _select_mode(outcome: dict, candidate: dict, candidate_index: int, assignmen
     outcome["bayes_interval"] = candidate.get("bayes_interval")
     outcome["interval_reliable"] = bool(candidate.get("reliable", False))
     probabilities = dict(candidate.get("probabilities") or {})
-    outcome["branch_id"] = "optic"
+    outcome["branch_id"] = target_branch
     outcome["branch_posterior"] = probabilities
-    outcome["branch_weight"] = float(probabilities.get("optic", 0.0))
+    outcome["branch_weight"] = float(probabilities.get(target_branch, 0.0))
     outcome["assignment_entropy"] = assignment.get("assignment_entropy")
 
 
@@ -1802,9 +1817,10 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
     observations, refs = _tracked_authorities(session, path)
     policy = (getattr(card.state, "hypothesis_snapshot", None) or {}).get("steering") or {}
     previous = getattr(card.state, "branch_tracks", None) or {}
+    target_branch = _campaign_target(card)[0]
     track = branch_tracking.track_path(
         path, observations, period=_dispersion_period(card), hypotheses=_campaign_hypotheses(card),
-        target_branch=_campaign_target(card)[0], previous=previous,
+        target_branch=target_branch, previous=previous,
         assignment_entropy_stop_nats=float(policy.get("assignment_entropy_stop_nats", 0.2)),
         maximum_bridge_steps=int(policy.get("maximum_bridge_steps", 1)))
     revision = int(track["revision"])
@@ -1824,7 +1840,8 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
                 local_assignment["track_state"] = "individual"
                 _clear_tracked_selection(other, local_assignment, revision)
             continue
-        _select_mode(outcome, assignment["candidates"][selected], selected, assignment, revision)
+        _select_mode(outcome, assignment["candidates"][selected], selected, assignment, revision,
+                     target_branch)
         # Individual fits at the same q remain muted evidence but follow the current identity for
         # backwards-compatible scalar columns, using their own nearest fitted mode.
         for _other_key, (_other_entry, _other_detector, other) in refs.items():
@@ -1837,7 +1854,8 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
                 float(candidates[index]["energy_meV"]) - float(outcome["omega0"])))
             local_assignment = dict(assignment)
             local_assignment["track_state"] = "individual"
-            _select_mode(other, candidates[nearest], nearest, local_assignment, revision)
+            _select_mode(other, candidates[nearest], nearest, local_assignment, revision,
+                         target_branch)
     _rebuild_tracked_prior(card, session, track, observations, refs, t_round=t_round)
     card.state.branch_tracks = track
     return track
@@ -1962,6 +1980,8 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
                 raise
             summary.context_lines.append(f"master fitting skipped: {exc}")
 
+    if _campaign_hypotheses(card):
+        _materialize_branch_candidates(session)
     _rebuild_pooled_prior(card, session, session_prior, t_round=t_round)
     # Identity assignment is deliberately after pooled-master updates. It reads the complete
     # candidate field, may revise earlier labels, then rebuilds the connected fold-only prior.
@@ -2423,6 +2443,8 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
         session.put(entry)
 
     t_round = float((card.policy.collation or {}).get("t_round", 5.0))
+    if _campaign_hypotheses(card):
+        _materialize_branch_candidates(session)
     _rebuild_pooled_prior(card, session, session_prior, t_round=t_round)
     track = _apply_tracked_branch(session, card, t_round=t_round)
     # Tracking may annotate individual rows for display. Certification is master-only, so restore

@@ -957,7 +957,7 @@ def _q_compact(hkl) -> str:
     if not hkl:
         return "—"
     try:
-        return "[" + " ".join(f"{float(v):.2g}" for v in hkl) + "]"
+        return "[" + " ".join(f"{float(v):.6g}" for v in hkl) + "]"
     except (TypeError, ValueError) as exc:
         log.debug("_q_compact: non-numeric hkl %r (%s)", hkl, exc)
         return "—"

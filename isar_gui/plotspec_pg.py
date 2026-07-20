@@ -275,6 +275,8 @@ def _marker_style(kind: MarkerKind):
         return "s", "red", None, 14
     if kind is MarkerKind.POOLED_UNCERTIFIED:
         return "s", _GREY_03, None, 14
+    if kind is MarkerKind.AMBIGUOUS_CANDIDATE:
+        return "o", "#737373", None, 10
     if kind is MarkerKind.VERDICT_RESOLVED:
         return "o", "green", "green", 11
     if kind is MarkerKind.VERDICT_FLAGGED:

@@ -418,21 +418,127 @@ def _driver_inserted_candidate(objective, grid: list[GridQ], observations: list[
     return best
 
 
+def _candidate_precision(master: dict) -> float | None:
+    """Conservative half-width of the fitted branch candidates, when one is available."""
+    candidates = list(master.get("branch_candidates") or ())
+    widths = []
+    for candidate in candidates:
+        width = candidate.get("sigma_meV")
+        if width is None:
+            width = candidate.get("omega0_err")
+        if width is None:
+            for key in ("interval", "profile_interval", "bayes_interval", "hesse_interval"):
+                interval = candidate.get(key)
+                if isinstance(interval, (list, tuple)) and len(interval) >= 2:
+                    finite = [float(value) for value in interval if value is not None]
+                    if len(finite) >= 2 and all(math.isfinite(value) for value in finite):
+                        width = 0.5 * (max(finite) - min(finite))
+                        break
+        if width is not None and math.isfinite(float(width)):
+            widths.append(abs(float(width)))
+    if candidates:
+        # Identity routing is conservative: every displayed candidate must carry usable precision.
+        # A target-level diagnostic cannot stand in for an unquantified rival candidate.
+        return max(widths) if len(widths) == len(candidates) else None
+    diagnostic = master.get("diagnostic_halfwidth")
+    if diagnostic is not None and math.isfinite(float(diagnostic)):
+        return abs(float(diagnostic))
+    return None
+
+
+def _tracked_evidence(master: dict, point: GridQ) -> dict[str, Any]:
+    candidates = list(master.get("branch_candidates") or ())
+    precision = _candidate_precision(master)
+    adequate = bool(candidates) and (
+        point.interval_floored
+        or (precision is not None and precision <= float(point.tolerance)))
+    target_branch = master.get("target_branch")
+    posterior = master.get("branch_posterior") or {}
+    probability = posterior.get(target_branch) if target_branch else None
+    entropy = master.get("assignment_entropy")
+    entropy = float(entropy) if entropy is not None else None
+    return {
+        "candidate_count": len(candidates),
+        "candidate_precision_meV": _finite_or_none(precision),
+        "tolerance_meV": float(point.tolerance),
+        "branch_probability": _finite_or_none(probability),
+        "assignment_entropy": _finite_or_none(entropy),
+        "adequate": adequate,
+    }
+
+
+def _adjacent_classification_pick(grid: list[GridQ], source_index: int, classify):
+    """Best unvisited immediate neighbor; path order is the deterministic tie-breaker."""
+    options = [index for index in (source_index - 1, source_index + 1)
+               if 0 <= index < len(grid) and not grid[index].visited]
+    if not options:
+        return None, None
+    if classify is None:
+        pick_index = min(options)
+        return grid[pick_index], None
+    scored = [(max(float(classify(grid[index])), 0.0), index) for index in options]
+    information, pick_index = max(scored, key=lambda item: (item[0], -item[1]))
+    return grid[pick_index], _finite_or_none(information)
+
+
+def _has_neighboring_identity_evidence(point: GridQ) -> bool:
+    """Whether a measured neighbor contributed fitted evidence usable by path tracking."""
+    evidence = point.evidence_master or point.master or {}
+    return bool(
+        point.track_state in {"confirmed", "provisional"}
+        or (evidence and evidence.get("branch_candidates"))
+    )
+
+
 def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1,
-                             anchor_index: int | None = None):
-    """Opening walk for a tracked branch: anchor, adjacent frontier, at most one bridge."""
+                             anchor_index: int | None = None, classify=None):
+    """Connected tracked-branch walk with separate evidence and identity states."""
     if not grid:
         return None
     anchor_index = 0 if anchor_index is None else max(0, min(int(anchor_index), len(grid) - 1))
     anchor = grid[anchor_index]
     if not anchor.visited:
-        return anchor, "quicklook", "tracked branch: establish optic identity at the zone-centre anchor"
+        return anchor, "quicklook", "tracked branch: establish identity at the resolvable anchor", None
     if anchor.track_state != "confirmed":
         if anchor.stuck:
             return None
-        # Repeating the anchor is the one deliberate opening-walk exception: without a usable ZC
-        # identity there is no branch from which neighboring evidence can be propagated.
-        return anchor, "production", "tracked branch: zone-centre optic identity is not yet confirmed"
+        master = anchor.evidence_master or anchor.master or {}
+        evidence = _tracked_evidence(master, anchor)
+        if evidence["adequate"]:
+            pick, information = _adjacent_classification_pick(
+                grid, anchor_index, classify)
+            if pick is not None:
+                reason = ("tracked branch: statistically adequate ambiguous anchor requires "
+                          "neighboring identity evidence")
+                transition = {
+                    "source_hkl": list(anchor.hkl), "selected_probe_hkl": list(pick.hkl),
+                    "source_q": float(anchor.q), "selected_probe_q": float(pick.q),
+                    **evidence, "classification_information": information,
+                    "transition_reason": "adequate_candidates_ambiguous_identity",
+                }
+                return pick, "quicklook", reason, transition
+            adjacent_evidence = any(
+                0 <= index < len(grid) and _has_neighboring_identity_evidence(grid[index])
+                for index in (anchor_index - 1, anchor_index + 1))
+            revisit_limit = anchor.max_production_batches + maximum_bridge_steps
+            if (adjacent_evidence and not anchor.stuck
+                    and anchor.n_production < revisit_limit):
+                return (anchor, "production",
+                        "tracked branch: revisit the ambiguous anchor using neighboring identity evidence",
+                        None)
+            return None
+        if anchor.n_production >= anchor.max_production_batches:
+            for distance in range(1, maximum_bridge_steps + 1):
+                choices = [index for index in (anchor_index - distance, anchor_index + distance)
+                           if 0 <= index < len(grid) and not grid[index].visited]
+                if choices:
+                    pick = grid[min(choices)]
+                    return (pick, "quicklook",
+                            "tracked branch: strategy ceiling reached; differentiation probe "
+                            "at an untried adjacent q", None)
+            return None
+        return (anchor, "production",
+                "tracked branch: anchor candidate evidence is not yet statistically adequate", None)
 
     actions = []
     for direction in (-1, 1):
@@ -445,25 +551,30 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
         frontier = grid[frontier_index]
         if not frontier.visited:
             actions.append((0, frontier.index, frontier, "quicklook",
-                            "tracked branch: extend the connected optic frontier by one adjacent q"))
+                            "tracked branch: extend the connected target frontier by one adjacent q"))
             continue
         bridge_index = frontier_index + direction
+        bridge_has_evidence = False
         if maximum_bridge_steps > 0 and 0 <= bridge_index < len(grid):
             bridge = grid[bridge_index]
             if not bridge.visited:
                 actions.append((1, bridge.index, bridge, "quicklook",
                                 "tracked branch: one provisional adjacent bridge to resolve the ambiguous frontier"))
                 continue
-        if not frontier.stuck:
+            bridge_has_evidence = _has_neighboring_identity_evidence(bridge)
+        revisit_limit = frontier.max_production_batches + maximum_bridge_steps
+        if (bridge_has_evidence and not frontier.stuck
+                and frontier.n_production < revisit_limit):
             actions.append((2, frontier.index, frontier, "production",
                             "tracked branch: revisit the ambiguous frontier using evidence from both adjacent q"))
     if not actions:
         return None
     _priority, _path_order, pick, kind, reason = min(actions, key=lambda item: (item[0], item[1]))
-    return pick, kind, reason
+    return pick, kind, reason, None
 
 
-def tracked_anchor_index(path, period: float | None = None) -> int:
+def tracked_anchor_index(path, period: float | None = None, *, target_branch: str = "optic",
+                         model=None, resolution_info=None, hypothesis: dict | None = None) -> int:
     """Nearest reduced-zone centre, with path order as the deterministic tie-breaker.
 
     A cold workspace may not have a card yet.  In that one case reciprocal-lattice integers are the
@@ -478,7 +589,37 @@ def tracked_anchor_index(path, period: float | None = None) -> int:
     valid_period = period is not None and math.isfinite(float(period)) and float(period) > 0.0
     scale = float(period) if valid_period else 1.0
     reduced = [abs(point[axis] - round(point[axis] / scale) * scale) for point in points]
-    return min(range(len(points)), key=lambda index: (reduced[index], index))
+    zone_anchor = min(range(len(points)), key=lambda index: (reduced[index], index))
+    if target_branch != "acoustic" or model is None:
+        return zone_anchor
+    scalars = [0.0]
+    for left, right in zip(points, points[1:]):
+        scalars.append(scalars[-1] + math.dist(left, right))
+    resolvable = []
+    model_points = getattr(model, "qs", None)
+    cold_model = model_points is not None and len(model_points) == 0
+    zc = (hypothesis or {}).get("zc_energy") or {}
+    slope = (hypothesis or {}).get("slope_zc") or {}
+    hypothesis_zc = float(zc.get("mean", zc.get("mode", 0.0)))
+    hypothesis_slope = float(slope.get("mean", 0.0))
+    for index, point in enumerate(points):
+        try:
+            predicted = (abs(hypothesis_zc + hypothesis_slope * reduced[index])
+                         if cold_model and hypothesis else
+                         abs(float(model.predict(scalars[index])[0])))
+            fwhm = _resolve_fwhm(resolution_info, *point, predicted)
+        except (TypeError, ValueError, IndexError):
+            continue
+        if predicted >= fwhm:
+            resolvable.append(index)
+    # If no point clears the predicted resolution threshold, the farthest reduced-q point is the
+    # highest-energy acoustic option and therefore the best available attempt at establishing an
+    # anchor. Falling back to the zone centre would deliberately choose the least resolvable point.
+    if resolvable:
+        return min(resolvable, key=lambda index: (reduced[index], index))
+    farthest = max(reduced)
+    return min(index for index, distance in enumerate(reduced)
+               if math.isclose(distance, farthest, rel_tol=0.0, abs_tol=1e-12))
 
 
 def _select_target(grid: list[GridQ], model, *,
@@ -514,22 +655,27 @@ def _select_target(grid: list[GridQ], model, *,
     """
     if tracked_branch:
         opening_pick = _tracked_frontier_target(
-            grid, maximum_bridge_steps=maximum_bridge_steps, anchor_index=track_anchor_index)
+            grid, maximum_bridge_steps=maximum_bridge_steps, anchor_index=track_anchor_index,
+            classify=classify)
         if opening_pick is not None:
-            pick, kind, reason = opening_pick
+            pick, kind, reason, evidence_transition = opening_pick
+            differentiation = any(token in reason for token in (
+                "ambiguous", "identity evidence", "bridge", "differentiation", "strategy ceiling"))
             return pick, kind, reason, ProposalScore(
-                method="classification" if "ambiguous" in reason or "bridge" in reason else "explore",
+                method="classification" if differentiation else "explore",
                 c_spent=float(pick.counts_spent), reason=reason,
-                purpose="differentiate" if "ambiguous" in reason or "bridge" in reason else "hypothesis_check")
+                purpose="differentiate" if differentiation else "hypothesis_check",
+                evidence_transition=evidence_transition)
         # Ambiguous identity is evidence to collect, not a terminal frontier.  The ordinary ranking
         # below remains allowed to choose the best feasible discriminating measurement.
 
     for source in grid:
-        master = source.master or {}
+        master = source.evidence_master or source.master or {}
         diagnostic_hw = master.get("diagnostic_halfwidth")
         statistics_limited = (diagnostic_hw is None
                               or float(diagnostic_hw) > source.tolerance)
         if (source.visited and not source.converged and not source.stuck
+                and source.n_production < source.max_production_batches
                 and master.get("candidate_state") == "provisional" and statistics_limited):
             candidate_id = master.get("candidate_id") or "unknown"
             reason = (f"statistics-limited provisional candidate {candidate_id} at q={source.q:g} "
@@ -541,7 +687,7 @@ def _select_target(grid: list[GridQ], model, *,
     unvisited = [g for g in grid if not g.visited]
     if unvisited and classify is not None:
         for source in grid:
-            master = source.master or {}
+            master = source.evidence_master or source.master or {}
             diagnostic_hw = master.get("diagnostic_halfwidth")
             evidence_ready = (source.interval_floored or
                               (diagnostic_hw is not None
@@ -568,7 +714,12 @@ def _select_target(grid: list[GridQ], model, *,
                   f"and count rate (predicted σ={model.predict(pick.q)[1]:g} meV)")
         return pick, "quicklook", reason, ProposalScore(
             method="explore", c_spent=float(pick.counts_spent), reason=reason, purpose=purpose)
-    candidates = [g for g in grid if not (g.converged or g.stuck)]
+    candidates = [g for g in grid if not (g.converged or g.stuck)
+                  and not (g.n_production >= (
+                      g.max_production_batches + g.maximum_bridge_steps)
+                           and (g.evidence_master is not None and g.master is None
+                                or g.track_state in {
+                                    "ambiguous", "missing", "provisional", "blocked"}))]
     if not candidates:
         return None, "", "all grid q converged", None
 
@@ -576,7 +727,7 @@ def _select_target(grid: list[GridQ], model, *,
     # not more counts at the same q. Prefer an untested neighboring q by expected classification
     # information; this is evidence collection, never a hard acoustic/optic exclusion.
     for source in grid:
-        master = source.master or {}
+        master = source.evidence_master or source.master or {}
         candidate_id = master.get("candidate_id")
         diagnostic_hw = master.get("diagnostic_halfwidth")
         evidence_ready = (source.interval_floored or
@@ -584,7 +735,7 @@ def _select_target(grid: list[GridQ], model, *,
         if master.get("candidate_state") != "provisional" or not candidate_id or not evidence_ready:
             continue
         measured = {tuple(update.get("hkl") or ()) for point in grid
-                    for update in point.master_updates
+                    for update in (point.evidence_updates or point.master_updates)
                     if update.get("candidate_id") == candidate_id}
         neighbors = [candidate for candidate in candidates
                      if tuple(candidate.hkl) not in measured and candidate.hkl != source.hkl]
@@ -605,7 +756,7 @@ def _select_target(grid: list[GridQ], model, *,
 
     # Baseline-first: a workable q with no usable ω₀ yet gets a production scan to establish one
     # (unchanged behaviour — these carry a +inf σ-deficit and win outright).
-    no_baseline = [g for g in candidates if _q_sigma(g) is None]
+    no_baseline = [g for g in candidates if g.evidence_master is None and g.master is None]
     if no_baseline:
         pick = max(no_baseline, key=lambda g: g.deficit)
         reason = (f"baseline q={pick.q:g} (hkl={list(pick.hkl)}); no usable ω₀ interval yet; production "
@@ -615,7 +766,7 @@ def _select_target(grid: list[GridQ], model, *,
 
     predictive = []
     for candidate in candidates:
-        master = candidate.master or {}
+        master = candidate.evidence_master or candidate.master or {}
         diagnostics = master.get("expected_next_information") or {}
         if not diagnostics.get("usable"):
             continue
@@ -768,13 +919,15 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
             (5b). Returns the predicted post-scan σ(ω₀) when the q is Fisher-grounded, else ``None``.
     """
     grid = summarize_grid(objective, results_so_far or [], master_rows or [])
+    target_hypothesis = next((h for h in getattr(objective, "hypotheses", [])
+                              if h.get("name") == getattr(objective, "target_hypothesis", None)), None)
     if (getattr(objective, "target_selector", None) == "tracked_branch"
             and track_anchor_index is None):
         declared_period = (getattr(objective, "meta", None) or {}).get("zone_period")
         track_anchor_index = tracked_anchor_index(
-            objective.path, track_zone_period if track_zone_period is not None else declared_period)
-    target_hypothesis = next((h for h in getattr(objective, "hypotheses", [])
-                              if h.get("name") == getattr(objective, "target_hypothesis", None)), None)
+            objective.path, track_zone_period if track_zone_period is not None else declared_period,
+            target_branch=getattr(objective, "target_branch", "optic"), model=model,
+            resolution_info=resolution_info, hypothesis=target_hypothesis)
     opening = None
     if target_hypothesis is not None:
         name = target_hypothesis.get("name")
@@ -866,6 +1019,7 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
         reason=reason, e_pred=float(e_pred), fwhm_dE=float(fwhm), n_points=n_points,
         meta={"e_sigma": _finite_or_none(e_sigma), "q": pick.q, "score": score.to_dict(),
               "purpose": score.purpose, "widen_factor": widen,
+              "evidence_transition": score.evidence_transition,
               "driver_inserted": driver_inserted,
               "certification_eligible": not driver_inserted,
               "insertion_purpose": "differentiate" if driver_inserted else None,

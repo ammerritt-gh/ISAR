@@ -123,8 +123,9 @@ SYSTEM = (
     "phonon energy ω₀; map '±X meV' to X). Include a measurement budget as EITHER budget_hours "
     "OR budget_neutrons only when the user states one; analysis time is a separate guardrail. "
     "Set target_branch to optic when the user asks for an optic or transverse optic phonon, otherwise "
-    "acoustic; retain their wording in target_label. For an unspecified optic target use "
-    "target_selector='lowest_energy'. An energy stated as the identity of an optic branch (for "
+    "acoustic; retain their wording in target_label. A request to map a named branch along a path "
+    "uses target_selector='tracked_branch' unless the user explicitly asks for the lowest, highest, "
+    "or nearest-energy feature independently at every q. An energy stated as the identity of a branch (for "
     "example 'the optic phonon around 6 meV') is a zone-centre anchor: put it in "
     "target_zc_energy_meV and use target_selector='tracked_branch'; do not set target_energy_meV. "
     "Only when the user explicitly requests the feature nearest an energy at every q or throughout "
@@ -254,9 +255,7 @@ def _build_spec(data: dict, merged: dict, *,
     target_energy = data.get("target_energy_meV")
     selector = data.get("target_selector")
     if selector is None:
-        selector = ("nearest_energy" if target_energy is not None else
-                    "tracked_branch" if data.get("target_zc_energy_meV") is not None else
-                    "lowest_energy")
+        selector = ("nearest_energy" if target_energy is not None else "tracked_branch")
     if selector == "nearest_energy" and target_energy is None:
         raise GoalParseError("nearest_energy target_selector requires target_energy_meV")
     # The tracked selector identifies a dispersing branch.  Accept target_energy_meV as an input

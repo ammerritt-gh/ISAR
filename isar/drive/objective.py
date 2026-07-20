@@ -86,8 +86,9 @@ class ObjectiveSpec:
             raise ValueError(f"target_selector {self.target_selector!r} not in {TARGET_SELECTORS}")
         if self.target_selector == "nearest_energy" and self.target_energy_meV is None:
             raise ValueError("nearest_energy target_selector requires target_energy_meV")
-        if self.target_selector == "tracked_branch" and self.target_branch != "optic":
-            raise ValueError("tracked_branch target_selector currently requires target_branch='optic'")
+        # A tracked selector follows one connected physical branch along the objective path.  Both
+        # shipped branch identities are supported; local lowest/highest/nearest selectors remain
+        # available when independent per-q feature selection is what the operator requested.
         # Normalize path entries to plain float triples so round-trips are stable.
         norm: list[tuple[float, float, float]] = []
         for p in self.path:

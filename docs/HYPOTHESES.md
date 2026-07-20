@@ -26,12 +26,19 @@ hypothesis only tells the *steering* where to look first and what the features i
 plausibly are. If the data disagrees with your hypothesis, the system is designed to notice and
 say so (see *When you're wrong*, below), not to fit your expectation anyway.
 
-For a tracked optic branch, “around 6 meV” is a **zone-centre identity prior**, not an instruction
+For a tracked branch, a stated energy is an **anchor identity prior**, not an instruction
 to pick whichever peak lies nearest 6 meV at every q. The global-nearest behavior remains available
 only through the explicit `nearest_energy` selector. `tracked_branch` jointly assigns the optic,
 acoustic rival, new, and missing states over the ordered path. Only modes from a published, consistent
 pooled master are authoritative track evidence; physical-fit modes remain inspectable diagnostics.
 Assignments may be revised when a neighboring pooled master arrives.
+
+New natural-language and compact-file goals that ask to map a named branch along a multi-point path
+default to `tracked_branch`, for acoustic and optic targets alike. Explicit “lowest at every q”,
+“highest at every q”, and “nearest at every q” requests retain their local selectors. Previously frozen
+objective envelopes are replayed unchanged. Acoustic tracking anchors at the nearest
+predicted-resolvable point to reduced q=0 and walks in both directions; it does not demand a measurable
+nonzero acoustic energy at the exact zone centre.
 
 ## Declaring hypotheses in `card.policy.toml`
 
@@ -76,10 +83,17 @@ is a fully custom Tier-1 hypothesis.
 - **Opening book.** The first scans probe the hypothesis's most discriminating feature — for a
   gapped target, the zone centre at the claimed gap ± 2σ (the *sanity-check opening move*, O11).
   A grossly wrong prior is caught in the first scans, not at the end of the night.
-- **Connected frontier.** Once the zone-centre optic is identified, acquisition moves one adjacent
-  q at a time. An ambiguous point permits one provisional adjacent bridge, then must be revisited
+- **Connected frontier.** Once the target branch's resolvable anchor is identified, acquisition moves
+  one adjacent q at a time in both directions. An ambiguous point permits one provisional adjacent bridge, then may be revisited
   with evidence from both sides. An unresolved frontier cannot seed the dispersion prior, certify a
   farther point, or be crossed by a plotted branch line.
+- **Evidence is not delivery.** Every current pooled master marks its q as measured and retains all
+  fitted candidates, including a wrong-branch or near-equal-posterior result. Only a confirmed target
+  fold publishes target `omega0`, enters the target prior, or certifies. The viewer shows ambiguous
+  candidates as open markers without certifying whiskers or a connecting line.
+- **Bounded deadlock.** The per-q production ceiling changes strategy rather than declaring absence:
+  acquisition moves to an untried differentiation probe. Demonstrated exposure saturation plus an
+  exhausted bridge/revisit allowance ends automatically as honest `incomplete` branch ambiguity.
 - **Belief seeding.** Each declared hypothesis gets a branch belief carrying the hypothesis as a
   prior on the regression parameters (gap, slope) — *never* as fake data points (O8). With zero
   measurements the belief predicts from the prior with honest width; with data, the data wins.

@@ -645,7 +645,8 @@ def _calibration_bucket(calibration: Calibration, exposure_key: str) -> tuple[st
 def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibration,
                           proposal_cost: float = 0.0, *, driver_inserted: bool = False,
                           certification_eligible: bool = True,
-                          acquisition_id: str | None = None) -> dict:
+                          acquisition_id: str | None = None,
+                          count_diagnostics: dict | None = None) -> dict:
     disp = row.get("disposition")
     verdict = row.get("verdict")
     # `flagged` (model_incomplete) still carries a usable ω₀ — for an ω₀-tolerance objective the flag
@@ -672,6 +673,7 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
                                                       bucket=calibration_arg)
             except Exception:   # noqa: BLE001
                 hw = None
+    count_diagnostics = dict(count_diagnostics or {})
     return {
         "hkl": _row_hkl(row), "kind": kind, "calibrated_halfwidth": hw,
         "resolved": usable, "disposition": disp, "verdict": verdict,
@@ -680,6 +682,9 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         "omega0": row.get("omega0"), "scan": row.get("scan"), "detector": row.get("detector"),
         "proposal_cost": float(proposal_cost), "fit_kind": row.get("fit_kind"),
         "submitted_ncount": int(ncount), "acquisition_id": acquisition_id,
+        "requested_ncount": count_diagnostics.get("requested_before_runtime_limit", ncount),
+        "runtime_ncount_limit": count_diagnostics.get("runtime_ncount_limit"),
+        "ncount_clamped": bool(count_diagnostics.get("requested_before_runtime_limit") is not None),
         "effective_exposure": effective_exposure, "exposure_source": exposure_source,
         "exposure_bucket": bucket,
         "branch_id": row.get("branch_id"),   # Phase A: only acoustic (or null) rows steer ω(q)
@@ -782,8 +787,11 @@ def _candidate_evidence_state(observations: list[dict], update: dict) -> tuple[s
     p_target = competitor = None
     if isinstance(posterior, dict) and target_branch:
         p_target = float(posterior.get(target_branch, 0.0))
-        competitor = max(float(posterior.get("acoustic", 0.0)),
-                         float(posterior.get("new", posterior.get("unmodeled", 0.0))))
+        competitor = max(
+            (float(value) for branch, value in posterior.items()
+             if branch != target_branch),
+            default=0.0,
+        )
         if (state == "provisional" and p_target <= 0.05 and competitor >= 0.6
                 and len(acquisitions) >= 2 and len(positions) >= 2):
             state = "rejected"
@@ -798,11 +806,18 @@ def _record_pooled_master_update(workspace, calibration: Calibration, proposal, 
                                  observations: list[dict]) -> dict | None:
     """Persist the current pooled master for the submitted q as chronological replay evidence."""
     matching = [row for row in _read_master_rows(workspace, calibration)
-                if _hkl_close(row.get("hkl"), (proposal.h, proposal.k, proposal.l))
-                and row.get("branch_id") == target_branch]
+                if _hkl_close(row.get("hkl"), (proposal.h, proposal.k, proposal.l))]
     if not matching:
         return None
-    master = max(matching, key=lambda row: int(row.get("n_members") or 0))
+    # Prefer confirmed target delivery when present. Otherwise keep the strongest pooled fit as
+    # evidence: wrong-branch/ambiguous spectra still prove q was measured and carry candidates.
+    master = max(
+        matching,
+        key=lambda row: (
+            row.get("branch_id") == target_branch and row.get("omega0") is not None,
+            int(row.get("n_members") or 0),
+        ),
+    )
     payload = {**master, "kind": "pooled_master_update",
                "acquisition_id": proposal.acquisition_id,
                "acquisition_target_energy": float(proposal.e_pred)}
@@ -810,6 +825,16 @@ def _record_pooled_master_update(workspace, calibration: Calibration, proposal, 
         observations, payload)
     observations.append(payload)
     log_event(log_path, "pooled_master_update", payload)
+    if payload.get("branch_id") != target_branch or payload.get("omega0") is None:
+        log_event(log_path, "evidence_only_master", {
+            "hkl": payload.get("hkl"), "target_branch": target_branch,
+            "branch_id": payload.get("branch_id"),
+            "branch_posterior": payload.get("branch_posterior"),
+            "assignment_entropy": payload.get("assignment_entropy"),
+            "candidate_state": payload.get("candidate_state"),
+            "branch_candidates": payload.get("branch_candidates"),
+            "acquisition_id": proposal.acquisition_id,
+        })
     if payload["candidate_state"] == "rejected":
         log_event(log_path, "candidate_update", {
             "candidate_id": payload.get("candidate_id"), "state": "rejected",
@@ -1054,6 +1079,7 @@ def _proposal_from_submission(payload: dict) -> ScanProposal:
     meta = {
         "driver_inserted": bool(payload.get("driver_inserted", False)),
         "certification_eligible": bool(payload.get("certification_eligible", True)),
+        "count_diagnostics": dict(payload.get("count_diagnostics") or {}),
     }
     if payload.get("insertion_purpose") is not None:
         meta["insertion_purpose"] = payload.get("insertion_purpose")
@@ -1082,6 +1108,13 @@ def _resume_detailed_events(workspace, events: list[dict], calibration: Calibrat
         for event in events if event.get("kind") == "physical_submission"
         and (event.get("payload") or {}).get("job_id") is not None
     }
+    legacy_clamps = {}
+    for event in events:
+        clamp = event.get("payload") or {}
+        if (event.get("kind") == "exception"
+                and clamp.get("action") == "proposal_ncount_clamped_to_limit"
+                and clamp.get("hkl") is not None):
+            legacy_clamps[(clamp.get("iter"), hkl_key(clamp["hkl"]))] = clamp
     submissions = []
     by_job: dict[str, dict] = {}
     for order, event in enumerate(events):
@@ -1093,6 +1126,14 @@ def _resume_detailed_events(workspace, events: list[dict], calibration: Calibrat
                              or str(payload.get("job_id")) not in physical_job_ids))
         if not (is_detailed or is_legacy_prefix):
             continue
+        clamp = (legacy_clamps.get((payload.get("iter"), hkl_key(payload["hkl"])))
+                 if payload.get("hkl") is not None else None)
+        if clamp is not None and not payload.get("count_diagnostics"):
+            payload["count_diagnostics"] = {
+                "requested_before_runtime_limit": clamp.get("requested_ncount"),
+                "runtime_ncount_limit": clamp.get("effective_ncount"),
+                "limit_clamp_logged": True,
+            }
         record = {"order": order, "payload": payload, "detailed": is_detailed,
                   "cost": float(payload.get("cost") or 0.0), "seconds_delta": 0.0,
                   "reconciled": False, "has_result_rows": False}
@@ -1181,6 +1222,7 @@ def _resume_detailed_events(workspace, events: list[dict], calibration: Calibrat
             provenance = {
                 "driver_inserted": bool(payload.get("driver_inserted", False)),
                 "certification_eligible": bool(payload.get("certification_eligible", True)),
+                "count_diagnostics": payload.get("count_diagnostics") or {},
             }
             cost = record["cost"] if record is not None else 0.0
             order = float(record["order"]) if record is not None else -1.0 + sequence * 1e-6
@@ -1807,7 +1849,8 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
                 driver_inserted=bool((proposal.meta or {}).get("driver_inserted", False)),
                 certification_eligible=bool((proposal.meta or {}).get(
                     "certification_eligible", True)),
-                acquisition_id=proposal.acquisition_id))
+                acquisition_id=proposal.acquisition_id,
+                count_diagnostics=(proposal.meta or {}).get("count_diagnostics")))
             scan_kind[(row.get("scan"), row.get("detector"))] = (
                 proposal.kind, proposal.ncount, proposal.acquisition_id)
         metrics["n_rows"] = len(rows)
@@ -2024,6 +2067,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             "certification_eligible": bool((proposal.meta or {}).get(
                 "certification_eligible", True)),
             "insertion_purpose": (proposal.meta or {}).get("insertion_purpose"),
+            "count_diagnostics": dict((proposal.meta or {}).get("count_diagnostics") or {}),
             "cost": float(feasible_points) * float(proposal.ncount), "iter": it,
         }
         log_event(log_path, "run", submission_payload)
@@ -2807,6 +2851,14 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                            or f"{cfg.run_nonce}:{proposal_counter:08d}")
                 proposal_counter += 1
                 log_event(cfg.log_path, "propose", {**proposal.to_dict(), "iter": it})
+                if (proposal.meta or {}).get("purpose") == "differentiate":
+                    transition = (proposal.meta or {}).get("evidence_transition") or {}
+                    log_event(cfg.log_path, "differentiation_probe", {
+                        "hkl": [proposal.h, proposal.k, proposal.l],
+                        "kind": proposal.kind, "reason": proposal.reason,
+                        "acquisition_id": proposal.acquisition_id, "iter": it,
+                        **transition,
+                    })
 
                 analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
                 if (objective.analysis_limit_seconds is not None
@@ -2897,6 +2949,19 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                                    "converged": sum(1 for g in grid if g.converged),
                                                    "n_grid": len(grid), "per_q": grid_snapshot.per_q,
                                                    "iter": it})
+                for point in grid:
+                    if point.n_production == point.max_production_batches:
+                        log_event(cfg.log_path, "strategy_ceiling", {
+                            "hkl": list(point.hkl), "n_production": point.n_production,
+                            "maximum_production_batches_per_q": point.max_production_batches,
+                            "action": "switch_to_differentiation_probe", "iter": it,
+                        })
+                    if point.clamped_productions == 2 and point.exposure_saturated:
+                        log_event(cfg.log_path, "exposure_saturation", {
+                            "hkl": list(point.hkl),
+                            "reason": "requested dwell repeatedly clamped to the same instrument limit",
+                            "clamped_productions": point.clamped_productions, "iter": it,
+                        })
         else:
             # The loop exhausted max_iters without a break, so the top-of-iteration check will never
             # run again — but the boundary AFTER the final allowed iteration is still an iteration

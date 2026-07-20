@@ -148,11 +148,16 @@ class GridQ:
     best_prod_halfwidth: float | None = None  # compatibility only; never populated or consulted
     best_prod_omega0: float | None = None
     master: dict | None = None     # {"omega0","halfwidth","reliable","usable","disposition","n_members"}
+    evidence_master: dict | None = None  # pooled evidence even when target identity abstains
     requires_crossing_guard: bool = False
     requires_confirmed_track: bool = False
     crossing_fingerprints: list[str] = field(default_factory=list)
     max_production_batches: int = MAX_PROD_ATTEMPTS
+    maximum_bridge_steps: int = 1
     master_updates: list[dict] = field(default_factory=list)
+    evidence_updates: list[dict] = field(default_factory=list)
+    clamped_productions: int = 0
+    clamped_effective_ncounts: list[int] = field(default_factory=list)
     interval_floor_window: int = 3
     interval_floor_min_improvement: float = 0.05
     interval_floor_min_exposure_ratio: float = 2.0
@@ -161,7 +166,7 @@ class GridQ:
 
     @property
     def visited(self) -> bool:
-        return self.master is not None or self.n_quicklook > 0 or self.n_production > 0
+        return self.evidence_master is not None or self.n_quicklook > 0 or self.n_production > 0
 
     @property
     def master_revision(self) -> str | None:
@@ -175,7 +180,7 @@ class GridQ:
 
     @property
     def diagnostics(self) -> list[str]:
-        m = self.master or {}
+        m = self.evidence_master or self.master or {}
         out = []
         if self.interval_floored:
             out.append("interval_nonshrinking")
@@ -192,12 +197,18 @@ class GridQ:
             out.append("linewidth_resolution_limited")
         if m and not m.get("usable"):
             out.append("analysis_failed")
+        if self.exposure_saturated:
+            out.append("exposure_saturated")
+        if self.n_production >= self.max_production_batches:
+            out.append("same_q_strategy_ceiling")
         return list(dict.fromkeys(out))
 
     @property
     def assessment_state(self) -> str:
-        if self.master is None:
+        if self.evidence_master is None:
             return "unmeasured"
+        if self.master is None:
+            return "ambiguous"
         return "certified" if self.converged else "uncertified"
 
     @property
@@ -297,21 +308,38 @@ class GridQ:
     @property
     def signal_seen(self) -> bool:
         """Whether this q has positive signal evidence, including an unresolved branch candidate."""
-        return bool((self.master or {}).get("usable"))
+        return bool((self.evidence_master or self.master or {}).get("usable"))
 
     @property
     def candidate_rejected(self) -> bool:
         return bool(self.master_updates and self.master_updates[-1].get("candidate_state") == "rejected")
 
     @property
+    def exposure_saturated(self) -> bool:
+        """Additional same-q dwell is demonstrably unable to change the current decision."""
+        repeated_limit = (len(self.clamped_effective_ncounts) >= 2
+                          and self.clamped_effective_ncounts[-1]
+                          == self.clamped_effective_ncounts[-2])
+        return repeated_limit or self.interval_floored or self.info_saturated
+
+    @property
+    def ambiguity_exhausted(self) -> bool:
+        evidence_only = self.evidence_master is not None and self.master is None
+        ambiguous_track = self.track_state in {"ambiguous", "missing", "provisional", "blocked"}
+        return bool((evidence_only or ambiguous_track)
+                    and self.n_production >= (
+                        self.max_production_batches + self.maximum_bridge_steps)
+                    and self.exposure_saturated)
+
+    @property
     def stuck(self) -> bool:
-        """Compatibility surface: diagnostics no longer autonomously abandon a q-point."""
-        return False
+        """A bounded strategy stop, never evidence that the physical branch is absent."""
+        return self.ambiguity_exhausted
 
     @property
     def stuck_reason(self) -> str | None:
-        """Compatibility surface; scientific diagnostics live in :attr:`diagnostics`."""
-        return None
+        return ("branch_ambiguity; frontier_blocked after saturated same-q strategy"
+                if self.ambiguity_exhausted else None)
 
     @property
     def deficit(self) -> float:
@@ -394,8 +422,10 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
     max_batches = int((getattr(objective, "steering", None) or {}).get(
         "maximum_production_batches_per_q", MAX_PROD_ATTEMPTS))
     policy = getattr(objective, "steering", None) or {}
+    maximum_bridge_steps = max(0, int(policy.get("maximum_bridge_steps", 1)))
     grid = [GridQ(index=i, hkl=tuple(path[i]), q=scalars[i], tolerance=objective.tolerance_meV,
                   requires_crossing_guard=crossing_guard, max_production_batches=max_batches,
+                  maximum_bridge_steps=maximum_bridge_steps,
                   requires_confirmed_track=confirmed_track_required,
                   interval_floor_window=max(1, int(policy.get("interval_floor_window", 3))),
                   interval_floor_min_improvement=float(policy.get(
@@ -406,11 +436,11 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
     for update in observations:
         if update.get("kind") != "pooled_master_update" or update.get("hkl") is None:
             continue
-        if not branch_matches(update):
-            continue
         i = match_grid_index(tuple(update["hkl"]), path)
         if i is not None:
-            grid[i].master_updates.append(dict(update))
+            grid[i].evidence_updates.append(dict(update))
+            if branch_matches(update):
+                grid[i].master_updates.append(dict(update))
     for obs in _logical_observations(observations, target_branch):
         # A classification probe may deliberately sit off the requested path.  Its branch evidence is
         # retained elsewhere, but it must never seat or penalize a certification point — even when an
@@ -441,6 +471,10 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                     obs.get("submitted_exposure_increment", submitted_ncount))
         if kind in PRODUCTION_KINDS:
             g.n_production += 1
+            if obs.get("ncount_clamped"):
+                g.clamped_productions += 1
+                if submitted_ncount is not None:
+                    g.clamped_effective_ncounts.append(int(submitted_ncount))
             if cost > 0.0:
                 g.last_prod_cost = cost                 # the next production scan's ΔC proxy
         elif kind == "quicklook":
@@ -449,7 +483,7 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
         if mr.get("hkl") is None:
             continue
         i = match_grid_index(tuple(mr["hkl"]), path)
-        if i is not None and branch_matches(mr):
+        if i is not None:
             master = dict(mr)
             members = master.get("members") or []
             if members:
@@ -457,7 +491,9 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                                      separators=(",", ":"), ensure_ascii=True)
                 master["production_batch_fingerprint"] = hashlib.sha256(
                     encoded.encode("utf-8")).hexdigest()
-            grid[i].master = master
+            grid[i].evidence_master = master
+            if branch_matches(mr):
+                grid[i].master = master
             try:
                 master_revision = (int(master["track_revision"])
                                    if master.get("track_revision") is not None else 0)
@@ -540,8 +576,11 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
     per_q = []
     for g in grid:
         m = g.master or {}
+        evidence = g.evidence_master or m
         if g.converged:
             reason = "certified master interval meets tolerance"
+        elif g.master is None and g.evidence_master is not None:
+            reason = "continue — pooled fit evidence exists but target branch identity is unresolved"
         elif g.master is None:
             reason = "continue — no pooled master published"
         elif (g.master or {}).get("pool_consistent") is False:
@@ -558,6 +597,9 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                       "master_members": m.get("members"),
                       "master_revision": g.master_revision,
                       "source": "master" if g.master is not None else None,
+                      "evidence_master": g.evidence_master is not None,
+                      "evidence_branch_id": evidence.get("branch_id"),
+                      "evidence_candidate_state": evidence.get("candidate_state"),
                       "track_state": g.track_state, "track_revision": g.track_revision,
                       "linewidth_state": g.linewidth_state,
                       "pool_consistent": m.get("pool_consistent"),
@@ -566,6 +608,9 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                       "expected_next_information": m.get("expected_next_information"),
                       "diagnostics": g.diagnostics,
                       "n_production": g.n_production,
+                      "clamped_productions": g.clamped_productions,
+                      "exposure_saturated": g.exposure_saturated,
+                      "strategy_ceiling_reached": g.n_production >= g.max_production_batches,
                       "interval_floored": g.interval_floored,
                       "n_master_updates": len(g.master_updates),
                       "diagnostic_halfwidth": (g.master_updates[-1].get("diagnostic_halfwidth")
@@ -586,6 +631,32 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                             [f"all {len(grid)} grid q converged: a certified ω₀ interval "
                              f"(pooled master, inflation-calibrated) "
                              f"≤ {tol:g} meV at each point"], per_q)
+
+    def classification_route_remains(item: GridQ) -> bool:
+        if item.track_state == "blocked":
+            return False
+        lo = max(0, item.index - max(item.maximum_bridge_steps, 1))
+        hi = min(len(grid), item.index + max(item.maximum_bridge_steps, 1) + 1)
+        return any(
+            neighbor.index != item.index
+            and (not neighbor.visited or neighbor.track_state in {"confirmed", "provisional"})
+            and not neighbor.stuck
+            for neighbor in grid[lo:hi]
+        )
+
+    exhausted = [g for g in grid
+                 if g.ambiguity_exhausted and not classification_route_remains(g)]
+    if exhausted:
+        indices = ", ".join(str(g.index) for g in exhausted)
+        for g in exhausted:
+            per_q[g.index]["assessment_state"] = "incomplete"
+            per_q[g.index]["reason"] = (
+                "branch_ambiguity; frontier_blocked after saturated same-q strategy")
+        return StopDecision(
+            "incomplete",
+            [f"branch_ambiguity; frontier_blocked at path index/indices {indices}: "
+             "same-q exposure saturated and the configured strategy allowance was exhausted"],
+            per_q)
 
     reasons: list[str] = []
     spent = float(budget_state.get("spent", 0.0))

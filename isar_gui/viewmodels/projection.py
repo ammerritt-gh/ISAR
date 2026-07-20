@@ -312,8 +312,10 @@ def unselected_candidate_points(fv, x: float) -> list[dict]:
     for index, (candidate, energy) in enumerate(zip(candidates, energies)):
         if index == selected or energy is None or not isinstance(candidate, dict):
             continue
+        # Candidate uncertainty is classification evidence, not a certifying target interval.  Keep
+        # it off the whisker channel even when the candidate fit carries a local standard error.
         out.append({"q": float(x), "omega": energy,
-                    "yerr": _candidate_error(candidate), "selected": False,
+                    "yerr": None, "selected": False,
                     "candidate_index": index})
     return out
 
@@ -326,22 +328,6 @@ def _candidate_energy(candidate) -> float | None:
         return None if value is None else float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _candidate_error(candidate) -> float | None:
-    value = candidate.get("omega0_err", candidate.get("energy_err", candidate.get("sigma")))
-    try:
-        if value is not None:
-            return abs(float(value))
-    except (TypeError, ValueError):
-        return None
-    interval = candidate.get("interval")
-    try:
-        if isinstance(interval, (list, tuple)) and len(interval) >= 2:
-            return abs(float(interval[-1]) - float(interval[0])) / 2.0
-    except (TypeError, ValueError):
-        return None
-    return None
 
 
 def _f_or_nan(v) -> float:

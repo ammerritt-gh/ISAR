@@ -1497,6 +1497,40 @@ def test_detailed_resume_replays_changing_ncount_and_master_updates_chronologica
     assert resumed["scan_counter"] == 3
 
 
+def test_detailed_resume_reconstructs_pre_provenance_live_ncount_clamp(tmp_path):
+    ws = tmp_path / "ws-clamp-replay"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    log_event(log, "exception", {
+        "action": "proposal_ncount_clamped_to_limit", "iter": 4,
+        "hkl": [2.3, 0.0, 0.0], "requested_ncount": 400_000_000,
+        "effective_ncount": 100_000_000,
+    })
+    submission = {
+        "job_id": "j-clamped", "state": "done", "iter": 4,
+        "kind": "production", "ncount": 100_000_000,
+        "submitted_ncount": 100_000_000, "n_points": 20,
+        "hkl": [2.3, 0.0, 0.0], "cost": 2_000_000_000.0,
+        "acquisition_id": "A-clamped",
+    }
+    log_event(log, "run", submission)
+    log_event(log, "physical_submission", submission)
+    log_event(log, "analyze", {"job_id": "j-clamped", "n_rows": 1})
+    _write_results(ws, [{
+        "scan": 1, "detector": "det", "h": 2.3, "k": 0.0, "l": 0.0,
+        "status": "fitted", "verdict": "branch_ambiguous",
+        "disposition": "flagged", "omega0": 2.7,
+        "interval_lo": 2.5, "interval_hi": 2.9, "interval_reliable": True,
+    }])
+    resumed = _resume_state(ws, log, _UNITY_CAL)
+    physical = [row for row in resumed["observations"]
+                if row.get("kind") != "pooled_master_update"]
+    assert len(physical) == 1
+    assert physical[0]["ncount_clamped"] is True
+    assert physical[0]["requested_ncount"] == 400_000_000
+    assert physical[0]["runtime_ncount_limit"] == 100_000_000
+
+
 def test_detailed_resume_keeps_legacy_prefix_and_charges_multidetector_scan_once(tmp_path):
     ws = tmp_path / "ws-mixed-ledger"
     (ws / "report").mkdir(parents=True)

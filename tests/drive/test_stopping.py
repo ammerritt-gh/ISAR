@@ -404,6 +404,57 @@ def test_wrong_branch_master_updates_cannot_trigger_floor_or_rejection():
     assert not grid[0].interval_floored and not grid[0].candidate_rejected
 
 
+def test_wrong_branch_master_is_measured_evidence_without_target_delivery():
+    wrong = _master((2.1, 0.0, 0.0), 0.2)
+    wrong.update({"branch_id": "optic", "branch_candidates": [
+        {"energy_meV": 2.7}, {"energy_meV": 6.85}]})
+    point = st.summarize_grid(_obj(), [], [wrong])[0]
+    assert point.visited and point.evidence_master is not None
+    assert point.master is None and point.assessment_state == "ambiguous"
+    assert not point.converged
+
+
+def test_saturated_ambiguous_frontier_terminates_only_after_probe_allowance():
+    obj = _obj()
+    obj.steering["maximum_production_batches_per_q"] = 2
+    obj.steering["maximum_bridge_steps"] = 1
+    observations = []
+    for index in range(3):
+        row = _obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
+        row.update({"acquisition_id": f"A{index}", "ncount_clamped": index >= 1,
+                    "submitted_ncount": 100_000_000})
+        observations.append(row)
+    # The full survey has already visited every neighboring q, so no untried classification route
+    # remains.  The only pooled fit is real two-mode evidence but belongs to the rival branch.
+    observations.extend(_obs((h, 0.0, 0.0), "quicklook", None, resolved=False,
+                             disp="branch_ambiguous") for h in (2.2, 2.3, 2.4))
+    wrong = _master((2.1, 0.0, 0.0), 0.2)
+    wrong.update({"branch_id": "optic", "branch_candidates": [
+        {"energy_meV": 2.7}, {"energy_meV": 6.85}]})
+    grid = st.summarize_grid(obj, observations, [wrong])
+    decision = st.evaluate_stop(obj, grid, _BUDGET)
+    assert grid[0].clamped_productions == 2 and grid[0].ambiguity_exhausted
+    assert decision.state == "incomplete"
+    assert "branch_ambiguity" in decision.reasons[0]
+
+
+def test_saturated_frontier_stays_nonterminal_while_untried_neighbor_remains():
+    obj = _obj()
+    obj.steering["maximum_production_batches_per_q"] = 1
+    obj.steering["maximum_bridge_steps"] = 1
+    observations = []
+    for index in range(2):
+        row = _obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
+        row.update({"acquisition_id": f"A{index}", "ncount_clamped": True,
+                    "submitted_ncount": 100_000_000})
+        observations.append(row)
+    wrong = _master((2.1, 0.0, 0.0), 0.2)
+    wrong["branch_id"] = "optic"
+    grid = st.summarize_grid(obj, observations, [wrong])
+    assert grid[0].ambiguity_exhausted
+    assert st.evaluate_stop(obj, grid, _BUDGET).state == "continue"
+
+
 def test_production_cap_without_master_does_not_abandon_q():
     obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
            for _ in range(st.MAX_PROD_ATTEMPTS)]

@@ -17,14 +17,43 @@
 > give the citation; citation-confidence flags are collected at the end (the reference list is meant
 > to seed a reading library).
 
-### Tracked-branch frontier semantics (2026-07-18)
+### Tracked-branch frontier and evidence semantics (updated 2026-07-20)
 
 `target_selector="tracked_branch"` makes identity coverage precede final precision. The driver first
-confirms the target at the path point nearest reduced q=0, then walks only to an adjacent q connected
-to that confirmed component. One unresolved point permits at most `maximum_bridge_steps=1` provisional
-quicklook beyond it; the bridge supplies evidence for a joint forward/backward reassignment but cannot
-seed the prior, certify the objective, or extend a plotted line. If the ambiguity survives the attempt
-cap, the durable outcome is `branch_ambiguity` plus `frontier_blocked`, never a sparse long-range jump.
+confirms an optic target at the point nearest reduced q=0. A gapless acoustic target instead starts at
+the nearest point whose predicted energy is separated from the elastic line by the local resolution;
+the zone-centre point is classified later from connected neighbors or remains explicitly ambiguous.
+The walk then advances only to adjacent q connected to the confirmed component. One unresolved point
+permits at most `maximum_bridge_steps=1` provisional quicklook beyond it; the bridge supplies evidence
+for a joint forward/backward reassignment but cannot seed the prior, certify the objective, or extend a
+plotted line.
+
+Tracked campaigns use this connected walk from their resolvable anchor; they do not begin with a full
+path survey. At the anchor and every later frontier, acquisition distinguishes statistical evidence
+from identity evidence. No fitted candidates, or candidates whose conservative precision remains above
+the objective tolerance, permit another same-q production measurement. Once fitted candidates are
+precise enough but their identity remains ambiguous, another same-q exposure is not useful identity
+evidence: the driver immediately chooses an unvisited adjacent classification point. Expected
+classification information chooses between the two sides when available, with path order as the
+deterministic tie-breaker. The whole path is retracked after that result before another proposal is
+made. An ambiguous point may be revisited only after a neighbor has produced fitted candidate/track
+evidence—a submitted or visited-only quicklook is insufficient—and only within the configured bridge
+allowance.
+
+The state contract deliberately separates three facts. A current pooled fit is **evidence** that q was
+measured and preserves every fitted mode candidate. A branch assignment is **identity** and may remain
+ambiguous. Only a confirmed target master is **delivery**: it supplies authoritative `omega0`, seats
+convergence, or refreshes the target prior. Candidate modes remain visible as open, unwhiskered markers
+while delivery is null.
+
+`maximum_production_batches_per_q` is a same-q strategy ceiling, not a quota and not an absence verdict.
+Adequate ambiguous evidence switches to an adjacent differentiation probe immediately; it does not wait
+for the ceiling. Statistics-limited evidence may continue at the same q until that ceiling, at which
+point the driver must try an unmeasured adjacent probe before revisiting the frontier. Revisits remain
+bounded by `maximum_bridge_steps`. If repeated requests clamp to the same instrument dwell (or
+the interval/no-progress diagnostic independently proves saturation), and no connected classification
+route remains after that allowance, the durable outcome is `incomplete` with `branch_ambiguity` plus
+`frontier_blocked`. It never pauses for an operator or blindly repeats the saturated q.
 Once the acoustic rival's identity entropy is below the stopping threshold, it remains labeled context
 and receives no target-precision acquisition value.
 

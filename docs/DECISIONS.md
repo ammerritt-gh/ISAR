@@ -388,6 +388,23 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   TAVI identities make that run performance evidence rather than a strict frozen shadow replay;
   all 21 endpoints certified and the operator accepted the small numeric/model-selection variation
   as scientifically equivalent. The strict comparator remains the gate for true frozen replays.
+- **O24.** (2026-07-20, Implemented) **Pooled evidence, branch identity, and target delivery are
+  separate states.** AP1 produced stable two-mode pooled spectra near H=2.30, but a near-even
+  acoustic/optic assignment correctly withheld target `omega0`. The old reducer consequently erased
+  both “measured” state and viewer markers, while the production cap remained diagnostic and repeated
+  dwell requests saturated at the live instrument ceiling. Every current pooled master now marks q
+  measured and preserves its candidates; only a confirmed target fold can certify, seed the target
+  prior, or join the target curve. New named acoustic and optic maps use connected `tracked_branch`;
+  acoustic anchors at the nearest locally resolvable point. O18's anti-abandonment rule is amended:
+  a count threshold alone remains nonterminal, but it is a safety ceiling rather than a quota. The
+  second AP1 replay exposed an anchor exception that repeated H=2.15 despite two precise candidates.
+  A statistically adequate ambiguous anchor now requires adjacent identity evidence immediately;
+  same-q production remains available only while candidate precision is inadequate. Adjacent sides are
+  ranked by classification information with path order as a deterministic tie-breaker, and any anchor
+  revisit requires fitted neighboring candidate/track evidence (not merely a submitted quicklook) and
+  consumes the bounded bridge allowance. Demonstrated
+  exposure saturation plus exhausted bridge/revisit opportunities terminates honestly as `incomplete`
+  (`branch_ambiguity` / `frontier_blocked`) rather than pausing or blindly acquiring the same q.
 
 ## Session status update
 

@@ -56,15 +56,20 @@ def _make(make_ws, *, prior=None, branch=None, tracks=None, specs=_SPECS,
           with_master=False) -> Workspace:
     scans, rows, data = {}, [], []
     for s in specs:
-        oc = _outcome(h=s["h"], k=s["k"], l=s["l"], omega0=s["omega0"],
+        seed_omega = s["omega0"] if s["omega0"] is not None else s.get("candidate_seed", 1.0)
+        oc = _outcome(h=s["h"], k=s["k"], l=s["l"], omega0=seed_omega,
                       reliable=s["reliable"], entropy=s["entropy"], verdict=s["verdict"],
                       T=s.get("T", 200.0))
+        if s["omega0"] is None:
+            oc.update({"omega0": None, "interval": None, "interval_reliable": False,
+                       "selected_candidate_index": None,
+                       "branch_candidates": list(s.get("branch_candidates") or [])})
         sid = f"tavi:{s['scan']}:det"
         scans[sid] = {"scan_id": sid, "scan_number": s["scan"], "scan_type": "measurement",
                       "status": "fitted", "detectors": {"det": oc}, "provenance": {"M": 200}}
         rows.append({"scan": s["scan"], "detector": "det", "sample": "tavi", "T": s.get("T", 200.0),
                      "h": s["h"], "k": s["k"], "l": s["l"], "status": "fitted"})
-        data.append({"scan_number": s["scan"], "energy": list(_X), "counts": _counts(s["omega0"])})
+        data.append({"scan_number": s["scan"], "energy": list(_X), "counts": _counts(seed_omega)})
     if with_master:
         # A pooled master (delivered per-q answer) at H=2.1 with its own interval + 3 members; no
         # data file (masters have no persisted spectrum), but it belongs on the ω̂ overlay.
@@ -142,6 +147,22 @@ def test_prior_and_branch_curves(make_ws):
     vm = DispersionViewModel(ws)
     roles = [s.role for s in vm.spec.series]
     assert Role.PRIOR in roles and Role.BRANCH in roles
+
+
+def test_ambiguous_candidates_render_as_open_markers_without_whiskers(make_ws):
+    specs = _SPECS + [{
+        "scan": 9, "h": 2.3, "k": 0.0, "l": 0.0, "omega0": None,
+        "candidate_seed": 2.7, "reliable": False, "entropy": 0.69,
+        "verdict": "branch_ambiguous", "branch_candidates": [
+            {"energy_meV": 2.7, "omega0_err": 0.12},
+            {"energy_meV": 6.85, "omega0_err": 0.18},
+        ],
+    }]
+    vm = DispersionViewModel(_make(make_ws, specs=specs))
+    ambiguous = [marker for marker in vm.spec.markers
+                 if marker.kind is MarkerKind.AMBIGUOUS_CANDIDATE]
+    assert [(marker.x, marker.y) for marker in ambiguous] == [(2.3, 2.7), (2.3, 6.85)]
+    assert not any(series.yerr is not None and 2.3 in series.x for series in vm.spec.series)
 
 
 def test_branch_uncertainty_metadata_uses_the_plotted_sample_temperature_slice(make_ws):

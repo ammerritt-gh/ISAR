@@ -8,6 +8,7 @@ from isar.session.branch_tracking import anchor_index, track_path
 from isar.session.driver import (
     _apply_tracked_branch,
     _clear_tracked_selection,
+    _materialize_branch_candidates,
     _mode_candidates,
     _select_mode,
 )
@@ -30,6 +31,33 @@ def _candidate(ref, energy, error=0.12):
 def test_anchor_is_nearest_reduced_zone_centre_with_path_order_tie_break():
     path = [[3.0, 0, 0], [2.0, 0, 0], [4.0, 0, 0]]
     assert anchor_index(path, 2.0) == 1
+
+
+def test_acoustic_anchor_is_nearest_point_with_resolvable_candidate():
+    path = [[2.0, 0, 0], [2.05, 0, 0], [2.1, 0, 0], [2.15, 0, 0]]
+    observations = [
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("a0", 0.1)]},
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("a1", 0.6)]},
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("a2", 1.1)]},
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("a3", 1.7)]},
+    ]
+    assert anchor_index(path, 2.0, target_branch="acoustic", observations=observations) == 2
+
+
+def test_acoustic_tracking_selects_low_connected_branch_and_labels_it_target():
+    path = [[2.0, 0, 0], [2.1, 0, 0], [2.2, 0, 0]]
+    observations = [
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("a0", 0.1), _candidate("o0", 6.0)]},
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("a1", 1.2), _candidate("o1", 6.2)]},
+        {"gauss_fwhm": 0.8, "candidates": [_candidate("a2", 2.4), _candidate("o2", 6.4)]},
+    ]
+    track = track_path(path, observations, period=2.0, hypotheses=HYPOTHESES,
+                       target_branch="acoustic", assignment_entropy_stop_nats=1.0)
+    assert track["target_branch"] == "acoustic" and track["anchor_index"] == 1
+    assert track["assignments"][1]["selected_candidate_index"] == 0
+    acoustic = next(item for item in track["tracks"] if item["branch_id"] == "acoustic")
+    optic = next(item for item in track["tracks"] if item["branch_id"] == "optic")
+    assert acoustic["role"] == "target" and optic["role"] == "rival"
 
 
 def test_broad_zc_prior_confirms_peak_at_its_mean_without_phantom_new_branch():
@@ -177,6 +205,23 @@ def test_selecting_second_mode_uses_its_gamma_and_error_not_primary_interval():
     assert carried[0]["profile_interval"] == [4.7, 5.3]
     assert carried[0]["bayes_interval"] == [4.8, 5.0, 5.2]
     assert carried[1]["interval"] is None
+
+
+def test_hypothesis_master_candidates_persist_before_target_selection():
+    outcome = {
+        "detector_id": "det0", "omega0": 2.7, "omega0_err": 0.12,
+        "gamma": 0.4, "interval": [2.5, 2.9], "interval_reliable": True,
+        "modes": [
+            {"omega0": 2.7, "omega0_err": 0.12, "gamma": 0.4, "amplitude": 10.0},
+            {"omega0": 6.85, "omega0_err": 0.18, "gamma": 0.7, "amplitude": 8.0},
+        ],
+    }
+    session = SessionState()
+    session.put(ScanEntry(scan_id="master:q", scan_number=9_000_001, scan_type="energy",
+                          status="fitted", detectors={"det0": outcome}))
+    _materialize_branch_candidates(session)
+    candidates = outcome["branch_candidates"]
+    assert [candidate["energy_meV"] for candidate in candidates] == [2.7, 6.85]
 
 
 def test_missing_revision_clears_stale_scalar_selection_but_preserves_candidates():

@@ -261,9 +261,12 @@ class HeatmapViewModel(ViewModel):
         hit_points = []
         entropy = []
         for fv in fits:
+            x = float(fv.q[varying])
+            candidates = projection.unselected_candidate_points(fv, x)
             if fv.omega0 is None:
+                overlay_points.extend(candidates)
                 continue
-            x, y = float(fv.q[varying]), float(fv.omega0)
+            y = float(fv.omega0)
             hit_points.append((x, y, fv))
             ent = fv.assignment_entropy
             ent = None if ent is None else float(ent)
@@ -277,7 +280,7 @@ class HeatmapViewModel(ViewModel):
                 "n_members": fv.n_members, "track_state": getattr(fv, "track_state", None),
                 "interval_reliable": fv.interval_reliable,
             })
-            overlay_points.extend(projection.unselected_candidate_points(fv, x))
+            overlay_points.extend(candidates)
         overlay = builders.dispersion_spec(
             points=overlay_points,
             projection=ps.ProjectionLegend(plane="overlay", integration="overlay"))

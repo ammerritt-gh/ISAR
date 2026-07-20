@@ -27,8 +27,15 @@ class _State:
     acoustic: int | None
 
 
-def anchor_index(path: Iterable[Iterable[float]], period: float | None) -> int:
-    """Return the path point nearest reduced q=0, with path order as the tie-breaker."""
+def anchor_index(path: Iterable[Iterable[float]], period: float | None, *,
+                 target_branch: str = "optic", observations: list[dict] | None = None) -> int:
+    """Return the deterministic identity anchor for a connected branch.
+
+    Optic branches anchor at reduced q=0.  An acoustic mode is position-unresolvable there, so once
+    candidate evidence exists its anchor is the nearest point carrying a mode separated from the
+    elastic line by the local resolution.  Before evidence exists the caller may supply its own
+    predicted-resolvable acquisition anchor; the zone centre remains the conservative fallback.
+    """
     points = [tuple(float(value) for value in q) for q in path]
     if not points:
         return 0
@@ -38,7 +45,36 @@ def anchor_index(path: Iterable[Iterable[float]], period: float | None) -> int:
     if period is None or not np.isfinite(period) or period <= 0.0:
         return 0
     reduced = [abs(q[axis] - round(q[axis] / period) * period) for q in points]
-    return min(range(len(points)), key=lambda index: (reduced[index], index))
+    zone_anchor = min(range(len(points)), key=lambda index: (reduced[index], index))
+    if target_branch != "acoustic" or not observations:
+        return zone_anchor
+    resolvable = []
+    for index, row in enumerate(observations):
+        try:
+            fwhm = float(row.get("gauss_fwhm"))
+        except (TypeError, ValueError):
+            continue
+        acoustic_energies = []
+        for candidate in row.get("candidates") or []:
+            try:
+                acoustic_energies.append((
+                    float((candidate.get("probabilities") or {}).get("acoustic", 0.0)),
+                    abs(_candidate_energy(candidate)),
+                ))
+            except (TypeError, ValueError):
+                continue
+        if not acoustic_energies:
+            continue
+        # Before tracking has assigned probabilities, the lowest positive mode is the conservative
+        # acoustic candidate.  On later revisions, use the strongest acoustic identity instead.
+        if any(probability > 0.0 for probability, _energy in acoustic_energies):
+            target_energy = max(acoustic_energies, key=lambda item: item[0])[1]
+        else:
+            target_energy = min(energy for _probability, energy in acoustic_energies)
+        if fwhm > 0.0 and target_energy >= fwhm:
+            resolvable.append(index)
+    return (min(resolvable, key=lambda index: (reduced[index], index))
+            if resolvable else zone_anchor)
 
 
 def _logsumexp(values) -> float:
@@ -100,7 +136,8 @@ def _states(n_candidates: int) -> list[_State]:
 
 
 def _emission(state: _State, candidates: list[dict], *, at_anchor: bool,
-              optic_hypothesis: dict, acoustic_hypothesis: dict) -> float:
+              optic_hypothesis: dict, acoustic_hypothesis: dict,
+              anchor_reduced_distance: float = 0.0) -> float:
     assigned = {index for index in (state.optic, state.acoustic) if index is not None}
     score = (len(candidates) - len(assigned)) * UNASSIGNED_LOG_PENALTY
     if state.optic is None:
@@ -115,6 +152,12 @@ def _emission(state: _State, candidates: list[dict], *, at_anchor: bool,
         if index is None:
             continue
         mean, sigma = _prior_pair(hypothesis, "zc_energy", default)
+        if anchor_reduced_distance > 0.0:
+            slope, slope_sigma = _prior_pair(
+                hypothesis, "slope_zc", (0.0, 8.0) if branch == "optic" else (12.0, 12.0))
+            mean += slope * anchor_reduced_distance
+            sigma = math.sqrt(sigma * sigma
+                              + (slope_sigma * anchor_reduced_distance) ** 2)
         candidate = candidates[index]
         combined = math.sqrt(sigma * sigma + _candidate_sigma(candidate) ** 2)
         score += _normal_compatibility(_candidate_energy(candidate), mean, combined)
@@ -204,14 +247,15 @@ def _frontier_states(assignments: list[dict], anchor: int, *, entropy_stop: floa
             index += direction
 
 
-def _segments(assignments: list[dict], branch: str) -> list[dict]:
+def _segments(assignments: list[dict], branch: str, target_branch: str) -> list[dict]:
     segments: list[dict] = []
     current: dict | None = None
     for row in assignments:
         candidate_index = row.get(f"{branch}_candidate_index")
         candidates = row.get("candidates") or []
         state = row.get("track_state", "blocked")
-        drawable_state = state if branch == "optic" else ("confirmed" if candidate_index is not None else "missing")
+        drawable_state = (state if branch == target_branch
+                          else ("confirmed" if candidate_index is not None else "missing"))
         if candidate_index is None or drawable_state in ("missing", "ambiguous", "blocked"):
             current = None
             continue
@@ -238,12 +282,19 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
     ``observations`` has one row per path point and each row has an unordered ``candidates`` list.
     Missing lists are valid observations.  The result is entirely JSON-serialisable.
     """
-    if target_branch != "optic":
-        raise ValueError("joint tracked-branch assignment currently requires target_branch='optic'")
+    if target_branch not in {"optic", "acoustic"}:
+        raise ValueError("tracked branch must be 'optic' or 'acoustic'")
     if len(path) != len(observations):
         raise ValueError("path and observations must have the same length")
     points = [[float(value) for value in q] for q in path]
-    anchor = anchor_index(points, period)
+    anchor = anchor_index(points, period, target_branch=target_branch, observations=observations)
+    spans = [max(q[axis] for q in points) - min(q[axis] for q in points)
+             for axis in range(len(points[0]))]
+    axis = int(np.argmax(spans)) if any(span > 0.0 for span in spans) else 0
+    anchor_reduced_distance = 0.0
+    if period is not None and np.isfinite(period) and period > 0.0:
+        coordinate = points[anchor][axis]
+        anchor_reduced_distance = abs(coordinate - round(coordinate / period) * period)
     path_distance, radial = _path_geometry(points, anchor)
     optic_hypothesis = _hypothesis(hypotheses, "optic")
     acoustic_hypothesis = _hypothesis(hypotheses, "acoustic")
@@ -255,7 +306,8 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
 
     emissions = [[_emission(state, candidates_by_q[index], at_anchor=index == anchor,
                             optic_hypothesis=optic_hypothesis,
-                            acoustic_hypothesis=acoustic_hypothesis)
+                            acoustic_hypothesis=acoustic_hypothesis,
+                            anchor_reduced_distance=anchor_reduced_distance)
                   for state in states[index]] for index in range(len(points))]
     transitions: list[np.ndarray] = []
     for index in range(1, len(points)):
@@ -306,7 +358,7 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
                 "new": max(0.0, 1.0 - optic_probability - acoustic_probability),
             }
         selected_state = states[index][map_indices[index]]
-        selected_index = selected_state.optic
+        selected_index = getattr(selected_state, target_branch)
         selected_probabilities = (candidates[selected_index].get("probabilities", {})
                                   if selected_index is not None else {"missing": 1.0})
         assignments.append({
@@ -314,7 +366,7 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
             "candidates": candidates, "optic_candidate_index": selected_state.optic,
             "acoustic_candidate_index": selected_state.acoustic,
             "selected_candidate_index": selected_index,
-            "target_probability": float(selected_probabilities.get("optic", 0.0)),
+            "target_probability": float(selected_probabilities.get(target_branch, 0.0)),
             "assignment_entropy": _entropy(selected_probabilities),
             "identity_entropy": _identity_entropy(selected_probabilities),
         })
@@ -344,11 +396,12 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
         "revision": revision, "target_branch": target_branch, "anchor_index": anchor,
         "assignments": assignments,
         "tracks": [
-            {"branch_id": "optic", "role": "target", "revision": revision,
-             "segments": _segments(assignments, "optic")},
-            {"branch_id": "acoustic", "role": "rival", "revision": revision,
-             "label": "acoustic identified; retained as non-target context",
-             "segments": _segments(assignments, "acoustic")},
+            {"branch_id": branch, "role": ("target" if branch == target_branch else "rival"),
+             "revision": revision,
+             "label": (None if branch == target_branch else
+                       f"{branch} identified; retained as non-target context"),
+             "segments": _segments(assignments, branch, target_branch)}
+            for branch in (target_branch, "acoustic" if target_branch == "optic" else "optic")
         ],
         "frontiers": {"confirmed_indices": confirmed, "blocked_indices": blocked,
                       "frontier_blocked": bool(blocked)},
