@@ -1,6 +1,7 @@
 # Fast Test Campaigns — speedup sprint design
 
-**Status: design approved 2026-07-19; implementation not started.**
+**Status: implementation in progress on `Speedup-Phase` (Phase 1 code complete 2026-07-20,
+reference-control evidence incomplete; later phases remain governed by the gates below).**
 Owner intent: this sprint is judged on **development iteration velocity** — synthetic/analytic
 test campaigns must get several times faster so that design iteration on everything else
 (backgrounds, steering physics, scan economy) speeds up. It is *not* judged on beam-time
@@ -20,16 +21,15 @@ per-task aggregation of the session log's embedded `run_timings`:
 
 | Bucket | Seconds | % of 1772 s wall |
 |---|---|---|
-| Error-bar attachment — scan fits (`errors_attach_seconds`) | ~452 | 26% |
-| Error-bar attachment — master refits | ~408 | 23% |
-| Scan-fit remainder (structure enumeration, IC grid, optimization) | ~501 | 28% |
-| Two-stage fitting (scans + masters) | ~368 | 21% |
-| Everything else (propose/submit/wait/collate/I/O/orchestration) | ~43 | 2% |
+| Error-bar attachment — scan fits (`errors_attach_seconds`) | 452.373 | 25.5% |
+| Error-bar attachment — master refits | 407.690 | 23.0% |
+| Fit remainder (structure enumeration, IC grid, optimization) | 501.479 | 28.3% |
+| Two-stage fitting (scans + masters) | 367.984 | 20.8% |
+| Everything else (propose/submit/wait/collate/I/O/orchestration) | 42.574 | 2.4% |
 
 (The buckets are disjoint by construction: `errors_attach_seconds` and `two_stage_seconds`
-are recorded per-task fields; the remainder is each stage total minus those two. Values are
-approximate at the few-percent level; Phase 1 makes this table a built-in report so future
-numbers are exact and reproducible.)
+are recorded per-task fields; the remainder is each stage total minus those two. Phase 1 made
+this decomposition a shared implementation used by the profiler and diagnostic report.)
 
 Two structural facts:
 
@@ -57,10 +57,10 @@ upside beyond that, gated on its own safety evidence.
 
 ---
 
-## 2. Phase 1 — Instrument + free wins
+## 2. Phase 1 — Instrument + controlled baseline
 
-*Risk: none (no steering behavior change). Ships first; everything later is measured
-against its output.*
+*Status: code complete 2026-07-20; the prescribed M=50 versus M=200 drive-control evidence remains
+open. Risk: none (no intended steering behavior change). Everything later is measured against it.*
 
 ### 2.1 What ships
 
@@ -72,18 +72,17 @@ against its output.*
      and per-method (`bootstrap` / `minos` / `profile` / `bayes`) totals.
    - `CAMPAIGN_DIAGNOSTIC.md` (the per-campaign report) gains the same table, so every
      campaign self-reports where its time went.
-2. **Adaptive bootstrap early-stop on by default.** `boot_adaptive` exists as a parameter
-   (`fit_one`); document its stopping rule (stability of the interval endpoints across
-   batches), give it a floor (never fewer than ~48 draws), and enable it by default. The
-   exact stopping statistic, batch size, endpoint tolerance, and never-stabilizes behavior
-   (run to the M cap) are fixed at implementation time by reading the existing
-   `bootstrap.py` implementation first; requirements: deterministic under the seed
-   contract, floor respected, cap respected, decision recorded in provenance.
-3. **Role-aware bootstrap M.** M becomes a function of role: provisional/live-loop fits
-   default to M=50; prior-seeding, pooled-master, and certification fits keep M=200. Roles
-   are already distinguishable at the call sites (`isar/session/driver.py` tier plumbing) —
-   thread the role explicitly rather than inferring it from incidental state, and record
-   the effective M in the fit's provenance so replays and reports can see it.
+2. **Adaptive bootstrap is preserved and documented.** It runs in deterministic blocks of 32,
+   checks only after at least 64 draws when the cap permits, and stops after two consecutive
+   endpoint-half-width changes below 5%. It never exceeds M and is deterministic under the seed
+   contract. A provisional cap of 50 therefore runs exactly 50 draws; requested and effective
+   counts are recorded.
+3. **Role-aware bootstrap M.** `run_batch(..., M=200, scan_M=None)` keeps M for pooled masters
+   and certification while provisional physical-scan fits default to `scan_M=50`. The CLI exposes
+   `--scan-M`; requested and effective counts are recorded in fit provenance.
+4. **Canonical shadow comparison.** The reusable comparator checks proposals, windows, ncounts,
+   escalation decisions, prior admissions, stopping state, and final certified outputs after
+   removing timestamps and timing-only fields. `isar profile --compare-workspace OTHER` exposes it.
 
 ### 2.2 Done criteria
 
@@ -98,83 +97,86 @@ against its output.*
 
 ## 3. Phase 2 — Escalate-on-distrust error tiers in the live loop
 
-*Risk: low, and bounded by a validation gate. This is the highest-leverage phase (attacks
-the 49% bucket).*
+*Status: Partial 2026-07-20. HESSE-first `auto`, in-place error attachment, provenance, and the
+atomic promotion-record API are implemented. Runtime pending-work recovery, real supersession
+publication checks, asynchronous scheduling, and drive-default enablement remain open and blocked
+by the shadow gate.*
 
 ### 3.1 Policy
 
-A new effective tier `errors_tier="auto"` (the sprint's default for drive campaigns):
+Extend the existing drive-level HESSE-first router rather than introducing a second policy:
 
-- **Default:** every live-loop fit runs the fast tier — HESSE plus the `hesse_trusted`
-  agreement flag. No bootstrap, no profile.
-- **Escalate to full** (MINOS + ω₀ profile + bootstrap) when *any* of:
-  1. `hesse_trusted` is False;
-  2. Γ (or any parameter) is within its agreement-breaking zone of a bound (the Γ-wall
-     regime, STATS_PRIMER §4);
-  3. the fit's modality is fork / ambiguous, or model selection is close (runner-up Akaike
-     weight above a fixed threshold — set at implementation, e.g. 0.1, and recorded in
-     provenance so replays see the same rule);
-  4. the result will **seed the dispersion prior** or **enter a pooled master /
-     certification pool** — "pooled master" meaning any combine-before-divide pooled fit
-     publishable as a master revision (the objects consumed by stopping, prior seeding,
-     and certification; `isar/session/session_prior.py:add_point()`,
-     `isar/drive/supervisor/stopping.py`), not every intermediate pooled quantity.
-- **New hard rule (introduced by this phase):** nothing enters `dispersion_prior` or a certification pool
-  carrying only a HESSE bar. Rule 4 makes that structural, not advisory.
-- **Provenance:** every fit records which tier actually ran and why (escalation reason
-  enum), alongside the existing `fit_kind` tag, so reports and replays can distinguish
-  cheap-steered from fully-certified numbers.
-- **Deferred-bootstrap queue:** when escalation fires for reason 4 (certification-bound)
-  and the number is not needed for the *next* steering decision, the full computation is
-  queued and executed asynchronously (batch end / iteration boundary) instead of blocking
-  the loop. Queue contents are part of the durable checkpoint state — a resume must not
-  lose pending escalations. If a queued result is *demanded* early (e.g. a stopping
-  evaluation needs it), it is computed synchronously at that point — the queue is an
-  optimization, never a correctness hole.
+- quicklooks remain `cheap`;
+- production scans and changed master revisions run `auto`;
+- certification remains explicitly `full` or `bayes`.
+
+`auto` performs structure enumeration and point estimation once, publishes a fresh HESSE master,
+and promotes that frozen revision to full errors when any of these deterministic conditions holds:
+
+1. the best-fit HESSE interval is untrusted;
+2. Ωd or Γ lies within two HESSE standard errors of a bound, including the existing Γ-bound rule;
+3. the runner-up Akaike weight is at least 0.10;
+4. no usable best fit or covariance exists.
+
+Promotion reuses the candidates already computed by point estimation; it does not repeat structure
+enumeration. A trusted HESSE **fold** may refresh the dispersion prior (O21). Fork-only exclusion and
+the fit-vs-decide boundary remain unchanged. Final certification independently refits frozen pools
+at an explicit full tier.
+
+Promotion manifests/results are durable and keyed by master content hash, fit fingerprint, tier,
+M, and seed. A completed promotion publishes only if its source revision is still current;
+superseded results remain provenance and never overwrite newer state. At most one promotion worker
+runs, using no more than one third of the worker budget. With fewer than four workers it runs
+synchronously at the deterministic iteration barrier. Otherwise one other-q foreground iteration
+may run; the promotion becomes logically due at the next boundary and the loop waits there if
+needed. Terminal stopping and certification wait for all required promotions.
+
+Every result adds `fit_role`, requested/effective tier, ordered escalation reasons, promotion state,
+requested/effective bootstrap M, source revision, and publication outcome without changing any
+existing Stage II↔III field.
 
 Final certification is untouched: it already re-fits frozen pools at full honesty
 (MEASUREMENT_STEERING §7.4); this phase changes only what the live loop computes.
 
 ### 3.2 The validation gate (blocks enabling `auto` by default)
 
-Shadow-mode replay on 2–3 archived campaigns (`svp_recert1` plus at least one
-`mvp_zone_test`-family workspace): recompute every live-loop fit both ways and compare the
-**decisions**, not the intervals — scan proposals chosen, windows, ncounts, stopping
-verdicts, prior admissions. Acceptance: zero decision divergences, or every divergence
-individually reviewed and judged benign. The coverage study validated parameter agreement;
-this gate validates decision agreement, which is the thing that can actually mis-steer a
-campaign.
+Shadow-mode replay covers `svp_recert1` plus deterministic healthy-fold and Γ-bound/ambiguous
+synthetic campaigns. It compares proposals, windows, ncounts, escalation decisions, prior
+admissions, stopping states, and final certified outputs—not timestamps or timing metadata.
+Phase 2 becomes the drive default only after zero canonical decision divergences.
 
 ### 3.3 Done criteria
 
-- `errors_tier="auto"` implemented with the four escalation rules + provenance + queue.
+- `errors_tier="auto"` implemented with the four escalation rules, reusable error attachment,
+  provenance, durable promotion state, supersession guard, and deterministic barrier.
 - Shadow gate run and its result committed as a short evidence note (per-campaign decision
   diff counts) under `docs/campaigns/`.
 - Reference campaign rerun with `auto`: expected large wall-time drop; timing table proves
   where.
-- Tests: unit tests per escalation rule; a regression test asserting prior-seeding fits are
-  never HESSE-only; resume test covering a non-empty deferred queue.
+- Tests: unit tests per escalation rule, prior admission from trusted HESSE folds, superseded
+  promotion handling, and resume with a pending promotion.
 
 ---
 
 ## 4. Phase 3 — Stop refitting the master on every scan
 
-*Risk: moderate, contained (no optimizer changes). Attacks the 35% `fit_masters` bucket.*
+*Conditional: implement only when Phase 2 remains above 590.7 seconds and fresh-master point
+estimation still exceeds 20% of campaign wall. Compatibility default remains `always`.*
 
 ### 4.1 Design
 
-- **Pool-delta significance gate.** After a new physical scan folds into a pool, compute a
-  cheap delta measure — added exposure fraction plus the predicted change in the pooled
-  interval (both available without a refit). Below threshold → defer the master refit;
-  above → refit now. The predictor's exact form is an implementation decision, but two
-  requirements are design-level: it must be validated against always-refit shadow runs
-  before the gate defaults on, and it must be **conservative at low counts** — a scan
-  whose pool is below the routine count floor (~20–30 peak counts, per the synth
-  calibration) always counts as significant and triggers a refit.
-- **Mandatory refit points.** A deferred master MUST be refit before it is consulted for:
-  stopping/convergence evaluation at its q, prior seeding, certification manifest
-  construction, or the acquisition's master-predictive artifact when that q is a candidate.
-  Deferral therefore only skips refits whose outputs nothing would have read.
+- **Policy.** `[fitting] master_refit_policy = "always" | "gated"`, with
+  `master_refit_max_deferrals = 3`, `master_refit_exposure_fraction = 0.25`,
+  `master_refit_interval_improvement = 0.10`, and
+  `master_refit_min_peak_excess_counts = 30`. Estimate interval improvement as
+  `1 - sqrt(C_old / C_new)` and refit when either configured delta threshold is met.
+- **Conservative overrides.** Always refit low-count pools, missing/non-result masters, changed
+  calibration/policy/branch identity, or a pool without a usable prior revision.
+- **Dirty state.** Persist the dirty-pool content hash, exposure, predicted improvement, and
+  consecutive-deferral count in machine-owned session state. The previous master may rank
+  acquisition while visibly stale, but cannot newly seat convergence or refresh the prior.
+- **Mandatory refresh.** Refresh after three deferrals, before certification or a terminal
+  decision, and when no clean useful candidate remains.
 - **Bounded staleness.** A master may not defer across more than N consecutive deferrals
   (default N=3): the counter increments each time a physical scan folds into that q's pool
   and the gate defers, resets to zero on any refit (gated or mandatory), and is evaluated
@@ -184,9 +186,9 @@ campaign.
   unchanged: physical rows still never provide ω/intervals/votes; the tracker still sees
   only published masters. A deferred master is simply the *previous published revision*
   remaining current slightly longer — a state the system already handles.
-- **Validation:** shadow comparison on archived campaigns — deferred-vs-always-refit runs
-  must produce identical certified results and identical steering decisions (the mandatory
-  refit points guarantee this by construction; the shadow run proves it).
+- **Validation:** enable `gated` in new development templates only after deferred-vs-always runs
+  produce identical canonical decisions and certified outputs. Any unexplained divergence leaves
+  it off and ends Phase 3 without weakening fresh-master semantics.
 
 ### 4.2 Done criteria
 
@@ -201,29 +203,24 @@ campaign.
 
 ## 5. Phase 4 — Fit-path efficiency (feature-flagged, last)
 
-*Risk: highest — wrong-basin correctness bugs are silent. Everything here ships behind a
-flag, defaulting OFF, with automatic fallback. Attacks the 28% scan-fit remainder.*
+*Conditional: implement only if the target remains unmet after Phase 3 and fit remainder remains
+above 20% of wall. Wrong-basin correctness bugs are silent, so the flag defaults off.*
 
 ### 5.1 Design
 
-1. **Warm-starting.** Seed a fit's initial conditions from (a) the same q's previous
-   iteration, (b) the branch belief's prediction at this q. A warm-started fit runs a
-   **basin-stability check**: if it fails to converge, hits a bound the cold grid would
-   explore away from, or its cost exceeds a sampled cold-start's by more than a tolerance,
-   fall back to the full IC grid automatically and log the fallback.
-2. **IC-grid pruning.** When a prior (dispersion prior / branch belief) is tight, restrict
-   the Ω_d scan of the initial-condition grid to the prior's support (± k·σ) instead of the
-   full window. Never prunes when the fit is `unconstrained` provenance or the prior is
-   floor-width.
-3. **Structure-enumeration pruning.** Skip enumerated structures whose admissibility is
-   already excluded by physics gates for this scan (work the gates already imply, computed
-   once instead of per-fit), and optionally skip high-complexity structures when the
-   running campaign has never selected them at neighboring q — but **never prune the
-   simplest structures** (null/elastic-only/1-mode): AIC must always see the simple side of
-   the ladder, or model selection silently biases complex.
-4. **Safety net:** a periodic audit fraction (e.g. every 10th fit) runs cold-start
-   full-enumeration regardless and compares; divergence disables the flag for the rest of
-   the campaign and flags the report.
+1. **One compatibility flag.** Consolidate the existing tight-prior IC narrowing and
+   `reuse_master_structure` behavior under opt-in `fit_fastpath`, while retaining the old toggle.
+2. **Warm starts.** Seed from persisted same-q candidate parameters. Fall back to the complete cold
+   grid when convergence/covariance fails, a physics parameter reaches a bound, or a canonical cold
+   seed improves deviance by more than `max(2.0, 0.001 × |cost|)`.
+3. **Prior pruning.** Keep the existing eligibility gate exactly: only Gaussian-equivalent priors
+   with σ≤0.6 meV narrow Ωd to ±1.5 meV.
+4. **Enumeration.** Precompute existing admissibility gates once per scan. Do not add neighbor-history
+   pruning; null, elastic-only, and one-mode structures always remain available to AIC.
+5. **Deterministic audits.** Select by revision hash, averaging one full audit per ten accepted fast
+   paths. Divergence means a different best structure/modality/verdict, or `|Δω₀|` above 25% of the
+   cold authoritative half-width (0.05 meV fallback). Divergence disables the fast path for the
+   campaign, retains all results, and flags every fit since the previous audit for review.
 
 All Phase-4 numeric thresholds — the cold-start sampling plan and cost tolerance for the
 basin check, k for prior-support pruning, the neighbor radius and history depth for
@@ -251,7 +248,7 @@ campaign is not rolled back (nothing is ever deleted), it is flagged.
   ownership split, QC-masks-not-deletes, Qt-free layers — none are touched.
 - **Fit-vs-decide contract** (MEASUREMENT_STEERING §4.4): tier choice and warm-starting
   affect *how fast* a number is computed, never which cost AIC/goodness-of-fit reads.
-- **Fold-only prior admission** and "nothing HESSE-only feeds the prior" (new, Phase 2).
+- **Fold-only prior admission.** Trusted HESSE folds may refresh it under O21; forks never do.
 - **Determinism and replay:** every new decision (escalation, deferral, fallback, audit) is
   seeded/derived from persisted state and logged; shadow comparisons rely on this.
 - **Frozen Stage II↔III contract:** all new fields (tier provenance, deferral events,
@@ -270,13 +267,10 @@ campaign is not rolled back (nothing is ever deleted), it is flagged.
 
 ## 8. Sequencing note
 
-Phases land in order 1 → 2 → 3 → 4; each phase ends with the reference-campaign rerun and
-its timing table committed, so the speedup narrative is a measured series, not an
-assertion. Phase 4 may be dropped entirely if, after Phase 3, the profiling table shows the
-remainder bucket no longer dominates — the flag architecture makes it severable.
-
-A routing pointer for this document should be added to the AGENTS.md "Before You Touch X"
-table when implementation starts.
+Phases are evaluated in order 1 → 2 → conditional 3 → conditional 4; each executed phase ends with
+the same-machine reference rerun, timing table, and canonical shadow comparison. A skipped or
+rejected conditional phase gets an evidence note stating the measured gate or divergence. The
+`AGENTS.md` routing table points performance work here.
 
 ---
 

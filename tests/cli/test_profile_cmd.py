@@ -160,6 +160,22 @@ def test_stage_and_subprocess_tables(tmp_path, capsys):
     assert "%wall" in out
 
 
+def test_subprocess_overhead_includes_certification_parent(tmp_path, capsys):
+    log = tmp_path / "report" / "session_log.jsonl"
+    log_event(log, "timing", {"stage": "isar_run", "seconds": 10.0}, ts=100.0)
+    log_event(log, "analyze", {
+        "iter": 0, "timings": {"total_seconds": 9.0, "stages": []}}, ts=110.0)
+    log_event(log, "timing", {"stage": "certify", "seconds": 20.0}, ts=111.0)
+    log_event(log, "analyze", {
+        "iter": None, "timings": {"total_seconds": 19.0, "stages": []}}, ts=131.0)
+    log_event(log, "stop", {"state": "met", "reasons": []}, ts=132.0)
+
+    assert profile_cmd.run(_args(tmp_path)) == 0
+    out = capsys.readouterr().out
+    assert "subprocess overhead (interpreter + analysis process startup): 2.000s" in out
+    assert "-18.000s" not in out
+
+
 def test_top_limits_rows(tmp_path, capsys):
     log = tmp_path / "report" / "session_log.jsonl"
     _write_campaign(log)
@@ -209,3 +225,20 @@ def test_no_timing_events_gap_estimate(tmp_path, capsys):
     assert "approximate" in out.lower()
     # gap attributed to the later event's kind: run gets the 40s gap
     assert "run" in out
+
+
+def test_compare_workspace_reports_contract_differences(tmp_path, capsys):
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    _write_campaign(left / "report" / "session_log.jsonl")
+    _write_campaign(right / "report" / "session_log.jsonl")
+
+    args = _args(left)
+    args.compare_workspace = str(right)
+    assert profile_cmd.run(args) == 0
+    assert "identical scientific decision stream" in capsys.readouterr().out
+
+    log_event(right / "report" / "session_log.jsonl", "propose",
+              {"hkl": [9, 0, 0], "kind": "production", "ncount": 1}, ts=999.0)
+    assert profile_cmd.run(args) == 1
+    assert "DIFFERENT: decisions" in capsys.readouterr().out

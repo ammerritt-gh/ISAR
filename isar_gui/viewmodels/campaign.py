@@ -490,6 +490,16 @@ class CampaignViewModel(ViewModel):
             if items:
                 self.feed_appended.emit(items)
 
+    def feed_snapshot(self) -> list[FeedItem]:
+        """Return the currently persisted, renderable feed in chronological order.
+
+        A workspace rebind constructs this viewmodel before its dock.  The constructor's initial
+        ``feed_appended`` signal therefore has no receiver; this snapshot lets a late subscriber
+        hydrate itself without rewinding the append cursor or duplicating events for other listeners.
+        """
+        return [item for item in map(render_feed_item, self._ws.session_events())
+                if item is not None]
+
     def _recount_verdicts(self) -> None:
         counts: dict[str, int] = {}
         for fv in self._ws.results:

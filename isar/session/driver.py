@@ -22,7 +22,7 @@ import time
 import tempfile
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -443,7 +443,14 @@ def _timing_provenance(fit) -> dict:
     prov = {"bootstrap_seconds": fit.get("bootstrap_seconds"),
             "minos_seconds": fit.get("minos_seconds"),
             "profile_seconds": fit.get("profile_seconds"),
-            "bayes_seconds": fit.get("bayes_seconds")}
+            "bayes_seconds": fit.get("bayes_seconds"),
+            "bootstrap_M_requested": fit.get("bootstrap_M_requested"),
+            "bootstrap_M_effective": fit.get("bootstrap_M_effective"),
+            "fit_role": fit.get("fit_role"),
+            "errors_tier_requested": fit.get("errors_tier_requested"),
+            "errors_tier_effective": fit.get("errors_tier_effective"),
+            "escalation_reasons": list(fit.get("escalation_reasons") or ()),
+            "promotion_state": fit.get("promotion_state")}
     if fit.get("dynesty_version") is not None:
         prov["bayes_n_live"] = fit.get("bayes_n_live")
         prov["bayes_seed"] = fit.get("bayes_seed")
@@ -535,10 +542,54 @@ def _candidate_rows(scores, fits) -> list | None:
     return rows
 
 
+def _auto_escalation_reasons(prelim, fits, ctx) -> list[str]:
+    """Ordered, deterministic reasons why an HESSE-first fit needs full errors.
+
+    This consumes the point-estimation objects directly.  It deliberately does not refit them:
+    :func:`fit_one` can attach the authoritative error layer to the same candidates afterward.
+    """
+    best = fits.get(prelim.best) if prelim.best else None
+    reasons = []
+    if best is None or not best.analysis_usable:
+        reasons.append("no_usable_best")
+        return reasons
+    if not best.covariance_ok or best.parameter_covariance is None:
+        reasons.append("no_usable_covariance")
+    _interval, trusted = _hesse_interval_and_trust(best, ctx)
+    if not trusted:
+        reasons.append("untrusted_hesse")
+
+    x_max = float(np.max(ctx.x_used))
+    for name, value in best.params.items():
+        sigma = best.param_errors.get(name)
+        if sigma is None or not np.isfinite(sigma) or float(sigma) <= 0:
+            continue
+        value, sigma = float(value), float(sigma)
+        if name.endswith(".Omega_d"):
+            if min(value - loop.EPS_OMEGA_D, x_max - value) <= 2.0 * sigma:
+                reasons.append("omega_d_within_2sigma_of_bound")
+                break
+    for name, value in best.params.items():
+        sigma = best.param_errors.get(name)
+        if sigma is None or not np.isfinite(sigma) or float(sigma) <= 0:
+            continue
+        value, sigma = float(value), float(sigma)
+        if name.endswith(".Gamma"):
+            if min(value - loop.GAMMA_FLOOR, loop.GAMMA_MAX - value) <= 2.0 * sigma:
+                reasons.append("gamma_within_2sigma_of_bound")
+                break
+    runner_weights = sorted(
+        (float(score.weight) for score in prelim.scores if score.label != prelim.best),
+        reverse=True)
+    if runner_weights and runner_weights[0] >= 0.10:
+        reasons.append("runner_up_akaike_weight_ge_0.10")
+    return reasons
+
+
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
             errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False,
             descriptor=None, structure_hint=None, bayes_opts=None,
-            predictive_n_members: int | None = None):
+            predictive_n_members: int | None = None, fit_role="provisional_scan"):
     """Two-stage structure fit (§ multiplicity), optionally narrowed by guideline labels, then
     select + verdict. Mirrors docs/phase3_gold*_check.run_pipeline; returns extracted fields.
 
@@ -559,10 +610,15 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     positive-definite HESSE σ, enough counts) that interval ≈ the bootstrap half-width, so the
     driver can converge on it without paying for a bootstrap; untrusted → escalate to ``full``.
     ``"cheap"`` is the quick-look tier: HESSE only, no interval at all (verdict + rough ω₀ to steer
-    acquisition, ~an order of magnitude faster). ``boot_workers`` sets the parametric-bootstrap
-    process-pool size (1 = serial; see :func:`run_batch`)."""
+    acquisition, ~an order of magnitude faster). ``"auto"`` first performs that same HESSE point
+    estimate, then attaches full errors to the *same candidate objects* only when a stable promotion
+    trigger fires. ``boot_workers`` sets the parametric-bootstrap process-pool size (1 = serial; see
+    :func:`run_batch`)."""
+    if errors_tier not in ("auto", "full", "fast", "cheap", "bayes"):
+        raise ValueError(f"unknown errors tier: {errors_tier!r}")
+    requested_tier = errors_tier
     run_full = errors_tier in FULL_TIERS  # MINOS + bootstrap + ω₀ profile (authoritative interval)
-    run_fast = errors_tier == "fast"     # HESSE ω₀ interval + trust flag, no bootstrap (fast loop)
+    run_fast = errors_tier in ("fast", "auto")  # HESSE-first; auto may promote below
     run_bayes = errors_tier == "bayes"   # full + nested-sampling posterior on the prelim-best label
     _t_two_stage = time.perf_counter()
     # Candidate enumeration is point-estimation only. Full-tier MINOS is authoritative only after
@@ -587,6 +643,13 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     fits = {r.label: r for r in results}
 
     prelim = select.select_models(results, stamp=False)
+    escalation_reasons = (_auto_escalation_reasons(prelim, fits, ctx)
+                          if errors_tier == "auto" else [])
+    if errors_tier == "auto" and escalation_reasons:
+        run_full = True
+        run_fast = False
+    effective_tier = ("full" if errors_tier == "auto" and run_full
+                      else "fast" if errors_tier == "auto" else errors_tier)
     errors_attach_seconds = 0.0
     if run_full:
         _t_errors = time.perf_counter()
@@ -642,7 +705,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
                        + ("(trusted)" if hesse_trusted else "(untrusted → escalate to full)"))
     # Cheap quick-look tier: no interval at all, only a rough HESSE ω₀ — mark it untrustworthy so
     # the stop rule never consumes it.
-    if errors_tier == "cheap":
+    if effective_tier == "cheap":
         interval = None
         omega0_profile = None
         interval_reliable = False
@@ -725,6 +788,10 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     profile_seconds = round((max(profile_batch_seconds) if profile_batch_seconds
                              else sum(profile_method_seconds)), 4)
     bayes_seconds = round(bayes_seconds, 4)
+    best_within = best.within_model if (best is not None and best.within_model) else {}
+    bootstrap_M_requested = best_within.get("M_requested", int(M))
+    bootstrap_M_effective = best_within.get(
+        "M_effective", best_within.get("M", 0 if not run_full else None))
 
     n_modes = int(best.n_modes) if best is not None else 1
     modes = list(best.modes) if (best is not None and best.modes) else None
@@ -770,6 +837,12 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "predictive_ensemble": predictive_ensemble,
         "fit_kind": fit_kind,
         "gamma_at_bound": bool(getattr(best, "gamma_at_bound", False)) if best else False,
+        "fit_role": str(fit_role),
+        "errors_tier_requested": requested_tier,
+        "errors_tier_effective": effective_tier,
+        "escalation_reasons": escalation_reasons,
+        "promotion_state": ("completed" if escalation_reasons else
+                            "not_required" if requested_tier == "auto" else "not_requested"),
         "two_stage_seconds": two_stage_seconds,
         "errors_attach_seconds": errors_attach_seconds,
         "structure_skipped": structure_skipped,
@@ -789,6 +862,8 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "minos_seconds": minos_seconds,
         "profile_seconds": profile_seconds,
         "bayes_seconds": bayes_seconds,
+        "bootstrap_M_requested": bootstrap_M_requested,
+        "bootstrap_M_effective": bootstrap_M_effective,
         # Provenance-only (not FitOutcome fields): the sampler config for the run record.
         "bayes_n_live": bayes_n_live,
         "bayes_seed": bayes_seed,
@@ -939,12 +1014,15 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
         return out
 
 
-def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200,
+def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200, scan_M=None,
               detectors=None, formats=("html", "markdown"), workers=None,
               errors_tier="full", bayes_cli=None, timer=None,
               certification_manifest=None, analysis_allowance_seconds=None,
               finish_initial_wave=False) -> RunSummary:
     timer = timer or NullTimer()
+    scan_M = 50 if scan_M is None else int(scan_M)
+    if scan_M <= 0 or int(M) <= 0:
+        raise ValueError("M and scan_M must be positive")
     with timer.stage("workspace_load"):
         card, session = workspace.load()
     checkpoint_store = None
@@ -1092,6 +1170,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
             "tier": errors_tier,
             "force": bool(force),
             "M": int(M),
+            "scan_M": int(scan_M),
             "inputs": {
                 "policy_sha256": _file_sha256(workspace.root / "card.policy.toml"),
                 "state_sha256": _file_sha256(workspace.root / "card.state.json"),
@@ -1134,7 +1213,9 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
     else:
         use_pool = scan_workers > 1 and len(tasks) > 1
         boot_workers = 1 if use_pool else _resolve_boot_workers(scan_workers)
-    boot_adaptive = is_full
+    # ``auto`` may promote after its HESSE-first point estimate; promoted bootstrap uses the same
+    # deterministic adaptive rule as an explicitly full fit.
+    boot_adaptive = is_full or errors_tier == "auto"
     master_boot_workers = _resolve_boot_workers(scan_workers)
 
     shared_pool = None
@@ -1165,7 +1246,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
                     checkpoint_store.save(f"scan:{entry.scan_id}", entry)
 
             fresh_entries = _run_tasks(
-                remaining, card, g, runcal, exclusions, M=M, errors_tier=errors_tier,
+                remaining, card, g, runcal, exclusions, M=scan_M, errors_tier=errors_tier,
                 boot_workers=boot_workers, use_pool=use_pool,
                 scan_workers=scan_workers, boot_executor=shared_pool,
                 boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
@@ -1181,6 +1262,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
                  "minos_seconds": e.provenance.get("minos_seconds"),
                  "profile_seconds": e.provenance.get("profile_seconds"),
                  "bayes_seconds": e.provenance.get("bayes_seconds")}
+                | {"bootstrap_M_requested": e.provenance.get("bootstrap_M_requested"),
+                   "bootstrap_M_effective": e.provenance.get("bootstrap_M_effective")}
                 for e in entries if e.provenance.get("fit_seconds") is not None]
         completed_master_keys: list[str] = []
         _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
@@ -1668,6 +1751,7 @@ def _rebuild_tracked_prior(card, session: SessionState, track: dict, observation
             continue
         _entry, _detector, outcome = refs[observation["authority"]]
         if (not outcome.get("pooled") or outcome.get("modality") != "fold"
+                or not _master_prior_admissible(_entry, outcome)
                 or outcome.get("pool_consistent") is False):
             continue
         for branch in ("optic", "acoustic"):
@@ -1758,6 +1842,7 @@ def _rebuild_pooled_prior(card, session: SessionState, session_prior, *, t_round
     for entry in sorted(session.scans.values(), key=lambda item: item.scan_number):
         for outcome in entry.detectors.values():
             if (not outcome.get("pooled") or outcome.get("modality") != "fold"
+                    or not _master_prior_admissible(entry, outcome)
                     or outcome.get("pool_consistent") is False):
                 continue
             session_prior.add_point(
@@ -1769,6 +1854,20 @@ def _rebuild_pooled_prior(card, session: SessionState, session_prior, *, t_round
                 branch_posterior=outcome.get("branch_posterior"),
                 assignment_entropy=outcome.get("assignment_entropy"), t_round=t_round,
                 require_fold=True)
+
+
+def _master_prior_admissible(entry: ScanEntry, outcome: dict) -> bool:
+    """Full errors or a trusted HESSE master may seed the prior; cheap/untrusted fits may not."""
+    provenance = entry.provenance or {}
+    tier = provenance.get("errors_tier_effective") or provenance.get(
+        "analysis_tier_effective") or provenance.get("analysis_tier")
+    # Additive compatibility: ledgers predating tier provenance already passed the resolved-fold
+    # gate and must not silently lose their prior points merely by being reopened on newer code.
+    if tier is None:
+        return True
+    if tier in FULL_TIERS:
+        return True
+    return tier == "fast" and bool(outcome.get("hesse_trusted"))
 
 
 def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
@@ -1974,6 +2073,40 @@ def _predicted_master_analysis_seconds(payload: dict) -> float:
     return round(max(0.1, 0.1 + 0.00015 * complexity), 4)
 
 
+def _record_master_promotion(data_dir, entry: ScanEntry, *, source_revision: str,
+                             M: int, seed: int) -> None:
+    """Persist and publish a synchronous auto-tier promotion for this exact master revision."""
+    provenance = entry.provenance or {}
+    reasons = list(provenance.get("escalation_reasons") or ())
+    if (provenance.get("errors_tier_requested") != "auto"
+            or provenance.get("errors_tier_effective") != "full" or not reasons):
+        return
+    from isar.session.promotions import PromotionKey, PromotionStore
+
+    outcomes = [outcome for outcome in entry.detectors.values() if outcome.get("pooled")]
+    point_fingerprint = _json_fingerprint({
+        "master_id": entry.scan_id,
+        "source_revision": source_revision,
+        "best_label": outcomes[0].get("best_label") if outcomes else None,
+        "candidates": outcomes[0].get("candidates") if outcomes else None,
+    })
+    key = PromotionKey(
+        master_id=entry.scan_id, source_revision=source_revision,
+        spectrum_digest=str(provenance.get("spectrum_digest") or ""),
+        point_fingerprint=point_fingerprint, tier="full", M=int(M), seed=int(seed))
+    store = PromotionStore(Path(data_dir).parent)
+    store.begin(key, escalation_reasons=reasons)
+    store.complete(key, asdict(entry))
+    record = store.resolve_publication(key, current_revision=source_revision)
+    entry.provenance.update({
+        "promotion_id": key.digest,
+        "promotion_state": record["status"],
+        "promotion_source_revision": source_revision,
+        "promotion_publication_outcome": record["publication_outcome"],
+        "point_fit_fingerprint": point_fingerprint,
+    })
+
+
 def _fit_master_group_task(args):
     """Top-level (picklable) entry point for a master-group pool worker: fit one merged group.
 
@@ -1984,14 +2117,16 @@ def _fit_master_group_task(args):
     serially afterward in sorted-group order. Every argument is picklable (ms/grp are plain collation
     dataclasses, member_rec a ScanRecord, card/g/runcal as the scan pool already ships)."""
     (ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number, chash,
-     M, seed, errors_tier, boot_adaptive, structure_hint, bayes_opts) = args
+     M, seed, errors_tier, boot_adaptive, structure_hint, bayes_opts, *role_tail) = args
+    fit_role = role_tail[0] if role_tail else "master"
     # Pass structure_hint only when set: with the reuse policy off (default) hint is None and this
     # call is byte-identical to the pre-B2 call (keeps the "change nothing when off" guarantee).
     hint_kw = {"structure_hint": structure_hint} if structure_hint is not None else {}
+    role_kw = {"fit_role": fit_role} if fit_role != "master" else {}
     return _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id,
                              scan_number, chash, M=M, seed=seed, errors_tier=errors_tier,
                              boot_workers=1, boot_executor=None, boot_adaptive=boot_adaptive,
-                             bayes_opts=bayes_opts, **hint_kw)
+                             bayes_opts=bayes_opts, **role_kw, **hint_kw)
 
 
 def _stamp_master_analysis(entry: ScanEntry, *, errors_tier: str,
@@ -2000,6 +2135,8 @@ def _stamp_master_analysis(entry: ScanEntry, *, errors_tier: str,
     entry.provenance = {
         **(entry.provenance or {}),
         "analysis_tier": errors_tier,
+        "analysis_tier_effective": (entry.provenance or {}).get(
+            "errors_tier_effective", errors_tier),
         "master_fit_contract": _MASTER_FIT_CONTRACT,
     }
     if fit_fingerprint is not None:
@@ -2179,6 +2316,7 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
                 fit_card, runcal, g, str(item["unit"]["master_id"]),
                 _MASTER_SCAN_BASE + item["group_index"], item["content_hash"], M,
                 int(item["unit"]["seed"]), requested_tier, boot_adaptive, None, bayes_opts,
+                "certification",
             ) for item in wave]
             progress(active=len(wave))
             pool = None
@@ -2460,6 +2598,9 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
                     if outcome.get("pooled"):
                         outcome["predictive_ref"] = predictive_ref
                 entry.provenance["predictive_ref"] = predictive_ref
+            _record_master_promotion(
+                data_dir, entry, source_revision=chash, M=M,
+                seed=seed_base + _MASTER_SCAN_BASE + idx)
         session.put(entry)
         if completed_master_keys is not None:
             completed_master_keys.append(f"master:{master_id}")
@@ -2472,13 +2613,16 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
                  "bootstrap_seconds": entry.provenance.get("bootstrap_seconds"),
                  "minos_seconds": entry.provenance.get("minos_seconds"),
                  "profile_seconds": entry.provenance.get("profile_seconds"),
-                 "bayes_seconds": entry.provenance.get("bayes_seconds")})
+                 "bayes_seconds": entry.provenance.get("bayes_seconds"),
+                 "bootstrap_M_requested": entry.provenance.get("bootstrap_M_requested"),
+                 "bootstrap_M_effective": entry.provenance.get("bootstrap_M_effective")})
     return len(refits)
 
 
 def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number,
                       chash, *, M, seed, errors_tier="full", boot_workers=1, boot_executor=None,
-                      boot_adaptive=False, structure_hint=None, bayes_opts=None) -> ScanEntry:
+                      boot_adaptive=False, structure_hint=None, bayes_opts=None,
+                      fit_role="master") -> ScanEntry:
     """Fit one merged group's pooled spectrum → a ``pooled=True`` ScanEntry (or a non_result).
 
     ``structure_hint`` (the group's previous fitted best_label, opt-in via card policy
@@ -2559,7 +2703,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                       boot_workers=boot_workers, boot_executor=boot_executor,
                       boot_adaptive=boot_adaptive, descriptor=descriptor,
                       structure_hint=structure_hint, bayes_opts=bayes_opts,
-                      predictive_n_members=int(ms.n_members))
+                      predictive_n_members=int(ms.n_members), fit_role=fit_role)
     except Exception as exc:  # noqa: BLE001 — one unfittable pool must not kill the batch (N=16 wrinkle)
         return _stamp_master_analysis(
             ScanEntry(status="non_result",

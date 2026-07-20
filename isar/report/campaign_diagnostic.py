@@ -30,6 +30,7 @@ from typing import Any
 from isar.report import captions as _captions
 from isar.report import fit_figures as _fit_figures
 from isar.report.findings import FindingsDoc
+from isar.session.timing import embedded_run_timings, fit_timing_breakdown
 
 # ---------------------------------------------------------------------------------------------------
 # Inputs
@@ -647,6 +648,30 @@ def _section_outcome(doc: FindingsDoc, di: DiagInputs, per_q: list, ec: EventCou
         ("interval health", health_cell),
     ]
     doc.table(["metric", "value"], rows)
+    fit_breakdown = fit_timing_breakdown(embedded_run_timings(di.events))
+    if fit_breakdown is not None:
+        campaign_wall = (split["fitting"] + split["instrument"] + split["overhead"]
+                         if split is not None else 0.0)
+        fit_total = fit_breakdown["total_fit_seconds"]
+        labels = {
+            "scan_error_attachment": "scan error attachment",
+            "master_error_attachment": "master error attachment",
+            "two_stage_fitting": "two-stage fitting",
+            "fit_remainder": "enumeration / IC / optimization remainder",
+        }
+        timing_rows = []
+        for key, seconds in fit_breakdown["buckets"].items():
+            wall_pct = seconds / campaign_wall * 100.0 if campaign_wall > 0 else 0.0
+            fit_pct = seconds / fit_total * 100.0 if fit_total > 0 else 0.0
+            timing_rows.append((labels[key], _num(seconds, 5),
+                                f"{_num(wall_pct, 3)}%", f"{_num(fit_pct, 3)}%"))
+        doc.para("**Disjoint fit-time decomposition.**")
+        doc.table(["bucket", "seconds", "% campaign wall", "% total fit"], timing_rows)
+        method_rows = [(key.removesuffix("_seconds"), _num(value, 5))
+                       for key, value in fit_breakdown["method_seconds"].items() if value > 0.0]
+        if method_rows:
+            doc.para("**Error-method timings** (may overlap when work ran in parallel).")
+            doc.table(["method", "seconds"], method_rows)
     doc.figure_block("campaign/dispersion_truth", _fig_rel("campaign_dispersion_truth"))
     doc.figure_block("campaign/scan_spend", _fig_rel("campaign_scan_spend"))
     doc.figure_block("campaign/budget_timing", _fig_rel("campaign_budget_timing"))

@@ -80,7 +80,9 @@ def run(args) -> int:
                                    ("dlogz", getattr(args, "bayes_dlogz", None)),
                                    ("max_iter", getattr(args, "bayes_maxiter", None)))
                  if v is not None}
-    timer = StageTimer(errors_tier=errors_tier, M=args.M, argv=list(sys.argv))
+    scan_M = getattr(args, "scan_M", None)
+    timer = StageTimer(errors_tier=errors_tier, M=args.M,
+                       scan_M=(50 if scan_M is None else scan_M), argv=list(sys.argv))
     run_id = uuid.uuid4().hex
     # Invalidate any prior canonical report before results can change.  Readers may see a compact
     # running-status document, but never a successful report describing an older results.csv.
@@ -97,7 +99,7 @@ def run(args) -> int:
             certification_manifest = create_master_certification_manifest(
                 ws.root, certification_request)
         summary = driver.run_batch(
-            ws, args.data, force=args.force, llm=args.llm, M=args.M,
+            ws, args.data, force=args.force, llm=args.llm, M=args.M, scan_M=scan_M,
             detectors=args.detectors, formats=formats,
             workers=getattr(args, "workers", None), errors_tier=errors_tier,
             bayes_cli=bayes_cli, timer=timer,

@@ -8,11 +8,12 @@ gap estimates from consecutive event timestamps. Stdlib only, plain print.
 """
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
 from isar.drive.session_log import read_log
+from isar.session.shadow import compare_workspaces
+from isar.session.timing import embedded_run_timings, fit_timing_breakdown
 
 
 # --------------------------------------------------------------------------- helpers
@@ -54,21 +55,8 @@ def _fmt_hkl(hkl):
 
 # --------------------------------------------------------------------------- sections
 def _print_subprocess_breakdown(events, log_path, stage_pairs, wall, top):
-    """Aggregate the embedded ``isar_run`` sub-stage timings and the per-scan overhead."""
-    embedded = []
-    for e in events:
-        if e.get("kind") == "analyze":
-            t = (e.get("payload") or {}).get("timings")
-            if isinstance(t, dict):
-                embedded.append(t)
-    if not embedded:
-        # Fallback: the last run's standalone run_timings.json next to the log.
-        rt_path = log_path.parent / "run_timings.json"
-        if rt_path.exists():
-            try:
-                embedded = [json.loads(rt_path.read_text(encoding="utf-8"))]
-            except (ValueError, OSError):
-                embedded = []
+    """Aggregate embedded analysis timings and their driver-side process overhead."""
+    embedded = embedded_run_timings(events, fallback_path=log_path.parent / "run_timings.json")
     if not embedded:
         return
 
@@ -80,11 +68,14 @@ def _print_subprocess_breakdown(events, log_path, stage_pairs, wall, top):
     _print_table(_aggregate(sub_pairs), wall, top,
                  "  isar_run: subprocess sub-stage breakdown:")
 
-    isar_run_wall = sum(sec for name, sec in stage_pairs if name == "isar_run")
+    # Ordinary scan analysis is wrapped by ``isar_run``; final master-only analysis is wrapped by
+    # ``certify``.  Both publish an embedded run timing.  Omitting the latter parent while subtracting
+    # its child produced impossible negative overhead on campaigns such as OP5.
+    parent_wall = sum(sec for name, sec in stage_pairs if name in {"isar_run", "certify"})
     embedded_total = sum(float(t.get("total_seconds", 0.0)) for t in embedded)
-    overhead = isar_run_wall - embedded_total
+    overhead = parent_wall - embedded_total
     print()
-    print(f"  subprocess overhead (interpreter + matplotlib startup, paid per scan): "
+    print(f"  subprocess overhead (interpreter + analysis process startup): "
           f"{overhead:.3f}s over {len(embedded)} embedded run(s)")
 
 
@@ -96,19 +87,7 @@ def _print_error_method_breakdown(events, log_path, wall, top):
     """Aggregate per-method error-attach timings (bootstrap/MINOS/profile/bayes) from the
     embedded ``run_timings.json`` ``per_task``/``per_master`` entries. Silently skipped when the
     embedded timings predate this instrumentation (no entries carry the keys)."""
-    embedded = []
-    for e in events:
-        if e.get("kind") == "analyze":
-            t = (e.get("payload") or {}).get("timings")
-            if isinstance(t, dict):
-                embedded.append(t)
-    if not embedded:
-        rt_path = log_path.parent / "run_timings.json"
-        if rt_path.exists():
-            try:
-                embedded = [json.loads(rt_path.read_text(encoding="utf-8"))]
-            except (ValueError, OSError):
-                embedded = []
+    embedded = embedded_run_timings(events, fallback_path=log_path.parent / "run_timings.json")
     if not embedded:
         return
 
@@ -137,6 +116,27 @@ def _print_error_method_breakdown(events, log_path, wall, top):
     print()
     print("  Note: HESSE cost is inside the MIGRAD fit (two_stage_seconds); the comparable "
           "fast-tier number is mean fit_seconds on fast-tier iterations.")
+
+
+def _print_disjoint_fit_breakdown(events, log_path, wall):
+    embedded = embedded_run_timings(events, fallback_path=log_path.parent / "run_timings.json")
+    breakdown = fit_timing_breakdown(embedded)
+    if breakdown is None:
+        return
+    total = breakdown["total_fit_seconds"]
+    labels = {
+        "scan_error_attachment": "scan error attachment",
+        "master_error_attachment": "master error attachment",
+        "two_stage_fitting": "two-stage fitting",
+        "fit_remainder": "enumeration/IC/optimization remainder",
+    }
+    print()
+    print("  disjoint fit-time decomposition:")
+    print(f"  {'bucket':36s} {'total_s':>10s} {'%wall':>7s} {'%fit':>7s}")
+    for key, seconds in breakdown["buckets"].items():
+        wall_pct = seconds / wall * 100.0 if wall > 0 else 0.0
+        fit_pct = seconds / total * 100.0 if total > 0 else 0.0
+        print(f"  {labels[key]:36s} {seconds:10.3f} {wall_pct:6.1f}% {fit_pct:6.1f}%")
 
 
 def _print_iterations(events):
@@ -252,9 +252,22 @@ def run(args) -> int:
 
     _print_subprocess_breakdown(events, log_path, stage_pairs, wall, args.top)
 
+    _print_disjoint_fit_breakdown(events, log_path, wall)
+
     _print_error_method_breakdown(events, log_path, wall, args.top)
 
     if getattr(args, "iterations", False):
         _print_iterations(events)
+
+    compare_workspace = getattr(args, "compare_workspace", None)
+    if compare_workspace:
+        comparison = compare_workspaces(args.workspace, compare_workspace)
+        print()
+        print(f"Shadow comparison: {args.workspace} vs {compare_workspace}")
+        if comparison.identical:
+            print("  identical scientific decision stream, prior admissions, and certified results")
+        else:
+            print("  DIFFERENT: " + ", ".join(comparison.differences))
+            return 1
 
     return 0

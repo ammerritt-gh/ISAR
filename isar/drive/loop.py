@@ -2036,8 +2036,158 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
     return rows, scan_counter
 
 
+def _certification_revision(point: dict) -> str | None:
+    revision = point.get("master_revision")
+    return str(revision) if revision not in (None, "") else None
+
+
+def _certification_decision_signature(decision) -> tuple:
+    """Stable scientific state used only to prevent zero-progress certification loops."""
+    return tuple((tuple(point.get("hkl") or ()), _certification_revision(point),
+                  point.get("calibrated_halfwidth"), point.get("assessment_state"),
+                  bool(point.get("converged", False)))
+                 for point in decision.per_q or ())
+
+
+def _certification_acceptance_path(workspace: Path) -> Path:
+    return workspace / "report" / "certification" / "accepted.json"
+
+
+def _certification_acceptance_contract(cfg: CampaignConfig, tier: str) -> str:
+    policy_path = cfg.workspace / "card.policy.toml"
+    policy_sha = (hashlib.sha256(policy_path.read_bytes()).hexdigest()
+                  if policy_path.is_file() else None)
+    state_path = cfg.workspace / "card.state.json"
+    state = (json.loads(state_path.read_text(encoding="utf-8"))
+             if state_path.is_file() else {})
+    calibration = getattr(cfg.calibration, "raw", None) or {
+        "inflation": getattr(cfg.calibration, "inflation", None),
+        "coverage68": getattr(cfg.calibration, "coverage68", None),
+        "center_pull_mean": getattr(cfg.calibration, "center_pull_mean", None),
+        "bucket_by": getattr(cfg.calibration, "bucket_by", None),
+        "buckets": getattr(cfg.calibration, "buckets", None),
+        "truth_source": getattr(cfg.calibration, "truth_source", None),
+    }
+    payload = {
+        "tier": tier, "policy_sha256": policy_sha,
+        "calibration": calibration, "floor_meV": cfg.floor,
+        # These are global scientific identities. Running dispersion/branch beliefs are deliberately
+        # excluded: unchanged q certificates survive evidence arriving at another q, while a changed
+        # calibration, resolution, hypothesis, or campaign target invalidates them fail-closed.
+        "state_identity": {
+            "resolution_versions": state.get("resolution_versions"),
+            "energy_zero_series": state.get("energy_zero_series"),
+            "hypothesis_snapshot": state.get("hypothesis_snapshot"),
+            "campaign_target": state.get("campaign_target"),
+        },
+    }
+    return hashlib.sha256(json.dumps(
+        payload, sort_keys=True, default=str,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _certification_point_contexts(cfg: CampaignConfig) -> dict[tuple[float, float, float], str]:
+    """Fingerprint resolved per-q inputs that may change without changing pooled membership."""
+    results_path = cfg.workspace / "report" / "results.csv"
+    if not results_path.is_file():
+        return {}
+    fields = (
+        "zero", "zero_source", "gauss_fwhm", "lorentz_fwhm",
+        "resolution_source", "resolution_version", "prior_omega", "prior_sigma",
+        "branch_id", "target_branch", "target_label", "spectrum_ref", "content_hash",
+        "master_revision", "n_members", "members",
+    )
+    contexts = {}
+    for row in read_results_csv(cfg.workspace):
+        hkl = _row_hkl(row)
+        if not row.get("pooled") or hkl is None:
+            continue
+        payload = {field: row.get(field) for field in fields}
+        contexts[tuple(float(value) for value in hkl)] = hashlib.sha256(json.dumps(
+            payload, sort_keys=True, default=str,
+            separators=(",", ":")).encode("utf-8")).hexdigest()
+    return contexts
+
+
+def _load_certification_acceptance(cfg: CampaignConfig) -> dict:
+    path = _certification_acceptance_path(cfg.workspace)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        log_event(cfg.log_path, "exception", {
+            "action": "certification_acceptance_read_failed", "path": str(path),
+            "error": str(error)})
+        return {}
+    if payload.get("schema") != "isar.certification.accepted/1":
+        log_event(cfg.log_path, "exception", {
+            "action": "certification_acceptance_invalid", "path": str(path),
+            "schema": payload.get("schema")})
+        return {}
+    return {str(item.get("objective_index")): item
+            for item in payload.get("points") or ()
+            if item.get("objective_index") is not None}
+
+
+def _pending_certification_indices(cfg: CampaignConfig, decision, tier: str) -> list[int]:
+    """Return objective indices whose current master revision lacks a passing certificate."""
+    accepted = _load_certification_acceptance(cfg)
+    contract = _certification_acceptance_contract(cfg, tier)
+    contexts = _certification_point_contexts(cfg)
+    pending = []
+    for index, point in enumerate(decision.per_q or ()):
+        revision = _certification_revision(point)
+        prior = accepted.get(str(index))
+        hkl = tuple(float(value) for value in point.get("hkl") or ())
+        if (revision is None or prior is None or prior.get("tier") != tier
+                or prior.get("contract_fingerprint") != contract
+                or prior.get("point_context_fingerprint") != contexts.get(hkl)
+                or prior.get("master_revision") != revision
+                or list(prior.get("hkl") or ()) != list(point.get("hkl") or ())):
+            pending.append(index)
+    return pending
+
+
+def _record_certification_acceptance(cfg: CampaignConfig, decision, tier: str) -> None:
+    """Atomically retain only currently passing, revision-matched certification points."""
+    points = []
+    contract = _certification_acceptance_contract(cfg, tier)
+    contexts = _certification_point_contexts(cfg)
+    for index, point in enumerate(decision.per_q or ()):
+        revision = _certification_revision(point)
+        if not point.get("converged", False) or revision is None:
+            continue
+        points.append({
+            "objective_index": index, "hkl": list(point.get("hkl") or ()),
+            "master_revision": revision, "tier": tier,
+            "contract_fingerprint": contract,
+            "point_context_fingerprint": contexts.get(
+                tuple(float(value) for value in point.get("hkl") or ())),
+            "calibrated_halfwidth": point.get("calibrated_halfwidth"),
+            "tolerance": point.get("tolerance"),
+        })
+    path = _certification_acceptance_path(cfg.workspace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"schema": "isar.certification.accepted/1", "points": points}
+    temporary = path.with_suffix(".json.tmp")
+    try:
+        with open(temporary, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except OSError as error:
+        log_event(cfg.log_path, "exception", {
+            "action": "certification_acceptance_write_failed", "path": str(path),
+            "error": str(error)})
+        raise
+
+
 def _certification_request(cfg: CampaignConfig, objective: ObjectiveSpec,
-                           decision, tier: str, *, activity_id: str) -> Path:
+                           decision, tier: str, *, activity_id: str,
+                           requested_indices: list[int] | None = None) -> Path:
     """Persist the drive-owned request; the session runner resolves the scientific manifest."""
     M = 200
     bayes_opts = {"n_live": 250, "dlogz": 0.5, "max_iter": 30_000}
@@ -2053,12 +2203,19 @@ def _certification_request(cfg: CampaignConfig, objective: ObjectiveSpec,
                 _LOG.warning("ignoring invalid %s=%r while freezing certification settings",
                              env_name, raw_value)
     boot_adaptive = tier in {"full", "bayes"}
-    decision_points = list(decision.per_q or ())
-    if len(decision_points) != len(objective.path):
+    all_decision_points = list(decision.per_q or ())
+    if len(all_decision_points) != len(objective.path):
         raise ValueError(
             "final decision does not contain exactly one state for each objective-path point")
-    requested_points: list[dict[str, list[float]]] = []
-    for canonical_index, (objective_hkl, point) in enumerate(zip(objective.path, decision_points)):
+    indices = (list(range(len(objective.path))) if requested_indices is None
+               else list(requested_indices))
+    if not indices or len(set(indices)) != len(indices) or any(
+            index < 0 or index >= len(objective.path) for index in indices):
+        raise ValueError("certification request needs unique in-range objective indices")
+    decision_points = [all_decision_points[index] for index in indices]
+    objective_points = [objective.path[index] for index in indices]
+    requested_points: list[dict[str, Any]] = []
+    for canonical_index, objective_hkl, point in zip(indices, objective_points, decision_points):
         raw_hkl = point.get("hkl") if isinstance(point, dict) else None
         if not isinstance(raw_hkl, (list, tuple)) or len(raw_hkl) != 3:
             raise ValueError(f"invalid q in final decision at path index {canonical_index}")
@@ -2068,11 +2225,11 @@ def _certification_request(cfg: CampaignConfig, objective: ObjectiveSpec,
             raise ValueError(
                 f"final decision q {hkl} does not match objective path index "
                 f"{canonical_index}: {list(objective_hkl)}")
-        requested_points.append({"hkl": hkl})
+        requested_points.append({"hkl": hkl, "objective_index": canonical_index})
     payload = {
         "schema": "isar.certification.request/1",
         "tier": tier,
-        "objective_path": [list(hkl) for hkl in objective.path],
+        "objective_path": [list(hkl) for hkl in objective_points],
         "per_q": requested_points,
         "fit_options": {"M": M, "boot_adaptive": boot_adaptive,
                         "bayes_opts": bayes_opts},
@@ -2179,12 +2336,20 @@ def _certify(*, cfg: CampaignConfig, objective: ObjectiveSpec, decision,
               {"phase": "promote", "iter": None, "hkl": None, "from_tier": "fast",
                "to_tier": full_tier, "reason": "certify_pass"})
     try:
-        total_points = len(decision.per_q or ())
         master_only = bool(getattr(cfg.runner, "supports_master_certification", True))
+        requested_indices = (_pending_certification_indices(cfg, decision, full_tier)
+                             if master_only else list(range(len(decision.per_q or ()))))
+        total_points = len(requested_indices)
+        if not requested_indices:
+            log_event(log_path, "decide", {
+                "event": "certify_reused", "action": "certify_reused", "tier": full_tier,
+                "reused_points": len(decision.per_q or ())})
+            return observations, True
         with activity(log_path, "final_certification", fit_tier=full_tier,
                       total=total_points, progress_unit="points") as activity_id:
             request_path = (_certification_request(
-                cfg, objective, decision, full_tier, activity_id=activity_id)
+                cfg, objective, decision, full_tier, activity_id=activity_id,
+                requested_indices=requested_indices)
                 if master_only else None)
             log_activity_progress(log_path, activity_id, completed=0, total=total_points,
                                   progress_unit="points")
@@ -2303,6 +2468,40 @@ def _operator_stop_requested(cfg: CampaignConfig, it: int) -> bool:
         return False
 
 
+def _terminalize_certification_regression(decision: StopDecision) -> StopDecision:
+    """Turn a certified ``continue`` into an honest, resumable terminal outcome.
+
+    ``continue`` is an in-loop instruction, not one of the campaign's terminal outcomes.  A full
+    certification pass can legitimately widen an interval that passed the provisional tier; when
+    that happens at the end of an invocation the persisted result must say both that the objective
+    remains incomplete and that another acquisition run is required.
+    """
+    if decision.state != "continue":
+        return decision
+
+    failed = [row for row in decision.per_q if not row.get("converged", False)]
+    labels = []
+    for row in failed:
+        hkl = row.get("hkl")
+        halfwidth = row.get("calibrated_halfwidth")
+        tolerance = row.get("tolerance")
+        if isinstance(hkl, (list, tuple)) and len(hkl) == 3:
+            q_text = "(" + ", ".join(f"{float(value):g}" for value in hkl) + ")"
+        else:
+            q_text = str(hkl or "unknown q")
+        if halfwidth is not None and tolerance is not None:
+            labels.append(f"{q_text}: ±{float(halfwidth):.4g} > ±{float(tolerance):.4g} meV")
+        else:
+            labels.append(q_text)
+    detail = "; ".join(labels) if labels else "one or more requested q points"
+    return StopDecision(
+        "incomplete",
+        ["final certification left provisional success outside the objective; "
+         f"resume the campaign to collect more data ({detail})"],
+        decision.per_q,
+    )
+
+
 def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[str, Any]:
     """Run an adaptive measurement campaign to satisfy ``objective`` (LLM_HARNESS_DESIGN §8).
 
@@ -2352,6 +2551,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     operator_stop = False        # set when a cooperative operator-stop file is found at an iteration top
     op_stop_iter: int | None = None
     pending_recovery_reason: str | None = None
+    certified_terminal = False
+    last_regression_basis: tuple | None = None
     try:
         pending_recovery_reason = _recover_unmatched_submissions(
             cfg=cfg, objective=objective,
@@ -2380,7 +2581,64 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                         master_rows, grid = _grid_state(
                             objective, observations, cfg.workspace, cfg.calibration)
                     decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
-                if decision.state != "continue":
+                if decision.state == "met":
+                    certification_basis = _certification_decision_signature(decision)
+                    if (last_regression_basis is not None
+                            and certification_basis == last_regression_basis):
+                        decision = StopDecision(
+                            "incomplete",
+                            ["certification remained outside the objective without a changed "
+                             "scientific state; automatic continuation stopped to avoid a retry loop"],
+                            decision.per_q)
+                        break
+                    analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
+                    if (objective.analysis_limit_seconds is not None
+                            and analysis_spent >= float(objective.analysis_limit_seconds)):
+                        decision = StopDecision(
+                            "incomplete",
+                            [f"analysis limit exhausted before final certification ({analysis_spent:.1f}/"
+                             f"{float(objective.analysis_limit_seconds):.1f}s)"], decision.per_q)
+                        break
+                    try:
+                        observations, ran_certify = _certify(
+                            cfg=cfg, objective=objective, decision=decision,
+                            observations=observations, scan_kind=scan_kind)
+                    except AnalysisLimitExceeded as error:
+                        decision = StopDecision("incomplete", [str(error)], decision.per_q)
+                        break
+                    if not ran_certify:
+                        decision = StopDecision(
+                            "incomplete",
+                            ["final certification did not complete; checkpoints retained"],
+                            decision.per_q)
+                        break
+                    master_rows, grid = _grid_state(
+                        objective, observations, cfg.workspace, cfg.calibration)
+                    decision = evaluate_stop(
+                        objective, grid, budget_state,
+                        calibration=cfg.calibration, floor=cfg.floor)
+                    _record_certification_acceptance(cfg, decision, _full_tier(cfg))
+                    if decision.state == "met":
+                        certified_terminal = True
+                        break
+                    log_event(cfg.log_path, "exception", {
+                        "action": "certify_regression", "state": decision.state,
+                        "automatic_resume": True, "iter": it,
+                        "per_q": [row for row in decision.per_q
+                                  if not row.get("converged", False)],
+                        "note": "full certification left provisional success outside the objective"})
+                    last_regression_basis = certification_basis
+                    # Certification does not consume an acquisition iteration.  With a physical and
+                    # analysis budget still available, fall through and propose the corrective scan.
+                    if _operator_stop_requested(cfg, it):
+                        log_event(cfg.log_path, "decide", {
+                            "event": "operator_stop", "action": "operator_stop",
+                            "iter": it, "token": cfg.control_token,
+                            "boundary": "post_certification"})
+                        operator_stop = True
+                        op_stop_iter = it
+                        break
+                elif decision.state != "continue":
                     break
                 analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
                 if (objective.analysis_limit_seconds is not None
@@ -2646,20 +2904,23 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             # re-evaluate honestly: if a q's bootstrap-certified interval crosses tolerance the summary
             # reflects that, not the optimistic fast-tier stop (the triage tool reports the certified truth).
             analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
-            if (decision is not None and decision.state == "met"
+            if (not certified_terminal and decision is not None and decision.state == "met"
                     and objective.analysis_limit_seconds is not None
                     and analysis_spent >= float(objective.analysis_limit_seconds)):
                 decision = StopDecision(
                     "incomplete",
                     [f"analysis limit exhausted before final certification ({analysis_spent:.1f}/"
                      f"{float(objective.analysis_limit_seconds):.1f}s)"], decision.per_q)
-            try:
-                observations, ran_certify = _certify(
-                    cfg=cfg, objective=objective, decision=decision, observations=observations,
-                    scan_kind=scan_kind)
-            except AnalysisLimitExceeded as error:
-                ran_certify = False
-                decision = StopDecision("incomplete", [str(error)], decision.per_q)
+            if certified_terminal:
+                ran_certify = True
+            else:
+                try:
+                    observations, ran_certify = _certify(
+                        cfg=cfg, objective=objective, decision=decision, observations=observations,
+                        scan_kind=scan_kind)
+                except AnalysisLimitExceeded as error:
+                    ran_certify = False
+                    decision = StopDecision("incomplete", [str(error)], decision.per_q)
 
             if decision is not None and decision.state == "met" and not ran_certify:
                 decision = StopDecision(
@@ -2678,10 +2939,16 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             # decision while retaining ordinary recomputation for every measured-scan exit path.
             if not (decision is not None and decision.state in {"incomplete", "infeasible"}):
                 decision = final_decision
+            if ran_certify:
+                _record_certification_acceptance(cfg, decision, _full_tier(cfg))
             if ran_certify and decision.state != "met":
+                decision = _terminalize_certification_regression(decision)
                 log_event(cfg.log_path, "exception",
                           {"action": "certify_regression", "state": decision.state,
-                           "note": "a q's bootstrap-certified interval exceeded the fast-tier stop"})
+                           "reasons": decision.reasons,
+                           "per_q": [row for row in decision.per_q
+                                     if not row.get("converged", False)],
+                           "note": "full certification left provisional success outside the objective"})
 
             summary = _campaign_summary(objective, grid, decision, budget_state, cfg.workspace,
                                         cfg.log_path, len(observations),
@@ -2791,4 +3058,7 @@ def _campaign_summary(objective, grid, decision, budget_state, workspace, log_pa
         "instrument_limits": dict(instrument_limits or {}),
         "n_observations": n_obs,
         "session_log": str(log_path),
+        "session_log_relative": ("report/session_log.jsonl"
+                                 if Path(log_path) == Path(workspace) / "report" / "session_log.jsonl"
+                                 else None),
     }

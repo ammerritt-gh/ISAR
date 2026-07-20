@@ -63,11 +63,22 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
 - **`isar run <data>... --workspace DIR`** — the whole pipeline, idempotent. Useful flags:
   `--force` (refit everything), `--llm` (enable LLM adjudication of QC flags — off by default;
   needs LLMM, the co-located local LLM service, running — see
-  [LLMM_INTEGRATION_HANDOFF.md](archive/LLMM_INTEGRATION_HANDOFF.md)), `--M N` (bootstrap size; default
-  200, use ~60 for a fast first look), `--detectors ana7` (restrict which analyzers are fitted
+  [LLMM_INTEGRATION_HANDOFF.md](archive/LLMM_INTEGRATION_HANDOFF.md)), `--M N` (pooled-master and
+  certification bootstrap cap; default 200), `--scan-M N` (provisional scan bootstrap cap; default
+  50), `--detectors ana7` (restrict which analyzers are fitted
   this run), and `--workers N` (the total fitting CPU budget; default `min(30, cpu-2)`, also settable
   with `ISAR_WORKERS`). ISAR assigns that budget across scans for a large batch or within a promoted
   full/Bayes fit for a small workorder; it does not nest the two kinds of process pool.
+  `--errors auto` performs HESSE-first uncertainty estimation and promotes the same point-estimation
+  candidates to full errors when trust, covariance, parameter-bound, or model-weight gates require
+  it. `full`, `fast`, `cheap`, and `bayes` retain their existing meanings. Drive campaigns continue
+  using the validated legacy router until the Phase-2 shadow gate is recorded; final certification
+  always requests `full` or `bayes` explicitly.
+  Full-tier bootstrap is adaptive but deterministic for a fixed seed: draws are evaluated in blocks
+  of 32, with stopping allowed only after at least 64 draws and two consecutive changes below 5% in
+  the ω₀ interval half-width. The requested cap is never exceeded; a provisional `--scan-M 50` run
+  therefore executes exactly 50 draws. Requested and effective draw counts are recorded in timing
+  and fit provenance.
 - **`isar ingest <data>... --workspace DIR [--json]`** — parse data into the ledger **without
   fitting**. It discovers and classifies the files, parses and dedups the scans, and upserts one
   `ingested` ledger entry per `(exp, scan, detector)` — so parsed scans are visible (through
@@ -112,6 +123,10 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   and a running TAVI instrument. Use `--spec spec.json` for an LLM-free run. **Currently drives the
   TAVI simulator only** (development tier), not a live beamline. See
   [campaigns/2026-06_MVP_FIRST_RUN.md](campaigns/2026-06_MVP_FIRST_RUN.md).
+  Final certification is authoritative. If it widens one or more provisional intervals beyond the
+  objective, drive automatically resumes acquisition while budget remains; no operator click is
+  needed. The next certification fits only failed, changed, or previously unassessed q revisions,
+  while already-passing unchanged revisions remain authoritative.
 - **`isar profile --workspace DIR`** — where an autonomous campaign spent its time. Reads the
   campaign's `report/session_log.jsonl` timing events and prints a stage breakdown (propose /
   validate / submit / wait_scan / isar_run / fold / analyze …), the embedded `isar run` subprocess

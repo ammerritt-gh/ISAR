@@ -106,6 +106,18 @@ def test_adaptive_no_early_stop_matches_fixed():
     assert adap.M == 64
 
 
+def test_adaptive_cap_below_minimum_runs_exact_requested_draws():
+    # Provisional scan fits default to M=50. Since the 64-draw stability minimum is unreachable,
+    # adaptive mode must consume exactly the requested cap rather than rounding to a block/minimum.
+    ctx = _spectrum_ctx()
+    hyp, fit = _fitted(ctx)
+    fixed = B.parametric_bootstrap(hyp, ctx, fit, M=50, seed=5)
+    adaptive = B.parametric_bootstrap(hyp, ctx, fit, M=50, seed=5, adaptive=True)
+    assert adaptive.M == 50
+    assert np.array_equal(fixed.omega0_samples, adaptive.omega0_samples)
+    assert fixed.omega0_interval == adaptive.omega0_interval
+
+
 def test_adaptive_stops_early_on_stable_interval():
     # A clean single peak: the ω₀ half-width stabilises fast, so adaptive stops before the cap.
     ctx = _spectrum_ctx()

@@ -355,6 +355,26 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   tests member homogeneity; inconsistency blocks certification and requests review but never removes
   data or terminates q. Γ at the resolution boundary is diagnostic only when model-marginalized ω
   remains identifiable.
+- **O21.** (2026-07-20, Partial) **Live uncertainty work is HESSE-first, revision-safe, and
+  certification remains independent.** Quicklooks remain `cheap`; production scans and changed
+  pooled-master revisions may run `auto`, publishing a fresh result from trusted HESSE covariance
+  and promoting that exact frozen revision to full errors when covariance/trust, parameter-bound,
+  or model-weight gates demand it. A trusted HESSE **fold** may refresh the dispersion prior: prior
+  admission is a scientific quality gate, not a requirement to spend bootstrap time. Ambiguous
+  forks still never enter the prior, and final certification still refits frozen pools at an
+  explicitly full tier. Promotions are content-addressed and may publish only while their source
+  revision remains current; superseded computations are retained as provenance. Bounded master
+  staleness and the fit fast path remain conditional on measured post-phase gates and default off
+  until their shadow comparisons show no canonical divergence.
+- **O22.** (2026-07-20, Implemented) **Certification regression is an acquisition boundary, not an
+  operator handoff.** When authoritative full certification leaves any requested q outside the
+  objective, the same drive invocation returns immediately to proposal and measurement while its
+  physical and analysis budgets permit. Certification itself consumes no acquisition iteration.
+  Passing q revisions are recorded in an atomic drive-owned acceptance ledger; a later certification
+  request contains only failed, changed, or unassessed revisions at the requested tier. The session
+  runner still publishes that dirty master-only generation atomically and preserves all untouched
+  masters. A tier, policy, calibration, or master-revision change invalidates acceptance. Repeating
+  the same failed scientific state without intervening progress stops honestly instead of looping.
 
 ## Session status update
 

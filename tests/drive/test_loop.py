@@ -17,11 +17,13 @@ import types
 import isar.drive.loop as loop_mod
 from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_point_count,
                              _campaign_summary,
+                             _terminalize_certification_regression,
                              _declined_observation,
                              _executed_point_count, _feasible_point_count,
                              _errors_arg_for, _errors_tier_for, _extract_max_points, _full_tier,
                              _finalize_proposal, _guard_point_count,
                              _make_classification_providers, _record_eligible_crossings,
+                             _pending_certification_indices, _record_certification_acceptance,
                              _master_obs_from_row, _observation_from_row, _pick_interval,
                              _pooled_target_delivered,
                              _preflight_instrument_limits, _preflight_max_points,
@@ -44,6 +46,26 @@ from isar.drive.supervisor.stopping import (
 from isar.schema.hypotheses import content_fingerprint
 
 _UNITY_CAL = Calibration.from_dict({"inflation": 1.0, "buckets": [], "center_pull_mean": 0.0})
+
+
+def test_certification_regression_is_terminal_and_resumable():
+    per_q = [
+        {"hkl": [2.7, 0.0, 0.0], "converged": False,
+         "calibrated_halfwidth": 0.111381, "tolerance": 0.1},
+        {"hkl": [2.8, 0.0, 0.0], "converged": True,
+         "calibrated_halfwidth": 0.08, "tolerance": 0.1},
+    ]
+    result = _terminalize_certification_regression(StopDecision("continue", [], per_q))
+
+    assert result.state == "incomplete"
+    assert result.per_q == per_q
+    assert "resume the campaign" in result.reasons[0]
+    assert "(2.7, 0, 0): ±0.1114 > ±0.1 meV" in result.reasons[0]
+
+
+def test_certification_regression_terminalizer_preserves_other_outcomes():
+    decision = StopDecision("infeasible", ["instrument limit"], [])
+    assert _terminalize_certification_regression(decision) is decision
 
 
 def test_feasible_point_count_prefers_tavi_contract_fields():
@@ -760,6 +782,30 @@ def _run(tmp_path, objective, client, runner, **extra):
     return run_campaign(objective, cfg), ws
 
 
+def _widen_last_pooled_master(workspace, halfwidth=0.75):
+    results_path = Path(workspace) / "report" / "results.csv"
+    with open(results_path, newline="", encoding="utf-8") as stream:
+        rows = list(csv.DictReader(stream))
+        fieldnames = list(rows[0])
+    pooled_rows = [row for row in rows
+                   if str(row.get("pooled", "")).lower() in {"true", "1"}]
+    failed_h = max(float(row["h"]) for row in pooled_rows)
+    for row in pooled_rows:
+        if float(row["h"]) != failed_h:
+            continue
+        center = float(row["omega0"])
+        for prefix in ("interval", "hesse", "model_interval"):
+            lo_key, hi_key = f"{prefix}_lo", f"{prefix}_hi"
+            if lo_key in row:
+                row[lo_key] = str(center - halfwidth)
+            if hi_key in row:
+                row[hi_key] = str(center + halfwidth)
+    with open(results_path, "w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def test_campaign_summary_carries_member_provenance(tmp_path):
     # Chain of custody: every pooled dispersion + grid entry names its members, len == n_members.
     omega = lambda h: (h - 2.0) * 2.0
@@ -849,6 +895,168 @@ def test_campaign_reaches_met(tmp_path):
     assert len(summary["dispersion"]) == 4
     # The campaign summary file was written.
     assert (ws / "report" / "campaign_summary.json").exists()
+    assert summary["session_log_relative"] == "report/session_log.jsonl"
+
+
+def test_certification_regression_automatically_acquires_and_recertifies(
+        tmp_path, monkeypatch):
+    _no_subprocess(monkeypatch)
+    omega = lambda h: (h - 2.0) * 2.0
+    runner = make_mock_runner(omega)
+
+    certification_calls = []
+
+    def widen_first_certification(*, cfg, objective, decision, observations, scan_kind):
+        certification_calls.append([dict(point) for point in decision.per_q])
+        if len(certification_calls) > 1:
+            return observations, True
+        _widen_last_pooled_master(cfg.workspace)
+        return observations, True
+
+    monkeypatch.setattr(loop_mod, "_certify", widen_first_certification)
+    monkeypatch.setattr(loop_mod, "_predictive_escalation_candidate", lambda *_args: None)
+    summary, ws = _run(tmp_path, _objective(), MockTavi(omega), runner)
+
+    assert summary["stop"]["state"] == "met"
+    assert len(certification_calls) == 2
+    events = read_log(summary["session_log"])
+    regression = [event for event in events
+                  if (event.get("payload") or {}).get("action") == "certify_regression"]
+    assert len(regression) == 1 and regression[0]["payload"]["state"] == "continue"
+    assert regression[0]["payload"]["automatic_resume"] is True
+    regression_position = events.index(regression[0])
+    assert any(event["kind"] == "propose" for event in events[regression_position + 1:])
+    assert any(event["kind"] == "run" for event in events[regression_position + 1:])
+    assert events[-1]["kind"] == "stop"
+    assert events[-1]["payload"]["state"] == "met"
+
+
+def test_certification_retry_stops_when_provisional_basis_did_not_change(
+        tmp_path, monkeypatch):
+    _no_subprocess(monkeypatch)
+    omega = lambda h: (h - 2.0) * 2.0
+    certification_calls = []
+
+    def always_regress(*, cfg, objective, decision, observations, scan_kind):
+        certification_calls.append(1)
+        _widen_last_pooled_master(cfg.workspace)
+        return observations, True
+
+    monkeypatch.setattr(loop_mod, "_certify", always_regress)
+    summary, _ws = _run(
+        tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega))
+
+    # One predictive full-fit escalation legitimately changes the basis and permits a second check;
+    # the unchanged second basis is then stopped rather than spinning through max_iters.
+    assert len(certification_calls) == 2
+    assert summary["stop"]["state"] == "incomplete"
+    assert "without a changed scientific state" in summary["stop"]["reasons"][0]
+
+
+def test_operator_stop_during_regressed_certification_prevents_corrective_scan(
+        tmp_path, monkeypatch):
+    _no_subprocess(monkeypatch)
+    omega = lambda h: (h - 2.0) * 2.0
+    token = "stop-during-certification"
+
+    def regress_and_request_stop(*, cfg, objective, decision, observations, scan_kind):
+        _widen_last_pooled_master(cfg.workspace)
+        control = cfg.workspace / "report" / "control"
+        control.mkdir(parents=True, exist_ok=True)
+        (control / f"stop-{token}.json").write_text("{}", encoding="utf-8")
+        return observations, True
+
+    monkeypatch.setattr(loop_mod, "_certify", regress_and_request_stop)
+    summary, _ws = _run(
+        tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega),
+        control_token=token)
+    events = read_log(summary["session_log"])
+    regression_index = next(index for index, event in enumerate(events)
+                            if (event.get("payload") or {}).get("action")
+                            == "certify_regression")
+
+    assert summary["stop"]["state"] == "operator_stopped"
+    assert not any(event["kind"] == "run" for event in events[regression_index + 1:])
+    stops = [event for event in events if event["kind"] == "stop"]
+    assert len(stops) == 1 and stops[0]["payload"]["state"] == "operator_stopped"
+
+
+def test_certification_acceptance_selects_only_failed_or_changed_revisions(tmp_path):
+    cfg = types.SimpleNamespace(
+        workspace=tmp_path, log_path=tmp_path / "report" / "session_log.jsonl",
+        calibration=types.SimpleNamespace(inflation=1.0), floor=0.0)
+    first = StopDecision("continue", [], [
+        {"hkl": [2.1, 0.0, 0.0], "converged": True, "master_revision": "rev-a",
+         "calibrated_halfwidth": 0.08, "tolerance": 0.1},
+        {"hkl": [2.2, 0.0, 0.0], "converged": False, "master_revision": "rev-b",
+         "calibrated_halfwidth": 0.12, "tolerance": 0.1},
+    ])
+    _record_certification_acceptance(cfg, first, "full")
+
+    retry = StopDecision("met", [], [
+        {**first.per_q[0], "converged": True},
+        {**first.per_q[1], "converged": True, "master_revision": "rev-c"},
+    ])
+    assert _pending_certification_indices(cfg, retry, "full") == [1]
+
+    retry.per_q[0]["master_revision"] = "rev-a2"
+    assert _pending_certification_indices(cfg, retry, "full") == [0, 1]
+    assert _pending_certification_indices(cfg, retry, "bayes") == [0, 1]
+
+    retry.per_q[0]["master_revision"] = "rev-a"
+    cfg.calibration.inflation = 1.1
+    assert _pending_certification_indices(cfg, retry, "full") == [0, 1]
+    cfg.calibration.inflation = 1.0
+    (tmp_path / "card.state.json").write_text(json.dumps({
+        "resolution_versions": [{"version": "new-resolution"}],
+        "energy_zero_series": [], "hypothesis_snapshot": None, "campaign_target": None,
+    }), encoding="utf-8")
+    assert _pending_certification_indices(cfg, retry, "full") == [0, 1]
+
+
+def test_certify_sends_only_dirty_q_in_master_worklist(tmp_path, monkeypatch):
+    workspace = tmp_path / "ws"
+    cfg_base = types.SimpleNamespace(
+        workspace=workspace, log_path=workspace / "report" / "session_log.jsonl",
+        calibration=types.SimpleNamespace(inflation=1.0), floor=0.0)
+    accepted = StopDecision("continue", [], [
+        {"hkl": [2.1, 0.0, 0.0], "converged": True, "master_revision": "rev-a",
+         "calibrated_halfwidth": 0.08, "tolerance": 0.1},
+        {"hkl": [2.2, 0.0, 0.0], "converged": False, "master_revision": "rev-b",
+         "calibrated_halfwidth": 0.12, "tolerance": 0.1},
+    ])
+    _record_certification_acceptance(cfg_base, accepted, "full")
+    requests = []
+
+    class Runner:
+        supports_master_certification = True
+
+        def run(self, _workspace, _data_paths, **kwargs):
+            request = json.loads(
+                Path(kwargs["certification_request"]).read_text(encoding="utf-8"))
+            requests.append(request)
+            return types.SimpleNamespace(completed=True)
+
+    cfg = types.SimpleNamespace(
+        workspace=workspace, data_dir=workspace / "data", log_path=cfg_base.log_path,
+        calibration=types.SimpleNamespace(inflation=1.0), floor=0.0,
+        runner=Runner(), bayes_errors=False)
+    objective = types.SimpleNamespace(
+        path=[(2.1, 0.0, 0.0), (2.2, 0.0, 0.0)], analysis_limit_seconds=None)
+    decision = StopDecision("met", [], [
+        {**accepted.per_q[0], "converged": True},
+        {**accepted.per_q[1], "converged": True, "master_revision": "rev-c"},
+    ])
+    monkeypatch.setattr(loop_mod, "_verify_certification_publication",
+                        lambda request_path, _workspace: request_path)
+
+    _observations, ran = loop_mod._certify(
+        cfg=cfg, objective=objective, decision=decision, observations=[], scan_kind={})
+
+    assert ran and len(requests) == 1
+    assert requests[0]["objective_path"] == [[2.2, 0.0, 0.0]]
+    assert requests[0]["per_q"] == [{"hkl": [2.2, 0.0, 0.0], "objective_index": 1}]
+    assert requests[0]["runtime"]["total"] == 1
 
 
 def test_optic_campaign_tracks_target_amid_acoustic_distractor_deterministically(

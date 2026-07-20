@@ -21,6 +21,16 @@ def test_parser_no_render_sets_render_false():
     assert args.render is True   # default renders (for humans)
 
 
+def test_parser_role_aware_bootstrap_defaults_and_override():
+    args = main_mod.build_parser().parse_args(["run", "d", "--workspace", "ws"])
+    assert args.M == 200
+    assert args.scan_M is None  # run_batch resolves the provisional default to 50
+    args = main_mod.build_parser().parse_args(
+        ["run", "d", "--workspace", "ws", "--M", "240", "--scan-M", "40"])
+    assert args.M == 240
+    assert args.scan_M == 40
+
+
 def _fake_summary(*, analysis_incomplete=False):
     return types.SimpleNamespace(
         n_reprocessed=0, n_fitted_this_run=0, outcomes=[], gaps=[], context_lines=[],
@@ -79,6 +89,20 @@ def test_render_default_invokes_report(tmp_path, monkeypatch):
     assert rendered == [True]                               # report layer invoked
     marker = json.loads((ws / "report" / "report.complete.json").read_text(encoding="utf-8"))
     assert marker["status"] == "complete"
+
+
+def test_run_forwards_scan_draw_cap_separately(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    rendered = []
+    _install_fakes(monkeypatch, ws, rendered)
+    captured = {}
+    monkeypatch.setattr(run_cmd.driver, "run_batch",
+                        lambda *args, **kwargs: captured.update(kwargs) or _fake_summary())
+    args = _run_args(ws, render=False)
+    args.scan_M = 37
+    assert run_cmd.run(args) == 0
+    assert captured["M"] == 200
+    assert captured["scan_M"] == 37
 
 
 def test_incomplete_run_replaces_stale_canonical_reports(tmp_path, monkeypatch):

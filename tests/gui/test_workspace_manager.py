@@ -148,6 +148,8 @@ def test_save_as_copies_tree_and_discards_temp(qtbot, temproot, tmp_path):
                                      "omega0": 5.0}])
     (root / "report").mkdir(exist_ok=True)
     (root / "report" / "results.csv").write_text("scan\n1\n", encoding="utf-8")
+    log_bytes = b'{"kind":"decide","payload":{"action":"campaign_start"}}\n'
+    (root / "report" / "session_log.jsonl").write_bytes(log_bytes)
     m = WorkspaceManager()
     assert m.open(root) is True
     assert m.is_temporary()
@@ -157,6 +159,7 @@ def test_save_as_copies_tree_and_discards_temp(qtbot, temproot, tmp_path):
     assert (dest / "card.policy.toml").exists()
     assert (dest / "session.json").exists()
     assert (dest / "report" / "results.csv").read_text(encoding="utf-8") == "scan\n1\n"
+    assert (dest / "report" / "session_log.jsonl").read_bytes() == log_bytes
     assert not root.exists()                      # temp source discarded after the copy
     assert m.root() == dest
     assert not m.is_temporary()                   # the saved copy is a real workspace
