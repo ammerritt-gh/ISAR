@@ -326,6 +326,27 @@ def test_ambiguous_anchor_does_not_revisit_after_neighbor_scan_without_fitted_ev
     assert pick is None or pick.index != 3
 
 
+def test_ambiguous_anchor_does_not_revisit_from_inconsistent_neighbor_master():
+    grid = _grid()
+    anchor = _ambiguous_anchor(grid)
+    anchor.n_production = 1
+    anchor.production_sequences = [5]
+    neighbor = grid[2]
+    neighbor.n_quicklook = 1
+    neighbor.track_state = "provisional"
+    neighbor.evidence_master = {
+        "branch_candidates": [{"energy_meV": 1.2, "sigma_meV": 0.03}],
+        "pool_consistent": False,
+    }
+    _authoritative_evidence(neighbor, 10)
+
+    pick, _kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1,
+        track_anchor_index=3)
+
+    assert pick is None or pick.index != 3
+
+
 def test_ap2_half_mev_sequence_broadens_after_one_middle_point_identity_revisit():
     grid = _grid()[:4]
     assert all(point.tolerance == 0.5 for point in grid)

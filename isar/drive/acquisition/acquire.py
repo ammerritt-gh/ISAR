@@ -486,7 +486,7 @@ def _fitted_evidence_sequences(point: GridQ) -> list[tuple[int, dict]]:
     return [
         (int(sequence), update)
         for sequence, update in zip(point.evidence_update_sequences, point.evidence_updates)
-        if update.get("branch_candidates")
+        if update.get("branch_candidates") and update.get("pool_consistent") is not False
     ]
 
 
