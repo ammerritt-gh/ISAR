@@ -229,28 +229,65 @@ def _transition(previous: _State, current: _State, previous_candidates: list[dic
         score += _normal_compatibility(
             _candidate_energy(new) - _candidate_energy(old), expected_change, sigma)
     # A connected physical trajectory cannot silently change acoustic/optic character merely
-    # because one label is dropped and the other is introduced at the next q.  Recomputing the
-    # entire path can still reverse an earlier character assignment; this term makes that reversal
-    # global instead of allowing a local hand-off halfway along an otherwise smooth trajectory.
-    for old_index, same_new_index, rival_new_index in (
-            (previous.acoustic, current.acoustic, current.optic),
-            (previous.optic, current.optic, current.acoustic)):
+    # because one label is dropped and the other is introduced at the next q.
+    #
+    # This fires only on a TRUE hand-off: the branch is no longer assigned AND the opposite label
+    # has taken up a candidate continuous with it.  It deliberately does NOT fire when the branch is
+    # simply undetected, because "character cannot flip" and "a branch must be detected at every q"
+    # are different propositions and only the first is physics.  At the counting statistics this
+    # instrument delivers (peak heights of order 5-10 counts) a two-mode fit losing one mode is an
+    # expected Poisson outcome, so charging it as evidence against the branch's identity at the
+    # PREVIOUS q inverted a confirmed trajectory into an ambiguous one and deadlocked the campaign:
+    # the blocked frontier then withheld the exposure that would have resolved the missing mode.
+    # Merely vanishing is already priced by MISSING_LOG_PENALTY. Laundering character through an
+    # unassigned state is still charged below, so deferring the invariant never waives it.
+    assigned_now = {index for index in (current.optic, current.acoustic) if index is not None}
+    for old_index, same_new_index, rival_new_index, rival_old_index in (
+            (previous.acoustic, current.acoustic, current.optic, previous.optic),
+            (previous.optic, current.optic, current.acoustic, previous.acoustic)):
         if old_index is None or same_new_index is not None or not current_candidates:
             continue
         old = previous_candidates[old_index]
-        # Include an unassigned but continuous candidate.  Otherwise the Viterbi path can evade the
-        # character invariant with one all-missing state, then reappear under the opposite label.
-        rival = (current_candidates[rival_new_index] if rival_new_index is not None else
-                 min(current_candidates,
-                     key=lambda candidate: abs(_candidate_energy(candidate)
-                                               - _candidate_energy(old))))
-        delta = _candidate_energy(rival) - _candidate_energy(old)
-        continuity_sigma = math.sqrt(
-            _candidate_sigma(old) ** 2 + _candidate_sigma(rival) ** 2
-            + TRANSITION_SIGMA_FLOOR_MEV ** 2 + (12.0 * abs(radial_delta)) ** 2)
-        continuity = math.exp(-0.5 * (delta / continuity_sigma) ** 2)
-        score += continuity * CHARACTER_HANDOFF_LOG_PENALTY
+        nearest_index = min(range(len(current_candidates)),
+                            key=lambda index: abs(_candidate_energy(current_candidates[index])
+                                                  - _candidate_energy(old)))
+        nearest = current_candidates[nearest_index]
+        if nearest_index not in assigned_now:
+            # The branch's own continuation is sitting unassigned. Leaving it unlabelled for one q
+            # is how a path launders character: pay the unassigned/missing cost once, then re-emerge
+            # under the opposite label with the invariant never charged. Price it here.
+            score += _handoff_penalty(old, nearest, None, radial_delta)
+        elif rival_new_index is not None and nearest_index == rival_new_index:
+            rival_predecessor = (previous_candidates[rival_old_index]
+                                 if rival_old_index is not None else None)
+            score += _handoff_penalty(old, nearest, rival_predecessor, radial_delta)
+        # Otherwise the branch simply went undetected while its neighbour continued legitimately —
+        # an expected Poisson outcome at these counts, and not evidence about character.
     return score
+
+
+def _handoff_penalty(old: dict, rival: dict, rival_predecessor: dict | None,
+                     radial_delta: float) -> float:
+    """Cost of the opposite label taking up a candidate that belongs to ``old``'s trajectory.
+
+    Energy decides, not labels: asking "did the label change?" by inspecting labels is circular.
+    The rival is only a character swap if it is better explained as a continuation of the vanished
+    branch than of its own.  Without that comparison the term fires on the ordinary case where one
+    branch legitimately continues onto the sole surviving candidate while the other simply went
+    undetected — which is how a confirmed trajectory became ambiguous and stalled a campaign.
+    """
+    def _continuity(predecessor: dict) -> float:
+        delta = _candidate_energy(rival) - _candidate_energy(predecessor)
+        sigma = math.sqrt(
+            _candidate_sigma(predecessor) ** 2 + _candidate_sigma(rival) ** 2
+            + TRANSITION_SIGMA_FLOOR_MEV ** 2 + (12.0 * abs(radial_delta)) ** 2)
+        return math.exp(-0.5 * (delta / sigma) ** 2)
+
+    swapped = _continuity(old)
+    if rival_predecessor is not None and _continuity(rival_predecessor) >= swapped:
+        # The rival is at least as consistent with its own branch, so no character changed hands.
+        return 0.0
+    return swapped * CHARACTER_HANDOFF_LOG_PENALTY
 
 
 def _path_geometry(path: list[list[float]], anchor: int) -> tuple[list[float], list[float]]:
