@@ -838,13 +838,19 @@ def _section_dispersion(doc: FindingsDoc, di: DiagInputs, per_q: list) -> None:
             and 0 <= assignment["acoustic_candidate_index"]
             < len(assignment.get("candidates") or [])
             for assignment in assignments)
+        target_branch = tracks.get("target_branch", "optic")
+        acoustic_status = ""
+        if has_acoustic:
+            acoustic_status = ("Acoustic target trajectory identified."
+                               if target_branch == "acoustic" else
+                               "Acoustic identified; retained as non-target context.")
         doc.para(
             f"Tracked-branch revision {tracks.get('revision', '—')}; anchor path index "
             f"{tracks.get('anchor_index', '—')}; connected target points: "
             f"{len(frontier.get('confirmed_indices') or [])}. "
             + ("The connected frontier is blocked by unresolved identity. "
                if frontier.get("frontier_blocked") else "The reachable identity frontier is connected. ")
-            + ("Acoustic identified; retained as non-target context." if has_acoustic else ""))
+            + acoustic_status)
         assignment_rows = []
         for assignment in assignments:
             candidates = assignment.get("candidates") or []

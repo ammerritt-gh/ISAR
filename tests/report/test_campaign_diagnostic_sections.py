@@ -144,9 +144,9 @@ def test_driver_counts_escalations_when_present():
     assert "seated" in out and "failed" in out
 
 
-def _render_tracked_dispersion(assignments):
+def _render_tracked_dispersion(assignments, *, target_branch="optic"):
     di = DiagInputs(workspace=None, card_state={"branch_tracks": {
-        "revision": 1, "anchor_index": 0,
+        "revision": 1, "anchor_index": 0, "target_branch": target_branch,
         "frontiers": {"confirmed_indices": [0], "frontier_blocked": False},
         "assignments": assignments,
     }})
@@ -168,6 +168,16 @@ def test_tracked_dispersion_only_claims_acoustic_when_rival_resolved():
         "optic_candidate_index": 1, "acoustic_candidate_index": 0,
     }])
     assert "Acoustic identified; retained as non-target context." in resolved
+
+
+def test_tracked_dispersion_names_acoustic_target_as_target():
+    rendered = _render_tracked_dispersion([{
+        "path_index": 1, "q": [2.05, 0.0, 0.0],
+        "candidates": [{"energy_meV": 0.45}],
+        "optic_candidate_index": None, "acoustic_candidate_index": 0,
+    }], target_branch="acoustic")
+    assert "Acoustic target trajectory identified." in rendered
+    assert "non-target context" not in rendered
 
 
 # --------------------------------------------------------------------- §6 verify-units defect

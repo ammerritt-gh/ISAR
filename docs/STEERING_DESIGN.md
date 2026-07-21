@@ -61,7 +61,7 @@ wrong-hypothesis campaigns still recovering (nudge, never force).
 
 ---
 
-## 2. Phase 0 — AP1/AP2 branch-controller correctness repair (in progress)
+## 2. Phase 0 — AP1/AP2/AP3 branch-controller correctness repair (in progress)
 
 AP1 and AP2 falsified O24's claim that the connected tracker had bounded ambiguous-frontier
 revisits. AP1 surveyed successfully and then repeated one ambiguous point. AP2 started with
@@ -104,6 +104,15 @@ proposal sequence, plus AP1's two-candidate deadlock, acoustic geometry on both 
 physical zone centre, acoustic/optic role symmetry, provisional-fit non-authority, unchanged-
 evidence repeat rejection, and honest exhausted-frontier stopping. Until those tests pass, this
 section remains **in progress**, not Implemented.
+
+AP3 adds two acceptance conditions. Branch character is a trajectory-level posterior: the connected
+0.45 → 0.87 → 1.38 → 1.80 meV sequence must remain acoustic as it approaches the zone boundary,
+and accumulated authoritative evidence may reverse an earlier optic character. O6/O9 broadening
+discounts identity information by uncertainty propagated across unmeasured path links, without a
+hard step limit. At exact Γ, a connected low-q acoustic trajectory may establish an additive
+`inferred_unresolved` structural endpoint. That endpoint publishes no fitted `omega0`, enters no
+dispersion prior, and is excluded from precision coverage. Automatic Bravais/space-group zone
+derivation remains Planned; AP3's declared period already places H=3 at the zone boundary.
 
 ---
 

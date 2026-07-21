@@ -169,10 +169,13 @@ class GridQ:
     interval_floor_min_exposure_ratio: float = 2.0
     track_state: str | None = None
     track_revision: int | None = None
+    structural_endpoint_status: str | None = None
+    is_reduced_q_origin: bool = False
 
     @property
     def visited(self) -> bool:
-        return self.evidence_master is not None or self.n_quicklook > 0 or self.n_production > 0
+        return (not self.precision_coverage_eligible or self.evidence_master is not None
+                or self.n_quicklook > 0 or self.n_production > 0)
 
     @property
     def master_revision(self) -> str | None:
@@ -211,6 +214,8 @@ class GridQ:
 
     @property
     def assessment_state(self) -> str:
+        if not self.precision_coverage_eligible:
+            return "inferred_unresolved"
         if self.evidence_master is None:
             return "unmeasured"
         if self.master is None:
@@ -256,6 +261,13 @@ class GridQ:
         fingerprint = (self.master or {}).get("production_batch_fingerprint")
         return bool(fingerprint and self.crossing_fingerprints
                     and self.crossing_fingerprints[-1] != fingerprint)
+
+    @property
+    def precision_coverage_eligible(self) -> bool:
+        """Whether this q represents a measurable target requiring a certified interval."""
+        return not (self.track_state == "inferred_unresolved"
+                    and self.structural_endpoint_status == "inferred_unresolved"
+                    and self.is_reduced_q_origin)
 
     @property
     def info_saturated(self) -> bool:
@@ -410,7 +422,8 @@ def _logical_observations(observations: list[dict], target_branch: str) -> list[
     return logical
 
 
-def summarize_grid(objective, observations: list[dict], master_rows: list[dict] | None = None):
+def summarize_grid(objective, observations: list[dict], master_rows: list[dict] | None = None,
+                   branch_track: dict | None = None):
     """One :class:`GridQ` per objective grid point from the per-scan ``observations`` + ``master_rows``.
 
     Per-scan observations contribute acquisition count/cost provenance only. ``master_rows`` (the
@@ -519,11 +532,29 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
             except (TypeError, ValueError):
                 master_revision = 0
             master_state = master.get("track_state")
-            if (master_state in {"confirmed", "ambiguous", "missing", "provisional", "blocked"}
+            if (master_state in {"confirmed", "ambiguous", "missing", "provisional", "blocked",
+                                 "inferred_unresolved"}
                     and (grid[i].track_revision is None
                          or master_revision >= grid[i].track_revision)):
                 grid[i].track_state = master_state
                 grid[i].track_revision = master_revision
+                grid[i].structural_endpoint_status = master.get("structural_endpoint_status")
+                grid[i].is_reduced_q_origin = bool(master.get("is_reduced_q_origin", False))
+    track = dict(branch_track or {})
+    for assignment in track.get("assignments") or []:
+        if (assignment.get("structural_endpoint_status") != "inferred_unresolved"
+                or not assignment.get("is_reduced_q_origin")):
+            continue
+        try:
+            index = int(assignment["path_index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not 0 <= index < len(grid):
+            continue
+        grid[index].track_state = "inferred_unresolved"
+        grid[index].track_revision = int(track.get("revision", 0))
+        grid[index].structural_endpoint_status = "inferred_unresolved"
+        grid[index].is_reduced_q_origin = True
     return grid
 
 
@@ -596,7 +627,10 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
     for g in grid:
         m = g.master or {}
         evidence = g.evidence_master or m
-        if g.converged:
+        if not g.precision_coverage_eligible:
+            reason = ("acoustic endpoint inferred at physical reduced-q origin; unresolved by "
+                      "construction and excluded from precision coverage")
+        elif g.converged:
             reason = "certified master interval meets tolerance"
         elif g.master is None and g.evidence_master is not None:
             reason = "continue — pooled fit evidence exists but target branch identity is unresolved"
@@ -620,6 +654,9 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                       "evidence_branch_id": evidence.get("branch_id"),
                       "evidence_candidate_state": evidence.get("candidate_state"),
                       "track_state": g.track_state, "track_revision": g.track_revision,
+                      "structural_endpoint_status": g.structural_endpoint_status,
+                      "is_reduced_q_origin": g.is_reduced_q_origin,
+                      "precision_coverage_eligible": g.precision_coverage_eligible,
                       "linewidth_state": g.linewidth_state,
                       "pool_consistent": m.get("pool_consistent"),
                       "consistency_pvalue": m.get("consistency_pvalue"),
@@ -645,9 +682,14 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                             [f"tolerance {tol:g} meV is below the resolution-asymmetry systematic "
                              f"floor {fl:g} meV (calibration center_pull_mean) — unreachable"], per_q)
 
-    if grid and all(g.converged for g in grid):
+    eligible = [g for g in grid if g.precision_coverage_eligible]
+    if grid and eligible and all(g.converged for g in eligible):
+        inferred = len(grid) - len(eligible)
         return StopDecision("met",
-                            [f"all {len(grid)} grid q converged: a certified ω₀ interval "
+                            [f"all {len(eligible)} measurable grid q converged"
+                             + (f"; {inferred} inferred unresolved acoustic endpoint excluded"
+                                if inferred else "")
+                             + ": a certified ω₀ interval "
                              f"(pooled master, inflation-calibrated) "
                              f"≤ {tol:g} meV at each point"], per_q)
 
@@ -681,7 +723,7 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
     spent = float(budget_state.get("spent", 0.0))
     amount = budget_state.get("amount")
     if amount is not None and spent >= float(amount):
-        n_unconverged = sum(1 for g in grid if not g.converged)
+        n_unconverged = sum(1 for g in eligible if not g.converged)
         reasons.append(f"budget exhausted ({spent:g}/{amount:g} {budget_state.get('kind', '')}) "
                        f"with {n_unconverged} grid q still under-determined")
         return StopDecision("incomplete", reasons, per_q)

@@ -311,6 +311,64 @@ def _frontier_states(assignments: list[dict], anchor: int, *, entropy_stop: floa
             index += direction
 
 
+def _infer_unresolved_acoustic_origin(assignments: list[dict], origin: int,
+                                      reduced_distance: list[float],
+                                      observations: list[dict]) -> bool:
+    """Mark an unfitted Gamma endpoint supported by a connected low-q acoustic trajectory."""
+    if not assignments or not math.isclose(reduced_distance[origin], 0.0, abs_tol=1e-9):
+        return False
+    origin_row = assignments[origin]
+    acoustic_index = origin_row.get("acoustic_candidate_index")
+    if acoustic_index is not None:
+        # This status represents the experimentally hidden endpoint, not a fitted low-energy mode.
+        # A fitted candidate remains ordinary evidence even when it lies inside the resolution.
+        return False
+
+    support = []
+    for direction in (-1, 1):
+        index = origin + direction
+        while 0 <= index < len(assignments) and len(support) < 8:
+            row = assignments[index]
+            candidate_index = row.get("acoustic_candidate_index")
+            if candidate_index is None:
+                break
+            candidate = (row.get("candidates") or [])[candidate_index]
+            probability = float((candidate.get("probabilities") or {}).get("acoustic", 0.0))
+            if probability < CONFIRMED_PROBABILITY:
+                break
+            support.append((reduced_distance[index], _candidate_energy(candidate),
+                            _candidate_sigma(candidate)))
+            index += direction
+    if len(support) < 3:
+        return False
+    x = np.asarray([point[0] for point in support], dtype=float)
+    y = np.asarray([point[1] for point in support], dtype=float)
+    sigma = np.asarray([point[2] for point in support], dtype=float)
+    design = np.column_stack((np.ones_like(x), x))
+    weights = 1.0 / np.square(np.maximum(sigma, 1e-6))
+    precision = design.T @ (weights[:, None] * design)
+    covariance = np.linalg.pinv(precision, hermitian=True)
+    intercept, slope = covariance @ (design.T @ (weights * y))
+    residual_rms = math.sqrt(float(np.average(np.square(y - design @ [intercept, slope]),
+                                               weights=weights)))
+    intercept_limit = max(0.5, 3.0 * math.sqrt(max(float(covariance[0, 0]), 0.0)))
+    residual_limit = max(0.35, 2.0 * float(np.median(sigma)))
+    if slope <= 0.0 or abs(intercept) > intercept_limit or residual_rms > residual_limit:
+        return False
+
+    origin_row.update({
+        "track_state": "inferred_unresolved",
+        "structural_endpoint_status": "inferred_unresolved",
+        "is_reduced_q_origin": True,
+        "target_delivery_eligible": False,
+        "precision_coverage_eligible": False,
+        "inference_support_points": len(support),
+        "inferred_intercept_meV": float(intercept),
+        "inferred_slope_meV_per_rlu": float(slope),
+    })
+    return True
+
+
 def _segments(assignments: list[dict], branch: str, target_branch: str) -> list[dict]:
     segments: list[dict] = []
     current: dict | None = None
@@ -471,6 +529,10 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
 
     _frontier_states(assignments, anchor, entropy_stop=float(assignment_entropy_stop_nats),
                      maximum_bridge_steps=max(0, int(maximum_bridge_steps)))
+    inferred_origin = (target_branch == "acoustic"
+                       and period is not None and np.isfinite(period) and period > 0.0
+                       and _infer_unresolved_acoustic_origin(
+                           assignments, zone_anchor, reduced_distance, observations))
     old_revision = int((previous or {}).get("revision", 0))
     old_assignments = (previous or {}).get("assignments") or []
     reassignments = []
@@ -496,6 +558,7 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
         "anchor_index": anchor,
         "acquisition_seed_index": anchor,
         "reduced_q_origin_index": zone_anchor,
+        "inferred_endpoint_indices": [zone_anchor] if inferred_origin else [],
         "assignments": assignments,
         "tracks": [
             {"branch_id": branch, "role": ("target" if branch == target_branch else "rival"),

@@ -923,7 +923,8 @@ def _grid_state(objective, observations: list[dict], workspace, calibration: Cal
     then folds observations + masters into the per-q grid. The three call sites were verified to be
     identical calls; the caller wraps this in whatever ``timed`` span (or none) belongs at that site."""
     master_rows = _read_master_rows(workspace, calibration)
-    grid = summarize_grid(objective, observations, master_rows)
+    grid = summarize_grid(
+        objective, observations, master_rows, branch_track=_read_branch_tracks(Path(workspace)))
     return master_rows, grid
 
 
@@ -2928,6 +2929,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                     "acquisition_seed_index",
                                     (durable_state.get("branch_tracks") or {}).get("anchor_index"))),
                                 track_zone_period=_workspace_zone_period(cfg.workspace),
+                                branch_track=(durable_state.get("branch_tracks") or {}),
                                 scoring_allowance_seconds=scoring_allowance)
                         if proposal is not None:
                             _finalize_proposal(proposal, objective, cfg, budget_state, it=it)

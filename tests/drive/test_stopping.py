@@ -70,6 +70,39 @@ def test_met_when_all_masters_within_tolerance():
     assert st.evaluate_stop(obj, grid, _BUDGET).state == "met"
 
 
+def test_inferred_unresolved_gamma_is_excluded_from_precision_completion():
+    obj = _obj()
+    origin = st.GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
+                      track_state="inferred_unresolved",
+                      structural_endpoint_status="inferred_unresolved",
+                      is_reduced_q_origin=True,
+                      evidence_master={"track_state": "inferred_unresolved",
+                                       "branch_candidates": [{"energy_meV": 5.8}]})
+    measured = st.GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
+                        master=_master((2.05, 0.0, 0.0), 0.3))
+
+    decision = st.evaluate_stop(obj, [origin, measured], _BUDGET)
+
+    assert decision.state == "met"
+    assert decision.per_q[0]["assessment_state"] == "inferred_unresolved"
+    assert decision.per_q[0]["precision_coverage_eligible"] is False
+    assert decision.per_q[0]["omega0"] is None
+    assert "1 measurable grid q converged" in decision.reasons[0]
+
+
+def test_bare_inferred_state_without_structural_origin_cannot_shrink_denominator():
+    malformed = st.GridQ(index=0, hkl=(2.5, 0.0, 0.0), q=0.5, tolerance=0.5,
+                         track_state="inferred_unresolved",
+                         evidence_master={"track_state": "inferred_unresolved"})
+    measured = st.GridQ(index=1, hkl=(2.55, 0.0, 0.0), q=0.55, tolerance=0.5,
+                        master=_master((2.55, 0.0, 0.0), 0.3))
+
+    decision = st.evaluate_stop(_obj(), [malformed, measured], _BUDGET)
+
+    assert decision.state != "met"
+    assert decision.per_q[0]["precision_coverage_eligible"] is True
+
+
 def test_hypothesis_campaign_requires_new_production_pool_between_crossings():
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
     obj = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,

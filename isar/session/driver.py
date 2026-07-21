@@ -1773,6 +1773,8 @@ def _select_mode(outcome: dict, candidate: dict, candidate_index: int, assignmen
     outcome["branch_posterior"] = probabilities
     outcome["branch_weight"] = float(probabilities.get(target_branch, 0.0))
     outcome["assignment_entropy"] = assignment.get("assignment_entropy")
+    outcome["structural_endpoint_status"] = assignment.get("structural_endpoint_status")
+    outcome["is_reduced_q_origin"] = assignment.get("is_reduced_q_origin")
 
 
 def _clear_tracked_selection(outcome: dict, assignment: dict, revision: int) -> None:
@@ -1786,6 +1788,8 @@ def _clear_tracked_selection(outcome: dict, assignment: dict, revision: int) -> 
     outcome["branch_posterior"] = None
     outcome["branch_weight"] = None
     outcome["assignment_entropy"] = assignment.get("assignment_entropy")
+    outcome["structural_endpoint_status"] = assignment.get("structural_endpoint_status")
+    outcome["is_reduced_q_origin"] = assignment.get("is_reduced_q_origin")
     # The immutable branch_candidates table remains the complete fit evidence and can restore these
     # mode-specific values after a later reassignment.  The scalar compatibility view must abstain.
     for field in ("omega0", "omega0_err", "gamma", "interval", "omega0_profile",
@@ -3422,6 +3426,7 @@ _CSV_COLUMNS = [
     "effective_exposure", "exposure_provenance", "branch_posterior",
     "candidate_id", "candidate_state", "acquisition_id",
     "branch_candidates", "selected_candidate_index", "track_state", "track_revision",
+    "structural_endpoint_status", "is_reduced_q_origin",
     "spectrum_ref", "predictive_ref", "master_revision", "model_interval_lo",
     "model_interval_med", "model_interval_hi", "model_robust", "model_entropy",
     "gamma_at_bound", "linewidth_state",
@@ -3502,6 +3507,8 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                                       if oc.get("branch_candidates") is not None else None),
                 "selected_candidate_index": oc.get("selected_candidate_index"),
                 "track_state": oc.get("track_state"), "track_revision": oc.get("track_revision"),
+                "structural_endpoint_status": oc.get("structural_endpoint_status"),
+                "is_reduced_q_origin": oc.get("is_reduced_q_origin"),
                 "spectrum_ref": oc.get("spectrum_ref"),
                 "predictive_ref": oc.get("predictive_ref"),
                 "master_revision": oc.get("master_revision"),

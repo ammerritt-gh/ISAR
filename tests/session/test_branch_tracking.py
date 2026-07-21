@@ -147,6 +147,8 @@ def test_ap3_connected_trajectory_keeps_acoustic_character_to_zone_boundary():
     ]
     path = [[2.0 + 0.05 * index, 0.0, 0.0] for index in range(21)]
     observations = [{"candidates": []} for _ in path]
+    observations[0] = {"gauss_fwhm": 0.8,
+                       "candidates": [_candidate("zc:unrelated", 5.8)]}
     for index, energy in ((1, 0.45), (2, 0.87), (3, 1.38), (4, 1.80)):
         observations[index] = {"candidates": [_candidate(f"a{index}", energy)]}
     observations[3]["candidates"].append(_candidate("o3", 6.4))
@@ -166,6 +168,14 @@ def test_ap3_connected_trajectory_keeps_acoustic_character_to_zone_boundary():
         assert row["candidates"][0]["trajectory_identity"] == "acoustic"
     assert track["assignments"][3]["optic_candidate_index"] == 1
     assert track["assignments"][3]["candidates"][1]["trajectory_identity"] == "optic"
+    origin = track["assignments"][0]
+    assert origin["track_state"] == "inferred_unresolved"
+    assert origin["structural_endpoint_status"] == "inferred_unresolved"
+    assert origin["acoustic_candidate_index"] is None
+    assert origin["target_delivery_eligible"] is False
+    assert origin["precision_coverage_eligible"] is False
+    assert origin["candidates"][0]["trajectory_identity"] == "optic"
+    assert track["inferred_endpoint_indices"] == [0]
 
 
 def test_authoritative_trajectory_reverses_stale_candidate_character_prior():
@@ -189,6 +199,33 @@ def test_authoritative_trajectory_reverses_stale_candidate_character_prior():
 
 def test_lone_candidate_contributes_no_lowest_energy_ordering_evidence():
     assert _lowest_energy_log_likelihood(0, [_candidate("only", 0.45)]) == 0.0
+
+
+def test_fitted_gamma_acoustic_candidate_is_not_recast_as_structural_endpoint():
+    path = [[2.0 + 0.05 * index, 0.0, 0.0] for index in range(4)]
+    observations = [{"gauss_fwhm": 0.8, "candidates": [_candidate("a0", 0.1)]}]
+    observations.extend({"candidates": [_candidate(f"a{index}", energy)]}
+                        for index, energy in enumerate((0.45, 0.87, 1.38), start=1))
+
+    track = track_path(path, observations, period=2.0, hypotheses=HYPOTHESES,
+                       target_branch="acoustic", assignment_entropy_stop_nats=1.0)
+
+    assert track["assignments"][0]["acoustic_candidate_index"] == 0
+    assert track["assignments"][0].get("structural_endpoint_status") is None
+    assert track["inferred_endpoint_indices"] == []
+
+
+def test_structural_gamma_inference_requires_declared_reduced_zone_period():
+    path = [[2.05 + 0.05 * index, 0.0, 0.0] for index in range(4)]
+    observations = [{"candidates": []}]
+    observations.extend({"candidates": [_candidate(f"a{index}", energy)]}
+                        for index, energy in enumerate((0.45, 0.87, 1.38), start=1))
+
+    track = track_path(path, observations, period=None, hypotheses=HYPOTHESES,
+                       target_branch="acoustic", assignment_entropy_stop_nats=1.0)
+
+    assert track["assignments"][0].get("structural_endpoint_status") is None
+    assert track["inferred_endpoint_indices"] == []
 
 
 def test_broad_zc_prior_confirms_peak_at_its_mean_without_phantom_new_branch():
@@ -402,6 +439,42 @@ def test_ambiguous_optic_like_mode_is_evidence_not_acoustic_delivery():
     assert outcome["branch_candidates"][0]["probabilities"]["acoustic"] < 0.15
     assert outcome["omega0"] is None and outcome["branch_id"] is None
     assert outcome["selected_candidate_index"] is None
+
+
+def test_inferred_gamma_endpoint_never_delivers_or_seeds_dispersion_prior():
+    path = [[2.0 + 0.05 * index, 0.0, 0.0] for index in range(5)]
+    state = CardState(
+        campaign_target={"branch": "acoustic", "label": "acoustic",
+                         "selector": "tracked_branch", "target_energy_meV": None,
+                         "energy_search_meV": [-2.0, 7.0], "path": path},
+        hypothesis_snapshot={"hypotheses": HYPOTHESES, "target_hypothesis": "acoustic",
+                             "steering": {"assignment_entropy_stop_nats": 1.0,
+                                          "maximum_bridge_steps": 1}})
+    card = SimpleNamespace(state=state, policy=SimpleNamespace(
+        dispersion={"zone_period": 2.0}, collation={"t_round": 5.0}))
+    session = SessionState()
+    for index, energy in enumerate((5.8, 0.45, 0.87, 1.38, 1.80)):
+        outcome = {
+            "detector_id": "det0", "q": path[index], "T": 200.0, "sample": "sample",
+            "omega0": energy, "omega0_err": 0.08, "gamma": 0.2,
+            "interval": [energy - 0.16, energy + 0.16], "interval_reliable": True,
+            "pooled": True, "n_members": 2, "pool_consistent": True,
+            "fit_kind": "unconstrained", "best_label": "stokes+bg",
+            "verdict": "resolved", "modality": "fold", "gauss_fwhm": 0.8,
+            "modes": [{"omega0": energy, "omega0_err": 0.08, "gamma": 0.2,
+                       "gamma_err": 0.03, "amplitude": 5.0}],
+        }
+        session.put(ScanEntry(scan_id=f"master:q{index}", scan_number=9_000_000 + index,
+                              scan_type="energy", status="fitted",
+                              detectors={"det0": outcome}))
+
+    track = _apply_tracked_branch(session, card, t_round=5.0)
+    origin = session.scans["master:q0"].detectors["det0"]
+
+    assert track["assignments"][0]["track_state"] == "inferred_unresolved"
+    assert origin["omega0"] is None and origin["branch_id"] is None
+    assert origin["selected_candidate_index"] is None
+    assert all(point.get("q") != path[0] for point in state.dispersion_prior)
 
 
 def test_session_wiring_recomputes_after_masters_and_rebuilds_connected_prior():

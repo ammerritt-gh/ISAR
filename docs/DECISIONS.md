@@ -423,6 +423,17 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   identity. Phase 0 remains in progress until AP1/AP2 replay gates pass. Curvature/zones,
   confidence-scaled physics nudges, and per-second OCBA/VOI economy remain Planned sub-phases
   A, B, and C behind their recorded prerequisites.
+- **O26.** (2026-07-21, Partial; supersedes the remainder of O24 and extends O25) **AP3 proves
+  branch character and acquisition continuity must be global evidence questions.** The controller
+  followed a connected acoustic dispersion from Γ toward H=3 but locally relabelled its high-q
+  continuation optic, while global classification value jumped across an unmeasured interval.
+  Character is now recomputed over the authoritative connected trajectory; confidence-scaled Γ,
+  slope, and multi-candidate ordering evidence may overturn earlier labels. Broadening retains O6/O9
+  information but discounts it by propagated association uncertainty, with no hard distance cap.
+  A smooth low-q acoustic trajectory may mark exact Γ `inferred_unresolved`; this is neither a fit nor
+  delivery and is excluded from prior admission and precision completion. AP3's period already makes
+  H=3 a zone boundary; automatic lattice/space-group zone derivation remains Planned. Phase 0 remains
+  Partial pending campaign replay and unified optic regression gates.
 
 ## Session status update
 

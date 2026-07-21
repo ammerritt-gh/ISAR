@@ -160,6 +160,12 @@ on; provisional or ambiguous identities receive stable `Branch N` labels. The ac
 solid and context/rival branches dashed. Viewer metadata tolerates no target role and then styles all
 branches equally.
 
+For an acoustic target, exact Γ may be persisted as `inferred_unresolved` when at least three
+connected, authoritative low-q assignments support a smooth positive-slope extrapolation compatible
+with zero. This is structural endpoint evidence, not a fitted mode: it never publishes target
+`omega0`, seeds the dispersion prior, or enters the precision denominator. A lone Γ feature—such as
+an unrelated finite-energy mode—cannot establish this status.
+
 This does not expand the current objective engine: arbitrary named targets continue to use the existing
 target semantics, while target-free “map every visible dispersion” acquisition remains Planned. The
 viewer tolerance is the compatibility door for that future mode, not an assertion that it can already

@@ -609,7 +609,7 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
     anchor = grid[anchor_index]
     if not anchor.visited:
         return anchor, "quicklook", "tracked branch: establish identity at the resolvable anchor", None
-    if anchor.track_state != "confirmed":
+    if anchor.track_state not in {"confirmed", "inferred_unresolved"}:
         if anchor.stuck:
             return None
         master = anchor.evidence_master or anchor.master or {}
@@ -664,7 +664,8 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
     for direction in (-1, 1):
         frontier_index = anchor_index + direction
         while (0 <= frontier_index < len(grid)
-               and grid[frontier_index].track_state == "confirmed"):
+               and grid[frontier_index].track_state in {
+                   "confirmed", "inferred_unresolved"}):
             frontier_index += direction
         if not 0 <= frontier_index < len(grid):
             continue
@@ -815,7 +816,8 @@ def _select_target(grid: list[GridQ], model, *,
         # not jump to a locally attractive mode and silently relabel it.  The caller turns this
         # exhausted identity route into an honest incomplete result.  After identity coverage is
         # complete, ordinary ranking remains available for target-precision production.
-        if any(point.visited and point.track_state not in (None, "confirmed") for point in grid):
+        if any(point.visited and point.track_state not in (
+                None, "confirmed", "inferred_unresolved") for point in grid):
             return None, "", "tracked branch identity frontier exhausted", None
 
     for source in grid:
@@ -863,7 +865,8 @@ def _select_target(grid: list[GridQ], model, *,
                   f"and count rate (predicted σ={model.predict(pick.q)[1]:g} meV)")
         return pick, "quicklook", reason, ProposalScore(
             method="explore", c_spent=float(pick.counts_spent), reason=reason, purpose=purpose)
-    candidates = [g for g in grid if not (g.converged or g.stuck)
+    candidates = [g for g in grid if g.precision_coverage_eligible
+                  and not (g.converged or g.stuck)
                   and not (g.n_production >= (
                       g.max_production_batches + g.maximum_bridge_steps)
                            and (g.evidence_master is not None and g.master is None
@@ -1051,6 +1054,7 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
                  runtime_limits: dict | None = None,
                  track_anchor_index: int | None = None,
                  track_zone_period: float | None = None,
+                 branch_track: dict | None = None,
                  scoring_allowance_seconds: float = 60.0) -> ScanProposal | None:
     """Propose the next scan (Q, energy window, neutron count), or ``None`` if nothing remains.
 
@@ -1067,7 +1071,8 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
         fisher: optional Poisson-Fisher screen provider ``(gridq, omega0_pred, sigma_prior) -> σ_scan``
             (5b). Returns the predicted post-scan σ(ω₀) when the q is Fisher-grounded, else ``None``.
     """
-    grid = summarize_grid(objective, results_so_far or [], master_rows or [])
+    grid = summarize_grid(
+        objective, results_so_far or [], master_rows or [], branch_track=branch_track)
     target_hypothesis = next((h for h in getattr(objective, "hypotheses", [])
                               if h.get("name") == getattr(objective, "target_hypothesis", None)), None)
     if (getattr(objective, "target_selector", None) == "tracked_branch"

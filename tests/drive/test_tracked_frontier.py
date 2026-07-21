@@ -128,6 +128,30 @@ def test_first_proposal_computes_interior_reduced_zone_anchor_before_tracks_exis
     assert proposal is not None and proposal.h == 2.0
 
 
+def test_unmeasured_inferred_gamma_is_overlaid_and_not_proposed():
+    path = [(2.0, 0.0, 0.0), (2.05, 0.0, 0.0)]
+    objective = ObjectiveSpec(
+        path=path, tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 1e12},
+        target_branch="acoustic", target_selector="tracked_branch",
+        **shipped_hypothesis_snapshot("acoustic", (-2.0, 12.0)))
+    branch_track = {
+        "revision": 4,
+        "acquisition_seed_index": 0,
+        "assignments": [{
+            "path_index": 0,
+            "track_state": "inferred_unresolved",
+            "structural_endpoint_status": "inferred_unresolved",
+            "is_reduced_q_origin": True,
+        }],
+    }
+
+    proposal = propose_scan(
+        objective, _Model(), [], resolution_info=0.8, track_zone_period=2.0,
+        track_anchor_index=0, branch_track=branch_track)
+
+    assert proposal is not None and proposal.h == 2.05
+
+
 def test_acoustic_opening_uses_nearest_predicted_resolvable_anchor():
     class AcousticModel:
         def predict(self, q):
@@ -184,6 +208,43 @@ def test_anchor_strategy_ceiling_switches_to_adjacent_differentiation_probe():
     assert (pick.index, kind) == (1, "quicklook")
     assert "strategy ceiling" in reason
     assert score.purpose == "differentiate"
+
+
+def test_inferred_gamma_does_not_block_measured_point_precision_work():
+    grid = _grid()[:2]
+    grid[0].n_quicklook = 1
+    grid[0].track_state = "inferred_unresolved"
+    grid[0].structural_endpoint_status = "inferred_unresolved"
+    grid[0].is_reduced_q_origin = True
+    grid[0].evidence_master = {"track_state": "inferred_unresolved",
+                               "branch_candidates": [{"energy_meV": 5.8}]}
+    grid[1].n_quicklook = 1
+    grid[1].track_state = "confirmed"
+    grid[1].master = {"usable": True, "omega0": 0.45, "halfwidth": 0.8,
+                      "reliable": True, "certifiable": True,
+                      "candidate_state": "confirmed"}
+    grid[1].evidence_master = dict(grid[1].master)
+
+    pick, kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, track_anchor_index=1)
+
+    assert (pick.index, kind) == (1, "production")
+
+
+def test_inferred_gamma_anchor_advances_without_rescanning_endpoint():
+    grid = _grid()[:2]
+    grid[0].n_quicklook = 1
+    grid[0].track_state = "inferred_unresolved"
+    grid[0].structural_endpoint_status = "inferred_unresolved"
+    grid[0].is_reduced_q_origin = True
+    grid[0].evidence_master = {"track_state": "inferred_unresolved",
+                               "structural_endpoint_status": "inferred_unresolved",
+                               "is_reduced_q_origin": True}
+
+    pick, kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, track_anchor_index=0)
+
+    assert (pick.index, kind) == (1, "quicklook")
 
 
 def _ambiguous_anchor(grid, *, precision=0.0189650075206503):
