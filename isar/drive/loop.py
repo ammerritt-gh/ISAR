@@ -69,6 +69,7 @@ from isar.drive.supervisor.stopping import (
     systematic_floor,
 )
 from isar.schema.card import Card
+from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
 
 DEFAULT_MAX_ITERS = 200
 DEFAULT_WAIT_TIMEOUT = 600.0
@@ -164,7 +165,7 @@ def _runtime_limits(cfg, objective, n_points: int | None = None) -> dict[str, An
     result["instrument_max_neutrons_per_point"] = instrument.get("max_neutrons_per_point")
     result["max_points"] = min(int(policy.get("max_scan_points", MAX_POINTS)),
                                int(instrument["max_points"]))
-    policy_ncount = int(policy.get("max_ncount_per_scan", 4_000_000_000))
+    policy_ncount = int(policy.get("max_ncount_per_scan", MAX_NCOUNT_PER_SCAN))
     candidates = [(policy_ncount, "policy")]
     if instrument.get("max_neutrons_per_point") is not None:
         candidates.append((int(instrument["max_neutrons_per_point"]),
@@ -306,7 +307,7 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int)
             "action": "proposal_ncount_clamped_to_limit",
             "hkl": [proposal.h, proposal.k, proposal.l],
             "requested_ncount": requested, "effective_ncount": instrument_cap,
-            "policy_limit": int(policy.get("max_ncount_per_scan", 4_000_000_000)),
+            "policy_limit": int(policy.get("max_ncount_per_scan", MAX_NCOUNT_PER_SCAN)),
             "instrument_limits": {
                 "max_neutrons_per_point": limits.get("instrument_max_neutrons_per_point"),
                 "queue_neutron_budget": limits.get("queue_neutron_budget")},
@@ -2422,7 +2423,18 @@ def _certification_request(cfg: CampaignConfig, objective: ObjectiveSpec,
             raise ValueError(
                 f"final decision q {hkl} does not match objective path index "
                 f"{canonical_index}: {list(objective_hkl)}")
-        requested_points.append({"hkl": hkl, "objective_index": canonical_index})
+        # Carry the stopping decision's coverage verdict. Without it certification cannot tell a q
+        # that is unresolvable by construction (an inferred reduced-q origin, which has no pooled
+        # master and never will) from one whose master is genuinely missing, and aborts the whole
+        # run on the former. Additive to the request contract; the driver still ships a decision
+        # summary rather than the full per-q record.
+        requested_points.append({
+            "hkl": hkl, "objective_index": canonical_index,
+            "precision_coverage_eligible": bool(point.get("precision_coverage_eligible", True)),
+            "structural_endpoint_status": point.get("structural_endpoint_status"),
+            "is_reduced_q_origin": bool(point.get("is_reduced_q_origin", False)),
+            "reason": point.get("reason"),
+        })
     payload = {
         "schema": "isar.certification.request/1",
         "tier": tier,
@@ -3300,6 +3312,12 @@ def _campaign_summary(objective, grid, decision, budget_state, workspace, log_pa
                   "n_members": (g.master or {}).get("n_members"),
                   "members": (g.master or {}).get("members"),
                   "n_production": g.n_production, "diagnostics": g.diagnostics,
+                  # Without these the summary shows a point as "inferred_unresolved" but cannot say
+                  # why it was excluded from coverage, which is exactly the question a reader asks.
+                  "precision_coverage_eligible": g.precision_coverage_eligible,
+                  "structural_endpoint_status": g.structural_endpoint_status,
+                  "is_reduced_q_origin": g.is_reduced_q_origin,
+                  "track_state": g.track_state,
                   "linewidth_state": g.linewidth_state, "stuck": False} for g in grid],
         "dispersion": dispersion,
         "dispersion_prior_points": len(prior_points),

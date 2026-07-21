@@ -1176,7 +1176,12 @@ def test_certify_sends_only_dirty_q_in_master_worklist(tmp_path, monkeypatch):
 
     assert ran and len(requests) == 1
     assert requests[0]["objective_path"] == [[2.2, 0.0, 0.0]]
-    assert requests[0]["per_q"] == [{"hkl": [2.2, 0.0, 0.0], "objective_index": 1}]
+    # per_q additionally carries the stopping decision's coverage verdict, so certification can tell
+    # a structurally unresolvable q from one whose pooled master is genuinely missing.
+    assert requests[0]["per_q"] == [{
+        "hkl": [2.2, 0.0, 0.0], "objective_index": 1,
+        "precision_coverage_eligible": True, "structural_endpoint_status": None,
+        "is_reduced_q_origin": False, "reason": None}]
     assert requests[0]["runtime"]["total"] == 1
 
 

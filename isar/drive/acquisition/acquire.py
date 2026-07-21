@@ -44,6 +44,7 @@ from isar.drive.supervisor.stopping import (
     summarize_grid,
 )
 from isar.schema.steering import ProposalScore
+from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
 
 # Energy-window rule constants (LLM_HARNESS_DESIGN acquisition decisions, binding).
 LOW_MARGIN_MEV = 2.0          # low side = −(E_pred + LOW_MARGIN): span the anti-Stokes side
@@ -198,7 +199,7 @@ def _count_request(gridq: GridQ, *, kind: str, n_points: int, tolerance: float,
         previous = int(gridq.last_submitted_ncount or production_floor)
         requested = min(requested,
                         int(math.floor(previous * float(policy.get("ncount_growth_cap", 4.0)))),
-                        int(policy.get("max_ncount_per_scan", 4_000_000_000)))
+                        int(policy.get("max_ncount_per_scan", MAX_NCOUNT_PER_SCAN)))
         requested = max(requested, production_floor)
         minimum = production_floor
         diagnostics.update({"exposure_required": required, "exposure_current": current,
