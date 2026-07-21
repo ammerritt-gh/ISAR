@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from isar.drive.acquisition.acquire import _select_target, propose_scan, tracked_anchor_index
+from isar.drive.acquisition.acquire import (
+    _classification_link_diagnostics,
+    _select_target,
+    propose_scan,
+    tracked_anchor_index,
+)
 from isar.drive.acquisition.model import fit
 from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
 from isar.drive.supervisor.stopping import GridQ
@@ -262,6 +267,70 @@ def test_ap1_ambiguous_two_mode_state_uses_global_branch_information_for_breadth
         track_anchor_index=3, classify=lambda point: float(point.index))
     assert (pick.index, kind) == (6, "quicklook")
     assert "broaden" in reason
+
+
+def _ap3_broadening_grid():
+    grid = [GridQ(index=index, hkl=(2.0 + 0.05 * index, 0.0, 0.0),
+                  q=0.05 * index, tolerance=0.5) for index in range(21)]
+    anchor = _ambiguous_anchor(grid)
+    anchor.production_sequences = [10]
+    for index in (0, 1, 2, 4):
+        grid[index].n_quicklook = 1
+        grid[index].track_state = "ambiguous"
+        grid[index].evidence_master = {
+            "branch_candidates": [{"energy_meV": 0.45 * index, "sigma_meV": 0.08}],
+        }
+    return grid
+
+
+def test_ap3_broadening_discounts_zone_boundary_across_unmeasured_interval():
+    grid = _ap3_broadening_grid()
+
+    def classify(point):
+        if point.index == 5:
+            return 0.04
+        if point.index == 20:
+            return 0.089
+        return 0.01
+
+    pick, kind, reason, score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1,
+        track_anchor_index=3, classify=classify)
+
+    assert (pick.index, kind) == (5, "quicklook")
+    assert "broaden" in reason
+    diagnostics = score.evidence_transition
+    assert diagnostics["classification_information"] == 0.04
+    assert diagnostics["expected_identity_information"] < 0.04
+    assert diagnostics["unmeasured_gap_steps"] == 1
+    assert diagnostics["propagated_association_uncertainty"] > 0.0
+    assert score.classification_eig == diagnostics["expected_identity_information"]
+
+
+def test_distant_probe_can_still_win_when_identity_information_is_sufficient():
+    grid = _ap3_broadening_grid()
+
+    pick, kind, _reason, score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1,
+        track_anchor_index=3,
+        classify=lambda point: 0.25 if point.index == 20 else 0.04)
+
+    assert (pick.index, kind) == (20, "quicklook")
+    assert score.evidence_transition["unmeasured_gap_steps"] == 16
+    assert score.evidence_transition["expected_identity_information"] > 0.04
+
+
+def test_link_uncertainty_is_symmetric_on_both_sides_of_source():
+    grid = [GridQ(index=index, hkl=(2.0 + 0.05 * index, 0.0, 0.0),
+                  q=0.05 * index, tolerance=0.5) for index in range(7)]
+    for index in (1, 2, 3, 4, 5):
+        grid[index].n_quicklook = 1
+
+    left = _classification_link_diagnostics(grid, 3, 0, 0.04)
+    right = _classification_link_diagnostics(grid, 3, 6, 0.04)
+
+    assert left["unmeasured_gap_steps"] == right["unmeasured_gap_steps"] == 1
+    assert left["expected_identity_information"] == right["expected_identity_information"]
 
 
 def test_statistics_limited_ambiguous_anchor_may_receive_more_same_q_exposure():

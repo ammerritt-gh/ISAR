@@ -59,6 +59,7 @@ DEFAULT_FWHM_MEV = 0.5        # fallback energy resolution when /resolution is u
 # plausible phonon band; as the model seeds, σ_pred drops below FWHM and the window tightens as before.
 SURVEY_SIGMA_K = 3.0          # survey high side covers e_pred + k·σ_pred of the ω(q) predictive spread
 SURVEY_E_HI_MEV = 7.0         # meV ceiling on the survey high side: spans the acoustic band, clips the optic
+ASSOCIATION_UNCERTAINTY_PER_UNMEASURED_STEP = 0.15
 
 
 @dataclass
@@ -529,18 +530,74 @@ def _same_q_evidence_advanced(point: GridQ) -> bool:
     return max(point.evidence_update_sequences, default=-1) > max(point.production_sequences)
 
 
+def _association_probability(point: GridQ) -> float:
+    """Known-branch association carried by the newest authoritative source evidence."""
+    master = point.evidence_master or point.master or {}
+    direct = master.get("association_probability")
+    if direct is None:
+        posterior = master.get("branch_posterior") or {}
+        if posterior:
+            direct = sum(float(posterior.get(branch, 0.0))
+                         for branch in ("acoustic", "optic"))
+    try:
+        value = float(direct)
+    except (TypeError, ValueError):
+        value = 1.0
+    return min(max(value, 0.0), 1.0) if math.isfinite(value) else 1.0
+
+
+def _classification_link_diagnostics(grid: list[GridQ], source_index: int,
+                                     candidate_index: int, raw_information: float) -> dict:
+    """Discount identity information by uncertainty accumulated across unmeasured path links.
+
+    The decay is deliberately soft: it makes a disconnected endpoint less useful for *identity*
+    without making it infeasible.  Strong enough O6/O9 information can still justify a distant q.
+    """
+    lo, hi = sorted((int(source_index), int(candidate_index)))
+    # Count unvisited interior points plus the proposed (necessarily unvisited) endpoint.  Naming
+    # the endpoint explicitly keeps the uncertainty symmetric when broadening left or right.
+    unmeasured = (sum(not grid[index].visited for index in range(lo + 1, hi))
+                  + int(not grid[candidate_index].visited))
+    source_association = _association_probability(grid[source_index])
+    retention = 1.0 / (
+        1.0 + ASSOCIATION_UNCERTAINTY_PER_UNMEASURED_STEP * float(unmeasured))
+    propagated = source_association * retention
+    usable = max(float(raw_information), 0.0) * propagated
+    return {
+        "classification_information": _finite_or_none(raw_information),
+        "expected_identity_information": _finite_or_none(usable),
+        "unmeasured_gap_steps": int(unmeasured),
+        "source_association_probability": _finite_or_none(source_association),
+        "association_retention": _finite_or_none(retention),
+        "propagated_association_uncertainty": _finite_or_none(1.0 - propagated),
+    }
+
+
 def _broadening_classification_pick(grid: list[GridQ], source_index: int, classify):
-    """Best unvisited requested point once the local identity route stops making progress."""
+    """Best usable identity information once the local route stops making progress."""
     options = [point for point in grid if not point.visited]
     if not options:
-        return None, None
+        return None, None, None
     if classify is None:
         pick = min(options, key=lambda point: (abs(point.index - source_index), point.index))
-        return pick, None
-    scored = [(max(float(classify(point)), 0.0), point) for point in options]
-    information, pick = max(
-        scored, key=lambda item: (item[0], -abs(item[1].index - source_index), -item[1].index))
-    return pick, _finite_or_none(information)
+        diagnostics = _classification_link_diagnostics(grid, source_index, pick.index, 0.0)
+        return pick, None, diagnostics
+    scored = []
+    for point in options:
+        raw = max(float(classify(point)), 0.0)
+        diagnostics = _classification_link_diagnostics(grid, source_index, point.index, raw)
+        scored.append((float(diagnostics["expected_identity_information"] or 0.0),
+                       int(diagnostics["unmeasured_gap_steps"]), point, diagnostics))
+    best = scored[0]
+    for candidate in scored[1:]:
+        if candidate[0] > best[0] and not math.isclose(
+                candidate[0], best[0], rel_tol=1e-9, abs_tol=1e-12):
+            best = candidate
+        elif math.isclose(candidate[0], best[0], rel_tol=1e-9, abs_tol=1e-12):
+            if (candidate[1], candidate[2].index) < (best[1], best[2].index):
+                best = candidate
+    information, _gap, pick, diagnostics = best
+    return pick, _finite_or_none(information), diagnostics
 
 
 def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1,
@@ -577,27 +634,27 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
                         "tracked branch: revisit the ambiguous anchor using neighboring identity evidence",
                         {**evidence, **basis,
                          "transition_reason": "new_neighbor_revision_unlocked_identity_revisit"})
-            pick, information = _broadening_classification_pick(grid, anchor_index, classify)
+            pick, information, link = _broadening_classification_pick(
+                grid, anchor_index, classify)
             if pick is not None:
                 return (pick, "quicklook",
                         "tracked branch: broaden ambiguous identity to the most informative unvisited q",
-                        {**evidence, "source_hkl": list(anchor.hkl),
+                        {**evidence, **(link or {}), "source_hkl": list(anchor.hkl),
                          "selected_probe_hkl": list(pick.hkl),
-                         "classification_information": information,
                          "transition_reason": "local_identity_route_exhausted_broaden"})
             return None
         if (anchor.n_production >= anchor.max_production_batches
                 or not _same_q_evidence_advanced(anchor)):
-            pick, information = _broadening_classification_pick(grid, anchor_index, classify)
+            pick, information, link = _broadening_classification_pick(
+                grid, anchor_index, classify)
             if pick is not None:
                 reason = ("tracked branch: strategy ceiling reached; broaden to an untried q"
                           if anchor.n_production >= anchor.max_production_batches else
                           "tracked branch: same-q evidence did not advance; broaden to an untried q")
                 return (pick, "quicklook",
                         reason,
-                        {**evidence, "source_hkl": list(anchor.hkl),
+                        {**evidence, **(link or {}), "source_hkl": list(anchor.hkl),
                          "selected_probe_hkl": list(pick.hkl),
-                         "classification_information": information,
                          "transition_reason": "unchanged_authoritative_evidence_broaden"})
             return None
         return (anchor, "production",
@@ -638,13 +695,13 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
                             "tracked branch: revisit the ambiguous frontier using newer adjacent identity evidence",
                             basis))
             continue
-        pick, information = _broadening_classification_pick(grid, frontier_index, classify)
+        pick, information, link = _broadening_classification_pick(
+            grid, frontier_index, classify)
         if pick is not None:
             actions.append((4, pick.index, pick, "quicklook",
                             "tracked branch: broaden ambiguous frontier to the most informative unvisited q",
-                            {**evidence, "source_hkl": list(frontier.hkl),
+                            {**evidence, **(link or {}), "source_hkl": list(frontier.hkl),
                              "selected_probe_hkl": list(pick.hkl),
-                             "classification_information": information,
                              "transition_reason": "local_frontier_exhausted_broaden"}))
     if not actions:
         return None
@@ -744,6 +801,14 @@ def _select_target(grid: list[GridQ], model, *,
             return pick, kind, reason, ProposalScore(
                 method="classification" if differentiation else "explore",
                 c_spent=float(pick.counts_spent), reason=reason,
+                classification_eig=(
+                    _finite_or_none((evidence_transition or {}).get(
+                        "expected_identity_information"))
+                    if evidence_transition else None),
+                combined_information=(
+                    _finite_or_none((evidence_transition or {}).get(
+                        "expected_identity_information"))
+                    if evidence_transition else None),
                 purpose="differentiate" if differentiation else "hypothesis_check",
                 evidence_transition=evidence_transition)
         # Once a connected identity frontier has no admissible action, global deficit ranking must
