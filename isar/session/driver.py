@@ -22,7 +22,7 @@ import time
 import tempfile
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 
 import numpy as np
@@ -171,6 +171,10 @@ class FitOutcome:
     selected_candidate_index: int | None = None
     track_state: str | None = None
     track_revision: int | None = None
+    # A reduced-q origin the tracker infers rather than measures: unresolvable by construction, so
+    # it carries no certifiable interval and is excluded from precision coverage.
+    structural_endpoint_status: str | None = None
+    is_reduced_q_origin: bool = False
     spectrum_ref: str | None = None
     predictive_ref: str | None = None
     master_revision: str | None = None
@@ -1774,7 +1778,7 @@ def _select_mode(outcome: dict, candidate: dict, candidate_index: int, assignmen
     outcome["branch_weight"] = float(probabilities.get(target_branch, 0.0))
     outcome["assignment_entropy"] = assignment.get("assignment_entropy")
     outcome["structural_endpoint_status"] = assignment.get("structural_endpoint_status")
-    outcome["is_reduced_q_origin"] = assignment.get("is_reduced_q_origin")
+    outcome["is_reduced_q_origin"] = bool(assignment.get("is_reduced_q_origin", False))
 
 
 def _clear_tracked_selection(outcome: dict, assignment: dict, revision: int) -> None:
@@ -1789,7 +1793,7 @@ def _clear_tracked_selection(outcome: dict, assignment: dict, revision: int) -> 
     outcome["branch_weight"] = None
     outcome["assignment_entropy"] = assignment.get("assignment_entropy")
     outcome["structural_endpoint_status"] = assignment.get("structural_endpoint_status")
-    outcome["is_reduced_q_origin"] = assignment.get("is_reduced_q_origin")
+    outcome["is_reduced_q_origin"] = bool(assignment.get("is_reduced_q_origin", False))
     # The immutable branch_candidates table remains the complete fit evidence and can restore these
     # mode-specific values after a later reassignment.  The scalar compatibility view must abstain.
     for field in ("omega0", "omega0_err", "gamma", "interval", "omega0_profile",
@@ -1991,7 +1995,7 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
         summary.n_fitted_this_run += 1 if entry.status in ("fitted", "non_result") else 0
         oc = entry.detectors.get(det)
         if oc:
-            summary.outcomes.append((scan, FitOutcome(**oc) if not isinstance(oc, FitOutcome) else oc))
+            summary.outcomes.append((scan, _coerce_fit_outcome(oc)))
 
     # Collate (all records, whole-experiment view).
     with timer.stage("collate"):
@@ -3375,8 +3379,31 @@ def _split_csv(s):
     return [x.strip() for x in s.split(",") if x.strip()] if s else None
 
 
+def _coerce_fit_outcome(value: dict | FitOutcome) -> FitOutcome:
+    """The one dict→dataclass conversion at the persistence boundary.
+
+    A key persisted by a newer writer but not declared here must not kill the run: the carry path
+    rehydrates every previously-fitted scan on every iteration, so a strict ``FitOutcome(**d)``
+    turns additive schema drift into a campaign-wide abort far from its cause. Unknown keys are
+    reported and dropped *from this view only* — ``ScanEntry.detectors`` keeps the raw dict, so no
+    stored value is lost. The writer/schema invariant test is what fails loudly during development.
+    """
+    if isinstance(value, FitOutcome):
+        return value
+    declared = {f.name for f in fields(FitOutcome)}
+    unknown = sorted(set(value) - declared)
+    if unknown:
+        log.warning("ledger outcome carries field(s) not declared on FitOutcome: %s — dropped from "
+                    "the dataclass view; the raw ledger entry retains them", ", ".join(unknown))
+    kept = {k: v for k, v in value.items() if k in declared}
+    # Ledgers written before is_reduced_q_origin was declared persist None for it. Normalizing on
+    # read as well as at the writer keeps the bool annotation honest for old and new data alike.
+    kept["is_reduced_q_origin"] = bool(kept.get("is_reduced_q_origin", False))
+    return FitOutcome(**kept)
+
+
 def _outcome_from_entry(entry: ScanEntry, det: str) -> FitOutcome:
-    return FitOutcome(**entry.detectors[det])
+    return _coerce_fit_outcome(entry.detectors[det])
 
 
 def _maybe_adjudicate(measurements, card) -> list[str]:
