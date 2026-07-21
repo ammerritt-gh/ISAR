@@ -17,7 +17,7 @@
 > give the citation; citation-confidence flags are collected at the end (the reference list is meant
 > to seed a reading library).
 
-### Tracked-branch frontier and evidence semantics (updated 2026-07-20)
+### Tracked-branch frontier and evidence semantics (updated 2026-07-21)
 
 `target_selector="tracked_branch"` makes identity coverage precede final precision. The driver first
 confirms an optic target at the point nearest reduced q=0. A gapless acoustic target instead starts at
@@ -30,15 +30,28 @@ plotted line.
 
 Tracked campaigns use this connected walk from their resolvable anchor; they do not begin with a full
 path survey. At the anchor and every later frontier, acquisition distinguishes statistical evidence
-from identity evidence. No fitted candidates, or candidates whose conservative precision remains above
-the objective tolerance, permit another same-q production measurement. Once fitted candidates are
-precise enough but their identity remains ambiguous, another same-q exposure is not useful identity
-evidence: the driver immediately chooses an unvisited adjacent classification point. Expected
-classification information chooses between the two sides when available, with path order as the
-deterministic tie-breaker. The whole path is retracked after that result before another proposal is
-made. An ambiguous point may be revisited only after a neighbor has produced fitted candidate/track
-evidence—a submitted or visited-only quicklook is insufficient—and only within the configured bridge
-allowance.
+from identity evidence, and these are **separate adequacy questions**. Candidate precision above the
+objective tolerance permits another same-q production. Precision adequacy does *not* settle identity:
+whether the branch label is decided is the tracker's own confirmation predicate
+(`local_identity_clear`, from `target_probability` and `identity_entropy`), never the ω₀ interval
+width. Reading the interval as an identity verdict is what stopped OP9/OP10 (O27) — a 0.129 meV
+interval against a 0.5 meV tolerance made an undecided assignment look settled.
+
+Once candidates are precise but their identity is undecided, cheap discrimination still comes first:
+the driver prefers an unvisited adjacent classification point, chosen by expected classification
+information with path order as the deterministic tie-breaker, and the whole path is retracked after
+that result before another proposal is made. A neighbor-informed same-q revisit still requires that
+neighbor to have produced fitted candidate/track evidence — a submitted or visited-only quicklook is
+insufficient.
+
+When those routes are spent the driver does **not** stop while authorised work remains. Because a
+tracked target is confirmed by continuity, an undecided identity can be blocked by a hole in the
+*rival* trajectory rather than by anything about the frontier. Acquisition therefore walks back along
+the confirmed run and, where a q resolved fewer modes than the frontier does, spends a production
+there to restore the rival evidence, bounded per gap q so a reconnect that never resolves yields the
+beam. Only below that does the frontier receive more of its own exposure. A proposal-less frontier
+that still holds authorised same-q work is a controller fault and raises `ControllerInvariantError`
+rather than being reported as a scientific `branch_ambiguity` result.
 
 The state contract deliberately separates three facts. A current pooled fit is **evidence** that q was
 measured and preserves every fitted mode candidate. A branch assignment is **identity** and may remain
@@ -47,13 +60,27 @@ convergence, or refreshes the target prior. Candidate modes remain visible as op
 while delivery is null.
 
 `maximum_production_batches_per_q` is a same-q strategy ceiling, not a quota and not an absence verdict.
+It is also the **single** same-q budget: every production at a q charges to it, whether the driver
+called that scan statistics, an identity revisit, or a rival reconnection. `maximum_bridge_steps`
+means path geometry only — how far acquisition may cross an unresolved gap — and never caps same-q
+counting. Charging identity revisits to the geometry knob (a default of one) is the second half of
+the OP9/OP10 stop (O27); it made the production ladder, the ncount escalation and `exposure_saturated`
+unreachable at an ambiguous frontier. `identity_revisit_sequences` survives as provenance, not as a
+spending allowance.
+
 Adequate ambiguous evidence switches to an adjacent differentiation probe immediately; it does not wait
 for the ceiling. Statistics-limited evidence may continue at the same q until that ceiling, at which
-point the driver must try an unmeasured adjacent probe before revisiting the frontier. Revisits remain
-bounded by `maximum_bridge_steps`. If repeated requests clamp to the same instrument dwell (or
-the interval/no-progress diagnostic independently proves saturation), and no connected classification
-route remains after that allowance, the durable outcome is `incomplete` with `branch_ambiguity` plus
-`frontier_blocked`. It never pauses for an operator or blindly repeats the saturated q.
+point the driver must try an unmeasured adjacent probe before revisiting the frontier. The durable
+outcome is `incomplete` with `branch_ambiguity` plus `frontier_blocked` only once no connected
+classification route remains *and* the q is genuinely done: its same-q ceiling reached, its repeated
+requests clamped to the same instrument dwell, or a saturation diagnostic independently proved it.
+Alongside the interval/no-progress brakes there is an identity-space one, `identity_saturated`, for
+the case those cannot speak to — an identity-ambiguous q never matches the target branch, so it never
+accumulates the pooled-master updates `interval_floored` reads. It requires both the target
+probability and the identity entropy to stall across a real exposure increase; a partial identity
+signal is unknown, not saturation, and unknown means keep measuring. The driver never pauses for an
+operator, never blindly repeats a saturated q, and never reports ambiguity while it still holds
+authorised scans.
 Once the acoustic rival's identity entropy is below the stopping threshold, it remains labeled context
 and receives no target-precision acquisition value.
 

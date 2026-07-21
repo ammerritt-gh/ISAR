@@ -956,10 +956,12 @@ def _select_target(grid: list[GridQ], model, *,
                   f"and count rate (predicted σ={model.predict(pick.q)[1]:g} meV)")
         return pick, "quicklook", reason, ProposalScore(
             method="explore", c_spent=float(pick.counts_spent), reason=reason, purpose=purpose)
+    # ``same_q_ceiling_reached`` rather than ``max_production_batches + maximum_bridge_steps``: the
+    # geometry knob never caps same-q counting (O27).  This is the general ranking path, so leaving
+    # the old sum here would have kept a second, larger effective ceiling for non-tracked selectors.
     candidates = [g for g in grid if g.precision_coverage_eligible
                   and not (g.converged or g.stuck)
-                  and not (g.n_production >= (
-                      g.max_production_batches + g.maximum_bridge_steps)
+                  and not (g.same_q_ceiling_reached
                            and (g.evidence_master is not None and g.master is None
                                 or g.track_state in {
                                     "ambiguous", "missing", "provisional", "blocked"}))]

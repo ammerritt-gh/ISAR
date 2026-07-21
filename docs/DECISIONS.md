@@ -434,6 +434,39 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   delivery and is excluded from prior admission and precision completion. AP3's period already makes
   H=3 a zone boundary; automatic lattice/space-group zone derivation remains Planned. Phase 0 remains
   Partial pending campaign replay and unified optic regression gates.
+- **O27.** (2026-07-21, Implemented for the tracked optic path; supersedes the same-q revisit
+  allowance of O24/O25) **Branch identity is an assignment question, and a blocked identity may be a
+  gap in the rival trajectory rather than a shortage of counts at the frontier.** OP9 and OP10 ran
+  OP8's objective, controller, target and tolerance and stopped `branch_ambiguity` at H=2.75 holding
+  eleven of twelve authorised productions, with `exposure_saturated` false and the per-scan ceiling
+  three orders of magnitude above the largest scan submitted; they terminated on running out of
+  unvisited q to broaden to. Two causes. Identity adequacy was read off ω₀ *precision* against the ω₀
+  tolerance, so a 0.129 meV interval against a 0.5 meV tolerance made an undecided assignment look
+  settled and permanently suppressed the same-q rung gated on `not adequate`. And O24/O25 charged the
+  same-q identity revisit to `maximum_bridge_steps`, a path-geometry knob defaulting to one, which
+  made the production ladder, the ncount escalation and `exposure_saturated` unreachable at an
+  ambiguous frontier. Precision adequacy and identity adequacy are now distinct; identity is the
+  tracker's own confirmation predicate (`target_probability`, `identity_entropy`,
+  `local_identity_clear`) carried additively through `results.csv` to `GridQ`, never re-derived from
+  `branch_posterior`, which the driver clears for exactly the ambiguous case. Every same-q production
+  charges to `maximum_production_batches_per_q`; `maximum_bridge_steps` again means path geometry
+  only, and the newer-neighbour basis of O25 is retained as the *preferential* revisit trigger rather
+  than a permanent precondition for further counting. Counting alone was insufficient: a replay spent
+  ~1.7e10 counts at H=2.75 across twelve productions without moving an assignment whose two
+  candidates (5.53 and 7.72 meV, ~22σ apart) were already resolved as peaks and ambiguous only in
+  their labels, because the acoustic branch had gone unfitted at 2.60/2.65/2.70. Acquisition
+  therefore reconnects the rival branch at an under-resolved q on the confirmed run behind a blocked
+  frontier, below broadening and above the frontier's own same-q fallback, capped per gap q so a
+  reconnect that never resolves yields the beam instead of escalating to that point's ceiling. A
+  proposal-less frontier still holding authorised same-q work raises `ControllerInvariantError`
+  instead of being reported as a scientific result; O24's honest-`incomplete` claim held only when
+  the ceiling or saturation was genuinely reached. The frozen OP10 envelope replays to `met`, 21/21
+  converged, at 63 scans and 1.26e9 counts against OP8's 64 and 1.41e9, needing one 25 M reconnect
+  scan at H=2.70. The `identity_saturated` brake (the identity-space analogue of `interval_floored`,
+  for points whose branch never matches the target and so never reach `master_updates`) is
+  unit-tested but did not fire in that replay and remains campaign-unproven; AP1/AP2/AP3 campaign
+  replays were not rerun, so O25/O26 stay Partial. Evidence:
+  `docs/campaigns/2026-07-21_OP9_OP10_TRACKED_FRONTIER.md`.
 
 ## Session status update
 
