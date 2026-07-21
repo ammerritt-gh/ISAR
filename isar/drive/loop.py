@@ -39,6 +39,7 @@ from isar.drive.acquisition.acquire import (
     BudgetInsufficientForMinimumBatch,
     InstrumentLimitBelowMinimumBatch,
     ScanProposal,
+    _candidate_precision,
     normalize_proposal_score,
     points_in_window,
     propose_scan,
@@ -730,6 +731,9 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         "branch_candidates": row.get("branch_candidates"),
         "selected_candidate_index": row.get("selected_candidate_index"),
         "track_state": row.get("track_state"), "track_revision": row.get("track_revision"),
+        "target_probability": row.get("target_probability"),
+        "identity_entropy": row.get("identity_entropy"),
+        "local_identity_clear": row.get("local_identity_clear"),
         "modality": row.get("modality"),
         "gamma_at_bound": bool(row.get("gamma_at_bound", False)),
         "linewidth_state": row.get("linewidth_state"),
@@ -790,6 +794,9 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         "branch_candidates": row.get("branch_candidates"),
         "selected_candidate_index": row.get("selected_candidate_index"),
         "track_state": row.get("track_state"), "track_revision": row.get("track_revision"),
+        "target_probability": row.get("target_probability"),
+        "identity_entropy": row.get("identity_entropy"),
+        "local_identity_clear": row.get("local_identity_clear"),
         "modality": row.get("modality"),
         "gamma_at_bound": bool(row.get("gamma_at_bound", False)),
         "linewidth_state": row.get("linewidth_state"),
@@ -1827,6 +1834,40 @@ def _workspace_zone_period(workspace: Path) -> float | None:
         return None
 
 
+class ControllerInvariantError(RuntimeError):
+    """Acquisition abandoned a frontier it was still authorized to act on.
+
+    This is a controller defect, never a scientific result, so it is raised rather than reported.
+    The loop breaks unconditionally after :func:`_blocked_frontier_decision`, so a softened verdict
+    would end the campaign anyway — and OP10 showed what that costs: six q reported as
+    ``branch_ambiguity`` while holding 11 of 12 authorized productions and an untouched per-scan
+    ceiling three orders of magnitude above the largest scan actually submitted.
+    """
+
+
+def _invariant_payload(point) -> dict:
+    """Everything needed to reconstruct why acquisition declined to act on this point."""
+    return {
+        "path_index": point.index,
+        "hkl": list(point.hkl),
+        "track_state": point.track_state,
+        "target_probability": point.target_probability,
+        "identity_entropy": point.identity_entropy,
+        "local_identity_clear": point.local_identity_clear,
+        "candidate_precision_meV": _candidate_precision(
+            point.evidence_master or point.master or {}),
+        "n_production": point.n_production,
+        "max_production_batches": point.max_production_batches,
+        "same_q_ceiling_reached": point.same_q_ceiling_reached,
+        "exposure_saturated": point.exposure_saturated,
+        "identity_saturated": point.identity_saturated,
+        "n_quicklook": point.n_quicklook,
+        "production_sequences": list(point.production_sequences),
+        "identity_revisit_sequences": list(point.identity_revisit_sequences),
+        "evidence_update_sequences": list(point.evidence_update_sequences),
+    }
+
+
 def _blocked_frontier_decision(objective, grid, decision: StopDecision) -> StopDecision:
     """Turn a proposal-less tracked identity frontier into an honest incomplete outcome."""
     if (decision.state != "continue"
@@ -1841,6 +1882,16 @@ def _blocked_frontier_decision(objective, grid, decision: StopDecision) -> StopD
     # has already checked local statistics, newer-neighbor revisit tokens, every unvisited requested
     # point ranked by branch information, and saturation.  Duplicating an approximate route test here
     # previously let the loop break while still reporting ``continue``.
+    actionable = [point for point in blocked if point.same_q_identity_work_remains]
+    if actionable:
+        details = "; ".join(
+            f"path index {point.index} {tuple(point.hkl)} "
+            f"{point.n_production}/{point.max_production_batches} productions"
+            for point in actionable)
+        raise ControllerInvariantError(
+            "acquisition returned no proposal for an actionable blocked frontier: "
+            f"{details}. Authorized same-q identity work remained, so branch ambiguity here is a "
+            f"controller fault rather than a result. state={[_invariant_payload(p) for p in actionable]}")
     indices = ", ".join(str(point.index) for point in blocked)
     per_q = [dict(row) for row in decision.per_q]
     for point in blocked:

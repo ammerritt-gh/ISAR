@@ -292,6 +292,12 @@ def test_adequate_ambiguous_acoustic_anchor_immediately_moves_to_best_adjacent_p
         "branch_probability": 0.8617,
         "assignment_entropy": 0.4836,
         "adequate": True,
+        # Precision adequacy split from identity adequacy (OP10).  This fixture sets no tracker
+        # identity fields, so identity reads unknown — and unknown is never treated as clear.
+        "precision_adequate": True,
+        "target_probability": None,
+        "identity_entropy": None,
+        "local_identity_clear": False,
         "classification_information": 0.7,
         "transition_reason": "adequate_candidates_ambiguous_identity",
     }
@@ -554,3 +560,175 @@ def test_ap2_half_mev_sequence_broadens_after_one_middle_point_identity_revisit(
         (2.15, "quicklook"), (2.10, "quicklook"), (2.05, "quicklook"),
         (2.10, "production"), (2.00, "quicklook"),
     ]
+
+
+# --- OP10: a precise but identity-ambiguous frontier must keep counting ----------------------
+#
+# OP10 stopped `incomplete` at path index 15 (H=2.75) with n_production=1 of an authorized 12,
+# exposure_saturated False and a 10e9 per-scan ceiling untouched.  The frontier carried two fitted
+# candidates whose centres were precise (0.129 meV against a 0.5 meV tolerance) while the branch
+# assignment stayed undecided.  Precision adequacy was read as identity adequacy, which suppressed
+# same-q production, and the only same-q route left was capped by ``maximum_bridge_steps``.  Once
+# broadening ran out of unvisited q the controller returned no proposal at all.
+
+
+def _op10_frontier(grid, *, local_identity_clear=False, n_production=1):
+    """Index 1 as OP10's blocked frontier: centres precise, branch identity undecided."""
+    grid[0].n_quicklook = 1
+    grid[0].track_state = "confirmed"
+    frontier = grid[1]
+    frontier.n_quicklook = 1
+    frontier.n_production = n_production
+    frontier.production_sequences = [20] * n_production
+    frontier.identity_revisit_sequences = [20] * n_production
+    frontier.track_state = "ambiguous"
+    frontier.target_probability = 0.95 if local_identity_clear else 0.62
+    frontier.identity_entropy = 0.05 if local_identity_clear else 0.66
+    frontier.local_identity_clear = local_identity_clear
+    frontier.evidence_master = {
+        "target_branch": "optic",
+        "diagnostic_halfwidth": 0.1287,
+        "branch_candidates": [
+            {"energy_meV": 7.5787, "sigma_meV": 0.1287},
+            {"energy_meV": 6.9012, "sigma_meV": 0.1287},
+        ],
+    }
+    return frontier
+
+
+def _visit_rest(grid, start):
+    """Spend every remaining classification route, leaving broadening nothing to pick."""
+    for point in grid[start:]:
+        point.n_quicklook = 1
+        point.track_state = "blocked"
+
+
+def test_op10_ambiguous_frontier_keeps_counting_once_broadening_is_exhausted():
+    grid = _grid()
+    frontier = _op10_frontier(grid)
+    _visit_rest(grid, 2)
+
+    pick, kind, reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
+    assert pick is not None, "a frontier with same-q budget left must not stop the campaign"
+    assert (pick.index, kind) == (frontier.index, "production")
+    assert "identity" in reason
+
+
+def test_op10_frontier_buys_adjacent_evidence_before_counting_itself():
+    """Neighbour-first ordering survives: cheap discrimination outranks brute-force dwell."""
+    grid = _grid()
+    frontier = _op10_frontier(grid)
+    # grid[2] unvisited -> the provisional bridge is still available.
+    pick, kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
+    assert (pick.index, kind) == (2, "quicklook")
+    assert pick.index != frontier.index
+
+
+def test_op10_frontier_broadens_before_falling_back_to_same_q():
+    grid = _grid()
+    _op10_frontier(grid)
+    grid[2].n_quicklook = 1
+    grid[2].track_state = "blocked"
+    # grid[3:] stay unvisited, so an informative broadening probe still exists.
+    pick, kind, reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1,
+        classify=lambda _point: 1.0)
+    assert kind == "quicklook"
+    assert "broaden" in reason
+
+
+def test_single_candidate_can_still_be_identity_ambiguous():
+    """Candidate count is diagnostic, not a criterion: one mode can be acoustic or optic."""
+    grid = _grid()
+    frontier = _op10_frontier(grid)
+    frontier.evidence_master["branch_candidates"] = [
+        {"energy_meV": 7.5787, "sigma_meV": 0.1287},
+    ]
+    _visit_rest(grid, 2)
+
+    pick, kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
+    assert (pick.index, kind) == (frontier.index, "production")
+
+
+def test_two_candidates_with_decisive_identity_are_not_counted_again():
+    """Two separated candidates with one-to-one ownership need no identity production."""
+    grid = _grid()
+    _op10_frontier(grid, local_identity_clear=True)
+    _visit_rest(grid, 2)
+
+    pick, _kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
+    assert pick is None or pick.index != 1
+
+
+def test_locally_clear_but_disconnected_frontier_is_not_counted_again():
+    """A decisive local posterior behind a path gap is a connectivity problem, not a count problem."""
+    grid = _grid()
+    frontier = _op10_frontier(grid, local_identity_clear=True)
+    frontier.track_state = "blocked"
+    _visit_rest(grid, 2)
+
+    pick, _kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
+    assert pick is None or pick.index != 1
+
+
+def test_missing_frontier_identity_also_earns_the_same_q_fallback():
+    """``_frontier_states`` labels the frontier ``missing`` when no candidate was selected."""
+    grid = _grid()
+    frontier = _op10_frontier(grid)
+    frontier.track_state = "missing"
+    _visit_rest(grid, 2)
+
+    pick, kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
+    assert (pick.index, kind) == (frontier.index, "production")
+
+
+def test_identity_saturation_needs_both_metrics_and_a_real_exposure_increase():
+    """A partial or cheap identity history is not evidence that counting cannot help."""
+    frontier = GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
+                     track_state="ambiguous", local_identity_clear=False)
+    stalled = [{"effective_exposure": 25e6, "target_probability": 0.75, "identity_entropy": 0.56},
+               {"effective_exposure": 50e6, "target_probability": 0.751, "identity_entropy": 0.559},
+               {"effective_exposure": 100e6, "target_probability": 0.752, "identity_entropy": 0.558}]
+    frontier.identity_updates = [dict(u) for u in stalled]
+    assert frontier.identity_saturated
+
+    # Only one metric available → unknown, not saturated.
+    partial = [{k: v for k, v in u.items() if k != "target_probability"} for u in stalled]
+    frontier.identity_updates = partial
+    assert not frontier.identity_saturated
+
+    # Exposure barely moved → the window proves nothing about counting.
+    flat = [dict(u, effective_exposure=25e6) for u in stalled]
+    frontier.identity_updates = flat
+    assert not frontier.identity_saturated
+
+    # Identity actually improving → keep counting.
+    improving = [dict(stalled[0]),
+                 dict(stalled[1], target_probability=0.85, identity_entropy=0.40),
+                 dict(stalled[2], target_probability=0.93, identity_entropy=0.22)]
+    frontier.identity_updates = improving
+    assert not frontier.identity_saturated
+
+
+def test_same_q_budget_is_the_production_ceiling_not_the_bridge_allowance():
+    grid = _grid()
+    frontier = _op10_frontier(grid, n_production=11)
+    frontier.max_production_batches = 12
+    _visit_rest(grid, 2)
+
+    pick, kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
+    assert (pick.index, kind) == (frontier.index, "production"), (
+        "eleven same-q productions against a ceiling of twelve must leave one more")
+
+    frontier.n_production = 12
+    frontier.production_sequences = [20] * 12
+    pick, _kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
+    assert pick is None or pick.index != frontier.index

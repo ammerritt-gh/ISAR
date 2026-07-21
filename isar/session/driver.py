@@ -171,6 +171,14 @@ class FitOutcome:
     selected_candidate_index: int | None = None
     track_state: str | None = None
     track_revision: int | None = None
+    # The tracker's local identity verdict, retained even when the scalar selection is withdrawn.
+    # ``track_state`` says whether this q is connected to the confirmed trajectory; these say whether
+    # its branch label is decisive *here*.  Acquisition needs the difference to tell an undecided
+    # label (more counting helps) from a decided label behind a path gap (more counting cannot).
+    # ``None`` means a ledger predating these columns, i.e. unknown — never "clear".
+    target_probability: float | None = None
+    identity_entropy: float | None = None
+    local_identity_clear: bool | None = None
     # A reduced-q origin the tracker infers rather than measures: unresolvable by construction, so
     # it carries no certifiable interval and is excluded from precision coverage.
     structural_endpoint_status: str | None = None
@@ -1777,8 +1785,23 @@ def _select_mode(outcome: dict, candidate: dict, candidate_index: int, assignmen
     outcome["branch_posterior"] = probabilities
     outcome["branch_weight"] = float(probabilities.get(target_branch, 0.0))
     outcome["assignment_entropy"] = assignment.get("assignment_entropy")
+    _carry_local_identity(outcome, assignment)
     outcome["structural_endpoint_status"] = assignment.get("structural_endpoint_status")
     outcome["is_reduced_q_origin"] = bool(assignment.get("is_reduced_q_origin", False))
+
+
+def _carry_local_identity(outcome: dict, assignment: dict) -> None:
+    """Carry the tracker's local identity verdict onto the outcome, selected or not.
+
+    These survive :func:`_clear_tracked_selection` on purpose.  That helper withdraws the *scalar
+    selection* so nothing stale is certifiable, but acquisition needs the local identity evidence
+    precisely when the selection is absent — that is how it tells an undecided label (count more)
+    from a decided label behind a path gap (counting cannot help).
+    """
+    outcome["target_probability"] = assignment.get("target_probability")
+    outcome["identity_entropy"] = assignment.get("identity_entropy")
+    clear = assignment.get("local_identity_clear")
+    outcome["local_identity_clear"] = None if clear is None else bool(clear)
 
 
 def _clear_tracked_selection(outcome: dict, assignment: dict, revision: int) -> None:
@@ -1792,6 +1815,7 @@ def _clear_tracked_selection(outcome: dict, assignment: dict, revision: int) -> 
     outcome["branch_posterior"] = None
     outcome["branch_weight"] = None
     outcome["assignment_entropy"] = assignment.get("assignment_entropy")
+    _carry_local_identity(outcome, assignment)
     outcome["structural_endpoint_status"] = assignment.get("structural_endpoint_status")
     outcome["is_reduced_q_origin"] = bool(assignment.get("is_reduced_q_origin", False))
     # The immutable branch_candidates table remains the complete fit evidence and can restore these
@@ -3454,6 +3478,7 @@ _CSV_COLUMNS = [
     "candidate_id", "candidate_state", "acquisition_id",
     "branch_candidates", "selected_candidate_index", "track_state", "track_revision",
     "structural_endpoint_status", "is_reduced_q_origin",
+    "target_probability", "identity_entropy", "local_identity_clear",
     "spectrum_ref", "predictive_ref", "master_revision", "model_interval_lo",
     "model_interval_med", "model_interval_hi", "model_robust", "model_entropy",
     "gamma_at_bound", "linewidth_state",
@@ -3534,6 +3559,9 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                                       if oc.get("branch_candidates") is not None else None),
                 "selected_candidate_index": oc.get("selected_candidate_index"),
                 "track_state": oc.get("track_state"), "track_revision": oc.get("track_revision"),
+                "target_probability": oc.get("target_probability"),
+                "identity_entropy": oc.get("identity_entropy"),
+                "local_identity_clear": oc.get("local_identity_clear"),
                 "structural_endpoint_status": oc.get("structural_endpoint_status"),
                 "is_reduced_q_origin": oc.get("is_reduced_q_origin"),
                 "spectrum_ref": oc.get("spectrum_ref"),

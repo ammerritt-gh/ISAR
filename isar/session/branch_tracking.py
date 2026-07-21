@@ -322,6 +322,12 @@ def _frontier_states(assignments: list[dict], anchor: int, *, entropy_stop: floa
                   and row.get("target_probability", 0.0) >= CONFIRMED_PROBABILITY
                   and row.get("identity_entropy", math.inf) <= entropy_stop)
              for row in assignments]
+    # Persist the verdict rather than leaving it implicit in ``track_state``.  Acquisition needs to
+    # tell "identity is undecided here" (more counting can help) from "identity is decided but this
+    # q is not connected to the trajectory" (more counting cannot), and ``track_state`` alone
+    # collapses both into ``ambiguous``/``blocked``.
+    for row, is_clear in zip(assignments, clear):
+        row["local_identity_clear"] = is_clear
     for row in assignments:
         row["track_state"] = "blocked"
     if not assignments:

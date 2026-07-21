@@ -167,14 +167,25 @@ def test_scan_declines_do_not_make_a_tracked_frontier_terminal():
     assert decision.reasons == []
 
 
-def test_exhausted_tracked_identity_route_is_honestly_incomplete():
-    frozen = shipped_hypothesis_snapshot("acoustic", (-2.0, 12.0))
-    objective = ObjectiveSpec(
+def _blocked_identity_objective(branch="acoustic"):
+    frozen = shipped_hypothesis_snapshot(branch, (-2.0, 12.0))
+    return ObjectiveSpec(
         path=[(2.0, 0.0, 0.0), (2.05, 0.0, 0.0)], tolerance_meV=0.5,
-        budget={"kind": "neutrons", "amount": 1e12}, target_branch="acoustic",
+        budget={"kind": "neutrons", "amount": 1e12}, target_branch=branch,
         target_selector="tracked_branch", **frozen)
+
+
+def test_exhausted_tracked_identity_route_is_honestly_incomplete():
+    """Honest incomplete requires the same-q ceiling actually reached, not merely a blocked route.
+
+    Before the OP10 repair this fixture used n_production=1 against a ceiling of eight and still
+    reported a scientific incomplete.  That is the exact shape of the OP10 failure, so it is now an
+    invariant violation (covered below) rather than a result.
+    """
+    objective = _blocked_identity_objective()
     anchor = GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
-                   n_quicklook=1, n_production=1, track_state="ambiguous")
+                   n_quicklook=1, track_state="ambiguous", max_production_batches=8)
+    anchor.n_production = 8
     anchor.evidence_master = {
         "branch_candidates": [{"energy_meV": 5.98, "sigma_meV": 0.05}],
         "diagnostic_halfwidth": 0.05,
@@ -185,7 +196,32 @@ def test_exhausted_tracked_identity_route_is_honestly_incomplete():
         objective, [anchor, neighbor], StopDecision("continue", [], []))
     assert decision.state == "incomplete"
     assert "branch_ambiguity" in decision.reasons[0]
-    assert "classification route" in decision.reasons[0]
+
+
+def test_proposal_less_frontier_with_same_q_budget_left_is_a_controller_fault():
+    """OP10 regression: a stoppable-looking frontier that still has authorized scans is a bug.
+
+    OP10 reported ``branch_ambiguity`` at six points whose n_production was 0 or 1 against an
+    authorized 12, with exposure_saturated False.  Presenting that as a scientific result hid a
+    controller defect, so the loop must fail loudly instead.
+    """
+    objective = _blocked_identity_objective()
+    anchor = GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
+                   n_quicklook=1, track_state="ambiguous", max_production_batches=12)
+    anchor.n_production = 1
+    anchor.local_identity_clear = False
+    anchor.evidence_master = {
+        "branch_candidates": [{"energy_meV": 5.98, "sigma_meV": 0.05}],
+        "diagnostic_halfwidth": 0.05,
+    }
+    neighbor = GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
+                     n_quicklook=1, track_state="blocked")
+    with pytest.raises(loop_mod.ControllerInvariantError) as excinfo:
+        loop_mod._blocked_frontier_decision(
+            objective, [anchor, neighbor], StopDecision("continue", [], []))
+    message = str(excinfo.value)
+    assert "1/12" in message                       # the unspent budget is named
+    assert "path index 0" in message
 
 
 def test_pooled_selected_optic_suppresses_false_missed_window_from_acoustic_individual():

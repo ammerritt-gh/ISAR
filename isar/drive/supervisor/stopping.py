@@ -113,6 +113,17 @@ MAX_PROD_ATTEMPTS = 8         # compatibility/diagnostic threshold; never a stop
 
 
 # --------------------------------------------------------------------------- grid summary
+def _finite_or_none(value) -> float | None:
+    """``value`` as a finite float, else ``None`` — non-numeric ledger cells never raise here."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 @dataclass
 class GridQ:
     """A per-grid-point rollup the acquisition function and the stopping criterion both consume.
@@ -171,6 +182,19 @@ class GridQ:
     track_revision: int | None = None
     structural_endpoint_status: str | None = None
     is_reduced_q_origin: bool = False
+    # Local branch identity, carried verbatim from the tracker's own confirmation predicate
+    # (``branch_tracking._frontier_states``).  ``track_state`` answers whether this q is *connected*
+    # to the confirmed trajectory; these answer whether its identity is decisive *here*, which is a
+    # different question and the one that decides whether more counting can help.  They must be read
+    # from the tracker rather than re-derived from ``branch_posterior``: the driver deliberately
+    # clears that posterior for exactly the ambiguous case this has to distinguish.
+    target_probability: float | None = None
+    identity_entropy: float | None = None
+    local_identity_clear: bool | None = None
+    identity_updates: list[dict] = field(default_factory=list)
+    identity_floor_window: int = 3
+    identity_floor_min_improvement: float = 0.05
+    identity_floor_min_exposure_ratio: float = 2.0
 
     @property
     def visited(self) -> bool:
@@ -341,13 +365,76 @@ class GridQ:
         return repeated_limit or self.interval_floored or self.info_saturated
 
     @property
+    def same_q_ceiling_reached(self) -> bool:
+        """The scientist's own same-q production ceiling, the single budget for dwell at this q.
+
+        ``maximum_bridge_steps`` is a path-geometry knob and is deliberately absent: adding it here
+        was what let an identity revisit be charged to the wrong allowance (OP10).
+        """
+        return self.n_production >= self.max_production_batches
+
+    @property
+    def identity_saturated(self) -> bool:
+        """More counting demonstrably cannot sharpen the branch label at this q.
+
+        ``interval_floored`` and ``info_saturated`` both need a *selected target master*, which an
+        identity-ambiguous q by definition does not have — its updates never pass ``branch_matches``
+        and so never reach ``master_updates``.  This is the identity-space analogue: over comparable
+        authoritative revisions, if exposure grew by the configured ratio and neither the target
+        probability nor the identity entropy improved materially, the label is not count-limited.
+        """
+        if self.local_identity_clear:
+            return False
+        window = [update for update in self.identity_updates
+                  if update.get("effective_exposure") is not None
+                  and (update.get("target_probability") is not None
+                       or update.get("identity_entropy") is not None)]
+        if len(window) < self.identity_floor_window:
+            return False
+        window = window[-self.identity_floor_window:]
+        first, last = window[0], window[-1]
+        try:
+            first_exposure = float(first["effective_exposure"])
+            last_exposure = float(last["effective_exposure"])
+        except (TypeError, ValueError):
+            return False
+        if first_exposure <= 0.0 or (
+                last_exposure / first_exposure) < self.identity_floor_min_exposure_ratio:
+            return False
+
+        def _gain(key: str, *, lower_is_better: bool) -> float | None:
+            before, after = first.get(key), last.get(key)
+            if before is None or after is None:
+                return None
+            try:
+                before, after = float(before), float(after)
+            except (TypeError, ValueError):
+                return None
+            if not (math.isfinite(before) and math.isfinite(after)):
+                return None
+            # A metric that got *worse* under more exposure clips to zero gain deliberately.  It is
+            # not weaker evidence than stagnation that counting has stopped paying — it is stronger,
+            # and continuing to spend beam on a diverging label would be the wrong response.
+            if lower_is_better:
+                return max((before - after) / before, 0.0) if before > 0.0 else 0.0
+            return max((after - before) / (1.0 - before), 0.0) if before < 1.0 else 0.0
+
+        gains = [_gain("identity_entropy", lower_is_better=True),
+                 _gain("target_probability", lower_is_better=False)]
+        # Both metrics must be present and both must have stalled.  A partial identity signal (a
+        # ledger written before these columns, say) is not evidence that counting cannot help, and
+        # the conservative reading of "unknown" here is to keep measuring rather than to stop.
+        if any(value is None for value in gains):
+            return False
+        return max(gains) < self.identity_floor_min_improvement
+
+    @property
     def ambiguity_exhausted(self) -> bool:
         evidence_only = self.evidence_master is not None and self.master is None
         ambiguous_track = self.track_state in {"ambiguous", "missing", "provisional", "blocked"}
         return bool((evidence_only or ambiguous_track)
-                    and self.n_production >= (
-                        self.max_production_batches + self.maximum_bridge_steps)
-                    and self.exposure_saturated)
+                    and (self.identity_saturated
+                         or (self.same_q_ceiling_reached and self.exposure_saturated)))
 
     @property
     def stuck(self) -> bool:
@@ -356,8 +443,32 @@ class GridQ:
 
     @property
     def stuck_reason(self) -> str | None:
-        return ("branch_ambiguity; frontier_blocked after saturated same-q strategy"
-                if self.ambiguity_exhausted else None)
+        if not self.ambiguity_exhausted:
+            return None
+        if self.identity_saturated:
+            return ("branch_ambiguity; frontier_blocked after identity evidence stopped "
+                    "responding to exposure")
+        return "branch_ambiguity; frontier_blocked after saturated same-q strategy"
+
+    @property
+    def same_q_identity_work_remains(self) -> bool:
+        """Whether counting again here is still an authorized, physically meaningful action.
+
+        This is the controller invariant OP10 violated: it reported ``branch_ambiguity`` at points
+        for which this was true.  A decisive *local* identity makes further dwell pointless even
+        when the point is not connected — that is a connectivity problem, not a counting one.
+        """
+        if self.local_identity_clear:
+            return False
+        # Only the frontier itself is actionable.  ``_frontier_states`` labels the first non-clear
+        # point outward from the anchor ``ambiguous``/``missing`` and everything past it
+        # ``provisional``/``blocked``; acquisition can act on the former but reaches the latter only
+        # once the frontier ahead of them resolves.  Counting a point buried behind a blocked
+        # frontier is not an available move, so demanding it would be a false alarm.
+        if self.track_state not in {"ambiguous", "missing"}:
+            return False
+        return not (self.same_q_ceiling_reached or self.identity_saturated
+                    or self.exposure_saturated)
 
     @property
     def deficit(self) -> float:
@@ -462,6 +573,12 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
         if i is not None:
             grid[i].evidence_updates.append(dict(update))
             grid[i].evidence_update_sequences.append(sequence)
+            # Identity progress is tracked on *evidence*, not on the target-matched master: an
+            # identity-ambiguous q never passes ``branch_matches`` and so never reaches
+            # ``master_updates``.  That is exactly why interval-based saturation cannot speak for it.
+            if (update.get("target_probability") is not None
+                    or update.get("identity_entropy") is not None):
+                grid[i].identity_updates.append(dict(update))
             if branch_matches(update):
                 grid[i].master_updates.append(dict(update))
     logical_observations = _logical_observations(observations, target_branch)
@@ -540,6 +657,12 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                 grid[i].track_revision = master_revision
                 grid[i].structural_endpoint_status = master.get("structural_endpoint_status")
                 grid[i].is_reduced_q_origin = bool(master.get("is_reduced_q_origin", False))
+                grid[i].target_probability = _finite_or_none(master.get("target_probability"))
+                grid[i].identity_entropy = _finite_or_none(master.get("identity_entropy"))
+                clear = master.get("local_identity_clear")
+                # A ledger predating these columns leaves identity unknown.  Unknown is treated as
+                # unclear so the controller counts rather than stops — the safe direction here.
+                grid[i].local_identity_clear = None if clear is None else bool(clear)
     track = dict(branch_track or {})
     for assignment in track.get("assignments") or []:
         if (assignment.get("structural_endpoint_status") != "inferred_unresolved"

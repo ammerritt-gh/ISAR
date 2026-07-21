@@ -451,7 +451,7 @@ def _candidate_precision(master: dict) -> float | None:
 def _tracked_evidence(master: dict, point: GridQ) -> dict[str, Any]:
     candidates = list(master.get("branch_candidates") or ())
     precision = _candidate_precision(master)
-    adequate = bool(candidates) and (
+    precision_adequate = bool(candidates) and (
         point.interval_floored
         or (precision is not None and precision <= float(point.tolerance)))
     target_branch = master.get("target_branch")
@@ -465,7 +465,19 @@ def _tracked_evidence(master: dict, point: GridQ) -> dict[str, Any]:
         "tolerance_meV": float(point.tolerance),
         "branch_probability": _finite_or_none(probability),
         "assignment_entropy": _finite_or_none(entropy),
-        "adequate": adequate,
+        # Precision adequacy answers "is this centre measured finely enough", which is a *different*
+        # question from "do I know which branch this is".  Conflating them was the OP10 defect: a
+        # 0.129 meV interval against a 0.5 meV tolerance made an undecided assignment look settled
+        # and permanently suppressed same-q counting.  ``adequate`` is retained under its original
+        # meaning for existing callers and diagnostics.
+        "adequate": precision_adequate,
+        "precision_adequate": precision_adequate,
+        # Sourced from the tracker's own confirmation predicate, never re-derived here.  Absent
+        # tracker fields (legacy ledgers) leave identity unknown, and unknown identity is treated as
+        # unclear so the controller counts rather than stops.
+        "target_probability": _finite_or_none(point.target_probability),
+        "identity_entropy": _finite_or_none(point.identity_entropy),
+        "local_identity_clear": bool(point.local_identity_clear),
     }
 
 
@@ -515,11 +527,6 @@ def _identity_revisit_basis(grid: list[GridQ], source_index: int) -> dict | None
         "neighbor_evidence_sequence": sequence,
         "authoritative_evidence_revision": revision,
     }
-
-
-def _identity_revisit_count(grid: list[GridQ], source_index: int) -> int:
-    """Identity-classification productions already charged to the bridge allowance."""
-    return len(grid[source_index].identity_revisit_sequences)
 
 
 def _same_q_evidence_advanced(point: GridQ) -> bool:
@@ -630,7 +637,7 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
                 return pick, "quicklook", reason, transition
             basis = _identity_revisit_basis(grid, anchor_index)
             if (basis is not None and not anchor.stuck
-                    and _identity_revisit_count(grid, anchor_index) < maximum_bridge_steps):
+                    and anchor.n_production < anchor.max_production_batches):
                 return (anchor, "production",
                         "tracked branch: revisit the ambiguous anchor using neighboring identity evidence",
                         {**evidence, **basis,
@@ -643,6 +650,13 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
                         {**evidence, **(link or {}), "source_hkl": list(anchor.hkl),
                          "selected_probe_hkl": list(pick.hkl),
                          "transition_reason": "local_identity_route_exhausted_broaden"})
+            # Same last rung as the frontier: an undecided anchor identity with authorized budget
+            # left is a counting problem once every classification route is spent.
+            if anchor.same_q_identity_work_remains:
+                return (anchor, "production",
+                        "tracked branch: classification routes exhausted; resolve the ambiguous "
+                        "anchor identity with more same-q exposure",
+                        {**evidence, "transition_reason": "identity_route_exhausted_count_more"})
             return None
         if (anchor.n_production >= anchor.max_production_batches
                 or not _same_q_evidence_advanced(anchor)):
@@ -692,7 +706,7 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
                 continue
         basis = _identity_revisit_basis(grid, frontier_index)
         if (basis is not None and not frontier.stuck
-                and _identity_revisit_count(grid, frontier_index) < maximum_bridge_steps):
+                and frontier.n_production < frontier.max_production_batches):
             actions.append((3, frontier.index, frontier, "production",
                             "tracked branch: revisit the ambiguous frontier using newer adjacent identity evidence",
                             basis))
@@ -705,6 +719,16 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
                             {**evidence, **(link or {}), "source_hkl": list(frontier.hkl),
                              "selected_probe_hkl": list(pick.hkl),
                              "transition_reason": "local_frontier_exhausted_broaden"}))
+            continue
+        # Last rung.  Cheap adjacent discrimination is always preferred above, but once every
+        # classification route is spent an undecided identity is a *counting* problem again.  OP10
+        # stopped here with one of twelve authorized productions used and the per-scan ceiling three
+        # orders of magnitude away; refusing to count was never an evidence-based decision.
+        if frontier.same_q_identity_work_remains:
+            actions.append((5, frontier.index, frontier, "production",
+                            "tracked branch: classification routes exhausted; resolve the ambiguous "
+                            "frontier identity with more same-q exposure",
+                            {**evidence, "transition_reason": "identity_route_exhausted_count_more"}))
     if not actions:
         return None
     _priority, _path_order, pick, kind, reason, *transition = min(

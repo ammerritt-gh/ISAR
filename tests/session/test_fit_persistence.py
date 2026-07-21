@@ -156,6 +156,36 @@ def test_to_dict_is_json_clean_for_new_fields():
     assert restored["candidates"] == _cands()
 
 
+@pytest.mark.parametrize("writer", [driver._select_mode, driver._clear_tracked_selection])
+def test_local_identity_survives_the_writer_to_results_csv_path(tmp_path, writer):
+    """Declaring a column is not populating it: the OP10 repair's second bug class.
+
+    ``results.csv`` is the Stage II/III frozen contract and the only route by which the driver's
+    GridQ learns local branch identity.  The first repair attempt declared the three columns and
+    wired the writers, but the row builder maps every column explicitly, so the campaign ran with
+    identity permanently unknown — the fields were present in the ledger and blank in the CSV.
+    """
+    outcome = _outcome_with(None, None)
+    written = outcome.to_dict()
+    assignment = dict(_tracked_assignment())
+    assignment.update(target_probability=0.7373147601858216,
+                      identity_entropy=0.5614679859005164,
+                      local_identity_clear=False)
+    if writer is driver._select_mode:
+        writer(written, {"candidate_ref": "acoustic:0", "energy_meV": 1.35,
+                         "probabilities": {"acoustic": 0.9}}, 0, assignment, 1, "acoustic")
+    else:
+        writer(written, assignment, 1)
+    outcome = driver._outcome_from_entry(
+        ScanEntry(scan_id="E:7:ana7", scan_number=7, scan_type="measurement",
+                  status="fitted", detectors={"ana7": written}), "ana7")
+
+    row = _write_read(tmp_path, outcome)
+    assert row["target_probability"] == pytest.approx(0.7373147601858216)
+    assert row["identity_entropy"] == pytest.approx(0.5614679859005164)
+    assert row["local_identity_clear"] is False
+
+
 def test_results_csv_roundtrips_amplitudes_and_candidates(tmp_path):
     amps = {"phonon.A": 501.2, "elastic.E": 12.0, "bg.BG": 8.0}
     row = _write_read(tmp_path, _outcome_with(amps, _cands()))
