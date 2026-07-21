@@ -1509,7 +1509,9 @@ def _mode_candidates(scan_id: str, detector: str, outcome: dict) -> list[dict]:
             row = dict(candidate)
             # Assignment probabilities are derived state, never fit evidence.  Keeping them in the
             # next Viterbi input would let yesterday's assignment masquerade as a new local label.
-            row.pop("probabilities", None)
+            for field in ("probabilities", "association_probability",
+                          "character_probability", "trajectory_identity"):
+                row.pop(field, None)
             rows.append(row)
         if rows:
             return rows
@@ -1722,7 +1724,9 @@ def _tracked_authority_signature(observations: list[dict], *, target_branch: str
         candidates = []
         for candidate in observation.get("candidates") or []:
             fitted = dict(candidate)
-            fitted.pop("probabilities", None)
+            for field in ("probabilities", "association_probability",
+                          "character_probability", "trajectory_identity"):
+                fitted.pop(field, None)
             candidates.append(fitted)
         authorities.append({
             "authority": observation.get("authority"),

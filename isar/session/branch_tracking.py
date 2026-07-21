@@ -19,6 +19,12 @@ TRANSITION_SIGMA_FLOOR_MEV = 0.25
 DEFAULT_CANDIDATE_SIGMA_MEV = 0.35
 CONFIRMED_PROBABILITY = 0.85
 UNRELIABLE_EVIDENCE_FACTOR = 0.70
+ORDERING_LOG_FLOOR = math.log(0.05)
+
+# Character is a trajectory-level latent variable.  A finite floor keeps all hypotheses represented
+# numerically while making a local acoustic<->optic hand-off negligible relative to reconnecting the
+# same character; a full authoritative replay can still choose the opposite character everywhere.
+CHARACTER_HANDOFF_LOG_PENALTY = math.log(1e-12)
 
 
 @dataclass(frozen=True)
@@ -87,12 +93,6 @@ def _logsumexp(values) -> float:
     return maximum + math.log(float(np.exp(values - maximum).sum()))
 
 
-def _normal_logpdf(value: float, mean: float, sigma: float) -> float:
-    sigma = max(float(sigma), 1e-6)
-    z = (float(value) - float(mean)) / sigma
-    return -0.5 * z * z - math.log(sigma)
-
-
 def _normal_compatibility(value: float, mean: float, sigma: float) -> float:
     """Dimensionless hypothesis compatibility for a discrete identity decision.
 
@@ -129,38 +129,77 @@ def _candidate_energy(candidate: dict) -> float:
     return float(candidate.get("energy_meV", candidate.get("omega0")))
 
 
+def _hypothesis_confidence(hypothesis: dict) -> float:
+    try:
+        value = float(hypothesis.get("confidence", 1.0))
+    except (TypeError, ValueError):
+        value = 1.0
+    return min(max(value, 0.0), 1.0)
+
+
+def _lowest_energy_log_likelihood(index: int, candidates: list[dict]) -> float:
+    """Return soft evidence that ``index`` is lower than every resolved rival.
+
+    A single fitted mode contains no ordering information.  With rivals, their fit uncertainties
+    turn the ordering into a probability instead of a hard lowest-mode label.
+    """
+    if len(candidates) < 2:
+        return 0.0
+    selected = candidates[index]
+    energy = _candidate_energy(selected)
+    sigma = _candidate_sigma(selected)
+    evidence = 0.0
+    for rival_index, rival in enumerate(candidates):
+        if rival_index == index:
+            continue
+        combined = math.sqrt(sigma * sigma + _candidate_sigma(rival) ** 2)
+        z = (_candidate_energy(rival) - energy) / combined
+        probability = 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+        evidence += max(math.log(max(probability, 1e-12)), ORDERING_LOG_FLOOR)
+    return evidence / (len(candidates) - 1)
+
+
 def _states(n_candidates: int) -> list[_State]:
     indices = [None, *range(n_candidates)]
     return [_State(optic, acoustic) for optic in indices for acoustic in indices
             if optic is None or acoustic is None or optic != acoustic]
 
 
-def _emission(state: _State, candidates: list[dict], *, at_anchor: bool,
+def _emission(state: _State, candidates: list[dict], *, reduced_distance: float,
+              period: float | None,
               optic_hypothesis: dict, acoustic_hypothesis: dict,
-              anchor_reduced_distance: float = 0.0) -> float:
+              ) -> float:
     assigned = {index for index in (state.optic, state.acoustic) if index is not None}
     score = (len(candidates) - len(assigned)) * UNASSIGNED_LOG_PENALTY
     if state.optic is None:
         score += MISSING_LOG_PENALTY
     if state.acoustic is None:
         score += MISSING_LOG_PENALTY
-    if not at_anchor:
-        return score
     for branch, index, hypothesis, default in (
             ("optic", state.optic, optic_hypothesis, (6.0, 3.0)),
             ("acoustic", state.acoustic, acoustic_hypothesis, (0.0, 0.2))):
         if index is None:
             continue
         mean, sigma = _prior_pair(hypothesis, "zc_energy", default)
-        if anchor_reduced_distance > 0.0:
+        if reduced_distance > 0.0:
             slope, slope_sigma = _prior_pair(
                 hypothesis, "slope_zc", (0.0, 8.0) if branch == "optic" else (12.0, 12.0))
-            mean += slope * anchor_reduced_distance
+            mean += slope * reduced_distance
             sigma = math.sqrt(sigma * sigma
-                              + (slope_sigma * anchor_reduced_distance) ** 2)
+                              + (slope_sigma * reduced_distance) ** 2)
         candidate = candidates[index]
         combined = math.sqrt(sigma * sigma + _candidate_sigma(candidate) ** 2)
-        score += _normal_compatibility(_candidate_energy(candidate), mean, combined)
+        confidence = _hypothesis_confidence(hypothesis)
+        score += confidence * _normal_compatibility(_candidate_energy(candidate), mean, combined)
+        if branch == "acoustic" and len(candidates) > 1:
+            # Lowest-mode character is useful close to Gamma, but provides no identity evidence at
+            # the zone boundary where acoustic and optic energies may approach or cross.
+            half_period = (float(period) / 2.0
+                           if period is not None and np.isfinite(period) and period > 0.0
+                           else None)
+            ordering_weight = (max(0.0, 1.0 - reduced_distance / half_period)
+                               if half_period else 0.0)
+            score += confidence * ordering_weight * _lowest_energy_log_likelihood(index, candidates)
         # Fit reliability affects evidence strength, but never deletes the candidate.
         if candidate.get("reliable") is False:
             score += math.log(UNRELIABLE_EVIDENCE_FACTOR)
@@ -184,8 +223,33 @@ def _transition(previous: _State, current: _State, previous_candidates: list[dic
             _candidate_sigma(old) ** 2 + _candidate_sigma(new) ** 2
             + (slope_sigma * abs(radial_delta)) ** 2
             + TRANSITION_SIGMA_FLOOR_MEV ** 2)
-        score += _normal_logpdf(
+        # This is a discrete association likelihood.  Density normalization would reward whichever
+        # declaration happened to carry the narrower slope uncertainty once per path edge, allowing
+        # that prior-volume artefact to overwhelm a complete trajectory's fresh evidence.
+        score += _normal_compatibility(
             _candidate_energy(new) - _candidate_energy(old), expected_change, sigma)
+    # A connected physical trajectory cannot silently change acoustic/optic character merely
+    # because one label is dropped and the other is introduced at the next q.  Recomputing the
+    # entire path can still reverse an earlier character assignment; this term makes that reversal
+    # global instead of allowing a local hand-off halfway along an otherwise smooth trajectory.
+    for old_index, same_new_index, rival_new_index in (
+            (previous.acoustic, current.acoustic, current.optic),
+            (previous.optic, current.optic, current.acoustic)):
+        if old_index is None or same_new_index is not None or not current_candidates:
+            continue
+        old = previous_candidates[old_index]
+        # Include an unassigned but continuous candidate.  Otherwise the Viterbi path can evade the
+        # character invariant with one all-missing state, then reappear under the opposite label.
+        rival = (current_candidates[rival_new_index] if rival_new_index is not None else
+                 min(current_candidates,
+                     key=lambda candidate: abs(_candidate_energy(candidate)
+                                               - _candidate_energy(old))))
+        delta = _candidate_energy(rival) - _candidate_energy(old)
+        continuity_sigma = math.sqrt(
+            _candidate_sigma(old) ** 2 + _candidate_sigma(rival) ** 2
+            + TRANSITION_SIGMA_FLOOR_MEV ** 2 + (12.0 * abs(radial_delta)) ** 2)
+        continuity = math.exp(-0.5 * (delta / continuity_sigma) ** 2)
+        score += continuity * CHARACTER_HANDOFF_LOG_PENALTY
     return score
 
 
@@ -300,14 +364,15 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
     spans = [max(q[axis] for q in points) - min(q[axis] for q in points)
              for axis in range(len(points[0]))]
     axis = int(np.argmax(spans)) if any(span > 0.0 for span in spans) else 0
-    anchor_reduced_distance = 0.0
-    if period is not None and np.isfinite(period) and period > 0.0:
-        coordinate = points[anchor][axis]
-        anchor_reduced_distance = abs(coordinate - round(coordinate / period) * period)
     # The acquisition/identity anchor may sit away from the zone centre for a gapless branch.  Its
     # location must not reverse the physical sign of dE/d|q| on the zone-centre side of that anchor.
     zone_anchor = anchor_index(points, period)
     path_distance, radial = _path_geometry(points, zone_anchor)
+    reduced_distance = list(radial)
+    if period is not None and np.isfinite(period) and period > 0.0:
+        reduced_distance = [abs(points[index][axis]
+                                - round(points[index][axis] / period) * period)
+                            for index in range(len(points))]
     optic_hypothesis = _hypothesis(hypotheses, "optic")
     acoustic_hypothesis = _hypothesis(hypotheses, "acoustic")
     candidates_by_q = [list(row.get("candidates") or []) for row in observations]
@@ -320,10 +385,10 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
                 "reduced_q_origin_index": zone_anchor,
                 "assignments": [], "tracks": [], "frontiers": {}}
 
-    emissions = [[_emission(state, candidates_by_q[index], at_anchor=index == anchor,
+    emissions = [[_emission(state, candidates_by_q[index],
+                            reduced_distance=reduced_distance[index], period=period,
                             optic_hypothesis=optic_hypothesis,
-                            acoustic_hypothesis=acoustic_hypothesis,
-                            anchor_reduced_distance=anchor_reduced_distance)
+                            acoustic_hypothesis=acoustic_hypothesis)
                   for state in states[index]] for index in range(len(points))]
     transitions: list[np.ndarray] = []
     for index in range(1, len(points)):
@@ -373,16 +438,33 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
                 "optic": optic_probability, "acoustic": acoustic_probability,
                 "new": max(0.0, 1.0 - optic_probability - acoustic_probability),
             }
+            known_probability = optic_probability + acoustic_probability
+            character = ("acoustic" if acoustic_probability >= optic_probability else "optic")
+            candidate["association_probability"] = known_probability
+            candidate["character_probability"] = (
+                max(optic_probability, acoustic_probability) / known_probability
+                if known_probability > 0.0 else 0.0)
+            candidate["trajectory_identity"] = character if known_probability > 0.0 else None
         selected_state = states[index][map_indices[index]]
         selected_index = getattr(selected_state, target_branch)
         selected_probabilities = (candidates[selected_index].get("probabilities", {})
                                   if selected_index is not None else {"missing": 1.0})
+        known_probability = sum(float(selected_probabilities.get(branch, 0.0))
+                                for branch in ("optic", "acoustic"))
+        selected_character = (max(("optic", "acoustic"),
+                                  key=lambda branch: selected_probabilities.get(branch, 0.0))
+                              if selected_index is not None and known_probability > 0.0 else None)
         assignments.append({
             "path_index": index, "q": points[index], "path_distance": path_distance[index],
             "candidates": candidates, "optic_candidate_index": selected_state.optic,
             "acoustic_candidate_index": selected_state.acoustic,
             "selected_candidate_index": selected_index,
             "target_probability": float(selected_probabilities.get(target_branch, 0.0)),
+            "association_probability": known_probability,
+            "character_probability": (
+                float(selected_probabilities.get(target_branch, 0.0)) / known_probability
+                if known_probability > 0.0 else 0.0),
+            "trajectory_identity": selected_character,
             "assignment_entropy": _entropy(selected_probabilities),
             "identity_entropy": _identity_entropy(selected_probabilities),
         })

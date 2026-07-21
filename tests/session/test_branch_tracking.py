@@ -4,7 +4,11 @@ import math
 from types import SimpleNamespace
 
 from isar.schema.card import CardState
-from isar.session.branch_tracking import anchor_index, track_path
+from isar.session.branch_tracking import (
+    _lowest_energy_log_likelihood,
+    anchor_index,
+    track_path,
+)
 from isar.session.driver import (
     _apply_tracked_branch,
     _clear_tracked_selection,
@@ -132,6 +136,59 @@ def test_acoustic_tracking_selects_low_connected_branch_and_labels_it_target():
     acoustic = next(item for item in track["tracks"] if item["branch_id"] == "acoustic")
     optic = next(item for item in track["tracks"] if item["branch_id"] == "optic")
     assert acoustic["role"] == "target" and optic["role"] == "rival"
+
+
+def test_ap3_connected_trajectory_keeps_acoustic_character_to_zone_boundary():
+    hypotheses = [
+        {"name": "optic", "zc_energy": {"mean": 3.5, "sigma": 1.75},
+         "slope_zc": {"mean": 0.0, "sigma": 8.0}, "confidence": 0.6},
+        {"name": "acoustic", "zc_energy": {"mean": 0.0, "sigma": 0.2},
+         "slope_zc": {"mean": 12.0, "sigma": 12.0}, "confidence": 0.8},
+    ]
+    path = [[2.0 + 0.05 * index, 0.0, 0.0] for index in range(21)]
+    observations = [{"candidates": []} for _ in path]
+    for index, energy in ((1, 0.45), (2, 0.87), (3, 1.38), (4, 1.80)):
+        observations[index] = {"candidates": [_candidate(f"a{index}", energy)]}
+    observations[3]["candidates"].append(_candidate("o3", 6.4))
+    for index in range(5, 21):
+        observations[index] = {
+            "candidates": [_candidate(f"a{index}", 1.8 + 0.255 * (index - 4))]}
+
+    track = track_path(
+        path, observations, period=2.0, hypotheses=hypotheses,
+        target_branch="acoustic",
+        previous={"target_branch": "acoustic", "acquisition_seed_index": 3},
+        assignment_entropy_stop_nats=1.0)
+
+    for index in range(1, 21):
+        row = track["assignments"][index]
+        assert row["acoustic_candidate_index"] == 0
+        assert row["candidates"][0]["trajectory_identity"] == "acoustic"
+    assert track["assignments"][3]["optic_candidate_index"] == 1
+    assert track["assignments"][3]["candidates"][1]["trajectory_identity"] == "optic"
+
+
+def test_authoritative_trajectory_reverses_stale_candidate_character_prior():
+    path = [[2.05, 0.0, 0.0], [2.1, 0.0, 0.0],
+            [2.15, 0.0, 0.0], [2.2, 0.0, 0.0]]
+    observations = []
+    for index, energy in enumerate((0.45, 0.87, 1.38, 1.80)):
+        candidate = _candidate(f"stale{index}", energy)
+        candidate["probabilities"] = {"optic": 0.99, "acoustic": 0.005, "new": 0.005}
+        candidate["trajectory_identity"] = "optic"
+        observations.append({"candidates": [candidate]})
+
+    track = track_path(path, observations, period=2.0, hypotheses=HYPOTHESES,
+                       target_branch="acoustic", assignment_entropy_stop_nats=1.0)
+
+    assert all(row["candidates"][0]["trajectory_identity"] == "acoustic"
+               for row in track["assignments"])
+    assert all(row["candidates"][0]["probabilities"]["acoustic"] > 0.85
+               for row in track["assignments"])
+
+
+def test_lone_candidate_contributes_no_lowest_energy_ordering_evidence():
+    assert _lowest_energy_log_likelihood(0, [_candidate("only", 0.45)]) == 0.0
 
 
 def test_broad_zc_prior_confirms_peak_at_its_mean_without_phantom_new_branch():
