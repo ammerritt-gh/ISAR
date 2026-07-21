@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from isar.drive.acquisition.acquire import (
+    MAX_RECONNECT_PRODUCTIONS,
     _classification_link_diagnostics,
     _select_target,
     propose_scan,
@@ -674,6 +675,104 @@ def test_locally_clear_but_disconnected_frontier_is_not_counted_again():
     pick, _kind, _reason, _score = _select_target(
         grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
     assert pick is None or pick.index != 1
+
+
+# --- OP10 part two: the frontier was blocked by a gap in the *rival* trajectory ---------------
+#
+# At H=2.75 the two candidates were 5.53 and 7.72 meV — 2.18 meV apart, ~22 sigma, already cleanly
+# resolved as peaks.  The ambiguity was in the labels, and P(optic)=0.752 sat just under the 0.85
+# confirm gate because the acoustic branch had not been fitted at 2.60/2.65/2.70, breaking the
+# continuity evidence that would assign 5.53 to acoustic.  Those q had only ever had a 10M
+# quicklook.  Counting the frontier harder cannot fix that; counting the *gap* can.
+
+
+def _rival_gap_grid():
+    """Confirmed run carrying two modes, then three single-mode q, then a two-mode frontier."""
+    grid = [GridQ(index=i, hkl=(2.0 + 0.05 * i, 0.0, 0.0), q=0.05 * i, tolerance=0.5,
+                  max_production_batches=12) for i in range(6)]
+    two_mode = [{"energy_meV": 4.55, "sigma_meV": 0.05}, {"energy_meV": 7.61, "sigma_meV": 0.05}]
+    one_mode = [{"energy_meV": 7.88, "sigma_meV": 0.05}]
+    for index in (0, 1):
+        grid[index].n_quicklook = 1
+        grid[index].track_state = "confirmed"
+        grid[index].evidence_master = {"branch_candidates": list(two_mode)}
+    for index in (2, 3, 4):                      # the rival gap: quicklooked only, one mode fitted
+        grid[index].n_quicklook = 1
+        grid[index].track_state = "confirmed"
+        grid[index].evidence_master = {"branch_candidates": list(one_mode)}
+    frontier = grid[5]
+    frontier.n_quicklook = 1
+    frontier.n_production = 1
+    frontier.production_sequences = [20]
+    frontier.track_state = "ambiguous"
+    frontier.local_identity_clear = False
+    frontier.target_probability = 0.752
+    frontier.identity_entropy = 0.545
+    frontier.evidence_master = {
+        "branch_candidates": [{"energy_meV": 5.53, "sigma_meV": 0.065},
+                              {"energy_meV": 7.72, "sigma_meV": 0.097}],
+    }
+    return grid, frontier
+
+
+def test_blocked_frontier_counts_the_rival_gap_before_counting_itself():
+    grid, frontier = _rival_gap_grid()
+    pick, kind, reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
+    assert kind == "production"
+    assert pick.index != frontier.index, "counting the frontier cannot restore rival continuity"
+    assert pick.index == 4, "the nearest gap q to the frontier is the one that reconnects it"
+    assert "rival" in reason
+
+
+def test_rival_gap_is_skipped_once_it_resolves_the_second_mode():
+    """With the rival trajectory whole again, the frontier is back to its own same-q work."""
+    grid, frontier = _rival_gap_grid()
+    for index in (2, 3, 4):
+        grid[index].evidence_master = {"branch_candidates": [
+            {"energy_meV": 4.9, "sigma_meV": 0.05}, {"energy_meV": 7.88, "sigma_meV": 0.05}]}
+
+    pick, kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
+    assert (pick.index, kind) == (frontier.index, "production")
+
+
+def test_rival_gap_that_never_resolves_yields_the_beam_instead_of_looping():
+    """A reconnect that fails to raise the mode count must not be re-picked indefinitely.
+
+    The gap q is under-resolved precisely because it was only quicklooked, so its production count
+    records how often this rung has already tried.  Without the cap, a gap whose rival mode never
+    appears would be re-selected up to its own 12-production ceiling — with geometric escalation,
+    billions of counts spent proving the same negative.
+    """
+    grid, frontier = _rival_gap_grid()
+    gap_indices = {2, 3, 4}
+    picks = []
+    for _ in range(12):
+        pick, kind, _reason, _score = _select_target(
+            grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
+        picks.append((pick.index, kind))
+        pick.n_production += 1                  # the scan lands but the rival mode stays unfitted
+        pick.production_sequences.append(100 + len(picks))
+
+    # Each gap q is a different place the rival evidence could live, so trying each is legitimate —
+    # what must not happen is any single q absorbing the beam, or the frontier never getting it.
+    for index in gap_indices:
+        assert grid[index].n_production <= MAX_RECONNECT_PRODUCTIONS, (
+            f"gap q {index} exceeded its reconnect allowance: {picks}")
+    assert picks[0][0] == 4, "the nearest gap q is tried first"
+    assert picks[-1][0] == frontier.index, f"the frontier must end up with the beam: {picks}"
+    gap_spend = sum(1 for index, _kind in picks if index in gap_indices)
+    assert gap_spend <= MAX_RECONNECT_PRODUCTIONS * len(gap_indices)
+
+
+def test_rival_gap_respects_the_gap_points_own_production_ceiling():
+    grid, frontier = _rival_gap_grid()
+    for index in (2, 3, 4):
+        grid[index].n_production = 12               # every gap q already spent its own budget
+    pick, kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
+    assert (pick.index, kind) == (frontier.index, "production")
 
 
 def test_missing_frontier_identity_also_earns_the_same_q_fallback():

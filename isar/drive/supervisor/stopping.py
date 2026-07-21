@@ -789,8 +789,15 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                       "n_production": g.n_production,
                       "clamped_productions": g.clamped_productions,
                       "exposure_saturated": g.exposure_saturated,
-                      "strategy_ceiling_reached": g.n_production >= g.max_production_batches,
+                      "strategy_ceiling_reached": g.same_q_ceiling_reached,
                       "interval_floored": g.interval_floored,
+                      # The identity trio belongs in the per-q summary, not only in results.csv:
+                      # a branch_ambiguity stop is unreadable without knowing whether the label was
+                      # undecided (count more) or decided-but-disconnected (counting cannot help).
+                      "target_probability": g.target_probability,
+                      "identity_entropy": g.identity_entropy,
+                      "local_identity_clear": g.local_identity_clear,
+                      "identity_saturated": g.identity_saturated,
                       "n_master_updates": len(g.master_updates),
                       "diagnostic_halfwidth": (g.master_updates[-1].get("diagnostic_halfwidth")
                                                if g.master_updates else None),

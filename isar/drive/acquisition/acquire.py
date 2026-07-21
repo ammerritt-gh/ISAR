@@ -529,6 +529,58 @@ def _identity_revisit_basis(grid: list[GridQ], source_index: int) -> dict | None
     }
 
 
+MAX_RECONNECT_PRODUCTIONS = 2   # reconnect attempts per gap q before the frontier gets the beam
+
+
+def _fitted_mode_count(point: GridQ) -> int:
+    """How many distinct modes the pooled evidence actually resolved at this q."""
+    master = point.evidence_master or point.master or {}
+    return len(list(master.get("branch_candidates") or ()))
+
+
+def _rival_gap_pick(grid: list[GridQ], frontier_index: int, direction: int) -> GridQ | None:
+    """Nearest q on the connected run behind the frontier that resolved fewer modes than it.
+
+    A tracked target is confirmed by *continuity*, so its identity can be blocked by a hole in the
+    **rival** trajectory rather than by anything about the frontier itself.  OP10 stopped exactly
+    that way: the frontier at H=2.75 resolved two well-separated modes (5.53 and 7.72 meV, ~22σ
+    apart) but the acoustic branch had gone unfitted at 2.60/2.65/2.70 — q that had only ever had a
+    10 M quicklook — so nothing connected 5.53 to the acoustic trajectory and P(optic) stalled at
+    0.752 under a 0.85 gate.  Counting the frontier could not repair that, and did not: a replay
+    spent ~17 billion counts there across twelve productions without moving the assignment.
+
+    Walking back along the *confirmed* run keeps this connected: a q past a break in the trajectory
+    cannot restore continuity to the frontier, so only the run that actually feeds it is considered.
+    """
+    want = _fitted_mode_count(grid[frontier_index])
+    if want < 2:
+        return None                      # nothing to reconnect: the frontier sees no rival either
+    options = []
+    index = frontier_index - direction
+    while 0 <= index < len(grid) and grid[index].track_state == "confirmed":
+        point = grid[index]
+        resolved = _fitted_mode_count(point)
+        # ``1 <= resolved < want`` is the signature of a *partially* resolved q — the target mode
+        # was fitted there and the rival was not.  Zero fitted modes is not a gap in the rival
+        # trajectory but a q with no pooled evidence at all, which this rung has no business
+        # re-counting on the frontier's behalf.
+        #
+        # ``n_production < MAX_RECONNECT_PRODUCTIONS`` is the anti-livelock guard.  A gap is
+        # under-resolved precisely because it was only ever quicklooked, so its production count is
+        # an honest record of how many times this rung has already tried and failed to raise its
+        # mode count.  Without the cap a reconnect that never resolves the rival would be re-picked
+        # until the point's own 12-production ceiling — with geometric escalation, billions of
+        # counts spent proving the same negative.  The point's own ceiling still applies on top.
+        if (point.visited and 1 <= resolved < want
+                and point.n_production < MAX_RECONNECT_PRODUCTIONS
+                and not (point.same_q_ceiling_reached or point.exposure_saturated)):
+            options.append((abs(index - frontier_index), index, point))
+        index -= direction
+    if not options:
+        return None
+    return min(options)[2]
+
+
 def _same_q_evidence_advanced(point: GridQ) -> bool:
     """Whether another statistics scan is justified by a newer local authoritative revision."""
     if point.exposure_saturated:
@@ -720,12 +772,26 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
                              "selected_probe_hkl": list(pick.hkl),
                              "transition_reason": "local_frontier_exhausted_broaden"}))
             continue
+        # Before spending more on the frontier, repair the rival trajectory it is being judged
+        # against.  A hole there blocks the frontier's identity no matter how long the frontier
+        # itself is counted, and the gap q is usually the cheaper, more informative scan.
+        gap = _rival_gap_pick(grid, frontier_index, direction)
+        if gap is not None and not frontier.local_identity_clear:
+            actions.append((5, gap.index, gap, "production",
+                            "tracked branch: reconnect the rival branch at an under-resolved q so "
+                            "the ambiguous frontier identity has continuous evidence",
+                            {**evidence, "source_hkl": list(frontier.hkl),
+                             "selected_probe_hkl": list(gap.hkl),
+                             "frontier_mode_count": _fitted_mode_count(frontier),
+                             "probe_mode_count": _fitted_mode_count(gap),
+                             "transition_reason": "rival_trajectory_gap_reconnect"}))
+            continue
         # Last rung.  Cheap adjacent discrimination is always preferred above, but once every
         # classification route is spent an undecided identity is a *counting* problem again.  OP10
         # stopped here with one of twelve authorized productions used and the per-scan ceiling three
         # orders of magnitude away; refusing to count was never an evidence-based decision.
         if frontier.same_q_identity_work_remains:
-            actions.append((5, frontier.index, frontier, "production",
+            actions.append((6, frontier.index, frontier, "production",
                             "tracked branch: classification routes exhausted; resolve the ambiguous "
                             "frontier identity with more same-q exposure",
                             {**evidence, "transition_reason": "identity_route_exhausted_count_more"}))
