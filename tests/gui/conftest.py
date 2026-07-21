@@ -34,6 +34,29 @@ def _isolated_user_dirs(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
 
 
+@pytest.fixture(autouse=True)
+def _no_live_health_probes(monkeypatch):
+    """Stop every MainWindow from spawning a real network probe.
+
+    ``MainWindow._init_health`` wires ``HealthProbe(lambda url: ping_http(url))`` and starts a
+    timer, so *constructing a window at all* launches a daemon thread that calls ``urlopen``
+    against the operator's real LLMM/TAVI ports. Across a GUI run those threads accumulate and
+    race Qt teardown; the suite died with "Windows fatal exception: access violation" with the
+    crashing thread parked in ``socket.create_connection``. Tests must never touch the network:
+    it makes results depend on which services happen to be running on the developer's machine.
+
+    Autouse so the default is offline, matching ``_isolated_user_dirs`` above. A test that wants
+    specific probe behaviour still patches ``main_window.ping_http`` itself and wins, because its
+    monkeypatch runs after this fixture (see ``test_backends`` health tests).
+    """
+    from isar_gui import main_window
+    from isar_gui.health import Health
+
+    monkeypatch.setattr(main_window, "ping_http",
+                        lambda url, *a, **k: Health(False, "unreachable (offline in tests)",
+                                                    reachable=False))
+
+
 @pytest.fixture
 def make_ws(tmp_path):
     """Return a factory that stamps a synthetic workspace under a fresh subdir and returns its path."""
