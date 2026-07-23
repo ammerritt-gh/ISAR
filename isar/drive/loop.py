@@ -46,7 +46,7 @@ from isar.drive.acquisition.acquire import (
 )
 from isar.drive.acquisition.inventory import (
     GENERATOR_REGISTRY_VERSION, TERMINAL_ACTION_INVENTORY_EXHAUSTED, TERMINAL_CONTROLLER_FAULT,
-    canonical_json)
+    FinalizedProposal, ValidatedAttempt, canonical_json)
 from isar.drive.acquisition.calibration import Calibration, load_calibration
 from isar.drive.instrument.tavi_client import TaviClient, TaviError
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
@@ -274,6 +274,70 @@ def _stamp_proposal_provenance(proposal) -> None:
     }
     encoded = json.dumps(basis, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     meta["proposal_fingerprint"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def finalized_proposal(proposal) -> FinalizedProposal | None:
+    """Stage 2 of the action lifecycle: the exact request, after every clamp, before validation.
+
+    Built here rather than in ``acquire._build_proposal`` because the request is not final there —
+    :func:`_finalize_proposal` still applies the instrument point-count ceiling and the neutron
+    affordability clamp afterwards. ``request_fingerprint`` reuses the provenance hash
+    :func:`_stamp_proposal_provenance` already computes over the *finalized* window and count, so the
+    two can never disagree about what was actually asked for; re-finalizing after a step shrink or a
+    re-center moves it while the intent's scientific fingerprint stays put.
+
+    Returns ``None`` for a proposal that never carried an intent (older unit-level callers), so the
+    lifecycle is additive rather than a new precondition on every proposal.
+    """
+    intent = getattr(proposal, "intent", None)
+    fingerprint = (proposal.meta or {}).get("proposal_fingerprint")
+    if intent is None or not fingerprint:
+        return None
+    return FinalizedProposal(
+        intent=intent, request_fingerprint=str(fingerprint),
+        e_lo=float(proposal.e_lo), e_hi=float(proposal.e_hi), e_step=float(proposal.e_step),
+        n_points=int(proposal.n_points or 0), ncount=int(proposal.ncount))
+
+
+def _feasibility_manifest_fingerprint(validation: dict) -> str:
+    """Hash TAVI's frozen feasibility verdict — the geometry an attempt was judged under.
+
+    Deliberately covers only the instrument's answer (queueability, blockers, the planned/feasible
+    point manifest), never the request that produced it: a q that is reachable today and blocked
+    tomorrow must be distinguishable *at the same* request fingerprint, or a geometry rejection gets
+    charged to the scientific action and suppresses it permanently.
+
+    List order is preserved rather than normalized, except for ``blockers`` (an unordered set of
+    reasons). ``planned_feasible_mask`` and ``feasible_segments`` are positional — sorting them would
+    make two genuinely different geometries hash the same, and a false *match* is the dangerous
+    direction here: it would let a suppression formed under one geometry silently apply to another.
+    A false *difference* only costs a redundant retry.
+
+    Canonicalized with the same strict encoder as the inventory artifacts, so an unexpected type
+    raises instead of being silently stringified into a stable-looking but meaningless address.
+    """
+    manifest = {
+        "would_queue": bool(validation.get("would_queue", False)),
+        "blockers": sorted(str(b) for b in (validation.get("blockers") or [])),
+        "requested_points": validation.get("requested_points"),
+        "feasible_points": validation.get("feasible_points"),
+        "planned_feasible_mask": validation.get("planned_feasible_mask"),
+        "feasible_segments": validation.get("feasible_segments"),
+        "infeasible": validation.get("infeasible"),
+    }
+    return hashlib.sha256(canonical_json(manifest).encode("utf-8")).hexdigest()
+
+
+def validated_attempt(finalized: FinalizedProposal | None, validation: dict, *,
+                      status: str) -> ValidatedAttempt | None:
+    """Stage 3: TAVI's verdict on one finalized request, under one instrument geometry."""
+    if finalized is None:
+        return None
+    return ValidatedAttempt(
+        proposal=finalized,
+        feasibility_manifest_fingerprint=_feasibility_manifest_fingerprint(validation),
+        feasible_points=_feasible_point_count(validation, finalized.n_points or 1),
+        status=str(status))
 
 
 def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int) -> None:
@@ -2259,8 +2323,17 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
     while True:
         # Single checkpoint before EVERY validate/submit, including support/recenter retries.
         _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+        finalized = finalized_proposal(proposal)
         with timed(log_path, "validate", iteration=it, attempt=attempt):
             val = client.validate(_validate_body(proposal, sample=cfg.sample))
+        # Stage 3: freeze the geometry this exact request was judged under, before any branch below
+        # decides what the verdict means. PR2.3 reads ``attempt.status`` to class the rejection.
+        attempt_record = validated_attempt(
+            finalized, val, status=("would_queue" if val.get("would_queue", False)
+                                    else "validation_rejected"))
+        manifest_fingerprint = (attempt_record.feasibility_manifest_fingerprint
+                                if attempt_record is not None
+                                else _feasibility_manifest_fingerprint(val))
         feasible_points = _feasible_point_count(val, proposal.n_points or 1)
         target_band = (proposal.meta or {}).get("target_band")
         min_support = int((getattr(objective, "steering", None) or {}).get(
@@ -2274,6 +2347,10 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                                           "partial": val.get("partial"),
                                           "feasible_segments": val.get("feasible_segments"),
                                           "infeasible": val.get("infeasible"),
+                                          "request_fingerprint": (
+                                              finalized.request_fingerprint
+                                              if finalized is not None else None),
+                                          "feasibility_manifest_fingerprint": manifest_fingerprint,
                                           "iter": it})
         if (min_support > 0 and target_support is not None and target_support < min_support
                 and val.get("would_queue", False)):
@@ -2357,6 +2434,11 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             "authoritative_evidence_revision": (proposal.meta or {}).get(
                 "authoritative_evidence_revision"),
             "proposal_fingerprint": (proposal.meta or {}).get("proposal_fingerprint"),
+            # The other two lifecycle identities, so a submitted scan joins back to the scientific
+            # question it answers and the geometry its request was accepted under.
+            "scientific_action_fingerprint": (proposal.meta or {}).get(
+                "scientific_action_fingerprint"),
+            "feasibility_manifest_fingerprint": manifest_fingerprint,
             "cost": float(feasible_points) * float(proposal.ncount), "iter": it,
         }
         log_event(log_path, "run", submission_payload)

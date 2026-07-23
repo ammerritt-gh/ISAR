@@ -444,6 +444,27 @@ def test_campaign_logs_inventory_events_with_verifiable_artifact_hashes(tmp_path
             assert hashlib.sha256(canonical_json(full).encode("utf-8")).hexdigest() == ref["sha256"]
 
 
+def test_a_campaign_records_all_three_action_identities_against_each_scan(tmp_path):
+    """PR2.2: a scan must be joinable back to the scientific question it answers, the exact request
+    that was sent, and the geometry TAVI judged that request under. With only the request recorded, a
+    forensic replay cannot tell a geometry rejection (retry elsewhere) from a scientifically exhausted
+    action (never retry) — which is exactly the distinction PR2.3's reject-and-try-next rests on."""
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, _ws = _run(tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega))
+    events = read_log(summary["session_log"])
+
+    validations = [e["payload"] for e in events if e["kind"] == "validate"]
+    assert validations, "a campaign that submitted scans must have validated them"
+    assert all(v.get("feasibility_manifest_fingerprint") for v in validations)
+
+    runs = [e["payload"] for e in events if e["kind"] == "run"]
+    assert runs
+    for payload in runs:
+        assert payload.get("proposal_fingerprint")
+        assert payload.get("scientific_action_fingerprint")
+        assert payload.get("feasibility_manifest_fingerprint")
+
+
 def test_inventory_terminal_stamps_the_versioned_proof_on_the_stop(tmp_path, monkeypatch):
     from isar.drive.acquisition.inventory import GENERATOR_REGISTRY_VERSION
     omega = lambda h: (h - 2.0) * 2.0

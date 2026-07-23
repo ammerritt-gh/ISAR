@@ -95,6 +95,10 @@ class ScanProposal:
     # omitted from to_dict(), so the event/file contract remains plain JSON.
     score_recompute: Callable[[int], dict[str, float | None]] | None = field(
         default=None, repr=False, compare=False)
+    # In-memory only: the scientific question this request realizes. The JSON contract carries only
+    # ``meta["scientific_action_fingerprint"]``; the object itself is what lets the loop build the
+    # finalized stage against the intent it belongs to instead of against a bare hash string.
+    intent: MeasurementIntent | None = field(default=None, repr=False, compare=False)
 
     def scan_command(self) -> str:
         """The TAVI ``scan_command1`` for this window: ``deltaE <lo> <hi> <step>``."""
@@ -1787,7 +1791,8 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
               "rival_band": list(rb) if rb is not None else None,
               "count_diagnostics": count_diagnostics,
               "budget_state": dict(budget_state) if budget_state else {}},
-        score_recompute=score_recompute)
+        score_recompute=score_recompute,
+        intent=chosen.evaluation.intent)
     normalize_proposal_score(proposal, float(objective.tolerance_meV))
     normalized_score = proposal.meta["score"]
     epc = normalized_score.get("eig_per_cost")
