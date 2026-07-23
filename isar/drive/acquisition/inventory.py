@@ -61,14 +61,43 @@ class GeneratorStatus(str, Enum):
 TERMINAL_ACTION_INVENTORY_EXHAUSTED = "action_inventory_exhausted"
 TERMINAL_CONTROLLER_FAULT = "controller_fault"
 
+@dataclass(frozen=True)
+class GeneratorSpec:
+    """One registered action generator: the declarative unit an inventory is validated against."""
+
+    generator_id: str
+    version: int = 1
+
+
 # The registered generator set that produced an inventory. An ``action_inventory_exhausted`` terminal
 # is exhaustion *relative to this registry* — a later version that adds generators (PR2) does not make
 # an old honest terminal a lie, so the proof must always name the version it was computed under.
-GENERATOR_REGISTRY_VERSION = "isar.generator-registry/1"
+#
+# Today this is deliberately a single **compatibility adapter** around the legacy selector, not the
+# complete physical action space: it selects one action by the legacy priority/ranking logic. Naming it
+# so keeps the exhaustion proof honest about its scope. PR2 splits it into explicit per-intent
+# generators and grows this tuple; the fingerprint below changes with it automatically.
+GENERATOR_REGISTRY: tuple[GeneratorSpec, ...] = (
+    GeneratorSpec("legacy_selector_adapter", version=1),
+)
+LEGACY_SELECTOR_GENERATOR = GENERATOR_REGISTRY[0].generator_id
 
 
 def _canonical(value) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def registry_fingerprint(registry: tuple[GeneratorSpec, ...] = GENERATOR_REGISTRY) -> str:
+    """Derive the registry version from the ordered generator ids + versions.
+
+    Deriving rather than hand-maintaining a string means a generator added, removed, renamed, or
+    revised cannot silently keep an old terminal's proof looking current.
+    """
+    payload = _canonical([[spec.generator_id, spec.version] for spec in registry])
+    return "isar.generator-registry/1:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+GENERATOR_REGISTRY_VERSION = registry_fingerprint()
 
 
 def scientific_fingerprint(intent: "MeasurementIntent") -> str:
@@ -197,10 +226,65 @@ class ActionInventory:
     reports: list[GeneratorReport] = field(default_factory=list)
     inventory_version: str = "isar.action-inventory/1"
 
+    def structural_problems(self) -> list[str]:
+        """Registry-independent ways an inventory can fail to back its own completeness claim.
+
+        These are the invariants that make ``generated = 0`` trustworthy input to an exhaustion proof.
+        Without them an inventory with **no reports at all** counted as complete, and a report could
+        claim actions that no evaluation records (or an evaluation could name a generator that never
+        reported) while still "proving" the action space empty.
+        """
+        problems: list[str] = []
+        if not self.reports:
+            problems.append("no generator reports: an inventory with no accounting proves nothing")
+        seen: set[str] = set()
+        for report in self.reports:
+            if report.generator in seen:
+                problems.append(f"duplicate report for generator {report.generator!r}")
+            seen.add(report.generator)
+        counts: dict[str, int] = {}
+        for evaluation in self.evaluations:
+            counts[evaluation.generator] = counts.get(evaluation.generator, 0) + 1
+            if evaluation.generator not in seen:
+                problems.append(
+                    f"evaluation from generator {evaluation.generator!r} has no report")
+        for report in self.reports:
+            evaluated = counts.get(report.generator, 0)
+            if int(report.generated) != evaluated:
+                problems.append(
+                    f"generator {report.generator!r} reported {report.generated} generated but "
+                    f"{evaluated} evaluation(s) are recorded")
+        return problems
+
+    def validate(self, registry: tuple[GeneratorSpec, ...] = GENERATOR_REGISTRY) -> list[str]:
+        """Every way this inventory fails to be a valid proof for ``registry`` — empty list when valid.
+
+        Adds the registry-dependent checks to :meth:`structural_problems`: a registered generator that
+        never reported (so its actions are simply unknown) and an unknown generator that is not part of
+        the declared set. Both make an exhaustion claim unfounded.
+        """
+        problems = self.structural_problems()
+        reported = [report.generator for report in self.reports]
+        required = [spec.generator_id for spec in registry]
+        for generator_id in required:
+            if reported.count(generator_id) != 1:
+                problems.append(
+                    f"registered generator {generator_id!r} reported "
+                    f"{reported.count(generator_id)} times, expected exactly 1")
+        for generator in reported:
+            if generator not in required:
+                problems.append(f"unknown generator {generator!r} is not in the declared registry")
+        return problems
+
     @property
     def is_complete(self) -> bool:
-        """True only when every applicable generator ran to completion (none FAILED)."""
-        return all(report.completed_cleanly for report in self.reports)
+        """True only when every applicable generator ran to completion **and** the accounting adds up.
+
+        Registry-independent by design so synthetic/adapter inventories can be reasoned about without a
+        matching global registry; :meth:`validate` adds the registry-membership checks.
+        """
+        return (all(report.completed_cleanly for report in self.reports)
+                and not self.structural_problems())
 
     def eligible_actions(self) -> list[ActionEvaluation]:
         return [e for e in self.evaluations if e.is_eligible]

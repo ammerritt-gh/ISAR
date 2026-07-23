@@ -14,11 +14,15 @@ from isar.drive.acquisition.inventory import (
     ActionEligibility,
     ActionEvaluation,
     ActionInventory,
+    GENERATOR_REGISTRY,
     GENERATOR_REGISTRY_VERSION,
     GeneratorReport,
+    GeneratorSpec,
     GeneratorStatus,
+    LEGACY_SELECTOR_GENERATOR,
     MeasurementIntent,
     RejectionClass,
+    registry_fingerprint,
     scientific_fingerprint,
 )
 
@@ -87,10 +91,12 @@ def test_complete_with_no_eligible_action_is_action_inventory_exhausted():
 
 def test_a_failed_generator_makes_the_inventory_incomplete_and_a_controller_fault():
     intent = _intent()
+    # Structurally consistent apart from the failure, so the FAILED status is the only thing under test.
     inv = ActionInventory(
-        evaluations=[_rejected(intent)],
+        evaluations=[_rejected(intent, generator="ok")],
         reports=[_report("ok", generated=1),
                  _report("boundary", status=GeneratorStatus.FAILED, error_code="zone_geometry")])
+    assert inv.structural_problems() == []
     assert inv.is_complete is False
     # Exhaustion is illegal while any applicable generator failed to run — that is a controller fault,
     # never a scientific result.
@@ -100,7 +106,7 @@ def test_a_failed_generator_makes_the_inventory_incomplete_and_a_controller_faul
 def test_inapplicable_generator_with_a_reason_still_permits_exhaustion():
     intent = _intent()
     inv = ActionInventory(
-        evaluations=[_rejected(intent)],
+        evaluations=[_rejected(intent, generator="ok")],
         reports=[_report("ok", generated=1),
                  GeneratorReport(generator="rival_gap", status=GeneratorStatus.INAPPLICABLE,
                                  reason_code="no_gap_q")])
@@ -133,9 +139,61 @@ def test_intents_are_frozen_and_hashable_so_they_can_key_sets_and_dicts():
 def test_eligible_actions_exposes_only_eligible_evaluations():
     a, b = _intent(), _intent(action_class="narrow_rival")
     inv = ActionInventory(evaluations=[_eligible(a), _rejected(b)],
-                          reports=[_report("g", generated=1)])
+                          reports=[_report("g", generated=2)])
     eligible = inv.eligible_actions()
     assert [e.intent.action_class for e in eligible] == ["same_q_identity"]
+
+
+# -- validated completeness + declarative registry (PR1.7b) ----------------------------------------
+
+def test_an_inventory_with_no_reports_cannot_prove_exhaustion():
+    """The vacuous-completeness hole: ``all([])`` is True, so an inventory carrying no generator
+    accounting at all used to count as complete and "prove" the action space empty."""
+    empty = ActionInventory()
+    assert empty.is_complete is False
+    assert empty.terminal_cause() == "controller_fault"
+    assert "no generator reports" in empty.structural_problems()[0]
+
+
+def test_duplicate_orphan_and_miscounted_reports_are_controller_faults():
+    intent = _intent()
+    duplicate = ActionInventory(evaluations=[], reports=[_report("g"), _report("g")])
+    assert duplicate.is_complete is False and duplicate.terminal_cause() == "controller_fault"
+    assert any("duplicate report" in problem for problem in duplicate.structural_problems())
+
+    # An evaluation whose generator never reported: its provenance is unaccounted for.
+    orphan = ActionInventory(evaluations=[_rejected(intent, generator="ghost")],
+                             reports=[_report("g")])
+    assert orphan.is_complete is False and orphan.terminal_cause() == "controller_fault"
+    assert any("has no report" in problem for problem in orphan.structural_problems())
+
+    # A report claiming actions that no evaluation records.
+    miscounted = ActionInventory(evaluations=[], reports=[_report("g", generated=3)])
+    assert miscounted.is_complete is False and miscounted.terminal_cause() == "controller_fault"
+    assert any("generated" in problem for problem in miscounted.structural_problems())
+
+
+def test_validate_checks_membership_of_the_declared_registry():
+    spec_a, spec_b = GeneratorSpec("a"), GeneratorSpec("b")
+    registry = (spec_a, spec_b)
+    complete = ActionInventory(evaluations=[], reports=[_report("a"), _report("b")])
+    assert complete.validate(registry) == []
+
+    missing = ActionInventory(evaluations=[], reports=[_report("a")])
+    assert any("'b'" in problem and "expected exactly 1" in problem
+               for problem in missing.validate(registry))
+
+    unknown = ActionInventory(evaluations=[], reports=[_report("a"), _report("b"), _report("rogue")])
+    assert any("unknown generator" in problem for problem in unknown.validate(registry))
+
+
+def test_the_live_registry_is_a_single_honest_legacy_adapter_and_its_version_is_derived():
+    assert [spec.generator_id for spec in GENERATOR_REGISTRY] == [LEGACY_SELECTOR_GENERATOR]
+    assert GENERATOR_REGISTRY_VERSION == registry_fingerprint(GENERATOR_REGISTRY)
+    # The fingerprint is derived from the ordered ids+versions, so growing the registry (PR2) or
+    # revising a generator cannot leave an old proof looking current.
+    assert registry_fingerprint((GeneratorSpec("a"),)) != registry_fingerprint((GeneratorSpec("b"),))
+    assert registry_fingerprint((GeneratorSpec("a", 1),)) != registry_fingerprint((GeneratorSpec("a", 2),))
 
 
 # -- persistence surface (PR1.6): compact summary, full serialization, content address -------------
@@ -160,7 +218,7 @@ def test_summary_carries_the_completeness_proof_and_registry_version():
 def test_full_dict_exposes_every_evaluation_and_its_intent():
     a, b = _intent(), _intent(action_class="narrow_rival")
     inv = ActionInventory(evaluations=[_eligible(a), _rejected(b)],
-                          reports=[_report("g", generated=1)])
+                          reports=[_report("g", generated=2)])
     full = inv.to_full_dict()
     assert full["generator_registry_version"] == GENERATOR_REGISTRY_VERSION
     assert [e["intent"]["action_class"] for e in full["evaluations"]] == [

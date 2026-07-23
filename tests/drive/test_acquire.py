@@ -503,6 +503,38 @@ def test_propose_action_returns_none_proposal_with_exhausted_inventory():
     assert inventory.terminal_cause() == "action_inventory_exhausted"
 
 
+# -- generator failure isolation (PR1.7b) ----------------------------------------------------------
+
+def test_a_raising_generator_becomes_a_failed_report_not_an_escaped_exception(monkeypatch):
+    """Before this, a generator exception escaped `enumerate_actions` before an ActionInventory existed,
+    so the production path could never produce the FAILED/controller_fault state the model promises —
+    it just killed the campaign. The fault must now be recorded as incomplete accounting."""
+    from isar.drive.acquisition.inventory import LEGACY_SELECTOR_GENERATOR
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("classification provider exploded")
+
+    monkeypatch.setattr(acq, "_select_target", boom)
+    inventory, candidates = acq.enumerate_actions(
+        _obj(), acq_model.fit([]), [], resolution_info={"fwhm_dE": 0.8})
+    assert candidates == []
+    assert [r.generator for r in inventory.reports] == [LEGACY_SELECTOR_GENERATOR]
+    failed = inventory.failed_reports()
+    assert len(failed) == 1 and "RuntimeError" in failed[0].error_code
+    assert "classification provider exploded" in failed[0].error_code
+    # An unknown action space is never an exhaustion proof.
+    assert inventory.is_complete is False
+    assert inventory.terminal_cause() == "controller_fault"
+
+
+def test_the_live_inventory_validates_against_the_declared_registry():
+    """The happy path must be registry-valid by construction, so validation is a real gate."""
+    inventory, _candidates = acq.enumerate_actions(
+        _obj(), acq_model.fit([]), [], resolution_info={"fwhm_dE": 0.8})
+    assert inventory.validate() == []
+    assert inventory.is_complete is True
+
+
 # -- indexing fault (PR1.5): a driver-inserted candidate must not carry a synthetic grid index -----
 
 def _ambiguous_adequate_anchor():

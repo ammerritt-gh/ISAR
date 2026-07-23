@@ -49,6 +49,7 @@ from isar.drive.acquisition.inventory import (
     ActionInventory,
     GeneratorReport,
     GeneratorStatus,
+    LEGACY_SELECTOR_GENERATOR,
     MeasurementIntent,
 )
 from isar.schema.steering import ProposalScore
@@ -1205,6 +1206,44 @@ def enumerate_actions(objective, model, results_so_far: list[dict], resolution_i
     decomposition (one generator per action class) arrives with the new generators in PR2; today the
     tracked-frontier ladder and the scored tiers report as a single ``COMPLETED`` selector.
     """
+    try:
+        candidates = _legacy_selector_candidates(
+            objective, model, results_so_far, resolution_info=resolution_info,
+            master_rows=master_rows, fisher=fisher, classify=classify,
+            runtime_limits=runtime_limits, track_anchor_index=track_anchor_index,
+            track_zone_period=track_zone_period, branch_track=branch_track,
+            scoring_allowance_seconds=scoring_allowance_seconds)
+    except Exception as error:  # noqa: BLE001 - a generator fault must not escape before the inventory
+        # Failure isolation: a generator that raised leaves its actions *unknown*, so the inventory is
+        # incomplete and exhaustion is unprovable.  Record the fault as a FAILED report — the terminal
+        # then becomes a resumable ``controller_fault`` — rather than escaping before an inventory
+        # exists at all, which is how a generator crash used to kill an unattended campaign.
+        report = GeneratorReport(
+            generator=LEGACY_SELECTOR_GENERATOR, status=GeneratorStatus.FAILED, generated=0,
+            error_code=f"{type(error).__name__}: {error}"[:300])
+        return ActionInventory(evaluations=[], reports=[report]), []
+    report = GeneratorReport(
+        generator=LEGACY_SELECTOR_GENERATOR, status=GeneratorStatus.COMPLETED,
+        generated=len(candidates),
+        reason_code=None if candidates else "no_selectable_action")
+    inventory = ActionInventory(evaluations=[c.evaluation for c in candidates], reports=[report])
+    return inventory, candidates
+
+
+def _legacy_selector_candidates(objective, model, results_so_far: list[dict], *,
+                                resolution_info=None, master_rows: list[dict] | None = None,
+                                fisher=None, classify=None, runtime_limits: dict | None = None,
+                                track_anchor_index: int | None = None,
+                                track_zone_period: float | None = None,
+                                branch_track: dict | None = None,
+                                scoring_allowance_seconds: float = 60.0) -> list[_CandidateAction]:
+    """The single registered generator today: the legacy priority/ranking selector, adapted.
+
+    It returns at most ONE candidate, chosen by the pre-existing tier logic, so the inventory it backs
+    is a proof about the *legacy selector's* action space rather than the complete physical one — which
+    is exactly why it is registered as ``legacy_selector_adapter``. PR2 splits it into explicit
+    per-intent generators, at which point the registry (and its fingerprint) grows.
+    """
     grid = summarize_grid(
         objective, results_so_far or [], master_rows or [], branch_track=branch_track)
     target_hypothesis = next((h for h in getattr(objective, "hypotheses", [])
@@ -1251,17 +1290,12 @@ def enumerate_actions(objective, model, results_so_far: list[dict], resolution_i
     if pick is not None:
         intent = _intent_from_pick(objective, pick, kind, score)
         candidates.append(_CandidateAction(
-            evaluation=ActionEvaluation(intent=intent, generator="tracked_and_scored_selection",
+            evaluation=ActionEvaluation(intent=intent, generator=LEGACY_SELECTOR_GENERATOR,
                                         eligibility=ActionEligibility.ELIGIBLE),
             pick=pick, kind=kind, reason=reason, score=score,
             target_hypothesis=target_hypothesis, policy=policy,
             classification_weight=classification_weight, runtime_limits=runtime_limits))
-    report = GeneratorReport(
-        generator="tracked_and_scored_selection", status=GeneratorStatus.COMPLETED,
-        generated=len(candidates),
-        reason_code=None if candidates else "no_selectable_action")
-    inventory = ActionInventory(evaluations=[c.evaluation for c in candidates], reports=[report])
-    return inventory, candidates
+    return candidates
 
 
 def select_action(inventory: ActionInventory,
