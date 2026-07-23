@@ -61,6 +61,11 @@ class GeneratorStatus(str, Enum):
 TERMINAL_ACTION_INVENTORY_EXHAUSTED = "action_inventory_exhausted"
 TERMINAL_CONTROLLER_FAULT = "controller_fault"
 
+# The registered generator set that produced an inventory. An ``action_inventory_exhausted`` terminal
+# is exhaustion *relative to this registry* — a later version that adds generators (PR2) does not make
+# an old honest terminal a lie, so the proof must always name the version it was computed under.
+GENERATOR_REGISTRY_VERSION = "isar.generator-registry/1"
+
 
 def _canonical(value) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
@@ -231,3 +236,76 @@ class ActionInventory:
             seen.add(key)
             deduped.append(intent)
         return deduped
+
+    def summary(self, *, selected_action_class: str | None = None) -> dict:
+        """A compact, per-iteration record of the action space — small enough to log every iteration.
+
+        Carries the completeness proof (``is_complete`` + the per-generator accounting) and the
+        registry version, so a ``terminal_cause`` read off this summary is interpretable long after the
+        run. The full ranked evaluations live in the referenced artifact (:meth:`to_full_dict`), not here.
+        """
+        return {
+            "inventory_version": self.inventory_version,
+            "generator_registry_version": GENERATOR_REGISTRY_VERSION,
+            "n_evaluations": len(self.evaluations),
+            "n_eligible": len(self.eligible_actions()),
+            "is_complete": self.is_complete,
+            "has_eligible_action": self.has_eligible_action,
+            "terminal_cause": self.terminal_cause(),
+            "selected_action_class": selected_action_class,
+            "generators": [
+                {"generator": r.generator, "status": r.status.value, "generated": r.generated,
+                 "reason_code": r.reason_code, "error_code": r.error_code}
+                for r in self.reports],
+        }
+
+    def to_full_dict(self) -> dict:
+        """The full ranked inventory for the referenced hashed artifact — every evaluation and score.
+
+        Deterministic given the same enumerated action space, so its content hash is stable and a
+        resume that recomputes the inventory from the same authoritative evidence addresses the same
+        artifact rather than duplicating it.
+        """
+        return {
+            "inventory_version": self.inventory_version,
+            "generator_registry_version": GENERATOR_REGISTRY_VERSION,
+            "reports": [
+                {"generator": r.generator, "status": r.status.value, "generated": r.generated,
+                 "reason_code": r.reason_code, "error_code": r.error_code}
+                for r in self.reports],
+            "evaluations": [
+                {
+                    "generator": e.generator,
+                    "eligibility": e.eligibility.value,
+                    "rejection_class": e.rejection_class.value if e.rejection_class else None,
+                    "rejection_reason": e.rejection_reason,
+                    "policy_rank": e.policy_rank,
+                    "scientific_action_fingerprint": e.intent.scientific_action_fingerprint,
+                    "intent": {
+                        "action_class": e.intent.action_class,
+                        "hkl": [float(x) for x in e.intent.hkl],
+                        "energy_lo": e.intent.energy_lo,
+                        "energy_hi": e.intent.energy_hi,
+                        "window_family": e.intent.window_family,
+                        "target_branch_role": e.intent.target_branch_role,
+                        "rival_branch_role": e.intent.rival_branch_role,
+                        "evidence_basis_fingerprint": e.intent.evidence_basis_fingerprint,
+                        "hypotheses_fingerprint": e.intent.hypotheses_fingerprint,
+                        "campaign_slice_fingerprint": e.intent.campaign_slice_fingerprint,
+                    },
+                    "score": {
+                        "expected_identity_gain": e.expected_identity_gain,
+                        "expected_precision_gain": e.expected_precision_gain,
+                        "expected_coverage_gain": e.expected_coverage_gain,
+                        "expected_measurement_cost": e.expected_measurement_cost,
+                        "expected_analysis_cost": e.expected_analysis_cost,
+                        "score_method": e.score_method,
+                        "score_confidence": e.score_confidence,
+                    },
+                }
+                for e in self.evaluations],
+        }
+
+    def content_hash(self) -> str:
+        """SHA-256 of the canonical full inventory — the content address of its persisted artifact."""
+        return hashlib.sha256(_canonical(self.to_full_dict()).encode("utf-8")).hexdigest()

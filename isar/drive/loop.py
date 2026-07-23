@@ -44,7 +44,8 @@ from isar.drive.acquisition.acquire import (
     points_in_window,
     propose_action,
 )
-from isar.drive.acquisition.inventory import TERMINAL_ACTION_INVENTORY_EXHAUSTED
+from isar.drive.acquisition.inventory import (
+    GENERATOR_REGISTRY_VERSION, TERMINAL_ACTION_INVENTORY_EXHAUSTED)
 from isar.drive.acquisition.calibration import Calibration, load_calibration
 from isar.drive.instrument.tavi_client import TaviClient, TaviError
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
@@ -1919,6 +1920,57 @@ def _blocked_frontier_decision(objective, grid, decision: StopDecision,
         per_q, terminal_cause=cause)
 
 
+def _selected_action_class(proposal) -> str | None:
+    """The action class the selected proposal realizes, matching ``MeasurementIntent.action_class``."""
+    if proposal is None:
+        return None
+    meta = proposal.meta or {}
+    if meta.get("purpose") == "differentiate":
+        return "differentiation_probe"
+    return proposal.kind
+
+
+def _persist_action_inventory(cfg: CampaignConfig, inventory, *, it: int,
+                              selected_action_class: str | None,
+                              prev_action_class: str | None, force_full: bool) -> dict | None:
+    """Log the compact inventory summary every iteration, and persist the full ranked inventory as a
+    content-addressed artifact only when it is worth keeping: an action-class change (which includes
+    ambiguity onset), an empty inventory, or a forced terminal boundary.
+
+    Returns the inventory_ref (``{"kind","sha256","path"}``) when a full artifact was written, else
+    ``None``. The artifact is content-addressed, so a resume that recomputes the same inventory from
+    the same authoritative evidence re-references it rather than duplicating it. The ``inventory``
+    event kind is resume-inert (``_resume_state`` never reads it), keeping the inventory a derived,
+    recomputed-on-resume view rather than load-bearing state.
+    """
+    summary = inventory.summary(selected_action_class=selected_action_class)
+    write_full = bool(force_full
+                      or not inventory.has_eligible_action
+                      or selected_action_class != prev_action_class)
+    inventory_ref = None
+    if write_full:
+        digest = inventory.content_hash()
+        path = cfg.workspace / "report" / "inventory" / f"{digest}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            # Atomic write (temp + fsync + os.replace), matching the certification-artifact pattern:
+            # a crash mid-write must never leave a partial file at the content-addressed path, which
+            # ``path.exists()`` would then trust forever and reference from the terminal proof.
+            temporary = path.with_suffix(".json.tmp")
+            with open(temporary, "w", encoding="utf-8") as stream:
+                json.dump(inventory.to_full_dict(), stream, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        inventory_ref = {"kind": "action_inventory", "sha256": digest,
+                         "path": f"report/inventory/{digest}.json"}
+    payload = {**summary, "iter": it}
+    if inventory_ref is not None:
+        payload["inventory_ref"] = inventory_ref
+    log_event(cfg.log_path, "inventory", payload)
+    return inventory_ref
+
+
 def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
                                    submission_payload: dict, budget_state: dict,
                                    observations: list[dict], consumed: set, scan_kind: dict,
@@ -2827,6 +2879,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     certified_terminal = False
     promotion_terminal_blocked = False
     last_regression_basis: tuple | None = None
+    prev_action_class: str | None = None          # last selected action class, for change-triggered persistence
+    terminal_inventory_proof: dict | None = None  # versioned inventory proof stamped on an inventory terminal
     try:
         pending_recovery_reason = _recover_unmatched_submissions(
             cfg=cfg, objective=objective,
@@ -3026,6 +3080,18 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                             evaluate_stop(objective, grid, budget_state,
                                           calibration=cfg.calibration, floor=cfg.floor).per_q)
                         proposal = None
+                if action_inventory is not None:
+                    selected_class = _selected_action_class(proposal)
+                    inventory_ref = _persist_action_inventory(
+                        cfg, action_inventory, it=it, selected_action_class=selected_class,
+                        prev_action_class=prev_action_class, force_full=(proposal is None))
+                    if proposal is not None:
+                        prev_action_class = selected_class
+                    elif action_inventory.terminal_cause() is not None:
+                        terminal_inventory_proof = {
+                            "inventory_version": action_inventory.inventory_version,
+                            "generator_registry_version": GENERATOR_REGISTRY_VERSION,
+                            "inventory_ref": inventory_ref}
                 if proposal is None:
                     if decision is None or decision.state == "continue":
                         decision = evaluate_stop(
@@ -3286,6 +3352,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             stop_payload = {"state": decision.state, "reasons": decision.reasons}
             if decision.terminal_cause is not None:
                 stop_payload["terminal_cause"] = decision.terminal_cause
+            if terminal_inventory_proof is not None:
+                stop_payload.update(terminal_inventory_proof)
 
         (cfg.workspace / "report").mkdir(parents=True, exist_ok=True)
         (cfg.workspace / "report" / "campaign_summary.json").write_text(

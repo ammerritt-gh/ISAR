@@ -14,6 +14,7 @@ from isar.drive.acquisition.inventory import (
     ActionEligibility,
     ActionEvaluation,
     ActionInventory,
+    GENERATOR_REGISTRY_VERSION,
     GeneratorReport,
     GeneratorStatus,
     MeasurementIntent,
@@ -135,3 +136,45 @@ def test_eligible_actions_exposes_only_eligible_evaluations():
                           reports=[_report("g", generated=1)])
     eligible = inv.eligible_actions()
     assert [e.intent.action_class for e in eligible] == ["same_q_identity"]
+
+
+# -- persistence surface (PR1.6): compact summary, full serialization, content address -------------
+
+def test_summary_carries_the_completeness_proof_and_registry_version():
+    intent = _intent()
+    inv = ActionInventory(evaluations=[_rejected(intent)],
+                          reports=[_report("g", generated=1)])
+    summary = inv.summary(selected_action_class="same_q_identity")
+    assert summary["inventory_version"] == inv.inventory_version
+    assert summary["generator_registry_version"] == GENERATOR_REGISTRY_VERSION
+    assert summary["n_evaluations"] == 1 and summary["n_eligible"] == 0
+    assert summary["is_complete"] is True
+    assert summary["has_eligible_action"] is False
+    assert summary["terminal_cause"] == "action_inventory_exhausted"
+    assert summary["selected_action_class"] == "same_q_identity"
+    assert summary["generators"] == [
+        {"generator": "g", "status": "completed", "generated": 1,
+         "reason_code": None, "error_code": None}]
+
+
+def test_full_dict_exposes_every_evaluation_and_its_intent():
+    a, b = _intent(), _intent(action_class="narrow_rival")
+    inv = ActionInventory(evaluations=[_eligible(a), _rejected(b)],
+                          reports=[_report("g", generated=1)])
+    full = inv.to_full_dict()
+    assert full["generator_registry_version"] == GENERATOR_REGISTRY_VERSION
+    assert [e["intent"]["action_class"] for e in full["evaluations"]] == [
+        "same_q_identity", "narrow_rival"]
+    rejected = full["evaluations"][1]
+    assert rejected["eligibility"] == "rejected"
+    assert rejected["rejection_class"] == "saturation"
+
+
+def test_content_hash_is_deterministic_and_content_sensitive():
+    intent = _intent()
+    a = ActionInventory(evaluations=[_rejected(intent)], reports=[_report("g", generated=1)])
+    b = ActionInventory(evaluations=[_rejected(_intent())], reports=[_report("g", generated=1)])
+    assert a.content_hash() == b.content_hash()          # equal content -> same address (resume re-refs)
+    different = ActionInventory(evaluations=[_eligible(_intent())],
+                                reports=[_report("g", generated=1)])
+    assert different.content_hash() != a.content_hash()   # a different action space -> different address

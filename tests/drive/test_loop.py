@@ -280,6 +280,126 @@ def test_blocked_frontier_terminal_defaults_to_exhausted_without_an_inventory():
     assert decision.terminal_cause == "action_inventory_exhausted"
 
 
+# -- inventory persistence (PR1.6) -----------------------------------------------------------------
+
+def _exhausted_inventory():
+    from isar.drive.acquisition.inventory import (
+        ActionInventory, GeneratorReport, GeneratorStatus)
+    return ActionInventory(evaluations=[], reports=[GeneratorReport(
+        generator="tracked_and_scored_selection", status=GeneratorStatus.COMPLETED,
+        generated=0, reason_code="no_selectable_action")])
+
+
+def _eligible_inventory():
+    from isar.drive.acquisition.inventory import (
+        ActionEligibility, ActionEvaluation, ActionInventory, GeneratorReport, GeneratorStatus,
+        MeasurementIntent)
+    intent = MeasurementIntent(action_class="production", hkl=(2.1, 0.0, 0.0), energy_lo=-2.0,
+                               energy_hi=7.0, window_family="target")
+    return ActionInventory(
+        evaluations=[ActionEvaluation(intent=intent, generator="g",
+                                      eligibility=ActionEligibility.ELIGIBLE)],
+        reports=[GeneratorReport(generator="g", status=GeneratorStatus.COMPLETED, generated=1)])
+
+
+def test_selected_action_class_matches_the_intent_action_class():
+    assert loop_mod._selected_action_class(None) is None
+    production = ScanProposal(h=2.1, k=0.0, l=0.0, e_lo=-2.0, e_hi=7.0, e_step=0.1, ncount=1,
+                              kind="production", reason="r", e_pred=0.2)
+    assert loop_mod._selected_action_class(production) == "production"
+    differentiate = ScanProposal(h=2.1, k=0.0, l=0.0, e_lo=-2.0, e_hi=7.0, e_step=0.1, ncount=1,
+                                 kind="quicklook", reason="r", e_pred=0.2,
+                                 meta={"purpose": "differentiate"})
+    assert loop_mod._selected_action_class(differentiate) == "differentiation_probe"
+
+
+def test_persist_action_inventory_writes_a_content_addressed_artifact_and_compact_event(tmp_path):
+    from isar.drive.acquisition.inventory import GENERATOR_REGISTRY_VERSION
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True, exist_ok=True)
+    cfg = types.SimpleNamespace(workspace=ws, log_path=ws / "report" / "session_log.jsonl")
+    inv = _exhausted_inventory()
+
+    ref = loop_mod._persist_action_inventory(
+        cfg, inv, it=3, selected_action_class=None, prev_action_class="production", force_full=True)
+
+    # An empty/forced inventory persists the full artifact, addressed by its own content hash.
+    assert ref["kind"] == "action_inventory" and ref["sha256"] == inv.content_hash()
+    assert ref["path"] == f"report/inventory/{inv.content_hash()}.json"
+    artifact = ws / ref["path"]
+    assert artifact.exists()
+    assert json.loads(artifact.read_text(encoding="utf-8")) == inv.to_full_dict()
+    # The compact per-iteration event carries the summary + the reference to the full artifact.
+    payloads = [e["payload"] for e in read_log(cfg.log_path) if e["kind"] == "inventory"]
+    assert len(payloads) == 1
+    assert payloads[0]["terminal_cause"] == "action_inventory_exhausted"
+    assert payloads[0]["generator_registry_version"] == GENERATOR_REGISTRY_VERSION
+    assert payloads[0]["inventory_ref"] == ref
+
+
+def test_persist_action_inventory_skips_the_full_artifact_when_nothing_changed(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True, exist_ok=True)
+    cfg = types.SimpleNamespace(workspace=ws, log_path=ws / "report" / "session_log.jsonl")
+    inv = _eligible_inventory()
+
+    # Eligible action, same action class as last iteration, not a terminal -> no full artifact.
+    ref = loop_mod._persist_action_inventory(
+        cfg, inv, it=1, selected_action_class="production", prev_action_class="production",
+        force_full=False)
+    assert ref is None
+    assert not (ws / "report" / "inventory").exists()
+    # ...but the compact summary is still logged every iteration.
+    payloads = [e["payload"] for e in read_log(cfg.log_path) if e["kind"] == "inventory"]
+    assert len(payloads) == 1 and "inventory_ref" not in payloads[0]
+
+    # A change of selected action class does persist the full artifact.
+    ref2 = loop_mod._persist_action_inventory(
+        cfg, inv, it=2, selected_action_class="differentiation_probe",
+        prev_action_class="production", force_full=False)
+    assert ref2 is not None and (ws / ref2["path"]).exists()
+
+
+def test_campaign_logs_inventory_events_with_verifiable_artifact_hashes(tmp_path):
+    from isar.drive.acquisition.inventory import GENERATOR_REGISTRY_VERSION, _canonical
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, ws = _run(tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega))
+    payloads = [e["payload"] for e in read_log(summary["session_log"]) if e["kind"] == "inventory"]
+    assert payloads, "every proposing iteration logs a compact inventory summary"
+    for payload in payloads:
+        assert payload["generator_registry_version"] == GENERATOR_REGISTRY_VERSION
+        ref = payload.get("inventory_ref")
+        if ref is not None:
+            artifact = ws / ref["path"]
+            assert artifact.exists()
+            full = json.loads(artifact.read_text(encoding="utf-8"))
+            # The advertised sha is the canonical content address of the persisted artifact.
+            import hashlib
+            assert hashlib.sha256(_canonical(full).encode("utf-8")).hexdigest() == ref["sha256"]
+
+
+def test_inventory_terminal_stamps_the_versioned_proof_on_the_stop(tmp_path, monkeypatch):
+    from isar.drive.acquisition.inventory import GENERATOR_REGISTRY_VERSION
+    omega = lambda h: (h - 2.0) * 2.0
+    exhausted = _exhausted_inventory()
+    monkeypatch.setattr(loop_mod, "propose_action", lambda *a, **k: (None, exhausted))
+    monkeypatch.setattr(
+        loop_mod, "_blocked_frontier_decision",
+        lambda objective, grid, decision, inventory=None: StopDecision(
+            "incomplete", ["branch_ambiguity; frontier_blocked"], decision.per_q,
+            terminal_cause="action_inventory_exhausted"))
+
+    summary, ws = _run(tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega))
+    # The canonical terminal record is the durable session-log ``stop`` event.
+    stop = [e["payload"] for e in read_log(summary["session_log"]) if e["kind"] == "stop"][-1]
+    assert stop["state"] == "incomplete"
+    assert stop["terminal_cause"] == "action_inventory_exhausted"
+    assert stop["inventory_version"] == exhausted.inventory_version
+    assert stop["generator_registry_version"] == GENERATOR_REGISTRY_VERSION
+    # The proof references the persisted full inventory artifact, and it is on disk.
+    assert (ws / stop["inventory_ref"]["path"]).exists()
+
+
 def test_pooled_selected_optic_suppresses_false_missed_window_from_acoustic_individual():
     proposal = ScanProposal(
         h=2.05, k=0.0, l=0.0, e_lo=-2.0, e_hi=8.0, e_step=0.25,
