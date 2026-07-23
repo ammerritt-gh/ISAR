@@ -43,6 +43,14 @@ from isar.drive.supervisor.stopping import (
     GridQ,
     summarize_grid,
 )
+from isar.drive.acquisition.inventory import (
+    ActionEligibility,
+    ActionEvaluation,
+    ActionInventory,
+    GeneratorReport,
+    GeneratorStatus,
+    MeasurementIntent,
+)
 from isar.schema.steering import ProposalScore
 from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
 
@@ -1141,28 +1149,61 @@ def _select_target(grid: list[GridQ], model, *,
         c_spent=float(pick.counts_spent), reason=reason)
 
 
-def propose_scan(objective, model, results_so_far: list[dict], resolution_info=None,
-                 budget_state: dict | None = None, master_rows: list[dict] | None = None,
-                 fisher=None, classify=None, rival_band=None,
-                 runtime_limits: dict | None = None,
-                 track_anchor_index: int | None = None,
-                 track_zone_period: float | None = None,
-                 branch_track: dict | None = None,
-                 scoring_allowance_seconds: float = 60.0) -> ScanProposal | None:
-    """Propose the next scan (Q, energy window, neutron count), or ``None`` if nothing remains.
+@dataclass
+class _CandidateAction:
+    """A selected raw pick paired with its inventory evaluation, ready to build into a proposal.
 
-    Args:
-        objective: the :class:`~isar.drive.objective.ObjectiveSpec` (path + tolerance).
-        model: a fitted ω(q) model exposing ``predict(q) -> (mean, sigma)``
-            (:mod:`isar.drive.acquisition.model`).
-        results_so_far: the chronological observation list (see
-            :func:`isar.drive.supervisor.stopping.summarize_grid`).
-        resolution_info: the energy-resolution source — a float, a dict, or a callable
-            ``(h,k,l,deltaE) -> …`` (the loop wraps ``GET /resolution``). See :func:`_resolve_fwhm`.
-        budget_state: informational; carried onto the proposal meta. The stopping criterion owns the
-            budget verdict, not the acquisition function.
-        fisher: optional Poisson-Fisher screen provider ``(gridq, omega0_pred, sigma_prior) -> σ_scan``
-            (5b). Returns the predicted post-scan σ(ω₀) when the q is Fisher-grounded, else ``None``.
+    The value-type ``evaluation`` is what the inventory (and the terminal decision) reasons about; the
+    raw ``pick``/``kind``/``reason``/``score`` carry the exact state the proposal builder consumes. The
+    selection context (``target_hypothesis``/``policy``/``classification_weight``/``runtime_limits``) is
+    carried verbatim rather than recomputed, so the proposal builder sees byte-identical inputs to the
+    values selection actually used — no second read of ``objective.steering`` that could diverge.
+    """
+
+    evaluation: ActionEvaluation
+    pick: GridQ
+    kind: str
+    reason: str
+    score: ProposalScore
+    target_hypothesis: dict | None
+    policy: dict
+    classification_weight: float
+    runtime_limits: dict
+
+
+def _intent_from_pick(objective, pick, kind, score) -> MeasurementIntent:
+    """Describe the *scientific question* a selected pick answers, for dedup and terminal accounting."""
+    purpose = getattr(score, "purpose", None)
+    action_class = "differentiation_probe" if purpose == "differentiate" else kind
+    target_branch = getattr(objective, "target_branch", None)
+    rival_branch = ("acoustic" if target_branch == "optic"
+                    else "optic" if target_branch == "acoustic" else None)
+    search = getattr(objective, "energy_search_meV", None) or (None, None)
+    evidence = (getattr(score, "evidence_transition", None) or {}).get("authoritative_evidence_revision")
+    return MeasurementIntent(
+        action_class=str(action_class), hkl=tuple(pick.hkl),
+        energy_lo=search[0], energy_hi=search[1],
+        window_family=("differentiate" if purpose == "differentiate" else "target"),
+        target_branch_role=target_branch, rival_branch_role=rival_branch,
+        evidence_basis_fingerprint=(str(evidence) if evidence is not None else None))
+
+
+def enumerate_actions(objective, model, results_so_far: list[dict], resolution_info=None,
+                      budget_state: dict | None = None, master_rows: list[dict] | None = None,
+                      fisher=None, classify=None, rival_band=None,
+                      runtime_limits: dict | None = None,
+                      track_anchor_index: int | None = None,
+                      track_zone_period: float | None = None,
+                      branch_track: dict | None = None,
+                      scoring_allowance_seconds: float = 60.0):
+    """Enumerate the acquisition action space and report per-generator completeness.
+
+    Behaviour-preserving over the previous inline selection: the winning pick is still chosen by
+    ``_select_target`` exactly as before. The returned :class:`ActionInventory` reflects *that*
+    selection — it is not a separate approximation — so the terminal decision can consult the same
+    action space acquisition used rather than re-deriving it (PR1 in the plan). The per-generator
+    decomposition (one generator per action class) arrives with the new generators in PR2; today the
+    tracked-frontier ladder and the scored tiers report as a single ``COMPLETED`` selector.
     """
     grid = summarize_grid(
         objective, results_so_far or [], master_rows or [], branch_track=branch_track)
@@ -1199,8 +1240,72 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
         ranking_cost_kind=("analysis" if getattr(objective, "tier", None) == "deterministic"
                            else "measurement"),
         scoring_allowance_seconds=scoring_allowance_seconds)
-    if pick is None:
+    candidates: list[_CandidateAction] = []
+    if pick is not None:
+        intent = _intent_from_pick(objective, pick, kind, score)
+        candidates.append(_CandidateAction(
+            evaluation=ActionEvaluation(intent=intent, generator="tracked_and_scored_selection",
+                                        eligibility=ActionEligibility.ELIGIBLE),
+            pick=pick, kind=kind, reason=reason, score=score,
+            target_hypothesis=target_hypothesis, policy=policy,
+            classification_weight=classification_weight, runtime_limits=runtime_limits))
+    report = GeneratorReport(
+        generator="tracked_and_scored_selection", status=GeneratorStatus.COMPLETED,
+        generated=len(candidates),
+        reason_code=None if candidates else "no_selectable_action")
+    inventory = ActionInventory(evaluations=[c.evaluation for c in candidates], reports=[report])
+    return inventory, candidates
+
+
+def select_action(inventory: ActionInventory,
+                  candidates: list[_CandidateAction]) -> _CandidateAction | None:
+    """Choose the best eligible candidate. One candidate today; the staged ranking arrives in PR3."""
+    eligible = [c for c in candidates if c.evaluation.is_eligible]
+    if not eligible:
         return None
+    return min(eligible, key=lambda c: c.evaluation.policy_rank)
+
+
+def propose_scan(objective, model, results_so_far: list[dict], resolution_info=None,
+                 budget_state: dict | None = None, master_rows: list[dict] | None = None,
+                 fisher=None, classify=None, rival_band=None,
+                 runtime_limits: dict | None = None,
+                 track_anchor_index: int | None = None,
+                 track_zone_period: float | None = None,
+                 branch_track: dict | None = None,
+                 scoring_allowance_seconds: float = 60.0) -> ScanProposal | None:
+    """Propose the next scan (Q, energy window, neutron count), or ``None`` if nothing remains.
+
+    Args:
+        objective: the :class:`~isar.drive.objective.ObjectiveSpec` (path + tolerance).
+        model: a fitted ω(q) model exposing ``predict(q) -> (mean, sigma)``
+            (:mod:`isar.drive.acquisition.model`).
+        results_so_far: the chronological observation list (see
+            :func:`isar.drive.supervisor.stopping.summarize_grid`).
+        resolution_info: the energy-resolution source — a float, a dict, or a callable
+            ``(h,k,l,deltaE) -> …`` (the loop wraps ``GET /resolution``). See :func:`_resolve_fwhm`.
+        budget_state: informational; carried onto the proposal meta. The stopping criterion owns the
+            budget verdict, not the acquisition function.
+        fisher: optional Poisson-Fisher screen provider ``(gridq, omega0_pred, sigma_prior) -> σ_scan``
+            (5b). Returns the predicted post-scan σ(ω₀) when the q is Fisher-grounded, else ``None``.
+    """
+    inventory, candidates = enumerate_actions(
+        objective, model, results_so_far, resolution_info=resolution_info,
+        budget_state=budget_state, master_rows=master_rows, fisher=fisher, classify=classify,
+        rival_band=rival_band, runtime_limits=runtime_limits, track_anchor_index=track_anchor_index,
+        track_zone_period=track_zone_period, branch_track=branch_track,
+        scoring_allowance_seconds=scoring_allowance_seconds)
+    chosen = select_action(inventory, candidates)
+    if chosen is None:
+        return None
+    pick, kind, reason, score = chosen.pick, chosen.kind, chosen.reason, chosen.score
+    # Reuse the exact context selection used — never a second read of objective.steering — so the
+    # proposal builder below sees byte-identical inputs. The grid, opening, inserted candidate and
+    # target selection all live in ``enumerate_actions`` now.
+    target_hypothesis = chosen.target_hypothesis
+    policy = chosen.policy
+    runtime_limits = chosen.runtime_limits
+    classification_weight = chosen.classification_weight
     driver_inserted = not any(math.dist(pick.hkl, tuple(point)) <= 1e-4 for point in objective.path)
     if driver_inserted:
         reason = (f"driver-inserted classification probe q={pick.q:g} (hkl={list(pick.hkl)}); "

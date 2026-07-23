@@ -445,3 +445,34 @@ def test_driver_insertion_requires_finite_requested_grid_comparison():
         obj, model, observations, {"fwhm_dE": 0.5}, {}, classify=classification_value)
     assert proposal is not None
     assert proposal.meta["driver_inserted"] is False
+
+
+# -- enumerate/select seam (PR1.2): the inventory must faithfully mirror propose_scan -------------
+
+def test_enumerate_select_mirrors_propose_scan_when_an_action_exists():
+    obj = _obj()
+    model = acq_model.fit([])
+    inventory, candidates = acq.enumerate_actions(obj, model, [], resolution_info={"fwhm_dE": 0.8})
+    chosen = acq.select_action(inventory, candidates)
+    proposal = acq.propose_scan(obj, model, [], {"fwhm_dE": 0.8}, {})
+    # An action is available, the enumeration completed, and it is not a terminal.
+    assert inventory.is_complete is True
+    assert inventory.has_eligible_action is True
+    assert inventory.terminal_cause() is None
+    # select_action picks the same q propose_scan builds its proposal at.
+    assert chosen is not None and proposal is not None
+    assert chosen.pick.hkl[0] == pytest.approx(proposal.h)
+
+
+def test_enumerate_reports_action_inventory_exhausted_when_nothing_remains():
+    obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.1, step=0.1, tolerance_meV=0.5,
+                                budget={"kind": "neutrons", "amount": 1e12})
+    obs = [_obs((2.1, 0.0, 0.0), "production", 0.30)]
+    masters = [_master((2.1, 0.0, 0.0), 0.30)]     # pooled interval within tolerance -> converged
+    inventory, candidates = acq.enumerate_actions(
+        obj, _model(obs), obs, resolution_info={"fwhm_dE": 0.8}, master_rows=masters)
+    assert acq.select_action(inventory, candidates) is None
+    assert acq.propose_scan(obj, _model(obs), obs, {"fwhm_dE": 0.8}, {}, master_rows=masters) is None
+    assert inventory.has_eligible_action is False
+    assert inventory.is_complete is True
+    assert inventory.terminal_cause() == "action_inventory_exhausted"
