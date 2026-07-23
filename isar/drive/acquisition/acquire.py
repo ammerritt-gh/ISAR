@@ -1229,6 +1229,10 @@ class AcquisitionContext:
     # evaporate the moment any evidence advanced, and the controller would re-propose the same
     # unreachable q for the rest of the campaign.
     unreachable_hkl: dict = field(default_factory=dict)
+    # Which (sample, temperature-bin) belief slice these actions are formed against. Part of every
+    # intent's identity: the same question asked of a different slice is answered by different
+    # evidence and updates a different posterior.
+    campaign_slice: object | None = None
 
 
 @dataclass(frozen=True)
@@ -1313,8 +1317,8 @@ def _driver_inserted_pick(objective, pick) -> bool:
     return not any(math.dist(pick.hkl, tuple(point)) <= 1e-4 for point in objective.path)
 
 
-def _intent_from_pick(objective, pick, kind, score, *, driver_inserted: bool = False
-                      ) -> MeasurementIntent:
+def _intent_from_pick(objective, pick, kind, score, *, driver_inserted: bool = False,
+                      campaign_slice=None) -> MeasurementIntent:
     """Describe the *scientific question* a selected pick answers, for dedup and terminal accounting."""
     # A driver-inserted pick *is* a differentiation probe by construction — the candidate generator
     # exists to place a classification probe off the certification grid, and the proposal builder
@@ -1344,7 +1348,9 @@ def _intent_from_pick(objective, pick, kind, score, *, driver_inserted: bool = F
         window_family=("differentiate" if differentiate else "target"),
         target_branch_role=target_branch, rival_branch_role=rival_branch,
         evidence_basis_fingerprint=(str(evidence) if evidence is not None else None),
-        hypotheses_fingerprint=getattr(objective, "hypothesis_fingerprint", None))
+        hypotheses_fingerprint=getattr(objective, "hypothesis_fingerprint", None),
+        campaign_slice_fingerprint=(campaign_slice.fingerprint
+                                    if campaign_slice is not None else None))
 
 
 def build_acquisition_context(objective, model, results_so_far: list[dict], resolution_info=None,
@@ -1355,7 +1361,8 @@ def build_acquisition_context(objective, model, results_so_far: list[dict], reso
                               branch_track: dict | None = None,
                               scoring_allowance_seconds: float = 60.0,
                               suppressed: dict | None = None,
-                              unreachable_hkl: dict | None = None) -> AcquisitionContext:
+                              unreachable_hkl: dict | None = None,
+                              campaign_slice=None) -> AcquisitionContext:
     """Assemble the one world every generator reasons about at this decision boundary.
 
     This is verbatim the preamble the fused legacy selector used to run inline — the summarized grid,
@@ -1410,7 +1417,8 @@ def build_acquisition_context(objective, model, results_so_far: list[dict], reso
                            else "measurement"),
         scoring_allowance_seconds=scoring_allowance_seconds,
         suppressed=_validated_suppressions(suppressed),
-        unreachable_hkl=_validated_suppressions(unreachable_hkl))
+        unreachable_hkl=_validated_suppressions(unreachable_hkl),
+        campaign_slice=campaign_slice)
 
 
 def hkl_key(hkl) -> str:
@@ -1454,7 +1462,8 @@ def _legacy_selector_generate(context: AcquisitionContext) -> list[GeneratedActi
         return []
     driver_inserted = _driver_inserted_pick(context.objective, pick)
     intent = _intent_from_pick(context.objective, pick, kind, score,
-                               driver_inserted=driver_inserted)
+                               driver_inserted=driver_inserted,
+                               campaign_slice=context.campaign_slice)
     return [GeneratedAction(intent=intent, generator=LEGACY_SELECTOR_GENERATOR, pick=pick,
                             kind=kind, reason=reason, score=score,
                             driver_inserted=driver_inserted)]
@@ -1649,7 +1658,8 @@ def enumerate_actions(objective, model, results_so_far: list[dict], resolution_i
                       branch_track: dict | None = None,
                       scoring_allowance_seconds: float = 60.0,
                       suppressed: dict | None = None,
-                      unreachable_hkl: dict | None = None):
+                      unreachable_hkl: dict | None = None,
+                      campaign_slice=None, campaign_slice_error: str | None = None):
     """Enumerate the acquisition action space and report per-generator completeness.
 
     The pipeline is now the declared one — build one context, generate intents, dedupe them, evaluate
@@ -1657,12 +1667,22 @@ def enumerate_actions(objective, model, results_so_far: list[dict], resolution_i
     only ``legacy_selector_adapter`` registered the selected action is identical to before; the split
     exists so PR2.7's endpoint generators plug in beside it without either side rebuilding the world.
     """
+    if campaign_slice_error:
+        # Fail closed without crashing an unattended run. The generators cannot be given a
+        # trustworthy evidence basis, so they did not run — the action space is unknown, exhaustion is
+        # unprovable, and the terminal becomes a resumable ``controller_fault`` rather than a guess
+        # made against whichever belief slice happened to sort highest.
+        return ActionInventory(
+            evaluations=[],
+            reports=[GeneratorReport(generator=spec.generator_id, status=GeneratorStatus.FAILED,
+                                     generated=0, error_code=str(campaign_slice_error)[:300])
+                     for spec in GENERATOR_REGISTRY]), []
     context = build_acquisition_context(
         objective, model, results_so_far, resolution_info=resolution_info,
         master_rows=master_rows, fisher=fisher, classify=classify, runtime_limits=runtime_limits,
         track_anchor_index=track_anchor_index, track_zone_period=track_zone_period,
         branch_track=branch_track, scoring_allowance_seconds=scoring_allowance_seconds,
-        suppressed=suppressed, unreachable_hkl=unreachable_hkl)
+        suppressed=suppressed, unreachable_hkl=unreachable_hkl, campaign_slice=campaign_slice)
     generated, reports = generate_action_intents(context)
     generated, evaluations, evaluator_failures = _evaluate_safely(generated, context)
     evaluations = _apply_suppressions(evaluations, context)
@@ -1727,7 +1747,8 @@ def plan_actions(objective, model, results_so_far: list[dict], resolution_info=N
                  branch_track: dict | None = None,
                  scoring_allowance_seconds: float = 60.0,
                  suppressed: dict | None = None,
-                 unreachable_hkl: dict | None = None) -> ActionPlan:
+                 unreachable_hkl: dict | None = None,
+                 campaign_slice=None, campaign_slice_error: str | None = None) -> ActionPlan:
     """Enumerate the action space once and return a plan that can realize its actions in order."""
     inventory, candidates = enumerate_actions(
         objective, model, results_so_far, resolution_info=resolution_info,
@@ -1735,7 +1756,8 @@ def plan_actions(objective, model, results_so_far: list[dict], resolution_info=N
         rival_band=rival_band, runtime_limits=runtime_limits, track_anchor_index=track_anchor_index,
         track_zone_period=track_zone_period, branch_track=branch_track,
         scoring_allowance_seconds=scoring_allowance_seconds, suppressed=suppressed,
-        unreachable_hkl=unreachable_hkl)
+        unreachable_hkl=unreachable_hkl, campaign_slice=campaign_slice,
+        campaign_slice_error=campaign_slice_error)
     return ActionPlan(
         inventory=inventory, candidates=candidates,
         _build_context=(objective, model, resolution_info, budget_state, fisher, rival_band,
@@ -1751,7 +1773,8 @@ def propose_action(objective, model, results_so_far: list[dict], resolution_info
                    branch_track: dict | None = None,
                    scoring_allowance_seconds: float = 60.0,
                    suppressed: dict | None = None,
-                   unreachable_hkl: dict | None = None
+                   unreachable_hkl: dict | None = None,
+                   campaign_slice=None, campaign_slice_error: str | None = None
                    ) -> tuple[ScanProposal | None, ActionInventory]:
     """Enumerate, select, and build the single best action — plus the canonical inventory.
 
@@ -1767,7 +1790,8 @@ def propose_action(objective, model, results_so_far: list[dict], resolution_info
         rival_band=rival_band, runtime_limits=runtime_limits, track_anchor_index=track_anchor_index,
         track_zone_period=track_zone_period, branch_track=branch_track,
         scoring_allowance_seconds=scoring_allowance_seconds, suppressed=suppressed,
-        unreachable_hkl=unreachable_hkl)
+        unreachable_hkl=unreachable_hkl, campaign_slice=campaign_slice,
+        campaign_slice_error=campaign_slice_error)
     return plan.next_proposal(), plan.inventory
 
 

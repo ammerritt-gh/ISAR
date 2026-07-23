@@ -48,7 +48,7 @@ from isar.drive.acquisition.acquire import (
 )
 from isar.drive.acquisition.inventory import (
     GENERATOR_REGISTRY_VERSION, TERMINAL_ACTION_INVENTORY_EXHAUSTED, TERMINAL_CONTROLLER_FAULT,
-    FinalizedProposal, RejectionClass, ValidatedAttempt, canonical_json)
+    CampaignSliceKey, FinalizedProposal, RejectionClass, ValidatedAttempt, canonical_json)
 from isar.drive.acquisition.calibration import Calibration, load_calibration
 from isar.drive.instrument.tavi_client import TaviClient, TaviError
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
@@ -433,24 +433,117 @@ def _make_resolution_cb(client, override):
     return cb
 
 
-def _make_classification_providers(card_state: dict, objective, resolution_cb, *, sample: str):
-    """Build MI/rival providers from one complete active-sample temperature slice."""
-    from isar.drive.acquisition.acquire import _resolve_fwhm
-    from isar.drive.acquisition.classify_eig import assignment_mi, belief_predict
-
-    rows = [dict(row) for row in (card_state.get("branch_belief_models") or [])
-            if isinstance(row, dict) and str(row.get("sample", "")) == str(sample)]
+def _belief_slices(card_state: dict, *, sample: str) -> dict[float, list[dict]]:
+    """Belief-model rows for the active sample, grouped by temperature bin."""
     slices: dict[float, list[dict]] = {}
-    for row in rows:
+    for row in (card_state.get("branch_belief_models") or []):
+        if not isinstance(row, dict) or str(row.get("sample", "")) != str(sample):
+            continue
         try:
             temperature = float(row.get("t_bin"))
         except (TypeError, ValueError):
             continue
         if math.isfinite(temperature):
-            slices.setdefault(temperature, []).append(row)
-    complete = [temperature for temperature, group in slices.items()
-                if len({row.get("branch_id") for row in group if row.get("branch_id")}) >= 2]
-    selected = slices[max(complete)] if complete else []
+            slices.setdefault(temperature, []).append(dict(row))
+    return slices
+
+
+def _complete_slice_temperatures(slices: dict[float, list[dict]]) -> list[float]:
+    """Temperatures whose slice holds both branches — the only ones that can classify anything."""
+    return sorted(temperature for temperature, group in slices.items()
+                  if len({row.get("branch_id") for row in group if row.get("branch_id")}) >= 2)
+
+
+def resolve_campaign_slice(card_state: dict, objective, *, sample: str,
+                           binning_policy_fingerprint: str | None = None
+                           ) -> tuple[CampaignSliceKey | None, str | None]:
+    """Resolve which belief slice this campaign is acting on, or refuse to guess.
+
+    Returns ``(key, None)`` when the slice is determined and ``(None, reason)`` when the evidence is
+    ambiguous. The previous rule took ``max(complete)`` — the newest temperature with both branches
+    present — which silently classified a 100 K campaign against 200 K beliefs whenever a newer
+    complete slice existed, with nothing in the run record to say so.
+
+    Order: the temperature the objective explicitly declared; else the single complete slice when
+    exactly one qualifies; else refuse. No complete slice at all is the ordinary cold start, not an
+    ambiguity: the campaign runs on the common prior with ``temperature_bin=None``.
+
+    The caller turns a refusal into an incomplete inventory, so an unattended run stops resumably with
+    a structured reason instead of either crashing or guessing.
+    """
+    slices = _belief_slices(card_state, sample=sample)
+    complete = _complete_slice_temperatures(slices)
+    key = lambda temperature: CampaignSliceKey(
+        sample=str(sample), temperature_bin=temperature,
+        binning_policy_fingerprint=binning_policy_fingerprint)
+
+    declared = getattr(objective, "target_temperature_K", None)
+    if declared is not None:
+        declared = float(declared)
+        match = next((t for t in complete if math.isclose(t, declared, rel_tol=0.0, abs_tol=1e-6)),
+                     None)
+        if match is not None:
+            return key(match), None
+        if not complete:
+            return key(None), None
+        return None, (
+            f"campaign_slice_unresolved: the objective declares {declared:g} K but the complete "
+            f"belief slices for sample {sample!r} are at "
+            f"{', '.join(f'{t:g} K' for t in complete)}; classifying against a slice the campaign "
+            "did not declare would silently answer with the wrong temperature's evidence")
+    if len(complete) == 1:
+        return key(complete[0]), None
+    if not complete:
+        return key(None), None
+    return None, (
+        f"campaign_slice_unresolved: sample {sample!r} has complete belief slices at "
+        f"{', '.join(f'{t:g} K' for t in complete)} and the objective declares no target "
+        "temperature; declare target_temperature_K rather than letting the controller guess")
+
+
+def _temperature_binning_fingerprint(workspace: Path) -> str | None:
+    """Hash the scientist-owned rules that decide which temperature bin evidence lands in.
+
+    Two policy blocks decide that, and both belong in the identity:
+
+    * ``collation.t_round`` is the binning granularity itself — the bin is
+      ``round(T / t_round) * t_round`` (:mod:`isar.session.branch_model`,
+      :mod:`isar.session.driver`). Change it and rows regroup into different slices.
+    * ``temperature_rule`` decides which field ``T`` is *read from* (setpoint vs sensors, and the
+      divergence tolerance), so it changes the value that then gets binned.
+
+    Either can silently reroute evidence while the sample and the nominal temperature both look
+    unchanged, which is exactly the kind of move a slice fingerprint exists to make visible.
+    """
+    policy_path = workspace / "card.policy.toml"
+    if not policy_path.exists():
+        return None
+    try:
+        card = Card.load(policy_path, workspace / "card.state.json")
+        rule = getattr(card.policy, "temperature_rule", None) or {}
+        t_round = (getattr(card.policy, "collation", None) or {}).get("t_round")
+    except (OSError, ValueError, TypeError) as exc:
+        logging.getLogger(__name__).warning(
+            "could not read the temperature binning rules from %s: %s", policy_path, exc)
+        return None
+    if not rule and t_round is None:
+        return None
+    payload = canonical_json({"temperature_rule": rule, "t_round": t_round})
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _make_classification_providers(card_state: dict, objective, resolution_cb, *, sample: str,
+                                   temperature_bin: float | None = None):
+    """Build MI/rival providers from the resolved belief slice.
+
+    ``temperature_bin`` is the slice :func:`resolve_campaign_slice` settled on; ``None`` means the
+    cold start, where no measured slice exists and the common prior is used.
+    """
+    from isar.drive.acquisition.acquire import _resolve_fwhm
+    from isar.drive.acquisition.classify_eig import assignment_mi, belief_predict
+
+    slices = _belief_slices(card_state, sample=sample)
+    selected = list(slices.get(temperature_bin) or []) if temperature_bin is not None else []
     if not selected:
         # A common prior-only slice is safe across samples/T; unrelated measured slices are not.
         selected = [{"branch_id": h.get("name"), "anchors": [], "n_anchors": 0,
@@ -3339,8 +3432,13 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                 # reconstructs an analysis model from branch summaries.
                 with timed(cfg.log_path, "classification_provider", iteration=it):
                     durable_state = read_card_state(cfg.workspace)
+                    campaign_slice, campaign_slice_error = resolve_campaign_slice(
+                        durable_state, objective, sample=cfg.sample,
+                        binning_policy_fingerprint=_temperature_binning_fingerprint(cfg.workspace))
                     classify, rival_band = _make_classification_providers(
-                        durable_state, objective, cfg.resolution_cb, sample=cfg.sample)
+                        durable_state, objective, cfg.resolution_cb, sample=cfg.sample,
+                        temperature_bin=(campaign_slice.temperature_bin
+                                         if campaign_slice is not None else None))
                 action_inventory = None
                 plan = None
                 with timed(cfg.log_path, "propose", iteration=it):
@@ -3366,7 +3464,9 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                 branch_track=(durable_state.get("branch_tracks") or {}),
                                 scoring_allowance_seconds=scoring_allowance,
                                 suppressed=action_suppressions,
-                                unreachable_hkl=unreachable_hkl)
+                                unreachable_hkl=unreachable_hkl,
+                                campaign_slice=campaign_slice,
+                                campaign_slice_error=campaign_slice_error)
                             action_inventory = plan.inventory
                             proposal = plan.next_proposal()
                         if proposal is not None:

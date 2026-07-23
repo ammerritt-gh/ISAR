@@ -149,6 +149,38 @@ def scientific_fingerprint(intent: "MeasurementIntent") -> str:
 
 
 @dataclass(frozen=True)
+class CampaignSliceKey:
+    """Which ``(sample, temperature bin)`` slice of belief evidence an action belongs to.
+
+    Belief models are stored per slice, so an action formed against one slice is not the same
+    scientific action as the identical question asked of another — it is answered by different
+    evidence and updates a different posterior. Carrying the key on the intent makes that difference
+    part of the action's identity rather than an invisible ambient choice.
+
+    ``binning_policy_fingerprint`` is part of the identity because the rule that maps a measured
+    temperature into a bin decides which slice evidence lands in; a rounding change could silently
+    reroute it while every other field stayed put.
+
+    ``temperature_bin`` is ``None`` for the cold-start slice, where no measured belief evidence exists
+    yet and the common prior is used — an ordinary opening state, not an unresolved one.
+    """
+
+    sample: str
+    temperature_bin: float | None = None
+    binning_policy_fingerprint: str | None = None
+
+    @property
+    def fingerprint(self) -> str:
+        payload = canonical_json([
+            str(self.sample),
+            None if self.temperature_bin is None else round(float(self.temperature_bin), 6),
+            self.binning_policy_fingerprint,
+        ])
+        return "isar.campaign-slice/1:" + hashlib.sha256(
+            payload.encode("utf-8")).hexdigest()[:16]
+
+
+@dataclass(frozen=True)
 class MeasurementIntent:
     """The scientific question an action resolves, independent of any exact emitted request."""
 

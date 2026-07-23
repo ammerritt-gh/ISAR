@@ -24,6 +24,7 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
                              _extract_max_points, _full_tier,
                              _finalize_proposal, _guard_point_count,
                              _make_classification_providers, _record_eligible_crossings,
+                             resolve_campaign_slice,
                              _pending_certification_indices, _record_certification_acceptance,
                              _master_obs_from_row, _observation_from_row, _pick_interval,
                              _pooled_target_delivered,
@@ -95,12 +96,18 @@ def test_target_support_preflight_counts_only_feasible_bins_inside_credible_band
     assert _target_supporting_feasible_points(malformed, (6.0, 0.2)) == 0
 
 
-def test_classification_uses_latest_complete_temperature_for_active_sample_only():
+def test_classification_uses_the_resolved_slice_for_the_active_sample_only():
+    """The slice comes from ``resolve_campaign_slice`` (PR2.4), not from ``max(complete)``.
+
+    This test used to assert the newest complete temperature won automatically. It did not — it
+    silently classified whatever the campaign was measuring against whichever complete slice sorted
+    highest. With 100 K and 200 K both complete, the campaign must now say which one it means."""
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
     objective = ObjectiveSpec.segment(
         q_start=(2.0, 0.0, 0.0), q_end=(2.0, 0.1, 0.0), step_rlu=0.1,
         tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 1e12},
-        target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+        target_branch="optic", energy_search_meV=(-2.0, 12.0),
+        target_temperature_K=200.0, **frozen)
 
     def row(sample, temperature, branch, energy):
         return {"sample": sample, "t_bin": temperature, "branch_id": branch,
@@ -117,15 +124,28 @@ def test_classification_uses_latest_complete_temperature_for_active_sample_only(
         row("active", 300.0, "optic", 8.0),  # newest but incomplete: never mix with 200 K
         row("other", 400.0, "acoustic", 9.0), row("other", 400.0, "optic", 10.0),
     ]}
+    key, error = resolve_campaign_slice(state, objective, sample="active")
+    assert error is None and key.temperature_bin == pytest.approx(200.0)
     classify, rival = _make_classification_providers(
-        state, objective, 1.0, sample="active")
+        state, objective, 1.0, sample="active", temperature_bin=key.temperature_bin)
     gridq = types.SimpleNamespace(hkl=(2.0, 0.0, 0.0), q=0.0)
     assert classify(gridq) >= 0.0
     from isar.drive.acquisition.classify_eig import belief_predict
     assert rival(gridq) == pytest.approx(belief_predict(selected_acoustic, 0.0))
+    # An unknown sample has no measured slice at all: that is the cold start, on the common prior.
+    missing_key, missing_error = resolve_campaign_slice(state, objective, sample="missing")
+    assert missing_error is None and missing_key.temperature_bin is None
     fallback, fallback_rival = _make_classification_providers(
-        state, objective, 1.0, sample="missing")
+        state, objective, 1.0, sample="missing", temperature_bin=None)
     assert fallback is not None and fallback_rival is not None
+    # Without the declaration the same evidence is genuinely ambiguous, and is refused.
+    undeclared = ObjectiveSpec.segment(
+        q_start=(2.0, 0.0, 0.0), q_end=(2.0, 0.1, 0.0), step_rlu=0.1,
+        tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 1e12},
+        target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    ambiguous_key, ambiguous_error = resolve_campaign_slice(
+        state, undeclared, sample="active")
+    assert ambiguous_key is None and "campaign_slice_unresolved" in ambiguous_error
 
     state["branch_tracks"] = {"assignments": [{
         "q": [2.0, 0.0, 0.0], "acoustic_candidate_index": 0,
@@ -133,13 +153,13 @@ def test_classification_uses_latest_complete_temperature_for_active_sample_only(
                                             "new": 0.0005}}],
     }]}
     resolved_classify, _ = _make_classification_providers(
-        state, objective, 1.0, sample="active")
+        state, objective, 1.0, sample="active", temperature_bin=200.0)
     assert resolved_classify(gridq) == 0.0
 
     acoustic_objective = ObjectiveSpec.segment(
         q_start=(2.0, 0.0, 0.0), q_end=(2.0, 0.1, 0.0), step_rlu=0.1,
         tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 1e12},
-        target_branch="acoustic", energy_search_meV=(-2.0, 12.0),
+        target_branch="acoustic", energy_search_meV=(-2.0, 12.0), target_temperature_K=200.0,
         **shipped_hypothesis_snapshot("acoustic", (-2.0, 12.0)))
     state["branch_tracks"] = {"assignments": [{
         "q": [2.0, 0.0, 0.0], "optic_candidate_index": 0,
@@ -147,7 +167,7 @@ def test_classification_uses_latest_complete_temperature_for_active_sample_only(
                                             "new": 0.0005}}],
     }]}
     acoustic_classify, _ = _make_classification_providers(
-        state, acoustic_objective, 1.0, sample="active")
+        state, acoustic_objective, 1.0, sample="active", temperature_bin=200.0)
     assert acoustic_classify(gridq) == 0.0
 
 

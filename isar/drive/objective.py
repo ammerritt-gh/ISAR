@@ -63,6 +63,10 @@ class ObjectiveSpec:
     target_selector: str | None = None
     target_energy_meV: float | None = None
     energy_search_meV: tuple[float, float] | None = None
+    # The sample temperature this campaign is measuring at, in kelvin. Belief evidence is stored per
+    # temperature bin, so declaring it is what lets the controller pick the right slice instead of
+    # guessing when more than one is complete. ``None`` is fine while only one slice exists.
+    target_temperature_K: float | None = None
     hypotheses: list[dict[str, Any]] = field(default_factory=list)
     target_hypothesis: str | None = None
     hypothesis_source: str | None = None
@@ -113,6 +117,10 @@ class ObjectiveSpec:
             self.analysis_limit_seconds = float(self.analysis_limit_seconds)
             if not math.isfinite(self.analysis_limit_seconds) or self.analysis_limit_seconds <= 0.0:
                 raise ValueError("analysis_limit_seconds must be positive or None")
+        if self.target_temperature_K is not None:
+            self.target_temperature_K = float(self.target_temperature_K)
+            if not math.isfinite(self.target_temperature_K) or self.target_temperature_K <= 0.0:
+                raise ValueError("target_temperature_K must be a positive, finite temperature in K")
         if self.energy_search_meV is None:
             self.energy_search_meV = (-2.0, 12.0) if self.target_branch == "optic" else (-2.0, 7.0)
         else:
@@ -157,6 +165,7 @@ class ObjectiveSpec:
                 target_branch: str = "acoustic", target_label: str = "acoustic",
                 target_selector: str | None = None, target_energy_meV: float | None = None,
                 energy_search_meV: tuple[float, float] | None = None,
+                target_temperature_K: float | None = None,
                 hypotheses: list[dict[str, Any]] | None = None,
                 target_hypothesis: str | None = None, hypothesis_source: str | None = None,
                 hypothesis_fingerprint: str | None = None,
@@ -178,6 +187,7 @@ class ObjectiveSpec:
                    tier=tier, name=name, meta=dict(meta or {}), target_branch=target_branch,
                    target_label=target_label, target_selector=target_selector,
                    target_energy_meV=target_energy_meV, energy_search_meV=energy_search_meV,
+                   target_temperature_K=target_temperature_K,
                    hypotheses=list(hypotheses or []), target_hypothesis=target_hypothesis,
                    hypothesis_source=hypothesis_source,
                    hypothesis_fingerprint=hypothesis_fingerprint,
@@ -190,6 +200,7 @@ class ObjectiveSpec:
                 target_label: str = "acoustic",
                 target_selector: str | None = None, target_energy_meV: float | None = None,
                 energy_search_meV: tuple[float, float] | None = None,
+                target_temperature_K: float | None = None,
                 hypotheses: list[dict[str, Any]] | None = None,
                 target_hypothesis: str | None = None, hypothesis_source: str | None = None,
                 hypothesis_fingerprint: str | None = None,
@@ -217,6 +228,7 @@ class ObjectiveSpec:
                    name=name, meta=dict(meta or {}), target_branch=target_branch,
                    target_label=target_label, target_selector=target_selector,
                    target_energy_meV=target_energy_meV, energy_search_meV=energy_search_meV,
+                   target_temperature_K=target_temperature_K,
                    hypotheses=list(hypotheses or []), target_hypothesis=target_hypothesis,
                    hypothesis_source=hypothesis_source,
                    hypothesis_fingerprint=hypothesis_fingerprint,
@@ -238,6 +250,7 @@ class ObjectiveSpec:
             "target_selector": self.target_selector,
             "target_energy_meV": self.target_energy_meV,
             "energy_search_meV": list(self.energy_search_meV),
+            "target_temperature_K": self.target_temperature_K,
             "hypotheses": [dict(h) for h in self.hypotheses],
             "target_hypothesis": self.target_hypothesis,
             "hypothesis_source": self.hypothesis_source,
@@ -262,6 +275,7 @@ class ObjectiveSpec:
             target_energy_meV=d.get("target_energy_meV"),
             energy_search_meV=(tuple(d["energy_search_meV"])
                                if d.get("energy_search_meV") is not None else None),
+            target_temperature_K=d.get("target_temperature_K"),
             hypotheses=list(d.get("hypotheses") or []),
             target_hypothesis=d.get("target_hypothesis"),
             hypothesis_source=d.get("hypothesis_source"),
