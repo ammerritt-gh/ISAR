@@ -744,6 +744,18 @@ def systematic_floor(calibration=None, floor: float | None = None) -> float:
     return 0.0
 
 
+def local_exhaustion_status(g: GridQ) -> dict[str, Any]:
+    """The per-q local-exhaustion status, serialized identically wherever it is reported.
+
+    One source of truth for the three coupled fields (``stuck``, its reason, and the underlying
+    ``ambiguity_exhausted``) so the ``decide`` event's per-q rollup and the campaign summary's
+    ``grid_state`` can never drift again. Both previously hard-coded ``stuck=False``, hiding real
+    saturation from forensics — AP6's index 18 logged ``stuck=false`` while ``GridQ.stuck`` was ``True``.
+    """
+    return {"stuck": g.stuck, "stuck_reason": g.stuck_reason,
+            "ambiguity_exhausted": g.ambiguity_exhausted}
+
+
 def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                   calibration=None, floor: float | None = None,
                   max_declines: int = MAX_DECLINES) -> StopDecision:
@@ -814,7 +826,7 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                       "n_master_updates": len(g.master_updates),
                       "diagnostic_halfwidth": (g.master_updates[-1].get("diagnostic_halfwidth")
                                                if g.master_updates else None),
-                      "reason": reason, "stuck": False})
+                      "reason": reason, **local_exhaustion_status(g)})
 
     # Tolerance below the systematic floor is infeasible by construction — check before "met".
     if tol < fl:
