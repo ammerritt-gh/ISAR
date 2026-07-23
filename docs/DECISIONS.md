@@ -467,6 +467,47 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   unit-tested but did not fire in that replay and remains campaign-unproven; AP1/AP2/AP3 campaign
   replays were not rerun, so O25/O26 stay Partial. Evidence:
   `docs/campaigns/2026-07-21_OP9_OP10_TRACKED_FRONTIER.md`.
+- **O28.** (2026-07-23, Implemented for the action-inventory control plane and the predicted-rival
+  identity probe; gated on a full driver-level AP6 replay; extends O27) **A blocked branch identity
+  can be a missing *kind* of measurement, not a shortage of counts — so the controller enumerates a
+  registry of action generators and its terminal is exhaustion relative to that registry.** AP6 mapped
+  the acoustic phonon (2,0,0)→(3,0,0) and stopped `incomplete — branch_ambiguity` at path indices
+  18–20 with beam time left. The frontier point H=2.9 was identity-ambiguous (P(target)=0.707, below
+  the 0.85 gate) and `identity_saturated` — more counting had provably stopped sharpening the label —
+  yet the rival mode that would settle it sits at ~7.115 meV, above the objective's declared 7.0 meV
+  `energy_search_meV` ceiling. Every scan the driver emitted at the frontier was clipped at 7.0, so the
+  discriminating evidence was outside every window it was willing to emit. Counting could not fix this
+  and neither could broadening: at a path endpoint there is no unvisited neighbour, and H=3 is a zone
+  boundary where the acoustic branch flattens at its maximum and sits closest to the optic branch, so
+  the point may be genuinely underdetermined. The fix is architectural. Acquisition is a two-phase
+  registry pipeline — declared generators emit `MeasurementIntent`s, evaluators score them, selection
+  ranks the survivors — carried through a three-stage lifecycle
+  (`MeasurementIntent → FinalizedProposal → ValidatedAttempt`) with per-generator failure isolation, so
+  a generator that raises becomes a `controller_fault` (resumable) rather than an escaped exception or a
+  false exhaustion proof. `action_inventory_exhausted` is exhaustion *relative to* a declarative
+  `GENERATOR_REGISTRY` with a derived version, so growing the registry cannot leave an old proof looking
+  current. The target search domain and the identity search domain are separated
+  (`energy_search_meV` retained as the target alias; `identity_search_meV` additive): an identity-class
+  action may look beyond the target ceiling, but only when the band's provenance shows it was
+  compiler-chosen — a band an operator declared, or one carrying no provenance at all, stays a hard
+  constraint and the rival action is reported `policy_forbidden` rather than silently scanned past.
+  Focused evidence has its own sink (`evidence_sink`): an `auxiliary_track_node` probe is fit
+  independently, never pooled into the (Q,T) master, never certification-eligible, and merged into the
+  tracker's per-path-point evidence as a provenance-tagged candidate that can change the identity but
+  never supply the point's ω₀; a clean null (`candidate_not_detected`) is first-class evidence, distinct
+  from a failed analysis. The `narrow_rival_probe` generator is registered: at a blocked
+  `identity_saturated` frontier with a predicted rival inside the identity domain it emits a narrow,
+  resolution-relative window centred on the rival, routed to `auxiliary_track_node`. AP6 replays in two
+  modes: *strict historical* — the real frozen objective carried no band provenance, so the rival stays
+  withheld and the terminal is unchanged, but the inventory now *names* the forbidden action an operator
+  could authorise; *migrated* — with the band recorded as compiler-generated, the probe enumerates as an
+  eligible action reaching 7.115 meV and the frontier is no longer a geometric dead end. **Acceptance is
+  not "AP6 reaches `met`"**; H=2.9–3.0 may be underdetermined and the posterior was not tuned through the
+  gate. The replay is proven at the `enumerate_actions`/reconstruction level; a full campaign replay
+  through the live driver against the frozen workspace is outstanding, and the zone-aware boundary probe
+  (which needs a cross-zone structure-factor consumer that does not yet exist) is deferred to a later PR.
+  **O25/O26 stay Partial** — AP1/AP2/AP3 campaign replays are unchanged by this. Evidence:
+  `docs/campaigns/2026-07-23_AP6_ACTION_INVENTORY.md`.
 
 ## Session status update
 
