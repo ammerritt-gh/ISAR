@@ -501,3 +501,64 @@ def test_propose_action_returns_none_proposal_with_exhausted_inventory():
         obj, _model(obs), obs, {"fwhm_dE": 0.8}, {}, master_rows=masters)
     assert proposal is None
     assert inventory.terminal_cause() == "action_inventory_exhausted"
+
+
+# -- indexing fault (PR1.5): a driver-inserted candidate must not carry a synthetic grid index -----
+
+def _ambiguous_adequate_anchor():
+    from isar.drive.supervisor.stopping import GridQ
+    anchor = GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5, n_production=1,
+                   track_state="ambiguous")
+    anchor.local_identity_clear = False
+    anchor.evidence_master = {
+        "branch_candidates": [{"energy_meV": 5.98, "sigma_meV": 0.05}],
+        "candidate_state": "provisional", "diagnostic_halfwidth": 0.05,
+        "target_branch": "acoustic", "branch_posterior": {"acoustic": 0.7}}
+    neighbor = GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5, n_production=1,
+                     track_state="confirmed")
+    neighbor.local_identity_clear = True
+    return [anchor, neighbor]
+
+
+def test_tracked_broadening_crashes_on_a_raw_synthetic_index_but_not_a_normalized_one():
+    """The fault, isolated. ``_driver_inserted_candidate`` builds a candidate with the synthetic
+    ``index = len(grid) + offset``; if that value enters the working grid, ``_broadening_classification
+    _diagnostics`` uses it as a list position and indexes out of range. The identical candidate carrying
+    its real position broadens safely — which is the invariant ``enumerate_actions`` now guarantees."""
+    from isar.drive.supervisor.stopping import GridQ
+    classify = lambda g: 1.0
+
+    base = _ambiguous_adequate_anchor()
+    raw = [*base, GridQ(index=len(base) + 3, hkl=(2.2, 0.0, 0.0), q=0.2, tolerance=1.5)]
+    with pytest.raises(IndexError):
+        acq._tracked_frontier_target(raw, anchor_index=0, classify=classify)
+
+    normalized = _ambiguous_adequate_anchor()
+    normalized.append(GridQ(index=len(normalized), hkl=(2.2, 0.0, 0.0), q=0.2, tolerance=1.5))
+    result = acq._tracked_frontier_target(normalized, anchor_index=0, classify=classify)
+    assert result is not None and result[1] == "quicklook"     # broadens instead of crashing
+
+
+def test_enumerate_actions_normalizes_the_driver_inserted_candidate_index():
+    """The fix in situ. A driver-inserted probe wins with a synthetic index (offset >= 1), but once
+    ``enumerate_actions`` appends it to the working grid its index is its real list position, so the
+    synthetic value never reaches a position-based reader."""
+    from isar.drive.supervisor.stopping import model_points, summarize_grid
+    path = [(2.0, 0.0, 0.0), (2.1, 0.0, 0.0), (2.2, 0.0, 0.0)]
+    obj = ObjectiveSpec(path=path, tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 1e12},
+                        target_branch="acoustic", **shipped_hypothesis_snapshot("acoustic", (-2.0, 7.0)))
+    obs = [_obs(p, "quicklook", 0.9) for p in path]            # every grid q visited
+    model = acq_model.fit(model_points(summarize_grid(obj, obs)))
+    # Favour the second midpoint (2.15,0,0) — candidate offset 1, so its synthetic index overshoots.
+    classify = lambda g: 9.0 if math.dist(tuple(g.hkl), (2.15, 0.0, 0.0)) <= 1e-6 else 0.0
+
+    grid = summarize_grid(obj, obs)
+    inserted = acq._driver_inserted_candidate(obj, grid, obs, classify)
+    assert inserted is not None
+    assert inserted.index == len(grid) + 1                     # raw synthetic index (offset 1)
+
+    _inventory, candidates = acq.enumerate_actions(
+        obj, model, obs, resolution_info={"fwhm_dE": 0.8}, classify=classify)
+    pick = candidates[0].pick
+    assert tuple(pick.hkl) == pytest.approx((2.15, 0.0, 0.0))  # the inserted probe was selected
+    assert pick.index == len(grid)                             # normalized to its real grid position

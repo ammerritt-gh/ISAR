@@ -1230,6 +1230,13 @@ def enumerate_actions(objective, model, results_so_far: list[dict], resolution_i
     classification_weight = float(policy.get("classification_weight", 0.0))
     inserted = _driver_inserted_candidate(objective, grid, results_so_far or [], classify)
     if inserted is not None:
+        # ``_driver_inserted_candidate`` carries a synthetic ``index = len(grid) + offset`` purely to
+        # keep transient candidates distinct while it scores them.  That synthetic value must never
+        # enter the working grid: position-based readers (``_classification_link_diagnostics`` does
+        # raw ``grid[candidate_index]`` / ``range(lo+1, hi)``) treat ``.index`` as a list position, and
+        # a candidate whose ``.index`` overshoots ``len(grid)`` indexes out of range.  Normalise it to
+        # its real position on entry.
+        inserted.index = len(grid)
         grid = [*grid, inserted]
     pick, kind, reason, score = _select_target(
         grid, model, fisher=fisher, opening=opening, classify=classify,
