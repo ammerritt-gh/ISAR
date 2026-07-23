@@ -39,7 +39,8 @@ from isar.reduce import combine, qc
 from isar.predictive import predictive_score as _predictive_score
 from isar.schema.card import Card
 from isar.schema.hypotheses import preset as hypothesis_preset
-from isar.schema.steering import IntensityMeasure, ParamConstraints
+from isar.schema.steering import (AUXILIARY_TRACK_NODE, CANONICAL_MASTER, IntensityMeasure,
+                                  ParamConstraints, evidence_sink_for)
 from isar.session import branch_assignment as BA
 from isar.session import branch_model, branch_tracking, calibrations, guidelines as guide_mod, ingest, router, session_prior
 
@@ -165,6 +166,11 @@ class FitOutcome:
     candidate_id: str | None = None
     candidate_state: str | None = None
     acquisition_id: str | None = None
+    # Where this scan's evidence is allowed to go (isar.schema.steering.EVIDENCE_SINKS). Absent or
+    # unrecognised means ``canonical_master``, so hand-loaded data and every pre-existing ledger read
+    # as ordinary evidence. Anything else was acquired to answer a narrower question and is barred from
+    # the (Q,T) pool and from certification.
+    evidence_sink: str = CANONICAL_MASTER
     # Additive tracked-branch contract. Every fitted mode remains an unordered candidate; the joint
     # path tracker records which one is currently selected without erasing earlier alternatives.
     branch_candidates: list | None = None
@@ -1693,8 +1699,17 @@ def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tupl
     Only a published, internally consistent pooled master may be an identity authority.  Physical
     fits remain in ``refs`` so the GUI can display their candidate tables, but they never fill a gap
     in the authoritative track and never vote on a master assignment.
+
+    A scan acquired as an ``auxiliary_track_node`` probe is the one exception, and a deliberately
+    narrow one.  It was fired to decide *which mode* a candidate is, not to deliver a better ω₀, so it
+    is never pooled and never certification-eligible; its fitted modes join the observation at its path
+    index as extra candidates tagged ``evidence_source="auxiliary_probe"``.  It can therefore change the
+    identity assigned at that point and can never supply the point's ω₀ or become its ``authority``.
+    It merges only where a pooled master already holds the index: alone it would be the *sole* identity
+    evidence at that point, which is precisely what the rule above exists to prevent.
     """
     by_index: dict[int, list[tuple]] = {}
+    auxiliary_by_index: dict[int, list[dict]] = {}
     refs: dict[str, tuple] = {}
     for order, entry in enumerate(session.scans.values()):
         for detector, outcome in entry.detectors.items():
@@ -1703,6 +1718,13 @@ def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tupl
             key = f"{entry.scan_id}:{detector}"
             refs[key] = (entry, detector, outcome)
             index = _path_index(outcome.get("q") or [], path)
+            if (index is not None and candidates
+                    and outcome.get("evidence_sink") == AUXILIARY_TRACK_NODE):
+                for candidate in candidates:
+                    tagged = dict(candidate)
+                    tagged["evidence_source"] = "auxiliary_probe"
+                    auxiliary_by_index.setdefault(index, []).append(tagged)
+                continue
             if (index is not None and candidates and outcome.get("pooled")
                     and outcome.get("pool_consistent") is not False):
                 exposure = outcome.get("effective_exposure")
@@ -1716,11 +1738,16 @@ def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tupl
     for index in range(len(path)):
         choices = by_index.get(index) or []
         if not choices:
+            # Any auxiliary probe at this index is deliberately dropped: see the docstring. It stays
+            # in ``refs`` for display and its beliefs update elsewhere, but it does not become the
+            # identity evidence for a point no master has measured.
             observations.append({"candidates": [], "authority": None})
             continue
         _rank, key, candidates = max(choices, key=lambda item: item[0])
         _entry, _detector, outcome = refs[key]
-        observations.append({"candidates": [dict(candidate) for candidate in candidates],
+        merged = [dict(candidate) for candidate in candidates]
+        merged.extend(auxiliary_by_index.get(index) or [])
+        observations.append({"candidates": merged,
                              "authority": key,
                              "gauss_fwhm": (outcome.get("gauss_fwhm")
                                              or (outcome.get("calib") or {}).get("gauss_fwhm"))})
@@ -3344,7 +3371,9 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         bayes_unconstrained=fit.get("bayes_unconstrained", False),
         target_branch=target_branch, target_label=target_label,
         effective_exposure=exposure_info.get("value"), exposure_provenance=exposure_info,
-        acquisition_id=acquisition_id)
+        acquisition_id=acquisition_id,
+        evidence_sink=evidence_sink_for(getattr(rec, "raw_header", None),
+                                        getattr(card.state, "acquisition_provenance", None)))
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is
@@ -3484,6 +3513,10 @@ _CSV_COLUMNS = [
     "gamma_at_bound", "linewidth_state",
     "pool_consistent", "consistency_statistic", "consistency_pvalue", "consistency_alpha",
     "consistency_seed",
+    # Appended, not inserted: this list is positional for old CSV consumers, so a new column can only
+    # go on the end. Which sink this scan's evidence was acquired for (PR2.6) — every historical row
+    # reads "canonical_master".
+    "evidence_sink",
 ]
 
 

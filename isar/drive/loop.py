@@ -77,6 +77,7 @@ from isar.drive.supervisor.stopping import (
 )
 from isar.schema.card import Card
 from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
+from isar.schema.steering import CANONICAL_MASTER, realized_outcome_for
 
 DEFAULT_MAX_ITERS = 200
 DEFAULT_WAIT_TIMEOUT = 600.0
@@ -844,7 +845,8 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
                           target_branch_role: str | None = None,
                           rival_branch_role: str | None = None,
                           authoritative_evidence_revision: str | None = None,
-                          proposal_fingerprint: str | None = None) -> dict:
+                          proposal_fingerprint: str | None = None,
+                          evidence_sink: str = CANONICAL_MASTER) -> dict:
     disp = row.get("disposition")
     verdict = row.get("verdict")
     # `flagged` (model_incomplete) still carries a usable ω₀ — for an ω₀-tolerance objective the flag
@@ -885,6 +887,13 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         "rival_branch_role": rival_branch_role,
         "authoritative_evidence_revision": authoritative_evidence_revision,
         "proposal_fingerprint": proposal_fingerprint,
+        "evidence_sink": evidence_sink,
+        # Only for probes. A canonical delivery is already fully described by disposition/certifiable,
+        # and giving it a second, coarser status would invite the two to disagree. A probe needs it
+        # because its clean null is a *result* that must not read as a failed scan.
+        "realized_outcome": (
+            None if evidence_sink == CANONICAL_MASTER
+            else realized_outcome_for(disp, has_candidate=bool(row.get("branch_candidates")))),
         "requested_ncount": count_diagnostics.get("requested_before_runtime_limit", ncount),
         "runtime_ncount_limit": count_diagnostics.get("runtime_ncount_limit"),
         "ncount_clamped": bool(count_diagnostics.get("requested_before_runtime_limit") is not None),
@@ -2073,6 +2082,10 @@ def _persist_acquisition_provenance(workspace: Path, payload: dict) -> None:
         "rival_branch_role": payload.get("rival_branch_role"),
         "authoritative_evidence_revision": payload.get("authoritative_evidence_revision"),
         "proposal_fingerprint": payload.get("proposal_fingerprint"),
+        # The one channel by which analysis learns this scan was not ordinary evidence. Written here,
+        # before the raw scan is consumed, because reduction decides whether to pool it and the session
+        # decides how the tracker may read it — both from this record, neither from the driver.
+        "evidence_sink": payload.get("evidence_sink") or CANONICAL_MASTER,
     })
     card.save_state(state_path)
 
@@ -2432,7 +2445,9 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
                 rival_branch_role=(proposal.meta or {}).get("rival_branch_role"),
                 authoritative_evidence_revision=(proposal.meta or {}).get(
                     "authoritative_evidence_revision"),
-                proposal_fingerprint=(proposal.meta or {}).get("proposal_fingerprint")))
+                proposal_fingerprint=(proposal.meta or {}).get("proposal_fingerprint"),
+                evidence_sink=((proposal.meta or {}).get("evidence_sink")
+                               or CANONICAL_MASTER)))
             scan_kind[(row.get("scan"), row.get("detector"))] = (
                 proposal.kind, proposal.ncount, proposal.acquisition_id)
         metrics["n_rows"] = len(rows)
@@ -2673,6 +2688,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             "acquisition_action_role": (proposal.meta or {}).get("acquisition_action_role"),
             "target_branch_role": (proposal.meta or {}).get("target_branch_role"),
             "rival_branch_role": (proposal.meta or {}).get("rival_branch_role"),
+            "evidence_sink": (proposal.meta or {}).get("evidence_sink") or CANONICAL_MASTER,
             "authoritative_evidence_revision": (proposal.meta or {}).get(
                 "authoritative_evidence_revision"),
             "proposal_fingerprint": (proposal.meta or {}).get("proposal_fingerprint"),

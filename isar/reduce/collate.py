@@ -21,6 +21,8 @@ from pathlib import Path
 
 import numpy as np
 
+from isar.schema.steering import CANONICAL_MASTER, evidence_sink_for
+
 _COMPONENTS = ("h", "k", "l")
 
 
@@ -322,8 +324,20 @@ def collate(records, card) -> Collation:
     measurements = [r for r in records if r.scan_type == "measurement"]
     refs = [ref for r in measurements for ref in _spectrum_refs(r, step, t_round)]
 
+    # Non-canonical evidence is excluded from *grouping only* — never from the rollup or the coverage
+    # map, which must keep reporting every scan that was taken. An auxiliary probe is a deliberately
+    # off-target window fired to settle an identity question; combine-before-divide would fold its
+    # counts into the ΣN pool that certifies the target at this (Q,T), so the master would claim
+    # exposure it never spent on the target and a certification could come to rest on it. The probe is
+    # still fit and still reported — on its own, through its declared sink.
+    provenance = getattr(getattr(card, "state", None), "acquisition_provenance", None) or []
+    poolable = [r for r in measurements
+                if evidence_sink_for(getattr(r, "raw_header", None), provenance) == CANONICAL_MASTER]
+    group_refs = (refs if len(poolable) == len(measurements)
+                  else [ref for r in poolable for ref in _spectrum_refs(r, step, t_round)])
+
     groups: dict = {}
-    for ref in refs:
+    for ref in group_refs:
         resolved = [_group_component(n, ref) for n in key_names]
         gkey = tuple(k for k, _disp in resolved)
         if gkey not in groups:

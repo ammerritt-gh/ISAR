@@ -54,7 +54,7 @@ from isar.drive.acquisition.inventory import (
     MeasurementIntent,
     RejectionClass,
 )
-from isar.schema.steering import ProposalScore
+from isar.schema.steering import NON_CANONICAL_SINKS, ProposalScore
 from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
 
 # Energy-window rule constants (LLM_HARNESS_DESIGN acquisition decisions, binding).
@@ -1979,7 +1979,13 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
               # scan carries only its own request fingerprint and cannot be attributed to an intent.
               "scientific_action_fingerprint": chosen.evaluation.intent.scientific_action_fingerprint,
               "action_class": chosen.evaluation.intent.action_class,
-              "certification_eligible": not driver_inserted,
+              "evidence_sink": chosen.evaluation.intent.evidence_sink,
+              # A non-canonical sink is never certification-eligible, whoever inserted it: the scan was
+              # fired at a deliberately narrow question and its exposure was never spent on delivering
+              # the target, so it cannot stand in for a requested certification point.
+              "certification_eligible": (
+                  not driver_inserted
+                  and chosen.evaluation.intent.evidence_sink not in NON_CANONICAL_SINKS),
               "insertion_purpose": "differentiate" if driver_inserted else None,
               "max_scan_points": int(policy.get("max_scan_points", MAX_POINTS)),
               "target_band": list(target_band) if target_band is not None else None,

@@ -30,6 +30,8 @@ import math
 from dataclasses import dataclass, field
 from enum import Enum
 
+from isar.schema.steering import CANONICAL_MASTER, EVIDENCE_SINKS
+
 
 class ActionEligibility(str, Enum):
     ELIGIBLE = "eligible"
@@ -144,6 +146,7 @@ def scientific_fingerprint(intent: "MeasurementIntent") -> str:
         intent.evidence_basis_fingerprint,
         intent.hypotheses_fingerprint,
         intent.campaign_slice_fingerprint,
+        intent.evidence_sink,
     ])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -194,6 +197,16 @@ class MeasurementIntent:
     evidence_basis_fingerprint: str | None = None
     hypotheses_fingerprint: str | None = None
     campaign_slice_fingerprint: str | None = None
+    # Where this action's evidence may go (isar.schema.steering.EVIDENCE_SINKS). Part of the scientific
+    # identity, not a delivery detail: the same window at the same q routed to a different sink is
+    # answered against different evidence and updates a different posterior, so the two are genuinely
+    # different actions and must not dedupe onto one another.
+    evidence_sink: str = CANONICAL_MASTER
+
+    def __post_init__(self) -> None:
+        if self.evidence_sink not in EVIDENCE_SINKS:
+            raise ValueError(f"unknown evidence_sink {self.evidence_sink!r}; "
+                             f"expected one of {EVIDENCE_SINKS}")
 
     @property
     def scientific_action_fingerprint(self) -> str:
