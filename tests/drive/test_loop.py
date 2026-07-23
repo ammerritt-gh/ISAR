@@ -269,6 +269,33 @@ def test_blocked_frontier_terminal_reports_controller_fault_for_incomplete_inven
         objective, grid, StopDecision("continue", [], []), inventory)
     assert decision.state == "incomplete"
     assert decision.terminal_cause == "controller_fault"
+    # The reason must name the controller fault, never a scientific branch-ambiguity result (review #9).
+    assert "controller_fault" in decision.reasons[0]
+    assert "rival_gap(zone_geometry)" in decision.reasons[0]
+    assert "resume is supported" in decision.reasons[0]
+    assert "branch_ambiguity" not in decision.reasons[0]
+    assert all("controller_fault" in row["reason"] for row in decision.per_q
+               if row.get("assessment_state") == "incomplete")
+
+
+def test_blocked_frontier_eligible_inventory_without_a_proposal_raises_never_exhausts():
+    """Review #3: a complete inventory that still holds an eligible action while acquisition produced no
+    proposal is a controller bug, not exhaustion. The old ``or EXHAUSTED`` coercion would have hidden it
+    as ``action_inventory_exhausted``; it must raise instead."""
+    from isar.drive.acquisition.inventory import (
+        ActionEligibility, ActionEvaluation, ActionInventory, GeneratorReport, GeneratorStatus,
+        MeasurementIntent)
+    objective, grid = _exhausted_frontier_grid()      # saturated anchor -> same_q guard does not fire
+    intent = MeasurementIntent(action_class="focused_rival", hkl=(2.0, 0.0, 0.0), energy_lo=-2.0,
+                               energy_hi=7.0, window_family="two_branch")
+    inventory = ActionInventory(
+        evaluations=[ActionEvaluation(intent=intent, generator="g",
+                                      eligibility=ActionEligibility.ELIGIBLE)],
+        reports=[GeneratorReport(generator="g", status=GeneratorStatus.COMPLETED, generated=1)])
+    assert inventory.terminal_cause() is None          # eligible action -> not a terminal
+    with pytest.raises(loop_mod.ControllerInvariantError, match="eligible"):
+        loop_mod._blocked_frontier_decision(
+            objective, grid, StopDecision("continue", [], []), inventory)
 
 
 def test_blocked_frontier_terminal_defaults_to_exhausted_without_an_inventory():

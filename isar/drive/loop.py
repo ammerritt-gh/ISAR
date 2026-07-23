@@ -45,7 +45,7 @@ from isar.drive.acquisition.acquire import (
     propose_action,
 )
 from isar.drive.acquisition.inventory import (
-    GENERATOR_REGISTRY_VERSION, TERMINAL_ACTION_INVENTORY_EXHAUSTED)
+    GENERATOR_REGISTRY_VERSION, TERMINAL_ACTION_INVENTORY_EXHAUSTED, TERMINAL_CONTROLLER_FAULT)
 from isar.drive.acquisition.calibration import Calibration, load_calibration
 from isar.drive.instrument.tavi_client import TaviClient, TaviError
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
@@ -1904,20 +1904,38 @@ def _blocked_frontier_decision(objective, grid, decision: StopDecision,
             "acquisition returned no proposal for an actionable blocked frontier: "
             f"{details}. Authorized same-q identity work remained, so branch ambiguity here is a "
             f"controller fault rather than a result. state={[_invariant_payload(p) for p in actionable]}")
+    # The cause comes straight from the canonical inventory — never coerced. A ``None`` cause means the
+    # inventory still holds an eligible action while acquisition produced no proposal: that is a
+    # controller bug, not an exhaustion proof, so it must raise rather than be relabelled as exhausted
+    # (the ``same_q`` guard above catches the legacy-predicate form; this catches it generally).
+    cause = (inventory.terminal_cause() if inventory is not None
+             else TERMINAL_ACTION_INVENTORY_EXHAUSTED)
+    if cause is None:
+        eligible = [e.intent.action_class for e in inventory.eligible_actions()]
+        raise ControllerInvariantError(
+            "acquisition returned no proposal although the canonical inventory holds eligible "
+            f"action(s) {eligible}: branch ambiguity here is a controller fault, not a result.")
     indices = ", ".join(str(point.index) for point in blocked)
     per_q = [dict(row) for row in decision.per_q]
+    if cause == TERMINAL_CONTROLLER_FAULT:
+        # A controller failure is not a scientific branch-ambiguity result: name it as such so a
+        # GUI/report reader that ignores the additive cause cannot mistake a software fault for a
+        # scientific terminal. Checkpoints are retained; the campaign resumes after repair.
+        failed = ", ".join(f"{r.generator}({r.error_code or 'unknown'})"
+                           for r in inventory.failed_reports()) or "unknown"
+        top_reason = (f"controller_fault: the action inventory is incomplete — generator(s) {failed} "
+                      "did not run to completion, so action-space exhaustion cannot be proven; "
+                      "checkpoints retained and resume is supported after repair")
+        per_q_reason = f"controller_fault: inventory incomplete ({failed}); resume supported after repair"
+    else:
+        top_reason = (f"branch_ambiguity; frontier_blocked at path index/indices {indices}: "
+                      "the connected classification route and identity-revisit allowance were exhausted")
+        per_q_reason = "branch_ambiguity; frontier_blocked after identity-route allowance was exhausted"
     for point in blocked:
         if point.index < len(per_q):
             per_q[point.index]["assessment_state"] = "incomplete"
-            per_q[point.index]["reason"] = (
-                "branch_ambiguity; frontier_blocked after identity-route allowance was exhausted")
-    cause = (inventory.terminal_cause() if inventory is not None
-             else TERMINAL_ACTION_INVENTORY_EXHAUSTED) or TERMINAL_ACTION_INVENTORY_EXHAUSTED
-    return StopDecision(
-        "incomplete",
-        [f"branch_ambiguity; frontier_blocked at path index/indices {indices}: "
-         "the connected classification route and identity-revisit allowance were exhausted"],
-        per_q, terminal_cause=cause)
+            per_q[point.index]["reason"] = per_q_reason
+    return StopDecision("incomplete", [top_reason], per_q, terminal_cause=cause)
 
 
 def _selected_action_class(proposal) -> str | None:
@@ -3352,6 +3370,10 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             stop_payload = {"state": decision.state, "reasons": decision.reasons}
             if decision.terminal_cause is not None:
                 stop_payload["terminal_cause"] = decision.terminal_cause
+            if decision.terminal_cause == TERMINAL_CONTROLLER_FAULT:
+                # A controller fault is an unattended-safe terminal: checkpoints are retained and the
+                # campaign resumes after repair rather than crashing overnight.
+                stop_payload["resume_supported"] = True
             if terminal_inventory_proof is not None:
                 stop_payload.update(terminal_inventory_proof)
 
