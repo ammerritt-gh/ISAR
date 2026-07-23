@@ -590,6 +590,18 @@ def _rival_gap_pick(grid: list[GridQ], frontier_index: int, direction: int) -> G
     return min(options)[2]
 
 
+def _same_q_counting_suppressed(point: GridQ) -> bool:
+    """Whether *same-q counting* at this q has stopped paying — the only action class the general
+    ranking path below generates.
+
+    Equivalent today to the point-wide ``stuck`` test it replaced, but scoped to the **action** rather
+    than the q: ``stuck`` is a reporting aggregate, and when PR2 adds non-same-q actions (focused
+    rival, boundary probe) reachable from this path they must be evaluated on their own merits instead
+    of being dropped along with the q.
+    """
+    return point.stuck
+
+
 def _same_q_evidence_advanced(point: GridQ) -> bool:
     """Whether another statistics scan is justified by a newer local authoritative revision."""
     if point.exposure_saturated:
@@ -679,8 +691,15 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
     if not anchor.visited:
         return anchor, "quicklook", "tracked branch: establish identity at the resolvable anchor", None
     if anchor.track_state not in {"confirmed", "inferred_unresolved"}:
-        if anchor.stuck:
-            return None
+        # ``stuck`` (== ``ambiguity_exhausted``) is a per-q *reporting* aggregate, never a global
+        # eligibility gate.  It folds identity saturation, which says counting cannot settle the
+        # *label* here — it says nothing about a neighbouring classification probe or a precision
+        # scan.  Dropping the whole anchor on it suppressed a legal broadening action, and because a
+        # stuck anchor also has ``same_q_identity_work_remains == False`` the controller-invariant
+        # guard never caught it: the campaign reported ``action_inventory_exhausted`` while that
+        # action was still available.  The per-action brakes below own the suppression instead —
+        # identity revisit by ``not anchor.stuck``, same-q identity counting by
+        # ``same_q_identity_work_remains``, and the precision scan by the ceiling / exposure test.
         master = anchor.evidence_master or anchor.master or {}
         evidence = _tracked_evidence(master, anchor)
         if evidence["adequate"]:
@@ -733,6 +752,12 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
                          "selected_probe_hkl": list(pick.hkl),
                          "transition_reason": "unchanged_authoritative_evidence_broaden"})
             return None
+        # A *precision* scan, not an identity one: it asks "is this centre measured finely enough",
+        # which the O27/OP10 repair established is a different question from "which branch is this".
+        # So identity saturation must NOT gate it — conflating the two was the OP10 defect.  Its own
+        # brakes are the ceiling and exposure test above (``_same_q_evidence_advanced`` is False once
+        # ``exposure_saturated``), which is why removing the blanket ``stuck`` drop cannot leak
+        # unbounded same-q counting here.
         return (anchor, "production",
                 "tracked branch: anchor candidate evidence is not yet statistically adequate", None)
 
@@ -969,7 +994,7 @@ def _select_target(grid: list[GridQ], model, *,
     # geometry knob never caps same-q counting (O27).  This is the general ranking path, so leaving
     # the old sum here would have kept a second, larger effective ceiling for non-tracked selectors.
     candidates = [g for g in grid if g.precision_coverage_eligible
-                  and not (g.converged or g.stuck)
+                  and not (g.converged or _same_q_counting_suppressed(g))
                   and not (g.same_q_ceiling_reached
                            and (g.evidence_master is not None and g.master is None
                                 or g.track_state in {

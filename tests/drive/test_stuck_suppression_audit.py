@@ -126,11 +126,13 @@ def _classify(_g):
     return 1.0
 
 
-def test_v1_baseline_stuck_anchor_blanket_suppresses_a_legal_broadening_action():
-    """KNOWN v1 limitation, pinned so PR2 is measured against it. A non-stuck ambiguous anchor with an
-    unvisited neighbour proposes a broadening quicklook; the identical grid with a *stuck* anchor
-    returns None because ``_tracked_frontier_target`` blanket-drops the anchor at ``if anchor.stuck``.
-    PR2 (generator split) must flip the stuck branch to also propose the broadening intent."""
+def test_a_stuck_anchor_still_offers_the_legal_broadening_action():
+    """PR1.7c flipped this. Saturation says counting cannot settle the *label* at this q; it says
+    nothing about a neighbouring classification probe. The blanket ``if anchor.stuck: return None``
+    dropped the whole anchor, so a stuck anchor with an unvisited neighbour produced no action at all
+    and the controller reported ``action_inventory_exhausted`` while that broadening scan was still
+    available (and ``same_q_identity_work_remains`` was False, so the invariant guard never fired).
+    Both the stuck and non-stuck anchor must now offer the same broadening quicklook."""
     def grid(stuck):
         anchor = _saturated_point(index=0, hkl=(2.0, 0.0, 0.0), q=0.0)
         if not stuck:
@@ -140,13 +142,28 @@ def test_v1_baseline_stuck_anchor_blanket_suppresses_a_legal_broadening_action()
 
     not_stuck = grid(stuck=False)
     assert not_stuck[0].stuck is False
-    result = _tracked_frontier_target(not_stuck, anchor_index=0, classify=_classify)
-    assert result is not None and result[1] == "quicklook"
+    baseline = _tracked_frontier_target(not_stuck, anchor_index=0, classify=_classify)
+    assert baseline is not None and baseline[1] == "quicklook"
 
     stuck = grid(stuck=True)
     assert stuck[0].stuck is True
-    assert stuck[0].same_q_identity_work_remains is False      # so the invariant guard won't fire
-    assert _tracked_frontier_target(stuck, anchor_index=0, classify=_classify) is None
+    assert stuck[0].same_q_identity_work_remains is False      # the invariant guard cannot catch this
+    recovered = _tracked_frontier_target(stuck, anchor_index=0, classify=_classify)
+    assert recovered is not None and recovered[1] == "quicklook"
+    assert tuple(recovered[0].hkl) == tuple(baseline[0].hkl)   # the same legal neighbouring probe
+
+
+def test_a_stuck_anchor_still_refuses_same_q_identity_counting():
+    """The other half of the per-action contract: un-blanketing must not re-authorise the same-q
+    identity action that saturation is actually about. With no neighbour to broaden to, a stuck anchor
+    has no action left — an honest empty set rather than a suppressed one."""
+    anchor = _saturated_point(index=0, hkl=(2.0, 0.0, 0.0), q=0.0)
+    visited_neighbor = _saturated_point(index=1, hkl=(2.05, 0.0, 0.0), q=0.05)
+    visited_neighbor.track_state = "confirmed"
+    visited_neighbor.local_identity_clear = True
+    assert anchor.same_q_identity_work_remains is False
+    assert _tracked_frontier_target([anchor, visited_neighbor], anchor_index=0,
+                                    classify=_classify) is None
 
 
 def test_v1_baseline_stuck_frontier_is_already_per_action_and_still_bridges():
