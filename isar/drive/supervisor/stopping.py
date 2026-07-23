@@ -706,14 +706,27 @@ def model_points(grid: list[GridQ]) -> list[tuple[float, float, float]]:
 # --------------------------------------------------------------------------- the decision
 @dataclass
 class StopDecision:
-    """Campaign verdict: ``continue`` | ``met`` | ``incomplete`` | ``infeasible``."""
+    """Campaign verdict: ``continue`` | ``met`` | ``incomplete`` | ``infeasible``.
+
+    ``terminal_cause`` is an *additive* refinement that names *why* a terminal was reached, decided by
+    the post-acquisition inventory rather than by any stopping-side approximation. In this increment
+    the only causes are the inventory's own (``action_inventory_exhausted`` vs ``controller_fault``),
+    so it is set only on the ``incomplete`` no-proposal terminal and left ``None`` everywhere else; a
+    later taxonomy (see the plan's PR3) pairs further causes with other states. It is omitted from
+    ``to_dict`` when ``None`` so existing (cause-less) stop payloads are byte-unchanged.
+    """
 
     state: str
     reasons: list[str] = field(default_factory=list)
     per_q: list[dict] = field(default_factory=list)
+    terminal_cause: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"state": self.state, "reasons": list(self.reasons), "per_q": list(self.per_q)}
+        payload: dict[str, Any] = {
+            "state": self.state, "reasons": list(self.reasons), "per_q": list(self.per_q)}
+        if self.terminal_cause is not None:
+            payload["terminal_cause"] = self.terminal_cause
+        return payload
 
 
 def systematic_floor(calibration=None, floor: float | None = None) -> float:
@@ -823,31 +836,14 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                              f"(pooled master, inflation-calibrated) "
                              f"≤ {tol:g} meV at each point"], per_q)
 
-    def classification_route_remains(item: GridQ) -> bool:
-        if item.track_state == "blocked":
-            return False
-        lo = max(0, item.index - max(item.maximum_bridge_steps, 1))
-        hi = min(len(grid), item.index + max(item.maximum_bridge_steps, 1) + 1)
-        return any(
-            neighbor.index != item.index
-            and (not neighbor.visited or neighbor.track_state in {"confirmed", "provisional"})
-            and not neighbor.stuck
-            for neighbor in grid[lo:hi]
-        )
-
-    exhausted = [g for g in grid
-                 if g.ambiguity_exhausted and not classification_route_remains(g)]
-    if exhausted:
-        indices = ", ".join(str(g.index) for g in exhausted)
-        for g in exhausted:
-            per_q[g.index]["assessment_state"] = "incomplete"
-            per_q[g.index]["reason"] = (
-                "branch_ambiguity; frontier_blocked after saturated same-q strategy")
-        return StopDecision(
-            "incomplete",
-            [f"branch_ambiguity; frontier_blocked at path index/indices {indices}: "
-             "same-q exposure saturated and the configured strategy allowance was exhausted"],
-            per_q)
+    # A branch-ambiguity terminal is NOT decided here.  ``evaluate_stop`` runs *before* acquisition
+    # enumerates the action space, so a local approximation of "is any classification route left?"
+    # (the former ``classification_route_remains`` grid scan) could terminalise a frontier the
+    # controller could in fact still act on — the early-terminal defect (DECISIONS, PR1).  Saturation
+    # is now a per-point diagnostic only (``GridQ.ambiguity_exhausted`` / ``stuck``); the honest
+    # ``incomplete`` is produced *after* acquisition returns no proposal, by
+    # ``_blocked_frontier_decision`` consuming the canonical ``ActionInventory`` and its
+    # ``terminal_cause``.
 
     reasons: list[str] = []
     spent = float(budget_state.get("spent", 0.0))

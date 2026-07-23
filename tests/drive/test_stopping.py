@@ -447,7 +447,12 @@ def test_wrong_branch_master_is_measured_evidence_without_target_delivery():
     assert not point.converged
 
 
-def test_saturated_ambiguous_frontier_terminates_only_after_probe_allowance():
+def test_saturated_ambiguous_frontier_is_not_terminalised_by_evaluate_stop():
+    """The early-terminal defect, removed (PR1): ``evaluate_stop`` runs *before* acquisition, so it no
+    longer converts a saturated ambiguous frontier into a ``branch_ambiguity`` incomplete on its own.
+    Saturation stays a per-point diagnostic (``ambiguity_exhausted``); the honest terminal is produced
+    after acquisition returns no proposal, by ``_blocked_frontier_decision`` consuming the inventory
+    (covered in ``test_loop`` / ``test_ap6_forensic_replay``)."""
     obj = _obj()
     obj.steering["maximum_production_batches_per_q"] = 2
     obj.steering["maximum_bridge_steps"] = 1
@@ -457,8 +462,8 @@ def test_saturated_ambiguous_frontier_terminates_only_after_probe_allowance():
         row.update({"acquisition_id": f"A{index}", "ncount_clamped": index >= 1,
                     "submitted_ncount": 100_000_000})
         observations.append(row)
-    # The full survey has already visited every neighboring q, so no untried classification route
-    # remains.  The only pooled fit is real two-mode evidence but belongs to the rival branch.
+    # The full survey has already visited every neighboring q.  The only pooled fit is real two-mode
+    # evidence but belongs to the rival branch.
     observations.extend(_obs((h, 0.0, 0.0), "quicklook", None, resolved=False,
                              disp="branch_ambiguous") for h in (2.2, 2.3, 2.4))
     wrong = _master((2.1, 0.0, 0.0), 0.2)
@@ -466,9 +471,19 @@ def test_saturated_ambiguous_frontier_terminates_only_after_probe_allowance():
         {"energy_meV": 2.7}, {"energy_meV": 6.85}]})
     grid = st.summarize_grid(obj, observations, [wrong])
     decision = st.evaluate_stop(obj, grid, _BUDGET)
+    # The point is diagnostically saturated, but that is no longer evaluate_stop's terminal authority.
     assert grid[0].clamped_productions == 2 and grid[0].ambiguity_exhausted
-    assert decision.state == "incomplete"
-    assert "branch_ambiguity" in decision.reasons[0]
+    assert decision.state == "continue"
+    assert decision.terminal_cause is None
+
+
+def test_stop_decision_terminal_cause_is_additive_and_omitted_when_absent():
+    plain = st.StopDecision("continue", [], [])
+    assert plain.terminal_cause is None
+    assert "terminal_cause" not in plain.to_dict()
+    tagged = st.StopDecision("incomplete", ["frontier_blocked"], [],
+                             terminal_cause="action_inventory_exhausted")
+    assert tagged.to_dict()["terminal_cause"] == "action_inventory_exhausted"
 
 
 def test_saturated_frontier_stays_nonterminal_while_untried_neighbor_remains():

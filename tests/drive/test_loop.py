@@ -224,6 +224,62 @@ def test_proposal_less_frontier_with_same_q_budget_left_is_a_controller_fault():
     assert "path index 0" in message
 
 
+def _exhausted_frontier_grid():
+    """A saturated tracked frontier with no same-q identity work left — an honest empty action space."""
+    objective = _blocked_identity_objective()
+    anchor = GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
+                   n_quicklook=1, track_state="ambiguous", max_production_batches=8)
+    anchor.n_production = 8
+    anchor.evidence_master = {
+        "branch_candidates": [{"energy_meV": 5.98, "sigma_meV": 0.05}],
+        "diagnostic_halfwidth": 0.05,
+    }
+    neighbor = GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
+                     n_quicklook=1, track_state="blocked")
+    return objective, [anchor, neighbor]
+
+
+def test_blocked_frontier_terminal_carries_inventory_exhausted_cause():
+    """A complete inventory with no eligible action stamps ``action_inventory_exhausted`` on the
+    terminal — the proof travels with the honest incomplete instead of a bare reason string."""
+    from isar.drive.acquisition.inventory import (
+        ActionInventory, GeneratorReport, GeneratorStatus)
+    objective, grid = _exhausted_frontier_grid()
+    inventory = ActionInventory(evaluations=[], reports=[GeneratorReport(
+        generator="tracked_and_scored_selection", status=GeneratorStatus.COMPLETED,
+        generated=0, reason_code="no_selectable_action")])
+    decision = loop_mod._blocked_frontier_decision(
+        objective, grid, StopDecision("continue", [], []), inventory)
+    assert decision.state == "incomplete"
+    assert decision.terminal_cause == "action_inventory_exhausted"
+
+
+def test_blocked_frontier_terminal_reports_controller_fault_for_incomplete_inventory():
+    """A generator that FAILED makes the inventory incomplete, so exhaustion is unprovable: the
+    terminal is stamped ``controller_fault``, never ``action_inventory_exhausted``."""
+    from isar.drive.acquisition.inventory import (
+        ActionInventory, GeneratorReport, GeneratorStatus)
+    objective, grid = _exhausted_frontier_grid()
+    inventory = ActionInventory(evaluations=[], reports=[
+        GeneratorReport(generator="tracked_and_scored_selection",
+                        status=GeneratorStatus.COMPLETED, generated=0),
+        GeneratorReport(generator="rival_gap", status=GeneratorStatus.FAILED,
+                        error_code="zone_geometry")])
+    decision = loop_mod._blocked_frontier_decision(
+        objective, grid, StopDecision("continue", [], []), inventory)
+    assert decision.state == "incomplete"
+    assert decision.terminal_cause == "controller_fault"
+
+
+def test_blocked_frontier_terminal_defaults_to_exhausted_without_an_inventory():
+    """Unit callers that pass no inventory get the honest legacy meaning (exhausted), not ``None``."""
+    objective, grid = _exhausted_frontier_grid()
+    decision = loop_mod._blocked_frontier_decision(
+        objective, grid, StopDecision("continue", [], []))
+    assert decision.state == "incomplete"
+    assert decision.terminal_cause == "action_inventory_exhausted"
+
+
 def test_pooled_selected_optic_suppresses_false_missed_window_from_acoustic_individual():
     proposal = ScanProposal(
         h=2.05, k=0.0, l=0.0, e_lo=-2.0, e_hi=8.0, e_step=0.25,
@@ -2302,15 +2358,16 @@ def test_campaign_clamps_dynamic_400m_batch_and_publishes_limit_envelope(
     client = _NcountLimitedTavi(omega)
 
     def desired_400m(*_args, **_kwargs):
-        return ScanProposal(
+        proposal = ScanProposal(
             h=2.1, k=0.0, l=0.0, e_lo=-2.0, e_hi=7.0, e_step=0.1,
             ncount=400_000_000, kind="production", reason="dynamic tolerance request",
             e_pred=0.2, n_points=91,
             meta={"score": {"method": "deficit", "cost": 36_400_000_000.0},
                   "count_diagnostics": {"dynamic_ncount": True,
                                         "requested_before_runtime_limit": 400_000_000}})
+        return proposal, None
 
-    monkeypatch.setattr(loop_mod, "propose_scan", desired_400m)
+    monkeypatch.setattr(loop_mod, "propose_action", desired_400m)
     summary, _ws = _run(
         tmp_path, _objective(), client, make_mock_runner(omega), max_iters=1)
     assert client.validated_ncounts == [100_000_000]

@@ -42,8 +42,9 @@ from isar.drive.acquisition.acquire import (
     _candidate_precision,
     normalize_proposal_score,
     points_in_window,
-    propose_scan,
+    propose_action,
 )
+from isar.drive.acquisition.inventory import TERMINAL_ACTION_INVENTORY_EXHAUSTED
 from isar.drive.acquisition.calibration import Calibration, load_calibration
 from isar.drive.instrument.tavi_client import TaviClient, TaviError
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
@@ -1868,8 +1869,17 @@ def _invariant_payload(point) -> dict:
     }
 
 
-def _blocked_frontier_decision(objective, grid, decision: StopDecision) -> StopDecision:
-    """Turn a proposal-less tracked identity frontier into an honest incomplete outcome."""
+def _blocked_frontier_decision(objective, grid, decision: StopDecision,
+                               inventory=None) -> StopDecision:
+    """Turn a proposal-less tracked identity frontier into an honest incomplete outcome.
+
+    ``inventory`` is the :class:`~isar.drive.acquisition.inventory.ActionInventory` acquisition just
+    enumerated. Its :meth:`terminal_cause` decides *why* the action space ended — an exhaustion proof
+    (``action_inventory_exhausted``) only when every applicable generator ran cleanly, otherwise a
+    ``controller_fault`` — and that cause is stamped on the returned terminal. When no inventory is
+    supplied (unit callers of this helper) the honest legacy meaning, ``action_inventory_exhausted``,
+    is used.
+    """
     if (decision.state != "continue"
             or getattr(objective, "target_selector", None) != "tracked_branch"):
         return decision
@@ -1899,11 +1909,13 @@ def _blocked_frontier_decision(objective, grid, decision: StopDecision) -> StopD
             per_q[point.index]["assessment_state"] = "incomplete"
             per_q[point.index]["reason"] = (
                 "branch_ambiguity; frontier_blocked after identity-route allowance was exhausted")
+    cause = (inventory.terminal_cause() if inventory is not None
+             else TERMINAL_ACTION_INVENTORY_EXHAUSTED) or TERMINAL_ACTION_INVENTORY_EXHAUSTED
     return StopDecision(
         "incomplete",
         [f"branch_ambiguity; frontier_blocked at path index/indices {indices}: "
          "the connected classification route and identity-revisit allowance were exhausted"],
-        per_q)
+        per_q, terminal_cause=cause)
 
 
 def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
@@ -2972,6 +2984,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     durable_state = read_card_state(cfg.workspace)
                     classify, rival_band = _make_classification_providers(
                         durable_state, objective, cfg.resolution_cb, sample=cfg.sample)
+                action_inventory = None
                 with timed(cfg.log_path, "propose", iteration=it):
                     try:
                         analysis_remaining = (float("inf") if objective.analysis_limit_seconds is None
@@ -2983,7 +2996,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                 cfg.log_path, f"score:{cfg.run_nonce}:{proposal_counter}",
                                 "predictive_scoring",
                                 limit_seconds=objective.analysis_limit_seconds, iteration=it):
-                            proposal = propose_scan(
+                            proposal, action_inventory = propose_action(
                                 objective, model, observations, cfg.resolution_cb, budget_state,
                                 master_rows=master_rows, fisher=None,
                                 classify=classify, rival_band=rival_band,
@@ -3017,7 +3030,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                         decision = evaluate_stop(
                             objective, grid, budget_state,
                             calibration=cfg.calibration, floor=cfg.floor)
-                    decision = _blocked_frontier_decision(objective, grid, decision)
+                    decision = _blocked_frontier_decision(
+                        objective, grid, decision, action_inventory)
                     break
                 proposal.acquisition_id = (proposal.acquisition_id
                                            or f"{cfg.run_nonce}:{proposal_counter:08d}")
@@ -3269,6 +3283,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                         cfg.log_path, len(observations),
                                         instrument_limits=limit_envelope)
             stop_payload = {"state": decision.state, "reasons": decision.reasons}
+            if decision.terminal_cause is not None:
+                stop_payload["terminal_cause"] = decision.terminal_cause
 
         (cfg.workspace / "report").mkdir(parents=True, exist_ok=True)
         (cfg.workspace / "report" / "campaign_summary.json").write_text(

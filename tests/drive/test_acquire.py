@@ -476,3 +476,28 @@ def test_enumerate_reports_action_inventory_exhausted_when_nothing_remains():
     assert inventory.has_eligible_action is False
     assert inventory.is_complete is True
     assert inventory.terminal_cause() == "action_inventory_exhausted"
+
+
+def test_propose_action_returns_proposal_and_inventory_mirroring_propose_scan():
+    obj = _obj()
+    model = acq_model.fit([])
+    proposal, inventory = acq.propose_action(obj, model, [], {"fwhm_dE": 0.8}, {})
+    assert proposal is not None
+    assert inventory.is_complete and inventory.has_eligible_action
+    assert inventory.terminal_cause() is None
+    # The back-compat wrapper drops the inventory but builds the byte-identical proposal.
+    plain = acq.propose_scan(obj, model, [], {"fwhm_dE": 0.8}, {})
+    assert (plain.h, plain.k, plain.l) == (proposal.h, proposal.k, proposal.l)
+    assert plain.ncount == proposal.ncount and plain.kind == proposal.kind
+    assert plain.e_lo == proposal.e_lo and plain.e_hi == proposal.e_hi
+
+
+def test_propose_action_returns_none_proposal_with_exhausted_inventory():
+    obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.1, step=0.1, tolerance_meV=0.5,
+                                budget={"kind": "neutrons", "amount": 1e12})
+    obs = [_obs((2.1, 0.0, 0.0), "production", 0.30)]
+    masters = [_master((2.1, 0.0, 0.0), 0.30)]
+    proposal, inventory = acq.propose_action(
+        obj, _model(obs), obs, {"fwhm_dE": 0.8}, {}, master_rows=masters)
+    assert proposal is None
+    assert inventory.terminal_cause() == "action_inventory_exhausted"

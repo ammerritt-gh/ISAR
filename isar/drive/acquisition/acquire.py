@@ -1266,6 +1266,36 @@ def select_action(inventory: ActionInventory,
     return min(eligible, key=lambda c: c.evaluation.policy_rank)
 
 
+def propose_action(objective, model, results_so_far: list[dict], resolution_info=None,
+                   budget_state: dict | None = None, master_rows: list[dict] | None = None,
+                   fisher=None, classify=None, rival_band=None,
+                   runtime_limits: dict | None = None,
+                   track_anchor_index: int | None = None,
+                   track_zone_period: float | None = None,
+                   branch_track: dict | None = None,
+                   scoring_allowance_seconds: float = 60.0
+                   ) -> tuple[ScanProposal | None, ActionInventory]:
+    """Enumerate, select, and build — returning the proposal *and the canonical inventory*.
+
+    This is the seam the drive loop consumes: when the proposal is ``None`` the loop's terminal
+    decision reads :meth:`ActionInventory.terminal_cause` off the very inventory acquisition
+    enumerated, so a branch-ambiguity terminal can never come from a separate stopping-side
+    approximation (PR1). :func:`propose_scan` is the thin back-compat wrapper that drops the inventory.
+    """
+    inventory, candidates = enumerate_actions(
+        objective, model, results_so_far, resolution_info=resolution_info,
+        budget_state=budget_state, master_rows=master_rows, fisher=fisher, classify=classify,
+        rival_band=rival_band, runtime_limits=runtime_limits, track_anchor_index=track_anchor_index,
+        track_zone_period=track_zone_period, branch_track=branch_track,
+        scoring_allowance_seconds=scoring_allowance_seconds)
+    chosen = select_action(inventory, candidates)
+    if chosen is None:
+        return None, inventory
+    proposal = _build_proposal(
+        objective, chosen, model, resolution_info, budget_state, fisher, rival_band, classify)
+    return proposal, inventory
+
+
 def propose_scan(objective, model, results_so_far: list[dict], resolution_info=None,
                  budget_state: dict | None = None, master_rows: list[dict] | None = None,
                  fisher=None, classify=None, rival_band=None,
@@ -1275,6 +1305,9 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
                  branch_track: dict | None = None,
                  scoring_allowance_seconds: float = 60.0) -> ScanProposal | None:
     """Propose the next scan (Q, energy window, neutron count), or ``None`` if nothing remains.
+
+    Back-compat wrapper over :func:`propose_action` that returns only the proposal. Callers that need
+    the completeness/terminal proof (the drive loop) call :func:`propose_action` directly.
 
     Args:
         objective: the :class:`~isar.drive.objective.ObjectiveSpec` (path + tolerance).
@@ -1289,19 +1322,25 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
         fisher: optional Poisson-Fisher screen provider ``(gridq, omega0_pred, sigma_prior) -> σ_scan``
             (5b). Returns the predicted post-scan σ(ω₀) when the q is Fisher-grounded, else ``None``.
     """
-    inventory, candidates = enumerate_actions(
+    proposal, _inventory = propose_action(
         objective, model, results_so_far, resolution_info=resolution_info,
         budget_state=budget_state, master_rows=master_rows, fisher=fisher, classify=classify,
         rival_band=rival_band, runtime_limits=runtime_limits, track_anchor_index=track_anchor_index,
         track_zone_period=track_zone_period, branch_track=branch_track,
         scoring_allowance_seconds=scoring_allowance_seconds)
-    chosen = select_action(inventory, candidates)
-    if chosen is None:
-        return None
+    return proposal
+
+
+def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_info,
+                    budget_state, fisher, rival_band, classify) -> ScanProposal:
+    """Build the executable :class:`ScanProposal` from a selected candidate.
+
+    Reads its energy-window/count context from ``chosen`` (the exact values selection used), never a
+    second read of ``objective.steering`` that could diverge from what ``enumerate_actions`` chose.
+    """
     pick, kind, reason, score = chosen.pick, chosen.kind, chosen.reason, chosen.score
-    # Reuse the exact context selection used — never a second read of objective.steering — so the
-    # proposal builder below sees byte-identical inputs. The grid, opening, inserted candidate and
-    # target selection all live in ``enumerate_actions`` now.
+    # The grid, opening, inserted candidate and target selection all live in ``enumerate_actions``;
+    # here we only realise the winning candidate into an executable window/count.
     target_hypothesis = chosen.target_hypothesis
     policy = chosen.policy
     runtime_limits = chosen.runtime_limits
