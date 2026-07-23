@@ -340,6 +340,20 @@ def test_selected_action_class_matches_the_intent_action_class():
     assert loop_mod._selected_action_class(differentiate) == "differentiation_probe"
 
 
+class _StubPlan:
+    """Stands in for an ``ActionPlan`` where a test scripts the action space directly.
+
+    The loop consumes the plan, not a single proposal, so a test that wants to control what gets
+    proposed has to control the *sequence* — including the emptiness that follows the last one."""
+
+    def __init__(self, inventory, proposals):
+        self.inventory = inventory
+        self._proposals = list(proposals)
+
+    def next_proposal(self):
+        return self._proposals.pop(0) if self._proposals else None
+
+
 def _persist_cfg(tmp_path):
     ws = tmp_path / "ws"
     (ws / "report").mkdir(parents=True, exist_ok=True)
@@ -469,7 +483,7 @@ def test_inventory_terminal_stamps_the_versioned_proof_on_the_stop(tmp_path, mon
     from isar.drive.acquisition.inventory import GENERATOR_REGISTRY_VERSION
     omega = lambda h: (h - 2.0) * 2.0
     exhausted = _exhausted_inventory()
-    monkeypatch.setattr(loop_mod, "propose_action", lambda *a, **k: (None, exhausted))
+    monkeypatch.setattr(loop_mod, "plan_actions", lambda *a, **k: _StubPlan(exhausted, []))
     monkeypatch.setattr(
         loop_mod, "_blocked_frontier_decision",
         lambda objective, grid, decision, inventory=None: StopDecision(
@@ -635,6 +649,56 @@ class MockTavi:
 
     def get_resolution(self, h, k, l, deltaE):
         return {"ok": True, "fwhm": {"dE": 0.8}}
+
+
+class _UnreachableQTavi(MockTavi):
+    """A TAVI where one q is geometrically unreachable — every request there is refused."""
+
+    def __init__(self, omega_true, *, unreachable_h):
+        super().__init__(omega_true)
+        self.unreachable_h = unreachable_h
+        self.validated_h: list[float] = []
+
+    def validate(self, body):
+        h = float(body["parameters"]["H"])
+        self.validated_h.append(h)
+        if abs(h - self.unreachable_h) <= 1e-6:
+            return {"would_queue": False, "blockers": ["a2_out_of_range"],
+                    "requested_points": 91, "feasible_points": 0}
+        return super().validate(body)
+
+
+def test_an_unreachable_q_is_recorded_as_a_geometry_suppression(tmp_path):
+    """PR2.3. Before this, a q the instrument cannot reach cost a whole iteration every time the
+    selector picked it, and nothing recorded that it had stopped being usable — so an inventory could
+    empty out with no account of why."""
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _UnreachableQTavi(omega, unreachable_h=2.1)
+    summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+    events = read_log(summary["session_log"])
+
+    suppressed = [e["payload"] for e in events if e["kind"] == "action_suppressed"]
+    assert suppressed, "an unreachable q must be recorded, not silently retried forever"
+    assert suppressed[0]["scope"] == "geometry"
+    assert suppressed[0]["rejection_class"] == "structural"
+    assert suppressed[0]["verdict"] == "geometry_unreachable"
+    assert suppressed[0]["hkl"][0] == pytest.approx(2.1)
+
+    # No scan was ever submitted at the unreachable q, and the campaign kept working elsewhere.
+    submitted = [float(body["parameters"]["H"]) for body in client.jobs.values()]
+    assert all(abs(h - 2.1) > 1e-6 for h in submitted)
+    assert summary["stop"]["state"] in {"met", "incomplete"}
+
+
+def test_a_suppressed_q_is_not_re_proposed_on_later_iterations(tmp_path):
+    """The suppression has to outlive its iteration. Held only within one, the selector would pick the
+    same unreachable q again next time and the campaign would burn its remaining iterations on it."""
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _UnreachableQTavi(omega, unreachable_h=2.1)
+    summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+    rejected_validations = [h for h in client.validated_h if abs(h - 2.1) <= 1e-6]
+    assert len(rejected_validations) == 1, \
+        f"the unreachable q was validated {len(rejected_validations)} times; suppression did not stick"
 
 
 class _SubmitFailingTavi(MockTavi):
@@ -2577,9 +2641,9 @@ def test_campaign_clamps_dynamic_400m_batch_and_publishes_limit_envelope(
             meta={"score": {"method": "deficit", "cost": 36_400_000_000.0},
                   "count_diagnostics": {"dynamic_ncount": True,
                                         "requested_before_runtime_limit": 400_000_000}})
-        return proposal, None
+        return _StubPlan(None, [proposal])
 
-    monkeypatch.setattr(loop_mod, "propose_action", desired_400m)
+    monkeypatch.setattr(loop_mod, "plan_actions", desired_400m)
     summary, _ws = _run(
         tmp_path, _objective(), client, make_mock_runner(omega), max_iters=1)
     assert client.validated_ncounts == [100_000_000]

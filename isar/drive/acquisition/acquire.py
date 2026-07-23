@@ -52,6 +52,7 @@ from isar.drive.acquisition.inventory import (
     GeneratorStatus,
     LEGACY_SELECTOR_GENERATOR,
     MeasurementIntent,
+    RejectionClass,
 )
 from isar.schema.steering import ProposalScore
 from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
@@ -1215,6 +1216,19 @@ class AcquisitionContext:
     branch_track: dict
     ranking_cost_kind: str
     scoring_allowance_seconds: float
+    # Scientific action fingerprints the policy has already durably refused, mapped to
+    # ``{"class": ..., "reason": ...}``. Applied to the *evaluations*, never by dropping the action
+    # before enumeration: a suppressed action must still appear in the inventory, or the exhaustion
+    # proof would claim an empty action space with no record of what emptied it.
+    suppressed: dict = field(default_factory=dict)
+    # Q positions the instrument cannot reach, mapped to ``{"class": ..., "reason": ...}``.
+    #
+    # Keyed by hkl rather than by scientific action fingerprint on purpose. Unreachability is a
+    # property of the geometry, not of the question being asked there: the scientific fingerprint
+    # includes the evidence basis, so charging a geometry refusal to it would let the suppression
+    # evaporate the moment any evidence advanced, and the controller would re-propose the same
+    # unreachable q for the rest of the campaign.
+    unreachable_hkl: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1339,7 +1353,9 @@ def build_acquisition_context(objective, model, results_so_far: list[dict], reso
                               track_anchor_index: int | None = None,
                               track_zone_period: float | None = None,
                               branch_track: dict | None = None,
-                              scoring_allowance_seconds: float = 60.0) -> AcquisitionContext:
+                              scoring_allowance_seconds: float = 60.0,
+                              suppressed: dict | None = None,
+                              unreachable_hkl: dict | None = None) -> AcquisitionContext:
     """Assemble the one world every generator reasons about at this decision boundary.
 
     This is verbatim the preamble the fused legacy selector used to run inline — the summarized grid,
@@ -1392,7 +1408,30 @@ def build_acquisition_context(objective, model, results_so_far: list[dict], reso
         branch_track=dict(branch_track or {}),
         ranking_cost_kind=("analysis" if getattr(objective, "tier", None) == "deterministic"
                            else "measurement"),
-        scoring_allowance_seconds=scoring_allowance_seconds)
+        scoring_allowance_seconds=scoring_allowance_seconds,
+        suppressed=_validated_suppressions(suppressed),
+        unreachable_hkl=_validated_suppressions(unreachable_hkl))
+
+
+def hkl_key(hkl) -> str:
+    """The stable string key an unreachable-q suppression is recorded under."""
+    return ",".join(f"{round(float(value), 6):g}" for value in hkl)
+
+
+def _validated_suppressions(suppressed: dict | None) -> dict:
+    """Reject a transient suppression at the boundary rather than making it durable.
+
+    A network blip, a busy queue or a momentary instrument state says nothing about whether the
+    scientific question is worth asking. Nothing in the type system stops a caller passing one in, so
+    the refusal lives here — the one place every suppression must pass through.
+    """
+    entries = dict(suppressed or {})
+    for fingerprint, entry in entries.items():
+        if str((entry or {}).get("class", "")).lower() == RejectionClass.TRANSIENT.value:
+            raise ValueError(
+                f"refusing a transient suppression for action {fingerprint!r}: a transient failure "
+                "must never durably suppress a scientific action")
+    return entries
 
 
 def _legacy_selector_generate(context: AcquisitionContext) -> list[GeneratedAction]:
@@ -1543,6 +1582,35 @@ def evaluate_action_intents(actions: list[GeneratedAction],
     return [ACTION_EVALUATORS[action.generator](action, context) for action in actions]
 
 
+def _apply_suppressions(evaluations: list[ActionEvaluation],
+                        context: AcquisitionContext) -> list[ActionEvaluation]:
+    """Demote already-refused actions to REJECTED, keeping them in the inventory.
+
+    Suppression is applied to the *evaluation*, not by dropping the action during generation, for two
+    reasons: the accounting stays consistent (a generator's ``generated`` count still matches its
+    recorded evaluations, so the proof stays structurally valid), and the terminal names what emptied
+    the action space instead of presenting a blank one.
+    """
+    if not context.suppressed and not context.unreachable_hkl:
+        return evaluations
+    applied: list[ActionEvaluation] = []
+    for evaluation in evaluations:
+        entry = (context.suppressed.get(evaluation.intent.scientific_action_fingerprint)
+                 or context.unreachable_hkl.get(hkl_key(evaluation.intent.hkl)))
+        if entry is None:
+            applied.append(evaluation)
+            continue
+        try:
+            rejection_class = RejectionClass(str(entry.get("class", "structural")).lower())
+        except ValueError:
+            rejection_class = RejectionClass.STRUCTURAL
+        applied.append(replace(
+            evaluation, eligibility=ActionEligibility.REJECTED,
+            rejection_class=rejection_class,
+            rejection_reason=str(entry.get("reason") or "previously refused")))
+    return applied
+
+
 def _evaluate_safely(actions: list[GeneratedAction], context: AcquisitionContext
                      ) -> tuple[list[GeneratedAction], list[ActionEvaluation], dict[str, str]]:
     """Evaluate with the same per-generator isolation generation gets.
@@ -1579,7 +1647,9 @@ def enumerate_actions(objective, model, results_so_far: list[dict], resolution_i
                       track_anchor_index: int | None = None,
                       track_zone_period: float | None = None,
                       branch_track: dict | None = None,
-                      scoring_allowance_seconds: float = 60.0):
+                      scoring_allowance_seconds: float = 60.0,
+                      suppressed: dict | None = None,
+                      unreachable_hkl: dict | None = None):
     """Enumerate the acquisition action space and report per-generator completeness.
 
     The pipeline is now the declared one — build one context, generate intents, dedupe them, evaluate
@@ -1591,9 +1661,11 @@ def enumerate_actions(objective, model, results_so_far: list[dict], resolution_i
         objective, model, results_so_far, resolution_info=resolution_info,
         master_rows=master_rows, fisher=fisher, classify=classify, runtime_limits=runtime_limits,
         track_anchor_index=track_anchor_index, track_zone_period=track_zone_period,
-        branch_track=branch_track, scoring_allowance_seconds=scoring_allowance_seconds)
+        branch_track=branch_track, scoring_allowance_seconds=scoring_allowance_seconds,
+        suppressed=suppressed, unreachable_hkl=unreachable_hkl)
     generated, reports = generate_action_intents(context)
     generated, evaluations, evaluator_failures = _evaluate_safely(generated, context)
+    evaluations = _apply_suppressions(evaluations, context)
     if evaluator_failures:
         # Demote just the faulting generators, leaving every healthy generator's generation accounting
         # (including its dedupe count) intact — the failure is in scoring, not in what was enumerated.
@@ -1601,8 +1673,10 @@ def enumerate_actions(objective, model, results_so_far: list[dict], resolution_i
                                    generated=0, error_code=evaluator_failures[report.generator])
                    if report.generator in evaluator_failures else report
                    for report in reports]
+    # Only eligible evaluations yield a buildable candidate; the rejected ones stay in the inventory
+    # as the record of what was refused and why.
     candidates = [_CandidateAction(generated=action, evaluation=evaluation, context=context)
-                  for action, evaluation in zip(generated, evaluations)]
+                  for action, evaluation in zip(generated, evaluations) if evaluation.is_eligible]
     return ActionInventory(evaluations=evaluations, reports=reports), candidates
 
 
@@ -1615,6 +1689,59 @@ def select_action(inventory: ActionInventory,
     return min(eligible, key=lambda c: c.evaluation.policy_rank)
 
 
+@dataclass
+class ActionPlan:
+    """The enumerated action space plus the ability to realize its actions into requests, in order.
+
+    The controller used to get exactly one proposal per iteration, so a request the instrument refused
+    cost the whole iteration even when the inventory still held other eligible actions. Holding the
+    candidates lets the loop try the next one immediately, while ``inventory`` stays the single
+    canonical action space the terminal decision reads.
+    """
+
+    inventory: ActionInventory
+    candidates: list[_CandidateAction]
+    _build_context: tuple
+    _tried: set = field(default_factory=set)
+
+    def next_proposal(self) -> "ScanProposal | None":
+        """Realize the best eligible action not yet attempted this iteration, or ``None``."""
+        objective, model, resolution_info, budget_state, fisher, rival_band, classify = \
+            self._build_context
+        for candidate in sorted(self.candidates, key=lambda c: c.evaluation.policy_rank):
+            fingerprint = candidate.evaluation.intent.scientific_action_fingerprint
+            if fingerprint in self._tried:
+                continue
+            self._tried.add(fingerprint)
+            return _build_proposal(objective, candidate, model, resolution_info, budget_state,
+                                   fisher, rival_band, classify)
+        return None
+
+
+def plan_actions(objective, model, results_so_far: list[dict], resolution_info=None,
+                 budget_state: dict | None = None, master_rows: list[dict] | None = None,
+                 fisher=None, classify=None, rival_band=None,
+                 runtime_limits: dict | None = None,
+                 track_anchor_index: int | None = None,
+                 track_zone_period: float | None = None,
+                 branch_track: dict | None = None,
+                 scoring_allowance_seconds: float = 60.0,
+                 suppressed: dict | None = None,
+                 unreachable_hkl: dict | None = None) -> ActionPlan:
+    """Enumerate the action space once and return a plan that can realize its actions in order."""
+    inventory, candidates = enumerate_actions(
+        objective, model, results_so_far, resolution_info=resolution_info,
+        budget_state=budget_state, master_rows=master_rows, fisher=fisher, classify=classify,
+        rival_band=rival_band, runtime_limits=runtime_limits, track_anchor_index=track_anchor_index,
+        track_zone_period=track_zone_period, branch_track=branch_track,
+        scoring_allowance_seconds=scoring_allowance_seconds, suppressed=suppressed,
+        unreachable_hkl=unreachable_hkl)
+    return ActionPlan(
+        inventory=inventory, candidates=candidates,
+        _build_context=(objective, model, resolution_info, budget_state, fisher, rival_band,
+                        classify))
+
+
 def propose_action(objective, model, results_so_far: list[dict], resolution_info=None,
                    budget_state: dict | None = None, master_rows: list[dict] | None = None,
                    fisher=None, classify=None, rival_band=None,
@@ -1622,27 +1749,26 @@ def propose_action(objective, model, results_so_far: list[dict], resolution_info
                    track_anchor_index: int | None = None,
                    track_zone_period: float | None = None,
                    branch_track: dict | None = None,
-                   scoring_allowance_seconds: float = 60.0
+                   scoring_allowance_seconds: float = 60.0,
+                   suppressed: dict | None = None,
+                   unreachable_hkl: dict | None = None
                    ) -> tuple[ScanProposal | None, ActionInventory]:
-    """Enumerate, select, and build — returning the proposal *and the canonical inventory*.
+    """Enumerate, select, and build the single best action — plus the canonical inventory.
 
-    This is the seam the drive loop consumes: when the proposal is ``None`` the loop's terminal
-    decision reads :meth:`ActionInventory.terminal_cause` off the very inventory acquisition
-    enumerated, so a branch-ambiguity terminal can never come from a separate stopping-side
-    approximation (PR1). :func:`propose_scan` is the thin back-compat wrapper that drops the inventory.
+    A thin view over :func:`plan_actions` that takes only its first proposal. The drive loop uses the
+    plan directly, so a refused request can fall through to the next eligible action instead of
+    costing the whole iteration; callers that only ever want one action keep this shape. When the
+    proposal is ``None`` the terminal decision reads :meth:`ActionInventory.terminal_cause` off the
+    very inventory acquisition enumerated (PR1).
     """
-    inventory, candidates = enumerate_actions(
+    plan = plan_actions(
         objective, model, results_so_far, resolution_info=resolution_info,
         budget_state=budget_state, master_rows=master_rows, fisher=fisher, classify=classify,
         rival_band=rival_band, runtime_limits=runtime_limits, track_anchor_index=track_anchor_index,
         track_zone_period=track_zone_period, branch_track=branch_track,
-        scoring_allowance_seconds=scoring_allowance_seconds)
-    chosen = select_action(inventory, candidates)
-    if chosen is None:
-        return None, inventory
-    proposal = _build_proposal(
-        objective, chosen, model, resolution_info, budget_state, fisher, rival_band, classify)
-    return proposal, inventory
+        scoring_allowance_seconds=scoring_allowance_seconds, suppressed=suppressed,
+        unreachable_hkl=unreachable_hkl)
+    return plan.next_proposal(), plan.inventory
 
 
 def propose_scan(objective, model, results_so_far: list[dict], resolution_info=None,

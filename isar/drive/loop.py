@@ -41,12 +41,14 @@ from isar.drive.acquisition.acquire import (
     ScanProposal,
     _candidate_precision,
     normalize_proposal_score,
+    hkl_key,
+    plan_actions,
     points_in_window,
     propose_action,
 )
 from isar.drive.acquisition.inventory import (
     GENERATOR_REGISTRY_VERSION, TERMINAL_ACTION_INVENTORY_EXHAUSTED, TERMINAL_CONTROLLER_FAULT,
-    FinalizedProposal, ValidatedAttempt, canonical_json)
+    FinalizedProposal, RejectionClass, ValidatedAttempt, canonical_json)
 from isar.drive.acquisition.calibration import Calibration, load_calibration
 from isar.drive.instrument.tavi_client import TaviClient, TaviError
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
@@ -1799,6 +1801,112 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
     )
 
 
+@dataclass(frozen=True)
+class ActionRejection:
+    """How a refused attempt is charged: to the scientific question, to the request, or to nobody.
+
+    ``scope`` is the load-bearing field, and it is why the lifecycle has more than one identity:
+
+    * ``"geometry"`` — the instrument cannot reach that q at all. Charged to the **hkl**, not to the
+      scientific action fingerprint: unreachability is a property of the geometry, not of the
+      question being asked there. The scientific fingerprint includes the evidence basis, so keying
+      a geometry refusal to it would let the suppression evaporate the moment any evidence advanced
+      and the controller would re-propose the same unreachable q for the rest of the campaign.
+    * ``"request"`` — this *particular* request was refused. The widen / re-center / step-shrink
+      ladder answering the same question with a different window is a real recovery and must stay
+      open, so only the request is charged and the ladder keeps it.
+    * ``"none"`` — transient. Suppress nothing; the question and the request both remain live.
+    """
+
+    verdict: str
+    rejection_class: RejectionClass
+    scope: str          # "geometry" | "request" | "none"
+
+
+# Verdict → durable consequence. Anything not listed is TRANSIENT/"none" on purpose: an unrecognised
+# verdict must not become a permanent suppression on the strength of a string nobody has mapped yet,
+# so classification fails open.
+_REJECTION_RULES: dict[str, tuple[RejectionClass, str]] = {
+    "geometry_unreachable": (RejectionClass.STRUCTURAL, "geometry"),
+    "all_points_infeasible": (RejectionClass.STRUCTURAL, "geometry"),
+    "validation_rejected": (RejectionClass.STRUCTURAL, "request"),
+    "insufficient_target_support": (RejectionClass.STRUCTURAL, "request"),
+    "budget_insufficient_for_minimum_batch": (RejectionClass.BUDGET, "request"),
+}
+
+
+def classify_rejection(verdict: str) -> ActionRejection:
+    """Class one refusal verdict into its durable consequence. See :class:`ActionRejection`."""
+    rejection_class, scope = _REJECTION_RULES.get(
+        str(verdict), (RejectionClass.TRANSIENT, "none"))
+    return ActionRejection(verdict=str(verdict), rejection_class=rejection_class, scope=scope)
+
+
+def suppressed_actions(log_path) -> tuple[dict[str, dict], dict[str, dict]]:
+    """Rebuild the durable suppression sets from the session log.
+
+    Suppression is derived state, never a second durable store: a resume that could not rebuild it
+    would re-propose something the instrument has already refused, every iteration, for the rest of
+    the campaign. Returns ``(by_scientific_action, by_hkl)``; request-scoped and transient entries are
+    recorded for forensics and deliberately do not narrow the action space.
+    """
+    by_action: dict[str, dict] = {}
+    by_hkl: dict[str, dict] = {}
+    for event in read_log(log_path):
+        if event.get("kind") != "action_suppressed":
+            continue
+        payload = event.get("payload") or {}
+        scope = payload.get("scope")
+        entry = {
+            "class": str(payload.get("rejection_class") or RejectionClass.STRUCTURAL.value),
+            "reason": str(payload.get("reason") or "previously refused"),
+        }
+        if scope == "geometry" and payload.get("hkl"):
+            by_hkl[hkl_key(payload["hkl"])] = entry
+        elif scope == "action" and payload.get("scientific_action_fingerprint"):
+            by_action[str(payload["scientific_action_fingerprint"])] = entry
+    return by_action, by_hkl
+
+
+# How many actions one iteration may try before giving the loop back its turn. A refused request
+# should not cost the whole iteration, but an inventory that refuses everything must not spin either.
+MAX_ACTION_ATTEMPTS_PER_ITERATION = 3
+
+
+def _record_action_rejection(cfg, plan, proposal, verdict: str,
+                             action_suppressions: dict, unreachable_hkl: dict, *, it: int):
+    """Record one refusal at its correct scope and return the next action to try, if any.
+
+    Always logs, because a refusal is evidence about the action space even when it suppresses
+    nothing. Only a durable scope narrows the space *and* justifies moving on to another action this
+    iteration: a ``request``-scoped refusal is handed back to the widen / re-center ladder that
+    already owns it, and a transient one is left entirely alone.
+    """
+    rejection = classify_rejection(verdict)
+    meta = proposal.meta or {}
+    fingerprint = meta.get("scientific_action_fingerprint")
+    hkl = [proposal.h, proposal.k, proposal.l]
+    reason = f"{verdict} at hkl={hkl}"
+    log_event(cfg.log_path, "action_suppressed", {
+        "scope": rejection.scope,
+        "verdict": rejection.verdict,
+        "rejection_class": rejection.rejection_class.value,
+        "reason": reason,
+        "scientific_action_fingerprint": fingerprint,
+        "request_fingerprint": meta.get("proposal_fingerprint"),
+        "hkl": hkl,
+        "acquisition_id": proposal.acquisition_id,
+        "iter": it})
+    entry = {"class": rejection.rejection_class.value, "reason": reason}
+    if rejection.scope == "geometry":
+        unreachable_hkl[hkl_key(hkl)] = entry
+    elif rejection.scope == "action" and fingerprint:
+        action_suppressions[str(fingerprint)] = entry
+    else:
+        return None
+    return plan.next_proposal() if plan is not None else None
+
+
 def _declined_observation(proposal, verdict: str) -> dict:
     """The observation appended when a proposed scan yields no fit — validation rejected it, or the
     scan job never reached ``done``. Identical shape at both sites; only ``verdict`` differs
@@ -2001,6 +2109,40 @@ def _blocked_frontier_decision(objective, grid, decision: StopDecision,
             per_q[point.index]["assessment_state"] = "incomplete"
             per_q[point.index]["reason"] = per_q_reason
     return StopDecision("incomplete", [top_reason], per_q, terminal_cause=cause)
+
+
+def _exhausted_action_space_decision(decision: StopDecision, inventory=None) -> StopDecision:
+    """Terminalize a still-``continue`` decision when acquisition has no action left to offer.
+
+    :func:`_blocked_frontier_decision` speaks only for a *tracked* identity frontier; every other
+    objective fell straight through it, and because the loop breaks unconditionally on a missing
+    proposal the campaign then reported ``continue`` — a non-terminal masquerading as a terminal
+    state, with no cause and no inventory proof attached.
+
+    Nothing could reach that path while the selector always returned some action. Durable suppression
+    (PR2.3) makes an empty action space ordinary, so the general case now needs the same honest
+    terminal the frontier case gets: the cause comes from the canonical inventory, never a coercion,
+    and an inventory still holding an eligible action is a controller fault rather than an outcome.
+    """
+    if decision.state != "continue":
+        return decision
+    cause = (inventory.terminal_cause() if inventory is not None
+             else TERMINAL_ACTION_INVENTORY_EXHAUSTED)
+    if cause is None:
+        eligible = [e.intent.action_class for e in inventory.eligible_actions()]
+        raise ControllerInvariantError(
+            "acquisition returned no proposal although the canonical inventory holds eligible "
+            f"action(s) {eligible}: an empty action space here is a controller fault, not a result.")
+    if cause == TERMINAL_CONTROLLER_FAULT:
+        failed = ", ".join(f"{r.generator}({r.error_code or 'unknown'})"
+                           for r in inventory.failed_reports()) or "unknown"
+        reason = (f"controller_fault: the action inventory is incomplete — generator(s) {failed} "
+                  "did not run to completion, so action-space exhaustion cannot be proven; "
+                  "checkpoints retained and resume is supported after repair")
+    else:
+        reason = ("action_inventory_exhausted: no eligible measurement action remains for this "
+                  "objective under the registered generators")
+    return StopDecision("incomplete", [reason], decision.per_q, terminal_cause=cause)
 
 
 def _selected_action_class(proposal) -> str | None:
@@ -2305,21 +2447,24 @@ def _recover_unmatched_submissions(*, cfg: CampaignConfig, objective,
 
 def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan_counter: int,
                       budget_state: dict, observations: list[dict], consumed: set,
-                      scan_kind: dict) -> tuple[list[dict], int]:
+                      scan_kind: dict) -> tuple[list[dict], int, str | None]:
     """Run one proposed scan to a folded result, with bounded missed-window re-centering (a LOOK, §1).
 
     Owns the inner validate → submit → wait → fetch/save → (lazy init) → ``isar run`` → fold → analyze
     loop and its recenter/widen retries. Mutates ``observations`` (appends folded or declined rows),
     ``consumed`` (via :func:`_new_rows`), ``scan_kind``, ``budget_state``, and ``proposal`` (e_lo/e_hi/
-    n_points on recenter) in place; returns ``(rows, scan_counter)`` — the final folded rows (empty on
-    a decline) plus the advanced scan counter. Every ``timed`` span and ``log_event`` payload is
-    verbatim from the original loop body (the profiling / event contract is part of the identity gate)."""
+    n_points on recenter) in place; returns ``(rows, scan_counter, declined_verdict)`` — the final
+    folded rows (empty on a decline), the advanced scan counter, and the decline verdict (``None`` on
+    success) that :func:`classify_rejection` turns into a durable consequence. Every ``timed`` span and
+    ``log_event`` payload is verbatim from the original loop body (the profiling / event contract is
+    part of the identity gate)."""
     client, runner = cfg.client, cfg.runner
     log_path, workspace, data_dir = cfg.log_path, cfg.workspace, cfg.data_dir
     # ---- run this proposal, with bounded missed-window re-centering (a LOOK, §1) ----------
     attempt = 0
     rows: list[dict] = []
     support_adjusted = False
+    declined_verdict: str | None = None
     while True:
         # Single checkpoint before EVERY validate/submit, including support/recenter retries.
         _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
@@ -2373,6 +2518,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                 "target_supporting_feasible_points": target_support,
                 "required": min_support, "iter": it})
             observations.append(_declined_observation(proposal, "insufficient_target_support"))
+            declined_verdict = "insufficient_target_support"
             break
         if not val.get("would_queue", False):
             if feasible_points <= 0 and int(val.get("requested_points") or proposal.n_points or 0) > 0:
@@ -2381,10 +2527,12 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                     "hkl": [proposal.h, proposal.k, proposal.l], "blockers": val.get("blockers"),
                     "iter": it})
                 observations.append(_declined_observation(proposal, "geometry_unreachable"))
+                declined_verdict = "geometry_unreachable"
                 break
             v_act = exc.handle_validation_rejection(val.get("blockers") or [])
             log_event(log_path, "exception", {**v_act.to_dict(), "iter": it})
             observations.append(_declined_observation(proposal, "validation_rejected"))
+            declined_verdict = "validation_rejected"
             break
 
         with timed(log_path, "submit", iteration=it, attempt=attempt) as _m:
@@ -2406,6 +2554,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                     })
                     observations.append(
                         _declined_observation(proposal, "geometry_unreachable"))
+                    declined_verdict = "all_points_infeasible"
                     break
                 raise
             scan_counter += 1
@@ -2454,6 +2603,9 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                                               "state": snap.get("state"), "error": snap.get("error"),
                                               "iter": it})
             observations.append(_declined_observation(proposal, str(snap.get("state"))))
+            # A job that never reached ``done`` says nothing about the science: it classes as
+            # transient (the fail-open default) and suppresses nothing.
+            declined_verdict = f"scan_not_done:{snap.get('state')}"
             break
 
         rows, data = _finalize_completed_submission(
@@ -2494,7 +2646,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
         attempt += 1
 
-    return rows, scan_counter
+    return rows, scan_counter, declined_verdict
 
 
 def _certification_revision(point: dict) -> str | None:
@@ -2999,6 +3151,9 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     scan_kind: dict = resumed["scan_kind"]   # (scan, detector) -> (kind, ncount), to rebuild obs after certify
     scan_counter = resumed["scan_counter"]
     proposal_counter = resumed.get("proposal_counter", 0)
+    # Derived from the durable log, never a second store: a resume that could not rebuild this would
+    # re-propose an action the instrument has already refused on every remaining iteration.
+    action_suppressions, unreachable_hkl = suppressed_actions(cfg.log_path)
     limit_envelope = {
         "discovered": dict(cfg.instrument_limits or {}),
         "effective": _runtime_limits(cfg, objective),
@@ -3187,6 +3342,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     classify, rival_band = _make_classification_providers(
                         durable_state, objective, cfg.resolution_cb, sample=cfg.sample)
                 action_inventory = None
+                plan = None
                 with timed(cfg.log_path, "propose", iteration=it):
                     try:
                         analysis_remaining = (float("inf") if objective.analysis_limit_seconds is None
@@ -3198,7 +3354,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                 cfg.log_path, f"score:{cfg.run_nonce}:{proposal_counter}",
                                 "predictive_scoring",
                                 limit_seconds=objective.analysis_limit_seconds, iteration=it):
-                            proposal, action_inventory = propose_action(
+                            plan = plan_actions(
                                 objective, model, observations, cfg.resolution_cb, budget_state,
                                 master_rows=master_rows, fisher=None,
                                 classify=classify, rival_band=rival_band,
@@ -3208,7 +3364,11 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                     (durable_state.get("branch_tracks") or {}).get("anchor_index"))),
                                 track_zone_period=_workspace_zone_period(cfg.workspace),
                                 branch_track=(durable_state.get("branch_tracks") or {}),
-                                scoring_allowance_seconds=scoring_allowance)
+                                scoring_allowance_seconds=scoring_allowance,
+                                suppressed=action_suppressions,
+                                unreachable_hkl=unreachable_hkl)
+                            action_inventory = plan.inventory
+                            proposal = plan.next_proposal()
                         if proposal is not None:
                             _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
                     except AnalysisLimitExceeded as error:
@@ -3245,87 +3405,112 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                             calibration=cfg.calibration, floor=cfg.floor)
                     decision = _blocked_frontier_decision(
                         objective, grid, decision, action_inventory)
+                    decision = _exhausted_action_space_decision(decision, action_inventory)
                     break
-                proposal.acquisition_id = (proposal.acquisition_id
-                                           or f"{cfg.run_nonce}:{proposal_counter:08d}")
-                proposal_counter += 1
-                log_event(cfg.log_path, "propose", {**proposal.to_dict(), "iter": it})
-                if (proposal.meta or {}).get("purpose") == "differentiate":
-                    transition = (proposal.meta or {}).get("evidence_transition") or {}
-                    log_event(cfg.log_path, "differentiation_probe", {
-                        "hkl": [proposal.h, proposal.k, proposal.l],
-                        "kind": proposal.kind, "reason": proposal.reason,
-                        "acquisition_id": proposal.acquisition_id, "iter": it,
-                        **transition,
-                    })
+                # A refused request must not cost the whole iteration while the inventory still holds
+                # other eligible actions (PR2.3). Bounded, so a pathological inventory cannot spin;
+                # ``stop_campaign`` carries the terminal decisions out, since a ``break`` here would
+                # only leave this retry loop.
+                stop_campaign = False
+                for _action_attempt in range(MAX_ACTION_ATTEMPTS_PER_ITERATION):
+                    proposal.acquisition_id = (proposal.acquisition_id
+                                               or f"{cfg.run_nonce}:{proposal_counter:08d}")
+                    proposal_counter += 1
+                    log_event(cfg.log_path, "propose", {**proposal.to_dict(), "iter": it})
+                    if (proposal.meta or {}).get("purpose") == "differentiate":
+                        transition = (proposal.meta or {}).get("evidence_transition") or {}
+                        log_event(cfg.log_path, "differentiation_probe", {
+                            "hkl": [proposal.h, proposal.k, proposal.l],
+                            "kind": proposal.kind, "reason": proposal.reason,
+                            "acquisition_id": proposal.acquisition_id, "iter": it,
+                            **transition,
+                        })
 
-                analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
-                if (objective.analysis_limit_seconds is not None
-                        and analysis_spent >= float(objective.analysis_limit_seconds)):
-                    decision = StopDecision(
-                        "incomplete",
-                        [f"analysis limit exhausted ({analysis_spent:.1f}/"
-                         f"{float(objective.analysis_limit_seconds):.1f}s) before measurement submission"],
-                        evaluate_stop(objective, grid, budget_state,
-                                      calibration=cfg.calibration, floor=cfg.floor).per_q)
-                    break
-
-                b_act = exc.handle_budget(budget_state)
-                if b_act is not None:
-                    log_event(cfg.log_path, "exception", {**b_act.to_dict(), "iter": it})
-                    if b_act.action == "exhausted":
+                    analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
+                    if (objective.analysis_limit_seconds is not None
+                            and analysis_spent >= float(objective.analysis_limit_seconds)):
+                        decision = StopDecision(
+                            "incomplete",
+                            [f"analysis limit exhausted ({analysis_spent:.1f}/"
+                             f"{float(objective.analysis_limit_seconds):.1f}s) before measurement submission"],
+                            evaluate_stop(objective, grid, budget_state,
+                                          calibration=cfg.calibration, floor=cfg.floor).per_q)
+                        stop_campaign = True
                         break
 
-                try:
-                    rows, scan_counter = _execute_proposal(
-                        cfg=cfg, objective=objective, proposal=proposal, it=it,
-                        scan_counter=scan_counter, budget_state=budget_state,
-                        observations=observations, consumed=consumed, scan_kind=scan_kind)
-                except AnalysisLimitExceeded as error:
-                    decision = StopDecision(
-                        "incomplete", [str(error)],
-                        evaluate_stop(objective, grid, budget_state,
-                                      calibration=cfg.calibration, floor=cfg.floor).per_q)
-                    break
-                except TaviError as error:
-                    # A communication failure after ``physical_submission`` is not a failed submit:
-                    # the job may still be running or its data may already be retrievable.  Preserve
-                    # the durable unmatched submission and use the normal Resume recovery contract.
-                    recovery_state = _resume_state(
-                        cfg.workspace, cfg.log_path, cfg.calibration)
-                    unmatched = [item for item in recovery_state.get("unmatched_submissions", [])
-                                 if (item.get("payload") or {}).get("acquisition_id")
-                                 == proposal.acquisition_id]
-                    if unmatched:
-                        payload = unmatched[-1].get("payload") or {}
-                        pending_recovery_reason = (
-                            f"job {payload.get('job_id')} recovery is pending after instrument "
-                            f"communication failed ({error})")
-                        log_event(cfg.log_path, "recovery_pending", {
-                            "job_id": payload.get("job_id"), "state": "unknown",
-                            "decline": False, "reason": pending_recovery_reason,
-                            "acquisition_id": proposal.acquisition_id, "iter": it})
+                    b_act = exc.handle_budget(budget_state)
+                    if b_act is not None:
+                        log_event(cfg.log_path, "exception", {**b_act.to_dict(), "iter": it})
+                        if b_act.action == "exhausted":
+                            stop_campaign = True
+                            break
+
+                    try:
+                        rows, scan_counter, declined_verdict = _execute_proposal(
+                            cfg=cfg, objective=objective, proposal=proposal, it=it,
+                            scan_counter=scan_counter, budget_state=budget_state,
+                            observations=observations, consumed=consumed, scan_kind=scan_kind)
+                    except AnalysisLimitExceeded as error:
+                        decision = StopDecision(
+                            "incomplete", [str(error)],
+                            evaluate_stop(objective, grid, budget_state,
+                                          calibration=cfg.calibration, floor=cfg.floor).per_q)
+                        stop_campaign = True
                         break
-                    log_event(cfg.log_path, "exception", {
-                        "action": "instrument_submission_failed", "error": str(error),
-                        "status": error.status, "iter": it})
-                    decision = StopDecision(
-                        "incomplete", [f"instrument submission failed: {error}"],
-                        evaluate_stop(objective, grid, budget_state,
-                                      calibration=cfg.calibration, floor=cfg.floor).per_q)
-                    break
-                except (BudgetInsufficientForMinimumBatch,
-                        InstrumentLimitBelowMinimumBatch) as error:
-                    log_event(cfg.log_path, "exception", {
-                        "action": ("instrument_limit_below_minimum_batch"
-                                   if isinstance(error, InstrumentLimitBelowMinimumBatch)
-                                   else "budget_insufficient_for_minimum_batch"),
-                        "error": str(error), "iter": it})
-                    decision = StopDecision(
-                        ("infeasible" if isinstance(error, InstrumentLimitBelowMinimumBatch)
-                         else "incomplete"), [str(error)],
-                        evaluate_stop(objective, grid, budget_state,
-                                      calibration=cfg.calibration, floor=cfg.floor).per_q)
+                    except TaviError as error:
+                        # A communication failure after ``physical_submission`` is not a failed submit:
+                        # the job may still be running or its data may already be retrievable.  Preserve
+                        # the durable unmatched submission and use the normal Resume recovery contract.
+                        recovery_state = _resume_state(
+                            cfg.workspace, cfg.log_path, cfg.calibration)
+                        unmatched = [item for item in recovery_state.get("unmatched_submissions", [])
+                                     if (item.get("payload") or {}).get("acquisition_id")
+                                     == proposal.acquisition_id]
+                        if unmatched:
+                            payload = unmatched[-1].get("payload") or {}
+                            pending_recovery_reason = (
+                                f"job {payload.get('job_id')} recovery is pending after instrument "
+                                f"communication failed ({error})")
+                            log_event(cfg.log_path, "recovery_pending", {
+                                "job_id": payload.get("job_id"), "state": "unknown",
+                                "decline": False, "reason": pending_recovery_reason,
+                                "acquisition_id": proposal.acquisition_id, "iter": it})
+                            stop_campaign = True
+                            break
+                        log_event(cfg.log_path, "exception", {
+                            "action": "instrument_submission_failed", "error": str(error),
+                            "status": error.status, "iter": it})
+                        decision = StopDecision(
+                            "incomplete", [f"instrument submission failed: {error}"],
+                            evaluate_stop(objective, grid, budget_state,
+                                          calibration=cfg.calibration, floor=cfg.floor).per_q)
+                        stop_campaign = True
+                        break
+                    except (BudgetInsufficientForMinimumBatch,
+                            InstrumentLimitBelowMinimumBatch) as error:
+                        log_event(cfg.log_path, "exception", {
+                            "action": ("instrument_limit_below_minimum_batch"
+                                       if isinstance(error, InstrumentLimitBelowMinimumBatch)
+                                       else "budget_insufficient_for_minimum_batch"),
+                            "error": str(error), "iter": it})
+                        decision = StopDecision(
+                            ("infeasible" if isinstance(error, InstrumentLimitBelowMinimumBatch)
+                             else "incomplete"), [str(error)],
+                            evaluate_stop(objective, grid, budget_state,
+                                          calibration=cfg.calibration, floor=cfg.floor).per_q)
+                        stop_campaign = True
+                        break
+
+                    if declined_verdict is None:
+                        break
+                    next_proposal = _record_action_rejection(
+                        cfg, plan, proposal, declined_verdict, action_suppressions,
+                        unreachable_hkl, it=it)
+                    if next_proposal is None:
+                        break
+                    proposal = next_proposal
+                    _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+                if stop_campaign:
                     break
 
                 # ---- exception branch on the final verdict (flagged / held) ----------------------------
