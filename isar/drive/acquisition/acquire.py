@@ -1195,23 +1195,54 @@ class _CandidateAction:
     policy: dict
     classification_weight: float
     runtime_limits: dict
+    # Decided before the intent so the proposal builder reuses it rather than re-deriving a value the
+    # scientific action identity has already been fixed against.
+    driver_inserted: bool = False
 
 
-def _intent_from_pick(objective, pick, kind, score) -> MeasurementIntent:
+def _driver_inserted_pick(objective, pick) -> bool:
+    """Whether the selected q sits off the requested certification path (a driver-inserted probe).
+
+    Decided once, *before* the intent is built, so the scientific action identity cannot disagree with
+    the emitted proposal: the proposal builder previously re-derived this and flipped the score's
+    purpose to ``differentiate`` afterwards, leaving the inventory intent labelled ``quicklook`` /
+    ``production`` while the emitted action was a differentiation probe.
+    """
+    return not any(math.dist(pick.hkl, tuple(point)) <= 1e-4 for point in objective.path)
+
+
+def _intent_from_pick(objective, pick, kind, score, *, driver_inserted: bool = False
+                      ) -> MeasurementIntent:
     """Describe the *scientific question* a selected pick answers, for dedup and terminal accounting."""
-    purpose = getattr(score, "purpose", None)
-    action_class = "differentiation_probe" if purpose == "differentiate" else kind
+    # A driver-inserted pick *is* a differentiation probe by construction — the candidate generator
+    # exists to place a classification probe off the certification grid, and the proposal builder
+    # stamps ``purpose``/``insertion_purpose`` = "differentiate" for it unconditionally. So it drives
+    # both the action class and the window family: describing the same action as a "target" window in
+    # the inventory while emitting a differentiation probe is the incoherence this fixes. This affects
+    # only the intent's description and fingerprint — the emitted window still comes from
+    # ``_energy_window``, which is unchanged.
+    differentiate = (getattr(score, "purpose", None) == "differentiate") or driver_inserted
+    action_class = "differentiation_probe" if differentiate else kind
     target_branch = getattr(objective, "target_branch", None)
     rival_branch = ("acoustic" if target_branch == "optic"
                     else "optic" if target_branch == "acoustic" else None)
     search = getattr(objective, "energy_search_meV", None) or (None, None)
-    evidence = (getattr(score, "evidence_transition", None) or {}).get("authoritative_evidence_revision")
+    # The evidence the action is a response to — same fallback chain the proposal records as its
+    # ``authoritative_evidence_revision``, so a changed evidence basis changes the scientific
+    # fingerprint and two iterations against different evidence cannot collapse to one identity.
+    selected_evidence = pick.evidence_master or pick.master or {}
+    evidence = ((getattr(score, "evidence_transition", None) or {}).get(
+        "authoritative_evidence_revision")
+        or selected_evidence.get("content_hash")
+        or selected_evidence.get("production_batch_fingerprint")
+        or selected_evidence.get("track_revision"))
     return MeasurementIntent(
         action_class=str(action_class), hkl=tuple(pick.hkl),
         energy_lo=search[0], energy_hi=search[1],
-        window_family=("differentiate" if purpose == "differentiate" else "target"),
+        window_family=("differentiate" if differentiate else "target"),
         target_branch_role=target_branch, rival_branch_role=rival_branch,
-        evidence_basis_fingerprint=(str(evidence) if evidence is not None else None))
+        evidence_basis_fingerprint=(str(evidence) if evidence is not None else None),
+        hypotheses_fingerprint=getattr(objective, "hypothesis_fingerprint", None))
 
 
 def enumerate_actions(objective, model, results_so_far: list[dict], resolution_info=None,
@@ -1313,13 +1344,26 @@ def _legacy_selector_candidates(objective, model, results_so_far: list[dict], *,
         scoring_allowance_seconds=scoring_allowance_seconds)
     candidates: list[_CandidateAction] = []
     if pick is not None:
-        intent = _intent_from_pick(objective, pick, kind, score)
+        driver_inserted = _driver_inserted_pick(objective, pick)
+        intent = _intent_from_pick(objective, pick, kind, score, driver_inserted=driver_inserted)
+        # Carry the real score vector onto the evaluation: ``to_full_dict`` presents this as the ranked
+        # score record, so leaving it at defaults made the persisted artifact claim scores it never had.
+        # ``policy_rank`` stays at its default — the staged ranking comparator is PR3's, and with one
+        # candidate there is nothing to order.
         candidates.append(_CandidateAction(
-            evaluation=ActionEvaluation(intent=intent, generator=LEGACY_SELECTOR_GENERATOR,
-                                        eligibility=ActionEligibility.ELIGIBLE),
+            evaluation=ActionEvaluation(
+                intent=intent, generator=LEGACY_SELECTOR_GENERATOR,
+                eligibility=ActionEligibility.ELIGIBLE,
+                selection_reason=reason,
+                expected_identity_gain=_finite_or_none(score.classification_eig),
+                expected_precision_gain=_finite_or_none(score.eig),
+                expected_measurement_cost=_finite_or_none(
+                    score.ranking_cost if score.ranking_cost is not None else score.cost),
+                score_method=score.method),
             pick=pick, kind=kind, reason=reason, score=score,
             target_hypothesis=target_hypothesis, policy=policy,
-            classification_weight=classification_weight, runtime_limits=runtime_limits))
+            classification_weight=classification_weight, runtime_limits=runtime_limits,
+            driver_inserted=driver_inserted))
     return candidates
 
 
@@ -1411,7 +1455,9 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
     policy = chosen.policy
     runtime_limits = chosen.runtime_limits
     classification_weight = chosen.classification_weight
-    driver_inserted = not any(math.dist(pick.hkl, tuple(point)) <= 1e-4 for point in objective.path)
+    # Reuse the decision the intent was fixed against — never re-derive it here, or the emitted
+    # action's scientific class can disagree with the inventory's.
+    driver_inserted = chosen.driver_inserted
     if driver_inserted:
         reason = (f"driver-inserted classification probe q={pick.q:g} (hkl={list(pick.hkl)}); "
                   "higher expected branch-information value than every certification point")
@@ -1495,6 +1541,10 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
                   str(evidence_revision) if evidence_revision is not None else None),
               "evidence_transition": score.evidence_transition,
               "driver_inserted": driver_inserted,
+              # Joins the emitted scan back to the action evaluation that justified it: without it a
+              # scan carries only its own request fingerprint and cannot be attributed to an intent.
+              "scientific_action_fingerprint": chosen.evaluation.intent.scientific_action_fingerprint,
+              "action_class": chosen.evaluation.intent.action_class,
               "certification_eligible": not driver_inserted,
               "insertion_purpose": "differentiate" if driver_inserted else None,
               "max_scan_points": int(policy.get("max_scan_points", MAX_POINTS)),

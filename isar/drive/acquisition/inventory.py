@@ -174,6 +174,9 @@ class ActionEvaluation:
     eligibility: ActionEligibility
     rejection_reason: str | None = None
     rejection_class: RejectionClass | None = None
+    # Why an *eligible* action was produced — the counterpart of ``rejection_reason``, so the full
+    # artifact records the controller's stated justification, not only its refusals.
+    selection_reason: str | None = None
     # Score vector, populated by evaluators in a later increment; None until then.
     expected_identity_gain: float | None = None
     expected_precision_gain: float | None = None
@@ -363,6 +366,7 @@ class ActionInventory:
                     "eligibility": e.eligibility.value,
                     "rejection_class": e.rejection_class.value if e.rejection_class else None,
                     "rejection_reason": e.rejection_reason,
+                    "selection_reason": e.selection_reason,
                     "policy_rank": e.policy_rank,
                     "scientific_action_fingerprint": e.intent.scientific_action_fingerprint,
                     "intent": {

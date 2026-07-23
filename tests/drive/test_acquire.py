@@ -503,6 +503,77 @@ def test_propose_action_returns_none_proposal_with_exhausted_inventory():
     assert inventory.terminal_cause() == "action_inventory_exhausted"
 
 
+# -- intent / proposal identity coherence (PR1.7d) -------------------------------------------------
+
+def _hypothesis_objective():
+    path = [(2.0, 0.0, 0.0), (2.1, 0.0, 0.0), (2.2, 0.0, 0.0)]
+    return ObjectiveSpec(path=path, tolerance_meV=0.5,
+                         budget={"kind": "neutrons", "amount": 1e12}, target_branch="acoustic",
+                         **shipped_hypothesis_snapshot("acoustic", (-2.0, 7.0)))
+
+
+def test_inventory_action_class_matches_the_emitted_proposal_for_a_driver_inserted_probe():
+    """Review #8: the intent was built from the score's purpose *before* `_build_proposal` discovered
+    the pick was driver-inserted and flipped that purpose to ``differentiate``, so the inventory
+    recorded a quicklook while the emitted action was a differentiation probe."""
+    from isar.drive.supervisor.stopping import model_points, summarize_grid
+    obj = _hypothesis_objective()
+    obs = [_obs(p, "quicklook", 0.9) for p in obj.path]
+    model = acq_model.fit(model_points(summarize_grid(obj, obs)))
+    classify = lambda g: 9.0 if math.dist(tuple(g.hkl), (2.15, 0.0, 0.0)) <= 1e-6 else 0.0
+
+    _inventory, candidates = acq.enumerate_actions(
+        obj, model, obs, resolution_info={"fwhm_dE": 0.8}, classify=classify)
+    proposal, _inv = acq.propose_action(obj, model, obs, {"fwhm_dE": 0.8}, {}, classify=classify)
+
+    intent = candidates[0].evaluation.intent
+    assert candidates[0].driver_inserted is True
+    assert intent.action_class == "differentiation_probe"
+    assert proposal.meta["driver_inserted"] is True
+    assert proposal.meta["action_class"] == intent.action_class      # no post-hoc reclassification
+    # The window family follows the same decision: a driver-inserted probe is a differentiation probe
+    # by construction, so describing it as a "target" window while emitting `purpose=differentiate`
+    # would leave the same incoherence one field over.
+    assert intent.window_family == "differentiate"
+    assert proposal.meta["purpose"] == "differentiate"
+    assert proposal.meta["insertion_purpose"] == "differentiate"
+    # The emitted scan joins back to the evaluation that justified it.
+    assert proposal.meta["scientific_action_fingerprint"] == intent.scientific_action_fingerprint
+    # ...and the intent is anchored to the frozen hypothesis snapshot it was formed under.
+    assert intent.hypotheses_fingerprint == obj.hypothesis_fingerprint
+
+
+def test_the_scientific_fingerprint_tracks_the_evidence_basis():
+    """Review #7: two iterations formed against different authoritative evidence must not collapse to
+    one scientific action identity."""
+    from isar.schema.steering import ProposalScore
+    obj = _obj()
+    pick = acq.GridQ(index=0, hkl=(2.1, 0.0, 0.0), q=0.0, tolerance=0.5)
+    score = ProposalScore(method="deficit")
+
+    pick.evidence_master = {"content_hash": "rev-A"}
+    first = acq._intent_from_pick(obj, pick, "production", score)
+    pick.evidence_master = {"content_hash": "rev-B"}
+    second = acq._intent_from_pick(obj, pick, "production", score)
+
+    assert first.evidence_basis_fingerprint == "rev-A"
+    assert second.evidence_basis_fingerprint == "rev-B"
+    assert first.scientific_action_fingerprint != second.scientific_action_fingerprint
+
+
+def test_the_evaluation_carries_the_real_score_vector_and_selection_reason():
+    """The persisted artifact presents this as the ranked score record, so defaults were a lie."""
+    obj = _obj()
+    inventory, candidates = acq.enumerate_actions(
+        obj, acq_model.fit([]), [], resolution_info={"fwhm_dE": 0.8})
+    evaluation, chosen = candidates[0].evaluation, candidates[0]
+    assert evaluation.selection_reason == chosen.reason and evaluation.selection_reason
+    assert evaluation.score_method == chosen.score.method
+    persisted = inventory.to_full_dict()["evaluations"][0]
+    assert persisted["selection_reason"] == chosen.reason
+    assert persisted["score"]["score_method"] == chosen.score.method
+
+
 # -- generator failure isolation (PR1.7b) ----------------------------------------------------------
 
 def test_a_raising_generator_becomes_a_failed_report_not_an_escaped_exception(monkeypatch):
