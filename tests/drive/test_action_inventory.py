@@ -22,6 +22,7 @@ from isar.drive.acquisition.inventory import (
     LEGACY_SELECTOR_GENERATOR,
     MeasurementIntent,
     RejectionClass,
+    canonical_json,
     registry_fingerprint,
     scientific_fingerprint,
 )
@@ -226,6 +227,32 @@ def test_full_dict_exposes_every_evaluation_and_its_intent():
     rejected = full["evaluations"][1]
     assert rejected["eligibility"] == "rejected"
     assert rejected["rejection_class"] == "saturation"
+
+
+def test_a_non_finite_score_cannot_crash_the_content_address():
+    """Canonicalization is strict (``allow_nan=False``), so a NaN from a future evaluator would raise
+    inside the *persistence* path — a crashed unattended campaign. Non-finite scores are recorded as
+    absent instead, and the artifact stays valid JSON."""
+    intent = _intent()
+    inv = ActionInventory(
+        evaluations=[ActionEvaluation(intent=intent, generator="g",
+                                      eligibility=ActionEligibility.ELIGIBLE,
+                                      expected_identity_gain=float("nan"),
+                                      expected_precision_gain=float("inf"))],
+        reports=[_report("g", generated=1)])
+    score = inv.to_full_dict()["evaluations"][0]["score"]
+    assert score["expected_identity_gain"] is None
+    assert score["expected_precision_gain"] is None
+    assert inv.content_hash()                       # canonicalization succeeds
+
+
+def test_canonicalization_refuses_values_it_cannot_stably_encode():
+    """No ``default=str`` coercion: an unserializable value must fail loudly rather than become a
+    string whose text — and therefore the content address — is not stable."""
+    with pytest.raises(TypeError):
+        canonical_json({"unserializable": object()})
+    with pytest.raises(ValueError):
+        canonical_json({"nan": float("nan")})
 
 
 def test_content_hash_is_deterministic_and_content_sensitive():

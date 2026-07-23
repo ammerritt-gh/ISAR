@@ -340,16 +340,29 @@ def test_selected_action_class_matches_the_intent_action_class():
     assert loop_mod._selected_action_class(differentiate) == "differentiation_probe"
 
 
-def test_persist_action_inventory_writes_a_content_addressed_artifact_and_compact_event(tmp_path):
-    from isar.drive.acquisition.inventory import GENERATOR_REGISTRY_VERSION
+def _persist_cfg(tmp_path):
     ws = tmp_path / "ws"
     (ws / "report").mkdir(parents=True, exist_ok=True)
-    cfg = types.SimpleNamespace(workspace=ws, log_path=ws / "report" / "session_log.jsonl")
+    return ws, types.SimpleNamespace(workspace=ws, log_path=ws / "report" / "session_log.jsonl")
+
+
+def _selected_proposal(fingerprint="fp-1", action_class="production", h=2.1):
+    return ScanProposal(h=h, k=0.0, l=0.0, e_lo=-2.0, e_hi=7.0, e_step=0.1, ncount=1,
+                        kind="production", reason="r", e_pred=0.2,
+                        meta={"scientific_action_fingerprint": fingerprint,
+                              "action_class": action_class,
+                              "proposal_fingerprint": f"req-{fingerprint}"})
+
+
+def test_persist_action_inventory_writes_a_content_addressed_artifact_and_compact_event(tmp_path):
+    from isar.drive.acquisition.inventory import GENERATOR_REGISTRY_VERSION
+    ws, cfg = _persist_cfg(tmp_path)
     inv = _exhausted_inventory()
 
-    ref = loop_mod._persist_action_inventory(
-        cfg, inv, it=3, selected_action_class=None, prev_action_class="production", force_full=True)
+    ref, fingerprint = loop_mod._persist_action_inventory(
+        cfg, inv, it=3, proposal=None, prev_fingerprint="fp-earlier", force_full=True)
 
+    assert fingerprint is None                       # nothing was selected at a terminal boundary
     # An empty/forced inventory persists the full artifact, addressed by its own content hash.
     assert ref["kind"] == "action_inventory" and ref["sha256"] == inv.content_hash()
     assert ref["path"] == f"report/inventory/{inv.content_hash()}.json"
@@ -364,31 +377,57 @@ def test_persist_action_inventory_writes_a_content_addressed_artifact_and_compac
     assert payloads[0]["inventory_ref"] == ref
 
 
-def test_persist_action_inventory_skips_the_full_artifact_when_nothing_changed(tmp_path):
-    ws = tmp_path / "ws"
-    (ws / "report").mkdir(parents=True, exist_ok=True)
-    cfg = types.SimpleNamespace(workspace=ws, log_path=ws / "report" / "session_log.jsonl")
+def test_persistence_triggers_on_the_scientific_action_not_the_broad_class(tmp_path):
+    """Review #11: twenty production scans at twenty different q are twenty different actions. Keying
+    persistence on the broad class collapsed them to one record and one artifact."""
+    ws, cfg = _persist_cfg(tmp_path)
     inv = _eligible_inventory()
 
-    # Eligible action, same action class as last iteration, not a terminal -> no full artifact.
-    ref = loop_mod._persist_action_inventory(
-        cfg, inv, it=1, selected_action_class="production", prev_action_class="production",
+    # Same scientific action as last iteration, eligible, not a terminal -> no full artifact.
+    ref, fingerprint = loop_mod._persist_action_inventory(
+        cfg, inv, it=1, proposal=_selected_proposal("fp-1"), prev_fingerprint="fp-1",
         force_full=False)
-    assert ref is None
+    assert ref is None and fingerprint == "fp-1"
     assert not (ws / "report" / "inventory").exists()
-    # ...but the compact summary is still logged every iteration.
     payloads = [e["payload"] for e in read_log(cfg.log_path) if e["kind"] == "inventory"]
     assert len(payloads) == 1 and "inventory_ref" not in payloads[0]
+    # ...but the compact record still identifies the selected action, not just its class.
+    assert payloads[0]["selected_action_class"] == "production"
+    assert payloads[0]["selected_scientific_action_fingerprint"] == "fp-1"
+    assert payloads[0]["selected_hkl"] == [2.1, 0.0, 0.0]
+    assert payloads[0]["selected_request_fingerprint"] == "req-fp-1"
+    assert payloads[0]["selected_generator"] == "g"
 
-    # A change of selected action class does persist the full artifact.
-    ref2 = loop_mod._persist_action_inventory(
-        cfg, inv, it=2, selected_action_class="differentiation_probe",
-        prev_action_class="production", force_full=False)
+    # A different q — same broad class, different scientific action — does persist.
+    ref2, fingerprint2 = loop_mod._persist_action_inventory(
+        cfg, inv, it=2, proposal=_selected_proposal("fp-2", h=2.2), prev_fingerprint="fp-1",
+        force_full=False)
+    assert fingerprint2 == "fp-2"
     assert ref2 is not None and (ws / ref2["path"]).exists()
 
 
+def test_a_corrupt_content_addressed_artifact_is_repaired_not_trusted(tmp_path):
+    """Review #12: an existing file at the hash-named path was trusted without checking that it still
+    hashes to that address, so external damage would be referenced as the terminal's proof."""
+    ws, cfg = _persist_cfg(tmp_path)
+    inv = _exhausted_inventory()
+    ref, _ = loop_mod._persist_action_inventory(
+        cfg, inv, it=0, proposal=None, prev_fingerprint=None, force_full=True)
+    artifact = ws / ref["path"]
+    artifact.write_text('{"tampered": true}', encoding="utf-8")      # external damage
+
+    again, _ = loop_mod._persist_action_inventory(
+        cfg, inv, it=1, proposal=None, prev_fingerprint=None, force_full=True)
+
+    assert again == ref
+    assert json.loads(artifact.read_text(encoding="utf-8")) == inv.to_full_dict()   # repaired
+    # ...and the repair is surfaced rather than done silently.
+    faults = [e["payload"] for e in read_log(cfg.log_path) if e["kind"] == "exception"]
+    assert any(p.get("action") == "inventory_artifact_mismatch" for p in faults)
+
+
 def test_campaign_logs_inventory_events_with_verifiable_artifact_hashes(tmp_path):
-    from isar.drive.acquisition.inventory import GENERATOR_REGISTRY_VERSION, _canonical
+    from isar.drive.acquisition.inventory import GENERATOR_REGISTRY_VERSION, canonical_json
     omega = lambda h: (h - 2.0) * 2.0
     summary, ws = _run(tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega))
     payloads = [e["payload"] for e in read_log(summary["session_log"]) if e["kind"] == "inventory"]
@@ -402,7 +441,7 @@ def test_campaign_logs_inventory_events_with_verifiable_artifact_hashes(tmp_path
             full = json.loads(artifact.read_text(encoding="utf-8"))
             # The advertised sha is the canonical content address of the persisted artifact.
             import hashlib
-            assert hashlib.sha256(_canonical(full).encode("utf-8")).hexdigest() == ref["sha256"]
+            assert hashlib.sha256(canonical_json(full).encode("utf-8")).hexdigest() == ref["sha256"]
 
 
 def test_inventory_terminal_stamps_the_versioned_proof_on_the_stop(tmp_path, monkeypatch):
@@ -425,6 +464,11 @@ def test_inventory_terminal_stamps_the_versioned_proof_on_the_stop(tmp_path, mon
     assert stop["generator_registry_version"] == GENERATOR_REGISTRY_VERSION
     # The proof references the persisted full inventory artifact, and it is on disk.
     assert (ws / stop["inventory_ref"]["path"]).exists()
+    # Review #10: the campaign summary — what a reader opens first — must lead to that same proof,
+    # not just carry a terminal_cause with no way to verify it.
+    linked = summary["stop"]["action_inventory"]
+    assert linked["generator_registry_version"] == GENERATOR_REGISTRY_VERSION
+    assert linked["inventory_ref"] == stop["inventory_ref"]
 
 
 def test_pooled_selected_optic_suppresses_false_missed_window_from_acoustic_individual():

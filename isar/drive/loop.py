@@ -45,7 +45,8 @@ from isar.drive.acquisition.acquire import (
     propose_action,
 )
 from isar.drive.acquisition.inventory import (
-    GENERATOR_REGISTRY_VERSION, TERMINAL_ACTION_INVENTORY_EXHAUSTED, TERMINAL_CONTROLLER_FAULT)
+    GENERATOR_REGISTRY_VERSION, TERMINAL_ACTION_INVENTORY_EXHAUSTED, TERMINAL_CONTROLLER_FAULT,
+    canonical_json)
 from isar.drive.acquisition.calibration import Calibration, load_calibration
 from isar.drive.instrument.tavi_client import TaviClient, TaviError
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
@@ -1948,29 +1949,75 @@ def _selected_action_class(proposal) -> str | None:
     return proposal.kind
 
 
-def _persist_action_inventory(cfg: CampaignConfig, inventory, *, it: int,
-                              selected_action_class: str | None,
-                              prev_action_class: str | None, force_full: bool) -> dict | None:
-    """Log the compact inventory summary every iteration, and persist the full ranked inventory as a
-    content-addressed artifact only when it is worth keeping: an action-class change (which includes
-    ambiguity onset), an empty inventory, or a forced terminal boundary.
+def _selected_action_record(proposal, inventory) -> dict:
+    """Identify the selected action in the compact per-iteration record.
 
-    Returns the inventory_ref (``{"kind","sha256","path"}``) when a full artifact was written, else
-    ``None``. The artifact is content-addressed, so a resume that recomputes the same inventory from
-    the same authoritative evidence re-references it rather than duplicating it. The ``inventory``
-    event kind is resume-inert (``_resume_state`` never reads it), keeping the inventory a derived,
+    The class alone cannot distinguish twenty production scans at twenty different q, so the record
+    also carries the scientific fingerprint, the q, the generator that produced it, and the emitted
+    request fingerprint — enough to follow a campaign's action sequence from the log alone.
+    """
+    if proposal is None:
+        return {"selected_action_class": None, "selected_scientific_action_fingerprint": None,
+                "selected_hkl": None, "selected_request_fingerprint": None,
+                "selected_generator": None}
+    meta = proposal.meta or {}
+    eligible = inventory.eligible_actions()
+    return {
+        "selected_action_class": meta.get("action_class") or _selected_action_class(proposal),
+        "selected_scientific_action_fingerprint": meta.get("scientific_action_fingerprint"),
+        "selected_hkl": [proposal.h, proposal.k, proposal.l],
+        "selected_request_fingerprint": meta.get("proposal_fingerprint"),
+        "selected_generator": eligible[0].generator if eligible else None,
+    }
+
+
+def _inventory_artifact_matches(path: Path, digest: str) -> bool:
+    """Whether an existing content-addressed artifact still hashes to the address it is stored under."""
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return hashlib.sha256(canonical_json(parsed).encode("utf-8")).hexdigest() == digest
+
+
+def _persist_action_inventory(cfg: CampaignConfig, inventory, *, it: int, proposal,
+                              prev_fingerprint: str | None,
+                              force_full: bool) -> tuple[dict | None, str | None]:
+    """Log the compact inventory summary every iteration, and persist the full ranked inventory as a
+    content-addressed artifact when it is worth keeping: the selected *scientific action* changed, the
+    inventory is empty, or this is a forced terminal boundary.
+
+    Returns ``(inventory_ref, selected_fingerprint)``; the ref is ``None`` when no full artifact was
+    written. The artifact is content-addressed, so a resume that recomputes the same inventory from the
+    same authoritative evidence re-references it rather than duplicating it. The ``inventory`` event
+    kind is resume-inert (``_resume_state`` never reads it), keeping the inventory a derived,
     recomputed-on-resume view rather than load-bearing state.
     """
-    summary = inventory.summary(selected_action_class=selected_action_class)
+    selected = _selected_action_record(proposal, inventory)
+    summary = inventory.summary(selected_action_class=selected["selected_action_class"])
+    summary.update({key: value for key, value in selected.items()
+                    if key != "selected_action_class"})
+    fingerprint = selected["selected_scientific_action_fingerprint"]
+    # Trigger on the scientific fingerprint, not the broad class: a run of production scans at
+    # different q is a different action each time and must not collapse to one persisted artifact.
     write_full = bool(force_full
                       or not inventory.has_eligible_action
-                      or selected_action_class != prev_action_class)
+                      or fingerprint != prev_fingerprint)
     inventory_ref = None
     if write_full:
         digest = inventory.content_hash()
         path = cfg.workspace / "report" / "inventory" / f"{digest}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
+        corrupt = path.exists() and not _inventory_artifact_matches(path, digest)
+        if corrupt:
+            # Never reference a file that does not hash to its own address. The atomic write below
+            # rules out partial writes from this process, so a mismatch means external damage: repair
+            # it from the inventory in hand (which IS the correct content) and say so.
+            log_event(cfg.log_path, "exception", {
+                "action": "inventory_artifact_mismatch", "sha256": digest, "iter": it,
+                "path": f"report/inventory/{digest}.json",
+                "error": "stored artifact did not match its content address; rewritten"})
+        if corrupt or not path.exists():
             # Atomic write (temp + fsync + os.replace), matching the certification-artifact pattern:
             # a crash mid-write must never leave a partial file at the content-addressed path, which
             # ``path.exists()`` would then trust forever and reference from the terminal proof.
@@ -1986,7 +2033,7 @@ def _persist_action_inventory(cfg: CampaignConfig, inventory, *, it: int,
     if inventory_ref is not None:
         payload["inventory_ref"] = inventory_ref
     log_event(cfg.log_path, "inventory", payload)
-    return inventory_ref
+    return inventory_ref, fingerprint
 
 
 def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
@@ -2897,7 +2944,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     certified_terminal = False
     promotion_terminal_blocked = False
     last_regression_basis: tuple | None = None
-    prev_action_class: str | None = None          # last selected action class, for change-triggered persistence
+    prev_action_fingerprint: str | None = None    # last selected scientific action, for change-triggered persistence
     terminal_inventory_proof: dict | None = None  # versioned inventory proof stamped on an inventory terminal
     try:
         pending_recovery_reason = _recover_unmatched_submissions(
@@ -3099,12 +3146,11 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                           calibration=cfg.calibration, floor=cfg.floor).per_q)
                         proposal = None
                 if action_inventory is not None:
-                    selected_class = _selected_action_class(proposal)
-                    inventory_ref = _persist_action_inventory(
-                        cfg, action_inventory, it=it, selected_action_class=selected_class,
-                        prev_action_class=prev_action_class, force_full=(proposal is None))
+                    inventory_ref, selected_fingerprint = _persist_action_inventory(
+                        cfg, action_inventory, it=it, proposal=proposal,
+                        prev_fingerprint=prev_action_fingerprint, force_full=(proposal is None))
                     if proposal is not None:
-                        prev_action_class = selected_class
+                        prev_action_fingerprint = selected_fingerprint
                     elif action_inventory.terminal_cause() is not None:
                         terminal_inventory_proof = {
                             "inventory_version": action_inventory.inventory_version,
@@ -3366,7 +3412,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
 
             summary = _campaign_summary(objective, grid, decision, budget_state, cfg.workspace,
                                         cfg.log_path, len(observations),
-                                        instrument_limits=limit_envelope)
+                                        instrument_limits=limit_envelope,
+                                        inventory_proof=terminal_inventory_proof)
             stop_payload = {"state": decision.state, "reasons": decision.reasons}
             if decision.terminal_cause is not None:
                 stop_payload["terminal_cause"] = decision.terminal_cause
@@ -3419,7 +3466,8 @@ def _reconcile_budget_points(budget_state: dict, ncount: int, planned: int, exec
 
 def _campaign_summary(objective, grid, decision, budget_state, workspace, log_path, n_obs,
                       *, stop_override: dict | None = None,
-                      instrument_limits: dict | None = None) -> dict:
+                      instrument_limits: dict | None = None,
+                      inventory_proof: dict | None = None) -> dict:
     def _omega0(g):
         return (g.master or {}).get("omega0")
 
@@ -3457,11 +3505,16 @@ def _campaign_summary(objective, grid, decision, budget_state, workspace, log_pa
         branch_beliefs = []
     analysis = analysis_clock_state(log_path)
     analysis["limit_seconds"] = objective.analysis_limit_seconds
+    stop = dict(stop_override) if stop_override is not None else decision.to_dict()
+    if inventory_proof is not None:
+        # The session log stays canonical, but the summary is what a reader opens first, and a
+        # terminal_cause with no path to the inventory that produced it is unverifiable from here.
+        stop["action_inventory"] = dict(inventory_proof)
     return {
         "objective": objective.to_dict(),
         # ``stop_override`` carries the operator_stopped terminal state (+ grid_state snapshot); the
         # default is the honest StopDecision. Additive — the dict shape is otherwise unchanged.
-        "stop": stop_override if stop_override is not None else decision.to_dict(),
+        "stop": stop,
         "grid": [{"hkl": list(g.hkl), "q": g.q, "converged": g.converged,
                   "assessment_state": g.assessment_state,
                   "calibrated_halfwidth": g.cert_halfwidth, "omega0": _omega0(g),

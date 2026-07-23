@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -61,6 +62,7 @@ class GeneratorStatus(str, Enum):
 TERMINAL_ACTION_INVENTORY_EXHAUSTED = "action_inventory_exhausted"
 TERMINAL_CONTROLLER_FAULT = "controller_fault"
 
+
 @dataclass(frozen=True)
 class GeneratorSpec:
     """One registered action generator: the declarative unit an inventory is validated against."""
@@ -83,8 +85,32 @@ GENERATOR_REGISTRY: tuple[GeneratorSpec, ...] = (
 LEGACY_SELECTOR_GENERATOR = GENERATOR_REGISTRY[0].generator_id
 
 
-def _canonical(value) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+# The canonicalization the content addresses are computed under. Versioned in its own right so a
+# future change to the encoding is distinguishable from a change to the content it encodes.
+CANONICALIZATION_VERSION = "isar.canonical/1"
+
+
+def _finite(value: float | None) -> float | None:
+    """Normalize a non-finite score to ``None`` so it can never reach :func:`canonical_json`.
+
+    The canonicalization is deliberately strict (``allow_nan=False``), which makes a NaN or infinity
+    from a future evaluator an exception in the *persistence* path — i.e. a crashed unattended
+    campaign. A score that is not a number is not a score, so record it as absent instead.
+    """
+    if value is None:
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def canonical_json(value) -> str:
+    """Deterministic JSON for content addressing — strict on purpose.
+
+    ``allow_nan=False`` because NaN/Infinity are not JSON and would make the artifact unreadable by a
+    conforming parser, and no ``default=`` coercion so an unserializable value raises instead of
+    silently becoming a ``str`` whose text (and therefore the content address) is not stable.
+    """
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def registry_fingerprint(registry: tuple[GeneratorSpec, ...] = GENERATOR_REGISTRY) -> str:
@@ -93,7 +119,7 @@ def registry_fingerprint(registry: tuple[GeneratorSpec, ...] = GENERATOR_REGISTR
     Deriving rather than hand-maintaining a string means a generator added, removed, renamed, or
     revised cannot silently keep an old terminal's proof looking current.
     """
-    payload = _canonical([[spec.generator_id, spec.version] for spec in registry])
+    payload = canonical_json([[spec.generator_id, spec.version] for spec in registry])
     return "isar.generator-registry/1:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
@@ -107,7 +133,7 @@ def scientific_fingerprint(intent: "MeasurementIntent") -> str:
     two intents that ask the same scientific question with different executable realizations share one
     fingerprint and must not both occupy the inventory.
     """
-    payload = _canonical([
+    payload = canonical_json([
         intent.action_class,
         [round(float(x), 9) for x in intent.hkl],
         None if intent.energy_lo is None else round(float(intent.energy_lo), 6),
@@ -356,6 +382,7 @@ class ActionInventory:
         return {
             "inventory_version": self.inventory_version,
             "generator_registry_version": GENERATOR_REGISTRY_VERSION,
+            "canonicalization_version": CANONICALIZATION_VERSION,
             "reports": [
                 {"generator": r.generator, "status": r.status.value, "generated": r.generated,
                  "reason_code": r.reason_code, "error_code": r.error_code}
@@ -382,13 +409,13 @@ class ActionInventory:
                         "campaign_slice_fingerprint": e.intent.campaign_slice_fingerprint,
                     },
                     "score": {
-                        "expected_identity_gain": e.expected_identity_gain,
-                        "expected_precision_gain": e.expected_precision_gain,
-                        "expected_coverage_gain": e.expected_coverage_gain,
-                        "expected_measurement_cost": e.expected_measurement_cost,
-                        "expected_analysis_cost": e.expected_analysis_cost,
+                        "expected_identity_gain": _finite(e.expected_identity_gain),
+                        "expected_precision_gain": _finite(e.expected_precision_gain),
+                        "expected_coverage_gain": _finite(e.expected_coverage_gain),
+                        "expected_measurement_cost": _finite(e.expected_measurement_cost),
+                        "expected_analysis_cost": _finite(e.expected_analysis_cost),
                         "score_method": e.score_method,
-                        "score_confidence": e.score_confidence,
+                        "score_confidence": _finite(e.score_confidence),
                     },
                 }
                 for e in self.evaluations],
@@ -396,4 +423,4 @@ class ActionInventory:
 
     def content_hash(self) -> str:
         """SHA-256 of the canonical full inventory — the content address of its persisted artifact."""
-        return hashlib.sha256(_canonical(self.to_full_dict()).encode("utf-8")).hexdigest()
+        return hashlib.sha256(canonical_json(self.to_full_dict()).encode("utf-8")).hexdigest()
