@@ -1,0 +1,174 @@
+{
+  "_comment": "Compact forensic extract of the AP6_Failed acoustic campaign. Regenerate with tests/drive/fixtures/extract_ap6_frontier.py. Do not hand-edit.",
+  "frozen_commit": "7b469154e108566f3fdce844d909e218dbb9a9c2",
+  "source_workspace": "test_workspaces/AP6_Failed",
+  "source_hashes": {
+    "report/session_log.jsonl": "659a99354e4f32b09a6f2d09a95374c9c9bc095df4fb12ef618584aed9ce68e5",
+    "report/results.csv": "119aab6419e56262688c0dcf7d34d49bcfc1bcd64ea1588901e5c551e2d57fb4",
+    "card.state.json": "1cb5b3d86c311673cbd45e7b96501d8ef14402e90f9af111fc88fc7171065940"
+  },
+  "objective": {
+    "branch": "acoustic",
+    "selector": "tracked_branch",
+    "energy_search_meV": [
+      -2.0,
+      7.0
+    ],
+    "path_len": 21
+  },
+  "terminal": {
+    "state": "incomplete",
+    "reasons": [
+      "branch_ambiguity; frontier_blocked at path index/indices 18, 19, 20: the connected classification route and identity-revisit allowance were exhausted"
+    ]
+  },
+  "frontier_indices": [
+    18,
+    19,
+    20
+  ],
+  "frontier_per_q": {
+    "18": {
+      "hkl": [
+        2.9,
+        0.0,
+        0.0
+      ],
+      "q": 0.8999999999999999,
+      "track_state": "ambiguous",
+      "assessment_state": "ambiguous",
+      "target_probability": 0.7068532163007715,
+      "identity_entropy": 0.5971598817001387,
+      "local_identity_clear": false,
+      "identity_saturated": true,
+      "exposure_saturated": false,
+      "strategy_ceiling_reached": false,
+      "interval_floored": false,
+      "n_production": 2,
+      "n_master_updates": 2,
+      "diagnostic_halfwidth": 0.15461725866783824,
+      "converged": false
+    },
+    "19": {
+      "hkl": [
+        2.95,
+        0.0,
+        0.0
+      ],
+      "q": 0.9500000000000002,
+      "track_state": "blocked",
+      "assessment_state": "ambiguous",
+      "target_probability": 0.0,
+      "identity_entropy": null,
+      "local_identity_clear": false,
+      "identity_saturated": false,
+      "exposure_saturated": false,
+      "strategy_ceiling_reached": false,
+      "interval_floored": false,
+      "n_production": 0,
+      "n_master_updates": 1,
+      "diagnostic_halfwidth": 0.1602545819277308,
+      "converged": false
+    },
+    "20": {
+      "hkl": [
+        3.0,
+        0.0,
+        0.0
+      ],
+      "q": 1.0,
+      "track_state": "blocked",
+      "assessment_state": "ambiguous",
+      "target_probability": 0.0,
+      "identity_entropy": null,
+      "local_identity_clear": false,
+      "identity_saturated": false,
+      "exposure_saturated": false,
+      "strategy_ceiling_reached": false,
+      "interval_floored": false,
+      "n_production": 2,
+      "n_master_updates": 3,
+      "diagnostic_halfwidth": 0.10107172657148546,
+      "converged": false
+    }
+  },
+  "emitted_windows_at_frontier": [
+    {
+      "hkl": [
+        2.9,
+        0.0,
+        0.0
+      ],
+      "e_lo": -2.0,
+      "e_hi": 7.0,
+      "e_step": 0.3806525327638435,
+      "n_points": 24
+    },
+    {
+      "hkl": [
+        2.95,
+        0.0,
+        0.0
+      ],
+      "e_lo": -2.0,
+      "e_hi": 7.0,
+      "e_step": 0.3830985773446471,
+      "n_points": 24
+    },
+    {
+      "hkl": [
+        3.0,
+        0.0,
+        0.0
+      ],
+      "e_lo": -2.0,
+      "e_hi": 7.0,
+      "e_step": 0.38308669893020303,
+      "n_points": 24
+    },
+    {
+      "hkl": [
+        3.0,
+        0.0,
+        0.0
+      ],
+      "e_lo": -2.0,
+      "e_hi": 7.0,
+      "e_step": 0.38359730668805336,
+      "n_points": 24
+    },
+    {
+      "hkl": [
+        3.0,
+        0.0,
+        0.0
+      ],
+      "e_lo": -2.0,
+      "e_hi": 7.0,
+      "e_step": 0.38270959317476877,
+      "n_points": 24
+    },
+    {
+      "hkl": [
+        2.9,
+        0.0,
+        0.0
+      ],
+      "e_lo": -2.0,
+      "e_hi": 7.0,
+      "e_step": 0.3795071028443625,
+      "n_points": 24
+    },
+    {
+      "hkl": [
+        2.9,
+        0.0,
+        0.0
+      ],
+      "e_lo": -2.0,
+      "e_hi": 7.0,
+      "e_step": 0.3788064240744628,
+      "n_points": 24
+    }
+  ]
+}
