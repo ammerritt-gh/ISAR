@@ -344,6 +344,51 @@ def _energy_window(e_pred: float, fwhm: float, e_sigma: float = 0.0,
     return e_lo, e_hi, e_step, n_points
 
 
+def identity_domain(objective, *, rival_energy_meV: float | None,
+                    fwhm_meV: float = DEFAULT_FWHM_MEV) -> tuple[tuple[float, float], str | None]:
+    """The energy band an identity-class action may scan, and why it may not be widened.
+
+    Returns ``(domain, forbidden_reason)``. A non-``None`` reason means the rival-supporting action is
+    *policy-forbidden*: the inventory reports it as an ``OPERATOR`` rejection rather than silently
+    scanning outside what the campaign declared.
+
+    The rules, in order:
+
+    1. A **declared** identity domain is the answer. Nothing to migrate.
+    2. No rival to reach means nothing to widen for.
+    3. A band the **compiler** chose is a default, not an instruction, so it may be widened to admit
+       the rival that settles the identity — bounded by that rival plus a few resolution widths, not
+       opened to an arbitrary band.
+    4. A band the **operator** declared is a hard constraint. Spending their beam time outside the
+       range they asked for is not ours to decide.
+    5. A band with **no provenance** (an old frozen objective) is treated like the operator's. That a
+       range equals the shipped default is not evidence the compiler chose it, and guessing wrong
+       here silently rewrites a scientist's declared intent.
+    """
+    target = tuple(objective.energy_search_meV)
+    declared = getattr(objective, "identity_search_meV", None)
+    if declared is not None:
+        return (float(declared[0]), float(declared[1])), None
+    if rival_energy_meV is None or not math.isfinite(float(rival_energy_meV)):
+        return target, None
+    source = getattr(objective, "target_search_source", None)
+    if source == "operator":
+        return target, (
+            "policy_forbidden: the operator declared the search band "
+            f"{target[0]:g}..{target[1]:g} meV and the rival support at {rival_energy_meV:g} meV "
+            "lies outside it; declare identity_search_meV to authorise identity work there")
+    if source != "compiler":
+        return target, (
+            "policy_forbidden: this objective carries no search-band provenance, so the band "
+            f"{target[0]:g}..{target[1]:g} meV cannot be assumed to be a compiler default; declare "
+            "identity_search_meV (or re-compile the objective) to authorise identity work at "
+            f"{rival_energy_meV:g} meV")
+    # Finite and instrument-aware: enough to observe the rival and its shoulders, not a free hand.
+    margin = 3.0 * max(float(fwhm_meV), 1e-3)
+    rival = float(rival_energy_meV)
+    return (min(target[0], rival - margin), max(target[1], rival + margin)), None
+
+
 def _q_sigma(g: GridQ) -> float | None:
     """The current pooled-master ω₀ half-width belief, never an individual-fit fallback."""
     master = g.master or {}

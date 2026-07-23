@@ -63,6 +63,17 @@ class ObjectiveSpec:
     target_selector: str | None = None
     target_energy_meV: float | None = None
     energy_search_meV: tuple[float, float] | None = None
+    # Where the *identity* question may be asked, as opposed to where the target is expected.
+    # ``energy_search_meV`` bounds target delivery and precision work; a rival mode that settles which
+    # branch a peak belongs to can legitimately sit outside it (AP6: target 5.754 meV, rival 7.115 meV,
+    # ceiling 7.0). ``None`` means undeclared, and an undeclared identity domain is NEVER silently
+    # widened - see ``acquire.identity_domain``.
+    identity_search_meV: tuple[float, float] | None = None
+    # Who chose each band: "operator" (explicitly requested) or "compiler" (a shipped default).
+    # Recorded rather than inferred, because a band that merely *equals* the shipped default proves
+    # nothing about who chose it, and widening a scientist's declared range is not ours to do.
+    target_search_source: str | None = None
+    identity_search_source: str | None = None
     # The sample temperature this campaign is measuring at, in kelvin. Belief evidence is stored per
     # temperature bin, so declaring it is what lets the controller pick the right slice instead of
     # guessing when more than one is complete. ``None`` is fine while only one slice exists.
@@ -128,6 +139,20 @@ class ObjectiveSpec:
             self.energy_search_meV = (float(lo), float(hi))
             if not self.energy_search_meV[0] < self.energy_search_meV[1]:
                 raise ValueError("energy_search_meV must be [low, high] with low < high")
+        if self.identity_search_meV is not None:
+            # Stays exactly what was declared — never normalized to a fallback. Filling it in here
+            # would make ``dataclasses.replace()`` read the fallback back as a declaration, turning
+            # "never declared" into "declared exactly this" and silently retiring the policy-forbidden
+            # report that tells an operator identity work was blocked. Callers wanting the effective
+            # band use :attr:`effective_identity_search_meV`.
+            lo, hi = self.identity_search_meV
+            self.identity_search_meV = (float(lo), float(hi))
+            if not self.identity_search_meV[0] < self.identity_search_meV[1]:
+                raise ValueError("identity_search_meV must be [low, high] with low < high")
+        for name in ("target_search_source", "identity_search_source"):
+            value = getattr(self, name)
+            if value is not None and value not in ("operator", "compiler"):
+                raise ValueError(f"{name} must be 'operator', 'compiler', or None")
         self.target_label = str(self.target_label or self.target_branch)
         self.hypotheses = [dict(h) for h in self.hypotheses]
         self.steering = dict(self.steering)
@@ -156,6 +181,28 @@ class ObjectiveSpec:
                   self.steering)):
             raise ValueError("hypothesis metadata cannot exist without frozen hypotheses")
 
+    # ---- search domains ----------------------------------------------------
+    @property
+    def target_search_meV(self) -> tuple[float, float]:
+        """Where the target mode is expected — the band that bounds delivery and precision work.
+
+        The stored field keeps its original name ``energy_search_meV`` so the frozen contract stays
+        additive (DECISIONS O12); this is the vocabulary that distinguishes it from the identity
+        domain now that the two are no longer the same thing.
+        """
+        return self.energy_search_meV
+
+    @property
+    def effective_identity_search_meV(self) -> tuple[float, float]:
+        """The identity band actually in force: the declared one, else the target band.
+
+        The stored ``identity_search_meV`` field is left as ``None`` when nothing was declared, so
+        "declared, and happens to equal the target band" stays distinguishable from "never declared"
+        through every copy, ``replace()`` and round-trip. That distinction is what the whole migration
+        rule turns on, so it must live in the field rather than in a derived flag.
+        """
+        return self.identity_search_meV or self.energy_search_meV
+
     # ---- constructors ------------------------------------------------------
     @classmethod
     def along_h(cls, *, h_start: float, h_end: float, step: float, k: float = 0.0, l: float = 0.0,
@@ -165,6 +212,9 @@ class ObjectiveSpec:
                 target_branch: str = "acoustic", target_label: str = "acoustic",
                 target_selector: str | None = None, target_energy_meV: float | None = None,
                 energy_search_meV: tuple[float, float] | None = None,
+                identity_search_meV: tuple[float, float] | None = None,
+                target_search_source: str | None = None,
+                identity_search_source: str | None = None,
                 target_temperature_K: float | None = None,
                 hypotheses: list[dict[str, Any]] | None = None,
                 target_hypothesis: str | None = None, hypothesis_source: str | None = None,
@@ -187,6 +237,9 @@ class ObjectiveSpec:
                    tier=tier, name=name, meta=dict(meta or {}), target_branch=target_branch,
                    target_label=target_label, target_selector=target_selector,
                    target_energy_meV=target_energy_meV, energy_search_meV=energy_search_meV,
+                   identity_search_meV=identity_search_meV,
+                   target_search_source=target_search_source,
+                   identity_search_source=identity_search_source,
                    target_temperature_K=target_temperature_K,
                    hypotheses=list(hypotheses or []), target_hypothesis=target_hypothesis,
                    hypothesis_source=hypothesis_source,
@@ -200,6 +253,9 @@ class ObjectiveSpec:
                 target_label: str = "acoustic",
                 target_selector: str | None = None, target_energy_meV: float | None = None,
                 energy_search_meV: tuple[float, float] | None = None,
+                identity_search_meV: tuple[float, float] | None = None,
+                target_search_source: str | None = None,
+                identity_search_source: str | None = None,
                 target_temperature_K: float | None = None,
                 hypotheses: list[dict[str, Any]] | None = None,
                 target_hypothesis: str | None = None, hypothesis_source: str | None = None,
@@ -228,6 +284,9 @@ class ObjectiveSpec:
                    name=name, meta=dict(meta or {}), target_branch=target_branch,
                    target_label=target_label, target_selector=target_selector,
                    target_energy_meV=target_energy_meV, energy_search_meV=energy_search_meV,
+                   identity_search_meV=identity_search_meV,
+                   target_search_source=target_search_source,
+                   identity_search_source=identity_search_source,
                    target_temperature_K=target_temperature_K,
                    hypotheses=list(hypotheses or []), target_hypothesis=target_hypothesis,
                    hypothesis_source=hypothesis_source,
@@ -250,6 +309,10 @@ class ObjectiveSpec:
             "target_selector": self.target_selector,
             "target_energy_meV": self.target_energy_meV,
             "energy_search_meV": list(self.energy_search_meV),
+            "identity_search_meV": (list(self.identity_search_meV)
+                                    if self.identity_search_meV is not None else None),
+            "target_search_source": self.target_search_source,
+            "identity_search_source": self.identity_search_source,
             "target_temperature_K": self.target_temperature_K,
             "hypotheses": [dict(h) for h in self.hypotheses],
             "target_hypothesis": self.target_hypothesis,
@@ -275,6 +338,10 @@ class ObjectiveSpec:
             target_energy_meV=d.get("target_energy_meV"),
             energy_search_meV=(tuple(d["energy_search_meV"])
                                if d.get("energy_search_meV") is not None else None),
+            identity_search_meV=(tuple(d["identity_search_meV"])
+                                 if d.get("identity_search_meV") is not None else None),
+            target_search_source=d.get("target_search_source"),
+            identity_search_source=d.get("identity_search_source"),
             target_temperature_K=d.get("target_temperature_K"),
             hypotheses=list(d.get("hypotheses") or []),
             target_hypothesis=d.get("target_hypothesis"),

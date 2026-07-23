@@ -68,6 +68,9 @@ LLM_GOAL_SCHEMA = {
         "target_energy_meV": {"type": "number"},
         "energy_search_meV": {"type": "array", "items": {"type": "number"},
                               "minItems": 2, "maxItems": 2},
+        # The sample temperature the campaign is measuring at, which selects the belief slice.
+        # Scientific context the supervisor may legitimately state; it grants no scanning authority.
+        "target_temperature_K": {"type": "number"},
         "target_zc_energy_meV": {"type": "number"},
         "target_zc_energy_sigma_meV": {"type": "number"},
     },
@@ -77,6 +80,12 @@ LLM_GOAL_SCHEMA = {
 # LLM schema, so the supervisor can express scientific intent but cannot invent beam-time limits.
 FILE_SPEC_SCHEMA = copy.deepcopy(LLM_GOAL_SCHEMA)
 FILE_SPEC_SCHEMA["properties"]["analysis_limit_seconds"] = {"type": ["number", "null"]}
+# File-only, deliberately: ``identity_search_meV`` authorises identity scans OUTSIDE the declared
+# target band, which is beam-time-affecting acquisition policy rather than scientific intent. Same
+# boundary as the budget fields — the supervisor can say what to look for, not how much of someone
+# else's beam time to spend looking, nor where it may look beyond what was declared.
+FILE_SPEC_SCHEMA["properties"]["identity_search_meV"] = {
+    "type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}
 FILE_SPEC_SCHEMA["properties"]["steering"] = {
     "type": "object", "additionalProperties": False,
     "properties": {
@@ -268,6 +277,12 @@ def _build_spec(data: dict, merged: dict, *,
     energy = data.get("energy_search_meV")
     resolved_energy = tuple(energy) if energy is not None else (
         (-2.0, 12.0) if branch == "optic" else (-2.0, 7.0))
+    # Record who chose the band here, where the answer is still known. Downstream, a band that equals
+    # the shipped default is indistinguishable from one the scientist asked for exactly — and the
+    # difference decides whether identity work may be widened past it.
+    target_search_source = "operator" if energy is not None else "compiler"
+    identity_energy = data.get("identity_search_meV")
+    identity_search_source = "operator" if identity_energy is not None else None
     goal_override = None
     target_zc_energy = data.get("target_zc_energy_meV", tracked_anchor_energy)
     if (data.get("target_zc_energy_sigma_meV") is not None
@@ -296,7 +311,12 @@ def _build_spec(data: dict, merged: dict, *,
                   meta={"source": "goal_to_spec", "raw": data}, target_branch=branch,
                   target_label=label, target_selector=str(selector),
                   target_energy_meV=(float(target_energy) if target_energy is not None else None),
-                  energy_search_meV=resolved_energy, **frozen)
+                  energy_search_meV=resolved_energy,
+                  identity_search_meV=(tuple(identity_energy)
+                                       if identity_energy is not None else None),
+                  target_search_source=target_search_source,
+                  identity_search_source=identity_search_source,
+                  target_temperature_K=data.get("target_temperature_K"), **frozen)
     if "q_start" in data or "q_end" in data:
         if "q_start" not in data or "q_end" not in data:
             raise GoalParseError("goal spec needs both q_start and q_end")
