@@ -188,9 +188,18 @@ def test_validate_checks_membership_of_the_declared_registry():
     assert any("unknown generator" in problem for problem in unknown.validate(registry))
 
 
-def test_the_live_registry_is_a_single_honest_legacy_adapter_and_its_version_is_derived():
-    assert [spec.generator_id for spec in GENERATOR_REGISTRY] == [LEGACY_SELECTOR_GENERATOR]
+def test_the_live_registry_declares_its_generators_and_its_version_is_derived():
+    """PR2.7a grew the registry from the lone legacy adapter to the legacy adapter plus the identity
+    probe. The declared set is pinned here because it is what an ``action_inventory_exhausted``
+    terminal is exhaustion *relative to*: a generator silently added or dropped would change the
+    meaning of every such proof without changing its wording."""
+    assert [spec.generator_id for spec in GENERATOR_REGISTRY] == [
+        LEGACY_SELECTOR_GENERATOR, "narrow_rival_probe"]
     assert GENERATOR_REGISTRY_VERSION == registry_fingerprint(GENERATOR_REGISTRY)
+    # Growing the registry must change the derived version, or an old proof computed over one
+    # generator would still look current under two.
+    assert registry_fingerprint((GeneratorSpec(LEGACY_SELECTOR_GENERATOR),)) != \
+        GENERATOR_REGISTRY_VERSION
     # The fingerprint is derived from the ordered ids+versions, so growing the registry (PR2) or
     # revising a generator cannot leave an old proof looking current.
     assert registry_fingerprint((GeneratorSpec("a"),)) != registry_fingerprint((GeneratorSpec("b"),))

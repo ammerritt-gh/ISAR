@@ -83,8 +83,12 @@ class GeneratorSpec:
 # generators and grows this tuple; the fingerprint below changes with it automatically.
 GENERATOR_REGISTRY: tuple[GeneratorSpec, ...] = (
     GeneratorSpec("legacy_selector_adapter", version=1),
+    # The identity-class action the legacy selector cannot express. It fires only where counting has
+    # demonstrably stopped paying, so it does not compete with the ordinary path for beam.
+    GeneratorSpec("narrow_rival_probe", version=1),
 )
 LEGACY_SELECTOR_GENERATOR = GENERATOR_REGISTRY[0].generator_id
+NARROW_RIVAL_PROBE_GENERATOR = GENERATOR_REGISTRY[1].generator_id
 
 
 # The canonicalization the content addresses are computed under. Versioned in its own right so a

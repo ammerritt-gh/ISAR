@@ -589,8 +589,11 @@ def test_a_raising_generator_becomes_a_failed_report_not_an_escaped_exception(mo
     inventory, candidates = acq.enumerate_actions(
         _obj(), acq_model.fit([]), [], resolution_info={"fwhm_dE": 0.8})
     assert candidates == []
-    assert [r.generator for r in inventory.reports] == [LEGACY_SELECTOR_GENERATOR]
+    # Isolation is the claim: the faulting generator is recorded as failed and its peers keep
+    # reporting normally. Asserting it is the *only* report would instead pin the registry's arity,
+    # which PR2.7a deliberately changed.
     failed = inventory.failed_reports()
+    assert [r.generator for r in failed] == [LEGACY_SELECTOR_GENERATOR]
     assert len(failed) == 1 and "RuntimeError" in failed[0].error_code
     assert "classification provider exploded" in failed[0].error_code
     # An unknown action space is never an exhaustion proof.

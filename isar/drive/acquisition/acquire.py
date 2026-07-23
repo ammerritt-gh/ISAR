@@ -52,9 +52,10 @@ from isar.drive.acquisition.inventory import (
     GeneratorStatus,
     LEGACY_SELECTOR_GENERATOR,
     MeasurementIntent,
+    NARROW_RIVAL_PROBE_GENERATOR,
     RejectionClass,
 )
-from isar.schema.steering import NON_CANONICAL_SINKS, ProposalScore
+from isar.schema.steering import AUXILIARY_TRACK_NODE, NON_CANONICAL_SINKS, ProposalScore
 from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
 
 # Energy-window rule constants (LLM_HARNESS_DESIGN acquisition decisions, binding).
@@ -63,6 +64,10 @@ HIGH_RES_FACTOR = 1.5         # high side = E_pred + HIGH_RES_FACTOR × resoluti
 STEP_RES_FRACTION = 0.25      # step ≈ resolution FWHM / 4
 MAX_POINTS = 100              # budget cap on scan length
 DEFAULT_FWHM_MEV = 0.5        # fallback energy resolution when /resolution is unavailable / refuses
+# Where an identity probe sits in the selection order. Above zero so every ordinary action outranks it:
+# the probe is what to try when the cheap path has run out, never a competitor for beam while ordinary
+# work remains. One shared constant so the identity generators cannot drift apart.
+IDENTITY_PROBE_RANK = 100.0
 
 # Survey-window rule: when the ω(q) prediction is uncertain (cold model / far extrapolation) the tight
 # high side ``e_pred + 1.5·FWHM`` is unjustified — a dispersing branch can lie far above ``e_pred`` and
@@ -339,6 +344,33 @@ def _energy_window(e_pred: float, fwhm: float, e_sigma: float = 0.0,
     point_cap = max(int(max_points), 2)
     n_points = int(math.floor(span / e_step + 0.5)) + 1
     if n_points > point_cap:                        # clamp to the frozen steering-policy cap
+        e_step = span / (point_cap - 1)
+        n_points = point_cap
+    return e_lo, e_hi, e_step, n_points
+
+
+def _declared_window(e_lo: float, e_hi: float, fwhm: float,
+                     max_points: int = MAX_POINTS) -> tuple[float, float, float, int]:
+    """Realize a window a generator *declared*, rather than deriving one from the target model.
+
+    :func:`_energy_window` exists to answer "where should we look for the target at this q", and every
+    rule in it — the low margin below ω, the survey extension, the clamp back into the target search
+    band — is in service of that question. An identity probe has already answered a different question:
+    its bounds came from the predicted rival and were clamped into the identity domain when the intent
+    was formed. Re-deriving them here would silently replace the window that makes the scan a
+    discriminator with the ordinary target window, which is precisely the AP6 failure — the emitted scan
+    would never reach the rival the action exists to observe. Only the step and point-cap arithmetic is
+    shared, because that is instrument realization rather than scientific choice.
+    """
+    e_lo, e_hi = float(e_lo), float(e_hi)
+    fwhm = max(float(fwhm), 1e-3)
+    if e_hi <= e_lo:                                # defensive: never invert
+        e_hi = e_lo + fwhm
+    e_step = STEP_RES_FRACTION * fwhm
+    span = e_hi - e_lo
+    point_cap = max(int(max_points), 2)
+    n_points = int(math.floor(span / e_step + 0.5)) + 1
+    if n_points > point_cap:
         e_step = span / (point_cap - 1)
         n_points = point_cap
     return e_lo, e_hi, e_step, n_points
@@ -1278,6 +1310,11 @@ class AcquisitionContext:
     # intent's identity: the same question asked of a different slice is answered by different
     # evidence and updates a different posterior.
     campaign_slice: object | None = None
+    # Predicts the most probable NON-target branch at a grid point as ``(mean, sigma)``, from the same
+    # belief models the classifier uses; None when nothing is predicted. The identity generators need
+    # it at *generation* time — where a rival is predicted to be is what decides whether there is an
+    # identity action to propose at all, not merely how to widen a window that was already chosen.
+    rival_band: object | None = None
 
 
 @dataclass(frozen=True)
@@ -1299,6 +1336,23 @@ class GeneratedAction:
     # Decided before the intent so the proposal builder reuses it rather than re-deriving a value the
     # scientific action identity has already been fixed against.
     driver_inserted: bool = False
+
+
+@dataclass(frozen=True)
+class GeneratorResult:
+    """What one generator produced, plus its own account of why it produced that.
+
+    A generator that returns nothing is not self-explanatory, and the difference between the reasons
+    matters to an operator. "Nothing here needed an identity probe" is routine. "An identity probe
+    would have settled this, and your declared search band forbade it" is a decision someone may want
+    to revisit, and it is invisible unless the generator can say so — the accounting layer can only
+    observe *that* nothing came back, never why.
+    """
+
+    actions: list[GeneratedAction] = field(default_factory=list)
+    # Preferred over the count-derived reason when present. Absent means "no reason beyond what the
+    # counts already show", and the derived reason stands.
+    reason_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1407,7 +1461,8 @@ def build_acquisition_context(objective, model, results_so_far: list[dict], reso
                               scoring_allowance_seconds: float = 60.0,
                               suppressed: dict | None = None,
                               unreachable_hkl: dict | None = None,
-                              campaign_slice=None) -> AcquisitionContext:
+                              campaign_slice=None,
+                              rival_band=None) -> AcquisitionContext:
     """Assemble the one world every generator reasons about at this decision boundary.
 
     This is verbatim the preamble the fused legacy selector used to run inline — the summarized grid,
@@ -1463,7 +1518,7 @@ def build_acquisition_context(objective, model, results_so_far: list[dict], reso
         scoring_allowance_seconds=scoring_allowance_seconds,
         suppressed=_validated_suppressions(suppressed),
         unreachable_hkl=_validated_suppressions(unreachable_hkl),
-        campaign_slice=campaign_slice)
+        campaign_slice=campaign_slice, rival_band=rival_band)
 
 
 def hkl_key(hkl) -> str:
@@ -1504,14 +1559,14 @@ def _legacy_selector_generate(context: AcquisitionContext) -> list[GeneratedActi
         ranking_cost_kind=context.ranking_cost_kind,
         scoring_allowance_seconds=context.scoring_allowance_seconds)
     if pick is None:
-        return []
+        return GeneratorResult()
     driver_inserted = _driver_inserted_pick(context.objective, pick)
     intent = _intent_from_pick(context.objective, pick, kind, score,
                                driver_inserted=driver_inserted,
                                campaign_slice=context.campaign_slice)
-    return [GeneratedAction(intent=intent, generator=LEGACY_SELECTOR_GENERATOR, pick=pick,
-                            kind=kind, reason=reason, score=score,
-                            driver_inserted=driver_inserted)]
+    return GeneratorResult([GeneratedAction(
+        intent=intent, generator=LEGACY_SELECTOR_GENERATOR, pick=pick,
+        kind=kind, reason=reason, score=score, driver_inserted=driver_inserted)])
 
 
 def _legacy_selector_evaluate(action: GeneratedAction,
@@ -1536,6 +1591,103 @@ def _legacy_selector_evaluate(action: GeneratedAction,
         score_method=score.method)
 
 
+def _narrow_rival_generate(context: AcquisitionContext) -> list[GeneratedAction]:
+    """Propose a narrow window on the predicted rival at each point where counting has stopped paying.
+
+    This is the action AP6 lacked. A point whose identity is ambiguous is normally answered by counting
+    longer, and while that is still working this generator stays silent — ``identity_saturated`` is the
+    point's own record that exposure grew and neither the target probability nor the identity entropy
+    moved, i.e. that more of the same window is known-wasted beam. What has *not* been tried at that
+    stage is looking where the rival is predicted to be, so that is what this proposes: one narrow,
+    uncertainty-relative window centred on the rival, fit independently and routed to
+    ``auxiliary_track_node`` so it can revise the identity without ever touching the target's ω₀.
+
+    It refuses rather than reaches. A rival outside the identity domain is left un-probed, and the
+    campaign terminates naming an action it was not authorised to take — a reviewable statement an
+    operator can act on, instead of a silent scan outside the intent they declared.
+    """
+    objective = context.objective
+    rival_band = context.rival_band
+    if not callable(rival_band):
+        return GeneratorResult(reason_code="no_rival_predictor")
+    actions: list[GeneratedAction] = []
+    forbidden_reasons: list[str] = []
+    malformed = 0
+    for pick in context.grid:
+        if pick.local_identity_clear or not pick.identity_saturated:
+            continue
+        band = rival_band(pick)
+        if band is None:
+            continue
+        try:
+            mu, sigma = (float(band[0]), float(band[1]))
+        except (TypeError, ValueError, IndexError):
+            # A predictor that answered but answered nonsense is not the same as one that had nothing
+            # to say. Counted so it surfaces as a diagnostic rather than reading as routine silence,
+            # which would leave a broken predictor indistinguishable from a settled frontier.
+            malformed += 1
+            continue
+        if not (math.isfinite(mu) and math.isfinite(sigma)):
+            malformed += 1
+            continue
+        domain, forbidden = identity_domain(objective, rival_energy_meV=mu)
+        if forbidden is not None or not (domain[0] <= mu <= domain[1]):
+            # Not an error and not silence. This point had a settleable identity question and a
+            # predicted rival to settle it with, and the declared search band is the only thing
+            # stopping the scan. Recorded so the terminal can name the action it was not authorised
+            # to take, which an operator can act on by widening the band.
+            forbidden_reasons.append(
+                f"hkl={tuple(round(float(v), 4) for v in pick.hkl)} rival={mu:.3f} meV "
+                f"outside identity domain [{domain[0]:.3f}, {domain[1]:.3f}]")
+            continue
+        # Uncertainty- and resolution-relative half-width. A rival predicted loosely needs more room or
+        # the probe misses the mode it was fired to find and reports a false null; a tightly predicted
+        # one gets a cheap window. Clamped into the identity domain so the emitted request never
+        # exceeds what was authorised.
+        half = max(2.0 * sigma, 1.5 * DEFAULT_FWHM_MEV)
+        lo, hi = max(domain[0], mu - half), min(domain[1], mu + half)
+        if not lo < hi:
+            continue
+        intent = replace(
+            _intent_from_pick(objective, pick, "identity_rival_probe",
+                              ProposalScore(method="identity"),
+                              campaign_slice=context.campaign_slice),
+            action_class="identity_rival_probe", window_family="rival",
+            energy_lo=lo, energy_hi=hi, evidence_sink=AUXILIARY_TRACK_NODE)
+        actions.append(GeneratedAction(
+            intent=intent, generator=NARROW_RIVAL_PROBE_GENERATOR, pick=pick,
+            kind="identity_rival_probe",
+            reason=(f"identity saturated at hkl={tuple(pick.hkl)}; probing predicted rival "
+                    f"{mu:.3f}±{sigma:.3f} meV over [{lo:.3f}, {hi:.3f}]"),
+            score=ProposalScore(method="identity", purpose="differentiate",
+                                reason="predicted-rival identity probe")))
+    # Only when nothing was emitted: a run that produced an action is adequately described by that
+    # action, and reporting a refusal beside a success would present a partly-served frontier as a
+    # blocked one.
+    if not actions and forbidden_reasons:
+        return GeneratorResult(reason_code="policy_forbidden:identity_domain: "
+                                           + "; ".join(forbidden_reasons[:3]))
+    if not actions and malformed:
+        return GeneratorResult(reason_code=f"invalid_rival_prediction: {malformed} point(s)")
+    return GeneratorResult(actions)
+
+
+def _narrow_rival_evaluate(action: GeneratedAction,
+                           context: AcquisitionContext) -> ActionEvaluation:
+    """Rank the probe below ordinary work.
+
+    Deliberately a fixed low priority rather than a computed EIG: this generator only ever fires where
+    the cheap path has already been shown not to pay, so the ordering that matters is "after everything
+    else", and a fabricated information estimate would give the ranking a precision it does not have.
+    """
+    return ActionEvaluation(
+        intent=action.intent, generator=action.generator,
+        eligibility=ActionEligibility.ELIGIBLE,
+        selection_reason=action.reason,
+        score_method="identity",
+        policy_rank=IDENTITY_PROBE_RANK)
+
+
 # The callables behind the declarative registry. The registry says *what* must run for an exhaustion
 # proof to be valid; these say *how*. They are validated against each other at import (below) because
 # either half drifting is a silent correctness failure: a registered generator with no callable would
@@ -1546,9 +1698,11 @@ ActionEvaluator = Callable[[GeneratedAction, AcquisitionContext], ActionEvaluati
 
 ACTION_GENERATORS: dict[str, ActionGenerator] = {
     LEGACY_SELECTOR_GENERATOR: _legacy_selector_generate,
+    NARROW_RIVAL_PROBE_GENERATOR: _narrow_rival_generate,
 }
 ACTION_EVALUATORS: dict[str, ActionEvaluator] = {
     LEGACY_SELECTOR_GENERATOR: _legacy_selector_evaluate,
+    NARROW_RIVAL_PROBE_GENERATOR: _narrow_rival_evaluate,
 }
 
 _declared = {spec.generator_id for spec in GENERATOR_REGISTRY}
@@ -1591,26 +1745,31 @@ def generate_action_intents(
     """
     raw: list[GeneratedAction] = []
     failures: dict[str, str] = {}
+    declared_reasons: dict[str, str] = {}
     for spec in GENERATOR_REGISTRY:
         generator = ACTION_GENERATORS.get(spec.generator_id)
         if generator is None:
             failures[spec.generator_id] = "NotRegistered: no callable for a declared generator"
             continue
         try:
+            result = generator(context) or GeneratorResult()
             # The registry, not the generator, owns attribution: a generator that stamped a peer's id
             # (by construction, by copy-paste, or by delegating to it) would make the accounting name
             # the wrong producer, and every completeness/dedup count downstream would be about a
             # generator that never ran.
             raw.extend(replace(action, generator=spec.generator_id)
-                       for action in (generator(context) or []))
+                       for action in (result.actions or []))
+            if result.reason_code:
+                declared_reasons[spec.generator_id] = str(result.reason_code)[:300]
         except Exception as error:  # noqa: BLE001 - a fault must be recorded, never escape
             failures[spec.generator_id] = f"{type(error).__name__}: {error}"[:300]
     kept = _dedupe_generated(raw)
-    return kept, _generator_reports(raw, kept, failures)
+    return kept, _generator_reports(raw, kept, failures, declared_reasons)
 
 
 def _generator_reports(raw: list[GeneratedAction], kept: list[GeneratedAction],
-                       failures: dict[str, str]) -> list[GeneratorReport]:
+                       failures: dict[str, str],
+                       declared_reasons: dict[str, str] | None = None) -> list[GeneratorReport]:
     """One report per declared generator — the accounting an exhaustion proof rests on."""
     reports: list[GeneratorReport] = []
     for spec in GENERATOR_REGISTRY:
@@ -1622,11 +1781,14 @@ def _generator_reports(raw: list[GeneratedAction], kept: list[GeneratedAction],
             continue
         produced = sum(1 for action in raw if action.generator == generator_id)
         survived = sum(1 for action in kept if action.generator == generator_id)
+        # A generator's own account wins over the derived one: "nothing came back" is all the counts
+        # can show, and it cannot distinguish routine silence from a withheld action.
+        derived = ("no_selectable_action" if not produced else
+                   "all_actions_deduplicated" if not survived else None)
         reports.append(GeneratorReport(
             generator=generator_id, status=GeneratorStatus.COMPLETED, generated=survived,
             deduped=produced - survived,
-            reason_code=("no_selectable_action" if not produced else
-                         "all_actions_deduplicated" if not survived else None)))
+            reason_code=(declared_reasons or {}).get(generator_id) or derived))
     return reports
 
 
@@ -1727,7 +1889,8 @@ def enumerate_actions(objective, model, results_so_far: list[dict], resolution_i
         master_rows=master_rows, fisher=fisher, classify=classify, runtime_limits=runtime_limits,
         track_anchor_index=track_anchor_index, track_zone_period=track_zone_period,
         branch_track=branch_track, scoring_allowance_seconds=scoring_allowance_seconds,
-        suppressed=suppressed, unreachable_hkl=unreachable_hkl, campaign_slice=campaign_slice)
+        suppressed=suppressed, unreachable_hkl=unreachable_hkl, campaign_slice=campaign_slice,
+        rival_band=rival_band)
     generated, reports = generate_action_intents(context)
     generated, evaluations, evaluator_failures = _evaluate_safely(generated, context)
     evaluations = _apply_suppressions(evaluations, context)
@@ -1920,12 +2083,25 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
         getattr(pick, "n_decline", 0), step=float(policy.get("absent_signal_widen_step", 0.5)),
         max_steps=int(policy.get("absent_signal_widen_steps", 3)))
     rb = rival_band(pick) if callable(rival_band) else rival_band
-    e_lo, e_hi, e_step, n_points = _energy_window(
-        e_pred, fwhm, e_sigma, survey=survey,
-        energy_search_meV=getattr(objective, "energy_search_meV", None),
-        target_band=target_band, rival_band=rb, widen=widen, positive_only=positive_only,
-        max_points=min(int(policy.get("max_scan_points", MAX_POINTS)),
-                       int(runtime_limits.get("max_points", policy.get("max_scan_points", MAX_POINTS)))))
+    point_cap = min(int(policy.get("max_scan_points", MAX_POINTS)),
+                    int(runtime_limits.get("max_points", policy.get("max_scan_points", MAX_POINTS))))
+    intent = chosen.evaluation.intent
+    if intent.window_family == "rival" and intent.energy_lo is not None and intent.energy_hi is not None:
+        # An identity probe's window is a scientific declaration already clamped into the identity
+        # domain. Honour it; see :func:`_declared_window`.
+        e_lo, e_hi, e_step, n_points = _declared_window(
+            intent.energy_lo, intent.energy_hi, fwhm, max_points=point_cap)
+        # The energy this scan is *about* is the rival, not the target. ``e_pred`` becomes the
+        # persisted ``acquisition_target_energy`` and the centre the effective-exposure weighting is
+        # computed around, so leaving it at the target model's prediction would score the probe's
+        # counts over a region it deliberately did not scan.
+        e_pred = 0.5 * (e_lo + e_hi)
+    else:
+        e_lo, e_hi, e_step, n_points = _energy_window(
+            e_pred, fwhm, e_sigma, survey=survey,
+            energy_search_meV=getattr(objective, "energy_search_meV", None),
+            target_band=target_band, rival_band=rb, widen=widen, positive_only=positive_only,
+            max_points=point_cap)
     runtime_ncount_limit = runtime_limits.get("max_neutrons_per_point")
     queue_budget = runtime_limits.get("queue_neutron_budget")
     if queue_budget is not None:

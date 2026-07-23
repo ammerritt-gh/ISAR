@@ -134,18 +134,18 @@ def test_the_plan_hands_out_each_eligible_action_once_then_stops(monkeypatch):
     adapter registered the plan holds one action, so this is exercised against a two-generator
     registry — PR2.7 is what makes it fire on a real campaign."""
     def second(context):
-        base = acq._legacy_selector_generate(context)
+        base = acq._legacy_selector_generate(context).actions
         if not base:
-            return []
+            return acq.GeneratorResult()
         original = base[0]
         other = next((point for point in context.grid
                       if tuple(point.hkl) != tuple(original.pick.hkl)), None)
         if other is None:
-            return []
+            return acq.GeneratorResult()
         intent = acq._intent_from_pick(context.objective, other, original.kind, original.score)
-        return [acq.GeneratedAction(intent=intent, generator="second", pick=other,
-                                    kind=original.kind, reason="second action",
-                                    score=original.score)]
+        return acq.GeneratorResult([acq.GeneratedAction(
+            intent=intent, generator="second", pick=other, kind=original.kind,
+            reason="second action", score=original.score)])
 
     _register(monkeypatch, {LEGACY_SELECTOR_GENERATOR: acq._legacy_selector_generate,
                             "second": second})

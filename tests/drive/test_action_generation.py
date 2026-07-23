@@ -156,9 +156,9 @@ def test_dedupe_keeps_genuinely_different_scientific_questions(monkeypatch):
     obj, model = _obj(), acq_model.fit([])
 
     def rival(context):
-        base = acq._legacy_selector_generate(context)
+        base = acq._legacy_selector_generate(context).actions
         if not base:
-            return []
+            return acq.GeneratorResult()
         original = base[0]
         intent = acq.MeasurementIntent(
             action_class="narrow_rival", hkl=original.intent.hkl, energy_lo=6.5, energy_hi=7.6,
@@ -166,9 +166,9 @@ def test_dedupe_keeps_genuinely_different_scientific_questions(monkeypatch):
             rival_branch_role=original.intent.rival_branch_role,
             evidence_basis_fingerprint=original.intent.evidence_basis_fingerprint,
             hypotheses_fingerprint=original.intent.hypotheses_fingerprint)
-        return [acq.GeneratedAction(
+        return acq.GeneratorResult([acq.GeneratedAction(
             intent=intent, generator="rival", pick=original.pick, kind=original.kind,
-            reason="narrow rival probe", score=original.score)]
+            reason="narrow rival probe", score=original.score)])
 
     _register(monkeypatch, {LEGACY_SELECTOR_GENERATOR: acq._legacy_selector_generate,
                             "rival": rival})
@@ -233,8 +233,12 @@ def test_the_split_phases_reproduce_the_fused_selection():
     generated, reports = acq.generate_action_intents(context)
     evaluations = acq.evaluate_action_intents(generated, context)
 
-    assert [r.generator for r in reports] == [LEGACY_SELECTOR_GENERATOR]
-    assert reports[0].status is GeneratorStatus.COMPLETED
+    # Every declared generator reports; the legacy adapter is the one that contributes here, because
+    # this fixture has no identity-saturated point for the probe to act on. That is the property worth
+    # pinning — an ordinary campaign must keep choosing exactly what it chose before PR2.7a grew the
+    # registry — rather than the registry's arity, which this increment deliberately changed.
+    legacy = next(r for r in reports if r.generator == LEGACY_SELECTOR_GENERATOR)
+    assert legacy.status is GeneratorStatus.COMPLETED and legacy.generated == 1
     assert len(generated) == len(evaluations) == 1
     assert evaluations[0].eligibility is ActionEligibility.ELIGIBLE
 
