@@ -212,7 +212,7 @@ def test_summary_carries_the_completeness_proof_and_registry_version():
     assert summary["terminal_cause"] == "action_inventory_exhausted"
     assert summary["selected_action_class"] == "same_q_identity"
     assert summary["generators"] == [
-        {"generator": "g", "status": "completed", "generated": 1,
+        {"generator": "g", "status": "completed", "generated": 1, "deduped": 0,
          "reason_code": None, "error_code": None}]
 
 

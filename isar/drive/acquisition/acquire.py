@@ -47,6 +47,7 @@ from isar.drive.acquisition.inventory import (
     ActionEligibility,
     ActionEvaluation,
     ActionInventory,
+    GENERATOR_REGISTRY,
     GeneratorReport,
     GeneratorStatus,
     LEGACY_SELECTOR_GENERATOR,
@@ -1175,29 +1176,112 @@ def _select_target(grid: list[GridQ], model, *,
         c_spent=float(pick.counts_spent), reason=reason)
 
 
-@dataclass
-class _CandidateAction:
-    """A selected raw pick paired with its inventory evaluation, ready to build into a proposal.
+@dataclass(frozen=True)
+class AcquisitionContext:
+    """Everything a generator may read, built exactly once per decision boundary.
 
-    The value-type ``evaluation`` is what the inventory (and the terminal decision) reasons about; the
-    raw ``pick``/``kind``/``reason``/``score`` carry the exact state the proposal builder consumes. The
-    selection context (``target_hypothesis``/``policy``/``classification_weight``/``runtime_limits``) is
-    carried verbatim rather than recomputed, so the proposal builder sees byte-identical inputs to the
-    values selection actually used — no second read of ``objective.steering`` that could diverge.
+    Before this, the world a generator reasons about (working grid, steering policy, runtime limits,
+    the frozen target hypothesis, the tracked anchor) was assembled inline inside the single legacy
+    selector. A second generator added beside it would have had to rebuild that world from the raw
+    arguments — and any divergence (a differently-summarized grid, a second read of
+    ``objective.steering``, an un-normalized inserted candidate index) would be invisible: two
+    generators would silently be answering questions about two different states, and the inventory
+    would present their actions as comparable. One frozen context removes that whole class of bug.
     """
 
-    evaluation: ActionEvaluation
+    objective: Any
+    model: Any
+    # Tuples, not lists: ``frozen=True`` stops the *field* being reassigned but would happily let one
+    # generator append to or reorder a shared list, which is precisely the divergence this type exists
+    # to prevent. The sequence is read-only; the GridQ objects it holds are still the live per-q state.
+    grid: tuple[GridQ, ...]
+    results_so_far: tuple[dict, ...]
+    resolution_info: Any
+    policy: dict
+    runtime_limits: dict
+    classify: Any
+    fisher: Any
+    target_hypothesis: dict | None
+    classification_weight: float
+    opening: Any
+    tracked_branch: bool
+    maximum_bridge_steps: int
+    track_anchor_index: int | None
+    track_zone_period: float | None
+    branch_track: dict
+    ranking_cost_kind: str
+    scoring_allowance_seconds: float
+
+
+@dataclass(frozen=True)
+class GeneratedAction:
+    """One generator's output: the scientific question, plus the raw state a proposal is built from.
+
+    ``intent`` is what the inventory, dedup and the terminal proof reason about; ``pick``/``kind``/
+    ``reason``/``score`` are the concrete selection state :func:`_build_proposal` consumes. Keeping
+    both on one frozen value is what lets generation and evaluation be separate phases without the
+    evaluator having to re-derive the pick it is scoring.
+    """
+
+    intent: MeasurementIntent
+    generator: str
     pick: GridQ
     kind: str
     reason: str
     score: ProposalScore
-    target_hypothesis: dict | None
-    policy: dict
-    classification_weight: float
-    runtime_limits: dict
     # Decided before the intent so the proposal builder reuses it rather than re-deriving a value the
     # scientific action identity has already been fixed against.
     driver_inserted: bool = False
+
+
+@dataclass(frozen=True)
+class _CandidateAction:
+    """A generated action paired with its evaluation and the context both were formed in.
+
+    The proposal builder reads its policy/limits/hypothesis from ``context`` — the exact values
+    selection used — so no second read of ``objective.steering`` can diverge from what enumeration
+    chose. The ``pick``/``kind``/… accessors keep the pre-split call shape for existing callers.
+    """
+
+    generated: GeneratedAction
+    evaluation: ActionEvaluation
+    context: AcquisitionContext
+
+    @property
+    def pick(self) -> GridQ:
+        return self.generated.pick
+
+    @property
+    def kind(self) -> str:
+        return self.generated.kind
+
+    @property
+    def reason(self) -> str:
+        return self.generated.reason
+
+    @property
+    def score(self) -> ProposalScore:
+        return self.generated.score
+
+    @property
+    def driver_inserted(self) -> bool:
+        return self.generated.driver_inserted
+
+    @property
+    def target_hypothesis(self) -> dict | None:
+        return self.context.target_hypothesis
+
+    @property
+    def policy(self) -> dict:
+        return self.context.policy
+
+    @property
+    def runtime_limits(self) -> dict:
+        return self.context.runtime_limits
+
+    @property
+    def classification_weight(self) -> float:
+        return self.context.classification_weight
 
 
 def _driver_inserted_pick(objective, pick) -> bool:
@@ -1245,60 +1329,19 @@ def _intent_from_pick(objective, pick, kind, score, *, driver_inserted: bool = F
         hypotheses_fingerprint=getattr(objective, "hypothesis_fingerprint", None))
 
 
-def enumerate_actions(objective, model, results_so_far: list[dict], resolution_info=None,
-                      budget_state: dict | None = None, master_rows: list[dict] | None = None,
-                      fisher=None, classify=None, rival_band=None,
-                      runtime_limits: dict | None = None,
-                      track_anchor_index: int | None = None,
-                      track_zone_period: float | None = None,
-                      branch_track: dict | None = None,
-                      scoring_allowance_seconds: float = 60.0):
-    """Enumerate the acquisition action space and report per-generator completeness.
+def build_acquisition_context(objective, model, results_so_far: list[dict], resolution_info=None,
+                              master_rows: list[dict] | None = None, fisher=None, classify=None,
+                              runtime_limits: dict | None = None,
+                              track_anchor_index: int | None = None,
+                              track_zone_period: float | None = None,
+                              branch_track: dict | None = None,
+                              scoring_allowance_seconds: float = 60.0) -> AcquisitionContext:
+    """Assemble the one world every generator reasons about at this decision boundary.
 
-    Behaviour-preserving over the previous inline selection: the winning pick is still chosen by
-    ``_select_target`` exactly as before. The returned :class:`ActionInventory` reflects *that*
-    selection — it is not a separate approximation — so the terminal decision can consult the same
-    action space acquisition used rather than re-deriving it (PR1 in the plan). The per-generator
-    decomposition (one generator per action class) arrives with the new generators in PR2; today the
-    tracked-frontier ladder and the scored tiers report as a single ``COMPLETED`` selector.
-    """
-    try:
-        candidates = _legacy_selector_candidates(
-            objective, model, results_so_far, resolution_info=resolution_info,
-            master_rows=master_rows, fisher=fisher, classify=classify,
-            runtime_limits=runtime_limits, track_anchor_index=track_anchor_index,
-            track_zone_period=track_zone_period, branch_track=branch_track,
-            scoring_allowance_seconds=scoring_allowance_seconds)
-    except Exception as error:  # noqa: BLE001 - a generator fault must not escape before the inventory
-        # Failure isolation: a generator that raised leaves its actions *unknown*, so the inventory is
-        # incomplete and exhaustion is unprovable.  Record the fault as a FAILED report — the terminal
-        # then becomes a resumable ``controller_fault`` — rather than escaping before an inventory
-        # exists at all, which is how a generator crash used to kill an unattended campaign.
-        report = GeneratorReport(
-            generator=LEGACY_SELECTOR_GENERATOR, status=GeneratorStatus.FAILED, generated=0,
-            error_code=f"{type(error).__name__}: {error}"[:300])
-        return ActionInventory(evaluations=[], reports=[report]), []
-    report = GeneratorReport(
-        generator=LEGACY_SELECTOR_GENERATOR, status=GeneratorStatus.COMPLETED,
-        generated=len(candidates),
-        reason_code=None if candidates else "no_selectable_action")
-    inventory = ActionInventory(evaluations=[c.evaluation for c in candidates], reports=[report])
-    return inventory, candidates
-
-
-def _legacy_selector_candidates(objective, model, results_so_far: list[dict], *,
-                                resolution_info=None, master_rows: list[dict] | None = None,
-                                fisher=None, classify=None, runtime_limits: dict | None = None,
-                                track_anchor_index: int | None = None,
-                                track_zone_period: float | None = None,
-                                branch_track: dict | None = None,
-                                scoring_allowance_seconds: float = 60.0) -> list[_CandidateAction]:
-    """The single registered generator today: the legacy priority/ranking selector, adapted.
-
-    It returns at most ONE candidate, chosen by the pre-existing tier logic, so the inventory it backs
-    is a proof about the *legacy selector's* action space rather than the complete physical one — which
-    is exactly why it is registered as ``legacy_selector_adapter``. PR2 splits it into explicit
-    per-intent generators, at which point the registry (and its fingerprint) grows.
+    This is verbatim the preamble the fused legacy selector used to run inline — the summarized grid,
+    the frozen target hypothesis, the tracked anchor, the steering policy, and the driver-inserted
+    candidate normalized to its real grid position. Hoisting it here is what makes a second generator
+    safe to add: it cannot see a differently-built grid or a differently-read policy.
     """
     grid = summarize_grid(
         objective, results_so_far or [], master_rows or [], branch_track=branch_track)
@@ -1321,8 +1364,6 @@ def _legacy_selector_candidates(objective, model, results_so_far: list[dict], *,
                 mu, _ = model.predict(g.q)
                 return (0 if mu >= DEFAULT_FWHM_MEV else 1, g.q, g.index)
     policy = dict(getattr(objective, "steering", {}) or {})
-    runtime_limits = dict(runtime_limits or {})
-    classification_weight = float(policy.get("classification_weight", 0.0))
     inserted = _driver_inserted_candidate(objective, grid, results_so_far or [], classify)
     if inserted is not None:
         # ``_driver_inserted_candidate`` carries a synthetic ``index = len(grid) + offset`` purely to
@@ -1333,43 +1374,237 @@ def _legacy_selector_candidates(objective, model, results_so_far: list[dict], *,
         # its real position on entry.
         inserted.index = len(grid)
         grid = [*grid, inserted]
-    pick, kind, reason, score = _select_target(
-        grid, model, fisher=fisher, opening=opening, classify=classify,
-        classification_weight=classification_weight,
+    return AcquisitionContext(
+        objective=objective, model=model, grid=tuple(grid),
+        results_so_far=tuple(results_so_far or []),
+        resolution_info=resolution_info, policy=policy,
+        runtime_limits=dict(runtime_limits or {}), classify=classify, fisher=fisher,
+        target_hypothesis=target_hypothesis,
+        classification_weight=float(policy.get("classification_weight", 0.0)),
+        opening=opening,
         tracked_branch=(getattr(objective, "target_selector", None) == "tracked_branch"),
         maximum_bridge_steps=int(policy.get("maximum_bridge_steps", 1)),
-        track_anchor_index=track_anchor_index,
+        track_anchor_index=track_anchor_index, track_zone_period=track_zone_period,
+        branch_track=dict(branch_track or {}),
         ranking_cost_kind=("analysis" if getattr(objective, "tier", None) == "deterministic"
                            else "measurement"),
         scoring_allowance_seconds=scoring_allowance_seconds)
-    candidates: list[_CandidateAction] = []
-    if pick is not None:
-        driver_inserted = _driver_inserted_pick(objective, pick)
-        intent = _intent_from_pick(objective, pick, kind, score, driver_inserted=driver_inserted)
-        # Carry the real score vector onto the evaluation: ``to_full_dict`` presents this as the ranked
-        # score record, so leaving it at defaults made the persisted artifact claim scores it never had.
-        # ``policy_rank`` stays at its default — the staged ranking comparator is PR3's, and with one
-        # candidate there is nothing to order.
-        candidates.append(_CandidateAction(
-            evaluation=ActionEvaluation(
-                intent=intent, generator=LEGACY_SELECTOR_GENERATOR,
-                eligibility=ActionEligibility.ELIGIBLE,
-                selection_reason=reason,
-                expected_identity_gain=_finite_or_none(score.classification_eig),
-                expected_precision_gain=_finite_or_none(score.eig),
-                expected_measurement_cost=_finite_or_none(
-                    score.ranking_cost if score.ranking_cost is not None else score.cost),
-                score_method=score.method),
-            pick=pick, kind=kind, reason=reason, score=score,
-            target_hypothesis=target_hypothesis, policy=policy,
-            classification_weight=classification_weight, runtime_limits=runtime_limits,
-            driver_inserted=driver_inserted))
-    return candidates
+
+
+def _legacy_selector_generate(context: AcquisitionContext) -> list[GeneratedAction]:
+    """The single registered generator today: the legacy priority/ranking selector, adapted.
+
+    It yields at most ONE action, chosen by the pre-existing tier logic, so the inventory it backs is
+    a proof about the *legacy selector's* action space rather than the complete physical one — which
+    is exactly why it is registered as ``legacy_selector_adapter``. PR2.7 registers explicit per-intent
+    generators beside it, at which point the registry (and its derived fingerprint) grows.
+    """
+    pick, kind, reason, score = _select_target(
+        context.grid, context.model, fisher=context.fisher, opening=context.opening,
+        classify=context.classify, classification_weight=context.classification_weight,
+        tracked_branch=context.tracked_branch,
+        maximum_bridge_steps=context.maximum_bridge_steps,
+        track_anchor_index=context.track_anchor_index,
+        ranking_cost_kind=context.ranking_cost_kind,
+        scoring_allowance_seconds=context.scoring_allowance_seconds)
+    if pick is None:
+        return []
+    driver_inserted = _driver_inserted_pick(context.objective, pick)
+    intent = _intent_from_pick(context.objective, pick, kind, score,
+                               driver_inserted=driver_inserted)
+    return [GeneratedAction(intent=intent, generator=LEGACY_SELECTOR_GENERATOR, pick=pick,
+                            kind=kind, reason=reason, score=score,
+                            driver_inserted=driver_inserted)]
+
+
+def _legacy_selector_evaluate(action: GeneratedAction,
+                              context: AcquisitionContext) -> ActionEvaluation:
+    """Score the legacy adapter's action from the vector its own tier logic already produced.
+
+    The legacy selector generates and ranks in one pass, so its evaluator reads the resulting
+    :class:`ProposalScore` rather than recomputing anything — carrying the *real* vector, because
+    ``to_full_dict`` presents this as the ranked score record and defaults would be a lie.
+    ``policy_rank`` stays at its default: the staged ranking comparator is PR3c's, and the legacy
+    adapter contributes a single already-chosen action with nothing to order against.
+    """
+    score = action.score
+    return ActionEvaluation(
+        intent=action.intent, generator=action.generator,
+        eligibility=ActionEligibility.ELIGIBLE,
+        selection_reason=action.reason,
+        expected_identity_gain=_finite_or_none(score.classification_eig),
+        expected_precision_gain=_finite_or_none(score.eig),
+        expected_measurement_cost=_finite_or_none(
+            score.ranking_cost if score.ranking_cost is not None else score.cost),
+        score_method=score.method)
+
+
+# The callables behind the declarative registry. The registry says *what* must run for an exhaustion
+# proof to be valid; these say *how*. They are validated against each other at import (below) because
+# either half drifting is a silent correctness failure: a registered generator with no callable would
+# report nothing and let an exhaustion proof cover an action class that never ran, and a callable with
+# no registry entry would simply never be consulted.
+ActionGenerator = Callable[[AcquisitionContext], list[GeneratedAction]]
+ActionEvaluator = Callable[[GeneratedAction, AcquisitionContext], ActionEvaluation]
+
+ACTION_GENERATORS: dict[str, ActionGenerator] = {
+    LEGACY_SELECTOR_GENERATOR: _legacy_selector_generate,
+}
+ACTION_EVALUATORS: dict[str, ActionEvaluator] = {
+    LEGACY_SELECTOR_GENERATOR: _legacy_selector_evaluate,
+}
+
+_declared = {spec.generator_id for spec in GENERATOR_REGISTRY}
+if set(ACTION_GENERATORS) != _declared or set(ACTION_EVALUATORS) != _declared:
+    raise RuntimeError(
+        "action generator/evaluator dispatch does not match the declared GENERATOR_REGISTRY: "
+        f"registry={sorted(_declared)} generators={sorted(ACTION_GENERATORS)} "
+        f"evaluators={sorted(ACTION_EVALUATORS)}")
+del _declared
+
+
+def _dedupe_generated(actions: list[GeneratedAction]) -> list[GeneratedAction]:
+    """Collapse actions asking the same scientific question, first-seen wins.
+
+    A duplicate is not a second option — it is one question that would be paid for twice. The surviving
+    order comes from :meth:`ActionInventory.dedupe_intents` so the intent-level rule has exactly one
+    implementation.
+    """
+    surviving = {intent.scientific_action_fingerprint
+                 for intent in ActionInventory.dedupe_intents([a.intent for a in actions])}
+    seen: set[str] = set()
+    kept: list[GeneratedAction] = []
+    for action in actions:
+        fingerprint = action.intent.scientific_action_fingerprint
+        if fingerprint in seen or fingerprint not in surviving:
+            continue
+        seen.add(fingerprint)
+        kept.append(action)
+    return kept
+
+
+def generate_action_intents(
+        context: AcquisitionContext) -> tuple[list[GeneratedAction], list[GeneratorReport]]:
+    """Run every registered generator, dedupe the result, and account for what each one did.
+
+    Failure isolation is per generator: one that raises leaves *its* actions unknown while its peers
+    keep contributing. The inventory is then incomplete — exhaustion is unprovable over an action
+    class that never ran — which the terminal reads as a resumable ``controller_fault`` rather than a
+    scientific result, and rather than the escaped exception that used to kill an unattended campaign.
+    """
+    raw: list[GeneratedAction] = []
+    failures: dict[str, str] = {}
+    for spec in GENERATOR_REGISTRY:
+        generator = ACTION_GENERATORS.get(spec.generator_id)
+        if generator is None:
+            failures[spec.generator_id] = "NotRegistered: no callable for a declared generator"
+            continue
+        try:
+            # The registry, not the generator, owns attribution: a generator that stamped a peer's id
+            # (by construction, by copy-paste, or by delegating to it) would make the accounting name
+            # the wrong producer, and every completeness/dedup count downstream would be about a
+            # generator that never ran.
+            raw.extend(replace(action, generator=spec.generator_id)
+                       for action in (generator(context) or []))
+        except Exception as error:  # noqa: BLE001 - a fault must be recorded, never escape
+            failures[spec.generator_id] = f"{type(error).__name__}: {error}"[:300]
+    kept = _dedupe_generated(raw)
+    return kept, _generator_reports(raw, kept, failures)
+
+
+def _generator_reports(raw: list[GeneratedAction], kept: list[GeneratedAction],
+                       failures: dict[str, str]) -> list[GeneratorReport]:
+    """One report per declared generator — the accounting an exhaustion proof rests on."""
+    reports: list[GeneratorReport] = []
+    for spec in GENERATOR_REGISTRY:
+        generator_id = spec.generator_id
+        if generator_id in failures:
+            reports.append(GeneratorReport(
+                generator=generator_id, status=GeneratorStatus.FAILED, generated=0,
+                error_code=failures[generator_id]))
+            continue
+        produced = sum(1 for action in raw if action.generator == generator_id)
+        survived = sum(1 for action in kept if action.generator == generator_id)
+        reports.append(GeneratorReport(
+            generator=generator_id, status=GeneratorStatus.COMPLETED, generated=survived,
+            deduped=produced - survived,
+            reason_code=("no_selectable_action" if not produced else
+                         "all_actions_deduplicated" if not survived else None)))
+    return reports
+
+
+def evaluate_action_intents(actions: list[GeneratedAction],
+                            context: AcquisitionContext) -> list[ActionEvaluation]:
+    """Score each generated action. Raises whatever an evaluator raises — see :func:`_evaluate_safely`."""
+    return [ACTION_EVALUATORS[action.generator](action, context) for action in actions]
+
+
+def _evaluate_safely(actions: list[GeneratedAction], context: AcquisitionContext
+                     ) -> tuple[list[GeneratedAction], list[ActionEvaluation], dict[str, str]]:
+    """Evaluate with the same per-generator isolation generation gets.
+
+    An action whose utility could not be computed cannot be ranked against its rivals: leaving it
+    eligible would let selection pick an unscored action, and dropping it quietly would let the
+    remaining set masquerade as the complete space. So an evaluator fault demotes its whole generator
+    to ``FAILED``, exactly as a generation fault does.
+    """
+    evaluations: dict[int, ActionEvaluation] = {}
+    failures: dict[str, str] = {}
+    for position, action in enumerate(actions):
+        evaluator = ACTION_EVALUATORS.get(action.generator)
+        if evaluator is None:
+            failures[action.generator] = "NotRegistered: no evaluator for a declared generator"
+            continue
+        try:
+            evaluations[position] = evaluator(action, context)
+        except Exception as error:  # noqa: BLE001 - an unscorable action is a fault, not an option
+            failures[action.generator] = f"{type(error).__name__}: {error}"[:300]
+    kept, scored = [], []
+    for position, action in enumerate(actions):
+        if action.generator in failures or position not in evaluations:
+            continue
+        kept.append(action)
+        scored.append(evaluations[position])
+    return kept, scored, failures
+
+
+def enumerate_actions(objective, model, results_so_far: list[dict], resolution_info=None,
+                      budget_state: dict | None = None, master_rows: list[dict] | None = None,
+                      fisher=None, classify=None, rival_band=None,
+                      runtime_limits: dict | None = None,
+                      track_anchor_index: int | None = None,
+                      track_zone_period: float | None = None,
+                      branch_track: dict | None = None,
+                      scoring_allowance_seconds: float = 60.0):
+    """Enumerate the acquisition action space and report per-generator completeness.
+
+    The pipeline is now the declared one — build one context, generate intents, dedupe them, evaluate
+    them, and hand the survivors to :func:`select_action` — rather than a single fused selector. With
+    only ``legacy_selector_adapter`` registered the selected action is identical to before; the split
+    exists so PR2.7's endpoint generators plug in beside it without either side rebuilding the world.
+    """
+    context = build_acquisition_context(
+        objective, model, results_so_far, resolution_info=resolution_info,
+        master_rows=master_rows, fisher=fisher, classify=classify, runtime_limits=runtime_limits,
+        track_anchor_index=track_anchor_index, track_zone_period=track_zone_period,
+        branch_track=branch_track, scoring_allowance_seconds=scoring_allowance_seconds)
+    generated, reports = generate_action_intents(context)
+    generated, evaluations, evaluator_failures = _evaluate_safely(generated, context)
+    if evaluator_failures:
+        # Demote just the faulting generators, leaving every healthy generator's generation accounting
+        # (including its dedupe count) intact — the failure is in scoring, not in what was enumerated.
+        reports = [GeneratorReport(generator=report.generator, status=GeneratorStatus.FAILED,
+                                   generated=0, error_code=evaluator_failures[report.generator])
+                   if report.generator in evaluator_failures else report
+                   for report in reports]
+    candidates = [_CandidateAction(generated=action, evaluation=evaluation, context=context)
+                  for action, evaluation in zip(generated, evaluations)]
+    return ActionInventory(evaluations=evaluations, reports=reports), candidates
 
 
 def select_action(inventory: ActionInventory,
                   candidates: list[_CandidateAction]) -> _CandidateAction | None:
-    """Choose the best eligible candidate. One candidate today; the staged ranking arrives in PR3."""
+    """Choose the best eligible candidate. The staged ranking comparator arrives in PR3c."""
     eligible = [c for c in candidates if c.evaluation.is_eligible]
     if not eligible:
         return None

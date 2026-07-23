@@ -232,6 +232,12 @@ class GeneratorReport:
     generated: int = 0
     reason_code: str | None = None   # why INAPPLICABLE / why it generated nothing
     error_code: str | None = None    # why FAILED
+    # Actions this generator produced that collapsed onto an earlier action's identical scientific
+    # question — whether that earlier action came from a peer generator or from this one asking the
+    # same thing twice. ``generated`` counts only the survivors, so it keeps matching the evaluations
+    # (the consistency rule in :meth:`ActionInventory.structural_problems`); without this field the
+    # collapse would be invisible and a generator that *did* contribute would look inapplicable.
+    deduped: int = 0
 
     @property
     def applicable(self) -> bool:
@@ -368,7 +374,7 @@ class ActionInventory:
             "selected_action_class": selected_action_class,
             "generators": [
                 {"generator": r.generator, "status": r.status.value, "generated": r.generated,
-                 "reason_code": r.reason_code, "error_code": r.error_code}
+                 "deduped": r.deduped, "reason_code": r.reason_code, "error_code": r.error_code}
                 for r in self.reports],
         }
 
@@ -385,7 +391,7 @@ class ActionInventory:
             "canonicalization_version": CANONICALIZATION_VERSION,
             "reports": [
                 {"generator": r.generator, "status": r.status.value, "generated": r.generated,
-                 "reason_code": r.reason_code, "error_code": r.error_code}
+                 "deduped": r.deduped, "reason_code": r.reason_code, "error_code": r.error_code}
                 for r in self.reports],
             "evaluations": [
                 {
