@@ -42,6 +42,33 @@ def test_tracked_opening_is_anchor_then_strictly_adjacent():
     assert (pick.index, kind) == (1, "quicklook")
 
 
+def _converged_master(hkl, hw=0.3, *, pool_consistent=True):
+    return {"hkl": hkl, "omega0": 3.0, "halfwidth": hw, "usable": True,
+            "reliable": True, "certifiable": True, "disposition": "resolved",
+            "pool_consistent": pool_consistent, "n_members": 2, "members": ["1", "2"]}
+
+
+def test_pool_inconsistent_point_is_re_acquired_not_abandoned():
+    """AP8 Q1: once the identity cascade is fixed, a confirmed interior point whose pooled master is
+    ``pool_consistent=False`` is an ordinary unconverged precision target — it has no certifiable
+    interval (deficit +inf) and one production so far — so the tracked selector must pick it for
+    another production rather than leaving the frontier with no action (which stopped AP8)."""
+    grid = _grid()
+    for index, g in enumerate(grid):
+        g.n_quicklook = 1
+        g.n_production = 1
+        g.track_state = "confirmed"
+        g.master = _converged_master(g.hkl, pool_consistent=(index != 3))
+    # Every point certifies except index 3, whose members disagree (pool_consistent=False).
+    assert not grid[3].converged and grid[3].cert_halfwidth is None
+    assert all(grid[i].converged for i in range(len(grid)) if i != 3)
+
+    pick, kind, _reason, score = _pick(grid)
+    assert pick is not None, "a pool-inconsistent frontier must remain actionable"
+    assert (pick.index, kind) == (3, "production")
+    assert score is not None
+
+
 def test_ambiguous_frontier_gets_one_bridge_then_is_revisited():
     grid = _grid()
     grid[0].n_quicklook = 1

@@ -1725,14 +1725,22 @@ def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tupl
                     tagged["evidence_source"] = "auxiliary_probe"
                     auxiliary_by_index.setdefault(index, []).append(tagged)
                 continue
-            if (index is not None and candidates and outcome.get("pooled")
-                    and outcome.get("pool_consistent") is not False):
+            if index is not None and candidates and outcome.get("pooled"):
                 exposure = outcome.get("effective_exposure")
                 try:
                     exposure = float(exposure)
                 except (TypeError, ValueError):
                     exposure = 0.0
-                rank = (int(outcome.get("n_members") or 0), exposure, order)
+                # A ``pool_consistent is False`` master's members disagree on ω₀, but the acoustic mode
+                # is still fitted — so its candidate is valid IDENTITY/connectivity evidence and must
+                # not be dropped. Dropping it emptied the q's observation, broke the tracked trajectory,
+                # and cascaded every confirmed downstream point to ``blocked`` (AP8). It stays out of
+                # the certifiable interval (stopping.py ``_master_hw``) and the dispersion prior
+                # (``_rebuild_*_prior``) independently, so keeping it here cannot certify a bad ω₀ or
+                # pollute the prior. When a q holds both a consistent and an inconsistent master the
+                # rank prefers the consistent one rather than excluding the other.
+                consistent = outcome.get("pool_consistent") is not False
+                rank = (int(consistent), int(outcome.get("n_members") or 0), exposure, order)
                 by_index.setdefault(index, []).append((rank, key, candidates))
     observations = []
     for index in range(len(path)):

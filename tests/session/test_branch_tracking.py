@@ -477,6 +477,87 @@ def test_inferred_gamma_endpoint_never_delivers_or_seeds_dispersion_prior():
     assert all(point.get("q") != path[0] for point in state.dispersion_prior)
 
 
+def _acoustic_master_outcome(q, energy, *, pool_consistent=True, n_members=2):
+    """A pooled, single-mode acoustic master on a rising connected trajectory."""
+    return {
+        "detector_id": "det0", "q": q, "T": 200.0, "sample": "sample",
+        "omega0": energy, "omega0_err": 0.08, "gamma": 0.2,
+        "interval": [energy - 0.16, energy + 0.16], "interval_reliable": True,
+        "pooled": True, "n_members": n_members, "pool_consistent": pool_consistent,
+        "fit_kind": "unconstrained", "best_label": "stokes+bg",
+        "verdict": "resolved", "modality": "fold", "gauss_fwhm": 0.8,
+        "modes": [{"omega0": energy, "omega0_err": 0.08, "gamma": 0.2,
+                   "gamma_err": 0.03, "amplitude": 5.0}],
+    }
+
+
+def test_pool_inconsistent_master_keeps_identity_connected():
+    """AP8: a single interior point going ``pool_consistent=False`` must NOT clear its own identity or
+    retract the confirmed identities of independently-confirmed downstream points.
+
+    The inconsistency is a disagreement between the pooled members' ω₀, not evidence that the acoustic
+    mode is absent — the mode is still fitted. Excluding its candidate from the tracker broke the
+    trajectory at that q and cascaded every downstream ``confirmed`` point to ``blocked`` (AP8 stopped
+    at path indices 14-20 with beam budget unused). The inconsistent q must stay connected (candidate
+    retained, not ``missing``) and its downstream neighbours must remain ``confirmed``.
+    """
+    path = [[2.15 + 0.05 * index, 0.0, 0.0] for index in range(5)]
+    state = CardState(
+        campaign_target={"branch": "acoustic", "label": "acoustic", "selector": "tracked_branch",
+                         "target_energy_meV": None, "energy_search_meV": [-2.0, 7.0], "path": path},
+        hypothesis_snapshot={"hypotheses": HYPOTHESES, "target_hypothesis": "acoustic",
+                             "steering": {"assignment_entropy_stop_nats": 1.0,
+                                          "maximum_bridge_steps": 1}})
+    card = SimpleNamespace(state=state, policy=SimpleNamespace(
+        dispersion={"zone_period": 2.0}, collation={"t_round": 5.0}))
+    session = SessionState()
+    energies = (1.8, 2.4, 3.0, 3.6, 4.2)          # a clean rising acoustic trajectory
+    inconsistent_index = 2
+    for index, energy in enumerate(energies):
+        outcome = _acoustic_master_outcome(
+            path[index], energy, pool_consistent=(index != inconsistent_index))
+        session.put(ScanEntry(scan_id=f"master:q{index}", scan_number=9_000_000 + index,
+                              scan_type="energy", status="fitted", detectors={"det0": outcome}))
+
+    track = _apply_tracked_branch(session, card, t_round=5.0)
+    states = [a["track_state"] for a in track["assignments"]]
+
+    # The inconsistent q stays connected: its candidate is retained (not dropped to an empty
+    # observation), so its track_state is not the frontier-closing "missing".
+    assert track["assignments"][inconsistent_index]["selected_candidate_index"] is not None
+    assert states[inconsistent_index] != "missing"
+    # Downstream points keep their own confirmed identity — no cascade to blocked.
+    assert states[inconsistent_index + 1] == "confirmed", states
+    assert states[inconsistent_index + 2] == "confirmed", states
+    assert "blocked" not in states[inconsistent_index:], states
+
+    # Safety: keeping the inconsistent master's IDENTITY evidence must not seed the dispersion prior
+    # with its untrustworthy ω₀. The prior rebuild excludes ``pool_consistent is False`` independently,
+    # so the inconsistent q is absent while its confirmed neighbours still seed the prior.
+    prior_qs = [tuple(round(float(v), 4) for v in point.get("q") or ()) for point in state.dispersion_prior]
+    assert (2.25, 0.0, 0.0) not in prior_qs, prior_qs
+    assert (2.2, 0.0, 0.0) in prior_qs and (2.3, 0.0, 0.0) in prior_qs, prior_qs
+
+
+def test_tracker_authority_prefers_the_consistent_master_when_both_exist_at_a_q():
+    """The rank tie-break: keeping inconsistent masters as identity evidence must never let one
+    OUTRANK a consistent master at the same q. A consistent master wins the authority even when the
+    inconsistent one has more members — inconsistency is the leading (worst) rank key."""
+    from isar.session.driver import _tracked_authorities
+
+    path = [[2.2, 0.0, 0.0]]
+    session = SessionState()
+    inconsistent = _acoustic_master_outcome(path[0], 3.0, pool_consistent=False, n_members=8)
+    consistent = _acoustic_master_outcome(path[0], 3.0, pool_consistent=True, n_members=2)
+    session.put(ScanEntry(scan_id="master:inconsistent", scan_number=9_000_001,
+                          scan_type="energy", status="fitted", detectors={"det0": inconsistent}))
+    session.put(ScanEntry(scan_id="master:consistent", scan_number=9_000_002,
+                          scan_type="energy", status="fitted", detectors={"det0": consistent}))
+
+    observations, _refs = _tracked_authorities(session, path)
+    assert observations[0]["authority"] == "master:consistent:det0"
+
+
 def test_session_wiring_recomputes_after_masters_and_rebuilds_connected_prior():
     path = [[2.0, 0.0, 0.0], [2.1, 0.0, 0.0]]
     state = CardState(

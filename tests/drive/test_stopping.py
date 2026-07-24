@@ -157,6 +157,22 @@ def test_unreliable_master_does_not_converge():
     assert st.evaluate_stop(obj, grid, _BUDGET).state != "met"
 
 
+def test_pool_inconsistent_master_never_certifies_even_when_tight():
+    # AP8 safety property: the identity tracker now keeps a pool_inconsistent master's candidate so the
+    # trajectory stays connected, but that must NOT let the master certify. Convergence seats only on a
+    # consistent, certifiable interval (_master_hw returns None when pool_consistent is False), so an
+    # inconsistent point stays unconverged no matter how tight its interval — and is instead re-acquired.
+    obj = _obj()
+    masters = []
+    for h in (2.1, 2.2, 2.3, 2.4):
+        m = _master((h, 0.0, 0.0), 0.001)      # a tiny, otherwise-certifiable interval
+        m["pool_consistent"] = False
+        masters.append(m)
+    grid = st.summarize_grid(obj, [], masters)
+    assert all(point.cert_halfwidth is None and not point.converged for point in grid)
+    assert st.evaluate_stop(obj, grid, _BUDGET).state != "met"
+
+
 def test_single_production_cannot_rescue_degraded_master():
     obj = _obj()
     obs = [_obs((h, 0.0, 0.0), "production", 0.3, disp="flagged") for h in (2.1, 2.2, 2.3, 2.4)]
