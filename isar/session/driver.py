@@ -178,6 +178,13 @@ class FitOutcome:
     # result. ``None`` on ordinary deliveries and on ledgers predating this field.
     search_energy_lo: float | None = None
     search_energy_hi: float | None = None
+    # Withheld target delivery (see _withhold_tracked_delivery). ``target_delivery_eligible`` gates
+    # certification/model/prior downstream; the other two carry the identity conclusion that survives
+    # the withheld number, and the reason a reader can act on. Declared here because the ledger
+    # rehydrates through this dataclass -- an undeclared key is logged and dropped on every carry.
+    target_delivery_eligible: bool = True
+    identity_branch_id: str | None = None
+    delivery_withheld_reason: str | None = None
     # Additive tracked-branch contract. Every fitted mode remains an unordered candidate; the joint
     # path tracker records which one is currently selected without erasing earlier alternatives.
     branch_candidates: list | None = None
@@ -3672,8 +3679,10 @@ _CSV_COLUMNS = [
     # Whether this row may supply the campaign target's delivered omega0 (PR review F2). False only
     # when the tracker's confirmed target identity rests on an auxiliary-probe candidate: the answer
     # is kept, the number is withheld, and the point still needs a canonical target measurement.
-    # Every historical row reads True.
-    "target_delivery_eligible",
+    # Every historical row reads True. The other two carry the *answer* across the frozen Stage II/III
+    # contract -- withheld delivery is only actionable downstream if the identity it kept, and the
+    # reason the number is absent, travel with it.
+    "target_delivery_eligible", "identity_branch_id", "delivery_withheld_reason",
 ]
 
 
@@ -3804,6 +3813,8 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 # Defaults True: only a withheld auxiliary-only delivery ever clears it, so every
                 # ordinary row and every historical CSV reads as deliverable.
                 "target_delivery_eligible": oc.get("target_delivery_eligible", True),
+                "identity_branch_id": oc.get("identity_branch_id"),
+                "delivery_withheld_reason": oc.get("delivery_withheld_reason"),
                 "assignment_entropy": oc.get("assignment_entropy"),
                 "resolvable": oc.get("resolvable"),
                 "descriptor_n_peaks": _descriptor_summary(oc)[0],

@@ -247,10 +247,13 @@ def _tracked_assignment():
 def _written_outcome_dict(writer):
     """Run one tracked-selection writer over a real outcome dict, as the driver does."""
     outcome = _outcome_with(None, None).to_dict()
+    candidate = {"candidate_ref": "acoustic:0", "energy_meV": 1.35,
+                 "probabilities": {"acoustic": 0.9}}
     if writer is driver._select_mode:
-        writer(outcome, {"candidate_ref": "acoustic:0", "energy_meV": 1.35,
-                         "probabilities": {"acoustic": 0.9}}, 0, _tracked_assignment(),
-               1, "acoustic")
+        writer(outcome, candidate, 0, _tracked_assignment(), 1, "acoustic")
+    elif writer is driver._withhold_tracked_delivery:
+        writer(outcome, {**candidate, "evidence_source": "auxiliary_probe"},
+               _tracked_assignment(), 1, "acoustic")
     else:
         writer(outcome, _tracked_assignment(), 1)
     return outcome
@@ -266,7 +269,8 @@ def test_carry_path_rehydrates_tracked_selection_outcome(writer):
     assert oc.is_reduced_q_origin is True
 
 
-@pytest.mark.parametrize("writer", [driver._select_mode, driver._clear_tracked_selection])
+@pytest.mark.parametrize("writer", [driver._select_mode, driver._clear_tracked_selection,
+                                   driver._withhold_tracked_delivery])
 def test_every_tracked_selection_key_is_a_declared_field(writer):
     """Writer/schema invariant: persisting a key the dataclass cannot accept is the bug class."""
     declared = {f.name for f in dataclasses.fields(driver.FitOutcome)}
