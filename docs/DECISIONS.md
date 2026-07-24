@@ -508,6 +508,35 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   (which needs a cross-zone structure-factor consumer that does not yet exist) is deferred to a later PR.
   **O25/O26 stay Partial** — AP1/AP2/AP3 campaign replays are unchanged by this. Evidence:
   `docs/campaigns/2026-07-23_AP6_ACTION_INVENTORY.md`.
+- **O29.** (2026-07-24, Implemented for the AP7 and AP8 terminals; a standing invariant on the terminal
+  taxonomy) **A campaign must not enter a terminal stop while measurement budget remains unless the
+  objective is met, the tolerance is infeasible by construction, the operator asked it to stop, or a
+  controller fault needs repair.** The legitimate terminals are `met`; `infeasible` (tolerance below the
+  resolution-asymmetry systematic floor, unreachable by construction); `incomplete` on genuine
+  measurement-budget or analysis-clock exhaustion; `operator_stopped`; and `controller_fault` — the last
+  a software defect surfaced for repair-and-resume, never a scientific result. Any *other* stop with beam
+  time still available — in particular an `action_inventory_exhausted` or a
+  `branch_ambiguity`/`frontier_blocked` while budget remains — is a smell: either the generator registry
+  lacks an action for a situation that is in fact resolvable, or a resolvable state was misclassified as
+  terminal. Two 2026-07-24 campaigns were exactly that. **AP7** converged all 20 measurable q, then
+  hard-failed *final certification* on an internal worklist-index invariant — the inferred reduced-q
+  origin is legitimately excluded from the master worklist, so the surviving canonical indices begin at 1
+  and the consumer's demand that they equal `range(len)` raised — and reported a bare `incomplete`. The
+  invariant now checks the union of worklist and `excluded_points` against `range(total)`, and a
+  non-completing certification pass is classified `controller_fault` (resumable) rather than reading as
+  data-limited. **AP8** confirmed the *entire* acoustic path, then a single interior point whose two
+  pooled members disagreed on ω₀ (`pool_consistent=False`, though the pooled value was within tolerance)
+  had its identity evidence dropped from the branch tracker; that emptied the q's observation, broke the
+  tracked trajectory, and retroactively wiped every downstream confirmed identity — collapsing the path
+  and stopping `branch_ambiguity`/`frontier_blocked` at indices 14–20 with unlimited budget unused. The
+  fix keeps a `pool_consistent=False` master's candidate as identity/connectivity evidence (the mode is
+  fitted; only its ω₀ *agreement* is in doubt), while convergence (`stopping._master_hw`) and the
+  dispersion prior (`_rebuild_*_prior`) gate on consistency independently, so the point stays connected
+  but unconverged and is *re-acquired* to resolve the disagreement instead of terminating. The standing
+  rule for future generators and terminals: before emitting a budget-remaining terminal, prove the action
+  space is genuinely empty relative to the registry (O28), and prefer acquiring more or better data over
+  discarding confirmed work. Evidence: `tests/drive/test_ap7_certification_replay.py`,
+  `tests/drive/test_ap8_pool_inconsistency_replay.py`, and the two 2026-07-24 fix commits.
 
 ## Session status update
 

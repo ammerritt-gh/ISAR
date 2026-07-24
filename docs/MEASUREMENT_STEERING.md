@@ -84,6 +84,17 @@ authorised scans.
 Once the acoustic rival's identity entropy is below the stopping threshold, it remains labeled context
 and receives no target-precision acquisition value.
 
+This generalizes into a standing terminal-taxonomy invariant (DECISIONS O29): **the campaign must not
+enter a terminal stop while measurement budget remains** unless one of five legitimate terminals holds —
+`met`, `infeasible` (tolerance below the systematic floor), `incomplete` on genuine budget/analysis-clock
+exhaustion, `operator_stopped`, or a `controller_fault` surfaced for repair-and-resume. Any *other* stop
+with beam time left — an `action_inventory_exhausted` or a `branch_ambiguity`/`frontier_blocked` while
+budget remains — is a defect to hunt, not a result: either the generator registry lacks an action for a
+situation that is in fact resolvable, or a resolvable state was misclassified as terminal. A software
+fault must be classified `controller_fault` rather than reported as a data-limited `incomplete`, and a
+point that only needs more or better data (an inconsistent pool, an unconfirmed identity) must be
+re-acquired rather than have its confirmed neighbours discarded.
+
 ---
 
 ## 1. The problem
