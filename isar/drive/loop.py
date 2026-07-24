@@ -3360,10 +3360,17 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                         decision = StopDecision("incomplete", [str(error)], decision.per_q)
                         break
                     if not ran_certify:
+                        # The only way here from a ``met`` decision is the catch-all fault in
+                        # ``_certify`` (an ``AnalysisLimitExceeded`` checkpoint is handled on its own
+                        # branch above, and the reused-early-exit returns True), so this is a
+                        # controller fault, not a scientific outcome.  Name it as such — checkpoints
+                        # are retained and the campaign resumes after repair — so a software bug is
+                        # never reported as a data-limited ``incomplete``.
                         decision = StopDecision(
                             "incomplete",
-                            ["final certification did not complete; checkpoints retained"],
-                            decision.per_q)
+                            ["controller_fault: final certification did not complete; checkpoints "
+                             "retained and resume is supported after repair"],
+                            decision.per_q, terminal_cause=TERMINAL_CONTROLLER_FAULT)
                         break
                     master_rows, grid = _grid_state(
                         objective, observations, cfg.workspace, cfg.calibration)
@@ -3766,10 +3773,14 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     decision = StopDecision("incomplete", [str(error)], decision.per_q)
 
             if decision is not None and decision.state == "met" and not ran_certify:
+                # A certify fault reached here from a ``met`` decision is a controller fault (the
+                # analysis-limit checkpoint and promotion-blocked paths above set their own reasons),
+                # so classify it rather than let a software bug read as a data-limited ``incomplete``.
                 decision = StopDecision(
                     "incomplete",
-                    ["final certification did not complete; checkpoints retained"],
-                    decision.per_q)
+                    ["controller_fault: final certification did not complete; checkpoints "
+                     "retained and resume is supported after repair"],
+                    decision.per_q, terminal_cause=TERMINAL_CONTROLLER_FAULT)
 
             # Recompute the stop decision on the FINAL grid unconditionally: the in-loop decision is from
             # the top of the last iteration, so a campaign that exhausts max_iters (or breaks on budget)

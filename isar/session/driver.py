@@ -2333,6 +2333,23 @@ def _publication_hashes(workspace: Workspace) -> dict[str, str]:
     return result
 
 
+def _assert_canonical_indices_cover_path(worklist, excluded) -> None:
+    """Every objective-path point must be accounted for exactly once — certified or excluded.
+
+    The worklist alone is NOT dense: the manifest builder legitimately omits structurally-
+    unresolvable points (the inferred reduced-q origin has no pooled master by construction) into
+    ``excluded_points``.  So the contiguity invariant is over the UNION of the worklist and excluded
+    canonical indices, not the worklist by itself.  Requiring the worklist to equal
+    ``range(len(worklist))`` on its own broke every campaign whose path starts at a zone-center
+    origin, where the surviving canonical indices begin at 1.
+    """
+    combined = sorted([int(unit.get("canonical_index", -1)) for unit in worklist]
+                      + [int(item.get("canonical_index", -1)) for item in excluded])
+    if combined != list(range(len(combined))):
+        raise ValueError("certification worklist and excluded points must together cover "
+                         "contiguous, unique canonical indices")
+
+
 def _run_master_certification(workspace, card, session, records, runcal, g, checkpoint_store,
                               *, summary, M, errors_tier, workers, bayes_opts,
                               deadline_gate, timer) -> RunSummary:
@@ -2344,8 +2361,7 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
             f"certification tier mismatch: manifest={requested_tier!r}, run={errors_tier!r}")
     worklist = list(manifest.get("worklist") or ())
     worklist.sort(key=lambda unit: int(unit.get("canonical_index", -1)))
-    if [int(unit.get("canonical_index", -1)) for unit in worklist] != list(range(len(worklist))):
-        raise ValueError("certification worklist canonical indices must be contiguous and unique")
+    _assert_canonical_indices_cover_path(worklist, manifest.get("excluded_points") or ())
     unit_keys = [str(unit.get("unit_key") or "") for unit in worklist]
     master_ids = [str(unit.get("master_id") or "") for unit in worklist]
     if (not all(unit_keys) or len(set(unit_keys)) != len(unit_keys)

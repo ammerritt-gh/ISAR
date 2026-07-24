@@ -302,3 +302,29 @@ def test_excluded_points_present_and_empty_when_nothing_skipped(tmp_path):
     manifest = json.loads(create_master_certification_manifest(
         root, request).read_text(encoding="utf-8"))
     assert manifest["excluded_points"] == []
+
+
+def test_worklist_index_gate_accepts_an_excluded_zone_origin():
+    """Consumer side of the AP7 fix: a worklist that starts at canonical index 1 because the
+    reduced-q origin was excluded must be accepted — the union of worklist + excluded covers the
+    path. Previously ``_run_master_certification`` demanded the worklist alone equal range(len),
+    which raised on every zone-origin acoustic campaign and hard-failed final certification."""
+    worklist = [{"canonical_index": i} for i in range(1, 21)]
+    excluded = [{"canonical_index": 0}]
+    driver._assert_canonical_indices_cover_path(worklist, excluded)  # no raise
+    # Dense worklist with no exclusions still fine.
+    driver._assert_canonical_indices_cover_path(
+        [{"canonical_index": 0}, {"canonical_index": 1}], [])
+
+
+def test_worklist_index_gate_still_rejects_gaps_and_duplicates():
+    """The exclusion tolerance must not weaken the real guarantee: every path point accounted for
+    exactly once. A hole in the combined index set (a silently dropped point) or a duplicate is
+    still a hard error."""
+    with pytest.raises(ValueError, match="contiguous, unique"):
+        # combined {0, 2} leaves index 1 unaccounted for — a silently dropped point.
+        driver._assert_canonical_indices_cover_path(
+            [{"canonical_index": 2}], [{"canonical_index": 0}])
+    with pytest.raises(ValueError, match="contiguous, unique"):
+        driver._assert_canonical_indices_cover_path(
+            [{"canonical_index": 1}, {"canonical_index": 1}], [{"canonical_index": 0}])

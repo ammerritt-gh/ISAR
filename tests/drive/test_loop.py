@@ -1291,6 +1291,23 @@ def test_terminal_and_certification_refuse_unresolved_current_promotion(tmp_path
                    for event in events if event["kind"] == "decide")
 
 
+def test_certify_failure_is_classified_as_controller_fault(tmp_path, monkeypatch):
+    # Change 2 (AP7): the campaign converges (met) in-loop, then the forced final-certification pass
+    # does not complete. A certify failure reached from a `met` decision is a controller fault (e.g.
+    # the worklist-index invariant violation that hard-failed AP7), never a data-limited scientific
+    # outcome. It must terminate `incomplete` with terminal_cause="controller_fault" so a software
+    # bug is surfaced for repair-and-resume rather than reported as a certified/data-limited campaign.
+    omega = lambda h: (h - 2.0) * 2.0
+    monkeypatch.setattr(loop_mod, "_certify", lambda **kw: (kw["observations"], False))
+
+    summary, _ws = _run(
+        tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega, hesse_only=True))
+
+    assert summary["stop"]["state"] == "incomplete"
+    assert summary["stop"].get("terminal_cause") == "controller_fault"
+    assert "controller_fault" in summary["stop"]["reasons"][0]
+
+
 def _widen_last_pooled_master(workspace, halfwidth=0.75):
     results_path = Path(workspace) / "report" / "results.csv"
     with open(results_path, newline="", encoding="utf-8") as stream:
