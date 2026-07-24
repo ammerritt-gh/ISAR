@@ -1944,16 +1944,23 @@ def classify_rejection(verdict: str) -> ActionRejection:
     return ActionRejection(verdict=str(verdict), rejection_class=rejection_class, scope=scope)
 
 
-def suppressed_actions(log_path) -> tuple[dict[str, dict], dict[str, dict]]:
+def suppressed_actions(log_path) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict]]:
     """Rebuild the durable suppression sets from the session log.
 
     Suppression is derived state, never a second durable store: a resume that could not rebuild it
     would re-propose something the instrument has already refused, every iteration, for the rest of
-    the campaign. Returns ``(by_scientific_action, by_hkl)``; request-scoped and transient entries are
-    recorded for forensics and deliberately do not narrow the action space.
+    the campaign. Returns ``(by_scientific_action, by_hkl, by_request)``.
+
+    ``by_request`` is keyed by ``request_fingerprint`` and holds requests that were refused *as that
+    exact request* (``validation_rejected`` / ``insufficient_target_support``). It deliberately does
+    NOT feed ``by_action``: the widen / re-center / step-shrink ladder answering the same scientific
+    question with a *different* window keys off the scientific action fingerprint and must stay open —
+    only the identical request is blocked from re-emitting. Transient entries are recorded for
+    forensics and narrow nothing.
     """
     by_action: dict[str, dict] = {}
     by_hkl: dict[str, dict] = {}
+    by_request: dict[str, dict] = {}
     for event in read_log(log_path):
         if event.get("kind") != "action_suppressed":
             continue
@@ -1967,7 +1974,9 @@ def suppressed_actions(log_path) -> tuple[dict[str, dict], dict[str, dict]]:
             by_hkl[hkl_key(payload["hkl"])] = entry
         elif scope == "action" and payload.get("scientific_action_fingerprint"):
             by_action[str(payload["scientific_action_fingerprint"])] = entry
-    return by_action, by_hkl
+        elif scope == "request" and payload.get("request_fingerprint"):
+            by_request[str(payload["request_fingerprint"])] = entry
+    return by_action, by_hkl, by_request
 
 
 # How many actions one iteration may try before giving the loop back its turn. A refused request
@@ -1976,17 +1985,28 @@ MAX_ACTION_ATTEMPTS_PER_ITERATION = 3
 
 
 def _record_action_rejection(cfg, plan, proposal, verdict: str,
-                             action_suppressions: dict, unreachable_hkl: dict, *, it: int):
+                             action_suppressions: dict, unreachable_hkl: dict,
+                             request_suppressions: dict, *, it: int):
     """Record one refusal at its correct scope and return the next action to try, if any.
 
     Always logs, because a refusal is evidence about the action space even when it suppresses
     nothing. Only a durable scope narrows the space *and* justifies moving on to another action this
-    iteration: a ``request``-scoped refusal is handed back to the widen / re-center ladder that
-    already owns it, and a transient one is left entirely alone.
+    iteration:
+
+    * ``geometry`` charges the **hkl** (``unreachable_hkl``);
+    * ``action`` charges the **scientific action fingerprint** (``action_suppressions``);
+    * ``request`` charges only the **request fingerprint** (``request_suppressions``) so the exact
+      request is not re-emitted, while the scientific action — and with it the widen / re-center /
+      step-shrink ladder that answers the same question with a different window — stays untouched;
+    * a transient refusal is left entirely alone and does not advance to another action.
+
+    The logged ``action_suppressed`` event carries the scope and the request fingerprint, so a resume
+    rebuilds every set (including ``request_suppressions``) from the durable log.
     """
     rejection = classify_rejection(verdict)
     meta = proposal.meta or {}
     fingerprint = meta.get("scientific_action_fingerprint")
+    request_fingerprint = meta.get("proposal_fingerprint")
     hkl = [proposal.h, proposal.k, proposal.l]
     reason = f"{verdict} at hkl={hkl}"
     log_event(cfg.log_path, "action_suppressed", {
@@ -1995,7 +2015,7 @@ def _record_action_rejection(cfg, plan, proposal, verdict: str,
         "rejection_class": rejection.rejection_class.value,
         "reason": reason,
         "scientific_action_fingerprint": fingerprint,
-        "request_fingerprint": meta.get("proposal_fingerprint"),
+        "request_fingerprint": request_fingerprint,
         "hkl": hkl,
         "acquisition_id": proposal.acquisition_id,
         "iter": it})
@@ -2004,9 +2024,93 @@ def _record_action_rejection(cfg, plan, proposal, verdict: str,
         unreachable_hkl[hkl_key(hkl)] = entry
     elif rejection.scope == "action" and fingerprint:
         action_suppressions[str(fingerprint)] = entry
+    elif rejection.scope == "request" and request_fingerprint:
+        request_suppressions[str(request_fingerprint)] = entry
     else:
         return None
     return plan.next_proposal() if plan is not None else None
+
+
+def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
+                             request_suppressions: dict, *, it: int):
+    """Select the best not-yet-tried action, finalize it, and hand back a ready proposal (O29).
+
+    Selection and finalization are one bounded step so that a first action which cannot fund its
+    minimum batch — or which the instrument cannot deliver — no longer terminates a campaign while a
+    cheaper eligible action is still affordable. A budget / instrument refusal raised during
+    finalization is caught here, logged, and the next candidate is tried instead; only when *no*
+    remaining candidate can be finalized does a terminal fire — ``infeasible`` if any instrument limit
+    was hit, otherwise ``incomplete``.
+
+    Request suppression is a *preference*, not a terminal: a finalized proposal whose
+    ``request_fingerprint`` is already in ``request_suppressions`` (an unchanged request the log says
+    was refused) is skipped in favour of a fresh action, and a different window at the same q keeps its
+    own fingerprint and stays allowed. But if the only realizable action *is* that already-refused
+    request, it is re-emitted rather than reported as an empty action space — an operational refusal is
+    not evidence the q is infeasible, and the inventory still holds the action as eligible, so
+    fabricating exhaustion here would trip the controller-fault guard on a legitimate frontier. The
+    global iteration limit is the guardrail when the instrument never accepts that request.
+
+    Returns ``(proposal, None)`` for a ready proposal, ``(None, StopDecision)`` when a budget /
+    instrument terminal is the honest outcome, or ``(None, None)`` when the plan genuinely ran out of
+    candidates — the caller then falls through to the blocked-frontier / exhausted-action-space path,
+    which reads the same canonical inventory for its terminal proof.
+    """
+    instrument_error: Exception | None = None
+    budget_error: Exception | None = None
+    suppressed_fallback = None   # a realizable request already refused: re-emitted only if nothing fresh remains
+    while True:
+        # Both the realization (``next_proposal`` → ``_build_proposal``) and the finalize clamp can
+        # raise the affordability/instrument-limit exceptions, so both live inside one handler — the
+        # refusal is charged and the loop tries the next candidate rather than terminating (O29).
+        try:
+            proposal = plan.next_proposal()
+            if proposal is not None:
+                _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+        except InstrumentLimitBelowMinimumBatch as error:
+            log_event(cfg.log_path, "exception", {
+                "action": "instrument_limit_below_minimum_batch",
+                "error": str(error), "iter": it})
+            instrument_error = error
+            continue
+        except BudgetInsufficientForMinimumBatch as error:
+            log_event(cfg.log_path, "exception", {
+                "action": "budget_insufficient_for_minimum_batch",
+                "error": str(error), "iter": it})
+            budget_error = error
+            continue
+        if proposal is None:
+            # Nothing fresh left. Prefer re-emitting a realizable (already-refused) request over any
+            # terminal — an emittable action means the campaign is not truly out of options.
+            if suppressed_fallback is not None:
+                log_event(cfg.log_path, "decide", {
+                    "event": "request_reemitted_no_alternative",
+                    "action": "request_reemitted_no_alternative",
+                    "request_fingerprint": finalized_proposal(suppressed_fallback).request_fingerprint
+                    if finalized_proposal(suppressed_fallback) is not None else None,
+                    "hkl": [suppressed_fallback.h, suppressed_fallback.k, suppressed_fallback.l],
+                    "iter": it})
+                return suppressed_fallback, None
+            if instrument_error is not None:
+                return None, StopDecision(
+                    "infeasible", [str(instrument_error)],
+                    evaluate_stop(objective, grid, budget_state,
+                                  calibration=cfg.calibration, floor=cfg.floor).per_q)
+            if budget_error is not None:
+                return None, StopDecision(
+                    "incomplete", [str(budget_error)],
+                    evaluate_stop(objective, grid, budget_state,
+                                  calibration=cfg.calibration, floor=cfg.floor).per_q)
+            return None, None
+        finalized = finalized_proposal(proposal)
+        if finalized is not None and finalized.request_fingerprint in request_suppressions:
+            log_event(cfg.log_path, "decide", {
+                "event": "request_suppressed_skip", "action": "request_suppressed_skip",
+                "request_fingerprint": finalized.request_fingerprint,
+                "hkl": [proposal.h, proposal.k, proposal.l], "iter": it})
+            suppressed_fallback = suppressed_fallback or proposal
+            continue
+        return proposal, None
 
 
 def _declined_observation(proposal, verdict: str) -> dict:
@@ -3262,7 +3366,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     proposal_counter = resumed.get("proposal_counter", 0)
     # Derived from the durable log, never a second store: a resume that could not rebuild this would
     # re-propose an action the instrument has already refused on every remaining iteration.
-    action_suppressions, unreachable_hkl = suppressed_actions(cfg.log_path)
+    action_suppressions, unreachable_hkl, request_suppressions = suppressed_actions(cfg.log_path)
     limit_envelope = {
         "discovered": dict(cfg.instrument_limits or {}),
         "effective": _runtime_limits(cfg, objective),
@@ -3464,6 +3568,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                          if campaign_slice is not None else None))
                 action_inventory = None
                 plan = None
+                proposal = None
+                selection_terminal: StopDecision | None = None
                 with timed(cfg.log_path, "propose", iteration=it):
                     try:
                         analysis_remaining = (float("inf") if objective.analysis_limit_seconds is None
@@ -3491,25 +3597,20 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                 campaign_slice=campaign_slice,
                                 campaign_slice_error=campaign_slice_error)
                             action_inventory = plan.inventory
-                            proposal = plan.next_proposal()
-                        if proposal is not None:
-                            _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+                        # Selection + finalization are one bounded step: an unaffordable / instrument-
+                        # refused first action is charged and the next eligible candidate tried, rather
+                        # than terminating the campaign while a cheaper action is still affordable (O29).
+                        proposal, selection_terminal = _next_finalized_proposal(
+                            plan, objective, cfg, grid, budget_state, request_suppressions, it=it)
                     except AnalysisLimitExceeded as error:
                         decision = StopDecision("incomplete", [str(error)], decision.per_q)
                         proposal = None
-                    except (BudgetInsufficientForMinimumBatch,
-                            InstrumentLimitBelowMinimumBatch) as error:
-                        log_event(cfg.log_path, "exception", {
-                            "action": ("instrument_limit_below_minimum_batch"
-                                       if isinstance(error, InstrumentLimitBelowMinimumBatch)
-                                       else "budget_insufficient_for_minimum_batch"),
-                            "error": str(error), "iter": it})
-                        decision = StopDecision(
-                            ("infeasible" if isinstance(error, InstrumentLimitBelowMinimumBatch)
-                             else "incomplete"), [str(error)],
-                            evaluate_stop(objective, grid, budget_state,
-                                          calibration=cfg.calibration, floor=cfg.floor).per_q)
-                        proposal = None
+                if selection_terminal is not None:
+                    # No remaining candidate could be finalized/afforded: a budget (incomplete) or
+                    # instrument (infeasible) terminal. The proposal-less path below leaves an already
+                    # non-continue decision untouched and still stamps the inventory proof.
+                    decision = selection_terminal
+                    proposal = None
                 if action_inventory is not None:
                     inventory_ref, selected_fingerprint = _persist_action_inventory(
                         cfg, action_inventory, it=it, proposal=proposal,
@@ -3626,13 +3727,26 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
 
                     if declined_verdict is None:
                         break
-                    next_proposal = _record_action_rejection(
-                        cfg, plan, proposal, declined_verdict, action_suppressions,
-                        unreachable_hkl, it=it)
-                    if next_proposal is None:
+                    # Charge the refusal at its scope (populating suppressions / by_request and logging
+                    # the durable event). A transient refusal (scope "none") suppresses nothing and does
+                    # not advance to another action, matching the original break.
+                    _record_action_rejection(
+                        cfg, None, proposal, declined_verdict, action_suppressions,
+                        unreachable_hkl, request_suppressions, it=it)
+                    if classify_rejection(declined_verdict).scope == "none":
                         break
-                    proposal = next_proposal
-                    _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+                    # Pull + finalize the next candidate through the same bounded helper the initial
+                    # selection uses, so a budget/instrument refusal here is classified into a terminal
+                    # instead of escaping as an exception (GAP 1), and an already-refused request is not
+                    # re-emitted (GAP 2).
+                    proposal, fallback_terminal = _next_finalized_proposal(
+                        plan, objective, cfg, grid, budget_state, request_suppressions, it=it)
+                    if fallback_terminal is not None:
+                        decision = fallback_terminal
+                        stop_campaign = True
+                        break
+                    if proposal is None:
+                        break
                 if stop_campaign:
                     break
 

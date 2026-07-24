@@ -3010,3 +3010,105 @@ def test_force_kill_run_without_results_row_counts_spend(tmp_path):
     assert r["scan_counter"] == 1                               # the submitted scan is on the ledger
     assert r["neutrons"] == pytest.approx(6.0e9)                # its spend is counted (no free re-do)
     assert r["observations"] == []                             # but nothing folded → the q looks unmeasured
+
+
+# --------------------------------------------------- selection + finalize as one bounded step (O29)
+# GAP 1: an unaffordable / instrument-refused first action must not terminate a campaign while a
+# cheaper eligible action is still affordable. Selection and finalization are unified in
+# _next_finalized_proposal, which classifies a budget/instrument refusal and tries the next candidate
+# instead of letting it escape or stop the loop. These exercise the helper directly with a fake plan
+# and a monkeypatched _finalize_proposal (the full campaign harness is unnecessary weight for this).
+
+class _FakePlan:
+    """Hands back a fixed sequence of proposals, then None — the ordering ``next_proposal`` guarantees."""
+
+    def __init__(self, proposals):
+        self._proposals = list(proposals)
+        self._i = 0
+
+    def next_proposal(self):
+        if self._i >= len(self._proposals):
+            return None
+        proposal = self._proposals[self._i]
+        self._i += 1
+        return proposal
+
+
+def _fake_proposal(reason, **meta):
+    return types.SimpleNamespace(
+        h=2.1, k=0.0, l=0.0, e_lo=-2.0, e_hi=7.0, e_step=0.5, n_points=19, ncount=100,
+        kind="production", reason=reason, acquisition_id=None, intent=None, meta=dict(meta))
+
+
+def _helper_cfg(tmp_path):
+    return types.SimpleNamespace(log_path=tmp_path / "log.jsonl", calibration=_UNITY_CAL, floor=None)
+
+
+def test_next_finalized_proposal_skips_an_unaffordable_action_for_an_affordable_one(tmp_path, monkeypatch):
+    """The concrete O29 failure: a broad legacy production scan cannot fund its minimum batch, but the
+    narrow rival probe is affordable — the campaign must run the narrow action, not stop."""
+    broad, narrow = _fake_proposal("broad"), _fake_proposal("narrow")
+
+    def fake_finalize(proposal, objective, cfg, budget_state, *, it):
+        if proposal.reason == "broad":
+            raise loop_mod.BudgetInsufficientForMinimumBatch("need 100, have 10")
+
+    monkeypatch.setattr(loop_mod, "_finalize_proposal", fake_finalize)
+    plan = _FakePlan([broad, narrow])
+
+    proposal, terminal = loop_mod._next_finalized_proposal(
+        plan, types.SimpleNamespace(), _helper_cfg(tmp_path), [],
+        {"kind": "neutrons", "amount": 1_000.0, "spent": 0.0}, {}, it=0)
+
+    assert terminal is None
+    assert proposal is narrow
+
+
+@pytest.mark.parametrize("exc_cls, expected_state", [
+    (loop_mod.BudgetInsufficientForMinimumBatch, "incomplete"),
+    (loop_mod.InstrumentLimitBelowMinimumBatch, "infeasible"),
+])
+def test_next_finalized_proposal_classifies_a_finalization_failure(
+        tmp_path, monkeypatch, exc_cls, expected_state):
+    """GAP 1: when finalization raises during the post-decline fallback (or when no candidate is
+    affordable), the refusal is classified into a terminal StopDecision rather than escaping as an
+    exception. An instrument limit is ``infeasible``; running out of budget is ``incomplete``."""
+    only = _fake_proposal("only")
+
+    def fake_finalize(proposal, objective, cfg, budget_state, *, it):
+        raise exc_cls("boom")
+
+    monkeypatch.setattr(loop_mod, "_finalize_proposal", fake_finalize)
+    monkeypatch.setattr(loop_mod, "evaluate_stop",
+                        lambda *a, **k: StopDecision("continue", [], [{"hkl": [2.1, 0.0, 0.0]}]))
+    plan = _FakePlan([only])
+
+    proposal, terminal = loop_mod._next_finalized_proposal(
+        plan, types.SimpleNamespace(), _helper_cfg(tmp_path), [],
+        {"kind": "neutrons", "amount": 1.0, "spent": 0.0}, {}, it=0)
+
+    assert proposal is None
+    assert terminal is not None and terminal.state == expected_state
+    assert "boom" in terminal.reasons[0]
+
+
+def test_next_finalized_proposal_skips_a_request_already_in_the_suppression_set(tmp_path, monkeypatch):
+    """GAP 2: a finalized proposal whose ``request_fingerprint`` is in the restored ``by_request`` set
+    (an unchanged request the log says was already refused) is skipped in favour of the next action —
+    the exact request is not re-emitted, while a different window at the same q stays allowed."""
+    suppressed, fresh = _fake_proposal("suppressed"), _fake_proposal("fresh")
+
+    monkeypatch.setattr(loop_mod, "_finalize_proposal", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "finalized_proposal",
+                        lambda proposal: types.SimpleNamespace(
+                            request_fingerprint=("req-old" if proposal.reason == "suppressed"
+                                                 else "req-new")))
+    plan = _FakePlan([suppressed, fresh])
+
+    proposal, terminal = loop_mod._next_finalized_proposal(
+        plan, types.SimpleNamespace(), _helper_cfg(tmp_path), [],
+        {"kind": "neutrons", "amount": 1_000_000.0, "spent": 0.0},
+        {"req-old": {"class": "structural", "reason": "validation_rejected"}}, it=0)
+
+    assert terminal is None
+    assert proposal is fresh

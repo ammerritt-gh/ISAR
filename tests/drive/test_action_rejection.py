@@ -24,6 +24,8 @@ request — would silently disable the missed-window recovery ladder.
 """
 from __future__ import annotations
 
+import types
+
 import pytest
 
 from isar.drive import loop as loop_mod
@@ -234,11 +236,85 @@ def test_suppressions_are_rederived_from_the_session_log(tmp_path):
         "scientific_action_fingerprint": "fp-blip", "hkl": [2.6, 0.0, 0.0], "scope": "none",
         "rejection_class": "transient", "reason": "connection lost", "iter": 6})
 
-    by_action, by_hkl = loop_mod.suppressed_actions(log_path)
+    by_action, by_hkl, by_request = loop_mod.suppressed_actions(log_path)
     assert by_action == {}
     assert set(by_hkl) == {"3,0,0"}
     assert by_hkl["3,0,0"]["class"] == "structural"
     assert "geometry_unreachable" in by_hkl["3,0,0"]["reason"]
+    # A request-scoped event now rebuilds the third suppression set, keyed by request_fingerprint, so
+    # an unchanged request the instrument already refused is not re-emitted after a resume. It must NOT
+    # touch by_action: the widen / re-center ladder answering the same question with a different window
+    # keys off the scientific action fingerprint and has to stay open.
+    assert set(by_request) == {"req-1"}
+    assert by_request["req-1"]["class"] == "structural"
+    assert "validation_rejected" in by_request["req-1"]["reason"]
+
+
+# -- request-scoped refusal: record the request, hand back the next action -------------------------
+
+class _OneShotPlan:
+    """Minimal plan stand-in: hands back a single fixed next action, counting how often it was asked."""
+
+    def __init__(self, nxt):
+        self._nxt = nxt
+        self.calls = 0
+
+    def next_proposal(self):
+        self.calls += 1
+        return self._nxt
+
+
+def _refused_proposal():
+    return types.SimpleNamespace(
+        h=2.5, k=0.0, l=0.0, acquisition_id="acq-1",
+        meta={"scientific_action_fingerprint": "sci-1", "proposal_fingerprint": "req-1"})
+
+
+def test_a_request_scoped_rejection_records_by_request_and_offers_the_next_action(tmp_path):
+    """GAP 2: a ``validation_rejected`` request must not cost the whole iteration. The refusal is
+    charged to the *request* (so the exact request is not re-emitted), the scientific action is left
+    untouched (its widen/recenter ladder stays open), and the plan's next eligible action is returned
+    so the loop can attempt it immediately."""
+    cfg = types.SimpleNamespace(log_path=tmp_path / "log.jsonl")
+    nxt = object()
+    plan = _OneShotPlan(nxt)
+    action_suppressions: dict = {}
+    unreachable_hkl: dict = {}
+    by_request: dict = {}
+
+    result = loop_mod._record_action_rejection(
+        cfg, plan, _refused_proposal(), "validation_rejected",
+        action_suppressions, unreachable_hkl, by_request, it=3)
+
+    assert result is nxt
+    assert plan.calls == 1
+    assert set(by_request) == {"req-1"}
+    assert by_request["req-1"]["class"] == "structural"
+    # The scientific action fingerprint must stay live — request scope never narrows the action space.
+    assert action_suppressions == {}
+    assert unreachable_hkl == {}
+    events = [e["payload"] for e in loop_mod.read_log(cfg.log_path)
+              if e.get("kind") == "action_suppressed"]
+    assert len(events) == 1
+    assert events[0]["scope"] == "request"
+    assert events[0]["request_fingerprint"] == "req-1"
+
+
+def test_a_transient_rejection_records_nothing_durable_and_offers_no_next_action(tmp_path):
+    """A transient refusal (network/queue) suppresses nothing and does not advance to another action:
+    it must never become a durable scientific conclusion on the strength of one blip."""
+    cfg = types.SimpleNamespace(log_path=tmp_path / "log.jsonl")
+    plan = _OneShotPlan(object())
+    action_suppressions: dict = {}
+    unreachable_hkl: dict = {}
+    by_request: dict = {}
+
+    result = loop_mod._record_action_rejection(
+        cfg, plan, _refused_proposal(), "instrument_submission_failed",
+        action_suppressions, unreachable_hkl, by_request, it=3)
+
+    assert result is None
+    assert action_suppressions == {} and unreachable_hkl == {} and by_request == {}
 
 
 def test_an_unreachable_q_stays_suppressed_when_the_evidence_basis_moves():
