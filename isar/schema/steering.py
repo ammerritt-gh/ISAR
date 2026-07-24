@@ -12,7 +12,10 @@ Everything here is a small frozen dataclass with ``to_dict``/``from_dict`` so it
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -128,14 +131,25 @@ class ScanDescriptor:
 #   track_edge_evidence  informs the transition between two path points rather than either endpoint.
 #   branch_belief_only   updates the branch belief model and nothing else; never enters a track.
 #
-# Unknown values must be treated as ``canonical_master`` by consumers, so a sink introduced by a newer
-# writer cannot silently acquire privileges from an older reader.
+# An *absent* sink reads as ``canonical_master``: hand-loaded data and every scan written before the
+# field existed are ordinary evidence and must keep pooling exactly as they did. An *explicitly
+# unrecognised* sink does not, and the distinction is the whole point. ``canonical_master`` is not the
+# safe default — it is the most privileged sink there is, the one whose counts certify the target. A
+# scan whose routing this reader does not understand is quarantined to ``UNKNOWN_SINK`` instead: still
+# parsed, still fit, still reported and visible in the coverage map (nothing is ever deleted), but
+# never pooled and never merged as tracker evidence.
 CANONICAL_MASTER = "canonical_master"
 AUXILIARY_TRACK_NODE = "auxiliary_track_node"
 TRACK_EDGE_EVIDENCE = "track_edge_evidence"
 BRANCH_BELIEF_ONLY = "branch_belief_only"
 
 EVIDENCE_SINKS = (CANONICAL_MASTER, AUXILIARY_TRACK_NODE, TRACK_EDGE_EVIDENCE, BRANCH_BELIEF_ONLY)
+
+# Deliberately NOT a member of ``EVIDENCE_SINKS``: it is not a routing decision a writer may declare
+# (``MeasurementIntent.__post_init__`` rejects it on the write side), it is a reader's record that the
+# declared routing was unintelligible. Every consumer that tests for a specific sink therefore excludes
+# it without needing to know it exists.
+UNKNOWN_SINK = "unknown_sink"
 
 # Sinks whose scans must never be pooled into a canonical master, nor occupy a certification point.
 NON_CANONICAL_SINKS = (AUXILIARY_TRACK_NODE, TRACK_EDGE_EVIDENCE, BRANCH_BELIEF_ONLY)
@@ -183,10 +197,14 @@ def evidence_sink_for(raw_header, acquisition_provenance) -> str:
     """The sink a scan was acquired under, from its TAVI job id and the driver's provenance map.
 
     Takes the two pieces rather than a record and a card so both callers can use it without importing
-    each other: reduction has the record and the card state, the session has the same. A scan with no
-    TAVI job, no matching provenance entry, or an unrecognised sink is ``canonical_master`` — hand-loaded
-    data and every scan written before this field existed are ordinary evidence, and a sink from a newer
-    writer must not acquire privileges from an older reader.
+    each other: reduction has the record and the card state, the session has the same.
+
+    Absent and unrecognised are different answers. A scan with no TAVI job, no matching provenance
+    entry, or a provenance entry that never carried the field is ``canonical_master`` — hand-loaded data
+    and every scan written before this field existed are ordinary evidence and must keep pooling exactly
+    as they did. A sink that is *present but unrecognised* fails closed to :data:`UNKNOWN_SINK`: falling
+    open to ``canonical_master`` would hand a scan whose routing this reader cannot interpret the one
+    privilege that matters, pooling its counts into the ΣN that certifies the target.
     """
     raw = raw_header if isinstance(raw_header, dict) else {}
     tavi = raw.get("tavi")
@@ -196,7 +214,15 @@ def evidence_sink_for(raw_header, acquisition_provenance) -> str:
     for item in reversed(list(acquisition_provenance or [])):
         if str(item.get("job_id")) == str(job_id):
             sink = item.get("evidence_sink")
-            return sink if sink in EVIDENCE_SINKS else CANONICAL_MASTER
+            if sink is None:                       # pre-field record: ordinary evidence
+                return CANONICAL_MASTER
+            if sink in EVIDENCE_SINKS:
+                return sink
+            log.warning(
+                "quarantining scan for TAVI job %s: unrecognised evidence_sink %r (known: %s). "
+                "The scan is still fit and reported, but it will not be pooled into a canonical "
+                "master or merged as tracker evidence.", job_id, sink, ", ".join(EVIDENCE_SINKS))
+            return UNKNOWN_SINK
     return CANONICAL_MASTER
 
 

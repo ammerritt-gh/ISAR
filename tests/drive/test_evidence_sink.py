@@ -17,7 +17,8 @@ import pytest
 
 from isar.drive.acquisition.inventory import MeasurementIntent
 from isar.schema.steering import (AUXILIARY_TRACK_NODE, CANONICAL_MASTER, EVIDENCE_SINKS,
-                                  NON_CANONICAL_SINKS, evidence_sink_for, realized_outcome_for)
+                                  NON_CANONICAL_SINKS, UNKNOWN_SINK, evidence_sink_for,
+                                  realized_outcome_for)
 
 
 def _intent(**kw):
@@ -80,10 +81,26 @@ def test_a_pre_existing_provenance_record_reads_as_canonical():
                              [{"job_id": "7", "acquisition_id": "a"}]) == CANONICAL_MASTER
 
 
-def test_a_sink_from_a_newer_writer_gains_no_privileges():
-    """An older reader must not grant unfamiliar sinks the auxiliary treatment it cannot implement."""
-    assert evidence_sink_for({"tavi": {"job_id": "7"}},
-                             [{"job_id": "7", "evidence_sink": "from_the_future"}]) == CANONICAL_MASTER
+def test_a_sink_from_a_newer_writer_fails_closed(caplog):
+    """An older reader must not grant unfamiliar sinks the auxiliary treatment it cannot implement —
+    and ``canonical_master`` is not the safe default for that, it is the *most* privileged sink there
+    is. Falling open to it pools a scan whose routing this reader does not understand into the ΣN pool
+    that certifies the target. An explicitly unrecognised sink quarantines instead."""
+    with caplog.at_level("WARNING"):
+        sink = evidence_sink_for({"tavi": {"job_id": "7"}},
+                                 [{"job_id": "7", "evidence_sink": "from_the_future"}])
+    assert sink == UNKNOWN_SINK
+    assert sink not in EVIDENCE_SINKS, "an unknown sink must not become a recognised one"
+    assert "from_the_future" in caplog.text, "a quarantined scan is never a silent no-op"
+
+
+def test_an_unknown_sink_is_excluded_from_the_pooled_master():
+    """The consumer half of the same rule: quarantine only means something if collation honours it.
+    The scan is still parsed, fit and reported — nothing is deleted — but its counts never reach the
+    pool that certifies the target."""
+    assert UNKNOWN_SINK != CANONICAL_MASTER
+    assert UNKNOWN_SINK not in NON_CANONICAL_SINKS, (
+        "quarantine is not a declared routing sink; it is the absence of a known one")
 
 
 def test_non_canonical_sinks_exclude_the_canonical_one():
