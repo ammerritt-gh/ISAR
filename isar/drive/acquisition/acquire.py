@@ -860,7 +860,14 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
             continue
         master = frontier.evidence_master or frontier.master or {}
         evidence = _tracked_evidence(master, frontier)
-        if (not evidence["adequate"] and not frontier.stuck
+        # A *precision* scan, not an identity one — "is this centre measured finely enough", a
+        # different question from "which branch is this".  So ``frontier.stuck`` (which folds identity
+        # saturation) must NOT gate it, exactly as O27 established at the anchor; conflating the two
+        # denied a legitimate precision scan at an identity-saturated frontier with budget left.  Its
+        # own brakes are the production ceiling and ``_same_q_evidence_advanced`` (False once
+        # ``exposure_saturated``), which keep same-q counting bounded.  ``frontier.stuck`` stays on the
+        # identity-revisit rung below, where it belongs.
+        if (not evidence["adequate"]
                 and frontier.n_production < frontier.max_production_batches
                 and _same_q_evidence_advanced(frontier)):
             actions.append((1, frontier.index, frontier, "production",

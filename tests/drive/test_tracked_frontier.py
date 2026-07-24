@@ -814,6 +814,46 @@ def test_missing_frontier_identity_also_earns_the_same_q_fallback():
     assert (pick.index, kind) == (frontier.index, "production")
 
 
+def test_frontier_identity_saturated_still_earns_a_precision_scan_when_centres_are_coarse():
+    """O27 at the frontier (Blocker #4). Identity saturation says counting cannot settle the branch
+    *label* here; it says nothing about a *precision* scan, which asks the different question "is the
+    centre measured finely enough". When the candidate centre is still coarse and production +
+    exposure allowance remain, that precision production must stay eligible even though the point is
+    ``identity_saturated`` — the same conflation O27 removed at the anchor, retained at the frontier."""
+    grid = _grid()
+    grid[0].n_quicklook = 1
+    grid[0].track_state = "confirmed"
+    frontier = grid[1]
+    frontier.n_quicklook = 1
+    frontier.n_production = 1
+    frontier.max_production_batches = 12
+    frontier.production_sequences = [20]
+    frontier.track_state = "ambiguous"
+    frontier.local_identity_clear = False
+    # A single coarse candidate: sigma 0.9 meV against a 0.5 meV tolerance is precision-INADEQUATE.
+    frontier.evidence_master = {
+        "target_branch": "optic",
+        "branch_candidates": [{"energy_meV": 7.5, "sigma_meV": 0.9}],
+    }
+    # Identity has stopped responding to a fourfold exposure increase → saturated (so ``stuck``).
+    frontier.identity_updates = [
+        {"effective_exposure": 25e6, "target_probability": 0.75, "identity_entropy": 0.56},
+        {"effective_exposure": 50e6, "target_probability": 0.751, "identity_entropy": 0.559},
+        {"effective_exposure": 100e6, "target_probability": 0.752, "identity_entropy": 0.558},
+    ]
+    assert frontier.identity_saturated and frontier.stuck
+    # A newer authoritative revision → same-q evidence advanced, so a precision scan is still justified.
+    _authoritative_evidence(frontier, 21)
+    _visit_rest(grid, 2)   # no unvisited bridge, no broadening, no rival-gap reconnect
+
+    pick, kind, _reason, _score = _select_target(
+        grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
+    assert pick is not None, (
+        "a coarse frontier centre with production and exposure allowance left must not stop the "
+        "campaign merely because the identity label is saturated")
+    assert (pick.index, kind) == (frontier.index, "production")
+
+
 def test_identity_saturation_needs_both_metrics_and_a_real_exposure_increase():
     """A partial or cheap identity history is not evidence that counting cannot help."""
     frontier = GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
