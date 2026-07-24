@@ -32,7 +32,9 @@ import pytest
 
 from isar.drive.acquisition import acquire as acq
 from isar.drive.acquisition import model as acq_model
+from isar.drive.acquisition.acquire import ScanProposal
 from isar.drive.acquisition.inventory import GENERATOR_REGISTRY
+from isar.drive.loop import _auxiliary_clean_null
 from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
 from isar.drive.supervisor.stopping import model_points, summarize_grid
 from isar.schema.steering import AUXILIARY_TRACK_NODE
@@ -215,4 +217,37 @@ def test_d_the_completeness_proof_covers_the_grown_registry():
     assert "narrow_rival_probe" in reported, "the proof must cover the grown registry, not the old one"
     # The suppressed rival is gone; any remaining candidate is ordinary work elsewhere on the path, not
     # the refused probe re-offered.
+    assert all(c.evaluation.intent.scientific_action_fingerprint != fingerprint for c in candidates)
+
+
+# -- the clean-null path: the rival was probed and was not there (Increment D) ------------------------
+
+def test_migrated_replay_a_clean_null_at_the_frontier_is_a_result_not_a_chase():
+    """The other outcome of the enumerated probe: it is fired and the rival is *not* found. AP6's
+    frontier at H=2.9 sits at a zone boundary where the acoustic branch may genuinely have no separable
+    rival, so a clean null is a real answer. The driver must (i) read it as action-complete rather than
+    a missed window it should recenter/widen into a survey, and (ii) not re-emit the identical probe
+    once its negative evidence is in hand — the two failure modes Blocker #2 named."""
+    objective = _objective(target_search_source="compiler")
+    inventory, _cands = _inventory(objective)
+    intent = _rival_evaluations(inventory)[0].intent
+
+    # The probe was fired over exactly its emitted window and cleanly found no mode.
+    probe = ScanProposal(h=BLOCKED_HKL[0], k=BLOCKED_HKL[1], l=BLOCKED_HKL[2],
+                         e_lo=intent.energy_lo, e_hi=intent.energy_hi, e_step=0.1,
+                         ncount=25_000_000, kind="identity_rival_probe", reason="rival probe",
+                         e_pred=RIVAL_MEV, meta={"evidence_sink": AUXILIARY_TRACK_NODE})
+    clean_null = [{"disposition": "no_signal", "scan": "s", "detector": "d"}]
+    assert _auxiliary_clean_null(probe, clean_null) is True, (
+        "a trustworthy clean null answers the identity question and must not trigger recenter/widen")
+
+    # Its negative evidence, fed back as a suppression under an unchanged basis, removes the identical
+    # probe from the next enumeration — it does not re-emit for the same reason it just answered.
+    fingerprint = intent.scientific_action_fingerprint
+    observations = _frontier_observations()
+    model = acq_model.fit(model_points(summarize_grid(objective, observations)))
+    _inv, candidates = acq.enumerate_actions(
+        objective, model, observations, resolution_info={"fwhm_dE": 0.8},
+        rival_band=lambda g: (RIVAL_MEV, 0.2),
+        suppressed={fingerprint: {"class": "structural", "reason": "clean null: rival not detected"}})
     assert all(c.evaluation.intent.scientific_action_fingerprint != fingerprint for c in candidates)
