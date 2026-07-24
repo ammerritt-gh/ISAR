@@ -2202,6 +2202,11 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
               "scientific_action_fingerprint": chosen.evaluation.intent.scientific_action_fingerprint,
               "action_class": chosen.evaluation.intent.action_class,
               "evidence_sink": chosen.evaluation.intent.evidence_sink,
+              # The belief context this action was formed against. Carried so the pooled-master update
+              # it produces can record which identity question it answered — saturation is only
+              # comparable across revisions that answered the same one.
+              "hypotheses_fingerprint": chosen.evaluation.intent.hypotheses_fingerprint,
+              "campaign_slice_fingerprint": chosen.evaluation.intent.campaign_slice_fingerprint,
               # A non-canonical sink is never certification-eligible, whoever inserted it: the scan was
               # fired at a deliberately narrow question and its exposure was never spent on delivering
               # the target, so it cannot stand in for a requested certification point.

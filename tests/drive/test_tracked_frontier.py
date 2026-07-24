@@ -936,6 +936,80 @@ def test_a_recalibration_mid_window_is_not_identity_saturation():
     assert frontier.identity_basis_changed
 
 
+def test_entirely_replaced_candidate_sets_are_not_one_comparable_question():
+    """The review reproduction. The basis recorded only the candidate *count*, so three windows whose
+    two candidates were entirely different modes each time still read as one comparable question and
+    saturated -- exactly the phantom the basis exists to prevent, just one level down."""
+    frontier = _identity_frontier()
+    series = _stalled_identity_series()
+    frontier.identity_updates = [
+        dict(series[0], branch_candidates=[{"energy_meV": 1.0}, {"energy_meV": 2.0}]),
+        dict(series[1], branch_candidates=[{"energy_meV": 9.0}, {"energy_meV": 12.0}]),
+        dict(series[2], branch_candidates=[{"energy_meV": 20.0}, {"energy_meV": 25.0}]),
+    ]
+    assert not frontier.identity_saturated
+    assert frontier.identity_basis_changed
+
+
+def test_refit_jitter_below_tolerance_stays_comparable():
+    """The counterpart the basis must not over-fire on: the same two modes re-fit slightly differently
+    are the same question. A quantized key would have reset the window at whichever bin edge the
+    energies happened to straddle; matched movement against the q's own tolerance has no edges."""
+    frontier = _identity_frontier()
+    series = _stalled_identity_series()
+    jitter = (0.0, 0.03, -0.04)
+    frontier.identity_updates = [
+        dict(update, branch_candidates=[{"energy_meV": 5.75 + shift},
+                                        {"energy_meV": 7.11 - shift}])
+        for update, shift in zip(series, jitter)]
+    assert frontier.identity_saturated
+    assert not frontier.identity_basis_changed
+
+
+def test_candidates_straddling_a_bin_edge_are_still_comparable():
+    """Directly pins the reason for a matched predicate over absolute quantization: two revisions
+    0.02 meV apart must never be incomparable merely because a bin boundary fell between them."""
+    frontier = _identity_frontier()
+    series = _stalled_identity_series()
+    frontier.identity_updates = [
+        dict(series[0], branch_candidates=[{"energy_meV": 4.999}]),
+        dict(series[1], branch_candidates=[{"energy_meV": 5.001}]),
+        dict(series[2], branch_candidates=[{"energy_meV": 5.010}]),
+    ]
+    assert not frontier.identity_basis_changed
+
+
+def test_a_target_selection_flip_resets_the_window_as_its_own_epoch():
+    """A selection flip is a changed *answer*, not a changed candidate set. It must still reset the
+    saturation window -- the newest revisions are about a different target -- but as an explicit
+    identity epoch rather than by quietly redefining what a candidate-basis change means."""
+    frontier = _identity_frontier()
+    series = _stalled_identity_series()
+    candidates = [{"energy_meV": 5.75}, {"energy_meV": 7.11}]
+    frontier.identity_updates = [
+        dict(series[0], branch_candidates=candidates, identity_epoch=3),
+        dict(series[1], branch_candidates=candidates, identity_epoch=3),
+        dict(series[2], branch_candidates=candidates, identity_epoch=4),
+    ]
+    assert not frontier.identity_saturated
+    assert frontier.identity_basis_changed
+
+
+def test_a_hypothesis_or_slice_change_is_a_different_question():
+    """Both fields were declared in the basis and never written by the live producer, so they proved
+    nothing. Pinned here so the producer wiring cannot regress silently."""
+    frontier = _identity_frontier()
+    series = _stalled_identity_series()
+    for field in ("hypotheses_fingerprint", "campaign_slice_fingerprint"):
+        frontier.identity_updates = [
+            dict(series[0], **{field: "a"}),
+            dict(series[1], **{field: "a"}),
+            dict(series[2], **{field: "b"}),
+        ]
+        assert not frontier.identity_saturated, field
+        assert frontier.identity_basis_changed, field
+
+
 def test_same_q_budget_is_the_production_ceiling_not_the_bridge_allowance():
     grid = _grid()
     frontier = _op10_frontier(grid, n_production=11)
@@ -952,3 +1026,29 @@ def test_same_q_budget_is_the_production_ceiling_not_the_bridge_allowance():
     pick, _kind, _reason, _score = _select_target(
         grid, _Model(), tracked_branch=True, maximum_bridge_steps=1)
     assert pick is None or pick.index != frontier.index
+
+
+def test_the_identity_epoch_follows_the_selected_mode_not_its_id_or_index():
+    """The epoch has to survive re-pooling. ``candidate_ref`` is re-minted when a master gains a
+    member and ``selected_candidate_index`` follows the table's order, so keying the selection on
+    either would report a flip on an unchanged selection and reset the saturation window forever."""
+    from isar.drive.loop import _identity_epoch, _target_selection_rank
+
+    def row(selected, energies, refs, epoch=None):
+        out = {"kind": "pooled_master_update", "hkl": [2.9, 0.0, 0.0],
+               "selected_candidate_index": selected,
+               "branch_candidates": [{"energy_meV": e, "candidate_ref": r}
+                                     for e, r in zip(energies, refs)]}
+        if epoch is not None:
+            out["identity_epoch"] = epoch
+        return out
+
+    # Same mode selected, but re-pooled: new refs, and the table came back in the other order.
+    before = row(0, [5.75, 7.11], ["s1:det:mode:0", "s1:det:mode:1"], epoch=2)
+    after = row(1, [7.11, 5.75], ["s2:det:mode:0", "s2:det:mode:1"])
+    assert _target_selection_rank(before) == _target_selection_rank(after) == 0
+    assert _identity_epoch(after, [before]) == 2, "an unchanged selection must not advance the epoch"
+
+    # A genuine flip to the other mode does advance it.
+    flipped = row(0, [7.11, 5.75], ["s2:det:mode:0", "s2:det:mode:1"])
+    assert _identity_epoch(flipped, [before]) == 3

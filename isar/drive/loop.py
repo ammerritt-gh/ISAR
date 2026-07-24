@@ -1033,6 +1033,49 @@ def _candidate_evidence_state(observations: list[dict], update: dict) -> tuple[s
     return state, diagnostics
 
 
+def _target_selection_rank(row: dict) -> int | None:
+    """Which of the modes in play this row selects as the target, by energy order.
+
+    A *rank* rather than the candidate id or index: ``candidate_ref`` is re-minted when a master is
+    re-pooled and the stored index follows the table's order, so either would report a changed
+    selection on an unchanged one. Rank is stable under refit jitter and re-pooling, and changes
+    exactly when the target moves to a different mode.
+    """
+    index = row.get("selected_candidate_index")
+    candidates = row.get("branch_candidates")
+    if index is None or not candidates:
+        return None
+    try:
+        selected = candidates[int(index)]
+        energies = sorted(float(c.get("energy_meV", c.get("omega0"))) for c in candidates)
+        return energies.index(float(selected.get("energy_meV", selected.get("omega0"))))
+    except (TypeError, ValueError, IndexError, AttributeError):
+        return None
+
+
+def _identity_epoch(row: dict, observations: list[dict]) -> int:
+    """A counter that advances whenever the target selection moves to a different mode.
+
+    Saturation compares identity metrics across revisions that answer the same question. A selection
+    flip is a changed *answer*, not a changed candidate set, and it must still reset that window —
+    but as its own named thing, so "the candidate basis changed" keeps meaning only what it says.
+    Monotone by construction, so equal values always mean "same selection era".
+    """
+    previous = None
+    for update in reversed(observations):
+        if (update.get("kind") == "pooled_master_update"
+                and _hkl_close(update.get("hkl"), row.get("hkl"))
+                and update.get("identity_epoch") is not None):
+            previous = update
+            break
+    if previous is None:
+        return 0
+    epoch = int(previous["identity_epoch"])
+    if _target_selection_rank(previous) == _target_selection_rank(row):
+        return epoch
+    return epoch + 1
+
+
 def _record_pooled_master_update(workspace, calibration: Calibration, proposal, *,
                                  target_branch: str, log_path,
                                  observations: list[dict]) -> dict | None:
@@ -1057,7 +1100,14 @@ def _record_pooled_master_update(workspace, calibration: Calibration, proposal, 
                    "acquisition_action_role"),
                "target_branch_role": (proposal.meta or {}).get("target_branch_role"),
                "rival_branch_role": (proposal.meta or {}).get("rival_branch_role"),
-               "proposal_fingerprint": (proposal.meta or {}).get("proposal_fingerprint")}
+               "proposal_fingerprint": (proposal.meta or {}).get("proposal_fingerprint"),
+               # The identity-comparability context (stopping._identity_context). Declared in the
+               # saturation basis from the start but never written by any producer, so those clauses
+               # guaranteed nothing: they travel from the action's own intent, via the proposal meta.
+               "hypotheses_fingerprint": (proposal.meta or {}).get("hypotheses_fingerprint"),
+               "campaign_slice_fingerprint": (proposal.meta or {}).get(
+                   "campaign_slice_fingerprint")}
+    payload["identity_epoch"] = _identity_epoch(payload, observations)
     payload["candidate_state"], payload["candidate_evidence"] = _candidate_evidence_state(
         observations, payload)
     observations.append(payload)

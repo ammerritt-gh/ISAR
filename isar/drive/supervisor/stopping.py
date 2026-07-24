@@ -124,28 +124,68 @@ def _finite_or_none(value) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _identity_basis(update: dict) -> tuple:
-    """The scientific *question* an identity update answers, for saturation comparability.
+def _candidate_energies(update: dict) -> list[float] | None:
+    """Sorted finite candidate energies, or ``None`` when the update carries no candidate table.
 
-    Saturation compares identity metrics across growing exposure to decide counting has stopped
-    paying. That is only valid across revisions that answer the same question. This captures the
-    STRUCTURE of the question — how many candidates are in play, and the calibration / model /
-    hypothesis / campaign-slice context — and deliberately excludes the *answer* (``branch_id``,
-    ``target_probability``, ``identity_entropy``) and the advancing revision ids (exposure,
-    ``content_hash``, ``track_revision``): those are exactly what saturation is measuring the movement
-    of, so keying on them would reset the comparability window on every observation. A change here — a
-    candidate appearing or disappearing, a recalibration, a model or hypothesis change — is a different
-    question, so worsening or stalled metrics across it are not evidence that counting cannot help.
-    Legacy updates carrying only the metric fields yield a constant basis, preserving prior behavior.
+    ``None`` is not an empty set: a legacy update that predates the column says nothing about the
+    candidates, and treating that as "no candidates" would make it incomparable with every update
+    that has them.
     """
-    candidates = update.get("branch_candidates") or ()
+    candidates = update.get("branch_candidates")
+    if candidates is None:
+        return None
+    energies = []
+    for candidate in candidates:
+        value = _finite_or_none((candidate or {}).get("energy_meV",
+                                                      (candidate or {}).get("omega0")))
+        if value is not None:
+            energies.append(value)
+    return sorted(energies)
+
+
+def _identity_context(update: dict) -> tuple:
+    """The non-candidate half of the identity question: calibration, hypotheses, slice, epoch.
+
+    ``identity_epoch`` is the *target selection* identity, carried as a discrete counter by the
+    producer. A selection flip is a changed answer rather than a changed candidate set, and it must
+    still reset the saturation window — the newest revisions are about a different target — but naming
+    it separately keeps "the candidate basis changed" meaning only what it says.
+
+    ``model_selection_family`` is deliberately absent: no producer has a model-family field to supply,
+    so including it was a permanently-``None`` clause that guaranteed nothing.
+    """
     return (
-        len(candidates),
         update.get("calibration_version"),
-        update.get("model_selection_family") or update.get("model_selection"),
         update.get("hypotheses_fingerprint"),
         update.get("campaign_slice_fingerprint"),
+        update.get("identity_epoch"),
     )
+
+
+def _identity_comparable(update: dict, reference: dict, *, scale: float) -> bool:
+    """Whether two identity updates answer the same scientific *question*, so their metrics may be
+    compared across growing exposure to decide counting has stopped paying.
+
+    Comparability is a matched predicate rather than a hashable key. Keying on a quantized energy has
+    boundary instability — jitter across a bin edge changes the answer while nearly a full tolerance
+    of drift inside one bin does not — so candidates are *paired* instead and each pair must have moved
+    less than ``scale``. With equal counts on a line, sorted pairing is the minimum-cost matching, so
+    no assignment algorithm is needed.
+
+    Keying on the candidate *count* alone (the previous rule) let three windows of two entirely
+    different modes read as one comparable question. The *answer* stays excluded — ``branch_id``,
+    ``target_probability``, ``identity_entropy`` and the advancing revision ids are exactly what
+    saturation measures the movement of, so keying on them would reset the window every observation.
+    """
+    if _identity_context(update) != _identity_context(reference):
+        return False
+    mine, theirs = _candidate_energies(update), _candidate_energies(reference)
+    if mine is None or theirs is None:
+        return True                     # legacy updates say nothing about candidates; stay comparable
+    if len(mine) != len(theirs):
+        return False
+    tolerance = abs(float(scale)) if math.isfinite(float(scale)) else 0.0
+    return all(abs(a - b) <= tolerance for a, b in zip(mine, theirs))
 
 
 @dataclass
@@ -418,8 +458,9 @@ class GridQ:
         # Only compare revisions that answer the same identity question. Mirrors ``interval_floored``'s
         # comparability key: a change in the candidate set, calibration, model, hypothesis, or slice
         # is a different question, and saturation across it would be a phantom.
-        basis = _identity_basis(window[-1])
-        comparable = [update for update in window if _identity_basis(update) == basis]
+        latest = window[-1]
+        comparable = [update for update in window
+                      if _identity_comparable(update, latest, scale=self.tolerance)]
         if len(comparable) < self.identity_floor_window:
             return False
         window = comparable[-self.identity_floor_window:]
@@ -461,18 +502,20 @@ class GridQ:
 
     @property
     def identity_basis_changed(self) -> bool:
-        """The identity question changed within the recent identity window (candidate set,
-        calibration, model, hypothesis, or slice), so the latest updates are not comparable for
-        saturation. Observability for why a saturated-looking series is not treated as saturated."""
+        """The identity question changed within the recent identity window — the candidate set moved
+        by more than this q's tolerance, or the calibration / hypotheses / campaign slice / identity
+        epoch changed — so the latest updates are not comparable for saturation. Observability for why
+        a saturated-looking series is not treated as saturated."""
         window = [update for update in self.identity_updates
                   if update.get("effective_exposure") is not None
                   and (update.get("target_probability") is not None
                        or update.get("identity_entropy") is not None)]
         if len(window) < self.identity_floor_window:
             return False
-        basis = _identity_basis(window[-1])
+        latest = window[-1]
         recent = window[-self.identity_floor_window:]
-        return any(_identity_basis(update) != basis for update in recent)
+        return any(not _identity_comparable(update, latest, scale=self.tolerance)
+                   for update in recent)
 
     @property
     def ambiguity_exhausted(self) -> bool:
