@@ -165,16 +165,60 @@ def _states(n_candidates: int) -> list[_State]:
             if optic is None or acoustic is None or optic != acoustic]
 
 
+def _predicted_branch_mean(branch: str, hypothesis: dict, reduced_distance: float) -> float:
+    """The energy at which ``branch`` is predicted at this q, from the declared gap + slope prior.
+
+    Same computation as the assigned-candidate compatibility below, extracted so a MISSING branch --
+    which the compatibility loop skips -- can still be located for the clean-null relaxation.
+    """
+    zc_default = (6.0, 3.0) if branch == "optic" else (0.0, 0.2)
+    mean, _sigma = _prior_pair(hypothesis, "zc_energy", zc_default)
+    if reduced_distance > 0.0:
+        slope, _slope_sigma = _prior_pair(
+            hypothesis, "slope_zc", (0.0, 8.0) if branch == "optic" else (12.0, 12.0))
+        mean += slope * reduced_distance
+    return mean
+
+
+def _null_relaxation(branch_mean: float, null_windows) -> float:
+    """Fraction in [0, 1] by which a trustworthy clean null covering ``branch_mean`` relaxes the
+    missing-branch penalty.
+
+    A clean null found no mode where the branch is predicted, so its absence there is *confirmed*
+    rather than merely unmeasured, and leaving it unassigned should no longer be fully penalised. The
+    fraction never exceeds the null's detection sensitivity, and it is used only to cancel
+    ``MISSING_LOG_PENALTY`` -- never to reward absence, never to force it, and never on a state that
+    assigns a candidate. That structural boundary is why negative evidence cannot suppress a fitted
+    mode: a null with no candidate at ``branch_mean`` cannot contradict a fit that put one there.
+
+    The evidence is deliberately branch-agnostic: "no mode in this window" confirms the absence of
+    *whichever* branch happens to be predicted inside it, so a window that covers two branches'
+    predicted means relaxes both. That is correct -- an empty window holds no acoustic and no optic
+    mode alike -- and it is why the window carries no branch label of its own.
+    """
+    best = 0.0
+    for window in null_windows or ():
+        lo, hi, sensitivity = window
+        if float(lo) <= float(branch_mean) <= float(hi):
+            best = max(best, min(max(float(sensitivity), 0.0), 1.0))
+    return best
+
+
 def _emission(state: _State, candidates: list[dict], *, reduced_distance: float,
               period: float | None,
               optic_hypothesis: dict, acoustic_hypothesis: dict,
+              null_windows=None,
               ) -> float:
     assigned = {index for index in (state.optic, state.acoustic) if index is not None}
     score = (len(candidates) - len(assigned)) * UNASSIGNED_LOG_PENALTY
     if state.optic is None:
-        score += MISSING_LOG_PENALTY
+        relax = _null_relaxation(
+            _predicted_branch_mean("optic", optic_hypothesis, reduced_distance), null_windows)
+        score += MISSING_LOG_PENALTY * (1.0 - relax)
     if state.acoustic is None:
-        score += MISSING_LOG_PENALTY
+        relax = _null_relaxation(
+            _predicted_branch_mean("acoustic", acoustic_hypothesis, reduced_distance), null_windows)
+        score += MISSING_LOG_PENALTY * (1.0 - relax)
     for branch, index, hypothesis, default in (
             ("optic", state.optic, optic_hypothesis, (6.0, 3.0)),
             ("acoustic", state.acoustic, acoustic_hypothesis, (0.0, 0.2))):
@@ -477,6 +521,7 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
     optic_hypothesis = _hypothesis(hypotheses, "optic")
     acoustic_hypothesis = _hypothesis(hypotheses, "acoustic")
     candidates_by_q = [list(row.get("candidates") or []) for row in observations]
+    null_windows_by_q = [list(row.get("null_windows") or []) for row in observations]
     states = [_states(len(candidates)) for candidates in candidates_by_q]
     if not states:
         return {"revision": 1, "target_branch": target_branch,
@@ -489,7 +534,8 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
     emissions = [[_emission(state, candidates_by_q[index],
                             reduced_distance=reduced_distance[index], period=period,
                             optic_hypothesis=optic_hypothesis,
-                            acoustic_hypothesis=acoustic_hypothesis)
+                            acoustic_hypothesis=acoustic_hypothesis,
+                            null_windows=null_windows_by_q[index])
                   for state in states[index]] for index in range(len(points))]
     transitions: list[np.ndarray] = []
     for index in range(1, len(points)):

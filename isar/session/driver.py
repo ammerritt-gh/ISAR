@@ -39,8 +39,9 @@ from isar.reduce import combine, qc
 from isar.predictive import predictive_score as _predictive_score
 from isar.schema.card import Card
 from isar.schema.hypotheses import preset as hypothesis_preset
-from isar.schema.steering import (AUXILIARY_TRACK_NODE, CANONICAL_MASTER, IntensityMeasure,
-                                  ParamConstraints, evidence_sink_for)
+from isar.schema.steering import (AUXILIARY_TRACK_NODE, CANDIDATE_NOT_DETECTED, CANONICAL_MASTER,
+                                  IntensityMeasure, ParamConstraints, evidence_sink_for,
+                                  realized_outcome_for)
 from isar.session import branch_assignment as BA
 from isar.session import branch_model, branch_tracking, calibrations, guidelines as guide_mod, ingest, router, session_prior
 
@@ -171,6 +172,12 @@ class FitOutcome:
     # as ordinary evidence. Anything else was acquired to answer a narrower question and is barred from
     # the (Q,T) pool and from certification.
     evidence_sink: str = CANONICAL_MASTER
+    # The searched energy window of an auxiliary detection probe. Persisted so a trustworthy clean null
+    # (``disposition == no_signal`` under an ``auxiliary_track_node`` sink) becomes tracker negative
+    # evidence -- a ``null_window`` relaxing the missing-branch pull at this q -- instead of a vanished
+    # result. ``None`` on ordinary deliveries and on ledgers predating this field.
+    search_energy_lo: float | None = None
+    search_energy_hi: float | None = None
     # Additive tracked-branch contract. Every fitted mode remains an unordered candidate; the joint
     # path tracker records which one is currently selected without erasing earlier alternatives.
     branch_candidates: list | None = None
@@ -1693,6 +1700,37 @@ def _path_index(q: list, path: list[list[float]], tolerance: float = 1e-5) -> in
     return index if distances[index] <= tolerance else None
 
 
+# A clean null answers "no rival in this window" but does not measure detection power, so its evidence
+# of absence is real but not certain. Until PR3 computes a predicted detection power per probe, a
+# trustworthy clean null relaxes the missing-branch pull by this bounded, conservative fraction rather
+# than fully cancelling it -- the null moves the posterior without ever claiming the branch cannot exist.
+CLEAN_NULL_DETECTION_SENSITIVITY = 0.5
+
+
+def _clean_null_window(outcome: dict) -> tuple[float, float, float] | None:
+    """The (lo, hi, sensitivity) negative-evidence window for a trustworthy clean-null auxiliary probe.
+
+    A clean null searched [search_energy_lo, search_energy_hi] and found no mode there; the tracker
+    reads this as "the branch predicted in this window is confirmed absent, not merely unmeasured"
+    (:func:`branch_tracking._null_relaxation`). Returns ``None`` for anything that is not a trustworthy
+    clean null -- a broken analysis, a detection, or a probe with no recorded window -- so a failure can
+    never masquerade as evidence of absence.
+    """
+    if outcome.get("evidence_sink") != AUXILIARY_TRACK_NODE:
+        return None
+    if realized_outcome_for(outcome.get("disposition"),
+                            has_candidate=bool(outcome.get("branch_candidates"))) != CANDIDATE_NOT_DETECTED:
+        return None
+    lo, hi = outcome.get("search_energy_lo"), outcome.get("search_energy_hi")
+    try:
+        lo, hi = float(lo), float(hi)
+    except (TypeError, ValueError):
+        return None
+    if not (np.isfinite(lo) and np.isfinite(hi) and lo < hi):
+        return None
+    return (lo, hi, CLEAN_NULL_DETECTION_SENSITIVITY)
+
+
 def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tuple[list[dict], dict]:
     """Return one authoritative fit per path point and all outcome references.
 
@@ -1710,6 +1748,7 @@ def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tupl
     """
     by_index: dict[int, list[tuple]] = {}
     auxiliary_by_index: dict[int, list[dict]] = {}
+    null_windows_by_index: dict[int, list[tuple]] = {}
     refs: dict[str, tuple] = {}
     for order, entry in enumerate(session.scans.values()):
         for detector, outcome in entry.detectors.items():
@@ -1718,6 +1757,13 @@ def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tupl
             key = f"{entry.scan_id}:{detector}"
             refs[key] = (entry, detector, outcome)
             index = _path_index(outcome.get("q") or [], path)
+            # A clean null from an auxiliary probe fits no mode, so it never becomes a candidate; it is
+            # negative evidence that the branch predicted in its searched window is absent, carried to
+            # the tracker as a ``null_window`` that relaxes (never forces) that branch's missing pull.
+            null_window = _clean_null_window(outcome)
+            if index is not None and null_window is not None:
+                null_windows_by_index.setdefault(index, []).append(null_window)
+                continue
             if (index is not None and candidates
                     and outcome.get("evidence_sink") == AUXILIARY_TRACK_NODE):
                 for candidate in candidates:
@@ -1745,20 +1791,27 @@ def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tupl
     observations = []
     for index in range(len(path)):
         choices = by_index.get(index) or []
+        null_windows = null_windows_by_index.get(index) or []
         if not choices:
             # Any auxiliary probe at this index is deliberately dropped: see the docstring. It stays
             # in ``refs`` for display and its beliefs update elsewhere, but it does not become the
-            # identity evidence for a point no master has measured.
-            observations.append({"candidates": [], "authority": None})
-            continue
-        _rank, key, candidates = max(choices, key=lambda item: item[0])
-        _entry, _detector, outcome = refs[key]
-        merged = [dict(candidate) for candidate in candidates]
-        merged.extend(auxiliary_by_index.get(index) or [])
-        observations.append({"candidates": merged,
-                             "authority": key,
-                             "gauss_fwhm": (outcome.get("gauss_fwhm")
-                                             or (outcome.get("calib") or {}).get("gauss_fwhm"))})
+            # identity evidence for a point no master has measured. A clean-null probe is the one
+            # exception that leaves a trace here: its negative evidence rides on ``null_windows``.
+            observation = {"candidates": [], "authority": None}
+        else:
+            _rank, key, candidates = max(choices, key=lambda item: item[0])
+            _entry, _detector, outcome = refs[key]
+            merged = [dict(candidate) for candidate in candidates]
+            merged.extend(auxiliary_by_index.get(index) or [])
+            observation = {"candidates": merged, "authority": key,
+                           "gauss_fwhm": (outcome.get("gauss_fwhm")
+                                          or (outcome.get("calib") or {}).get("gauss_fwhm"))}
+        # Only present when a clean null was recorded here: a campaign that never used the auxiliary
+        # channel must produce observations byte-identical to the pre-channel ones, so its identity
+        # signature is unperturbed.
+        if null_windows:
+            observation["null_windows"] = null_windows
+        observations.append(observation)
     return observations, refs
 
 
@@ -1775,11 +1828,17 @@ def _tracked_authority_signature(observations: list[dict], *, target_branch: str
                           "character_probability", "trajectory_identity"):
                 fitted.pop(field, None)
             candidates.append(fitted)
-        authorities.append({
+        authority = {
             "authority": observation.get("authority"),
             "gauss_fwhm": observation.get("gauss_fwhm"),
             "candidates": candidates,
-        })
+        }
+        # Negative evidence is part of the identity basis: a new clean null changes the question being
+        # asked at this q, so an unchanged basis (Increment C) cannot re-offer the same probe. Added only
+        # when present, so a campaign with no probes hashes byte-identically to the pre-channel signature.
+        if observation.get("null_windows"):
+            authority["null_windows"] = observation["null_windows"]
+        authorities.append(authority)
     return canonical_hash({
         "authorities": authorities, "target_branch": target_branch,
         "period": period, "hypotheses": hypotheses,
@@ -3396,6 +3455,8 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         target_branch=target_branch, target_label=target_label,
         effective_exposure=exposure_info.get("value"), exposure_provenance=exposure_info,
         acquisition_id=acquisition_id,
+        search_energy_lo=(acquisition or {}).get("search_energy_lo"),
+        search_energy_hi=(acquisition or {}).get("search_energy_hi"),
         evidence_sink=evidence_sink_for(getattr(rec, "raw_header", None),
                                         getattr(card.state, "acquisition_provenance", None)))
 

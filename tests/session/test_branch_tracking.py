@@ -5,6 +5,9 @@ from types import SimpleNamespace
 
 from isar.schema.card import CardState
 from isar.session.branch_tracking import (
+    MISSING_LOG_PENALTY,
+    _State,
+    _emission,
     _lowest_energy_log_likelihood,
     anchor_index,
     track_path,
@@ -491,6 +494,18 @@ def _acoustic_master_outcome(q, energy, *, pool_consistent=True, n_members=2):
     }
 
 
+def _clean_null_probe_outcome(q, *, search_lo, search_hi):
+    """An auxiliary rival probe that cleanly searched [search_lo, search_hi] and found no mode."""
+    from isar.schema.steering import AUXILIARY_TRACK_NODE
+    return {
+        "detector_id": "det0", "q": q, "T": 200.0, "sample": "sample",
+        "omega0": None, "omega0_err": None, "pooled": False,
+        "evidence_sink": AUXILIARY_TRACK_NODE, "disposition": "no_signal", "verdict": "no_signal",
+        "search_energy_lo": search_lo, "search_energy_hi": search_hi,
+        "branch_candidates": None, "modes": [],
+    }
+
+
 def test_pool_inconsistent_master_keeps_identity_connected():
     """AP8: a single interior point going ``pool_consistent=False`` must NOT clear its own identity or
     retract the confirmed identities of independently-confirmed downstream points.
@@ -556,6 +571,41 @@ def test_tracker_authority_prefers_the_consistent_master_when_both_exist_at_a_q(
 
     observations, _refs = _tracked_authorities(session, path)
     assert observations[0]["authority"] == "master:consistent:det0"
+
+
+def test_clean_null_auxiliary_probe_becomes_a_tracker_null_window_and_shifts_the_basis():
+    """Full path for negative evidence (Increment D). A clean-null auxiliary probe at a q must (i)
+    surface as a ``null_windows`` entry on that path point's observation carrying the searched window,
+    and (ii) change the identity-basis authority signature -- so the tracker consumes the null and, the
+    basis having changed, the identical probe is not re-offered under an unchanged basis."""
+    from isar.session.driver import _tracked_authorities, _tracked_authority_signature
+
+    path = [[2.9, 0.0, 0.0]]
+    session = SessionState()
+    master = _acoustic_master_outcome(path[0], 5.75)
+    session.put(ScanEntry(scan_id="master:q0", scan_number=9_000_000,
+                          scan_type="energy", status="fitted", detectors={"det0": master}))
+
+    sig_kwargs = dict(target_branch="acoustic", period=2.0, hypotheses=HYPOTHESES,
+                      entropy_stop=1.0, maximum_bridge_steps=1)
+    obs_without, _ = _tracked_authorities(session, path)
+    sig_without = _tracked_authority_signature(obs_without, **sig_kwargs)
+    assert not obs_without[0].get("null_windows")
+
+    session.put(ScanEntry(
+        scan_id="probe:q0", scan_number=9_000_001, scan_type="energy", status="fitted",
+        detectors={"det0": _clean_null_probe_outcome(path[0], search_lo=7.0, search_hi=7.3)}))
+
+    obs_with, _ = _tracked_authorities(session, path)
+    windows = obs_with[0]["null_windows"]
+    assert len(windows) == 1
+    lo, hi, sensitivity = windows[0]
+    assert (lo, hi) == (7.0, 7.3)
+    assert 0.0 < sensitivity <= 1.0                 # a real, bounded relaxation
+    # The master's own candidate must be untouched: a null never suppresses a fitted mode.
+    assert obs_with[0]["authority"] == "master:q0:det0"
+    assert obs_with[0]["candidates"]
+    assert _tracked_authority_signature(obs_with, **sig_kwargs) != sig_without
 
 
 def test_session_wiring_recomputes_after_masters_and_rebuilds_connected_prior():
@@ -723,3 +773,67 @@ def test_multi_step_gap_does_not_let_character_flip():
     after = result["assignments"][6]["candidates"]
     high = max(after, key=lambda c: c["energy_meV"])
     assert high["probabilities"]["optic"] > high["probabilities"]["acoustic"]
+
+
+# -- clean-null negative evidence: the relax-MISSING emission term (Increment D) --------------------
+# A clean null adds no fitted candidate; it may only *relax* the pull toward an unobserved-but-predicted
+# branch (MISSING_LOG_PENALTY). These fence the safety-critical rail: the term can never touch an
+# assigned candidate, and it is bounded so it can at most cancel the missing penalty, never reward or
+# force absence.
+
+_OPTIC_HYP = {"zc_energy": {"mean": 6.0, "sigma": 1.0}, "slope_zc": {"mean": 0.0, "sigma": 8.0}}
+_ACOUSTIC_HYP = {"zc_energy": {"mean": 0.0, "sigma": 0.2}, "slope_zc": {"mean": 12.0, "sigma": 12.0}}
+
+
+def _emit(state, candidates, *, reduced_distance=0.0, null_windows=None):
+    # At reduced_distance 0 the predicted means are the zc_energy means: optic 6.0, acoustic 0.0.
+    return _emission(state, candidates, reduced_distance=reduced_distance, period=None,
+                     optic_hypothesis=_OPTIC_HYP, acoustic_hypothesis=_ACOUSTIC_HYP,
+                     null_windows=null_windows)
+
+
+def test_a_null_window_never_changes_an_assigned_branch_emission():
+    """The safety rail. A state that assigns candidates to both branches must score byte-identically
+    whether or not a null window is present — negative evidence can never suppress a fitted candidate,
+    only relax a MISSING branch."""
+    candidates = [_candidate("c-optic", 6.0), _candidate("c-acoustic", 0.0)]
+    state = _State(optic=0, acoustic=1)
+    nulls = [(5.9, 6.1, 1.0), (-0.1, 0.1, 1.0)]  # windows covering BOTH predicted branch means
+    assert _emit(state, candidates, null_windows=nulls) == _emit(state, candidates, null_windows=None)
+
+
+def test_a_trustworthy_null_relaxes_the_missing_branch_penalty():
+    """A full-sensitivity null that cleanly searched where the optic branch is predicted (6.0 meV) and
+    found nothing confirms the branch is absent there, so leaving it unassigned is no longer penalised."""
+    candidates = [_candidate("c-acoustic", 0.0)]
+    state = _State(optic=None, acoustic=0)     # optic missing; predicted at 6.0 meV
+    baseline = _emit(state, candidates, null_windows=None)
+    relaxed = _emit(state, candidates, null_windows=[(5.5, 6.5, 1.0)])
+    assert relaxed > baseline
+    assert math.isclose(relaxed - baseline, -MISSING_LOG_PENALTY, rel_tol=1e-9)
+
+
+def test_a_null_relaxation_scales_with_detection_sensitivity():
+    """Sensitivity scales the relaxation linearly and can never over-cancel the penalty (relax<=1)."""
+    candidates = [_candidate("c-acoustic", 0.0)]
+    state = _State(optic=None, acoustic=0)
+    baseline = _emit(state, candidates, null_windows=None)
+    half = _emit(state, candidates, null_windows=[(5.5, 6.5, 0.5)])
+    assert math.isclose(half - baseline, -0.5 * MISSING_LOG_PENALTY, rel_tol=1e-9)
+
+
+def test_a_null_away_from_the_predicted_branch_does_nothing():
+    """The null must cover the branch's *predicted* energy to bear on its absence."""
+    candidates = [_candidate("c-acoustic", 0.0)]
+    state = _State(optic=None, acoustic=0)     # optic predicted at 6.0 meV
+    baseline = _emit(state, candidates, null_windows=None)
+    off = _emit(state, candidates, null_windows=[(2.0, 3.0, 1.0)])   # does not cover 6.0
+    assert off == baseline
+
+
+def test_an_untrusted_null_does_not_relax_anything():
+    """Zero detection sensitivity is not evidence of absence — it must leave the penalty intact."""
+    candidates = [_candidate("c-acoustic", 0.0)]
+    state = _State(optic=None, acoustic=0)
+    baseline = _emit(state, candidates, null_windows=None)
+    assert _emit(state, candidates, null_windows=[(5.5, 6.5, 0.0)]) == baseline

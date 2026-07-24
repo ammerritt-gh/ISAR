@@ -77,7 +77,8 @@ from isar.drive.supervisor.stopping import (
 )
 from isar.schema.card import Card
 from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
-from isar.schema.steering import CANONICAL_MASTER, realized_outcome_for
+from isar.schema.steering import (ANALYSIS_UNUSABLE, AUXILIARY_TRACK_NODE, CANDIDATE_NOT_DETECTED,
+                                  CANONICAL_MASTER, realized_outcome_for)
 
 DEFAULT_MAX_ITERS = 200
 DEFAULT_WAIT_TIMEOUT = 600.0
@@ -1703,6 +1704,25 @@ def _rows_missed(rows: list[dict]) -> bool:
                    for r in rows)
 
 
+def _auxiliary_clean_null(proposal, rows: list[dict]) -> bool:
+    """True when an auxiliary identity probe returned a *trustworthy clean null* — a result, not a miss.
+
+    The probe searched where a rival was predicted and cleanly found no mode; recentring/widening would
+    chase a feature the scan was fired to rule out, turning a focused discriminator into a survey for
+    something that may genuinely be absent (Blocker #2). Guarded on both sides: only auxiliary probes
+    qualify (a canonical delivery is fully described by its disposition), and a *broken* analysis is not
+    a clean null — with no ``candidate_not_detected`` row, or any ``analysis_unusable`` one, recovery
+    still runs (fail-open, so a failed scan never masquerades as a settled question)."""
+    if (proposal.meta or {}).get("evidence_sink") != AUXILIARY_TRACK_NODE:
+        return False
+    if not rows:
+        return False
+    outcomes = [realized_outcome_for(r.get("disposition"),
+                                     has_candidate=bool(r.get("branch_candidates")))
+                for r in rows]
+    return CANDIDATE_NOT_DETECTED in outcomes and ANALYSIS_UNUSABLE not in outcomes
+
+
 def _pooled_target_delivered(observations: list[dict], proposal, target_branch: str) -> bool:
     """Whether analysis found the requested mode even if an individual row favored the rival.
 
@@ -2186,6 +2206,10 @@ def _persist_acquisition_provenance(workspace: Path, payload: dict) -> None:
         "job_id": str(job_id),
         "acquisition_id": str(acquisition_id),
         "acquisition_target_energy": float(payload["acquisition_target_energy"]),
+        # The searched window, so a clean null from an auxiliary probe reaches the tracker as negative
+        # evidence at analysis time (the session reads this record, not the driver's in-memory proposal).
+        "search_energy_lo": payload.get("search_energy_lo"),
+        "search_energy_hi": payload.get("search_energy_hi"),
         "submitted_ncount": int(payload["submitted_ncount"]),
         "scan_kind": str(payload["kind"]),
         "acquisition_action_role": payload.get("acquisition_action_role"),
@@ -2803,6 +2827,11 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             "requested_points": int(proposal.n_points or 0), "n_points": feasible_points,
             "hkl": [proposal.h, proposal.k, proposal.l],
             "acquisition_target_energy": float(proposal.e_pred),
+            # The searched energy window. For an auxiliary detection probe a trustworthy clean null over
+            # this window is negative evidence the tracker consumes; persisted here so it survives a
+            # crash-resume finalize rather than being re-derived by hkl-nearness.
+            "search_energy_lo": float(proposal.e_lo),
+            "search_energy_hi": float(proposal.e_hi),
             "driver_inserted": bool((proposal.meta or {}).get("driver_inserted", False)),
             "certification_eligible": bool((proposal.meta or {}).get(
                 "certification_eligible", True)),
@@ -2848,8 +2877,15 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
 
         target_delivered = _pooled_target_delivered(
             observations, proposal, getattr(objective, "target_branch", "acoustic"))
-        if not _rows_missed(rows) or target_delivered:
-            if target_delivered and _rows_missed(rows):
+        clean_null = _auxiliary_clean_null(proposal, rows)
+        if not _rows_missed(rows) or target_delivered or clean_null:
+            if clean_null and _rows_missed(rows):
+                log_event(log_path, "decide", {
+                    "event": "clean_null_suppressed", "action": "missed_window_suppressed",
+                    "reason": "auxiliary identity probe returned a trustworthy clean null; the rival "
+                              "was not detected in the searched window — not a missed window",
+                    "hkl": [proposal.h, proposal.k, proposal.l], "iter": it})
+            elif target_delivered and _rows_missed(rows):
                 log_event(log_path, "decide", {
                     "event": "missed_window_suppressed", "action": "missed_window_suppressed",
                     "reason": "pooled master delivered the selected target mode",

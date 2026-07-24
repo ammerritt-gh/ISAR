@@ -26,6 +26,7 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
                              _make_classification_providers, _record_eligible_crossings,
                              resolve_campaign_slice,
                              _pending_certification_indices, _record_certification_acceptance,
+                             _auxiliary_clean_null,
                              _master_obs_from_row, _observation_from_row, _pick_interval,
                              _pooled_target_delivered,
                              _preflight_instrument_limits, _preflight_max_points,
@@ -540,6 +541,28 @@ def test_pooled_selected_optic_suppresses_false_missed_window_from_acoustic_indi
     }]
     assert _pooled_target_delivered(observations, proposal, "optic")
     assert not _pooled_target_delivered(observations, proposal, "acoustic")
+
+
+def test_auxiliary_clean_null_is_a_result_not_a_missed_window():
+    """A trustworthy clean null from an auxiliary identity probe answered its question — the rival was
+    not there — and must not trigger recenter/widen recovery. A broken analysis is not a clean null and
+    still routes to recovery (fail-open), and a canonical delivery is never treated this way."""
+    from isar.schema.steering import AUXILIARY_TRACK_NODE, CANONICAL_MASTER
+    probe = ScanProposal(h=2.9, k=0.0, l=0.0, e_lo=7.0, e_hi=7.3, e_step=0.1,
+                         ncount=25_000_000, kind="identity_rival_probe", reason="rival probe",
+                         e_pred=7.115, acquisition_id="acq-null",
+                         meta={"evidence_sink": AUXILIARY_TRACK_NODE})
+    canonical = ScanProposal(h=2.9, k=0.0, l=0.0, e_lo=7.0, e_hi=7.3, e_step=0.1,
+                             ncount=25_000_000, kind="production", reason="prod",
+                             e_pred=7.1, acquisition_id="acq-c",
+                             meta={"evidence_sink": CANONICAL_MASTER})
+    clean_null = [{"disposition": "no_signal", "scan": "s1", "detector": "d1"}]
+    unusable = [{"disposition": "error", "scan": "s1", "detector": "d1"}]
+
+    assert _auxiliary_clean_null(probe, clean_null) is True
+    assert _auxiliary_clean_null(probe, unusable) is False        # broken analysis still recovers
+    assert _auxiliary_clean_null(probe, []) is False              # no analysis at all is not a null
+    assert _auxiliary_clean_null(canonical, clean_null) is False  # canonical delivery is not a probe
 
 
 def test_crossing_recorder_records_transitions_not_every_eligible_batch(tmp_path):
