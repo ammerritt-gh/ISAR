@@ -105,6 +105,39 @@ def test_dynamic_count_request_clamps_only_neutron_budget_and_requires_floor():
             runtime_ncount_limit=99_999_999)
 
 
+def test_identity_detection_kind_uses_a_fixed_auxiliary_floor_not_target_escalation():
+    """A narrow yes/no rival probe (routed to the auxiliary tracker node) answers a detection
+    question, not a precision one. It must NOT inherit the target-production dynamic escalation that
+    would spend a geometrically growing exposure to answer a cheap discriminator — it gets a dedicated
+    detection floor regardless of the point's production history."""
+    g = acq.GridQ(index=0, hkl=(2.9, 0.0, 0.0), q=0.9, tolerance=0.5,
+                  last_submitted_ncount=2_000_000_000, n_production=5,
+                  master={"halfwidth": 10.0, "effective_exposure": 4_000_000_000})
+    policy = {"dynamic_ncount": True, "production_batch_ncount": 100_000_000,
+              "tolerance_margin": 0.8, "ncount_growth_cap": 4.0,
+              "max_ncount_per_scan": 4_000_000_000, "identity_detection_ncount": 10_000_000}
+    unlimited = {"kind": "counting_seconds", "amount": 0.0, "spent": 0.0}
+
+    # A production scan at this saturated point climbs the escalation ladder well above the floor.
+    prod, _ = acq._count_request(g, kind="production", n_points=10, tolerance=0.5,
+                                 policy=policy, budget_state=unlimited)
+    assert prod > 100_000_000
+
+    # The identity probe at the same point stays at the dedicated auxiliary detection floor.
+    probe, _diag = acq._count_request(g, kind="identity_rival_probe", n_points=10, tolerance=0.5,
+                                      policy=policy, budget_state=unlimited)
+    assert probe == 10_000_000
+
+
+def test_identity_detection_floor_still_honours_the_neutron_budget_clamp():
+    """The dedicated floor is a starting request, not an exemption from the budget/instrument clamps."""
+    g = acq.GridQ(index=0, hkl=(2.9, 0.0, 0.0), q=0.9, tolerance=0.5)
+    policy = {"dynamic_ncount": True, "identity_detection_ncount": 10_000_000}
+    with pytest.raises(acq.BudgetInsufficientForMinimumBatch):
+        acq._count_request(g, kind="identity_rival_probe", n_points=10, tolerance=0.5, policy=policy,
+                           budget_state={"kind": "neutrons", "amount": 99_999_990, "spent": 0.0})
+
+
 def test_static_policy_retains_fixed_production_count():
     g = acq.GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
                   master={"halfwidth": 10.0, "effective_exposure": 1_000_000_000})

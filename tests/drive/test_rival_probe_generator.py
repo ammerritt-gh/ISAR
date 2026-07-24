@@ -57,10 +57,10 @@ def _blocked_point(index=18, hkl=(2.9, 0.0, 0.0), *, saturated=True, clear=False
     return point
 
 
-def _context(grid, objective=None, rival=(7.115, 0.2)):
+def _context(grid, objective=None, rival=(7.115, 0.2), resolution_info=None):
     return acq.AcquisitionContext(
         objective=objective or _objective(), model=None, grid=tuple(grid), results_so_far=(),
-        resolution_info=None, policy={}, runtime_limits={}, classify=None, fisher=None,
+        resolution_info=resolution_info, policy={}, runtime_limits={}, classify=None, fisher=None,
         target_hypothesis=None, classification_weight=1.0, opening=None, tracked_branch=True,
         # Zone centres every even H for this sample, so the period is 2.0 and H=3.0 is a zone
         # BOUNDARY. That is where the acoustic branch reaches its maximum and flattens, bringing it
@@ -114,6 +114,22 @@ def test_a_wider_rival_prediction_gets_a_wider_window():
         _context([_blocked_point()], objective=objective, rival=(7.115, 0.8))).actions[0].intent
 
     assert (loose.energy_hi - loose.energy_lo) > (tight.energy_hi - tight.energy_lo)
+
+
+def test_a_broad_local_resolution_widens_the_window():
+    """The window is resolution-relative to the *local* instrument resolution, not a fixed fallback.
+    At a q where the resolution is broad the probe must open wide enough to catch the mode, or a valid
+    rival is smeared below the window and reported as a false null."""
+    objective = _objective(identity_search_meV=(-2.0, 20.0), identity_search_source="operator")
+    tight_pred = (7.115, 0.05)   # sigma small so the resolution term dominates the half-width
+    broad = acq.ACTION_GENERATORS[RIVAL_GENERATOR](
+        _context([_blocked_point()], objective=objective, rival=tight_pred,
+                 resolution_info={"fwhm_dE": 3.0})).actions[0].intent
+    narrow = acq.ACTION_GENERATORS[RIVAL_GENERATOR](
+        _context([_blocked_point()], objective=objective, rival=tight_pred,
+                 resolution_info={"fwhm_dE": 0.3})).actions[0].intent
+
+    assert (broad.energy_hi - broad.energy_lo) > (narrow.energy_hi - narrow.energy_lo)
 
 
 # -- when it must NOT fire --------------------------------------------------------------------------

@@ -177,6 +177,12 @@ def _ceil_production_ladder(exposure: float, floor: int) -> int:
     return floor * (2 ** int(math.ceil(math.log2(exposure / floor))))
 
 
+# Auxiliary detection kinds answer a yes/no "is the predicted mode there" question and are counted at
+# a fixed detection floor, never the target-production escalation ladder (they feed the auxiliary
+# tracker node, never the certified master).
+AUXILIARY_DETECTION_KINDS = frozenset({"identity_rival_probe"})
+
+
 def _count_request(gridq: GridQ, *, kind: str, n_points: int, tolerance: float,
                    policy: dict, budget_state: dict | None,
                    runtime_ncount_limit: int | None = None) -> tuple[int, dict[str, Any]]:
@@ -189,6 +195,16 @@ def _count_request(gridq: GridQ, *, kind: str, n_points: int, tolerance: float,
     if kind == "quicklook":
         requested = quicklook_floor
         minimum = quicklook_floor
+    elif kind in AUXILIARY_DETECTION_KINDS:
+        # A narrow yes/no identity probe (routed to auxiliary_track_node) answers a *detection*
+        # question, not a precision one, so it must not inherit the target-production dynamic
+        # escalation — that would spend a geometrically growing exposure to settle a cheap
+        # discriminator. It gets a dedicated detection floor instead; a predicted detection-power
+        # calculation can refine this later. The budget / runtime clamps below still apply.
+        detection_floor = int(policy.get("identity_detection_ncount",
+                                         policy.get("quicklook_ncount", QUICKLOOK_NCOUNT)))
+        requested = detection_floor
+        minimum = detection_floor
     elif not dynamic:
         requested = production_floor
         minimum = production_floor
@@ -1649,9 +1665,12 @@ def _narrow_rival_generate(context: AcquisitionContext) -> list[GeneratedAction]
             continue
         # Uncertainty- and resolution-relative half-width. A rival predicted loosely needs more room or
         # the probe misses the mode it was fired to find and reports a false null; a tightly predicted
-        # one gets a cheap window. Clamped into the identity domain so the emitted request never
-        # exceeds what was authorised.
-        half = max(2.0 * sigma, 1.5 * DEFAULT_FWHM_MEV)
+        # one gets a cheap window. The resolution term uses the *local* instrument FWHM at the rival
+        # energy, not a fixed fallback — a broad local resolution would otherwise smear the mode below a
+        # default-width window and turn a real rival into a false null. Clamped into the identity domain
+        # so the emitted request never exceeds what was authorised.
+        local_fwhm = _resolve_fwhm(context.resolution_info, *pick.hkl, mu)
+        half = max(2.0 * sigma, 1.5 * local_fwhm)
         lo, hi = max(domain[0], mu - half), min(domain[1], mu + half)
         if not lo < hi:
             continue

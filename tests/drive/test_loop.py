@@ -29,6 +29,7 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
                              _master_obs_from_row, _observation_from_row, _pick_interval,
                              _pooled_target_delivered,
                              _preflight_instrument_limits, _preflight_max_points,
+                             _proposal_from_submission,
                              _reconcile_budget_points, _resume_state,
                              _run_nonce, _target_supporting_feasible_points, _validate_body,
                              run_campaign)
@@ -1876,6 +1877,34 @@ def test_bayes_master_promotion_logs_actual_tier_and_outcome(tmp_path):
 
 
 # --------------------------------------------------------------------------- crash-safe resume (Part C)
+def test_proposal_from_submission_preserves_auxiliary_action_identity():
+    """A crashed-and-resumed auxiliary probe must keep its sink and action identity. Without the sink
+    the recovered scan becomes canonical by default and pools into the certified master; without the
+    scientific/feasibility fingerprints it loses its audit identity. This is load-bearing once the
+    clean-null evidence lands on the auxiliary node."""
+    from isar.schema.steering import AUXILIARY_TRACK_NODE
+    payload = {
+        "hkl": [2.9, 0.0, 0.0], "kind": "identity_rival_probe", "acquisition_id": "run:00000007",
+        "submitted_ncount": 10_000_000, "n_points": 5, "acquisition_target_energy": 7.115,
+        "evidence_sink": AUXILIARY_TRACK_NODE,
+        "scientific_action_fingerprint": "sci-fp-123",
+        "feasibility_manifest_fingerprint": "feas-fp-456",
+        "proposal_fingerprint": "req-fp-789",
+    }
+    proposal = _proposal_from_submission(payload)
+
+    assert proposal.meta["evidence_sink"] == AUXILIARY_TRACK_NODE
+    assert proposal.meta["scientific_action_fingerprint"] == "sci-fp-123"
+    assert proposal.meta["feasibility_manifest_fingerprint"] == "feas-fp-456"
+
+
+def test_proposal_from_submission_defaults_a_missing_sink_to_canonical():
+    """A legacy submission with no persisted sink recovers as an ordinary canonical scan."""
+    from isar.schema.steering import CANONICAL_MASTER
+    proposal = _proposal_from_submission({"hkl": [2.0, 0.0, 0.0], "kind": "production"})
+    assert proposal.meta["evidence_sink"] == CANONICAL_MASTER
+
+
 def test_resume_state_recovers_ledger_from_log_and_results(tmp_path):
     ws = tmp_path / "ws"
     (ws / "report").mkdir(parents=True)

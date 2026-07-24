@@ -80,10 +80,11 @@ def test_the_emitted_probe_window_actually_reaches_the_rival():
     assert probe.e_lo < RIVAL_MEV < probe.e_hi
     assert probe.e_hi > 7.0, "the whole point is reaching above the target search ceiling"
     # Pin the actual bounds, not just overlap. A future window bug that still happened to straddle
-    # 7.115 would pass a mere-overlap check while emitting the wrong scan; the declared half-width is
-    # max(2*sigma, 1.5*fwhm) = max(0.4, 0.75) = 0.75 around the rival.
-    assert probe.e_lo == pytest.approx(RIVAL_MEV - 0.75, abs=1e-6)
-    assert probe.e_hi == pytest.approx(RIVAL_MEV + 0.75, abs=1e-6)
+    # 7.115 would pass a mere-overlap check while emitting the wrong scan; the half-width is resolution-
+    # relative, max(2*sigma, 1.5*fwhm) = max(0.4, 1.5*0.8) = 1.2 around the rival at the context's local
+    # 0.8 meV FWHM.
+    assert probe.e_lo == pytest.approx(RIVAL_MEV - 1.2, abs=1e-6)
+    assert probe.e_hi == pytest.approx(RIVAL_MEV + 1.2, abs=1e-6)
     # The energy the scan is *about*, which becomes the persisted acquisition_target_energy and the
     # centre the effective-exposure weighting uses. Left at the target model's prediction it was 0.0,
     # which would score the probe's counts over a region it deliberately did not scan.

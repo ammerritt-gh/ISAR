@@ -1309,6 +1309,13 @@ def _proposal_from_submission(payload: dict) -> ScanProposal:
         "rival_branch_role": payload.get("rival_branch_role"),
         "authoritative_evidence_revision": payload.get("authoritative_evidence_revision"),
         "proposal_fingerprint": payload.get("proposal_fingerprint"),
+        # The action identity a resumed scan must not lose. Without the sink a recovered auxiliary
+        # probe becomes canonical by default and pools into the certified master; the scientific and
+        # feasibility fingerprints are its audit identity. All three are already persisted on the
+        # physical_submission event, so recovery only has to read them back.
+        "evidence_sink": payload.get("evidence_sink") or CANONICAL_MASTER,
+        "scientific_action_fingerprint": payload.get("scientific_action_fingerprint"),
+        "feasibility_manifest_fingerprint": payload.get("feasibility_manifest_fingerprint"),
     }
     if payload.get("insertion_purpose") is not None:
         meta["insertion_purpose"] = payload.get("insertion_purpose")
