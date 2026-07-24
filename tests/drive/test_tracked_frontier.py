@@ -882,6 +882,60 @@ def test_identity_saturation_needs_both_metrics_and_a_real_exposure_increase():
     assert not frontier.identity_saturated
 
 
+def _stalled_identity_series():
+    """Three comparable revisions: exposure up 4x, neither identity metric moving."""
+    return [{"effective_exposure": 25e6, "target_probability": 0.75, "identity_entropy": 0.56},
+            {"effective_exposure": 50e6, "target_probability": 0.751, "identity_entropy": 0.559},
+            {"effective_exposure": 100e6, "target_probability": 0.752, "identity_entropy": 0.558}]
+
+
+def _identity_frontier():
+    return GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
+                 track_state="ambiguous", local_identity_clear=False)
+
+
+def test_identity_saturation_holds_within_one_stable_basis():
+    """The positive case with a basis present: a stable candidate set and calibration across the
+    window still saturates when the metrics stall under growing exposure."""
+    frontier = _identity_frontier()
+    frontier.identity_updates = [
+        dict(u, branch_candidates=[{"energy_meV": 5.75}, {"energy_meV": 7.11}],
+             calibration_version="cal-1")
+        for u in _stalled_identity_series()]
+    assert frontier.identity_saturated
+    assert not frontier.identity_basis_changed
+
+
+def test_a_changed_candidate_set_is_not_identity_saturation():
+    """Blocker #3. If a second candidate appears (or one disappears) inside the window, the last
+    revisions answer a different candidate-ownership question than the first, so worsening/stalled
+    metrics across them are not evidence that counting has stopped paying."""
+    frontier = _identity_frontier()
+    series = _stalled_identity_series()
+    frontier.identity_updates = [
+        dict(series[0], branch_candidates=[{"energy_meV": 5.75}]),
+        dict(series[1], branch_candidates=[{"energy_meV": 5.75}]),
+        # A second candidate appeared: this is a different scientific question, not stalled counting.
+        dict(series[2], branch_candidates=[{"energy_meV": 5.75}, {"energy_meV": 7.11}]),
+    ]
+    assert not frontier.identity_saturated
+    assert frontier.identity_basis_changed
+
+
+def test_a_recalibration_mid_window_is_not_identity_saturation():
+    """A calibration change makes the older revisions incomparable to the newest — the label may be
+    settling under the new calibration, so counting is not proven wasted."""
+    frontier = _identity_frontier()
+    series = _stalled_identity_series()
+    frontier.identity_updates = [
+        dict(series[0], calibration_version="cal-1"),
+        dict(series[1], calibration_version="cal-1"),
+        dict(series[2], calibration_version="cal-2"),
+    ]
+    assert not frontier.identity_saturated
+    assert frontier.identity_basis_changed
+
+
 def test_same_q_budget_is_the_production_ceiling_not_the_bridge_allowance():
     grid = _grid()
     frontier = _op10_frontier(grid, n_production=11)

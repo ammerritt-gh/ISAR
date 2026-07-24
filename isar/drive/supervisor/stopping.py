@@ -124,6 +124,30 @@ def _finite_or_none(value) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _identity_basis(update: dict) -> tuple:
+    """The scientific *question* an identity update answers, for saturation comparability.
+
+    Saturation compares identity metrics across growing exposure to decide counting has stopped
+    paying. That is only valid across revisions that answer the same question. This captures the
+    STRUCTURE of the question — how many candidates are in play, and the calibration / model /
+    hypothesis / campaign-slice context — and deliberately excludes the *answer* (``branch_id``,
+    ``target_probability``, ``identity_entropy``) and the advancing revision ids (exposure,
+    ``content_hash``, ``track_revision``): those are exactly what saturation is measuring the movement
+    of, so keying on them would reset the comparability window on every observation. A change here — a
+    candidate appearing or disappearing, a recalibration, a model or hypothesis change — is a different
+    question, so worsening or stalled metrics across it are not evidence that counting cannot help.
+    Legacy updates carrying only the metric fields yield a constant basis, preserving prior behavior.
+    """
+    candidates = update.get("branch_candidates") or ()
+    return (
+        len(candidates),
+        update.get("calibration_version"),
+        update.get("model_selection_family") or update.get("model_selection"),
+        update.get("hypotheses_fingerprint"),
+        update.get("campaign_slice_fingerprint"),
+    )
+
+
 @dataclass
 class GridQ:
     """A per-grid-point rollup the acquisition function and the stopping criterion both consume.
@@ -391,7 +415,14 @@ class GridQ:
                        or update.get("identity_entropy") is not None)]
         if len(window) < self.identity_floor_window:
             return False
-        window = window[-self.identity_floor_window:]
+        # Only compare revisions that answer the same identity question. Mirrors ``interval_floored``'s
+        # comparability key: a change in the candidate set, calibration, model, hypothesis, or slice
+        # is a different question, and saturation across it would be a phantom.
+        basis = _identity_basis(window[-1])
+        comparable = [update for update in window if _identity_basis(update) == basis]
+        if len(comparable) < self.identity_floor_window:
+            return False
+        window = comparable[-self.identity_floor_window:]
         first, last = window[0], window[-1]
         try:
             first_exposure = float(first["effective_exposure"])
@@ -427,6 +458,21 @@ class GridQ:
         if any(value is None for value in gains):
             return False
         return max(gains) < self.identity_floor_min_improvement
+
+    @property
+    def identity_basis_changed(self) -> bool:
+        """The identity question changed within the recent identity window (candidate set,
+        calibration, model, hypothesis, or slice), so the latest updates are not comparable for
+        saturation. Observability for why a saturated-looking series is not treated as saturated."""
+        window = [update for update in self.identity_updates
+                  if update.get("effective_exposure") is not None
+                  and (update.get("target_probability") is not None
+                       or update.get("identity_entropy") is not None)]
+        if len(window) < self.identity_floor_window:
+            return False
+        basis = _identity_basis(window[-1])
+        recent = window[-self.identity_floor_window:]
+        return any(_identity_basis(update) != basis for update in recent)
 
     @property
     def ambiguity_exhausted(self) -> bool:
