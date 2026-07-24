@@ -2041,11 +2041,17 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
             and previous.get("assignments") is not None):
         track = previous
     else:
+        # The campaign's own authorized band is the domain the "could be anywhere" baseline is uniform
+        # over (O30). Without it the tracker falls back to a fixed span, which stays branch-neutral but
+        # no longer reflects what this campaign actually declared it was searching.
+        search_band = target.get("energy_search_meV")
         track = branch_tracking.track_path(
             path, observations, period=period, hypotheses=hypotheses,
             target_branch=target_branch, previous=previous,
             assignment_entropy_stop_nats=entropy_stop,
-            maximum_bridge_steps=maximum_bridge_steps)
+            maximum_bridge_steps=maximum_bridge_steps,
+            energy_domain_meV=(tuple(float(v) for v in search_band)
+                               if search_band and len(search_band) == 2 else None))
         track["authoritative_evidence_signature"] = authority_signature
     revision = int(track["revision"])
     for assignment, observation in zip(track["assignments"], observations):

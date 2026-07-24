@@ -837,3 +837,82 @@ def test_an_untrusted_null_does_not_relax_anything():
     state = _State(optic=None, acoustic=0)
     baseline = _emit(state, candidates, null_windows=None)
     assert _emit(state, candidates, null_windows=[(5.5, 6.5, 0.0)]) == baseline
+
+
+# -- confidence is discrimination, never forgiveness (O30) -------------------------------------------
+
+DOMAIN = (-2.0, 7.0)
+
+
+def test_zero_confidence_contributes_no_evidence_rather_than_no_penalty():
+    """The P0. ``confidence`` multiplied ``_normal_compatibility``, which is always <= 0, so lowering
+    it scaled the *penalty* toward zero and a less-trusted hypothesis scored a mismatched candidate
+    better -- for a 4 meV candidate against an acoustic prior at 0 +/- 0.2 meV the emission ran -162.5
+    at confidence 1 up to -2.5 at confidence 0."""
+    from isar.session.branch_tracking import _baselined_compatibility
+
+    for energy in (0.0, 4.0, 6.0, 20.0):
+        for mean, sigma in ((0.0, 0.2), (6.0, 3.0)):
+            assert _baselined_compatibility(energy, mean, sigma, 0.0, DOMAIN) == 0.0
+
+
+def test_an_untrusted_hypothesis_never_earns_positive_support():
+    """The bound that replaces monotonicity. Confidence is deliberately not monotone in the score -- a
+    confident hypothesis the data contradicts *may* fall below a vague one, which is the correct
+    Bayesian reading -- but a mismatch must never become evidence *for* the branch."""
+    from isar.session.branch_tracking import _baselined_compatibility
+
+    scores = [_baselined_compatibility(4.0, 0.0, 0.2, c, DOMAIN)
+              for c in (1.0, 0.75, 0.5, 0.25, 0.0)]
+    assert max(scores) <= 0.0
+    assert scores[0] < scores[-1] == 0.0, "the documented, deliberate direction"
+
+
+def test_a_broad_declared_prior_at_its_own_mean_is_positive_support():
+    """Why the ratio form can restore normalization that ``_normal_compatibility`` had to drop. A
+    3 meV-wide ZC prior used to lose permanently to ``new`` even for a peak exactly at its mean;
+    measured against a uniform over the same domain it is worth more than 'anywhere', as it should
+    be."""
+    from isar.session.branch_tracking import _baselined_compatibility
+
+    assert _baselined_compatibility(6.0, 6.0, 3.0, 1.0, DOMAIN) > 0.0
+
+
+def test_confidence_alone_cannot_move_the_assignment_between_branches():
+    """The bias the multiplier created: with identical densities and only confidence differing, the
+    cheaper branch was whichever was trusted *less*, because its mismatch cost less."""
+    candidates = [_candidate("x", 3.0)]
+    shared = {"zc_energy": {"mean": 3.0, "sigma": 0.5}, "slope_zc": {"mean": 0.0, "sigma": 1.0}}
+
+    def emission_for(optic_confidence, acoustic_confidence, state):
+        return _emission(state, candidates, reduced_distance=0.0, period=2.0,
+                         optic_hypothesis={**shared, "confidence": optic_confidence},
+                         acoustic_hypothesis={**shared, "confidence": acoustic_confidence},
+                         energy_domain=DOMAIN)
+
+    as_optic, as_acoustic = _State(optic=0, acoustic=None), _State(optic=None, acoustic=0)
+    # Trusting the optic branch less must not make "call it optic" the cheaper answer.
+    assert emission_for(0.2, 1.0, as_optic) < emission_for(0.2, 1.0, as_acoustic)
+    assert emission_for(1.0, 0.2, as_acoustic) < emission_for(1.0, 0.2, as_optic)
+
+
+def test_the_ordering_term_is_silent_rather_than_free_when_untrusted():
+    """The same defect on the acoustic-only ordering evidence: scaling a <= 0 log-likelihood by
+    confidence made a low-confidence acoustic hypothesis cheaper to assign than a trusted one, while
+    the optic branch -- which carries no ordering term at all -- was scored at 0 either way."""
+    from isar.session.branch_tracking import _baselined_evidence
+
+    assert _baselined_evidence(-3.0, 0.0) == 0.0
+    assert _baselined_evidence(-3.0, 1.0) == -3.0
+    assert -3.0 < _baselined_evidence(-3.0, 0.5) < 0.0
+
+
+def test_a_declared_campaign_band_is_the_baseline_domain():
+    """The baseline is uniform over what the campaign declared it was searching, not over the observed
+    candidates -- whose spread would make the baseline move with the very data it measures."""
+    from isar.session.branch_tracking import DEFAULT_ENERGY_DOMAIN_MEV, _baselined_compatibility
+
+    narrow = _baselined_compatibility(3.0, 3.0, 0.5, 1.0, (2.0, 4.0))
+    wide = _baselined_compatibility(3.0, 3.0, 0.5, 1.0, (-10.0, 20.0))
+    assert wide > narrow, "a declared branch beats 'anywhere' by more when 'anywhere' is bigger"
+    assert DEFAULT_ENERGY_DOMAIN_MEV[1] > DEFAULT_ENERGY_DOMAIN_MEV[0]

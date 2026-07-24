@@ -538,6 +538,36 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   discarding confirmed work. Evidence: `tests/drive/test_ap7_certification_replay.py`,
   `tests/drive/test_ap8_pool_inconsistency_replay.py`, and the two 2026-07-24 fix commits.
 
+- **O30.** (2026-07-24, Implemented in `isar/session/branch_tracking.py`) **A declared hypothesis'
+  `confidence` scales how much the hypothesis is allowed to *discriminate*, never how much a
+  mismatched candidate is forgiven. It is applied as a likelihood ratio against a baseline common to
+  every branch, so `confidence = 0` contributes exactly zero evidence rather than zero penalty.**
+  The scorer multiplied confidence into `_normal_compatibility`, which returns `-z²/2` and is therefore
+  always ≤ 0. Lowering confidence scaled the *penalty* toward zero, so a less-trusted hypothesis scored
+  a mismatched candidate **better**: for one 4 meV candidate against an acoustic prior at 0 ± 0.2 meV,
+  the emission ran -162.5 at `confidence = 1` up to -2.5 at `confidence = 0`. Since `MISSING_LOG_PENALTY`
+  is confidence-independent, a zero-confidence branch strictly preferred grabbing an arbitrary candidate
+  to staying unassigned, and two branches with different confidences were scored on incomparable
+  scales.
+
+  The repair is a mixture of a **normalized**, domain-truncated branch density with a common uniform
+  density over the authorized energy domain, scored as a ratio against that same uniform:
+  `log[(c·N(x; μ_b, σ_b) + (1−c)·U(x)) / U(x)]`. At `c = 1` this is a log Bayes factor against "the
+  mode could be anywhere"; at `c = 0` it is exactly 0 for every candidate and every branch. A
+  *rejected* alternative, recorded because it looks like the obvious fix and is not: mixing two
+  **peak-normalized** Gaussians (`log[c·e^{−z²/2} + (1−c)·e^{−z_v²/2}]`) fails in the same direction
+  as the bug and harder, because weight moves to the broader, less-negative component as confidence
+  falls — the same 4 meV mismatch runs -200 at `c = 1` to -0.08 at `c = 0`.
+
+  Two consequences are deliberate. **A confident-but-contradicted hypothesis can lose to a vague one.**
+  Confidence is not monotone in the score and must not be tested as if it were; what is guaranteed is
+  that both branches are measured against one baseline, so low confidence buys no branch an advantage
+  the other cannot have. **Normalization returns**, which `_normal_compatibility` had removed because a
+  3 meV-wide ZC prior then permanently lost to `new` even at its own mean. The ratio form fixes that
+  case rather than reviving it: against a uniform over the same domain, a broad prior at its mean gives
+  `log(N_peak/U) > 0` — positive support. `MISSING_LOG_PENALTY` and `UNASSIGNED_LOG_PENALTY` are read
+  as ratios against that same baseline. Evidence: `tests/session/test_branch_tracking.py`.
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:

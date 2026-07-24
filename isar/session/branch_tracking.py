@@ -21,6 +21,12 @@ CONFIRMED_PROBABILITY = 0.85
 UNRELIABLE_EVIDENCE_FACTOR = 0.70
 ORDERING_LOG_FLOOR = math.log(0.05)
 
+# The "the mode could be anywhere" baseline every confidence-weighted term is scored against (O30).
+# Used only when the campaign does not supply its authorized energy domain; it is a constant applied
+# identically to every branch, so it scales how much a *declared* branch beats "anywhere" without ever
+# favouring one branch over another.
+DEFAULT_ENERGY_DOMAIN_MEV = (-2.0, 18.0)
+
 # Character is a trajectory-level latent variable.  A finite floor keeps all hypotheses represented
 # numerically while making a local acoustic<->optic hand-off negligible relative to reconnecting the
 # same character; a full authoritative replay can still choose the opposite character everywhere.
@@ -96,13 +102,77 @@ def _logsumexp(values) -> float:
 def _normal_compatibility(value: float, mean: float, sigma: float) -> float:
     """Dimensionless hypothesis compatibility for a discrete identity decision.
 
-    The normalization term of a probability *density* must not become a prior against a broad but
-    explicitly declared branch: doing so made a 3 meV-wide ZC prior permanently favor ``new`` over
-    an observed peak exactly at its mean, regardless of accumulated counts.
+    Used where no confidence weighting applies (the transition likelihood). The normalization term of
+    a probability *density* must not become a prior against a broad but explicitly declared branch:
+    doing so made a 3 meV-wide ZC prior permanently favor ``new`` over an observed peak exactly at its
+    mean, regardless of accumulated counts. For the confidence-weighted emission terms see
+    :func:`_baselined_compatibility`, which restores normalization safely by taking a *ratio* against
+    a baseline shared by every branch.
     """
     sigma = max(float(sigma), 1e-6)
     z = (float(value) - float(mean)) / sigma
     return -0.5 * z * z
+
+
+def _normal_cdf(z: float) -> float:
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+
+def _baselined_compatibility(value: float, mean: float, sigma: float, confidence: float,
+                             domain: tuple[float, float]) -> float:
+    """Log Bayes factor for "this candidate is that branch" against a branch-neutral baseline (O30).
+
+    The declared branch is trusted with probability ``confidence``; otherwise the mode could be
+    anywhere in the authorized energy domain. Scoring the resulting mixture as a *ratio* against that
+    same uniform makes the number comparable across branches::
+
+        log[ (c·N_trunc(value; mean, sigma) + (1-c)·U) / U ]
+
+    ``c = 0`` returns exactly ``0.0`` — no evidence, identically for every candidate and every branch —
+    rather than the *no penalty* the previous ``confidence * (-z²/2)`` produced, which let an untrusted
+    hypothesis outscore a trusted one on the same mismatched candidate.
+
+    Confidence is deliberately **not** monotone in the returned score: a confident hypothesis that the
+    data contradicts can score below a vague one, which is the correct Bayesian reading and the price
+    of a shared baseline. What is guaranteed is that no branch gains an advantage from being trusted
+    less, because both are measured against the same ``U``.
+
+    The branch density is truncated to the domain, so a prior whose mean sits near an edge is not
+    charged for the mass it cannot place there.
+    """
+    lo, hi = float(domain[0]), float(domain[1])
+    width = max(hi - lo, 1e-6)
+    confidence = min(max(float(confidence), 0.0), 1.0)
+    if confidence <= 0.0:
+        return 0.0
+    sigma = max(float(sigma), 1e-6)
+    z = (float(value) - float(mean)) / sigma
+    # Mass of the declared branch that actually falls inside the authorized domain. Floored so a
+    # branch predicted far outside it cannot divide by ~0 and manufacture unbounded support.
+    inside = max(_normal_cdf((hi - float(mean)) / sigma) - _normal_cdf((lo - float(mean)) / sigma),
+                 1e-6)
+    # density_ratio = N_trunc(value) / U, both proper densities on the domain.
+    log_density_ratio = (math.log(width) - math.log(sigma) - 0.5 * math.log(2.0 * math.pi)
+                         - math.log(inside) - 0.5 * z * z)
+    if confidence >= 1.0:
+        return log_density_ratio
+    return float(np.logaddexp(math.log(confidence) + log_density_ratio, math.log1p(-confidence)))
+
+
+def _baselined_evidence(log_likelihood: float, weight: float) -> float:
+    """The same construction for evidence that is not a density over energy (the ordering term).
+
+    The baseline is "the hypothesis makes no ordering claim", whose likelihood ratio is 1, so a
+    ``weight`` of 0 contributes exactly 0 — matching the branch that never carries an ordering term at
+    all. Scaling the raw log-likelihood instead made a low-confidence acoustic hypothesis cheaper to
+    assign than a trusted one.
+    """
+    weight = min(max(float(weight), 0.0), 1.0)
+    if weight <= 0.0:
+        return 0.0
+    if weight >= 1.0:
+        return float(log_likelihood)
+    return float(np.logaddexp(math.log(weight) + float(log_likelihood), math.log1p(-weight)))
 
 
 def _hypothesis(hypotheses: list[dict], name: str) -> dict:
@@ -208,6 +278,7 @@ def _emission(state: _State, candidates: list[dict], *, reduced_distance: float,
               period: float | None,
               optic_hypothesis: dict, acoustic_hypothesis: dict,
               null_windows=None,
+              energy_domain: tuple[float, float] = DEFAULT_ENERGY_DOMAIN_MEV,
               ) -> float:
     assigned = {index for index in (state.optic, state.acoustic) if index is not None}
     score = (len(candidates) - len(assigned)) * UNASSIGNED_LOG_PENALTY
@@ -234,7 +305,8 @@ def _emission(state: _State, candidates: list[dict], *, reduced_distance: float,
         candidate = candidates[index]
         combined = math.sqrt(sigma * sigma + _candidate_sigma(candidate) ** 2)
         confidence = _hypothesis_confidence(hypothesis)
-        score += confidence * _normal_compatibility(_candidate_energy(candidate), mean, combined)
+        score += _baselined_compatibility(_candidate_energy(candidate), mean, combined,
+                                          confidence, energy_domain)
         if branch == "acoustic" and len(candidates) > 1:
             # Lowest-mode character is useful close to Gamma, but provides no identity evidence at
             # the zone boundary where acoustic and optic energies may approach or cross.
@@ -243,7 +315,8 @@ def _emission(state: _State, candidates: list[dict], *, reduced_distance: float,
                            else None)
             ordering_weight = (max(0.0, 1.0 - reduced_distance / half_period)
                                if half_period else 0.0)
-            score += confidence * ordering_weight * _lowest_energy_log_likelihood(index, candidates)
+            score += _baselined_evidence(_lowest_energy_log_likelihood(index, candidates),
+                                         confidence * ordering_weight)
         # Fit reliability affects evidence strength, but never deletes the candidate.
         if candidate.get("reliable") is False:
             score += math.log(UNRELIABLE_EVIDENCE_FACTOR)
@@ -485,7 +558,8 @@ def _segments(assignments: list[dict], branch: str, target_branch: str) -> list[
 def track_path(path: list[list[float]], observations: list[dict], *, period: float | None,
                hypotheses: list[dict], target_branch: str = "optic", previous: dict | None = None,
                assignment_entropy_stop_nats: float = 0.2,
-               maximum_bridge_steps: int = 1) -> dict:
+               maximum_bridge_steps: int = 1,
+               energy_domain_meV: tuple[float, float] | None = None) -> dict:
     """Run Viterbi plus forward/backward marginals over an ordered objective path.
 
     ``observations`` has one row per path point and each row has an unordered ``candidates`` list.
@@ -493,6 +567,12 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
     """
     if target_branch not in {"optic", "acoustic"}:
         raise ValueError("tracked branch must be 'optic' or 'acoustic'")
+    # The domain the "could be anywhere" baseline is uniform over (O30). Falls back to a fixed span
+    # rather than to the observed candidates, whose spread would make the baseline move with the data
+    # it is supposed to be measured against.
+    domain = tuple(float(v) for v in energy_domain_meV) if energy_domain_meV else         DEFAULT_ENERGY_DOMAIN_MEV
+    if not domain[1] > domain[0]:
+        domain = DEFAULT_ENERGY_DOMAIN_MEV
     if len(path) != len(observations):
         raise ValueError("path and observations must have the same length")
     points = [[float(value) for value in q] for q in path]
@@ -535,7 +615,8 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
                             reduced_distance=reduced_distance[index], period=period,
                             optic_hypothesis=optic_hypothesis,
                             acoustic_hypothesis=acoustic_hypothesis,
-                            null_windows=null_windows_by_q[index])
+                            null_windows=null_windows_by_q[index],
+                            energy_domain=domain)
                   for state in states[index]] for index in range(len(points))]
     transitions: list[np.ndarray] = []
     for index in range(1, len(points)):
