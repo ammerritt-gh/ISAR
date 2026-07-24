@@ -404,12 +404,17 @@ def identity_domain(objective, *, rival_energy_meV: float | None,
 
     1. A **declared** identity domain is the answer. Nothing to migrate.
     2. No rival to reach means nothing to widen for.
-    3. A band the **compiler** chose is a default, not an instruction, so it may be widened to admit
+    3. A rival **already inside** the target band needs no widening, so no provenance question arises.
+       Every rule below decides whether the band may be *widened*; asking them first reported
+       ``policy_forbidden`` for a rival the operator had already authorised, disabling identity work
+       inside the very range they declared. Containment is tested on the rival *centre* alone —
+       admitting a rival whose shoulders fall outside would be widening by another name.
+    4. A band the **compiler** chose is a default, not an instruction, so it may be widened to admit
        the rival that settles the identity — bounded by that rival plus a few resolution widths, not
        opened to an arbitrary band.
-    4. A band the **operator** declared is a hard constraint. Spending their beam time outside the
+    5. A band the **operator** declared is a hard constraint. Spending their beam time outside the
        range they asked for is not ours to decide.
-    5. A band with **no provenance** (an old frozen objective) is treated like the operator's. That a
+    6. A band with **no provenance** (an old frozen objective) is treated like the operator's. That a
        range equals the shipped default is not evidence the compiler chose it, and guessing wrong
        here silently rewrites a scientist's declared intent.
     """
@@ -419,6 +424,8 @@ def identity_domain(objective, *, rival_energy_meV: float | None,
         return (float(declared[0]), float(declared[1])), None
     if rival_energy_meV is None or not math.isfinite(float(rival_energy_meV)):
         return target, None
+    if target[0] <= float(rival_energy_meV) <= target[1]:
+        return target, None                        # already authorised; nothing to widen
     source = getattr(objective, "target_search_source", None)
     if source == "operator":
         return target, (

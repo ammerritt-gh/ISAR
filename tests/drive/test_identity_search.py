@@ -160,6 +160,27 @@ def test_a_legacy_objective_without_provenance_is_not_quietly_widened():
     assert forbidden is not None and "provenance" in forbidden
 
 
+def test_a_rival_already_inside_the_declared_band_needs_no_authorisation():
+    """Containment is asked before provenance. The migration rules exist to decide whether a band may
+    be *widened*; a rival already inside it needs no widening, so no provenance question arises. Asking
+    provenance first reported ``policy_forbidden`` for a probe the operator had already authorised —
+    disabling identity work inside the very range they declared."""
+    for source in ("operator", None):
+        objective = _spec(energy_search_meV=(-2.0, 7.0), target_search_source=source)
+        domain, forbidden = acq.identity_domain(objective, rival_energy_meV=6.0)
+        assert forbidden is None, f"a rival at 6 meV is inside the declared band ({source=})"
+        assert domain == pytest.approx((-2.0, 7.0))
+
+
+def test_containment_is_tested_on_the_rival_centre_not_its_shoulders():
+    """A rival *outside* the band still needs widening, and an operator band still forbids it. The
+    short-circuit tests the centre alone: admitting a rival whose shoulders fall outside would be
+    widening by another name, which is exactly what the operator rule refuses."""
+    objective = _spec(energy_search_meV=(-2.0, 7.0), target_search_source="operator")
+    _domain, forbidden = acq.identity_domain(objective, rival_energy_meV=7.115)
+    assert forbidden is not None and "operator" in forbidden
+
+
 def test_an_explicit_identity_domain_overrides_the_migration_question_entirely():
     objective = _spec(identity_search_meV=(-2.0, 9.0), identity_search_source="operator")
     domain, forbidden = acq.identity_domain(objective, rival_energy_meV=7.115)
