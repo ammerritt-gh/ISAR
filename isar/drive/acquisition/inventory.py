@@ -377,13 +377,21 @@ class ActionInventory:
     def has_eligible_action(self) -> bool:
         return any(e.is_eligible for e in self.evaluations)
 
-    def terminal_cause(self) -> str | None:
+    def terminal_cause(self, registry: tuple[GeneratorSpec, ...] | None = None) -> str | None:
         """The action-space terminal this inventory implies, or None if it is not terminal.
 
         Only speaks to the action-space: hard terminals (met, budget, analysis guardrail, operator
         stop, physical infeasibility) are decided before the inventory is consulted.
+
+        ``is_complete`` is registry-independent so synthetic/adapter inventories can be reasoned about
+        in isolation. Pass ``registry`` to also require registry consistency before proving exhaustion:
+        an inventory whose own accounting is clean but which is missing a registry-required generator
+        (one that never ran) has not proven the action space empty, and claiming exhaustion there would
+        hide a controller fault behind a valid-looking terminal.
         """
         if not self.is_complete:
+            return TERMINAL_CONTROLLER_FAULT
+        if registry is not None and self.validate(registry):
             return TERMINAL_CONTROLLER_FAULT
         if self.has_eligible_action:
             return None
@@ -462,6 +470,11 @@ class ActionInventory:
                         "evidence_basis_fingerprint": e.intent.evidence_basis_fingerprint,
                         "hypotheses_fingerprint": e.intent.hypotheses_fingerprint,
                         "campaign_slice_fingerprint": e.intent.campaign_slice_fingerprint,
+                        # Part of the scientific action identity: the same window at the same q routed
+                        # to a different sink answers against different evidence and updates a different
+                        # posterior, so a reader must be able to tell a canonical action from an
+                        # auxiliary-node one in the persisted artifact.
+                        "evidence_sink": e.intent.evidence_sink,
                     },
                     "score": {
                         "expected_identity_gain": _finite(e.expected_identity_gain),

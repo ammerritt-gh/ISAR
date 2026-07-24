@@ -2384,13 +2384,25 @@ def _selected_action_record(proposal, inventory) -> dict:
                 "selected_hkl": None, "selected_request_fingerprint": None,
                 "selected_generator": None}
     meta = proposal.meta or {}
-    eligible = inventory.eligible_actions()
+    # Match the generator to the action actually realized, by its scientific fingerprint. After a
+    # fallback the selected proposal need not be the first eligible action, so ``eligible_actions()[0]``
+    # would mis-attribute the record to whatever ranked first. Fall back to the first eligible only when
+    # the proposal carries no fingerprint (legacy/driver-inserted).
+    selected_fingerprint = meta.get("scientific_action_fingerprint")
+    generator = None
+    if selected_fingerprint is not None:
+        generator = next(
+            (e.generator for e in inventory.evaluations
+             if e.intent.scientific_action_fingerprint == selected_fingerprint), None)
+    if generator is None:
+        eligible = inventory.eligible_actions()
+        generator = eligible[0].generator if eligible else None
     return {
         "selected_action_class": meta.get("action_class") or _selected_action_class(proposal),
-        "selected_scientific_action_fingerprint": meta.get("scientific_action_fingerprint"),
+        "selected_scientific_action_fingerprint": selected_fingerprint,
         "selected_hkl": [proposal.h, proposal.k, proposal.l],
         "selected_request_fingerprint": meta.get("proposal_fingerprint"),
-        "selected_generator": eligible[0].generator if eligible else None,
+        "selected_generator": generator,
     }
 
 

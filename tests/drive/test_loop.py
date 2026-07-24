@@ -29,7 +29,7 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
                              _master_obs_from_row, _observation_from_row, _pick_interval,
                              _pooled_target_delivered,
                              _preflight_instrument_limits, _preflight_max_points,
-                             _proposal_from_submission,
+                             _proposal_from_submission, _selected_action_record,
                              _reconcile_budget_points, _resume_state,
                              _run_nonce, _target_supporting_feasible_points, _validate_body,
                              run_campaign)
@@ -1877,6 +1877,37 @@ def test_bayes_master_promotion_logs_actual_tier_and_outcome(tmp_path):
 
 
 # --------------------------------------------------------------------------- crash-safe resume (Part C)
+def test_selected_action_record_identifies_the_generator_by_fingerprint():
+    """After a fallback the selected proposal need not be the first eligible action, so the compact
+    record must attribute it to the generator whose scientific fingerprint it realizes, not to
+    eligible_actions()[0]."""
+    from isar.drive.acquisition.inventory import (
+        ActionEligibility, ActionEvaluation, ActionInventory, GeneratorReport, GeneratorStatus,
+        MeasurementIntent)
+    first = MeasurementIntent(action_class="production", hkl=(2.1, 0.0, 0.0), energy_lo=-2.0,
+                              energy_hi=7.0, window_family="target")
+    second = MeasurementIntent(action_class="identity_rival_probe", hkl=(2.9, 0.0, 0.0),
+                               energy_lo=6.0, energy_hi=8.0, window_family="rival")
+    inv = ActionInventory(
+        evaluations=[
+            ActionEvaluation(intent=first, generator="legacy_selector_adapter",
+                             eligibility=ActionEligibility.ELIGIBLE),
+            ActionEvaluation(intent=second, generator="narrow_rival_probe",
+                             eligibility=ActionEligibility.ELIGIBLE)],
+        reports=[GeneratorReport(generator="legacy_selector_adapter",
+                                 status=GeneratorStatus.COMPLETED, generated=1),
+                 GeneratorReport(generator="narrow_rival_probe",
+                                 status=GeneratorStatus.COMPLETED, generated=1)])
+    # The proposal realizes the SECOND action (the rival probe), not eligible_actions()[0].
+    proposal = ScanProposal(
+        h=2.9, k=0.0, l=0.0, e_lo=6.0, e_hi=8.0, e_step=0.1, ncount=1, kind="identity_rival_probe",
+        reason="probe",
+        meta={"scientific_action_fingerprint": second.scientific_action_fingerprint})
+
+    record = _selected_action_record(proposal, inv)
+    assert record["selected_generator"] == "narrow_rival_probe"
+
+
 def test_proposal_from_submission_preserves_auxiliary_action_identity():
     """A crashed-and-resumed auxiliary probe must keep its sink and action identity. Without the sink
     the recovered scan becomes canonical by default and pools into the certified master; without the

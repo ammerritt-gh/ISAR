@@ -238,6 +238,49 @@ def test_full_dict_exposes_every_evaluation_and_its_intent():
     assert rejected["rejection_class"] == "saturation"
 
 
+def test_full_dict_exposes_the_evidence_sink_of_each_intent():
+    """The sink is part of the scientific action identity: two evaluations with identical windows but
+    different sinks feed different posteriors. A reader of the artifact must be able to tell them
+    apart — that one action feeds the canonical master and the other an auxiliary tracker node."""
+    from dataclasses import replace
+
+    from isar.schema.steering import AUXILIARY_TRACK_NODE, CANONICAL_MASTER
+    canonical = _intent()
+    auxiliary = replace(_intent(action_class="narrow_rival"), evidence_sink=AUXILIARY_TRACK_NODE)
+    inv = ActionInventory(evaluations=[_eligible(canonical), _eligible(auxiliary)],
+                          reports=[_report("g", generated=2)])
+
+    sinks = [e["intent"]["evidence_sink"] for e in inv.to_full_dict()["evaluations"]]
+    assert sinks == [CANONICAL_MASTER, AUXILIARY_TRACK_NODE]
+
+
+def test_terminal_cause_with_a_registry_faults_on_a_missing_generator():
+    """terminal_cause() is registry-blind by design, but an inventory internally consistent yet
+    missing a registry-required generator has NOT proven exhaustion — a generator never ran. Passing
+    the registry makes that a controller fault rather than a false exhaustion claim."""
+    from isar.drive.acquisition.inventory import (TERMINAL_ACTION_INVENTORY_EXHAUSTED,
+                                                  TERMINAL_CONTROLLER_FAULT)
+    # Only the legacy selector reported; GENERATOR_REGISTRY also requires narrow_rival_probe.
+    inv = ActionInventory(
+        evaluations=[_rejected(_intent(), generator=LEGACY_SELECTOR_GENERATOR)],
+        reports=[_report(LEGACY_SELECTOR_GENERATOR, generated=1)])
+
+    assert inv.is_complete                                      # its own accounting is fine
+    assert inv.terminal_cause() == TERMINAL_ACTION_INVENTORY_EXHAUSTED       # registry-blind
+    assert inv.terminal_cause(registry=GENERATOR_REGISTRY) == TERMINAL_CONTROLLER_FAULT
+
+
+def test_terminal_cause_with_a_registry_still_proves_a_valid_exhaustion():
+    """A fully registry-consistent, eligible-action-free inventory still terminates as exhausted."""
+    from isar.drive.acquisition.inventory import TERMINAL_ACTION_INVENTORY_EXHAUSTED
+    reports = [_report(spec.generator_id, generated=1) for spec in GENERATOR_REGISTRY]
+    evaluations = [_rejected(_intent(action_class=spec.generator_id),
+                             generator=spec.generator_id) for spec in GENERATOR_REGISTRY]
+    inv = ActionInventory(evaluations=evaluations, reports=reports)
+
+    assert inv.terminal_cause(registry=GENERATOR_REGISTRY) == TERMINAL_ACTION_INVENTORY_EXHAUSTED
+
+
 def test_a_non_finite_score_cannot_crash_the_content_address():
     """Canonicalization is strict (``allow_nan=False``), so a NaN from a future evaluator would raise
     inside the *persistence* path — a crashed unattended campaign. Non-finite scores are recorded as
