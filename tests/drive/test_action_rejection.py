@@ -32,6 +32,7 @@ from isar.drive import loop as loop_mod
 from isar.drive.acquisition import acquire as acq
 from isar.drive.acquisition import model as acq_model
 from isar.drive.acquisition.inventory import (
+    GENERATOR_REGISTRY,
     ActionEligibility,
     GeneratorSpec,
     LEGACY_SELECTOR_GENERATOR,
@@ -181,11 +182,14 @@ def test_an_empty_action_space_terminalizes_a_non_tracked_objective():
         ActionEvaluation, ActionInventory, GeneratorReport, GeneratorStatus)
     from isar.drive.supervisor.stopping import StopDecision
 
+    # Registry-complete: every registered generator reports, so the only thing under test is the
+    # empty action space itself and not a missing-generator controller fault.
     empty = ActionInventory(
         evaluations=[],
-        reports=[GeneratorReport(generator=LEGACY_SELECTOR_GENERATOR,
+        reports=[GeneratorReport(generator=spec.generator_id,
                                  status=GeneratorStatus.COMPLETED, generated=0,
-                                 reason_code="no_selectable_action")])
+                                 reason_code="no_selectable_action")
+                 for spec in GENERATOR_REGISTRY])
     decision = loop_mod._exhausted_action_space_decision(
         StopDecision("continue", [], []), empty)
 
@@ -213,9 +217,34 @@ def test_an_eligible_inventory_without_a_proposal_is_a_controller_fault():
         evaluations=[ActionEvaluation(intent=intent, generator=LEGACY_SELECTOR_GENERATOR,
                                       eligibility=ActionEligibility.ELIGIBLE)],
         reports=[GeneratorReport(generator=LEGACY_SELECTOR_GENERATOR,
-                                 status=GeneratorStatus.COMPLETED, generated=1)])
+                                 status=GeneratorStatus.COMPLETED, generated=1)]
+        + [GeneratorReport(generator=spec.generator_id, status=GeneratorStatus.COMPLETED,
+                           generated=0, reason_code="not_applicable_here")
+           for spec in GENERATOR_REGISTRY if spec.generator_id != LEGACY_SELECTOR_GENERATOR])
     with pytest.raises(loop_mod.ControllerInvariantError):
         loop_mod._exhausted_action_space_decision(StopDecision("continue", [], []), eligible)
+
+
+def test_a_missing_registered_generator_faults_through_the_loops_terminal_path():
+    """``terminal_cause()`` grew a registry argument but no production caller passed it, so an
+    inventory whose own accounting is clean while a registered generator never ran could still be
+    stamped ``action_inventory_exhausted``. The generator's actions are simply unknown; exhaustion is
+    not provable over it."""
+    from isar.drive.acquisition.inventory import (ActionInventory, GeneratorReport,
+                                                  GeneratorStatus, TERMINAL_CONTROLLER_FAULT)
+    from isar.drive.supervisor.stopping import StopDecision
+
+    assert len(GENERATOR_REGISTRY) > 1, "the test needs a registry it can leave a hole in"
+    incomplete = ActionInventory(
+        evaluations=[],
+        reports=[GeneratorReport(generator=LEGACY_SELECTOR_GENERATOR,
+                                 status=GeneratorStatus.COMPLETED, generated=0)])
+    assert incomplete.is_complete, "its own accounting is clean — that is the trap"
+
+    decision = loop_mod._exhausted_action_space_decision(
+        StopDecision("continue", [], []), incomplete)
+    assert decision.terminal_cause == TERMINAL_CONTROLLER_FAULT
+    assert "controller_fault" in decision.reasons[0]
 
 
 # -- suppressions survive a resume ------------------------------------------------------------------

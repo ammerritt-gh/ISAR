@@ -47,8 +47,9 @@ from isar.drive.acquisition.acquire import (
     propose_action,
 )
 from isar.drive.acquisition.inventory import (
-    GENERATOR_REGISTRY_VERSION, TERMINAL_ACTION_INVENTORY_EXHAUSTED, TERMINAL_CONTROLLER_FAULT,
-    CampaignSliceKey, FinalizedProposal, RejectionClass, ValidatedAttempt, canonical_json)
+    GENERATOR_REGISTRY, GENERATOR_REGISTRY_VERSION, TERMINAL_ACTION_INVENTORY_EXHAUSTED,
+    TERMINAL_CONTROLLER_FAULT, CampaignSliceKey, FinalizedProposal, RejectionClass,
+    ValidatedAttempt, canonical_json)
 from isar.drive.acquisition.calibration import Calibration, load_calibration
 from isar.drive.instrument.tavi_client import TaviClient, TaviError
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
@@ -2322,7 +2323,7 @@ def _blocked_frontier_decision(objective, grid, decision: StopDecision,
     # inventory still holds an eligible action while acquisition produced no proposal: that is a
     # controller bug, not an exhaustion proof, so it must raise rather than be relabelled as exhausted
     # (the ``same_q`` guard above catches the legacy-predicate form; this catches it generally).
-    cause = (inventory.terminal_cause() if inventory is not None
+    cause = (inventory.terminal_cause(GENERATOR_REGISTRY) if inventory is not None
              else TERMINAL_ACTION_INVENTORY_EXHAUSTED)
     if cause is None:
         eligible = [e.intent.action_class for e in inventory.eligible_actions()]
@@ -2367,7 +2368,7 @@ def _exhausted_action_space_decision(decision: StopDecision, inventory=None) -> 
     """
     if decision.state != "continue":
         return decision
-    cause = (inventory.terminal_cause() if inventory is not None
+    cause = (inventory.terminal_cause(GENERATOR_REGISTRY) if inventory is not None
              else TERMINAL_ACTION_INVENTORY_EXHAUSTED)
     if cause is None:
         eligible = [e.intent.action_class for e in inventory.eligible_actions()]
@@ -2453,7 +2454,8 @@ def _persist_action_inventory(cfg: CampaignConfig, inventory, *, it: int, propos
     recomputed-on-resume view rather than load-bearing state.
     """
     selected = _selected_action_record(proposal, inventory)
-    summary = inventory.summary(selected_action_class=selected["selected_action_class"])
+    summary = inventory.summary(selected_action_class=selected["selected_action_class"],
+                                registry=GENERATOR_REGISTRY)
     summary.update({key: value for key, value in selected.items()
                     if key != "selected_action_class"})
     fingerprint = selected["selected_scientific_action_fingerprint"]
@@ -3672,7 +3674,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                         prev_fingerprint=prev_action_fingerprint, force_full=(proposal is None))
                     if proposal is not None:
                         prev_action_fingerprint = selected_fingerprint
-                    elif action_inventory.terminal_cause() is not None:
+                    elif action_inventory.terminal_cause(GENERATOR_REGISTRY) is not None:
                         terminal_inventory_proof = {
                             "inventory_version": action_inventory.inventory_version,
                             "generator_registry_version": GENERATOR_REGISTRY_VERSION,

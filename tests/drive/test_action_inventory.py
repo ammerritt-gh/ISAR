@@ -281,6 +281,26 @@ def test_terminal_cause_with_a_registry_still_proves_a_valid_exhaustion():
     assert inv.terminal_cause(registry=GENERATOR_REGISTRY) == TERMINAL_ACTION_INVENTORY_EXHAUSTED
 
 
+def test_the_summary_can_be_registry_aware_so_the_audit_matches_the_decision():
+    """The persisted proof must not contradict the terminal it documents.
+
+    ``summary()`` computed its own registry-blind ``terminal_cause``, so an inventory missing a
+    registry-required generator was recorded as ``action_inventory_exhausted`` for the very iteration
+    the controller terminated as ``controller_fault``. A proof that disagrees with the decision it
+    exists to justify is worse than no proof at all."""
+    from isar.drive.acquisition.inventory import (TERMINAL_ACTION_INVENTORY_EXHAUSTED,
+                                                  TERMINAL_CONTROLLER_FAULT)
+    inv = ActionInventory(
+        evaluations=[_rejected(_intent(), generator=LEGACY_SELECTOR_GENERATOR)],
+        reports=[_report(LEGACY_SELECTOR_GENERATOR, generated=1)])
+
+    assert inv.summary()["terminal_cause"] == TERMINAL_ACTION_INVENTORY_EXHAUSTED  # blind default
+    assert inv.summary(registry=GENERATOR_REGISTRY)["terminal_cause"] == TERMINAL_CONTROLLER_FAULT
+    # The two must always agree when handed the same registry — that is the whole invariant.
+    for registry in (None, GENERATOR_REGISTRY):
+        assert inv.summary(registry=registry)["terminal_cause"] == inv.terminal_cause(registry)
+
+
 def test_a_non_finite_score_cannot_crash_the_content_address():
     """Canonicalization is strict (``allow_nan=False``), so a NaN from a future evaluator would raise
     inside the *persistence* path — a crashed unattended campaign. Non-finite scores are recorded as

@@ -413,12 +413,19 @@ class ActionInventory:
             deduped.append(intent)
         return deduped
 
-    def summary(self, *, selected_action_class: str | None = None) -> dict:
+    def summary(self, *, selected_action_class: str | None = None,
+                registry: tuple[GeneratorSpec, ...] | None = None) -> dict:
         """A compact, per-iteration record of the action space — small enough to log every iteration.
 
         Carries the completeness proof (``is_complete`` + the per-generator accounting) and the
         registry version, so a ``terminal_cause`` read off this summary is interpretable long after the
         run. The full ranked evaluations live in the referenced artifact (:meth:`to_full_dict`), not here.
+
+        ``registry`` must be the same one the live terminal was decided against. Omitting it there would
+        let the persisted audit record ``action_inventory_exhausted`` for the very iteration the
+        controller terminated as ``controller_fault``, and a proof that contradicts the decision it
+        documents is worse than no proof. It stays optional, and registry-blind by default, for the
+        synthetic/adapter callers :meth:`terminal_cause` is registry-independent for.
         """
         return {
             "inventory_version": self.inventory_version,
@@ -427,7 +434,7 @@ class ActionInventory:
             "n_eligible": len(self.eligible_actions()),
             "is_complete": self.is_complete,
             "has_eligible_action": self.has_eligible_action,
-            "terminal_cause": self.terminal_cause(),
+            "terminal_cause": self.terminal_cause(registry),
             "selected_action_class": selected_action_class,
             "generators": [
                 {"generator": r.generator, "status": r.status.value, "generated": r.generated,
