@@ -565,8 +565,19 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   the other cannot have. **Normalization returns**, which `_normal_compatibility` had removed because a
   3 meV-wide ZC prior then permanently lost to `new` even at its own mean. The ratio form fixes that
   case rather than reviving it: against a uniform over the same domain, a broad prior at its mean gives
-  `log(N_peak/U) > 0` — positive support. `MISSING_LOG_PENALTY` and `UNASSIGNED_LOG_PENALTY` are read
-  as ratios against that same baseline. Evidence: `tests/session/test_branch_tracking.py`.
+  `log(N_peak/U) > 0` — positive support.
+
+  **What this does not fix, stated so it is not mistaken for fixed.** The *absolute* trade between
+  assigning a candidate and leaving a branch unassigned is set by `MISSING_LOG_PENALTY +
+  UNASSIGNED_LOG_PENALTY` (≈ −3.58 nats), and those constants are unchanged. Because the compatibility
+  term is now bounded below by `log(1−c)` rather than running arbitrarily negative, lowering a branch's
+  confidence from 1.0 to ~0.5 can still flip the tracker from correctly abstaining to attaching a
+  grossly mismatched candidate: the evidence against the assignment shrinks past the fixed structural
+  cost of refusing it. That is a defensible reading of low confidence — with little prior information,
+  explaining an observed mode is reasonable — but it is a *consequence of those constants*, not
+  something this decision establishes. Re-anchoring them against the same uniform baseline is open
+  work. The scope of O30 is the comparability and boundedness of the confidence term, not the
+  assign-versus-abstain threshold. Evidence: `tests/session/test_branch_tracking.py`.
 
 ## Session status update
 

@@ -844,6 +844,15 @@ def test_an_untrusted_null_does_not_relax_anything():
 DOMAIN = (-2.0, 7.0)
 
 
+def _old_confidence_term(value, mean, sigma, confidence):
+    """The pre-fix scorer, kept so the regression tests can prove they discriminate.
+
+    Three of these tests passed against it on the first attempt -- `0.0 * -x` is `-0.0`, and
+    `-0.0 == 0.0` is True in Python -- which made them read as P0 guards while guarding nothing.
+    """
+    return confidence * (-0.5 * ((value - mean) / sigma) ** 2)
+
+
 def test_zero_confidence_contributes_no_evidence_rather_than_no_penalty():
     """The P0. ``confidence`` multiplied ``_normal_compatibility``, which is always <= 0, so lowering
     it scaled the *penalty* toward zero and a less-trusted hypothesis scored a mismatched candidate
@@ -855,17 +864,40 @@ def test_zero_confidence_contributes_no_evidence_rather_than_no_penalty():
         for mean, sigma in ((0.0, 0.2), (6.0, 3.0)):
             assert _baselined_compatibility(energy, mean, sigma, 0.0, DOMAIN) == 0.0
 
+    at_zero = {_baselined_compatibility(e, 0.0, 0.2, 0.0, DOMAIN) for e in (0.0, 4.0, 6.0)}
+    assert len(at_zero) == 1, "branch-neutral: every candidate scored identically"
+
+    # Exact-zero neutrality alone does not discriminate -- the old form also returned -0.0 there,
+    # having multiplied its penalty by zero. What separates them is the APPROACH to zero. A mixture
+    # cannot charge more than "the hypothesis is simply wrong", so the cost is bounded below by
+    # log(1-c) at every confidence; the old product scaled without bound, and a 20-sigma mismatch at
+    # half confidence still cost 100 nats -- enough to dominate every structural penalty in the model.
+    for confidence in (0.5, 0.9, 0.99):
+        new_cost = _baselined_compatibility(4.0, 0.0, 0.2, confidence, DOMAIN)
+        old_cost = _old_confidence_term(4.0, 0.0, 0.2, confidence)
+        assert new_cost >= math.log1p(-confidence) - 1e-9, "bounded by the mixture weight"
+        assert old_cost < math.log1p(-confidence) - 1.0, "the pre-fix form was unbounded"
+
 
 def test_an_untrusted_hypothesis_never_earns_positive_support():
     """The bound that replaces monotonicity. Confidence is deliberately not monotone in the score -- a
     confident hypothesis the data contradicts *may* fall below a vague one, which is the correct
-    Bayesian reading -- but a mismatch must never become evidence *for* the branch."""
+    Bayesian reading -- but a mismatch must never become evidence *for* the branch.
+
+    A gross mismatch, and a marginal one: the boundary at which a candidate stops being support is a
+    property of the ratio (roughly where the branch density drops below uniform), so it is pinned at
+    both ends rather than only where the answer is obvious."""
     from isar.session.branch_tracking import _baselined_compatibility
 
-    scores = [_baselined_compatibility(4.0, 0.0, 0.2, c, DOMAIN)
-              for c in (1.0, 0.75, 0.5, 0.25, 0.0)]
-    assert max(scores) <= 0.0
-    assert scores[0] < scores[-1] == 0.0, "the documented, deliberate direction"
+    for energy in (4.0, 0.8, 0.55):        # 20 sigma, 4 sigma, 2.75 sigma from the mean
+        scores = [_baselined_compatibility(energy, 0.0, 0.2, c, DOMAIN)
+                  for c in (1.0, 0.75, 0.5, 0.25, 0.0)]
+        assert max(scores) <= 0.0, f"a {energy} meV candidate must never support a 0 +/- 0.2 branch"
+        assert scores[0] < scores[-1] == 0.0, "the documented, deliberate direction"
+
+    # And the boundary is where the declared branch stops beating "anywhere", not at some fixed z.
+    assert _baselined_compatibility(0.3, 0.0, 0.2, 1.0, DOMAIN) > 0.0     # 1.5 sigma: still support
+    assert _baselined_compatibility(0.55, 0.0, 0.2, 1.0, DOMAIN) < 0.0    # 2.75 sigma: no longer
 
 
 def test_a_broad_declared_prior_at_its_own_mean_is_positive_support():
@@ -905,6 +937,10 @@ def test_the_ordering_term_is_silent_rather_than_free_when_untrusted():
     assert _baselined_evidence(-3.0, 0.0) == 0.0
     assert _baselined_evidence(-3.0, 1.0) == -3.0
     assert -3.0 < _baselined_evidence(-3.0, 0.5) < 0.0
+    # The discriminating part: scaling made a *strong* ordering contradiction cheap at low weight,
+    # while a mixture bounds it by the "no claim" baseline it is mixed against.
+    assert _baselined_evidence(-500.0, 0.1) > -3.0, "bounded by the baseline, not proportional"
+    assert 0.1 * -500.0 < -3.0, "the pre-fix form scaled it instead, which is the defect"
 
 
 def test_a_declared_campaign_band_is_the_baseline_domain():
