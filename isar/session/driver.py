@@ -1859,8 +1859,27 @@ def _materialize_branch_candidates(session: SessionState) -> None:
             outcome["branch_candidates"] = candidates or None
 
 
+AUXILIARY_EVIDENCE_SOURCE = "auxiliary_probe"
+
+
+def _is_auxiliary_candidate(candidate: dict) -> bool:
+    """Whether this fitted mode came from an auxiliary probe rather than the point's own master.
+
+    The tag is applied in :func:`_tracked_authorities` when the probe's modes are merged onto the
+    canonical observation, and absence of it means canonical.
+    """
+    return (candidate or {}).get("evidence_source") == AUXILIARY_EVIDENCE_SOURCE
+
+
 def _select_mode(outcome: dict, candidate: dict, candidate_index: int, assignment: dict,
                  revision: int, target_branch: str = "optic") -> None:
+    if _is_auxiliary_candidate(candidate):
+        # Defence in depth behind _apply_tracked_branch's check. An auxiliary probe is never pooled
+        # and never certification-eligible, so copying its energy and intervals onto a pooled master
+        # builds a row that certifies the target from exposure the target window never spent.
+        raise ValueError(
+            f"auxiliary candidate {candidate.get('candidate_ref')!r} cannot supply a target "
+            "delivery; withhold the delivery instead (see _withhold_tracked_delivery)")
     outcome["selected_candidate_index"] = int(candidate_index)
     outcome["track_state"] = assignment.get("track_state")
     outcome["track_revision"] = int(revision)
@@ -1920,6 +1939,36 @@ def _clear_tracked_selection(outcome: dict, assignment: dict, revision: int) -> 
     outcome["interval_reliable"] = False
 
 
+def _withhold_tracked_delivery(outcome: dict, candidate: dict, assignment: dict, revision: int,
+                               target_branch: str) -> None:
+    """Record a confirmed identity whose only supporting mode came from an auxiliary probe.
+
+    This is neither a selection nor an ambiguity. The tracker reached a conclusion — that is what the
+    probe was fired to buy, and discarding it would waste the beam time — but the mode it concluded
+    from lives in a scan that is never pooled and never certification-eligible. So the *answer* is
+    kept and the *number* is withheld: this point has no canonical measurement of the branch it has
+    now identified, and the honest next action is an ordinary target scan at that energy.
+
+    ``branch_id`` is deliberately NOT set. On a master that field means "this row supplies the target
+    delivery", and every reader predating this state would take it at face value. The conclusion is
+    carried by ``identity_branch_id`` instead, alongside the local-identity fields acquisition already
+    reads when a selection is absent.
+    """
+    _clear_tracked_selection(outcome, assignment, revision)
+    outcome["target_delivery_eligible"] = False
+    outcome["identity_branch_id"] = target_branch
+    outcome["delivery_withheld_reason"] = "auxiliary_only_selection"
+    # The model-averaged predictive interval is a second, independent delivery path: a model-robust
+    # row certifies from ``model_interval_med`` without ever reading the scalar omega0 cleared above.
+    outcome["model_robust"] = False
+    outcome["model_interval"] = None
+    log.warning(
+        "withholding target delivery at q=%s: the tracked %s identity rests on auxiliary candidate "
+        "%r, which is never pooled and never certification-eligible. Identity retained; this point "
+        "still needs a canonical target measurement.",
+        outcome.get("q"), target_branch, candidate.get("candidate_ref"))
+
+
 def _rebuild_tracked_prior(card, session: SessionState, track: dict, observations: list[dict],
                            refs: dict, *, t_round: float) -> None:
     source_ids = {key.rsplit(":", 1)[0] for row in observations
@@ -1942,6 +1991,12 @@ def _rebuild_tracked_prior(card, session: SessionState, track: dict, observation
             if candidate_index is None:
                 continue
             candidate = assignment["candidates"][candidate_index]
+            if _is_auxiliary_candidate(candidate):
+                # The prior accepts only clean single-answer folds from pooled masters. This candidate
+                # was fitted by a probe that is not pooled at all, and the outcome gating this loop is
+                # the *canonical* authority — so without this check the auxiliary energy would enter
+                # the running dispersion prior wearing the master's fold provenance.
+                continue
             probability = float((candidate.get("probabilities") or {}).get(branch, 0.0))
             if probability < branch_tracking.CONFIRMED_PROBABILITY:
                 continue
@@ -2011,10 +2066,16 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
                 local_assignment["track_state"] = "individual"
                 _clear_tracked_selection(other, local_assignment, revision)
             continue
-        _select_mode(outcome, assignment["candidates"][selected], selected, assignment, revision,
-                     target_branch)
+        candidate = assignment["candidates"][selected]
+        if _is_auxiliary_candidate(candidate):
+            _withhold_tracked_delivery(outcome, candidate, assignment, revision, target_branch)
+        else:
+            _select_mode(outcome, candidate, selected, assignment, revision, target_branch)
         # Individual fits at the same q remain muted evidence but follow the current identity for
-        # backwards-compatible scalar columns, using their own nearest fitted mode.
+        # backwards-compatible scalar columns, using their own nearest fitted mode. Referenced against
+        # the selected candidate's energy rather than ``outcome["omega0"]``: identical on the delivery
+        # path, and still the identity the tracker concluded when the delivery was withheld.
+        reference_energy = float(candidate["energy_meV"])
         for _other_key, (_other_entry, _other_detector, other) in refs.items():
             if other is outcome or _path_index(other.get("q") or [], path) != assignment["path_index"]:
                 continue
@@ -2022,7 +2083,7 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
             if not candidates:
                 continue
             nearest = min(range(len(candidates)), key=lambda index: abs(
-                float(candidates[index]["energy_meV"]) - float(outcome["omega0"])))
+                float(candidates[index]["energy_meV"]) - reference_energy))
             local_assignment = dict(assignment)
             local_assignment["track_state"] = "individual"
             _select_mode(other, candidates[nearest], nearest, local_assignment, revision,
@@ -3602,6 +3663,11 @@ _CSV_COLUMNS = [
     # go on the end. Which sink this scan's evidence was acquired for (PR2.6) — every historical row
     # reads "canonical_master".
     "evidence_sink",
+    # Whether this row may supply the campaign target's delivered omega0 (PR review F2). False only
+    # when the tracker's confirmed target identity rests on an auxiliary-probe candidate: the answer
+    # is kept, the number is withheld, and the point still needs a canonical target measurement.
+    # Every historical row reads True.
+    "target_delivery_eligible",
 ]
 
 
@@ -3729,6 +3795,9 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "best_model": oc.get("best_label"), "cost_per_dof": oc.get("cost_per_dof"),
                 "fit_kind": oc.get("fit_kind"),
                 "branch_id": oc.get("branch_id"),
+                # Defaults True: only a withheld auxiliary-only delivery ever clears it, so every
+                # ordinary row and every historical CSV reads as deliverable.
+                "target_delivery_eligible": oc.get("target_delivery_eligible", True),
                 "assignment_entropy": oc.get("assignment_entropy"),
                 "resolvable": oc.get("resolvable"),
                 "descriptor_n_peaks": _descriptor_summary(oc)[0],

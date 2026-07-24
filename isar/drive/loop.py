@@ -929,14 +929,22 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
 
 
 def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
-    """A pooled fit → its sole decision-bearing, model-robust master assessment."""
+    """A pooled fit → its sole decision-bearing, model-robust master assessment.
+
+    ``target_delivery_eligible=False`` withholds every delivery this row could supply. Clearing the
+    scalar ``omega0`` alone is not enough: a model-robust row takes its ω₀ from
+    ``model_interval_med``, so it would keep certifying from the model-averaged predictive interval
+    without ever reading the scalar. The row remains present, fit and reported — it is a real
+    measurement — it simply cannot stand as the target's delivered number.
+    """
     exposure_key, effective_exposure, exposure_source = _effective_exposure_bucket(
         row, PRODUCTION_NCOUNT)
     bucket, calibration_arg = _calibration_bucket(calibration, exposure_key)
+    deliverable = row.get("target_delivery_eligible") is not False
     model_lo, model_med, model_hi = (row.get("model_interval_lo"),
                                          row.get("model_interval_med"),
                                          row.get("model_interval_hi"))
-    model_robust = bool(row.get("model_robust") is True and model_lo is not None
+    model_robust = bool(deliverable and row.get("model_robust") is True and model_lo is not None
                         and model_hi is not None)
     hw = None
     if model_robust:
@@ -950,12 +958,16 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
     disp = row.get("disposition")
     return {
         "hkl": _row_hkl(row),
-        "omega0": (model_med if model_robust and model_med is not None else row.get("omega0")),
+        "omega0": ((model_med if model_robust and model_med is not None else row.get("omega0"))
+                   if deliverable else None),
         "halfwidth": hw,
         "reliable": model_robust, "certifiable": model_robust,
         "model_robust": model_robust, "model_entropy": row.get("model_entropy"),
         "model_interval": ([model_lo, model_med, model_hi] if model_robust else None),
-        "usable": (disp in _USABLE and row.get("omega0") is not None),
+        # ``usable`` is what model_points and the signal-seen check read, so a withheld delivery has
+        # to clear it too or the ω(q) model would still be fitted through the auxiliary energy.
+        "usable": (deliverable and disp in _USABLE and row.get("omega0") is not None),
+        "target_delivery_eligible": deliverable,
         "disposition": disp, "n_members": row.get("n_members"),
         "effective_exposure": effective_exposure, "exposure_source": exposure_source,
         "exposure_bucket": bucket,
