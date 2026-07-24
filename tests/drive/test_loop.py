@@ -3260,6 +3260,32 @@ def test_a_sole_refused_request_terminates_instead_of_being_re_emitted(tmp_path,
     assert "validation_rejected" in terminal.reasons[0], "the terminal must name the refusal"
 
 
+def test_an_earlier_budget_refusal_is_not_reported_as_a_software_fault(tmp_path, monkeypatch):
+    """``budget_insufficient_for_minimum_batch`` is BUDGET-scoped and *does* reach
+    ``request_suppressions``, so a budget refusal recorded in an earlier iteration arrives here with
+    no live budget exception. Reporting it as a controller fault would tell the operator to repair the
+    controller when the answer is to add budget."""
+    suppressed = _fake_proposal("suppressed")
+    monkeypatch.setattr(loop_mod, "_finalize_proposal", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "finalized_proposal",
+                        lambda proposal: types.SimpleNamespace(request_fingerprint="req-old"))
+    monkeypatch.setattr(loop_mod, "evaluate_stop",
+                        lambda *a, **k: StopDecision("continue", [], [{"hkl": [2.1, 0.0, 0.0]}]))
+
+    proposal, terminal = loop_mod._next_finalized_proposal(
+        _FakePlan([suppressed]), types.SimpleNamespace(), _helper_cfg(tmp_path), [],
+        {"kind": "neutrons", "amount": 1_000_000.0, "spent": 0.0},
+        {"req-old": {"class": "budget",
+                     "reason": "budget_insufficient_for_minimum_batch at hkl=[2.1, 0.0, 0.0]"}},
+        it=0)
+
+    assert proposal is None
+    assert terminal.state == "incomplete"
+    assert terminal.terminal_cause is None, "a budget limit is not a controller fault"
+    assert "budget" in terminal.reasons[0].lower()
+    assert "controller_fault" not in terminal.reasons[0]
+
+
 def test_a_known_budget_terminal_outranks_the_unrealizable_request_fault(tmp_path, monkeypatch):
     """A named resource limit is a better answer than a generic controller fault, so when the sweep
     already established one it wins."""

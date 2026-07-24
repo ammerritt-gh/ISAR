@@ -2184,12 +2184,24 @@ def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
             # A named resource limit is a better answer than a generic fault, so an instrument or
             # budget terminal established during the sweep outranks the unrealizable-request one.
             if instrument_error is None and budget_error is None and suppressed_refusal is not None:
-                reason = (
-                    "controller_fault: an eligible action has no unsuppressed realization — the only "
-                    f"request it can emit at hkl={suppressed_refusal['hkl']} was already refused "
-                    f"({suppressed_refusal['reason']}). The scientific action remains eligible; "
-                    "re-emitting the identical refused request would repeat it every iteration. "
-                    "Checkpoints retained and resume is supported after repair.")
+                # The recorded class decides the terminal. A BUDGET-scoped refusal from an *earlier*
+                # iteration reaches here with no live ``budget_error``, and reporting it as a software
+                # fault would tell the operator to repair the controller when the answer is to add
+                # budget. Only a structural refusal is a controller-side fault.
+                budget_refusal = suppressed_refusal["class"] == RejectionClass.BUDGET.value
+                if budget_refusal:
+                    reason = (
+                        "incomplete: the remaining budget cannot fund any realization of an eligible "
+                        f"action at hkl={suppressed_refusal['hkl']} — its only emittable request was "
+                        f"already refused ({suppressed_refusal['reason']}). More budget, or a looser "
+                        "minimum batch, is what unblocks it.")
+                else:
+                    reason = (
+                        "controller_fault: an eligible action has no unsuppressed realization — the "
+                        f"only request it can emit at hkl={suppressed_refusal['hkl']} was already "
+                        f"refused ({suppressed_refusal['reason']}). The scientific action remains "
+                        "eligible; re-emitting the identical refused request would repeat it every "
+                        "iteration. Checkpoints retained and resume is supported after repair.")
                 log_event(cfg.log_path, "decide", {
                     "event": "request_has_no_unsuppressed_realization",
                     "action": "request_has_no_unsuppressed_realization",
@@ -2200,7 +2212,7 @@ def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
                     "incomplete", [reason],
                     evaluate_stop(objective, grid, budget_state,
                                   calibration=cfg.calibration, floor=cfg.floor).per_q,
-                    terminal_cause=TERMINAL_CONTROLLER_FAULT)
+                    terminal_cause=(None if budget_refusal else TERMINAL_CONTROLLER_FAULT))
             if instrument_error is not None:
                 return None, StopDecision(
                     "infeasible", [str(instrument_error)],
