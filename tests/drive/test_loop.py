@@ -264,12 +264,9 @@ def _exhausted_frontier_grid():
 def test_blocked_frontier_terminal_carries_inventory_exhausted_cause():
     """A complete inventory with no eligible action stamps ``action_inventory_exhausted`` on the
     terminal — the proof travels with the honest incomplete instead of a bare reason string."""
-    from isar.drive.acquisition.inventory import (
-        ActionInventory, GeneratorReport, GeneratorStatus)
+    from isar.drive.acquisition.inventory import ActionInventory
     objective, grid = _exhausted_frontier_grid()
-    inventory = ActionInventory(evaluations=[], reports=[GeneratorReport(
-        generator="tracked_and_scored_selection", status=GeneratorStatus.COMPLETED,
-        generated=0, reason_code="no_selectable_action")])
+    inventory = ActionInventory(evaluations=[], reports=_registry_complete_reports())
     decision = loop_mod._blocked_frontier_decision(
         objective, grid, StopDecision("continue", [], []), inventory)
     assert decision.state == "incomplete"
@@ -310,11 +307,14 @@ def test_blocked_frontier_eligible_inventory_without_a_proposal_raises_never_exh
     objective, grid = _exhausted_frontier_grid()      # saturated anchor -> same_q guard does not fire
     intent = MeasurementIntent(action_class="focused_rival", hkl=(2.0, 0.0, 0.0), energy_lo=-2.0,
                                energy_hi=7.0, window_family="two_branch")
+    from isar.drive.acquisition.inventory import GENERATOR_REGISTRY
+    first = GENERATOR_REGISTRY[0].generator_id
     inventory = ActionInventory(
-        evaluations=[ActionEvaluation(intent=intent, generator="g",
+        evaluations=[ActionEvaluation(intent=intent, generator=first,
                                       eligibility=ActionEligibility.ELIGIBLE)],
-        reports=[GeneratorReport(generator="g", status=GeneratorStatus.COMPLETED, generated=1)])
-    assert inventory.terminal_cause() is None          # eligible action -> not a terminal
+        reports=([GeneratorReport(generator=first, status=GeneratorStatus.COMPLETED, generated=1)]
+                 + [r for r in _registry_complete_reports() if r.generator != first]))
+    assert inventory.terminal_cause(GENERATOR_REGISTRY) is None   # eligible action -> not a terminal
     with pytest.raises(loop_mod.ControllerInvariantError, match="eligible"):
         loop_mod._blocked_frontier_decision(
             objective, grid, StopDecision("continue", [], []), inventory)
@@ -331,12 +331,23 @@ def test_blocked_frontier_terminal_defaults_to_exhausted_without_an_inventory():
 
 # -- inventory persistence (PR1.6) -----------------------------------------------------------------
 
+def _registry_complete_reports(generated=0, reason_code="no_selectable_action"):
+    """One clean report per registered generator.
+
+    Terminal decisions are now taken against GENERATOR_REGISTRY, so a fixture that reports for only
+    one generator is a *missing-generator controller fault* whatever else it is testing. Tests whose
+    subject is not registry completeness build their inventories through here.
+    """
+    from isar.drive.acquisition.inventory import (GENERATOR_REGISTRY, GeneratorReport,
+                                                  GeneratorStatus)
+    return [GeneratorReport(generator=spec.generator_id, status=GeneratorStatus.COMPLETED,
+                            generated=generated, reason_code=reason_code)
+            for spec in GENERATOR_REGISTRY]
+
+
 def _exhausted_inventory():
-    from isar.drive.acquisition.inventory import (
-        ActionInventory, GeneratorReport, GeneratorStatus)
-    return ActionInventory(evaluations=[], reports=[GeneratorReport(
-        generator="tracked_and_scored_selection", status=GeneratorStatus.COMPLETED,
-        generated=0, reason_code="no_selectable_action")])
+    from isar.drive.acquisition.inventory import ActionInventory
+    return ActionInventory(evaluations=[], reports=_registry_complete_reports())
 
 
 def _eligible_inventory():
@@ -2788,17 +2799,33 @@ class _RejectingTavi(MockTavi):
 
 
 def test_validation_refusals_use_distinct_logical_acquisitions(tmp_path):
+    """Every refused attempt is its own logical acquisition, and no *identical* request is re-sent.
+
+    An instrument that refuses everything used to burn the whole iteration budget: the same refused
+    request was re-emitted once per iteration, on the reasoning that an operational refusal is not
+    evidence the q is infeasible. Only structural and budget verdicts ever reach the request
+    suppression set, though — transient ones are scoped "none" — so each re-emission re-sent a request
+    that had already been refused structurally. The ladder that answers the same question with a
+    *different* window or exposure keeps its own fingerprint and stays open; when it too runs out, the
+    campaign says so instead of spinning."""
+    from isar.drive.acquisition.inventory import TERMINAL_CONTROLLER_FAULT
+
     client = _RejectingTavi()
     summary, _ws = _run(
         tmp_path, _objective(), client, make_mock_runner(lambda h: (h - 2.0) * 2.0),
         max_iters=20)
     proposals = [e["payload"] for e in read_log(summary["session_log"])
                  if e["kind"] == "propose"]
-    # Operational refusals are not scientific evidence that the q is infeasible. The global
-    # iteration limit is the guardrail when the instrument never accepts a proposal.
-    assert len(proposals) == 20
-    assert len({proposal["acquisition_id"] for proposal in proposals}) == 20
-    assert client.n == 0
+
+    assert client.n == 0, "nothing was ever accepted, so nothing may be submitted"
+    assert len({p["acquisition_id"] for p in proposals}) == len(proposals), (
+        "each refused attempt is its own logical acquisition")
+    requests = [(tuple(p["hkl"]), p["e_lo"], p["e_hi"], p["e_step"], p["ncount"])
+                for p in proposals]
+    assert len(set(requests)) == len(requests), "an identical refused request is never re-emitted"
+    assert len(proposals) < 20, "the iteration limit is no longer the guardrail"
+    assert summary["stop"]["terminal_cause"] == TERMINAL_CONTROLLER_FAULT
+    assert "no unsuppressed realization" in summary["stop"]["reasons"][0]
 
 
 def _cmd_points(cmd):
@@ -3195,3 +3222,64 @@ def test_next_finalized_proposal_skips_a_request_already_in_the_suppression_set(
 
     assert terminal is None
     assert proposal is fresh
+
+
+def test_a_sole_refused_request_terminates_instead_of_being_re_emitted(tmp_path, monkeypatch):
+    """The durable request-suppression contract, restored.
+
+    When no fresh realization remained the helper re-emitted the *identical* refused request, on the
+    reasoning that an operational refusal is not evidence the q is infeasible. But only
+    ``validation_rejected``, ``insufficient_target_support`` and
+    ``budget_insufficient_for_minimum_batch`` ever reach ``request_suppressions`` -- transient verdicts
+    are scoped "none" and never recorded -- so every re-emission re-submitted a request the instrument
+    or budget had refused *structurally*, once per iteration until max_iters.
+
+    The scientific intent stays eligible: one refused realization does not prove the action is
+    scientifically exhausted, and saying so would collapse the request/action distinction the
+    three-stage lifecycle exists to draw. The honest report is a resumable controller fault naming the
+    refusal, which an operator can act on."""
+    from isar.drive.acquisition.inventory import TERMINAL_CONTROLLER_FAULT
+
+    suppressed = _fake_proposal("suppressed")
+    monkeypatch.setattr(loop_mod, "_finalize_proposal", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "finalized_proposal",
+                        lambda proposal: types.SimpleNamespace(request_fingerprint="req-old"))
+    monkeypatch.setattr(loop_mod, "evaluate_stop",
+                        lambda *a, **k: StopDecision("continue", [], [{"hkl": [2.1, 0.0, 0.0]}]))
+    plan = _FakePlan([suppressed])
+
+    proposal, terminal = loop_mod._next_finalized_proposal(
+        plan, types.SimpleNamespace(), _helper_cfg(tmp_path), [],
+        {"kind": "neutrons", "amount": 1_000_000.0, "spent": 0.0},
+        {"req-old": {"class": "structural", "reason": "validation_rejected at hkl=[2.1, 0.0, 0.0]"}},
+        it=0)
+
+    assert proposal is None, "the identical refused request must never be re-emitted"
+    assert terminal is not None and terminal.state == "incomplete"
+    assert terminal.terminal_cause == TERMINAL_CONTROLLER_FAULT
+    assert "validation_rejected" in terminal.reasons[0], "the terminal must name the refusal"
+
+
+def test_a_known_budget_terminal_outranks_the_unrealizable_request_fault(tmp_path, monkeypatch):
+    """A named resource limit is a better answer than a generic controller fault, so when the sweep
+    already established one it wins."""
+    unaffordable, suppressed = _fake_proposal("unaffordable"), _fake_proposal("suppressed")
+
+    def fake_finalize(proposal, objective, cfg, budget_state, *, it):
+        if proposal.reason == "unaffordable":
+            raise loop_mod.BudgetInsufficientForMinimumBatch("need 100, have 10")
+
+    monkeypatch.setattr(loop_mod, "_finalize_proposal", fake_finalize)
+    monkeypatch.setattr(loop_mod, "finalized_proposal",
+                        lambda proposal: types.SimpleNamespace(request_fingerprint="req-old"))
+    monkeypatch.setattr(loop_mod, "evaluate_stop",
+                        lambda *a, **k: StopDecision("continue", [], [{"hkl": [2.1, 0.0, 0.0]}]))
+    plan = _FakePlan([unaffordable, suppressed])
+
+    proposal, terminal = loop_mod._next_finalized_proposal(
+        plan, types.SimpleNamespace(), _helper_cfg(tmp_path), [],
+        {"kind": "neutrons", "amount": 1.0, "spent": 0.0},
+        {"req-old": {"class": "structural", "reason": "validation_rejected"}}, it=0)
+
+    assert proposal is None
+    assert terminal.state == "incomplete" and "need 100, have 10" in terminal.reasons[0]

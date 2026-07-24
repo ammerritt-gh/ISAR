@@ -2132,23 +2132,34 @@ def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
     remaining candidate can be finalized does a terminal fire — ``infeasible`` if any instrument limit
     was hit, otherwise ``incomplete``.
 
-    Request suppression is a *preference*, not a terminal: a finalized proposal whose
-    ``request_fingerprint`` is already in ``request_suppressions`` (an unchanged request the log says
-    was refused) is skipped in favour of a fresh action, and a different window at the same q keeps its
-    own fingerprint and stays allowed. But if the only realizable action *is* that already-refused
-    request, it is re-emitted rather than reported as an empty action space — an operational refusal is
-    not evidence the q is infeasible, and the inventory still holds the action as eligible, so
-    fabricating exhaustion here would trip the controller-fault guard on a legitimate frontier. The
-    global iteration limit is the guardrail when the instrument never accepts that request.
+    A finalized proposal whose ``request_fingerprint`` is already in ``request_suppressions`` (an
+    unchanged request the log says was refused) is skipped in favour of a fresh action; a different
+    window at the same q keeps its own fingerprint and stays allowed, so the widen / re-center /
+    step-shrink ladder is untouched.
+
+    The identical request is **never** re-emitted. Only ``validation_rejected``,
+    ``insufficient_target_support`` and ``budget_insufficient_for_minimum_batch`` ever reach
+    ``request_suppressions`` — transient verdicts are scoped ``"none"`` and recorded for forensics only
+    — so every entry there is a structural or budget refusal, and re-submitting it would repeat a
+    refused request once per iteration until ``max_iters``.
+
+    When the only realizable action is such a request, the honest report is a **resumable
+    controller fault** naming the refusal. Note what is deliberately *not* done: the scientific intent
+    stays eligible in the inventory. One refused finalized request does not prove its
+    ``MeasurementIntent`` is scientifically exhausted, and rejecting the parent action to manufacture
+    an ``action_inventory_exhausted`` would both collapse the request/action distinction the
+    three-stage lifecycle exists to draw and mis-class a BUDGET refusal as an empty action space. The
+    honest terminal for complete *realization* exhaustion belongs to a realization inventory beneath
+    the scientific one, once the widen/re-center/step ladder is explicitly enumerated.
 
     Returns ``(proposal, None)`` for a ready proposal, ``(None, StopDecision)`` when a budget /
-    instrument terminal is the honest outcome, or ``(None, None)`` when the plan genuinely ran out of
-    candidates — the caller then falls through to the blocked-frontier / exhausted-action-space path,
-    which reads the same canonical inventory for its terminal proof.
+    instrument / unrealizable-request terminal is the honest outcome, or ``(None, None)`` when the plan
+    genuinely ran out of candidates — the caller then falls through to the blocked-frontier /
+    exhausted-action-space path, which reads the same canonical inventory for its terminal proof.
     """
     instrument_error: Exception | None = None
     budget_error: Exception | None = None
-    suppressed_fallback = None   # a realizable request already refused: re-emitted only if nothing fresh remains
+    suppressed_refusal: dict | None = None   # the sole realizable action was an already-refused request
     while True:
         # Both the realization (``next_proposal`` → ``_build_proposal``) and the finalize clamp can
         # raise the affordability/instrument-limit exceptions, so both live inside one handler — the
@@ -2170,17 +2181,26 @@ def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
             budget_error = error
             continue
         if proposal is None:
-            # Nothing fresh left. Prefer re-emitting a realizable (already-refused) request over any
-            # terminal — an emittable action means the campaign is not truly out of options.
-            if suppressed_fallback is not None:
+            # A named resource limit is a better answer than a generic fault, so an instrument or
+            # budget terminal established during the sweep outranks the unrealizable-request one.
+            if instrument_error is None and budget_error is None and suppressed_refusal is not None:
+                reason = (
+                    "controller_fault: an eligible action has no unsuppressed realization — the only "
+                    f"request it can emit at hkl={suppressed_refusal['hkl']} was already refused "
+                    f"({suppressed_refusal['reason']}). The scientific action remains eligible; "
+                    "re-emitting the identical refused request would repeat it every iteration. "
+                    "Checkpoints retained and resume is supported after repair.")
                 log_event(cfg.log_path, "decide", {
-                    "event": "request_reemitted_no_alternative",
-                    "action": "request_reemitted_no_alternative",
-                    "request_fingerprint": finalized_proposal(suppressed_fallback).request_fingerprint
-                    if finalized_proposal(suppressed_fallback) is not None else None,
-                    "hkl": [suppressed_fallback.h, suppressed_fallback.k, suppressed_fallback.l],
-                    "iter": it})
-                return suppressed_fallback, None
+                    "event": "request_has_no_unsuppressed_realization",
+                    "action": "request_has_no_unsuppressed_realization",
+                    "request_fingerprint": suppressed_refusal["request_fingerprint"],
+                    "rejection_class": suppressed_refusal["class"],
+                    "hkl": suppressed_refusal["hkl"], "iter": it})
+                return None, StopDecision(
+                    "incomplete", [reason],
+                    evaluate_stop(objective, grid, budget_state,
+                                  calibration=cfg.calibration, floor=cfg.floor).per_q,
+                    terminal_cause=TERMINAL_CONTROLLER_FAULT)
             if instrument_error is not None:
                 return None, StopDecision(
                     "infeasible", [str(instrument_error)],
@@ -2198,7 +2218,12 @@ def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
                 "event": "request_suppressed_skip", "action": "request_suppressed_skip",
                 "request_fingerprint": finalized.request_fingerprint,
                 "hkl": [proposal.h, proposal.k, proposal.l], "iter": it})
-            suppressed_fallback = suppressed_fallback or proposal
+            entry = request_suppressions.get(finalized.request_fingerprint) or {}
+            suppressed_refusal = suppressed_refusal or {
+                "request_fingerprint": finalized.request_fingerprint,
+                "hkl": [proposal.h, proposal.k, proposal.l],
+                "class": str(entry.get("class") or "structural"),
+                "reason": str(entry.get("reason") or "previously refused")}
             continue
         return proposal, None
 
