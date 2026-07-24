@@ -206,6 +206,15 @@ class MeasurementIntent:
     # answered against different evidence and updates a different posterior, so the two are genuinely
     # different actions and must not dedupe onto one another.
     evidence_sink: str = CANONICAL_MASTER
+    # The energy this action is *about*, when that is not the midpoint of its window. A rival probe's
+    # bounds are clamped into the identity domain, so a domain that clips one side moves the midpoint
+    # off the predicted rival; realization must resolve the instrument resolution and persist the
+    # acquisition target at the prediction, not at the midpoint of what survived the clamp.
+    #
+    # Deliberately EXCLUDED from ``scientific_fingerprint``: ``energy_lo``/``energy_hi`` already carry
+    # the scientific window, and folding the centre in would re-mint every fingerprint ever computed,
+    # invalidating the frozen replay artifacts for no gain in what the identity distinguishes.
+    window_center_meV: float | None = None
 
     def __post_init__(self) -> None:
         if self.evidence_sink not in EVIDENCE_SINKS:

@@ -1660,7 +1660,12 @@ def _narrow_rival_generate(context: AcquisitionContext) -> list[GeneratedAction]
         if not (math.isfinite(mu) and math.isfinite(sigma)):
             malformed += 1
             continue
-        domain, forbidden = identity_domain(objective, rival_energy_meV=mu)
+        # The *local* instrument FWHM at the rival energy, resolved once and used for everything
+        # downstream. It must precede ``identity_domain``: that function's compiler-band widening
+        # margin is ``3 × fwhm_meV``, so calling it first spent the fixed DEFAULT_FWHM_MEV and sized
+        # the authorised domain against a resolution the instrument does not have here.
+        local_fwhm = _resolve_fwhm(context.resolution_info, *pick.hkl, mu)
+        domain, forbidden = identity_domain(objective, rival_energy_meV=mu, fwhm_meV=local_fwhm)
         if forbidden is not None or not (domain[0] <= mu <= domain[1]):
             # Not an error and not silence. This point had a settleable identity question and a
             # predicted rival to settle it with, and the declared search band is the only thing
@@ -1672,11 +1677,9 @@ def _narrow_rival_generate(context: AcquisitionContext) -> list[GeneratedAction]
             continue
         # Uncertainty- and resolution-relative half-width. A rival predicted loosely needs more room or
         # the probe misses the mode it was fired to find and reports a false null; a tightly predicted
-        # one gets a cheap window. The resolution term uses the *local* instrument FWHM at the rival
-        # energy, not a fixed fallback — a broad local resolution would otherwise smear the mode below a
+        # one gets a cheap window. A broad local resolution would otherwise smear the mode below a
         # default-width window and turn a real rival into a false null. Clamped into the identity domain
         # so the emitted request never exceeds what was authorised.
-        local_fwhm = _resolve_fwhm(context.resolution_info, *pick.hkl, mu)
         half = max(2.0 * sigma, 1.5 * local_fwhm)
         lo, hi = max(domain[0], mu - half), min(domain[1], mu + half)
         if not lo < hi:
@@ -1686,7 +1689,8 @@ def _narrow_rival_generate(context: AcquisitionContext) -> list[GeneratedAction]
                               ProposalScore(method="identity"),
                               campaign_slice=context.campaign_slice),
             action_class="identity_rival_probe", window_family="rival",
-            energy_lo=lo, energy_hi=hi, evidence_sink=AUXILIARY_TRACK_NODE)
+            energy_lo=lo, energy_hi=hi, window_center_meV=mu,
+            evidence_sink=AUXILIARY_TRACK_NODE)
         actions.append(GeneratedAction(
             intent=intent, generator=NARROW_RIVAL_PROBE_GENERATOR, pick=pick,
             kind="identity_rival_probe",
@@ -2120,15 +2124,24 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
                     int(runtime_limits.get("max_points", policy.get("max_scan_points", MAX_POINTS))))
     intent = chosen.evaluation.intent
     if intent.window_family == "rival" and intent.energy_lo is not None and intent.energy_hi is not None:
+        # The energy this scan is *about* is the rival, not the target. ``e_pred`` becomes the
+        # persisted ``acquisition_target_energy`` and the centre the effective-exposure weighting is
+        # computed around, so leaving it at the target model's prediction would score the probe's
+        # counts over a region it deliberately did not scan. Prefer the declared centre: the bounds
+        # were clamped into the identity domain, so their midpoint is not the predicted rival whenever
+        # the domain clipped one side.
+        e_pred = (float(intent.window_center_meV) if intent.window_center_meV is not None
+                  else 0.5 * (float(intent.energy_lo) + float(intent.energy_hi)))
+        # Re-resolve the instrument resolution *at the rival*. ``fwhm`` above was resolved at the
+        # target's prediction, and using it here set the step spacing and the persisted ``fwhm_dE`` from
+        # a resolution belonging to an energy this scan does not visit — undoing the generator's
+        # deliberate use of the rival-local FWHM to keep a broad-resolution mode from reading as a
+        # false null.
+        fwhm = _resolve_fwhm(resolution_info, h, k, l, e_pred)
         # An identity probe's window is a scientific declaration already clamped into the identity
         # domain. Honour it; see :func:`_declared_window`.
         e_lo, e_hi, e_step, n_points = _declared_window(
             intent.energy_lo, intent.energy_hi, fwhm, max_points=point_cap)
-        # The energy this scan is *about* is the rival, not the target. ``e_pred`` becomes the
-        # persisted ``acquisition_target_energy`` and the centre the effective-exposure weighting is
-        # computed around, so leaving it at the target model's prediction would score the probe's
-        # counts over a region it deliberately did not scan.
-        e_pred = 0.5 * (e_lo + e_hi)
     else:
         e_lo, e_hi, e_step, n_points = _energy_window(
             e_pred, fwhm, e_sigma, survey=survey,

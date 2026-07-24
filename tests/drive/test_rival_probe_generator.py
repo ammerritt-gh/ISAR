@@ -23,6 +23,10 @@ scanning outside the operator's declared search band to reach a rival they never
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
+
 from isar.drive.acquisition import acquire as acq
 from isar.drive.acquisition.inventory import GENERATOR_REGISTRY
 from isar.drive.objective import ObjectiveSpec
@@ -130,6 +134,50 @@ def test_a_broad_local_resolution_widens_the_window():
                  resolution_info={"fwhm_dE": 0.3})).actions[0].intent
 
     assert (broad.energy_hi - broad.energy_lo) > (narrow.energy_hi - narrow.energy_lo)
+
+
+def test_the_widened_compiler_domain_is_sized_by_the_rivals_own_resolution():
+    """``identity_domain`` widens a compiler band by ``3 x fwhm_meV`` around the rival, so it has to be
+    told the resolution *at the rival*. It was called before the local FWHM was resolved, spending the
+    fixed default: at a q where the instrument is broad the authorised domain was too tight to hold the
+    window the generator then built, and the probe's shoulders were clamped off."""
+    objective = _objective(target_search_source="compiler")
+    tight_pred = (7.115, 0.05)      # sigma small, so the resolution term decides both sizes
+    broad = acq.ACTION_GENERATORS[RIVAL_GENERATOR](
+        _context([_blocked_point()], objective=objective, rival=tight_pred,
+                 resolution_info={"fwhm_dE": 2.0})).actions[0].intent
+    narrow = acq.ACTION_GENERATORS[RIVAL_GENERATOR](
+        _context([_blocked_point()], objective=objective, rival=tight_pred,
+                 resolution_info={"fwhm_dE": 0.2})).actions[0].intent
+
+    # 1.5 x fwhm each side, and the domain (target_hi=7.0 widened by 3 x fwhm) must be roomy enough to
+    # leave that intact rather than clipping it back to the band edge.
+    assert broad.energy_hi == pytest.approx(7.115 + 1.5 * 2.0, abs=1e-6)
+    assert narrow.energy_hi == pytest.approx(7.115 + 1.5 * 0.2, abs=1e-6)
+
+
+def test_the_declared_probe_centre_is_the_prediction_not_the_surviving_midpoint():
+    """Realization persists this as the acquisition target energy. When the domain clips one shoulder
+    the midpoint of the surviving bounds is not the rival, so the prediction has to travel explicitly."""
+    objective = _objective(identity_search_meV=(-2.0, 7.115 + 0.3),
+                           identity_search_source="operator")
+    intent = acq.ACTION_GENERATORS[RIVAL_GENERATOR](
+        _context([_blocked_point()], objective=objective)).actions[0].intent
+
+    assert intent.window_center_meV == pytest.approx(7.115)
+    assert 0.5 * (intent.energy_lo + intent.energy_hi) < intent.window_center_meV
+
+
+def test_the_probe_centre_is_not_part_of_the_scientific_identity():
+    """``energy_lo``/``energy_hi`` already carry the scientific window. Folding the centre into the
+    fingerprint would re-mint every fingerprint ever computed — invalidating the frozen replay
+    artifacts — without distinguishing any two actions the bounds do not already distinguish."""
+    base = acq.ACTION_GENERATORS[RIVAL_GENERATOR](
+        _context([_blocked_point()], objective=_objective(target_search_source="compiler"))
+    ).actions[0].intent
+    moved = replace(base, window_center_meV=(base.window_center_meV or 0.0) + 1.0)
+
+    assert moved.scientific_action_fingerprint == base.scientific_action_fingerprint
 
 
 # -- when it must NOT fire --------------------------------------------------------------------------

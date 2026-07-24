@@ -91,6 +91,49 @@ def test_the_emitted_probe_window_actually_reaches_the_rival():
     assert probe.e_pred == pytest.approx(RIVAL_MEV, abs=1e-6)
 
 
+def test_the_emitted_probe_is_realized_at_the_rivals_resolution_not_the_targets():
+    """The generator sizes the window with the FWHM at the *rival* precisely so a broad local
+    resolution cannot smear a real mode below the window and report a false null. Realization then
+    resolved the FWHM at the **target** prediction and used it for the step spacing and the persisted
+    ``fwhm_dE``, only moving ``e_pred`` to the rival afterwards — so the emitted scan sampled the rival
+    at a spacing belonging to an energy it never visits, and the record said so too."""
+    def resolution(_h, _k, _l, deltaE):
+        # Sharp where the target sits (~5.75 meV), broad up at the rival (7.115 meV).
+        return {"fwhm_dE": 2.0 if float(deltaE) > 6.5 else 0.4}
+
+    objective = _objective()
+    observations = _observations()
+    model = acq_model.fit(model_points(summarize_grid(objective, observations)))
+    plan = acq.plan_actions(objective, model, observations, resolution_info=resolution,
+                            budget_state={}, rival_band=lambda g: (RIVAL_MEV, 0.2))
+    probe = next(p for p in iter(plan.next_proposal, None) if p.kind == "identity_rival_probe")
+
+    assert probe.fwhm_dE == pytest.approx(2.0), "the record must describe the energy actually scanned"
+    # Step spacing follows from that same resolution, so a target-resolution realization would have
+    # oversampled the rival by 5x and mispriced the scan.
+    assert probe.e_step == pytest.approx(acq.STEP_RES_FRACTION * 2.0, rel=1e-6)
+
+
+def test_the_persisted_probe_centre_is_the_predicted_rival_not_the_clamped_midpoint():
+    """The window is clamped into the identity domain, so when the domain clips one side its midpoint
+    is no longer the rival. ``e_pred`` becomes the persisted acquisition target energy and the centre
+    the effective-exposure weighting uses, so deriving it from the surviving bounds attributes the
+    probe's counts to an energy nothing predicted."""
+    # A domain that ends just above the rival: the upper shoulder is clipped, the lower is not.
+    objective = _objective(identity_search_meV=(-2.0, RIVAL_MEV + 0.3),
+                           identity_search_source="operator")
+    observations = _observations()
+    model = acq_model.fit(model_points(summarize_grid(objective, observations)))
+    plan = acq.plan_actions(objective, model, observations, resolution_info={"fwhm_dE": 0.8},
+                            budget_state={}, rival_band=lambda g: (RIVAL_MEV, 0.2))
+    probe = next(p for p in iter(plan.next_proposal, None) if p.kind == "identity_rival_probe")
+
+    assert probe.e_hi < RIVAL_MEV + 1.2, "the domain must actually have clipped the upper shoulder"
+    midpoint = 0.5 * (probe.e_lo + probe.e_hi)
+    assert midpoint < RIVAL_MEV, "otherwise the test proves nothing"
+    assert probe.e_pred == pytest.approx(RIVAL_MEV, abs=1e-6)
+
+
 def test_the_probe_is_cheaper_than_the_target_scan_it_supplements():
     """It answers a yes/no question about one predicted mode, so it must not cost a survey."""
     proposals = _proposals()
