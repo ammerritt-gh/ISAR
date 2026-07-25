@@ -7,8 +7,7 @@ machine — the calibration layer is proven to reproduce the gold check's per-sc
 precision (step 3 gate, `tests/session/test_calibrations.py`), and the driver is proven end-to-end on
 IN8 + a synthetic S30 held/idempotency/corrections smoke, but the end-to-end ω₀ comparison against
 `results_gold.csv` has not yet been run. Decisions U1–U8 are in §9; open engineering items are marked
-inline. Companion build briefing: `docs/archive/HANDOFF_UNIFICATION.md`. User-facing companion:
-`docs/USING_ISAR.md`.
+inline. User-facing companion: `docs/USING_ISAR.md`.
 
 **Relationship to the master design:** This is the realization of `DESIGN.md` §3 (the architecture
 diagram's spine), §4 (the event-stream model), §7.1 (ingestion & batching), the accumulated-state

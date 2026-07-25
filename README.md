@@ -113,4 +113,5 @@ Python ≥ 3.11. `pip install -e .` (test extras: `pip install -e .[test]`; run 
 slow"` — the `tests/real_data/` subset requires the local-only `test_data/`). To also run the GUI
 tests under `tests/gui/`, install `pip install -e .[test,test-gui,gui]` (the `test-gui` extra is
 `pytest-qt`, kept out of the base `test` extra so it doesn't require a Qt binding). LLM features are
-optional and require a local [LLMM](docs/archive/LLMM_INTEGRATION_HANDOFF.md) endpoint.
+optional and require a local LLMM endpoint — see
+[docs/ADJUDICATION.md](docs/ADJUDICATION.md) for the endpoint, configuration, and fallback contract.

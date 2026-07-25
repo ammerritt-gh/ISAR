@@ -7,9 +7,12 @@ test campaigns must get several times faster so that design iteration on everyth
 (backgrounds, steering physics, scan economy) speeds up. It is *not* judged on beam-time
 economy or final-number accuracy; certification honesty is explicitly preserved unchanged.
 
-Companion documents: `docs/handoffs/HANDOFF_statistics_contract_checkup.md` (the audit that
-motivated this), `docs/STATS_PRIMER.md` §3 (the coverage evidence that licenses Phase 2),
-`docs/MEASUREMENT_STEERING.md` §7.5 (master-authoritative semantics Phase 3 must preserve).
+**Owner: @ammerritt-gh.** Motivating finding — "the error-tier choice is static", from the
+2026-07-19 statistics-contract audit: `docs/STATS_PRIMER.md` §7.
+
+Companion documents: `docs/STATS_PRIMER.md` §3 (the coverage evidence that licenses Phase 2),
+`docs/MEASUREMENT_STEERING.md` §7.5 (master-authoritative semantics Phase 3 must preserve),
+`docs/campaigns/2026-07-20_speedup_phases_1_2.md` (Phase 1–2 timing evidence).
 
 ---
 

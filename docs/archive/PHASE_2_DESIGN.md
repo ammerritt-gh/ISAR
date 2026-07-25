@@ -1,6 +1,6 @@
 # ISAR Phase 2 — Parsing & Reduction (the front half of the R)
 
-**Status:** Settled. Ready to hand off to a build session (`docs/archive/HANDOFF_PHASE_2.md`). All open
+**Status:** Settled and built. All open
 decisions D1–D8 are resolved (§11), and the design is grounded against real files from four of the five
 instruments in `test_data/`.
 **Relationship to the master design:** This is the concrete realization of `DESIGN.md`

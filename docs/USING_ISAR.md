@@ -63,7 +63,7 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
 - **`isar run <data>... --workspace DIR`** — the whole pipeline, idempotent. Useful flags:
   `--force` (refit everything), `--llm` (enable LLM adjudication of QC flags — off by default;
   needs LLMM, the co-located local LLM service, running — see
-  [LLMM_INTEGRATION_HANDOFF.md](archive/LLMM_INTEGRATION_HANDOFF.md)), `--M N` (pooled-master and
+  [ADJUDICATION.md](ADJUDICATION.md)), `--M N` (pooled-master and
   certification bootstrap cap; default 200), `--scan-M N` (provisional scan bootstrap cap; default
   50), `--detectors ana7` (restrict which analyzers are fitted
   this run), and `--workers N` (the total fitting CPU budget; default `min(30, cpu-2)`, also settable

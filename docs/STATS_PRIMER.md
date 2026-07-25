@@ -364,6 +364,28 @@ python docs/phase3_gold_check.py
 
 ---
 
+## 7. Known weak points — the 2026-07-19 statistics-contract audit
+
+A post-MVP audit asked how ISAR decides *how long to count, what a scan tells us, and what to do
+next*. Its findings are recorded here because three workstream plans are built on them, and one
+shared record is better than three drifting copies.
+
+**Verdict.** The statistical core came out better than expected: Baker–Cousins throughout, measured
+interval coverage (§3), a fold-only prior gate, and an EIG acquisition that explains rather than
+causes one of the reported symptoms — the "too wide" survey scans are cold-start survey mode doing
+its designed job, not a defect.
+
+Three genuine weak points, each now the subject of a plan:
+
+| Weak point | Status | Governing plan |
+|---|---|---|
+| **Backgrounds are a single flat constant** — the largest real-data risk. Long elastic tails and sloped baselines under the inelastic signal silently bias phonon amplitudes | Open | `BACKGROUND_DESIGN.md` |
+| **Counting targets are absolute-meV only** — no signal-to-background awareness, so a five-count peak is a real hazard once genuine noise arrives | Open | `STEERING_DESIGN.md` |
+| **The error-tier choice is static** — §3's coverage evidence already licenses a cheap-first, escalate-on-distrust policy | Partly addressed | `SPEEDUP_DESIGN.md` (Phase 2) |
+
+Two of the three are unstarted. They are recorded here, not in a plan, so that a reader of the
+statistics contract learns the limitations without having to read three roadmaps.
+
 ## Reproducing everything
 
 ```

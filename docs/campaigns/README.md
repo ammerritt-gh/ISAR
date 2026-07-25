@@ -40,10 +40,13 @@ which ruling settled it. That is worth keeping and worth not mistaking for a con
 
 | Record | What it is |
 |---|---|
-| [IN8_PHASE1_CHECK.md](IN8_PHASE1_CHECK.md) | First stress-test of the Phase-1 fitter on real triple-axis (ILL IN8) data |
-| [PHASE_4_NOTES.md](PHASE_4_NOTES.md) | Original forward notes for closing the measurement loop. **Built and shipped** — the realized driver is `isar/drive/`. Kept because they framed what Phase 3 was built toward. |
-| [PHASE_5_NOTES.md](PHASE_5_NOTES.md) | Forward notes only, not designed. The horizon beyond Phase 4. |
+| [IN8_PHASE1_CHECK.md](IN8_PHASE1_CHECK.md) | First stress-test of the Phase-1 fitter on real triple-axis (ILL IN8) data. Kept as the only checkout-visible detailed record behind the `out/in8_phase1/FINDINGS.md` citation |
+| [PHASE_4_NOTES.md](PHASE_4_NOTES.md) | Original forward notes for closing the measurement loop. **Built and shipped** — the realized driver is `isar/drive/`. Kept because `archive/PHASE_3_DESIGN.md` uses them as rationale for what Phase 3 was built toward |
 
-Both `PHASE_4_NOTES.md` and `PHASE_5_NOTES.md` are aspiration documents rather than campaign
-evidence, and neither describes shipped behaviour: Phase 4's realized form is in `isar/drive/`,
-and Phase 5 does not exist. They live here because they are dated and historical.
+`PHASE_4_NOTES.md` is an aspiration document rather than campaign evidence and does not describe
+shipped behaviour — Phase 4's realized form is in `isar/drive/`. It lives here because it is dated
+and historical, and because Phase 3's design still points at it.
+
+`PHASE_5_NOTES.md` was deleted on 2026-07-25: forward notes for work that was never designed and is
+not scheduled, superseded by nothing because it described nothing that exists. See the tombstone
+table in [../DOC_INVENTORY.md](../DOC_INVENTORY.md).

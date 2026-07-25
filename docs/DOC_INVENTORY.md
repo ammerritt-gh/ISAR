@@ -49,92 +49,121 @@ lifecycle-banner requirement (PR4 check 4) because the generator, not a human, o
 
 Status key: **done** = landed in the PR named; **todo** = still outstanding.
 
-| Path | Lifecycle | Authority | Action | Inbound (py/md) |
-|---|---|---|---|---|
-| `README.md` | Current | product overview + quickstart | **done** PR1b (CLI list completed, both completed-build phrases removed, nav → 5-row pointer, TAVI-tier qualification) · **todo** PR3f `out/**` | 5/3 |
-| `DESIGN.md` | Current | architecture + capability status (§15) | **done** PR1a (Bayes §7 + §15 row), PR1b (§16 → pointer) | high |
-| `AGENTS.md` | Current | contributor rules and routing | **todo** PR2e: add documentation policy | 0/7 |
-| `CLAUDE.md` | Current | — (12-byte `@AGENTS.md` stub) | none | 0/4 |
-| `TODO.md` | Current | the single backlog | **todo** PR3e: absorb WISHLIST, strip completed to changelog | 11/21 |
-| `calibration/README.md` | Historical evidence | — | **todo** PR2a banner; it is a dated 2026-07-06 calibration record whose sibling JSON is loaded by `isar.drive.acquisition.calibration` | 5/3 |
+> **Inbound-reference counts were removed (PR2).** They were labelled machine-computed but had no
+> generator behind them and no test keeping them honest, and PR2's deletions invalidated them
+> immediately. A number nobody recomputes is worse than no number. Where an inbound reference
+> actually matters it is now named explicitly as a deletion blocker, and the PR2 deletion gate
+> (`git grep` per removed basename) verifies those by execution rather than by bookkeeping.
+
+| Path | Lifecycle | Authority | Action |
+|---|---|---|---|
+| `README.md` | Current | product overview + quickstart | **done** PR1b (CLI list completed, both completed-build phrases removed, nav → 5-row pointer, TAVI-tier qualification), PR2a (LLMM link → `ADJUDICATION.md`) · **todo** PR5a `out/**` |
+| `DESIGN.md` | Current | architecture + capability status (§15) | **done** PR1a (Bayes §7 + §15 row), PR1b (§16 → pointer), PR2a (two handoff pointers dropped) |
+| `AGENTS.md` | Current | contributor rules and routing | **done** PR2b (schema routing → `SCHEMA_LANDSCAPE.md` only) · **todo** PR4: documentation policy |
+| `CLAUDE.md` | Current | — (12-byte `@AGENTS.md` stub) | none |
+| `TODO.md` | Current | the single backlog | **done** PR2b (WISHLIST content merged in) · **todo** PR3a: full rebuild, strip the 11 completed items |
+| `calibration/README.md` | Historical evidence | — | **todo** PR4 banner; a dated 2026-07-06 calibration record whose sibling JSON is loaded by `isar.drive.acquisition.calibration` |
 
 ## `docs/` — current contracts
 
-| Path | Lifecycle | Authority | Action | Inbound (py/md) |
-|---|---|---|---|---|
-| `READING_GUIDE.md` | Current | **the** general documentation map | **done** PR1b (sole map + lifecycle column, campaign routing removed, TAVI-tier qualification) | 1/16 |
-| `USING_ISAR.md` | Current | operator workflow | **done** PR1d — grep found its O27/action-inventory prose already correct, no edit needed | 0/23 |
-| `INTERPRETING_A_VERDICT.md` | Current | verdict + master-assessment meaning | **todo** PR2a banner | 0/10 |
-| `WORKED_EXAMPLE.md` | Current | single-scan walkthrough | **todo** PR2a banner; PR3f `out/**` wording | 0/6 |
-| `GLOSSARY.md` | Current | term definitions | **done** PR1a (added `credible interval`; no stale Bayes wording existed) | 5/10 |
-| `HYPOTHESES.md` | Current | hypothesis declaration contract | **done** PR1d — grep found no stale bridge/budget prose | 26/16 |
-| `ADJUDICATION.md` | Current | adjudication trust + config contract | **done** PR1c (§3 "not auto-wired" and §12 gap both corrected) | 1/7 |
-| `STATS_PRIMER.md` | Current | statistical methods | **done** PR1a (§0, §3, §5 + Fig. 1 regenerated) | 11/18 |
-| `SCHEMA_LANDSCAPE.md` | Current | the schema survey (sole) | **todo** PR3d routing fix | 0/7 |
-| `DECISIONS.md` | Current | append-only decision ledger (D4) | **done** PR1a (appended S5 amending S1/V5 by forward reference; header typo fixed) | 10/23 |
-| `MEASUREMENT_STEERING.md` | Current | steering research foundation + current controller | verified accurate on O27; **todo** PR2a banner | 6/19 |
-| `UNIFICATION_DESIGN.md` | Current | workspace / session / CLI contract | **todo** PR2a banner; keep path and section numbers — 37 Python docstrings cite `UNIFICATION_DESIGN §N` | 37/18 |
-| `GUI_DESIGN.md` | Current | GUI architecture + ownership boundaries | **todo** PR2a banner; already disciplined about Planned voice | 6/9 |
-| `CAMPAIGN_DIAGNOSTIC_SPEC.md` | Current | campaign diagnostic contract | **done** PR1c (as-built section above the original design body) | 1/4 |
-| `DOC_INVENTORY.md` | Current | this register | — | — |
-| `campaigns/README.md` | Current | which campaign record covers what | **done** PR1b (created; index + forward pointers) | — |
+| Path | Lifecycle | Authority | Action |
+|---|---|---|---|
+| `READING_GUIDE.md` | Current | **the** general documentation map | **done** PR1b (sole map + lifecycle column, campaign routing removed, TAVI-tier qualification) |
+| `USING_ISAR.md` | Current | operator workflow | **done** PR1d (O27 prose verified already correct), PR2a (LLMM link → `ADJUDICATION.md`) |
+| `INTERPRETING_A_VERDICT.md` | Current | verdict + master-assessment meaning | **todo** PR4 banner |
+| `WORKED_EXAMPLE.md` | Current | single-scan walkthrough | **todo** PR4 banner; PR5a `out/**` wording |
+| `GLOSSARY.md` | Current | term definitions | **done** PR1a (added `credible interval`; no stale Bayes wording existed) |
+| `HYPOTHESES.md` | Current | hypothesis declaration contract | **done** PR1d — grep found no stale bridge/budget prose |
+| `ADJUDICATION.md` | Current | adjudication trust + config contract; **also the LLMM setup reference** | **done** PR1c (§3/§12 corrected), PR2a (absorbed the LLMM handoff's routing role) |
+| `STATS_PRIMER.md` | Current | statistical methods; **§7 is the sole record of the 2026-07-19 audit** | **done** PR1a (§0/§3/§5 + Fig. 1), PR2a (§7 added) |
+| `SCHEMA_LANDSCAPE.md` | Current | the schema survey (sole) | **done** PR2b — `AGENTS.md` now routes here only |
+| `DECISIONS.md` | Current | append-only decision ledger (D4) | **done** PR1a (appended S5 amending S1/V5 by forward reference; header typo fixed) |
+| `MEASUREMENT_STEERING.md` | Current | steering research foundation + current controller | verified accurate on O27; **todo** PR4 banner |
+| `UNIFICATION_DESIGN.md` | Current | workspace / session / CLI contract | **done** PR2a (handoff pointer removed) · **todo** PR4 banner. Keep path and section numbers — Python docstrings cite `UNIFICATION_DESIGN §N` throughout `isar/` |
+| `GUI_DESIGN.md` | Current | GUI architecture + ownership boundaries | **todo** PR3b as-built matrix; PR4 banner |
+| `CAMPAIGN_DIAGNOSTIC_SPEC.md` | Current | campaign diagnostic contract | **done** PR1c (as-built section above the original design body) |
+| `DOC_INVENTORY.md` | Current | this register | — |
+| `campaigns/README.md` | Current | which campaign record covers what | **done** PR1b (created), PR2c (PHASE_5_NOTES removal recorded) |
 
 ## `docs/` — active plans
 
-Each needs an owner and exit criteria added in PR2. All three already carry a Status line and
-all three cite `HANDOFF_statistics_contract_checkup.md` as the audit that motivated them — that
-citation is load-bearing and must be resolved before PR3b archives the handoff.
+All three are **owned by @ammerritt-gh**. Each cited `HANDOFF_statistics_contract_checkup.md` as
+its motivating audit; PR2a promoted that audit's shared findings once into `STATS_PRIMER.md` §7
+and reduced each plan to a one-line pointer, so the three plans do not carry three drifting copies.
 
-| Path | Lifecycle | Status as written | Owner | Exit criteria |
-|---|---|---|---|---|
-| `SPEEDUP_DESIGN.md` | Active plan | Phase 1 code complete 2026-07-20; reference-control evidence incomplete | **TBD** | **TBD** |
-| `STEERING_DESIGN.md` | Active plan | Phase 0 repair in progress; A→B→C Planned | **TBD** | **TBD** |
-| `BACKGROUND_DESIGN.md` | Active plan | approved 2026-07-19; implementation not started | **TBD** | **TBD** |
+| Path | Lifecycle | Status as written | Exit criteria |
+|---|---|---|---|
+| `SPEEDUP_DESIGN.md` | Active plan | Phase 1 complete; Phase 2 Partial (async scheduling + fresh-master `auto` open, blocked on the shadow gate); 3/4 conditional | **todo** PR3b |
+| `STEERING_DESIGN.md` | Active plan | Phase 0 shipped as O27/O28/O29/O31; A→B→C Planned | **todo** PR3b |
+| `BACKGROUND_DESIGN.md` | Active plan | approved 2026-07-19; implementation not started | **todo** PR3b |
 
-## `docs/` — to archive
+## Deleted — tombstones (PR2, 2026-07-25)
 
-| Path | Lifecycle | Replacement | Blocker before moving | Inbound (py/md) |
-|---|---|---|---|---|
-| `DATA_SCHEME_RESEARCH.md` | Archived | `SCHEMA_LANDSCAPE.md` | none — banner in place, fix `DESIGN.md` §16 routing | 0/2 |
-| `handoffs/HANDOFF_pooled_member_provenance.md` | Archived | `DESIGN.md` §7 | none; `DESIGN.md:260` + `DECISIONS.md:27` cite it as *provenance* — re-point path only | 0/2 |
-| `handoffs/HANDOFF_stats_primer_gallery.md` | Archived | `STATS_PRIMER.md` | none; `DESIGN.md:400` + `DECISIONS.md:65` cite as provenance — re-point path only | 0/2 |
-| `handoffs/HANDOFF_operator_workflow.md` | Archived | `GUI_DESIGN.md` | none — zero inbound references | 0/0 |
-| `handoffs/HANDOFF_statistics_contract_checkup.md` | Archived | `STATS_PRIMER.md` + the three plans | **yes** — cited as motivating audit by `BACKGROUND_DESIGN.md:6`, `SPEEDUP_DESIGN.md:10`, `STEERING_DESIGN.md:9`. Promote the load-bearing content into those documents first. | 0/3 |
-| `GPT-Generated/ISAR_ACOUSTIC_CAMPAIGN_HANDOFF.md` | Historical evidence | `MEASUREMENT_STEERING.md`, DECISIONS O28/O29/O31 | none — its own banner (`:3-11`) already declares it historical and pre-repair | 0/0 |
-| `superpowers/plans/2026-07-19-speedup-sprint-phase1.md` | Archived | `SPEEDUP_DESIGN.md` | none — execution plan, Phase 1 landed | 0/0 |
-| `ISAR_DOCUMENTATION_CLEANUP_HANDOFF.md` | Archived | this register + the cleanup PRs | untracked; archives on completion or is never committed | 0/0 |
-| `WISHLIST.md` | — | `TODO.md` | PR3e merges and deletes it | 0/0 |
+Everything below was removed from the working tree. Git retains all of it: the **last commit
+containing the file** is given so it can be recovered with
+`git show <commit>:<path>` without archaeology. (The commit that *deleted* a file cannot be named
+inside that same commit, so the last-containing commit is the stable handle.)
+
+| Deleted path | Last commit containing it | Why |
+|---|---|---|
+| `archive/HANDOFF_PHASE_1.md` | `5cf5915` | Completed session handoff |
+| `archive/HANDOFF_PHASE_2.md` | `5cf5915` | Completed session handoff; `PHASE_2_DESIGN.md` status line updated |
+| `archive/HANDOFF_UNIFICATION.md` | `65c6122` | Completed session handoff; `UNIFICATION_DESIGN.md:10` pointer removed |
+| `archive/LLMM_INTEGRATION_HANDOFF.md` | `65c6122` | A 2026-06-26 negotiation record. The contract it negotiated is live in `ADJUDICATION.md`; `README.md` and `USING_ISAR.md` now point there |
+| `handoffs/HANDOFF_operator_workflow.md` | `5593f07` | Tied to a superseded GUI branch state; zero inbound |
+| `handoffs/HANDOFF_pooled_member_provenance.md` | `74eaea4` | Marked done; `DESIGN.md` §7 states the fact inline instead |
+| `handoffs/HANDOFF_stats_primer_gallery.md` | `24e1ab5` | Deliverables complete; `DESIGN.md` §13 points at `STATS_PRIMER.md` §3 instead |
+| `handoffs/HANDOFF_statistics_contract_checkup.md` | `77121c0` | Findings promoted once into `STATS_PRIMER.md` §7 |
+| `superpowers/plans/2026-07-19-speedup-sprint-phase1.md` | `64779aa` | Checkbox execution plan; its sprint's Phase 1 merged in `8fa1219` |
+| `GPT-Generated/ISAR_ACOUSTIC_CAMPAIGN_HANDOFF.md` | `9a16a75` | Self-declared historical pre-repair analysis; shipped as O28/O29/O31 |
+| `DATA_SCHEME_RESEARCH.md` | `bba902c` | Superseded by `SCHEMA_LANDSCAPE.md`; `AGENTS.md` routing narrowed |
+| `WISHLIST.md` | `9a16a75` | Content merged into `TODO.md` before deletion |
+| `campaigns/PHASE_5_NOTES.md` | `24e1ab5` | "Forward notes only. Not designed." Described nothing that exists |
+
+**Two references are deliberately left dangling.** `DECISIONS.md:26` and `:64` mention two deleted
+handoffs by bare filename (not as links, so no link check breaks). The ledger is append-only under
+D4, and a ruling that referenced a document which existed at ruling time is itself accurate
+history. This table is where a reader learns where those files went.
+
+**Amended ruling — campaign records.** PR1 recorded that all thirteen campaign records remain.
+PR2 revises that: `PHASE_5_NOTES.md` is deleted. It was never campaign evidence — it described a
+Phase 5 that was explicitly "not designed" and is not scheduled, so it recorded neither what
+happened nor what will. The two other non-campaign files in that directory were **kept** on the
+irreplaceability test: `IN8_PHASE1_CHECK.md` is the only checkout-visible detailed record behind
+the `out/in8_phase1/FINDINGS.md` citation, and `PHASE_4_NOTES.md` is used as rationale by
+`archive/PHASE_3_DESIGN.md:657`.
 
 Retire `docs/handoffs/`, `docs/GPT-Generated/`, and `docs/superpowers/` once empty. Provenance
 ("GPT-Generated") is not a lifecycle — it is the `Provenance` field.
 
 ## `docs/campaigns/` — historical evidence
 
-All thirteen keep their dated filenames and stay in place. **done** — indexed by
-[`campaigns/README.md`](campaigns/README.md), created in PR1b, which states the
-historical-evidence rule for the directory and gives each record a forward pointer to its
-governing decision. **todo** PR2a — per-file `Historical evidence` banners. None may be cited as
-a current behavioural contract.
+**Twelve** records keep their dated filenames and stay in place, indexed by
+[`campaigns/README.md`](campaigns/README.md) (PR1b), which states the historical-evidence rule for
+the directory and gives each record a forward pointer to its governing decision. **todo** PR4 —
+per-file `Historical evidence` banners. None may be cited as a current behavioural contract.
 
 `2026-06_MVP_FIRST_RUN.md` · `2026-07-09_MVP16_DIAGNOSTIC.md` · `2026-07-10_SVP_RECERT.md` ·
 `2026-07-20_op7_speedup_checkpoint.md` · `2026-07-20_speedup_phases_1_2.md` ·
 `2026-07-21_OP9_OP10_TRACKED_FRONTIER.md` · `2026-07-23_AP6_ACTION_INVENTORY.md` ·
 `2026-07_AP1_BRANCH_MAPPING_DEADLOCK.md` · `2026-07_AP3_GLOBAL_BRANCH_EVIDENCE.md` ·
-`2026-07_MVP_ZONE_RETEST.md` · `IN8_PHASE1_CHECK.md` · `PHASE_4_NOTES.md` · `PHASE_5_NOTES.md`
+`2026-07_MVP_ZONE_RETEST.md` · `IN8_PHASE1_CHECK.md` · `PHASE_4_NOTES.md`
 
-Two need attention beyond the banner: `2026-07_MVP_ZONE_RETEST.md` is cited by `README.md:25` as
-"current test state" (PR1b re-points it), and `PHASE_4_NOTES.md` is cited by
-`READING_GUIDE.md:106` as an explanation of current loop behaviour (PR2c re-points it).
+`2026-07_MVP_ZONE_RETEST.md` was cited by `README.md:25` as "current test state" (re-pointed in
+PR1b), and `PHASE_4_NOTES.md` was cited by `READING_GUIDE.md:106` as an explanation of current
+loop behaviour (re-pointed in PR1b).
 
-## `docs/archive/` — already archived
+## `docs/archive/` — kept design rationale
 
-Seven files, all `Archived`, indexed by `docs/archive/README.md` (PR2d). Each gains a
-replacement pointer. `PHASE_1_DESIGN.md`, `PHASE_2_DESIGN.md`, and `PHASE_3_DESIGN.md` are
-legitimately cited from `README.md:65` and `READING_GUIDE.md:116` for design *rationale* —
-permitted under rule 1.
+**Three** files, all `Archived`, to be indexed by `docs/archive/README.md` (PR4). They hold the
+*why* behind `DESIGN.md` — the inverse-crime justification, the "five corrections" framing behind
+mask-not-delete, the error-spine-as-architecture principle — which `DESIGN.md` summarizes but does
+not reproduce. They are legitimately cited from `README.md` and `READING_GUIDE.md` for design
+rationale, permitted under rule 1.
 
-`HANDOFF_PHASE_1.md` · `HANDOFF_PHASE_2.md` · `HANDOFF_UNIFICATION.md` ·
-`LLMM_INTEGRATION_HANDOFF.md` · `PHASE_1_DESIGN.md` · `PHASE_2_DESIGN.md` · `PHASE_3_DESIGN.md`
+`PHASE_1_DESIGN.md` · `PHASE_2_DESIGN.md` · `PHASE_3_DESIGN.md`
+
+The four handoffs that shared this directory were deleted in PR2 — see the tombstone table.
 
 ## Generated — exempt from lifecycle banners
 

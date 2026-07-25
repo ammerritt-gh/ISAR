@@ -259,7 +259,7 @@ coin flip, do not deliver). Nothing else in the pipeline is called Bayesian. *(I
 errors, distance from the running dispersion, provenance-weighted), never LLM-self-reported.
 Each scan gets a verdict and a disposition realizing the review taxonomy (§2). Pooled "master"
 fits carry synthetic scan ids and must enumerate their `members`. *(Confidence Implemented;
-member enumeration Implemented 2026-07-10 — `docs/handoffs/HANDOFF_pooled_member_provenance.md`.)*
+member enumeration Implemented 2026-07-10.)*
 
 **Residual-driven refit (LLM).** On a failed/poor fit, a vision-capable tier reads the fit +
 residual figure and proposes a structural fix — after deterministic attempts, off the critical
@@ -399,7 +399,8 @@ every pipeline change is scored per-scan against it. Campaign certification adds
 truth-source comparison, per-q buckets, pulls, **coverage** — observed 68% interval coverage
 against known truth is both the internal health metric and the external persuasion instrument
 (the seminar argument for practitioners raised on Neyman + Hessian is a reproducible coverage
-experiment, not a lecture — `docs/handoffs/HANDOFF_stats_primer_gallery.md`). *(Implemented;
+experiment, not a lecture — the gallery that makes it is `docs/STATS_PRIMER.md` §3 and
+`docs/stats/`). *(Implemented;
 coverage currently exposes the γ-at-bound work as designed.)*
 
 ## 14. Workspaces & hygiene

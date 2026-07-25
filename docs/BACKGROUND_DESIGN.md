@@ -2,8 +2,9 @@
 
 **Status: design approved 2026-07-19; implementation not started; sequenced after the
 speedup sprint (`docs/SPEEDUP_DESIGN.md`),** whose fast test campaigns are what make this
-workstream cheap to iterate. Companion: the audit that motivated it,
-`docs/handoffs/HANDOFF_statistics_contract_checkup.md` §3.
+workstream cheap to iterate. **Owner: @ammerritt-gh.** Motivating finding — "backgrounds are a
+single flat constant", named the largest real-data risk by the 2026-07-19 statistics-contract
+audit: `docs/STATS_PRIMER.md` §7.
 
 Owner intent: real data has gnarly backgrounds — long elastic tails under the inelastic
 signal, sloped/non-flat baselines — and today ISAR's only background model is a single

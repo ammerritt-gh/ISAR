@@ -5,8 +5,9 @@ sub-phases A → B → C remain Planned and sequenced third,** after the speedup
 (`docs/SPEEDUP_DESIGN.md`) and the background workstream (`docs/BACKGROUND_DESIGN.md`) —
 both of which they build on: fast campaigns make validation cheap, and honest backgrounds
 make the physics nudges trustworthy. Phase 0 is an urgent repair to the current controller,
-not an early start on A, B, or C. Companions: the
-audit that motivated it (`docs/handoffs/HANDOFF_statistics_contract_checkup.md` §2, §4),
+not an early start on A, B, or C. **Owner: @ammerritt-gh.** Motivating finding — "counting targets
+are absolute-meV only", with no signal-to-background awareness, from the 2026-07-19
+statistics-contract audit: `docs/STATS_PRIMER.md` §7. Companions:
 `docs/MEASUREMENT_STEERING.md` (the research foundation this workstream executes slices
 of), `docs/HYPOTHESES.md` (the Tier-2 extensibility seam sub-phase B fills).
 
