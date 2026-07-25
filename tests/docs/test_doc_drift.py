@@ -32,10 +32,24 @@ LIFECYCLE_VALUES = ("Current", "Active plan", "Historical evidence", "Archived")
 # below fails if the two drift apart.
 EXEMPT_PREFIXES = (
     "docs/stats/figures/",       # caption sidecars, written by docs/stats/make_figures.py
+    "docs/assets/",              # promoted report output, written by the docs/*_check.py scripts
     "tests/data/golden/",        # byte-compared fixtures; a banner would break the comparison
 )
 EXEMPT_FILES = (
     "CLAUDE.md",                 # a 12-byte `@AGENTS.md` stub
+)
+# Carve-outs: hand-written index files that happen to sit under an exempt prefix. Without these,
+# adding one generated directory would silently stop checking its own README.
+NEVER_EXEMPT = (
+    "docs/assets/README.md",
+)
+
+# Link checking is exempt separately and far more narrowly. A file being generator-owned is a
+# reason not to demand a lifecycle banner of it; it is *not* a reason to let its links rot — a
+# promoted FINDINGS.md whose figures were not promoted with it is precisely the failure this
+# bundle exists to prevent.
+LINK_EXEMPT_PREFIXES = (
+    "tests/data/golden/",        # points into a generated workspace that is not in the tree
 )
 
 # Documents allowed to name a deleted file (check 2). The register is where a reader learns where
@@ -78,7 +92,14 @@ def _tracked_markdown() -> list[str]:
 
 
 def _is_exempt(rel: str) -> bool:
+    """Exempt from the banner, provenance, and registration rules — not from link checking."""
+    if rel in NEVER_EXEMPT:
+        return False
     return rel in EXEMPT_FILES or rel.startswith(EXEMPT_PREFIXES)
+
+
+def _is_link_exempt(rel: str) -> bool:
+    return rel.startswith(LINK_EXEMPT_PREFIXES)
 
 
 def _read(rel: str) -> str:
@@ -329,8 +350,8 @@ def test_relative_links_resolve():
     """
     broken: list[str] = []
     for rel in _tracked_markdown():
-        if _is_exempt(rel):
-            continue  # golden fixtures point into a generated workspace that is not in the tree
+        if _is_link_exempt(rel):
+            continue
         base = (REPO / rel).parent
         for target in _link_targets(_read(rel)):
             if target.startswith("#") or _ABSOLUTE_RE.match(target):
@@ -430,7 +451,124 @@ def test_exempt_paths_are_declared_in_the_register():
         assert name in register, f"{name!r} is exempt here but absent from the register"
 
 
-# ---- 6. the checks are actually load-bearing --------------------------------------------------
+# ---- 6. the committed evidence bundle matches its manifest -----------------------------------
+
+ASSETS = REPO / "docs" / "assets"
+
+
+def _manifest() -> dict:
+    import json
+
+    path = ASSETS / "MANIFEST.json"
+    assert path.exists(), (
+        "docs/assets/MANIFEST.json is missing — the committed evidence has no provenance record. "
+        "Regenerate with `python tools/docs/collect_evidence.py`."
+    )
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_evidence_bundle_matches_its_manifest():
+    """Every committed asset is listed with its hash, and every listed asset is present.
+
+    Prevents the two failures that would make the bundle worse than no bundle: a figure quietly
+    replaced with a different run's output while the manifest still vouches for the old one, and
+    a file accumulating in `docs/assets/` that no document cites and no command produces.
+    """
+    import hashlib
+
+    manifest = _manifest()
+    listed: dict[str, str] = {}
+    for group in manifest["groups"]:
+        for record in group["files"]:
+            listed[record["path"]] = record["sha256"]
+
+    problems: list[str] = []
+    for rel, expected in sorted(listed.items()):
+        path = ASSETS / rel
+        if not path.exists():
+            problems.append(f"listed in the manifest but missing: {rel}")
+            continue
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != expected:
+            problems.append(f"content differs from the manifest hash: {rel}")
+
+    # Excluded by exact path, not basename: a README.md *inside* a group is an undeclared file,
+    # which is exactly what this check is for.
+    unmanaged = {ASSETS / "MANIFEST.json", ASSETS / "README.md"}
+    on_disk = {
+        p.relative_to(ASSETS).as_posix()
+        for p in ASSETS.rglob("*")
+        if p.is_file() and p not in unmanaged
+    }
+    problems += [f"present but unlisted: {rel}" for rel in sorted(on_disk - set(listed))]
+    assert not problems, "\n".join(["docs/assets/ disagrees with MANIFEST.json:", *problems])
+
+
+def test_every_promoted_figure_has_a_caption():
+    """docs/assets/README.md promises a caption beside every figure. Hold it to that.
+
+    A figure is promoted precisely so it can be looked at away from its report; without its
+    caption it is an unlabelled plot, and the promise in the index becomes false.
+    """
+    manifest = _manifest()
+    listed = {record["path"] for group in manifest["groups"] for record in group["files"]}
+    uncaptioned = [
+        rel for rel in sorted(listed)
+        if rel.lower().endswith(".png")
+        and rel.rsplit(".", 1)[0] + ".caption.md" not in listed
+    ]
+    assert not uncaptioned, (
+        "promoted figures with no .caption.md beside them: " + ", ".join(uncaptioned)
+    )
+
+
+def test_manifest_records_the_provenance_each_group_needs():
+    """A bundle without its generating command and code revision is an undated screenshot."""
+    manifest = _manifest()
+    assert manifest["schema_version"] == 1
+    assert re.fullmatch(r"[0-9a-f]{40}", manifest["code_revision"]), (
+        f"code_revision {manifest['code_revision']!r} is not a full commit sha — the bundle "
+        "cannot be tied to the code that produced it"
+    )
+    assert manifest["test_data_fingerprint"]["present"] is True, (
+        "the bundle was collected without test_data/ present, so nothing records which inputs "
+        "produced it"
+    )
+    for group in manifest["groups"]:
+        for field in ("name", "what", "command", "replaces", "files"):
+            assert group.get(field), f"group {group.get('name')!r} has no {field}"
+        assert group["command"].startswith("python "), group["command"]
+        assert (REPO / group["command"].split()[1]).exists(), (
+            f"group {group['name']!r} names a generating script that does not exist: "
+            f"{group['command']}"
+        )
+
+
+def test_no_document_still_cites_the_disposable_out_tree_for_promoted_evidence():
+    """Prevents a promoted report being cited at its old, gitignored `out/` path.
+
+    Only the promoted groups are checked. `out/` is a legitimate thing to name — it is where a
+    run writes, and DECISIONS W1 is about it — so this fails on a citation of exactly the
+    evidence that now lives in `docs/assets/`.
+    """
+    promoted = [group["name"] for group in _manifest()["groups"]]
+    offenders: list[str] = []
+    for rel in _maintained_docs():
+        if rel in ("docs/DECISIONS.md", "docs/DECISION_INDEX.md", "docs/DOC_INVENTORY.md"):
+            continue  # the ledger is append-only; the register describes the move
+        for line_no, line in enumerate(_read(rel).splitlines(), 1):
+            for name in promoted:
+                # Any separator and any trailing context: `out/phase3_gold`, out\phase3_gold,
+                # ../out/phase3_gold/FINDINGS.md. Matching only "out/<name>/" would miss the bare
+                # directory reference, which is the form a reader is most likely to retype.
+                if re.search(rf"\bout[\\/]{re.escape(name)}\b", line):
+                    offenders.append(f"{rel}:{line_no}: cites out/{name}, now docs/assets/{name}/")
+    assert not offenders, "\n".join(
+        ["evidence promoted to docs/assets/ is still cited at its disposable path:", *offenders]
+    )
+
+
+# ---- 7. the checks are actually load-bearing --------------------------------------------------
 
 @pytest.mark.parametrize(
     "target, mutate",

@@ -40,7 +40,7 @@ which ruling settled it. That is worth keeping and worth not mistaking for a con
 
 | Record | What it is |
 |---|---|
-| [IN8_PHASE1_CHECK.md](IN8_PHASE1_CHECK.md) | First stress-test of the Phase-1 fitter on real triple-axis (ILL IN8) data. Kept as the only checkout-visible detailed record behind the `out/in8_phase1/FINDINGS.md` citation |
+| [IN8_PHASE1_CHECK.md](IN8_PHASE1_CHECK.md) | First stress-test of the Phase-1 fitter on real triple-axis (ILL IN8) data. Kept for what it records *before* the run: what a numor gives versus what the fitter needs, why 055182 is the clean case, and the resolution caveat. The run's *results* are now committed at [`../assets/in8_phase1/FINDINGS.md`](../assets/in8_phase1/FINDINGS.md) |
 | [PHASE_4_NOTES.md](PHASE_4_NOTES.md) | Original forward notes for closing the measurement loop. **Built and shipped** — the realized driver is `isar/drive/`. Kept because `archive/PHASE_3_DESIGN.md` uses them as rationale for what Phase 3 was built toward |
 
 `PHASE_4_NOTES.md` is an aspiration document rather than campaign evidence and does not describe

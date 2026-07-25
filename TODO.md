@@ -201,14 +201,17 @@ Speedup work is governed by [SPEEDUP_DESIGN.md](docs/SPEEDUP_DESIGN.md); steerin
       half is [SPEEDUP_DESIGN.md](docs/SPEEDUP_DESIGN.md).
       **Acceptance:** a chronically flaky q is abandoned by policy, and triage output shows both.
 
-- [ ] **DOC-1 — Move the primary evidence out of disposable `out/**` paths.** `README.md`,
-      `READING_GUIDE.md`, `STATS_PRIMER.md` and `WORKED_EXAMPLE.md` cite gitignored `out/**`
-      artifacts as their headline evidence, so a clean checkout cannot see them. Commit a defined
-      bundle derived from `test_data/` under `docs/assets/` with a provenance manifest; the raw
-      facility data stays gitignored. The rest of the 2026-07-09 docs-consolidation item (the
-      vocabulary sweep and status tags) was completed in the 2026-07-25 documentation pass.
-      **Acceptance:** the cited evidence is viewable from a clean checkout, and no doc claims
-      reproducibility that `test_data/` absence would falsify.
+- [ ] **DOC-1 — Promote the remaining disposable-path evidence.** The three validation reports were
+      committed under `docs/assets/` on 2026-07-25 with a provenance manifest, and `README.md`,
+      `READING_GUIDE.md`, `WORKED_EXAMPLE.md` and `UNIFICATION_DESIGN.md` now cite them there.
+      Two citations remain unpromotable and are the residue of this item:
+      `STATS_PRIMER.md:404` points at `out/mvp_zone_test16` ("ask the maintainer for its blessed
+      location"), the frozen v1 characterization baseline `DECISIONS.md` W1 archives but which is
+      not in this checkout; and `UNIFICATION_DESIGN.md`'s step-0 baseline needs
+      `out/phase3_gold_in8/`, which has never been generated here because
+      `test_data/ILL IN8/IN8_fit_results.csv` is missing from disk.
+      **Acceptance:** both are either promoted into `docs/assets/` with a manifest entry, or
+      rewritten to stop presenting an unavailable artifact as the reader's next step.
 
 ---
 

@@ -6,8 +6,10 @@
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
 To make the pipeline concrete, here is a single S30 (IXS) control scan followed all the way through —
-the same path every scan takes. Figures referenced live in `out/phase3_step1/figures/` (regenerate with
-`python docs/phase3_step1_check.py`); each carries its own caption.
+the same path every scan takes. The figures referenced are committed under
+[assets/phase3_step1/figures/](assets/phase3_step1/figures/) (regenerate with
+`python docs/phase3_step1_check.py`, which needs the local `test_data/`); each carries its own
+caption.
 
 We use **scan 168**, analyzer **ana5**, at Q = (3.77, K, −0.09), T ≈ 100 K — one of the six FeSeS_1
 control scans.

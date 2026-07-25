@@ -323,7 +323,7 @@ here."
   lands in `results.csv` and the report (P6).
 
 The gold check's prior-independence demonstration (toggling the prior moved ω₀ by ≤ 0.0001 meV —
-`out/phase3_gold/FINDINGS.md`) is the safety argument for swapping the LOO gold prior for the auto
+`docs/assets/phase3_gold/FINDINGS.md`) is the safety argument for swapping the LOO gold prior for the auto
 prior; but the prior *does* enter confidence (`s_prior`) and fork-breaking, so validation compares
 dispositions and ω₀, never confidence values (risk R4).
 
@@ -447,8 +447,9 @@ The Phase-3 residual-diagnosis LLM pass stays future work (§12).
 Each step is mergeable and gated before the next. Windows note: test-data paths contain spaces
 (`test_data/APS S30`, `test_data/ILL IN8`) — `pathlib` everywhere, quoted CLI examples.
 
-0. **Baseline.** `pytest -m "not slow"` green; keep `out/phase3_gold/results_gold.csv` and
-   `out/phase3_gold_in8/results_in8_gold.csv` as the comparison references.
+0. **Baseline.** `pytest -m "not slow"` green; compare against `docs/assets/phase3_gold/results_gold.csv`
+   (committed, so the reference survives an `out/` wipe) and `out/phase3_gold_in8/results_in8_gold.csv`
+   (not promoted — see the data-state gap below).
    **Known data-state gap (found in doc verification, 2026-07):** `test_data/ILL IN8/
    IN8_fit_results.csv` is currently missing from disk (test_data is gitignored — it cannot be
    restored from git) and `out/phase3_gold_in8/` has never been generated on this machine.

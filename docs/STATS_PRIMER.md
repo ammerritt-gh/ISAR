@@ -341,7 +341,7 @@ ISAR's bootstrap interval captures **counting statistics only**. It does **not**
 systematic uncertainty — the background shape, the resolution function, energy-zero drift
 between scans. Chapter 3 sharpens this rather than softening it: *within* its own statistical
 universe the machinery is calibrated (Fig. 4), the high-count dip is itself a measured example
-of uncertainty the per-fit interval cannot contain, and that is exactly why the ~20%
+of uncertainty the per-fit interval cannot contain, and that is exactly why the 18%
 gold-set coverage against a human's values is diagnostic of missing *systematics*, not of
 broken statistics. On well-counted data the counting error is tiny, so the interval is tight;
 the human's value falls inside ISAR's 68% interval far less than 68% of the time. **That is
