@@ -237,8 +237,10 @@ Implemented; `tas4d` Planned — TAS Γ is carried as provisional until it lands
 assumption — the quick-look and fast tiers; `hesse_trusted` exists because the assumption fails
 constantly; **never certifies**) → profile likelihood (asymmetric, analytic) → **bootstrap**
 (frequentist-by-simulation; the certifying tier) → Bayesian posterior credible intervals
-(**Planned**, not built). Terminology discipline: bootstrap/profile give confidence intervals;
-"credible" belongs to the Bayesian tier when it exists.
+(**Implemented, diagnostics-only** under `--errors bayes`; certification and confidence never
+read them, and promotion to a certifying rung waits on coverage validation). Terminology
+discipline: bootstrap/profile give confidence intervals; "credible" belongs to the Bayesian
+tier alone.
 
 **The γ-at-bound pathology.** Near a parameter bound the Hessian lies (its parabola crosses the
 wall); *on* the bound the bootstrap may degenerate. That makes Γ resolution-limited, but does not by
@@ -438,7 +440,7 @@ DECISIONS W1–W3.)*
 | Campaign diagnostic report (`isar diagnose`) | Implemented (2026-07-10) |
 | Fit-free ingest to the ledger (`isar ingest`, `ingested` status) | Implemented (2026-07-12) |
 | Per-unit data files (`data/ingest/`, `isar.unit_data/1`) + ingest provenance enrichment | Implemented (2026-07-12) |
-| Bayesian interval tier | Planned |
+| Bayesian interval tier (`--errors bayes`: nested-sampling ω₀/Γ credible intervals, posterior samples, three-method agreement) | Implemented, **diagnostics-only** (bootstrap still certifies; coverage validation and promotion to certifying authority Planned) |
 | Renegotiation protocol | Planned (design door open) |
 | Model-level (ARIANE-style) objective tier | Planned |
 | Branch-identity-aware acquisition (two-term scan value; excitation hypotheses; first-guess path) | Implemented for branch hypotheses (O6–O9/O11–O12, 2026-07-17; level/continuum plugins remain O10-Partial) |
@@ -451,19 +453,12 @@ scheduled. Cross-T dispersion-prior pooling near transitions — revisit with da
 
 ## 16. Document map
 
-| For… | Read |
-|---|---|
-| Using the tool | `docs/USING_ISAR.md`, `docs/WORKED_EXAMPLE.md`, `docs/INTERPRETING_A_VERDICT.md` |
-| The statistics (and the seminar) | `docs/STATS_PRIMER.md` (+ generated gallery, `docs/stats/`) |
-| Workspace/session/CLI internals | `docs/UNIFICATION_DESIGN.md` |
-| Steering research & drive internals | `docs/MEASUREMENT_STEERING.md` |
-| Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
-| Flag adjudication | `docs/ADJUDICATION.md` |
-| Card/schema survey across facilities | `docs/SCHEMA_LANDSCAPE.md`, `docs/DATA_SCHEME_RESEARCH.md` |
-| Reports the runs owe us | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` |
-| Decisions & their history | `docs/DECISIONS.md` |
-| What actually happened in a given run | `docs/campaigns/` (dated, historical, never load-bearing) |
-| Orientation & reading order | `docs/READING_GUIDE.md` |
+**The map lives in one place: [`docs/READING_GUIDE.md`](docs/READING_GUIDE.md)** — every document,
+with its lifecycle, so a reader can tell a current contract from a plan from a historical record.
+The per-file register behind it is [`docs/DOC_INVENTORY.md`](docs/DOC_INVENTORY.md).
+
+This section used to carry a second, independently maintained table. It drifted from the reading
+guide's, which is exactly the failure the single-map rule prevents.
 
 ---
 

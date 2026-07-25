@@ -95,6 +95,20 @@ existing O6/O9 branch-information ranking and buy the best feasible unvisited di
 point. Exhausted bridge and saturation routes end honestly as `incomplete` with
 `branch_ambiguity` / `frontier_blocked`.
 
+> **Superseded as shipped (O27, 2026-07-21; terminal taxonomy O28/O29/O31).** The paragraph above
+> is the Phase 0 design as approved on 2026-07-19. What was actually built separates the two knobs
+> the design conflated: **`maximum_production_batches_per_q` is the single same-q production
+> budget** — every production at a q charges to it, whether the campaign calls it scan statistics,
+> identity work, or a rival reconnection — while **`maximum_bridge_steps` is only a path-geometry
+> allowance**, not a revisit counter. Further same-q exposure stays available while identity work
+> is authorized and unsaturated.
+>
+> The terminal rule also tightened. `branch_ambiguity` / `frontier_blocked` is legitimate only
+> after the *whole registered action inventory* is provably exhausted (O28), and a proposal-less
+> frontier that still has authorized same-q work is a `ControllerInvariantError` — a controller
+> fault, not a scientific result (`isar/drive/loop.py`). Current contract:
+> `docs/MEASUREMENT_STEERING.md` and DECISIONS O27–O31. Sub-phases A/B/C below are unaffected.
+
 The objective and persisted-state changes are additive from v2. Existing frozen envelopes retain
 their replay semantics; newly compiled named acoustic and optic objectives share the corrected
 controller. Target-free discovery remains Planned.

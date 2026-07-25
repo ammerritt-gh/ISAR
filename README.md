@@ -13,16 +13,17 @@ this yourself*. It is fast feedback for steering an experiment, not the system o
 published numbers. Nothing is ever deleted; a human reviews everything afterward.
 
 > **Status: development.** The analysis pipeline is built and validated on real data from two very
-> different instruments (APS Sector-30 HERIX and ILL IN8). The `isar` CLI
-> (`init/run/status/report/score/profile`) runs it end-to-end on new data
-> ([docs/UNIFICATION_DESIGN.md](docs/UNIFICATION_DESIGN.md), [docs/USING_ISAR.md](docs/USING_ISAR.md));
-> one validation (the full 83-scan S30 statistical gate at M=200) is still pending. An autonomous
-> driver (`isar drive`) closes the loop against a simulated instrument (TAVI): model-free spectral
-> descriptor, Bayesian branch assignment, cost-normalised expected-information-gain acquisition. It
-> has passed its first certification scorecard on the synthetic zone re-test; two physics zones
-> (near-Γ, zone boundary) remain open. See
-> [docs/MEASUREMENT_STEERING.md](docs/MEASUREMENT_STEERING.md) (why it steers the way it does) and
-> [docs/campaigns/2026-07_MVP_ZONE_RETEST.md](docs/campaigns/2026-07_MVP_ZONE_RETEST.md) (current test state).
+> different instruments (APS Sector-30 HERIX and ILL IN8). The `isar` CLI runs it end-to-end on new
+> data ([docs/USING_ISAR.md](docs/USING_ISAR.md)); one validation (the full 83-scan S30 statistical
+> gate at M=200) is still pending. An autonomous driver (`isar drive`) closes the loop against a
+> simulated instrument (TAVI): model-free spectral descriptor, Bayesian branch assignment,
+> cost-normalised expected-information-gain acquisition. This is certified on the analytic
+> synthetic tier and on TAVI's **deterministic** rung; realistic clocks and the McStas rung remain
+> Planned, and no campaign has run on a real instrument. See
+> [docs/MEASUREMENT_STEERING.md](docs/MEASUREMENT_STEERING.md) for why it steers the way it does.
+>
+> **Per-capability status — Implemented / Partial / Planned — lives in one place:
+> [DESIGN.md §15](DESIGN.md). That table is the authority; this paragraph is orientation.**
 
 ## The pipeline
 
@@ -37,8 +38,7 @@ published numbers. Nothing is ever deleted; a human reviews everything afterward
    bootstrap/profile (and optionally Bayesian) errors → a computed **verdict + confidence** per
    scan, seeded by a running dispersion prior and your own guidelines in the card.
 
-The intended workflow once the CLI lands (the contract in
-[docs/USING_ISAR.md](docs/USING_ISAR.md)):
+The workflow (the contract in [docs/USING_ISAR.md](docs/USING_ISAR.md)):
 
 ```
 isar init "path\to\first\scan" --out my_experiment   # detect instrument, scaffold the card
@@ -47,22 +47,28 @@ isar run "path\to\data" --workspace my_experiment     # parse -> reduce -> revie
 # re-run the same command as new scans land; only new work is done
 ```
 
+The full command set:
+
+<!-- isar-commands: exhaustive -->
+```
+init  detect  ingest  run  status  profile  report  diagnose  score  view  drive
+```
+<!-- /isar-commands -->
+
+`isar <command> --help` documents the flags for each.
+
 ## Where to read what
+
+Five doors. **[docs/READING_GUIDE.md](docs/READING_GUIDE.md) is the full map** — every other
+document is indexed there, with its lifecycle, so there is one place to look rather than three.
 
 | Question | Where |
 |---|---|
 | What is ISAR for / why trust it? | [docs/READING_GUIDE.md](docs/READING_GUIDE.md) |
 | How do I run it on my data? | [docs/USING_ISAR.md](docs/USING_ISAR.md) |
-| The master design (architecture, principles) | [DESIGN.md](DESIGN.md) |
-| The current build phase (CLI + session assembly) | [docs/UNIFICATION_DESIGN.md](docs/UNIFICATION_DESIGN.md) |
-| What a verdict means / what to do with it | [docs/INTERPRETING_A_VERDICT.md](docs/INTERPRETING_A_VERDICT.md) |
-| Term definitions | [docs/GLOSSARY.md](docs/GLOSSARY.md) |
-| Why these statistics | [docs/STATS_PRIMER.md](docs/STATS_PRIMER.md) |
-| One scan, start to finish | [docs/WORKED_EXAMPLE.md](docs/WORKED_EXAMPLE.md) |
-| The autonomous loop — research foundation & design | [docs/MEASUREMENT_STEERING.md](docs/MEASUREMENT_STEERING.md) |
-| Autonomous campaign results (first run, zone re-test) | [docs/campaigns/2026-06_MVP_FIRST_RUN.md](docs/campaigns/2026-06_MVP_FIRST_RUN.md), [docs/campaigns/2026-07_MVP_ZONE_RETEST.md](docs/campaigns/2026-07_MVP_ZONE_RETEST.md) |
-| Where did a campaign spend its time? | `isar profile` in [docs/USING_ISAR.md](docs/USING_ISAR.md) |
-| Phase design rationale | [docs/archive/PHASE_1_DESIGN.md](docs/archive/PHASE_1_DESIGN.md), [PHASE_2_DESIGN.md](docs/archive/PHASE_2_DESIGN.md), [PHASE_3_DESIGN.md](docs/archive/PHASE_3_DESIGN.md); forward notes: [docs/campaigns/PHASE_4_NOTES.md](docs/campaigns/PHASE_4_NOTES.md), [docs/campaigns/PHASE_5_NOTES.md](docs/campaigns/PHASE_5_NOTES.md) |
+| What does a verdict mean / what do I do with it? | [docs/INTERPRETING_A_VERDICT.md](docs/INTERPRETING_A_VERDICT.md) |
+| The architecture, principles, and per-capability status | [DESIGN.md](DESIGN.md) |
+| Everything else, indexed | [docs/READING_GUIDE.md](docs/READING_GUIDE.md) |
 
 ## Repository layout
 
@@ -74,7 +80,7 @@ isar/
   calibrate/      # elastic fits, time-keyed energy-zero series, Bragg reader
   analyze/        # structure enumeration, ICs, fitting loop, errors, selection, verdict, confidence
   session/        # workspace/session assembly: driver, priors, branch model, worker, timing
-  cli/            # the isar command (init/run/status/report/score/profile/drive)
+  cli/            # the isar command (see the full command set above)
   drive/          # autonomous loop: acquisition (EIG), TAVI I/O, supervisor, session log
   report/         # figures, findings, markdown/html renderers
   synth/          # Phase-1 synthetic core: generator, DHO fitter, estimators, MC scoring

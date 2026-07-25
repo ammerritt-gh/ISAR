@@ -23,7 +23,7 @@ command that regenerates its evidence. Where a capability is not yet wired in, i
 
 Every number in a `results.csv` row answers exactly one of the three questions, and trusting a
 number means trusting the machinery behind its question. Fig. 1 is the map; note the one dashed
-box — the Bayesian rung of the certification ladder — which is **[Planned]**, not built.
+box — the Bayesian rung of the certification ladder — which is built but **does not certify**.
 
 ![FIG. 1](stats/figures/three_questions.svg)
 
@@ -38,10 +38,12 @@ Vocabulary is discipline, not pedagogy, in this document:
 >   the branch-assignment posterior (`assignment_entropy`, `branch_id`) **[Implemented]**, and
 >   the dispersion-prior MAP fit (`prior_omega`, `prior_sigma` → `fit_kind=soft_prior`)
 >   **[Implemented]**.
-> - Bayesian credible **intervals** on ω₀ are **[Planned]**: the sampler exists
->   (`isar/analyze/errors/bayes.py`, nested sampling) but is not wired into the driver-facing
->   fit path. No interval ISAR reports today is credible in the Bayesian sense; they are all
->   frequentist.
+> - Bayesian credible **intervals** on ω₀ are **[Implemented, diagnostics-only]**: the nested
+>   sampler (`isar/analyze/errors/bayes.py`) is wired through `--errors bayes` and stores
+>   `bayes_interval` plus its agreement diagnostics, but certification and confidence never read
+>   it (`isar/session/driver.py:135`). Every interval ISAR *certifies* on is frequentist.
+>   Coverage validation of the credible interval, and any promotion of it to certifying
+>   authority, remain **[Planned]**.
 
 Verify the map (no workspace needed):
 
@@ -119,7 +121,8 @@ at the minimum. It assumes the cost is a clean parabola. ISAR computes it
 (`hesse_lo`/`hesse_hi`) **[Implemented]**, then climbs: a profile-likelihood (MINOS) interval,
 which can be asymmetric (`omega0_profile_lo/hi`) **[Implemented]**; a parametric bootstrap —
 M refits of Poisson redraws — as the authoritative interval (`interval_lo/hi`)
-**[Implemented]**; and a Bayesian credible interval as the future top rung **[Planned]**.
+**[Implemented]**; and a Bayesian credible interval as the top rung
+**[Implemented, diagnostics-only]** — computed under `--errors bayes`, but never certifying.
 
 A ladder is only worth its cost if the rungs differ measurably, so we measured them. The claim
 "a 68% interval covers the truth 68% of the time" can only be tested where the truth is known,
@@ -308,9 +311,16 @@ q-point, the fit can be softly constrained by it; `prior_omega`, `prior_sigma`, 
 record the belief and `fit_kind` records that it was used. The data-only cost is kept separate
 (`cost` vs `posterior_cost`), so a constrained fit is never mistaken for independent evidence.
 
-Bayesian credible *intervals* on ω₀ remain **[Planned]**. When they land, they become the
-ladder's fifth rung, and the frequentist↔Bayesian agreement check becomes one more per-scan
-trust signal of the §3.2 kind.
+Bayesian credible *intervals* on ω₀ are the third earned piece, **[Implemented,
+diagnostics-only]**. Under `--errors bayes` the nested sampler runs on the preliminary-best
+label and records `bayes_interval`, `bayes_gamma_interval`, posterior samples, and its own
+convergence gates (`bayes_ok`, `bayes_ess`, `bayes_fail_reason`). The frequentist↔Bayesian
+agreement check is live as a per-scan trust signal of the §3.2 kind (`bayes_freq_ratio`).
+
+What remains **[Planned]** is not the machinery but the *licence*: certification and confidence
+deliberately never read the credible interval (`isar/session/driver.py:135`), because its
+coverage has not been measured the way §3's bootstrap coverage was. Promotion to the ladder's
+certifying rung waits on that measurement.
 
 Verify:
 

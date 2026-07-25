@@ -47,6 +47,10 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   counts; ISAR uses it as a cross-check, not the authority.
 - **Bernstein–von Mises** — the statistical result that the bootstrap and HESSE error bars agree when
   there are plenty of counts; ISAR checks this per scan.
+- **credible interval** — a Bayesian posterior interval, reserved for quantities that really are
+  posteriors. ISAR computes one for ω₀ and Γ under `--errors bayes` (`bayes_interval`), but it is
+  **diagnostics-only**: the bootstrap interval is what certifies. Confidence intervals (bootstrap,
+  profile) are never called credible. See DECISIONS S5.
 - **AIC / Akaike weight** — a way to compare candidate models that penalizes extra parameters; the
   weight is the relative evidence for each model (higher = better supported).
 - **fork / fold** — a *fork* is two or more equally-supported answers reported separately (the data are

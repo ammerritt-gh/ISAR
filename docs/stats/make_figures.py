@@ -142,7 +142,7 @@ def _r(x, nd=6):
 # =========================================================================== FIGURE 1
 def figure_three_questions() -> Path:
     """Static pipeline map: MINIMIZE → SELECT → CERTIFY, with the Bayesian rung drawn dashed
-    (Planned). No data dependency."""
+    (Implemented but diagnostics-only — it never certifies). No data dependency."""
     fig, ax = plt.subplots(figsize=(9.5, 5.0))
     ax.set_xlim(0, 10)
     ax.set_ylim(0, 10)
@@ -172,16 +172,18 @@ def figure_three_questions() -> Path:
                     arrowprops=dict(arrowstyle="-|>", color="0.5", lw=1.4))
 
     # The four-rung ladder under CERTIFY.
+    # `noncertifying` = drawn dashed. The Bayesian rung is Implemented (--errors bayes) but its
+    # interval is diagnostics-only; bootstrap remains the certifying rung (DECISIONS S5).
     rungs = [("Hessian (HESSE)", "C2", False), ("profile (MINOS)", "C2", False),
              ("parametric bootstrap", "C2", False), ("Bayesian credible", "0.55", True)]
     y0, dy, xc = 5.2, 1.0, 8.4
-    for i, (name, color, planned) in enumerate(rungs):
+    for i, (name, color, noncertifying) in enumerate(rungs):
         y = y0 - i * dy
         style = "round,pad=0.05"
-        if planned:
+        if noncertifying:
             ax.add_patch(FancyBboxPatch((xc - 1.7, y - 0.32), 3.4, 0.64, boxstyle=style,
                                         ec=color, fc="none", lw=1.4, ls="--"))
-            ax.text(xc, y, name + "   [Planned]", ha="center", va="center", fontsize=8,
+            ax.text(xc, y, name + "   [diagnostics-only]", ha="center", va="center", fontsize=8,
                     color=color, style="italic")
         else:
             ax.add_patch(FancyBboxPatch((xc - 1.7, y - 0.32), 3.4, 0.64, boxstyle=style,
@@ -200,7 +202,7 @@ def figure_three_questions() -> Path:
     _dump_json("three_questions", {
         "columns": [c[0] for c in cols],
         "ladder": [r[0] for r in rungs],
-        "planned_rung": "Bayesian credible",
+        "noncertifying_rung": "Bayesian credible",
         "seed": SEED,
     })
     return _save_svg(fig, "three_questions", "stats/three_questions")

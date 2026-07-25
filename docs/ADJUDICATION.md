@@ -50,9 +50,15 @@ Runtime order: `qc.qc_record()` → **`adjudicate.adjudicate_records()`** → re
 consumes the reduced, QC-flagged, not-yet-collated records and only dispatches records that carry a
 flag (clean scans cost no call). It mutates records in place and returns them.
 
-> **Not yet auto-wired.** It runs as a library step called between QC and report generation (that is
-> what `adjudicate_eyeball.main()` does). The standalone `driver/reduce_run.py` that chains
-> ingest→parse→QC→adjudicate→collate→report end-to-end is build-order step 8 and was **deferred**.
+> **Auto-wired since the session layer landed.** `isar run --llm` (or `[adjudication] enabled` in
+> `card.policy.toml`) turns it on, and `isar/session/driver.py` calls it between routing and
+> collation via `_maybe_adjudicate` — the pipeline the deferred `driver/reduce_run.py` was meant to
+> provide is now the session driver itself. Adjudication is skipped entirely during master
+> certification. Failure is contained by design: `_maybe_adjudicate` catches any exception, records
+> `"LLM adjudication skipped (no consult): …"` in the run context, and lets the batch finish — a
+> dead LLMM endpoint degrades the run to deterministic QC rather than stalling it.
+>
+> It remains callable as a library step (`adjudicate_eyeball.main()`) for offline scoring work.
 
 ## 4. Components (all under `isar/reduce/`, plus schema/report edits)
 
@@ -180,8 +186,9 @@ LLMM must be running (`http://127.0.0.1:8766`) with the model launched.
 
 ## 12. Known gaps / next
 
-- **No end-to-end driver yet** — `driver/reduce_run.py` (build step 8) is deferred; adjudication is a
-  library call today.
+- ~~**No end-to-end driver yet**~~ — closed. `isar run --llm` threads the setting through
+  `isar/cli/run_cmd.py` into `isar/session/driver.py`, which invokes the adjudicator in the batch
+  pipeline. The originally planned standalone `driver/reduce_run.py` was never needed.
 - **9B scan-level recall** — prompt nudge to always emit a scan-level decision would close the 0.80→1.0
   gap.
 - **Local serviceability** — the local pin needs the model *launched*. A cloud fallback is an explicit
