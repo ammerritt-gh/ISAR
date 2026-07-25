@@ -13,9 +13,11 @@ start with [READING_GUIDE.md](READING_GUIDE.md); for what a verdict means, see
 > **Status: the v1 CLI described here is built** (`isar init/ingest/run/status/report/score/profile`, plus
 > the autonomous `isar drive`, tested in `tests/session/`, `tests/cli/` and `tests/drive/`). It runs end-to-end on IN8
 > today and on S30 once a companion `.spec` supplies the
-> energy zero. One validation is still pending — the full 83-scan S30 statistical comparison at M=200
-> (a multi-minute run) — so treat the S30 accuracy numbers as expected-not-yet-confirmed until that
-> gate is run (see [UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md) §10 step 5).
+> energy zero. One validation is still pending — the **CLI/session equivalence gate at M=200**, the
+> 83-scan S30 comparison run end-to-end through `isar run` (a multi-minute run) — so treat the S30
+> accuracy numbers as expected-not-yet-confirmed until that gate is run (tracked as `VAL-2` in
+> [TODO.md](../TODO.md)). The workspace/session/CLI contract itself is
+> [WORKSPACE_AND_CLI.md](WORKSPACE_AND_CLI.md).
 
 ## The idea in one paragraph
 

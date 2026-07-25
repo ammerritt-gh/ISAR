@@ -29,7 +29,7 @@ this paragraph.
 
 | Group | What it answers |
 |---|---|
-| [`phase3_gold/`](phase3_gold/) | Does ISAR agree with a human expert across the 83-scan S30 gold set, and does it ever confidently resolve a scan the expert rejected? |
+| [`phase3_gold/`](phase3_gold/) | The **analysis-core 83-scan gold gate**: does ISAR agree with a human expert across the 83-scan S30 gold set, and does it ever confidently resolve a scan the expert rejected? (Drives the analysis modules directly — the CLI/session equivalence gate at M=200 is a separate, still-open validation, `VAL-2`.) |
 | [`in8_phase1/`](in8_phase1/) | Does the same fitting core work on a triple-axis instrument (ILL IN8)? Carries a real S30 IXS positive control, because the contrast is the point |
 | [`phase3_step1/`](phase3_step1/) | Does the structure-hypothesis loop reproduce the frozen Phase-1 fitter, and do the error and model-selection layers behave? |
 

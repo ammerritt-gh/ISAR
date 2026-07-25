@@ -81,10 +81,12 @@ Things that are wrong now, as opposed to things not yet built.
       `tests/real_data/test_in8_gold_smoke.py`, and every IN8 gate.
       **Acceptance:** the CSV is restored and `tests/real_data/test_in8_gold_smoke.py` passes.
 
-- [ ] **VAL-2 — Full S30 statistical comparison at M=200.** End-to-end ω₀ comparison against
-      `results_gold.csv` through the CLI; a multi-minute run deferred for a fast machine. Gate on
-      dispositions + safety (0 gold-REJECT resolved) + ω₀ residuals, **not** confidence (risk R4).
-      This is the validation `README.md` describes as still pending.
+- [ ] **VAL-2 — CLI/session equivalence gate at M=200.** End-to-end ω₀ comparison of the 83-scan
+      S30 set against `results_gold.csv` **through the CLI/session path**; a multi-minute run
+      deferred for a fast machine. Gate on dispositions + safety (0 gold-REJECT resolved) + ω₀
+      residuals, **not** confidence (risk R4). Distinct from the **analysis-core 83-scan gold
+      gate**, which drives the analysis modules directly and is already passed and committed under
+      `docs/assets/phase3_gold/` — passing that one does not close this.
       **Acceptance:** the run completes and the scorecard records 0 safety violations, with the
       result promoted into `DESIGN.md` §15.
 
@@ -203,14 +205,14 @@ Speedup work is governed by [SPEEDUP_DESIGN.md](docs/SPEEDUP_DESIGN.md); steerin
 
 - [ ] **DOC-1 — Promote the remaining disposable-path evidence.** The three validation reports were
       committed under `docs/assets/` on 2026-07-25 with a provenance manifest, and `README.md`,
-      `READING_GUIDE.md`, `WORKED_EXAMPLE.md` and `UNIFICATION_DESIGN.md` now cite them there.
-      Two citations remain unpromotable and are the residue of this item:
-      `STATS_PRIMER.md:404` points at `out/mvp_zone_test16` ("ask the maintainer for its blessed
-      location"), the frozen v1 characterization baseline `DECISIONS.md` W1 archives but which is
-      not in this checkout; and `UNIFICATION_DESIGN.md`'s step-0 baseline needs
-      `out/phase3_gold_in8/`, which has never been generated here because
-      `test_data/ILL IN8/IN8_fit_results.csv` is missing from disk.
-      **Acceptance:** both are either promoted into `docs/assets/` with a manifest entry, or
+      `READING_GUIDE.md` and `WORKED_EXAMPLE.md` now cite them there.
+      One citation remains unpromotable and is the residue of this item: `STATS_PRIMER.md` points
+      at `out/mvp_zone_test16` ("ask the maintainer for its blessed location"), the frozen v1
+      characterization baseline `DECISIONS.md` W1 archives but which is not in this checkout.
+      (`UNIFICATION_DESIGN.md`'s step-0 baseline also needs the never-generated
+      `out/phase3_gold_in8/`, but that file is now `Archived` — a historical design record may
+      name the paths it used, so it is no longer part of this item.)
+      **Acceptance:** it is either promoted into `docs/assets/` with a manifest entry, or
       rewritten to stop presenting an unavailable artifact as the reader's next step.
 
 ---

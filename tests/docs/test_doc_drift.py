@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,47 @@ STALE_PHRASES = (
         "Every capability is **Planned** unless",
         "GUI_DESIGN.md carries an as-built matrix now; the blanket preamble was wrong for "
         "Phase 0/A and Pass 3",
+    ),
+    (
+        "built in the working tree; commit on a branch",
+        "a working-tree handoff note that outlived its handoff — ADJUDICATION.md's contract has "
+        "been committed since Phase 2",
+    ),
+    (
+        "None of it is reachable",
+        "the pre-unification framing: the analysis stack has been reachable on new data since "
+        "the CLI shipped (WORKSPACE_AND_CLI.md)",
+    ),
+    (
+        "the campaign path currently renders",
+        "CAMPAIGN_DIAGNOSTIC_SPEC.md's design body claimed one figure per run long after "
+        "figures/dossier/ and figures/scans/ shipped",
+    ),
+    (
+        "Phase 0 correctness repair in progress",
+        "Phase 0 shipped as O27/O28/O29-as-amended-by-O31; only its campaign replays are open "
+        "(STEERING_DESIGN.md)",
+    ),
+    (
+        "require a local LLMM endpoint",
+        "LLMM is the default offline profile, not a requirement — the `openai` profile takes any "
+        "OpenAI-compatible endpoint (ADJUDICATION.md §8)",
+    ),
+    (
+        "LLMM must be running",
+        "same correction: state which profile needs LLMM rather than making it unconditional",
+    ),
+    # Two forms, not one: `GUI_DESIGN.md` legitimately names its build phase "Phase A — read-only
+    # viewer", so the bare noun phrase cannot be forbidden. What was wrong is the *claim* form,
+    # which reads as an architectural boundary that campaign control appears to violate.
+    (
+        "read-only viewer over",
+        "the GUI is read-only with respect to scientific interpretation through workspace_api; "
+        "it does own subprocesses and write control files (AGENTS.md hard rule 7)",
+    ),
+    (
+        "read-only viewer against",
+        "same correction, README's repository-layout wording",
     ),
 )
 
@@ -181,21 +223,19 @@ def test_exhaustive_command_blocks_match_argparse():
 # ---- 2. deleted documents stay deleted -------------------------------------------------------
 
 def _tombstoned_paths() -> list[str]:
-    """Paths from the tombstone table in docs/DOC_INVENTORY.md.
+    """Paths from the tombstone table, each with a last-containing commit.
 
     Derived from the register rather than hard-coded here so that the next deletion pass extends
     this check by writing its tombstone, with no test edit required.
     """
+    rows = _register_rows()[1]
     text = _read("docs/DOC_INVENTORY.md")
-    section = re.split(r"^## Deleted — tombstones.*$", text, flags=re.M)
-    assert len(section) == 2, "could not find the tombstone section in docs/DOC_INVENTORY.md"
-    body = re.split(r"^## ", section[1], flags=re.M)[0]
-    # Match on the first column alone. Keying off the commit-hash column too would silently skip
-    # any row whose hash was omitted or replaced with a placeholder — exactly the row most likely
-    # to be sloppy, and therefore the one that most needs checking.
-    rows = re.findall(r"^\|\s*`([^`]+\.md)`\s*\|", body, re.M)
-    assert rows, "tombstone table parsed to zero rows — has its format changed?"
-    unhashed = re.findall(r"^\|\s*`([^`]+\.md)`\s*\|(?!\s*`[0-9a-f]{7,40}`\s*\|)", body, re.M)
+    body = re.split(r"^## ", re.split(r"^## Deleted — tombstones.*$", text, flags=re.M)[1],
+                    flags=re.M)[0]
+    # Checked separately from the path parse. Keying the path regex off the commit-hash column
+    # would silently *skip* any row whose hash was omitted or left as a placeholder — exactly the
+    # row most likely to be sloppy, and therefore the one that most needs checking.
+    unhashed = re.findall(r"^\|\s*`([^`|]+\.md)`\s*\|(?!\s*`[0-9a-f]{7,40}`\s*\|)", body, re.M)
     assert not unhashed, (
         f"tombstone rows without a last-containing commit hash: {unhashed}. The hash is the whole "
         "point of the row — without it the file cannot be recovered without archaeology."
@@ -203,14 +243,24 @@ def _tombstoned_paths() -> list[str]:
     return rows
 
 
+def test_tombstoned_paths_are_repository_relative():
+    """`git show <commit>:<path>` from the table must work as written, with no prefix guessing.
+
+    The recovery instruction beside the table is the reason the table exists. It was previously
+    copy-paste broken: the rows carried `archive/HANDOFF_PHASE_1.md` while the file had lived at
+    `docs/archive/HANDOFF_PHASE_1.md`, so every command a reader assembled from the row failed.
+    """
+    wrong = [p for p in _tombstoned_paths() if "/" in p and not p.startswith(("docs/", "tests/"))]
+    assert not wrong, (
+        f"tombstone paths that are not repository-relative: {wrong}. They are pasted straight "
+        "into `git show <commit>:<path>`, so a heading-relative path silently fails."
+    )
+
+
 def test_tombstoned_files_are_absent_from_the_tree():
     """Prevents a deleted document being restored while its tombstone still says it is gone."""
     tracked = set(_tracked_markdown())
-    back = []
-    for path in _tombstoned_paths():
-        for candidate in (path, f"docs/{path}"):
-            if candidate in tracked:
-                back.append(candidate)
+    back = [path for path in _tombstoned_paths() if path in tracked]
     assert not back, (
         f"these files are tombstoned in docs/DOC_INVENTORY.md but present in the tree: {back}. "
         "Either remove them again or remove the tombstone row and say why they came back."
@@ -395,47 +445,96 @@ def test_every_non_exempt_document_declares_provenance():
     assert not missing, f"documents with no `> **Provenance:**` field: {missing}"
 
 
-_MD_TOKEN_RE = re.compile(r"[\w.\-/]+\.md")
+# A register row: `| `path.md` | ...`. Anchored at the start of the row and requiring the
+# backticked path to be the *first* cell, so a path merely named in a Maintenance-note cell — or
+# in surrounding prose — is not mistaken for a registration. That looseness is what let the
+# previous token-scraping version pass a register with duplicate, missing, and phantom rows.
+_REGISTER_ROW_RE = re.compile(r"^\|\s*`([^`|]+\.md)`\s*\|", re.M)
 
 
-def _registered_paths() -> set[str]:
-    """Repo-relative paths the register accounts for, resolved per section.
+def _register_rows() -> tuple[list[str], list[str]]:
+    """(registered paths, tombstoned paths) as written in docs/DOC_INVENTORY.md.
 
-    The register keys each section against its own heading — `## Root` lists `README.md`,
-    ``## `docs/` — current contracts`` lists `READING_GUIDE.md`, ``## `docs/campaigns/` …`` lists
-    bare dated filenames — so a name is only meaningful relative to the heading it sits under.
-    Resolving that way keeps the register readable *and* the check exact; a flat basename match
-    would let `README.md` under `## Root` satisfy `docs/archive/README.md`.
-
-    The tombstone section is skipped: appearing there means a file is gone, not registered.
+    Both are returned as lists, not sets, so the caller can detect a path registered twice.
+    Every path in the register is repository-relative and complete — the register says so
+    explicitly, because a heading-relative path can silently resolve to a file that does not
+    exist, which is precisely what this check exists to catch.
     """
     text = _read("docs/DOC_INVENTORY.md")
-    chunks = re.split(r"^## ", text, flags=re.M)[1:]
-    paths: set[str] = set()
-    for chunk in chunks:
+    registered: list[str] = []
+    tombstoned: list[str] = []
+    for chunk in re.split(r"^## ", text, flags=re.M)[1:]:
         heading, _, body = chunk.partition("\n")
+        rows = _REGISTER_ROW_RE.findall(body)
         if heading.startswith("Deleted"):
-            continue
-        prefix_match = re.search(r"`(docs/(?:[\w.\-]+/)*)`", heading)
-        prefix = prefix_match.group(1) if prefix_match else ""
-        for token in _MD_TOKEN_RE.findall(body):
-            paths.add(prefix + token)
-    return paths
+            tombstoned += rows
+        elif heading.startswith("Generated"):
+            continue    # glob patterns, not paths; covered by EXEMPT_PREFIXES instead
+        else:
+            registered += rows
+    assert registered, "the register parsed to zero rows — has its table format changed?"
+    assert tombstoned, "tombstone table parsed to zero rows — has its format changed?"
+    return registered, tombstoned
 
 
-def test_every_non_exempt_document_appears_in_the_register():
-    """docs/DOC_INVENTORY.md claims every `.md` appears in it exactly once. Hold it to that.
+def test_the_register_is_a_bijection_with_the_tree():
+    """Every tracked `.md` has exactly one register row, and every row names a real file.
 
-    Prevents a document entering the tree with no entry saying what it is or who maintains it —
-    which is how the register silently stopped describing the tree the last time.
+    docs/DOC_INVENTORY.md claims each file appears "exactly once". This holds it to all three
+    halves of that claim, each of which failed silently under the old token-scraping check:
+
+    * **missing** — a document enters the tree with no entry saying what it is or who maintains
+      it, which is how the register stopped describing the tree the last time;
+    * **duplicated** — two rows for one file, so two sections can disagree about its lifecycle;
+    * **phantom** — a row for a file that does not exist, which reads as a live document and
+      sends a reader looking for something that was deleted or never written.
     """
-    registered = _registered_paths()
-    unregistered = [
-        rel for rel in _tracked_markdown()
-        if not _is_exempt(rel) and rel != "docs/DOC_INVENTORY.md" and rel not in registered
+    registered, tombstoned = _register_rows()
+    tracked = set(_tracked_markdown())
+    # Exempt files are not *required* to be registered, but several legitimately are (`CLAUDE.md`
+    # has a row explaining why it carries no banner). So exemption relaxes the missing check only;
+    # a registered path must still name a real file either way.
+    required = {rel for rel in tracked if not _is_exempt(rel)}
+
+    problems: list[str] = []
+    problems += [f"missing from the register: {rel}" for rel in sorted(required - set(registered))]
+    problems += [
+        f"registered {registered.count(p)} times: {p}"
+        for p in sorted(set(registered)) if registered.count(p) > 1
     ]
-    assert not unregistered, "\n".join(
-        ["documents missing from docs/DOC_INVENTORY.md:", *unregistered]
+    problems += [
+        f"registered but not a tracked file: {p}" for p in sorted(set(registered) - tracked)
+    ]
+    problems += [
+        f"tombstoned {tombstoned.count(p)} times: {p}"
+        for p in sorted(set(tombstoned)) if tombstoned.count(p) > 1
+    ]
+    problems += [
+        f"both registered and tombstoned: {p}"
+        for p in sorted(set(registered) & set(tombstoned))
+    ]
+    assert not problems, "\n".join(
+        ["docs/DOC_INVENTORY.md does not match the tree one-to-one:", *problems]
+    )
+
+
+def test_active_plans_declare_an_owner_and_exit_criteria():
+    """Policy rule 5, enforced: an `Active plan` without both is a wish, not a plan.
+
+    Prevents the failure the lifecycle model exists to stop — a document that looks like approved,
+    tracked work but that nobody owns and nobody can declare finished, so it sits in the tree
+    forever reading as a live commitment.
+    """
+    problems: list[str] = []
+    for rel in _tracked_markdown():
+        if _is_exempt(rel) or _lifecycle(rel) != "Active plan":
+            continue
+        flat = re.sub(r"\s+", " ", _read(rel))
+        for field in ("Owner", "Exit criteria"):
+            if not re.search(rf"\*\*{field}[:.]?\*\*|{field}:", flat, re.I):
+                problems.append(f"{rel}: no {field!r} declared")
+    assert not problems, "\n".join(
+        ["active plans missing the metadata AGENTS.md rule 5 requires:", *problems]
     )
 
 
@@ -568,7 +667,24 @@ def test_no_document_still_cites_the_disposable_out_tree_for_promoted_evidence()
     )
 
 
-# ---- 7. the checks are actually load-bearing --------------------------------------------------
+# ---- 7. generated files match their generators ------------------------------------------------
+
+def test_the_decision_index_is_not_stale():
+    """`docs/DECISION_INDEX.md` still matches what its generator produces from the ledger.
+
+    Prevents the failure mode every generated-and-committed file has: the next append to
+    `DECISIONS.md` leaves the index describing a ledger that no longer exists, and because the
+    file carries a banner and reads plausibly, nothing announces it. The generator is
+    deterministic and writes the whole file, so an exact comparison is the right check.
+    """
+    result = subprocess.run(
+        [sys.executable, "tools/docs/make_decision_index.py", "--check"],
+        cwd=str(REPO), capture_output=True, text=True,
+    )
+    assert result.returncode == 0, (result.stdout + result.stderr).strip()
+
+
+# ---- 8. the checks are actually load-bearing --------------------------------------------------
 
 @pytest.mark.parametrize(
     "target, mutate",
@@ -582,3 +698,28 @@ def test_marker_removal_is_detectable(target, mutate):
     Without this, deleting the marker would silently disable check 1 rather than fail it.
     """
     assert _EXHAUSTIVE_RE.search(mutate(_read("README.md"))) is None
+
+
+def test_the_stale_phrase_check_would_catch_a_reintroduction():
+    """A guarded phrase reinserted into a maintained document is actually detected.
+
+    The check searches whitespace-collapsed text, so this exercises the collapse too: a phrase
+    reintroduced across a line wrap must still be caught, which is the case a naive line-scoped
+    search silently misses.
+    """
+    phrase = "LLMM must be running"
+    wrapped = phrase.replace(" ", "\n", 1)
+    flat = re.sub(r"\s+", " ", " ".join(f"prose {wrapped} more prose".splitlines()))
+    assert phrase in flat
+    assert phrase in {p for p, _ in STALE_PHRASES}
+
+
+def test_the_register_check_would_catch_a_duplicate_row():
+    """A path registered twice is detected, not silently collapsed into a set.
+
+    The previous token-scraping implementation built a `set`, so a file registered under two
+    sections with two different lifecycles passed. This pins the counting behaviour that fixed it.
+    """
+    registered, _ = _register_rows()
+    doubled = registered + registered[:1]
+    assert [p for p in set(doubled) if doubled.count(p) > 1] == [registered[0]]

@@ -12,7 +12,7 @@ how we know it works** — then points you at the right report or document for e
 > Status: ISAR is in **development and testing**. The analysis pipeline is assembled behind an
 > `isar` command-line tool that runs end-to-end (user workflow in
 > [USING_ISAR.md](USING_ISAR.md); the workspace/session/CLI contract in
-> [UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md)), and the **autonomous driver** (`isar drive`)
+> [WORKSPACE_AND_CLI.md](WORKSPACE_AND_CLI.md)), and the **autonomous driver** (`isar drive`)
 > closes the loop: from a natural-language goal it proposes scans, drives the TAVI virtual
 > instrument, fits each scan, and decides where to remeasure and when to stop — with no human
 > numbers in the loop ([DESIGN.md §8](../DESIGN.md)). This runs on TAVI's *deterministic*
@@ -111,8 +111,6 @@ side on representative scans so you can judge every call with your own eyes.
 
 ## Where to read what
 
-| Question | Where |
-|---|---|
 This is the sole general map of ISAR's documentation. The **Lifecycle** column says what kind of
 document you are about to open, because that determines how much authority it carries:
 *Current* is maintained with the code and may be relied on; *Active plan* describes approved but
@@ -133,7 +131,7 @@ The per-file register is [DOC_INVENTORY.md](DOC_INVENTORY.md).
 | One scan, start to finish | [WORKED_EXAMPLE.md](WORKED_EXAMPLE.md) | Current |
 | How do I declare the excitations I expect? | [HYPOTHESES.md](HYPOTHESES.md) | Current |
 | How does LLM flag adjudication work, and what does it never touch? | [ADJUDICATION.md](ADJUDICATION.md) | Current |
-| How it all assembles into one tool (workspace, session, CLI) | [UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md) | Current |
+| How it all assembles into one tool (workspace, session, CLI) | [WORKSPACE_AND_CLI.md](WORKSPACE_AND_CLI.md) | Current |
 | What the campaign diagnostic owes you | [CAMPAIGN_DIAGNOSTIC_SPEC.md](CAMPAIGN_DIAGNOSTIC_SPEC.md) | Current |
 | How the GUI is built and bounded | [GUI_DESIGN.md](GUI_DESIGN.md) | Current |
 | What the data/card schema looks like across facilities | [SCHEMA_LANDSCAPE.md](SCHEMA_LANDSCAPE.md) | Current |
@@ -147,7 +145,7 @@ The per-file register is [DOC_INVENTORY.md](DOC_INVENTORY.md).
 | Does the same core work on another instrument (triple-axis)? | [assets/in8_phase1/FINDINGS.md](assets/in8_phase1/FINDINGS.md) | Historical evidence |
 | What happened in a given campaign run? | [campaigns/](campaigns/) — indexed in [campaigns/README.md](campaigns/README.md) | Historical evidence |
 | The full design rationale | [archive/PHASE_1_DESIGN.md](archive/PHASE_1_DESIGN.md), [archive/PHASE_2_DESIGN.md](archive/PHASE_2_DESIGN.md), [archive/PHASE_3_DESIGN.md](archive/PHASE_3_DESIGN.md) | Archived |
-| Build-session handoff briefs (Phase 1/2, Unification, LLMM integration) | [archive/](archive/) | Archived |
+| Why the workspace/session/CLI was designed this way | [UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md) | Archived |
 
 Those three reports are **committed** under [assets/](assets/) — a clean checkout can read them and
 look at their figures. What a clean checkout cannot do is *regenerate* them: the `docs/*_check.py`

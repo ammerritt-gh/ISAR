@@ -11,9 +11,11 @@ itself rather than trying to judge which rulings still bind.
 
 Run from the repo root:
 
-    python tools/docs/make_decision_index.py
+    python tools/docs/make_decision_index.py            # write docs/DECISION_INDEX.md
+    python tools/docs/make_decision_index.py --check    # verify it is up to date, write nothing
 
-Writes `docs/DECISION_INDEX.md`. Idempotent; safe to re-run after every ledger append.
+Idempotent; safe to re-run after every ledger append. `--check` is what `tests/docs/` runs, so an
+append to the ledger that leaves the index stale fails the suite rather than rotting silently.
 """
 from __future__ import annotations
 
@@ -109,14 +111,11 @@ def series_of(rid: str) -> str:
     return re.match(r"([A-Z]+)", rid).group(1)
 
 
-def main() -> int:
-    if not LEDGER.exists():
-        print(f"missing ledger: {LEDGER}", file=sys.stderr)
-        return 1
+def render() -> tuple[str, int, int]:
+    """-> (the whole file's text, ruling count, amended count). Writes nothing."""
     rows = parse(LEDGER.read_text(encoding="utf-8"))
     if not rows:
-        print("parsed no rulings — has the ledger format changed?", file=sys.stderr)
-        return 1
+        raise SystemExit("parsed no rulings — has the ledger format changed?")
     amended = amendments(rows)
 
     lines = [
@@ -154,9 +153,54 @@ def main() -> int:
             lines.append(f"| **{rid}** | {status} | {summary} |")
         lines.append("")
 
-    OUT.write_text("\n".join(lines), encoding="utf-8")
-    n_amended = len(amended)
-    print(f"wrote {OUT.relative_to(REPO)} — {len(rows)} rulings, {n_amended} amended")
+    return "\n".join(lines), len(rows), len(amended)
+
+
+def check() -> int:
+    """Verify the committed index against a fresh render. Writes nothing.
+
+    Modelled on `collect_evidence.py --check`, and for the same reason: a generated file with no
+    freshness check is a file that goes stale on the next append and stays wrong until somebody
+    happens to re-run its generator.
+    """
+    if not OUT.exists():
+        print(f"missing {OUT.relative_to(REPO)} — run this script without --check", file=sys.stderr)
+        return 1
+    expected, n_rows, _ = render()
+    actual = OUT.read_text(encoding="utf-8")
+    if actual == expected:
+        print(f"{OUT.relative_to(REPO)} is up to date — {n_rows} rulings")
+        return 0
+    exp_lines, act_lines = expected.splitlines(), actual.splitlines()
+    for i in range(max(len(exp_lines), len(act_lines))):
+        want = exp_lines[i] if i < len(exp_lines) else "<end of file>"
+        got = act_lines[i] if i < len(act_lines) else "<end of file>"
+        if want != got:
+            print(
+                f"{OUT.relative_to(REPO)} is stale — regenerate with "
+                f"`python tools/docs/make_decision_index.py`.\n"
+                f"  first difference at line {i + 1}:\n"
+                f"    committed: {got}\n"
+                f"    generated: {want}",
+                file=sys.stderr,
+            )
+            break
+    return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if not LEDGER.exists():
+        print(f"missing ledger: {LEDGER}", file=sys.stderr)
+        return 1
+    if argv == ["--check"]:
+        return check()
+    if argv:
+        print(f"usage: {Path(__file__).name} [--check]", file=sys.stderr)
+        return 2
+    text, n_rows, n_amended = render()
+    OUT.write_text(text, encoding="utf-8")
+    print(f"wrote {OUT.relative_to(REPO)} — {n_rows} rulings, {n_amended} amended")
     return 0
 
 

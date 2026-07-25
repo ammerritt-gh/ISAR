@@ -34,7 +34,7 @@ Corrections found during the Phase 0/A build are in §0bis; the Pass-3 rulings (
 All rulings from that conversation are restated here in full; nothing load-bearing is implied.
 
 **Relationship to other documents.** Subordinate to `DESIGN.md` (its principles P1–P6 bind this
-document). Sibling to `docs/UNIFICATION_DESIGN.md` (workspace/session internals the GUI reads)
+document). Sibling to `docs/WORKSPACE_AND_CLI.md` (workspace/session internals the GUI reads)
 and `docs/MEASUREMENT_STEERING.md` (the drive loop the GUI observes and nudges). Decision IDs
 introduced here use the **G-series** and should be migrated into `docs/DECISIONS.md` when
 accepted.

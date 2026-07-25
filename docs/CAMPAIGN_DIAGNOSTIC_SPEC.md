@@ -89,9 +89,8 @@ budget by tiering them:
   as representative contrast (1–2 per zone).
 - **Full per-scan set, buried:** every fitted scan gets a data+fit+residual PNG under
   `figures/scans/<scan_id>.png`. The triage table links to them; the diagnostic report links only
-  the dossier subset. (New work: the campaign path currently renders **one** figure per run —
-  `dispersion.png`. Per-scan rendering at fit time is a prerequisite; it also serves the future
-  LLM residual-diagnosis pass, which wants the same image.)
+  the dossier subset. (Per-scan rendering at fit time also serves the future LLM
+  residual-diagnosis pass, which wants the same image.)
 - Every figure carries a drawn-on caption plus a `<figure>.caption.md` sidecar (existing
   convention from the `*_check.py` reports).
 

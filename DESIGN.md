@@ -16,8 +16,9 @@ repo, command). Also, fittingly, the river through Munich.
 **Status:** Living design, consolidated 2026-07-09 (refinement patches merged; decision ledger
 split out to `docs/DECISIONS.md`). Stages I–II (parse/reduce, analysis) are built and validated;
 the drive loop (Stage III) is built and has passed its first certification campaign against the
-**analytic synthetic tier** (`fn:phonon_dft`; see `docs/campaigns/`). A full campaign against
-TAVI-as-backend is the next proof (the SVP, §9). Statuses in this document follow the discipline:
+**analytic synthetic tier** (`fn:phonon_dft`; see `docs/campaigns/`). The TAVI-as-backend campaign
+(the SVP, §9) has cleared its **deterministic** rung (2026-07-10); the next proofs are the
+realistic-clock and McStas rungs, both Planned (§15). Statuses in this document follow the discipline:
 every capability is **Implemented**, **Partial**, or **Planned**, and nothing is described in the
 implemented voice unless it is.
 
@@ -137,7 +138,7 @@ the card's policy half is human-authored TOML (the machine never writes it); acc
 Restart-safety comes from idempotency: every run re-parses everything and re-fits only
 new/held/changed scans. No database, no checkpointer dependency. Growing-file batch payloads
 (S30) are handled by full re-parse + dedup by `(experiment_id, scan_number)`, keeping the last
-occurrence. *(Implemented; see `docs/UNIFICATION_DESIGN.md` for the full treatment.)*
+occurrence. *(Implemented; see `docs/WORKSPACE_AND_CLI.md` for the full treatment.)*
 
 **The Stage II ↔ Stage III boundary is a frozen file contract.** The driver consumes analysis
 only via the `isar run` subprocess and its products — `report/results.csv`, `report.json`,
