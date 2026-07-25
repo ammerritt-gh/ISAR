@@ -7,7 +7,16 @@ both of which they build on: fast campaigns make validation cheap, and honest ba
 make the physics nudges trustworthy. Phase 0 is an urgent repair to the current controller,
 not an early start on A, B, or C. **Owner: @ammerritt-gh.** Motivating finding — "counting targets
 are absolute-meV only", with no signal-to-background awareness, from the 2026-07-19
-statistics-contract audit: `docs/STATS_PRIMER.md` §7. Companions:
+statistics-contract audit: `docs/STATS_PRIMER.md` §7.
+
+**Exit criteria.** Phase 0 is discharged: it shipped as O27 (the same-q budget / bridge-geometry
+separation), O28 (the action-inventory control plane) and O29 as amended by O31 (the terminal
+taxonomy). What remains open from it are the campaign replays that keep O25/O26 at Partial in
+`DESIGN.md` §15 — Phase 0 closes when those replays pass. Sub-phases A → B → C each close when
+their own acceptance campaign runs against TAVI with the counting target expressed relative to
+background rather than in absolute meV, and `DESIGN.md` §15 records the status change.
+
+Companions:
 `docs/MEASUREMENT_STEERING.md` (the research foundation this workstream executes slices
 of), `docs/HYPOTHESES.md` (the Tier-2 extensibility seam sub-phase B fills).
 
