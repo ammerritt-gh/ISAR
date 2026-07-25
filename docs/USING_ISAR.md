@@ -230,11 +230,20 @@ Calibration is versioned: if you re-measure resolution mid-run, subsequent fits 
 the new version. Nothing is ever silently re-interpreted.
 
 `maximum_production_batches_per_q` limits one same-q counting strategy; it does not declare a branch
-absent. On reaching it, the campaign tries an adjacent differentiation probe. If dwell requests are
-repeatedly clamped to the same live instrument limit and all configured bridge/revisit opportunities
-are exhausted, the campaign ends automatically as `incomplete` with `branch_ambiguity` and
-`frontier_blocked`, preserving every candidate and naming the unresolved region. Resume is not needed
-to escape that deadlock.
+absent. On reaching it, the campaign tries an adjacent differentiation probe. Ending as `incomplete`
+with `branch_ambiguity` and `frontier_blocked` takes more than running out of bridge and revisit moves:
+the driver must first exhaust its **whole registered action inventory** — every kind of measurement it
+knows how to propose, including the narrow identity probe that scans a predicted rival mode rather than
+counting longer at the frontier. Only when that inventory is provably empty, *and* the q is genuinely
+done (dwell requests clamped to the same live instrument limit, or saturation independently shown),
+does the campaign stop, preserving every candidate and naming the unresolved region.
+
+The campaign always ends itself rather than pausing for you, but the terminal tells you which of three
+things to do. A `controller_fault` is a software defect, not a data limit: checkpoints are kept and the
+campaign **is** resumable once it is repaired. A stop naming a `policy_forbidden` action means the one
+move left would have to leave the energy search band you declared — authorise it (`identity_search_meV`
+in the objective, or re-compile the goal) and resume; more beam time alone will not help. Anything else
+is genuinely data- or budget-limited, and resuming without changing something will reproduce it.
 
 ## What ISAR does and doesn't do here (honest limits)
 

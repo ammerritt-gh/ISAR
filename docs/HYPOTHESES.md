@@ -29,9 +29,20 @@ say so (see *When you're wrong*, below), not to fit your expectation anyway.
 For a tracked branch, a stated energy is an **anchor identity prior**, not an instruction
 to pick whichever peak lies nearest 6 meV at every q. The global-nearest behavior remains available
 only through the explicit `nearest_energy` selector. `tracked_branch` jointly assigns the optic,
-acoustic rival, new, and missing states over the ordered path. Only modes from a published, consistent
-pooled master are authoritative track evidence; physical-fit modes remain inspectable diagnostics.
+acoustic rival, new, and missing states over the ordered path. Only modes from a published pooled
+master are authoritative track evidence; physical-fit modes remain inspectable diagnostics.
 Assignments may be revised when a neighboring pooled master arrives.
+
+**Delivery authority and tracking evidence are separate gates.** A pooled master whose members
+disagree on ω₀ (`pool_consistent = false`) still fitted its modes — only their *agreement* is in
+doubt — so its candidates are kept as identity and connectivity evidence for that q. What it does not
+get is authority: it cannot deliver the point's ω₀, seat convergence, or refresh the dispersion prior,
+each of which gates on consistency independently. Where a q holds both a consistent and an
+inconsistent master the consistent one is preferred, rather than the inconsistent one excluded. This
+split is load-bearing: dropping an inconsistent master's candidate outright empties that q's
+observation, breaks the tracked trajectory, and retroactively collapses every confirmed point
+downstream of it (AP8, DECISIONS O29). Such a point stays connected but unconverged, and is
+re-acquired to resolve the disagreement.
 
 New natural-language and compact-file goals that ask to map a named branch along a multi-point path
 default to `tracked_branch`, for acoustic and optic targets alike. Explicit “lowest at every q”,

@@ -71,9 +71,14 @@ spending allowance.
 Adequate ambiguous evidence switches to an adjacent differentiation probe immediately; it does not wait
 for the ceiling. Statistics-limited evidence may continue at the same q until that ceiling, at which
 point the driver must try an unmeasured adjacent probe before revisiting the frontier. The durable
-outcome is `incomplete` with `branch_ambiguity` plus `frontier_blocked` only once no connected
-classification route remains *and* the q is genuinely done: its same-q ceiling reached, its repeated
-requests clamped to the same instrument dwell, or a saturation diagnostic independently proved it.
+outcome is `incomplete` with `branch_ambiguity` plus `frontier_blocked` only once the **complete
+registered action inventory** is exhausted *and* the q is genuinely done: its same-q ceiling reached,
+its repeated requests clamped to the same instrument dwell, or a saturation diagnostic independently
+proved it. Exhaustion is not "no connected classification route remains" — that local approximation,
+computed before acquisition ever enumerated the action space, is the early-terminal defect O28 repaired.
+It is `ActionInventory.terminal_cause` proving the space empty *relative to* `GENERATOR_REGISTRY`, so
+every declaratively registered generator — the narrow rival probe included — is asked before the
+campaign may call itself blocked, and growing the registry cannot leave an old proof looking current.
 Alongside the interval/no-progress brakes there is an identity-space one, `identity_saturated`, for
 the case those cannot speak to — an identity-ambiguous q never matches the target branch, so it never
 accumulates the pooled-master updates `interval_floored` reads. It requires both the target
@@ -84,16 +89,28 @@ authorised scans.
 Once the acoustic rival's identity entropy is below the stopping threshold, it remains labeled context
 and receives no target-precision acquisition value.
 
-This generalizes into a standing terminal-taxonomy invariant (DECISIONS O29): **the campaign must not
-enter a terminal stop while measurement budget remains** unless one of five legitimate terminals holds —
-`met`, `infeasible` (tolerance below the systematic floor), `incomplete` on genuine budget/analysis-clock
-exhaustion, `operator_stopped`, or a `controller_fault` surfaced for repair-and-resume. Any *other* stop
-with beam time left — an `action_inventory_exhausted` or a `branch_ambiguity`/`frontier_blocked` while
-budget remains — is a defect to hunt, not a result: either the generator registry lacks an action for a
-situation that is in fact resolvable, or a resolvable state was misclassified as terminal. A software
-fault must be classified `controller_fault` rather than reported as a data-limited `incomplete`, and a
-point that only needs more or better data (an inconsistent pool, an unconfirmed identity) must be
-re-acquired rather than have its confirmed neighbours discarded.
+This generalizes into a standing terminal-taxonomy invariant (DECISIONS O29, amended by O31): **the
+campaign must not enter a terminal stop while measurement budget remains** unless one of six legitimate
+terminals holds — `met`, `infeasible` (tolerance below the systematic floor), `incomplete` on genuine
+budget/analysis-clock exhaustion, `operator_stopped`, a `controller_fault` surfaced for
+repair-and-resume, or an exhaustion whose one remaining action the operator's **own declared policy
+forbids**. Any *other* stop with beam time left — an `action_inventory_exhausted` or a
+`branch_ambiguity`/`frontier_blocked` while budget remains — is a defect to hunt, not a result: either
+the generator registry lacks an action for a situation that is in fact resolvable, or a resolvable state
+was misclassified as terminal. A software fault must be classified `controller_fault` rather than
+reported as a data-limited `incomplete`, and a point that only needs more or better data (an
+inconsistent pool, an unconfirmed identity) must be re-acquired rather than have its confirmed
+neighbours discarded.
+
+The sixth terminal is the O28/O29 seam and is narrow on purpose. A search band the operator declared —
+or one carrying no provenance at all — is a hard constraint, so an identity action that would have to
+reach outside it is reported `policy_forbidden` rather than silently scanned past, and a durable
+`OPERATOR` rejection lets the inventory prove exhaustion honestly. It is not a `controller_fault`: the
+inventory is *complete* and the proof stands; the one action left is withheld by policy, not unknown.
+Because the escape is neither more beam nor a repair, the stop reason itself names the forbidden action
+and how to authorise it (declare `identity_search_meV`, or re-compile so the band carries compiler
+provenance) — burying that in the persisted inventory would report a resolvable campaign as a
+scientific dead end.
 
 ---
 

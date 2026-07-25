@@ -82,14 +82,45 @@ def _last_payload(events: list[dict], kind: str, log_path: Path) -> dict:
     raise RuntimeError(f"no '{kind}' event in {log_path} — the frozen workspace is not the AP6 run")
 
 
+def _terminal_rollup(events: list[dict], log_path: Path, path_len: int) -> list[dict]:
+    """The last per-q rollup, selected by content rather than by being the final ``decide``.
+
+    ``decide`` is a multiplexed kind — ``campaign_start``, ``model_update`` and others all use it —
+    and only the ``model_update`` payload carries ``per_q``.  Taking the chronologically last
+    ``decide`` therefore reads whatever event happened to close the log, which either raises on a
+    missing key or, worse, indexes ``FRONTIER_INDICES`` into a shorter/differently-ordered list and
+    freezes a fixture that looks valid and is not.  This mirrors the selection
+    ``workspace_api.Workspace.master_assessments`` already uses, and then insists the rollup describes
+    the whole objective path before any index is taken.
+    """
+    for event in reversed(events):
+        if event.get("kind") != "decide":
+            continue
+        payload = event.get("payload") or {}
+        per_q = payload.get("per_q")
+        if not isinstance(per_q, list) or not per_q:
+            continue
+        if len(per_q) != path_len:
+            raise RuntimeError(
+                f"the last per-q rollup in {log_path} describes {len(per_q)} point(s) but the "
+                f"objective path has {path_len} — the log and the card disagree, so the frontier "
+                "indices cannot be trusted")
+        return per_q
+    raise RuntimeError(
+        f"no 'decide' event carrying a per_q rollup in {log_path} — the frozen workspace is not the "
+        "AP6 run (or its log predates the per-q model_update record)")
+
+
 def build() -> dict:
     log_path = WORKSPACE / "report" / "session_log.jsonl"
     card_path = WORKSPACE / "card.state.json"
     events = _load_events(log_path)
 
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    target = card.get("campaign_target", {})
+
     stop = _last_payload(events, "stop", log_path)
-    decide = _last_payload(events, "decide", log_path)
-    per_q = decide["per_q"]
+    per_q = _terminal_rollup(events, log_path, len(target.get("path", [])))
 
     frontier = {}
     for index in FRONTIER_INDICES:
@@ -106,9 +137,6 @@ def build() -> dict:
         hkl = pl.get("hkl")
         if hkl and any(_near(hkl[0], value) for value in frontier_hkl0):
             windows.append({key: pl.get(key) for key in WINDOW_FIELDS})
-
-    card = json.loads(card_path.read_text(encoding="utf-8"))
-    target = card.get("campaign_target", {})
 
     return {
         "_comment": "Compact forensic extract of the AP6_Failed acoustic campaign. Regenerate with "

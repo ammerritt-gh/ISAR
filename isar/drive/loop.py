@@ -2385,6 +2385,38 @@ def _invariant_payload(point) -> dict:
     }
 
 
+def _operator_authorization_hint(inventory) -> str | None:
+    """The operator-authorizable reason an exhausted inventory holds, if it holds one (DECISIONS O31).
+
+    An exhaustion terminal whose *only* remaining action is forbidden by declared policy is a
+    legitimate terminal, but it is escaped by authorizing the action — not by more beam, not by a
+    repair. That escape has to reach the operator reading the stop reason; leaving it in the persisted
+    inventory alone reports a resolvable campaign as a scientific dead end (O28's strict-historical
+    AP6: the rival that would settle the identity sat above the declared search band).
+
+    Two shapes carry the signal, and both are read here because a generator may take either route:
+    an action that was generated and then rejected as ``OPERATOR``, and a generator that emitted
+    nothing at all and declared ``policy_forbidden`` as its reason code. Anything else — structural,
+    saturation, budget, transient — is deliberately excluded: those are not the operator's to lift,
+    and presenting them as authorizable would send a scientist to edit a policy that cannot help.
+    """
+    if inventory is None:
+        return None
+    hints: list[str] = []
+    for evaluation in getattr(inventory, "evaluations", []):
+        if (evaluation.rejection_class is RejectionClass.OPERATOR
+                and evaluation.rejection_reason):
+            hints.append(str(evaluation.rejection_reason))
+    for report in getattr(inventory, "reports", []):
+        reason = report.reason_code
+        if reason and str(reason).startswith("policy_forbidden"):
+            hints.append(str(reason))
+    if not hints:
+        return None
+    unique = list(dict.fromkeys(hints))          # first-seen order; a repeated band says it once
+    return "; ".join(unique[:3])
+
+
 def _blocked_frontier_decision(objective, grid, decision: StopDecision,
                                inventory=None) -> StopDecision:
     """Turn a proposal-less tracked identity frontier into an honest incomplete outcome.
@@ -2444,6 +2476,9 @@ def _blocked_frontier_decision(objective, grid, decision: StopDecision,
     else:
         top_reason = (f"branch_ambiguity; frontier_blocked at path index/indices {indices}: "
                       "the connected classification route and identity-revisit allowance were exhausted")
+        hint = _operator_authorization_hint(inventory)
+        if hint:
+            top_reason += f" — an action remains that declared policy forbids: {hint}"
         per_q_reason = "branch_ambiguity; frontier_blocked after identity-route allowance was exhausted"
     for point in blocked:
         if point.index < len(per_q):
@@ -2483,6 +2518,9 @@ def _exhausted_action_space_decision(decision: StopDecision, inventory=None) -> 
     else:
         reason = ("action_inventory_exhausted: no eligible measurement action remains for this "
                   "objective under the registered generators")
+        hint = _operator_authorization_hint(inventory)
+        if hint:
+            reason += f" — an action remains that declared policy forbids: {hint}"
     return StopDecision("incomplete", [reason], decision.per_q, terminal_cause=cause)
 
 

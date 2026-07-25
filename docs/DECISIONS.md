@@ -579,6 +579,42 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   work. The scope of O30 is the comparability and boundedness of the confidence term, not the
   assign-versus-abstain threshold. Evidence: `tests/session/test_branch_tracking.py`.
 
+- **O31.** (2026-07-24, Implemented; amends O29's terminal taxonomy, resolves it against O28) **An
+  action the operator's own declared policy forbids is a sixth legitimate terminal — an operator-policy
+  limit, neither a controller fault nor a data limit — and it must say so where the operator will read
+  it.** O28 and O29 were in direct contradiction. O28 shipped strict-historical AP6 as
+  `branch_ambiguity`/`frontier_blocked` with beam time left, on the grounds that the rival which would
+  settle the identity sat above a search band carrying no compiler provenance and so could not be
+  widened. O29 then declared exactly that stop — a budget-remaining `action_inventory_exhausted` or
+  `branch_ambiguity` — a smell that is always one of two defects. Both cannot be right, and the code
+  sides with O28: `RejectionClass.OPERATOR` is a **durable** rejection
+  (`isar/drive/acquisition/inventory.py`), so an inventory holding only a policy-forbidden action is
+  complete, holds no eligible action, and legally proves `action_inventory_exhausted`.
+
+  The ruling keeps that behaviour and names it. A band the operator declared, or one with no
+  provenance at all (an old frozen objective, where equality with the shipped default is *not*
+  evidence the compiler chose it), is a hard constraint: spending their beam outside the range they
+  asked for is not the controller's call, and guessing wrong silently rewrites a scientist's intent
+  (O28 rules 5 and 6). So O29's five legitimate terminals become six, and its standing rule is
+  amended: a budget-remaining terminal is a defect to hunt **unless** the inventory's only remaining
+  action is `OPERATOR`-rejected. The distinction from `controller_fault` is exact — a fault means the
+  inventory is *incomplete* and exhaustion could not be proven; this means exhaustion **was** proven
+  and the one remaining action is withheld by policy.
+
+  The obligation that makes this honest rather than a loophole: such a terminal must name the
+  forbidden action and its escape in the stop reason itself, not only in the persisted inventory. The
+  escape is to declare `identity_search_meV` (or re-compile the objective so the band carries compiler
+  provenance) and resume — not more beam, and not a repair.
+  `_operator_authorization_hint` appends the generator's own operator-facing text to both exhaustion
+  terminals (`_blocked_frontier_decision` and `_exhausted_action_space_decision`), reading the two
+  shapes the signal takes: an action generated and then `OPERATOR`-rejected, and a generator that
+  emitted nothing and declared `policy_forbidden`. Structural, saturation, budget and transient
+  rejections are deliberately excluded — they are not the operator's to lift, and offering them as
+  authorizable would send a scientist to edit a policy that cannot help. `terminal_cause`, the
+  `StopDecision` state and the per-q reasons are unchanged: this is reason text, so no consumer keyed
+  on the cause changes behaviour. References: O28 (the AP6 strict-historical replay), O29 (the
+  taxonomy this amends), `docs/MEASUREMENT_STEERING.md`.
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:

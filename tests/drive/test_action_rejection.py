@@ -36,6 +36,7 @@ from isar.drive.acquisition.inventory import (
     ActionEligibility,
     GeneratorSpec,
     LEGACY_SELECTOR_GENERATOR,
+    NARROW_RIVAL_PROBE_GENERATOR,
     RejectionClass,
 )
 from isar.drive.objective import ObjectiveSpec
@@ -245,6 +246,118 @@ def test_a_missing_registered_generator_faults_through_the_loops_terminal_path()
         StopDecision("continue", [], []), incomplete)
     assert decision.terminal_cause == TERMINAL_CONTROLLER_FAULT
     assert "controller_fault" in decision.reasons[0]
+
+
+# -- a policy-forbidden exhaustion names its own escape (O31) --------------------------------------
+
+def _complete_inventory(*, evaluations=None, reason_codes=None):
+    """A registry-complete inventory holding no eligible action — the exhaustion shape."""
+    from isar.drive.acquisition.inventory import (ActionInventory, GeneratorReport,
+                                                  GeneratorStatus)
+    codes = reason_codes or {}
+    evaluations = evaluations or []
+    counts: dict[str, int] = {}
+    for evaluation in evaluations:
+        counts[evaluation.generator] = counts.get(evaluation.generator, 0) + 1
+    return ActionInventory(
+        evaluations=list(evaluations),
+        reports=[GeneratorReport(
+            generator=spec.generator_id, status=GeneratorStatus.COMPLETED,
+            generated=counts.get(spec.generator_id, 0),
+            reason_code=codes.get(spec.generator_id, "no_selectable_action"))
+            for spec in GENERATOR_REGISTRY])
+
+
+def test_a_policy_forbidden_exhaustion_names_the_operator_escape():
+    """O31: the terminal is legitimate, but its escape is authorization — not beam, not repair — so
+    the stop reason an operator reads has to say which action policy withheld and how to allow it.
+    AP6 strict-historical is exactly this case: the rival that would settle the identity sat above a
+    search band carrying no provenance, and the generator emitted nothing but a ``policy_forbidden``
+    reason code."""
+    from isar.drive.supervisor.stopping import StopDecision
+
+    forbidden = ("policy_forbidden:identity_domain: this objective carries no search-band "
+                 "provenance, so the band -2..7 meV cannot be assumed to be a compiler default; "
+                 "declare identity_search_meV to authorise identity work at 7.115 meV")
+    inventory = _complete_inventory(
+        reason_codes={NARROW_RIVAL_PROBE_GENERATOR: forbidden})
+
+    decision = loop_mod._exhausted_action_space_decision(
+        StopDecision("continue", [], []), inventory)
+
+    assert decision.terminal_cause == "action_inventory_exhausted"
+    assert "identity_search_meV" in decision.reasons[0]
+    assert "declared policy forbids" in decision.reasons[0]
+
+
+def test_a_forbidden_rival_is_named_on_the_tracked_frontier_terminal_too():
+    """The tracked frontier is where AP6 actually stopped; a hint that only reached the non-tracked
+    twin would miss every tracked acoustic campaign."""
+    from isar.drive.supervisor.stopping import GridQ, StopDecision
+
+    # One visited, blocked point: no same-q identity work is authorised behind a blocked frontier, so
+    # the helper reaches its terminal rather than raising the actionable-frontier invariant.
+    point = GridQ(index=0, hkl=(2.9, 0.0, 0.0), q=0.9, tolerance=0.5, max_production_batches=12,
+                  evidence_master={})
+    point.track_state = "blocked"
+    point.local_identity_clear = False
+    grid = [point]
+    objective = types.SimpleNamespace(target_selector="tracked_branch")
+    forbidden = ("policy_forbidden:identity_domain: the operator declared the search band "
+                 "-2..7 meV; declare identity_search_meV to authorise identity work there")
+    inventory = _complete_inventory(reason_codes={NARROW_RIVAL_PROBE_GENERATOR: forbidden})
+
+    decision = loop_mod._blocked_frontier_decision(
+        objective, grid, StopDecision("continue", [], [{"index": 0}]), inventory)
+
+    assert decision.state == "incomplete"
+    assert decision.terminal_cause == "action_inventory_exhausted"
+    assert "identity_search_meV" in decision.reasons[0]
+
+
+def test_a_saturation_rejection_is_not_offered_as_authorizable():
+    """Only an OPERATOR rejection is the operator's to lift. Presenting a saturation, budget or
+    geometry rejection as authorizable would send a scientist to edit a policy that cannot help."""
+    from isar.drive.acquisition.inventory import (ActionEligibility, ActionEvaluation,
+                                                  MeasurementIntent, RejectionClass)
+    from isar.drive.supervisor.stopping import StopDecision
+
+    intent = MeasurementIntent(action_class="production", hkl=(2.9, 0.0, 0.0), energy_lo=-2.0,
+                               energy_hi=7.0, window_family="target")
+    saturated = ActionEvaluation(intent=intent, generator=LEGACY_SELECTOR_GENERATOR,
+                                 eligibility=ActionEligibility.REJECTED,
+                                 rejection_class=RejectionClass.SATURATION,
+                                 rejection_reason="counting here stopped paying")
+    inventory = _complete_inventory(evaluations=[saturated])
+
+    decision = loop_mod._exhausted_action_space_decision(
+        StopDecision("continue", [], []), inventory)
+
+    assert decision.terminal_cause == "action_inventory_exhausted"
+    assert "declared policy forbids" not in decision.reasons[0]
+    assert "stopped paying" not in decision.reasons[0]
+
+
+def test_an_operator_suppressed_action_is_named_from_its_evaluation():
+    """The signal takes two shapes — a generator that emitted nothing and declared the refusal, and an
+    action that was generated and then OPERATOR-rejected (durable suppression). Both must reach the
+    operator; reading only one leaves a campaign silently blocked."""
+    from isar.drive.acquisition.inventory import (ActionEligibility, ActionEvaluation,
+                                                  MeasurementIntent, RejectionClass)
+    from isar.drive.supervisor.stopping import StopDecision
+
+    intent = MeasurementIntent(action_class="identity_rival_probe", hkl=(2.9, 0.0, 0.0),
+                               energy_lo=6.8, energy_hi=7.4, window_family="rival")
+    rejected = ActionEvaluation(intent=intent, generator=NARROW_RIVAL_PROBE_GENERATOR,
+                                eligibility=ActionEligibility.REJECTED,
+                                rejection_class=RejectionClass.OPERATOR,
+                                rejection_reason="policy_forbidden: declare identity_search_meV")
+    inventory = _complete_inventory(evaluations=[rejected])
+
+    decision = loop_mod._exhausted_action_space_decision(
+        StopDecision("continue", [], []), inventory)
+
+    assert "identity_search_meV" in decision.reasons[0]
 
 
 # -- suppressions survive a resume ------------------------------------------------------------------

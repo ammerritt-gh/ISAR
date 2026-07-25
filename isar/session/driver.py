@@ -1741,9 +1741,11 @@ def _clean_null_window(outcome: dict) -> tuple[float, float, float] | None:
 def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tuple[list[dict], dict]:
     """Return one authoritative fit per path point and all outcome references.
 
-    Only a published, internally consistent pooled master may be an identity authority.  Physical
-    fits remain in ``refs`` so the GUI can display their candidate tables, but they never fill a gap
-    in the authoritative track and never vote on a master assignment.
+    Only a published pooled master may be an identity authority.  Physical fits remain in ``refs`` so
+    the GUI can display their candidate tables, but they never fill a gap in the authoritative track
+    and never vote on a master assignment.  Internal consistency ranks masters here rather than
+    excluding them — an inconsistent pool is still fitted evidence of *which modes exist*, and the
+    gates that consistency does own live elsewhere (see the ``pool_consistent`` comment below).
 
     A scan acquired as an ``auxiliary_track_node`` probe is the one exception, and a deliberately
     narrow one.  It was fired to decide *which mode* a candidate is, not to deliver a better ω₀, so it
