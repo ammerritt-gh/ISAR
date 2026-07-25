@@ -182,6 +182,12 @@ lower-truncated-normal priors (the zero-mean acoustic case is half-normal). `lev
 remain declared plugin surfaces rather than implemented acquisition models; see
 [HYPOTHESES.md](HYPOTHESES.md) for the complete contract.
 
+For new goals such as “map the acoustic phonon along H”, ISAR uses connected `tracked_branch`
+selection by default. It begins at the nearest point where the acoustic mode is predicted to clear the
+local energy resolution, then walks adjacently toward and away from the zone centre. Say “lowest at
+each q”, “highest at each q”, or “nearest to X at each q” only when you intentionally want independent
+local selection. Resuming an existing campaign keeps its frozen selector.
+
 `[fitting]` also carries one performance toggle, `reuse_master_structure` (default `false`):
 
 ```toml
@@ -209,6 +215,10 @@ The loop: batch lands → `isar run` → skim the report → act.
   confidence, and provenance. "Delivered" = resolved + flagged: numbers you can use now.
 - **Dispersion summary** — ω₀ vs Q per (sample, temperature), with the running prior overlaid.
   This is the "is the experiment on track" figure.
+- **Ambiguous candidate markers** — open markers are real fitted modes from a measured pooled
+  spectrum whose target identity is unresolved. They deliberately have no certifying whisker and do
+  not join the confirmed dispersion curve. They remain useful steering evidence; they are not missing
+  scans and cannot seed the target prior or certify that q.
 - **Coverage & gaps** — Q points measured, holes in the scan sequence (a scan that never arrived),
   and Q-coverage gaps. Worth a glance every batch.
 - **Held scans** — each with its reason. The common one early in a run is `held_for_calibration`:
@@ -218,6 +228,22 @@ The loop: batch lands → `isar run` → skim the report → act.
 
 Calibration is versioned: if you re-measure resolution mid-run, subsequent fits use — and record —
 the new version. Nothing is ever silently re-interpreted.
+
+`maximum_production_batches_per_q` limits one same-q counting strategy; it does not declare a branch
+absent. On reaching it, the campaign tries an adjacent differentiation probe. Ending as `incomplete`
+with `branch_ambiguity` and `frontier_blocked` takes more than running out of bridge and revisit moves:
+the driver must first exhaust its **whole registered action inventory** — every kind of measurement it
+knows how to propose, including the narrow identity probe that scans a predicted rival mode rather than
+counting longer at the frontier. Only when that inventory is provably empty, *and* the q is genuinely
+done (dwell requests clamped to the same live instrument limit, or saturation independently shown),
+does the campaign stop, preserving every candidate and naming the unresolved region.
+
+The campaign always ends itself rather than pausing for you, but the terminal tells you which of three
+things to do. A `controller_fault` is a software defect, not a data limit: checkpoints are kept and the
+campaign **is** resumable once it is repaired. A stop naming a `policy_forbidden` action means the one
+move left would have to leave the energy search band you declared — authorise it (`identity_search_meV`
+in the objective, or re-compile the goal) and resume; more beam time alone will not help. Anything else
+is genuinely data- or budget-limited, and resuming without changing something will reproduce it.
 
 ## What ISAR does and doesn't do here (honest limits)
 

@@ -24,10 +24,13 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
                              _extract_max_points, _full_tier,
                              _finalize_proposal, _guard_point_count,
                              _make_classification_providers, _record_eligible_crossings,
+                             resolve_campaign_slice,
                              _pending_certification_indices, _record_certification_acceptance,
+                             _auxiliary_clean_null,
                              _master_obs_from_row, _observation_from_row, _pick_interval,
                              _pooled_target_delivered,
                              _preflight_instrument_limits, _preflight_max_points,
+                             _proposal_from_submission, _selected_action_record,
                              _reconcile_budget_points, _resume_state,
                              _run_nonce, _target_supporting_feasible_points, _validate_body,
                              run_campaign)
@@ -95,12 +98,18 @@ def test_target_support_preflight_counts_only_feasible_bins_inside_credible_band
     assert _target_supporting_feasible_points(malformed, (6.0, 0.2)) == 0
 
 
-def test_classification_uses_latest_complete_temperature_for_active_sample_only():
+def test_classification_uses_the_resolved_slice_for_the_active_sample_only():
+    """The slice comes from ``resolve_campaign_slice`` (PR2.4), not from ``max(complete)``.
+
+    This test used to assert the newest complete temperature won automatically. It did not — it
+    silently classified whatever the campaign was measuring against whichever complete slice sorted
+    highest. With 100 K and 200 K both complete, the campaign must now say which one it means."""
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
     objective = ObjectiveSpec.segment(
         q_start=(2.0, 0.0, 0.0), q_end=(2.0, 0.1, 0.0), step_rlu=0.1,
         tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 1e12},
-        target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+        target_branch="optic", energy_search_meV=(-2.0, 12.0),
+        target_temperature_K=200.0, **frozen)
 
     def row(sample, temperature, branch, energy):
         return {"sample": sample, "t_bin": temperature, "branch_id": branch,
@@ -117,15 +126,28 @@ def test_classification_uses_latest_complete_temperature_for_active_sample_only(
         row("active", 300.0, "optic", 8.0),  # newest but incomplete: never mix with 200 K
         row("other", 400.0, "acoustic", 9.0), row("other", 400.0, "optic", 10.0),
     ]}
+    key, error = resolve_campaign_slice(state, objective, sample="active")
+    assert error is None and key.temperature_bin == pytest.approx(200.0)
     classify, rival = _make_classification_providers(
-        state, objective, 1.0, sample="active")
+        state, objective, 1.0, sample="active", temperature_bin=key.temperature_bin)
     gridq = types.SimpleNamespace(hkl=(2.0, 0.0, 0.0), q=0.0)
     assert classify(gridq) >= 0.0
     from isar.drive.acquisition.classify_eig import belief_predict
     assert rival(gridq) == pytest.approx(belief_predict(selected_acoustic, 0.0))
+    # An unknown sample has no measured slice at all: that is the cold start, on the common prior.
+    missing_key, missing_error = resolve_campaign_slice(state, objective, sample="missing")
+    assert missing_error is None and missing_key.temperature_bin is None
     fallback, fallback_rival = _make_classification_providers(
-        state, objective, 1.0, sample="missing")
+        state, objective, 1.0, sample="missing", temperature_bin=None)
     assert fallback is not None and fallback_rival is not None
+    # Without the declaration the same evidence is genuinely ambiguous, and is refused.
+    undeclared = ObjectiveSpec.segment(
+        q_start=(2.0, 0.0, 0.0), q_end=(2.0, 0.1, 0.0), step_rlu=0.1,
+        tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 1e12},
+        target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+    ambiguous_key, ambiguous_error = resolve_campaign_slice(
+        state, undeclared, sample="active")
+    assert ambiguous_key is None and "campaign_slice_unresolved" in ambiguous_error
 
     state["branch_tracks"] = {"assignments": [{
         "q": [2.0, 0.0, 0.0], "acoustic_candidate_index": 0,
@@ -133,8 +155,22 @@ def test_classification_uses_latest_complete_temperature_for_active_sample_only(
                                             "new": 0.0005}}],
     }]}
     resolved_classify, _ = _make_classification_providers(
-        state, objective, 1.0, sample="active")
+        state, objective, 1.0, sample="active", temperature_bin=200.0)
     assert resolved_classify(gridq) == 0.0
+
+    acoustic_objective = ObjectiveSpec.segment(
+        q_start=(2.0, 0.0, 0.0), q_end=(2.0, 0.1, 0.0), step_rlu=0.1,
+        tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 1e12},
+        target_branch="acoustic", energy_search_meV=(-2.0, 12.0), target_temperature_K=200.0,
+        **shipped_hypothesis_snapshot("acoustic", (-2.0, 12.0)))
+    state["branch_tracks"] = {"assignments": [{
+        "q": [2.0, 0.0, 0.0], "optic_candidate_index": 0,
+        "candidates": [{"probabilities": {"acoustic": 0.0005, "optic": 0.999,
+                                            "new": 0.0005}}],
+    }]}
+    acoustic_classify, _ = _make_classification_providers(
+        state, acoustic_objective, 1.0, sample="active", temperature_bin=200.0)
+    assert acoustic_classify(gridq) == 0.0
 
 
 def test_scan_declines_do_not_make_a_tracked_frontier_terminal():
@@ -153,6 +189,356 @@ def test_scan_declines_do_not_make_a_tracked_frontier_terminal():
     assert decision.reasons == []
 
 
+def _blocked_identity_objective(branch="acoustic"):
+    frozen = shipped_hypothesis_snapshot(branch, (-2.0, 12.0))
+    return ObjectiveSpec(
+        path=[(2.0, 0.0, 0.0), (2.05, 0.0, 0.0)], tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e12}, target_branch=branch,
+        target_selector="tracked_branch", **frozen)
+
+
+def test_exhausted_tracked_identity_route_is_honestly_incomplete():
+    """Honest incomplete requires the same-q ceiling actually reached, not merely a blocked route.
+
+    Before the OP10 repair this fixture used n_production=1 against a ceiling of eight and still
+    reported a scientific incomplete.  That is the exact shape of the OP10 failure, so it is now an
+    invariant violation (covered below) rather than a result.
+    """
+    objective = _blocked_identity_objective()
+    anchor = GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
+                   n_quicklook=1, track_state="ambiguous", max_production_batches=8)
+    anchor.n_production = 8
+    anchor.evidence_master = {
+        "branch_candidates": [{"energy_meV": 5.98, "sigma_meV": 0.05}],
+        "diagnostic_halfwidth": 0.05,
+    }
+    neighbor = GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
+                     n_quicklook=1, track_state="blocked")
+    decision = loop_mod._blocked_frontier_decision(
+        objective, [anchor, neighbor], StopDecision("continue", [], []))
+    assert decision.state == "incomplete"
+    assert "branch_ambiguity" in decision.reasons[0]
+
+
+def test_proposal_less_frontier_with_same_q_budget_left_is_a_controller_fault():
+    """OP10 regression: a stoppable-looking frontier that still has authorized scans is a bug.
+
+    OP10 reported ``branch_ambiguity`` at six points whose n_production was 0 or 1 against an
+    authorized 12, with exposure_saturated False.  Presenting that as a scientific result hid a
+    controller defect, so the loop must fail loudly instead.
+    """
+    objective = _blocked_identity_objective()
+    anchor = GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
+                   n_quicklook=1, track_state="ambiguous", max_production_batches=12)
+    anchor.n_production = 1
+    anchor.local_identity_clear = False
+    anchor.evidence_master = {
+        "branch_candidates": [{"energy_meV": 5.98, "sigma_meV": 0.05}],
+        "diagnostic_halfwidth": 0.05,
+    }
+    neighbor = GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
+                     n_quicklook=1, track_state="blocked")
+    with pytest.raises(loop_mod.ControllerInvariantError) as excinfo:
+        loop_mod._blocked_frontier_decision(
+            objective, [anchor, neighbor], StopDecision("continue", [], []))
+    message = str(excinfo.value)
+    assert "1/12" in message                       # the unspent budget is named
+    assert "path index 0" in message
+
+
+def _exhausted_frontier_grid():
+    """A saturated tracked frontier with no same-q identity work left — an honest empty action space."""
+    objective = _blocked_identity_objective()
+    anchor = GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
+                   n_quicklook=1, track_state="ambiguous", max_production_batches=8)
+    anchor.n_production = 8
+    anchor.evidence_master = {
+        "branch_candidates": [{"energy_meV": 5.98, "sigma_meV": 0.05}],
+        "diagnostic_halfwidth": 0.05,
+    }
+    neighbor = GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
+                     n_quicklook=1, track_state="blocked")
+    return objective, [anchor, neighbor]
+
+
+def test_blocked_frontier_terminal_carries_inventory_exhausted_cause():
+    """A complete inventory with no eligible action stamps ``action_inventory_exhausted`` on the
+    terminal — the proof travels with the honest incomplete instead of a bare reason string."""
+    from isar.drive.acquisition.inventory import ActionInventory
+    objective, grid = _exhausted_frontier_grid()
+    inventory = ActionInventory(evaluations=[], reports=_registry_complete_reports())
+    decision = loop_mod._blocked_frontier_decision(
+        objective, grid, StopDecision("continue", [], []), inventory)
+    assert decision.state == "incomplete"
+    assert decision.terminal_cause == "action_inventory_exhausted"
+
+
+def test_blocked_frontier_terminal_reports_controller_fault_for_incomplete_inventory():
+    """A generator that FAILED makes the inventory incomplete, so exhaustion is unprovable: the
+    terminal is stamped ``controller_fault``, never ``action_inventory_exhausted``."""
+    from isar.drive.acquisition.inventory import (
+        ActionInventory, GeneratorReport, GeneratorStatus)
+    objective, grid = _exhausted_frontier_grid()
+    inventory = ActionInventory(evaluations=[], reports=[
+        GeneratorReport(generator="tracked_and_scored_selection",
+                        status=GeneratorStatus.COMPLETED, generated=0),
+        GeneratorReport(generator="rival_gap", status=GeneratorStatus.FAILED,
+                        error_code="zone_geometry")])
+    decision = loop_mod._blocked_frontier_decision(
+        objective, grid, StopDecision("continue", [], []), inventory)
+    assert decision.state == "incomplete"
+    assert decision.terminal_cause == "controller_fault"
+    # The reason must name the controller fault, never a scientific branch-ambiguity result (review #9).
+    assert "controller_fault" in decision.reasons[0]
+    assert "rival_gap(zone_geometry)" in decision.reasons[0]
+    assert "resume is supported" in decision.reasons[0]
+    assert "branch_ambiguity" not in decision.reasons[0]
+    assert all("controller_fault" in row["reason"] for row in decision.per_q
+               if row.get("assessment_state") == "incomplete")
+
+
+def test_blocked_frontier_eligible_inventory_without_a_proposal_raises_never_exhausts():
+    """Review #3: a complete inventory that still holds an eligible action while acquisition produced no
+    proposal is a controller bug, not exhaustion. The old ``or EXHAUSTED`` coercion would have hidden it
+    as ``action_inventory_exhausted``; it must raise instead."""
+    from isar.drive.acquisition.inventory import (
+        ActionEligibility, ActionEvaluation, ActionInventory, GeneratorReport, GeneratorStatus,
+        MeasurementIntent)
+    objective, grid = _exhausted_frontier_grid()      # saturated anchor -> same_q guard does not fire
+    intent = MeasurementIntent(action_class="focused_rival", hkl=(2.0, 0.0, 0.0), energy_lo=-2.0,
+                               energy_hi=7.0, window_family="two_branch")
+    from isar.drive.acquisition.inventory import GENERATOR_REGISTRY
+    first = GENERATOR_REGISTRY[0].generator_id
+    inventory = ActionInventory(
+        evaluations=[ActionEvaluation(intent=intent, generator=first,
+                                      eligibility=ActionEligibility.ELIGIBLE)],
+        reports=([GeneratorReport(generator=first, status=GeneratorStatus.COMPLETED, generated=1)]
+                 + [r for r in _registry_complete_reports() if r.generator != first]))
+    assert inventory.terminal_cause(GENERATOR_REGISTRY) is None   # eligible action -> not a terminal
+    with pytest.raises(loop_mod.ControllerInvariantError, match="eligible"):
+        loop_mod._blocked_frontier_decision(
+            objective, grid, StopDecision("continue", [], []), inventory)
+
+
+def test_blocked_frontier_terminal_defaults_to_exhausted_without_an_inventory():
+    """Unit callers that pass no inventory get the honest legacy meaning (exhausted), not ``None``."""
+    objective, grid = _exhausted_frontier_grid()
+    decision = loop_mod._blocked_frontier_decision(
+        objective, grid, StopDecision("continue", [], []))
+    assert decision.state == "incomplete"
+    assert decision.terminal_cause == "action_inventory_exhausted"
+
+
+# -- inventory persistence (PR1.6) -----------------------------------------------------------------
+
+def _registry_complete_reports(generated=0, reason_code="no_selectable_action"):
+    """One clean report per registered generator.
+
+    Terminal decisions are now taken against GENERATOR_REGISTRY, so a fixture that reports for only
+    one generator is a *missing-generator controller fault* whatever else it is testing. Tests whose
+    subject is not registry completeness build their inventories through here.
+    """
+    from isar.drive.acquisition.inventory import (GENERATOR_REGISTRY, GeneratorReport,
+                                                  GeneratorStatus)
+    return [GeneratorReport(generator=spec.generator_id, status=GeneratorStatus.COMPLETED,
+                            generated=generated, reason_code=reason_code)
+            for spec in GENERATOR_REGISTRY]
+
+
+def _exhausted_inventory():
+    from isar.drive.acquisition.inventory import ActionInventory
+    return ActionInventory(evaluations=[], reports=_registry_complete_reports())
+
+
+def _eligible_inventory():
+    from isar.drive.acquisition.inventory import (
+        ActionEligibility, ActionEvaluation, ActionInventory, GeneratorReport, GeneratorStatus,
+        MeasurementIntent)
+    intent = MeasurementIntent(action_class="production", hkl=(2.1, 0.0, 0.0), energy_lo=-2.0,
+                               energy_hi=7.0, window_family="target")
+    return ActionInventory(
+        evaluations=[ActionEvaluation(intent=intent, generator="g",
+                                      eligibility=ActionEligibility.ELIGIBLE)],
+        reports=[GeneratorReport(generator="g", status=GeneratorStatus.COMPLETED, generated=1)])
+
+
+def test_selected_action_class_matches_the_intent_action_class():
+    assert loop_mod._selected_action_class(None) is None
+    production = ScanProposal(h=2.1, k=0.0, l=0.0, e_lo=-2.0, e_hi=7.0, e_step=0.1, ncount=1,
+                              kind="production", reason="r", e_pred=0.2)
+    assert loop_mod._selected_action_class(production) == "production"
+    differentiate = ScanProposal(h=2.1, k=0.0, l=0.0, e_lo=-2.0, e_hi=7.0, e_step=0.1, ncount=1,
+                                 kind="quicklook", reason="r", e_pred=0.2,
+                                 meta={"purpose": "differentiate"})
+    assert loop_mod._selected_action_class(differentiate) == "differentiation_probe"
+
+
+class _StubPlan:
+    """Stands in for an ``ActionPlan`` where a test scripts the action space directly.
+
+    The loop consumes the plan, not a single proposal, so a test that wants to control what gets
+    proposed has to control the *sequence* — including the emptiness that follows the last one."""
+
+    def __init__(self, inventory, proposals):
+        self.inventory = inventory
+        self._proposals = list(proposals)
+
+    def next_proposal(self):
+        return self._proposals.pop(0) if self._proposals else None
+
+
+def _persist_cfg(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True, exist_ok=True)
+    return ws, types.SimpleNamespace(workspace=ws, log_path=ws / "report" / "session_log.jsonl")
+
+
+def _selected_proposal(fingerprint="fp-1", action_class="production", h=2.1):
+    return ScanProposal(h=h, k=0.0, l=0.0, e_lo=-2.0, e_hi=7.0, e_step=0.1, ncount=1,
+                        kind="production", reason="r", e_pred=0.2,
+                        meta={"scientific_action_fingerprint": fingerprint,
+                              "action_class": action_class,
+                              "proposal_fingerprint": f"req-{fingerprint}"})
+
+
+def test_persist_action_inventory_writes_a_content_addressed_artifact_and_compact_event(tmp_path):
+    from isar.drive.acquisition.inventory import GENERATOR_REGISTRY_VERSION
+    ws, cfg = _persist_cfg(tmp_path)
+    inv = _exhausted_inventory()
+
+    ref, fingerprint = loop_mod._persist_action_inventory(
+        cfg, inv, it=3, proposal=None, prev_fingerprint="fp-earlier", force_full=True)
+
+    assert fingerprint is None                       # nothing was selected at a terminal boundary
+    # An empty/forced inventory persists the full artifact, addressed by its own content hash.
+    assert ref["kind"] == "action_inventory" and ref["sha256"] == inv.content_hash()
+    assert ref["path"] == f"report/inventory/{inv.content_hash()}.json"
+    artifact = ws / ref["path"]
+    assert artifact.exists()
+    assert json.loads(artifact.read_text(encoding="utf-8")) == inv.to_full_dict()
+    # The compact per-iteration event carries the summary + the reference to the full artifact.
+    payloads = [e["payload"] for e in read_log(cfg.log_path) if e["kind"] == "inventory"]
+    assert len(payloads) == 1
+    assert payloads[0]["terminal_cause"] == "action_inventory_exhausted"
+    assert payloads[0]["generator_registry_version"] == GENERATOR_REGISTRY_VERSION
+    assert payloads[0]["inventory_ref"] == ref
+
+
+def test_persistence_triggers_on_the_scientific_action_not_the_broad_class(tmp_path):
+    """Review #11: twenty production scans at twenty different q are twenty different actions. Keying
+    persistence on the broad class collapsed them to one record and one artifact."""
+    ws, cfg = _persist_cfg(tmp_path)
+    inv = _eligible_inventory()
+
+    # Same scientific action as last iteration, eligible, not a terminal -> no full artifact.
+    ref, fingerprint = loop_mod._persist_action_inventory(
+        cfg, inv, it=1, proposal=_selected_proposal("fp-1"), prev_fingerprint="fp-1",
+        force_full=False)
+    assert ref is None and fingerprint == "fp-1"
+    assert not (ws / "report" / "inventory").exists()
+    payloads = [e["payload"] for e in read_log(cfg.log_path) if e["kind"] == "inventory"]
+    assert len(payloads) == 1 and "inventory_ref" not in payloads[0]
+    # ...but the compact record still identifies the selected action, not just its class.
+    assert payloads[0]["selected_action_class"] == "production"
+    assert payloads[0]["selected_scientific_action_fingerprint"] == "fp-1"
+    assert payloads[0]["selected_hkl"] == [2.1, 0.0, 0.0]
+    assert payloads[0]["selected_request_fingerprint"] == "req-fp-1"
+    assert payloads[0]["selected_generator"] == "g"
+
+    # A different q — same broad class, different scientific action — does persist.
+    ref2, fingerprint2 = loop_mod._persist_action_inventory(
+        cfg, inv, it=2, proposal=_selected_proposal("fp-2", h=2.2), prev_fingerprint="fp-1",
+        force_full=False)
+    assert fingerprint2 == "fp-2"
+    assert ref2 is not None and (ws / ref2["path"]).exists()
+
+
+def test_a_corrupt_content_addressed_artifact_is_repaired_not_trusted(tmp_path):
+    """Review #12: an existing file at the hash-named path was trusted without checking that it still
+    hashes to that address, so external damage would be referenced as the terminal's proof."""
+    ws, cfg = _persist_cfg(tmp_path)
+    inv = _exhausted_inventory()
+    ref, _ = loop_mod._persist_action_inventory(
+        cfg, inv, it=0, proposal=None, prev_fingerprint=None, force_full=True)
+    artifact = ws / ref["path"]
+    artifact.write_text('{"tampered": true}', encoding="utf-8")      # external damage
+
+    again, _ = loop_mod._persist_action_inventory(
+        cfg, inv, it=1, proposal=None, prev_fingerprint=None, force_full=True)
+
+    assert again == ref
+    assert json.loads(artifact.read_text(encoding="utf-8")) == inv.to_full_dict()   # repaired
+    # ...and the repair is surfaced rather than done silently.
+    faults = [e["payload"] for e in read_log(cfg.log_path) if e["kind"] == "exception"]
+    assert any(p.get("action") == "inventory_artifact_mismatch" for p in faults)
+
+
+def test_campaign_logs_inventory_events_with_verifiable_artifact_hashes(tmp_path):
+    from isar.drive.acquisition.inventory import GENERATOR_REGISTRY_VERSION, canonical_json
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, ws = _run(tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega))
+    payloads = [e["payload"] for e in read_log(summary["session_log"]) if e["kind"] == "inventory"]
+    assert payloads, "every proposing iteration logs a compact inventory summary"
+    for payload in payloads:
+        assert payload["generator_registry_version"] == GENERATOR_REGISTRY_VERSION
+        ref = payload.get("inventory_ref")
+        if ref is not None:
+            artifact = ws / ref["path"]
+            assert artifact.exists()
+            full = json.loads(artifact.read_text(encoding="utf-8"))
+            # The advertised sha is the canonical content address of the persisted artifact.
+            import hashlib
+            assert hashlib.sha256(canonical_json(full).encode("utf-8")).hexdigest() == ref["sha256"]
+
+
+def test_a_campaign_records_all_three_action_identities_against_each_scan(tmp_path):
+    """PR2.2: a scan must be joinable back to the scientific question it answers, the exact request
+    that was sent, and the geometry TAVI judged that request under. With only the request recorded, a
+    forensic replay cannot tell a geometry rejection (retry elsewhere) from a scientifically exhausted
+    action (never retry) — which is exactly the distinction PR2.3's reject-and-try-next rests on."""
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, _ws = _run(tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega))
+    events = read_log(summary["session_log"])
+
+    validations = [e["payload"] for e in events if e["kind"] == "validate"]
+    assert validations, "a campaign that submitted scans must have validated them"
+    assert all(v.get("feasibility_manifest_fingerprint") for v in validations)
+
+    runs = [e["payload"] for e in events if e["kind"] == "run"]
+    assert runs
+    for payload in runs:
+        assert payload.get("proposal_fingerprint")
+        assert payload.get("scientific_action_fingerprint")
+        assert payload.get("feasibility_manifest_fingerprint")
+
+
+def test_inventory_terminal_stamps_the_versioned_proof_on_the_stop(tmp_path, monkeypatch):
+    from isar.drive.acquisition.inventory import GENERATOR_REGISTRY_VERSION
+    omega = lambda h: (h - 2.0) * 2.0
+    exhausted = _exhausted_inventory()
+    monkeypatch.setattr(loop_mod, "plan_actions", lambda *a, **k: _StubPlan(exhausted, []))
+    monkeypatch.setattr(
+        loop_mod, "_blocked_frontier_decision",
+        lambda objective, grid, decision, inventory=None: StopDecision(
+            "incomplete", ["branch_ambiguity; frontier_blocked"], decision.per_q,
+            terminal_cause="action_inventory_exhausted"))
+
+    summary, ws = _run(tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega))
+    # The canonical terminal record is the durable session-log ``stop`` event.
+    stop = [e["payload"] for e in read_log(summary["session_log"]) if e["kind"] == "stop"][-1]
+    assert stop["state"] == "incomplete"
+    assert stop["terminal_cause"] == "action_inventory_exhausted"
+    assert stop["inventory_version"] == exhausted.inventory_version
+    assert stop["generator_registry_version"] == GENERATOR_REGISTRY_VERSION
+    # The proof references the persisted full inventory artifact, and it is on disk.
+    assert (ws / stop["inventory_ref"]["path"]).exists()
+    # Review #10: the campaign summary — what a reader opens first — must lead to that same proof,
+    # not just carry a terminal_cause with no way to verify it.
+    linked = summary["stop"]["action_inventory"]
+    assert linked["generator_registry_version"] == GENERATOR_REGISTRY_VERSION
+    assert linked["inventory_ref"] == stop["inventory_ref"]
+
+
 def test_pooled_selected_optic_suppresses_false_missed_window_from_acoustic_individual():
     proposal = ScanProposal(
         h=2.05, k=0.0, l=0.0, e_lo=-2.0, e_hi=8.0, e_step=0.25,
@@ -166,6 +552,28 @@ def test_pooled_selected_optic_suppresses_false_missed_window_from_acoustic_indi
     }]
     assert _pooled_target_delivered(observations, proposal, "optic")
     assert not _pooled_target_delivered(observations, proposal, "acoustic")
+
+
+def test_auxiliary_clean_null_is_a_result_not_a_missed_window():
+    """A trustworthy clean null from an auxiliary identity probe answered its question — the rival was
+    not there — and must not trigger recenter/widen recovery. A broken analysis is not a clean null and
+    still routes to recovery (fail-open), and a canonical delivery is never treated this way."""
+    from isar.schema.steering import AUXILIARY_TRACK_NODE, CANONICAL_MASTER
+    probe = ScanProposal(h=2.9, k=0.0, l=0.0, e_lo=7.0, e_hi=7.3, e_step=0.1,
+                         ncount=25_000_000, kind="identity_rival_probe", reason="rival probe",
+                         e_pred=7.115, acquisition_id="acq-null",
+                         meta={"evidence_sink": AUXILIARY_TRACK_NODE})
+    canonical = ScanProposal(h=2.9, k=0.0, l=0.0, e_lo=7.0, e_hi=7.3, e_step=0.1,
+                             ncount=25_000_000, kind="production", reason="prod",
+                             e_pred=7.1, acquisition_id="acq-c",
+                             meta={"evidence_sink": CANONICAL_MASTER})
+    clean_null = [{"disposition": "no_signal", "scan": "s1", "detector": "d1"}]
+    unusable = [{"disposition": "error", "scan": "s1", "detector": "d1"}]
+
+    assert _auxiliary_clean_null(probe, clean_null) is True
+    assert _auxiliary_clean_null(probe, unusable) is False        # broken analysis still recovers
+    assert _auxiliary_clean_null(probe, []) is False              # no analysis at all is not a null
+    assert _auxiliary_clean_null(canonical, clean_null) is False  # canonical delivery is not a probe
 
 
 def test_crossing_recorder_records_transitions_not_every_eligible_batch(tmp_path):
@@ -194,6 +602,35 @@ def test_crossing_recorder_records_transitions_not_every_eligible_batch(tmp_path
     observations.extend([update(0.8), update(0.3)])
     grid = summarize_grid(objective, observations, [master(["A"], 0.3)])
     assert _record_eligible_crossings(grid, observations) == 1
+
+
+def test_grid_summary_replays_authoritative_revision_and_identity_revisit_chronology():
+    frozen = shipped_hypothesis_snapshot("acoustic", (-2.0, 12.0))
+    objective = ObjectiveSpec(
+        path=[(2.05, 0.0, 0.0), (2.10, 0.0, 0.0)], tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e12}, target_branch="acoustic",
+        target_selector="tracked_branch", **frozen)
+    candidates = [{"energy_meV": 0.9, "sigma_meV": 0.08}]
+    observations = [
+        {"hkl": [2.10, 0.0, 0.0], "kind": "production", "acquisition_id": "initial",
+         "acquisition_action_role": "production", "resolved": False},
+        {"hkl": [2.10, 0.0, 0.0], "kind": "pooled_master_update",
+         "branch_candidates": candidates, "content_hash": "middle-r1"},
+        {"hkl": [2.05, 0.0, 0.0], "kind": "quicklook", "acquisition_id": "neighbor",
+         "acquisition_action_role": "classification", "resolved": False},
+        {"hkl": [2.05, 0.0, 0.0], "kind": "pooled_master_update",
+         "branch_candidates": candidates, "content_hash": "neighbor-r1"},
+        {"hkl": [2.10, 0.0, 0.0], "kind": "production", "acquisition_id": "revisit",
+         "acquisition_action_role": "classification", "resolved": False},
+        {"hkl": [2.10, 0.0, 0.0], "kind": "pooled_master_update",
+         "branch_candidates": candidates, "content_hash": "middle-r2"},
+    ]
+    grid = summarize_grid(objective, observations, [])
+    middle = grid[1]
+    assert middle.production_sequences == [0, 4]
+    assert middle.identity_revisit_sequences == [4]
+    assert middle.evidence_update_sequences == [1, 5]
+    assert grid[0].evidence_update_sequences == [3]
 
 
 def test_budget_reconciliation_charges_only_executed_points():
@@ -267,6 +704,56 @@ class MockTavi:
 
     def get_resolution(self, h, k, l, deltaE):
         return {"ok": True, "fwhm": {"dE": 0.8}}
+
+
+class _UnreachableQTavi(MockTavi):
+    """A TAVI where one q is geometrically unreachable — every request there is refused."""
+
+    def __init__(self, omega_true, *, unreachable_h):
+        super().__init__(omega_true)
+        self.unreachable_h = unreachable_h
+        self.validated_h: list[float] = []
+
+    def validate(self, body):
+        h = float(body["parameters"]["H"])
+        self.validated_h.append(h)
+        if abs(h - self.unreachable_h) <= 1e-6:
+            return {"would_queue": False, "blockers": ["a2_out_of_range"],
+                    "requested_points": 91, "feasible_points": 0}
+        return super().validate(body)
+
+
+def test_an_unreachable_q_is_recorded_as_a_geometry_suppression(tmp_path):
+    """PR2.3. Before this, a q the instrument cannot reach cost a whole iteration every time the
+    selector picked it, and nothing recorded that it had stopped being usable — so an inventory could
+    empty out with no account of why."""
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _UnreachableQTavi(omega, unreachable_h=2.1)
+    summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+    events = read_log(summary["session_log"])
+
+    suppressed = [e["payload"] for e in events if e["kind"] == "action_suppressed"]
+    assert suppressed, "an unreachable q must be recorded, not silently retried forever"
+    assert suppressed[0]["scope"] == "geometry"
+    assert suppressed[0]["rejection_class"] == "structural"
+    assert suppressed[0]["verdict"] == "geometry_unreachable"
+    assert suppressed[0]["hkl"][0] == pytest.approx(2.1)
+
+    # No scan was ever submitted at the unreachable q, and the campaign kept working elsewhere.
+    submitted = [float(body["parameters"]["H"]) for body in client.jobs.values()]
+    assert all(abs(h - 2.1) > 1e-6 for h in submitted)
+    assert summary["stop"]["state"] in {"met", "incomplete"}
+
+
+def test_a_suppressed_q_is_not_re_proposed_on_later_iterations(tmp_path):
+    """The suppression has to outlive its iteration. Held only within one, the selector would pick the
+    same unreachable q again next time and the campaign would burn its remaining iterations on it."""
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _UnreachableQTavi(omega, unreachable_h=2.1)
+    summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+    rejected_validations = [h for h in client.validated_h if abs(h - 2.1) <= 1e-6]
+    assert len(rejected_validations) == 1, \
+        f"the unreachable q was validated {len(rejected_validations)} times; suppression did not stick"
 
 
 class _SubmitFailingTavi(MockTavi):
@@ -839,6 +1326,23 @@ def test_terminal_and_certification_refuse_unresolved_current_promotion(tmp_path
                    for event in events if event["kind"] == "decide")
 
 
+def test_certify_failure_is_classified_as_controller_fault(tmp_path, monkeypatch):
+    # Change 2 (AP7): the campaign converges (met) in-loop, then the forced final-certification pass
+    # does not complete. A certify failure reached from a `met` decision is a controller fault (e.g.
+    # the worklist-index invariant violation that hard-failed AP7), never a data-limited scientific
+    # outcome. It must terminate `incomplete` with terminal_cause="controller_fault" so a software
+    # bug is surfaced for repair-and-resume rather than reported as a certified/data-limited campaign.
+    omega = lambda h: (h - 2.0) * 2.0
+    monkeypatch.setattr(loop_mod, "_certify", lambda **kw: (kw["observations"], False))
+
+    summary, _ws = _run(
+        tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega, hesse_only=True))
+
+    assert summary["stop"]["state"] == "incomplete"
+    assert summary["stop"].get("terminal_cause") == "controller_fault"
+    assert "controller_fault" in summary["stop"]["reasons"][0]
+
+
 def _widen_last_pooled_master(workspace, halfwidth=0.75):
     results_path = Path(workspace) / "report" / "results.csv"
     with open(results_path, newline="", encoding="utf-8") as stream:
@@ -1112,7 +1616,12 @@ def test_certify_sends_only_dirty_q_in_master_worklist(tmp_path, monkeypatch):
 
     assert ran and len(requests) == 1
     assert requests[0]["objective_path"] == [[2.2, 0.0, 0.0]]
-    assert requests[0]["per_q"] == [{"hkl": [2.2, 0.0, 0.0], "objective_index": 1}]
+    # per_q additionally carries the stopping decision's coverage verdict, so certification can tell
+    # a structurally unresolvable q from one whose pooled master is genuinely missing.
+    assert requests[0]["per_q"] == [{
+        "hkl": [2.2, 0.0, 0.0], "objective_index": 1,
+        "precision_coverage_eligible": True, "structural_endpoint_status": None,
+        "is_reduced_q_origin": False, "reason": None}]
     assert requests[0]["runtime"]["total"] == 1
 
 
@@ -1402,6 +1911,65 @@ def test_bayes_master_promotion_logs_actual_tier_and_outcome(tmp_path):
 
 
 # --------------------------------------------------------------------------- crash-safe resume (Part C)
+def test_selected_action_record_identifies_the_generator_by_fingerprint():
+    """After a fallback the selected proposal need not be the first eligible action, so the compact
+    record must attribute it to the generator whose scientific fingerprint it realizes, not to
+    eligible_actions()[0]."""
+    from isar.drive.acquisition.inventory import (
+        ActionEligibility, ActionEvaluation, ActionInventory, GeneratorReport, GeneratorStatus,
+        MeasurementIntent)
+    first = MeasurementIntent(action_class="production", hkl=(2.1, 0.0, 0.0), energy_lo=-2.0,
+                              energy_hi=7.0, window_family="target")
+    second = MeasurementIntent(action_class="identity_rival_probe", hkl=(2.9, 0.0, 0.0),
+                               energy_lo=6.0, energy_hi=8.0, window_family="rival")
+    inv = ActionInventory(
+        evaluations=[
+            ActionEvaluation(intent=first, generator="legacy_selector_adapter",
+                             eligibility=ActionEligibility.ELIGIBLE),
+            ActionEvaluation(intent=second, generator="narrow_rival_probe",
+                             eligibility=ActionEligibility.ELIGIBLE)],
+        reports=[GeneratorReport(generator="legacy_selector_adapter",
+                                 status=GeneratorStatus.COMPLETED, generated=1),
+                 GeneratorReport(generator="narrow_rival_probe",
+                                 status=GeneratorStatus.COMPLETED, generated=1)])
+    # The proposal realizes the SECOND action (the rival probe), not eligible_actions()[0].
+    proposal = ScanProposal(
+        h=2.9, k=0.0, l=0.0, e_lo=6.0, e_hi=8.0, e_step=0.1, ncount=1, kind="identity_rival_probe",
+        reason="probe",
+        meta={"scientific_action_fingerprint": second.scientific_action_fingerprint})
+
+    record = _selected_action_record(proposal, inv)
+    assert record["selected_generator"] == "narrow_rival_probe"
+
+
+def test_proposal_from_submission_preserves_auxiliary_action_identity():
+    """A crashed-and-resumed auxiliary probe must keep its sink and action identity. Without the sink
+    the recovered scan becomes canonical by default and pools into the certified master; without the
+    scientific/feasibility fingerprints it loses its audit identity. This is load-bearing once the
+    clean-null evidence lands on the auxiliary node."""
+    from isar.schema.steering import AUXILIARY_TRACK_NODE
+    payload = {
+        "hkl": [2.9, 0.0, 0.0], "kind": "identity_rival_probe", "acquisition_id": "run:00000007",
+        "submitted_ncount": 10_000_000, "n_points": 5, "acquisition_target_energy": 7.115,
+        "evidence_sink": AUXILIARY_TRACK_NODE,
+        "scientific_action_fingerprint": "sci-fp-123",
+        "feasibility_manifest_fingerprint": "feas-fp-456",
+        "proposal_fingerprint": "req-fp-789",
+    }
+    proposal = _proposal_from_submission(payload)
+
+    assert proposal.meta["evidence_sink"] == AUXILIARY_TRACK_NODE
+    assert proposal.meta["scientific_action_fingerprint"] == "sci-fp-123"
+    assert proposal.meta["feasibility_manifest_fingerprint"] == "feas-fp-456"
+
+
+def test_proposal_from_submission_defaults_a_missing_sink_to_canonical():
+    """A legacy submission with no persisted sink recovers as an ordinary canonical scan."""
+    from isar.schema.steering import CANONICAL_MASTER
+    proposal = _proposal_from_submission({"hkl": [2.0, 0.0, 0.0], "kind": "production"})
+    assert proposal.meta["evidence_sink"] == CANONICAL_MASTER
+
+
 def test_resume_state_recovers_ledger_from_log_and_results(tmp_path):
     ws = tmp_path / "ws"
     (ws / "report").mkdir(parents=True)
@@ -1495,6 +2063,40 @@ def test_detailed_resume_replays_changing_ncount_and_master_updates_chronologica
         "quicklook", "pooled_master_update", "production", "pooled_master_update",
         "production", "pooled_master_update"]
     assert resumed["scan_counter"] == 3
+
+
+def test_detailed_resume_reconstructs_pre_provenance_live_ncount_clamp(tmp_path):
+    ws = tmp_path / "ws-clamp-replay"
+    (ws / "report").mkdir(parents=True)
+    log = ws / "report" / "session_log.jsonl"
+    log_event(log, "exception", {
+        "action": "proposal_ncount_clamped_to_limit", "iter": 4,
+        "hkl": [2.3, 0.0, 0.0], "requested_ncount": 400_000_000,
+        "effective_ncount": 100_000_000,
+    })
+    submission = {
+        "job_id": "j-clamped", "state": "done", "iter": 4,
+        "kind": "production", "ncount": 100_000_000,
+        "submitted_ncount": 100_000_000, "n_points": 20,
+        "hkl": [2.3, 0.0, 0.0], "cost": 2_000_000_000.0,
+        "acquisition_id": "A-clamped",
+    }
+    log_event(log, "run", submission)
+    log_event(log, "physical_submission", submission)
+    log_event(log, "analyze", {"job_id": "j-clamped", "n_rows": 1})
+    _write_results(ws, [{
+        "scan": 1, "detector": "det", "h": 2.3, "k": 0.0, "l": 0.0,
+        "status": "fitted", "verdict": "branch_ambiguous",
+        "disposition": "flagged", "omega0": 2.7,
+        "interval_lo": 2.5, "interval_hi": 2.9, "interval_reliable": True,
+    }])
+    resumed = _resume_state(ws, log, _UNITY_CAL)
+    physical = [row for row in resumed["observations"]
+                if row.get("kind") != "pooled_master_update"]
+    assert len(physical) == 1
+    assert physical[0]["ncount_clamped"] is True
+    assert physical[0]["requested_ncount"] == 400_000_000
+    assert physical[0]["runtime_ncount_limit"] == 100_000_000
 
 
 def test_detailed_resume_keeps_legacy_prefix_and_charges_multidetector_scan_once(tmp_path):
@@ -1949,6 +2551,46 @@ def test_proposal_finalizer_uses_smaller_policy_cap_and_reclamps_neutron_count(t
             p, objective, cfg, {"kind": "neutrons", "amount": 99.0, "spent": 0.0}, it=4)
 
 
+def test_proposal_fingerprint_persists_action_evidence_and_original_branch_roles(tmp_path):
+    objective = types.SimpleNamespace(
+        tolerance_meV=0.5,
+        steering={"max_scan_points": 20, "production_batch_ncount": 10,
+                  "max_ncount_per_scan": 1_000})
+    cfg = types.SimpleNamespace(max_points=20, max_points_source="default",
+                                instrument_limits=None, log_path=tmp_path / "log.jsonl")
+
+    def finalized(target, rival):
+        proposal = ScanProposal(
+            h=2.1, k=0.0, l=0.0, e_lo=-2.0, e_hi=7.0, e_step=0.5,
+            ncount=10, kind="production", reason="identity revisit", n_points=19,
+            meta={"acquisition_action_role": "classification",
+                  "authoritative_evidence_revision": "neighbor-master-r7",
+                  "target_branch_role": target, "rival_branch_role": rival})
+        _finalize_proposal(
+            proposal, objective, cfg,
+            {"kind": "neutrons", "amount": 10_000.0, "spent": 0.0}, it=1)
+        return proposal
+
+    acoustic = finalized("acoustic", "optic")
+    optic = finalized("optic", "acoustic")
+    assert acoustic.meta["acquisition_action_role"] == "classification"
+    assert acoustic.meta["authoritative_evidence_revision"] == "neighbor-master-r7"
+    assert len(acoustic.meta["proposal_fingerprint"]) == 64
+    assert acoustic.meta["proposal_fingerprint"] != optic.meta["proposal_fingerprint"]
+
+    restored = loop_mod._proposal_from_submission({
+        "hkl": [2.1, 0.0, 0.0], "kind": "production", "submitted_ncount": 10,
+        "acquisition_action_role": acoustic.meta["acquisition_action_role"],
+        "authoritative_evidence_revision": acoustic.meta["authoritative_evidence_revision"],
+        "target_branch_role": acoustic.meta["target_branch_role"],
+        "rival_branch_role": acoustic.meta["rival_branch_role"],
+        "proposal_fingerprint": acoustic.meta["proposal_fingerprint"],
+    })
+    assert restored.meta["target_branch_role"] == "acoustic"
+    assert restored.meta["rival_branch_role"] == "optic"
+    assert restored.meta["proposal_fingerprint"] == acoustic.meta["proposal_fingerprint"]
+
+
 def test_finalizer_composes_per_point_and_queue_limits_for_hour_budget(tmp_path):
     p = ScanProposal(h=2.1, k=0.0, l=0.0, e_lo=0.0, e_hi=9.0, e_step=1.0,
                      ncount=400_000_000, kind="production", reason="test", n_points=10,
@@ -2123,15 +2765,16 @@ def test_campaign_clamps_dynamic_400m_batch_and_publishes_limit_envelope(
     client = _NcountLimitedTavi(omega)
 
     def desired_400m(*_args, **_kwargs):
-        return ScanProposal(
+        proposal = ScanProposal(
             h=2.1, k=0.0, l=0.0, e_lo=-2.0, e_hi=7.0, e_step=0.1,
             ncount=400_000_000, kind="production", reason="dynamic tolerance request",
             e_pred=0.2, n_points=91,
             meta={"score": {"method": "deficit", "cost": 36_400_000_000.0},
                   "count_diagnostics": {"dynamic_ncount": True,
                                         "requested_before_runtime_limit": 400_000_000}})
+        return _StubPlan(None, [proposal])
 
-    monkeypatch.setattr(loop_mod, "propose_scan", desired_400m)
+    monkeypatch.setattr(loop_mod, "plan_actions", desired_400m)
     summary, _ws = _run(
         tmp_path, _objective(), client, make_mock_runner(omega), max_iters=1)
     assert client.validated_ncounts == [100_000_000]
@@ -2156,17 +2799,33 @@ class _RejectingTavi(MockTavi):
 
 
 def test_validation_refusals_use_distinct_logical_acquisitions(tmp_path):
+    """Every refused attempt is its own logical acquisition, and no *identical* request is re-sent.
+
+    An instrument that refuses everything used to burn the whole iteration budget: the same refused
+    request was re-emitted once per iteration, on the reasoning that an operational refusal is not
+    evidence the q is infeasible. Only structural and budget verdicts ever reach the request
+    suppression set, though — transient ones are scoped "none" — so each re-emission re-sent a request
+    that had already been refused structurally. The ladder that answers the same question with a
+    *different* window or exposure keeps its own fingerprint and stays open; when it too runs out, the
+    campaign says so instead of spinning."""
+    from isar.drive.acquisition.inventory import TERMINAL_CONTROLLER_FAULT
+
     client = _RejectingTavi()
     summary, _ws = _run(
         tmp_path, _objective(), client, make_mock_runner(lambda h: (h - 2.0) * 2.0),
         max_iters=20)
     proposals = [e["payload"] for e in read_log(summary["session_log"])
                  if e["kind"] == "propose"]
-    # Operational refusals are not scientific evidence that the q is infeasible. The global
-    # iteration limit is the guardrail when the instrument never accepts a proposal.
-    assert len(proposals) == 20
-    assert len({proposal["acquisition_id"] for proposal in proposals}) == 20
-    assert client.n == 0
+
+    assert client.n == 0, "nothing was ever accepted, so nothing may be submitted"
+    assert len({p["acquisition_id"] for p in proposals}) == len(proposals), (
+        "each refused attempt is its own logical acquisition")
+    requests = [(tuple(p["hkl"]), p["e_lo"], p["e_hi"], p["e_step"], p["ncount"])
+                for p in proposals]
+    assert len(set(requests)) == len(requests), "an identical refused request is never re-emitted"
+    assert len(proposals) < 20, "the iteration limit is no longer the guardrail"
+    assert summary["stop"]["terminal_cause"] == TERMINAL_CONTROLLER_FAULT
+    assert "no unsuppressed realization" in summary["stop"]["reasons"][0]
 
 
 def _cmd_points(cmd):
@@ -2461,3 +3120,192 @@ def test_force_kill_run_without_results_row_counts_spend(tmp_path):
     assert r["scan_counter"] == 1                               # the submitted scan is on the ledger
     assert r["neutrons"] == pytest.approx(6.0e9)                # its spend is counted (no free re-do)
     assert r["observations"] == []                             # but nothing folded → the q looks unmeasured
+
+
+# --------------------------------------------------- selection + finalize as one bounded step (O29)
+# GAP 1: an unaffordable / instrument-refused first action must not terminate a campaign while a
+# cheaper eligible action is still affordable. Selection and finalization are unified in
+# _next_finalized_proposal, which classifies a budget/instrument refusal and tries the next candidate
+# instead of letting it escape or stop the loop. These exercise the helper directly with a fake plan
+# and a monkeypatched _finalize_proposal (the full campaign harness is unnecessary weight for this).
+
+class _FakePlan:
+    """Hands back a fixed sequence of proposals, then None — the ordering ``next_proposal`` guarantees."""
+
+    def __init__(self, proposals):
+        self._proposals = list(proposals)
+        self._i = 0
+
+    def next_proposal(self):
+        if self._i >= len(self._proposals):
+            return None
+        proposal = self._proposals[self._i]
+        self._i += 1
+        return proposal
+
+
+def _fake_proposal(reason, **meta):
+    return types.SimpleNamespace(
+        h=2.1, k=0.0, l=0.0, e_lo=-2.0, e_hi=7.0, e_step=0.5, n_points=19, ncount=100,
+        kind="production", reason=reason, acquisition_id=None, intent=None, meta=dict(meta))
+
+
+def _helper_cfg(tmp_path):
+    return types.SimpleNamespace(log_path=tmp_path / "log.jsonl", calibration=_UNITY_CAL, floor=None)
+
+
+def test_next_finalized_proposal_skips_an_unaffordable_action_for_an_affordable_one(tmp_path, monkeypatch):
+    """The concrete O29 failure: a broad legacy production scan cannot fund its minimum batch, but the
+    narrow rival probe is affordable — the campaign must run the narrow action, not stop."""
+    broad, narrow = _fake_proposal("broad"), _fake_proposal("narrow")
+
+    def fake_finalize(proposal, objective, cfg, budget_state, *, it):
+        if proposal.reason == "broad":
+            raise loop_mod.BudgetInsufficientForMinimumBatch("need 100, have 10")
+
+    monkeypatch.setattr(loop_mod, "_finalize_proposal", fake_finalize)
+    plan = _FakePlan([broad, narrow])
+
+    proposal, terminal = loop_mod._next_finalized_proposal(
+        plan, types.SimpleNamespace(), _helper_cfg(tmp_path), [],
+        {"kind": "neutrons", "amount": 1_000.0, "spent": 0.0}, {}, it=0)
+
+    assert terminal is None
+    assert proposal is narrow
+
+
+@pytest.mark.parametrize("exc_cls, expected_state", [
+    (loop_mod.BudgetInsufficientForMinimumBatch, "incomplete"),
+    (loop_mod.InstrumentLimitBelowMinimumBatch, "infeasible"),
+])
+def test_next_finalized_proposal_classifies_a_finalization_failure(
+        tmp_path, monkeypatch, exc_cls, expected_state):
+    """GAP 1: when finalization raises during the post-decline fallback (or when no candidate is
+    affordable), the refusal is classified into a terminal StopDecision rather than escaping as an
+    exception. An instrument limit is ``infeasible``; running out of budget is ``incomplete``."""
+    only = _fake_proposal("only")
+
+    def fake_finalize(proposal, objective, cfg, budget_state, *, it):
+        raise exc_cls("boom")
+
+    monkeypatch.setattr(loop_mod, "_finalize_proposal", fake_finalize)
+    monkeypatch.setattr(loop_mod, "evaluate_stop",
+                        lambda *a, **k: StopDecision("continue", [], [{"hkl": [2.1, 0.0, 0.0]}]))
+    plan = _FakePlan([only])
+
+    proposal, terminal = loop_mod._next_finalized_proposal(
+        plan, types.SimpleNamespace(), _helper_cfg(tmp_path), [],
+        {"kind": "neutrons", "amount": 1.0, "spent": 0.0}, {}, it=0)
+
+    assert proposal is None
+    assert terminal is not None and terminal.state == expected_state
+    assert "boom" in terminal.reasons[0]
+
+
+def test_next_finalized_proposal_skips_a_request_already_in_the_suppression_set(tmp_path, monkeypatch):
+    """GAP 2: a finalized proposal whose ``request_fingerprint`` is in the restored ``by_request`` set
+    (an unchanged request the log says was already refused) is skipped in favour of the next action —
+    the exact request is not re-emitted, while a different window at the same q stays allowed."""
+    suppressed, fresh = _fake_proposal("suppressed"), _fake_proposal("fresh")
+
+    monkeypatch.setattr(loop_mod, "_finalize_proposal", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "finalized_proposal",
+                        lambda proposal: types.SimpleNamespace(
+                            request_fingerprint=("req-old" if proposal.reason == "suppressed"
+                                                 else "req-new")))
+    plan = _FakePlan([suppressed, fresh])
+
+    proposal, terminal = loop_mod._next_finalized_proposal(
+        plan, types.SimpleNamespace(), _helper_cfg(tmp_path), [],
+        {"kind": "neutrons", "amount": 1_000_000.0, "spent": 0.0},
+        {"req-old": {"class": "structural", "reason": "validation_rejected"}}, it=0)
+
+    assert terminal is None
+    assert proposal is fresh
+
+
+def test_a_sole_refused_request_terminates_instead_of_being_re_emitted(tmp_path, monkeypatch):
+    """The durable request-suppression contract, restored.
+
+    When no fresh realization remained the helper re-emitted the *identical* refused request, on the
+    reasoning that an operational refusal is not evidence the q is infeasible. But only
+    ``validation_rejected``, ``insufficient_target_support`` and
+    ``budget_insufficient_for_minimum_batch`` ever reach ``request_suppressions`` -- transient verdicts
+    are scoped "none" and never recorded -- so every re-emission re-submitted a request the instrument
+    or budget had refused *structurally*, once per iteration until max_iters.
+
+    The scientific intent stays eligible: one refused realization does not prove the action is
+    scientifically exhausted, and saying so would collapse the request/action distinction the
+    three-stage lifecycle exists to draw. The honest report is a resumable controller fault naming the
+    refusal, which an operator can act on."""
+    from isar.drive.acquisition.inventory import TERMINAL_CONTROLLER_FAULT
+
+    suppressed = _fake_proposal("suppressed")
+    monkeypatch.setattr(loop_mod, "_finalize_proposal", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "finalized_proposal",
+                        lambda proposal: types.SimpleNamespace(request_fingerprint="req-old"))
+    monkeypatch.setattr(loop_mod, "evaluate_stop",
+                        lambda *a, **k: StopDecision("continue", [], [{"hkl": [2.1, 0.0, 0.0]}]))
+    plan = _FakePlan([suppressed])
+
+    proposal, terminal = loop_mod._next_finalized_proposal(
+        plan, types.SimpleNamespace(), _helper_cfg(tmp_path), [],
+        {"kind": "neutrons", "amount": 1_000_000.0, "spent": 0.0},
+        {"req-old": {"class": "structural", "reason": "validation_rejected at hkl=[2.1, 0.0, 0.0]"}},
+        it=0)
+
+    assert proposal is None, "the identical refused request must never be re-emitted"
+    assert terminal is not None and terminal.state == "incomplete"
+    assert terminal.terminal_cause == TERMINAL_CONTROLLER_FAULT
+    assert "validation_rejected" in terminal.reasons[0], "the terminal must name the refusal"
+
+
+def test_an_earlier_budget_refusal_is_not_reported_as_a_software_fault(tmp_path, monkeypatch):
+    """``budget_insufficient_for_minimum_batch`` is BUDGET-scoped and *does* reach
+    ``request_suppressions``, so a budget refusal recorded in an earlier iteration arrives here with
+    no live budget exception. Reporting it as a controller fault would tell the operator to repair the
+    controller when the answer is to add budget."""
+    suppressed = _fake_proposal("suppressed")
+    monkeypatch.setattr(loop_mod, "_finalize_proposal", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "finalized_proposal",
+                        lambda proposal: types.SimpleNamespace(request_fingerprint="req-old"))
+    monkeypatch.setattr(loop_mod, "evaluate_stop",
+                        lambda *a, **k: StopDecision("continue", [], [{"hkl": [2.1, 0.0, 0.0]}]))
+
+    proposal, terminal = loop_mod._next_finalized_proposal(
+        _FakePlan([suppressed]), types.SimpleNamespace(), _helper_cfg(tmp_path), [],
+        {"kind": "neutrons", "amount": 1_000_000.0, "spent": 0.0},
+        {"req-old": {"class": "budget",
+                     "reason": "budget_insufficient_for_minimum_batch at hkl=[2.1, 0.0, 0.0]"}},
+        it=0)
+
+    assert proposal is None
+    assert terminal.state == "incomplete"
+    assert terminal.terminal_cause is None, "a budget limit is not a controller fault"
+    assert "budget" in terminal.reasons[0].lower()
+    assert "controller_fault" not in terminal.reasons[0]
+
+
+def test_a_known_budget_terminal_outranks_the_unrealizable_request_fault(tmp_path, monkeypatch):
+    """A named resource limit is a better answer than a generic controller fault, so when the sweep
+    already established one it wins."""
+    unaffordable, suppressed = _fake_proposal("unaffordable"), _fake_proposal("suppressed")
+
+    def fake_finalize(proposal, objective, cfg, budget_state, *, it):
+        if proposal.reason == "unaffordable":
+            raise loop_mod.BudgetInsufficientForMinimumBatch("need 100, have 10")
+
+    monkeypatch.setattr(loop_mod, "_finalize_proposal", fake_finalize)
+    monkeypatch.setattr(loop_mod, "finalized_proposal",
+                        lambda proposal: types.SimpleNamespace(request_fingerprint="req-old"))
+    monkeypatch.setattr(loop_mod, "evaluate_stop",
+                        lambda *a, **k: StopDecision("continue", [], [{"hkl": [2.1, 0.0, 0.0]}]))
+    plan = _FakePlan([unaffordable, suppressed])
+
+    proposal, terminal = loop_mod._next_finalized_proposal(
+        plan, types.SimpleNamespace(), _helper_cfg(tmp_path), [],
+        {"kind": "neutrons", "amount": 1.0, "spent": 0.0},
+        {"req-old": {"class": "structural", "reason": "validation_rejected"}}, it=0)
+
+    assert proposal is None
+    assert terminal.state == "incomplete" and "need 100, have 10" in terminal.reasons[0]

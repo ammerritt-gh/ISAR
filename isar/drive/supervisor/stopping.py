@@ -113,6 +113,81 @@ MAX_PROD_ATTEMPTS = 8         # compatibility/diagnostic threshold; never a stop
 
 
 # --------------------------------------------------------------------------- grid summary
+def _finite_or_none(value) -> float | None:
+    """``value`` as a finite float, else ``None`` — non-numeric ledger cells never raise here."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _candidate_energies(update: dict) -> list[float] | None:
+    """Sorted finite candidate energies, or ``None`` when the update carries no candidate table.
+
+    ``None`` is not an empty set: a legacy update that predates the column says nothing about the
+    candidates, and treating that as "no candidates" would make it incomparable with every update
+    that has them.
+    """
+    candidates = update.get("branch_candidates")
+    if candidates is None:
+        return None
+    energies = []
+    for candidate in candidates:
+        value = _finite_or_none((candidate or {}).get("energy_meV",
+                                                      (candidate or {}).get("omega0")))
+        if value is not None:
+            energies.append(value)
+    return sorted(energies)
+
+
+def _identity_context(update: dict) -> tuple:
+    """The non-candidate half of the identity question: calibration, hypotheses, slice, epoch.
+
+    ``identity_epoch`` is the *target selection* identity, carried as a discrete counter by the
+    producer. A selection flip is a changed answer rather than a changed candidate set, and it must
+    still reset the saturation window — the newest revisions are about a different target — but naming
+    it separately keeps "the candidate basis changed" meaning only what it says.
+
+    ``model_selection_family`` is deliberately absent: no producer has a model-family field to supply,
+    so including it was a permanently-``None`` clause that guaranteed nothing.
+    """
+    return (
+        update.get("calibration_version"),
+        update.get("hypotheses_fingerprint"),
+        update.get("campaign_slice_fingerprint"),
+        update.get("identity_epoch"),
+    )
+
+
+def _identity_comparable(update: dict, reference: dict, *, scale: float) -> bool:
+    """Whether two identity updates answer the same scientific *question*, so their metrics may be
+    compared across growing exposure to decide counting has stopped paying.
+
+    Comparability is a matched predicate rather than a hashable key. Keying on a quantized energy has
+    boundary instability — jitter across a bin edge changes the answer while nearly a full tolerance
+    of drift inside one bin does not — so candidates are *paired* instead and each pair must have moved
+    less than ``scale``. With equal counts on a line, sorted pairing is the minimum-cost matching, so
+    no assignment algorithm is needed.
+
+    Keying on the candidate *count* alone (the previous rule) let three windows of two entirely
+    different modes read as one comparable question. The *answer* stays excluded — ``branch_id``,
+    ``target_probability``, ``identity_entropy`` and the advancing revision ids are exactly what
+    saturation measures the movement of, so keying on them would reset the window every observation.
+    """
+    if _identity_context(update) != _identity_context(reference):
+        return False
+    mine, theirs = _candidate_energies(update), _candidate_energies(reference)
+    if mine is None or theirs is None:
+        return True                     # legacy updates say nothing about candidates; stay comparable
+    if len(mine) != len(theirs):
+        return False
+    tolerance = abs(float(scale)) if math.isfinite(float(scale)) else 0.0
+    return all(abs(a - b) <= tolerance for a, b in zip(mine, theirs))
+
+
 @dataclass
 class GridQ:
     """A per-grid-point rollup the acquisition function and the stopping criterion both consume.
@@ -148,20 +223,47 @@ class GridQ:
     best_prod_halfwidth: float | None = None  # compatibility only; never populated or consulted
     best_prod_omega0: float | None = None
     master: dict | None = None     # {"omega0","halfwidth","reliable","usable","disposition","n_members"}
+    evidence_master: dict | None = None  # pooled evidence even when target identity abstains
     requires_crossing_guard: bool = False
     requires_confirmed_track: bool = False
     crossing_fingerprints: list[str] = field(default_factory=list)
     max_production_batches: int = MAX_PROD_ATTEMPTS
+    maximum_bridge_steps: int = 1
     master_updates: list[dict] = field(default_factory=list)
+    evidence_updates: list[dict] = field(default_factory=list)
+    # Chronological positions in the durable observation stream.  These are decision-local
+    # bookkeeping, not a second scientific authority: they let acquisition prove that a same-q
+    # identity revisit was unlocked by a *newer* neighboring pooled-master revision.
+    production_sequences: list[int] = field(default_factory=list)
+    identity_revisit_sequences: list[int] = field(default_factory=list)
+    evidence_update_sequences: list[int] = field(default_factory=list)
+    clamped_productions: int = 0
+    clamped_effective_ncounts: list[int] = field(default_factory=list)
     interval_floor_window: int = 3
     interval_floor_min_improvement: float = 0.05
     interval_floor_min_exposure_ratio: float = 2.0
     track_state: str | None = None
     track_revision: int | None = None
+    structural_endpoint_status: str | None = None
+    is_reduced_q_origin: bool = False
+    # Local branch identity, carried verbatim from the tracker's own confirmation predicate
+    # (``branch_tracking._frontier_states``).  ``track_state`` answers whether this q is *connected*
+    # to the confirmed trajectory; these answer whether its identity is decisive *here*, which is a
+    # different question and the one that decides whether more counting can help.  They must be read
+    # from the tracker rather than re-derived from ``branch_posterior``: the driver deliberately
+    # clears that posterior for exactly the ambiguous case this has to distinguish.
+    target_probability: float | None = None
+    identity_entropy: float | None = None
+    local_identity_clear: bool | None = None
+    identity_updates: list[dict] = field(default_factory=list)
+    identity_floor_window: int = 3
+    identity_floor_min_improvement: float = 0.05
+    identity_floor_min_exposure_ratio: float = 2.0
 
     @property
     def visited(self) -> bool:
-        return self.master is not None or self.n_quicklook > 0 or self.n_production > 0
+        return (not self.precision_coverage_eligible or self.evidence_master is not None
+                or self.n_quicklook > 0 or self.n_production > 0)
 
     @property
     def master_revision(self) -> str | None:
@@ -175,7 +277,7 @@ class GridQ:
 
     @property
     def diagnostics(self) -> list[str]:
-        m = self.master or {}
+        m = self.evidence_master or self.master or {}
         out = []
         if self.interval_floored:
             out.append("interval_nonshrinking")
@@ -192,12 +294,20 @@ class GridQ:
             out.append("linewidth_resolution_limited")
         if m and not m.get("usable"):
             out.append("analysis_failed")
+        if self.exposure_saturated:
+            out.append("exposure_saturated")
+        if self.n_production >= self.max_production_batches:
+            out.append("same_q_strategy_ceiling")
         return list(dict.fromkeys(out))
 
     @property
     def assessment_state(self) -> str:
-        if self.master is None:
+        if not self.precision_coverage_eligible:
+            return "inferred_unresolved"
+        if self.evidence_master is None:
             return "unmeasured"
+        if self.master is None:
+            return "ambiguous"
         return "certified" if self.converged else "uncertified"
 
     @property
@@ -239,6 +349,13 @@ class GridQ:
         fingerprint = (self.master or {}).get("production_batch_fingerprint")
         return bool(fingerprint and self.crossing_fingerprints
                     and self.crossing_fingerprints[-1] != fingerprint)
+
+    @property
+    def precision_coverage_eligible(self) -> bool:
+        """Whether this q represents a measurable target requiring a certified interval."""
+        return not (self.track_state == "inferred_unresolved"
+                    and self.structural_endpoint_status == "inferred_unresolved"
+                    and self.is_reduced_q_origin)
 
     @property
     def info_saturated(self) -> bool:
@@ -297,21 +414,150 @@ class GridQ:
     @property
     def signal_seen(self) -> bool:
         """Whether this q has positive signal evidence, including an unresolved branch candidate."""
-        return bool((self.master or {}).get("usable"))
+        return bool((self.evidence_master or self.master or {}).get("usable"))
 
     @property
     def candidate_rejected(self) -> bool:
         return bool(self.master_updates and self.master_updates[-1].get("candidate_state") == "rejected")
 
     @property
+    def exposure_saturated(self) -> bool:
+        """Additional same-q dwell is demonstrably unable to change the current decision."""
+        repeated_limit = (len(self.clamped_effective_ncounts) >= 2
+                          and self.clamped_effective_ncounts[-1]
+                          == self.clamped_effective_ncounts[-2])
+        return repeated_limit or self.interval_floored or self.info_saturated
+
+    @property
+    def same_q_ceiling_reached(self) -> bool:
+        """The scientist's own same-q production ceiling, the single budget for dwell at this q.
+
+        ``maximum_bridge_steps`` is a path-geometry knob and is deliberately absent: adding it here
+        was what let an identity revisit be charged to the wrong allowance (OP10).
+        """
+        return self.n_production >= self.max_production_batches
+
+    @property
+    def identity_saturated(self) -> bool:
+        """More counting demonstrably cannot sharpen the branch label at this q.
+
+        ``interval_floored`` and ``info_saturated`` both need a *selected target master*, which an
+        identity-ambiguous q by definition does not have — its updates never pass ``branch_matches``
+        and so never reach ``master_updates``.  This is the identity-space analogue: over comparable
+        authoritative revisions, if exposure grew by the configured ratio and neither the target
+        probability nor the identity entropy improved materially, the label is not count-limited.
+        """
+        if self.local_identity_clear:
+            return False
+        window = [update for update in self.identity_updates
+                  if update.get("effective_exposure") is not None
+                  and (update.get("target_probability") is not None
+                       or update.get("identity_entropy") is not None)]
+        if len(window) < self.identity_floor_window:
+            return False
+        # Only compare revisions that answer the same identity question. Mirrors ``interval_floored``'s
+        # comparability key: a change in the candidate set, calibration, model, hypothesis, or slice
+        # is a different question, and saturation across it would be a phantom.
+        latest = window[-1]
+        comparable = [update for update in window
+                      if _identity_comparable(update, latest, scale=self.tolerance)]
+        if len(comparable) < self.identity_floor_window:
+            return False
+        window = comparable[-self.identity_floor_window:]
+        first, last = window[0], window[-1]
+        try:
+            first_exposure = float(first["effective_exposure"])
+            last_exposure = float(last["effective_exposure"])
+        except (TypeError, ValueError):
+            return False
+        if first_exposure <= 0.0 or (
+                last_exposure / first_exposure) < self.identity_floor_min_exposure_ratio:
+            return False
+
+        def _gain(key: str, *, lower_is_better: bool) -> float | None:
+            before, after = first.get(key), last.get(key)
+            if before is None or after is None:
+                return None
+            try:
+                before, after = float(before), float(after)
+            except (TypeError, ValueError):
+                return None
+            if not (math.isfinite(before) and math.isfinite(after)):
+                return None
+            # A metric that got *worse* under more exposure clips to zero gain deliberately.  It is
+            # not weaker evidence than stagnation that counting has stopped paying — it is stronger,
+            # and continuing to spend beam on a diverging label would be the wrong response.
+            if lower_is_better:
+                return max((before - after) / before, 0.0) if before > 0.0 else 0.0
+            return max((after - before) / (1.0 - before), 0.0) if before < 1.0 else 0.0
+
+        gains = [_gain("identity_entropy", lower_is_better=True),
+                 _gain("target_probability", lower_is_better=False)]
+        # Both metrics must be present and both must have stalled.  A partial identity signal (a
+        # ledger written before these columns, say) is not evidence that counting cannot help, and
+        # the conservative reading of "unknown" here is to keep measuring rather than to stop.
+        if any(value is None for value in gains):
+            return False
+        return max(gains) < self.identity_floor_min_improvement
+
+    @property
+    def identity_basis_changed(self) -> bool:
+        """The identity question changed within the recent identity window — the candidate set moved
+        by more than this q's tolerance, or the calibration / hypotheses / campaign slice / identity
+        epoch changed — so the latest updates are not comparable for saturation. Observability for why
+        a saturated-looking series is not treated as saturated."""
+        window = [update for update in self.identity_updates
+                  if update.get("effective_exposure") is not None
+                  and (update.get("target_probability") is not None
+                       or update.get("identity_entropy") is not None)]
+        if len(window) < self.identity_floor_window:
+            return False
+        latest = window[-1]
+        recent = window[-self.identity_floor_window:]
+        return any(not _identity_comparable(update, latest, scale=self.tolerance)
+                   for update in recent)
+
+    @property
+    def ambiguity_exhausted(self) -> bool:
+        evidence_only = self.evidence_master is not None and self.master is None
+        ambiguous_track = self.track_state in {"ambiguous", "missing", "provisional", "blocked"}
+        return bool((evidence_only or ambiguous_track)
+                    and (self.identity_saturated
+                         or (self.same_q_ceiling_reached and self.exposure_saturated)))
+
+    @property
     def stuck(self) -> bool:
-        """Compatibility surface: diagnostics no longer autonomously abandon a q-point."""
-        return False
+        """A bounded strategy stop, never evidence that the physical branch is absent."""
+        return self.ambiguity_exhausted
 
     @property
     def stuck_reason(self) -> str | None:
-        """Compatibility surface; scientific diagnostics live in :attr:`diagnostics`."""
-        return None
+        if not self.ambiguity_exhausted:
+            return None
+        if self.identity_saturated:
+            return ("branch_ambiguity; frontier_blocked after identity evidence stopped "
+                    "responding to exposure")
+        return "branch_ambiguity; frontier_blocked after saturated same-q strategy"
+
+    @property
+    def same_q_identity_work_remains(self) -> bool:
+        """Whether counting again here is still an authorized, physically meaningful action.
+
+        This is the controller invariant OP10 violated: it reported ``branch_ambiguity`` at points
+        for which this was true.  A decisive *local* identity makes further dwell pointless even
+        when the point is not connected — that is a connectivity problem, not a counting one.
+        """
+        if self.local_identity_clear:
+            return False
+        # Only the frontier itself is actionable.  ``_frontier_states`` labels the first non-clear
+        # point outward from the anchor ``ambiguous``/``missing`` and everything past it
+        # ``provisional``/``blocked``; acquisition can act on the former but reaches the latter only
+        # once the frontier ahead of them resolves.  Counting a point buried behind a blocked
+        # frontier is not an available move, so demanding it would be a false alarm.
+        if self.track_state not in {"ambiguous", "missing"}:
+            return False
+        return not (self.same_q_ceiling_reached or self.identity_saturated
+                    or self.exposure_saturated)
 
     @property
     def deficit(self) -> float:
@@ -329,6 +575,8 @@ def _logical_observations(observations: list[dict], target_branch: str) -> list[
     logical result. Legacy observations without an acquisition ID remain one-for-one.
     """
     groups: dict[tuple, list[dict]] = {}
+    sequence_by_object = {id(observation): sequence
+                          for sequence, observation in enumerate(observations)}
     for index, observation in enumerate(observations):
         if observation.get("kind") == "pooled_master_update":
             continue
@@ -361,6 +609,7 @@ def _logical_observations(observations: list[dict], target_branch: str) -> list[
                         or item.get("verdict") == "branch_continuation"]
             representative = positive[-1] if positive else group[-1]
         folded = dict(representative)
+        folded["_observation_sequence"] = max(sequence_by_object[id(item)] for item in group)
         folded["proposal_cost"] = sum(float(item.get("proposal_cost") or 0.0) for item in group)
         folded["submitted_exposure_increment"] = sum(
             float(item.get("submitted_ncount") or 0.0) for item in group
@@ -373,7 +622,8 @@ def _logical_observations(observations: list[dict], target_branch: str) -> list[
     return logical
 
 
-def summarize_grid(objective, observations: list[dict], master_rows: list[dict] | None = None):
+def summarize_grid(objective, observations: list[dict], master_rows: list[dict] | None = None,
+                   branch_track: dict | None = None):
     """One :class:`GridQ` per objective grid point from the per-scan ``observations`` + ``master_rows``.
 
     Per-scan observations contribute acquisition count/cost provenance only. ``master_rows`` (the
@@ -394,8 +644,10 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
     max_batches = int((getattr(objective, "steering", None) or {}).get(
         "maximum_production_batches_per_q", MAX_PROD_ATTEMPTS))
     policy = getattr(objective, "steering", None) or {}
+    maximum_bridge_steps = max(0, int(policy.get("maximum_bridge_steps", 1)))
     grid = [GridQ(index=i, hkl=tuple(path[i]), q=scalars[i], tolerance=objective.tolerance_meV,
                   requires_crossing_guard=crossing_guard, max_production_batches=max_batches,
+                  maximum_bridge_steps=maximum_bridge_steps,
                   requires_confirmed_track=confirmed_track_required,
                   interval_floor_window=max(1, int(policy.get("interval_floor_window", 3))),
                   interval_floor_min_improvement=float(policy.get(
@@ -403,15 +655,23 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                   interval_floor_min_exposure_ratio=float(policy.get(
                       "interval_floor_min_exposure_ratio", 2.0)))
             for i in range(len(path))]
-    for update in observations:
+    for sequence, update in enumerate(observations):
         if update.get("kind") != "pooled_master_update" or update.get("hkl") is None:
-            continue
-        if not branch_matches(update):
             continue
         i = match_grid_index(tuple(update["hkl"]), path)
         if i is not None:
-            grid[i].master_updates.append(dict(update))
-    for obs in _logical_observations(observations, target_branch):
+            grid[i].evidence_updates.append(dict(update))
+            grid[i].evidence_update_sequences.append(sequence)
+            # Identity progress is tracked on *evidence*, not on the target-matched master: an
+            # identity-ambiguous q never passes ``branch_matches`` and so never reaches
+            # ``master_updates``.  That is exactly why interval-based saturation cannot speak for it.
+            if (update.get("target_probability") is not None
+                    or update.get("identity_entropy") is not None):
+                grid[i].identity_updates.append(dict(update))
+            if branch_matches(update):
+                grid[i].master_updates.append(dict(update))
+    logical_observations = _logical_observations(observations, target_branch)
+    for obs in logical_observations:
         # A classification probe may deliberately sit off the requested path.  Its branch evidence is
         # retained elsewhere, but it must never seat or penalize a certification point — even when an
         # unusually fine path places it within the nearest-hkl matching tolerance.
@@ -441,6 +701,18 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                     obs.get("submitted_exposure_increment", submitted_ncount))
         if kind in PRODUCTION_KINDS:
             g.n_production += 1
+            # ``_logical_observations`` preserves group insertion order.  Locate the latest physical
+            # row for this logical acquisition so a later pooled update compares after the scan, not
+            # after an arbitrary reducer pass.
+            sequence = obs.get("_observation_sequence")
+            if sequence is not None:
+                g.production_sequences.append(int(sequence))
+                if obs.get("acquisition_action_role") == "classification":
+                    g.identity_revisit_sequences.append(int(sequence))
+            if obs.get("ncount_clamped"):
+                g.clamped_productions += 1
+                if submitted_ncount is not None:
+                    g.clamped_effective_ncounts.append(int(submitted_ncount))
             if cost > 0.0:
                 g.last_prod_cost = cost                 # the next production scan's ΔC proxy
         elif kind == "quicklook":
@@ -449,7 +721,7 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
         if mr.get("hkl") is None:
             continue
         i = match_grid_index(tuple(mr["hkl"]), path)
-        if i is not None and branch_matches(mr):
+        if i is not None:
             master = dict(mr)
             members = master.get("members") or []
             if members:
@@ -457,18 +729,44 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                                      separators=(",", ":"), ensure_ascii=True)
                 master["production_batch_fingerprint"] = hashlib.sha256(
                     encoded.encode("utf-8")).hexdigest()
-            grid[i].master = master
+            grid[i].evidence_master = master
+            if branch_matches(mr):
+                grid[i].master = master
             try:
                 master_revision = (int(master["track_revision"])
                                    if master.get("track_revision") is not None else 0)
             except (TypeError, ValueError):
                 master_revision = 0
             master_state = master.get("track_state")
-            if (master_state in {"confirmed", "ambiguous", "missing", "provisional", "blocked"}
+            if (master_state in {"confirmed", "ambiguous", "missing", "provisional", "blocked",
+                                 "inferred_unresolved"}
                     and (grid[i].track_revision is None
                          or master_revision >= grid[i].track_revision)):
                 grid[i].track_state = master_state
                 grid[i].track_revision = master_revision
+                grid[i].structural_endpoint_status = master.get("structural_endpoint_status")
+                grid[i].is_reduced_q_origin = bool(master.get("is_reduced_q_origin", False))
+                grid[i].target_probability = _finite_or_none(master.get("target_probability"))
+                grid[i].identity_entropy = _finite_or_none(master.get("identity_entropy"))
+                clear = master.get("local_identity_clear")
+                # A ledger predating these columns leaves identity unknown.  Unknown is treated as
+                # unclear so the controller counts rather than stops — the safe direction here.
+                grid[i].local_identity_clear = None if clear is None else bool(clear)
+    track = dict(branch_track or {})
+    for assignment in track.get("assignments") or []:
+        if (assignment.get("structural_endpoint_status") != "inferred_unresolved"
+                or not assignment.get("is_reduced_q_origin")):
+            continue
+        try:
+            index = int(assignment["path_index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not 0 <= index < len(grid):
+            continue
+        grid[index].track_state = "inferred_unresolved"
+        grid[index].track_revision = int(track.get("revision", 0))
+        grid[index].structural_endpoint_status = "inferred_unresolved"
+        grid[index].is_reduced_q_origin = True
     return grid
 
 
@@ -497,14 +795,27 @@ def model_points(grid: list[GridQ]) -> list[tuple[float, float, float]]:
 # --------------------------------------------------------------------------- the decision
 @dataclass
 class StopDecision:
-    """Campaign verdict: ``continue`` | ``met`` | ``incomplete`` | ``infeasible``."""
+    """Campaign verdict: ``continue`` | ``met`` | ``incomplete`` | ``infeasible``.
+
+    ``terminal_cause`` is an *additive* refinement that names *why* a terminal was reached, decided by
+    the post-acquisition inventory rather than by any stopping-side approximation. In this increment
+    the only causes are the inventory's own (``action_inventory_exhausted`` vs ``controller_fault``),
+    so it is set only on the ``incomplete`` no-proposal terminal and left ``None`` everywhere else; a
+    later taxonomy (see the plan's PR3) pairs further causes with other states. It is omitted from
+    ``to_dict`` when ``None`` so existing (cause-less) stop payloads are byte-unchanged.
+    """
 
     state: str
     reasons: list[str] = field(default_factory=list)
     per_q: list[dict] = field(default_factory=list)
+    terminal_cause: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"state": self.state, "reasons": list(self.reasons), "per_q": list(self.per_q)}
+        payload: dict[str, Any] = {
+            "state": self.state, "reasons": list(self.reasons), "per_q": list(self.per_q)}
+        if self.terminal_cause is not None:
+            payload["terminal_cause"] = self.terminal_cause
+        return payload
 
 
 def systematic_floor(calibration=None, floor: float | None = None) -> float:
@@ -520,6 +831,18 @@ def systematic_floor(calibration=None, floor: float | None = None) -> float:
         if cp is not None and math.isfinite(cp):
             return abs(float(cp))
     return 0.0
+
+
+def local_exhaustion_status(g: GridQ) -> dict[str, Any]:
+    """The per-q local-exhaustion status, serialized identically wherever it is reported.
+
+    One source of truth for the three coupled fields (``stuck``, its reason, and the underlying
+    ``ambiguity_exhausted``) so the ``decide`` event's per-q rollup and the campaign summary's
+    ``grid_state`` can never drift again. Both previously hard-coded ``stuck=False``, hiding real
+    saturation from forensics — AP6's index 18 logged ``stuck=false`` while ``GridQ.stuck`` was ``True``.
+    """
+    return {"stuck": g.stuck, "stuck_reason": g.stuck_reason,
+            "ambiguity_exhausted": g.ambiguity_exhausted}
 
 
 def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
@@ -540,8 +863,14 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
     per_q = []
     for g in grid:
         m = g.master or {}
-        if g.converged:
+        evidence = g.evidence_master or m
+        if not g.precision_coverage_eligible:
+            reason = ("acoustic endpoint inferred at physical reduced-q origin; unresolved by "
+                      "construction and excluded from precision coverage")
+        elif g.converged:
             reason = "certified master interval meets tolerance"
+        elif g.master is None and g.evidence_master is not None:
+            reason = "continue — pooled fit evidence exists but target branch identity is unresolved"
         elif g.master is None:
             reason = "continue — no pooled master published"
         elif (g.master or {}).get("pool_consistent") is False:
@@ -558,7 +887,13 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                       "master_members": m.get("members"),
                       "master_revision": g.master_revision,
                       "source": "master" if g.master is not None else None,
+                      "evidence_master": g.evidence_master is not None,
+                      "evidence_branch_id": evidence.get("branch_id"),
+                      "evidence_candidate_state": evidence.get("candidate_state"),
                       "track_state": g.track_state, "track_revision": g.track_revision,
+                      "structural_endpoint_status": g.structural_endpoint_status,
+                      "is_reduced_q_origin": g.is_reduced_q_origin,
+                      "precision_coverage_eligible": g.precision_coverage_eligible,
                       "linewidth_state": g.linewidth_state,
                       "pool_consistent": m.get("pool_consistent"),
                       "consistency_pvalue": m.get("consistency_pvalue"),
@@ -566,11 +901,21 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                       "expected_next_information": m.get("expected_next_information"),
                       "diagnostics": g.diagnostics,
                       "n_production": g.n_production,
+                      "clamped_productions": g.clamped_productions,
+                      "exposure_saturated": g.exposure_saturated,
+                      "strategy_ceiling_reached": g.same_q_ceiling_reached,
                       "interval_floored": g.interval_floored,
+                      # The identity trio belongs in the per-q summary, not only in results.csv:
+                      # a branch_ambiguity stop is unreadable without knowing whether the label was
+                      # undecided (count more) or decided-but-disconnected (counting cannot help).
+                      "target_probability": g.target_probability,
+                      "identity_entropy": g.identity_entropy,
+                      "local_identity_clear": g.local_identity_clear,
+                      "identity_saturated": g.identity_saturated,
                       "n_master_updates": len(g.master_updates),
                       "diagnostic_halfwidth": (g.master_updates[-1].get("diagnostic_halfwidth")
                                                if g.master_updates else None),
-                      "reason": reason, "stuck": False})
+                      "reason": reason, **local_exhaustion_status(g)})
 
     # Tolerance below the systematic floor is infeasible by construction — check before "met".
     if tol < fl:
@@ -581,17 +926,31 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                             [f"tolerance {tol:g} meV is below the resolution-asymmetry systematic "
                              f"floor {fl:g} meV (calibration center_pull_mean) — unreachable"], per_q)
 
-    if grid and all(g.converged for g in grid):
+    eligible = [g for g in grid if g.precision_coverage_eligible]
+    if grid and eligible and all(g.converged for g in eligible):
+        inferred = len(grid) - len(eligible)
         return StopDecision("met",
-                            [f"all {len(grid)} grid q converged: a certified ω₀ interval "
+                            [f"all {len(eligible)} measurable grid q converged"
+                             + (f"; {inferred} inferred unresolved acoustic endpoint excluded"
+                                if inferred else "")
+                             + ": a certified ω₀ interval "
                              f"(pooled master, inflation-calibrated) "
                              f"≤ {tol:g} meV at each point"], per_q)
+
+    # A branch-ambiguity terminal is NOT decided here.  ``evaluate_stop`` runs *before* acquisition
+    # enumerates the action space, so a local approximation of "is any classification route left?"
+    # (the former ``classification_route_remains`` grid scan) could terminalise a frontier the
+    # controller could in fact still act on — the early-terminal defect (DECISIONS, PR1).  Saturation
+    # is now a per-point diagnostic only (``GridQ.ambiguity_exhausted`` / ``stuck``); the honest
+    # ``incomplete`` is produced *after* acquisition returns no proposal, by
+    # ``_blocked_frontier_decision`` consuming the canonical ``ActionInventory`` and its
+    # ``terminal_cause``.
 
     reasons: list[str] = []
     spent = float(budget_state.get("spent", 0.0))
     amount = budget_state.get("amount")
     if amount is not None and spent >= float(amount):
-        n_unconverged = sum(1 for g in grid if not g.converged)
+        n_unconverged = sum(1 for g in eligible if not g.converged)
         reasons.append(f"budget exhausted ({spent:g}/{amount:g} {budget_state.get('kind', '')}) "
                        f"with {n_unconverged} grid q still under-determined")
         return StopDecision("incomplete", reasons, per_q)

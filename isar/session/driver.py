@@ -22,7 +22,7 @@ import time
 import tempfile
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 
 import numpy as np
@@ -39,7 +39,9 @@ from isar.reduce import combine, qc
 from isar.predictive import predictive_score as _predictive_score
 from isar.schema.card import Card
 from isar.schema.hypotheses import preset as hypothesis_preset
-from isar.schema.steering import IntensityMeasure, ParamConstraints
+from isar.schema.steering import (AUXILIARY_TRACK_NODE, CANDIDATE_NOT_DETECTED, CANONICAL_MASTER,
+                                  IntensityMeasure, ParamConstraints, evidence_sink_for,
+                                  realized_outcome_for)
 from isar.session import branch_assignment as BA
 from isar.session import branch_model, branch_tracking, calibrations, guidelines as guide_mod, ingest, router, session_prior
 
@@ -165,12 +167,42 @@ class FitOutcome:
     candidate_id: str | None = None
     candidate_state: str | None = None
     acquisition_id: str | None = None
+    # Where this scan's evidence is allowed to go (isar.schema.steering.EVIDENCE_SINKS). Absent or
+    # unrecognised means ``canonical_master``, so hand-loaded data and every pre-existing ledger read
+    # as ordinary evidence. Anything else was acquired to answer a narrower question and is barred from
+    # the (Q,T) pool and from certification.
+    evidence_sink: str = CANONICAL_MASTER
+    # The searched energy window of an auxiliary detection probe. Persisted so a trustworthy clean null
+    # (``disposition == no_signal`` under an ``auxiliary_track_node`` sink) becomes tracker negative
+    # evidence -- a ``null_window`` relaxing the missing-branch pull at this q -- instead of a vanished
+    # result. ``None`` on ordinary deliveries and on ledgers predating this field.
+    search_energy_lo: float | None = None
+    search_energy_hi: float | None = None
+    # Withheld target delivery (see _withhold_tracked_delivery). ``target_delivery_eligible`` gates
+    # certification/model/prior downstream; the other two carry the identity conclusion that survives
+    # the withheld number, and the reason a reader can act on. Declared here because the ledger
+    # rehydrates through this dataclass -- an undeclared key is logged and dropped on every carry.
+    target_delivery_eligible: bool = True
+    identity_branch_id: str | None = None
+    delivery_withheld_reason: str | None = None
     # Additive tracked-branch contract. Every fitted mode remains an unordered candidate; the joint
     # path tracker records which one is currently selected without erasing earlier alternatives.
     branch_candidates: list | None = None
     selected_candidate_index: int | None = None
     track_state: str | None = None
     track_revision: int | None = None
+    # The tracker's local identity verdict, retained even when the scalar selection is withdrawn.
+    # ``track_state`` says whether this q is connected to the confirmed trajectory; these say whether
+    # its branch label is decisive *here*.  Acquisition needs the difference to tell an undecided
+    # label (more counting helps) from a decided label behind a path gap (more counting cannot).
+    # ``None`` means a ledger predating these columns, i.e. unknown — never "clear".
+    target_probability: float | None = None
+    identity_entropy: float | None = None
+    local_identity_clear: bool | None = None
+    # A reduced-q origin the tracker infers rather than measures: unresolvable by construction, so
+    # it carries no certifiable interval and is excluded from precision coverage.
+    structural_endpoint_status: str | None = None
+    is_reduced_q_origin: bool = False
     spectrum_ref: str | None = None
     predictive_ref: str | None = None
     master_revision: str | None = None
@@ -1507,7 +1539,11 @@ def _mode_candidates(scan_id: str, detector: str, outcome: dict) -> list[dict]:
             if not isinstance(candidate, dict):
                 continue
             row = dict(candidate)
-            row.pop("probabilities", None)  # assignment evidence is recomputed from the whole path
+            # Assignment probabilities are derived state, never fit evidence.  Keeping them in the
+            # next Viterbi input would let yesterday's assignment masquerade as a new local label.
+            for field in ("probabilities", "association_probability",
+                          "character_probability", "trajectory_identity"):
+                row.pop(field, None)
             rows.append(row)
         if rows:
             return rows
@@ -1671,14 +1707,57 @@ def _path_index(q: list, path: list[list[float]], tolerance: float = 1e-5) -> in
     return index if distances[index] <= tolerance else None
 
 
+# A clean null answers "no rival in this window" but does not measure detection power, so its evidence
+# of absence is real but not certain. Until PR3 computes a predicted detection power per probe, a
+# trustworthy clean null relaxes the missing-branch pull by this bounded, conservative fraction rather
+# than fully cancelling it -- the null moves the posterior without ever claiming the branch cannot exist.
+CLEAN_NULL_DETECTION_SENSITIVITY = 0.5
+
+
+def _clean_null_window(outcome: dict) -> tuple[float, float, float] | None:
+    """The (lo, hi, sensitivity) negative-evidence window for a trustworthy clean-null auxiliary probe.
+
+    A clean null searched [search_energy_lo, search_energy_hi] and found no mode there; the tracker
+    reads this as "the branch predicted in this window is confirmed absent, not merely unmeasured"
+    (:func:`branch_tracking._null_relaxation`). Returns ``None`` for anything that is not a trustworthy
+    clean null -- a broken analysis, a detection, or a probe with no recorded window -- so a failure can
+    never masquerade as evidence of absence.
+    """
+    if outcome.get("evidence_sink") != AUXILIARY_TRACK_NODE:
+        return None
+    if realized_outcome_for(outcome.get("disposition"),
+                            has_candidate=bool(outcome.get("branch_candidates"))) != CANDIDATE_NOT_DETECTED:
+        return None
+    lo, hi = outcome.get("search_energy_lo"), outcome.get("search_energy_hi")
+    try:
+        lo, hi = float(lo), float(hi)
+    except (TypeError, ValueError):
+        return None
+    if not (np.isfinite(lo) and np.isfinite(hi) and lo < hi):
+        return None
+    return (lo, hi, CLEAN_NULL_DETECTION_SENSITIVITY)
+
+
 def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tuple[list[dict], dict]:
     """Return one authoritative fit per path point and all outcome references.
 
-    Only a published, internally consistent pooled master may be an identity authority.  Physical
-    fits remain in ``refs`` so the GUI can display their candidate tables, but they never fill a gap
-    in the authoritative track and never vote on a master assignment.
+    Only a published pooled master may be an identity authority.  Physical fits remain in ``refs`` so
+    the GUI can display their candidate tables, but they never fill a gap in the authoritative track
+    and never vote on a master assignment.  Internal consistency ranks masters here rather than
+    excluding them — an inconsistent pool is still fitted evidence of *which modes exist*, and the
+    gates that consistency does own live elsewhere (see the ``pool_consistent`` comment below).
+
+    A scan acquired as an ``auxiliary_track_node`` probe is the one exception, and a deliberately
+    narrow one.  It was fired to decide *which mode* a candidate is, not to deliver a better ω₀, so it
+    is never pooled and never certification-eligible; its fitted modes join the observation at its path
+    index as extra candidates tagged ``evidence_source="auxiliary_probe"``.  It can therefore change the
+    identity assigned at that point and can never supply the point's ω₀ or become its ``authority``.
+    It merges only where a pooled master already holds the index: alone it would be the *sole* identity
+    evidence at that point, which is precisely what the rule above exists to prevent.
     """
     by_index: dict[int, list[tuple]] = {}
+    auxiliary_by_index: dict[int, list[dict]] = {}
+    null_windows_by_index: dict[int, list[tuple]] = {}
     refs: dict[str, tuple] = {}
     for order, entry in enumerate(session.scans.values()):
         for detector, outcome in entry.detectors.items():
@@ -1687,29 +1766,129 @@ def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tupl
             key = f"{entry.scan_id}:{detector}"
             refs[key] = (entry, detector, outcome)
             index = _path_index(outcome.get("q") or [], path)
-            if (index is not None and candidates and outcome.get("pooled")
-                    and outcome.get("pool_consistent") is not False):
+            # A clean null from an auxiliary probe fits no mode, so it never becomes a candidate; it is
+            # negative evidence that the branch predicted in its searched window is absent, carried to
+            # the tracker as a ``null_window`` that relaxes (never forces) that branch's missing pull.
+            null_window = _clean_null_window(outcome)
+            if index is not None and null_window is not None:
+                null_windows_by_index.setdefault(index, []).append(null_window)
+                continue
+            if (index is not None and candidates
+                    and outcome.get("evidence_sink") == AUXILIARY_TRACK_NODE):
+                for candidate in candidates:
+                    tagged = dict(candidate)
+                    tagged["evidence_source"] = "auxiliary_probe"
+                    auxiliary_by_index.setdefault(index, []).append(tagged)
+                continue
+            if index is not None and candidates and outcome.get("pooled"):
                 exposure = outcome.get("effective_exposure")
                 try:
                     exposure = float(exposure)
                 except (TypeError, ValueError):
                     exposure = 0.0
-                rank = (int(outcome.get("n_members") or 0), exposure, order)
+                # A ``pool_consistent is False`` master's members disagree on ω₀, but the acoustic mode
+                # is still fitted — so its candidate is valid IDENTITY/connectivity evidence and must
+                # not be dropped. Dropping it emptied the q's observation, broke the tracked trajectory,
+                # and cascaded every confirmed downstream point to ``blocked`` (AP8). It stays out of
+                # the certifiable interval (stopping.py ``_master_hw``) and the dispersion prior
+                # (``_rebuild_*_prior``) independently, so keeping it here cannot certify a bad ω₀ or
+                # pollute the prior. When a q holds both a consistent and an inconsistent master the
+                # rank prefers the consistent one rather than excluding the other.
+                consistent = outcome.get("pool_consistent") is not False
+                rank = (int(consistent), int(outcome.get("n_members") or 0), exposure, order)
                 by_index.setdefault(index, []).append((rank, key, candidates))
     observations = []
     for index in range(len(path)):
         choices = by_index.get(index) or []
+        null_windows = null_windows_by_index.get(index) or []
         if not choices:
-            observations.append({"candidates": [], "authority": None})
-            continue
-        _rank, key, candidates = max(choices, key=lambda item: item[0])
-        observations.append({"candidates": [dict(candidate) for candidate in candidates],
-                             "authority": key})
+            # Any auxiliary probe at this index is deliberately dropped: see the docstring. It stays
+            # in ``refs`` for display and its beliefs update elsewhere, but it does not become the
+            # identity evidence for a point no master has measured. A clean-null probe is the one
+            # exception that leaves a trace here: its negative evidence rides on ``null_windows``.
+            observation = {"candidates": [], "authority": None}
+        else:
+            _rank, key, candidates = max(choices, key=lambda item: item[0])
+            _entry, _detector, outcome = refs[key]
+            merged = [dict(candidate) for candidate in candidates]
+            merged.extend(auxiliary_by_index.get(index) or [])
+            observation = {"candidates": merged, "authority": key,
+                           "gauss_fwhm": (outcome.get("gauss_fwhm")
+                                          or (outcome.get("calib") or {}).get("gauss_fwhm"))}
+        # Only present when a clean null was recorded here: a campaign that never used the auxiliary
+        # channel must produce observations byte-identical to the pre-channel ones, so its identity
+        # signature is unperturbed.
+        if null_windows:
+            observation["null_windows"] = null_windows
+        observations.append(observation)
     return observations, refs
 
 
+def _tracked_authority_signature(observations: list[dict], *, target_branch: str,
+                                 period: float | None, hypotheses: list[dict],
+                                 entropy_stop: float, maximum_bridge_steps: int) -> str:
+    """Stable identity input; derived probabilities are deliberately excluded."""
+    authorities = []
+    for observation in observations:
+        candidates = []
+        for candidate in observation.get("candidates") or []:
+            fitted = dict(candidate)
+            for field in ("probabilities", "association_probability",
+                          "character_probability", "trajectory_identity"):
+                fitted.pop(field, None)
+            candidates.append(fitted)
+        authority = {
+            "authority": observation.get("authority"),
+            "gauss_fwhm": observation.get("gauss_fwhm"),
+            "candidates": candidates,
+        }
+        # Negative evidence is part of the identity basis: a new clean null changes the question being
+        # asked at this q, so an unchanged basis (Increment C) cannot re-offer the same probe. Added only
+        # when present, so a campaign with no probes hashes byte-identically to the pre-channel signature.
+        if observation.get("null_windows"):
+            authority["null_windows"] = observation["null_windows"]
+        authorities.append(authority)
+    return canonical_hash({
+        "authorities": authorities, "target_branch": target_branch,
+        "period": period, "hypotheses": hypotheses,
+        "assignment_entropy_stop_nats": float(entropy_stop),
+        "maximum_bridge_steps": int(maximum_bridge_steps),
+    })
+
+
+def _materialize_branch_candidates(session: SessionState) -> None:
+    """Persist unordered fitted-mode evidence independently of target delivery.
+
+    Local branch triage may deliberately clear the scalar omega0.  Keeping the immutable candidate
+    table means the viewer and a later connected tracker can still see what was actually fitted.
+    """
+    for entry in session.scans.values():
+        for detector, outcome in entry.detectors.items():
+            candidates = _mode_candidates(entry.scan_id, detector, outcome)
+            outcome["branch_candidates"] = candidates or None
+
+
+AUXILIARY_EVIDENCE_SOURCE = "auxiliary_probe"
+
+
+def _is_auxiliary_candidate(candidate: dict) -> bool:
+    """Whether this fitted mode came from an auxiliary probe rather than the point's own master.
+
+    The tag is applied in :func:`_tracked_authorities` when the probe's modes are merged onto the
+    canonical observation, and absence of it means canonical.
+    """
+    return (candidate or {}).get("evidence_source") == AUXILIARY_EVIDENCE_SOURCE
+
+
 def _select_mode(outcome: dict, candidate: dict, candidate_index: int, assignment: dict,
-                 revision: int) -> None:
+                 revision: int, target_branch: str = "optic") -> None:
+    if _is_auxiliary_candidate(candidate):
+        # Defence in depth behind _apply_tracked_branch's check. An auxiliary probe is never pooled
+        # and never certification-eligible, so copying its energy and intervals onto a pooled master
+        # builds a row that certifies the target from exposure the target window never spent.
+        raise ValueError(
+            f"auxiliary candidate {candidate.get('candidate_ref')!r} cannot supply a target "
+            "delivery; withhold the delivery instead (see _withhold_tracked_delivery)")
     outcome["selected_candidate_index"] = int(candidate_index)
     outcome["track_state"] = assignment.get("track_state")
     outcome["track_revision"] = int(revision)
@@ -1724,10 +1903,27 @@ def _select_mode(outcome: dict, candidate: dict, candidate_index: int, assignmen
     outcome["bayes_interval"] = candidate.get("bayes_interval")
     outcome["interval_reliable"] = bool(candidate.get("reliable", False))
     probabilities = dict(candidate.get("probabilities") or {})
-    outcome["branch_id"] = "optic"
+    outcome["branch_id"] = target_branch
     outcome["branch_posterior"] = probabilities
-    outcome["branch_weight"] = float(probabilities.get("optic", 0.0))
+    outcome["branch_weight"] = float(probabilities.get(target_branch, 0.0))
     outcome["assignment_entropy"] = assignment.get("assignment_entropy")
+    _carry_local_identity(outcome, assignment)
+    outcome["structural_endpoint_status"] = assignment.get("structural_endpoint_status")
+    outcome["is_reduced_q_origin"] = bool(assignment.get("is_reduced_q_origin", False))
+
+
+def _carry_local_identity(outcome: dict, assignment: dict) -> None:
+    """Carry the tracker's local identity verdict onto the outcome, selected or not.
+
+    These survive :func:`_clear_tracked_selection` on purpose.  That helper withdraws the *scalar
+    selection* so nothing stale is certifiable, but acquisition needs the local identity evidence
+    precisely when the selection is absent — that is how it tells an undecided label (count more)
+    from a decided label behind a path gap (counting cannot help).
+    """
+    outcome["target_probability"] = assignment.get("target_probability")
+    outcome["identity_entropy"] = assignment.get("identity_entropy")
+    clear = assignment.get("local_identity_clear")
+    outcome["local_identity_clear"] = None if clear is None else bool(clear)
 
 
 def _clear_tracked_selection(outcome: dict, assignment: dict, revision: int) -> None:
@@ -1741,12 +1937,45 @@ def _clear_tracked_selection(outcome: dict, assignment: dict, revision: int) -> 
     outcome["branch_posterior"] = None
     outcome["branch_weight"] = None
     outcome["assignment_entropy"] = assignment.get("assignment_entropy")
+    _carry_local_identity(outcome, assignment)
+    outcome["structural_endpoint_status"] = assignment.get("structural_endpoint_status")
+    outcome["is_reduced_q_origin"] = bool(assignment.get("is_reduced_q_origin", False))
     # The immutable branch_candidates table remains the complete fit evidence and can restore these
     # mode-specific values after a later reassignment.  The scalar compatibility view must abstain.
     for field in ("omega0", "omega0_err", "gamma", "interval", "omega0_profile",
                   "hesse_interval", "bayes_interval"):
         outcome[field] = None
     outcome["interval_reliable"] = False
+
+
+def _withhold_tracked_delivery(outcome: dict, candidate: dict, assignment: dict, revision: int,
+                               target_branch: str) -> None:
+    """Record a confirmed identity whose only supporting mode came from an auxiliary probe.
+
+    This is neither a selection nor an ambiguity. The tracker reached a conclusion — that is what the
+    probe was fired to buy, and discarding it would waste the beam time — but the mode it concluded
+    from lives in a scan that is never pooled and never certification-eligible. So the *answer* is
+    kept and the *number* is withheld: this point has no canonical measurement of the branch it has
+    now identified, and the honest next action is an ordinary target scan at that energy.
+
+    ``branch_id`` is deliberately NOT set. On a master that field means "this row supplies the target
+    delivery", and every reader predating this state would take it at face value. The conclusion is
+    carried by ``identity_branch_id`` instead, alongside the local-identity fields acquisition already
+    reads when a selection is absent.
+    """
+    _clear_tracked_selection(outcome, assignment, revision)
+    outcome["target_delivery_eligible"] = False
+    outcome["identity_branch_id"] = target_branch
+    outcome["delivery_withheld_reason"] = "auxiliary_only_selection"
+    # The model-averaged predictive interval is a second, independent delivery path: a model-robust
+    # row certifies from ``model_interval_med`` without ever reading the scalar omega0 cleared above.
+    outcome["model_robust"] = False
+    outcome["model_interval"] = None
+    log.warning(
+        "withholding target delivery at q=%s: the tracked %s identity rests on auxiliary candidate "
+        "%r, which is never pooled and never certification-eligible. Identity retained; this point "
+        "still needs a canonical target measurement.",
+        outcome.get("q"), target_branch, candidate.get("candidate_ref"))
 
 
 def _rebuild_tracked_prior(card, session: SessionState, track: dict, observations: list[dict],
@@ -1771,6 +2000,12 @@ def _rebuild_tracked_prior(card, session: SessionState, track: dict, observation
             if candidate_index is None:
                 continue
             candidate = assignment["candidates"][candidate_index]
+            if _is_auxiliary_candidate(candidate):
+                # The prior accepts only clean single-answer folds from pooled masters. This candidate
+                # was fitted by a probe that is not pooled at all, and the outcome gating this loop is
+                # the *canonical* authority — so without this check the auxiliary energy would enter
+                # the running dispersion prior wearing the master's fold provenance.
+                continue
             probability = float((candidate.get("probabilities") or {}).get(branch, 0.0))
             if probability < branch_tracking.CONFIRMED_PROBABILITY:
                 continue
@@ -1802,11 +2037,31 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
     observations, refs = _tracked_authorities(session, path)
     policy = (getattr(card.state, "hypothesis_snapshot", None) or {}).get("steering") or {}
     previous = getattr(card.state, "branch_tracks", None) or {}
-    track = branch_tracking.track_path(
-        path, observations, period=_dispersion_period(card), hypotheses=_campaign_hypotheses(card),
-        target_branch=_campaign_target(card)[0], previous=previous,
-        assignment_entropy_stop_nats=float(policy.get("assignment_entropy_stop_nats", 0.2)),
-        maximum_bridge_steps=int(policy.get("maximum_bridge_steps", 1)))
+    target_branch = _campaign_target(card)[0]
+    period = _dispersion_period(card)
+    hypotheses = _campaign_hypotheses(card)
+    entropy_stop = float(policy.get("assignment_entropy_stop_nats", 0.2))
+    maximum_bridge_steps = int(policy.get("maximum_bridge_steps", 1))
+    authority_signature = _tracked_authority_signature(
+        observations, target_branch=target_branch, period=period, hypotheses=hypotheses,
+        entropy_stop=entropy_stop, maximum_bridge_steps=maximum_bridge_steps)
+    if (previous.get("authoritative_evidence_signature") == authority_signature
+            and previous.get("target_branch") == target_branch
+            and previous.get("assignments") is not None):
+        track = previous
+    else:
+        # The campaign's own authorized band is the domain the "could be anywhere" baseline is uniform
+        # over (O30). Without it the tracker falls back to a fixed span, which stays branch-neutral but
+        # no longer reflects what this campaign actually declared it was searching.
+        search_band = target.get("energy_search_meV")
+        track = branch_tracking.track_path(
+            path, observations, period=period, hypotheses=hypotheses,
+            target_branch=target_branch, previous=previous,
+            assignment_entropy_stop_nats=entropy_stop,
+            maximum_bridge_steps=maximum_bridge_steps,
+            energy_domain_meV=(tuple(float(v) for v in search_band)
+                               if search_band and len(search_band) == 2 else None))
+        track["authoritative_evidence_signature"] = authority_signature
     revision = int(track["revision"])
     for assignment, observation in zip(track["assignments"], observations):
         key = observation.get("authority")
@@ -1815,7 +2070,9 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
             continue
         _entry, _detector, outcome = refs[key]
         outcome["branch_candidates"] = assignment["candidates"]
-        if selected is None:
+        # A MAP state is still only an assignment hypothesis.  Ambiguous/provisional/blocked target
+        # rows remain candidate evidence and must not publish a scalar target delivery.
+        if selected is None or assignment.get("track_state") != "confirmed":
             _clear_tracked_selection(outcome, assignment, revision)
             for _other_key, (_other_entry, _other_detector, other) in refs.items():
                 if other is outcome or _path_index(other.get("q") or [], path) != assignment["path_index"]:
@@ -1824,9 +2081,16 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
                 local_assignment["track_state"] = "individual"
                 _clear_tracked_selection(other, local_assignment, revision)
             continue
-        _select_mode(outcome, assignment["candidates"][selected], selected, assignment, revision)
+        candidate = assignment["candidates"][selected]
+        if _is_auxiliary_candidate(candidate):
+            _withhold_tracked_delivery(outcome, candidate, assignment, revision, target_branch)
+        else:
+            _select_mode(outcome, candidate, selected, assignment, revision, target_branch)
         # Individual fits at the same q remain muted evidence but follow the current identity for
-        # backwards-compatible scalar columns, using their own nearest fitted mode.
+        # backwards-compatible scalar columns, using their own nearest fitted mode. Referenced against
+        # the selected candidate's energy rather than ``outcome["omega0"]``: identical on the delivery
+        # path, and still the identity the tracker concluded when the delivery was withheld.
+        reference_energy = float(candidate["energy_meV"])
         for _other_key, (_other_entry, _other_detector, other) in refs.items():
             if other is outcome or _path_index(other.get("q") or [], path) != assignment["path_index"]:
                 continue
@@ -1834,10 +2098,11 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
             if not candidates:
                 continue
             nearest = min(range(len(candidates)), key=lambda index: abs(
-                float(candidates[index]["energy_meV"]) - float(outcome["omega0"])))
+                float(candidates[index]["energy_meV"]) - reference_energy))
             local_assignment = dict(assignment)
             local_assignment["track_state"] = "individual"
-            _select_mode(other, candidates[nearest], nearest, local_assignment, revision)
+            _select_mode(other, candidates[nearest], nearest, local_assignment, revision,
+                         target_branch)
     _rebuild_tracked_prior(card, session, track, observations, refs, t_round=t_round)
     card.state.branch_tracks = track
     return track
@@ -1924,7 +2189,7 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
         summary.n_fitted_this_run += 1 if entry.status in ("fitted", "non_result") else 0
         oc = entry.detectors.get(det)
         if oc:
-            summary.outcomes.append((scan, FitOutcome(**oc) if not isinstance(oc, FitOutcome) else oc))
+            summary.outcomes.append((scan, _coerce_fit_outcome(oc)))
 
     # Collate (all records, whole-experiment view).
     with timer.stage("collate"):
@@ -1962,6 +2227,8 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
                 raise
             summary.context_lines.append(f"master fitting skipped: {exc}")
 
+    if _campaign_hypotheses(card):
+        _materialize_branch_candidates(session)
     _rebuild_pooled_prior(card, session, session_prior, t_round=t_round)
     # Identity assignment is deliberately after pooled-master updates. It reads the complete
     # candidate field, may revise earlier labels, then rebuilds the connected fold-only prior.
@@ -2209,6 +2476,23 @@ def _publication_hashes(workspace: Workspace) -> dict[str, str]:
     return result
 
 
+def _assert_canonical_indices_cover_path(worklist, excluded) -> None:
+    """Every objective-path point must be accounted for exactly once — certified or excluded.
+
+    The worklist alone is NOT dense: the manifest builder legitimately omits structurally-
+    unresolvable points (the inferred reduced-q origin has no pooled master by construction) into
+    ``excluded_points``.  So the contiguity invariant is over the UNION of the worklist and excluded
+    canonical indices, not the worklist by itself.  Requiring the worklist to equal
+    ``range(len(worklist))`` on its own broke every campaign whose path starts at a zone-center
+    origin, where the surviving canonical indices begin at 1.
+    """
+    combined = sorted([int(unit.get("canonical_index", -1)) for unit in worklist]
+                      + [int(item.get("canonical_index", -1)) for item in excluded])
+    if combined != list(range(len(combined))):
+        raise ValueError("certification worklist and excluded points must together cover "
+                         "contiguous, unique canonical indices")
+
+
 def _run_master_certification(workspace, card, session, records, runcal, g, checkpoint_store,
                               *, summary, M, errors_tier, workers, bayes_opts,
                               deadline_gate, timer) -> RunSummary:
@@ -2220,8 +2504,7 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
             f"certification tier mismatch: manifest={requested_tier!r}, run={errors_tier!r}")
     worklist = list(manifest.get("worklist") or ())
     worklist.sort(key=lambda unit: int(unit.get("canonical_index", -1)))
-    if [int(unit.get("canonical_index", -1)) for unit in worklist] != list(range(len(worklist))):
-        raise ValueError("certification worklist canonical indices must be contiguous and unique")
+    _assert_canonical_indices_cover_path(worklist, manifest.get("excluded_points") or ())
     unit_keys = [str(unit.get("unit_key") or "") for unit in worklist]
     master_ids = [str(unit.get("master_id") or "") for unit in worklist]
     if (not all(unit_keys) or len(set(unit_keys)) != len(unit_keys)
@@ -2423,6 +2706,8 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
         session.put(entry)
 
     t_round = float((card.policy.collation or {}).get("t_round", 5.0))
+    if _campaign_hypotheses(card):
+        _materialize_branch_candidates(session)
     _rebuild_pooled_prior(card, session, session_prior, t_round=t_round)
     track = _apply_tracked_branch(session, card, t_round=t_round)
     # Tracking may annotate individual rows for display. Certification is master-only, so restore
@@ -3245,7 +3530,11 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         bayes_unconstrained=fit.get("bayes_unconstrained", False),
         target_branch=target_branch, target_label=target_label,
         effective_exposure=exposure_info.get("value"), exposure_provenance=exposure_info,
-        acquisition_id=acquisition_id)
+        acquisition_id=acquisition_id,
+        search_energy_lo=(acquisition or {}).get("search_energy_lo"),
+        search_energy_hi=(acquisition or {}).get("search_energy_hi"),
+        evidence_sink=evidence_sink_for(getattr(rec, "raw_header", None),
+                                        getattr(card.state, "acquisition_provenance", None)))
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is
@@ -3304,8 +3593,31 @@ def _split_csv(s):
     return [x.strip() for x in s.split(",") if x.strip()] if s else None
 
 
+def _coerce_fit_outcome(value: dict | FitOutcome) -> FitOutcome:
+    """The one dict→dataclass conversion at the persistence boundary.
+
+    A key persisted by a newer writer but not declared here must not kill the run: the carry path
+    rehydrates every previously-fitted scan on every iteration, so a strict ``FitOutcome(**d)``
+    turns additive schema drift into a campaign-wide abort far from its cause. Unknown keys are
+    reported and dropped *from this view only* — ``ScanEntry.detectors`` keeps the raw dict, so no
+    stored value is lost. The writer/schema invariant test is what fails loudly during development.
+    """
+    if isinstance(value, FitOutcome):
+        return value
+    declared = {f.name for f in fields(FitOutcome)}
+    unknown = sorted(set(value) - declared)
+    if unknown:
+        log.warning("ledger outcome carries field(s) not declared on FitOutcome: %s — dropped from "
+                    "the dataclass view; the raw ledger entry retains them", ", ".join(unknown))
+    kept = {k: v for k, v in value.items() if k in declared}
+    # Ledgers written before is_reduced_q_origin was declared persist None for it. Normalizing on
+    # read as well as at the writer keeps the bool annotation honest for old and new data alike.
+    kept["is_reduced_q_origin"] = bool(kept.get("is_reduced_q_origin", False))
+    return FitOutcome(**kept)
+
+
 def _outcome_from_entry(entry: ScanEntry, det: str) -> FitOutcome:
-    return FitOutcome(**entry.detectors[det])
+    return _coerce_fit_outcome(entry.detectors[det])
 
 
 def _maybe_adjudicate(measurements, card) -> list[str]:
@@ -3355,11 +3667,24 @@ _CSV_COLUMNS = [
     "effective_exposure", "exposure_provenance", "branch_posterior",
     "candidate_id", "candidate_state", "acquisition_id",
     "branch_candidates", "selected_candidate_index", "track_state", "track_revision",
+    "structural_endpoint_status", "is_reduced_q_origin",
+    "target_probability", "identity_entropy", "local_identity_clear",
     "spectrum_ref", "predictive_ref", "master_revision", "model_interval_lo",
     "model_interval_med", "model_interval_hi", "model_robust", "model_entropy",
     "gamma_at_bound", "linewidth_state",
     "pool_consistent", "consistency_statistic", "consistency_pvalue", "consistency_alpha",
     "consistency_seed",
+    # Appended, not inserted: this list is positional for old CSV consumers, so a new column can only
+    # go on the end. Which sink this scan's evidence was acquired for (PR2.6) — every historical row
+    # reads "canonical_master".
+    "evidence_sink",
+    # Whether this row may supply the campaign target's delivered omega0 (PR review F2). False only
+    # when the tracker's confirmed target identity rests on an auxiliary-probe candidate: the answer
+    # is kept, the number is withheld, and the point still needs a canonical target measurement.
+    # Every historical row reads True. The other two carry the *answer* across the frozen Stage II/III
+    # contract -- withheld delivery is only actionable downstream if the identity it kept, and the
+    # reason the number is absent, travel with it.
+    "target_delivery_eligible", "identity_branch_id", "delivery_withheld_reason",
 ]
 
 
@@ -3435,6 +3760,11 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                                       if oc.get("branch_candidates") is not None else None),
                 "selected_candidate_index": oc.get("selected_candidate_index"),
                 "track_state": oc.get("track_state"), "track_revision": oc.get("track_revision"),
+                "target_probability": oc.get("target_probability"),
+                "identity_entropy": oc.get("identity_entropy"),
+                "local_identity_clear": oc.get("local_identity_clear"),
+                "structural_endpoint_status": oc.get("structural_endpoint_status"),
+                "is_reduced_q_origin": oc.get("is_reduced_q_origin"),
                 "spectrum_ref": oc.get("spectrum_ref"),
                 "predictive_ref": oc.get("predictive_ref"),
                 "master_revision": oc.get("master_revision"),
@@ -3482,6 +3812,11 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "best_model": oc.get("best_label"), "cost_per_dof": oc.get("cost_per_dof"),
                 "fit_kind": oc.get("fit_kind"),
                 "branch_id": oc.get("branch_id"),
+                # Defaults True: only a withheld auxiliary-only delivery ever clears it, so every
+                # ordinary row and every historical CSV reads as deliverable.
+                "target_delivery_eligible": oc.get("target_delivery_eligible", True),
+                "identity_branch_id": oc.get("identity_branch_id"),
+                "delivery_withheld_reason": oc.get("delivery_withheld_reason"),
                 "assignment_entropy": oc.get("assignment_entropy"),
                 "resolvable": oc.get("resolvable"),
                 "descriptor_n_peaks": _descriptor_summary(oc)[0],

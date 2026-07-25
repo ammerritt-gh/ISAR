@@ -4,7 +4,7 @@ compatible, the new TOML sections survive the dataclass round-trip, and the U7 w
 import json
 
 from isar.schema import card
-from isar.session.state import ScanEntry, SessionState, canonical_hash
+from isar.session.state import SCHEMA_VERSION, ScanEntry, SessionState, canonical_hash
 
 
 # --------------------------------------------------------------------------- schema: backward compat
@@ -161,7 +161,9 @@ def test_session_load_missing_is_empty(tmp_path):
     st = SessionState.load(tmp_path / "nope.json")
     assert st.scans == {}
     assert st.files == {}
-    assert st.schema_version == "isar.session/2"
+    # Track the constant, not a literal: an additive-field bump is legitimate and must not fail here.
+    # The old-ledger literal in test_session_last_ingest_is_additive... is deliberately pinned.
+    assert st.schema_version == SCHEMA_VERSION
 
 
 def test_session_save_is_atomic_no_tmp_left(tmp_path):

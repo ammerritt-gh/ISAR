@@ -442,6 +442,8 @@ DECISIONS W1–W3.)*
 | Renegotiation protocol | Planned (design door open) |
 | Model-level (ARIANE-style) objective tier | Planned |
 | Branch-identity-aware acquisition (two-term scan value; excitation hypotheses; first-guess path) | Implemented for branch hypotheses (O6–O9/O11–O12, 2026-07-17; level/continuum plugins remain O10-Partial) |
+| Connected tracked-branch steering: identity vs precision adequacy, single same-q budget, rival-trajectory reconnection, controller invariant | Implemented for the tracked optic path (O27, 2026-07-21; OP10 replay reaches `met` 21/21). `identity_saturated` unit-tested but campaign-unproven; AP campaign replays outstanding, so O25/O26 remain Partial |
+| Action-inventory control plane: registry-driven generate/evaluate/select, three-stage lifecycle, failure-isolated exhaustion proof, evidence-sink contract, target/identity search-domain split, predicted-rival identity probe | **Partial** (O28, 2026-07-23; control plane + `narrow_rival_probe` Implemented and AP6 replay passes at the `enumerate_actions` reconstruction level, strict/migrated modes. Full driver-level AP6 campaign replay outstanding; zone-aware boundary probe deferred pending a cross-zone structure-factor consumer) |
 
 **Genuinely open:** wrap an existing 4D-convolution engine (ResLib/Tobyfit lineage) vs implement
 the Cooper–Nathans projection against TAVI ellipsoids directly — decide when `tas4d` is

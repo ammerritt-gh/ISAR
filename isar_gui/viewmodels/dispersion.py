@@ -232,9 +232,11 @@ class DispersionViewModel(ViewModel):
         points, entropy = [], []
         self._points = []
         for fv in fits:
-            if fv.omega0 is None:
-                continue
             x = float(fv.q[varying])
+            candidates = projection.unselected_candidate_points(fv, x)
+            if fv.omega0 is None:
+                points.extend(candidates)
+                continue
             y = float(fv.omega0)
             self._points.append((x, y, fv))
             ent = fv.assignment_entropy
@@ -248,7 +250,7 @@ class DispersionViewModel(ViewModel):
                            "n_members": fv.n_members,
                            "interval_reliable": fv.interval_reliable,
                            "track_state": getattr(fv, "track_state", None)})
-            points.extend(projection.unselected_candidate_points(fv, x))
+            points.extend(candidates)
 
         prior_xy = None if prior is None else (prior[0], prior[1])
         off_curve = self._off_curve(points, prior)

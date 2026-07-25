@@ -1,0 +1,31 @@
+{
+  "note": "Compact AP7 final-certification worklist, extracted from the gitignored test_workspaces/AP7_Failed/. AP7 mapped the acoustic phonon (2,0,0)->(3,0,0) in 21 steps; the reduced-q origin (path index 0) has no pooled master by construction and is excluded, so the worklist canonical indices begin at 1. The old worklist-only contiguity invariant (driver.py) rejected this and hard-failed final certification with ValueError: worklist canonical indices must be contiguous and unique.",
+  "objective_path_len": 21,
+  "worklist_canonical_indices": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20
+  ],
+  "excluded_canonical_indices": [
+    0
+  ],
+  "manifest_fingerprint": "4845f89773d2d1fc7bdf3770dc99910a84e8e979cbdc1eedd19d4f115da803ea",
+  "request_fingerprint": "e3afb6a8e54c21972d76fdc99e1fd02cdd5c3897a72796cba3552181768726e5"
+}

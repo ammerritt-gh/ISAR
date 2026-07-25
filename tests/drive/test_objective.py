@@ -136,10 +136,10 @@ def test_target_selector_defaults_and_validation():
     assert nearest.target_selector == "nearest_energy" and nearest.target_energy_meV == 7.25
     tracked = ObjectiveSpec(**common, target_selector="tracked_branch")
     assert tracked.target_selector == "tracked_branch" and tracked.target_energy_meV is None
-    with pytest.raises(ValueError, match="requires target_branch='optic'"):
-        ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
-                      budget={"kind": "neutrons", "amount": 1e6},
-                      target_branch="acoustic", target_selector="tracked_branch")
+    acoustic = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
+                             budget={"kind": "neutrons", "amount": 1e6},
+                             target_branch="acoustic", target_selector="tracked_branch")
+    assert acoustic.target_selector == "tracked_branch"
     with pytest.raises(ValueError, match="requires target_energy_meV"):
         ObjectiveSpec(**common, target_selector="nearest_energy")
     with pytest.raises(ValueError, match="target_selector"):

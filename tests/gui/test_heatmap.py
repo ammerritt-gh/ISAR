@@ -56,14 +56,19 @@ def _make(make_ws, *, with_master: bool = False, specs=_SPECS) -> Workspace:
     scans, rows, data = {}, [], []
     for s in specs:
         T = s.get("T", 200.0)
-        oc = _outcome(s["scan"], s["h"], s["k"], s["l"], omega0=s["omega0"],
+        seed_omega = s["omega0"] if s["omega0"] is not None else s.get("candidate_seed", 1.0)
+        oc = _outcome(s["scan"], s["h"], s["k"], s["l"], omega0=seed_omega,
                       reliable=s["reliable"], entropy=s["entropy"], verdict=s["verdict"], T=T)
+        if s["omega0"] is None:
+            oc.update({"omega0": None, "interval": None, "interval_reliable": False,
+                       "selected_candidate_index": None,
+                       "branch_candidates": list(s.get("branch_candidates") or [])})
         sid = f"tavi:{s['scan']}:det"
         scans[sid] = {"scan_id": sid, "scan_number": s["scan"], "scan_type": "measurement",
                       "status": "fitted", "detectors": {"det": oc}, "provenance": {"M": 200}}
         rows.append({"scan": s["scan"], "detector": "det", "sample": "tavi", "T": T,
                      "h": s["h"], "k": s["k"], "l": s["l"], "status": "fitted"})
-        data.append({"scan_number": s["scan"], "energy": list(_X), "counts": _counts(s["omega0"])})
+        data.append({"scan_number": s["scan"], "energy": list(_X), "counts": _counts(seed_omega)})
     if with_master:
         # A pooled master at H=2.1 (in-window) with its OWN interval and 3 members; NO data file, so
         # it contributes no strip (masters have no persisted spectrum) but IS on the ω̂ overlay.
@@ -194,6 +199,21 @@ def test_temperature_switch_rebuilds(qtbot, make_ws):
     assert vm.temperature == 300.0
     assert vm.spec is not None
     assert len(vm.spec.strips) == 2  # the two T=300 scans only
+
+
+def test_ambiguous_candidates_remain_visible_on_plane_without_whiskers(make_ws):
+    specs = _SPECS + [{
+        "scan": 9, "h": 2.3, "k": 0.0, "l": 0.0, "omega0": None,
+        "candidate_seed": 2.7, "reliable": False, "entropy": 0.69,
+        "verdict": "branch_ambiguous", "branch_candidates": [
+            {"energy_meV": 2.7, "omega0_err": 0.12},
+            {"energy_meV": 6.85, "omega0_err": 0.18},
+        ],
+    }]
+    vm = HeatmapViewModel(_make(make_ws, specs=specs))
+    ambiguous = [marker for marker in vm.spec.markers
+                 if marker.kind is MarkerKind.AMBIGUOUS_CANDIDATE]
+    assert [(marker.x, marker.y) for marker in ambiguous] == [(2.3, 2.7), (2.3, 6.85)]
 
 
 def test_dock_renders_and_routes_click(qtbot, make_ws):

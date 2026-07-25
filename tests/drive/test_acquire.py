@@ -105,6 +105,39 @@ def test_dynamic_count_request_clamps_only_neutron_budget_and_requires_floor():
             runtime_ncount_limit=99_999_999)
 
 
+def test_identity_detection_kind_uses_a_fixed_auxiliary_floor_not_target_escalation():
+    """A narrow yes/no rival probe (routed to the auxiliary tracker node) answers a detection
+    question, not a precision one. It must NOT inherit the target-production dynamic escalation that
+    would spend a geometrically growing exposure to answer a cheap discriminator — it gets a dedicated
+    detection floor regardless of the point's production history."""
+    g = acq.GridQ(index=0, hkl=(2.9, 0.0, 0.0), q=0.9, tolerance=0.5,
+                  last_submitted_ncount=2_000_000_000, n_production=5,
+                  master={"halfwidth": 10.0, "effective_exposure": 4_000_000_000})
+    policy = {"dynamic_ncount": True, "production_batch_ncount": 100_000_000,
+              "tolerance_margin": 0.8, "ncount_growth_cap": 4.0,
+              "max_ncount_per_scan": 4_000_000_000, "identity_detection_ncount": 10_000_000}
+    unlimited = {"kind": "counting_seconds", "amount": 0.0, "spent": 0.0}
+
+    # A production scan at this saturated point climbs the escalation ladder well above the floor.
+    prod, _ = acq._count_request(g, kind="production", n_points=10, tolerance=0.5,
+                                 policy=policy, budget_state=unlimited)
+    assert prod > 100_000_000
+
+    # The identity probe at the same point stays at the dedicated auxiliary detection floor.
+    probe, _diag = acq._count_request(g, kind="identity_rival_probe", n_points=10, tolerance=0.5,
+                                      policy=policy, budget_state=unlimited)
+    assert probe == 10_000_000
+
+
+def test_identity_detection_floor_still_honours_the_neutron_budget_clamp():
+    """The dedicated floor is a starting request, not an exemption from the budget/instrument clamps."""
+    g = acq.GridQ(index=0, hkl=(2.9, 0.0, 0.0), q=0.9, tolerance=0.5)
+    policy = {"dynamic_ncount": True, "identity_detection_ncount": 10_000_000}
+    with pytest.raises(acq.BudgetInsufficientForMinimumBatch):
+        acq._count_request(g, kind="identity_rival_probe", n_points=10, tolerance=0.5, policy=policy,
+                           budget_state={"kind": "neutrons", "amount": 99_999_990, "spent": 0.0})
+
+
 def test_static_policy_retains_fixed_production_count():
     g = acq.GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
                   master={"halfwidth": 10.0, "effective_exposure": 1_000_000_000})
@@ -445,3 +478,226 @@ def test_driver_insertion_requires_finite_requested_grid_comparison():
         obj, model, observations, {"fwhm_dE": 0.5}, {}, classify=classification_value)
     assert proposal is not None
     assert proposal.meta["driver_inserted"] is False
+
+
+# -- enumerate/select seam (PR1.2): the inventory must faithfully mirror propose_scan -------------
+
+def test_enumerate_select_mirrors_propose_scan_when_an_action_exists():
+    obj = _obj()
+    model = acq_model.fit([])
+    inventory, candidates = acq.enumerate_actions(obj, model, [], resolution_info={"fwhm_dE": 0.8})
+    chosen = acq.select_action(inventory, candidates)
+    proposal = acq.propose_scan(obj, model, [], {"fwhm_dE": 0.8}, {})
+    # An action is available, the enumeration completed, and it is not a terminal.
+    assert inventory.is_complete is True
+    assert inventory.has_eligible_action is True
+    assert inventory.terminal_cause() is None
+    # select_action picks the same q propose_scan builds its proposal at.
+    assert chosen is not None and proposal is not None
+    assert chosen.pick.hkl[0] == pytest.approx(proposal.h)
+
+
+def test_enumerate_reports_action_inventory_exhausted_when_nothing_remains():
+    obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.1, step=0.1, tolerance_meV=0.5,
+                                budget={"kind": "neutrons", "amount": 1e12})
+    obs = [_obs((2.1, 0.0, 0.0), "production", 0.30)]
+    masters = [_master((2.1, 0.0, 0.0), 0.30)]     # pooled interval within tolerance -> converged
+    inventory, candidates = acq.enumerate_actions(
+        obj, _model(obs), obs, resolution_info={"fwhm_dE": 0.8}, master_rows=masters)
+    assert acq.select_action(inventory, candidates) is None
+    assert acq.propose_scan(obj, _model(obs), obs, {"fwhm_dE": 0.8}, {}, master_rows=masters) is None
+    assert inventory.has_eligible_action is False
+    assert inventory.is_complete is True
+    assert inventory.terminal_cause() == "action_inventory_exhausted"
+
+
+def test_propose_action_returns_proposal_and_inventory_mirroring_propose_scan():
+    obj = _obj()
+    model = acq_model.fit([])
+    proposal, inventory = acq.propose_action(obj, model, [], {"fwhm_dE": 0.8}, {})
+    assert proposal is not None
+    assert inventory.is_complete and inventory.has_eligible_action
+    assert inventory.terminal_cause() is None
+    # The back-compat wrapper drops the inventory but builds the byte-identical proposal.
+    plain = acq.propose_scan(obj, model, [], {"fwhm_dE": 0.8}, {})
+    assert (plain.h, plain.k, plain.l) == (proposal.h, proposal.k, proposal.l)
+    assert plain.ncount == proposal.ncount and plain.kind == proposal.kind
+    assert plain.e_lo == proposal.e_lo and plain.e_hi == proposal.e_hi
+
+
+def test_propose_action_returns_none_proposal_with_exhausted_inventory():
+    obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.1, step=0.1, tolerance_meV=0.5,
+                                budget={"kind": "neutrons", "amount": 1e12})
+    obs = [_obs((2.1, 0.0, 0.0), "production", 0.30)]
+    masters = [_master((2.1, 0.0, 0.0), 0.30)]
+    proposal, inventory = acq.propose_action(
+        obj, _model(obs), obs, {"fwhm_dE": 0.8}, {}, master_rows=masters)
+    assert proposal is None
+    assert inventory.terminal_cause() == "action_inventory_exhausted"
+
+
+# -- intent / proposal identity coherence (PR1.7d) -------------------------------------------------
+
+def _hypothesis_objective():
+    path = [(2.0, 0.0, 0.0), (2.1, 0.0, 0.0), (2.2, 0.0, 0.0)]
+    return ObjectiveSpec(path=path, tolerance_meV=0.5,
+                         budget={"kind": "neutrons", "amount": 1e12}, target_branch="acoustic",
+                         **shipped_hypothesis_snapshot("acoustic", (-2.0, 7.0)))
+
+
+def test_inventory_action_class_matches_the_emitted_proposal_for_a_driver_inserted_probe():
+    """Review #8: the intent was built from the score's purpose *before* `_build_proposal` discovered
+    the pick was driver-inserted and flipped that purpose to ``differentiate``, so the inventory
+    recorded a quicklook while the emitted action was a differentiation probe."""
+    from isar.drive.supervisor.stopping import model_points, summarize_grid
+    obj = _hypothesis_objective()
+    obs = [_obs(p, "quicklook", 0.9) for p in obj.path]
+    model = acq_model.fit(model_points(summarize_grid(obj, obs)))
+    classify = lambda g: 9.0 if math.dist(tuple(g.hkl), (2.15, 0.0, 0.0)) <= 1e-6 else 0.0
+
+    _inventory, candidates = acq.enumerate_actions(
+        obj, model, obs, resolution_info={"fwhm_dE": 0.8}, classify=classify)
+    proposal, _inv = acq.propose_action(obj, model, obs, {"fwhm_dE": 0.8}, {}, classify=classify)
+
+    intent = candidates[0].evaluation.intent
+    assert candidates[0].driver_inserted is True
+    assert intent.action_class == "differentiation_probe"
+    assert proposal.meta["driver_inserted"] is True
+    assert proposal.meta["action_class"] == intent.action_class      # no post-hoc reclassification
+    # The window family follows the same decision: a driver-inserted probe is a differentiation probe
+    # by construction, so describing it as a "target" window while emitting `purpose=differentiate`
+    # would leave the same incoherence one field over.
+    assert intent.window_family == "differentiate"
+    assert proposal.meta["purpose"] == "differentiate"
+    assert proposal.meta["insertion_purpose"] == "differentiate"
+    # The emitted scan joins back to the evaluation that justified it.
+    assert proposal.meta["scientific_action_fingerprint"] == intent.scientific_action_fingerprint
+    # ...and the intent is anchored to the frozen hypothesis snapshot it was formed under.
+    assert intent.hypotheses_fingerprint == obj.hypothesis_fingerprint
+
+
+def test_the_scientific_fingerprint_tracks_the_evidence_basis():
+    """Review #7: two iterations formed against different authoritative evidence must not collapse to
+    one scientific action identity."""
+    from isar.schema.steering import ProposalScore
+    obj = _obj()
+    pick = acq.GridQ(index=0, hkl=(2.1, 0.0, 0.0), q=0.0, tolerance=0.5)
+    score = ProposalScore(method="deficit")
+
+    pick.evidence_master = {"content_hash": "rev-A"}
+    first = acq._intent_from_pick(obj, pick, "production", score)
+    pick.evidence_master = {"content_hash": "rev-B"}
+    second = acq._intent_from_pick(obj, pick, "production", score)
+
+    assert first.evidence_basis_fingerprint == "rev-A"
+    assert second.evidence_basis_fingerprint == "rev-B"
+    assert first.scientific_action_fingerprint != second.scientific_action_fingerprint
+
+
+def test_the_evaluation_carries_the_real_score_vector_and_selection_reason():
+    """The persisted artifact presents this as the ranked score record, so defaults were a lie."""
+    obj = _obj()
+    inventory, candidates = acq.enumerate_actions(
+        obj, acq_model.fit([]), [], resolution_info={"fwhm_dE": 0.8})
+    evaluation, chosen = candidates[0].evaluation, candidates[0]
+    assert evaluation.selection_reason == chosen.reason and evaluation.selection_reason
+    assert evaluation.score_method == chosen.score.method
+    persisted = inventory.to_full_dict()["evaluations"][0]
+    assert persisted["selection_reason"] == chosen.reason
+    assert persisted["score"]["score_method"] == chosen.score.method
+
+
+# -- generator failure isolation (PR1.7b) ----------------------------------------------------------
+
+def test_a_raising_generator_becomes_a_failed_report_not_an_escaped_exception(monkeypatch):
+    """Before this, a generator exception escaped `enumerate_actions` before an ActionInventory existed,
+    so the production path could never produce the FAILED/controller_fault state the model promises —
+    it just killed the campaign. The fault must now be recorded as incomplete accounting."""
+    from isar.drive.acquisition.inventory import LEGACY_SELECTOR_GENERATOR
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("classification provider exploded")
+
+    monkeypatch.setattr(acq, "_select_target", boom)
+    inventory, candidates = acq.enumerate_actions(
+        _obj(), acq_model.fit([]), [], resolution_info={"fwhm_dE": 0.8})
+    assert candidates == []
+    # Isolation is the claim: the faulting generator is recorded as failed and its peers keep
+    # reporting normally. Asserting it is the *only* report would instead pin the registry's arity,
+    # which PR2.7a deliberately changed.
+    failed = inventory.failed_reports()
+    assert [r.generator for r in failed] == [LEGACY_SELECTOR_GENERATOR]
+    assert len(failed) == 1 and "RuntimeError" in failed[0].error_code
+    assert "classification provider exploded" in failed[0].error_code
+    # An unknown action space is never an exhaustion proof.
+    assert inventory.is_complete is False
+    assert inventory.terminal_cause() == "controller_fault"
+
+
+def test_the_live_inventory_validates_against_the_declared_registry():
+    """The happy path must be registry-valid by construction, so validation is a real gate."""
+    inventory, _candidates = acq.enumerate_actions(
+        _obj(), acq_model.fit([]), [], resolution_info={"fwhm_dE": 0.8})
+    assert inventory.validate() == []
+    assert inventory.is_complete is True
+
+
+# -- indexing fault (PR1.5): a driver-inserted candidate must not carry a synthetic grid index -----
+
+def _ambiguous_adequate_anchor():
+    from isar.drive.supervisor.stopping import GridQ
+    anchor = GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5, n_production=1,
+                   track_state="ambiguous")
+    anchor.local_identity_clear = False
+    anchor.evidence_master = {
+        "branch_candidates": [{"energy_meV": 5.98, "sigma_meV": 0.05}],
+        "candidate_state": "provisional", "diagnostic_halfwidth": 0.05,
+        "target_branch": "acoustic", "branch_posterior": {"acoustic": 0.7}}
+    neighbor = GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5, n_production=1,
+                     track_state="confirmed")
+    neighbor.local_identity_clear = True
+    return [anchor, neighbor]
+
+
+def test_tracked_broadening_crashes_on_a_raw_synthetic_index_but_not_a_normalized_one():
+    """The fault, isolated. ``_driver_inserted_candidate`` builds a candidate with the synthetic
+    ``index = len(grid) + offset``; if that value enters the working grid, ``_broadening_classification
+    _diagnostics`` uses it as a list position and indexes out of range. The identical candidate carrying
+    its real position broadens safely — which is the invariant ``enumerate_actions`` now guarantees."""
+    from isar.drive.supervisor.stopping import GridQ
+    classify = lambda g: 1.0
+
+    base = _ambiguous_adequate_anchor()
+    raw = [*base, GridQ(index=len(base) + 3, hkl=(2.2, 0.0, 0.0), q=0.2, tolerance=1.5)]
+    with pytest.raises(IndexError):
+        acq._tracked_frontier_target(raw, anchor_index=0, classify=classify)
+
+    normalized = _ambiguous_adequate_anchor()
+    normalized.append(GridQ(index=len(normalized), hkl=(2.2, 0.0, 0.0), q=0.2, tolerance=1.5))
+    result = acq._tracked_frontier_target(normalized, anchor_index=0, classify=classify)
+    assert result is not None and result[1] == "quicklook"     # broadens instead of crashing
+
+
+def test_enumerate_actions_normalizes_the_driver_inserted_candidate_index():
+    """The fix in situ. A driver-inserted probe wins with a synthetic index (offset >= 1), but once
+    ``enumerate_actions`` appends it to the working grid its index is its real list position, so the
+    synthetic value never reaches a position-based reader."""
+    from isar.drive.supervisor.stopping import model_points, summarize_grid
+    path = [(2.0, 0.0, 0.0), (2.1, 0.0, 0.0), (2.2, 0.0, 0.0)]
+    obj = ObjectiveSpec(path=path, tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 1e12},
+                        target_branch="acoustic", **shipped_hypothesis_snapshot("acoustic", (-2.0, 7.0)))
+    obs = [_obs(p, "quicklook", 0.9) for p in path]            # every grid q visited
+    model = acq_model.fit(model_points(summarize_grid(obj, obs)))
+    # Favour the second midpoint (2.15,0,0) — candidate offset 1, so its synthetic index overshoots.
+    classify = lambda g: 9.0 if math.dist(tuple(g.hkl), (2.15, 0.0, 0.0)) <= 1e-6 else 0.0
+
+    grid = summarize_grid(obj, obs)
+    inserted = acq._driver_inserted_candidate(obj, grid, obs, classify)
+    assert inserted is not None
+    assert inserted.index == len(grid) + 1                     # raw synthetic index (offset 1)
+
+    _inventory, candidates = acq.enumerate_actions(
+        obj, model, obs, resolution_info={"fwhm_dE": 0.8}, classify=classify)
+    pick = candidates[0].pick
+    assert tuple(pick.hkl) == pytest.approx((2.15, 0.0, 0.0))  # the inserted probe was selected
+    assert pick.index == len(grid)                             # normalized to its real grid position

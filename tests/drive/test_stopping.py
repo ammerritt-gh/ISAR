@@ -70,6 +70,39 @@ def test_met_when_all_masters_within_tolerance():
     assert st.evaluate_stop(obj, grid, _BUDGET).state == "met"
 
 
+def test_inferred_unresolved_gamma_is_excluded_from_precision_completion():
+    obj = _obj()
+    origin = st.GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
+                      track_state="inferred_unresolved",
+                      structural_endpoint_status="inferred_unresolved",
+                      is_reduced_q_origin=True,
+                      evidence_master={"track_state": "inferred_unresolved",
+                                       "branch_candidates": [{"energy_meV": 5.8}]})
+    measured = st.GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
+                        master=_master((2.05, 0.0, 0.0), 0.3))
+
+    decision = st.evaluate_stop(obj, [origin, measured], _BUDGET)
+
+    assert decision.state == "met"
+    assert decision.per_q[0]["assessment_state"] == "inferred_unresolved"
+    assert decision.per_q[0]["precision_coverage_eligible"] is False
+    assert decision.per_q[0]["omega0"] is None
+    assert "1 measurable grid q converged" in decision.reasons[0]
+
+
+def test_bare_inferred_state_without_structural_origin_cannot_shrink_denominator():
+    malformed = st.GridQ(index=0, hkl=(2.5, 0.0, 0.0), q=0.5, tolerance=0.5,
+                         track_state="inferred_unresolved",
+                         evidence_master={"track_state": "inferred_unresolved"})
+    measured = st.GridQ(index=1, hkl=(2.55, 0.0, 0.0), q=0.55, tolerance=0.5,
+                        master=_master((2.55, 0.0, 0.0), 0.3))
+
+    decision = st.evaluate_stop(_obj(), [malformed, measured], _BUDGET)
+
+    assert decision.state != "met"
+    assert decision.per_q[0]["precision_coverage_eligible"] is True
+
+
 def test_hypothesis_campaign_requires_new_production_pool_between_crossings():
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
     obj = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
@@ -121,6 +154,22 @@ def test_unreliable_master_does_not_converge():
     obj = _obj()
     masters = [_master((h, 0.0, 0.0), 0.001, reliable=False) for h in (2.1, 2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, [], masters)
+    assert st.evaluate_stop(obj, grid, _BUDGET).state != "met"
+
+
+def test_pool_inconsistent_master_never_certifies_even_when_tight():
+    # AP8 safety property: the identity tracker now keeps a pool_inconsistent master's candidate so the
+    # trajectory stays connected, but that must NOT let the master certify. Convergence seats only on a
+    # consistent, certifiable interval (_master_hw returns None when pool_consistent is False), so an
+    # inconsistent point stays unconverged no matter how tight its interval — and is instead re-acquired.
+    obj = _obj()
+    masters = []
+    for h in (2.1, 2.2, 2.3, 2.4):
+        m = _master((h, 0.0, 0.0), 0.001)      # a tiny, otherwise-certifiable interval
+        m["pool_consistent"] = False
+        masters.append(m)
+    grid = st.summarize_grid(obj, [], masters)
+    assert all(point.cert_halfwidth is None and not point.converged for point in grid)
     assert st.evaluate_stop(obj, grid, _BUDGET).state != "met"
 
 
@@ -402,6 +451,72 @@ def test_wrong_branch_master_updates_cannot_trigger_floor_or_rejection():
     grid = st.summarize_grid(_obj(), updates)
     assert grid[0].master_updates == []
     assert not grid[0].interval_floored and not grid[0].candidate_rejected
+
+
+def test_wrong_branch_master_is_measured_evidence_without_target_delivery():
+    wrong = _master((2.1, 0.0, 0.0), 0.2)
+    wrong.update({"branch_id": "optic", "branch_candidates": [
+        {"energy_meV": 2.7}, {"energy_meV": 6.85}]})
+    point = st.summarize_grid(_obj(), [], [wrong])[0]
+    assert point.visited and point.evidence_master is not None
+    assert point.master is None and point.assessment_state == "ambiguous"
+    assert not point.converged
+
+
+def test_saturated_ambiguous_frontier_is_not_terminalised_by_evaluate_stop():
+    """The early-terminal defect, removed (PR1): ``evaluate_stop`` runs *before* acquisition, so it no
+    longer converts a saturated ambiguous frontier into a ``branch_ambiguity`` incomplete on its own.
+    Saturation stays a per-point diagnostic (``ambiguity_exhausted``); the honest terminal is produced
+    after acquisition returns no proposal, by ``_blocked_frontier_decision`` consuming the inventory
+    (covered in ``test_loop`` / ``test_ap6_forensic_replay``)."""
+    obj = _obj()
+    obj.steering["maximum_production_batches_per_q"] = 2
+    obj.steering["maximum_bridge_steps"] = 1
+    observations = []
+    for index in range(3):
+        row = _obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
+        row.update({"acquisition_id": f"A{index}", "ncount_clamped": index >= 1,
+                    "submitted_ncount": 100_000_000})
+        observations.append(row)
+    # The full survey has already visited every neighboring q.  The only pooled fit is real two-mode
+    # evidence but belongs to the rival branch.
+    observations.extend(_obs((h, 0.0, 0.0), "quicklook", None, resolved=False,
+                             disp="branch_ambiguous") for h in (2.2, 2.3, 2.4))
+    wrong = _master((2.1, 0.0, 0.0), 0.2)
+    wrong.update({"branch_id": "optic", "branch_candidates": [
+        {"energy_meV": 2.7}, {"energy_meV": 6.85}]})
+    grid = st.summarize_grid(obj, observations, [wrong])
+    decision = st.evaluate_stop(obj, grid, _BUDGET)
+    # The point is diagnostically saturated, but that is no longer evaluate_stop's terminal authority.
+    assert grid[0].clamped_productions == 2 and grid[0].ambiguity_exhausted
+    assert decision.state == "continue"
+    assert decision.terminal_cause is None
+
+
+def test_stop_decision_terminal_cause_is_additive_and_omitted_when_absent():
+    plain = st.StopDecision("continue", [], [])
+    assert plain.terminal_cause is None
+    assert "terminal_cause" not in plain.to_dict()
+    tagged = st.StopDecision("incomplete", ["frontier_blocked"], [],
+                             terminal_cause="action_inventory_exhausted")
+    assert tagged.to_dict()["terminal_cause"] == "action_inventory_exhausted"
+
+
+def test_saturated_frontier_stays_nonterminal_while_untried_neighbor_remains():
+    obj = _obj()
+    obj.steering["maximum_production_batches_per_q"] = 1
+    obj.steering["maximum_bridge_steps"] = 1
+    observations = []
+    for index in range(2):
+        row = _obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
+        row.update({"acquisition_id": f"A{index}", "ncount_clamped": True,
+                    "submitted_ncount": 100_000_000})
+        observations.append(row)
+    wrong = _master((2.1, 0.0, 0.0), 0.2)
+    wrong["branch_id"] = "optic"
+    grid = st.summarize_grid(obj, observations, [wrong])
+    assert grid[0].ambiguity_exhausted
+    assert st.evaluate_stop(obj, grid, _BUDGET).state == "continue"
 
 
 def test_production_cap_without_master_does_not_abandon_q():

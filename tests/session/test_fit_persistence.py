@@ -10,6 +10,7 @@ them reads with None; (4) session.json (ScanEntry.detectors) carries both throug
 The fitting tests reuse the single-peak pattern from ``test_driver_multimode`` and are ``slow``
 (they run iminuit); the CSV/ledger tests are fast (hand-built outcomes, no fitting).
 """
+import dataclasses
 import json
 
 import numpy as np
@@ -155,6 +156,36 @@ def test_to_dict_is_json_clean_for_new_fields():
     assert restored["candidates"] == _cands()
 
 
+@pytest.mark.parametrize("writer", [driver._select_mode, driver._clear_tracked_selection])
+def test_local_identity_survives_the_writer_to_results_csv_path(tmp_path, writer):
+    """Declaring a column is not populating it: the OP10 repair's second bug class.
+
+    ``results.csv`` is the Stage II/III frozen contract and the only route by which the driver's
+    GridQ learns local branch identity.  The first repair attempt declared the three columns and
+    wired the writers, but the row builder maps every column explicitly, so the campaign ran with
+    identity permanently unknown — the fields were present in the ledger and blank in the CSV.
+    """
+    outcome = _outcome_with(None, None)
+    written = outcome.to_dict()
+    assignment = dict(_tracked_assignment())
+    assignment.update(target_probability=0.7373147601858216,
+                      identity_entropy=0.5614679859005164,
+                      local_identity_clear=False)
+    if writer is driver._select_mode:
+        writer(written, {"candidate_ref": "acoustic:0", "energy_meV": 1.35,
+                         "probabilities": {"acoustic": 0.9}}, 0, assignment, 1, "acoustic")
+    else:
+        writer(written, assignment, 1)
+    outcome = driver._outcome_from_entry(
+        ScanEntry(scan_id="E:7:ana7", scan_number=7, scan_type="measurement",
+                  status="fitted", detectors={"ana7": written}), "ana7")
+
+    row = _write_read(tmp_path, outcome)
+    assert row["target_probability"] == pytest.approx(0.7373147601858216)
+    assert row["identity_entropy"] == pytest.approx(0.5614679859005164)
+    assert row["local_identity_clear"] is False
+
+
 def test_results_csv_roundtrips_amplitudes_and_candidates(tmp_path):
     amps = {"phonon.A": 501.2, "elastic.E": 12.0, "bg.BG": 8.0}
     row = _write_read(tmp_path, _outcome_with(amps, _cands()))
@@ -200,6 +231,89 @@ def test_old_results_csv_without_columns_reads_none(tmp_path):
     row = readers.read_results_csv(ws.root)[0]
     assert row["omega0"] == pytest.approx(5.0)
     assert "amplitudes" not in row and "candidates" not in row  # column absent → key absent
+
+
+# --------------------------------------------------------------------------- rehydration boundary
+# Regression: the tracked-branch writers persist keys into ScanEntry.detectors, and the "carry"
+# branch of run_batch rehydrates that dict back into a FitOutcome on every later iteration. A key
+# written but never declared on the dataclass therefore survives iteration 0 and kills iteration 1
+# — the whole campaign — with a TypeError from far away. Nothing exercised that path before.
+def _tracked_assignment():
+    """An assignment as the AP3 tracker emits it at an inferred reduced-q origin."""
+    return {"track_state": "inferred_unresolved", "assignment_entropy": 0.4,
+            "structural_endpoint_status": "inferred_unresolved", "is_reduced_q_origin": True}
+
+
+def _written_outcome_dict(writer):
+    """Run one tracked-selection writer over a real outcome dict, as the driver does."""
+    outcome = _outcome_with(None, None).to_dict()
+    candidate = {"candidate_ref": "acoustic:0", "energy_meV": 1.35,
+                 "probabilities": {"acoustic": 0.9}}
+    if writer is driver._select_mode:
+        writer(outcome, candidate, 0, _tracked_assignment(), 1, "acoustic")
+    elif writer is driver._withhold_tracked_delivery:
+        writer(outcome, {**candidate, "evidence_source": "auxiliary_probe"},
+               _tracked_assignment(), 1, "acoustic")
+    else:
+        writer(outcome, _tracked_assignment(), 1)
+    return outcome
+
+
+@pytest.mark.parametrize("writer", [driver._select_mode, driver._clear_tracked_selection])
+def test_carry_path_rehydrates_tracked_selection_outcome(writer):
+    """The exact production sequence: writer → ledger → carry-branch rehydration."""
+    entry = ScanEntry(scan_id="E:7:ana7", scan_number=7, scan_type="measurement",
+                      status="fitted", detectors={"ana7": _written_outcome_dict(writer)})
+    oc = driver._outcome_from_entry(entry, "ana7")
+    assert oc.structural_endpoint_status == "inferred_unresolved"
+    assert oc.is_reduced_q_origin is True
+
+
+@pytest.mark.parametrize("writer", [driver._select_mode, driver._clear_tracked_selection,
+                                   driver._withhold_tracked_delivery])
+def test_every_tracked_selection_key_is_a_declared_field(writer):
+    """Writer/schema invariant: persisting a key the dataclass cannot accept is the bug class."""
+    declared = {f.name for f in dataclasses.fields(driver.FitOutcome)}
+    undeclared = set(_written_outcome_dict(writer)) - declared
+    assert not undeclared, f"{writer.__name__} persists undeclared field(s): {sorted(undeclared)}"
+
+
+@pytest.mark.parametrize("writer", [driver._select_mode, driver._clear_tracked_selection])
+def test_is_reduced_q_origin_normalizes_to_false_when_absent(writer):
+    """Dataclasses do not enforce annotations, so an absent key must not persist None under a
+    bool-typed field — that would put a lie in both the ledger and results.csv."""
+    outcome = _outcome_with(None, None).to_dict()
+    assignment = {"track_state": "ambiguous", "assignment_entropy": 0.4}  # no AP3 endpoint keys
+    if writer is driver._select_mode:
+        writer(outcome, {"candidate_ref": "acoustic:0", "energy_meV": 1.35,
+                         "probabilities": {}}, 0, assignment, 1, "acoustic")
+    else:
+        writer(outcome, assignment, 1)
+    assert outcome["is_reduced_q_origin"] is False
+
+
+def test_coerce_fit_outcome_survives_an_unknown_additive_key(caplog):
+    """An additive key from a newer writer must not kill the campaign. The raw dict still lives in
+    ScanEntry.detectors, so dropping it from the dataclass view loses nothing — but it must warn."""
+    payload = {**_outcome_with(None, None).to_dict(), "some_future_field": "value"}
+    with caplog.at_level("WARNING"):
+        oc = driver._coerce_fit_outcome(payload)
+    assert oc.detector_id == "ana7"
+    assert "some_future_field" in caplog.text
+    # Dropped from the dataclass view only — the caller's dict is not mutated, so the ledger keeps it.
+    assert "some_future_field" not in vars(oc)
+    assert payload["some_future_field"] == "value"
+
+
+def test_coerce_fit_outcome_normalizes_legacy_none_origin():
+    """A ledger written before the field was declared persists None under a bool annotation."""
+    payload = {**_outcome_with(None, None).to_dict(), "is_reduced_q_origin": None}
+    assert driver._coerce_fit_outcome(payload).is_reduced_q_origin is False
+
+
+def test_coerce_fit_outcome_passes_through_an_existing_instance():
+    outcome = _outcome_with(None, None)
+    assert driver._coerce_fit_outcome(outcome) is outcome
 
 
 def test_session_json_roundtrips_new_fields(tmp_path):

@@ -215,9 +215,8 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
 
     rel_x, rel_y, rel_err, rel_ent = [], [], [], []
     provisional_x, provisional_y, provisional_err = [], [], []
-    candidate_x, candidate_y = [], []
     uncertified_x, uncertified_y = [], []
-    candidate_err_x, candidate_err_y, candidate_err = [], [], []
+    candidate_label_added = False
     pool_groups: dict[tuple[str, str], dict[str, list]] = {}
     any_unreliable = False
     for p in points or []:
@@ -228,14 +227,11 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
         yerr = p.get("yerr")
         if p.get("selected") is False:
             # Candidate modes remain visible as context, but never masquerade as the delivered
-            # branch answer and never receive verdict glyphs.
-            if yerr is None:
-                candidate_x.append(x)
-                candidate_y.append(y)
-            else:
-                candidate_err_x.append(x)
-                candidate_err_y.append(y)
-                candidate_err.append(float(yerr))
+            # branch answer, receive a certifying whisker, or join a dispersion line.
+            markers.append(ps.Marker(
+                x=x, y=y, kind=ps.MarkerKind.AMBIGUOUS_CANDIDATE,
+                label=("ambiguous mode candidates" if not candidate_label_added else None)))
+            candidate_label_added = True
             continue
         if p.get("pooled"):
             # Pooled master: its OWN interval (not a member's) whiskers it, per certify law; no
@@ -298,16 +294,6 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
                 text=str(branch.get("label") or branch.get("branch_id") or "branch"),
                 xy=(float(endpoint[0]), float(endpoint[1]))))
 
-    if candidate_err_x:
-        series.append(ps.Series(
-            x=np.asarray(candidate_err_x, float), y=np.asarray(candidate_err_y, float),
-            yerr=np.asarray(candidate_err, float), label="unselected candidates",
-            role=ps.Role.DATA, style="muted"))
-    if candidate_x:
-        series.append(ps.Series(
-            x=np.asarray(candidate_x, float), y=np.asarray(candidate_y, float),
-            label=(None if candidate_err_x else "unselected candidates"),
-            role=ps.Role.DATA, style="muted"))
     if uncertified_x:
         series.append(ps.Series(
             x=np.asarray(uncertified_x, float), y=np.asarray(uncertified_y, float),

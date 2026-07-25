@@ -20,7 +20,13 @@ from PySide6.QtWidgets import QLabel
 from isar_gui.gui_store import GuiStore
 from isar_gui.mime import MIME_SCAN_IDS, encode_scan_ids
 from isar_gui.viewmodels.scans import ScansViewModel
-from isar_gui.views.scans_dock import ScansDock
+from isar_gui.views.scans_dock import ScansDock, _q_compact
+
+
+def test_q_compact_preserves_close_reciprocal_coordinates_and_suppresses_zeroes():
+    assert _q_compact((2.10, 0.0, 0.0)) == "[2.1 0 0]"
+    assert _q_compact((2.15, 0.0, 0.0)) == "[2.15 0 0]"
+    assert _q_compact((2.15001, 2.15002, 0.0)) == "[2.15001 2.15002 0]"
 
 
 def _sv(exp, num, det, *, T=300.0, hkl=(1.0, 0.0, 0.0), q_target=None, B=None):
