@@ -2,14 +2,17 @@
 
 > **Lifecycle:** Current
 > **Authority:** canonical for what every documentation file *is* and who maintains it
-> **Provenance:** hand-written; inbound-reference counts machine-computed
-> **Verified against code revision:** `8fa1219` (2026-07-25)
+> **Provenance:** hand-written
+> **Verified against code revision:** `3341ded` (2026-07-25)
 
 This is the register the documentation cleanup works from. It exists because "keep the
-maintained documents up to date" was previously undefined — nobody could say which of the 61
+maintained documents up to date" was previously undefined — nobody could say which of the
 Markdown files in this repository were contracts, which were evidence, and which were dead.
 
-Every `.md` file in the repository appears exactly once below.
+Every `.md` file in the repository appears exactly once below. **This is enforced**, not merely
+asserted: `tests/docs/test_doc_drift.py` reads this register, resolves each entry against the
+heading it sits under, and fails if a tracked `.md` file is absent from it or carries no lifecycle
+banner. The tombstone table is read the same way, so a deleted file cannot quietly return.
 
 ## The three fields
 
@@ -42,6 +45,14 @@ lifecycle-banner requirement (PR4 check 4) because the generator, not a human, o
    into a canonical reference, or archives. `docs/handoffs/` is not a queue.
 4. An execution plan leaves the active tree when its work lands.
 5. `Active plan` requires an owner and exit criteria; without them it is not a plan.
+
+Rules 2–5 and the *normative source* half of rule 1 are review items — no checker can judge
+whether a citation is normative. What **is** enforced by `tests/docs/test_doc_drift.py`: every
+tracked `.md` is registered here and declares a valid lifecycle and provenance; every relative
+link resolves (case-sensitively, so a GitHub-only breakage fails locally); a tombstoned file is
+absent from the tree; a maintained document that names a deleted file says in the same paragraph
+that it is gone; and any command list marked `<!-- isar-commands: exhaustive -->` matches
+`isar.cli.main.build_parser()` exactly.
 
 ---
 

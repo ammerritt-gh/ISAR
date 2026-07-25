@@ -148,6 +148,13 @@ Rules, each naming the failure it prevents:
 When you change behaviour, commands, schemas, or capability status, update the governing document
 in the same change — and if the claim is machine-checkable, add it to `tests/docs/`.
 
+`tests/docs/test_doc_drift.py` already enforces the mechanical half: every tracked `.md` is
+registered in `DOC_INVENTORY.md` and declares a valid lifecycle and provenance, relative links
+resolve case-sensitively, tombstoned files stay deleted, and a command list marked
+`<!-- isar-commands: exhaustive -->` must match `isar.cli.main.build_parser()`. **Adding a new
+document therefore requires a register entry and a banner** — the test fails otherwise, by design.
+Rule 1's *normative source* judgement is not machine-checkable and stays a review item.
+
 ---
 
 *Last updated: 2026-07-25. Canonical file is `AGENTS.md`; `CLAUDE.md` is the `@AGENTS.md` stub.*

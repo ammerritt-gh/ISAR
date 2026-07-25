@@ -1,6 +1,6 @@
 # Archived design rationale
 
-> **Lifecycle:** Archived (this index is Current)
+> **Lifecycle:** Current (an index to archived material — everything it points to is Archived)
 > **Provenance:** hand-written
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
