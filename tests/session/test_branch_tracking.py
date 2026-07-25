@@ -573,6 +573,52 @@ def test_tracker_authority_prefers_the_consistent_master_when_both_exist_at_a_q(
     assert observations[0]["authority"] == "master:consistent:det0"
 
 
+def test_tracking_domain_is_authorized_union_not_observed_candidate_extent():
+    from isar.session.driver import _authorized_tracking_domain
+
+    target = {"energy_search_meV": [-2.0, 7.0], "identity_search_meV": [-1.0, 7.05]}
+    observations = [{
+        "candidates": [
+            _candidate("canonical", 6.0),
+            {**_candidate("auxiliary", 7.115), "evidence_source": "auxiliary_probe",
+             "authorized_energy_window_meV": [7.08, 7.2]},
+            {**_candidate("unobserved-authority", 50.0), "evidence_source": "auxiliary_probe"},
+        ],
+        "null_windows": [(8.0, 8.2, 0.5)],
+    }]
+
+    assert _authorized_tracking_domain(target, observations) == (
+        (-2.0, 7.05), (7.08, 7.2), (8.0, 8.2))
+
+
+def test_malformed_explicit_target_domain_fails_closed():
+    import pytest
+
+    from isar.session.driver import _authorized_tracking_domain
+
+    with pytest.raises(ValueError, match="malformed persisted energy_search_meV"):
+        _authorized_tracking_domain(
+            {"energy_search_meV": [7.0, -2.0]},
+            [{"candidates": [], "null_windows": [(7.1, 7.2, 1.0)]}],
+        )
+
+
+def test_tracking_signature_includes_domain_and_scorer_revision():
+    from isar.session.driver import _tracked_authority_signature
+
+    kwargs = dict(observations=[{"candidates": []}], target_branch="acoustic", period=2.0,
+                  hypotheses=HYPOTHESES, entropy_stop=1.0, maximum_bridge_steps=1)
+    baseline = _tracked_authority_signature(
+        **kwargs, energy_domain_meV=[[-2.0, 7.0]], scorer_revision=2)
+
+    assert _tracked_authority_signature(
+        **kwargs, energy_domain_meV=[[-2.0, 7.2]], scorer_revision=2) != baseline
+    assert _tracked_authority_signature(
+        **kwargs, energy_domain_meV=[[-2.0, 7.0]], scorer_revision=3) != baseline
+    assert _tracked_authority_signature(
+        **kwargs, energy_domain_meV=[[-2.0, 7.0]], scorer_revision=2) == baseline
+
+
 def test_clean_null_auxiliary_probe_becomes_a_tracker_null_window_and_shifts_the_basis():
     """Full path for negative evidence (Increment D). A clean-null auxiliary probe at a q must (i)
     surface as a ``null_windows`` entry on that path point's observation carrying the searched window,
@@ -860,7 +906,7 @@ def test_zero_confidence_contributes_no_evidence_rather_than_no_penalty():
     at confidence 1 up to -2.5 at confidence 0."""
     from isar.session.branch_tracking import _baselined_compatibility
 
-    for energy in (0.0, 4.0, 6.0, 20.0):
+    for energy in (0.0, 4.0, 6.0):
         for mean, sigma in ((0.0, 0.2), (6.0, 3.0)):
             assert _baselined_compatibility(energy, mean, sigma, 0.0, DOMAIN) == 0.0
 
@@ -952,3 +998,43 @@ def test_a_declared_campaign_band_is_the_baseline_domain():
     wide = _baselined_compatibility(3.0, 3.0, 0.5, 1.0, (-10.0, 20.0))
     assert wide > narrow, "a declared branch beats 'anywhere' by more when 'anywhere' is bigger"
     assert DEFAULT_ENERGY_DOMAIN_MEV[1] > DEFAULT_ENERGY_DOMAIN_MEV[0]
+
+
+def test_o30_rejects_out_of_support_before_the_zero_confidence_shortcut():
+    from isar.session.branch_tracking import _baselined_compatibility
+
+    for confidence in (0.0, 0.5, 1.0):
+        assert _baselined_compatibility(-2.01, 0.0, 0.2, confidence, (-2.0, 7.0)) == -math.inf
+        assert _baselined_compatibility(7.01, 7.0, 0.2, confidence, (-2.0, 7.0)) == -math.inf
+        assert _baselined_compatibility(math.nan, 0.0, 0.2, confidence, (-2.0, 7.0)) == -math.inf
+        assert math.isfinite(
+            _baselined_compatibility(-2.0, -2.0, 0.2, confidence, (-2.0, 7.0)))
+        assert math.isfinite(
+            _baselined_compatibility(7.0, 7.0, 0.2, confidence, (-2.0, 7.0)))
+
+
+def test_ap6_rival_needs_an_authorized_disjoint_probe_window():
+    hypotheses = [
+        {"name": "optic", "zc_energy": {"mean": 20.0, "sigma": 0.2},
+         "slope_zc": {"mean": 0.0, "sigma": 0.2}, "confidence": 1.0},
+        {"name": "acoustic", "zc_energy": {"mean": 7.115, "sigma": 0.1},
+         "slope_zc": {"mean": 0.0, "sigma": 0.1}, "confidence": 1.0},
+    ]
+    path = [[2.9, 0.0, 0.0]]
+    observations = [{"candidates": [_candidate("ap6:rival", 7.115, error=0.03)]}]
+
+    forbidden = track_path(
+        path, observations, period=2.0, hypotheses=hypotheses, target_branch="acoustic",
+        assignment_entropy_stop_nats=2.0, energy_domain_meV=(-2.0, 7.0))
+    authorized = track_path(
+        path, observations, period=2.0, hypotheses=hypotheses, target_branch="acoustic",
+        assignment_entropy_stop_nats=2.0,
+        energy_domain_meV=[(-2.0, 7.0), (7.08, 7.2)])
+
+    assert forbidden["assignments"][0]["selected_candidate_index"] is None
+    assert authorized["assignments"][0]["selected_candidate_index"] == 0
+    assert authorized["energy_domain_meV"] == [[-2.0, 7.0], [7.08, 7.2]]
+    assert authorized["scorer_revision"] == 2
+    from isar.session.branch_tracking import _baselined_compatibility
+    assert _baselined_compatibility(7.04, 7.115, 0.1, 1.0, [
+        (-2.0, 7.0), (7.08, 7.2)]) == -math.inf

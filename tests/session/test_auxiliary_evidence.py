@@ -74,6 +74,19 @@ def test_the_auxiliary_candidate_is_tagged_and_the_canonical_ones_are_not():
     assert "evidence_source" not in by_energy[5.754]
 
 
+def test_auxiliary_candidate_carries_its_persisted_authorized_search_window():
+    session = _session(
+        ("exp:1:det", _master(PATH[1], 5.754)),
+        ("exp:2:det", _probe(
+            PATH[1], 7.115, search_energy_lo=7.0, search_energy_hi=7.3)),
+    )
+    observations, _refs = _tracked_authorities(session, PATH)
+    auxiliary = next(candidate for candidate in observations[1]["candidates"]
+                     if candidate.get("evidence_source") == "auxiliary_probe")
+
+    assert auxiliary["authorized_energy_window_meV"] == [7.0, 7.3]
+
+
 def test_an_auxiliary_probe_is_never_pooled_into_the_master():
     """The probe's own outcome must not be marked pooled, or the certification machinery would count
     a deliberately off-target window as target exposure."""
@@ -240,9 +253,12 @@ def test_a_withheld_delivery_is_not_certifiable_and_seeds_no_prior():
     session, card, _track = _tracked_session_with_probe()
     master = session.scans["master:q1"].detectors["det"]
 
-    assert master.get("model_robust") is not True, "model-averaged delivery is withheld too"
+    assert master.get("model_robust") is True, "withholding must not destroy fitted model evidence"
+    assert master.get("model_interval") == [3.92, 4.0, 4.08]
     row = {"h": PATH[1][0], "k": 0.0, "l": 0.0, "omega0": master["omega0"],
-           "model_interval_lo": None, "model_interval_med": None, "model_interval_hi": None,
+           "model_interval_lo": master["model_interval"][0],
+           "model_interval_med": master["model_interval"][1],
+           "model_interval_hi": master["model_interval"][2],
            "model_robust": master.get("model_robust"), "disposition": "resolved",
            "target_delivery_eligible": False}
     obs = _master_obs_from_row(row, Calibration(inflation=1.0))
@@ -251,3 +267,56 @@ def test_a_withheld_delivery_is_not_certifiable_and_seeds_no_prior():
     prior_qs = [point.get("q") for point in (card.state.dispersion_prior or [])]
     assert all(q != list(PATH[1]) for q in prior_qs), (
         "an auxiliary candidate must never enter the running dispersion prior")
+
+
+def test_a_later_canonical_selection_clears_withholding_and_reuses_model_delivery():
+    from isar.drive.acquisition.calibration import Calibration
+    from isar.drive.loop import _master_obs_from_row
+    from isar.session.driver import _select_mode
+
+    session, _card, track = _tracked_session_with_probe()
+    master = session.scans["master:q1"].detectors["det"]
+    assignment = track["assignments"][1]
+    canonical_index = next(
+        index for index, candidate in enumerate(assignment["candidates"])
+        if candidate.get("evidence_source") != "auxiliary_probe")
+    canonical = assignment["candidates"][canonical_index]
+
+    _select_mode(master, canonical, canonical_index, assignment, track["revision"], "acoustic")
+
+    assert master["target_delivery_eligible"] is True
+    assert master["identity_branch_id"] is None
+    assert master["delivery_withheld_reason"] is None
+    assert master["model_robust"] is True
+    assert master["model_interval"] == [3.92, 4.0, 4.08]
+    row = {
+        "h": PATH[1][0], "k": 0.0, "l": 0.0, "omega0": master["omega0"],
+        "model_interval_lo": master["model_interval"][0],
+        "model_interval_med": master["model_interval"][1],
+        "model_interval_hi": master["model_interval"][2],
+        "model_robust": master["model_robust"], "disposition": "resolved",
+        "target_delivery_eligible": master["target_delivery_eligible"],
+    }
+    obs = _master_obs_from_row(row, Calibration(inflation=1.0))
+    assert obs["certifiable"] is True
+
+
+def test_new_ambiguity_withdraws_the_old_auxiliary_identity_but_keeps_delivery_gated():
+    from isar.session.driver import _clear_tracked_selection
+
+    session, _card, track = _tracked_session_with_probe()
+    master = session.scans["master:q1"].detectors["det"]
+    ambiguous = {
+        **track["assignments"][1],
+        "track_state": "ambiguous",
+        "target_probability": 0.5,
+        "identity_entropy": 0.7,
+        "local_identity_clear": False,
+    }
+
+    _clear_tracked_selection(master, ambiguous, track["revision"] + 1)
+
+    assert master["target_delivery_eligible"] is False
+    assert master["identity_branch_id"] is None
+    assert master["delivery_withheld_reason"] is None
+    assert master["omega0"] is None

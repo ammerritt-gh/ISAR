@@ -506,6 +506,10 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   gate. The replay is proven at the `enumerate_actions`/reconstruction level; a full campaign replay
   through the live driver against the frozen workspace is outstanding, and the zone-aware boundary probe
   (which needs a cross-zone structure-factor consumer that does not yet exist) is deferred to a later PR.
+  Auxiliary withholding is reversible: the canonical master's model interval remains intact behind
+  `target_delivery_eligible=False`, and a later canonical selection clears the withholding state and
+  restores delivery without requiring a refit. The persisted probe search window authorizes its
+  candidates for identity scoring after resume; candidate energies themselves never widen that domain.
   **O25/O26 stay Partial** — AP1/AP2/AP3 campaign replays are unchanged by this. Evidence:
   `docs/campaigns/2026-07-23_AP6_ACTION_INVENTORY.md`.
 - **O29.** (2026-07-24, Implemented for the AP7 and AP8 terminals; a standing invariant on the terminal
@@ -566,6 +570,12 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   3 meV-wide ZC prior then permanently lost to `new` even at its own mean. The ratio form fixes that
   case rather than reviving it: against a uniform over the same domain, a broad prior at its mean gives
   `log(N_peak/U) > 0` — positive support.
+
+  The authorized domain is a normalized union of the target band, any declared identity band, and
+  persisted auxiliary probe/null windows. Uniform width and truncated-normal mass are summed across
+  disjoint intervals; values outside every interval are impossible (`-inf`) even at zero confidence.
+  The normalized union and an explicit scorer revision are part of the durable authority signature and
+  `branch_tracks` audit record, so a changed band or scorer cannot reuse stale assignments.
 
   **What this does not fix, stated so it is not mistaken for fixed.** The *absolute* trade between
   assigning a candidate and leaving a branch unassigned is set by `MISSING_LOG_PENALTY +

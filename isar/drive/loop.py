@@ -2276,6 +2276,9 @@ def _persist_campaign_target(workspace: Path, objective) -> None:
               # The session identity tracker needs the frozen scientific path order; sorting fitted
               # q after the fact would silently turn a looped path into a different experiment.
               "path": [list(q) for q in getattr(objective, "path", [])]}
+    identity_search = getattr(objective, "identity_search_meV", None)
+    if identity_search is not None:
+        target["identity_search_meV"] = list(identity_search)
     snapshot = ({"hypotheses": list(getattr(objective, "hypotheses", []) or []),
                  "target_hypothesis": getattr(objective, "target_hypothesis", None),
                  "source": getattr(objective, "hypothesis_source", None),

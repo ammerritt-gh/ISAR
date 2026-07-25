@@ -50,6 +50,24 @@ def test_an_undeclared_identity_domain_defaults_to_the_target_domain():
     assert objective.effective_identity_search_meV == objective.target_search_meV   # ...so: target
 
 
+def test_campaign_target_persists_raw_declared_identity_domain(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from isar.drive.loop import _persist_campaign_target
+    from isar.schema.card import CardState
+
+    policy_path = tmp_path / "card.policy.toml"
+    policy_path.write_text("", encoding="utf-8")
+    card = SimpleNamespace(state=CardState(), save_state=lambda path: path)
+    monkeypatch.setattr("isar.drive.loop.Card.load", lambda policy, state: card)
+    objective = _spec(identity_search_meV=(-2.0, 9.0))
+
+    _persist_campaign_target(tmp_path, objective)
+
+    assert card.state.campaign_target["energy_search_meV"] == [-2.0, 7.0]
+    assert card.state.campaign_target["identity_search_meV"] == [-2.0, 9.0]
+
+
 def test_the_undeclared_state_survives_replace_and_copy():
     """The field must stay ``None`` rather than being normalized to the target band in __post_init__.
 

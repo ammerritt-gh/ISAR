@@ -1778,6 +1778,13 @@ def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tupl
                 for candidate in candidates:
                     tagged = dict(candidate)
                     tagged["evidence_source"] = "auxiliary_probe"
+                    try:
+                        search_window = branch_tracking.normalize_energy_domain(
+                            (outcome.get("search_energy_lo"), outcome.get("search_energy_hi")))
+                    except ValueError:
+                        search_window = ()
+                    if search_window:
+                        tagged["authorized_energy_window_meV"] = list(search_window[0])
                     auxiliary_by_index.setdefault(index, []).append(tagged)
                 continue
             if index is not None and candidates and outcome.get("pooled"):
@@ -1824,9 +1831,12 @@ def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tupl
     return observations, refs
 
 
-def _tracked_authority_signature(observations: list[dict], *, target_branch: str,
-                                 period: float | None, hypotheses: list[dict],
-                                 entropy_stop: float, maximum_bridge_steps: int) -> str:
+def _tracked_authority_signature(
+        observations: list[dict], *, target_branch: str, period: float | None,
+        hypotheses: list[dict], entropy_stop: float, maximum_bridge_steps: int,
+        energy_domain_meV=None,
+        scorer_revision: int = branch_tracking.BRANCH_TRACKING_SCORER_REVISION,
+) -> str:
     """Stable identity input; derived probabilities are deliberately excluded."""
     authorities = []
     for observation in observations:
@@ -1853,6 +1863,9 @@ def _tracked_authority_signature(observations: list[dict], *, target_branch: str
         "period": period, "hypotheses": hypotheses,
         "assignment_entropy_stop_nats": float(entropy_stop),
         "maximum_bridge_steps": int(maximum_bridge_steps),
+        "energy_domain_meV": [
+            list(interval) for interval in branch_tracking.normalize_energy_domain(energy_domain_meV)],
+        "scorer_revision": int(scorer_revision),
     })
 
 
@@ -1910,6 +1923,11 @@ def _select_mode(outcome: dict, candidate: dict, candidate_index: int, assignmen
     _carry_local_identity(outcome, assignment)
     outcome["structural_endpoint_status"] = assignment.get("structural_endpoint_status")
     outcome["is_reduced_q_origin"] = bool(assignment.get("is_reduced_q_origin", False))
+    # Auxiliary withholding is a temporary delivery gate, not a durable property of the q. A later
+    # canonical selection can immediately reuse the fit's preserved model delivery without a refit.
+    outcome["target_delivery_eligible"] = True
+    outcome["identity_branch_id"] = None
+    outcome["delivery_withheld_reason"] = None
 
 
 def _carry_local_identity(outcome: dict, assignment: dict) -> None:
@@ -1940,6 +1958,11 @@ def _clear_tracked_selection(outcome: dict, assignment: dict, revision: int) -> 
     _carry_local_identity(outcome, assignment)
     outcome["structural_endpoint_status"] = assignment.get("structural_endpoint_status")
     outcome["is_reduced_q_origin"] = bool(assignment.get("is_reduced_q_origin", False))
+    # A newly ambiguous/missing assignment also withdraws any earlier auxiliary-only identity
+    # conclusion. Keep a pre-existing delivery gate closed until a canonical selection explicitly
+    # re-enables it, but do not keep claiming a branch identity the tracker no longer confirms.
+    outcome["identity_branch_id"] = None
+    outcome["delivery_withheld_reason"] = None
     # The immutable branch_candidates table remains the complete fit evidence and can restore these
     # mode-specific values after a later reassignment.  The scalar compatibility view must abstain.
     for field in ("omega0", "omega0_err", "gamma", "interval", "omega0_profile",
@@ -1967,10 +1990,8 @@ def _withhold_tracked_delivery(outcome: dict, candidate: dict, assignment: dict,
     outcome["target_delivery_eligible"] = False
     outcome["identity_branch_id"] = target_branch
     outcome["delivery_withheld_reason"] = "auxiliary_only_selection"
-    # The model-averaged predictive interval is a second, independent delivery path: a model-robust
-    # row certifies from ``model_interval_med`` without ever reading the scalar omega0 cleared above.
-    outcome["model_robust"] = False
-    outcome["model_interval"] = None
+    # Preserve the fit's model delivery. The eligibility flag gates both scalar and model paths, and a
+    # later canonical selection can therefore restore certification without an unnecessary refit.
     log.warning(
         "withholding target delivery at q=%s: the tracked %s identity rests on auxiliary candidate "
         "%r, which is never pooled and never certification-eligible. Identity retained; this point "
@@ -2025,6 +2046,51 @@ def _rebuild_tracked_prior(card, session: SessionState, track: dict, observation
             point["track_revision"] = revision
 
 
+def _authorized_tracking_domain(target: dict, observations: list[dict]):
+    """Normalized union of policy- and provenance-authorized tracking windows.
+
+    Candidate energies never contribute to this union. An auxiliary candidate with missing or malformed
+    acquisition provenance remains visible evidence, but gains no support outside the declared target
+    and identity bands.
+    """
+    intervals = []
+    target_band = target.get("energy_search_meV")
+    if target_band is None:
+        intervals.extend(branch_tracking.normalize_energy_domain(None))
+    else:
+        try:
+            intervals.extend(branch_tracking.normalize_energy_domain(target_band))
+        except ValueError as exc:
+            raise ValueError(
+                f"malformed persisted energy_search_meV tracking authorization: {target_band!r}"
+            ) from exc
+    identity_band = target.get("identity_search_meV")
+    if identity_band is not None:
+        try:
+            intervals.extend(branch_tracking.normalize_energy_domain(identity_band))
+        except ValueError:
+            log.warning("ignoring malformed persisted identity_search_meV tracking authorization: %r",
+                        identity_band)
+    for observation in observations:
+        for candidate in observation.get("candidates") or []:
+            if not _is_auxiliary_candidate(candidate):
+                continue
+            window = candidate.get("authorized_energy_window_meV")
+            if window is None:
+                continue
+            try:
+                intervals.extend(branch_tracking.normalize_energy_domain(window))
+            except ValueError:
+                log.warning("ignoring malformed auxiliary candidate tracking authorization: %r", window)
+        for null_window in observation.get("null_windows") or []:
+            try:
+                intervals.extend(branch_tracking.normalize_energy_domain(null_window[:2]))
+            except (TypeError, ValueError):
+                log.warning("ignoring malformed auxiliary null-window tracking authorization: %r",
+                            null_window)
+    return branch_tracking.normalize_energy_domain(intervals)
+
+
 def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dict | None:
     if not _tracked_selector(card):
         return None
@@ -2042,25 +2108,23 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
     hypotheses = _campaign_hypotheses(card)
     entropy_stop = float(policy.get("assignment_entropy_stop_nats", 0.2))
     maximum_bridge_steps = int(policy.get("maximum_bridge_steps", 1))
+    energy_domain = _authorized_tracking_domain(target, observations)
     authority_signature = _tracked_authority_signature(
         observations, target_branch=target_branch, period=period, hypotheses=hypotheses,
-        entropy_stop=entropy_stop, maximum_bridge_steps=maximum_bridge_steps)
+        entropy_stop=entropy_stop, maximum_bridge_steps=maximum_bridge_steps,
+        energy_domain_meV=energy_domain,
+        scorer_revision=branch_tracking.BRANCH_TRACKING_SCORER_REVISION)
     if (previous.get("authoritative_evidence_signature") == authority_signature
             and previous.get("target_branch") == target_branch
             and previous.get("assignments") is not None):
         track = previous
     else:
-        # The campaign's own authorized band is the domain the "could be anywhere" baseline is uniform
-        # over (O30). Without it the tracker falls back to a fixed span, which stays branch-neutral but
-        # no longer reflects what this campaign actually declared it was searching.
-        search_band = target.get("energy_search_meV")
         track = branch_tracking.track_path(
             path, observations, period=period, hypotheses=hypotheses,
             target_branch=target_branch, previous=previous,
             assignment_entropy_stop_nats=entropy_stop,
             maximum_bridge_steps=maximum_bridge_steps,
-            energy_domain_meV=(tuple(float(v) for v in search_band)
-                               if search_band and len(search_band) == 2 else None))
+            energy_domain_meV=energy_domain)
         track["authoritative_evidence_signature"] = authority_signature
     revision = int(track["revision"])
     for assignment, observation in zip(track["assignments"], observations):

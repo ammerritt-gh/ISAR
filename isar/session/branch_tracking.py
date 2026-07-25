@@ -26,6 +26,7 @@ ORDERING_LOG_FLOOR = math.log(0.05)
 # identically to every branch, so it scales how much a *declared* branch beats "anywhere" without ever
 # favouring one branch over another.
 DEFAULT_ENERGY_DOMAIN_MEV = (-2.0, 18.0)
+BRANCH_TRACKING_SCORER_REVISION = 2
 
 # Character is a trajectory-level latent variable.  A finite floor keeps all hypotheses represented
 # numerically while making a local acoustic<->optic hand-off negligible relative to reconnecting the
@@ -118,8 +119,45 @@ def _normal_cdf(z: float) -> float:
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
 
+def normalize_energy_domain(
+        domain: tuple[float, float] | list[float] | Iterable[Iterable[float]] | None,
+) -> tuple[tuple[float, float], ...]:
+    """Return a sorted, merged union of finite energy intervals.
+
+    A two-value interval remains the backward-compatible public input. Callers that have separately
+    authorized target, identity, or probe windows may pass an iterable of intervals instead.
+    """
+    if domain is None:
+        raw_intervals = [DEFAULT_ENERGY_DOMAIN_MEV]
+    else:
+        raw = list(domain)
+        if len(raw) == 2 and all(isinstance(value, (int, float, np.number)) for value in raw):
+            raw_intervals = [raw]
+        else:
+            raw_intervals = raw
+    intervals = []
+    for interval in raw_intervals:
+        try:
+            lo, hi = interval
+            lo, hi = float(lo), float(hi)
+        except (TypeError, ValueError):
+            raise ValueError("energy domain must contain two-value intervals") from None
+        if not (np.isfinite(lo) and np.isfinite(hi) and lo < hi):
+            raise ValueError("energy domain intervals must be finite and increasing")
+        intervals.append((lo, hi))
+    if not intervals:
+        raise ValueError("energy domain must contain at least one interval")
+    merged: list[list[float]] = []
+    for lo, hi in sorted(intervals):
+        if not merged or lo > merged[-1][1]:
+            merged.append([lo, hi])
+        else:
+            merged[-1][1] = max(merged[-1][1], hi)
+    return tuple((lo, hi) for lo, hi in merged)
+
+
 def _baselined_compatibility(value: float, mean: float, sigma: float, confidence: float,
-                             domain: tuple[float, float]) -> float:
+                             domain: tuple[float, float] | Iterable[Iterable[float]]) -> float:
     """Log Bayes factor for "this candidate is that branch" against a branch-neutral baseline (O30).
 
     The declared branch is trusted with probability ``confidence``; otherwise the mode could be
@@ -137,20 +175,25 @@ def _baselined_compatibility(value: float, mean: float, sigma: float, confidence
     of a shared baseline. What is guaranteed is that no branch gains an advantage from being trusted
     less, because both are measured against the same ``U``.
 
-    The branch density is truncated to the domain, so a prior whose mean sits near an edge is not
-    charged for the mass it cannot place there.
+    The branch density is truncated to the authorized interval union, so a prior whose mean sits near
+    an edge is not charged for mass it cannot place there. Values outside every interval are impossible
+    under both densities and are rejected before the zero-confidence shortcut.
     """
-    lo, hi = float(domain[0]), float(domain[1])
-    width = max(hi - lo, 1e-6)
+    intervals = normalize_energy_domain(domain)
+    value = float(value)
+    if not np.isfinite(value) or not any(lo <= value <= hi for lo, hi in intervals):
+        return -math.inf
+    width = sum(hi - lo for lo, hi in intervals)
     confidence = min(max(float(confidence), 0.0), 1.0)
     if confidence <= 0.0:
         return 0.0
     sigma = max(float(sigma), 1e-6)
-    z = (float(value) - float(mean)) / sigma
+    z = (value - float(mean)) / sigma
     # Mass of the declared branch that actually falls inside the authorized domain. Floored so a
     # branch predicted far outside it cannot divide by ~0 and manufacture unbounded support.
-    inside = max(_normal_cdf((hi - float(mean)) / sigma) - _normal_cdf((lo - float(mean)) / sigma),
-                 1e-6)
+    inside = max(sum(
+        _normal_cdf((hi - float(mean)) / sigma) - _normal_cdf((lo - float(mean)) / sigma)
+        for lo, hi in intervals), 1e-6)
     # density_ratio = N_trunc(value) / U, both proper densities on the domain.
     log_density_ratio = (math.log(width) - math.log(sigma) - 0.5 * math.log(2.0 * math.pi)
                          - math.log(inside) - 0.5 * z * z)
@@ -559,7 +602,8 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
                hypotheses: list[dict], target_branch: str = "optic", previous: dict | None = None,
                assignment_entropy_stop_nats: float = 0.2,
                maximum_bridge_steps: int = 1,
-               energy_domain_meV: tuple[float, float] | None = None) -> dict:
+               energy_domain_meV: (tuple[float, float] | list[float]
+                                   | Iterable[Iterable[float]] | None) = None) -> dict:
     """Run Viterbi plus forward/backward marginals over an ordered objective path.
 
     ``observations`` has one row per path point and each row has an unordered ``candidates`` list.
@@ -570,9 +614,7 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
     # The domain the "could be anywhere" baseline is uniform over (O30). Falls back to a fixed span
     # rather than to the observed candidates, whose spread would make the baseline move with the data
     # it is supposed to be measured against.
-    domain = tuple(float(v) for v in energy_domain_meV) if energy_domain_meV else         DEFAULT_ENERGY_DOMAIN_MEV
-    if not domain[1] > domain[0]:
-        domain = DEFAULT_ENERGY_DOMAIN_MEV
+    domain = normalize_energy_domain(energy_domain_meV)
     if len(path) != len(observations):
         raise ValueError("path and observations must have the same length")
     points = [[float(value) for value in q] for q in path]
@@ -609,6 +651,8 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
                 "anchor_index": anchor,
                 "acquisition_seed_index": anchor,
                 "reduced_q_origin_index": zone_anchor,
+                "energy_domain_meV": [list(interval) for interval in domain],
+                "scorer_revision": BRANCH_TRACKING_SCORER_REVISION,
                 "assignments": [], "tracks": [], "frontiers": {}}
 
     emissions = [[_emission(state, candidates_by_q[index],
@@ -728,6 +772,8 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
         "anchor_index": anchor,
         "acquisition_seed_index": anchor,
         "reduced_q_origin_index": zone_anchor,
+        "energy_domain_meV": [list(interval) for interval in domain],
+        "scorer_revision": BRANCH_TRACKING_SCORER_REVISION,
         "inferred_endpoint_indices": [zone_anchor] if inferred_origin else [],
         "assignments": assignments,
         "tracks": [
