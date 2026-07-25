@@ -36,12 +36,14 @@ _NUMERIC_COLUMNS = frozenset({
     "effective_exposure", "consistency_statistic", "consistency_pvalue",
     "consistency_alpha", "model_interval_lo", "model_interval_med", "model_interval_hi",
     "model_entropy",
+    "target_probability", "identity_entropy",
 })
 _INT_COLUMNS = frozenset({"scan", "prior_n", "n_modes", "n_members",
                           "selected_candidate_index", "track_revision", "consistency_seed"})
 # Coerced to bool ("True"/"False" → True/False; "" → None). ISAR writes Python bool reprs.
 _BOOL_COLUMNS = frozenset({"interval_reliable", "pooled", "hesse_trusted", "resolvable",
-                           "gamma_at_bound", "pool_consistent", "model_robust"})
+                           "gamma_at_bound", "pool_consistent", "model_robust",
+                           "local_identity_clear", "target_delivery_eligible"})
 # Split on ";" into a list of labels ("" → None; missing column → key absent via DictReader).
 _LIST_COLUMNS = frozenset({"members"})
 # JSON-encoded structured columns (GUI Phase 0): the amplitudes dict and candidate table. Parsed

@@ -126,6 +126,7 @@ def create_master_certification_manifest(workspace_root: str | Path,
             masters.append((entry, pooled_outcomes[0]))
 
     worklist = []
+    excluded = []
     used_master_ids = set()
     for canonical_index, (objective_hkl, point) in enumerate(
             zip(objective_path, decision_points)):
@@ -142,6 +143,19 @@ def create_master_certification_manifest(workspace_root: str | Path,
         matches = [(entry, outcome) for entry, outcome in masters
                    if all(abs(float(left) - float(right)) <= 1e-8
                           for left, right in zip(outcome.get("q") or (), hkl))]
+        if not matches and _is_structurally_unresolvable(point):
+            # A reduced-q origin the tracker inferred rather than measured has no pooled master by
+            # construction, so demanding one aborts an otherwise complete campaign. Record the
+            # exclusion explicitly: a manifest that silently omitted a grid point would be worse
+            # than the crash it replaces.
+            excluded.append({
+                "canonical_index": canonical_index,
+                "hkl": hkl,
+                "structural_endpoint_status": point.get("structural_endpoint_status"),
+                "is_reduced_q_origin": bool(point.get("is_reduced_q_origin", False)),
+                "reason": str(point.get("reason") or "structurally unresolvable; not certifiable"),
+            })
+            continue
         if len(matches) != 1:
             raise ValueError(
                 f"requested q {hkl} maps to {len(matches)} pooled masters; expected exactly one")
@@ -206,6 +220,9 @@ def create_master_certification_manifest(workspace_root: str | Path,
         },
         "seeds": dict(request.get("seeds") or {}),
         "worklist": worklist,
+        # Grid points deliberately not certified, and why. Present (empty when nothing was skipped)
+        # so a reader can always tell "nothing was excluded" from "this manifest predates the field".
+        "excluded_points": excluded,
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     fingerprint = hashlib.sha256(canonical).hexdigest()
@@ -221,6 +238,24 @@ def create_master_certification_manifest(workspace_root: str | Path,
     if runtime:
         _atomic_json(manifest.parent / "runtime.json", dict(runtime))
     return manifest
+
+
+def _is_structurally_unresolvable(point: dict) -> bool:
+    """Whether a decision point represents a q that cannot carry a certified interval.
+
+    Mirrors ``GridQ.precision_coverage_eligible`` (isar/drive/supervisor/stopping.py), which is the
+    authority; ``evaluate_stop`` emits its verdict into each ``per_q`` row. Preferring that emitted
+    verdict over re-deriving it here keeps one rule for "this q is not a measurable target" instead
+    of two that can drift apart — the drift that aborted an otherwise complete campaign.
+    """
+    if not isinstance(point, dict):
+        return False
+    eligible = point.get("precision_coverage_eligible")
+    if eligible is not None:
+        return not bool(eligible)
+    # Older decision records predate that field; fall back to the endpoint marks it was derived from.
+    return (point.get("structural_endpoint_status") == "inferred_unresolved"
+            and bool(point.get("is_reduced_q_origin", False)))
 
 
 def _entry_from_dict(row: dict) -> ScanEntry:

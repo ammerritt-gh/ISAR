@@ -180,3 +180,151 @@ def test_master_fingerprint_covers_numerical_dependencies_but_not_execution_orde
     # Worker count, completion order, and allowance are deliberately absent from the API.
     assert tier_satisfies("bayes", "full")
     assert not tier_satisfies("full", "bayes")
+
+
+# --------------------------------------------------------------- structurally unresolvable q (AP5)
+# Regression: 7348cc6 introduced the inferred acoustic zone-centre endpoint — a q that is
+# unresolvable by construction and therefore carries no pooled master. stopping.py and acquire.py
+# learned to exclude it from precision coverage; certification did not, so it still demanded exactly
+# one pooled master per objective-path point. A campaign that certified 20 of 21 points then aborted
+# with "requested q [2.0, 0.0, 0.0] maps to 0 pooled masters".
+from isar.session.certification import _is_structurally_unresolvable
+
+
+def test_predicate_prefers_the_emitted_eligibility_verdict():
+    """evaluate_stop's precision_coverage_eligible is the authority when present."""
+    assert _is_structurally_unresolvable({"precision_coverage_eligible": False})
+    assert not _is_structurally_unresolvable({"precision_coverage_eligible": True})
+    # It wins over the endpoint marks, so the two rules can never disagree in opposite directions.
+    assert not _is_structurally_unresolvable({
+        "precision_coverage_eligible": True,
+        "structural_endpoint_status": "inferred_unresolved", "is_reduced_q_origin": True})
+
+
+def test_predicate_falls_back_for_records_predating_the_field():
+    assert _is_structurally_unresolvable({
+        "structural_endpoint_status": "inferred_unresolved", "is_reduced_q_origin": True})
+    # A reduced-q origin that was actually measured is still an ordinary certifiable target.
+    assert not _is_structurally_unresolvable({
+        "structural_endpoint_status": None, "is_reduced_q_origin": True})
+    assert not _is_structurally_unresolvable({})
+
+
+def test_ordinary_missing_master_still_raises():
+    """The exclusion must be narrow: a q that simply has no master is still an error."""
+    assert not _is_structurally_unresolvable({"precision_coverage_eligible": True, "hkl": [2.1, 0, 0]})
+
+
+def _cert_workspace(tmp_path):
+    """Minimal real workspace: one pooled master at 2.05, nothing at the 2.00 origin."""
+    from pathlib import Path
+    from isar.parsers import tavi as tavi_parser
+    from isar.session.state import SessionState
+
+    root = tmp_path / "ws"
+    (root / "report").mkdir(parents=True)
+    (root / "card.policy.toml").write_text(
+        Path(tavi_parser._CARD_PATH).read_text(encoding="utf-8"), encoding="utf-8")
+    (root / "card.state.json").write_text("{}", encoding="utf-8")
+
+    spectrum_ref = "data/spectrum-2050.json"
+    (root / "data").mkdir()
+    (root / spectrum_ref).write_text(json.dumps({"x": [0.0], "counts": [1]}), encoding="utf-8")
+
+    st = SessionState()
+    st.put(ScanEntry(
+        scan_id="master:tavi_(205, 0, 0)_300.0", scan_number=9_000_001,
+        scan_type="measurement", status="fitted",
+        detectors={"det": {"pooled": True, "q": [2.05, 0.0, 0.0], "T": 300.0, "calib": {}}},
+        provenance={"members": [["tavi:1:det"]], "spectrum_ref": spectrum_ref}))
+    st.save(root / "session.json")
+    return root
+
+
+def _cert_request(root, **extra):
+    body = {
+        "schema": "isar.certification.request/1", "tier": "full",
+        "fit_options": {"M": 8},
+        "objective_path": [[2.0, 0.0, 0.0], [2.05, 0.0, 0.0]],
+        "seeds": {}, "calibration": {},
+        **extra,
+    }
+    body["fingerprint"] = hashlib.sha256(json.dumps(
+        body, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    path = root / "request.json"
+    path.write_text(json.dumps(body), encoding="utf-8")
+    return path
+
+
+def test_manifest_excludes_an_inferred_origin_and_says_so(tmp_path):
+    from isar.session.certification import create_master_certification_manifest
+
+    root = _cert_workspace(tmp_path)
+    request = _cert_request(root, per_q=[
+        {"hkl": [2.0, 0.0, 0.0], "precision_coverage_eligible": False,
+         "structural_endpoint_status": "inferred_unresolved", "is_reduced_q_origin": True,
+         "reason": "acoustic endpoint inferred at physical reduced-q origin"},
+        {"hkl": [2.05, 0.0, 0.0], "precision_coverage_eligible": True},
+    ])
+    manifest = json.loads(create_master_certification_manifest(
+        root, request).read_text(encoding="utf-8"))
+
+    assert [u["hkl"] for u in manifest["worklist"]] == [[2.05, 0.0, 0.0]]
+    excluded = manifest["excluded_points"]
+    assert len(excluded) == 1
+    assert excluded[0]["hkl"] == [2.0, 0.0, 0.0]
+    assert excluded[0]["structural_endpoint_status"] == "inferred_unresolved"
+    assert excluded[0]["is_reduced_q_origin"] is True
+    assert "reduced-q origin" in excluded[0]["reason"]
+
+
+def test_manifest_still_raises_when_an_eligible_q_has_no_master(tmp_path):
+    """The exclusion must not become a blanket tolerance for missing masters."""
+    from isar.session.certification import create_master_certification_manifest
+
+    root = _cert_workspace(tmp_path)
+    request = _cert_request(root, per_q=[
+        {"hkl": [2.0, 0.0, 0.0], "precision_coverage_eligible": True},
+        {"hkl": [2.05, 0.0, 0.0], "precision_coverage_eligible": True},
+    ])
+    with pytest.raises(ValueError, match="maps to 0 pooled masters"):
+        create_master_certification_manifest(root, request)
+
+
+def test_excluded_points_present_and_empty_when_nothing_skipped(tmp_path):
+    from isar.session.certification import create_master_certification_manifest
+
+    root = _cert_workspace(tmp_path)
+    request = _cert_request(
+        root,
+        objective_path=[[2.05, 0.0, 0.0]],
+        per_q=[{"hkl": [2.05, 0.0, 0.0], "precision_coverage_eligible": True}])
+    manifest = json.loads(create_master_certification_manifest(
+        root, request).read_text(encoding="utf-8"))
+    assert manifest["excluded_points"] == []
+
+
+def test_worklist_index_gate_accepts_an_excluded_zone_origin():
+    """Consumer side of the AP7 fix: a worklist that starts at canonical index 1 because the
+    reduced-q origin was excluded must be accepted — the union of worklist + excluded covers the
+    path. Previously ``_run_master_certification`` demanded the worklist alone equal range(len),
+    which raised on every zone-origin acoustic campaign and hard-failed final certification."""
+    worklist = [{"canonical_index": i} for i in range(1, 21)]
+    excluded = [{"canonical_index": 0}]
+    driver._assert_canonical_indices_cover_path(worklist, excluded)  # no raise
+    # Dense worklist with no exclusions still fine.
+    driver._assert_canonical_indices_cover_path(
+        [{"canonical_index": 0}, {"canonical_index": 1}], [])
+
+
+def test_worklist_index_gate_still_rejects_gaps_and_duplicates():
+    """The exclusion tolerance must not weaken the real guarantee: every path point accounted for
+    exactly once. A hole in the combined index set (a silently dropped point) or a duplicate is
+    still a hard error."""
+    with pytest.raises(ValueError, match="contiguous, unique"):
+        # combined {0, 2} leaves index 1 unaccounted for — a silently dropped point.
+        driver._assert_canonical_indices_cover_path(
+            [{"canonical_index": 2}], [{"canonical_index": 0}])
+    with pytest.raises(ValueError, match="contiguous, unique"):
+        driver._assert_canonical_indices_cover_path(
+            [{"canonical_index": 1}, {"canonical_index": 1}], [{"canonical_index": 0}])

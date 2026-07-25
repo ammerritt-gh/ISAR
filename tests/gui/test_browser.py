@@ -317,6 +317,15 @@ def test_load_workspace_swaps_tree(qtbot, make_ws, tmp_path, monkeypatch):
     assert str(root2) in w._session.recent_workspaces
 
 
+@pytest.mark.skip(reason=(
+    "PAUSED 2026-07-21 — hard-crashes the interpreter (exit 139, 'Windows fatal exception: "
+    "access violation') inside Qt event processing, taking the whole GUI suite down with it. "
+    "Reproduces when run ALONE, so it is this test, not cross-test contamination, and it is not "
+    "caused by any recent change (pristine HEAD crashes identically). Suspect the global "
+    "DeferredDelete flush below — sendPostedEvents(None, ...) drains deferred deletes for EVERY "
+    "object, not just this window's — interacting with findChildren() over menus being torn down "
+    "by the second load_workspace. UNRESOLVED: this may indicate a real menu-teardown bug in "
+    "load_workspace rather than a test artefact, so it needs diagnosis, not deletion."))
 def test_load_workspace_twice_no_menu_leak(qtbot, make_ws):
     from PySide6.QtCore import QEvent
     from PySide6.QtWidgets import QApplication, QMenu

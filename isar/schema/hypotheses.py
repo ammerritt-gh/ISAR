@@ -16,6 +16,12 @@ from typing import Any
 HYPOTHESIS_SCHEMA = "isar.excitation-hypothesis/1"
 PRESET_VERSION = "isar.hypothesis-presets/1"
 ACQUISITION_ESTIMATOR_VERSION = "isar.branch-mi/gh32-component-v1"
+
+# Policy ceiling on neutrons per scan point. The effective limit is the MINIMUM of this and the
+# instrument's own cap, so raising the instrument alone silently changes nothing. Measured against
+# TAVI on 2026-07-21: ~4 peak counts per 1e8 neutrons at the sample in use, so resolving two modes
+# ~2 meV apart needs a ceiling of this order — at 1e10 a point takes about 6.5 minutes.
+MAX_NCOUNT_PER_SCAN = 10_000_000_000
 DISPERSION_TYPES = ("branch", "level", "continuum")
 IMPLEMENTED_DISPERSION_TYPES = ("branch",)
 PRESET_NAMES = ("acoustic", "optic", "null")
@@ -96,7 +102,7 @@ class SteeringPolicy:
     maximum_production_batches_per_q: int = 12
     maximum_bridge_steps: int = 1
     dynamic_ncount: bool = False
-    max_ncount_per_scan: int = 4_000_000_000
+    max_ncount_per_scan: int = MAX_NCOUNT_PER_SCAN
     ncount_growth_cap: float = 4.0
     tolerance_margin: float = 0.8
     interval_floor_window: int = 3

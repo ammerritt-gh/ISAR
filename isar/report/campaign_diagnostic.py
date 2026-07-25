@@ -30,6 +30,8 @@ from typing import Any
 from isar.report import captions as _captions
 from isar.report import fit_figures as _fit_figures
 from isar.report.findings import FindingsDoc
+from isar.session.timing import (certification_pass_breakdown, embedded_run_timings,
+                                 fit_timing_breakdown)
 
 # ---------------------------------------------------------------------------------------------------
 # Inputs
@@ -647,6 +649,49 @@ def _section_outcome(doc: FindingsDoc, di: DiagInputs, per_q: list, ec: EventCou
         ("interval health", health_cell),
     ]
     doc.table(["metric", "value"], rows)
+    fit_breakdown = fit_timing_breakdown(embedded_run_timings(di.events))
+    if fit_breakdown is not None:
+        campaign_wall = (split["fitting"] + split["instrument"] + split["overhead"]
+                         if split is not None else 0.0)
+        fit_total = fit_breakdown["total_fit_seconds"]
+        labels = {
+            "scan_error_attachment": "scan error attachment",
+            "master_error_attachment": "master error attachment",
+            "two_stage_fitting": "two-stage fitting",
+            "fit_remainder": "enumeration / IC / optimization remainder",
+        }
+        timing_rows = []
+        for key, seconds in fit_breakdown["buckets"].items():
+            wall_pct = seconds / campaign_wall * 100.0 if campaign_wall > 0 else 0.0
+            fit_pct = seconds / fit_total * 100.0 if fit_total > 0 else 0.0
+            timing_rows.append((labels[key], _num(seconds, 5),
+                                f"{_num(wall_pct, 3)}%", f"{_num(fit_pct, 3)}%"))
+        doc.para("**Disjoint fit-time decomposition.**")
+        doc.table(["bucket", "seconds", "% campaign wall", "% total fit"], timing_rows)
+        method_rows = [(key.removesuffix("_seconds"), _num(value, 5))
+                       for key, value in fit_breakdown["method_seconds"].items() if value > 0.0]
+        if method_rows:
+            doc.para("**Error-method timings** (may overlap when work ran in parallel).")
+            doc.table(["method", "seconds"], method_rows)
+    certification_passes = certification_pass_breakdown(di.workspace, di.events)
+    if certification_passes:
+        certification_rows = []
+        for index, item in enumerate(certification_passes, 1):
+            methods = item.get("critical_method_seconds") or {}
+            method_cell = ", ".join(
+                f"{key.removesuffix('_seconds')} {_num(seconds, 4)} s"
+                for key, seconds in methods.items() if float(seconds) > 0.0) or "—"
+            certification_rows.append([
+                index, item["requested_points"], item["carried_points"],
+                item["newly_fitted"], item["reused_checkpoint"],
+                _num(item.get("wall_seconds"), 5),
+                _num(item.get("critical_unit_seconds"), 5),
+                _hkl_str(item.get("slowest_hkl")), method_cell,
+            ])
+        doc.para("**Certification passes** (parallel-unit critical path; unit work is not summed "
+                 "as campaign wall).")
+        doc.table(["pass", "requested", "carried", "fitted", "checkpoint", "wall s",
+                   "critical s", "slowest q", "critical-unit methods"], certification_rows)
     doc.figure_block("campaign/dispersion_truth", _fig_rel("campaign_dispersion_truth"))
     doc.figure_block("campaign/scan_spend", _fig_rel("campaign_scan_spend"))
     doc.figure_block("campaign/budget_timing", _fig_rel("campaign_budget_timing"))
@@ -735,9 +780,18 @@ def _section_driver(doc: FindingsDoc, di: DiagInputs, per_q: list, ec: EventCoun
                      f"{n_grid} grid q over the run.")
 
     # 9 certify presence
-    ran_certify = bool(ec.decide_action.get("certify_start") or ec.decide_action.get("certify_done"))
-    steps.append("**Certification.** " + ("one forced full bootstrap+profile certify pass ran."
-                 if ran_certify else "no certify pass (campaign did not stop 'met')."))
+    certification_passes = certification_pass_breakdown(di.workspace, events)
+    n_certify = len(certification_passes)
+    if not n_certify:
+        n_certify = sum(1 for ev in events if ev.get("kind") == "timing"
+                        and (ev.get("payload") or {}).get("stage") == "certify")
+    if n_certify:
+        carried = sum(int(item.get("carried_points") or 0) for item in certification_passes)
+        carry_note = f"; {carried} point-revisions carried across retries" if carried else ""
+        steps.append(f"**Certification.** {n_certify} forced full bootstrap+profile pass"
+                     f"{'es' if n_certify != 1 else ''} ran{carry_note}.")
+    else:
+        steps.append("**Certification.** no certify pass (campaign did not stop 'met').")
 
     # 10 stop
     stop = di.summary.get("stop") or {}
@@ -784,13 +838,19 @@ def _section_dispersion(doc: FindingsDoc, di: DiagInputs, per_q: list) -> None:
             and 0 <= assignment["acoustic_candidate_index"]
             < len(assignment.get("candidates") or [])
             for assignment in assignments)
+        target_branch = tracks.get("target_branch", "optic")
+        acoustic_status = ""
+        if has_acoustic:
+            acoustic_status = ("Acoustic target trajectory identified."
+                               if target_branch == "acoustic" else
+                               "Acoustic identified; retained as non-target context.")
         doc.para(
             f"Tracked-branch revision {tracks.get('revision', '—')}; anchor path index "
             f"{tracks.get('anchor_index', '—')}; connected target points: "
             f"{len(frontier.get('confirmed_indices') or [])}. "
             + ("The connected frontier is blocked by unresolved identity. "
                if frontier.get("frontier_blocked") else "The reachable identity frontier is connected. ")
-            + ("Acoustic identified; retained as non-target context." if has_acoustic else ""))
+            + acoustic_status)
         assignment_rows = []
         for assignment in assignments:
             candidates = assignment.get("candidates") or []

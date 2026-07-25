@@ -72,6 +72,7 @@ area.
 | Orientation / why trust it | `docs/READING_GUIDE.md` → `DESIGN.md` |
 | Running it on data / the CLI contract | `docs/USING_ISAR.md`, `docs/WORKED_EXAMPLE.md` |
 | Current build phase (CLI + session assembly) | `docs/UNIFICATION_DESIGN.md` |
+| Fit/runtime performance and speedup gates | `docs/SPEEDUP_DESIGN.md` |
 | Statistics (cost, AIC, interval ladder, coverage) | `docs/STATS_PRIMER.md`, `docs/GLOSSARY.md` |
 | Verdicts — meaning & what to do | `docs/INTERPRETING_A_VERDICT.md`, GLOSSARY |
 | Card / schema across facilities | `docs/SCHEMA_LANDSCAPE.md`, `docs/DATA_SCHEME_RESEARCH.md` |

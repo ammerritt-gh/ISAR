@@ -144,9 +144,9 @@ def test_driver_counts_escalations_when_present():
     assert "seated" in out and "failed" in out
 
 
-def _render_tracked_dispersion(assignments):
+def _render_tracked_dispersion(assignments, *, target_branch="optic"):
     di = DiagInputs(workspace=None, card_state={"branch_tracks": {
-        "revision": 1, "anchor_index": 0,
+        "revision": 1, "anchor_index": 0, "target_branch": target_branch,
         "frontiers": {"confirmed_indices": [0], "frontier_blocked": False},
         "assignments": assignments,
     }})
@@ -170,6 +170,16 @@ def test_tracked_dispersion_only_claims_acoustic_when_rival_resolved():
     assert "Acoustic identified; retained as non-target context." in resolved
 
 
+def test_tracked_dispersion_names_acoustic_target_as_target():
+    rendered = _render_tracked_dispersion([{
+        "path_index": 1, "q": [2.05, 0.0, 0.0],
+        "candidates": [{"energy_meV": 0.45}],
+        "optic_candidate_index": None, "acoustic_candidate_index": 0,
+    }], target_branch="acoustic")
+    assert "Acoustic target trajectory identified." in rendered
+    assert "non-target context" not in rendered
+
+
 # --------------------------------------------------------------------- §6 verify-units defect
 def test_verify_units_defect_fires_on_tiny_spend():
     summary = {"objective": {"tier": "deterministic"},
@@ -182,6 +192,25 @@ def test_verify_units_defect_fires_on_tiny_spend():
     cd._section_outcome(doc, di, [], ec)
     assert any("verify-units" in d for d in di.defects)
     assert "⚠ verify-units" in doc.render()
+
+
+def test_outcome_renders_certification_critical_path(tmp_path, monkeypatch):
+    di = DiagInputs(workspace=tmp_path, summary={"stop": {"state": "met"}}, events=[])
+    monkeypatch.setattr(cd, "certification_pass_breakdown", lambda _workspace, _events: [{
+        "requested_points": 21, "carried_points": 18, "newly_fitted": 3,
+        "reused_checkpoint": 0, "wall_seconds": 40.0, "critical_unit_seconds": 35.0,
+        "slowest_hkl": [2.7, 0.0, 0.0],
+        "critical_method_seconds": {"bootstrap_seconds": 25.0},
+    }])
+    doc = FindingsDoc("t")
+
+    cd._section_outcome(doc, di, [], _event_counts([]))
+
+    text = doc.render()
+    assert "Certification passes" in text
+    assert "parallel-unit critical path" in text
+    assert "bootstrap 25 s" in text
+    assert "(2.7, 0, 0)" in text
 
 
 # --------------------------------------------------------------------- render-status accounting

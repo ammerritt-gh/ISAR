@@ -26,12 +26,30 @@ hypothesis only tells the *steering* where to look first and what the features i
 plausibly are. If the data disagrees with your hypothesis, the system is designed to notice and
 say so (see *When you're wrong*, below), not to fit your expectation anyway.
 
-For a tracked optic branch, “around 6 meV” is a **zone-centre identity prior**, not an instruction
+For a tracked branch, a stated energy is an **anchor identity prior**, not an instruction
 to pick whichever peak lies nearest 6 meV at every q. The global-nearest behavior remains available
 only through the explicit `nearest_energy` selector. `tracked_branch` jointly assigns the optic,
-acoustic rival, new, and missing states over the ordered path. Only modes from a published, consistent
-pooled master are authoritative track evidence; physical-fit modes remain inspectable diagnostics.
+acoustic rival, new, and missing states over the ordered path. Only modes from a published pooled
+master are authoritative track evidence; physical-fit modes remain inspectable diagnostics.
 Assignments may be revised when a neighboring pooled master arrives.
+
+**Delivery authority and tracking evidence are separate gates.** A pooled master whose members
+disagree on ω₀ (`pool_consistent = false`) still fitted its modes — only their *agreement* is in
+doubt — so its candidates are kept as identity and connectivity evidence for that q. What it does not
+get is authority: it cannot deliver the point's ω₀, seat convergence, or refresh the dispersion prior,
+each of which gates on consistency independently. Where a q holds both a consistent and an
+inconsistent master the consistent one is preferred, rather than the inconsistent one excluded. This
+split is load-bearing: dropping an inconsistent master's candidate outright empties that q's
+observation, breaks the tracked trajectory, and retroactively collapses every confirmed point
+downstream of it (AP8, DECISIONS O29). Such a point stays connected but unconverged, and is
+re-acquired to resolve the disagreement.
+
+New natural-language and compact-file goals that ask to map a named branch along a multi-point path
+default to `tracked_branch`, for acoustic and optic targets alike. Explicit “lowest at every q”,
+“highest at every q”, and “nearest at every q” requests retain their local selectors. Previously frozen
+objective envelopes are replayed unchanged. Acoustic tracking anchors at the nearest
+predicted-resolvable point to reduced q=0 and walks in both directions; it does not demand a measurable
+nonzero acoustic energy at the exact zone centre.
 
 ## Declaring hypotheses in `card.policy.toml`
 
@@ -76,10 +94,17 @@ is a fully custom Tier-1 hypothesis.
 - **Opening book.** The first scans probe the hypothesis's most discriminating feature — for a
   gapped target, the zone centre at the claimed gap ± 2σ (the *sanity-check opening move*, O11).
   A grossly wrong prior is caught in the first scans, not at the end of the night.
-- **Connected frontier.** Once the zone-centre optic is identified, acquisition moves one adjacent
-  q at a time. An ambiguous point permits one provisional adjacent bridge, then must be revisited
+- **Connected frontier.** Once the target branch's resolvable anchor is identified, acquisition moves
+  one adjacent q at a time in both directions. An ambiguous point permits one provisional adjacent bridge, then may be revisited
   with evidence from both sides. An unresolved frontier cannot seed the dispersion prior, certify a
   farther point, or be crossed by a plotted branch line.
+- **Evidence is not delivery.** Every current pooled master marks its q as measured and retains all
+  fitted candidates, including a wrong-branch or near-equal-posterior result. Only a confirmed target
+  fold publishes target `omega0`, enters the target prior, or certifies. The viewer shows ambiguous
+  candidates as open markers without certifying whiskers or a connecting line.
+- **Bounded deadlock.** The per-q production ceiling changes strategy rather than declaring absence:
+  acquisition moves to an untried differentiation probe. Demonstrated exposure saturation plus an
+  exhausted bridge/revisit allowance ends automatically as honest `incomplete` branch ambiguity.
 - **Belief seeding.** Each declared hypothesis gets a branch belief carrying the hypothesis as a
   prior on the regression parameters (gap, slope) — *never* as fake data points (O8). With zero
   measurements the belief predicts from the prior with honest width; with data, the data wins.
@@ -145,6 +170,12 @@ outcomes. A `confirmed` track with a known physical assignment is labelled `Acou
 on; provisional or ambiguous identities receive stable `Branch N` labels. The active target is styled
 solid and context/rival branches dashed. Viewer metadata tolerates no target role and then styles all
 branches equally.
+
+For an acoustic target, exact Γ may be persisted as `inferred_unresolved` when at least three
+connected, authoritative low-q assignments support a smooth positive-slope extrapolation compatible
+with zero. This is structural endpoint evidence, not a fitted mode: it never publishes target
+`omega0`, seeds the dispersion prior, or enters the precision denominator. A lone Γ feature—such as
+an unrelated finite-energy mode—cannot establish this status.
 
 This does not expand the current objective engine: arbitrary named targets continue to use the existing
 target semantics, while target-free “map every visible dispersion” acquisition remains Planned. The

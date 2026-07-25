@@ -107,6 +107,31 @@ def test_run_job_passes_errors_tier_verbatim_to_run_batch(tmp_path, monkeypatch)
     assert captured["errors_tier"] == "bayes"
 
 
+def test_run_job_forwards_optional_role_tiers(tmp_path, monkeypatch):
+    from isar.session import driver as driver_mod
+    from isar.session import worker as worker_mod
+
+    ws, data = _scaffold_ws(tmp_path / "ws-role", tmp_path)
+    captured = {}
+
+    class _FakeSummary:
+        n_reprocessed = n_fitted_this_run = 0
+        counts = {}
+        outcomes = gaps = context_lines = []
+
+    def fake_run_batch(ws_, data_paths, **kwargs):
+        captured.update(kwargs)
+        return _FakeSummary()
+
+    monkeypatch.setattr(driver_mod, "run_batch", fake_run_batch)
+    worker_mod._run_job(ws.root, {
+        "id": 2, "data_paths": [str(data)], "errors_tier": "full",
+        "scan_errors_tier": "fast", "master_errors_tier": "bayes"})
+    assert captured["errors_tier"] == "full"
+    assert captured["scan_errors_tier"] == "fast"
+    assert captured["master_errors_tier"] == "bayes"
+
+
 # --------------------------------------------------------------------------- fast protocol tests
 def test_ping_round_trip(tmp_path):
     ws, _ = _scaffold_ws(tmp_path / "ws", tmp_path)

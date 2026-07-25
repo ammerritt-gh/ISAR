@@ -25,6 +25,15 @@
 | center accuracy vs truth | median \|Δω₀\| = 0.0486 meV · coverage68 = 0.5 (36 scored) |
 | interval health | 4 certified / 32 unreliable / 0 no-interval |
 
+**Disjoint fit-time decomposition.**
+
+| bucket | seconds | % campaign wall | % total fit |
+| --- | --- | --- | --- |
+| scan error attachment | 518.09 | 23.4% | 23.8% |
+| master error attachment | 589.59 | 26.7% | 27.1% |
+| two-stage fitting | 419.95 | 19% | 19.3% |
+| enumeration / IC / optimization remainder | 644.88 | 29.2% | 29.7% |
+
 ![Delivered dispersion vs truth](figures/campaign_dispersion_truth.png)
 
 **Delivered dispersion vs truth** — each delivered ω₀ plotted against the dominant Q component, with the analytic truth curve; filled circles are converged q (with calibrated halfwidth error bars), open diamonds are uncertifiable/fast-tier deliveries (centres shown, no honest bar), and × on the bottom rug marks no-signal / infeasible q.

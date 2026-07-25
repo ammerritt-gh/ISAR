@@ -236,6 +236,9 @@ class CampaignDock(QDockWidget):
         vm.status_changed.connect(self._sync_status)
         vm.feed_appended.connect(self._append_feed)
         vm.feed_reset.connect(self._clear_feed)
+        initial_feed = vm.feed_snapshot()
+        if initial_feed:
+            self._append_feed(initial_feed[-_MAX_FEED_ROWS:])
         # Qt drops these automatically when this dock (the receiver) is destroyed on rebind, so
         # connecting to the persistent coordinator here does not accumulate across bindings.
         operations.drive_started.connect(self._sync_status)

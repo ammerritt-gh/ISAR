@@ -373,6 +373,24 @@ def test_feed_renders_and_filters_exceptions(dock_env):
     assert "proposal_clamped" in dock._feed.item(0).text()
 
 
+def test_feed_hydrates_events_consumed_before_dock_connected(qtbot, make_ws):
+    root = make_ws(rows=[])
+    path = root / "report" / "session_log.jsonl"
+    log_event(path, "decide", {"event": "campaign_start", "action": "campaign_start",
+                               "objective": {}, "source": {"kind": "goal", "sha256": "x"}})
+    log_event(path, "exception", {"action": "proposal_clamped", "iter": 0})
+    log_event(path, "timing", {"stage": "propose", "seconds": 0.1})
+
+    vm = CampaignViewModel(Workspace.open(root))
+    dock = CampaignDock(vm, _Ops(), store=None)
+    qtbot.addWidget(dock)
+
+    assert dock._feed.count() == 2
+    assert "proposal_clamped" in dock._feed.item(0).text()
+    assert all("timing" not in dock._feed.item(index).text().lower()
+               for index in range(dock._feed.count()))
+
+
 def test_feed_copy_selection_copy_all_and_save_text(dock_env, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QApplication, QFileDialog
 

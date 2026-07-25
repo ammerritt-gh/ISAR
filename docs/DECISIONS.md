@@ -355,6 +355,275 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   tests member homogeneity; inconsistency blocks certification and requests review but never removes
   data or terminates q. Γ at the resolution boundary is diagnostic only when model-marginalized ω
   remains identifiable.
+- **O21.** (2026-07-20, Partial) **Live uncertainty work is HESSE-first, revision-safe, and
+  certification remains independent.** Quicklooks remain `cheap`; production scans and changed
+  pooled-master revisions may run `auto`, publishing a fresh result from trusted HESSE covariance
+  and promoting that exact frozen revision to full errors when covariance/trust, parameter-bound,
+  or model-weight gates demand it. A trusted HESSE **fold** may refresh the dispersion prior: prior
+  admission is a scientific quality gate, not a requirement to spend bootstrap time. Ambiguous
+  forks still never enter the prior, and final certification still refits frozen pools at an
+  explicitly full tier. Promotions are content-addressed and may publish only while their source
+  revision remains current; superseded computations are retained as provenance. Bounded master
+  staleness and the fit fast path remain conditional on measured post-phase gates and default off
+  until their shadow comparisons show no canonical divergence.
+- **O22.** (2026-07-20, Implemented) **Certification regression is an acquisition boundary, not an
+  operator handoff.** When authoritative full certification leaves any requested q outside the
+  objective, the same drive invocation returns immediately to proposal and measurement while its
+  physical and analysis budgets permit. Certification itself consumes no acquisition iteration.
+  Passing q revisions are recorded in an atomic drive-owned acceptance ledger; a later certification
+  request contains only failed, changed, or unassessed revisions at the requested tier. The session
+  runner still publishes that dirty master-only generation atomically and preserves all untouched
+  masters. A tier, policy, calibration, or master-revision change invalidates acceptance. Repeating
+  the same failed scientific state without intervening progress stops honestly instead of looping.
+- **O23.** (2026-07-20, Implemented) **Full live uncertainty attaches only to authoritative pooled
+  masters.** OP7 showed that the compatibility escalation router spent 254.9 seconds attaching full
+  errors to provisional physical scans during 20 master escalations. Physical rows cannot seat
+  convergence or refresh the prior, so the drive now splits fit tiers by role: the provisional scan
+  remains `fast` while the changed master receives the required `full`/`bayes` work. Generic
+  `run_batch` callers retain their historical single-tier behavior unless they opt into additive
+  role overrides. Fresh-master `auto` remains shadow-gated under O21; certification remains full and
+  independent. Certification profiling reports pass wall and the slowest parallel unit rather than
+  misrepresenting summed worker time as elapsed wall. The same-machine role-split rerun reduced OP7
+  wall from 1412.7 to 1210.6 seconds and removed provisional scan error attachment entirely. Fresh
+  TAVI identities make that run performance evidence rather than a strict frozen shadow replay;
+  all 21 endpoints certified and the operator accepted the small numeric/model-selection variation
+  as scientifically equivalent. The strict comparator remains the gate for true frozen replays.
+- **O24.** (2026-07-20, Implemented) **Pooled evidence, branch identity, and target delivery are
+  separate states.** AP1 produced stable two-mode pooled spectra near H=2.30, but a near-even
+  acoustic/optic assignment correctly withheld target `omega0`. The old reducer consequently erased
+  both “measured” state and viewer markers, while the production cap remained diagnostic and repeated
+  dwell requests saturated at the live instrument ceiling. Every current pooled master now marks q
+  measured and preserves its candidates; only a confirmed target fold can certify, seed the target
+  prior, or join the target curve. New named acoustic and optic maps use connected `tracked_branch`;
+  acoustic anchors at the nearest locally resolvable point. O18's anti-abandonment rule is amended:
+  a count threshold alone remains nonterminal, but it is a safety ceiling rather than a quota. The
+  second AP1 replay exposed an anchor exception that repeated H=2.15 despite two precise candidates.
+  A statistically adequate ambiguous anchor now requires adjacent identity evidence immediately;
+  same-q production remains available only while candidate precision is inadequate. Adjacent sides are
+  ranked by classification information with path order as a deterministic tie-breaker, and any anchor
+  revisit requires fitted neighboring candidate/track evidence (not merely a submitted quicklook) and
+  consumes the bounded bridge allowance. Demonstrated
+  exposure saturation plus exhausted bridge/revisit opportunities terminates honestly as `incomplete`
+  (`branch_ambiguity` / `frontier_blocked`) rather than pausing or blindly acquiring the same q.
+- **O25.** (2026-07-20, Partial; supersedes O24's implementation claim) **AP1/AP2 prove the
+  connected branch controller still conflates acquisition seed, physical reduced-q geometry,
+  unordered evidence, and target delivery.** AP2's 0.5 meV objective proposed H=2.15, H=2.10,
+  and H=2.05 quicklooks, then repeated H=2.10 for thirteen production submissions before moving
+  to H=2.00. O24's described repeat guard and ambiguous-frontier broadening were therefore not
+  Implemented. Phase 0 repairs the controller before the approved A → B → C Smarter Steering
+  sequence: persist the off-centre acquisition seed separately from the branch-period origin;
+  rerun joint identity only on authoritative pooled-master evidence; and allow only confirmed
+  target assignments to publish `omega0`, certify, seed the target prior, or enter the target
+  curve. Local lowest-energy/only-candidate ordering never establishes acoustic identity, and
+  target/rival roles apply symmetrically to acoustic and optic objectives. An equivalent same-q
+  identity revisit requires a newer fitted neighboring-evidence revision and consumes the existing
+  `maximum_bridge_steps` allowance; unchanged evidence broadens through O6/O9 information ranking
+  or ends honestly as `incomplete` when no feasible route remains. Additive state records the
+  authoritative evidence revision, proposal fingerprint, acquisition action role, and role-aware
+  identity. Phase 0 remains in progress until AP1/AP2 replay gates pass. Curvature/zones,
+  confidence-scaled physics nudges, and per-second OCBA/VOI economy remain Planned sub-phases
+  A, B, and C behind their recorded prerequisites.
+- **O26.** (2026-07-21, Partial; supersedes the remainder of O24 and extends O25) **AP3 proves
+  branch character and acquisition continuity must be global evidence questions.** The controller
+  followed a connected acoustic dispersion from Γ toward H=3 but locally relabelled its high-q
+  continuation optic, while global classification value jumped across an unmeasured interval.
+  Character is now recomputed over the authoritative connected trajectory; confidence-scaled Γ,
+  slope, and multi-candidate ordering evidence may overturn earlier labels. Broadening retains O6/O9
+  information but discounts it by propagated association uncertainty, with no hard distance cap.
+  A smooth low-q acoustic trajectory may mark exact Γ `inferred_unresolved`; this is neither a fit nor
+  delivery and is excluded from prior admission and precision completion. AP3's period already makes
+  H=3 a zone boundary; automatic lattice/space-group zone derivation remains Planned. Phase 0 remains
+  Partial pending campaign replay and unified optic regression gates.
+- **O27.** (2026-07-21, Implemented for the tracked optic path; supersedes the same-q revisit
+  allowance of O24/O25) **Branch identity is an assignment question, and a blocked identity may be a
+  gap in the rival trajectory rather than a shortage of counts at the frontier.** OP9 and OP10 ran
+  OP8's objective, controller, target and tolerance and stopped `branch_ambiguity` at H=2.75 holding
+  eleven of twelve authorised productions, with `exposure_saturated` false and the per-scan ceiling
+  three orders of magnitude above the largest scan submitted; they terminated on running out of
+  unvisited q to broaden to. Two causes. Identity adequacy was read off ω₀ *precision* against the ω₀
+  tolerance, so a 0.129 meV interval against a 0.5 meV tolerance made an undecided assignment look
+  settled and permanently suppressed the same-q rung gated on `not adequate`. And O24/O25 charged the
+  same-q identity revisit to `maximum_bridge_steps`, a path-geometry knob defaulting to one, which
+  made the production ladder, the ncount escalation and `exposure_saturated` unreachable at an
+  ambiguous frontier. Precision adequacy and identity adequacy are now distinct; identity is the
+  tracker's own confirmation predicate (`target_probability`, `identity_entropy`,
+  `local_identity_clear`) carried additively through `results.csv` to `GridQ`, never re-derived from
+  `branch_posterior`, which the driver clears for exactly the ambiguous case. Every same-q production
+  charges to `maximum_production_batches_per_q`; `maximum_bridge_steps` again means path geometry
+  only, and the newer-neighbour basis of O25 is retained as the *preferential* revisit trigger rather
+  than a permanent precondition for further counting. Counting alone was insufficient: a replay spent
+  ~1.7e10 counts at H=2.75 across twelve productions without moving an assignment whose two
+  candidates (5.53 and 7.72 meV, ~22σ apart) were already resolved as peaks and ambiguous only in
+  their labels, because the acoustic branch had gone unfitted at 2.60/2.65/2.70. Acquisition
+  therefore reconnects the rival branch at an under-resolved q on the confirmed run behind a blocked
+  frontier, below broadening and above the frontier's own same-q fallback, capped per gap q so a
+  reconnect that never resolves yields the beam instead of escalating to that point's ceiling. A
+  proposal-less frontier still holding authorised same-q work raises `ControllerInvariantError`
+  instead of being reported as a scientific result; O24's honest-`incomplete` claim held only when
+  the ceiling or saturation was genuinely reached. The frozen OP10 envelope replays to `met`, 21/21
+  converged, at 63 scans and 1.26e9 counts against OP8's 64 and 1.41e9, needing one 25 M reconnect
+  scan at H=2.70. The `identity_saturated` brake (the identity-space analogue of `interval_floored`,
+  for points whose branch never matches the target and so never reach `master_updates`) is
+  unit-tested but did not fire in that replay and remains campaign-unproven; AP1/AP2/AP3 campaign
+  replays were not rerun, so O25/O26 stay Partial. Evidence:
+  `docs/campaigns/2026-07-21_OP9_OP10_TRACKED_FRONTIER.md`.
+- **O28.** (2026-07-23, Implemented for the action-inventory control plane and the predicted-rival
+  identity probe; gated on a full driver-level AP6 replay; extends O27) **A blocked branch identity
+  can be a missing *kind* of measurement, not a shortage of counts — so the controller enumerates a
+  registry of action generators and its terminal is exhaustion relative to that registry.** AP6 mapped
+  the acoustic phonon (2,0,0)→(3,0,0) and stopped `incomplete — branch_ambiguity` at path indices
+  18–20 with beam time left. The frontier point H=2.9 was identity-ambiguous (P(target)=0.707, below
+  the 0.85 gate) and `identity_saturated` — more counting had provably stopped sharpening the label —
+  yet the rival mode that would settle it sits at ~7.115 meV, above the objective's declared 7.0 meV
+  `energy_search_meV` ceiling. Every scan the driver emitted at the frontier was clipped at 7.0, so the
+  discriminating evidence was outside every window it was willing to emit. Counting could not fix this
+  and neither could broadening: at a path endpoint there is no unvisited neighbour, and H=3 is a zone
+  boundary where the acoustic branch flattens at its maximum and sits closest to the optic branch, so
+  the point may be genuinely underdetermined. The fix is architectural. Acquisition is a two-phase
+  registry pipeline — declared generators emit `MeasurementIntent`s, evaluators score them, selection
+  ranks the survivors — carried through a three-stage lifecycle
+  (`MeasurementIntent → FinalizedProposal → ValidatedAttempt`) with per-generator failure isolation, so
+  a generator that raises becomes a `controller_fault` (resumable) rather than an escaped exception or a
+  false exhaustion proof. `action_inventory_exhausted` is exhaustion *relative to* a declarative
+  `GENERATOR_REGISTRY` with a derived version, so growing the registry cannot leave an old proof looking
+  current. The target search domain and the identity search domain are separated
+  (`energy_search_meV` retained as the target alias; `identity_search_meV` additive): an identity-class
+  action may look beyond the target ceiling, but only when the band's provenance shows it was
+  compiler-chosen — a band an operator declared, or one carrying no provenance at all, stays a hard
+  constraint and the rival action is reported `policy_forbidden` rather than silently scanned past.
+  Focused evidence has its own sink (`evidence_sink`): an `auxiliary_track_node` probe is fit
+  independently, never pooled into the (Q,T) master, never certification-eligible, and merged into the
+  tracker's per-path-point evidence as a provenance-tagged candidate that can change the identity but
+  never supply the point's ω₀; a clean null (`candidate_not_detected`) is first-class evidence, distinct
+  from a failed analysis. The `narrow_rival_probe` generator is registered: at a blocked
+  `identity_saturated` frontier with a predicted rival inside the identity domain it emits a narrow,
+  resolution-relative window centred on the rival, routed to `auxiliary_track_node`. AP6 replays in two
+  modes: *strict historical* — the real frozen objective carried no band provenance, so the rival stays
+  withheld and the terminal is unchanged, but the inventory now *names* the forbidden action an operator
+  could authorise; *migrated* — with the band recorded as compiler-generated, the probe enumerates as an
+  eligible action reaching 7.115 meV and the frontier is no longer a geometric dead end. **Acceptance is
+  not "AP6 reaches `met`"**; H=2.9–3.0 may be underdetermined and the posterior was not tuned through the
+  gate. The replay is proven at the `enumerate_actions`/reconstruction level; a full campaign replay
+  through the live driver against the frozen workspace is outstanding, and the zone-aware boundary probe
+  (which needs a cross-zone structure-factor consumer that does not yet exist) is deferred to a later PR.
+  Auxiliary withholding is reversible: the canonical master's model interval remains intact behind
+  `target_delivery_eligible=False`, and a later canonical selection clears the withholding state and
+  restores delivery without requiring a refit. The persisted probe search window authorizes its
+  candidates for identity scoring after resume; candidate energies themselves never widen that domain.
+  **O25/O26 stay Partial** — AP1/AP2/AP3 campaign replays are unchanged by this. Evidence:
+  `docs/campaigns/2026-07-23_AP6_ACTION_INVENTORY.md`.
+- **O29.** (2026-07-24, Implemented for the AP7 and AP8 terminals; a standing invariant on the terminal
+  taxonomy) **A campaign must not enter a terminal stop while measurement budget remains unless the
+  objective is met, the tolerance is infeasible by construction, the operator asked it to stop, or a
+  controller fault needs repair.** The legitimate terminals are `met`; `infeasible` (tolerance below the
+  resolution-asymmetry systematic floor, unreachable by construction); `incomplete` on genuine
+  measurement-budget or analysis-clock exhaustion; `operator_stopped`; and `controller_fault` — the last
+  a software defect surfaced for repair-and-resume, never a scientific result. Any *other* stop with beam
+  time still available — in particular an `action_inventory_exhausted` or a
+  `branch_ambiguity`/`frontier_blocked` while budget remains — is a smell: either the generator registry
+  lacks an action for a situation that is in fact resolvable, or a resolvable state was misclassified as
+  terminal. Two 2026-07-24 campaigns were exactly that. **AP7** converged all 20 measurable q, then
+  hard-failed *final certification* on an internal worklist-index invariant — the inferred reduced-q
+  origin is legitimately excluded from the master worklist, so the surviving canonical indices begin at 1
+  and the consumer's demand that they equal `range(len)` raised — and reported a bare `incomplete`. The
+  invariant now checks the union of worklist and `excluded_points` against `range(total)`, and a
+  non-completing certification pass is classified `controller_fault` (resumable) rather than reading as
+  data-limited. **AP8** confirmed the *entire* acoustic path, then a single interior point whose two
+  pooled members disagreed on ω₀ (`pool_consistent=False`, though the pooled value was within tolerance)
+  had its identity evidence dropped from the branch tracker; that emptied the q's observation, broke the
+  tracked trajectory, and retroactively wiped every downstream confirmed identity — collapsing the path
+  and stopping `branch_ambiguity`/`frontier_blocked` at indices 14–20 with unlimited budget unused. The
+  fix keeps a `pool_consistent=False` master's candidate as identity/connectivity evidence (the mode is
+  fitted; only its ω₀ *agreement* is in doubt), while convergence (`stopping._master_hw`) and the
+  dispersion prior (`_rebuild_*_prior`) gate on consistency independently, so the point stays connected
+  but unconverged and is *re-acquired* to resolve the disagreement instead of terminating. The standing
+  rule for future generators and terminals: before emitting a budget-remaining terminal, prove the action
+  space is genuinely empty relative to the registry (O28), and prefer acquiring more or better data over
+  discarding confirmed work. Evidence: `tests/drive/test_ap7_certification_replay.py`,
+  `tests/drive/test_ap8_pool_inconsistency_replay.py`, and the two 2026-07-24 fix commits.
+
+- **O30.** (2026-07-24, Implemented in `isar/session/branch_tracking.py`) **A declared hypothesis'
+  `confidence` scales how much the hypothesis is allowed to *discriminate*, never how much a
+  mismatched candidate is forgiven. It is applied as a likelihood ratio against a baseline common to
+  every branch, so `confidence = 0` contributes exactly zero evidence rather than zero penalty.**
+  The scorer multiplied confidence into `_normal_compatibility`, which returns `-z²/2` and is therefore
+  always ≤ 0. Lowering confidence scaled the *penalty* toward zero, so a less-trusted hypothesis scored
+  a mismatched candidate **better**: for one 4 meV candidate against an acoustic prior at 0 ± 0.2 meV,
+  the emission ran -162.5 at `confidence = 1` up to -2.5 at `confidence = 0`. Since `MISSING_LOG_PENALTY`
+  is confidence-independent, a zero-confidence branch strictly preferred grabbing an arbitrary candidate
+  to staying unassigned, and two branches with different confidences were scored on incomparable
+  scales.
+
+  The repair is a mixture of a **normalized**, domain-truncated branch density with a common uniform
+  density over the authorized energy domain, scored as a ratio against that same uniform:
+  `log[(c·N(x; μ_b, σ_b) + (1−c)·U(x)) / U(x)]`. At `c = 1` this is a log Bayes factor against "the
+  mode could be anywhere"; at `c = 0` it is exactly 0 for every candidate and every branch. A
+  *rejected* alternative, recorded because it looks like the obvious fix and is not: mixing two
+  **peak-normalized** Gaussians (`log[c·e^{−z²/2} + (1−c)·e^{−z_v²/2}]`) fails in the same direction
+  as the bug and harder, because weight moves to the broader, less-negative component as confidence
+  falls — the same 4 meV mismatch runs -200 at `c = 1` to -0.08 at `c = 0`.
+
+  Two consequences are deliberate. **A confident-but-contradicted hypothesis can lose to a vague one.**
+  Confidence is not monotone in the score and must not be tested as if it were; what is guaranteed is
+  that both branches are measured against one baseline, so low confidence buys no branch an advantage
+  the other cannot have. **Normalization returns**, which `_normal_compatibility` had removed because a
+  3 meV-wide ZC prior then permanently lost to `new` even at its own mean. The ratio form fixes that
+  case rather than reviving it: against a uniform over the same domain, a broad prior at its mean gives
+  `log(N_peak/U) > 0` — positive support.
+
+  The authorized domain is a normalized union of the target band, any declared identity band, and
+  persisted auxiliary probe/null windows. Uniform width and truncated-normal mass are summed across
+  disjoint intervals; values outside every interval are impossible (`-inf`) even at zero confidence.
+  The normalized union and an explicit scorer revision are part of the durable authority signature and
+  `branch_tracks` audit record, so a changed band or scorer cannot reuse stale assignments.
+
+  **What this does not fix, stated so it is not mistaken for fixed.** The *absolute* trade between
+  assigning a candidate and leaving a branch unassigned is set by `MISSING_LOG_PENALTY +
+  UNASSIGNED_LOG_PENALTY` (≈ −3.58 nats), and those constants are unchanged. Because the compatibility
+  term is now bounded below by `log(1−c)` rather than running arbitrarily negative, lowering a branch's
+  confidence from 1.0 to ~0.5 can still flip the tracker from correctly abstaining to attaching a
+  grossly mismatched candidate: the evidence against the assignment shrinks past the fixed structural
+  cost of refusing it. That is a defensible reading of low confidence — with little prior information,
+  explaining an observed mode is reasonable — but it is a *consequence of those constants*, not
+  something this decision establishes. Re-anchoring them against the same uniform baseline is open
+  work. The scope of O30 is the comparability and boundedness of the confidence term, not the
+  assign-versus-abstain threshold. Evidence: `tests/session/test_branch_tracking.py`.
+
+- **O31.** (2026-07-24, Implemented; amends O29's terminal taxonomy, resolves it against O28) **An
+  action the operator's own declared policy forbids is a sixth legitimate terminal — an operator-policy
+  limit, neither a controller fault nor a data limit — and it must say so where the operator will read
+  it.** O28 and O29 were in direct contradiction. O28 shipped strict-historical AP6 as
+  `branch_ambiguity`/`frontier_blocked` with beam time left, on the grounds that the rival which would
+  settle the identity sat above a search band carrying no compiler provenance and so could not be
+  widened. O29 then declared exactly that stop — a budget-remaining `action_inventory_exhausted` or
+  `branch_ambiguity` — a smell that is always one of two defects. Both cannot be right, and the code
+  sides with O28: `RejectionClass.OPERATOR` is a **durable** rejection
+  (`isar/drive/acquisition/inventory.py`), so an inventory holding only a policy-forbidden action is
+  complete, holds no eligible action, and legally proves `action_inventory_exhausted`.
+
+  The ruling keeps that behaviour and names it. A band the operator declared, or one with no
+  provenance at all (an old frozen objective, where equality with the shipped default is *not*
+  evidence the compiler chose it), is a hard constraint: spending their beam outside the range they
+  asked for is not the controller's call, and guessing wrong silently rewrites a scientist's intent
+  (O28 rules 5 and 6). So O29's five legitimate terminals become six, and its standing rule is
+  amended: a budget-remaining terminal is a defect to hunt **unless** the inventory's only remaining
+  action is `OPERATOR`-rejected. The distinction from `controller_fault` is exact — a fault means the
+  inventory is *incomplete* and exhaustion could not be proven; this means exhaustion **was** proven
+  and the one remaining action is withheld by policy.
+
+  The obligation that makes this honest rather than a loophole: such a terminal must name the
+  forbidden action and its escape in the stop reason itself, not only in the persisted inventory. The
+  escape is to declare `identity_search_meV` (or re-compile the objective so the band carries compiler
+  provenance) and resume — not more beam, and not a repair.
+  `_operator_authorization_hint` appends the generator's own operator-facing text to both exhaustion
+  terminals (`_blocked_frontier_decision` and `_exhausted_action_space_decision`), reading the two
+  shapes the signal takes: an action generated and then `OPERATOR`-rejected, and a generator that
+  emitted nothing and declared `policy_forbidden`. Structural, saturation, budget and transient
+  rejections are deliberately excluded — they are not the operator's to lift, and offering them as
+  authorizable would send a scientist to edit a policy that cannot help. `terminal_cause`, the
+  `StopDecision` state and the per-q reasons are unchanged: this is reason text, so no consumer keyed
+  on the cause changes behaviour. References: O28 (the AP6 strict-historical replay), O29 (the
+  taxonomy this amends), `docs/MEASUREMENT_STEERING.md`.
 
 ## Session status update
 

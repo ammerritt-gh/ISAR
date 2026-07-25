@@ -62,18 +62,26 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--workspace", required=True)
     pr.add_argument("--force", action="store_true", help="refit every scan, ignoring the ledger")
     pr.add_argument("--llm", action="store_true", help="enable LLM adjudication of QC flags")
-    pr.add_argument("--M", type=int, default=200, help="bootstrap draws per scan (default 200)")
+    pr.add_argument("--M", type=int, default=200,
+                    help="bootstrap draw cap for pooled masters and certification (default 200)")
+    pr.add_argument("--scan-M", dest="scan_M", type=int, default=None,
+                    help="bootstrap draw cap for provisional scan fits (default 50)")
     pr.add_argument("--formats", default="html,markdown", help="report formats (comma-separated)")
     pr.add_argument("--detectors", default=None, help="restrict fitted detectors (comma-separated)")
     pr.add_argument("--workers", type=int, default=None,
                     help="total fitting worker budget, assigned across scans or within a promoted "
                          "fit (default min(30, cpu-2); env ISAR_WORKERS; 1 = serial)")
-    pr.add_argument("--errors", default="full", choices=["full", "fast", "cheap", "bayes"],
-                    help="uncertainty depth: 'full' (MINOS+bootstrap+profile, default), "
+    pr.add_argument("--errors", default="full", choices=["auto", "full", "fast", "cheap", "bayes"],
+                    help="uncertainty depth: 'auto' (HESSE-first with selective full promotion), "
+                         "'full' (MINOS+bootstrap+profile, default), "
                          "'fast' (HESSE ω₀ interval + trust flag, no bootstrap), "
                          "'cheap' (HESSE only — quick-look verdict + rough ω₀, no interval), or "
                          "'bayes' = full + nested-sampling posterior interval (slow; three-method "
                          "cross-check)")
+    pr.add_argument("--scan-errors", dest="scan_errors_tier", default=None,
+                    choices=["auto", "full", "fast", "cheap", "bayes"], help=argparse.SUPPRESS)
+    pr.add_argument("--master-errors", dest="master_errors_tier", default=None,
+                    choices=["auto", "full", "fast", "cheap", "bayes"], help=argparse.SUPPRESS)
     pr.add_argument("--bayes-nlive", dest="bayes_nlive", type=int, default=None,
                     help="bayes tier: dynesty live-point budget (default 250; env ISAR_BAYES_NLIVE). "
                          "Benchmark caveat: on very-high-count scans 250 can give narrower credible "
@@ -105,6 +113,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="show only the N slowest stages (default: all)")
     pp.add_argument("--iterations", action="store_true",
                     help="also print the per-iteration breakdown table")
+    pp.add_argument("--compare-workspace", default=None,
+                    help="compare scientific decisions and certified outputs with another workspace")
 
     prp = sub.add_parser("report", help="re-render the report from persisted state")
     prp.add_argument("--workspace", required=True)

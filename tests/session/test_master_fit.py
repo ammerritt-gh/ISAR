@@ -205,6 +205,65 @@ def _prov_no_timing(prov):
             if k not in ("fit_seconds", "two_stage_seconds", "errors_attach_seconds")}
 
 
+def test_run_batch_routes_scan_and_master_bootstrap_caps_by_role(tmp_path, monkeypatch):
+    data = _in8_file(tmp_path, "ROLEM", 54500, 2.25)
+    ws = Workspace.open(tmp_path / "role-ws")
+    ws.root.mkdir(parents=True, exist_ok=True)
+    ws.policy_path.write_text(Path(ill_in8._CARD_PATH).read_text(encoding="utf-8"),
+                              encoding="utf-8")
+    observed = {}
+    real_run_tasks = driver._run_tasks
+    real_fit_masters = driver._fit_masters
+
+    def scan_spy(*args, **kwargs):
+        observed["scan_M"] = kwargs["M"]
+        return real_run_tasks(*args, **kwargs)
+
+    def master_spy(*args, **kwargs):
+        observed["master_M"] = kwargs["M"]
+        return real_fit_masters(*args, **kwargs)
+
+    monkeypatch.setattr(driver, "_run_tasks", scan_spy)
+    monkeypatch.setattr(driver, "_fit_masters", master_spy)
+    driver.run_batch(ws, [data], M=123, scan_M=17, detectors="det0", formats=(),
+                     workers=1, errors_tier="cheap")
+
+    assert observed == {"scan_M": 17, "master_M": 123}
+
+
+def test_run_batch_routes_optional_error_tiers_by_role_and_keeps_legacy_default(
+        tmp_path, monkeypatch):
+    data = _in8_file(tmp_path, "ROLET", 54600, 2.25)
+
+    def execute(name, **tier_kwargs):
+        ws = Workspace.open(tmp_path / name)
+        ws.root.mkdir(parents=True, exist_ok=True)
+        ws.policy_path.write_text(Path(ill_in8._CARD_PATH).read_text(encoding="utf-8"),
+                                  encoding="utf-8")
+        observed = {}
+        real_run_tasks = driver._run_tasks
+        real_fit_masters = driver._fit_masters
+
+        def scan_spy(*args, **kwargs):
+            observed["scan"] = kwargs["errors_tier"]
+            return real_run_tasks(*args, **kwargs)
+
+        def master_spy(*args, **kwargs):
+            observed["master"] = kwargs["errors_tier"]
+            return real_fit_masters(*args, **kwargs)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(driver, "_run_tasks", scan_spy)
+            scoped.setattr(driver, "_fit_masters", master_spy)
+            driver.run_batch(ws, [data], M=10, detectors="det0", formats=(), workers=1,
+                             errors_tier="cheap", **tier_kwargs)
+        return observed
+
+    assert execute("legacy") == {"scan": "cheap", "master": "cheap"}
+    assert execute("split", scan_errors_tier="fast", master_errors_tier="cheap") == {
+        "scan": "fast", "master": "cheap"}
+
+
 def test_parallel_masters_match_serial_end_to_end(tmp_path):
     # Real multiprocessing gate: two IN8 files → two (Q,T) master groups, both refit on a cold run.
     # Serial (workers=1) vs parallel-masters (workers=4) on fresh workspaces must produce identical
@@ -343,6 +402,63 @@ def test_master_only_certification_fits_no_physical_rows_and_reuses_publication(
     assert calls == []
     progress = json.loads((manifest_path.parent / "progress.json").read_text(encoding="utf-8"))
     assert progress["completed"] == 1 and progress["reused_workspace"] == 1
+
+
+def test_master_certification_subset_refits_only_dirty_q_and_preserves_clean_master(
+        tmp_path, monkeypatch):
+    from isar.drive import loop as drive_loop
+
+    first_data = _in8_file(tmp_path, "SUBA", 57500, 2.15)
+    second_data = _in8_file(tmp_path, "SUBB", 57600, 2.55)
+    ws = Workspace.open(tmp_path / "subset-ws")
+    ws.root.mkdir(parents=True)
+    ws.policy_path.write_text(Path(ill_in8._CARD_PATH).read_text(encoding="utf-8"),
+                              encoding="utf-8")
+    driver.run_batch(ws, [first_data, second_data], M=25, detectors="det0", formats=(),
+                     workers=1, errors_tier="fast")
+    _card, before = ws.load()
+    masters = sorted(
+        (entry for entry in before.scans.values() if entry.scan_id.startswith("master:")),
+        key=lambda entry: next(iter(entry.detectors.values()))["q"][0])
+    assert len(masters) == 2
+    clean_before = copy.deepcopy(masters[0])
+    outcomes = [next(value for value in entry.detectors.values() if value.get("pooled"))
+                for entry in masters]
+    decision = types.SimpleNamespace(per_q=[{"hkl": list(outcome["q"])}
+                                             for outcome in outcomes])
+    objective = types.SimpleNamespace(path=[tuple(outcome["q"]) for outcome in outcomes])
+    cfg = types.SimpleNamespace(
+        workspace=ws.root, log_path=ws.report_dir / "session_log.jsonl",
+        calibration=types.SimpleNamespace(inflation=1.0), floor=0.0)
+    request_path = drive_loop._certification_request(
+        cfg, objective, decision, "full", activity_id="test-subset",
+        requested_indices=[1])
+    manifest_path = certification.create_master_certification_manifest(ws.root, request_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert [unit["master_id"] for unit in manifest["worklist"]] == [masters[1].scan_id]
+    unit = manifest["worklist"][0]
+    calls = []
+
+    def fake_master_task(args):
+        calls.append(args[7])
+        entry = copy.deepcopy(masters[1])
+        entry.content_hash = args[9]
+        entry.provenance.update({
+            "analysis_tier": "full", "master_fit_contract": "isar.master_fit/2",
+            "master_fit_fingerprint": unit["master_fit_fingerprint"],
+            "spectrum_digest": unit["spectrum_digest"],
+        })
+        return entry
+
+    monkeypatch.setattr(driver, "_fit_master_group_task", fake_master_task)
+    summary = driver.run_batch(
+        ws, [first_data, second_data], M=200, detectors="det0", formats=(), workers=1,
+        errors_tier="full", certification_manifest=manifest_path)
+
+    assert not summary.analysis_incomplete and calls == [masters[1].scan_id]
+    _card, after = ws.load()
+    assert after.scans[masters[0].scan_id] == clean_before
+    assert after.scans[masters[1].scan_id].provenance["analysis_tier"] == "full"
 
 
 def test_master_certification_drains_wave_and_checkpoints_success_after_worker_failure(

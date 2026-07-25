@@ -103,7 +103,7 @@ def test_transverse_optic_k_segment_compiles_to_eleven_points():
     assert len(spec.path) == 11 and spec.path[-1] == (2.0, 0.5, 0.0)
     assert spec.target_branch == "optic" and spec.target_label == "transverse optic"
     assert spec.energy_search_meV == (-2.0, 12.0)
-    assert spec.target_selector == "lowest_energy" and spec.target_energy_meV is None
+    assert spec.target_selector == "tracked_branch" and spec.target_energy_meV is None
 
 
 def test_supplied_target_energy_implies_nearest_selector():
