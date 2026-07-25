@@ -1,14 +1,16 @@
 """Canonical comparisons for speedup shadow campaigns.
 
-Timing, process identifiers, and free-form explanatory prose are deliberately excluded.  The
-remaining stream is the scientific contract: what was proposed, how fit promotions and branch
-state changed, how the supervisor decided, which points entered the prior, and the final pooled
-results.  Keeping the projection here gives every speedup phase one comparison rule.
+Timing, process identifiers, and proposal-ranking prose are deliberately excluded. Terminal causes
+and reasons remain scientific decisions: changing why a campaign stopped must fail a shadow
+comparison. The remaining stream records what was proposed, how fit promotions and branch state
+changed, how the supervisor decided, which points entered the prior, and the final pooled results.
+Keeping the projection here gives every speedup phase one comparison rule.
 """
 from __future__ import annotations
 
 import csv
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,12 +33,14 @@ _DECISION_FIELDS = {
     "escalate_fit": ("phase", "iter", "hkl", "from_tier", "to_tier", "reason",
                      "revision_key", "outcome", "dispositions"),
     "decide": ("event", "action", "iter", "hkl", "per_q", "converged", "n_grid"),
-    "stop": ("state", "per_q", "grid_state"),
+    "stop": ("state", "terminal_cause", "reasons", "per_q", "grid_state"),
     "branch_track_update": ("iter", "revision", "assignments", "confirmed"),
     "branch_reassignment": ("iter", "revision", "hkl", "from_branch", "to_branch"),
     "frontier_blocked": ("iter", "hkl", "branch", "state"),
     "certification_crossing": ("iter", "hkl", "production_batch_fingerprint", "state"),
 }
+_ANALYSIS_SPENT_REASON = re.compile(
+    r"^(analysis limit exhausted[^()]*\()([^/()]+)(/[^()]+\).*)$")
 
 
 def _stable(value: Any) -> Any:
@@ -50,6 +54,24 @@ def _stable(value: Any) -> Any:
     return value
 
 
+def _stable_stop_reasons(payload: dict[str, Any]) -> None:
+    """Remove known process identity while preserving the stop's semantic explanation."""
+    reasons = payload.get("reasons")
+    if not isinstance(reasons, list):
+        return
+    normalized = []
+    for reason in reasons:
+        if (payload.get("state") == "operator_stopped" and isinstance(reason, str)
+                and reason.startswith("token ")):
+            continue
+        if isinstance(reason, str):
+            match = _ANALYSIS_SPENT_REASON.fullmatch(reason)
+            if match:
+                reason = f"{match.group(1)}<spent>{match.group(3)}"
+        normalized.append(reason)
+    payload["reasons"] = normalized
+
+
 def canonical_decisions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Project a session log onto its ordered scientific-decision stream."""
     projected = []
@@ -60,6 +82,8 @@ def canonical_decisions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         payload = event.get("payload") or {}
         fields = _DECISION_FIELDS[kind]
         stable_payload = {key: _stable(payload[key]) for key in fields if key in payload}
+        if kind == "stop":
+            _stable_stop_reasons(stable_payload)
         if kind == "propose" and isinstance(stable_payload.get("meta"), dict):
             # Explanatory strings may improve without changing the scored/proposed measurement.
             stable_payload["meta"].pop("reason", None)
