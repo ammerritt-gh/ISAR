@@ -1,5 +1,10 @@
 # ISAR
 
+> **Lifecycle:** Current
+> **Authority:** canonical for product overview and quickstart
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 **I**nelastic **S**cattering **A**utomated **R**— (the final R is deliberately floating: the tool
 *reduces* data at ingest, *resolves* phonons in analysis, *reviews* scans for the human, and — in a
 future phase — acts in *resolution* mode to solve a measurement problem). Also, fittingly, the

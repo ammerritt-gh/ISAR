@@ -1,5 +1,10 @@
 # LLM QC Adjudication — as-built (Phase 2, build-order step 7)
 
+> **Lifecycle:** Current
+> **Authority:** canonical for the adjudication trust contract, and the LLMM setup reference
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 **Status:** built, TDD-tested, and live-verified 2026-06-28. This is the as-built record for the LLM
 adjudication layer designed in `archive/PHASE_2_DESIGN.md` §7.3 (and DESIGN §0.5). It documents what exists,
 the decision contract, where the reasoning is visible, the model-selection evidence (the §7.3-mandated

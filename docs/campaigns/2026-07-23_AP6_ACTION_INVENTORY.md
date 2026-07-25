@@ -1,5 +1,10 @@
 # AP6 branch-ambiguity stop: the incomplete action space
 
+> **Lifecycle:** Historical evidence
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Superseded by:** the current contract named in [`campaigns/README.md`](README.md). A dated record of what happened, never a statement of current behaviour (DECISIONS D3).
+
 **Status:** historical evidence; repair Implemented for the action-inventory control plane and the
 predicted-rival identity probe (O28). AP6 replay passes at the `enumerate_actions` reconstruction
 level in strict-historical and migrated modes; a full campaign replay through the live driver against

@@ -1,5 +1,10 @@
 # One scan, start to finish
 
+> **Lifecycle:** Current
+> **Authority:** canonical for one scan, start to finish
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 To make the pipeline concrete, here is a single S30 (IXS) control scan followed all the way through —
 the same path every scan takes. Figures referenced live in `out/phase3_step1/figures/` (regenerate with
 `python docs/phase3_step1_check.py`); each carries its own caption.

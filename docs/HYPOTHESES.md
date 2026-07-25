@@ -1,5 +1,10 @@
 # Excitation hypotheses — declaring what you expect to measure
 
+> **Lifecycle:** Current
+> **Authority:** canonical for declaring expected excitations
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 > **Status: Implemented (branch hypotheses).** The branch schema, shipped presets, frozen objective fingerprint, parameter
 > priors, branch-MI acquisition, opening moves, deterministic widening, incremental count batches,
 > persisted mismatch evidence, and goal > card > shipped resolution are implemented (2026-07-17).

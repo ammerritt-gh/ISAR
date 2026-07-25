@@ -1,5 +1,10 @@
 # ISAR — backlog
 
+> **Lifecycle:** Current
+> **Authority:** canonical for the single backlog
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 A work queue, not a project diary. Completed work leaves this file; git history and
 `docs/DECISIONS.md` are the record of what shipped.
 

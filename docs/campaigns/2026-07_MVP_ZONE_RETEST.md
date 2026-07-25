@@ -1,5 +1,10 @@
 # MVP zone re-test — Phase 2–5 on the two trouble zones (2026-07-08)
 
+> **Lifecycle:** Historical evidence
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Superseded by:** the current contract named in [`campaigns/README.md`](README.md). A dated record of what happened, never a statement of current behaviour (DECISIONS D3).
+
 Re-run of the Stage-5 campaign (`docs/campaigns/2026-06_MVP_FIRST_RUN.md`) on branch `model-free-foundation`
 (Phases 2–5: low-q soft-prior branch + hard-fix, high-q Stokes-only + descriptor, EIG/Fisher
 acquisition + VOI stop, durable branch threading). Same grid, same seed, LLM-free.

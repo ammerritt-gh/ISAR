@@ -1,5 +1,10 @@
 # Background Handling — workstream design
 
+> **Lifecycle:** Active plan
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Owner:** @ammerritt-gh · **Exit criteria:** in the status block below
+
 **Status: design approved 2026-07-19; implementation not started; sequenced after the
 speedup sprint (`docs/SPEEDUP_DESIGN.md`),** whose fast test campaigns are what make this
 workstream cheap to iterate. **Owner: @ammerritt-gh.** Motivating finding — "backgrounds are a

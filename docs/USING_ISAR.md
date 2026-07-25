@@ -1,5 +1,10 @@
 # Using ISAR — the command-line workflow
 
+> **Lifecycle:** Current
+> **Authority:** canonical for the operator workflow
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 How to run ISAR on your own data: set up an experiment once, then re-run one command as scans land.
 Written for a scientist at (or preparing for) a beamtime. For what ISAR *is* and why to trust it,
 start with [READING_GUIDE.md](READING_GUIDE.md); for what a verdict means, see

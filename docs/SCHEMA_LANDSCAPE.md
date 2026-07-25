@@ -1,5 +1,10 @@
 # Schema Landscape — Inelastic Scattering Data Formats, Scan Types & Metadata
 
+> **Lifecycle:** Current
+> **Authority:** canonical for the schema survey across facilities
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 **Status:** Research reference. Informs the Phase 2 schema (`docs/archive/PHASE_2_DESIGN.md` §3, §5, §6).
 **Note:** two claims here were later **corrected by real files in `test_data/`** — BL43LXU writes SPEC (not
 an undocumented custom format), and IN8 ships `.nxs` NeXus twins beside each numor. Corrections are marked

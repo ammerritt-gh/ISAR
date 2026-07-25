@@ -1,5 +1,10 @@
 # Fast Test Campaigns — speedup sprint design
 
+> **Lifecycle:** Active plan
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Owner:** @ammerritt-gh · **Exit criteria:** in the status block below
+
 **Status: Phase 1 complete and merged (`8fa1219`, 2026-07-20); Phase 2 Partial; Phases 3 and 4
 conditional and unstarted. Later phases remain governed by the gates below.**
 **Owner: @ammerritt-gh.**

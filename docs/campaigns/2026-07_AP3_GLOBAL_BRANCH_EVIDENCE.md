@@ -1,5 +1,10 @@
 # AP3 global branch-evidence failure
 
+> **Lifecycle:** Historical evidence
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Superseded by:** the current contract named in [`campaigns/README.md`](README.md). A dated record of what happened, never a statement of current behaviour (DECISIONS D3).
+
 **Status:** historical evidence; Phase 0 repair implemented in focused tests, live replay pending.
 
 AP3 began near the H=2 zone centre, then jumped to H=3 and worked backward. The connected rising

@@ -1,5 +1,10 @@
 # Phase 1 core check against real IN8 (TAS) data — handoff to a Claude Code session
 
+> **Lifecycle:** Historical evidence
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Superseded by:** the current contract named in [`campaigns/README.md`](README.md). A dated record of what happened, never a statement of current behaviour (DECISIONS D3).
+
 **Purpose.** Empirically check whether the Phase 1 fitter (`isar.synth.fit.fit`, DHO ⊗ 1-D Voigt,
 Baker–Cousins) survives contact with **real, non-IXS** data — the IN8 numors in
 `test_data/ILL IN8/`. This is the first stress-test of the synthetic core on a different instrument

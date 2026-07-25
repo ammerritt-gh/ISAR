@@ -1,5 +1,10 @@
 # Smarter Steering — workstream design
 
+> **Lifecycle:** Active plan
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Owner:** @ammerritt-gh · **Exit criteria:** in the status block below
+
 **Status: design approved 2026-07-19; Phase 0 correctness repair in progress 2026-07-20;
 sub-phases A → B → C remain Planned and sequenced third,** after the speedup sprint
 (`docs/SPEEDUP_DESIGN.md`) and the background workstream (`docs/BACKGROUND_DESIGN.md`) —

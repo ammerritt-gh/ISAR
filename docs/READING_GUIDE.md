@@ -1,5 +1,10 @@
 # ISAR — what it's for, and how to read everything
 
+> **Lifecycle:** Current
+> **Authority:** canonical for the general documentation map
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 This is the front door. It explains, for a scientist who knows inelastic scattering and manual
 fitting but has never used ISAR, **what problem ISAR solves, what it deliberately does not do, and
 how we know it works** — then points you at the right report or document for each question.
@@ -131,6 +136,8 @@ The per-file register is [DOC_INVENTORY.md](DOC_INVENTORY.md).
 | How the GUI is built and bounded | [GUI_DESIGN.md](GUI_DESIGN.md) | Current |
 | What the data/card schema looks like across facilities | [SCHEMA_LANDSCAPE.md](SCHEMA_LANDSCAPE.md) | Current |
 | Why was a decision made this way? | [DECISIONS.md](DECISIONS.md) | Current |
+| Which rulings are still in force? | [DECISION_INDEX.md](DECISION_INDEX.md) | Current (generated) |
+| What is every document, and what happened to the deleted ones? | [DOC_INVENTORY.md](DOC_INVENTORY.md) | Current |
 | Why steer measurements this way (Bayesian info-gain; prior art) — research foundation | [MEASUREMENT_STEERING.md](MEASUREMENT_STEERING.md) | Current |
 | What is being built next (speedup, backgrounds, steering A/B/C) | [SPEEDUP_DESIGN.md](SPEEDUP_DESIGN.md), [BACKGROUND_DESIGN.md](BACKGROUND_DESIGN.md), [STEERING_DESIGN.md](STEERING_DESIGN.md) | Active plan |
 | Does it agree with a human on real data? | `out/phase3_gold/FINDINGS.md` (gold report) | Generated |

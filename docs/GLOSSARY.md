@@ -1,5 +1,10 @@
 # ISAR glossary
 
+> **Lifecycle:** Current
+> **Authority:** canonical for term definitions
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 Plain-language definitions for the terms in ISAR's reports and figures. Written for a scientist who
 knows inelastic scattering and manual fitting but is new to ISAR. (Seeded during the
 documentation pass; expanded alongside the reading guide and statistics primer.)

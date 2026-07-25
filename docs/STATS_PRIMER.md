@@ -1,5 +1,10 @@
 # The statistics behind an ISAR results row
 
+> **Lifecycle:** Current
+> **Authority:** canonical for statistical methods; §7 is the sole record of the 2026-07-19 audit
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 *For physicists who fit by hand — and who will check.*
 
 Every fitted number ISAR reports answers one of three questions. **Minimize:** given a model,

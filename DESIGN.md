@@ -1,5 +1,10 @@
 # ISAR — Design
 
+> **Lifecycle:** Current
+> **Authority:** canonical for the architecture and per-capability status table (§15)
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 **Name.** ISAR = **I**nelastic **S**cattering **A**utomated **R**—, with the final R left
 deliberately undeclared. The tool *reduces* data at ingest, *resolves* phonons in analysis,
 *reviews* scans, and acts in *resolution* mode to solve a measurement problem. Pinning the R to

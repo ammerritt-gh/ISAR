@@ -1,5 +1,10 @@
 # ISAR Unification — Assembly into a product (the tool grows a front door)
 
+> **Lifecycle:** Current
+> **Authority:** canonical for the workspace, session and CLI contract
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 **Status:** Built (2026-07). The `isar` CLI + `isar/session/` layer described here are implemented and
 tested (`tests/session/`); decisions U1–U8 held through the build. **One gate is deferred:** the full
 83-scan S30 statistical comparison at M=200 (§10 step 5) is a multi-minute run left for a fast
