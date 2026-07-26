@@ -1,9 +1,13 @@
 # DECISIONS — ISAR design ruling ledger
 
+> **Lifecycle:** Current
+> **Authority:** canonical for the append-only ruling ledger; IDs are stable citation anchors (D2, D4)
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 Append-only ledger of design rulings. IDs are stable citation anchors (D2). Started at the
 2026-07-09 design review; each ruling is final unless explicitly reopened; "future" means
 designed-for but not v1.
-explicitly reopened; "future" means designed-for but not v1.
 
 ## Vocabulary & framing
 
@@ -624,6 +628,34 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   `StopDecision` state and the per-q reasons are unchanged: this is reason text, so no consumer keyed
   on the cause changes behaviour. References: O28 (the AP6 strict-historical replay), O29 (the
   taxonomy this amends), `docs/MEASUREMENT_STEERING.md`.
+
+- **S5.** (2026-07-25, Implemented; amends S1 and V5, both of which record the superseded status)
+  **The Bayesian rung of the interval ladder is built and running; what is still Planned is its
+  licence to certify, not its machinery.** S1 wrote the ladder as "Hessian (never certifies) →
+  profile → bootstrap (certifying) → Bayesian (Planned)", and V5 wrote "Bayesian = credible
+  intervals, status Planned". Both were true when ruled and are now false in the same way: they
+  describe an absent capability, when the accurate statement is a present capability that is
+  deliberately denied authority.
+
+  The tier is wired end to end. `--errors bayes` (`isar/cli/main.py`, with `--bayes-nlive`,
+  `--bayes-dlogz`, `--bayes-maxiter`) sets `run_bayes` in `isar/session/driver.py`, which runs the
+  dynesty nested sampler on the preliminary-best label and persists `bayes_interval`,
+  `bayes_gamma_interval`, posterior parameter samples, the convergence gates (`bayes_ok`,
+  `bayes_ess`, `bayes_fail_reason`) and the three-method agreement ratio `bayes_freq_ratio`.
+
+  What is unchanged, and is the point of this ruling: **the bootstrap `freq_interval` remains the
+  sole certifying interval.** `isar/session/driver.py` states it at the field definition —
+  certification and confidence never read the Bayesian keys — and certification reads
+  `within_model["freq_interval"]`. The reason is not doubt about the sampler but the absence of a
+  coverage measurement of the kind §3 of `docs/STATS_PRIMER.md` performed for the bootstrap. Until
+  the credible interval's coverage is measured the same way, promoting it would certify on an
+  uncalibrated interval, which is precisely what the ladder exists to prevent.
+
+  Consequently the correct status phrase everywhere is **"Implemented, diagnostics-only"**, and
+  the Planned item is narrowed to: Bayesian coverage validation, and promotion to certifying
+  authority conditional on it. Per D4 this entry amends S1 and V5 rather than editing them; the
+  superseded wording stays in place as history. Applied in `DESIGN.md` §7 and §15,
+  `docs/STATS_PRIMER.md` §0/§3/§5, and the Fig. 1 pipeline map.
 
 ## Session status update
 

@@ -1,5 +1,10 @@
 # Autonomous measurement steering — the research foundation
 
+> **Lifecycle:** Current
+> **Authority:** canonical for the steering research foundation and the current controller contract
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 > **Status: design locked; the core is built.** The model-free descriptor (L0), branch model +
 > Bayesian branch assignment, soft/hard Γ constraints, Stokes-only rescue, under-model
 > falsification, cost-normalised EIG acquisition, and the anti-Stokes fold + rival-branch banking

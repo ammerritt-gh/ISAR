@@ -1,9 +1,20 @@
 # Background Handling — workstream design
 
+> **Lifecycle:** Active plan
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Owner:** @ammerritt-gh · **Exit criteria:** in the status block below
+
 **Status: design approved 2026-07-19; implementation not started; sequenced after the
 speedup sprint (`docs/SPEEDUP_DESIGN.md`),** whose fast test campaigns are what make this
-workstream cheap to iterate. Companion: the audit that motivated it,
-`docs/handoffs/HANDOFF_statistics_contract_checkup.md` §3.
+workstream cheap to iterate. **Owner: @ammerritt-gh.** Motivating finding — "backgrounds are a
+single flat constant", named the largest real-data risk by the 2026-07-19 statistics-contract
+audit: `docs/STATS_PRIMER.md` §7.
+
+**Exit criteria.** A background family beyond the single flat constant is selectable by the
+deterministic model-selection path; the S30 gold set shows no safety regression (0 gold-REJECT
+scans resolved) with the sloped/tailed backgrounds enabled; and `DESIGN.md` §15 carries a
+background row that is no longer "single flat constant". Not started — nothing below is built.
 
 Owner intent: real data has gnarly backgrounds — long elastic tails under the inelastic
 signal, sloped/non-flat baselines — and today ISAR's only background model is a single

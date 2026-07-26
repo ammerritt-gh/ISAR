@@ -1,5 +1,10 @@
 # SVP round 1 — TAVI-as-backend deterministic re-certification (2026-07-10)
 
+> **Lifecycle:** Historical evidence
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Superseded by:** the current contract named in [`campaigns/README.md`](README.md). A dated record of what happened, never a statement of current behaviour (DECISIONS D3).
+
 First campaign after the S3 uniform `interval_reliable` rule (`bdbeb69`), the R4 logging events
 (`a3bf4c6`), and the campaign diagnostic (`0d1756f`); also the first live exercise of the
 poison-bug fixes (ISAR `c1aa62c`, TAVI `0928171c`) and the `scan_command2` fix (`2d66b57`).

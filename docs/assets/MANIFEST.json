@@ -1,0 +1,278 @@
+{
+  "schema_version": 2,
+  "collected": "2026-07-26",
+  "code_revision": "96515a05d4747677040ad417d26bb28e32371fb4",
+  "code_dirty": true,
+  "code_diff_sha256": "fc8ab21b5aa073962c2ba3bb69ca1511a3d6348301d49ed7d34ed33f191f2f6f",
+  "privacy": "Derived evidence only: fit results, parameter summaries, and rendered figures. No raw facility file is included; scan overlays expose measured points at plot accuracy.",
+  "reproducibility": "Regeneration requires local test_data/. The bundle is viewable from a clean checkout, not reproducible from one.",
+  "test_data_fingerprint": {
+    "present": true,
+    "n_files": 234,
+    "sha256": "df946241512662d301bcec8663e164ce4002f14a3fb222cf1633e98c31e713dd"
+  },
+  "groups": [
+    {
+      "name": "phase3_gold",
+      "source": "phase3_gold",
+      "what": "83-scan S30 gold set scored against the curated FeSe_1 human fits \u2014 the headline real-data check.",
+      "command": "python docs/phase3_gold_check.py",
+      "replaces": [
+        "README.md \u2014 'Current evidence: out/phase3_gold/FINDINGS.md'",
+        "docs/READING_GUIDE.md \u2014 'the headline real-data check is the gold report'",
+        "docs/READING_GUIDE.md \u2014 'Does it agree with a human on real data?'"
+      ],
+      "input_fingerprint": {
+        "present": true,
+        "n_files": 234,
+        "sha256": "df946241512662d301bcec8663e164ce4002f14a3fb222cf1633e98c31e713dd"
+      },
+      "files": [
+        {
+          "path": "phase3_gold/FINDINGS.md",
+          "bytes": 10382,
+          "sha256": "c99a320651f86b0c4815329d5933e1b927c4ab0b89ff85695ef74dbe282868e0"
+        },
+        {
+          "path": "phase3_gold/results_gold.csv",
+          "bytes": 15835,
+          "sha256": "026dc834fc1c5c623e77ca1180f61da522f92624b49512a6d8034467f2567109"
+        },
+        {
+          "path": "phase3_gold/figures/confusion.png",
+          "bytes": 47283,
+          "sha256": "04ba417484ce234567a8472cb200072d5d326e427afcf72291c68a8d41924ff3"
+        },
+        {
+          "path": "phase3_gold/figures/confusion.caption.md",
+          "bytes": 648,
+          "sha256": "314de0ce0f163f24dcd20d2f3c175d16241354af2228d8a0c0ec27e29d524d6f"
+        },
+        {
+          "path": "phase3_gold/figures/omega0_scatter.png",
+          "bytes": 67431,
+          "sha256": "5de91a1968331656943f6af6994314f38f1c8cdff866e409507e82b8f075077e"
+        },
+        {
+          "path": "phase3_gold/figures/omega0_scatter.caption.md",
+          "bytes": 525,
+          "sha256": "8443310dbd3eb77444dbccd298e82ce301b67cb86f7b9b145f8111642700fee5"
+        },
+        {
+          "path": "phase3_gold/figures/omega0_pull_hist.png",
+          "bytes": 48111,
+          "sha256": "4fc3a3550e0c179c87bbbb79d0c1fdf27c0631dd476c4cab187466ef793f696c"
+        },
+        {
+          "path": "phase3_gold/figures/omega0_pull_hist.caption.md",
+          "bytes": 514,
+          "sha256": "4e5e3e084e32938bfb8b9f46885395789dafaa859d581455423b005bb369cea0"
+        },
+        {
+          "path": "phase3_gold/figures/confidence_calibration.png",
+          "bytes": 59978,
+          "sha256": "8ad7360cd4784656f8360580ba398fa9e8f74866dcfe369b0bf638652fa60dd2"
+        },
+        {
+          "path": "phase3_gold/figures/confidence_calibration.caption.md",
+          "bytes": 571,
+          "sha256": "656d694436517d62aca69c88ac04e3919fbbd814ce76b20e9999d0ee29ad75f0"
+        },
+        {
+          "path": "phase3_gold/figures/audit.png",
+          "bytes": 210352,
+          "sha256": "5cd29a4ac44a3a6fe42d8df629343c8de89f9be215d7964325d1526448ec2708"
+        },
+        {
+          "path": "phase3_gold/figures/audit.caption.md",
+          "bytes": 748,
+          "sha256": "9f82be1003c6c08844abeb418380ff38a59c8f4e1ae1f9f0df4d2f651de89823"
+        },
+        {
+          "path": "phase3_gold/figures/resolution_overlay.png",
+          "bytes": 78856,
+          "sha256": "e89e1874b612bf1422fae4bbbb7240a433c8a02dd44e6d49723c7dc37b55c38b"
+        },
+        {
+          "path": "phase3_gold/figures/resolution_overlay.caption.md",
+          "bytes": 560,
+          "sha256": "b8c26ab2201165a9645f465e001f6b66dbb4f9be63f55e93919d667e18e7bf27"
+        }
+      ]
+    },
+    {
+      "name": "in8_phase1",
+      "source": "in8_phase1",
+      "what": "The same fitting core on a triple-axis instrument (ILL IN8), with a real S30 IXS positive control for contrast.",
+      "command": "python docs/in8_phase1_check.py",
+      "replaces": [
+        "docs/READING_GUIDE.md \u2014 'Does the same core work on another instrument?'",
+        "README.md \u2014 'out/in8_phase1/FINDINGS.md (same core on a triple-axis instrument)'"
+      ],
+      "input_fingerprint": {
+        "present": true,
+        "n_files": 234,
+        "sha256": "df946241512662d301bcec8663e164ce4002f14a3fb222cf1633e98c31e713dd"
+      },
+      "files": [
+        {
+          "path": "in8_phase1/FINDINGS.md",
+          "bytes": 5378,
+          "sha256": "395774b83b0aab915795693f7941e168d8e5d7956e9f258abdb7bad7b40d24ff"
+        },
+        {
+          "path": "in8_phase1/results_in8.csv",
+          "bytes": 3612,
+          "sha256": "f087f6d38a0ba2b40f6600a5e187ff105c73e6b26b0cf17ddcc9e3bb87914690"
+        },
+        {
+          "path": "in8_phase1/results_in8_merged.csv",
+          "bytes": 2934,
+          "sha256": "ca8c88b7aa0fd5cac2748e37eebec35c584db898e2c666b11d12fd1648cdf272"
+        },
+        {
+          "path": "in8_phase1/results_s30.csv",
+          "bytes": 1505,
+          "sha256": "dddeadd0785ae2a75410667f04f2bd02041ce4b2b17a0b24ed528026f40b541e"
+        },
+        {
+          "path": "in8_phase1/figures/055181.png",
+          "bytes": 77111,
+          "sha256": "5d17248708b2227a34a7c593f78a62a23714051c57e2fe3cfe3f25893972914b"
+        },
+        {
+          "path": "in8_phase1/figures/055181.caption.md",
+          "bytes": 532,
+          "sha256": "f816e5200453716a83eae5b1023e500bab2ea4aa614ec7525ddd41dc509c0332"
+        },
+        {
+          "path": "in8_phase1/figures/055182.png",
+          "bytes": 78681,
+          "sha256": "75782fc5872805f37d33c08313d765837281af7272a3665cc821e2ade29d758f"
+        },
+        {
+          "path": "in8_phase1/figures/055182.caption.md",
+          "bytes": 532,
+          "sha256": "f816e5200453716a83eae5b1023e500bab2ea4aa614ec7525ddd41dc509c0332"
+        },
+        {
+          "path": "in8_phase1/figures/055289.png",
+          "bytes": 78421,
+          "sha256": "c8ec5b8f4ace9798f98a0e41566baee9fa0ff5556e47182559ead6539aad7332"
+        },
+        {
+          "path": "in8_phase1/figures/055289.caption.md",
+          "bytes": 532,
+          "sha256": "f816e5200453716a83eae5b1023e500bab2ea4aa614ec7525ddd41dc509c0332"
+        },
+        {
+          "path": "in8_phase1/figures/s30_scan168_ana5.png",
+          "bytes": 90973,
+          "sha256": "fe9d66cd3d5a0c120790d28678aa47be499d05942a31f3f44b983a19ca1e7341"
+        },
+        {
+          "path": "in8_phase1/figures/s30_scan168_ana5.caption.md",
+          "bytes": 559,
+          "sha256": "20fa036db725a6ff27c7d075480efd9a33c4f630b9031bd7f275b89000c59935"
+        }
+      ]
+    },
+    {
+      "name": "phase3_step1",
+      "source": "phase3_step1",
+      "what": "The structure-hypothesis loop on six curated S30 control scans, reproducing the frozen Phase-1 fitter, plus the error and model-selection layers.",
+      "command": "python docs/phase3_step1_check.py",
+      "replaces": [
+        "docs/READING_GUIDE.md \u2014 'Does the engine reproduce the trusted fitter + behave?'",
+        "docs/WORKED_EXAMPLE.md \u2014 the five figures it walks through"
+      ],
+      "input_fingerprint": {
+        "present": true,
+        "n_files": 234,
+        "sha256": "df946241512662d301bcec8663e164ce4002f14a3fb222cf1633e98c31e713dd"
+      },
+      "files": [
+        {
+          "path": "phase3_step1/FINDINGS.md",
+          "bytes": 11615,
+          "sha256": "f70d6d2f926ada1312132ec4871bd5877a9a09e3fecb86c3739a2c85b21a8a06"
+        },
+        {
+          "path": "phase3_step1/results_step1.csv",
+          "bytes": 3078,
+          "sha256": "e836b08a94d75ccec0d1c75841ca638d794328c6fd8d4eea2f07b8f82366990d"
+        },
+        {
+          "path": "phase3_step1/figures/energy_zero_series.png",
+          "bytes": 57897,
+          "sha256": "8c1fb8bd4d758db2828189613e148df0411f434d30771b74e802df5c04de01cd"
+        },
+        {
+          "path": "phase3_step1/figures/energy_zero_series.caption.md",
+          "bytes": 515,
+          "sha256": "bbbdc6679af49108ffcc144bb93f5fbe137cde5521360b7917d0fe3e602c66ad"
+        },
+        {
+          "path": "phase3_step1/figures/s30_scan168_ana5.png",
+          "bytes": 107106,
+          "sha256": "8ea020fc324a1a9e3f5846f5138006f9867c0d082d4373dc2331959b3976e0e1"
+        },
+        {
+          "path": "phase3_step1/figures/s30_scan168_ana5.caption.md",
+          "bytes": 536,
+          "sha256": "821f84ceefcfe229e987dc6cf2345924706c46c1aaefdaf631b05e40c5932647"
+        },
+        {
+          "path": "phase3_step1/figures/bootstrap_omega0_histograms.png",
+          "bytes": 104287,
+          "sha256": "b2675ef3acdfaac845dd60d5a546804e504aebef651f7deb51f5d4a43c0bf5bd"
+        },
+        {
+          "path": "phase3_step1/figures/bootstrap_omega0_histograms.caption.md",
+          "bytes": 625,
+          "sha256": "2058dabd52549b2c13816113205020279fc557c3e66150636fd7e7f29d3be246"
+        },
+        {
+          "path": "phase3_step1/figures/selection_akaike_weights.png",
+          "bytes": 52369,
+          "sha256": "b5ab64326f81e4f96ac0d35ac61ff351213e2c77130229ecfeab99d14c5f21d4"
+        },
+        {
+          "path": "phase3_step1/figures/selection_akaike_weights.caption.md",
+          "bytes": 471,
+          "sha256": "fb57010076212c7c586291c7aede6eedadc8969651da03f52fee4afeca40de21"
+        },
+        {
+          "path": "phase3_step1/figures/verdict_confidence.png",
+          "bytes": 82551,
+          "sha256": "59df10f8cfee4fd86535be34b9c82dd56975aa487ff223dfc464f90f46689d6b"
+        },
+        {
+          "path": "phase3_step1/figures/verdict_confidence.caption.md",
+          "bytes": 563,
+          "sha256": "cf87a71933f81783952d2bb96a6cbf0fd3b49d33f5a9ba8856820311e6b5c842"
+        },
+        {
+          "path": "phase3_step1/figures/dispersion_summary.png",
+          "bytes": 70030,
+          "sha256": "9933f83581216390616b9654e9b8b7b6cf4b9053548e4044b86660ae4c744f81"
+        },
+        {
+          "path": "phase3_step1/figures/dispersion_summary.caption.md",
+          "bytes": 496,
+          "sha256": "ea980fadee0e65205167b495ffb31ce48dbbc1e463a0beec35ddb56c8e0c5504"
+        },
+        {
+          "path": "phase3_step1/figures/synthetic_fork.png",
+          "bytes": 53900,
+          "sha256": "dc99b5139e82ee7f3ffdb82d13d7a1a4156a681939e987b2252f21d3a5c9616e"
+        },
+        {
+          "path": "phase3_step1/figures/synthetic_fork.caption.md",
+          "bytes": 453,
+          "sha256": "461e189b82395f35b972dcd004a98104bff43f14bad1482cbb40e64665d71426"
+        }
+      ]
+    }
+  ]
+}

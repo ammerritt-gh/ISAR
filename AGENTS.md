@@ -1,5 +1,10 @@
 # ISAR — Agent Floor
 
+> **Lifecycle:** Current
+> **Authority:** canonical for contributor rules and area routing
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 Automated **triage** pipeline for inelastic scattering (IXS + triple-axis): during a beamtime it
 parses incoming scans, QCs and calibrates them, fits DHO ⊗ resolution models with physics-gated
 model selection, and issues a per-scan verdict so a human knows where to spend review time. It is
@@ -22,11 +27,9 @@ area.
 - **Tests:** `pytest -m "not slow"` (markers `slow`, `live`; `testpaths` = `isar/synth/tests`, `tests`
   in `pyproject.toml`). `live` needs a running TAVI at `127.0.0.1:8642`. `tests/real_data/` needs the
   gitignored local `test_data/`. `isar/synth/tests/` = Phase-1 synthetic core; `tests/` = Phase 2+.
-- **Verification status (2026-07-12, evening):** the **base Python** (`C:\Utilities\Python\Python312`)
-  has every dependency (PySide6 6.11, pytest-qt, numpy/scipy/iminuit/lmfit/dynesty) and imports the
-  repo-root `isar` package directly — `python -m pytest -m "not slow"` from the repo root RUNS and
-  was green this session (1494 passed / 3 skipped; GUI subset 277). No `isar` micromamba env exists
-  yet; do not build one just to test. Offscreen GUI runs: pytest sets the platform via
+- **Running the suite:** any interpreter with the dependencies installed runs it — `python -m pytest
+  -m "not slow"` from the repo root imports the repo-root `isar` package directly, so a micromamba
+  env is not a prerequisite for testing. Offscreen GUI runs: pytest sets the platform via
   `tests/gui/conftest.py`; a test that leaves a modal path unmocked will hang the suite silently —
   use `-o faulthandler_timeout=60` when debugging a stall.
 
@@ -60,10 +63,20 @@ area.
    results never do, or the prior learns a phantom dispersion. (DESIGN §6–7, GLOSSARY.)
 
 6. **Layer boundaries are Qt-free.** `isar/workspace_api` (the read-only workspace facade),
-   `isar/geometry` (vendored from TAVI), and `isar/plotspec` must import no Qt. `isar_gui`
-   (PySide6 + pyqtgraph) is a **read-only viewer** over `workspace_api`. A Qt import leaking into the
-   facade or geometry breaks the notebook/headless consumers. Correspondingly, **no LLM in the runtime
-   path of a number** (P1): LLM output freezes into config before the deterministic fitter runs.
+   `isar/geometry` (vendored from TAVI), and `isar/plotspec` must import no Qt. A Qt import leaking
+   into the facade or geometry breaks the notebook/headless consumers. Correspondingly, **no LLM in
+   the runtime path of a number** (P1): LLM output freezes into config before the deterministic
+   fitter runs.
+
+7. **The GUI reads science, it never writes science.** `isar_gui` (PySide6 + pyqtgraph) is
+   read-only *with respect to scientific workspace interpretation*: everything it displays comes
+   through `workspace_api`, which never re-fits, re-collates from raw, or writes
+   (`isar/workspace_api/__init__.py`). Operational control is a separate channel and is allowed —
+   the GUI owns subprocesses (`isar init/run/drive` via `isar_gui/process.py`) and requests a
+   cooperative stop by atomically writing `report/control/stop-<token>.json`
+   (`isar_gui/operation_coordinator.py`). Stating this as "read-only viewer" is what previously led
+   contributors to think launching or stopping a campaign broke the architecture; interpreting a
+   number outside the fitter is what actually would.
 
 ## Before You Touch X
 
@@ -71,11 +84,11 @@ area.
 |---|---|
 | Orientation / why trust it | `docs/READING_GUIDE.md` → `DESIGN.md` |
 | Running it on data / the CLI contract | `docs/USING_ISAR.md`, `docs/WORKED_EXAMPLE.md` |
-| Current build phase (CLI + session assembly) | `docs/UNIFICATION_DESIGN.md` |
+| Workspace, session, and the CLI surface | `docs/WORKSPACE_AND_CLI.md` |
 | Fit/runtime performance and speedup gates | `docs/SPEEDUP_DESIGN.md` |
 | Statistics (cost, AIC, interval ladder, coverage) | `docs/STATS_PRIMER.md`, `docs/GLOSSARY.md` |
 | Verdicts — meaning & what to do | `docs/INTERPRETING_A_VERDICT.md`, GLOSSARY |
-| Card / schema across facilities | `docs/SCHEMA_LANDSCAPE.md`, `docs/DATA_SCHEME_RESEARCH.md` |
+| Card / schema across facilities | `docs/SCHEMA_LANDSCAPE.md` |
 | Flag adjudication (opt-in LLM) | `docs/ADJUDICATION.md` |
 | The autonomous driver (`isar drive`) | `docs/MEASUREMENT_STEERING.md` |
 | Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
@@ -91,8 +104,9 @@ combine-before-divide, collate) · `calibrate` (elastic fits, versioned energy-z
 (structure enumeration, fitting, errors, model selection, verdict, confidence) · `session` (workspace/
 prior/branch-model assembly) · `cli` · `drive` (autonomous loop, EIG acquisition, TAVI I/O) ·
 `report` · `synth` (Phase-1 synthetic core) · `workspace_api` / `geometry` / `plotspec` (Qt-free) ·
-`isar_gui` (read-only viewer). The Stage II ↔ III boundary is a **frozen file contract**
-(`report/results.csv`, `report.json`, `card.state.json`) — the driver never imports fit internals.
+`isar_gui` (reads science through `workspace_api`; controls campaigns by subprocess + control
+files). The Stage II ↔ III boundary is a **frozen file contract**
+(`report/results.csv`, `<workspace>/report/report.json`, `card.state.json`) — the driver never imports fit internals.
 The one pre-release v1→v2 clean break was authorized on 2026-07-17 (DECISIONS O12); from v2 onward,
 contract changes are additive only (DESIGN §4).
 
@@ -106,6 +120,63 @@ contract changes are additive only (DESIGN §4).
 4. **Status discipline:** DESIGN §15 marks every capability Implemented / Partial / Planned. Do not
    describe Planned work in the implemented voice, and match that table when you change status.
 
+## Documentation policy (what a document is allowed to be)
+
+Every maintained `.md` declares three **orthogonal** fields in a banner under its title. Conflating
+them is what previously made the tree unreadable — a document's origin is not its status, and
+neither is its authority.
+
+- **Lifecycle** — exactly one of `Current`, `Active plan`, `Historical evidence`, `Archived`.
+- **Authority** — *optional*. Only a document that is the single canonical source for a topic
+  declares one. Explanatory and historical documents have none, and inventing one for them is how
+  two documents end up claiming the same ground.
+- **Provenance** — `hand-written`, or `generated by <command>`. A generated file is owned by its
+  generator; edit the generator, not the output.
+
+The register of every file and its fields is [`docs/DOC_INVENTORY.md`](docs/DOC_INVENTORY.md).
+
+Rules, each naming the failure it prevents:
+
+1. **A `Current` document may not take an `Archived` or `Historical evidence` document as its
+   normative source.** Citing one for *rationale* or *provenance* is fine and expected — the test
+   is whether deleting the citation would leave a claim unsupported. Without this, a repaired
+   historical failure silently governs current behaviour.
+2. **Campaign notes are evidence, never contract** (DECISIONS D3). They record what happened on a
+   date, including things later found wrong. `docs/READING_GUIDE.md` must not route a reader
+   through them to learn current behaviour.
+3. **A handoff is temporary.** Once its receiving work starts it converts to an active plan, folds
+   into a canonical reference, or is deleted. There is no long-lived handoffs directory, because a
+   finished handoff that looks active becomes a phantom work queue.
+4. **An execution plan leaves the tree when its work lands.** Git history keeps the task list.
+5. **An `Active plan` needs an owner and exit criteria.** Without them it is a wish, and nobody can
+   say whether it is finished.
+6. **Deletion is preferred to a growing archive**, on an irreplaceability test: does this record
+   reasoning or evidence that exists nowhere else? If not, delete it and record it in the
+   `DOC_INVENTORY.md` tombstone table with the last commit that contained it.
+
+When you change behaviour, commands, schemas, or capability status, update the governing document
+in the same change — and if the claim is machine-checkable, add it to `tests/docs/`.
+
+`tests/docs/test_doc_drift.py` already enforces the mechanical half:
+
+- the register in `DOC_INVENTORY.md` is a **one-to-one mapping** with the non-exempt half of
+  `git ls-files '*.md'` — a tracked file with no row fails, a path with two rows fails, and a row
+  naming a file that does not exist fails;
+- every tracked `.md` declares a valid lifecycle and provenance, and every `Active plan` declares
+  an owner and exit criteria (rule 5);
+- relative links resolve case-sensitively, and tombstoned files stay deleted at repository-relative
+  paths that `git show <commit>:<path>` accepts verbatim;
+- no maintained document reintroduces a phrase that was corrected once (`STALE_PHRASES`);
+- a command list marked `<!-- isar-commands: exhaustive -->` matches
+  `isar.cli.main.build_parser()`;
+- `DECISION_INDEX.md` matches a fresh render of the ledger, and the `docs/assets/` bundle matches
+  its recorded hashes — the same checks as `python tools/docs/make_decision_index.py --check` and
+  `python tools/docs/collect_evidence.py --check`.
+
+**Adding a new document therefore requires a register entry and a banner** — the test fails
+otherwise, by design. Rule 1's *normative source* judgement is not machine-checkable and stays a
+review item.
+
 ---
 
-*Last updated: 2026-07-12. Canonical file is `AGENTS.md`; `CLAUDE.md` is the `@AGENTS.md` stub.*
+*Last updated: 2026-07-25. Canonical file is `AGENTS.md`; `CLAUDE.md` is the `@AGENTS.md` stub.*

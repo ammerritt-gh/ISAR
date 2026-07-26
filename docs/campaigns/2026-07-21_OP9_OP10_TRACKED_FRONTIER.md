@@ -1,5 +1,10 @@
 # OP9/OP10 tracked-frontier premature stop
 
+> **Lifecycle:** Historical evidence
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Superseded by:** the current contract named in [`campaigns/README.md`](README.md). A dated record of what happened, never a statement of current behaviour (DECISIONS D3).
+
 **Status:** historical evidence; repair Implemented for the tracked optic path and gated on an OP10
 replay that reaches `met` (commits `ee038d1`, `4dfdf81`). AP campaign replays not rerun here.
 

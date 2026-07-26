@@ -1,15 +1,31 @@
 # Fast Test Campaigns — speedup sprint design
 
-**Status: implementation in progress on `Speedup-Phase` (Phase 1 code complete 2026-07-20,
-reference-control evidence incomplete; later phases remain governed by the gates below).**
+> **Lifecycle:** Active plan
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Owner:** @ammerritt-gh · **Exit criteria:** in the status block below
+
+**Status: Phase 1 complete and merged (`8fa1219`, 2026-07-20); Phase 2 Partial; Phases 3 and 4
+conditional and unstarted. Later phases remain governed by the gates below.**
+**Owner: @ammerritt-gh.**
+
+**Exit criteria for the sprint.** (1) Reference-campaign wall time ≤ one third of baseline with
+**zero** steering-decision changes on shadow replays (§3 defines the comparison). (2) Phase 2's
+remaining work lands — crash-safe asynchronous scheduling and fresh-master `auto` drive
+enablement — and `--errors` may then default to `auto` rather than `full`
+(`isar/cli/main.py`). (3) Phases 3 and 4 are entered only if their numeric gates below trigger;
+if the target is met without them, they are closed as unnecessary, not left open.
 Owner intent: this sprint is judged on **development iteration velocity** — synthetic/analytic
 test campaigns must get several times faster so that design iteration on everything else
 (backgrounds, steering physics, scan economy) speeds up. It is *not* judged on beam-time
 economy or final-number accuracy; certification honesty is explicitly preserved unchanged.
 
-Companion documents: `docs/handoffs/HANDOFF_statistics_contract_checkup.md` (the audit that
-motivated this), `docs/STATS_PRIMER.md` §3 (the coverage evidence that licenses Phase 2),
-`docs/MEASUREMENT_STEERING.md` §7.5 (master-authoritative semantics Phase 3 must preserve).
+**Owner: @ammerritt-gh.** Motivating finding — "the error-tier choice is static", from the
+2026-07-19 statistics-contract audit: `docs/STATS_PRIMER.md` §7.
+
+Companion documents: `docs/STATS_PRIMER.md` §3 (the coverage evidence that licenses Phase 2),
+`docs/MEASUREMENT_STEERING.md` §7.5 (master-authoritative semantics Phase 3 must preserve),
+`docs/campaigns/2026-07-20_speedup_phases_1_2.md` (Phase 1–2 timing evidence).
 
 ---
 

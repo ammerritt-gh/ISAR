@@ -1,7 +1,38 @@
-# CAMPAIGN_DIAGNOSTIC — design spec
+# CAMPAIGN_DIAGNOSTIC — contract and design spec
 
-**Status:** design, agreed 2026-07-09. Prototype (hand-assembled against `out/mvp_zone_test16`):
-`MVP16_DIAGNOSTIC_REPORT.md`. This spec turns that prototype into a generated artifact.
+> **Lifecycle:** Current
+> **Authority:** canonical for the campaign diagnostic contract
+> **Provenance:** hand-written
+> **Verified against code revision:** `8fa1219` (2026-07-25)
+
+## As built
+
+**Implemented (2026-07-10).** The spec below was agreed 2026-07-09 against a hand-assembled
+prototype; it has since shipped and this section states what the code actually does. Where the
+design body below and this section disagree, this section wins.
+
+| | |
+|---|---|
+| **Command** | `isar diagnose --workspace DIR` (`isar/cli/diagnose_cmd.py`) |
+| **Automatic** | Yes — `isar/drive/loop.py` calls `_render_campaign_diagnostic(cfg)` at the end of every campaign, before the terminal `stop` event, whatever the outcome |
+| **Renderer** | `isar/report/campaign_diagnostic.py`, entry point `render_campaign_diagnostic(workspace)` |
+| **Output** | `<workspace>/report/CAMPAIGN_DIAGNOSTIC.md`, figures under `report/figures/` (dossier figures in `figures/dossier/`, buried-scan figures in `figures/scans/`) |
+| **Inputs** | `campaign_summary.json`, `session_log.jsonl`, `report/results.csv`, `score.json` (when a truth source exists), `card.state.json`, plus a deterministic Stage-I re-parse of `<workspace>/data` for raw counts behind the figures |
+| **Determinism** | Held. No refitting and no LLM in the assembly path. The re-parse crosses the same card+ingest boundary `isar run` uses; any failure degrades the figures to empty rather than raising |
+| **Sections** | The fixed eight-section order in §2 below is what the renderer emits |
+| **Golden test** | `tests/data/golden/CAMPAIGN_DIAGNOSTIC.mvp16.md`, exercised by `tests/report/test_campaign_diagnostic_characterization.py` |
+
+**Known gaps.** The optional LLM narrative layer described as a later addition (§0 principle) has
+not been built, and the separate *user-facing* campaign report — as opposed to this architect-facing
+diagnostic — remains Planned (`DESIGN.md` §15).
+
+---
+
+## Original design spec
+
+**Status:** design, agreed 2026-07-09 — retained for the reasoning behind the contract above.
+Prototype (hand-assembled against `out/mvp_zone_test16`): `MVP16_DIAGNOSTIC_REPORT.md`, since
+superseded by the generated artifact. This spec turned that prototype into a generated artifact.
 
 **Problem.** A campaign workspace contains the entire story of a run — objective, decisions,
 per-scan verdicts, truth scores — and no artifact tells it. `report.md` is a triage table for the
@@ -58,9 +89,8 @@ budget by tiering them:
   as representative contrast (1–2 per zone).
 - **Full per-scan set, buried:** every fitted scan gets a data+fit+residual PNG under
   `figures/scans/<scan_id>.png`. The triage table links to them; the diagnostic report links only
-  the dossier subset. (New work: the campaign path currently renders **one** figure per run —
-  `dispersion.png`. Per-scan rendering at fit time is a prerequisite; it also serves the future
-  LLM residual-diagnosis pass, which wants the same image.)
+  the dossier subset. (Per-scan rendering at fit time also serves the future LLM
+  residual-diagnosis pass, which wants the same image.)
 - Every figure carries a drawn-on caption plus a `<figure>.caption.md` sidecar (existing
   convention from the `*_check.py` reports).
 

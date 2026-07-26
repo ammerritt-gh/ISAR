@@ -1,5 +1,10 @@
 # The statistics behind an ISAR results row
 
+> **Lifecycle:** Current
+> **Authority:** canonical for statistical methods; §7 is the sole record of the 2026-07-19 audit
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 *For physicists who fit by hand — and who will check.*
 
 Every fitted number ISAR reports answers one of three questions. **Minimize:** given a model,
@@ -23,7 +28,7 @@ command that regenerates its evidence. Where a capability is not yet wired in, i
 
 Every number in a `results.csv` row answers exactly one of the three questions, and trusting a
 number means trusting the machinery behind its question. Fig. 1 is the map; note the one dashed
-box — the Bayesian rung of the certification ladder — which is **[Planned]**, not built.
+box — the Bayesian rung of the certification ladder — which is built but **does not certify**.
 
 ![FIG. 1](stats/figures/three_questions.svg)
 
@@ -34,14 +39,18 @@ Vocabulary is discipline, not pedagogy, in this document:
 
 > - **Bootstrap** means *frequentist-by-simulation*: refit many Poisson redraws of the best-fit
 >   model and read the spread. It is not Bayesian and is never called "credible".
-> - **Credible** is reserved for quantities that are actually posteriors. ISAR has exactly two:
->   the branch-assignment posterior (`assignment_entropy`, `branch_id`) **[Implemented]**, and
->   the dispersion-prior MAP fit (`prior_omega`, `prior_sigma` → `fit_kind=soft_prior`)
->   **[Implemented]**.
-> - Bayesian credible **intervals** on ω₀ are **[Planned]**: the sampler exists
->   (`isar/analyze/errors/bayes.py`, nested sampling) but is not wired into the driver-facing
->   fit path. No interval ISAR reports today is credible in the Bayesian sense; they are all
+> - The branch-assignment posterior (`assignment_entropy`, `branch_id`) is a stored posterior over
+>   branch identity **[Implemented]**.
+> - The dispersion-prior MAP fit (`prior_omega`, `prior_sigma` → `fit_kind=soft_prior`) is a
+>   prior-regularized point estimate **[Implemented]**. It is not a stored posterior distribution
+>   or a credible interval.
+> - Bayesian credible **intervals** on ω₀ are **[Implemented, diagnostics-only]**: the nested
+>   sampler (`isar/analyze/errors/bayes.py`) is wired through `--errors bayes` and stores
+>   `bayes_interval` plus posterior samples and agreement diagnostics, but certification and
+>   confidence never read it (`isar/session/driver.py:135`). Every interval ISAR *certifies* on is
 >   frequentist.
+>   Coverage validation of the credible interval, and any promotion of it to certifying
+>   authority, remain **[Planned]**.
 
 Verify the map (no workspace needed):
 
@@ -119,7 +128,8 @@ at the minimum. It assumes the cost is a clean parabola. ISAR computes it
 (`hesse_lo`/`hesse_hi`) **[Implemented]**, then climbs: a profile-likelihood (MINOS) interval,
 which can be asymmetric (`omega0_profile_lo/hi`) **[Implemented]**; a parametric bootstrap —
 M refits of Poisson redraws — as the authoritative interval (`interval_lo/hi`)
-**[Implemented]**; and a Bayesian credible interval as the future top rung **[Planned]**.
+**[Implemented]**; and a Bayesian credible interval as the top rung
+**[Implemented, diagnostics-only]** — computed under `--errors bayes`, but never certifying.
 
 A ladder is only worth its cost if the rungs differ measurably, so we measured them. The claim
 "a 68% interval covers the truth 68% of the time" can only be tested where the truth is known,
@@ -286,7 +296,9 @@ sample, seed, model inputs, reduction order, or reported interval.
 
 ## 5. The earned Bayesian pieces
 
-Chapter 0 reserved the word *credible* for actual posteriors. ISAR has two, and only two.
+Chapter 0 separates three related outputs: a branch-assignment posterior, a prior-regularized MAP
+point estimate, and diagnostics-only nested-sampler credible intervals. A MAP estimate is not by
+itself a stored posterior distribution or interval.
 
 **The branch-assignment posterior [Implemented].** Which dispersion branch a fitted mode
 belongs to is genuinely a Bayesian question — a prior over branches updated by the fit — and
@@ -303,14 +315,23 @@ not re-derivation.
 **FIG. 8.** The branch posterior for a certain and an ambiguous scan of `mvp_zone_test16`;
 entropy is the honesty meter.
 
-**The dispersion-prior MAP [Implemented].** When the campaign has a belief about ω₀ at a
-q-point, the fit can be softly constrained by it; `prior_omega`, `prior_sigma`, `prior_n`
-record the belief and `fit_kind` records that it was used. The data-only cost is kept separate
-(`cost` vs `posterior_cost`), so a constrained fit is never mistaken for independent evidence.
+**The dispersion-prior MAP point estimate [Implemented].** When the campaign has a belief about
+ω₀ at a q-point, the fit can be softly constrained by it; `prior_omega`, `prior_sigma`, `prior_n`
+record the regularizing prior and `fit_kind` records that it was used. The optimizer returns a MAP
+point estimate, not a stored posterior distribution or credible interval. The data-only cost is
+kept separate (`cost` vs `posterior_cost`), so a constrained fit is never mistaken for independent
+evidence.
 
-Bayesian credible *intervals* on ω₀ remain **[Planned]**. When they land, they become the
-ladder's fifth rung, and the frequentist↔Bayesian agreement check becomes one more per-scan
-trust signal of the §3.2 kind.
+**Nested-sampler credible intervals [Implemented, diagnostics-only].** Under `--errors bayes` the
+nested sampler runs on the preliminary-best label and records `bayes_interval`,
+`bayes_gamma_interval`, posterior samples, and its own
+convergence gates (`bayes_ok`, `bayes_ess`, `bayes_fail_reason`). The frequentist↔Bayesian
+agreement check is live as a per-scan trust signal of the §3.2 kind (`bayes_freq_ratio`).
+
+What remains **[Planned]** is not the machinery but the *licence*: certification and confidence
+deliberately never read the credible interval (`isar/session/driver.py:135`), because its
+coverage has not been measured the way §3's bootstrap coverage was. Promotion to the ladder's
+certifying rung waits on that measurement.
 
 Verify:
 
@@ -326,7 +347,7 @@ ISAR's bootstrap interval captures **counting statistics only**. It does **not**
 systematic uncertainty — the background shape, the resolution function, energy-zero drift
 between scans. Chapter 3 sharpens this rather than softening it: *within* its own statistical
 universe the machinery is calibrated (Fig. 4), the high-count dip is itself a measured example
-of uncertainty the per-fit interval cannot contain, and that is exactly why the ~20%
+of uncertainty the per-fit interval cannot contain, and that is exactly why the 18%
 gold-set coverage against a human's values is diagnostic of missing *systematics*, not of
 broken statistics. On well-counted data the counting error is tiny, so the interval is tight;
 the human's value falls inside ISAR's 68% interval far less than 68% of the time. **That is
@@ -353,6 +374,28 @@ python docs/phase3_gold_check.py
 ```
 
 ---
+
+## 7. Known weak points — the 2026-07-19 statistics-contract audit
+
+A post-MVP audit asked how ISAR decides *how long to count, what a scan tells us, and what to do
+next*. Its findings are recorded here because three workstream plans are built on them, and one
+shared record is better than three drifting copies.
+
+**Verdict.** The statistical core came out better than expected: Baker–Cousins throughout, measured
+interval coverage (§3), a fold-only prior gate, and an EIG acquisition that explains rather than
+causes one of the reported symptoms — the "too wide" survey scans are cold-start survey mode doing
+its designed job, not a defect.
+
+Three genuine weak points, each now the subject of a plan:
+
+| Weak point | Status | Governing plan |
+|---|---|---|
+| **Backgrounds are a single flat constant** — the largest real-data risk. Long elastic tails and sloped baselines under the inelastic signal silently bias phonon amplitudes | Open | `BACKGROUND_DESIGN.md` |
+| **Counting targets are absolute-meV only** — no signal-to-background awareness, so a five-count peak is a real hazard once genuine noise arrives | Open | `STEERING_DESIGN.md` |
+| **The error-tier choice is static** — §3's coverage evidence already licenses a cheap-first, escalate-on-distrust policy | Partly addressed | `SPEEDUP_DESIGN.md` (Phase 2) |
+
+Two of the three are unstarted. They are recorded here, not in a plan, so that a reader of the
+statistics contract learns the limitations without having to read three roadmaps.
 
 ## Reproducing everything
 

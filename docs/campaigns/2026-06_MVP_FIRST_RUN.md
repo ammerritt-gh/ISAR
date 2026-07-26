@@ -1,5 +1,10 @@
 # MVP first autonomous run — 2026-07-07
 
+> **Lifecycle:** Historical evidence
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Superseded by:** the current contract named in [`campaigns/README.md`](README.md). A dated record of what happened, never a statement of current behaviour (DECISIONS D3).
+
 The first end-to-end autonomous phonon measurement: one natural-language command, no human
 numbers in the loop. First *completed* run (post-speedup) recorded below under **Result**.
 

@@ -1,5 +1,10 @@
 # Using ISAR — the command-line workflow
 
+> **Lifecycle:** Current
+> **Authority:** canonical for the operator workflow
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 How to run ISAR on your own data: set up an experiment once, then re-run one command as scans land.
 Written for a scientist at (or preparing for) a beamtime. For what ISAR *is* and why to trust it,
 start with [READING_GUIDE.md](READING_GUIDE.md); for what a verdict means, see
@@ -8,9 +13,11 @@ start with [READING_GUIDE.md](READING_GUIDE.md); for what a verdict means, see
 > **Status: the v1 CLI described here is built** (`isar init/ingest/run/status/report/score/profile`, plus
 > the autonomous `isar drive`, tested in `tests/session/`, `tests/cli/` and `tests/drive/`). It runs end-to-end on IN8
 > today and on S30 once a companion `.spec` supplies the
-> energy zero. One validation is still pending — the full 83-scan S30 statistical comparison at M=200
-> (a multi-minute run) — so treat the S30 accuracy numbers as expected-not-yet-confirmed until that
-> gate is run (see [UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md) §10 step 5).
+> energy zero. One validation is still pending — the **CLI/session equivalence gate at M=200**, the
+> 83-scan S30 comparison run end-to-end through `isar run` (a multi-minute run) — so treat the S30
+> accuracy numbers as expected-not-yet-confirmed until that gate is run (tracked as `VAL-2` in
+> [TODO.md](../TODO.md)). The workspace/session/CLI contract itself is
+> [WORKSPACE_AND_CLI.md](WORKSPACE_AND_CLI.md).
 
 ## The idea in one paragraph
 
@@ -63,7 +70,7 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
 - **`isar run <data>... --workspace DIR`** — the whole pipeline, idempotent. Useful flags:
   `--force` (refit everything), `--llm` (enable LLM adjudication of QC flags — off by default;
   needs LLMM, the co-located local LLM service, running — see
-  [LLMM_INTEGRATION_HANDOFF.md](archive/LLMM_INTEGRATION_HANDOFF.md)), `--M N` (pooled-master and
+  [ADJUDICATION.md](ADJUDICATION.md)), `--M N` (pooled-master and
   certification bootstrap cap; default 200), `--scan-M N` (provisional scan bootstrap cap; default
   50), `--detectors ana7` (restrict which analyzers are fitted
   this run), and `--workers N` (the total fitting CPU budget; default `min(30, cpu-2)`, also settable

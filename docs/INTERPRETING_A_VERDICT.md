@@ -1,5 +1,10 @@
 # Interpreting an ISAR verdict — what should I do with this scan?
 
+> **Lifecycle:** Current
+> **Authority:** canonical for what a verdict means and what to do with it
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 Every scan ISAR processes gets exactly one **verdict**. The verdict is not a grade; it's a routing
 decision that tells you **where to spend your manual time**. Nothing is ever deleted — a declined scan
 keeps its raw data and is surfaced to you with its reason.

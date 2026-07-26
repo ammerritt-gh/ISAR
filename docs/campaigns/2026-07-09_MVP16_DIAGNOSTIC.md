@@ -1,5 +1,10 @@
 # Campaign Diagnostic — MVP Zone Re-test v16
 
+> **Lifecycle:** Historical evidence
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Superseded by:** the current contract named in [`campaigns/README.md`](README.md). A dated record of what happened, never a statement of current behaviour (DECISIONS D3).
+
 **Workspace:** `out/mvp_zone_test16` · **Date:** 2026-07-09 · **Tier:** deterministic (TAVI synthetic, `phonon_dft` truth)
 **Audience:** architect. This report answers: *what did the campaign do, where did it succeed or fail, why, and what should change.*
 Every number below is drawn from the workspace's own artifacts (`campaign_summary.json`, `session_log.jsonl`, `results.csv`, `score.json`); §8 lists the provenance per section.

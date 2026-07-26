@@ -1,5 +1,10 @@
 # LLM QC Adjudication — as-built (Phase 2, build-order step 7)
 
+> **Lifecycle:** Current
+> **Authority:** canonical for the adjudication trust contract and the LLM endpoint setup reference
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 **Status:** built, TDD-tested, and live-verified 2026-06-28. This is the as-built record for the LLM
 adjudication layer designed in `archive/PHASE_2_DESIGN.md` §7.3 (and DESIGN §0.5). It documents what exists,
 the decision contract, where the reasoning is visible, the model-selection evidence (the §7.3-mandated
@@ -50,15 +55,21 @@ Runtime order: `qc.qc_record()` → **`adjudicate.adjudicate_records()`** → re
 consumes the reduced, QC-flagged, not-yet-collated records and only dispatches records that carry a
 flag (clean scans cost no call). It mutates records in place and returns them.
 
-> **Not yet auto-wired.** It runs as a library step called between QC and report generation (that is
-> what `adjudicate_eyeball.main()` does). The standalone `driver/reduce_run.py` that chains
-> ingest→parse→QC→adjudicate→collate→report end-to-end is build-order step 8 and was **deferred**.
+> **Auto-wired since the session layer landed.** `isar run --llm` (or `[adjudication] enabled` in
+> `card.policy.toml`) turns it on, and `isar/session/driver.py` calls it between routing and
+> collation via `_maybe_adjudicate` — the pipeline the deferred `driver/reduce_run.py` was meant to
+> provide is now the session driver itself. Adjudication is skipped entirely during master
+> certification. Failure is contained by design: `_maybe_adjudicate` catches any exception, records
+> `"LLM adjudication skipped (no consult): …"` in the run context, and lets the batch finish — a
+> dead LLMM endpoint degrades the run to deterministic QC rather than stalling it.
+>
+> It remains callable as a library step (`adjudicate_eyeball.main()`) for offline scoring work.
 
 ## 4. Components (all under `isar/reduce/`, plus schema/report edits)
 
 | file | role |
 |---|---|
-| `llm_client.py` | stdlib-`urllib` client for one pinned `POST /v1/dispatch`. `DispatchResult`, the injectable `Dispatcher` protocol, `LLMMClient` (transport is injectable so tests never hit the network). No new deps. |
+| `llm_client.py` | stdlib-`urllib` clients. `DispatchResult`, the injectable `Dispatcher` protocol, `LLMMClient` (one pinned `POST /v1/dispatch`) and `OpenAIClient` (any OpenAI-compatible endpoint, bearer token from `ISAR_LLM_API_KEY`). Transport is injectable so tests never hit the network. No new deps. |
 | `compact_view.py` | `compact_view(record)` → the downsampled, LLM-facing picture of a flagged scan (~600–900 tokens): trace + summary + **each flagged point with its neighbours**, so the model can *see* what it judges. `_flagged_records` selects which scans warrant a call. |
 | `adjudicate.py` | `DECISION_SCHEMA`, the `SYSTEM` prompt (schema + worked example embedded inline), `_conforms` (dependency-free validator), `_extract`/parse, and `adjudicate_records`. Also `AdjudicationConfig`/`adjudication_config`, `FallbackDispatcher`, `make_client`. |
 | `adjudicate_score.py` | scoring vs injected truth: `expected_decisions`, `score_adjudication`, `aggregate`, `bakeoff`, `ScoreCard`. |
@@ -75,7 +86,7 @@ Four surfaces, all produced from one run:
 - **HTML / Markdown report** — a per-scan narrative line + an `[adjudication]` table
   (target · decision · shape · reason · confidence), rendered right after the deterministic scan-flag
   table.
-- **JSON sidecar** (`report.json`) — the decisions inline in the report model.
+- **JSON sidecar** (`<workspace>/report/report.json`) — the decisions inline in the report model.
 - **`card.state.corrections`** — the append-only, machine-readable audit; each entry is
   `{source:"llm-adjudicate", scan_number, target, decision, shape, reason, confidence, model_id}` —
   the input to the §8 human review.
@@ -119,7 +130,10 @@ DeepSeek **v4-pro**, not v3.x. The recall gap (9B ~0.80 vs cloud 1.00) is the 9B
 a scan-level decision (e.g. the sensor-divergence `hold`) — the deterministic flag still shows, so the
 human catches it; tightening the prompt to always emit a scan-level decision is a tracked improvement.
 
-**Update (2026-07-16): the cloud fallback default is now `nanogpt/deepseek/deepseek-v4-flash`.**
+**Update (2026-07-16): the recommended fallback model — *if* fallback is enabled — is now
+`nanogpt/deepseek/deepseek-v4-flash`.** Cloud fallback itself remains off by default (§8); this
+names which model to pin when an operator turns it on (`DEFAULT_CLOUD_FALLBACK_MODEL` in
+`isar/reduce/adjudicate.py`).
 gpt-oss-120b's NanoGPT serving degraded to empty plain-text replies (reasoning-channel issue — the
 same failure that moved the drive supervisor to GLM 5.2) with 3–8 s latency swings. v4-flash's
 2026-06-28 rejection ("ignores the schema") was measured through a different dispatch path
@@ -136,12 +150,19 @@ The card `[adjudication]` policy block (read by `adjudication_config(card)`; all
 ```toml
 [adjudication]
 enabled      = false                          # opt-in
+profile      = "llmm"                         # "llmm" (default) | "openai" (D3)
 model_pin    = "local_desktop/qwen3p5-9b"     # offline/privacy-first default
-# fallback_pin = "nanogpt/deepseek/deepseek-v4-flash" # optional cloud comparator/fallback
+# fallback_pin = "nanogpt/deepseek/deepseek-v4-flash" # optional cloud comparator/fallback (llmm profile)
 endpoint     = "http://127.0.0.1:8766"
 temperature  = 0.2
 max_tokens   = 1500
 ```
+
+**Two profiles.** `llmm` is the default: a local LLMM dispatch endpoint with a pinned model and,
+optionally, a distinct fallback pin. `openai` points at any OpenAI-compatible HTTPS endpoint with
+a bearer token, and has no automatic fallback — the LLMM dual-pin concept does not map, so a single
+portable model is configured instead (`make_client`, D3). LLMM is the offline default, not a
+requirement.
 
 Cloud fallback is off by default. Set `fallback_pin` or a non-empty `ISAR_LLM_FALLBACK_MODEL` only when
 the operator explicitly accepts that flagged-scan context may leave the machine; an explicitly empty
@@ -169,22 +190,29 @@ up per model.
   LLMM is unreachable) runs local-9B-vs-cloud and asserts the local 9B is non-destructive when
   serviceable.
 
-LLMM must be running (`http://127.0.0.1:8766`) with the model launched.
+An LLM endpoint must be configured and reachable. On the default `llmm` profile that means LLMM
+running at `http://127.0.0.1:8766` with the model launched; on the `openai` profile it means an
+OpenAI-compatible HTTPS endpoint plus `ISAR_LLM_API_KEY` (§8).
 
-## 11. Verification status
+## 11. Historical evaluation (as of 2026-07-16)
 
-- **257 unit tests pass** (35 adjudication-specific; fake `Dispatcher`, no network), 0 regressions.
+Dated evidence from the selection and integration work, kept as the record behind §7's model
+choices. These are **not** current verification status — the live suite is the authority on what
+passes today.
+
+- **Unit tests at the time:** 257 passing, 35 of them adjudication-specific (fake `Dispatcher`, no
+  network), 0 regressions.
 - **Live bake-off passed:** local 9B recall 0.80 / destructive 0 / schema 1.00; gpt-oss-120b 1.00 / 0 /
   1.00.
 - New `ScanRecord.adjudication` defaults to `None`, so every existing record/test is unaffected.
 
 ## 12. Known gaps / next
 
-- **No end-to-end driver yet** — `driver/reduce_run.py` (build step 8) is deferred; adjudication is a
-  library call today.
+- ~~**No end-to-end driver yet**~~ — closed. `isar run --llm` threads the setting through
+  `isar/cli/run_cmd.py` into `isar/session/driver.py`, which invokes the adjudicator in the batch
+  pipeline. The originally planned standalone `driver/reduce_run.py` was never needed.
 - **9B scan-level recall** — prompt nudge to always emit a scan-level decision would close the 0.80→1.0
   gap.
 - **Local serviceability** — the local pin needs the model *launched*. A cloud fallback is an explicit
   operator choice, not an unattended default. (Probe timeouts during selection were just the
   un-launched models.)
-- **Not committed** — built in the working tree; commit on a branch when ready.

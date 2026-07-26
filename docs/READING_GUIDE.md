@@ -1,18 +1,28 @@
 # ISAR — what it's for, and how to read everything
 
+> **Lifecycle:** Current
+> **Authority:** canonical for the general documentation map
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 This is the front door. It explains, for a scientist who knows inelastic scattering and manual
 fitting but has never used ISAR, **what problem ISAR solves, what it deliberately does not do, and
 how we know it works** — then points you at the right report or document for each question.
 
 > Status: ISAR is in **development and testing**. The analysis pipeline is assembled behind an
-> `isar` command-line tool that runs end-to-end ([UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md),
-> built; user workflow in [USING_ISAR.md](USING_ISAR.md)), and the **autonomous driver**
-> (`isar drive`) now closes the loop: from a natural-language goal it proposes scans, drives the
-> TAVI virtual instrument, fits each scan, and decides where to remeasure and when to stop — with
-> no human numbers in the loop ([campaigns/2026-06_MVP_FIRST_RUN.md](campaigns/2026-06_MVP_FIRST_RUN.md)). This runs on the TAVI
-> *simulator* and on *old* data to exercise the workflow, not yet on a live experiment. The goal
-> right now is to make ISAR's behaviour legible — to understand what it does and to show why the
-> approach is worth continuing.
+> `isar` command-line tool that runs end-to-end (user workflow in
+> [USING_ISAR.md](USING_ISAR.md); the workspace/session/CLI contract in
+> [WORKSPACE_AND_CLI.md](WORKSPACE_AND_CLI.md)), and the **autonomous driver** (`isar drive`)
+> closes the loop: from a natural-language goal it proposes scans, drives the TAVI virtual
+> instrument, fits each scan, and decides where to remeasure and when to stop — with no human
+> numbers in the loop ([DESIGN.md §8](../DESIGN.md)). This runs on TAVI's *deterministic*
+> simulation rung and on *old* data to exercise the workflow — realistic clocks and the McStas
+> rung are Planned, and it has never run on a live experiment. The goal right now is to make
+> ISAR's behaviour legible — to understand what it does and to show why the approach is worth
+> continuing.
+>
+> Per-capability status (Implemented / Partial / Planned) is maintained in one place:
+> [DESIGN.md §15](../DESIGN.md).
 
 ## The problem
 
@@ -34,7 +44,8 @@ does not mean — and, crucially, attaches a **verdict** to each one:
 - **declined** (junk / unconstrained / held / underpowered / no_signal) — it couldn't fit this well;
   look manually. **Nothing is deleted** — a declined scan keeps its raw data and is surfaced to you.
 
-Concretely, lines in the run summary read like (real rows from the gold run, `out/phase3_gold/`):
+Concretely, lines in the run summary read like (real rows from the gold run,
+[assets/phase3_gold/](assets/phase3_gold/)):
 
 ```
 scan 168   omega0 = 5.70 meV    verdict: resolved
@@ -78,9 +89,10 @@ ISAR is validated two ways, deliberately kept separate:
    proof: the human fits are provisional. The load-bearing property is **safety** — ISAR must never
    confidently "resolve" a scan the expert rejected as a blown-up fit.
 
-The headline real-data check is the **gold report** (`out/phase3_gold/FINDINGS.md`). Its visual audit
-puts the data, ISAR's fit, and the expert's fit side by side on representative scans so you can judge
-every call with your own eyes.
+The headline real-data check is the **gold report**,
+[assets/phase3_gold/FINDINGS.md](assets/phase3_gold/FINDINGS.md) — committed, so you can read it
+without running anything. Its visual audit puts the data, ISAR's fit, and the expert's fit side by
+side on representative scans so you can judge every call with your own eyes.
 
 ## When *not* to trust ISAR (limitations)
 
@@ -88,7 +100,7 @@ every call with your own eyes.
   a median of ~0.16 meV from the human's — well inside the ~1 meV resolution, so the *number* is a good
   ballpark. But the error bar captures counting noise only, not systematics (background shape,
   resolution, energy-zero drift), so it is too tight (the human value lands inside ISAR's 68% interval
-  only ~20% of the time). Use the energy as a ballpark; look manually before quoting an uncertainty, and
+  only 18% of the time). Use the energy as a ballpark; look manually before quoting an uncertainty, and
   don't weight by ISAR's σ. See [STATS_PRIMER.md](STATS_PRIMER.md).
 - **`junk` is conservative.** It sometimes parks a scan whose energy was actually fine into your manual
   pile. That's the safe direction (you lose a little automation, not a number), but it means a "junk"
@@ -99,25 +111,45 @@ every call with your own eyes.
 
 ## Where to read what
 
-| Question | Where |
-|---|---|
-| What is ISAR for / why trust it? | this guide |
-| How will I run it on my own data (the CLI)? | [USING_ISAR.md](USING_ISAR.md) |
-| How does the autonomous loop work (goal → scans → stop)? | [campaigns/2026-06_MVP_FIRST_RUN.md](campaigns/2026-06_MVP_FIRST_RUN.md), [campaigns/PHASE_4_NOTES.md](campaigns/PHASE_4_NOTES.md) |
-| How was the loop's zone fix tested / what still fails? | [campaigns/2026-07_MVP_ZONE_RETEST.md](campaigns/2026-07_MVP_ZONE_RETEST.md) |
-| Where did a campaign spend its time? | `isar profile` ([USING_ISAR.md](USING_ISAR.md)) |
-| What does a term mean (pull, fold/fork, cost/dof, a verdict)? | [GLOSSARY.md](GLOSSARY.md) |
-| Why these statistics (vs χ² / HESSE / eyeballing models)? | [STATS_PRIMER.md](STATS_PRIMER.md) |
-| What should I *do* with a given verdict? | [INTERPRETING_A_VERDICT.md](INTERPRETING_A_VERDICT.md) |
-| One scan, start to finish | [WORKED_EXAMPLE.md](WORKED_EXAMPLE.md) |
-| Does it agree with a human on real data? | `out/phase3_gold/FINDINGS.md` (gold report) |
-| Does the engine reproduce the trusted fitter + behave? | `out/phase3_step1/FINDINGS.md` |
-| Does the same core work on another instrument (triple-axis)? | `out/in8_phase1/FINDINGS.md` |
-| The full design rationale | [archive/PHASE_1_DESIGN.md](archive/PHASE_1_DESIGN.md), [archive/PHASE_2_DESIGN.md](archive/PHASE_2_DESIGN.md), [archive/PHASE_3_DESIGN.md](archive/PHASE_3_DESIGN.md) |
-| How it all assembles into one tool (current phase) | [UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md) |
-| Why steer measurements this way (Bayesian info-gain; prior art; cheap/sim/real tiers) — research foundation | [MEASUREMENT_STEERING.md](MEASUREMENT_STEERING.md) |
-| Build-session handoff briefs (Phase 1/2, Unification, LLMM integration) | archived under [docs/archive/](archive/) |
+This is the sole general map of ISAR's documentation. The **Lifecycle** column says what kind of
+document you are about to open, because that determines how much authority it carries:
+*Current* is maintained with the code and may be relied on; *Active plan* describes approved but
+unfinished work; *Historical evidence* records what happened on a date and is **never** a
+statement of current behaviour; *Archived* is retained rationale, superseded by something newer.
+The per-file register is [DOC_INVENTORY.md](DOC_INVENTORY.md).
 
-The `out/**` reports are regenerated by the `docs/*_check.py` scripts (they are gitignored — run a
-script to produce its report). Every figure in those reports carries its own caption (drawn on the
-image and written as a `<figure>.caption.md` sidecar), so a figure is understandable on its own.
+| Question | Where | Lifecycle |
+|---|---|---|
+| What is ISAR for / why trust it? | this guide | Current |
+| How will I run it on my own data (the CLI)? | [USING_ISAR.md](USING_ISAR.md) | Current |
+| How does the autonomous loop work (goal → scans → stop)? | [DESIGN.md §8](../DESIGN.md) | Current |
+| What is legal at an ambiguous frontier / how does it stop? | [MEASUREMENT_STEERING.md](MEASUREMENT_STEERING.md), [DECISIONS.md](DECISIONS.md) O27–O31 | Current |
+| Where did a campaign spend its time? | `isar profile` ([USING_ISAR.md](USING_ISAR.md)) | Current |
+| What does a term mean (pull, fold/fork, cost/dof, a verdict)? | [GLOSSARY.md](GLOSSARY.md) | Current |
+| Why these statistics (vs χ² / HESSE / eyeballing models)? | [STATS_PRIMER.md](STATS_PRIMER.md) | Current |
+| What should I *do* with a given verdict? | [INTERPRETING_A_VERDICT.md](INTERPRETING_A_VERDICT.md) | Current |
+| One scan, start to finish | [WORKED_EXAMPLE.md](WORKED_EXAMPLE.md) | Current |
+| How do I declare the excitations I expect? | [HYPOTHESES.md](HYPOTHESES.md) | Current |
+| How does LLM flag adjudication work, and what does it never touch? | [ADJUDICATION.md](ADJUDICATION.md) | Current |
+| How it all assembles into one tool (workspace, session, CLI) | [WORKSPACE_AND_CLI.md](WORKSPACE_AND_CLI.md) | Current |
+| What the campaign diagnostic owes you | [CAMPAIGN_DIAGNOSTIC_SPEC.md](CAMPAIGN_DIAGNOSTIC_SPEC.md) | Current |
+| How the GUI is built and bounded | [GUI_DESIGN.md](GUI_DESIGN.md) | Current |
+| What the data/card schema looks like across facilities | [SCHEMA_LANDSCAPE.md](SCHEMA_LANDSCAPE.md) | Current |
+| Why was a decision made this way? | [DECISIONS.md](DECISIONS.md) | Current |
+| Which rulings are still in force? | [DECISION_INDEX.md (generated)](DECISION_INDEX.md) | Current |
+| What is every document, and what happened to the deleted ones? | [DOC_INVENTORY.md](DOC_INVENTORY.md) | Current |
+| Why steer measurements this way (Bayesian info-gain; prior art) — research foundation | [MEASUREMENT_STEERING.md](MEASUREMENT_STEERING.md) | Current |
+| What is being built next (speedup, backgrounds, steering A/B/C) | [SPEEDUP_DESIGN.md](SPEEDUP_DESIGN.md), [BACKGROUND_DESIGN.md](BACKGROUND_DESIGN.md), [STEERING_DESIGN.md](STEERING_DESIGN.md) | Active plan |
+| Does it agree with a human on real data? | [assets/phase3_gold/FINDINGS.md](assets/phase3_gold/FINDINGS.md) (gold report) | Historical evidence |
+| Does the engine reproduce the trusted fitter + behave? | [assets/phase3_step1/FINDINGS.md](assets/phase3_step1/FINDINGS.md) | Historical evidence |
+| Does the same core work on another instrument (triple-axis)? | [assets/in8_phase1/FINDINGS.md](assets/in8_phase1/FINDINGS.md) | Historical evidence |
+| What happened in a given campaign run? | [campaigns/](campaigns/) — indexed in [campaigns/README.md](campaigns/README.md) | Historical evidence |
+| The full design rationale | [archive/PHASE_1_DESIGN.md](archive/PHASE_1_DESIGN.md), [archive/PHASE_2_DESIGN.md](archive/PHASE_2_DESIGN.md), [archive/PHASE_3_DESIGN.md](archive/PHASE_3_DESIGN.md) | Archived |
+| Why the workspace/session/CLI was designed this way | [UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md) | Archived |
+
+Those three reports are **committed** under [assets/](assets/) — a clean checkout can read them and
+look at their figures. What a clean checkout cannot do is *regenerate* them: the `docs/*_check.py`
+scripts that produce them read the local, gitignored `test_data/`, and they write to the disposable
+`out/` tree. [assets/README.md](assets/README.md) says exactly what was promoted, from which code
+revision, and by which command. Every figure carries its own caption (drawn on the image and written
+as a `<figure>.caption.md` sidecar), so a figure is understandable on its own.

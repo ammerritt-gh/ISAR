@@ -1,5 +1,10 @@
 # Speedup sprint evidence — Phases 1 and 2
 
+> **Lifecycle:** Historical evidence
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Superseded by:** the current contract named in [`campaigns/README.md`](README.md). A dated record of what happened, never a statement of current behaviour (DECISIONS D3).
+
 **Date:** 2026-07-20  
 **Branch:** `Speedup-Phase`  
 **Reference:** local `out/svp_recert1` (historical evidence; not load-bearing)

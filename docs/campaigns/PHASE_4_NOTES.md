@@ -1,5 +1,10 @@
 # ISAR Phase 4 — Closing the measurement loop (brief notes)
 
+> **Lifecycle:** Historical evidence
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Superseded by:** the current contract named in [`campaigns/README.md`](README.md). A dated record of what happened, never a statement of current behaviour (DECISIONS D3).
+
 **Status:** Built and running end-to-end (2026-07). These are the original forward notes, kept
 because they framed what Phase 3 was built *toward*; the realized driver lives in `isar/drive/`
 (`isar drive` CLI). For what actually shipped — the closed loop, the σ-calibrated stopping rule, and

@@ -1,5 +1,10 @@
 # ISAR — Design
 
+> **Lifecycle:** Current
+> **Authority:** canonical for the architecture and per-capability status table (§15)
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
 **Name.** ISAR = **I**nelastic **S**cattering **A**utomated **R**—, with the final R left
 deliberately undeclared. The tool *reduces* data at ingest, *resolves* phonons in analysis,
 *reviews* scans, and acts in *resolution* mode to solve a measurement problem. Pinning the R to
@@ -11,8 +16,9 @@ repo, command). Also, fittingly, the river through Munich.
 **Status:** Living design, consolidated 2026-07-09 (refinement patches merged; decision ledger
 split out to `docs/DECISIONS.md`). Stages I–II (parse/reduce, analysis) are built and validated;
 the drive loop (Stage III) is built and has passed its first certification campaign against the
-**analytic synthetic tier** (`fn:phonon_dft`; see `docs/campaigns/`). A full campaign against
-TAVI-as-backend is the next proof (the SVP, §9). Statuses in this document follow the discipline:
+**analytic synthetic tier** (`fn:phonon_dft`; see `docs/campaigns/`). The TAVI-as-backend campaign
+(the SVP, §9) has cleared its **deterministic** rung (2026-07-10); the next proofs are the
+realistic-clock and McStas rungs, both Planned (§15). Statuses in this document follow the discipline:
 every capability is **Implemented**, **Partial**, or **Planned**, and nothing is described in the
 implemented voice unless it is.
 
@@ -132,10 +138,10 @@ the card's policy half is human-authored TOML (the machine never writes it); acc
 Restart-safety comes from idempotency: every run re-parses everything and re-fits only
 new/held/changed scans. No database, no checkpointer dependency. Growing-file batch payloads
 (S30) are handled by full re-parse + dedup by `(experiment_id, scan_number)`, keeping the last
-occurrence. *(Implemented; see `docs/UNIFICATION_DESIGN.md` for the full treatment.)*
+occurrence. *(Implemented; see `docs/WORKSPACE_AND_CLI.md` for the full treatment.)*
 
 **The Stage II ↔ Stage III boundary is a frozen file contract.** The driver consumes analysis
-only via the `isar run` subprocess and its products — `report/results.csv`, `report.json`,
+only via the `isar run` subprocess and its products — `report/results.csv`, `<workspace>/report/report.json`,
 `card.state.json` — and never imports fit internals. The pre-release v1→v2 objective/campaign reset
 was authorized on 2026-07-17 (O12); additive-only evolution resumes from v2. This boundary
 is what lets the stages be independently useful and independently testable, and it is what makes
@@ -237,8 +243,10 @@ Implemented; `tas4d` Planned — TAS Γ is carried as provisional until it lands
 assumption — the quick-look and fast tiers; `hesse_trusted` exists because the assumption fails
 constantly; **never certifies**) → profile likelihood (asymmetric, analytic) → **bootstrap**
 (frequentist-by-simulation; the certifying tier) → Bayesian posterior credible intervals
-(**Planned**, not built). Terminology discipline: bootstrap/profile give confidence intervals;
-"credible" belongs to the Bayesian tier when it exists.
+(**Implemented, diagnostics-only** under `--errors bayes`; certification and confidence never
+read them, and promotion to a certifying rung waits on coverage validation). Terminology
+discipline: bootstrap/profile give confidence intervals; "credible" belongs to the Bayesian
+tier alone.
 
 **The γ-at-bound pathology.** Near a parameter bound the Hessian lies (its parabola crosses the
 wall); *on* the bound the bootstrap may degenerate. That makes Γ resolution-limited, but does not by
@@ -257,7 +265,7 @@ coin flip, do not deliver). Nothing else in the pipeline is called Bayesian. *(I
 errors, distance from the running dispersion, provenance-weighted), never LLM-self-reported.
 Each scan gets a verdict and a disposition realizing the review taxonomy (§2). Pooled "master"
 fits carry synthetic scan ids and must enumerate their `members`. *(Confidence Implemented;
-member enumeration Implemented 2026-07-10 — `docs/handoffs/HANDOFF_pooled_member_provenance.md`.)*
+member enumeration Implemented 2026-07-10.)*
 
 **Residual-driven refit (LLM).** On a failed/poor fit, a vision-capable tier reads the fit +
 residual figure and proposes a structural fix — after deterministic attempts, off the critical
@@ -397,7 +405,8 @@ every pipeline change is scored per-scan against it. Campaign certification adds
 truth-source comparison, per-q buckets, pulls, **coverage** — observed 68% interval coverage
 against known truth is both the internal health metric and the external persuasion instrument
 (the seminar argument for practitioners raised on Neyman + Hessian is a reproducible coverage
-experiment, not a lecture — `docs/handoffs/HANDOFF_stats_primer_gallery.md`). *(Implemented;
+experiment, not a lecture — the gallery that makes it is `docs/STATS_PRIMER.md` §3 and
+`docs/stats/`). *(Implemented;
 coverage currently exposes the γ-at-bound work as designed.)*
 
 ## 14. Workspaces & hygiene
@@ -438,7 +447,7 @@ DECISIONS W1–W3.)*
 | Campaign diagnostic report (`isar diagnose`) | Implemented (2026-07-10) |
 | Fit-free ingest to the ledger (`isar ingest`, `ingested` status) | Implemented (2026-07-12) |
 | Per-unit data files (`data/ingest/`, `isar.unit_data/1`) + ingest provenance enrichment | Implemented (2026-07-12) |
-| Bayesian interval tier | Planned |
+| Bayesian interval tier (`--errors bayes`: nested-sampling ω₀/Γ credible intervals, posterior samples, three-method agreement) | Implemented, **diagnostics-only** (bootstrap still certifies; coverage validation and promotion to certifying authority Planned) |
 | Renegotiation protocol | Planned (design door open) |
 | Model-level (ARIANE-style) objective tier | Planned |
 | Branch-identity-aware acquisition (two-term scan value; excitation hypotheses; first-guess path) | Implemented for branch hypotheses (O6–O9/O11–O12, 2026-07-17; level/continuum plugins remain O10-Partial) |
@@ -451,19 +460,12 @@ scheduled. Cross-T dispersion-prior pooling near transitions — revisit with da
 
 ## 16. Document map
 
-| For… | Read |
-|---|---|
-| Using the tool | `docs/USING_ISAR.md`, `docs/WORKED_EXAMPLE.md`, `docs/INTERPRETING_A_VERDICT.md` |
-| The statistics (and the seminar) | `docs/STATS_PRIMER.md` (+ generated gallery, `docs/stats/`) |
-| Workspace/session/CLI internals | `docs/UNIFICATION_DESIGN.md` |
-| Steering research & drive internals | `docs/MEASUREMENT_STEERING.md` |
-| Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
-| Flag adjudication | `docs/ADJUDICATION.md` |
-| Card/schema survey across facilities | `docs/SCHEMA_LANDSCAPE.md`, `docs/DATA_SCHEME_RESEARCH.md` |
-| Reports the runs owe us | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` |
-| Decisions & their history | `docs/DECISIONS.md` |
-| What actually happened in a given run | `docs/campaigns/` (dated, historical, never load-bearing) |
-| Orientation & reading order | `docs/READING_GUIDE.md` |
+**The map lives in one place: [`docs/READING_GUIDE.md`](docs/READING_GUIDE.md)** — every document,
+with its lifecycle, so a reader can tell a current contract from a plan from a historical record.
+The per-file register behind it is [`docs/DOC_INVENTORY.md`](docs/DOC_INVENTORY.md).
+
+This section used to carry a second, independently maintained table. It drifted from the reading
+guide's, which is exactly the failure the single-map rule prevents.
 
 ---
 

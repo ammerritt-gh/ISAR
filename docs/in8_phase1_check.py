@@ -75,6 +75,70 @@ def _finite(v) -> bool:
     return v is not None and math.isfinite(v)
 
 
+_NUMERIC_TYPES = (int, float, np.integer, np.floating)
+
+
+def _row_number(row, key) -> float:
+    value = row.get(key)
+    return float(value) if isinstance(value, _NUMERIC_TYPES) else float("nan")
+
+
+def _fit_success_flag(row) -> bool:
+    value = row.get("success")
+    return value is True or str(value) == "1"
+
+
+def _recovery_supported(row) -> bool:
+    """A recovery claim needs fit success and a finite estimate with finite uncertainty."""
+    return (
+        _fit_success_flag(row)
+        and _finite(_row_number(row, "omega0"))
+        and _finite(_row_number(row, "omega0_err_hesse"))
+    )
+
+
+def _fit_estimate_text(row) -> str:
+    """Format an anchor estimate without ever publishing a failed ``± nan`` uncertainty."""
+    omega0 = _row_number(row, "omega0")
+    omega0_err = _row_number(row, "omega0_err_hesse")
+    if _recovery_supported(row):
+        return f"ω₀ = {row['omega0']} ± {row['omega0_err_hesse']} meV"
+    if _finite(omega0):
+        reason = (
+            "because the fit failed"
+            if not _fit_success_flag(row)
+            else "because the fit did not produce a finite uncertainty"
+        )
+        return f"candidate ω₀ = {row['omega0']} meV; uncertainty unavailable {reason}"
+    return "ω₀ and its uncertainty are unavailable because the fit failed"
+
+
+def _clean_anchor_claim(row, *, headline: bool) -> str:
+    """Render the 055182 claim without letting a failed candidate inherit recovery language."""
+    estimate = _fit_estimate_text(row)
+    if _recovery_supported(row):
+        if headline:
+            return (
+                f"The synthetic core **recovers {estimate} on the clean IN8 anchor 055182**, "
+                "matching the hand-vetted ~4.2 meV phonon — first evidence the core recovers ω₀ "
+                "on real TAS data."
+            )
+        return (
+            f"**Recovers ω₀ on real triple-axis data:** {estimate} on the clean anchor 055182, "
+            "matching the hand-vetted ~4.2 meV phonon."
+        )
+    if headline:
+        return (
+            f"The clean IN8 anchor 055182 did not yield a successful fit: {estimate}. "
+            "The candidate is retained for diagnosis only; no phonon-recovery conclusion is drawn "
+            "from it."
+        )
+    return (
+        f"**Clean-anchor fit failed:** {estimate} on 055182. The candidate is retained for "
+        "diagnosis only and does not support a phonon-recovery claim."
+    )
+
+
 def minos_hesse_ratio(lo, hi, hesse):
     """mean(|lo|,|hi|)/HESSE -- ~1 when the cost is parabolic; departs on sparse/non-parabolic data."""
     if _finite(lo) and _finite(hi) and _finite(hesse) and hesse > 0:
@@ -277,7 +341,7 @@ def measure_resolution(x, counts):
 
 
 # --------------------------------------------------------------------------- overlay
-def overlay(path, title, x, counts, center, r, sub=""):
+def overlay(path, title, x, counts, center, r, sub="", fig_id="in8/overlay"):
     """Data (counts +- sqrt N) + fitted model + pull residual, saved to PNG."""
     import matplotlib
     matplotlib.use("Agg")
@@ -300,7 +364,7 @@ def overlay(path, title, x, counts, center, r, sub=""):
     ax0.set_title(f"{title}\n{sub}", fontsize=9)
     ax1.axhline(0, color="0.6", lw=0.8); ax1.plot(x, pull, "s-", ms=3, color="C2")
     ax1.set_ylabel("pull"); ax1.set_xlabel("energy transfer (meV)")
-    captions.save_captioned(fig, path, "in8/overlay")
+    captions.save_captioned(fig, path, fig_id)
 
 
 # the overlay needs the resolution/T used for each fit; carry them on the result via closures
@@ -353,7 +417,9 @@ def part_a_in8():
             rows.append(row)
             print(f"  {tag}: omega0={r.omega0:.3f}  success={bool(r.success)}  cost/dof={r.cost_per_dof:.1f}  CN_res={gfw:.2f}  nP={nUsed}")
             if tag in IN8_ANCHORS:
-                overlays[tag] = (f"IN8 {tag}", x, counts, 0.0, r, comnd.strip())
+                overlays[tag] = (
+                    f"IN8 {tag}", x, counts, 0.0, r, comnd.strip(), "in8/overlay"
+                )
     write_csv(OUT / "results_in8.csv", rows)
     return rows, records, overlays
 
@@ -422,7 +488,8 @@ def part_c_s30():
               f"res(g={gfw:.2f},l={lfw:.2f}) success={bool(r.success)}")
         if scan_no == S30_ANCHOR_SCAN:
             overlays[tag] = (f"S30 scan#{scan_no} {S30_ANALYZER}", xk, ck, center, r,
-                             f"T={T:.0f} K, measured res g={gfw:.2f}/l={lfw:.2f} meV")
+                              f"T={T:.0f} K, measured res g={gfw:.2f}/l={lfw:.2f} meV",
+                              "in8/s30_overlay")
     write_csv(OUT / "results_s30.csv", rows)
     return rows, overlays
 
@@ -433,8 +500,8 @@ def part_d(in8_rows, merged_rows, s30_rows, overlays):
     for p in FIGDIR.glob("*.png"):                         # drop stale figures from prior runs
         p.unlink()
     for tag, args in overlays.items():
-        title, x, counts, center, r, sub = args
-        overlay(FIGDIR / f"{tag}.png", title, x, counts, center, r, sub)
+        title, x, counts, center, r, sub, fig_id = args
+        overlay(FIGDIR / f"{tag}.png", title, x, counts, center, r, sub, fig_id)
         print(f"  figure: {tag}.png")
 
     def get(rows, key):
@@ -472,9 +539,7 @@ def part_d(in8_rows, merged_rows, s30_rows, overlays):
     d.section("What this shows")
     wbul = []
     if a182:
-        wbul.append(f"**Recovers ω₀ on real triple-axis data:** {a182['omega0']} ± "
-                    f"{a182['omega0_err_hesse']} meV on the clean anchor 055182, matching the "
-                    "hand-vetted ~4.2 meV phonon.")
+        wbul.append(_clean_anchor_claim(a182, headline=False))
     wbul.append("**The broad low-energy tail is real signal, not resolution:** the elevated cost/dof "
                 "traces to quasi-elastic / diffuse scattering the elastic+DHO+background model leaves "
                 "in the residual — so Phase 3 needs a quasi-elastic component, not a wider resolution. "
@@ -504,9 +569,7 @@ def part_d(in8_rows, merged_rows, s30_rows, overlays):
 
     if a182:
         d.section("Headline")
-        d.para(f"The synthetic core **recovers ω₀ = {a182['omega0']} ± {a182['omega0_err_hesse']} meV "
-               "on the clean IN8 anchor 055182**, matching the hand-vetted ~4.2 meV phonon — first "
-               "evidence the core recovers ω₀ on real TAS data. On the validated S30 IXS path the "
+        d.para(f"{_clean_anchor_claim(a182, headline=True)} On the validated S30 IXS path the "
                "*same core* recovers a full phonon dispersion (ω₀ ~5→7 meV with K) with meaningful Γ.")
 
     d.section("Anchors")
@@ -514,8 +577,8 @@ def part_d(in8_rows, merged_rows, s30_rows, overlays):
     for dd, name in ((a182, "055182 clean"), (a181, "055181 messy two-feature"),
                      (a289, "055289 low-T weak")):
         if dd:
-            arows.append(f"- **{name}**: ω₀ = {dd['omega0']} ± {dd['omega0_err_hesse']} meV "
-                         f"(success={bool(int(dd['success']))}, cost/dof={dd['cost_per_dof']}, "
+            arows.append(f"- **{name}**: {_fit_estimate_text(dd)} "
+                          f"(success={bool(int(dd['success']))}, cost/dof={dd['cost_per_dof']}, "
                          f"nP_used={dd['nP_used']}).")
     d.raw("\n".join(arows))
     d.para(f"The **elevated cost/dof on the clean scans** (055182 = "

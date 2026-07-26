@@ -1,14 +1,24 @@
 # ISAR Unification — Assembly into a product (the tool grows a front door)
 
-**Status:** Built (2026-07). The `isar` CLI + `isar/session/` layer described here are implemented and
-tested (`tests/session/`); decisions U1–U8 held through the build. **One gate is deferred:** the full
-83-scan S30 statistical comparison at M=200 (§10 step 5) is a multi-minute run left for a fast
-machine — the calibration layer is proven to reproduce the gold check's per-scan inputs to machine
-precision (step 3 gate, `tests/session/test_calibrations.py`), and the driver is proven end-to-end on
-IN8 + a synthetic S30 held/idempotency/corrections smoke, but the end-to-end ω₀ comparison against
-`results_gold.csv` has not yet been run. Decisions U1–U8 are in §9; open engineering items are marked
-inline. Companion build briefing: `docs/archive/HANDOFF_UNIFICATION.md`. User-facing companion:
-`docs/USING_ISAR.md`.
+> **Lifecycle:** Archived
+> **Provenance:** hand-written
+> **Superseded by:** [`WORKSPACE_AND_CLI.md`](WORKSPACE_AND_CLI.md) — the as-built contract
+
+> **This path and its section numbers are frozen.** Roughly forty source files cite
+> `UNIFICATION_DESIGN §N` in their docstrings (`isar/cli/`, `isar/session/`,
+> `isar/parsers/cards/*.toml`, `tests/session/`), so neither the filename nor the numbering may
+> change. Read this document for the *reasoning* behind the workspace, session, and CLI design.
+> For **what is true now**, read [`WORKSPACE_AND_CLI.md`](WORKSPACE_AND_CLI.md); where the two
+> disagree, that one wins.
+
+**Final disposition:** built and shipped 2026-07. The `isar` CLI and the `isar/session/` layer
+designed here are implemented and tested (`tests/session/`); decisions U1–U8 held through the
+build. One gate was deferred and is still open — the 83-scan S30 comparison run end-to-end
+through the CLI at M=200 (§10 step 5), now tracked as the **CLI/session equivalence gate**
+(`VAL-2` in `TODO.md`). The calibration layer is separately proven to reproduce the gold check's
+per-scan inputs to machine precision (step-3 gate, `tests/session/test_calibrations.py`), and the
+driver is proven end-to-end on IN8 plus a synthetic S30 held/idempotency/corrections smoke.
+Decisions U1–U8 are in §9.
 
 **Relationship to the master design:** This is the realization of `DESIGN.md` §3 (the architecture
 diagram's spine), §4 (the event-stream model), §7.1 (ingestion & batching), the accumulated-state
@@ -19,13 +29,14 @@ driver, U1), Q2 (S30 batch payload → growing-file resend: re-parse + dedup, U4
 policy TOML + two JSON state files, §2, U3), and Q5 (checkpointer → plain JSON on disk, no
 LangGraph, U2).
 
-**Relationship to Phases 1–3:** Phases 1–3 built and validated every stage of the pipeline as
-library code: parsers and the card (Phase 2), QC/combine/collate/adjudication (Phase 2),
-calibration functions (Phase 3, §7), and the full analysis stack — structure enumeration, IC,
-fitting, the error spine, model selection, verdict, confidence (Phase 3). **None of it is reachable
-on new data.** The only end-to-end wiring lives in four `docs/*_check.py` scripts hardcoded to the
-validation datasets. This phase adds *no new physics and no new statistics*: it assembles the
-validated pieces behind a CLI so the pipeline runs on data ISAR has never seen.
+**Relationship to Phases 1–3 (the state this phase started from):** Phases 1–3 had built and
+validated every stage of the pipeline as library code: parsers and the card (Phase 2),
+QC/combine/collate/adjudication (Phase 2), calibration functions (Phase 3, §7), and the full
+analysis stack — structure enumeration, IC, fitting, the error spine, model selection, verdict,
+confidence (Phase 3). **At that point none of it was reachable on new data**: the only end-to-end
+wiring lived in four `docs/*_check.py` scripts hardcoded to the validation datasets. This phase
+added *no new physics and no new statistics* — it assembled the validated pieces behind a CLI so
+the pipeline could run on data ISAR had never seen.
 
 ---
 
@@ -76,6 +87,11 @@ One new console entry point (`pyproject.toml`: project renamed `isar-synth` → 
 `[project.scripts] isar = "isar.cli.main:main"`) with the focused set of subcommands below. No more
 than these; partial-stage debugging is served by the persisted intermediates and `--formats`, not by
 an `isar fit`/`isar reduce` split.
+
+> **As built, the surface is wider than this table.** The six commands below are what this phase
+> designed; `detect`, `profile`, `diagnose`, `view` and `drive` were added by later phases, and
+> `isar report` ships as a ledger-only re-render with no refit at all. The current command set is
+> in [`WORKSPACE_AND_CLI.md`](WORKSPACE_AND_CLI.md), pinned to argparse by `tests/docs/`.
 
 | Command | What it does |
 |---|---|
@@ -319,7 +335,7 @@ here."
   lands in `results.csv` and the report (P6).
 
 The gold check's prior-independence demonstration (toggling the prior moved ω₀ by ≤ 0.0001 meV —
-`out/phase3_gold/FINDINGS.md`) is the safety argument for swapping the LOO gold prior for the auto
+`docs/assets/phase3_gold/FINDINGS.md`) is the safety argument for swapping the LOO gold prior for the auto
 prior; but the prior *does* enter confidence (`s_prior`) and fork-breaking, so validation compares
 dispositions and ω₀, never confidence values (risk R4).
 
@@ -443,8 +459,9 @@ The Phase-3 residual-diagnosis LLM pass stays future work (§12).
 Each step is mergeable and gated before the next. Windows note: test-data paths contain spaces
 (`test_data/APS S30`, `test_data/ILL IN8`) — `pathlib` everywhere, quoted CLI examples.
 
-0. **Baseline.** `pytest -m "not slow"` green; keep `out/phase3_gold/results_gold.csv` and
-   `out/phase3_gold_in8/results_in8_gold.csv` as the comparison references.
+0. **Baseline.** `pytest -m "not slow"` green; compare against `docs/assets/phase3_gold/results_gold.csv`
+   (committed, so the reference survives an `out/` wipe) and `out/phase3_gold_in8/results_in8_gold.csv`
+   (not promoted — see the data-state gap below).
    **Known data-state gap (found in doc verification, 2026-07):** `test_data/ILL IN8/
    IN8_fit_results.csv` is currently missing from disk (test_data is gitignored — it cannot be
    restored from git) and `out/phase3_gold_in8/` has never been generated on this machine.

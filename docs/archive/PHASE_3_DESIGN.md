@@ -1,5 +1,10 @@
 # ISAR Phase 3 — Analysis on messy real data (Resolve — the back half of the R)
 
+> **Lifecycle:** Archived
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Superseded by:** `DESIGN.md` §7. Kept for the design reasoning it records, which `DESIGN.md` summarizes but does not reproduce. Not maintained; never a normative source.
+
 **Status:** Draft for discussion. The major framing forks were worked through in a design session and
 are settled (the error *spine*, physics-gated structure enumeration, modality-branched reporting, the
 growing-point-set contract); a handful of genuine engineering decisions remain open and are marked as

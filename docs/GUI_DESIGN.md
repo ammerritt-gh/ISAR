@@ -1,21 +1,41 @@
 # ISAR GUI — Design
 
-**Status:** Design draft, 2026-07-11; Phase 0 + Phase A implemented on branch
-`ISAR-initial-GUI` as of 2026-07-11 (see §0bis for corrections found during that work). GUI
-Pass 3 (2026-07-16, branch `ISAR-GUI-Pass2`) implemented the workflow layout (center view host,
-versioned dock layout), the campaign workspace (launcher + live feed + cooperative stop), and
-the compact campaign monitor — see §0ter for its rulings (G18–G20) and §16 for what it
-deliberately left designed-but-unbuilt. Every capability in this document is **Planned** unless
-explicitly marked otherwise — Phase B and the directive machinery of Phase C remain entirely in
-the Planned voice. This document follows the discipline of `DESIGN.md`: nothing is described in
-the implemented voice unless it is.
+> **Lifecycle:** Current
+> **Authority:** canonical for GUI architecture and ownership boundaries
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+
+**Status:** Design draft, 2026-07-11, substantially built. This document follows the discipline of
+`DESIGN.md`: nothing is described in the implemented voice unless it is. Because roughly the first
+half of the plan has shipped and the second half has not, the as-built matrix below records
+verified implementation detail and mirrors the capability status in `DESIGN.md` §15. It does not
+override that canonical status table. The Planned voice of the body text predates the build and is
+preserved as the design record.
+
+### As-built status (verified against `isar_gui/` and `isar/`, 2026-07-25)
+
+| Phase / capability | Status | Evidence |
+|---|---|---|
+| **Phase 0** — Qt-free workspace read API + geometry layer | **Implemented** | `isar/workspace_api/` (`workspace.py`, `views.py`, `watch.py`, `evaluate.py`), `isar/geometry/`, Qt-free-core test |
+| **Phase A** — read-only viewer, surfaces C1–C5 | **Implemented** | `views/browser_dock.py`, `inspector_widget.py`, `heatmap_pane.py`, `waterfall_pane.py`, `dispersion_pane.py` |
+| **Pass 3** — workflow layout (center view host, versioned dock layout) | **Implemented** (G18) | `views/center_host.py` |
+| **Pass 3** — campaign workspace: launcher, live feed, cooperative stop | **Implemented** (G19) | `views/campaign_dock.py`, `control/stop-<token>.json` protocol |
+| **Pass 3** — compact campaign monitor | **Implemented** (G20) | `views/campaign_monitor.py` |
+| **Phase B** — planner (C6): objective authoring, forbidden-zone rendering | **Planned** | no objective editor or planner module exists |
+| **Phase C** — directives: inbox, drain protocol, NL compilation, dispersion editor | **Planned** | no directive or inbox machinery exists |
+| **Phase C** — sandbox interactive refitting (G7) | **Partial** | `views/sandbox_pane.py` + `viewmodels/sandbox.py` exist; no refit path implemented |
+| **Phase C** — drive dashboard, per-q live state | **Partial** | campaign observation shipped ahead of Phase C (§0ter); the per-q half is GUI-6 in `TODO.md`, blocked on an event-contract change |
+| §16 roadmap (7 items) | **Planned** | tracked as GUI-1…GUI-7 in `TODO.md` |
+
+Corrections found during the Phase 0/A build are in §0bis; the Pass-3 rulings (G18–G20) are in
+§0ter; §16 lists what Pass 3 deliberately left designed-but-unbuilt.
 
 **Audience.** This document is a self-contained handoff. It assumes the reader knows `DESIGN.md`
 (the master design) but has **no access to the design conversation** that produced this document.
 All rulings from that conversation are restated here in full; nothing load-bearing is implied.
 
 **Relationship to other documents.** Subordinate to `DESIGN.md` (its principles P1–P6 bind this
-document). Sibling to `docs/UNIFICATION_DESIGN.md` (workspace/session internals the GUI reads)
+document). Sibling to `docs/WORKSPACE_AND_CLI.md` (workspace/session internals the GUI reads)
 and `docs/MEASUREMENT_STEERING.md` (the drive loop the GUI observes and nudges). Decision IDs
 introduced here use the **G-series** and should be migrated into `docs/DECISIONS.md` when
 accepted.

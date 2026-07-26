@@ -1,12 +1,26 @@
 # Smarter Steering — workstream design
 
-**Status: design approved 2026-07-19; Phase 0 correctness repair in progress 2026-07-20;
-sub-phases A → B → C remain Planned and sequenced third,** after the speedup sprint
-(`docs/SPEEDUP_DESIGN.md`) and the background workstream (`docs/BACKGROUND_DESIGN.md`) —
-both of which they build on: fast campaigns make validation cheap, and honest backgrounds
-make the physics nudges trustworthy. Phase 0 is an urgent repair to the current controller,
-not an early start on A, B, or C. Companions: the
-audit that motivated it (`docs/handoffs/HANDOFF_statistics_contract_checkup.md` §2, §4),
+> **Lifecycle:** Active plan
+> **Provenance:** hand-written
+> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Owner:** @ammerritt-gh · **Exit criteria:** in the status block below
+
+**Status: design approved 2026-07-19. Phase 0 has shipped; sub-phases A → B → C remain Planned and
+sequenced third,** after the speedup sprint (`docs/SPEEDUP_DESIGN.md`) and the background
+workstream (`docs/BACKGROUND_DESIGN.md`) — both of which they build on: fast campaigns make
+validation cheap, and honest backgrounds make the physics nudges trustworthy. **Owner:
+@ammerritt-gh.** Motivating finding — "counting targets are absolute-meV only", with no
+signal-to-background awareness, from the 2026-07-19 statistics-contract audit:
+`docs/STATS_PRIMER.md` §7.
+
+**Exit criteria.** Phase 0 shipped as O27 (the same-q budget / bridge-geometry separation), O28
+(the action-inventory control plane) and O29 as amended by O31 (the terminal taxonomy). What
+remains open from it are the campaign replays that keep O25/O26 at Partial in `DESIGN.md` §15 —
+Phase 0 closes when those replays pass. Sub-phases A → B → C each close when their own acceptance
+campaign runs against TAVI with the counting target expressed relative to background rather than
+in absolute meV, and `DESIGN.md` §15 records the status change.
+
+Companions:
 `docs/MEASUREMENT_STEERING.md` (the research foundation this workstream executes slices
 of), `docs/HYPOTHESES.md` (the Tier-2 extensibility seam sub-phase B fills).
 
@@ -61,58 +75,40 @@ wrong-hypothesis campaigns still recovering (nudge, never force).
 
 ---
 
-## 2. Phase 0 — AP1/AP2/AP3 branch-controller correctness repair (in progress)
+## 2. Phase 0 — branch-controller correctness repair (shipped; prerequisite for A/B/C)
 
-AP1 and AP2 falsified O24's claim that the connected tracker had bounded ambiguous-frontier
-revisits. AP1 surveyed successfully and then repeated one ambiguous point. AP2 started with
-three classification probes but then submitted H=2.10 for production thirteen times before
-moving to H=2.00. This is a controller correctness failure, not a request for more production
-dwell and not evidence that acoustic campaigns require a separate acquisition architecture.
+Phase 0 was an urgent repair to the current controller, not an early start on A, B, or C. The
+AP1/AP2/AP3 campaigns falsified O24's claim that the connected tracker bounded ambiguous-frontier
+revisits: AP1 surveyed successfully and then repeated one ambiguous point; AP2 submitted H=2.10 for
+production thirteen times before moving on. That was a controller correctness failure, not a
+request for more production dwell, and not evidence that acoustic campaigns need a separate
+acquisition architecture.
 
-The repair keeps four states distinct:
+**It shipped as O27/O28/O29-as-amended-by-O31.** What A/B/C inherit from it:
 
-- the persisted off-centre **acquisition seed**, chosen because the target is expected to be
-  resolvable there;
-- the physical **reduced-q origin and period** declared by the branch hypothesis, which define
-  how an acoustic energy approaches zero at the zone centre;
-- **unordered fitted candidates**, which are evidence even when no target identity is confirmed;
-- **confirmed target delivery**, the only state allowed to publish target `omega0`, certify,
-  seed the target prior, or join the target curve.
+- Four states are kept distinct — the persisted off-centre **acquisition seed**, the physical
+  **reduced-q origin and period** declared by the branch hypothesis, **unordered fitted
+  candidates** (evidence even with no confirmed identity), and **confirmed target delivery** (the
+  only state allowed to publish target `omega0`, certify, seed the target prior, or join the
+  target curve).
+- Branch identity is recomputed jointly over accumulated path evidence, only after an
+  authoritative pooled-master revision. Branch character is a trajectory-level posterior.
+- `maximum_production_batches_per_q` is the single same-q production budget;
+  `maximum_bridge_steps` is a path-geometry allowance only.
+- A proposal-less frontier that still has authorized same-q work is a `ControllerInvariantError`
+  — a controller fault, not a scientific result.
 
-Branch identity is recomputed jointly over accumulated path evidence only after an authoritative
-pooled-master revision. The controller must never assign an acoustic identity from the locally
-lowest or only candidate, move the acquisition seed to such a candidate, or treat an ambiguous
-maximum-posterior assignment as delivered truth. Target/rival roles are symmetric: the declared
-target determines which branch is delivery and which is rival in both acoustic and optic
-campaigns.
+**The current contract is `docs/MEASUREMENT_STEERING.md` and DECISIONS O27–O31; read those, not
+this section.** The objective and persisted-state changes are additive from v2, so existing frozen
+envelopes retain their replay semantics. Target-free discovery and automatic Bravais/space-group
+zone derivation remain Planned.
 
-Each proposal persists the authoritative evidence revision, a deterministic proposal fingerprint,
-and a concrete action role beneath the canonical confidence-ladder stage (Discovery, Inference,
-or Discrimination). An equivalent same-q identity revisit is permitted only after newer fitted
-neighboring evidence exists and only within the existing `maximum_bridge_steps` allowance. Phase 0
-adds no competing revisit cap. With unchanged evidence, local ambiguity must instead invoke the
-existing O6/O9 branch-information ranking and buy the best feasible unvisited differentiation
-point. Exhausted bridge and saturation routes end honestly as `incomplete` with
-`branch_ambiguity` / `frontier_blocked`.
-
-The objective and persisted-state changes are additive from v2. Existing frozen envelopes retain
-their replay semantics; newly compiled named acoustic and optic objectives share the corrected
-controller. Target-free discovery remains Planned.
-
-Phase 0's acceptance gate is a deterministic AP2 replay with the actual 0.5 meV objective and
-proposal sequence, plus AP1's two-candidate deadlock, acoustic geometry on both sides of the
-physical zone centre, acoustic/optic role symmetry, provisional-fit non-authority, unchanged-
-evidence repeat rejection, and honest exhausted-frontier stopping. Until those tests pass, this
-section remains **in progress**, not Implemented.
-
-AP3 adds two acceptance conditions. Branch character is a trajectory-level posterior: the connected
-0.45 → 0.87 → 1.38 → 1.80 meV sequence must remain acoustic as it approaches the zone boundary,
-and accumulated authoritative evidence may reverse an earlier optic character. O6/O9 broadening
-discounts identity information by uncertainty propagated across unmeasured path links, without a
-hard step limit. At exact Γ, a connected low-q acoustic trajectory may establish an additive
-`inferred_unresolved` structural endpoint. That endpoint publishes no fitted `omega0`, enters no
-dispersion prior, and is excluded from precision coverage. Automatic Bravais/space-group zone
-derivation remains Planned; AP3's declared period already places H=3 at the zone boundary.
+**What is still open.** Phase 0's acceptance gate is the deterministic campaign replay set — an AP2
+replay with the actual 0.5 meV objective and proposal sequence, AP1's two-candidate deadlock,
+acoustic geometry on both sides of the physical zone centre, acoustic/optic role symmetry,
+provisional-fit non-authority, unchanged-evidence repeat rejection, honest exhausted-frontier
+stopping, and AP3's trajectory-level character conditions. Those replays are what keep O25/O26 at
+**Partial** in `DESIGN.md` §15; Phase 0 closes when they pass.
 
 ---
 
