@@ -288,9 +288,9 @@ class MainWindow(QMainWindow):
         # so all docks exist and their default geometry is applied first.  An empty start has a
         # deliberately simpler layout; apply that after restoration so an old full-workspace layout
         # cannot make Log dominate a first-time screen.
-        QTimer.singleShot(0, self._restore_layout)
-        QTimer.singleShot(0, self._apply_empty_start_dock_geometry)
-        QTimer.singleShot(0, self._surface_session_security_warnings)
+        QTimer.singleShot(0, self, self._restore_layout)
+        QTimer.singleShot(0, self, self._apply_empty_start_dock_geometry)
+        QTimer.singleShot(0, self, self._surface_session_security_warnings)
         # Cold launch: _bind_workspace queued its file-less-workspace Files raise while self._bound
         # was still False, so the restore branch there did NOT run — instead _restore_layout is
         # queued just above, AFTER that raise. A saved layout with a different front tab would then
@@ -298,7 +298,7 @@ class MainWindow(QMainWindow):
         # too (idempotent with the bind's queue). The rebind path queues its restore inside
         # _bind_workspace, before its own raise, so it needs no repeat.
         if ws is not None and not self._empty and not self.files_vm.rows:
-            QTimer.singleShot(0, self._raise_files_dock_for_empty_data)
+            QTimer.singleShot(0, self, self._raise_files_dock_for_empty_data)
         # Recovery adopts a temporary workspace directly, so there is no ingest-finished signal to
         # promote its raw scans. If it contains parsed rows but no fit results, treat Scans as the
         # next operator surface after the saved layout is restored. Saved workspaces and analyzed
@@ -396,9 +396,9 @@ class MainWindow(QMainWindow):
         # dock set.  Conversely, every none/pending rebind gets its compact data-entry geometry,
         # not just the constructor's initial bind.
         if self._empty:
-            QTimer.singleShot(0, self._apply_empty_start_dock_geometry)
+            QTimer.singleShot(0, self, self._apply_empty_start_dock_geometry)
         elif self._bound and self._session.dock_layout_b64:
-            QTimer.singleShot(0, self._restore_layout)
+            QTimer.singleShot(0, self, self._restore_layout)
 
         if self._empty:
             if self._wsm.state() == "pending":
@@ -452,7 +452,7 @@ class MainWindow(QMainWindow):
         # singleShot(0, ...), FIFO), otherwise restoreState would immediately re-bury Files. A
         # workspace that already has files keeps its saved layout untouched.
         if not self._empty and not self.files_vm.rows:
-            QTimer.singleShot(0, self._raise_files_dock_for_empty_data)
+            QTimer.singleShot(0, self, self._raise_files_dock_for_empty_data)
 
     def _raise_files_dock_for_empty_data(self) -> None:
         """Surface the Files dock as the data-entry point for a ready-but-data-less workspace.
@@ -969,7 +969,7 @@ class MainWindow(QMainWindow):
         generation = self._wsm.generation()
         root = self._wsm.root()
         QTimer.singleShot(
-            0, lambda g=generation, r=root: self._promote_scans_if_current(g, r))
+            0, self, lambda g=generation, r=root: self._promote_scans_if_current(g, r))
 
     def _promote_scans_if_current(self, generation: int, root: Path | None) -> None:
         """Show parsed scans after layout restoration, if still on the captured workspace."""
@@ -1312,7 +1312,7 @@ class MainWindow(QMainWindow):
             self._operation_status.setText("")
             if self._close_when_operations_finish:
                 self._close_when_operations_finish = False
-                QTimer.singleShot(0, self.close)
+                QTimer.singleShot(0, self, self.close)
         else:
             if state["cancelling"]:
                 verb = "Cancelling"

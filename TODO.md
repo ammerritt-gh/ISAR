@@ -18,25 +18,13 @@ ISAR = analysis authority). Forward workstreams live in their own plans:
 [SPEEDUP](docs/SPEEDUP_DESIGN.md), [STEERING](docs/STEERING_DESIGN.md),
 [BACKGROUND](docs/BACKGROUND_DESIGN.md).
 
-Last updated: 2026-07-25.
+Last updated: 2026-07-26.
 
 ---
 
 ## Defects
 
 Things that are wrong now, as opposed to things not yet built.
-
-- [ ] **DEFECT-1 — GUI test crashes the interpreter, hiding ~691 tests.**
-      `tests/gui/test_browser.py::test_load_workspace_twice_no_menu_leak` is `@pytest.mark.skip`
-      (2026-07-21): it exits 139 (access violation) even run alone, and took the whole GUI suite
-      down with it, so the other ~691 GUI tests were never executing. Needs diagnosis, not
-      deletion — it guards against a menu leak on repeated workspace loads, and loading a
-      workspace twice is a routine operator action, so this may be a genuine `load_workspace`
-      teardown bug rather than a test artefact. Suspect the test's global
-      `QApplication.sendPostedEvents(None, DeferredDelete)`, which drains deferred deletes for
-      every object in the process.
-      **Acceptance:** the test runs unskipped in the full GUI suite without crashing, and the
-      root cause is identified as either a product bug (fixed) or a test artefact (documented).
 
 - [ ] **DEFECT-2 — Matched-descriptor rescue can deliver confident-wrong.**
       `verdict.classify()` lets a family-wise-significant descriptor peak that the winning model
@@ -334,6 +322,6 @@ conditions — these are wants, not commitments.
 ## Notes
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
-`tests/gui/conftest.py`. Kept deliberately, though it was not the cause of DEFECT-1: without it,
-constructing any `MainWindow` in a test fires real `urlopen` calls at the operator's live
-LLMM/TAVI ports, so results would depend on which services happen to be running.
+`tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test
+fires real `urlopen` calls at the operator's live LLMM/TAVI ports, so results would depend on which
+services happen to be running.

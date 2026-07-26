@@ -26,7 +26,9 @@ figures 1–3 are synthetic/static and need no workspace. Run from the repo root
 ``--fast`` runs the coverage ensemble at N=40/level, M=50 and writes ``coverage_summary.fast.json``
 (never overwriting the committed full-run ``coverage_summary.json``). ``--workers`` spreads the
 synthetic ensembles over a process pool; results are worker-count-invariant (each scan is an
-independent, deterministically-seeded task).
+independent, deterministically-seeded task). ``--outdir`` redirects every output (images, JSON
+dumps and caption sidecars) to another directory, which is how the regeneration test regenerates
+into a scratch directory instead of over the committed gallery.
 """
 from __future__ import annotations
 
@@ -54,7 +56,12 @@ from isar.synth import estimators as _est  # noqa: E402
 
 # --------------------------------------------------------------------------- constants
 SEED = 20260710
+# Default output directory. `main()` rebinds this module global when --outdir is given: every
+# writer below (_ensure_figdir/_save_png/_save_svg/_dump_json) and the --replot-from-dump reader
+# resolve paths against it, so a single rebind redirects the whole script. Threading a parameter
+# through every figure function instead would touch a dozen signatures for no behavioural gain.
 FIGDIR = Path(__file__).resolve().parent / "figures"
+_DEFAULT_FIGDIR = FIGDIR
 
 # Per-figure RNG/seed offsets (SEED + offset) so figures never share a stream.
 _OFF_COSTBIAS_TOY = 2      # panel (a): the single Poisson draw
@@ -1116,7 +1123,13 @@ def main(argv=None) -> None:
     ap.add_argument("--replot-from-dump", action="store_true",
                     help="coverage: rebuild figures + summary from the committed "
                          "coverage_perscan[.fast].json WITHOUT re-fitting (fast figure iteration)")
+    ap.add_argument("--outdir", type=Path, default=_DEFAULT_FIGDIR,
+                    help="write every figure, JSON dump and caption sidecar here "
+                         f"(default: {_DEFAULT_FIGDIR}); also where --replot-from-dump reads from")
     args = ap.parse_args(argv)
+
+    global FIGDIR
+    FIGDIR = Path(args.outdir).resolve()
 
     which = args.only or ["three_questions", "cost_bias", "coverage", "wall", "akaike", "branch"]
     _ensure_figdir()

@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for contributor rules and area routing
 > **Provenance:** hand-written
-> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Verified against code revision:** `9914eb7` (2026-07-26)
 
 Automated **triage** pipeline for inelastic scattering (IXS + triple-axis): during a beamtime it
 parses incoming scans, QCs and calibrates them, fits DHO ⊗ resolution models with physics-gated
@@ -24,14 +24,35 @@ area.
   report score profile drive view diagnose`.
 - **GUI:** `run-isar-gui.bat` → `micromamba run -n isar python -m isar_gui`; falls back to env
   `tavi-dev` when `isar` isn't built yet.
-- **Tests:** `pytest -m "not slow"` (markers `slow`, `live`; `testpaths` = `isar/synth/tests`, `tests`
-  in `pyproject.toml`). `live` needs a running TAVI at `127.0.0.1:8642`. `tests/real_data/` needs the
-  gitignored local `test_data/`. `isar/synth/tests/` = Phase-1 synthetic core; `tests/` = Phase 2+.
-- **Running the suite:** any interpreter with the dependencies installed runs it — `python -m pytest
-  -m "not slow"` from the repo root imports the repo-root `isar` package directly, so a micromamba
-  env is not a prerequisite for testing. Offscreen GUI runs: pytest sets the platform via
-  `tests/gui/conftest.py`; a test that leaves a modal path unmocked will hang the suite silently —
-  use `-o faulthandler_timeout=60` when debugging a stall.
+- **Tests:** markers `slow`, `live`; `testpaths` = `isar/synth/tests`, `tests` (`pyproject.toml`).
+  `live` needs a running TAVI at `127.0.0.1:8642`. `tests/real_data/` needs the gitignored local
+  `test_data/`. `isar/synth/tests/` = Phase-1 synthetic core; `tests/` = Phase 2+. Parallel runs
+  need `pytest-xdist>=3.5` (in the `[test]` extra).
+- **Running the suite — three commands, pick by intent:**
+  1. *Targeted / debugging (serial):* `python -m pytest <path>::<test> -s`. Keep debugging serial —
+     `-s`, `--pdb`, and the stall recipe `-o faulthandler_timeout=60` do not work meaningfully
+     under xdist, which captures and multiplexes worker output.
+  2. *Day-to-day (~1 min):* `python -m pytest -m "not slow" -n 16 --dist worksteal` — ~55 s on an
+     idle 32-core box against 347 s serial. On a smaller box use `-n auto` instead of `-n 16`: the
+     pinned count is tuned for that idle 32-core machine, and a 4-core box thrashes at `-n 16`.
+  3. *Full validation (~10 min):* `python -m pytest -n 16 --dist worksteal`, against ~24 min
+     serial. Run a full **serial** `python -m pytest` periodically anyway (pre-release, after
+     test-infra changes): serial and parallel expose different ordering and shared-state bugs.
+- **Parallel-run rules (each names the failure it prevents):** parallel must reproduce serial
+  pass/skip/deselect counts exactly — a divergence is a test-isolation bug, not xdist noise.
+  Do not switch to `--dist loadfile` or sprinkle `xdist_group`: `loadgroup`
+  schedules ungrouped tests like `load` rather than worksteal (~19% slower measured), and
+  `tests/session/test_driver_smoke.py`'s ~20 s tests must never be pinned to one worker.
+- **Nested-pool guard:** the repo-root `conftest.py` `setdefault`s `ISAR_WORKERS=2` /
+  `ISAR_BOOTSTRAP_WORKERS=2` under pytest (a pre-set environment still wins); without it each xdist
+  worker spawns its own `min(30, cpu−2)` driver pool and fork-bombs the box. It does **not** reach
+  `isar/synth/score.py` / `demo.py`, whose `n_workers` defaults to `cpu−2` with no env knob — every
+  current test passes `n_workers` explicitly, and a new one must too.
+- Offscreen GUI runs: pytest sets the platform via `tests/gui/conftest.py`; a test that leaves a
+  modal path unmocked will hang the suite silently — debug that stall serially with
+  `-o faulthandler_timeout=60`. Any interpreter with the dependencies installed runs the suite from
+  the repo root (it imports the repo-root `isar` package directly), so a micromamba env is not a
+  prerequisite for testing.
 
 ## Hard Rules (each names the silent failure it prevents)
 
@@ -115,8 +136,10 @@ contract changes are additive only (DESIGN §4).
 1. **Parse:** `python -m py_compile` the changed files (or your editor's syntax check).
 2. **Import:** import the changed public surface (e.g. `import isar.analyze.components`); for GUI work
    confirm no Qt leaked into `workspace_api`/`geometry`/`plotspec`.
-3. **Tests:** `pytest -m "not slow"` from repo root in the `isar` env. Real-data subset needs local
-   `test_data/`; `live` needs TAVI at `127.0.0.1:8642`.
+3. **Tests:** `python -m pytest -m "not slow" -n 16 --dist worksteal` from the repo root (~1 min);
+   `python -m pytest -n 16 --dist worksteal` before calling non-trivial work done (~10 min), and a
+   full serial `python -m pytest` at release gates. Reproduce a failure serially before debugging
+   it. Real-data subset needs local `test_data/`; `live` needs TAVI at `127.0.0.1:8642`.
 4. **Status discipline:** DESIGN §15 marks every capability Implemented / Partial / Planned. Do not
    describe Planned work in the implemented voice, and match that table when you change status.
 
@@ -179,4 +202,4 @@ review item.
 
 ---
 
-*Last updated: 2026-07-25. Canonical file is `AGENTS.md`; `CLAUDE.md` is the `@AGENTS.md` stub.*
+*Last updated: 2026-07-26. Canonical file is `AGENTS.md`; `CLAUDE.md` is the `@AGENTS.md` stub.*

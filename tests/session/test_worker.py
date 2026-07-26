@@ -34,6 +34,30 @@ def _scaffold_ws(root: Path, tmp_path: Path):
     return ws, data
 
 
+def _corrupt_data_row(payload: bytes) -> bytes:
+    """``payload`` with one non-numeric token planted strictly inside the file's data-row list
+    (equivalently, inside the scan's data block here, since this file has exactly one scan).
+
+    Truncating the file is NOT garbage to this reader: a single short FINAL data row is the
+    aborted-mid-write artifact SPEC really produces, and `isar.parsers.spec_base._resolve_block_rows`
+    deliberately drops just that row with a warning, so half a file still parses clean. A non-numeric
+    token in an otherwise full-width row is the failure that same policy explicitly keeps — `float()`
+    raises inside `plugin.parse_file`, and `ingest.parse_all` (unlike `ingest_batch`) does not isolate
+    it, so a real exception reaches `run_batch`."""
+    lines = payload.decode("utf-8").splitlines(keepends=True)
+    data_rows = [i for i, line in enumerate(lines) if line.strip() and not line.startswith("#")]
+    assert len(data_rows) >= 3, "emitted run has no multi-row data block to corrupt"
+    victim = data_rows[len(data_rows) // 2]
+    assert data_rows[0] < victim < data_rows[-1], (
+        "corruption must land interior to the file's data-row list, not at its edges "
+        "(equivalently, interior to the scan's block here, since this file has one scan)")
+    tokens = lines[victim].split()
+    assert len(tokens) >= 3
+    tokens[len(tokens) // 2] = "NOT_A_NUMBER"   # mid-record: the row keeps its declared width
+    lines[victim] = " ".join(tokens) + "\n"
+    return "".join(lines).encode("utf-8")
+
+
 class _RawWorker:
     """Minimal JSONL client speaking the worker protocol directly (not WorkerRunner)."""
 
@@ -215,17 +239,19 @@ def test_run_job_ok_writes_timings_and_results(tmp_path):
 @pytest.mark.slow
 def test_garbage_data_replies_error_worker_alive(tmp_path):
     ws, _ = _scaffold_ws(tmp_path / "ws", tmp_path)
-    # A truncated (mid-scan) supplementary file is discovered as a measurement but blows up in
-    # parse_all — a deterministic run_batch exception.
+    # A supplementary file carrying non-numeric text mid-scan is discovered as a measurement but
+    # blows up in parse_all — a deterministic run_batch exception.
     valid = s30.emit_file(run_builder.build_s30_run("SYN", n_scans=1, seed0=1000), s30.card_template())
     garbage = tmp_path / "GARBAGE.spec_supplementary.dat"
-    garbage.write_bytes(valid[:len(valid) // 2])
+    garbage.write_bytes(_corrupt_data_row(valid))
     w = _RawWorker(ws.root)
     try:
         w.send({"id": 5, "cmd": "run", "data_paths": [str(garbage)], "M": 10})
         reply = w.recv()
         assert reply["id"] == 5 and reply["ok"] is False
         assert reply["error"]["traceback"]  # a real run_batch traceback rode home
+        # …and it is the planted corruption that failed, not some incidental workspace error.
+        assert "NOT_A_NUMBER" in reply["error"]["message"], reply["error"]
         # A job failure does NOT kill the worker.
         w.send({"id": 6, "cmd": "ping"})
         assert w.recv() == {"id": 6, "ok": True}

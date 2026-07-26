@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for product overview and quickstart
 > **Provenance:** hand-written
-> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Verified against code revision:** `9914eb7` (2026-07-26)
 
 **I**nelastic **S**cattering **A**utomated **R**— (the final R is deliberately floating: the tool
 *reduces* data at ingest, *resolves* phonons in analysis, *reviews* scans for the human, and — in a
@@ -127,9 +127,11 @@ a clean checkout can *see* this evidence but cannot reproduce it.
 
 ## Setup
 
-Python ≥ 3.11. `pip install -e .` (test extras: `pip install -e .[test]`; run `pytest -m "not
-slow"` — the `tests/real_data/` subset requires the local-only `test_data/`). To also run the GUI
-tests under `tests/gui/`, install `pip install -e .[test,test-gui,gui]` (the `test-gui` extra is
+Python ≥ 3.11. `pip install -e .` (test extras: `pip install -e .[test]`; run `python -m pytest -m
+"not slow" -n 16 --dist worksteal` — about a minute, and the `tests/real_data/` subset requires the
+local-only `test_data/`; `-n 16` is tuned for an idle 32-core box — on a smaller machine use
+`-n auto`; drop `-n 16 --dist worksteal` to run serially when debugging). To also run
+the GUI tests under `tests/gui/`, install `pip install -e .[test,test-gui,gui]` (the `test-gui` extra is
 `pytest-qt`, kept out of the base `test` extra so it doesn't require a Qt binding). LLM features are
 optional and require a configured LLM endpoint: local LLMM at `127.0.0.1:8766` is the default
 offline profile, and an OpenAI-compatible endpoint is also supported — see

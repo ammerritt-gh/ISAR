@@ -14,8 +14,6 @@ import re
 import subprocess
 import sys
 
-import pytest
-
 from isar.report import captions
 
 DOCS_DIR = __import__("pathlib").Path(__file__).resolve().parents[2] / "docs"
@@ -143,11 +141,9 @@ def test_gamma_skewed_width_ratio_median_in_primer_matches_json():
 
 # ---- 5. three_questions smoke test -----------------------------------------------------------
 
-# make_figures.py hardcodes FIGDIR = Path(__file__).resolve().parent / "figures" (no env var or
-# CLI override), and this test suite is test-only (no changes to make_figures.py allowed), so we
-# cannot point a fresh regeneration at a scratch directory. Instead this is a regression check that
-# the already-committed artifacts are present — a full regeneration/determinism check lives in the
-# slow test below, which runs against the real hardcoded FIGDIR and restores it afterward.
+# A regression check that the committed artifacts are present. The regeneration/determinism check
+# lives in the slow test below, which regenerates into a tmp directory via --outdir and therefore
+# never touches the committed files these tests read.
 def test_three_questions_committed_artifacts_exist():
     svg_path = DOCS_DIR / "stats" / "figures" / "three_questions.svg"
     caption_path = DOCS_DIR / "stats" / "figures" / "three_questions.caption.md"
@@ -169,36 +165,37 @@ def test_three_questions_metadata_and_compatibility_alias():
     assert payload["planned_rung"] == payload["noncertifying_rung"] == "Bayesian credible"
 
 
-# ---- 6. determinism (slow, mutates and restores the real committed file) --------------------
+# ---- 6. determinism (regenerates into tmp dirs, never the committed gallery) -----------------
 
-@pytest.mark.slow
-def test_three_questions_regeneration_is_deterministic():
+# Not slow-marked: the mark existed because this test rewrote the committed gallery, not because
+# it is expensive — two `--only three_questions` subprocesses measure ~1 s total, so it belongs in
+# the fast lane where the determinism contract actually gets checked day to day.
+def test_three_questions_regeneration_is_deterministic(tmp_path):
     """Run `make_figures.py --only three_questions` twice and confirm deterministic output.
 
-    FIGDIR is hardcoded next to the script (no override), so this necessarily writes to the real
-    committed docs/stats/figures/three_questions.{svg,json}. Per the primer's own documented
-    determinism contract ("Determinism is pinned to the numeric JSON dumps ... PNG bytes may
-    differ across matplotlib versions; the numbers may not" — see the "Reproducing everything"
-    section of STATS_PRIMER.md), this compares the numeric JSON dump rather than the SVG bytes:
-    matplotlib's SVG backend embeds non-deterministic internal ids (e.g. clip-path ids derived
-    from object identity) even when the plotted numbers are bit-identical, so an SVG-byte
-    comparison would be a false positive for non-determinism. The original files are read first
-    and restored in a finally block regardless of outcome, so the working tree is left
-    byte-identical.
+    Each run gets its own `--outdir` under tmp_path, so the committed
+    docs/stats/figures/three_questions.* are never written — the fast-lane tests above can read
+    them concurrently under xdist. Per the primer's own documented determinism contract
+    ("Determinism is pinned to the numeric JSON dumps ... PNG bytes may differ across matplotlib
+    versions; the numbers may not" — see the "Reproducing everything" section of
+    STATS_PRIMER.md), this compares the numeric JSON dump rather than the SVG bytes: matplotlib's
+    SVG backend embeds non-deterministic internal ids (e.g. clip-path ids derived from object
+    identity) even when the plotted numbers are bit-identical, so an SVG-byte comparison would be
+    a false positive for non-determinism.
     """
-    svg_path = DOCS_DIR / "stats" / "figures" / "three_questions.svg"
-    json_path = DOCS_DIR / "stats" / "figures" / "three_questions.json"
-    original_svg = svg_path.read_bytes() if svg_path.exists() else None
-    original_json = json_path.read_bytes() if json_path.exists() else None
-    try:
-        cmd = [sys.executable, str(MAKE_FIGURES_PATH), "--only", "three_questions"]
-        subprocess.run(cmd, check=True, cwd=str(DOCS_DIR.parent), capture_output=True)
-        first = json.loads(json_path.read_text(encoding="utf-8"))
-        subprocess.run(cmd, check=True, cwd=str(DOCS_DIR.parent), capture_output=True)
-        second = json.loads(json_path.read_text(encoding="utf-8"))
-        assert first == second, "three_questions.json is not deterministic across two runs"
-    finally:
-        if original_svg is not None:
-            svg_path.write_bytes(original_svg)
-        if original_json is not None:
-            json_path.write_bytes(original_json)
+    def _run(outdir):
+        subprocess.run(
+            [sys.executable, str(MAKE_FIGURES_PATH), "--only", "three_questions",
+             "--outdir", str(outdir)],
+            check=True, cwd=str(DOCS_DIR.parent), capture_output=True,
+        )
+        return json.loads((outdir / "three_questions.json").read_text(encoding="utf-8"))
+
+    out_a = tmp_path / "a"
+    out_b = tmp_path / "b"
+    first = _run(out_a)
+    second = _run(out_b)
+    assert first == second, "three_questions.json is not deterministic across two runs"
+    # --outdir must redirect *everything*, not just the JSON dump.
+    assert (out_a / "three_questions.svg").exists()
+    assert (out_a / "three_questions.caption.md").exists()

@@ -397,7 +397,7 @@ class WorkspaceOperationCoordinator(QObject):
         # IngestController emits its public terminal signal before it clears its private step
         # scratch.  Defer the next dequeue one Qt turn so the next coordinated batch cannot see
         # that controller as busy and accidentally overlap it.
-        QTimer.singleShot(0, self._start_next)
+        QTimer.singleShot(0, self, self._start_next)
 
     # ---- ingest relay ----------------------------------------------------
     def _on_ingest_started(self, paths) -> None:
