@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for contributor rules and area routing
 > **Provenance:** hand-written
-> **Verified against code revision:** `7aa14a2` (2026-07-26)
+> **Verified against code revision:** `9914eb7` (2026-07-26)
 
 Automated **triage** pipeline for inelastic scattering (IXS + triple-axis): during a beamtime it
 parses incoming scans, QCs and calibrates them, fits DHO ⊗ resolution models with physics-gated
