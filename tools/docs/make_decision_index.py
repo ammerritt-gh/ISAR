@@ -95,14 +95,20 @@ def amendments(rows) -> dict[str, list[str]]:
     immediately before the verb ("does **not** amend O24") is skipped, so a ruling that
     distinguishes itself from an earlier one is not recorded as overriding it.
     """
-    known = {rid for rid, _, _ in rows}
+    position = {rid: i for i, (rid, _, _) in enumerate(rows)}
     out: dict[str, list[str]] = {}
-    for rid, meta, summary in rows:
+    for source_index, (rid, meta, summary) in enumerate(rows):
         for preceding, clause in AMENDS.findall(meta + " " + summary):
-            if NEGATION.search(preceding or ""):
+            # Markdown emphasis can trail the negating token (``does **not** amend``). Strip
+            # formatting markers before applying the end-anchored negation check.
+            plain_preceding = re.sub(r"[*_~`]+", "", preceding or "")
+            if NEGATION.search(plain_preceding):
                 continue
             for target in IDREF.findall(clause):
-                if target != rid and target in known:
+                # The ledger is append-only: an amendment is valid only when its target has
+                # already appeared. This rejects self-references, unknown IDs, and accidental
+                # forward references in one ordering check.
+                if target in position and position[target] < source_index:
                     out.setdefault(target, []).append(rid)
     return out
 

@@ -44,25 +44,36 @@ reproducible from one: regenerating any group needs the local `test_data/`, whic
 distributed here. Do not read the presence of these files as a claim that `git clone && pytest`
 reproduces them.
 
-`MANIFEST.json` records, for each group, the generating command, and for the bundle as a whole the
-code revision and collection date. `tests/docs/test_doc_drift.py` fails if a committed file stops
-matching its recorded hash, if a listed file goes missing, or if a file appears here that no group
-declares.
+`MANIFEST.json` records schema version 2, the generating command and input fingerprint for every
+group, and the code revision and collection date for the bundle. Every group fingerprint must
+match the top-level `test_data/` fingerprint. The documentation tests fail if manifest metadata
+drifts from the collector declaration, a committed file stops matching its size or hash, a listed
+file goes missing, or an undeclared file appears here.
 
 ## Regenerating
 
 From the repo root, with `test_data/` present:
 
 ```
-python docs/phase3_gold_check.py
-python docs/in8_phase1_check.py
-python docs/phase3_step1_check.py
 python tools/docs/collect_evidence.py
 ```
 
-`python tools/docs/collect_evidence.py --check` verifies the committed bundle against the manifest
-without regenerating anything. The file list is declared in the collector, not globbed — adding an
-artifact means naming it there and saying which citation it serves.
+The collector clears only its declared `out/<source>` directories, runs each declared generator
+synchronously with the active Python interpreter, and checks that `test_data/` is unchanged before
+and after every generator. It validates all source artifacts and required PNG caption sidecars,
+builds the complete prospective bundle in staging, and only then promotes it with rollback on
+failure.
+
+`python tools/docs/collect_evidence.py --check` verifies manifest structure and declared metadata
+before checking files, sizes, and hashes; it neither regenerates nor copies anything. The file list
+is declared in the collector, not globbed — adding an artifact means naming it there and saying
+which citation it serves.
+
+Paths are restricted to portable Windows-safe relative names and must remain beneath `out/` and
+`docs/assets/`. Symlinks, junctions/reparse points, directories in place of artifacts, and other
+special files are rejected. Sources are revalidated immediately before copying. As with any
+filesystem validation followed by a separate open, a malicious local process with concurrent write
+access could still race that last check; collection assumes exclusive local control of the checkout.
 
 ## When these numbers go stale
 

@@ -39,14 +39,16 @@ Vocabulary is discipline, not pedagogy, in this document:
 
 > - **Bootstrap** means *frequentist-by-simulation*: refit many Poisson redraws of the best-fit
 >   model and read the spread. It is not Bayesian and is never called "credible".
-> - **Credible** is reserved for quantities that are actually posteriors. ISAR has exactly two:
->   the branch-assignment posterior (`assignment_entropy`, `branch_id`) **[Implemented]**, and
->   the dispersion-prior MAP fit (`prior_omega`, `prior_sigma` → `fit_kind=soft_prior`)
->   **[Implemented]**.
+> - The branch-assignment posterior (`assignment_entropy`, `branch_id`) is a stored posterior over
+>   branch identity **[Implemented]**.
+> - The dispersion-prior MAP fit (`prior_omega`, `prior_sigma` → `fit_kind=soft_prior`) is a
+>   prior-regularized point estimate **[Implemented]**. It is not a stored posterior distribution
+>   or a credible interval.
 > - Bayesian credible **intervals** on ω₀ are **[Implemented, diagnostics-only]**: the nested
 >   sampler (`isar/analyze/errors/bayes.py`) is wired through `--errors bayes` and stores
->   `bayes_interval` plus its agreement diagnostics, but certification and confidence never read
->   it (`isar/session/driver.py:135`). Every interval ISAR *certifies* on is frequentist.
+>   `bayes_interval` plus posterior samples and agreement diagnostics, but certification and
+>   confidence never read it (`isar/session/driver.py:135`). Every interval ISAR *certifies* on is
+>   frequentist.
 >   Coverage validation of the credible interval, and any promotion of it to certifying
 >   authority, remain **[Planned]**.
 
@@ -294,7 +296,9 @@ sample, seed, model inputs, reduction order, or reported interval.
 
 ## 5. The earned Bayesian pieces
 
-Chapter 0 reserved the word *credible* for actual posteriors. ISAR has two, and only two.
+Chapter 0 separates three related outputs: a branch-assignment posterior, a prior-regularized MAP
+point estimate, and diagnostics-only nested-sampler credible intervals. A MAP estimate is not by
+itself a stored posterior distribution or interval.
 
 **The branch-assignment posterior [Implemented].** Which dispersion branch a fitted mode
 belongs to is genuinely a Bayesian question — a prior over branches updated by the fit — and
@@ -311,14 +315,16 @@ not re-derivation.
 **FIG. 8.** The branch posterior for a certain and an ambiguous scan of `mvp_zone_test16`;
 entropy is the honesty meter.
 
-**The dispersion-prior MAP [Implemented].** When the campaign has a belief about ω₀ at a
-q-point, the fit can be softly constrained by it; `prior_omega`, `prior_sigma`, `prior_n`
-record the belief and `fit_kind` records that it was used. The data-only cost is kept separate
-(`cost` vs `posterior_cost`), so a constrained fit is never mistaken for independent evidence.
+**The dispersion-prior MAP point estimate [Implemented].** When the campaign has a belief about
+ω₀ at a q-point, the fit can be softly constrained by it; `prior_omega`, `prior_sigma`, `prior_n`
+record the regularizing prior and `fit_kind` records that it was used. The optimizer returns a MAP
+point estimate, not a stored posterior distribution or credible interval. The data-only cost is
+kept separate (`cost` vs `posterior_cost`), so a constrained fit is never mistaken for independent
+evidence.
 
-Bayesian credible *intervals* on ω₀ are the third earned piece, **[Implemented,
-diagnostics-only]**. Under `--errors bayes` the nested sampler runs on the preliminary-best
-label and records `bayes_interval`, `bayes_gamma_interval`, posterior samples, and its own
+**Nested-sampler credible intervals [Implemented, diagnostics-only].** Under `--errors bayes` the
+nested sampler runs on the preliminary-best label and records `bayes_interval`,
+`bayes_gamma_interval`, posterior samples, and its own
 convergence gates (`bayes_ok`, `bayes_ess`, `bayes_fail_reason`). The frequentist↔Bayesian
 agreement check is live as a per-scan trust signal of the §3.2 kind (`bayes_freq_ratio`).
 

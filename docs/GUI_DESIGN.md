@@ -1,15 +1,16 @@
 # ISAR GUI — Design
 
 > **Lifecycle:** Current
-> **Authority:** canonical for GUI architecture and ownership boundaries; the as-built matrix below is the status authority
+> **Authority:** canonical for GUI architecture and ownership boundaries
 > **Provenance:** hand-written
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
 **Status:** Design draft, 2026-07-11, substantially built. This document follows the discipline of
 `DESIGN.md`: nothing is described in the implemented voice unless it is. Because roughly the first
-half of the plan has shipped and the second half has not, **the as-built matrix below is the
-authority on what exists** — not the Planned voice of the body text, which was written before the
-build and is preserved as the design record.
+half of the plan has shipped and the second half has not, the as-built matrix below records
+verified implementation detail and mirrors the capability status in `DESIGN.md` §15. It does not
+override that canonical status table. The Planned voice of the body text predates the build and is
+preserved as the design record.
 
 ### As-built status (verified against `isar_gui/` and `isar/`, 2026-07-25)
 

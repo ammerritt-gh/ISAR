@@ -1,17 +1,20 @@
 {
-  "schema_version": 1,
-  "collected": "2026-07-25",
-  "code_revision": "c11ef3150cf8fecd179465e5553d61c3cd883822",
-  "privacy": "Derived evidence only: fit results, summary tables of fitted parameters, and rendered figures. No raw facility data file is included; test_data/ remains gitignored and unpublished. Note that a scan-overlay figure necessarily plots the measured points of the scan it fits (counts vs energy transfer, labelled with the scan or numor and its instrument command), so a handful of scans are readable off the plots at plot accuracy. That is deliberate \u2014 the figures exist so a reader can judge each call \u2014 and is the limit of what is exposed. Reviewed at collection time.",
-  "reproducibility": "Regenerating any group requires the local test_data/ and the command below. This bundle makes the evidence viewable from a clean checkout; it does not make it reproducible from one.",
+  "schema_version": 2,
+  "collected": "2026-07-26",
+  "code_revision": "96515a05d4747677040ad417d26bb28e32371fb4",
+  "code_dirty": true,
+  "code_diff_sha256": "fc8ab21b5aa073962c2ba3bb69ca1511a3d6348301d49ed7d34ed33f191f2f6f",
+  "privacy": "Derived evidence only: fit results, parameter summaries, and rendered figures. No raw facility file is included; scan overlays expose measured points at plot accuracy.",
+  "reproducibility": "Regeneration requires local test_data/. The bundle is viewable from a clean checkout, not reproducible from one.",
   "test_data_fingerprint": {
     "present": true,
     "n_files": 234,
-    "sha256": "fc570958afc5e5721e58708d2a3c3e0bbbf1295e3100e5c3372f329095804656"
+    "sha256": "df946241512662d301bcec8663e164ce4002f14a3fb222cf1633e98c31e713dd"
   },
   "groups": [
     {
       "name": "phase3_gold",
+      "source": "phase3_gold",
       "what": "83-scan S30 gold set scored against the curated FeSe_1 human fits \u2014 the headline real-data check.",
       "command": "python docs/phase3_gold_check.py",
       "replaces": [
@@ -19,6 +22,11 @@
         "docs/READING_GUIDE.md \u2014 'the headline real-data check is the gold report'",
         "docs/READING_GUIDE.md \u2014 'Does it agree with a human on real data?'"
       ],
+      "input_fingerprint": {
+        "present": true,
+        "n_files": 234,
+        "sha256": "df946241512662d301bcec8663e164ce4002f14a3fb222cf1633e98c31e713dd"
+      },
       "files": [
         {
           "path": "phase3_gold/FINDINGS.md",
@@ -94,17 +102,23 @@
     },
     {
       "name": "in8_phase1",
+      "source": "in8_phase1",
       "what": "The same fitting core on a triple-axis instrument (ILL IN8), with a real S30 IXS positive control for contrast.",
       "command": "python docs/in8_phase1_check.py",
       "replaces": [
         "docs/READING_GUIDE.md \u2014 'Does the same core work on another instrument?'",
         "README.md \u2014 'out/in8_phase1/FINDINGS.md (same core on a triple-axis instrument)'"
       ],
+      "input_fingerprint": {
+        "present": true,
+        "n_files": 234,
+        "sha256": "df946241512662d301bcec8663e164ce4002f14a3fb222cf1633e98c31e713dd"
+      },
       "files": [
         {
           "path": "in8_phase1/FINDINGS.md",
-          "bytes": 5319,
-          "sha256": "cbec207a0a26577c41e163c4df8fb5172b1522ebd4c2243c00c268a255811bac"
+          "bytes": 5378,
+          "sha256": "395774b83b0aab915795693f7941e168d8e5d7956e9f258abdb7bad7b40d24ff"
         },
         {
           "path": "in8_phase1/results_in8.csv",
@@ -153,24 +167,30 @@
         },
         {
           "path": "in8_phase1/figures/s30_scan168_ana5.png",
-          "bytes": 89465,
-          "sha256": "853f65f1044105504658f95e5bb59e4542071c1e25d2a9a9af92149c24bcf909"
+          "bytes": 90973,
+          "sha256": "fe9d66cd3d5a0c120790d28678aa47be499d05942a31f3f44b983a19ca1e7341"
         },
         {
           "path": "in8_phase1/figures/s30_scan168_ana5.caption.md",
-          "bytes": 532,
-          "sha256": "f816e5200453716a83eae5b1023e500bab2ea4aa614ec7525ddd41dc509c0332"
+          "bytes": 559,
+          "sha256": "20fa036db725a6ff27c7d075480efd9a33c4f630b9031bd7f275b89000c59935"
         }
       ]
     },
     {
       "name": "phase3_step1",
+      "source": "phase3_step1",
       "what": "The structure-hypothesis loop on six curated S30 control scans, reproducing the frozen Phase-1 fitter, plus the error and model-selection layers.",
       "command": "python docs/phase3_step1_check.py",
       "replaces": [
         "docs/READING_GUIDE.md \u2014 'Does the engine reproduce the trusted fitter + behave?'",
         "docs/WORKED_EXAMPLE.md \u2014 the five figures it walks through"
       ],
+      "input_fingerprint": {
+        "present": true,
+        "n_files": 234,
+        "sha256": "df946241512662d301bcec8663e164ce4002f14a3fb222cf1633e98c31e713dd"
+      },
       "files": [
         {
           "path": "phase3_step1/FINDINGS.md",

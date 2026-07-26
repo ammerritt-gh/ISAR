@@ -136,7 +136,7 @@ The per-file register is [DOC_INVENTORY.md](DOC_INVENTORY.md).
 | How the GUI is built and bounded | [GUI_DESIGN.md](GUI_DESIGN.md) | Current |
 | What the data/card schema looks like across facilities | [SCHEMA_LANDSCAPE.md](SCHEMA_LANDSCAPE.md) | Current |
 | Why was a decision made this way? | [DECISIONS.md](DECISIONS.md) | Current |
-| Which rulings are still in force? | [DECISION_INDEX.md](DECISION_INDEX.md) | Current (generated) |
+| Which rulings are still in force? | [DECISION_INDEX.md (generated)](DECISION_INDEX.md) | Current |
 | What is every document, and what happened to the deleted ones? | [DOC_INVENTORY.md](DOC_INVENTORY.md) | Current |
 | Why steer measurements this way (Bayesian info-gain; prior art) — research foundation | [MEASUREMENT_STEERING.md](MEASUREMENT_STEERING.md) | Current |
 | What is being built next (speedup, backgrounds, steering A/B/C) | [SPEEDUP_DESIGN.md](SPEEDUP_DESIGN.md), [BACKGROUND_DESIGN.md](BACKGROUND_DESIGN.md), [STEERING_DESIGN.md](STEERING_DESIGN.md) | Active plan |

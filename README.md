@@ -22,8 +22,8 @@ published numbers. Nothing is ever deleted; a human reviews everything afterward
 > data ([docs/USING_ISAR.md](docs/USING_ISAR.md)); one validation (the CLI/session equivalence gate
 > at M=200) is still pending. An autonomous driver (`isar drive`) closes the loop against a
 > simulated instrument (TAVI): model-free spectral descriptor, Bayesian branch assignment,
-> cost-normalised expected-information-gain acquisition. This is certified on the analytic
-> synthetic tier and on TAVI's **deterministic** rung; realistic clocks and the McStas rung remain
+> cost-normalised expected-information-gain acquisition. The analytic synthetic tier is certified,
+> and TAVI's **deterministic** rung has run; realistic clocks and the McStas rung remain
 > Planned, and no campaign has run on a real instrument. See
 > [docs/MEASUREMENT_STEERING.md](docs/MEASUREMENT_STEERING.md) for why it steers the way it does.
 >

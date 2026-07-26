@@ -222,16 +222,22 @@ def test_exhaustive_command_blocks_match_argparse():
 
 # ---- 2. deleted documents stay deleted -------------------------------------------------------
 
-def _tombstoned_paths() -> list[str]:
+def _tombstoned_paths(text: str | None = None) -> list[str]:
     """Paths from the tombstone table, each with a last-containing commit.
 
     Derived from the register rather than hard-coded here so that the next deletion pass extends
     this check by writing its tombstone, with no test edit required.
     """
-    rows = _register_rows()[1]
-    text = _read("docs/DOC_INVENTORY.md")
-    body = re.split(r"^## ", re.split(r"^## Deleted — tombstones.*$", text, flags=re.M)[1],
-                    flags=re.M)[0]
+    rows = _register_rows(text)[1]
+    deleted_sections = [
+        body for heading, body in _inventory_sections(text)
+        if heading.startswith("Deleted")
+    ]
+    assert len(deleted_sections) == 1, (
+        "expected exactly one Deleted inventory section, "
+        f"found {len(deleted_sections)}"
+    )
+    body = deleted_sections[0]
     # Checked separately from the path parse. Keying the path regex off the commit-hash column
     # would silently *skip* any row whose hash was omitted or left as a placeholder — exactly the
     # row most likely to be sloppy, and therefore the one that most needs checking.
@@ -452,7 +458,18 @@ def test_every_non_exempt_document_declares_provenance():
 _REGISTER_ROW_RE = re.compile(r"^\|\s*`([^`|]+\.md)`\s*\|", re.M)
 
 
-def _register_rows() -> tuple[list[str], list[str]]:
+def _inventory_sections(text: str | None = None) -> list[tuple[str, str]]:
+    """Return second-level inventory headings and bodies using one shared parser."""
+    if text is None:
+        text = _read("docs/DOC_INVENTORY.md")
+    sections = []
+    for chunk in re.split(r"^## ", text, flags=re.M)[1:]:
+        heading, _, body = chunk.partition("\n")
+        sections.append((heading, body))
+    return sections
+
+
+def _register_rows(text: str | None = None) -> tuple[list[str], list[str]]:
     """(registered paths, tombstoned paths) as written in docs/DOC_INVENTORY.md.
 
     Both are returned as lists, not sets, so the caller can detect a path registered twice.
@@ -460,11 +477,9 @@ def _register_rows() -> tuple[list[str], list[str]]:
     explicitly, because a heading-relative path can silently resolve to a file that does not
     exist, which is precisely what this check exists to catch.
     """
-    text = _read("docs/DOC_INVENTORY.md")
     registered: list[str] = []
     tombstoned: list[str] = []
-    for chunk in re.split(r"^## ", text, flags=re.M)[1:]:
-        heading, _, body = chunk.partition("\n")
+    for heading, body in _inventory_sections(text):
         rows = _REGISTER_ROW_RE.findall(body)
         if heading.startswith("Deleted"):
             tombstoned += rows
@@ -475,6 +490,27 @@ def _register_rows() -> tuple[list[str], list[str]]:
     assert registered, "the register parsed to zero rows — has its table format changed?"
     assert tombstoned, "tombstone table parsed to zero rows — has its format changed?"
     return registered, tombstoned
+
+
+def test_inventory_deleted_section_is_identified_by_heading_prefix():
+    inventory = """# Inventory
+
+## Current documents
+
+| Path | Lifecycle |
+|---|---|
+| `docs/LIVE.md` | Current |
+
+## Deleted documents
+
+| Former path | Last commit |
+|---|---|
+| `docs/GONE.md` | `abcdef0` |
+"""
+    registered, tombstoned = _register_rows(inventory)
+    assert registered == ["docs/LIVE.md"]
+    assert tombstoned == ["docs/GONE.md"]
+    assert _tombstoned_paths(inventory) == ["docs/GONE.md"]
 
 
 def test_the_register_is_a_bijection_with_the_tree():
@@ -491,9 +527,8 @@ def test_the_register_is_a_bijection_with_the_tree():
     """
     registered, tombstoned = _register_rows()
     tracked = set(_tracked_markdown())
-    # Exempt files are not *required* to be registered, but several legitimately are (`CLAUDE.md`
-    # has a row explaining why it carries no banner). So exemption relaxes the missing check only;
-    # a registered path must still name a real file either way.
+    # Exempt files are not required to be registered. Exemption relaxes the missing check only; a
+    # registered path must still name a real file.
     required = {rel for rel in tracked if not _is_exempt(rel)}
 
     problems: list[str] = []
@@ -624,11 +659,16 @@ def test_every_promoted_figure_has_a_caption():
 def test_manifest_records_the_provenance_each_group_needs():
     """A bundle without its generating command and code revision is an undated screenshot."""
     manifest = _manifest()
-    assert manifest["schema_version"] == 1
+    assert manifest["schema_version"] == 2
     assert re.fullmatch(r"[0-9a-f]{40}", manifest["code_revision"]), (
         f"code_revision {manifest['code_revision']!r} is not a full commit sha — the bundle "
         "cannot be tied to the code that produced it"
     )
+    assert type(manifest["code_dirty"]) is bool
+    if manifest["code_dirty"]:
+        assert re.fullmatch(r"[0-9a-f]{64}", manifest["code_diff_sha256"])
+    else:
+        assert manifest["code_diff_sha256"] is None
     assert manifest["test_data_fingerprint"]["present"] is True, (
         "the bundle was collected without test_data/ present, so nothing records which inputs "
         "produced it"

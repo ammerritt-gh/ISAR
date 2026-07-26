@@ -86,7 +86,7 @@ Four surfaces, all produced from one run:
 - **HTML / Markdown report** — a per-scan narrative line + an `[adjudication]` table
   (target · decision · shape · reason · confidence), rendered right after the deterministic scan-flag
   table.
-- **JSON sidecar** (`report.json`) — the decisions inline in the report model.
+- **JSON sidecar** (`<workspace>/report/report.json`) — the decisions inline in the report model.
 - **`card.state.corrections`** — the append-only, machine-readable audit; each entry is
   `{source:"llm-adjudicate", scan_number, target, decision, shape, reason, confidence, model_id}` —
   the input to the §8 human review.

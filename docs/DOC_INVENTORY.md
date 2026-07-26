@@ -80,7 +80,6 @@ and verified by `git grep` at deletion time rather than by bookkeeping.
 | `README.md` | Current | product overview + quickstart | Pipeline stages must match `DESIGN.md`'s three (Parse / Fit & Verdict / Steer); its command block is marked exhaustive and pinned to argparse |
 | `DESIGN.md` | Current | architecture + capability status (§15) | §15 is the authority every other document's status claims must match |
 | `AGENTS.md` | Current | contributor rules and routing | Carries the documentation policy this register implements |
-| `CLAUDE.md` | Current | — (12-byte `@AGENTS.md` stub) | — |
 | `TODO.md` | Current | the single backlog | The only in-repository backlog; completed items leave the queue |
 | `calibration/README.md` | Historical evidence | — | A dated 2026-07-06 calibration record whose sibling JSON is loaded by `isar.drive.acquisition.calibration` |
 

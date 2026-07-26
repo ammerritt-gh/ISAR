@@ -261,7 +261,7 @@ None of these change a reported number; all are cost or hygiene.
 ## Platform and instruments
 
 - [ ] **PLAT-1 — Query API for downstream consumers.** The driver reads `report/results.csv` /
-      `report.json` / `card.state.json` directly (the stable file contract). Revisit an
+      `<workspace>/report/report.json` / `card.state.json` directly (the stable file contract). Revisit an
       `isar query` or HTTP surface once the file contract chafes. Deliberately not now.
       **Acceptance:** revisited once a second consumer exists.
 - [ ] **PLAT-2 — Watch/daemon mode.** Sugar wrapping `run_batch` (U1). At real-instrument scale

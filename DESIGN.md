@@ -141,7 +141,7 @@ new/held/changed scans. No database, no checkpointer dependency. Growing-file ba
 occurrence. *(Implemented; see `docs/WORKSPACE_AND_CLI.md` for the full treatment.)*
 
 **The Stage II ↔ Stage III boundary is a frozen file contract.** The driver consumes analysis
-only via the `isar run` subprocess and its products — `report/results.csv`, `report.json`,
+only via the `isar run` subprocess and its products — `report/results.csv`, `<workspace>/report/report.json`,
 `card.state.json` — and never imports fit internals. The pre-release v1→v2 objective/campaign reset
 was authorized on 2026-07-17 (O12); additive-only evolution resumes from v2. This boundary
 is what lets the stages be independently useful and independently testable, and it is what makes

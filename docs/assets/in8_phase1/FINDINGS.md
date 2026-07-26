@@ -5,7 +5,7 @@ ISAR's synthetic fitting core was stress-tested on real ILL IN8 triple-axis (TAS
 
 ## What this shows
 
-- **Recovers ω₀ on real triple-axis data:** 4.4715 ± 0.025 meV on the clean anchor 055182, matching the hand-vetted ~4.2 meV phonon.
+- **Recovers ω₀ on real triple-axis data:** ω₀ = 4.4715 ± 0.025 meV on the clean anchor 055182, matching the hand-vetted ~4.2 meV phonon.
 - **The broad low-energy tail is real signal, not resolution:** the elevated cost/dof traces to quasi-elastic / diffuse scattering the elastic+DHO+background model leaves in the residual — so Phase 3 needs a quasi-elastic component, not a wider resolution. (A genuine physics finding from the check.)
 - **The same core gives a clean dispersion on IXS:** the S30 control fits 6/6 scans cleanly with a meaningful Γ (resolution measured from the in-window elastic line) — the 'ω trustworthy before Γ on TAS' contrast, made concrete.
 
@@ -44,7 +44,7 @@ The synthetic core **recovers ω₀ = 4.4715 ± 0.025 meV on the clean IN8 ancho
 
 - **055182 clean**: ω₀ = 4.4715 ± 0.025 meV (success=True, cost/dof=21.13, nP_used=24).
 - **055181 messy two-feature**: ω₀ = 2.6115 ± 0.0111 meV (success=True, cost/dof=128.89, nP_used=41).
-- **055289 low-T weak**: ω₀ = 4.382 ± nan meV (success=False, cost/dof=21.01, nP_used=25).
+- **055289 low-T weak**: candidate ω₀ = 4.382 meV; uncertainty unavailable because the fit failed (success=False, cost/dof=21.01, nP_used=25).
 The **elevated cost/dof on the clean scans** (055182 = 21.13, 055186 = 40.81 at the CN width) is the key physics result: the data has a strong, *broad* falling low-energy tail that a Cooper–Nathans ~0.6 meV elastic line is far too narrow to make; a width sweep only bottoms out (~7) near ~1.5 meV — broader than any plausible resolution. So that tail is **real quasi-elastic / diffuse scattering** (Fe2Mo3O8 is magnetic), which the elastic+DHO+flat-BG model leaves in the residual. ω₀ is recovered regardless.
 
 

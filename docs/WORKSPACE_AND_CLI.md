@@ -96,7 +96,7 @@ workspace) → read the report → correct the card if needed → next batch. Re
 ## The Stage II ↔ III boundary is a frozen file contract
 
 Stage III (`isar drive`) consumes Stage II (`isar run`) through files only —
-`report/results.csv`, `report.json`, and `card.state.json`. The driver never imports fit
+`report/results.csv`, `<workspace>/report/report.json`, and `card.state.json`. The driver never imports fit
 internals. The one pre-release v1→v2 clean break was authorized on 2026-07-17 (DECISIONS O12);
 from v2 onward, contract changes are additive only (`DESIGN.md` §4).
 
