@@ -40,10 +40,7 @@ area.
      test-infra changes): serial and parallel expose different ordering and shared-state bugs.
 - **Parallel-run rules (each names the failure it prevents):** parallel must reproduce serial
   pass/skip/deselect counts exactly — a divergence is a test-isolation bug, not xdist noise.
-  Prefer running the two marker lanes separately: an unfiltered `-n 16` can co-schedule
-  `tests/docs/test_stats_primer.py`'s slow-marked regeneration test with the two fast-lane tests in
-  that file that read the files it rewrites (the lanes never co-select them; accept rare flakes
-  there otherwise). Do not switch to `--dist loadfile` or sprinkle `xdist_group`: `loadgroup`
+  Do not switch to `--dist loadfile` or sprinkle `xdist_group`: `loadgroup`
   schedules ungrouped tests like `load` rather than worksteal (~19% slower measured), and
   `tests/session/test_driver_smoke.py`'s ~20 s tests must never be pinned to one worker.
 - **Nested-pool guard:** the repo-root `conftest.py` `setdefault`s `ISAR_WORKERS=2` /
