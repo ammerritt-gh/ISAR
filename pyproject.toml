@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=7.4"]
+test = ["pytest>=7.4", "pytest-xdist>=3.5"]
 test-gui = ["pytest-qt"]
 gui = ["PySide6", "pyqtgraph>=0.13,<0.15", "watchdog"]
 
