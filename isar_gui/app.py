@@ -166,7 +166,7 @@ def main(argv=None) -> int:
             delay = max(0, int(smoke_ms))
         except ValueError:
             delay = 0
-        QTimer.singleShot(delay, app.quit)
+        QTimer.singleShot(delay, app, app.quit)
 
     return app.exec()
 
