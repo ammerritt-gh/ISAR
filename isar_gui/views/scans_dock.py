@@ -1610,7 +1610,14 @@ class ScansDock(QDockWidget):
             tree.verticalScrollBar().setValue(state["vertical"])
             tree.horizontalScrollBar().setValue(state["horizontal"])
 
-        QTimer.singleShot(0, restore_scrollbars)
+        # ``tree`` is the CONTEXT object, not decoration: without it Qt keeps the zero-timer armed
+        # even after the tree is destroyed, and the closure then calls setValue() on scrollbars whose
+        # C++ objects are gone — a hard access violation (PySide6 does not invalidate wrappers for
+        # C++-owned children reaped by a parent's destructor, so there is no RuntimeError to catch).
+        # A rebind (load_workspace) that lands before the event loop turns destroys this dock with
+        # the timer still pending, which is exactly that case. With the context object Qt cancels the
+        # callback when the tree dies, and the guard above still covers a live-tree replacement.
+        QTimer.singleShot(0, tree, restore_scrollbars)
 
     def _build_page(self, name: str) -> None:
         if name in self._built or name not in self._page_content:

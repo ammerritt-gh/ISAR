@@ -20,6 +20,7 @@ from PySide6.QtWidgets import QLabel
 from isar_gui.gui_store import GuiStore
 from isar_gui.mime import MIME_SCAN_IDS, encode_scan_ids
 from isar_gui.viewmodels.scans import ScansViewModel
+from isar_gui.views import scans_dock
 from isar_gui.views.scans_dock import ScansDock, _q_compact
 
 
@@ -312,6 +313,57 @@ def test_master_browser_is_hierarchical_scrollable_and_only_children_drag(qtbot,
     assert not (top.flags() & Qt.ItemFlag.ItemIsDragEnabled)
     assert child.flags() & Qt.ItemFlag.ItemIsDragEnabled
     assert tree.verticalScrollBar().maximum() > 0
+
+
+def test_deferred_scrollbar_restore_is_bound_to_the_tree(qtbot, tmp_path, monkeypatch):
+    """The zero-delay scrollbar restore must pass the tree as its Qt CONTEXT object.
+
+    Without a context object Qt keeps the timer armed after the tree is destroyed, and the callback
+    then calls setValue() on scrollbars whose C++ objects are gone — a hard access violation, not a
+    catchable RuntimeError (PySide6 does not invalidate wrappers for C++-owned children reaped by a
+    parent's destructor). MainWindow.load_workspace destroys this dock as part of its rebind, so a
+    rebind landing before the event loop services the timer hits exactly that case; it is how
+    tests/gui/test_browser.py's menu-leak guard used to take the whole suite down.
+
+    Asserted structurally rather than by provoking the crash on purpose: a regression here kills the
+    interpreter, and a segfaulting test reports nothing — it just destroys the run.
+    """
+    real_qtimer = scans_dock.QTimer
+    contexts = []
+
+    class _SpyQTimer(real_qtimer):
+        @staticmethod
+        def singleShot(msec, *rest):
+            contexts.append(rest)
+            real_qtimer.singleShot(msec, *rest)
+
+    scans = [_sv("tavi", index, "det", hkl=(2.0 + index / 100, 0, 0)) for index in range(1, 11)]
+
+    def group_for(scan):
+        member = SimpleNamespace(unit_id=scan.scan_id, branch_id="optic", omega0=6.0)
+        master = SimpleNamespace(
+            q=scan.hkl, T=300.0, branch_id="optic", track_state="confirmed",
+            interval=[5.8, 6.2], omega0=6.0, interval_reliable=True,
+            disposition="resolved", n_members=1, reasons=())
+        return SimpleNamespace(master=master, members=(member,))
+
+    ws = SimpleNamespace(scans=scans, master_groups=[group_for(scan) for scan in scans])
+    vm = ScansViewModel(ws, store=GuiStore.load(tmp_path))
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+
+    # Patch only around the refresh, so the initial build's timers are not counted.
+    monkeypatch.setattr(scans_dock, "QTimer", _SpyQTimer)
+    vm.refresh()
+    monkeypatch.undo()
+
+    assert contexts, "the live refresh no longer schedules the deferred scrollbar restore"
+    for rest in contexts:
+        assert len(rest) == 2, (
+            "QTimer.singleShot was called without a context object — the callback would outlive the "
+            f"widgets it touches; args after the interval were {rest!r}")
+        context, _callback = rest
+        assert context is dock._pool_tree
 
 
 def test_live_refresh_preserves_master_browser_view_state(qtbot, tmp_path):

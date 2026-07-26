@@ -317,40 +317,39 @@ def test_load_workspace_swaps_tree(qtbot, make_ws, tmp_path, monkeypatch):
     assert str(root2) in w._session.recent_workspaces
 
 
-@pytest.mark.skip(reason=(
-    "PAUSED 2026-07-21 — hard-crashes the interpreter (exit 139, 'Windows fatal exception: "
-    "access violation') inside Qt event processing, taking the whole GUI suite down with it. "
-    "Reproduces when run ALONE, so it is this test, not cross-test contamination, and it is not "
-    "caused by any recent change (pristine HEAD crashes identically). Suspect the global "
-    "DeferredDelete flush below — sendPostedEvents(None, ...) drains deferred deletes for EVERY "
-    "object, not just this window's — interacting with findChildren() over menus being torn down "
-    "by the second load_workspace. UNRESOLVED: this may indicate a real menu-teardown bug in "
-    "load_workspace rather than a test artefact, so it needs diagnosis, not deletion."))
 def test_load_workspace_twice_no_menu_leak(qtbot, make_ws):
-    from PySide6.QtCore import QEvent
-    from PySide6.QtWidgets import QApplication, QMenu
+    """Repeated load_workspace must not grow the menu bar.
 
+    The invariant is read off the menu bar's own action list, which ``removeAction()`` updates
+    synchronously — no deferred-delete flush is needed. Two traps this test used to fall into, both
+    established by bisection; do not "simplify" them back:
+
+    * The previous version counted ``menuBar().findChildren(QMenu)`` behind a process-wide
+      ``QApplication.sendPostedEvents(None, DeferredDelete)`` drain, because a Docks menu awaiting
+      deletion is still a child of the menu bar. That drain hard-crashed the interpreter: forcing
+      pending destruction while ordinary posted events were still queued destroyed a ScansDock whose
+      zero-delay scrollbar-restore timer was still armed (fixed at its source in
+      ``scans_dock._restore_master_view_state``). The object-level count was never the invariant
+      anyway — a dead-but-pending QMenu is legitimate Qt state, not a leak.
+    * Reading ``action.menu()`` off ``menuBar().actions()`` destroys the C++ QMenu in this PySide6
+      build when the ``menuBar()`` wrapper is a temporary, leaving ``MainWindow._docks_menu`` dangling
+      and breaking the very rebind under test. ``action.text()`` is the menu title for every menu-bar
+      action and needs no wrapper for the menu itself.
+    """
     ws1, _ = _open(make_ws, rows=_ROWS[:1])
     w = MainWindow(ws1, session=Session(), watch=False)
     qtbot.addWidget(w)
 
-    def _menu_count() -> int:
-        # Flush deferred deletes (deleteLater) so torn-down menus are actually gone before counting.
-        # Count only TITLED menus: QMenuBar lazily creates one untitled internal extension
-        # ("overflow") menu the first time layout pressure squeezes it — a hidden singleton, not a
-        # leak. Every real menu this guard protects (File/Docks/View/…) carries a title.
-        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-        return len([m for m in w.menuBar().findChildren(QMenu) if m.title()])
+    def _menu_titles() -> list[str]:
+        return [a.text() for a in w.menuBar().actions() if a.text()]
 
-    baseline = _menu_count()  # File + Docks
-    w.load_workspace(make_ws(rows=_ROWS))
-    after_first = _menu_count()
-    w.load_workspace(make_ws(rows=_ROWS[:2]))
-    after_second = _menu_count()
-
-    # A leak would grow the QMenu count by one per load; the count must be stable instead.
-    assert after_first == baseline
-    assert after_second == baseline
+    baseline = _menu_titles()  # File + Help + Run + Backends + View + Docks
+    assert "&Docks" in baseline
+    # A leak adds one Docks menu per load; the titles must be identical instead. Four loads, so a
+    # leak that only shows up after the first rebind still gets caught.
+    for rows in (_ROWS, _ROWS[:2], _ROWS, _ROWS[:2]):
+        assert w.load_workspace(make_ws(rows=rows)) is True
+        assert _menu_titles() == baseline
     # And the tree reflects the LAST workspace (2 rows -> 2 members across its groups).
     assert sum(w.browser_dock._tree.topLevelItem(i).childCount()
                for i in range(w.browser_dock._tree.topLevelItemCount())) == 2
