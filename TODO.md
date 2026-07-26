@@ -18,7 +18,7 @@ ISAR = analysis authority). Forward workstreams live in their own plans:
 [SPEEDUP](docs/SPEEDUP_DESIGN.md), [STEERING](docs/STEERING_DESIGN.md),
 [BACKGROUND](docs/BACKGROUND_DESIGN.md).
 
-Last updated: 2026-07-25.
+Last updated: 2026-07-26.
 
 ---
 

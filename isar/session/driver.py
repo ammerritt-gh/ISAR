@@ -940,7 +940,10 @@ def _resolve_workers(cli_workers=None) -> int:
 def _resolve_boot_workers(default_n) -> int:
     """Parametric-bootstrap worker count. ``ISAR_BOOTSTRAP_WORKERS`` (>0) overrides; otherwise the
     caller's ``default_n`` (1 inside a scan-pool worker to avoid nested oversubscription; the full
-    budget when scans run serially — e.g. the drive loop's one-scan-per-``isar run``)."""
+    budget when scans run serially — e.g. the drive loop's one-scan-per-``isar run``). Note the
+    asymmetry: the env always wins over ``default_n``, so a caller passing a deliberate serial
+    default (e.g. ``1``) is silently overridden under pytest (where the repo-root conftest sets
+    ``ISAR_BOOTSTRAP_WORKERS``) — don't call this expecting ``default_n=1`` to force serial."""
     env = os.environ.get("ISAR_BOOTSTRAP_WORKERS")
     if env:
         try:

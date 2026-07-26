@@ -352,10 +352,12 @@ def test_deferred_scrollbar_restore_is_bound_to_the_tree(qtbot, tmp_path, monkey
     dock = ScansDock(vm)
     qtbot.addWidget(dock)
 
-    # Patch only around the refresh, so the initial build's timers are not counted.
-    monkeypatch.setattr(scans_dock, "QTimer", _SpyQTimer)
-    vm.refresh()
-    monkeypatch.undo()
+    # Patch only around the refresh, so the initial build's timers are not counted. Use a
+    # scoped context rather than monkeypatch.setattr(...)/monkeypatch.undo(): pytest shares one
+    # MonkeyPatch instance per test node, so undo() also reverts the autouse isolation fixtures.
+    with monkeypatch.context() as m:
+        m.setattr(scans_dock, "QTimer", _SpyQTimer)
+        vm.refresh()
 
     assert contexts, "the live refresh no longer schedules the deferred scrollbar restore"
     for rest in contexts:

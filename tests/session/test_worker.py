@@ -35,7 +35,8 @@ def _scaffold_ws(root: Path, tmp_path: Path):
 
 
 def _corrupt_data_row(payload: bytes) -> bytes:
-    """``payload`` with one non-numeric token planted strictly inside a scan's data block.
+    """``payload`` with one non-numeric token planted strictly inside the file's data-row list
+    (equivalently, inside the scan's data block here, since this file has exactly one scan).
 
     Truncating the file is NOT garbage to this reader: a single short FINAL data row is the
     aborted-mid-write artifact SPEC really produces, and `isar.parsers.spec_base._resolve_block_rows`
@@ -47,7 +48,9 @@ def _corrupt_data_row(payload: bytes) -> bytes:
     data_rows = [i for i, line in enumerate(lines) if line.strip() and not line.startswith("#")]
     assert len(data_rows) >= 3, "emitted run has no multi-row data block to corrupt"
     victim = data_rows[len(data_rows) // 2]
-    assert data_rows[0] < victim < data_rows[-1], "corruption must land inside the block, not at its edges"
+    assert data_rows[0] < victim < data_rows[-1], (
+        "corruption must land interior to the file's data-row list, not at its edges "
+        "(equivalently, interior to the scan's block here, since this file has one scan)")
     tokens = lines[victim].split()
     assert len(tokens) >= 3
     tokens[len(tokens) // 2] = "NOT_A_NUMBER"   # mid-record: the row keeps its declared width

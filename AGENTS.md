@@ -33,7 +33,8 @@ area.
      `-s`, `--pdb`, and the stall recipe `-o faulthandler_timeout=60` do not work meaningfully
      under xdist, which captures and multiplexes worker output.
   2. *Day-to-day (~1 min):* `python -m pytest -m "not slow" -n 16 --dist worksteal` — ~55 s on an
-     idle 32-core box against 347 s serial.
+     idle 32-core box against 347 s serial. On a smaller box use `-n auto` instead of `-n 16`: the
+     pinned count is tuned for that idle 32-core machine, and a 4-core box thrashes at `-n 16`.
   3. *Full validation (~10 min):* `python -m pytest -n 16 --dist worksteal`, against ~24 min
      serial. Run a full **serial** `python -m pytest` periodically anyway (pre-release, after
      test-infra changes): serial and parallel expose different ordering and shared-state bugs.

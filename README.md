@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for product overview and quickstart
 > **Provenance:** hand-written
-> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Verified against code revision:** `3dd2f3a` (2026-07-26)
 
 **I**nelastic **S**cattering **A**utomated **R**— (the final R is deliberately floating: the tool
 *reduces* data at ingest, *resolves* phonons in analysis, *reviews* scans for the human, and — in a

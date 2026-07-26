@@ -18,6 +18,12 @@ is still spawned, pickling and result reassembly still happen) while bounding th
 children per xdist worker. ``setdefault`` means an operator or CI that sets either variable keeps
 full control, and a test that needs a real pool size can ``monkeypatch.setenv`` it.
 
+The cap has a second effect worth knowing: with ``ISAR_WORKERS=2``, ``driver.run_batch``'s
+``use_workorder = is_full and len(tasks) <= scan_workers`` means any full-tier batch of 3+ tasks
+can no longer take the single-work-order path and deterministically falls to the Layer-A scan-pool
+branch under pytest — previously this was machine-dependent (it flipped with the ambient CPU
+count).
+
 No test currently needs an opt-out. The three parallel-equivalence tests all pin their worker
 counts as explicit call arguments, which take precedence over the environment:
 ``tests/session/test_master_fit.py::test_parallel_masters_match_serial_end_to_end`` passes
