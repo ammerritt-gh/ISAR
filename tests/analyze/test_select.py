@@ -146,7 +146,9 @@ def test_two_stage_select_rejects_second_mode_on_true_single_peak():
     rejects the extra mode: the 1-mode stokes+bg wins."""
     ctx = _one_peak_ctx()
     peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
-    results = loop.fit_structures_two_stage(ctx, with_errors=True, M=40, seed=1, peaks=peaks)
+    # with_errors=False on purpose: this test's contract is AIC rejection only -- the assertions
+    # never read bootstrap output, and the M=40 bootstrap was ~27s of pure cost.
+    results = loop.fit_structures_two_stage(ctx, with_errors=False, M=40, seed=1, peaks=peaks)
     assert "stokes2+bg" in {r.label for r in results}     # it WAS offered
     sel = select.select_models(results)
     assert sel.best == "stokes+bg"                        # …and rejected on AIC
