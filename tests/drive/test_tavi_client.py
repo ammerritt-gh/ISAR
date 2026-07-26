@@ -77,7 +77,7 @@ def _make_handler(state: _StubState):
 def server():
     state = _StubState()
     httpd = HTTPServer(("127.0.0.1", 0), _make_handler(state))
-    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t = threading.Thread(target=lambda: httpd.serve_forever(poll_interval=0.02), daemon=True)
     t.start()
     host, port = httpd.server_address
     base = f"http://{host}:{port}/api/v1"
@@ -85,6 +85,8 @@ def server():
         yield base, state
     finally:
         httpd.shutdown()
+        t.join(timeout=2.0)
+        assert not t.is_alive()
         httpd.server_close()
 
 

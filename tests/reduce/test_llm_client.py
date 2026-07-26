@@ -234,13 +234,16 @@ def http_server():
                 pass
 
         srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
-        servers.append(srv)
+        t = threading.Thread(target=lambda: srv.serve_forever(poll_interval=0.02), daemon=True)
+        t.start()
+        servers.append((srv, t))
         return f"http://127.0.0.1:{srv.server_address[1]}"
 
     yield make
-    for srv in servers:
+    for srv, t in servers:
         srv.shutdown()
+        t.join(timeout=2.0)
+        assert not t.is_alive()
         srv.server_close()
 
 
