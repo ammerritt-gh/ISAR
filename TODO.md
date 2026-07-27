@@ -299,21 +299,12 @@ None of these change a reported number; all are cost or hygiene.
 Smaller items, mostly GUI polish; fold into other work where convenient. No acceptance
 conditions — these are wants, not commitments.
 
-- [ ] **WISH-1** — Show a bounded box for the last scan area.
-- [ ] **WISH-2** — Error bars in the master fit, showing the width of the phonon energy error.
-- [ ] **WISH-3** — Better symbols with clear movement from individual (resolved/not) to master
-      scans:
-    1. Small green circle for a valid individual fit
-    2. Larger hollow green circle for the current master fit center that matches target conditions
-    3. Hollow red diamond for the current master fit that does NOT match target conditions
-    4. Hollow blue square for a master fit that is certified
 - [ ] **WISH-4** — Master scans report the total neutrons spent, i.e. what the result actually cost.
 - [ ] **WISH-5** — User-facing log cleanup, e.g. no separate "start"/"completed" lines.
 - [ ] **WISH-6** — Connecting to TAVI is slow with a new workspace, though it was connected before.
 - [ ] **WISH-7** — If a folder doesn't exist when saving a workspace, create it.
 - [ ] **WISH-8** — Data-point error bars should be Poisson-correct and asymmetric: a count of 1
       gives far smaller error bars on the negative side than the positive side.
-- [ ] **WISH-9** — Odd black-and-white colour palette on some scans — possibly the first one?
 - [ ] **WISH-10** — Use crystallographic energy to get Brillouin-zone sizes (not small).
 - [ ] **WISH-11** — Keep the GUI updated as scans finish, not only as fits finish.
 

@@ -24,11 +24,14 @@
     "integration": "Q = [2.6, 0.0, 0.0] (fixed)",
     "plane": "E"
   },
+  "regions": [],
   "series": [
     {
       "certifying": false,
       "color_norm": null,
       "color_values": null,
+      "errors": null,
+      "glyph": null,
       "label": "data (+/-sqrt N)",
       "role": "data",
       "state": null,
@@ -207,6 +210,8 @@
       "certifying": false,
       "color_norm": null,
       "color_values": null,
+      "errors": null,
+      "glyph": null,
       "label": "fit",
       "role": "fit",
       "state": null,
@@ -1022,6 +1027,8 @@
       "certifying": false,
       "color_norm": null,
       "color_values": null,
+      "errors": null,
+      "glyph": null,
       "label": "phonon",
       "role": "component",
       "state": null,
@@ -1837,6 +1844,8 @@
       "certifying": false,
       "color_norm": null,
       "color_values": null,
+      "errors": null,
+      "glyph": null,
       "label": "elastic",
       "role": "component",
       "state": null,
@@ -2652,6 +2661,8 @@
       "certifying": false,
       "color_norm": null,
       "color_values": null,
+      "errors": null,
+      "glyph": null,
       "label": "bg",
       "role": "component",
       "state": null,
@@ -3467,6 +3478,17 @@
       "certifying": false,
       "color_norm": null,
       "color_values": null,
+      "errors": {
+        "bottom": null,
+        "left": [
+          0.0295183119
+        ],
+        "right": [
+          0.0319150844
+        ],
+        "top": null
+      },
+      "glyph": null,
       "label": "\u03c9\u2080 (interval)",
       "role": "fit",
       "state": null,
@@ -3478,11 +3500,10 @@
       "y": [
         20.4519235
       ],
-      "yerr": [
-        0.0307166981
-      ]
+      "yerr": null
     }
   ],
+  "strip_colormap": "viridis",
   "strips": [],
   "title": "scan 505  det",
   "value_label": null,

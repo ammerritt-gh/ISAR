@@ -113,7 +113,11 @@ def fit_overlay_spec(*, x, counts, yerr, x_fit, total, components, mask=None,
 
     if x_fit is not None and total is not None:
         xf = np.asarray(x_fit, dtype=float)
-        fit_label = f"pooled fit ({n_members} members)" if pooled and n_members else "fit"
+        if pooled:
+            fit_label = (f"pooled master ({n_members} members)"
+                         if n_members else "pooled master")
+        else:
+            fit_label = "fit"
         series.append(ps.Series(x=xf, y=np.asarray(total, dtype=float), label=fit_label,
                                 role=ps.Role.FIT))
         for name, values in (components or []):
@@ -132,9 +136,11 @@ def fit_overlay_spec(*, x, counts, yerr, x_fit, total, components, mask=None,
         y0 = _interval_at(grid_x, grid_y, omega0)
         if interval_reliable and interval is not None and len(interval) >= 2:
             lo, hi = float(interval[0]), float(interval[-1])
-            half = abs(hi - lo) / 2.0
             series.append(ps.Series(x=np.array([float(omega0)]), y=np.array([y0]),
-                                    yerr=np.array([half]), label="ω₀ (interval)", role=ps.Role.FIT))
+                                    errors=ps.ErrorBars(
+                                        left=np.array([float(omega0) - lo]),
+                                        right=np.array([hi - float(omega0)])),
+                                    label="ω₀ (interval)", role=ps.Role.FIT))
         else:
             markers.append(ps.Marker(x=float(omega0), y=y0, kind=ps.MarkerKind.WARNING,
                                      label="ω₀ (unreliable)"))
@@ -177,7 +183,7 @@ _VERDICT_MARKER = {
 
 
 def dispersion_spec(*, points, projection, prior=None, branches=None,
-                    off_curve=None, color_norm=None,
+                    off_curve=None, color_norm=None, color_by_entropy=False,
                     title="dispersion ω̂(q)", xlabel="q (rlu)",
                     ylabel="energy transfer (meV)", value_label=None, meta=None):
     """The C5 dispersion view (ω̂ vs q) as a :class:`~isar.plotspec.spec.PlotSpec` — the heatmap's
@@ -208,6 +214,13 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
     if projection is None:
         raise ValueError("dispersion_spec requires a ProjectionLegend (declared projection "
                          "is always on screen; G9 4D-honesty)")
+
+    if points and all("display_state" in point for point in points):
+        return _state_first_dispersion_spec(
+            points=points, projection=projection, prior=prior, branches=branches,
+            off_curve=off_curve, color_norm=color_norm,
+            color_by_entropy=color_by_entropy, title=title, xlabel=xlabel,
+            ylabel=ylabel, value_label=value_label, meta=meta)
 
     series: list[ps.Series] = []
     markers: list[ps.Marker] = []
@@ -321,7 +334,7 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
         p_colored = any(e is not None for e in group["ent"])
         ns = [n for n in group["n"] if n is not None]
         if len(group["x"]) == 1 and ns:
-            plabel = f"pooled ({int(ns[0])})"
+            plabel = f"pooled master ({int(ns[0])})"
         elif ns:
             plabel = f"pooled masters ({len(group['x'])})"
         else:
@@ -354,6 +367,96 @@ def dispersion_spec(*, points, projection, prior=None, branches=None,
         title=title, xlabel=xlabel, ylabel=ylabel,
         series=series, markers=markers, annotations=annotations,
         projection=projection, value_label=value_label, meta=dict(meta or {}))
+
+
+_DISPLAY_GROUPS = (
+    ("individual_valid", ps.Glyph.INDIVIDUAL_VALID, "usable individual evidence"),
+    ("individual_uncertified", ps.Glyph.INDIVIDUAL_UNCERTIFIED,
+     "individual evidence (no certifying interval)"),
+    ("individual_unreliable", ps.Glyph.INDIVIDUAL_UNRELIABLE,
+     "individual evidence (unreliable)"),
+    ("master_target", ps.Glyph.MASTER_TARGET, "pooled master (target, uncertified)"),
+    ("master_ambiguous", ps.Glyph.MASTER_AMBIGUOUS, "pooled master (ambiguous)"),
+    ("master_mismatch", ps.Glyph.MASTER_MISMATCH, "pooled master (target mismatch)"),
+    ("master_certified", ps.Glyph.MASTER_CERTIFIED, "pooled master (certified)"),
+    ("master_unassessed", ps.Glyph.MASTER_UNASSESSED, "pooled master (legacy unassessed)"),
+    ("unselected_candidate", ps.Glyph.UNSELECTED_CANDIDATE, "unselected candidates"),
+)
+
+
+def _state_first_dispersion_spec(*, points, projection, prior, branches, off_curve,
+                                 color_norm, color_by_entropy, title, xlabel, ylabel,
+                                 value_label, meta):
+    """One series per semantic state, emitted in fixed legend order."""
+    series: list[ps.Series] = []
+    context_series: list[ps.Series] = []
+    annotations: list[ps.Annotation] = []
+    if prior is not None:
+        px, py = prior
+        context_series.append(ps.Series(
+            x=np.asarray(px, float), y=np.asarray(py, float),
+            label="dispersion prior", role=ps.Role.PRIOR))
+    context_series.extend(_branch_series(branches))
+    for branch in branches or ():
+        if isinstance(branch, dict) and branch.get("endpoint") is not None:
+            endpoint = branch["endpoint"]
+            annotations.append(ps.Annotation(
+                text=str(branch.get("label") or branch.get("branch_id") or "branch"),
+                xy=(float(endpoint[0]), float(endpoint[1]))))
+
+    for state, glyph, label in _DISPLAY_GROUPS:
+        rows = [point for point in points if str(point.get("display_state")) == state]
+        if not rows:
+            continue
+        xs = np.asarray([float(row["q"]) for row in rows], dtype=float)
+        ys = np.asarray([float(row["omega"]) for row in rows], dtype=float)
+        bottom, top, any_error = [], [], False
+        for row, y in zip(rows, ys):
+            interval = row.get("interval")
+            if interval is not None and len(interval) >= 2:
+                bottom.append(y - float(interval[0]))
+                top.append(float(interval[-1]) - y)
+                any_error = True
+            elif row.get("yerr") is not None:
+                bottom.append(float(row["yerr"]))
+                top.append(float(row["yerr"]))
+                any_error = True
+            else:
+                bottom.append(0.0)
+                top.append(0.0)
+        errors = (ps.ErrorBars(bottom=np.asarray(bottom), top=np.asarray(top))
+                  if any_error and glyph not in {
+                      ps.Glyph.INDIVIDUAL_UNRELIABLE,
+                      ps.Glyph.UNSELECTED_CANDIDATE,
+                  } else None)
+        entropy = [row.get("entropy") for row in rows]
+        colored = color_by_entropy
+        legacy_state = (
+            ps.State.UNRELIABLE if glyph is ps.Glyph.INDIVIDUAL_UNRELIABLE
+            else ps.State.POOLED if glyph in {
+                ps.Glyph.MASTER_TARGET, ps.Glyph.MASTER_AMBIGUOUS,
+                ps.Glyph.MASTER_MISMATCH, ps.Glyph.MASTER_CERTIFIED,
+                ps.Glyph.MASTER_UNASSESSED,
+            } else None)
+        series.append(ps.Series(
+            x=xs, y=ys, errors=errors, label=label, role=ps.Role.DATA, glyph=glyph,
+            state=legacy_state,
+            color_values=(entropy if colored else None),
+            color_norm=((color_norm if color_norm is not None else ps.LN2) if colored else None)))
+
+    series.extend(context_series)
+    if color_by_entropy:
+        annotations.append(ps.Annotation(
+            text="color = assignment entropy (ln 2 = undecided)", xy=None))
+    for oc in off_curve or ():
+        n_sigma = oc.get("n_sigma")
+        note = "off prior" if n_sigma is None else f"off prior ({float(n_sigma):.1f}σ)"
+        annotations.append(ps.Annotation(
+            text=note, xy=(float(oc["q"]), float(oc["omega"]))))
+    return ps.PlotSpec(
+        title=title, xlabel=xlabel, ylabel=ylabel, series=series,
+        annotations=annotations, projection=projection, value_label=value_label,
+        meta=dict(meta or {}))
 
 
 def _branch_series(branches) -> list[ps.Series]:
@@ -468,7 +571,7 @@ def waterfall_spec(*, traces, offset_step, q=None, axis_label=None,
 
         if pooled:
             annotations.append(ps.Annotation(
-                text=f"{label}: pooled ({n_members or '?'}) — member data not shown",
+                text=f"{label}: pooled master ({n_members or '?'}) — member data not shown",
                 xy=None, role=ps.State.POOLED))
         elif tr.get("counts") is not None:
             x = np.asarray(tr["x"], dtype=float)
@@ -479,7 +582,7 @@ def waterfall_spec(*, traces, offset_step, q=None, axis_label=None,
         if tr.get("curve_x") is not None and tr.get("curve_total") is not None:
             xf = np.asarray(tr["curve_x"], dtype=float)
             yf = np.asarray(tr["curve_total"], dtype=float) + offset
-            fit_label = (f"{label}: pooled ({n_members or '?'}) — member data not shown"
+            fit_label = (f"{label}: pooled master ({n_members or '?'}) — member data not shown"
                         if pooled else label)
             series.append(ps.Series(x=xf, y=yf, label=fit_label, role=ps.Role.FIT))
 

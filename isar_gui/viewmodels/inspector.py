@@ -28,6 +28,7 @@ from PySide6.QtCore import Signal
 
 from isar.plotspec import builders
 from isar.plotspec import spec as ps
+from isar.workspace_api import resolve_interval
 from isar_gui.scan_keys import scan_prefix, split_key
 from isar_gui.viewmodels import certify
 from isar_gui.viewmodels.base import ViewModel
@@ -154,6 +155,12 @@ class InspectorViewModel(ViewModel):
             provenance=self._provenance(fit),
             certifying_tier=certifying,
         )
+        interval, _assessment = resolve_interval(
+            fit, getattr(self._ws, "master_assessments", ()))
+        if interval is not None:
+            st.provenance["interval_source"] = interval.source
+            st.provenance["interval_method"] = interval.method or "unknown"
+            st.provenance["interval_endpoints"] = f"[{interval.lo:.6g}, {interval.hi:.6g}] meV"
         self._attach_specs(fit, st)
         return st
 
@@ -342,7 +349,13 @@ class InspectorViewModel(ViewModel):
 
         # The ω₀ whisker in the plot shows the CERTIFYING tier's interval (None => warning marker),
         # not bootstrap-regardless — so an uncertified ω₀ never draws a numeric whisker.
-        cert_interval = certify.certifying_interval(fit)
+        display_interval, assessment = resolve_interval(
+            fit, getattr(ws, "master_assessments", ()))
+        cert_interval = (None if display_interval is None else
+                         (display_interval.lo, display_interval.hi))
+        display_omega0 = fit.omega0
+        if assessment is not None and getattr(assessment, "omega0", None) is not None:
+            display_omega0 = assessment.omega0
 
         # Legacy pooled fits remain curve-only; new fits use the exact persisted merged spectrum.
         data_x, data_counts, data_yerr, data_mask = energy, counts, yerr, mask
@@ -351,7 +364,7 @@ class InspectorViewModel(ViewModel):
             st.main_spec = builders.fit_overlay_spec(
                 x=data_x, counts=data_counts, yerr=data_yerr, mask=data_mask,
                 x_fit=curve.x, total=curve.total, components=curve.components,
-                omega0=fit.omega0, interval=cert_interval,
+                omega0=display_omega0, interval=cert_interval,
                 interval_reliable=(cert_interval is not None),
                 scan_number=fit.scan_number, det_id=fit.detector_id, q=fit.q,
                 pooled=pooled, members=fit.members, n_members=fit.n_members,
@@ -433,9 +446,10 @@ class InspectorViewModel(ViewModel):
                 d["calib"] = ", ".join(parts)
         if fit.pooled:
             if fit.disposition == "rejected":
-                d["pooled"] = "pooled — uncertifiable"
+                d["pooled"] = "pooled master — uncertifiable"
             else:
-                d["pooled"] = f"pooled ({fit.n_members} members)" if fit.n_members else "pooled"
+                d["pooled"] = (f"pooled master ({fit.n_members} members)"
+                               if fit.n_members else "pooled master")
             if fit.members:
                 d["members"] = [str(m) for m in fit.members]
             if fit.master_revision:

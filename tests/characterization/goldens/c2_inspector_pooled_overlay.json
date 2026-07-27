@@ -33,12 +33,15 @@
     "integration": "Q = [2.0, 0.0, 0.0] (fixed)",
     "plane": "E"
   },
+  "regions": [],
   "series": [
     {
       "certifying": false,
       "color_norm": null,
       "color_values": null,
-      "label": "pooled fit (2 members)",
+      "errors": null,
+      "glyph": null,
+      "label": "pooled master (2 members)",
       "role": "fit",
       "state": null,
       "style": null,
@@ -853,6 +856,8 @@
       "certifying": false,
       "color_norm": null,
       "color_values": null,
+      "errors": null,
+      "glyph": null,
       "label": "phonon",
       "role": "component",
       "state": null,
@@ -1668,6 +1673,8 @@
       "certifying": false,
       "color_norm": null,
       "color_values": null,
+      "errors": null,
+      "glyph": null,
       "label": "bg",
       "role": "component",
       "state": null,
@@ -2483,6 +2490,17 @@
       "certifying": false,
       "color_norm": null,
       "color_values": null,
+      "errors": {
+        "bottom": null,
+        "left": [
+          0.4
+        ],
+        "right": [
+          0.4
+        ],
+        "top": null
+      },
+      "glyph": null,
       "label": "\u03c9\u2080 (interval)",
       "role": "fit",
       "state": null,
@@ -2494,11 +2512,10 @@
       "y": [
         522.364777
       ],
-      "yerr": [
-        0.4
-      ]
+      "yerr": null
     }
   ],
+  "strip_colormap": "viridis",
   "strips": [],
   "title": "pooled \u2014 scan 1  det",
   "value_label": null,

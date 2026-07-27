@@ -1,7 +1,5 @@
-"""C5 dispersion builder (Qt-free): dispersion_spec produces the ω̂(q) scatter with certifying
-whiskers only, the entropy colour channel aligned to the whiskered subset, unreliable points as a
-single warning note, verdict glyphs, optional prior/branch curves, off-curve annotations, and a
-MANDATORY projection legend. These specs are what the GUI (and later the report) render."""
+"""C5 dispersion builder (Qt-free): state-first fit glyphs, asymmetric certifying intervals,
+optional entropy colour, neutral prior/branch curves, and the mandatory projection legend."""
 from __future__ import annotations
 
 import json
@@ -17,9 +15,12 @@ _PROJ = ps.ProjectionLegend(plane="(H, 0, 0) × E", integration="|K|≤0.05, |L|
 
 def _pts():
     return [
-        {"q": 2.0, "omega": 4.0, "yerr": 0.4, "entropy": 0.0, "verdict": "resolved"},
-        {"q": 2.1, "omega": 5.0, "yerr": 0.4, "entropy": 0.3, "verdict": "resolved"},
-        {"q": 2.2, "omega": 6.0, "yerr": None, "entropy": 0.69, "verdict": "flagged"},
+        {"q": 2.0, "omega": 4.0, "interval": (3.7, 4.5), "entropy": 0.0,
+         "display_state": "individual_valid"},
+        {"q": 2.1, "omega": 5.0, "interval": (4.8, 5.6), "entropy": 0.3,
+         "display_state": "individual_valid"},
+        {"q": 2.2, "omega": 6.0, "interval": None, "entropy": 0.69,
+         "display_state": "individual_uncertified"},
     ]
 
 
@@ -28,43 +29,93 @@ def test_projection_legend_mandatory():
         builders.dispersion_spec(points=_pts(), projection=None)
 
 
-def test_reliable_points_are_whiskered_and_uncertified_estimate_stays_neutral():
+def test_reliable_points_have_asymmetric_vertical_errors_and_uncertified_has_none():
     spec = builders.dispersion_spec(points=_pts(), projection=_PROJ)
-    data = [s for s in spec.series if s.role is ps.Role.DATA and s.yerr is not None]
-    assert len(data) == 1
-    assert len(data[0].x) == 2   # two certifying points; the yerr=None one is NOT whiskered
-    assert set(np.round(data[0].x, 3)) == {2.0, 2.1}
-    neutral = next(s for s in spec.series if s.label and "individual estimates" in s.label)
-    assert neutral.x.tolist() == [2.2] and "muted" in (neutral.style or "")
+    valid = next(s for s in spec.series if s.glyph is ps.Glyph.INDIVIDUAL_VALID)
+    assert valid.x.tolist() == [2.0, 2.1]
+    assert valid.yerr is None and valid.errors is not None
+    np.testing.assert_allclose(valid.errors.bottom, [0.3, 0.2])
+    np.testing.assert_allclose(valid.errors.top, [0.5, 0.6])
+    uncertified = next(
+        s for s in spec.series if s.glyph is ps.Glyph.INDIVIDUAL_UNCERTIFIED)
+    assert uncertified.x.tolist() == [2.2]
+    assert uncertified.errors is None
+    assert spec.markers == []
     assert not any(m.kind is ps.MarkerKind.WARNING for m in spec.markers)
     assert json.loads(json.dumps(spec.to_dict())) == spec.to_dict()
 
 
-def test_entropy_channel_only_on_whiskered_subset_and_gated():
+def test_state_mode_is_default_and_has_no_entropy_note():
     spec = builders.dispersion_spec(points=_pts(), projection=_PROJ)
-    data = next(s for s in spec.series if s.role is ps.Role.DATA and s.yerr is not None)
-    assert data.state is ps.State.ENTROPY
-    # aligned to the whiskered subset (2 points), NOT the full 3
-    assert data.color_values is not None and len(data.color_values) == 2
-    assert data.color_norm == pytest.approx(ps.LN2)
-    assert any("assignment entropy" in a.text for a in spec.annotations)
-
-
-def test_entropy_note_absent_when_no_entropy_present():
-    pts = [{"q": 2.0, "omega": 4.0, "yerr": 0.4, "entropy": None},
-           {"q": 2.1, "omega": 5.0, "yerr": 0.4, "entropy": None}]
-    spec = builders.dispersion_spec(points=pts, projection=_PROJ)
-    data = next(s for s in spec.series if s.role is ps.Role.DATA and s.yerr is not None)
-    assert data.state is not ps.State.ENTROPY
-    assert data.color_values is None
+    assert all(s.color_values is None for s in spec.series)
     assert not any("assignment entropy" in a.text for a in spec.annotations)
 
 
-def test_verdict_glyphs_present():
-    spec = builders.dispersion_spec(points=_pts(), projection=_PROJ)
-    kinds = {m.kind for m in spec.markers}
-    assert ps.MarkerKind.VERDICT_RESOLVED in kinds
-    assert ps.MarkerKind.VERDICT_FLAGGED in kinds
+def test_entropy_mode_colours_each_semantic_group_without_changing_glyph():
+    spec = builders.dispersion_spec(
+        points=_pts(), projection=_PROJ, color_by_entropy=True)
+    valid = next(s for s in spec.series if s.glyph is ps.Glyph.INDIVIDUAL_VALID)
+    uncertified = next(
+        s for s in spec.series if s.glyph is ps.Glyph.INDIVIDUAL_UNCERTIFIED)
+    assert valid.color_values == [0.0, 0.3]
+    assert valid.color_norm == pytest.approx(ps.LN2)
+    assert uncertified.color_values == [0.69]
+    assert uncertified.glyph is ps.Glyph.INDIVIDUAL_UNCERTIFIED
+    assert any("assignment entropy" in a.text for a in spec.annotations)
+
+
+def test_entropy_mode_maps_an_all_null_group_to_calm_instead_of_state_colour():
+    spec = builders.dispersion_spec(
+        points=[{
+            "q": 2.0, "omega": 5.0, "entropy": None,
+            "display_state": "master_mismatch",
+        }],
+        projection=_PROJ,
+        color_by_entropy=True,
+    )
+    mismatch = next(s for s in spec.series if s.glyph is ps.Glyph.MASTER_MISMATCH)
+    assert mismatch.color_values == [None]
+    np.testing.assert_allclose(ps.entropy_rgb(mismatch.color_values), [[0.13, 0.47, 0.71]])
+
+
+def test_fit_display_states_emit_one_composed_glyph_in_fixed_legend_order():
+    states = [
+        "master_certified",
+        "individual_unreliable",
+        "master_mismatch",
+        "individual_valid",
+        "unselected_candidate",
+        "master_target",
+        "individual_uncertified",
+        "master_unassessed",
+        "master_ambiguous",
+    ]
+    points = [
+        {"q": float(i), "omega": float(i + 1), "display_state": state,
+         "interval": ((i + 0.8, i + 1.2)
+                      if state not in {"individual_unreliable", "unselected_candidate"}
+                      else None)}
+        for i, state in enumerate(states)
+    ]
+    spec = builders.dispersion_spec(points=points, projection=_PROJ)
+    assert [s.glyph for s in spec.series] == [
+        ps.Glyph.INDIVIDUAL_VALID,
+        ps.Glyph.INDIVIDUAL_UNCERTIFIED,
+        ps.Glyph.INDIVIDUAL_UNRELIABLE,
+        ps.Glyph.MASTER_TARGET,
+        ps.Glyph.MASTER_AMBIGUOUS,
+        ps.Glyph.MASTER_MISMATCH,
+        ps.Glyph.MASTER_CERTIFIED,
+        ps.Glyph.MASTER_UNASSESSED,
+        ps.Glyph.UNSELECTED_CANDIDATE,
+    ]
+    assert spec.markers == []
+    assert all("master scan" not in (s.label or "") for s in spec.series)
+    assert all(
+        s.errors is None
+        for s in spec.series
+        if s.glyph in {ps.Glyph.INDIVIDUAL_UNRELIABLE, ps.Glyph.UNSELECTED_CANDIDATE}
+    )
 
 
 def test_prior_and_branch_series_present_only_when_given():
@@ -91,52 +142,32 @@ def test_off_curve_annotations_rendered():
     assert "4.5" in off[0].text
 
 
-def test_pooled_master_is_marked_and_whiskered_separately_from_members():
-    # A pooled master (delivered per-q answer) with its OWN certifying interval + n_members.
-    pts = [{"q": 2.0, "omega": 4.0, "yerr": 0.4},
-           {"q": 2.1, "omega": 5.0, "yerr": 0.4},
-           {"q": 2.15, "omega": 5.2, "yerr": 0.3, "pooled": True, "n_members": 3}]
-    spec = builders.dispersion_spec(points=pts, projection=_PROJ)
-    pooled = [s for s in spec.series if s.state is ps.State.POOLED]
-    assert len(pooled) == 1
-    assert pooled[0].yerr is not None and pooled[0].yerr[0] == pytest.approx(0.3)  # its own whisker
-    assert pooled[0].label == "pooled (3)"
-    # members stay shown on their own certifying scatter (the master is NOT mixed in)
-    data = next(s for s in spec.series if s.role is ps.Role.DATA and s.state is not ps.State.POOLED)
-    assert len(data.x) == 2
-
-
-def test_pooled_master_without_certifying_interval_is_a_neutral_hollow_square():
-    pts = [{"q": 2.0, "omega": 4.0, "yerr": 0.4},
-           {"q": 2.1, "omega": 5.0, "yerr": 0.4},
-           {"q": 2.15, "omega": 5.2, "yerr": None, "pooled": True, "n_members": 3}]
-    spec = builders.dispersion_spec(points=pts, projection=_PROJ)
-    assert not any(s.state is ps.State.POOLED for s in spec.series)  # no whiskered pooled series
-    assert any(m.kind is ps.MarkerKind.POOLED_UNCERTIFIED and "no certifying" in (m.label or "")
-               for m in spec.markers)
-
-
-def test_explicitly_unreliable_pooled_master_is_red_warning():
-    spec = builders.dispersion_spec(points=[{
-        "q": 2.15, "omega": 5.2, "yerr": None, "pooled": True, "n_members": 3,
-        "interval_reliable": False, "verdict": "flagged",
-    }], projection=_PROJ)
-    assert any(m.kind is ps.MarkerKind.POOLED_WARNING and "unreliable" in (m.label or "")
-               for m in spec.markers)
-    assert any(a.role is ps.State.UNRELIABLE for a in spec.annotations)
-
-
-def test_pooled_master_composes_verdict_without_an_occluding_marker():
+def test_pooled_master_is_a_distinct_composed_glyph_with_its_own_interval():
     pts = [
-        {"q": 2.1, "omega": 5.0, "yerr": 0.4, "verdict": "resolved"},
-        {"q": 2.1, "omega": 5.1, "yerr": 0.2, "pooled": True,
-         "n_members": 3, "verdict": "resolved"},
+        {"q": 2.0, "omega": 4.0, "interval": (3.6, 4.4),
+         "display_state": "individual_valid"},
+        {"q": 2.1, "omega": 5.0, "interval": (4.6, 5.4),
+         "display_state": "individual_valid"},
+        {"q": 2.15, "omega": 5.2, "interval": (4.9, 5.7),
+         "display_state": "master_certified"},
     ]
     spec = builders.dispersion_spec(points=pts, projection=_PROJ)
-    pooled = next(s for s in spec.series if s.state is ps.State.POOLED)
-    assert "verdict_resolved" in (pooled.style or "")
-    assert not any(m.kind is ps.MarkerKind.VERDICT_RESOLVED and m.x == pytest.approx(2.1)
-                   and m.y == pytest.approx(5.1) for m in spec.markers)
+    pooled = next(s for s in spec.series if s.glyph is ps.Glyph.MASTER_CERTIFIED)
+    np.testing.assert_allclose(pooled.errors.bottom, [0.3])
+    np.testing.assert_allclose(pooled.errors.top, [0.5])
+    assert pooled.label == "pooled master (certified)"
+    members = next(s for s in spec.series if s.glyph is ps.Glyph.INDIVIDUAL_VALID)
+    assert len(members.x) == 2
+
+
+def test_legacy_unassessed_master_has_neutral_square_and_no_interval():
+    pts = [{"q": 2.15, "omega": 5.2, "interval": None,
+            "display_state": "master_unassessed"}]
+    spec = builders.dispersion_spec(points=pts, projection=_PROJ)
+    pooled = next(s for s in spec.series if s.glyph is ps.Glyph.MASTER_UNASSESSED)
+    assert pooled.errors is None
+    assert pooled.label == "pooled master (legacy unassessed)"
+    assert spec.markers == []
 
 
 def test_segmented_target_and_acoustic_rival_do_not_bridge_a_gap():
@@ -161,11 +192,12 @@ def test_segmented_target_and_acoustic_rival_do_not_bridge_a_gap():
     assert "rival" in (acoustic.style or "")
 
 
-def test_provisional_bridge_is_one_hollow_series_without_verdict_overlay():
+def test_unselected_candidate_is_one_glyph_without_interval():
     spec = builders.dispersion_spec(points=[{
-        "q": 2.5, "omega": 7.0, "yerr": 0.2, "track_state": "provisional",
-        "verdict": "resolved",
+        "q": 2.5, "omega": 7.0, "interval": (6.8, 7.2),
+        "display_state": "unselected_candidate",
     }], projection=_PROJ)
-    bridge = next(s for s in spec.series if "provisional" in (s.style or ""))
-    assert bridge.label == "provisional bridge"
-    assert not any(m.kind is ps.MarkerKind.VERDICT_RESOLVED for m in spec.markers)
+    candidate = next(s for s in spec.series if s.glyph is ps.Glyph.UNSELECTED_CANDIDATE)
+    assert candidate.label == "unselected candidates"
+    assert candidate.errors is None
+    assert spec.markers == []

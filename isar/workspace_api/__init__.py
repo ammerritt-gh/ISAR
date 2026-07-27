@@ -22,6 +22,9 @@ from .workspace import SCHEMA_VERSION, Workspace, WorkspaceNotFound
 from .scan_keys import scan_prefix, split_key, unit_key
 from .config_gates import (DEFAULT_CLOUD_FALLBACK_MODEL, PolicyValidation, validate_endpoint,
                            validate_policy_text)
+from .display import (AcquisitionSelection, DisplayInterval, FitDisplay, FitDisplayState,
+                      fit_certifying_interval, fit_display, latest_completed_acquisition,
+                      matching_assessment, resolve_interval)
 
 __all__ = [
     "Workspace",
@@ -43,4 +46,13 @@ __all__ = [
     "DEFAULT_CLOUD_FALLBACK_MODEL",
     "validate_policy_text",
     "PolicyValidation",
+    "DisplayInterval",
+    "FitDisplay",
+    "FitDisplayState",
+    "fit_display",
+    "matching_assessment",
+    "resolve_interval",
+    "AcquisitionSelection",
+    "latest_completed_acquisition",
+    "fit_certifying_interval",
 ]

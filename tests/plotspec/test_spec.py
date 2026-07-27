@@ -21,6 +21,52 @@ def test_series_to_dict_is_json_serializable():
     assert d["certifying"] is False
 
 
+def test_directional_error_bars_serialize_with_missing_directions():
+    errors = ps.ErrorBars(
+        left=np.array([0.2, 0.3]),
+        right=np.array([0.4, 0.5]),
+        bottom=None,
+        top=np.array([0.1, 0.6]),
+    )
+    series = ps.Series(
+        x=np.array([1.0, 2.0]), y=np.array([3.0, 4.0]), errors=errors,
+        glyph=ps.Glyph.MASTER_CERTIFIED,
+    )
+    d = series.to_dict()
+    json.dumps(d)
+    assert d["yerr"] is None
+    assert d["errors"] == {
+        "left": [0.2, 0.3],
+        "right": [0.4, 0.5],
+        "bottom": None,
+        "top": [0.1, 0.6],
+    }
+    assert d["glyph"] == "master_certified"
+
+
+def test_directional_error_bars_reject_shape_mismatch():
+    with pytest.raises(ValueError, match="same shape"):
+        ps.ErrorBars(left=np.array([0.1]), right=np.array([0.1, 0.2]))
+    with pytest.raises(ValueError, match="same shape"):
+        ps.Series(
+            x=np.array([1.0, 2.0]), y=np.array([3.0, 4.0]),
+            errors=ps.ErrorBars(left=np.array([0.1])),
+        )
+
+
+def test_directional_error_bars_reject_negative_spans():
+    with pytest.raises(ValueError, match="non-negative"):
+        ps.ErrorBars(bottom=np.array([-0.1]))
+
+
+def test_series_rejects_legacy_and_directional_errors_together():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        ps.Series(
+            x=np.array([1.0]), y=np.array([2.0]), yerr=np.array([0.1]),
+            errors=ps.ErrorBars(top=np.array([0.2])),
+        )
+
+
 def test_band_marker_annotation_projection_round_trip():
     band = ps.Band(x=np.array([0.0, 1.0]), lo=np.array([1.0, 1.5]), hi=np.array([2.0, 2.5]),
                    role=ps.Role.FIT, tier=ps.Tier.BOOTSTRAP, certifying=True)
@@ -57,6 +103,15 @@ def test_unreliable_series_may_not_carry_whiskers():
     with pytest.raises(ValueError):
         ps.Series(x=np.array([0.0]), y=np.array([1.0]), yerr=np.array([0.5]),
                   state=ps.State.UNRELIABLE)
+
+
+def test_unreliable_series_may_not_carry_directional_whiskers():
+    with pytest.raises(ValueError, match="UNRELIABLE"):
+        ps.Series(
+            x=np.array([0.0]), y=np.array([1.0]),
+            errors=ps.ErrorBars(left=np.array([0.5])),
+            state=ps.State.UNRELIABLE,
+        )
 
 
 def test_unreliable_band_is_rejected():
@@ -120,7 +175,39 @@ def test_plotspec_carries_strips_and_value_label_in_to_dict():
     json.dumps(d)
     assert len(d["strips"]) == 2
     assert d["value_label"] == "counts/monitor"
+    assert d["strip_colormap"] == "viridis"
     assert d["strips"][0]["meta"]["scan_id"] == "a"
+
+
+def test_plotspec_strip_colormap_is_configurable():
+    sp = ps.PlotSpec(title="plane", xlabel="H", ylabel="E", strip_colormap="magma")
+    assert sp.strip_colormap == "magma"
+    assert sp.to_dict()["strip_colormap"] == "magma"
+
+
+def test_region_box_serializes_and_rejects_inverted_bounds():
+    region = ps.RegionBox(
+        x_min=1.96, x_max=2.04, y_min=-2.0, y_max=8.0,
+        kind=ps.RegionKind.LATEST_ACQUISITION,
+        label="latest completed acquisition",
+    )
+    d = region.to_dict()
+    json.dumps(d)
+    assert d == {
+        "x_min": 1.96,
+        "x_max": 2.04,
+        "y_min": -2.0,
+        "y_max": 8.0,
+        "kind": "latest_acquisition",
+        "label": "latest completed acquisition",
+    }
+    sp = ps.PlotSpec(title="plane", xlabel="H", ylabel="E", regions=[region])
+    assert sp.to_dict()["regions"] == [d]
+    with pytest.raises(ValueError, match="maxima"):
+        ps.RegionBox(
+            x_min=2.0, x_max=1.0, y_min=0.0, y_max=1.0,
+            kind=ps.RegionKind.LATEST_ACQUISITION,
+        )
 
 
 def test_entropy_rgb_maps_calm_to_alarm():

@@ -22,6 +22,7 @@ import numpy as np
 from PySide6.QtCore import Signal
 
 from isar.plotspec import spec as ps
+from isar.workspace_api import fit_display, latest_completed_acquisition
 from isar_gui.viewmodels import certify, projection
 from isar_gui.viewmodels.base import ViewModel
 
@@ -34,6 +35,7 @@ _VERDICT_MARKER = {
 }
 _T_ROUND = 5.0   # K bin for matching branch-model / prior points to the viewed temperature
 _STATE_KEY = "heatmap"
+_DISPLAY_STATE_KEY = "fit_display"
 
 
 def _g(v) -> str:
@@ -64,6 +66,7 @@ class HeatmapViewModel(ViewModel):
         self._excluded_count = 0
         self._temperatures: list = []
         self._projection: ps.ProjectionLegend | None = None
+        self._color_by_entropy = False
         self._rebuild()
 
     # ---- public state -----------------------------------------------------
@@ -87,6 +90,10 @@ class HeatmapViewModel(ViewModel):
     def projection(self) -> ps.ProjectionLegend | None:
         return self._projection
 
+    @property
+    def color_by_entropy(self) -> bool:
+        return self._color_by_entropy
+
     # ---- slots ------------------------------------------------------------
     def refresh(self) -> None:
         """Rebuild the spec from the (already-refreshed) workspace and emit ``spec_changed``. Cheap
@@ -102,6 +109,13 @@ class HeatmapViewModel(ViewModel):
     def set_temperature(self, T) -> None:
         """Switch the viewed temperature (one T at a time) and rebuild."""
         self._temperature = None if T is None else round(float(T), 6)
+        self.refresh()
+
+    def set_color_by_entropy(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self._color_by_entropy:
+            return
+        self._color_by_entropy = enabled
         self.refresh()
 
     # ---- group-drop restriction (plan Part 2A) ------------------------------
@@ -138,13 +152,16 @@ class HeatmapViewModel(ViewModel):
     # ---- view-state round trip (G10: view state only, never the workspace) --
     def save_view_state(self, session) -> None:
         session.view_state[_STATE_KEY] = {"temperature": self._temperature}
+        session.view_state[_DISPLAY_STATE_KEY] = {
+            "color_by_entropy": self._color_by_entropy}
 
     def load_view_state(self, session) -> None:
         st = (getattr(session, "view_state", None) or {}).get(_STATE_KEY)
-        if not isinstance(st, dict):
-            return
-        t = st.get("temperature")
-        self._temperature = None if t is None else float(t)
+        if isinstance(st, dict):
+            t = st.get("temperature")
+            self._temperature = None if t is None else float(t)
+        shared = (getattr(session, "view_state", None) or {}).get(_DISPLAY_STATE_KEY) or {}
+        self._color_by_entropy = bool(shared.get("color_by_entropy", False))
         self.refresh()
 
     # ---- assembly ---------------------------------------------------------
@@ -221,9 +238,11 @@ class HeatmapViewModel(ViewModel):
         if isinstance(track_payload, dict) and track_payload:
             meta["branch_track_revision"] = track_payload.get("revision")
             meta["branch_frontiers"] = track_payload.get("frontiers")
+        regions = self._latest_regions(strips, fits)
         return ps.PlotSpec(
             title=title, xlabel=f"{axis} (rlu)", ylabel="energy transfer (meV)",
             series=series, markers=markers, annotations=annotations, strips=strips,
+            regions=regions,
             projection=projection, value_label=self._value_label(),
             meta=meta,
         )
@@ -239,7 +258,7 @@ class HeatmapViewModel(ViewModel):
             if energy is None or counts is None or len(energy) == 0:
                 continue
             rows.append((float(fv.q[varying]), np.asarray(energy, float),
-                         np.asarray(counts, float), fv.scan_number))
+                         np.asarray(counts, float), fv))
         if not rows:
             return [], []
         xs = sorted({round(x, 6) for x, *_ in rows})
@@ -248,10 +267,47 @@ class HeatmapViewModel(ViewModel):
         else:
             spacing = 2.0 * step
         width = 0.8 * spacing if spacing > 0 else 0.8 * (2.0 * step)
-        strips = [ps.Strip(x_center=x, width=width, y=e, values=c,
-                           meta={"scan_id": sid})
-                  for (x, e, c, sid) in rows]
+        strips = [ps.Strip(
+            x_center=x, width=width, y=e, values=c,
+            meta={"scan_id": fv.scan_number, "unit_id": fv.unit_id,
+                  "acquisition_id": fv.acquisition_id})
+                  for (x, e, c, fv) in rows]
         return strips, rows
+
+    def _latest_regions(self, strips, fits) -> list[ps.RegionBox]:
+        events = list(self._ws.session_events()) if hasattr(self._ws, "session_events") else []
+        latest = latest_completed_acquisition(events)
+        selected = []
+        if latest.detailed_events_present:
+            if latest.acquisition_id is None:
+                return []
+            selected = [
+                strip for strip in strips
+                if strip.meta.get("acquisition_id") == latest.acquisition_id]
+        else:
+            physical = [fit for fit in getattr(self._ws, "results", ()) if not fit.pooled]
+            if not physical:
+                return []
+            fallback = physical[-1]
+            if fallback.acquisition_id is not None:
+                selected = [
+                    strip for strip in strips
+                    if strip.meta.get("acquisition_id") == fallback.acquisition_id]
+            else:
+                selected = [
+                    strip for strip in strips
+                    if strip.meta.get("unit_id") == fallback.unit_id
+                    or (fallback.unit_id is None
+                        and strip.meta.get("scan_id") == fallback.scan_number)]
+        if not selected:
+            return []
+        return [ps.RegionBox(
+            x_min=min(strip.x_center - strip.width / 2.0 for strip in selected),
+            x_max=max(strip.x_center + strip.width / 2.0 for strip in selected),
+            y_min=min(float(np.min(strip.y)) for strip in selected),
+            y_max=max(float(np.max(strip.y)) for strip in selected),
+            kind=ps.RegionKind.LATEST_ACQUISITION,
+            label="latest completed acquisition")]
 
     def _branch_first_overlays(self, fits, varying):
         """Build the shared ω̂ overlay, including additive unselected branch candidates."""
@@ -260,30 +316,39 @@ class HeatmapViewModel(ViewModel):
         overlay_points = []
         hit_points = []
         entropy = []
+        assessments = getattr(self._ws, "master_assessments", ())
+        branch_tracks = getattr(getattr(self._ws, "branch_model", None), "branch_tracks", None)
         for fv in fits:
             x = float(fv.q[varying])
             candidates = projection.unselected_candidate_points(fv, x)
             if fv.omega0 is None:
-                overlay_points.extend(candidates)
+                overlay_points.extend({
+                    **candidate, "display_state": "unselected_candidate"}
+                    for candidate in candidates)
                 continue
+            display = fit_display(
+                fv, assessments, branch_tracks=branch_tracks)
             y = float(fv.omega0)
+            if display.assessment is not None \
+                    and getattr(display.assessment, "omega0", None) is not None:
+                y = float(display.assessment.omega0)
             hit_points.append((x, y, fv))
             ent = fv.assignment_entropy
             ent = None if ent is None else float(ent)
             entropy.append(ent)
-            cert = certify.certifying_interval(fv)
-            half = (abs(float(cert[-1]) - float(cert[0])) / 2.0
-                    if cert is not None and len(cert) >= 2 else None)
             overlay_points.append({
-                "q": x, "omega": y, "yerr": half, "entropy": ent,
-                "verdict": fv.verdict, "pooled": bool(fv.pooled),
-                "n_members": fv.n_members, "track_state": getattr(fv, "track_state", None),
-                "interval_reliable": fv.interval_reliable,
+                "q": x, "omega": y, "entropy": ent,
+                "interval": (None if display.interval is None else
+                             (display.interval.lo, display.interval.hi)),
+                "display_state": display.state.value,
             })
-            overlay_points.extend(candidates)
+            overlay_points.extend({
+                **candidate, "display_state": "unselected_candidate"}
+                for candidate in candidates)
         overlay = builders.dispersion_spec(
             points=overlay_points,
-            projection=ps.ProjectionLegend(plane="overlay", integration="overlay"))
+            projection=ps.ProjectionLegend(plane="overlay", integration="overlay"),
+            color_by_entropy=self._color_by_entropy)
         return overlay.series, overlay.markers, overlay.annotations, hit_points, entropy
 
     def _overlays(self, fits, varying):
@@ -353,7 +418,7 @@ class HeatmapViewModel(ViewModel):
             p_colored = any(e is not None for e in pool_ent)  # masters: entropy n/a unless present
             ns = [n for n in pool_n if n is not None]
             if len(pool_x) == 1 and ns:
-                plabel = f"pooled ({int(ns[0])})"
+                plabel = f"pooled master ({int(ns[0])})"
             elif ns:
                 plabel = f"pooled masters ({len(pool_x)})"
             else:

@@ -307,6 +307,16 @@ class FitView:
         return str(value) if value not in (None, "") else None
 
     @property
+    def acquisition_id(self) -> str | None:
+        value = self._pick("acquisition_id", "acquisition_id")
+        return str(value) if value not in (None, "") else None
+
+    @property
+    def target_branch(self) -> str | None:
+        value = self._pick("target_branch", "target_branch")
+        return str(value) if value not in (None, "") else None
+
+    @property
     def model_interval(self) -> tuple | None:
         value = self._outcome.get("model_interval")
         if isinstance(value, (list, tuple)) and len(value) >= 2:

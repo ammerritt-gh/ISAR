@@ -4,11 +4,14 @@
   "markers": [],
   "meta": {},
   "projection": null,
+  "regions": [],
   "series": [
     {
       "certifying": false,
       "color_norm": null,
       "color_values": null,
+      "errors": null,
+      "glyph": null,
       "label": "residual",
       "role": "residual",
       "state": null,
@@ -184,6 +187,7 @@
       ]
     }
   ],
+  "strip_colormap": "viridis",
   "strips": [],
   "title": "residuals",
   "value_label": null,

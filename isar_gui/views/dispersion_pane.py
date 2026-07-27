@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -30,7 +31,7 @@ class DispersionPane(GroupDropMixin, QWidget):
     """ω̂(q) over a :class:`DispersionViewModel`: scatter + overlays + projection legend, a T
     selector, click -> ``VM.activate_at``, and a group-drop restriction (2A, refuses multi-T)."""
 
-    def __init__(self, vm, parent=None):
+    def __init__(self, vm, parent=None, entropy_action=None):
         super().__init__(parent)
         self._vm = vm
 
@@ -45,6 +46,11 @@ class DispersionPane(GroupDropMixin, QWidget):
         self._t_combo = QComboBox()
         self._t_combo.currentIndexChanged.connect(self._on_t_changed)
         t_l.addWidget(self._t_combo)
+        if entropy_action is not None:
+            entropy_button = QToolButton(self._t_row)
+            entropy_button.setDefaultAction(entropy_action)
+            entropy_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            t_l.addWidget(entropy_button)
         t_l.addStretch(1)
         outer.addWidget(self._t_row)
 
@@ -98,12 +104,21 @@ class DispersionPane(GroupDropMixin, QWidget):
             "no_signal": "no signal",
         }
         points = self._vm.status_points
+        state_colors = {
+            "master_target": "#2e7d32",
+            "master_ambiguous": "#b8860b",
+            "master_mismatch": "#c62828",
+            "master_certified": "#1565c0",
+            "master_unassessed": "#808080",
+        }
         for index, point in enumerate(points):
             reason = point.get("reason")
             q = point.get("q")
             button = QPushButton("?" if q is None else f"{float(q):g}", self._status_host)
             button.setToolTip(reasons.get(reason, str(reason)) + "\n" + str(point))
-            color = "#2e7d32" if reason == "met" else "#c62828" if point.get("stuck") else "#b8860b"
+            color = state_colors.get(
+                point.get("display_state"),
+                "#c62828" if point.get("stuck") else "#b8860b")
             button.setStyleSheet(f"border-bottom: 4px solid {color}; padding: 2px 5px;")
             button.clicked.connect(lambda _checked=False, i=index: self._vm.activate_status(i))
             self._status_layout.addWidget(button)

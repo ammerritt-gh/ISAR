@@ -23,7 +23,7 @@ def _data():
     return x, counts, yerr, x_fit, total, components
 
 
-def test_fit_overlay_reliable_has_data_fit_components_and_omega0_whisker():
+def test_fit_overlay_reliable_has_horizontal_asymmetric_omega0_interval():
     x, counts, yerr, x_fit, total, components = _data()
     spec = builders.fit_overlay_spec(
         x=x, counts=counts, yerr=yerr, x_fit=x_fit, total=total, components=components,
@@ -38,15 +38,32 @@ def test_fit_overlay_reliable_has_data_fit_components_and_omega0_whisker():
     data = next(s for s in spec.series if s.role is ps.Role.DATA)
     assert data.yerr is not None
     assert all(s.state is not ps.State.UNRELIABLE for s in spec.series)
-    # ω₀ interval whisker: a single-point FIT series with yerr, no unreliable annotation/marker
-    omega_series = [s for s in spec.series if s.role is ps.Role.FIT and s.yerr is not None]
+    # ω₀ interval is horizontal and preserves the two endpoint distances exactly. It must not
+    # invent a count-axis uncertainty bar.
+    omega_series = [s for s in spec.series if s.role is ps.Role.FIT and s.errors is not None]
     assert len(omega_series) == 1 and omega_series[0].x[0] == 5.0
-    assert omega_series[0].yerr[0] == pytest.approx(0.4)  # half-width of (4.6, 5.4)
+    errors = omega_series[0].errors
+    np.testing.assert_allclose(errors.left, [0.4])
+    np.testing.assert_allclose(errors.right, [0.4])
+    assert errors.bottom is None and errors.top is None
+    assert omega_series[0].yerr is None
     assert not any(a.role is ps.State.UNRELIABLE for a in spec.annotations)
     assert not any(m.kind is ps.MarkerKind.WARNING for m in spec.markers)
     assert spec.projection is not None
     # JSON-stable
     assert json.loads(json.dumps(spec.to_dict())) == spec.to_dict()
+
+
+def test_fit_overlay_preserves_asymmetric_horizontal_interval_endpoints():
+    x, counts, yerr, x_fit, total, components = _data()
+    spec = builders.fit_overlay_spec(
+        x=x, counts=counts, yerr=yerr, x_fit=x_fit, total=total, components=components,
+        omega0=5.0, interval=(4.7, 5.8), interval_reliable=True,
+    )
+    marker = next(s for s in spec.series if s.role is ps.Role.FIT and s.errors is not None)
+    np.testing.assert_allclose(marker.x - marker.errors.left, [4.7])
+    np.testing.assert_allclose(marker.x + marker.errors.right, [5.8])
+    assert marker.errors.bottom is None and marker.errors.top is None
 
 
 def test_fit_overlay_unreliable_no_omega0_whisker_and_annotation():
@@ -57,10 +74,13 @@ def test_fit_overlay_unreliable_no_omega0_whisker_and_annotation():
         omega0=5.0, interval=(4.6, 5.4), interval_reliable=False,
         scan_number=7, det_id="det", q=[2.0, 0.0, 0.0])
 
-    # no ω₀ whisker series (a single-point FIT series with yerr)
-    single_point_yerr = [s for s in spec.series
-                         if s.role is ps.Role.FIT and s.yerr is not None and np.size(s.x) == 1]
-    assert single_point_yerr == []
+    # no ω₀ whisker series in either compatibility representation
+    single_point_errors = [
+        s for s in spec.series
+        if s.role is ps.Role.FIT and (s.yerr is not None or s.errors is not None)
+        and np.size(s.x) == 1
+    ]
+    assert single_point_errors == []
     # the sanctioned rendering: warning marker + "(unreliable)" annotation
     assert any(m.kind is ps.MarkerKind.WARNING for m in spec.markers)
     unreliable = [a for a in spec.annotations if a.role is ps.State.UNRELIABLE]

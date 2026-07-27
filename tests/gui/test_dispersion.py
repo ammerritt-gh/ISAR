@@ -1,8 +1,5 @@
-"""C5 dispersion view tests: DispersionViewModel derives the same projection as the heatmap (shared
-helper), rides the ω̂ honesty overlay (certifying whisker only, warning otherwise, entropy channel
-aligned to the whiskered subset, verdict glyphs), draws the dispersion prior + branch-belief curves,
-flags points that sit >3σ off the prior, and routes a plot click to the inspector. Offscreen,
-importorskip, xdist-safe."""
+"""C5 dispersion view tests: projection, state-first fit glyphs, directional uncertainty, optional
+entropy colouring, neutral belief curves, off-curve diagnostics, and inspector routing."""
 from __future__ import annotations
 
 import numpy as np
@@ -12,7 +9,7 @@ pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 
 from baselines import mvp16_path
-from isar.plotspec.spec import MarkerKind, Role, State
+from isar.plotspec.spec import Glyph, Role, State
 from isar.workspace_api import Workspace
 from isar_gui.viewmodels.dispersion import DispersionViewModel
 
@@ -103,39 +100,42 @@ def test_projection_matches_heatmap(make_ws):
     assert vm.excluded_count == 1  # the deviant-K scan is outside the projection
 
 
-def test_whiskers_only_where_certifying_entropy_aligned(make_ws):
+def test_directional_whiskers_only_where_certifying_in_default_state_mode(make_ws):
     ws = _make(make_ws)
     vm = DispersionViewModel(ws)
-    data = [s for s in vm.spec.series if s.role is Role.DATA and s.yerr is not None]
-    assert len(data) == 1
-    assert len(data[0].x) == 2                       # two reliable in-window scans
-    assert data[0].state is State.ENTROPY
-    assert data[0].color_values is not None and len(data[0].color_values) == 2  # aligned to subset
-    assert data[0].color_norm is not None
-    # the unreliable scan is a single warning marker + one note
-    warn = [m for m in vm.spec.markers if m.kind is MarkerKind.WARNING]
-    assert len(warn) == 1 and abs(warn[0].x - 2.2) < 1e-9
-    unrel = [a for a in vm.spec.annotations if a.role is State.UNRELIABLE]
-    assert len(unrel) == 1
+    valid = next(s for s in vm.spec.series if s.glyph is Glyph.INDIVIDUAL_VALID)
+    assert len(valid.x) == 2
+    assert valid.yerr is None and valid.errors is not None
+    np.testing.assert_allclose(valid.errors.bottom, [0.4, 0.4])
+    np.testing.assert_allclose(valid.errors.top, [0.4, 0.4])
+    unreliable = next(
+        s for s in vm.spec.series if s.glyph is Glyph.INDIVIDUAL_UNRELIABLE)
+    assert unreliable.x.tolist() == [2.2]
+    assert unreliable.errors is None
+    assert all(s.color_values is None for s in vm.spec.series)
+    assert not any("assignment entropy" in a.text for a in vm.spec.annotations)
+
+    vm.set_color_by_entropy(True)
+    valid = next(s for s in vm.spec.series if s.glyph is Glyph.INDIVIDUAL_VALID)
+    assert valid.color_values == [0.0, 0.3]
+    assert valid.color_norm is not None
+    assert any("assignment entropy" in a.text for a in vm.spec.annotations)
 
 
 def test_pooled_master_marked_and_members_still_shown(make_ws):
     ws = _make(make_ws, with_master=True)
     vm = DispersionViewModel(ws)
     pooled = [s for s in vm.spec.series if s.state is State.POOLED]
-    assert len(pooled) == 1 and pooled[0].yerr is not None  # its own certifying whisker
-    assert pooled[0].label == "pooled (3)"
+    assert len(pooled) == 1 and pooled[0].errors is not None
+    assert pooled[0].glyph is Glyph.MASTER_UNASSESSED
+    assert pooled[0].label == "pooled master (legacy unassessed)"
     members = [s for s in vm.spec.series
-               if s.role is Role.DATA and s.yerr is not None and s.state is not State.POOLED]
+               if s.glyph is Glyph.INDIVIDUAL_VALID]
     assert len(members) == 1 and len(members[0].x) == 2      # per-scan members still visible
     # the master is clickable -> routes to its own FitView
     with_master_scan = [fv for _, _, fv in vm._points if fv.scan_number == 10]
     assert with_master_scan and with_master_scan[0].pooled
-    # One resolved verdict belongs to the member at this coordinate; the pooled master's verdict is
-    # composed into its square instead of adding a second occluding circle.
-    at_master = [m for m in vm.spec.markers if m.kind is MarkerKind.VERDICT_RESOLVED
-                 and abs(m.x - 2.1) < 1e-9 and abs(m.y - 5.0) < 1e-9]
-    assert len(at_master) == 1
+    assert vm.spec.markers == []  # no verdict glyph is overlaid on either composed fit glyph
 
 
 def test_prior_and_branch_curves(make_ws):
@@ -149,7 +149,7 @@ def test_prior_and_branch_curves(make_ws):
     assert Role.PRIOR in roles and Role.BRANCH in roles
 
 
-def test_ambiguous_candidates_render_as_open_markers_without_whiskers(make_ws):
+def test_ambiguous_candidates_render_as_composed_glyph_without_whiskers(make_ws):
     specs = _SPECS + [{
         "scan": 9, "h": 2.3, "k": 0.0, "l": 0.0, "omega0": None,
         "candidate_seed": 2.7, "reliable": False, "entropy": 0.69,
@@ -159,10 +159,12 @@ def test_ambiguous_candidates_render_as_open_markers_without_whiskers(make_ws):
         ],
     }]
     vm = DispersionViewModel(_make(make_ws, specs=specs))
-    ambiguous = [marker for marker in vm.spec.markers
-                 if marker.kind is MarkerKind.AMBIGUOUS_CANDIDATE]
-    assert [(marker.x, marker.y) for marker in ambiguous] == [(2.3, 2.7), (2.3, 6.85)]
-    assert not any(series.yerr is not None and 2.3 in series.x for series in vm.spec.series)
+    ambiguous = next(
+        series for series in vm.spec.series
+        if series.glyph is Glyph.UNSELECTED_CANDIDATE)
+    assert list(zip(ambiguous.x, ambiguous.y)) == [(2.3, 2.7), (2.3, 6.85)]
+    assert ambiguous.yerr is None and ambiguous.errors is None
+    assert vm.spec.markers == []
 
 
 def test_branch_uncertainty_metadata_uses_the_plotted_sample_temperature_slice(make_ws):

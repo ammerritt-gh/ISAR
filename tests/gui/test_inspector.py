@@ -71,7 +71,7 @@ def test_ladder_reliable_bootstrap_certifies(make_ws):
     assert not bayes.certifying and bayes.diagnostics_only
 
 
-def test_ladder_unreliable_bootstrap_defers_to_profile(make_ws):
+def test_ladder_unreliable_bootstrap_falls_back_to_profile(make_ws):
     ws = _ws_with(make_ws, _outcome(interval_reliable=False, omega0_profile=[4.7, 5.3]))
     vm = InspectorViewModel(ws)
     vm.set_fit(_fit(ws))
@@ -142,7 +142,7 @@ def test_provenance_rejected_master_is_uncertifiable(make_ws):
     ws = _ws_with(make_ws, _outcome(pooled=True, disposition="rejected", n_members=2))
     vm = InspectorViewModel(ws)
     vm.set_fit(_fit(ws))
-    assert vm.state.provenance["pooled"] == "pooled — uncertifiable"
+    assert vm.state.provenance["pooled"] == "pooled master — uncertifiable"
 
 
 def test_pooled_master_never_overlays_member_data(make_ws):

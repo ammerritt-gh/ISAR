@@ -18,6 +18,7 @@ import numpy as np
 from PySide6.QtCore import Signal
 
 from isar.plotspec import builders
+from isar.workspace_api import fit_display
 from isar_gui.viewmodels import certify, projection
 from isar_gui.viewmodels.base import ViewModel
 
@@ -26,6 +27,7 @@ _OFF_CURVE_K = 3.0    # a 3σ gate: flag ω̂ only when it is grossly off the pr
 #                       tail under Gaussian noise), so the flag reads as "the model and the number
 #                       genuinely disagree", not as ordinary scatter.
 _STATE_KEY = "dispersion"
+_DISPLAY_STATE_KEY = "fit_display"
 
 
 def _g(v) -> str:
@@ -57,6 +59,7 @@ class DispersionViewModel(ViewModel):
         self._temperatures: list = []
         self._projection = None
         self._status_points: list[dict] = []
+        self._color_by_entropy = False
         self._rebuild()
 
     # ---- public state -----------------------------------------------------
@@ -84,6 +87,10 @@ class DispersionViewModel(ViewModel):
     def status_points(self) -> list[dict]:
         return [dict(point) for point in self._status_points]
 
+    @property
+    def color_by_entropy(self) -> bool:
+        return self._color_by_entropy
+
     def activate_status(self, index: int) -> None:
         if not (0 <= index < len(self._status_points)):
             return
@@ -109,6 +116,13 @@ class DispersionViewModel(ViewModel):
     def set_temperature(self, T) -> None:
         """Switch the viewed temperature (one T at a time) and rebuild."""
         self._temperature = None if T is None else round(float(T), 6)
+        self.refresh()
+
+    def set_color_by_entropy(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self._color_by_entropy:
+            return
+        self._color_by_entropy = enabled
         self.refresh()
 
     # ---- group-drop restriction (plan Part 2A) ------------------------------
@@ -142,13 +156,16 @@ class DispersionViewModel(ViewModel):
     # ---- view-state round trip (G10: view state only, never the workspace) --
     def save_view_state(self, session) -> None:
         session.view_state[_STATE_KEY] = {"temperature": self._temperature}
+        session.view_state[_DISPLAY_STATE_KEY] = {
+            "color_by_entropy": self._color_by_entropy}
 
     def load_view_state(self, session) -> None:
         st = (getattr(session, "view_state", None) or {}).get(_STATE_KEY)
-        if not isinstance(st, dict):
-            return
-        t = st.get("temperature")
-        self._temperature = None if t is None else float(t)
+        if isinstance(st, dict):
+            t = st.get("temperature")
+            self._temperature = None if t is None else float(t)
+        shared = (getattr(session, "view_state", None) or {}).get(_DISPLAY_STATE_KEY) or {}
+        self._color_by_entropy = bool(shared.get("color_by_entropy", False))
         self.refresh()
 
     # ---- assembly ---------------------------------------------------------
@@ -184,15 +201,40 @@ class DispersionViewModel(ViewModel):
         self._spec = self._build_spec(in_window, varying, modal, step)
 
     def _latest_per_q(self) -> list[dict]:
+        rows = []
         for event in reversed(list(self._ws.session_events(kind="decide"))):
             payload = event.get("payload") or {}
             if payload.get("action") == "model_update" and isinstance(payload.get("per_q"), list):
-                return [dict(point) for point in payload["per_q"] if isinstance(point, dict)]
-        events = list(self._ws.session_events(kind="stop"))
+                rows = [dict(point) for point in payload["per_q"] if isinstance(point, dict)]
+                break
+        if not rows:
+            events = list(self._ws.session_events(kind="stop"))
+        else:
+            events = []
         if events:
             grid = (events[-1].get("payload") or {}).get("grid_state") or {}
-            return [dict(point) for point in grid.get("per_q") or () if isinstance(point, dict)]
-        return []
+            rows = [dict(point) for point in grid.get("per_q") or () if isinstance(point, dict)]
+        assessments = getattr(self._ws, "master_assessments", ())
+        branch_tracks = getattr(getattr(self._ws, "branch_model", None), "branch_tracks", None)
+        masters = [fit for fit in getattr(self._ws, "results", ()) if fit.pooled]
+        for row in rows:
+            hkl = row.get("hkl")
+            master = next((
+                fit for fit in masters if fit.q is not None and hkl is not None
+                and len(fit.q) == len(hkl)
+                and np.allclose(fit.q, hkl, atol=self._hkl_round_step() / 2.0)), None)
+            if master is not None:
+                row["display_state"] = fit_display(
+                    master, assessments, branch_tracks=branch_tracks).state.value
+            elif str(row.get("assessment_state") or "").lower() == "certified" \
+                    or bool(row.get("converged", False)):
+                row["display_state"] = "master_certified"
+            elif str(row.get("track_state") or "").lower() in {
+                    "ambiguous", "missing", "provisional", "blocked", "frontier_blocked"}:
+                row["display_state"] = "master_ambiguous"
+            else:
+                row["display_state"] = "master_target"
+        return rows
 
     def _empty_spec(self):
         # No projection can be declared with no in-window scans, so this is the one spec allowed
@@ -231,26 +273,34 @@ class DispersionViewModel(ViewModel):
 
         points, entropy = [], []
         self._points = []
+        assessments = getattr(self._ws, "master_assessments", ())
         for fv in fits:
             x = float(fv.q[varying])
             candidates = projection.unselected_candidate_points(fv, x)
             if fv.omega0 is None:
-                points.extend(candidates)
+                points.extend({
+                    **candidate, "display_state": "unselected_candidate"}
+                    for candidate in candidates)
                 continue
+            display = fit_display(
+                fv, assessments, branch_tracks=track_payload)
             y = float(fv.omega0)
+            if display.assessment is not None \
+                    and getattr(display.assessment, "omega0", None) is not None:
+                y = float(display.assessment.omega0)
             self._points.append((x, y, fv))
             ent = fv.assignment_entropy
             ent = None if ent is None else float(ent)
             entropy.append(ent)
-            cert = certify.certifying_interval(fv)
-            half = (abs(float(cert[-1]) - float(cert[0])) / 2.0
-                    if cert is not None and len(cert) >= 2 else None)
-            points.append({"q": x, "omega": y, "yerr": half, "entropy": ent,
-                           "verdict": fv.verdict, "pooled": bool(fv.pooled),
-                           "n_members": fv.n_members,
-                           "interval_reliable": fv.interval_reliable,
-                           "track_state": getattr(fv, "track_state", None)})
-            points.extend(candidates)
+            points.append({
+                "q": x, "omega": y, "entropy": ent,
+                "interval": (None if display.interval is None else
+                             (display.interval.lo, display.interval.hi)),
+                "display_state": display.state.value,
+            })
+            points.extend({
+                **candidate, "display_state": "unselected_candidate"}
+                for candidate in candidates)
 
         prior_xy = None if prior is None else (prior[0], prior[1])
         off_curve = self._off_curve(points, prior)
@@ -272,6 +322,7 @@ class DispersionViewModel(ViewModel):
             points=points, projection=self._projection, prior=prior_xy,
             branches=branches, off_curve=off_curve, title=title,
             xlabel=f"{projection.AXIS[varying]} (rlu)",
+            color_by_entropy=self._color_by_entropy,
             meta=meta,
         )
 
@@ -296,7 +347,9 @@ class DispersionViewModel(ViewModel):
             if x < xs_p[0] or x > xs_p[-1]:
                 continue
             prior_y = float(np.interp(x, xs_p, ys_p))
-            sig_eff = p["yerr"]
+            interval = p.get("interval")
+            sig_eff = (max(y - float(interval[0]), float(interval[-1]) - y)
+                       if interval is not None and len(interval) >= 2 else p.get("yerr"))
             if sig_eff is None:
                 s = float(np.interp(x, xs_p, sig_p))
                 sig_eff = s if np.isfinite(s) else None

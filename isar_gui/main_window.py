@@ -18,7 +18,7 @@ from pathlib import Path
 from weakref import WeakSet
 
 from PySide6.QtCore import QByteArray, Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
@@ -357,6 +357,11 @@ class MainWindow(QMainWindow):
         self.waterfall_vm.load_view_state(self._session)
         self.heatmap_vm.load_view_state(self._session)
         self.dispersion_vm.load_view_state(self._session)
+        self._entropy_action = QAction("Colour by entropy", self)
+        self._entropy_action.setCheckable(True)
+        self._entropy_action.setChecked(self.heatmap_vm.color_by_entropy)
+        self._entropy_action.toggled.connect(self.heatmap_vm.set_color_by_entropy)
+        self._entropy_action.toggled.connect(self.dispersion_vm.set_color_by_entropy)
 
         # The five display surfaces (the C2 fit inspector + the four plot panes) live as switchable
         # pages of the central CenterHost; a browser selection drives the inspector. In the empty
@@ -477,8 +482,12 @@ class MainWindow(QMainWindow):
         host = CenterHost(self)
         host.add_page("scan", "Scan", self.inspector)
         host.add_page("waterfall", "Waterfall", WaterfallPane(self.waterfall_vm))
-        host.add_page("plane", "Plane (q, E)", HeatmapPane(self.heatmap_vm))
-        host.add_page("dispersion", "Dispersion ω(q)", DispersionPane(self.dispersion_vm))
+        host.add_page(
+            "plane", "Plane (q, E)",
+            HeatmapPane(self.heatmap_vm, entropy_action=self._entropy_action))
+        host.add_page(
+            "dispersion", "Dispersion ω(q)",
+            DispersionPane(self.dispersion_vm, entropy_action=self._entropy_action))
         host.add_page("sandbox", "Sandbox", SandboxPane(self.sandbox_vm))
         # Restore the persisted view state (default: the Scan/inspector page, auto-follow on). Set
         # auto BEFORE show_view so the programmatic (non-user) restore does not clear it.
@@ -1835,6 +1844,9 @@ class MainWindow(QMainWindow):
         self.scans_vm.deleteLater()
         self.inspector_vm.deleteLater()
         self.campaign_vm.deleteLater()
+        if getattr(self, "_entropy_action", None) is not None:
+            self._entropy_action.deleteLater()
+            self._entropy_action = None
         self.heatmap_vm.save_view_state(self._session)
         self.heatmap_vm.deleteLater()
         self.dispersion_vm.save_view_state(self._session)
@@ -1885,7 +1897,7 @@ class MainWindow(QMainWindow):
         # "results"/"snapshot" carry the fit data the plots read; "card_state" carries lattice
         # epochs / dispersion prior / branch belief that feed the browser HKL, the dispersion prior
         # curve, and the heatmap overlays — so it must also re-derive the component views.
-        if changed & {"results", "snapshot", "card_state", "card"}:
+        if changed & {"results", "snapshot", "card_state", "card", "events"}:
             self.browser_vm.refresh()
             self.heatmap_vm.refresh()
             self.dispersion_vm.refresh()

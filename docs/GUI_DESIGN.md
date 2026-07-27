@@ -21,6 +21,7 @@ preserved as the design record.
 | **Pass 3** — workflow layout (center view host, versioned dock layout) | **Implemented** (G18) | `views/center_host.py` |
 | **Pass 3** — campaign workspace: launcher, live feed, cooperative stop | **Implemented** (G19) | `views/campaign_dock.py`, `control/stop-<token>.json` protocol |
 | **Pass 3** — compact campaign monitor | **Implemented** (G20) | `views/campaign_monitor.py` |
+| **Read-only display grammar** — WISH-1/2/3/9 | **Implemented** (G23) | `isar/workspace_api/display.py`, `isar/plotspec/`, plane/dispersion/inspector viewmodels and panes |
 | **Phase B** — planner (C6): objective authoring, forbidden-zone rendering | **Planned** | no objective editor or planner module exists |
 | **Phase C** — directives: inbox, drain protocol, NL compilation, dispersion editor | **Planned** | no directive or inbox machinery exists |
 | **Phase C** — sandbox interactive refitting (G7) | **Partial** | `views/sandbox_pane.py` + `viewmodels/sandbox.py` exist; no refit path implemented |
@@ -62,6 +63,7 @@ in the referenced section.
 | G11 | Coordinate math: a **metric/UB layer** (lattice + orientation vectors u, v → scattering plane, r.l.u. ↔ Å⁻¹, non-rectilinear axes) lives in **core, Qt-free**, sourced from the TAS_MCP / TAVI math. TAVI stays the sole resolution authority; the GUI grows **no third opinion** on scattering triangles — feasibility is consulted, not reimplemented. | §10 |
 | G12 | Donor repositories: **ACIDD** (cut gesture, coordinate-layer-under-image-view, templates, session persistence), **PUFFIN** (live-parameter fitting grammar, MVVM + worker threads), **ISAR** (everything that thinks). All three are GPL-3; code may be lifted with copyright notices. The GUI is **assembly, not invention**. | §11 |
 | G13 | Phasing: Phase 0 workspace read API → Phase A read-only viewer → Phase B planner → Phase C directives/sandbox/live dashboard. Read-only first so nothing destabilizes the pending TAVI SVP. | §13 |
+| G23 | **Individual fits show evidence; pooled masters show the current answer; only a revision-matched assessment can certify.** State colouring is the default; one shared persisted action switches plane and dispersion to mutually exclusive entropy colouring. Strip colour and latest-acquisition highlighting have one backend-neutral semantic contract. | §7.3, §8 |
 
 ---
 
@@ -157,6 +159,15 @@ G-series (canonical text in `docs/DECISIONS.md`):
 Live campaign state shows **only what the ledger supports** (iteration per invocation,
 converged-of-grid aggregates, whole-log spend, scan verdicts from results rows). Per-q live
 state needs an additive event-contract change first (§16.6).
+
+### 0quater. Read-only display grammar (2026-07-27)
+
+G23 implements WISH-1, WISH-2, WISH-3, and WISH-9 without changing fitting, steering, workspace
+interpretation, or scientific persistence. The Qt-free `isar.workspace_api.display` module owns
+assessment matching, interval authority, fit-display state, and latest-completed-acquisition
+selection. `isar.plotspec` carries directional errors, composed glyph tokens, semantic regions,
+and strip colour-map ownership; matplotlib and pyqtgraph map those tokens without reclassifying
+science. The GUI contributes only session-persisted display mode and colourbar interaction.
 
 ---
 
@@ -475,14 +486,29 @@ disagree about what an unreliable interval or a pooled master looks like. This a
 figure hygiene: the render path becomes first-class instead of stranded in `out/`.
 
 **Rendering rules (binding, inherited from `DESIGN.md` §12):**
-- `interval_reliable=False` renders as `(unreliable)` — never a numeric range, never error
-  bars. In plots: a distinct marker (e.g. hollow + warning glyph), no whiskers.
-- Pooled masters are labeled as pooled and enumerate members on inspection; a rejected master
-  is "pooled — uncertifiable," never junk.
+- `interval_reliable=False` suppresses the bootstrap interval, whose ladder row renders as
+  `(unreliable)` rather than numbers. A valid profile or trusted-HESSE fallback still certifies
+  at its own rung; only a fit with no such fallback uses the explicitly unreliable individual
+  glyph, with no whiskers.
+- A fit may use its own certifying interval. A pooled master may instead use
+  `omega0 ± calibrated_halfwidth` only from the latest `MasterAssessmentView` whose populated
+  `master_revision` exactly matches. HKL fallback is limited to legacy data where a revision is
+  absent; differing populated revisions never match. Inspector metadata names the interval
+  source and method and records its endpoints.
+- The inspector's phonon-energy interval is horizontal at `x=ω₀`; it emits no count-axis
+  uncertainty. Plane and dispersion energy whiskers preserve separate lower and upper spans
+  rather than collapsing an asymmetric interval to a half-width. Symmetric legacy `yerr`
+  remains a rendering compatibility input.
+- Pooled masters are labeled **pooled master** and enumerate members on inspection; a rejected
+  pooled master is "pooled master — uncertifiable," never junk.
 - Interval-ladder comparison shows tiers side by side, *labeled by tier* (Hessian / profile /
   bootstrap), with the certifying tier visually primary.
 - The AIC candidate table (model, ΔAIC, Akaike weight, n_modes) is the standing answer to
   "what did ISAR choose and why" — render it wherever a fit is shown.
+- A plot specification owns its strip colour map (`viridis` by default). The Qt colourbar is
+  attached only to a private proxy image; level and lookup-table edits propagate to every
+  current strip. Re-render and stripless transitions clear all current-strip references, so
+  neither stale images nor backend-default black-and-white strips can survive.
 
 ---
 
@@ -494,10 +520,35 @@ a persistent legend like `plane (H, 1, 0) × E — integrating |L| < 0.02, |K−
 - **Heatmap (item 2):** measured strips render as strips; gaps render as gaps. **No
   interpolation by default.** An optional smoothed/kriged surface is a *model overlay*,
   toggled explicitly and labeled as a model — the same discipline as everywhere else in ISAR.
-  Conservative-by-construction applies to pixels.
-- **Overlay channels:** per-point ω̂ estimates with error bars (from `ws.results`); branch
-  model curve(s); points colored by `assignment_entropy` (the honesty meter — near ln 2
-  renders visibly "undecided"); verdict glyphs (resolved/flagged/held).
+  Conservative-by-construction applies to pixels. One high-contrast unfilled double outline
+  marks the globally latest physical submission with a completed matching analysis, joined to
+  visible strips by `acquisition_id`; pending/failed work, pooled products, and
+  certification-only analyses are excluded. The outline spans the union of displayed strip
+  widths and measured energy extrema. If that global acquisition is outside the selected
+  temperature/projection slice, nothing is drawn. Physical-result order is a legacy fallback
+  only when detailed event identity is absent.
+- **Overlay grammar:** each result is one composed glyph, classified by the shared Qt-free
+  display state:
+  - small filled green circle — usable individual evidence;
+  - small hollow grey circle — individual evidence without a certifying interval;
+  - small hollow red diamond — explicitly unreliable individual evidence;
+  - large hollow green circle — target-matched pooled master, uncertified;
+  - large hollow amber diamond — unresolved or ambiguous target identity;
+  - large hollow red diamond — explicit target mismatch;
+  - large heavy blue square — certified pooled master;
+  - large hollow grey square — legacy pooled master without a matching assessment;
+  - small neutral point — unselected candidate.
+- Target identity comes from the branch-track target and falls back to persisted
+  `FitView.target_branch`; `FitView.branch_id` establishes an explicit match or mismatch but
+  does not invent the target. Certification requires a revision-matched assessment whose state
+  is `certified` or whose `converged` flag is true. The dispersion status ribbon consumes that
+  same state, so ribbon and plot cannot disagree.
+- **Colour modes:** state-first categorical colour is the default. A single **Colour by
+  entropy** action appears in both plane and dispersion controls, is shared between them, and
+  persists in GUI session state. Entropy mode replaces categorical point colour with the
+  existing diagnostic ramp while shape, size, and fill retain authority/state; the two colour
+  modes are mutually exclusive. Prior and branch curves stay visually neutral. Legends use a
+  fixed semantic order.
 - **Out-of-plane awareness:** points whose Q falls outside the declared integration window
   are excluded from the view, with a visible count of exclusions ("14 scans outside this
   projection") so the projection can't silently hide data.
@@ -593,10 +644,10 @@ model selection, branch model, verdicts, the driver, the ledger. The GUI adds no
 | # | Component | MVP items | Reads | Writes | Phase |
 |---|---|---|---|---|---|
 | C1 | Workspace browser (open, card summary, group tree per collation key) | — | card, groups | — | A |
-| C2 | Q-group / fit inspector page: data + fit + components + residuals; interval ladder side-by-side; AIC table; verdict + confidence + adjudication narrative; provenance panel | 3 (view) | results, scans, evaluate_model | — | A |
-| C3 | Plane heatmap view: declared projection, strips-and-gaps, ω̂ overlays w/ error bars, branch curves, entropy coloring, live growth via watch | 2 | results, branch_model, watch | — | A |
+| C2 | Q-group / fit inspector page: data + fit + components + residuals; interval ladder side-by-side; authoritative horizontal ω₀ interval with source/method/endpoints; AIC table; verdict + confidence + adjudication narrative; provenance panel | 3 (view) | results, assessments, scans, evaluate_model | — | A |
+| C3 | Plane heatmap view: declared projection, viridis strips-and-gaps with one proxy-owned colourbar, latest completed-acquisition outline, state/entropy fit grammar with asymmetric energy errors, neutral branch curves, live growth via watch | 2 | results, assessments, branch_model, session_events, watch | — | A |
 | C4 | Waterfall / comparison view: 1D cuts at fixed q by T; dispersion overlays across T | 6 | groups, results | — | A |
-| C5 | Dispersion view: ω vs q with certifying-tier error bars, prior curve, off-curve flags | 3, 4 (view) | branch_model, results | — | A |
+| C5 | Dispersion view: ω vs q with authoritative asymmetric intervals, the shared state/entropy fit grammar and matching status ribbon, neutral prior curve, off-curve flags | 3, 4 (view) | branch_model, assessments, results | — | A |
 | C6 | Planner: RS map from card lattice/space group, oriented plane, forbidden zones, two-click line, spacing spinbox, scan-series preview, approve | 1 | card, geometry, feasibility | `objective_edit` | B |
 | C7 | Directive composer + inbox monitor: pending/consumed/rejected with driver reasons | 1, 3, 4, 5 | session_events | all four types | C |
 | C8 | Sandbox refit panel — **Partial:** live fast-tier preview, manual E₀, SANDBOX banner implemented; structure editor, prior sliders, Commit → directive planned | 3 (interactive) | `isar.sandbox_api` | `prior_edit`, `fit_correction` (planned) | C |
@@ -655,6 +706,18 @@ journey (§1.3) against TAVI-as-backend.
   GUI's own session file (assert on a tempdir workspace).
 - **4D honesty:** projection legend always present; exclusion count correct on a synthetic
   workspace with deliberate out-of-plane scans.
+- **Authority grammar:** revision-mismatched assessments cannot certify a master or supply its
+  interval; every fit-display state maps to one glyph in fixed legend order; plane,
+  dispersion, and the status ribbon agree. State and entropy colours are exclusive and the
+  shared mode round-trips through GUI session state.
+- **Directional uncertainty:** horizontal inspector endpoints and asymmetric vertical
+  plane/dispersion spans are exact; explicitly unreliable series have no whiskers.
+- **Strip colour ownership:** every strip shares the plot-spec colour map and current levels;
+  colourbar gradient/level changes reach all strips; re-render and stripless transitions retain
+  no stale image references.
+- **Latest acquisition:** chronology covers retries, pending/failed jobs, duplicate detector
+  rows, pooled and certification exclusion, legacy fallback, exact union bounds, and the
+  selected no-output behavior when the global latest lies outside the slice.
 - **Idempotent drain:** duplicate/re-listed directives are not applied twice (keyed by
   `directive_id` in the ledger).
 

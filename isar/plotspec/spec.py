@@ -77,6 +77,24 @@ class MarkerKind(str, Enum):
     VERDICT_HELD = "verdict_held"
 
 
+class Glyph(str, Enum):
+    """One composed fit-display glyph. Renderers map these tokens; builders own classification."""
+    INDIVIDUAL_VALID = "individual_valid"
+    INDIVIDUAL_UNCERTIFIED = "individual_uncertified"
+    INDIVIDUAL_UNRELIABLE = "individual_unreliable"
+    MASTER_TARGET = "master_target"
+    MASTER_AMBIGUOUS = "master_ambiguous"
+    MASTER_MISMATCH = "master_mismatch"
+    MASTER_CERTIFIED = "master_certified"
+    MASTER_UNASSESSED = "master_unassessed"
+    UNSELECTED_CANDIDATE = "unselected_candidate"
+
+
+class RegionKind(str, Enum):
+    """Semantic plot-region overlays."""
+    LATEST_ACQUISITION = "latest_acquisition"
+
+
 def _arr(a) -> list | None:
     """numpy array (or sequence) -> JSON list; ``None`` passes through."""
     if a is None:
@@ -112,12 +130,40 @@ def entropy_rgb(values, norm: float | None = None) -> np.ndarray:
 # Spec primitives
 # ---------------------------------------------------------------------------
 @dataclass
+class ErrorBars:
+    """Directional per-point errors. Missing directions are not drawn."""
+    left: np.ndarray | None = None
+    right: np.ndarray | None = None
+    bottom: np.ndarray | None = None
+    top: np.ndarray | None = None
+
+    def __post_init__(self):
+        present = [np.asarray(v, dtype=float) for v in
+                   (self.left, self.right, self.bottom, self.top) if v is not None]
+        if present and any(v.shape != present[0].shape for v in present[1:]):
+            raise ValueError("all ErrorBars directions must have the same shape")
+        if any(np.any(v < 0.0) for v in present):
+            raise ValueError("ErrorBars spans must be non-negative")
+
+    def validate_length(self, shape) -> None:
+        for name in ("left", "right", "bottom", "top"):
+            value = getattr(self, name)
+            if value is not None and np.asarray(value).shape != shape:
+                raise ValueError(f"ErrorBars.{name} and Series points must have the same shape")
+
+    def to_dict(self) -> dict:
+        return {name: _arr(getattr(self, name))
+                for name in ("left", "right", "bottom", "top")}
+
+
+@dataclass
 class Series:
     """Line/scatter data. ``tier``/``certifying`` place it on the interval ladder; ``state`` carries
     the honesty channel (an :data:`State.UNRELIABLE` series may not have whiskers)."""
     x: np.ndarray
     y: np.ndarray
     yerr: np.ndarray | None = None
+    errors: ErrorBars | None = None
     label: str | None = None
     role: Role = Role.DATA
     style: str | None = None
@@ -130,18 +176,25 @@ class Series:
     # colour. Only a scatter (``yerr`` present, DATA-like) is per-point coloured.
     color_values: np.ndarray | None = None
     color_norm: float | None = None
+    glyph: Glyph | None = None
 
     def __post_init__(self):
-        if self.state is State.UNRELIABLE and self.yerr is not None:
-            raise ValueError("an UNRELIABLE series may not carry whiskers (yerr); "
+        if self.yerr is not None and self.errors is not None:
+            raise ValueError("Series.yerr and Series.errors are mutually exclusive")
+        if self.errors is not None:
+            self.errors.validate_length(np.asarray(self.x).shape)
+        if self.state is State.UNRELIABLE and (self.yerr is not None or self.errors is not None):
+            raise ValueError("an UNRELIABLE series may not carry whiskers; "
                              "use mark_unreliable() instead")
 
     def to_dict(self) -> dict:
         return {"x": _arr(self.x), "y": _arr(self.y), "yerr": _arr(self.yerr),
+                "errors": None if self.errors is None else self.errors.to_dict(),
                 "label": self.label, "role": _tok(self.role), "style": self.style,
                 "tier": _tok(self.tier), "certifying": bool(self.certifying),
                 "state": _tok(self.state), "color_values": _arr(self.color_values),
-                "color_norm": None if self.color_norm is None else float(self.color_norm)}
+                "color_norm": None if self.color_norm is None else float(self.color_norm),
+                "glyph": _tok(self.glyph)}
 
 
 @dataclass
@@ -210,6 +263,28 @@ class Strip:
 
 
 @dataclass
+class RegionBox:
+    """Unfilled semantic rectangle drawn above strips and below fit points."""
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+    kind: RegionKind
+    label: str | None = None
+
+    def __post_init__(self):
+        if self.x_max < self.x_min or self.y_max < self.y_min:
+            raise ValueError("RegionBox maxima must not be below minima")
+
+    def to_dict(self) -> dict:
+        return {
+            "x_min": float(self.x_min), "x_max": float(self.x_max),
+            "y_min": float(self.y_min), "y_max": float(self.y_max),
+            "kind": _tok(self.kind), "label": self.label,
+        }
+
+
+@dataclass
 class ProjectionLegend:
     """The always-on 4D-honesty declaration (G9): which plane is shown and over what window it is
     integrated, e.g. plane=``"(H, 1, 0) x E"``, integration=``"|L| < 0.02, |K-1| < 0.02"``."""
@@ -232,8 +307,10 @@ class PlotSpec:
     markers: list[Marker] = field(default_factory=list)
     annotations: list[Annotation] = field(default_factory=list)
     strips: list[Strip] = field(default_factory=list)
+    regions: list[RegionBox] = field(default_factory=list)
     projection: ProjectionLegend | None = None
     value_label: str | None = None   # colorbar meaning for strips, e.g. "counts/monitor"
+    strip_colormap: str = "viridis"
     meta: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -252,8 +329,10 @@ class PlotSpec:
             "markers": [m.to_dict() for m in self.markers],
             "annotations": [a.to_dict() for a in self.annotations],
             "strips": [s.to_dict() for s in self.strips],
+            "regions": [r.to_dict() for r in self.regions],
             "projection": None if self.projection is None else self.projection.to_dict(),
             "value_label": self.value_label,
+            "strip_colormap": self.strip_colormap,
             "meta": self.meta,
         }
 

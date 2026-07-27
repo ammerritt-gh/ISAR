@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6 import QtCore, QtGui
+from PySide6 import QtCore, QtGui, QtWidgets
 
-from isar.plotspec.spec import MarkerKind, PlotSpec, Role, State, Tier, entropy_rgb
+from isar.plotspec.spec import Glyph, MarkerKind, PlotSpec, Role, State, Tier, entropy_rgb
 
 # Matplotlib default colour cycle (C0..C9) as concrete hex, so tier/role colours mean the same thing
 # as they do in the mpl backend. Greys mirror mpl's "0.4"/"0.3"/"0.25" string levels.
@@ -49,7 +49,7 @@ def disable_view_drops(view) -> None:
 
 _ROLE_COLOR = {
     Role.DATA: _C["C0"], Role.FIT: _C["C1"], Role.COMPONENT: _C["C3"], Role.RESIDUAL: _GREY_04,
-    Role.PRIOR: _C["C4"], Role.BRANCH: _C["C2"], Role.SANDBOX: _C["C5"],
+    Role.PRIOR: "#8c8c8c", Role.BRANCH: "#595959", Role.SANDBOX: _C["C5"],
 }
 _TIER_COLOR = {
     Tier.HESSE: _C["C7"], Tier.PROFILE: _C["C8"], Tier.BOOTSTRAP: _C["C9"], Tier.BAYES: _C["C6"],
@@ -121,6 +121,9 @@ class RenderedSpec:
         self.projection_label = None  # pg.LabelItem anchored to the ViewBox, or None
         self.legend_names: set[str] = set()
         self._corner_notes = 0        # count of un-anchored corner notes placed (for stacking)
+        self.strip_images: list[pg.ImageItem] = []
+        self.strip_levels: tuple[float, float] | None = None
+        self.strip_colormap: str | None = None
 
     def _add_data(self, item) -> None:
         self._plot_item.addItem(item)
@@ -149,6 +152,9 @@ class RenderedSpec:
         self.projection_label = None
         self.legend_names = set()
         self._corner_notes = 0
+        self.strip_images = []
+        self.strip_levels = None
+        self.strip_colormap = None
 
 
 def _detach(item) -> None:
@@ -166,6 +172,33 @@ def _detach(item) -> None:
 def _pen(color, width, dashed=False) -> QtGui.QPen:
     style = QtCore.Qt.PenStyle.DashLine if dashed else QtCore.Qt.PenStyle.SolidLine
     return pg.mkPen(color=color, width=width, style=style)
+
+
+_GLYPH_STYLE = {
+    Glyph.INDIVIDUAL_VALID: ("o", 8, "green", "green", 1.0, 6),
+    Glyph.INDIVIDUAL_UNCERTIFIED: ("o", 8, "#8c8c8c", None, 1.2, 6),
+    Glyph.INDIVIDUAL_UNRELIABLE: ("d", 10, "red", None, 1.4, 6),
+    Glyph.MASTER_TARGET: ("o", 14, "green", None, 1.8, 9),
+    Glyph.MASTER_AMBIGUOUS: ("d", 15, "darkorange", None, 1.8, 9),
+    Glyph.MASTER_MISMATCH: ("d", 15, "red", None, 1.8, 9),
+    Glyph.MASTER_CERTIFIED: ("s", 15, _C["C0"], _C["C0"], 2.4, 10),
+    Glyph.MASTER_UNASSESSED: ("s", 14, "#808080", None, 1.8, 9),
+    Glyph.UNSELECTED_CANDIDATE: ("o", 7, "#999999", None, 1.0, 5),
+}
+
+
+def _error_kwargs(s) -> dict:
+    if s.errors is None:
+        if s.yerr is None:
+            return {}
+        yerr = np.asarray(s.yerr, dtype=float)
+        return {"top": yerr, "bottom": yerr}
+    out = {}
+    for name in ("left", "right", "bottom", "top"):
+        value = getattr(s.errors, name)
+        if value is not None:
+            out[name] = np.asarray(value, dtype=float)
+    return out
 
 
 def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
@@ -187,21 +220,44 @@ def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
     x = np.asarray(s.x, dtype=float)
     y = np.asarray(s.y, dtype=float)
 
-    if s.role is Role.SANDBOX or (s.yerr is None and dashed):
+    error_kwargs = _error_kwargs(s)
+    if s.glyph is not None:
+        symbol, size, edge, face, glw, gz = _GLYPH_STYLE[s.glyph]
+        if error_kwargs:
+            err = pg.ErrorBarItem(
+                x=x, y=y, pen=_pen(edge, max(width, 1.0)), beam=0.0, **error_kwargs)
+            err.setZValue(gz)
+            rs._add_data(err)
+        if s.color_values is not None:
+            rgb = entropy_rgb(s.color_values, s.color_norm)
+            colors = [QtGui.QColor(int(round(r * 255)), int(round(g * 255)),
+                                   int(round(b * 255))) for r, g, b in rgb]
+            pens = [pg.mkPen(c, width=glw) for c in colors]
+            brushes = [pg.mkBrush(c) for c in colors] if face is not None else None
+        else:
+            pens = pg.mkPen(edge, width=glw)
+            brushes = None if face is None else pg.mkBrush(face)
+        scat = pg.ScatterPlotItem(
+            x=x, y=y, symbol=symbol, size=size, pen=pens, brush=brushes)
+        scat.setZValue(gz + 1)
+        rs._add_data(scat)
+        if label is not None:
+            legend_entries.append((scat, label))
+    elif s.role is Role.SANDBOX or (not error_kwargs and dashed):
         # Sandbox results are ephemeral and unmistakably marked (G7): dashed.
         item = pg.PlotDataItem(x, y, pen=_pen(color, width, dashed=True))
         item.setZValue(z)
         rs._add_data(item)
         if label is not None:
             legend_entries.append((item, label))
-    elif s.yerr is not None and s.color_values is not None:
+    elif error_kwargs and s.color_values is not None:
         # Per-point honesty colour channel (e.g. assignment entropy): neutral whiskers + a scatter
         # whose brushes are per-point calm->alarm (mirrors the mpl backend).
-        yerr = np.asarray(s.yerr, dtype=float)
         rgb = entropy_rgb(s.color_values, s.color_norm)
         brushes = [pg.mkBrush(int(round(r * 255)), int(round(g * 255)), int(round(b * 255)))
                    for r, g, b in rgb]
-        err = pg.ErrorBarItem(x=x, y=y, top=yerr, bottom=yerr, pen=_pen(_GREY_04, width), beam=0.0)
+        err = pg.ErrorBarItem(
+            x=x, y=y, pen=_pen(_GREY_04, width), beam=0.0, **error_kwargs)
         err.setZValue(z)
         edge = color if s.state is State.POOLED else _GREY_03
         size = 13 if s.state is State.POOLED else (7 if "muted" in styles else 10)
@@ -213,15 +269,15 @@ def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
         rs._add_data(scat)
         if label is not None:
             legend_entries.append((scat, label))
-    elif s.yerr is not None:
-        yerr = np.asarray(s.yerr, dtype=float)
+    elif error_kwargs:
         line = pg.PlotDataItem(
             x, y, pen=(None if s.role is Role.DATA else _pen(color, width)), symbol=symbol,
             symbolSize=(12 if s.state is State.POOLED else (6 if "muted" in styles else 8)),
             symbolBrush=(None if hollow else color), symbolPen=_pen(color, width),
         )
         line.setZValue(z)
-        err = pg.ErrorBarItem(x=x, y=y, top=yerr, bottom=yerr, pen=_pen(color, width), beam=0.0)
+        err = pg.ErrorBarItem(
+            x=x, y=y, pen=_pen(color, width), beam=0.0, **error_kwargs)
         err.setZValue(z)
         rs._add_data(err)
         rs._add_data(line)
@@ -315,10 +371,9 @@ def _strip_levels(strips):
     return float(np.min(allv)), float(np.max(allv))
 
 
-def _strip_lut():
-    """The viridis lookup table shared by every strip ImageItem (same colour meaning as the mpl
-    backend's ``cmap="viridis"``)."""
-    return pg.colormap.get("viridis").getLookupTable(nPts=256)
+def _strip_lut(colormap):
+    """The named lookup table shared by every strip ImageItem."""
+    return pg.colormap.get(colormap).getLookupTable(nPts=256)
 
 
 def _draw_strip(rs: RenderedSpec, s, levels, lut) -> None:
@@ -338,6 +393,19 @@ def _draw_strip(rs: RenderedSpec, s, levels, lut) -> None:
     img.setRect(QtCore.QRectF(x0, y0, float(s.width), y1 - y0))
     img.setZValue(-20)  # measured plane sits under bands/series/markers
     rs._add_data(img)
+    rs.strip_images.append(img)
+
+
+def _draw_region(rs: RenderedSpec, region) -> None:
+    rect = QtCore.QRectF(
+        region.x_min, region.y_min,
+        region.x_max - region.x_min, region.y_max - region.y_min)
+    for color, width, z in (("white", 4.0, -9.0), ("black", 1.5, -8.9)):
+        item = QtWidgets.QGraphicsRectItem(rect)
+        item.setPen(_pen(color, width))
+        item.setBrush(pg.mkBrush(None))
+        item.setZValue(z)
+        rs._add_data(item)
 
 
 def _draw_annotation(rs: RenderedSpec, a) -> None:
@@ -410,9 +478,13 @@ def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
 
     if spec.strips:  # measured columns underneath everything (the plane background)
         levels = _strip_levels(spec.strips)
-        lut = _strip_lut()
+        lut = _strip_lut(spec.strip_colormap)
+        rs.strip_levels = levels
+        rs.strip_colormap = spec.strip_colormap
         for st in spec.strips:
             _draw_strip(rs, st, levels, lut)
+    for region in spec.regions:
+        _draw_region(rs, region)
 
     for b in spec.bands:
         _draw_band(rs, b, legend_entries)

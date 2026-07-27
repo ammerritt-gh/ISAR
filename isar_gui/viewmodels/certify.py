@@ -8,16 +8,20 @@ Pure functions over a :class:`~isar.workspace_api.FitView`-like object (only its
 attributes are read); no Qt, no workspace writes. The certifying rule follows ``FitOutcome``
 (isar/session/driver.py) exactly:
 
-* bootstrap ``interval`` is authoritative and certifies **when** ``interval_reliable`` and present;
+* ``interval_reliable=False`` suppresses the bootstrap interval, not the lower ladder rungs;
+* bootstrap ``interval`` is authoritative and certifies when present on a reliable fit;
 * else the profile-likelihood ``omega0_profile`` certifies when present;
 * else the HESSE ``hesse_interval`` certifies **only** when ``hesse_trusted``;
 * the bayes posterior is **diagnostics-only** — it appears on the ladder but NEVER certifies.
 
-``interval_reliable=False`` renders the bootstrap row as ``"(unreliable)"`` — never numbers.
+``interval_reliable=False`` renders the bootstrap row as ``"(unreliable)"`` — never numbers —
+while a valid profile or trusted-HESSE fallback may still certify the fit.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from isar.workspace_api.display import fit_certifying_interval
 
 
 @dataclass
@@ -41,32 +45,16 @@ def _fmt_interval(iv) -> str:
 def certifying_tier(fit) -> str | None:
     """The name of the tier that certifies ``fit`` (``"bootstrap"``/``"profile"``/``"hesse"``), or
     ``None`` when nothing does. Matches :func:`ladder_rows`'s certifying flags exactly."""
-    boot = fit.interval
-    reliable = fit.interval_reliable is not False
-    prof = fit.omega0_profile
-    hesse = fit.hesse_interval
-    hesse_trusted = bool(fit.hesse_trusted)
-    if reliable and boot is not None:
-        return "bootstrap"
-    if prof is not None:
-        return "profile"
-    if hesse_trusted and hesse is not None:
-        return "hesse"
-    return None
+    interval = fit_certifying_interval(fit)
+    return None if interval is None else interval.method
 
 
 def certifying_interval(fit):
     """The numeric interval (lo..hi sequence) of the certifying tier — bayes never certifies — or
     ``None``. This is exactly the interval the ω̂ whisker may show; an uncertified ω̂ gets ``None``
     (so it is drawn as a warning marker, never a numeric whisker)."""
-    tier = certifying_tier(fit)
-    if tier == "bootstrap":
-        return fit.interval
-    if tier == "profile":
-        return fit.omega0_profile
-    if tier == "hesse":
-        return fit.hesse_interval
-    return None
+    interval = fit_certifying_interval(fit)
+    return None if interval is None else (interval.lo, interval.hi)
 
 
 def ladder_rows(fit) -> list:
@@ -79,10 +67,10 @@ def ladder_rows(fit) -> list:
     hesse_trusted = bool(fit.hesse_trusted)
     bayes = fit.bayes_interval
 
-    boot_certifies = reliable and boot is not None
-    prof_certifies = (not boot_certifies) and prof is not None
-    hesse_certifies = (not boot_certifies and not prof_certifies
-                       and hesse_trusted and hesse is not None)
+    certifying = certifying_tier(fit)
+    boot_certifies = certifying == "bootstrap"
+    prof_certifies = certifying == "profile"
+    hesse_certifies = certifying == "hesse"
 
     # bootstrap: never numbers when unreliable
     if boot is None:

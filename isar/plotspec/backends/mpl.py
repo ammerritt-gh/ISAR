@@ -12,10 +12,12 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.patches import Rectangle  # noqa: E402
 
 import numpy as np  # noqa: E402
 
 from isar.plotspec.spec import (  # noqa: E402
+    Glyph,
     MarkerKind,
     PlotSpec,
     Role,
@@ -27,7 +29,7 @@ from isar.plotspec.spec import (  # noqa: E402
 # Role -> line colour. DATA sits on matplotlib's C0; fit/components follow the report palette.
 _ROLE_COLOR = {
     Role.DATA: "C0", Role.FIT: "C1", Role.COMPONENT: "C3", Role.RESIDUAL: "0.4",
-    Role.PRIOR: "C4", Role.BRANCH: "C2", Role.SANDBOX: "C5",
+    Role.PRIOR: "0.55", Role.BRANCH: "0.35", Role.SANDBOX: "C5",
 }
 # Interval-ladder tiers get distinct, stable colours so a side-by-side ladder is legible.
 _TIER_COLOR = {
@@ -57,6 +59,38 @@ def _series_color(s) -> str:
     return _ROLE_COLOR.get(s.role, "C0")
 
 
+_GLYPH_STYLE = {
+    Glyph.INDIVIDUAL_VALID: ("o", 32, "green", "green", 1.0, 6),
+    Glyph.INDIVIDUAL_UNCERTIFIED: ("o", 30, "0.55", "none", 1.2, 6),
+    Glyph.INDIVIDUAL_UNRELIABLE: ("D", 42, "red", "none", 1.4, 6),
+    Glyph.MASTER_TARGET: ("o", 82, "green", "none", 1.8, 9),
+    Glyph.MASTER_AMBIGUOUS: ("D", 88, "darkorange", "none", 1.8, 9),
+    Glyph.MASTER_MISMATCH: ("D", 88, "red", "none", 1.8, 9),
+    Glyph.MASTER_CERTIFIED: ("s", 92, "C0", "C0", 2.4, 10),
+    Glyph.MASTER_UNASSESSED: ("s", 86, "0.5", "none", 1.8, 9),
+    Glyph.UNSELECTED_CANDIDATE: ("o", 28, "0.6", "none", 1.0, 5),
+}
+
+
+def _errors(s):
+    if s.errors is None:
+        if s.yerr is None:
+            return None, None
+        return None, np.asarray(s.yerr, dtype=float)
+    e = s.errors
+    xerr = None
+    yerr = None
+    if e.left is not None or e.right is not None:
+        left = np.zeros_like(s.x, dtype=float) if e.left is None else np.asarray(e.left, dtype=float)
+        right = np.zeros_like(s.x, dtype=float) if e.right is None else np.asarray(e.right, dtype=float)
+        xerr = np.vstack((left, right))
+    if e.bottom is not None or e.top is not None:
+        bottom = np.zeros_like(s.y, dtype=float) if e.bottom is None else np.asarray(e.bottom, dtype=float)
+        top = np.zeros_like(s.y, dtype=float) if e.top is None else np.asarray(e.top, dtype=float)
+        yerr = np.vstack((bottom, top))
+    return xerr, yerr
+
+
 def _draw_series(ax, s) -> None:
     color = _series_color(s)
     styles = set((s.style or "").split())
@@ -76,22 +110,38 @@ def _draw_series(ax, s) -> None:
     label = s.label
     if s.tier is not None and label is None:
         label = f"{s.tier.value}{' (certifying)' if s.certifying else ''}"
-    if s.role is Role.SANDBOX or (s.yerr is None and dashed):
+    xerr, yerr = _errors(s)
+    has_errors = xerr is not None or yerr is not None
+    if s.glyph is not None:
+        marker, size, edge, face, glw, gz = _GLYPH_STYLE[s.glyph]
+        if has_errors:
+            ax.errorbar(s.x, s.y, xerr=xerr, yerr=yerr, fmt="none", ecolor=edge,
+                        lw=max(lw, 1.0), capsize=2, zorder=gz)
+        if s.color_values is not None:
+            rgb = entropy_rgb(s.color_values, s.color_norm)
+            edgecolors = rgb
+            facecolors = rgb if face != "none" else "none"
+        else:
+            edgecolors, facecolors = edge, face
+        ax.scatter(s.x, s.y, s=size, marker=marker, edgecolors=edgecolors,
+                   facecolors=facecolors, linewidths=glw, zorder=gz + 1, label=label)
+    elif s.role is Role.SANDBOX or (not has_errors and dashed):
         # Sandbox results are ephemeral and unmistakably marked (G7): dashed.
         ax.plot(s.x, s.y, ls="--", lw=lw, color=color, zorder=z, label=label)
-    elif s.yerr is not None and s.color_values is not None:
+    elif has_errors and s.color_values is not None:
         # Per-point honesty colour channel (e.g. assignment entropy): neutral whiskers, and each
         # point coloured calm->alarm by its own value (the legend note explains the encoding).
         rgb = entropy_rgb(s.color_values, s.color_norm)
-        ax.errorbar(s.x, s.y, yerr=s.yerr, fmt="none", ecolor="0.5", lw=lw, zorder=z)
+        ax.errorbar(s.x, s.y, xerr=xerr, yerr=yerr, fmt="none",
+                    ecolor="0.5", lw=lw, zorder=z)
         edge = color if s.state is State.POOLED else "0.2"
         size = 72 if s.state is State.POOLED else (24 if "muted" in styles else 36)
         kwargs = ({"facecolors": "none"} if hollow else {"c": rgb})
         ax.scatter(s.x, s.y, s=size, marker=marker, edgecolors=edge, linewidths=1.2,
                    zorder=z + 1, label=label, **kwargs)
-    elif s.yerr is not None:
+    elif has_errors:
         size = 7 if s.state is State.POOLED else (3 if "muted" in styles else 4)
-        ax.errorbar(s.x, s.y, yerr=s.yerr, fmt=marker, ms=size, lw=lw, color=color,
+        ax.errorbar(s.x, s.y, xerr=xerr, yerr=yerr, fmt=marker, ms=size, lw=lw, color=color,
                     markerfacecolor=("none" if hollow else color), linestyle="none",
                     zorder=z, label=label)
     else:
@@ -172,7 +222,7 @@ def _strip_levels(strips):
     return float(np.min(allv)), float(np.max(allv))
 
 
-def _draw_strip(ax, s, levels) -> None:
+def _draw_strip(ax, s, levels, colormap) -> None:
     """One MEASURED column as a single imshow rectangle spanning THIS scan's E extent only. Each
     strip is its own artist, so the empty space between strips (a gap in the sampling) stays empty —
     no artist bridges the gap and nothing is interpolated across it."""
@@ -185,7 +235,18 @@ def _draw_strip(ax, s, levels) -> None:
     y0, y1 = float(np.min(y)), float(np.max(y))
     vmin, vmax = (levels if levels is not None else (None, None))
     ax.imshow(values.reshape(-1, 1), extent=(x0, x1, y0, y1), origin="lower", aspect="auto",
-              interpolation="none", cmap="viridis", vmin=vmin, vmax=vmax, zorder=0)
+              interpolation="none", cmap=colormap, vmin=vmin, vmax=vmax, zorder=0)
+
+
+def _draw_region(ax, region) -> None:
+    """A double outline remains visible over both dark and light strip pixels."""
+    xy = (region.x_min, region.y_min)
+    width = region.x_max - region.x_min
+    height = region.y_max - region.y_min
+    ax.add_patch(Rectangle(xy, width, height, fill=False, edgecolor="white",
+                           linewidth=4.0, zorder=1.2))
+    ax.add_patch(Rectangle(xy, width, height, fill=False, edgecolor="black",
+                           linewidth=1.5, zorder=1.3, label=region.label))
 
 
 def _draw_projection(ax, pj) -> None:
@@ -200,7 +261,9 @@ def _render_onto(ax, spec: PlotSpec) -> None:
     if spec.strips:  # measured columns sit underneath everything (the plane background)
         levels = _strip_levels(spec.strips)
         for st in spec.strips:
-            _draw_strip(ax, st, levels)
+            _draw_strip(ax, st, levels, spec.strip_colormap)
+    for region in spec.regions:
+        _draw_region(ax, region)
     for b in spec.bands:
         _draw_band(ax, b)
     for s in spec.series:

@@ -27,11 +27,14 @@
     "integration": "Q = [2.0, 0.0, 0.0] (fixed)",
     "plane": "E"
   },
+  "regions": [],
   "series": [
     {
       "certifying": false,
       "color_norm": null,
       "color_values": null,
+      "errors": null,
+      "glyph": null,
       "label": "data (+/-sqrt N)",
       "role": "data",
       "state": null,
@@ -195,6 +198,7 @@
       ]
     }
   ],
+  "strip_colormap": "viridis",
   "strips": [],
   "title": "scan 469  det",
   "value_label": null,

@@ -1,16 +1,6 @@
 {
   "annotations": [
     {
-      "role": "unreliable",
-      "text": "(unreliable)",
-      "xy": null
-    },
-    {
-      "role": null,
-      "text": "color = assignment entropy (ln 2 = undecided)",
-      "xy": null
-    },
-    {
       "role": null,
       "text": "off prior (2229.4\u03c3)",
       "xy": [
@@ -20,7 +10,7 @@
     },
     {
       "role": null,
-      "text": "off prior (778.3\u03c3)",
+      "text": "off prior (425.9\u03c3)",
       "xy": [
         2.5,
         4.25049069
@@ -28,7 +18,7 @@
     },
     {
       "role": null,
-      "text": "off prior (24.3\u03c3)",
+      "text": "off prior (20.5\u03c3)",
       "xy": [
         2.75,
         5.50679694
@@ -36,7 +26,7 @@
     },
     {
       "role": null,
-      "text": "off prior (6292.7\u03c3)",
+      "text": "off prior (5426.6\u03c3)",
       "xy": [
         2.4,
         3.54999196
@@ -44,7 +34,7 @@
     },
     {
       "role": null,
-      "text": "off prior (4526.8\u03c3)",
+      "text": "off prior (3209.8\u03c3)",
       "xy": [
         2.35,
         3.14949389
@@ -52,7 +42,7 @@
     },
     {
       "role": null,
-      "text": "off prior (25.0\u03c3)",
+      "text": "off prior (20.4\u03c3)",
       "xy": [
         2.65,
         5.05409317
@@ -60,7 +50,7 @@
     },
     {
       "role": null,
-      "text": "off prior (18.2\u03c3)",
+      "text": "off prior (15.9\u03c3)",
       "xy": [
         2.8,
         5.60193076
@@ -68,7 +58,7 @@
     },
     {
       "role": null,
-      "text": "off prior (1050.8\u03c3)",
+      "text": "off prior (1006.4\u03c3)",
       "xy": [
         2.2,
         1.87502694
@@ -76,7 +66,7 @@
     },
     {
       "role": null,
-      "text": "off prior (11960.6\u03c3)",
+      "text": "off prior (10110.7\u03c3)",
       "xy": [
         2.25,
         2.37499067
@@ -84,7 +74,7 @@
     },
     {
       "role": null,
-      "text": "off prior (12421.4\u03c3)",
+      "text": "off prior (11041.3\u03c3)",
       "xy": [
         2.3,
         2.74983131
@@ -92,7 +82,7 @@
     },
     {
       "role": null,
-      "text": "off prior (362.0\u03c3)",
+      "text": "off prior (200.2\u03c3)",
       "xy": [
         2.2,
         1.95006063
@@ -100,7 +90,7 @@
     },
     {
       "role": null,
-      "text": "off prior (18369.5\u03c3)",
+      "text": "off prior (12001.8\u03c3)",
       "xy": [
         2.25,
         2.27539802
@@ -108,7 +98,7 @@
     },
     {
       "role": null,
-      "text": "off prior (14255.1\u03c3)",
+      "text": "off prior (8743.5\u03c3)",
       "xy": [
         2.3,
         2.77524055
@@ -116,7 +106,7 @@
     },
     {
       "role": null,
-      "text": "off prior (9369.8\u03c3)",
+      "text": "off prior (7362.5\u03c3)",
       "xy": [
         2.35,
         3.12401953
@@ -124,7 +114,7 @@
     },
     {
       "role": null,
-      "text": "off prior (6444.7\u03c3)",
+      "text": "off prior (3447.5\u03c3)",
       "xy": [
         2.4,
         3.49971895
@@ -132,7 +122,7 @@
     },
     {
       "role": null,
-      "text": "off prior (146.7\u03c3)",
+      "text": "off prior (80.7\u03c3)",
       "xy": [
         2.6,
         4.82487956
@@ -140,7 +130,7 @@
     },
     {
       "role": null,
-      "text": "off prior (207.3\u03c3)",
+      "text": "off prior (118.4\u03c3)",
       "xy": [
         2.7,
         5.37503282
@@ -148,368 +138,7 @@
     }
   ],
   "bands": [],
-  "markers": [
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.2,
-      "y": 2.00011266
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.2,
-      "y": 2.00011266
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 3.0,
-      "y": 6.31730087
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 3.0,
-      "y": 6.31730087
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.55,
-      "y": 4.50353146
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.55,
-      "y": 4.50353146
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.95,
-      "y": 6.35513217
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.95,
-      "y": 6.35513217
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.85,
-      "y": 5.85675429
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.85,
-      "y": 5.85675429
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.8,
-      "y": 5.71552434
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.8,
-      "y": 5.71552434
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.7,
-      "y": 5.41676062
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.7,
-      "y": 5.41676062
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.65,
-      "y": 5.35296502
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.65,
-      "y": 5.35296502
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.4,
-      "y": 3.42852322
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.4,
-      "y": 3.42852322
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.35,
-      "y": 2.97403364
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.35,
-      "y": 2.97403364
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.25,
-      "y": 2.42513459
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.25,
-      "y": 2.42513459
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.3,
-      "y": 2.87120688
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.3,
-      "y": 2.87120688
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.45,
-      "y": 3.82621394
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.5,
-      "y": 4.2250723
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.5,
-      "y": 4.2250723
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.5,
-      "y": 4.25049069
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.6,
-      "y": 4.87577114
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.6,
-      "y": 4.87577114
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.6,
-      "y": 4.83385131
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.75,
-      "y": 5.53235443
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.75,
-      "y": 5.53235443
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.75,
-      "y": 5.50679694
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.4,
-      "y": 3.49999098
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.4,
-      "y": 3.49999098
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.65,
-      "y": 5.0774775
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.65,
-      "y": 5.0774775
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.4,
-      "y": 3.54999196
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.8,
-      "y": 5.69840943
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.8,
-      "y": 5.69840943
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.55,
-      "y": 4.54421104
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.55,
-      "y": 4.54421104
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.35,
-      "y": 3.12511726
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.35,
-      "y": 3.12511726
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.35,
-      "y": 3.14949389
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.7,
-      "y": 5.42737518
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.7,
-      "y": 5.42737518
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 3.0,
-      "y": 6.100366
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 3.0,
-      "y": 6.100366
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.65,
-      "y": 5.05409317
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.8,
-      "y": 5.60193076
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.2,
-      "y": 1.72514266
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.2,
-      "y": 1.87502694
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.25,
-      "y": 2.2249922
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.25,
-      "y": 2.2249922
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.25,
-      "y": 2.37499067
-    },
-    {
-      "kind": "warning",
-      "label": "\u03c9\u0302 (unreliable)",
-      "x": 2.3,
-      "y": 2.70020614
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.3,
-      "y": 2.70020614
-    },
-    {
-      "kind": "verdict_resolved",
-      "label": "verdict: resolved",
-      "x": 2.3,
-      "y": 2.74983131
-    }
-  ],
+  "markers": [],
   "meta": {
     "branch_label_uncertainty": [],
     "excluded_count": 0,
@@ -570,11 +199,201 @@
     "integration": "|K|\u22640.05, |L|\u22640.05",
     "plane": "(H, 0, 0) \u00d7 E"
   },
+  "regions": [],
   "series": [
     {
       "certifying": false,
       "color_norm": null,
       "color_values": null,
+      "errors": {
+        "bottom": [
+          0.00139448264,
+          0.000625090733,
+          0.0295183119,
+          0.0787804444,
+          0.000635174659,
+          0.00120393127,
+          0.079018842,
+          0.0969680174,
+          0.000113775849,
+          0.000401655539,
+          0.000343190576
+        ],
+        "left": null,
+        "right": null,
+        "top": [
+          0.00139448264,
+          0.0066224931,
+          0.0319150844,
+          0.05409752,
+          0.000460316446,
+          0.000503418577,
+          0.0499636222,
+          0.072631334,
+          0.000124290346,
+          0.000277408868,
+          0.000266930836
+        ]
+      },
+      "glyph": "individual_valid",
+      "label": "usable individual evidence",
+      "role": "data",
+      "state": null,
+      "style": null,
+      "tier": null,
+      "x": [
+        2.45,
+        2.5,
+        2.6,
+        2.75,
+        2.4,
+        2.35,
+        2.65,
+        2.8,
+        2.2,
+        2.25,
+        2.3
+      ],
+      "y": [
+        3.82621394,
+        4.25049069,
+        4.83385131,
+        5.50679694,
+        3.54999196,
+        3.14949389,
+        5.05409317,
+        5.60193076,
+        1.87502694,
+        2.37499067,
+        2.74983131
+      ],
+      "yerr": null
+    },
+    {
+      "certifying": false,
+      "color_norm": null,
+      "color_values": null,
+      "errors": null,
+      "glyph": "individual_unreliable",
+      "label": "individual evidence (unreliable)",
+      "role": "data",
+      "state": "unreliable",
+      "style": null,
+      "tier": null,
+      "x": [
+        2.2,
+        3.0,
+        2.55,
+        2.95,
+        2.85,
+        2.8,
+        2.7,
+        2.65,
+        2.4,
+        2.35,
+        2.25,
+        2.3,
+        2.5,
+        2.6,
+        2.75,
+        2.4,
+        2.65,
+        2.8,
+        2.55,
+        2.35,
+        2.7,
+        3.0,
+        2.2,
+        2.25,
+        2.3
+      ],
+      "y": [
+        2.00011266,
+        6.31730087,
+        4.50353146,
+        6.35513217,
+        5.85675429,
+        5.71552434,
+        5.41676062,
+        5.35296502,
+        3.42852322,
+        2.97403364,
+        2.42513459,
+        2.87120688,
+        4.2250723,
+        4.87577114,
+        5.53235443,
+        3.49999098,
+        5.0774775,
+        5.69840943,
+        4.54421104,
+        3.12511726,
+        5.42737518,
+        6.100366,
+        1.72514266,
+        2.2249922,
+        2.70020614
+      ],
+      "yerr": null
+    },
+    {
+      "certifying": false,
+      "color_norm": null,
+      "color_values": null,
+      "errors": {
+        "bottom": [
+          2.65576172e-05,
+          0.000106325299,
+          9.7596305e-05,
+          0.000528338249,
+          0.00101439988,
+          0.000630260881,
+          6.2725466e-05
+        ],
+        "left": null,
+        "right": null,
+        "top": [
+          0.000249980387,
+          0.000346666082,
+          0.000430475527,
+          0.000301960613,
+          7.08557569e-05,
+          6.36808257e-05,
+          0.000442217792
+        ]
+      },
+      "glyph": "master_unassessed",
+      "label": "pooled master (legacy unassessed)",
+      "role": "data",
+      "state": "pooled",
+      "style": null,
+      "tier": null,
+      "x": [
+        2.2,
+        2.25,
+        2.3,
+        2.35,
+        2.4,
+        2.6,
+        2.7
+      ],
+      "y": [
+        1.95006063,
+        2.27539802,
+        2.77524055,
+        3.12401953,
+        3.49971895,
+        4.82487956,
+        5.37503282
+      ],
+      "yerr": null
+    },
+    {
+      "certifying": false,
+      "color_norm": null,
+      "color_values": null,
+      "errors": null,
+      "glyph": null,
       "label": "dispersion prior",
       "role": "prior",
       "state": null,
@@ -681,114 +500,9 @@
         7.90508461
       ],
       "yerr": null
-    },
-    {
-      "certifying": false,
-      "color_norm": 0.693147181,
-      "color_values": [
-        0.00692083528,
-        0.00617051699,
-        0.00830784226,
-        0.332330624,
-        0.00442018202,
-        0.00376310037,
-        0.00434814912,
-        0.00948901227,
-        0.00345272742,
-        0.00305522917,
-        0.00289854849
-      ],
-      "label": "\u03c9\u0302 (certifying interval)",
-      "role": "data",
-      "state": "entropy",
-      "style": null,
-      "tier": null,
-      "x": [
-        2.45,
-        2.5,
-        2.6,
-        2.75,
-        2.4,
-        2.35,
-        2.65,
-        2.8,
-        2.2,
-        2.25,
-        2.3
-      ],
-      "y": [
-        3.82621394,
-        4.25049069,
-        4.83385131,
-        5.50679694,
-        3.54999196,
-        3.14949389,
-        5.05409317,
-        5.60193076,
-        1.87502694,
-        2.37499067,
-        2.74983131
-      ],
-      "yerr": [
-        0.00139448264,
-        0.00362379192,
-        0.0307166981,
-        0.0664389822,
-        0.000547745553,
-        0.000853674922,
-        0.0644912321,
-        0.0847996757,
-        0.000119033098,
-        0.000339532203,
-        0.000305060706
-      ]
-    },
-    {
-      "certifying": false,
-      "color_norm": 0.693147181,
-      "color_values": [
-        0.00313403096,
-        0.00302345654,
-        0.00281647363,
-        0.00364964613,
-        0.00419701855,
-        0.00773684399,
-        0.0101858228
-      ],
-      "label": "pooled masters (7)",
-      "role": "data",
-      "state": "pooled",
-      "style": null,
-      "tier": null,
-      "x": [
-        2.2,
-        2.25,
-        2.3,
-        2.35,
-        2.4,
-        2.6,
-        2.7
-      ],
-      "y": [
-        1.95006063,
-        2.27539802,
-        2.77524055,
-        3.12401953,
-        3.49971895,
-        4.82487956,
-        5.37503282
-      ],
-      "yerr": [
-        0.000138269002,
-        0.00022649569,
-        0.000264035916,
-        0.000415149431,
-        0.000542627819,
-        0.000346970853,
-        0.000252471629
-      ]
     }
   ],
+  "strip_colormap": "viridis",
   "strips": [],
   "title": "dispersion \u03c9\u0302(q) \u00b7 (H, 0, 0) \u00d7 E \u00b7 T=200 K",
   "value_label": null,

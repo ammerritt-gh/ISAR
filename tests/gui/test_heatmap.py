@@ -1,8 +1,5 @@
-"""C3 (q, E) plane tests: HeatmapViewModel derives the projection (varying q component + integration
-window), builds one measured strip per in-window scan, counts excluded scans, and rides the honesty
-overlays on top (ω̂ whisker only where a tier certifies, warning marker otherwise, entropy channel,
-verdict glyphs); a plot click routes to the inspector. Offscreen (conftest forces QT offscreen),
-importorskip, xdist-safe (each test stamps its own workspace)."""
+"""C3 (q, E) plane tests: measured strips, state-first fit glyphs, directional uncertainty, optional
+entropy colouring, latest-acquisition regions, and inspector routing."""
 from __future__ import annotations
 
 import numpy as np
@@ -12,7 +9,7 @@ pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 
 from baselines import mvp16_path
-from isar.plotspec.spec import MarkerKind, Role, State
+from isar.plotspec.spec import Glyph, RegionKind, Role, State
 from isar.workspace_api import Workspace
 from isar_gui.session import Session
 from isar_gui.viewmodels.heatmap import HeatmapViewModel
@@ -114,27 +111,43 @@ def test_one_strip_per_in_window_scan(make_ws):
     assert all("scan_id" in s.meta for s in strips)
 
 
-def test_omega_hat_whiskers_only_where_certifying(make_ws):
-    ws = _make(make_ws)
-    vm = HeatmapViewModel(ws)
-    data_series = [s for s in vm.spec.series if s.role is Role.DATA and s.yerr is not None]
-    assert len(data_series) == 1
-    # Two reliable in-window scans -> two whiskered points; the unreliable one is NOT here.
-    assert len(data_series[0].x) == 2
-    assert data_series[0].state is State.ENTROPY
-    # entropy is WIRED onto the scatter as a per-point colour channel (not just meta).
-    assert data_series[0].color_values is not None and len(data_series[0].color_values) == 2
-    assert data_series[0].color_norm is not None
+def test_latest_legacy_fallback_box_uses_visible_strip_bounds(make_ws):
+    # With no detailed driver events, the last physical result is the documented legacy fallback.
+    vm = HeatmapViewModel(_make(make_ws, specs=_SPECS[:3]))
+    assert len(vm.spec.regions) == 1
+    region = vm.spec.regions[0]
+    assert region.kind is RegionKind.LATEST_ACQUISITION
+    assert region.x_min == pytest.approx(2.16)
+    assert region.x_max == pytest.approx(2.24)
+    assert region.y_min == pytest.approx(-2.0)
+    assert region.y_max == pytest.approx(8.0)
 
 
-def test_unreliable_omega_hat_is_warning_marker_without_whiskers(make_ws):
+def test_global_latest_outside_current_projection_has_no_box(make_ws):
+    # The default fixture's globally last physical result is H=2.05, K=0.5, outside the K=0 slice.
+    vm = HeatmapViewModel(_make(make_ws))
+    assert vm.spec.regions == []
+
+
+def test_omega_hat_directional_whiskers_only_where_certifying(make_ws):
     ws = _make(make_ws)
     vm = HeatmapViewModel(ws)
-    warnings = [m for m in vm.spec.markers if m.kind is MarkerKind.WARNING]
-    assert len(warnings) == 1 and abs(warnings[0].x - 2.2) < 1e-9  # the unreliable H=2.2 scan
-    # exactly one "(unreliable)" note in the legend area, not per point
-    unrel = [a for a in vm.spec.annotations if a.role is State.UNRELIABLE]
-    assert len(unrel) == 1 and unrel[0].xy is None
+    valid = next(s for s in vm.spec.series if s.glyph is Glyph.INDIVIDUAL_VALID)
+    assert len(valid.x) == 2
+    assert valid.yerr is None and valid.errors is not None
+    np.testing.assert_allclose(valid.errors.bottom, [0.4, 0.4])
+    np.testing.assert_allclose(valid.errors.top, [0.4, 0.4])
+    assert valid.color_values is None  # state-first colouring is the default
+
+
+def test_unreliable_omega_hat_is_red_diamond_without_whiskers(make_ws):
+    ws = _make(make_ws)
+    vm = HeatmapViewModel(ws)
+    unreliable = next(
+        s for s in vm.spec.series if s.glyph is Glyph.INDIVIDUAL_UNRELIABLE)
+    assert unreliable.x.tolist() == [2.2]
+    assert unreliable.errors is None
+    assert vm.spec.markers == []
 
 
 def test_entropy_channel_populated(make_ws):
@@ -143,33 +156,40 @@ def test_entropy_channel_populated(make_ws):
     ent = vm.spec.meta.get("omega_hat_entropy_all")
     assert ent is not None and len(ent) == 3  # one per in-window ω̂ point
     assert all(e is not None for e in ent)
+    assert not any("assignment entropy" in a.text for a in vm.spec.annotations)
+    vm.set_color_by_entropy(True)
     assert any("assignment entropy" in a.text for a in vm.spec.annotations)
+    valid = next(s for s in vm.spec.series if s.glyph is Glyph.INDIVIDUAL_VALID)
+    assert valid.color_values == [0.0, 0.3]
+    unreliable = next(
+        s for s in vm.spec.series if s.glyph is Glyph.INDIVIDUAL_UNRELIABLE)
+    assert unreliable.color_values == [0.69]
 
 
 def test_pooled_master_on_overlay_but_not_strips(make_ws):
     ws = _make(make_ws, with_master=True)
     vm = HeatmapViewModel(ws)
-    # The master is a marked POOLED scatter with its own whisker + "pooled (3)" label...
+    # Legacy workspace: the master is explicitly unassessed, but still carries its fit interval.
     pooled = [s for s in vm.spec.series if s.state is State.POOLED]
-    assert len(pooled) == 1 and pooled[0].yerr is not None
-    assert pooled[0].label == "pooled (3)"
+    assert len(pooled) == 1 and pooled[0].errors is not None
+    assert pooled[0].glyph is Glyph.MASTER_UNASSESSED
+    assert pooled[0].label == "pooled master (legacy unassessed)"
     # ...the per-scan member scatter still shows (masters not mixed in)...
     members = [s for s in vm.spec.series
-               if s.role is Role.DATA and s.yerr is not None and s.state is not State.POOLED]
+               if s.glyph is Glyph.INDIVIDUAL_VALID]
     assert len(members) == 1 and len(members[0].x) == 2
     # ...and the master contributes NO strip (no persisted spectrum): still 3 strips.
     assert len(vm.spec.strips) == 3
-    at_master = [m for m in vm.spec.markers if m.kind is MarkerKind.VERDICT_RESOLVED
-                 and abs(m.x - 2.1) < 1e-9 and abs(m.y - 5.0) < 1e-9]
-    assert len(at_master) == 1  # member only; pooled verdict is composed into the square
+    assert vm.spec.markers == []
 
 
-def test_verdict_glyphs_present(make_ws):
+def test_fit_display_glyphs_replace_verdict_overlays(make_ws):
     ws = _make(make_ws)
     vm = HeatmapViewModel(ws)
-    kinds = {m.kind for m in vm.spec.markers}
-    assert MarkerKind.VERDICT_RESOLVED in kinds
-    assert MarkerKind.VERDICT_FLAGGED in kinds
+    glyphs = {series.glyph for series in vm.spec.series}
+    assert Glyph.INDIVIDUAL_VALID in glyphs
+    assert Glyph.INDIVIDUAL_UNRELIABLE in glyphs
+    assert vm.spec.markers == []
 
 
 def test_point_click_activates_fit(qtbot, make_ws):
@@ -201,7 +221,7 @@ def test_temperature_switch_rebuilds(qtbot, make_ws):
     assert len(vm.spec.strips) == 2  # the two T=300 scans only
 
 
-def test_ambiguous_candidates_remain_visible_on_plane_without_whiskers(make_ws):
+def test_ambiguous_candidates_remain_visible_as_composed_glyph_without_whiskers(make_ws):
     specs = _SPECS + [{
         "scan": 9, "h": 2.3, "k": 0.0, "l": 0.0, "omega0": None,
         "candidate_seed": 2.7, "reliable": False, "entropy": 0.69,
@@ -211,9 +231,11 @@ def test_ambiguous_candidates_remain_visible_on_plane_without_whiskers(make_ws):
         ],
     }]
     vm = HeatmapViewModel(_make(make_ws, specs=specs))
-    ambiguous = [marker for marker in vm.spec.markers
-                 if marker.kind is MarkerKind.AMBIGUOUS_CANDIDATE]
-    assert [(marker.x, marker.y) for marker in ambiguous] == [(2.3, 2.7), (2.3, 6.85)]
+    ambiguous = next(
+        series for series in vm.spec.series
+        if series.glyph is Glyph.UNSELECTED_CANDIDATE)
+    assert list(zip(ambiguous.x, ambiguous.y)) == [(2.3, 2.7), (2.3, 6.85)]
+    assert ambiguous.errors is None
 
 
 def test_dock_renders_and_routes_click(qtbot, make_ws):
@@ -227,9 +249,33 @@ def test_dock_renders_and_routes_click(qtbot, make_ws):
     assert blocker.args[0].scan_number == 1
 
 
-def test_colorbar_detaches_when_spec_has_no_strips(qtbot, make_ws):
-    """When a refresh yields a strip-less spec, the colorbar must stop pointing at the previous
-    (now-removed) strip ImageItem — it gets a fresh placeholder instead of a dangling reference."""
+def test_colorbar_proxy_controls_levels_and_lut_for_every_strip(qtbot, make_ws):
+    import pyqtgraph as pg
+
+    from isar_gui.views.heatmap_pane import HeatmapPane
+    vm = HeatmapViewModel(_make(make_ws))
+    dock = HeatmapPane(vm)
+    qtbot.addWidget(dock)
+    rendered = dock._plot._isar_rendered
+    assert rendered.strip_colormap == "viridis"
+    assert dock._strip_images == rendered.strip_images
+    assert dock._colorbar.imageItem() is dock._colorbar_proxy
+    proxy_lut = np.asarray(dock._colorbar_proxy.lut)
+    assert all(np.array_equal(np.asarray(image.lut), proxy_lut)
+               for image in dock._strip_images)
+
+    dock._colorbar.setLevels(150.0, 450.0)
+    assert all(tuple(image.getLevels()) == pytest.approx((150.0, 450.0))
+               for image in dock._strip_images)
+    plasma = pg.colormap.get("plasma")
+    dock._colorbar.gradient.setColorMap(plasma)
+    proxy_lut = np.asarray(dock._colorbar_proxy.lut)
+    assert all(np.array_equal(np.asarray(image.lut), proxy_lut)
+               for image in dock._strip_images)
+
+
+def test_colorbar_keeps_private_proxy_and_drops_strip_references(qtbot, make_ws):
+    """The histogram owns only its private proxy; a strip-less refresh drops all real images."""
     import pyqtgraph as pg
 
     from isar.plotspec.spec import PlotSpec
@@ -240,24 +286,31 @@ def test_colorbar_detaches_when_spec_has_no_strips(qtbot, make_ws):
     qtbot.addWidget(dock)
     old_img = dock._colorbar.imageItem()
     assert isinstance(old_img, pg.ImageItem)
+    assert old_img is dock._colorbar_proxy
+    assert dock._strip_images
+    assert all(image is not old_img for image in dock._strip_images)
     # Refresh with a strip-less (but non-None) spec.
     vm._spec = PlotSpec(title="empty", xlabel="q", ylabel="E")
     dock.refresh()
-    assert dock._colorbar.imageItem() is not old_img
+    assert dock._colorbar.imageItem() is old_img
+    assert dock._strip_images == []
 
 
 def test_view_state_round_trips_through_session(make_ws):
     ws = _make(make_ws)
     vm1 = HeatmapViewModel(ws)
     vm1.set_temperature(200.0)
+    vm1.set_color_by_entropy(True)
     session = Session()
     vm1.save_view_state(session)
     assert session.view_state["heatmap"] == {"temperature": 200.0}
+    assert session.view_state["fit_display"] == {"color_by_entropy": True}
 
     ws2 = _make(make_ws)
     vm2 = HeatmapViewModel(ws2)
     vm2.load_view_state(session)
     assert vm2.temperature == pytest.approx(200.0)
+    assert vm2.color_by_entropy is True
 
 
 def test_mainwindow_registers_plane_dock_and_routes(qtbot, make_ws):

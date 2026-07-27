@@ -657,6 +657,49 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   superseded wording stays in place as history. Applied in `DESIGN.md` §7 and §15,
   `docs/STATS_PRIMER.md` §0/§3/§5, and the Fig. 1 pipeline map.
 
+- **G23.** (2026-07-27, Implemented; amends G17) **Fit displays separate evidence from pooled
+  authority, and authority is revision-safe.** WISH-1, WISH-2, WISH-3, and WISH-9 are one
+  read-only display grammar. Individual fits show evidence: a small filled green circle is usable,
+  a small hollow grey circle lacks a certifying interval, and a small hollow red diamond is
+  explicitly unreliable. Pooled masters show the current answer: a large hollow green circle is
+  target-matched but uncertified, a large hollow amber diamond has unresolved or ambiguous target
+  identity, a large hollow red diamond is an explicit target mismatch, a large heavy blue square
+  is certified, and a large hollow grey square is a legacy master without a matching assessment.
+  Unselected candidates remain small neutral points. Each point is one composed semantic glyph;
+  prior and branch curves are neutral; legends use a fixed semantic order; aggregate results are
+  called **pooled masters**, never master scans.
+
+  Certification and authoritative master uncertainty require the latest
+  `MasterAssessmentView` whose populated `master_revision` exactly matches the fit. Only that
+  assessment's `certified` state or `converged` flag produces the certified glyph, and its
+  `omega0 ± calibrated_halfwidth` supplies the displayed interval. HKL matching is a legacy
+  fallback only when a revision is absent; two differing populated revisions never match. Without
+  such an assessment, the display uses the fit's certifying interval and identifies it as
+  fit-level uncertainty. The inspector draws that interval horizontally at ω₀, with no
+  count-axis uncertainty; plane and dispersion views preserve asymmetric lower and upper energy
+  spans. `interval_reliable=False` suppresses the bootstrap rung but does not suppress a valid
+  profile or trusted-HESSE fallback; an explicitly unreliable fit with no fallback never acquires
+  whiskers.
+
+  State colour is the default. One shared, session-persisted **Colour by entropy** action controls
+  both plane and dispersion; the modes are mutually exclusive, and entropy replaces categorical
+  point colour while shape, size, and fill retain authority/state. The dispersion status ribbon
+  uses the same assessment-derived state as its plot.
+
+  Strip colour belongs to the plot specification (`viridis` by default). Both backends consume
+  that colour map; the Qt colourbar owns only a private proxy image and propagates its levels and
+  lookup table to every current strip, clearing all strip references on re-render and stripless
+  transitions. A colourbar is never attached to a measured strip.
+
+  The latest-acquisition overlay is one unfilled, high-contrast double outline above measured
+  strips and below fit points. “Latest” means the globally newest physical submission with a
+  matching completed `analyze(job_id)` event: pending and failed jobs, pooled products, and
+  certification-only analyses do not qualify. Event `acquisition_id` joins the submission to all
+  of its physical strips; physical-result order is only the documented fallback when detailed
+  event identity is absent. The box is the union of the acquisition's displayed strip widths and
+  measured energy extrema, so multiple detector rows still produce one box. If that global
+  acquisition is outside the selected temperature/projection slice, the view draws nothing.
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:

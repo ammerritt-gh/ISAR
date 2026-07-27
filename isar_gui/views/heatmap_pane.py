@@ -10,11 +10,14 @@ the pane is dumb.
 """
 from __future__ import annotations
 
+import numpy as np
 import pyqtgraph as pg
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -28,7 +31,7 @@ class HeatmapPane(GroupDropMixin, QWidget):
     selector, a colorbar, click -> ``VM.activate_at``, and a group-drop restriction (2A, refuses
     multi-T)."""
 
-    def __init__(self, vm, parent=None):
+    def __init__(self, vm, parent=None, entropy_action=None):
         super().__init__(parent)
         self._vm = vm
 
@@ -43,6 +46,11 @@ class HeatmapPane(GroupDropMixin, QWidget):
         self._t_combo = QComboBox()
         self._t_combo.currentIndexChanged.connect(self._on_t_changed)
         t_l.addWidget(self._t_combo)
+        if entropy_action is not None:
+            entropy_button = QToolButton(self._t_row)
+            entropy_button.setDefaultAction(entropy_action)
+            entropy_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            t_l.addWidget(entropy_button)
         t_l.addStretch(1)
         outer.addWidget(self._t_row)
 
@@ -50,7 +58,13 @@ class HeatmapPane(GroupDropMixin, QWidget):
         self._glw = pg.GraphicsLayoutWidget()
         self._plot = self._glw.addPlot(row=0, col=0)
         self._colorbar = pg.HistogramLUTItem()
-        self._colorbar.setImageItem(pg.ImageItem())  # placeholder until a strip drives it
+        self._colorbar_proxy = pg.ImageItem()
+        self._colorbar_proxy.setImage(np.asarray([[0.0]], dtype=float))
+        self._colorbar.setImageItem(self._colorbar_proxy)
+        self._strip_images: list[pg.ImageItem] = []
+        self._syncing_colorbar = False
+        self._colorbar.sigLevelsChanged.connect(self._apply_colorbar_levels)
+        self._colorbar.gradient.sigGradientChanged.connect(self._apply_colorbar_lut)
         self._glw.addItem(self._colorbar, row=0, col=1)
         outer.addWidget(self._glw)
 
@@ -65,27 +79,59 @@ class HeatmapPane(GroupDropMixin, QWidget):
         spec = self._vm.spec
         self._sync_t_combo()
         if spec is not None:
+            # Drop references to the outgoing render before its items are detached. If rendering
+            # the replacement raises, colourbar interaction still cannot reach stale strip items.
+            self._strip_images = []
             render_into(self._plot, spec)
             self._sync_colorbar(spec)
         else:
             clear_render(self._plot)  # no spec -> don't retain the previous (stale) render
-            # …and detach the colorbar from the now-removed ImageItem (a fresh placeholder).
-            self._colorbar.setImageItem(pg.ImageItem())
+            self._clear_colorbar_target()
 
     def _sync_colorbar(self, spec) -> None:
         label = spec.value_label or "counts"
         self._colorbar.axis.setLabel(label)
-        # Point the colorbar at the first strip's ImageItem so its levels/LUT match the plane.
         rendered = getattr(self._plot, "_isar_rendered", None)
-        img = None
-        if rendered is not None:
-            img = next((it for it in rendered.items if isinstance(it, pg.ImageItem)), None)
-        if img is not None:
-            self._colorbar.setImageItem(img)
-        else:
-            # No strip in this spec -> the previous strip's ImageItem was just removed; don't leave
-            # the colorbar pointing at a detached item. Reset to a fresh placeholder.
-            self._colorbar.setImageItem(pg.ImageItem())
+        self._strip_images = list(rendered.strip_images) if rendered is not None else []
+        if not self._strip_images:
+            self._clear_colorbar_target()
+            return
+        self._syncing_colorbar = True
+        try:
+            cmap = pg.colormap.get(rendered.strip_colormap or spec.strip_colormap)
+            self._colorbar.gradient.setColorMap(cmap)
+            self._colorbar_proxy.setLookupTable(cmap.getLookupTable(nPts=256))
+            if rendered.strip_levels is not None:
+                self._colorbar_proxy.setLevels(rendered.strip_levels)
+                self._colorbar.setLevels(*rendered.strip_levels)
+        finally:
+            self._syncing_colorbar = False
+        self._apply_colorbar_levels()
+
+    def _clear_colorbar_target(self) -> None:
+        self._strip_images = []
+        self._colorbar_proxy.clear()
+        self._colorbar_proxy.setImage(np.asarray([[0.0]], dtype=float))
+
+    def _apply_colorbar_levels(self) -> None:
+        if self._syncing_colorbar:
+            return
+        levels = self._colorbar.getLevels()
+        self._syncing_colorbar = True
+        try:
+            self._colorbar_proxy.setLevels(levels)
+            for image in self._strip_images:
+                image.setLevels(levels)
+        finally:
+            self._syncing_colorbar = False
+
+    def _apply_colorbar_lut(self) -> None:
+        if self._syncing_colorbar:
+            return
+        lut = self._colorbar.gradient.getLookupTable(nPts=256)
+        self._colorbar_proxy.setLookupTable(lut)
+        for image in self._strip_images:
+            image.setLookupTable(lut)
 
     def _sync_t_combo(self) -> None:
         temps = self._vm.temperatures
