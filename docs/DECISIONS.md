@@ -700,6 +700,55 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   measured energy extrema, so multiple detector rows still produce one box. If that global
   acquisition is outside the selected temperature/projection slice, the view draws nothing.
 
+- **T4.** (2026-07-27, Implemented for the TAVI interface and ISAR's plumbing; the fitting-side
+  family of `docs/BACKGROUND_DESIGN.md` §2–4 remains Planned) **Background is generated truth with a
+  declared identity, and ISAR is allowed to know the identity but never the magnitude.** Backgrounds
+  were the largest real-data risk named by the statistics-contract audit, and the workstream was
+  blocked on a simulator that plants none: nothing to fit, and no way to score a fit. This ruling
+  settles how the simulator plants it and how ISAR carries it.
+
+  **Interface: hybrid, override replaces.** TAVI holds one background profile as instrument
+  configuration (GUI, `GET`/`PUT /background`) for manual work, and a scan body may carry a per-scan
+  `background` override which replaces that profile wholesale — never a merge, because a
+  partially-merged profile is a profile nobody declared. `/validate` accepts and checks the same key,
+  so validate-then-submit cannot disagree.
+
+  **Origin fixes scaling.** Every term declares `instrument`, `sample_environment`, or `sample`, and
+  the origin alone determines the base: the first two scale as `N × rate`, `sample` as
+  `N × diffuse_background × rate` through an explicit new calibration channel — never the phonon
+  factor, which would make the background a function of the very signal it is supposed to be
+  independent of. A missing sample scale refuses; only a term the preset marked `optional` is
+  skipped, and the skip is recorded.
+
+  **Metadata always resolves, and identity is a fingerprint.** Every scan reports the resolved
+  numerics, the preset, the delivery source (`config_default` | `per_scan_override`), a **profile
+  fingerprint** over the pre-scaling physics (delivery source deliberately excluded — the same
+  physics through either door is the same physics), and an **effective fingerprint** adding the
+  applied sample scale and skipped terms. The effective fingerprint is the pooling identity. A
+  disabled profile still stamps a block: the absence of background is provenance too. There is no
+  lockdown flag; identity is carried by fingerprints, not by enforcement.
+
+  **The truth firewall is physical, not a naming convention.** The planted numbers are the answer to
+  the question the fitter is being asked, so they are simply not on the record. The parser keeps
+  `enabled`, `source`, `background_schema` and the two fingerprints in
+  `raw_header["background_provenance"]` and redacts the numeric block out of the stored payload
+  (`{"redacted": "sim_truth", "effective_fingerprint": …}`). The preset **name** is excluded with the
+  numbers — `flat_high` states a magnitude as plainly as `5e-9`. The raw JSON on disk is untouched
+  (P4's mask-not-delete concerns data points, not the record's embedded copy) and validation scoring
+  reads the truth there **after** fitting. Collation refuses to pool members whose effective
+  fingerprints differ: kept, fit and reported individually, group flagged `pool_refusal`.
+
+  **Campaign transport is a compile-time freeze, and steering never sets backgrounds.**
+  `CampaignConfig.sample_background` is expanded exactly once at setup into the frozen numeric form
+  plus fingerprint, logged as `sample_background_frozen`, and stamped verbatim onto every validate and
+  scan body as a per-scan override; resume refuses on `background_fingerprint_drift`. A campaign
+  therefore never depends on TAVI's mutable config default, so a GUI edit, another client, a crash
+  leftover, or a preset retune cannot change its planted truth mid-run. `TaviClient.set_background`
+  exists for manual, test and campaign-setup use only — the steering loop calls it nowhere, because
+  stamping is transport and choosing a background would be a scientific decision the loop has no
+  business making. References: T2 (same-interface backend rule), T3, P4,
+  `docs/BACKGROUND_DESIGN.md` "TAVI prerequisite (landed)".
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:

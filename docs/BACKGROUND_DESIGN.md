@@ -2,7 +2,7 @@
 
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
-> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Verified against code revision:** `1a7013a` (2026-07-27)
 > **Owner:** @ammerritt-gh · **Exit criteria:** in the status block below
 
 **Status: design approved 2026-07-19; implementation not started; sequenced after the
@@ -25,9 +25,63 @@ knowledge shared across scans, and a driver that can deliberately buy background
 information cheaply.
 
 A `DECISIONS.md` entry is part of this workstream: background becomes an owned design
-area (it currently has no decision ID anywhere).
+area. The first such ruling is **T4** (the TAVI background interface contract, 2026-07-27);
+the fitting-side rulings of Sub-phases A–C are still to be written.
 
-USER NOTE: before working on this, it is critical to add some background to TAVI in analytic mode (and possibly Monte Carlo mode). I am thinking a possible "requested background" that has TAVI give a certain background profile, e.g. a large flat background and/or elastic lines. Only once we can get a background included can we start working on fitting it.
+## TAVI prerequisite (landed)
+
+This workstream was blocked on a simulator that plants no background at all: with zero planted
+background there is nothing for a background family to fit, and no way to score whether it fits it
+correctly. That prerequisite is now built (decision **T4**). What follows is the contract as
+implemented, not a proposal.
+
+**TAVI generates background truth; it never infers it from measured data.** A profile is a
+superposition of analytic terms over four shapes — `flat`; `linear_e`
+(`rate(E) = max(0, rate0 + slope·(E − E_ref))`, `E_ref = 0.0`); `elastic_incoherent`, a
+resolution-width Gaussian planted at every q (not only at Bragg positions), using the marginalized
+σ_E with a declared fallback width when the resolution solve fails; and `elastic_tail`, a broad
+Lorentzian pinned to E = 0. Every term declares an **origin** — `instrument`, `sample_environment`,
+or `sample` — and the origin fixes the scaling: instrument and sample-environment terms contribute
+`N × rate`, sample terms contribute `N × diffuse_background × rate` through a new explicit
+calibration channel (`AnalyticCalibration.diffuse_background`), never through the phonon factor. A
+sample term with no such calibration is refused (`sample_background_scale_unavailable`) unless the
+preset declared it `optional`; there is no implicit fallback scale.
+
+**The interface is hybrid.** TAVI holds one background profile as instrument configuration, editable
+from its GUI and over `GET`/`PUT /background`, and a scan body may carry a per-scan `background`
+override which *replaces* that profile wholesale (never merges). `/validate` accepts and checks the
+same key, so a body that validates is a body that submits. Scan metadata **always** reports the
+resolved numerics, the preset, a delivery-source tag (`config_default` | `per_scan_override`), and
+two fingerprints: the **profile fingerprint** over the pre-sample-scaling physics (delivery source
+excluded — the same physics through either door fingerprints the same) and the **effective
+fingerprint**, which adds the sample scaling actually applied and the skipped-term set. The
+effective fingerprint is the pooling identity. A disabled profile still stamps a block: the absence
+of background is provenance too.
+
+**ISAR consumes it under a truth firewall.** The planted numerics are the answer to the question the
+fitter is being asked, so they never reach the analysis record. The TAVI parser copies only the safe
+half — `enabled`, `source`, `background_schema`, and the two fingerprints — into
+`raw_header["background_provenance"]`, and *redacts* the numeric block out of the stored payload,
+leaving `{"redacted": "sim_truth", "effective_fingerprint": …}`. The preset **name** is excluded
+along with the numbers: `flat_high` states a magnitude as plainly as `5e-9` does. The firewall is
+physical, not a naming convention. The raw TAVI JSON on disk is untouched, and validation scoring
+reads the planted truth there **after** fitting. Collation refuses to pool members whose effective
+fingerprints differ (or where one carries a fingerprint and another does not): the members are kept,
+fit and reported individually, and the group records a `pool_refusal` — refuse, never delete.
+Campaigns resolve `CampaignConfig.sample_background` **once**, at compile time, into the frozen
+numeric form (`{"enabled", "terms": […]}`) plus its fingerprint, log it as
+`sample_background_frozen`, and stamp it verbatim on every validate and scan body as a per-scan
+override; a resume whose re-expansion disagrees aborts with `background_fingerprint_drift` before
+anything is submitted. The steering loop never calls `set_background` — stamping is transport, not a
+decision — so a GUI edit, another client, or a preset retune cannot change a running campaign's
+planted truth.
+
+**Note for Sub-phase A.** TAVI's planted `elastic_tail` is a **pure** Lorentzian pinned to E = 0 —
+it is *not* convolved with the resolution. §2's `ElasticTail` must therefore either adopt the same
+pure-Lorentzian form intentionally, or the mismatch is carried as a deliberate validation case
+(planted-vs-fitted shape difference) and stated where the fitted amplitude bias is reported. Silently
+fitting a resolution-convolved tail against a pure planted one would charge the difference to the
+phonon amplitude, which is the exact failure this workstream exists to remove.
 
 ---
 
