@@ -3309,3 +3309,207 @@ def test_a_known_budget_terminal_outranks_the_unrealizable_request_fault(tmp_pat
 
     assert proposal is None
     assert terminal.state == "incomplete" and "need 100, have 10" in terminal.reasons[0]
+
+
+# ---------------------------------------------------------------------------
+# Campaign background: frozen at compile time, stamped as transport (Stage 5)
+# ---------------------------------------------------------------------------
+
+_BG_PRESETS = {
+    "flat_low": {
+        "description": "weak instrument background",
+        "terms": [
+            {"name": "flat", "shape": "flat", "origin": "instrument", "method": "analytic",
+             "params": {"rate": 2e-10}, "optional": False},
+            {"name": "tail", "shape": "elastic_tail", "origin": "instrument", "method": "analytic",
+             "params": {"rate_integrated": 1e-9, "gamma_meV": 2.0}, "optional": False},
+        ],
+    },
+}
+
+
+class _BackgroundTavi(MockTavi):
+    """A MockTavi that advertises a background preset registry and records every body it sees."""
+
+    def __init__(self, omega_true=lambda h: (h - 2.0) * 2.0, presets=None):
+        super().__init__(omega_true)
+        self.presets = json.loads(json.dumps(presets if presets is not None else _BG_PRESETS))
+        self.validate_bodies = []
+        self.set_background_calls = []
+        self.schema_calls = 0
+
+    def get_schema(self):
+        self.schema_calls += 1
+        return {"background": {"presets": self.presets,
+                               "preset_registry_version": "bg-registry-1",
+                               "background_schema": "tavi.background/1"}}
+
+    def validate(self, body):
+        self.validate_bodies.append(json.loads(json.dumps(body)))
+        return super().validate(body)
+
+    def set_background(self, spec):
+        self.set_background_calls.append(spec)
+        return {}
+
+
+def _frozen_events(session_log):
+    return [e["payload"] for e in read_log(session_log)
+            if e["kind"] == "decide"
+            and (e.get("payload") or {}).get("event") == "sample_background_frozen"]
+
+
+def test_campaign_stamps_the_frozen_preset_background_on_every_body(tmp_path):
+    """The campaign's background is its sample declaration, frozen once and carried by every request —
+    never read from TAVI's mutable config default at scan time."""
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _BackgroundTavi(omega)
+    summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega),
+                        sample_background={"preset": "flat_low"})
+
+    expected = {"enabled": True, "terms": _BG_PRESETS["flat_low"]["terms"]}
+    assert client.jobs, "the campaign submitted no scans"
+    for body in client.jobs.values():
+        assert body["background"] == expected
+        assert "background_source" not in body      # TAVI derives the source from the key's presence
+    for body in client.validate_bodies:
+        assert body["background"] == expected       # validate/submit parity
+
+    frozen = _frozen_events(summary["session_log"])
+    assert len(frozen) == 1
+    assert frozen[0]["frozen"] == expected
+    assert frozen[0]["spec"] == {"preset": "flat_low"}
+    assert frozen[0]["preset_registry_version"] == "bg-registry-1"
+    assert frozen[0]["background_schema"] == "tavi.background/1"
+    # Stamping, never config mutation; the preset registry is read once, at setup (the other
+    # GET /schema is the campaign's instrument-limits preflight).
+    assert client.set_background_calls == []
+    assert client.schema_calls == 2
+
+
+def test_campaign_background_frozen_form_passes_through_unchanged(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _BackgroundTavi(omega)
+    spec = {"enabled": True,
+            "terms": [{"name": "flat", "shape": "flat", "origin": "sample_environment",
+                       "method": "analytic", "params": {"rate": 7e-10}, "optional": True}]}
+    summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega),
+                        sample_background=json.loads(json.dumps(spec)))
+
+    assert client.jobs and all(body["background"] == spec for body in client.jobs.values())
+    assert _frozen_events(summary["session_log"])[0]["frozen"] == spec
+    # Only the instrument-limits preflight read the schema: a frozen spec needs no registry lookup.
+    assert client.schema_calls == 1
+    assert client.set_background_calls == []
+
+
+def test_campaign_background_overrides_merge_into_the_frozen_terms(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _BackgroundTavi(omega)
+    summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega),
+                        sample_background={"enabled": True, "preset": "flat_low",
+                                           "overrides": {"tail": {"gamma_meV": 3.5}}})
+
+    frozen = _frozen_events(summary["session_log"])[0]["frozen"]
+    terms = {term["name"]: term for term in frozen["terms"]}
+    assert terms["tail"]["params"] == {"rate_integrated": 1e-9, "gamma_meV": 3.5}
+    assert terms["flat"]["params"] == {"rate": 2e-10}       # untouched terms keep preset numerics
+    assert all(body["background"] == frozen for body in client.jobs.values())
+
+
+@pytest.mark.parametrize("spec, needle", [
+    ({"preset": "does_not_exist"}, "unknown background preset"),
+    ({"preset": "flat_low", "overrides": {"nope": {"rate": 1.0}}}, "unknown term"),
+    ({"preset": "flat_low", "overrides": {"flat": {"rat": 1.0}}}, "unknown param"),
+    ({"enabled": True, "terms": []}, "non-empty list"),
+    ({"enabled": "false", "preset": "flat_low"}, "'enabled' must be a boolean"),
+])
+def test_an_unusable_sample_background_aborts_the_campaign_before_any_scan(tmp_path, spec, needle):
+    """An honest setup abort: nothing is submitted and nothing is silently defaulted."""
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _BackgroundTavi(omega)
+    with pytest.raises(ValueError) as excinfo:
+        _run(tmp_path, _objective(), client, make_mock_runner(omega), sample_background=spec)
+    assert needle in str(excinfo.value)
+    assert client.jobs == {} and client.validate_bodies == []
+
+
+def test_campaign_without_a_sample_background_stamps_nothing(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _BackgroundTavi(omega)
+    summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+
+    assert client.jobs
+    assert all("background" not in body for body in client.jobs.values())
+    assert all("background" not in body for body in client.validate_bodies)
+    assert _frozen_events(summary["session_log"]) == []
+    assert client.schema_calls == 1     # the limits preflight only; no background resolution
+    assert client.set_background_calls == []
+
+
+def test_resume_refuses_when_the_frozen_background_drifted(tmp_path):
+    """The workspace's scans were taken under one background; re-expanding the same spec against a
+    retuned preset registry must refuse rather than append scans under different truth."""
+    omega = lambda h: (h - 2.0) * 2.0
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    spec = {"preset": "flat_low"}
+    cfg = {"workspace": ws, "client": _BackgroundTavi(omega), "run_isar": make_mock_runner(omega),
+           "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7,
+           "sample_background": dict(spec)}
+    run_campaign(_objective(), cfg)
+
+    retuned = json.loads(json.dumps(_BG_PRESETS))
+    retuned["flat_low"]["terms"][0]["params"]["rate"] = 9e-10        # preset retuned between runs
+    drifted = _BackgroundTavi(omega, presets=retuned)
+    with pytest.raises(ValueError) as excinfo:
+        run_campaign(_objective(), dict(cfg, client=drifted, sample_background=dict(spec)))
+    assert "background_fingerprint_drift" in str(excinfo.value)
+    assert drifted.jobs == {}
+
+
+def test_a_resume_under_the_same_background_is_allowed(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    cfg = {"workspace": ws, "client": _BackgroundTavi(omega), "run_isar": make_mock_runner(omega),
+           "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7,
+           "sample_background": {"preset": "flat_low"}}
+    summary1 = run_campaign(_objective(), cfg)
+    summary2 = run_campaign(_objective(), dict(cfg, client=_BackgroundTavi(omega)))
+
+    assert summary2["stop"]["state"] in {"met", "incomplete", "infeasible"}
+    assert len(_frozen_events(summary1["session_log"])) == 2, "one frozen record per invocation"
+
+
+def test_the_frozen_background_shares_nothing_with_the_spec_or_the_preset_registry(tmp_path):
+    """Freezing means freezing: a later mutation of the caller's spec or of the instrument's preset
+    registry must not reach the profile the campaign already stamped."""
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    client = _BackgroundTavi()
+    spec = {"preset": "flat_low", "overrides": {"tail": {"gamma_meV": 3.5}}}
+    cfg = _campaign_config(_objective(), {"workspace": ws, "client": client,
+                                          "run_isar": lambda *a, **k: None,
+                                          "calibration": _UNITY_CAL, "sample_background": spec})
+    frozen, _meta = loop_mod._freeze_sample_background(cfg)
+
+    spec["overrides"]["tail"]["gamma_meV"] = 99.0
+    client.presets["flat_low"]["terms"][0]["params"]["rate"] = 99.0
+    terms = {term["name"]: term for term in frozen["terms"]}
+    assert terms["tail"]["params"]["gamma_meV"] == 3.5
+    assert terms["flat"]["params"]["rate"] == 2e-10
+    # The registry the instrument handed over is untouched by the merge.
+    assert client.presets["flat_low"]["terms"][1]["params"]["gamma_meV"] == 2.0
+
+
+def test_scan_and_validate_bodies_omit_background_when_none():
+    proposal = _scan_proposal(0.0, 1.0, 0.1)
+    assert "background" not in _validate_body(proposal, sample="Al_phonon_DFT")
+    assert "background" not in loop_mod._scan_body(proposal, "deterministic", 3,
+                                                   sample="Al_phonon_DFT")
+    frozen = {"enabled": False,
+              "terms": [{"name": "flat", "shape": "flat", "params": {"rate": 0.0}}]}
+    body = loop_mod._scan_body(proposal, "deterministic", 3, sample="Al_phonon_DFT",
+                               background=frozen)
+    assert body["background"] == frozen and body["engine"] == "deterministic"

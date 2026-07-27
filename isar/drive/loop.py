@@ -19,7 +19,7 @@ TAVI client and shell out to ``isar run``.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -617,8 +617,15 @@ def _make_classification_providers(card_state: dict, objective, resolution_cb, *
     return classify, rival_band
 
 
-def _validate_body(proposal, *, sample: str) -> dict[str, Any]:
-    """The ``POST /validate`` body — ``parameters`` only (engine/seed/isolated are scan-only fields)."""
+def _validate_body(proposal, *, sample: str, background: dict | None = None) -> dict[str, Any]:
+    """The ``POST /validate`` body — ``parameters`` only (engine/seed/isolated are scan-only fields).
+
+    ``background`` is the campaign's FROZEN numeric background profile (see
+    :func:`_freeze_sample_background`), stamped as a per-scan override. It rides on the validate body
+    too, because the instrument validates the background block (missing sample scale, unknown term):
+    without it a scan could validate clean and then be refused at submit. ``None`` (no campaign
+    background) → the key is absent and the body is byte-identical to the pre-background one.
+    """
     body: dict[str, Any] = {
         "parameters": {
             "H": proposal.h, "K": proposal.k, "L": proposal.l,
@@ -637,12 +644,18 @@ def _validate_body(proposal, *, sample: str) -> dict[str, Any]:
             "sample": sample,
         },
     }
+    if background is not None:
+        # Transport only: the loop never chooses, tunes, or re-resolves this — it stamps the profile
+        # frozen at campaign setup. The instrument derives ``source="per_scan_override"`` from the
+        # key's presence, so no companion ``background_source`` field is sent.
+        body["background"] = background
     return body
 
 
-def _scan_body(proposal, engine: str, seed: int, *, sample: str) -> dict[str, Any]:
+def _scan_body(proposal, engine: str, seed: int, *, sample: str,
+               background: dict | None = None) -> dict[str, Any]:
     """The ``POST /scan`` body — the validate body plus the isolated/seeded engine selection."""
-    body = _validate_body(proposal, sample=sample)
+    body = _validate_body(proposal, sample=sample, background=background)
     body.update({"engine": engine, "seed": int(seed), "isolated": True})
     return body
 
@@ -1875,6 +1888,14 @@ class CampaignConfig:
     - ``sample`` (:class:`str`, config key ``sample``, default ``"Al_phonon_DFT"``): stamped into every
       validate/scan body's ``parameters`` because the instrument API no longer inherits the GUI's
       sample selection.
+    - ``sample_background`` (:class:`dict` | ``None``, config key ``sample_background``, default
+      ``None``): the background spec bundled with the sample declaration — preset form
+      ``{enabled, preset, overrides}`` or frozen form ``{enabled, terms: [...]}``. Expanded ONCE at
+      campaign setup into ``sample_background_frozen`` (see :func:`_freeze_sample_background`) and
+      stamped on every validate/scan body. ``None`` → no background key anywhere (byte-identical to
+      a pre-background campaign).
+    - ``sample_background_frozen`` (:class:`dict` | ``None``, NOT a config key): the frozen numeric
+      profile derived from ``sample_background`` by :func:`run_campaign` at setup.
     - ``bayes_errors`` (:class:`bool`, config key ``bayes_errors``, default ``False``): campaign-level
       opt-in for the ``bayes`` errors tier (superset of ``full``: bootstrap + MINOS + profile +
       posterior). When set, every place that would otherwise use the ``full`` tier (escalation in
@@ -1904,6 +1925,9 @@ class CampaignConfig:
     # Complete live limit envelope; additive and independent of the frozen objective policy.
     instrument_limits: dict | None = None
     sample: str = "Al_phonon_DFT"
+    # The campaign's declared background (spec as given) and its compile-time frozen numeric form.
+    sample_background: dict | None = None
+    sample_background_frozen: dict | None = None
     bayes_errors: bool = False
     # Cooperative operator stop (GUI subprocess control). When set, each iteration's top checks for
     # ``<workspace>/report/control/stop-<control_token>.json`` and, if present, breaks with an
@@ -1987,10 +2011,158 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
         max_points_source=max_points_source,
         instrument_limits=instrument_limits,
         sample=str(config.get("sample", "Al_phonon_DFT")),
+        # Copied, not validated, here: a malformed spec is refused with a clear message by the
+        # compile-time freeze in run_campaign, not silently coerced at config time.
+        sample_background=(dict(config["sample_background"])
+                           if isinstance(config.get("sample_background"), dict)
+                           else config.get("sample_background")),
         bayes_errors=bool(config.get("bayes_errors", False)),
         control_token=(str(config["control_token"]) if config.get("control_token") else None),
         source=(dict(config["source"]) if config.get("source") else None),
     )
+
+
+BACKGROUND_DRIFT = "background_fingerprint_drift"
+
+
+def _validated_background_terms(terms, *, where: str) -> list[dict]:
+    """Minimal shape check on a numeric background term list; returns an independent copy.
+
+    ISAR never interprets background physics — every key the instrument put on a term is passed
+    through verbatim. Only the structure it must stamp and compare is checked here."""
+    if not isinstance(terms, list) or not terms:
+        raise ValueError(f"{where}: 'terms' must be a non-empty list of background term objects")
+    out: list[dict] = []
+    seen: set[str] = set()
+    for term in terms:
+        if not isinstance(term, dict):
+            raise ValueError(f"{where}: each background term must be an object, got {type(term).__name__}")
+        name, shape = term.get("name"), term.get("shape")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"{where}: a background term is missing a non-empty 'name'")
+        if not isinstance(shape, str) or not shape:
+            raise ValueError(f"{where}: background term {name!r} is missing a non-empty 'shape'")
+        params = term.get("params", {})
+        if not isinstance(params, dict):
+            raise ValueError(f"{where}: background term {name!r} has a non-object 'params'")
+        if name in seen:
+            raise ValueError(f"{where}: background term name {name!r} appears twice")
+        seen.add(name)
+        # Deep copy through JSON: the frozen profile must share NOTHING with the caller's spec or
+        # the instrument's preset registry (a later mutation of either would silently change the
+        # campaign's stamped truth), and a term that cannot round-trip through JSON could not be
+        # stamped on a scan body or written to the session log anyway — so refuse it here.
+        try:
+            out.append(json.loads(canonical_json(term)))
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{where}: background term {name!r} is not JSON-serializable "
+                             f"({error})") from error
+    return out
+
+
+def _prior_frozen_background(log_path) -> dict | None:
+    """The frozen background this workspace last ran under, from the durable session log (or None)."""
+    prior = None
+    for event in read_log(log_path):
+        payload = event.get("payload") or {}
+        if event.get("kind") == "decide" and payload.get("event") == "sample_background_frozen":
+            frozen = payload.get("frozen")
+            if isinstance(frozen, dict):
+                prior = frozen
+    return prior
+
+
+def _freeze_sample_background(cfg: CampaignConfig) -> tuple[dict | None, dict]:
+    """Expand ``cfg.sample_background`` into the frozen numeric form ONCE, at campaign setup.
+
+    A campaign's background is part of its SAMPLE DECLARATION, not a steering choice: it is resolved
+    here and then stamped verbatim onto every validate/scan body as a per-scan override. Nothing in
+    the loop may re-resolve it, and the campaign never depends on TAVI's mutable config default —
+    a GUI edit, another client, a crash leftover, or a preset retune would otherwise change the
+    background truth mid-campaign without a trace. ``TaviClient.set_background`` is manual/test-only
+    and is never called from here.
+
+    Preset form ``{enabled, preset, overrides}`` is expanded against the instrument's advertised
+    preset registry (``GET /schema`` → ``background.presets``), per-term overrides merged into the
+    term's ``params``. Frozen form ``{enabled, terms: [...]}`` is used as given. An absent
+    ``enabled`` means ``True`` (matching the instrument's semantics for a non-null spec).
+
+    Resume drift: the frozen form is durable in the session log, so a resumed campaign re-expands
+    the spec against the CURRENT schema and refuses (``background_fingerprint_drift``) rather than
+    appending scans generated under different background truth. That guard only covers a campaign
+    that declares a background; a run that drops ``sample_background`` entirely is caught downstream
+    instead, by the per-record effective fingerprints and collation's refusal to pool across them.
+
+    Returns ``(frozen | None, log_meta)``; a ``None`` spec returns ``(None, {})`` and the campaign
+    behaves exactly as it did before backgrounds existed. Raises :class:`ValueError` — an honest
+    setup abort, never a caught-and-continued degradation — on an unusable spec or on drift.
+    """
+    spec = cfg.sample_background
+    if spec is None:
+        return None, {}
+    where = "sample_background"
+    if not isinstance(spec, dict):
+        raise ValueError(f"{where} must be an object (preset form {{enabled, preset, overrides}} or "
+                         f"frozen form {{enabled, terms}}), got {type(spec).__name__}")
+    meta: dict[str, Any] = {}
+    if "terms" in spec:
+        terms = _validated_background_terms(spec.get("terms"), where=where)
+    else:
+        preset = spec.get("preset")
+        overrides = spec.get("overrides") or {}
+        if not isinstance(overrides, dict):
+            raise ValueError(f"{where}: 'overrides' must be an object keyed by term name")
+        try:
+            schema = cfg.client.get_schema()
+        except Exception as error:  # noqa: BLE001 — setup abort; the campaign must not guess a background
+            log_event(cfg.log_path, "exception", {
+                "action": "sample_background_unresolved", "preset": preset, "error": str(error)})
+            raise ValueError(
+                f"{where}: cannot expand preset {preset!r} — GET /schema failed ({error})") from error
+        block = (schema or {}).get("background") or {}
+        presets = block.get("presets") or {}
+        if not isinstance(presets, dict) or preset not in presets:
+            raise ValueError(f"{where}: unknown background preset {preset!r}; the instrument "
+                             f"advertises {sorted(presets) if isinstance(presets, dict) else []}")
+        terms = _validated_background_terms((presets[preset] or {}).get("terms"),
+                                            where=f"{where} preset {preset!r}")
+        by_name = {term["name"]: term for term in terms}
+        for name, override in overrides.items():
+            term = by_name.get(name)
+            if term is None:
+                raise ValueError(f"{where}: override names unknown term {name!r}; preset {preset!r} "
+                                 f"defines {sorted(by_name)}")
+            if not isinstance(override, dict):
+                raise ValueError(f"{where}: override for term {name!r} must be an object of params")
+            unknown = [key for key in override if key not in term["params"]]
+            if unknown:
+                raise ValueError(f"{where}: override for term {name!r} sets unknown "
+                                 f"param(s) {sorted(unknown)}; the preset defines "
+                                 f"{sorted(term['params'])}")
+            params = dict(term["params"])
+            try:
+                params.update(json.loads(canonical_json(override)))   # copied, never aliased
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"{where}: override for term {name!r} is not JSON-serializable "
+                                 f"({error})") from error
+            term["params"] = params
+        meta["preset"] = preset
+        for key in ("preset_registry_version", "background_schema"):
+            if block.get(key) is not None:
+                meta[key] = block[key]
+    enabled = spec.get("enabled", True)
+    if not isinstance(enabled, bool):
+        # No truthiness coercion: "false"/0 would silently become the opposite of what was declared.
+        raise ValueError(f"{where}: 'enabled' must be a boolean, got {enabled!r}")
+    frozen = {"enabled": enabled, "terms": terms}
+    prior = _prior_frozen_background(cfg.log_path)
+    if prior is not None and canonical_json(prior) != canonical_json(frozen):
+        raise ValueError(
+            f"{BACKGROUND_DRIFT}: this workspace's scans were taken under a different background "
+            f"profile. Stored: {canonical_json(prior)} — re-expanded now: {canonical_json(frozen)}. "
+            "Resuming would append scans generated under different truth; start a new campaign or "
+            "restore the original background.")
+    return frozen, meta
 
 
 @dataclass(frozen=True)
@@ -2867,7 +3039,8 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
         finalized = finalized_proposal(proposal)
         with timed(log_path, "validate", iteration=it, attempt=attempt):
-            val = client.validate(_validate_body(proposal, sample=cfg.sample))
+            val = client.validate(_validate_body(proposal, sample=cfg.sample,
+                                                 background=cfg.sample_background_frozen))
         # Stage 3: freeze the geometry this exact request was judged under, before any branch below
         # decides what the verdict means. PR2.3 reads ``attempt.status`` to class the rejection.
         attempt_record = validated_attempt(
@@ -2934,7 +3107,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
 
         with timed(log_path, "submit", iteration=it, attempt=attempt) as _m:
             body = _scan_body(proposal, cfg.engine, cfg.base_seed + scan_counter,
-                               sample=cfg.sample)
+                               sample=cfg.sample, background=cfg.sample_background_frozen)
             try:
                 submit = client.submit_scan(
                     body,
@@ -3543,6 +3716,12 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     type, its default, and where it is used are resolved and documented by :func:`_campaign_config` /
     :class:`CampaignConfig` — see there for the full key reference."""
     cfg = _campaign_config(objective, config)
+    # Freeze the declared background before anything is proposed or spent: one expansion per
+    # campaign, stamped unchanged on every scan (see _freeze_sample_background). A bad spec or a
+    # resume under drifted background truth aborts the campaign here, having submitted nothing.
+    background_frozen, background_meta = _freeze_sample_background(cfg)
+    if background_frozen is not None:
+        cfg = replace(cfg, sample_background_frozen=background_frozen)
 
     # Crash-safe resume: recover the spend ledger + folded rows + observations from the durable files
     # (session_log + results.csv). A cold workspace yields the fresh-start values.
@@ -3583,6 +3762,12 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     if cfg.source is not None:
         start_payload["source"] = cfg.source           # provenance fingerprint (goal/spec/resume + sha256)
     log_event(cfg.log_path, "decide", start_payload)
+    if background_frozen is not None:
+        # The durable record of the campaign's background truth — also what a later resume
+        # re-expands against to detect drift.
+        log_event(cfg.log_path, "decide",
+                  {"event": "sample_background_frozen", "action": "sample_background_frozen",
+                   "spec": cfg.sample_background, "frozen": background_frozen, **background_meta})
 
     decision = None
     operator_stop = False        # set when a cooperative operator-stop file is found at an iteration top
