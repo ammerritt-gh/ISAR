@@ -320,6 +320,12 @@ def _background_block():
 
 def _with_background(obj, block=None):
     obj["result"]["metadata"] = {"background": block if block is not None else _background_block()}
+    # TAVI's launch summary echoes the REQUESTED spec too (preset name; full numeric terms for the
+    # frozen form campaigns stamp) — the second leak path the redaction must close. Caught live on
+    # 2026-07-27: the metadata block was redacted while launch.background walked the preset name
+    # straight onto the record.
+    obj["launch"]["background"] = {"enabled": True, "preset": "flat_high"}
+    obj["launch"]["background_source"] = "config_default"
     return obj
 
 
@@ -349,6 +355,20 @@ def test_background_numerics_are_redacted_from_the_stored_payload(tmp_path):
         assert forbidden not in payload
     assert "flat_high" not in json.dumps(rec.raw_header["background_provenance"])
     assert rec.raw_header["tavi"]["job_id"] == "j-0001"     # the rest of the payload is intact
+
+
+def test_launch_background_spec_is_redacted_too(tmp_path):
+    # The launch summary's requested spec is truth in its own right: the preset form leaks the
+    # name, the frozen form (campaign stamping) leaks every numeric term.
+    obj = _with_background(_deltae_json())
+    obj["launch"]["background"] = {"enabled": True, "terms": [
+        {"name": "flat", "shape": "flat", "origin": "instrument", "params": {"rate": 5.0e-9}}]}
+    rec = tavi.parse_file(_write(tmp_path, "j-0001.json", obj), _card())[0]
+    launch = rec.raw_header["tavi"]["launch"]
+    assert launch["background"] == {"redacted": "sim_truth",
+                                    "effective_fingerprint": "fedcba9876543210"}
+    assert launch["background_source"] == "config_default"   # delivery tag is safe and kept
+    assert launch["scan_command1"] == "deltaE -2 2 1"        # the rest of launch is intact
 
 
 def test_background_redaction_does_not_mutate_the_parsed_payload_on_disk(tmp_path):

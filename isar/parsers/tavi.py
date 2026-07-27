@@ -267,19 +267,30 @@ def _background_provenance(block: dict) -> dict:
 
 
 def _redact_background(data: dict, block: dict) -> dict:
-    """The stored payload with the numeric background block replaced by a fingerprint pointer.
+    """The stored payload with every numeric background trace replaced by a fingerprint pointer.
 
-    Returns a SHALLOW COPY of `data` (and of `result`/`result.metadata`, the only nested dicts it
-    edits) so nothing the rest of `parse_file` reads — or any caller sharing the parsed object — is
-    mutated. Every other key still aliases the original payload, so this costs three small dicts.
+    Two leak paths, both closed here: `result.metadata.background` (the resolved truth block) and
+    `launch.background` (TAVI's launch summary echoes the REQUESTED spec — the preset name in preset
+    form, the full numeric terms in the frozen form campaigns stamp). `launch.background_source` is
+    safe and kept; it is one of the five safe keys anyway.
+
+    Returns a SHALLOW COPY of `data` (and of the nested dicts it edits) so nothing the rest of
+    `parse_file` reads — or any caller sharing the parsed object — is mutated. Every other key still
+    aliases the original payload.
     """
+    pointer = {"redacted": "sim_truth",
+               "effective_fingerprint": block.get("effective_fingerprint")}
     result = dict(data.get("result") or {})
     metadata = dict(result.get("metadata") or {})
-    metadata["background"] = {"redacted": "sim_truth",
-                              "effective_fingerprint": block.get("effective_fingerprint")}
+    metadata["background"] = dict(pointer)
     result["metadata"] = metadata
     stored = dict(data)
     stored["result"] = result
+    launch = data.get("launch")
+    if isinstance(launch, dict) and launch.get("background") is not None:
+        launch = dict(launch)
+        launch["background"] = dict(pointer)
+        stored["launch"] = launch
     return stored
 
 
