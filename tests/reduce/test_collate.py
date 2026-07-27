@@ -175,6 +175,71 @@ def test_master_consistency_bootstrap_is_seeded_zero_safe_and_detects_drift():
     assert statistic > first[0] and pvalue < 0.01 and consistent is False
 
 
+# ---------------------------------------------------------------------------
+# Background-truth pooling guard (flag, never delete)
+# ---------------------------------------------------------------------------
+def _stamp_background(record, effective_fingerprint, *, profile="p0"):
+    """Give a record the SAFE background provenance the TAVI parser writes (no numerics)."""
+    record.raw_header["background_provenance"] = {
+        "enabled": True, "source": "per_scan_override", "background_schema": "tavi.background/1",
+        "profile_fingerprint": profile, "effective_fingerprint": effective_fingerprint}
+    return record
+
+
+def test_background_pool_key_classes_absent_present_and_unfingerprinted():
+    assert collate.background_pool_key(None) == collate.NO_BACKGROUND
+    assert collate.background_pool_key({"tavi": {}}) == collate.NO_BACKGROUND
+    assert collate.background_pool_key(
+        {"background_provenance": {"effective_fingerprint": "abc"}}) == "fp:abc"
+    # Present but unfingerprinted fails CLOSED to its own class rather than pooling as "absent".
+    assert collate.background_pool_key(
+        {"background_provenance": {"enabled": True}}) == collate.UNKNOWN_BACKGROUND
+
+
+def test_identical_background_fingerprints_still_pool(tmp_path):
+    run = run_builder.build_in8_run("BG-SAME", n_scans=2, seed0=7)
+    records, card = _in8_records(run, tmp_path)
+    for rec in records:
+        _stamp_background(rec, "fingerprint-a")
+    col = collate.collate(records, card)
+    g = col.groups[0]
+    assert g.pool_refusal is None and g.merged is not None and g.merged.n_members == 2
+
+
+def test_absent_background_on_every_member_pools_exactly_as_before(tmp_path):
+    run = run_builder.build_in8_run("BG-NONE", n_scans=2, seed0=7)
+    records, card = _in8_records(run, tmp_path)
+    col = collate.collate(records, card)
+    assert col.groups[0].pool_refusal is None
+    assert col.groups[0].merged.n_members == 2
+    assert collate.BACKGROUND_MISMATCH not in col.rollup.scan_flags
+
+
+def test_differing_background_fingerprints_refuse_to_pool(tmp_path):
+    run = run_builder.build_in8_run("BG-DIFF", n_scans=2, seed0=7)
+    records, card = _in8_records(run, tmp_path)
+    _stamp_background(records[0], "fingerprint-a")
+    _stamp_background(records[1], "fingerprint-b")
+    col = collate.collate(records, card)
+    g = col.groups[0]
+    assert g.pool_refusal == collate.BACKGROUND_MISMATCH
+    assert g.merged is None                               # no master pools the two truths
+    assert len(g.members) == 2                            # …and nothing was deleted
+    assert col.rollup.scan_flags[collate.BACKGROUND_MISMATCH] == 1
+
+
+def test_absent_versus_present_background_also_refuses_to_pool(tmp_path):
+    # A scan measured over planted background and one measured without it are not the same
+    # measurement — summing them would credit ΣN with counts no member's exposure accounts for.
+    run = run_builder.build_in8_run("BG-MIX", n_scans=2, seed0=7)
+    records, card = _in8_records(run, tmp_path)
+    _stamp_background(records[1], "fingerprint-a")
+    col = collate.collate(records, card)
+    assert col.groups[0].pool_refusal == collate.BACKGROUND_MISMATCH
+    assert col.groups[0].merged is None
+    assert {m.scan_number for m in col.groups[0].members} == {55000, 55001}
+
+
 def test_master_merge_applies_qc_masks_without_deleting_energy_bins(tmp_path):
     run = run_builder.build_in8_run("DIR-MASK", n_scans=2, seed0=7)
     records, card = _in8_records(run, tmp_path)

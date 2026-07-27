@@ -22,6 +22,20 @@ none of the truth fields parse identically to before (card constants throughout)
 provenance (payload-truth vs card-fallback) is recorded in `raw_header["provenance"]` and summarized
 as an info-level `card_fallback` scan flag so downstream QC can tell which CN inputs are constants.
 
+TRUTH FIREWALL (background). TAVI can *generate* background, and stamps the planted numeric truth
+(rates, widths, per-term parameters, preset name) into `result.metadata.background`. That truth must
+never reach ISAR's analysis record: the fitter would then be conditioning on the answer. So this
+plugin splits the block in two. The SAFE half — `enabled`, `source`, `background_schema`,
+`profile_fingerprint`, `effective_fingerprint` — is copied to `raw_header["background_provenance"]`;
+it carries identity only (the effective fingerprint is the pooling identity collation keys on) and no
+magnitude, which is why the preset NAME is excluded too ("flat_high" states a magnitude as plainly as
+a number does). The NUMERIC half is REDACTED from the stored payload: `raw_header["tavi"]` holds a
+shallow copy whose `result.metadata.background` is `{"redacted": "sim_truth",
+"effective_fingerprint": ...}`. The firewall is physical, not a naming convention — the numbers are
+simply not on the record. The raw TAVI JSON on disk is untouched, and validation scoring reads the
+truth there, AFTER fitting. A payload with no background block (older TAVI, and every real
+instrument) gets no `background_provenance` key and parses exactly as it did before.
+
 The HORIZONTAL collimations ALF1..4 come from the payload directly (arcmin); d-spacings DM/DA come
 from the crystal-id → d map below (card override wins). experiment_id comes from the card ([sample]
 experiment_id/name) since TAVI JSONs carry no EXPNO; the payload `sample_key` is recorded in
@@ -232,6 +246,44 @@ def _cn_params(params: dict, card: Card, prov: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Background truth firewall (see the module docstring)
+# ---------------------------------------------------------------------------
+# The only fields of TAVI's background block allowed onto the record: identity and bookkeeping.
+# Everything else (terms, params, units, sample_scale, preset name, seed) states a magnitude.
+BACKGROUND_SAFE_KEYS = ("enabled", "source", "background_schema",
+                        "profile_fingerprint", "effective_fingerprint")
+
+
+def _background_block(result: dict):
+    """TAVI's `result.metadata.background` block, or None when the payload carries none."""
+    md = result.get("metadata")
+    block = md.get("background") if isinstance(md, dict) else None
+    return block if isinstance(block, dict) else None
+
+
+def _background_provenance(block: dict) -> dict:
+    """The SAFE half of the background block: identity only, never a rate/width/preset name."""
+    return {key: block.get(key) for key in BACKGROUND_SAFE_KEYS}
+
+
+def _redact_background(data: dict, block: dict) -> dict:
+    """The stored payload with the numeric background block replaced by a fingerprint pointer.
+
+    Returns a SHALLOW COPY of `data` (and of `result`/`result.metadata`, the only nested dicts it
+    edits) so nothing the rest of `parse_file` reads — or any caller sharing the parsed object — is
+    mutated. Every other key still aliases the original payload, so this costs three small dicts.
+    """
+    result = dict(data.get("result") or {})
+    metadata = dict(result.get("metadata") or {})
+    metadata["background"] = {"redacted": "sim_truth",
+                              "effective_fingerprint": block.get("effective_fingerprint")}
+    result["metadata"] = metadata
+    stored = dict(data)
+    stored["result"] = result
+    return stored
+
+
+# ---------------------------------------------------------------------------
 # Classification
 # ---------------------------------------------------------------------------
 def _classify(variable_1, params: dict) -> str:
@@ -353,7 +405,15 @@ def parse_file(path: str | Path, card: Card) -> list[scan.ScanRecord]:
             "card_fallback", "info",
             "instrument truth from card constants (payload lacked): " + ", ".join(fallback_fields)))
 
-    raw_header = {"tavi": data, "params": cn_params, "provenance": prov, "sample_key": sample_key}
+    # Background truth firewall: safe provenance onto the record, planted numerics redacted out of the
+    # stored payload (module docstring). No block (older TAVI / real data) → neither key changes.
+    bg_block = _background_block(result)
+    stored_payload = data if bg_block is None else _redact_background(data, bg_block)
+
+    raw_header = {"tavi": stored_payload, "params": cn_params, "provenance": prov,
+                  "sample_key": sample_key}
+    if bg_block is not None:
+        raw_header["background_provenance"] = _background_provenance(bg_block)
     source = scan.Source(
         file=p.name, byte_range=None, line_range=None, plugin=name, plugin_version=version,
         format_version=pol.format_version, schema_version=scan.SCHEMA_VERSION)

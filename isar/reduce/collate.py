@@ -7,6 +7,12 @@ separate (collation is a catalogue, not a physical combine); `merge_before_divid
 the IN8/`merge` path will use — sum kept counts AND kept monitors, THEN divide (§7.5, never average
 already-normalized rates), with no zero-count floor (D3).
 
+Pooling has compatibility limits, and they refuse rather than average: a `merge` group whose members
+were measured under different BACKGROUND TRUTH (the simulator's planted background, identified by the
+effective fingerprint the TAVI parser keeps — `background_pool_key`) gets no master at all. Its
+`pool_refusal` says why, the rollup counts it, and every member is kept, fit and reported on its own
+(flag, never delete).
+
 The output feeds the report (`isar/report`): the catalogue, the coverage map, and the flag rollup.
 """
 from __future__ import annotations
@@ -24,6 +30,11 @@ import numpy as np
 from isar.schema.steering import CANONICAL_MASTER, evidence_sink_for
 
 _COMPONENTS = ("h", "k", "l")
+
+# Background-truth pooling classes (see `background_pool_key`) and the refusal they can produce.
+NO_BACKGROUND = "absent"
+UNKNOWN_BACKGROUND = "unknown"
+BACKGROUND_MISMATCH = "background_fingerprint_mismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +54,7 @@ class SpectrumRef:
     spectrum: object = None      # the schema.scan.Spectrum (arrays; not serialized in the catalogue)
     energy: object = None        # the scanned-axis values (ndarray)
     normalization: object = None # the record's Normalization (for monitor / miniscan_monitor)
+    background_key: str = NO_BACKGROUND   # background-truth pooling class (`background_pool_key`)
 
 
 @dataclass
@@ -126,6 +138,7 @@ class CollationGroup:
     members: list
     merge: str = "separate"
     merged: MergedSpectrum | None = None   # the combined spectrum when merge="merge" (else None)
+    pool_refusal: str | None = None        # why this group was NOT pooled (members all kept)
 
 
 @dataclass
@@ -175,16 +188,46 @@ def _scanned_energy(record):
     return scanned[0].values if scanned else None
 
 
+def background_pool_key(raw_header) -> str:
+    """The background-truth class a spectrum may be pooled within.
+
+    A simulator can PLANT a background; TAVI stamps the effective fingerprint (the profile plus the
+    sample scaling actually applied) into ``raw_header["background_provenance"]`` and the parser keeps
+    that fingerprint while redacting the numbers. Records with no provenance key — real data, and every
+    scan taken before TAVI generated background — share the single class :data:`NO_BACKGROUND` and pool
+    exactly as they always did.
+
+    Absent and present are DIFFERENT classes, not a compatible pair: combine-before-divide would fold
+    counts from a planted background into the ΣN that certifies the point, so the master would carry an
+    intensity no member's exposure accounts for. A provenance block whose fingerprint is missing fails
+    CLOSED to :data:`UNKNOWN_BACKGROUND` rather than falling open to "absent" — the one case where
+    guessing hands untraceable truth the pooling privilege.
+    """
+    raw = raw_header if isinstance(raw_header, dict) else {}
+    provenance = raw.get("background_provenance")
+    if not isinstance(provenance, dict):
+        return NO_BACKGROUND
+    fingerprint = provenance.get("effective_fingerprint")
+    if fingerprint is None:
+        log.warning("background provenance without an effective fingerprint: %r — the spectrum is "
+                    "still catalogued, fit and reported, but it pools only with its own class.",
+                    provenance)
+        return UNKNOWN_BACKGROUND
+    return f"fp:{fingerprint}"
+
+
 def _spectrum_refs(record, step: float, t_round: float) -> list:
     t = float(record.temperature.setpoint[0]) if len(record.temperature.setpoint) else float("nan")
     energy = _scanned_energy(record)
+    background_key = background_pool_key(getattr(record, "raw_header", None))
     refs = []
     for det_id, sp in record.spectra.items():
         refs.append(SpectrumRef(
             experiment_id=record.experiment_id, scan_number=record.scan_number,
             detector_id=det_id, scan_type=record.scan_type, q=list(sp.q),
             q_key=_q_key(sp.q, step), temperature=t, t_key=_t_key(t, t_round),
-            spectrum=sp, energy=energy, normalization=record.normalization))
+            spectrum=sp, energy=energy, normalization=record.normalization,
+            background_key=background_key))
     return refs
 
 
@@ -345,8 +388,22 @@ def collate(records, card) -> Collation:
             groups[gkey] = CollationGroup(key=gkey, key_fields=fields, members=[], merge=merge)
         groups[gkey].members.append(ref)
 
+    rollup = _rollup(measurements)
     if merge == "merge":
         for g in groups.values():
+            # A group whose members were measured under different background truth is NOT pooled:
+            # summing them would put counts nobody's exposure accounts for into ΣN. Nothing is
+            # deleted — the members stay catalogued, fit and reported individually, and the group
+            # records why it has no master (mirrors the non-canonical-evidence rule above).
+            classes = sorted({ref.background_key for ref in g.members})
+            if len(classes) > 1:
+                g.pool_refusal = BACKGROUND_MISMATCH
+                _bump(rollup.scan_flags, BACKGROUND_MISMATCH)
+                log.warning(
+                    "refusing to pool %s: members carry %d background-truth classes (%s). The "
+                    "spectra are kept and still fit individually, but they have no pooled master.",
+                    g.key_fields, len(classes), ", ".join(classes))
+                continue
             g.merged = _merge_group(
                 g.members, energy_tol=energy_tol, consistency_alpha=consistency_alpha,
                 consistency_bootstrap_samples=consistency_bootstrap_samples)
@@ -354,7 +411,7 @@ def collate(records, card) -> Collation:
     return Collation(
         groups=list(groups.values()),
         coverage=_coverage(refs),
-        rollup=_rollup(measurements),
+        rollup=rollup,
         merge=merge)
 
 

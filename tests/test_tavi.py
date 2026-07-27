@@ -5,6 +5,10 @@ classification, the constant-Q-energy axis shape, RAW-COUNTS spectra with honest
 never-dropped masked points, the reported Q, the absolute energy status, and the Cooper-Nathans
 header (raw_header["params"]) with its derived KFIX/FX — plus matches(), name-registry resolution,
 the emit→parse round-trip, and that the shipped card loads through the Card machinery.
+
+They also pin the BACKGROUND TRUTH FIREWALL: a simulator payload's planted background numerics never
+reach the record (only the safe provenance/fingerprint half does), the raw JSON on disk keeps them for
+post-fit validation scoring, and a payload without a background block parses exactly as it did before.
 """
 import json
 from pathlib import Path
@@ -14,7 +18,7 @@ import pytest
 
 from isar.calibrate import tas
 from isar.parsers import registry, tavi
-from isar.schema import axes
+from isar.schema import axes, scan
 from isar.schema.card import Card
 from isar.synth_format import run_builder
 
@@ -290,6 +294,110 @@ def test_emit_parse_round_trip(tmp_path):
     assert np.allclose(sp.variance, d.counts)
     assert np.allclose(sp.q, d.q)
     assert np.allclose(rec.normalization.monitor, sc.monitor)
+
+
+# ---------------------------------------------------------------------------
+# Background truth firewall — safe provenance on the record, planted numerics redacted
+# ---------------------------------------------------------------------------
+def _background_block():
+    """TAVI's enabled-form `result.metadata.background` block (tavi/background.py metadata_block())."""
+    return {
+        "background_schema": "tavi.background/1",
+        "preset_registry_version": 1,
+        "enabled": True,
+        "preset": "flat_high",
+        "source": "config_default",
+        "overrides_applied": {},
+        "terms": [{"name": "flat", "shape": "flat", "origin": "instrument", "method": "analytic",
+                   "params": {"rate": 5.0e-9}, "optional": False, "units": "counts/monitor"}],
+        "parameter_units": {"rate": "counts/monitor"},
+        "sample_scale": None,
+        "skipped_terms": [],
+        "profile_fingerprint": "0123456789abcdef",
+        "effective_fingerprint": "fedcba9876543210",
+    }
+
+
+def _with_background(obj, block=None):
+    obj["result"]["metadata"] = {"background": block if block is not None else _background_block()}
+    return obj
+
+
+def test_background_provenance_carries_exactly_the_safe_keys(tmp_path):
+    obj = _with_background(_deltae_json())
+    rec = tavi.parse_file(_write(tmp_path, "j-0001.json", obj), _card())[0]
+    prov = rec.raw_header["background_provenance"]
+    assert set(prov) == set(tavi.BACKGROUND_SAFE_KEYS)
+    assert prov == {"enabled": True, "source": "config_default",
+                    "background_schema": "tavi.background/1",
+                    "profile_fingerprint": "0123456789abcdef",
+                    "effective_fingerprint": "fedcba9876543210"}
+    # No magnitude may ride along — not a rate, not a width, not the preset NAME.
+    assert "preset" not in prov and "terms" not in prov and "sample_scale" not in prov
+
+
+def test_background_numerics_are_redacted_from_the_stored_payload(tmp_path):
+    obj = _with_background(_deltae_json())
+    rec = tavi.parse_file(_write(tmp_path, "j-0001.json", obj), _card())[0]
+    stored = rec.raw_header["tavi"]["result"]["metadata"]["background"]
+    assert stored == {"redacted": "sim_truth", "effective_fingerprint": "fedcba9876543210"}
+    # The planted numbers exist nowhere on the record (physical firewall, not a naming convention).
+    # `params` is checked against the stored payload only — raw_header["params"] is the unrelated
+    # Cooper-Nathans header.
+    payload = json.dumps(rec.raw_header["tavi"])
+    for forbidden in ("terms", "params", "flat_high", "5e-09", "5.0e-09", "parameter_units"):
+        assert forbidden not in payload
+    assert "flat_high" not in json.dumps(rec.raw_header["background_provenance"])
+    assert rec.raw_header["tavi"]["job_id"] == "j-0001"     # the rest of the payload is intact
+
+
+def test_background_redaction_does_not_mutate_the_parsed_payload_on_disk(tmp_path):
+    # The record is redacted; the raw JSON file is untouched, because validation scoring reads the
+    # planted truth there AFTER fitting.
+    path = _write(tmp_path, "j-0001.json", _with_background(_deltae_json()))
+    tavi.parse_file(path, _card())
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk["result"]["metadata"]["background"]["terms"][0]["params"]["rate"] == 5.0e-9
+
+
+def test_disabled_background_block_still_records_provenance(tmp_path):
+    disabled = {"background_schema": "tavi.background/1", "enabled": False, "preset": "none",
+                "source": "config_default", "profile_fingerprint": "aaaa000011112222",
+                "effective_fingerprint": "bbbb333344445555"}
+    rec = tavi.parse_file(
+        _write(tmp_path, "j-0001.json", _with_background(_deltae_json(), disabled)), _card())[0]
+    prov = rec.raw_header["background_provenance"]
+    assert prov["enabled"] is False and prov["effective_fingerprint"] == "bbbb333344445555"
+    assert rec.raw_header["tavi"]["result"]["metadata"]["background"]["redacted"] == "sim_truth"
+
+
+def test_payload_without_background_block_is_unchanged(tmp_path):
+    # Older TAVI and every real instrument: no provenance key, and the stored payload is the payload.
+    path = _write(tmp_path, "j-0001.json", _deltae_json())
+    rec = tavi.parse_file(path, _card())[0]
+    assert "background_provenance" not in rec.raw_header
+    assert rec.raw_header["tavi"] == json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_real_instrument_parsers_never_stamp_background_provenance(tmp_path):
+    # Cross-parser parity: background provenance is a simulator concept. A real-numor record must be
+    # byte-identical to what it was before the firewall existed — no key, no redaction.
+    from isar.parsers import ill_in8
+
+    in8_card = ill_in8.card_template()
+    run = run_builder.build_in8_run("FIREWALL", n_scans=1, seed0=3)
+    path = tmp_path / "FIREWALL.numor"
+    path.write_bytes(ill_in8.emit_file(run, in8_card))
+    for rec in ill_in8.parse_file(path, in8_card):
+        assert "background_provenance" not in rec.raw_header
+
+
+def test_background_provenance_survives_the_record_json_round_trip(tmp_path):
+    rec = tavi.parse_file(
+        _write(tmp_path, "j-0001.json", _with_background(_deltae_json())), _card())[0]
+    back = scan.ScanRecord.from_dict(json.loads(json.dumps(rec.to_dict())))
+    assert back.raw_header["background_provenance"] == rec.raw_header["background_provenance"]
+    assert back.raw_header["tavi"]["result"]["metadata"]["background"]["redacted"] == "sim_truth"
 
 
 # ---------------------------------------------------------------------------

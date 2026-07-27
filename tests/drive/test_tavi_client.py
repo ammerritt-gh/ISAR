@@ -16,6 +16,8 @@ class _StubState:
         self.flaky_calls = 0       # how many times the flaky endpoint was hit
         self.last_post_body = None
         self.retry_after_hits = 0
+        self.last_put_body = None
+        self.last_put_path = None
 
 
 def _make_handler(state: _StubState):
@@ -42,6 +44,9 @@ def _make_handler(state: _StubState):
             if path == "/api/v1/resolution":
                 return self._send(200, {"H": float(qs["H"][0]), "deltaE": float(qs["deltaE"][0]),
                                         "method": qs.get("method", ["auto"])[0], "fwhm": 0.5})
+            if path == "/api/v1/background":
+                return self._send(200, {"enabled": False, "preset": "none",
+                                        "profile_fingerprint": "0123456789abcdef", "terms": []})
             if path == "/api/v1/scan/j-0001/data":
                 return self._send(200, {"job_id": "j-0001", "state": "done",
                                         "result": {"scan_values_1": [1, 2], "counts": [10, 20]}})
@@ -69,6 +74,15 @@ def _make_handler(state: _StubState):
                 return self._send(200, {"points": 5, "would_queue": True, "blockers": []})
             if u.path == "/api/v1/scan":
                 return self._send(202, {"job_id": "j-0001", "state": "queued", "position": 0})
+            return self._send(404, {"error": {"code": "not_found"}})
+
+        def do_PUT(self):
+            length = int(self.headers.get("Content-Length", 0))
+            state.last_put_body = json.loads(self.rfile.read(length) or b"{}")
+            state.last_put_path = urlparse(self.path).path
+            if state.last_put_path == "/api/v1/background":
+                return self._send(200, {"enabled": True, "preset": "flat_low",
+                                        "profile_fingerprint": "aaaabbbbccccdddd"})
             return self._send(404, {"error": {"code": "not_found"}})
     return Handler
 
@@ -131,6 +145,21 @@ def test_submit_scan_sends_idempotency_key(server):
     # No assertion on the header echo (stub ignores it) — just that it does not error.
     out = _client(base).submit_scan({}, idempotency_key="run-a")
     assert out["job_id"] == "j-0001"
+
+
+def test_get_background(server):
+    base, _ = server
+    profile = _client(base).get_background()
+    assert profile["enabled"] is False and profile["profile_fingerprint"] == "0123456789abcdef"
+
+
+def test_set_background_puts_the_spec_verbatim(server):
+    base, state = server
+    spec = {"enabled": True, "preset": "flat_low", "overrides": {"flat": {"rate": 2.0e-10}}}
+    out = _client(base).set_background(spec)
+    assert state.last_put_path == "/api/v1/background"     # PUT, not POST, at /background
+    assert state.last_put_body == spec                     # body is the spec, unwrapped
+    assert out["profile_fingerprint"] == "aaaabbbbccccdddd"
 
 
 def test_get_scan_data(server):

@@ -81,6 +81,15 @@ class TaviClient:
         params = {"H": h, "K": k, "L": l, "deltaE": deltaE, "method": method}
         return self._request("GET", "/resolution", params=params)
 
+    def get_background(self) -> dict[str, Any]:
+        """``GET /background`` — TAVI's configured background profile (spec, resolved terms, fingerprint).
+
+        MANUAL / TEST / CAMPAIGN-SETUP USE ONLY. The steering loop never calls this: a campaign resolves
+        its background once at compile time and stamps the frozen numeric form onto every scan as a
+        per-scan override, so acquisition never depends on TAVI's mutable config default.
+        """
+        return self._request("GET", "/background")
+
     def get_scan_data(self, job_id: str) -> dict[str, Any]:
         """``GET /scan/{id}/data`` — the job snapshot WITH the full ``result`` arrays.
 
@@ -95,6 +104,16 @@ class TaviClient:
         return self._request("GET", f"/scan/{self._quote(job_id)}", params=params)
 
     # ---- write / dry-run endpoints ----------------------------------------
+    def set_background(self, spec: dict[str, Any]) -> dict[str, Any]:
+        """``PUT /background`` — replace TAVI's configured background profile; returns the resolution.
+
+        MANUAL / TEST / CAMPAIGN-SETUP USE ONLY (same rule as :meth:`get_background`) — the steering
+        loop never writes instrument background config. ``spec`` is the preset form
+        ``{enabled, preset, overrides}`` or the frozen form ``{enabled, terms: [...]}``; TAVI answers
+        400 (raised as :class:`TaviError`) on an unknown preset, term, or parameter.
+        """
+        return self._request("PUT", "/background", body=spec)
+
     def validate(self, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /validate`` — dry-run the exact checks ``POST /scan`` performs; never queues/mutates.
 
