@@ -106,7 +106,12 @@ def test_live_short_campaign_reaches_met(tmp_path):
         h_start=2.1, h_end=2.4, step=0.1, tolerance_meV=0.5,
         budget={"kind": "neutrons", "amount": 1e13}, tier="deterministic", name="live-mvp")
 
-    summary = run_campaign(objective, {"workspace": ws, "seed": 11, "max_iters": 80})
+    # This test's claim is "the loop reaches tolerance on clean data", so it DECLARES clean data:
+    # a disabled background stamped on every scan insulates it from whatever profile the operator
+    # last left configured on the instrument (an enabled config default silently costs the campaign
+    # iterations it was never budgeted for — observed live 2026-07-27).
+    summary = run_campaign(objective, {"workspace": ws, "seed": 11, "max_iters": 80,
+                                       "sample_background": {"enabled": False, "preset": "none"}})
     kinds = {e["kind"] for e in read_log(summary["session_log"])}
     print(f"[live] campaign stop={summary['stop']['state']} reasons={summary['stop']['reasons']}")
     for expected in ("propose", "analyze", "decide", "stop"):

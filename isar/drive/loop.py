@@ -2029,9 +2029,12 @@ def _validated_background_terms(terms, *, where: str) -> list[dict]:
     """Minimal shape check on a numeric background term list; returns an independent copy.
 
     ISAR never interprets background physics — every key the instrument put on a term is passed
-    through verbatim. Only the structure it must stamp and compare is checked here."""
-    if not isinstance(terms, list) or not terms:
-        raise ValueError(f"{where}: 'terms' must be a non-empty list of background term objects")
+    through verbatim. Only the structure it must stamp and compare is checked here. An EMPTY list
+    is valid: 'none' (and any disabled declaration) genuinely has zero terms, and refusing it would
+    make "this campaign declares a clean instrument" inexpressible — the declaration that insulates
+    a campaign from whatever profile the operator last left configured."""
+    if not isinstance(terms, list):
+        raise ValueError(f"{where}: 'terms' must be a list of background term objects")
     out: list[dict] = []
     seen: set[str] = set()
     for term in terms:

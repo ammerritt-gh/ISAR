@@ -3316,6 +3316,8 @@ def test_a_known_budget_terminal_outranks_the_unrealizable_request_fault(tmp_pat
 # ---------------------------------------------------------------------------
 
 _BG_PRESETS = {
+    # The real instrument always advertises 'none' (zero terms) — the clean-instrument declaration.
+    "none": {"description": "no background", "terms": []},
     "flat_low": {
         "description": "weak instrument background",
         "terms": [
@@ -3401,6 +3403,21 @@ def test_campaign_background_scale_survives_the_freeze(tmp_path):
     assert frozen[0]["frozen"]["scale"] == 2.5
 
 
+def test_campaign_can_declare_a_clean_instrument(tmp_path):
+    """A disabled/none declaration stamps an empty override on every body — insulating the campaign
+    from whatever profile the operator last left configured on the instrument."""
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _BackgroundTavi(omega)
+    summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega),
+                        sample_background={"enabled": False, "preset": "none"})
+
+    expected = {"enabled": False, "terms": []}
+    assert client.jobs and all(body["background"] == expected for body in client.jobs.values())
+    frozen = _frozen_events(summary["session_log"])
+    assert len(frozen) == 1 and frozen[0]["frozen"] == expected
+    assert client.set_background_calls == []
+
+
 @pytest.mark.parametrize("scale", ["2", True, float("nan"), -1.0])
 def test_campaign_background_invalid_scale_aborts_setup(tmp_path, scale):
     omega = lambda h: (h - 2.0) * 2.0
@@ -3445,7 +3462,7 @@ def test_campaign_background_overrides_merge_into_the_frozen_terms(tmp_path):
     ({"preset": "does_not_exist"}, "unknown background preset"),
     ({"preset": "flat_low", "overrides": {"nope": {"rate": 1.0}}}, "unknown term"),
     ({"preset": "flat_low", "overrides": {"flat": {"rat": 1.0}}}, "unknown param"),
-    ({"enabled": True, "terms": []}, "non-empty list"),
+    ({"enabled": True, "terms": "nope"}, "must be a list"),
     ({"enabled": "false", "preset": "flat_low"}, "'enabled' must be a boolean"),
 ])
 def test_an_unusable_sample_background_aborts_the_campaign_before_any_scan(tmp_path, spec, needle):
