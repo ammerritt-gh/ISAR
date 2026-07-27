@@ -11,7 +11,8 @@ Pooling has compatibility limits, and they refuse rather than average: a `merge`
 were measured under different BACKGROUND TRUTH (the simulator's planted background, identified by the
 effective fingerprint the TAVI parser keeps — `background_pool_key`) gets no master at all. Its
 `pool_refusal` says why, the rollup counts it, and every member is kept, fit and reported on its own
-(flag, never delete).
+(flag, never delete). The same refusal covers a multi-member group holding an UNIDENTIFIED background
+(provenance with no fingerprint): sharing the "unknown" label is not evidence of shared truth.
 
 The output feeds the report (`isar/report`): the catalogue, the coverage map, and the flag rollup.
 """
@@ -201,11 +202,24 @@ def background_pool_key(raw_header) -> str:
     counts from a planted background into the ΣN that certifies the point, so the master would carry an
     intensity no member's exposure accounts for. A provenance block whose fingerprint is missing fails
     CLOSED to :data:`UNKNOWN_BACKGROUND` rather than falling open to "absent" — the one case where
-    guessing hands untraceable truth the pooling privilege.
+    guessing hands untraceable truth the pooling privilege. Because that class is a "we do not know"
+    and not an identity, TWO unknown members do not pool with each other either; that refusal lives in
+    :func:`collate`'s merge loop, where the group is visible.
+
+    DISABLED NORMALIZES TO ABSENT. A provenance block whose ``enabled`` is exactly ``False`` maps to
+    :data:`NO_BACKGROUND`, so an explicitly-clean simulator scan pools with legacy background-free data.
+    The justification is TAVI's bit-identity guarantee: a disabled profile adds no counts and produces
+    output bit-identical to pre-background TAVI, so the two carry numerically equivalent evidence and
+    refusing to pool them would only lose exposure. Only the literal boolean ``False`` normalizes —
+    a missing/``None``/true ``enabled`` keeps the fingerprint rules above (and a disabled block with no
+    fingerprint is still clean, so it normalizes too). The full provenance stays on the record
+    untouched; this is a pooling-key normalization, not a rewrite of the audit trail.
     """
     raw = raw_header if isinstance(raw_header, dict) else {}
     provenance = raw.get("background_provenance")
     if not isinstance(provenance, dict):
+        return NO_BACKGROUND
+    if provenance.get("enabled") is False:
         return NO_BACKGROUND
     fingerprint = provenance.get("effective_fingerprint")
     if fingerprint is None:
@@ -396,13 +410,22 @@ def collate(records, card) -> Collation:
             # deleted — the members stay catalogued, fit and reported individually, and the group
             # records why it has no master (mirrors the non-canonical-evidence rule above).
             classes = sorted({ref.background_key for ref in g.members})
-            if len(classes) > 1:
+            # UNKNOWN_BACKGROUND is a "we cannot identify this", not an identity: two records that
+            # both lost their fingerprint land in the same *label* without any evidence they were
+            # measured under the same truth. Pooling them would make the fail-closed class fail
+            # open the moment a second unknown arrived, so a multi-member group containing one
+            # refuses as well.
+            n_unknown = sum(ref.background_key == UNKNOWN_BACKGROUND for ref in g.members)
+            unknown_multi = n_unknown > 0 and len(g.members) > 1
+            if len(classes) > 1 or unknown_multi:
                 g.pool_refusal = BACKGROUND_MISMATCH
                 _bump(rollup.scan_flags, BACKGROUND_MISMATCH)
                 log.warning(
-                    "refusing to pool %s: members carry %d background-truth classes (%s). The "
+                    "refusing to pool %s: %d members carry %d background-truth classes (%s)%s. The "
                     "spectra are kept and still fit individually, but they have no pooled master.",
-                    g.key_fields, len(classes), ", ".join(classes))
+                    g.key_fields, len(g.members), len(classes), ", ".join(classes),
+                    (f", of which {n_unknown} is/are unidentified and cannot be shown to share a "
+                     "truth with anything") if unknown_multi else "")
                 continue
             g.merged = _merge_group(
                 g.members, energy_tol=energy_tol, consistency_alpha=consistency_alpha,

@@ -391,6 +391,33 @@ def test_disabled_background_block_still_records_provenance(tmp_path):
     assert rec.raw_header["tavi"]["result"]["metadata"]["background"]["redacted"] == "sim_truth"
 
 
+def test_launch_only_background_is_redacted_and_pools_as_unknown(tmp_path):
+    # A malformed/interrupted job: the launch summary records the REQUESTED spec (here the frozen
+    # form a campaign stamps — every numeric term) but the result block never landed. Redacting the
+    # launch spec only when a result block existed left those numerics on the record.
+    from isar.reduce import collate
+
+    obj = _deltae_json()
+    obj["launch"]["background"] = {"enabled": True, "terms": [
+        {"name": "flat", "shape": "flat", "origin": "instrument", "params": {"rate": 5.0e-9}}]}
+    obj["launch"]["background_source"] = "per_scan_override"
+    rec = tavi.parse_file(_write(tmp_path, "j-0001.json", obj), _card())[0]
+
+    assert rec.raw_header["tavi"]["launch"]["background"] == {
+        "redacted": "sim_truth", "effective_fingerprint": None}
+    assert "5e-09" not in json.dumps(rec.raw_header["tavi"])
+    assert rec.raw_header["tavi"]["launch"]["scan_command1"] == "deltaE -2 2 1"
+    # No result block to redact — it stays exactly as the payload had it.
+    assert "background" not in (rec.raw_header["tavi"]["result"].get("metadata") or {})
+
+    prov = rec.raw_header["background_provenance"]
+    assert set(prov) == set(tavi.BACKGROUND_SAFE_KEYS)
+    assert prov == {"enabled": None, "source": "per_scan_override", "background_schema": None,
+                    "profile_fingerprint": None, "effective_fingerprint": None}
+    # Fingerprint-less provenance fails CLOSED at collation rather than pooling as background-free.
+    assert collate.background_pool_key(rec.raw_header) == collate.UNKNOWN_BACKGROUND
+
+
 def test_payload_without_background_block_is_unchanged(tmp_path):
     # Older TAVI and every real instrument: no provenance key, and the stored payload is the payload.
     path = _write(tmp_path, "j-0001.json", _deltae_json())

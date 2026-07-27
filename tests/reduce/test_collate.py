@@ -240,6 +240,83 @@ def test_absent_versus_present_background_also_refuses_to_pool(tmp_path):
     assert {m.scan_number for m in col.groups[0].members} == {55000, 55001}
 
 
+def _stamp_unknown_background(record, *, enabled=True):
+    """Provenance that never resolved a fingerprint (interrupted job / malformed payload)."""
+    record.raw_header["background_provenance"] = {
+        "enabled": enabled, "source": "per_scan_override", "background_schema": None,
+        "profile_fingerprint": None, "effective_fingerprint": None}
+    return record
+
+
+def test_two_unidentified_backgrounds_refuse_to_pool_with_each_other(tmp_path):
+    # Sharing the "unknown" LABEL is not evidence of shared truth. If two unfingerprinted records
+    # pooled, the fail-closed class would fail open exactly when a second unknown arrived.
+    run = run_builder.build_in8_run("BG-UNK2", n_scans=2, seed0=7)
+    records, card = _in8_records(run, tmp_path)
+    for rec in records:
+        _stamp_unknown_background(rec)
+    col = collate.collate(records, card)
+    g = col.groups[0]
+    assert g.pool_refusal == collate.BACKGROUND_MISMATCH
+    assert g.merged is None
+    assert len(g.members) == 2                            # nothing deleted
+    assert col.rollup.scan_flags[collate.BACKGROUND_MISMATCH] == 1
+
+
+def test_a_lone_unidentified_background_still_merges_as_a_singleton(tmp_path):
+    # One member is not a pool: there is no second truth to fold in, so the master is that member.
+    run = run_builder.build_in8_run("BG-UNK1", n_scans=1, seed0=7)
+    records, card = _in8_records(run, tmp_path)
+    _stamp_unknown_background(records[0])
+    g = collate.collate(records, card).groups[0]
+    assert g.pool_refusal is None and g.merged is not None and g.merged.n_members == 1
+
+
+def test_an_explicitly_disabled_background_pools_with_legacy_background_free_data(tmp_path):
+    # TAVI guarantees a DISABLED profile adds no counts and reproduces pre-background output
+    # bit-identically, so the two carry numerically equivalent evidence — refusing would only
+    # throw exposure away.
+    run = run_builder.build_in8_run("BG-OFF", n_scans=2, seed0=7)
+    records, card = _in8_records(run, tmp_path)
+    records[0].raw_header["background_provenance"] = {
+        "enabled": False, "source": "per_scan_override", "background_schema": "tavi.background/1",
+        "profile_fingerprint": "aaaa0000", "effective_fingerprint": "bbbb1111"}
+    col = collate.collate(records, card)
+    g = col.groups[0]
+    assert g.pool_refusal is None and g.merged is not None and g.merged.n_members == 2
+    assert collate.BACKGROUND_MISMATCH not in col.rollup.scan_flags
+    # The audit trail is untouched: normalization happens in the pooling KEY, not on the record.
+    assert records[0].raw_header["background_provenance"]["effective_fingerprint"] == "bbbb1111"
+
+
+def test_a_disabled_background_still_refuses_to_pool_with_an_enabled_one(tmp_path):
+    run = run_builder.build_in8_run("BG-OFFON", n_scans=2, seed0=7)
+    records, card = _in8_records(run, tmp_path)
+    records[0].raw_header["background_provenance"] = {
+        "enabled": False, "source": "per_scan_override", "background_schema": "tavi.background/1",
+        "profile_fingerprint": "aaaa0000", "effective_fingerprint": "bbbb1111"}
+    _stamp_background(records[1], "fingerprint-a")
+    col = collate.collate(records, card)
+    assert col.groups[0].pool_refusal == collate.BACKGROUND_MISMATCH
+    assert col.groups[0].merged is None
+
+
+def test_background_pool_key_normalizes_only_the_literal_disabled_flag():
+    disabled = {"background_provenance": {"enabled": False, "effective_fingerprint": "abc"}}
+    assert collate.background_pool_key(disabled) == collate.NO_BACKGROUND
+    # A disabled block that never resolved a fingerprint is still clean.
+    assert collate.background_pool_key(
+        {"background_provenance": {"enabled": False}}) == collate.NO_BACKGROUND
+    # …but nothing else normalizes: no truthiness coercion of a string/0, and enabled/None keep
+    # the fingerprint rules.
+    for enabled in ("false", 0, None, True):
+        assert collate.background_pool_key(
+            {"background_provenance": {"enabled": enabled,
+                                       "effective_fingerprint": "abc"}}) == "fp:abc"
+        assert collate.background_pool_key(
+            {"background_provenance": {"enabled": enabled}}) == collate.UNKNOWN_BACKGROUND
+
+
 def test_master_merge_applies_qc_masks_without_deleting_energy_bins(tmp_path):
     run = run_builder.build_in8_run("DIR-MASK", n_scans=2, seed0=7)
     records, card = _in8_records(run, tmp_path)

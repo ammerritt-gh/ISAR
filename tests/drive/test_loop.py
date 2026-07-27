@@ -3475,10 +3475,12 @@ def test_an_unusable_sample_background_aborts_the_campaign_before_any_scan(tmp_p
     assert client.jobs == {} and client.validate_bodies == []
 
 
-def test_campaign_without_a_sample_background_stamps_nothing(tmp_path):
+def test_the_instrument_config_sentinel_stamps_nothing(tmp_path):
+    """The one deliberate opt-out: inherit TAVI's live mutable configuration, freeze nothing."""
     omega = lambda h: (h - 2.0) * 2.0
     client = _BackgroundTavi(omega)
-    summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+    summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega),
+                        sample_background=loop_mod.INSTRUMENT_CONFIG_BACKGROUND)
 
     assert client.jobs
     assert all("background" not in body for body in client.jobs.values())
@@ -3486,6 +3488,54 @@ def test_campaign_without_a_sample_background_stamps_nothing(tmp_path):
     assert _frozen_events(summary["session_log"]) == []
     assert client.schema_calls == 1     # the limits preflight only; no background resolution
     assert client.set_background_calls == []
+
+
+def test_an_undeclared_campaign_stamps_a_frozen_disabled_background(tmp_path):
+    """Omission is a declaration of CLEAN, not an invitation to inherit the instrument's profile.
+    Sending no key let an enabled persisted TAVI profile silently consume a live campaign's budget."""
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _BackgroundTavi(omega)
+    summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+
+    expected = {"enabled": False, "terms": []}
+    assert client.jobs and all(body["background"] == expected for body in client.jobs.values())
+    assert client.validate_bodies and all(body["background"] == expected
+                                          for body in client.validate_bodies)
+    frozen = _frozen_events(summary["session_log"])
+    assert len(frozen) == 1 and frozen[0]["frozen"] == expected
+    # The log distinguishes declared-clean from defaulted-clean.
+    assert frozen[0]["defaulted"] is True and frozen[0]["spec"] is None
+    # The default is structural, so it costs no preset lookup: only the limits preflight reads schema.
+    assert client.schema_calls == 1
+    assert client.set_background_calls == []
+
+
+def test_a_declared_clean_campaign_is_not_marked_defaulted(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _BackgroundTavi(omega)
+    summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega),
+                        sample_background={"enabled": False, "preset": "none"})
+    assert "defaulted" not in _frozen_events(summary["session_log"])[0]
+
+
+def test_dropping_a_declared_background_on_resume_aborts_before_any_spend(tmp_path):
+    """The resume bypass the old omission semantics left open: a campaign that simply forgot its
+    background used to sail past the drift guard and be caught only downstream, after the spend."""
+    omega = lambda h: (h - 2.0) * 2.0
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    cfg = {"workspace": ws, "client": _BackgroundTavi(omega), "run_isar": make_mock_runner(omega),
+           "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7,
+           "sample_background": {"preset": "flat_low"}}
+    run_campaign(_objective(), cfg)
+
+    forgetful = _BackgroundTavi(omega)
+    resumed = dict(cfg, client=forgetful)
+    resumed.pop("sample_background")
+    with pytest.raises(ValueError) as excinfo:
+        run_campaign(_objective(), resumed)
+    assert "background_fingerprint_drift" in str(excinfo.value)
+    assert forgetful.jobs == {} and forgetful.validate_bodies == []
 
 
 def test_resume_refuses_when_the_frozen_background_drifted(tmp_path):

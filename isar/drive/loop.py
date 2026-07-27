@@ -623,8 +623,11 @@ def _validate_body(proposal, *, sample: str, background: dict | None = None) -> 
     ``background`` is the campaign's FROZEN numeric background profile (see
     :func:`_freeze_sample_background`), stamped as a per-scan override. It rides on the validate body
     too, because the instrument validates the background block (missing sample scale, unknown term):
-    without it a scan could validate clean and then be refused at submit. ``None`` (no campaign
-    background) → the key is absent and the body is byte-identical to the pre-background one.
+    without it a scan could validate clean and then be refused at submit. ``None`` happens only for a
+    campaign that opted out of freezing via ``sample_background="instrument_config"`` → the key is
+    absent, the body is byte-identical to the pre-background one, and the instrument's live
+    configuration decides the background. An undeclared campaign stamps a frozen DISABLED profile
+    instead of omitting the key (see :func:`_freeze_sample_background`).
     """
     body: dict[str, Any] = {
         "parameters": {
@@ -1888,12 +1891,15 @@ class CampaignConfig:
     - ``sample`` (:class:`str`, config key ``sample``, default ``"Al_phonon_DFT"``): stamped into every
       validate/scan body's ``parameters`` because the instrument API no longer inherits the GUI's
       sample selection.
-    - ``sample_background`` (:class:`dict` | ``None``, config key ``sample_background``, default
-      ``None``): the background spec bundled with the sample declaration — preset form
-      ``{enabled, preset, overrides}`` or frozen form ``{enabled, terms: [...]}``. Expanded ONCE at
-      campaign setup into ``sample_background_frozen`` (see :func:`_freeze_sample_background`) and
-      stamped on every validate/scan body. ``None`` → no background key anywhere (byte-identical to
-      a pre-background campaign).
+    - ``sample_background`` (:class:`dict` | :class:`str` | ``None``, config key
+      ``sample_background``, default ``None``): the background spec bundled with the sample
+      declaration — preset form ``{enabled, preset, overrides}`` or frozen form
+      ``{enabled, terms: [...]}``. Expanded ONCE at campaign setup into ``sample_background_frozen``
+      (see :func:`_freeze_sample_background`) and stamped on every validate/scan body. ``None``
+      (undeclared) freezes to the DISABLED profile ``{"enabled": False, "terms": []}`` — an
+      undeclared campaign must not inherit TAVI's mutable configured profile. The sentinel string
+      ``"instrument_config"`` (:data:`INSTRUMENT_CONFIG_BACKGROUND`) is the deliberate opt-out: no
+      freeze, no stamping, no drift check, inherit the instrument's live config.
     - ``sample_background_frozen`` (:class:`dict` | ``None``, NOT a config key): the frozen numeric
       profile derived from ``sample_background`` by :func:`run_campaign` at setup.
     - ``bayes_errors`` (:class:`bool`, config key ``bayes_errors``, default ``False``): campaign-level
@@ -1925,8 +1931,9 @@ class CampaignConfig:
     # Complete live limit envelope; additive and independent of the frozen objective policy.
     instrument_limits: dict | None = None
     sample: str = "Al_phonon_DFT"
-    # The campaign's declared background (spec as given) and its compile-time frozen numeric form.
-    sample_background: dict | None = None
+    # The campaign's declared background (spec as given, or the "instrument_config" sentinel) and its
+    # compile-time frozen numeric form.
+    sample_background: dict | str | None = None
     sample_background_frozen: dict | None = None
     bayes_errors: bool = False
     # Cooperative operator stop (GUI subprocess control). When set, each iteration's top checks for
@@ -2011,8 +2018,9 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
         max_points_source=max_points_source,
         instrument_limits=instrument_limits,
         sample=str(config.get("sample", "Al_phonon_DFT")),
-        # Copied, not validated, here: a malformed spec is refused with a clear message by the
-        # compile-time freeze in run_campaign, not silently coerced at config time.
+        # Copied (a dict spec defensively, the "instrument_config" sentinel string as-is), not
+        # validated here: a malformed spec is refused with a clear message by the compile-time freeze
+        # in run_campaign, not silently coerced at config time.
         sample_background=(dict(config["sample_background"])
                            if isinstance(config.get("sample_background"), dict)
                            else config.get("sample_background")),
@@ -2023,6 +2031,10 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
 
 
 BACKGROUND_DRIFT = "background_fingerprint_drift"
+
+# The one ``sample_background`` value that opts OUT of freezing: the campaign inherits TAVI's live,
+# mutable background configuration and stamps nothing. See :func:`_freeze_sample_background`.
+INSTRUMENT_CONFIG_BACKGROUND = "instrument_config"
 
 
 def _validated_background_terms(terms, *, where: str) -> list[dict]:
@@ -2090,24 +2102,48 @@ def _freeze_sample_background(cfg: CampaignConfig) -> tuple[dict | None, dict]:
     term's ``params``. Frozen form ``{enabled, terms: [...]}`` is used as given. An absent
     ``enabled`` means ``True`` (matching the instrument's semantics for a non-null spec).
 
+    OMISSION IS A DECLARATION OF CLEAN. ``sample_background=None`` (the default) is treated exactly
+    like ``{"enabled": False, "preset": "none"}``: it freezes to ``{"enabled": False, "terms": []}``,
+    is stamped on every validate/scan body, and is subject to the drift check below. It previously
+    meant "send no background key", which silently inherited whatever profile the operator had last
+    configured on TAVI — an enabled persisted profile consumed a live campaign's whole iteration
+    budget before anyone noticed. The frozen event carries ``"defaulted": True`` so a log still
+    distinguishes declared-clean from defaulted-clean.
+
     Resume drift: the frozen form is durable in the session log, so a resumed campaign re-expands
     the spec against the CURRENT schema and refuses (``background_fingerprint_drift``) rather than
-    appending scans generated under different background truth. That guard only covers a campaign
-    that declares a background; a run that drops ``sample_background`` entirely is caught downstream
-    instead, by the per-record effective fingerprints and collation's refusal to pool across them.
+    appending scans generated under different background truth. Because omission now freezes too,
+    that guard also catches a resume that DROPS a previously declared background — before any spend,
+    instead of downstream at collation.
 
-    Returns ``(frozen | None, log_meta)``; a ``None`` spec returns ``(None, {})`` and the campaign
-    behaves exactly as it did before backgrounds existed. Raises :class:`ValueError` — an honest
-    setup abort, never a caught-and-continued degradation — on an unusable spec or on drift.
+    The sentinel string ``sample_background="instrument_config"`` is the one deliberate escape: no
+    freeze, no stamping, no drift check, and every scan inherits TAVI's live mutable configuration.
+    That is a footgun by construction — the background truth can change under the campaign at any
+    moment, from a GUI edit, another client, a crash leftover, or a preset retune, and nothing in
+    the record will say so. Use it only when the whole point is to measure whatever the instrument
+    is currently configured to produce.
+
+    Returns ``(frozen | None, log_meta)``; only the sentinel returns ``(None, {})``. Raises
+    :class:`ValueError` — an honest setup abort, never a caught-and-continued degradation — on an
+    unusable spec or on drift.
     """
     spec = cfg.sample_background
-    if spec is None:
-        return None, {}
     where = "sample_background"
+    if spec == INSTRUMENT_CONFIG_BACKGROUND:
+        return None, {}
+    meta_defaulted: dict[str, Any] = {}
+    if spec is None:
+        # Undeclared → frozen disabled, never TAVI's mutable default (see the docstring). Expressed
+        # in the FROZEN form so the default costs no GET /schema and depends on no preset registry:
+        # "no background" is a structural statement, not something the instrument has to define.
+        spec = {"enabled": False, "terms": []}
+        meta_defaulted = {"defaulted": True}
     if not isinstance(spec, dict):
         raise ValueError(f"{where} must be an object (preset form {{enabled, preset, overrides}} or "
-                         f"frozen form {{enabled, terms}}), got {type(spec).__name__}")
-    meta: dict[str, Any] = {}
+                         f"frozen form {{enabled, terms}}), omitted for a frozen disabled default, or "
+                         f"the sentinel {INSTRUMENT_CONFIG_BACKGROUND!r} to inherit the instrument's "
+                         f"live config; got {type(spec).__name__}")
+    meta: dict[str, Any] = dict(meta_defaulted)
     if "terms" in spec:
         terms = _validated_background_terms(spec.get("terms"), where=where)
     else:

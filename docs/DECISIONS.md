@@ -735,15 +735,35 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   (`{"redacted": "sim_truth", "effective_fingerprint": …}`). The preset **name** is excluded with the
   numbers — `flat_high` states a magnitude as plainly as `5e-9`. The raw JSON on disk is untouched
   (P4's mask-not-delete concerns data points, not the record's embedded copy) and validation scoring
-  reads the truth there **after** fitting. Collation refuses to pool members whose effective
-  fingerprints differ: kept, fit and reported individually, group flagged `pool_refusal`.
+  reads the truth there **after** fitting. Both leak paths are closed independently: a payload
+  carrying only the requested `launch.background` (an interrupted job with no result block) is
+  redacted too, and gets a fingerprint-less provenance rather than no provenance at all.
+
+  **Pooling classes fail closed, and "disabled" is not "unknown".** Collation refuses to pool members
+  whose effective fingerprints differ: kept, fit and reported individually, group flagged
+  `pool_refusal`. Provenance without a fingerprint is class `unknown`, and because that class is an
+  admission rather than an identity, **two** unknown members do not pool with each other either —
+  sharing the label is not evidence of shared truth. Conversely a provenance whose `enabled` is
+  literally `false` normalizes to the background-free class, so an explicitly-clean scan pools with
+  legacy pre-background data: TAVI guarantees a disabled profile is bit-identical to pre-background
+  output, so the evidence is numerically equivalent and refusing would only discard exposure. The
+  normalization is in the pooling key only; the full provenance stays on the record.
 
   **Campaign transport is a compile-time freeze, and steering never sets backgrounds.**
   `CampaignConfig.sample_background` is expanded exactly once at setup into the frozen numeric form
   plus fingerprint, logged as `sample_background_frozen`, and stamped verbatim onto every validate and
   scan body as a per-scan override; resume refuses on `background_fingerprint_drift`. A campaign
   therefore never depends on TAVI's mutable config default, so a GUI edit, another client, a crash
-  leftover, or a preset retune cannot change its planted truth mid-run. `TaviClient.set_background`
+  leftover, or a preset retune cannot change its planted truth mid-run. **Omission is a declaration
+  of clean, not an invitation to inherit:** an undeclared `sample_background` freezes the disabled
+  profile `{"enabled": false, "terms": []}`, stamps it like any other, and is subject to the same
+  drift check — the frozen event carries `"defaulted": true` so logs still separate declared-clean
+  from defaulted-clean. Sending no key instead let a persisted enabled TAVI profile silently consume
+  a live campaign's whole iteration budget, and let a resume that dropped its declared background
+  bypass the drift guard and be caught only downstream, after the spend. The sentinel string
+  `sample_background = "instrument_config"` is the one deliberate opt-out — no freeze, no stamping,
+  no drift check, inherit the instrument's live configuration — and it is a footgun by construction.
+  `TaviClient.set_background`
   exists for manual, test and campaign-setup use only — the steering loop calls it nowhere, because
   stamping is transport and choosing a background would be a scientific decision the loop has no
   business making. References: T2 (same-interface backend rule), T3, P4,

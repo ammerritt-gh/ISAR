@@ -33,8 +33,11 @@ a number does). The NUMERIC half is REDACTED from the stored payload: `raw_heade
 shallow copy whose `result.metadata.background` is `{"redacted": "sim_truth",
 "effective_fingerprint": ...}`. The firewall is physical, not a naming convention — the numbers are
 simply not on the record. The raw TAVI JSON on disk is untouched, and validation scoring reads the
-truth there, AFTER fitting. A payload with no background block (older TAVI, and every real
-instrument) gets no `background_provenance` key and parses exactly as it did before.
+truth there, AFTER fitting. The two leak paths are closed INDEPENDENTLY: a payload carrying only
+`launch.background` (an interrupted job whose result block never landed) is still redacted, and gets a
+provenance whose fingerprints are `None` — collation then classes it UNKNOWN and refuses to pool it.
+A payload with NEITHER block (older TAVI, and every real instrument) gets no `background_provenance`
+key and parses exactly as it did before.
 
 The HORIZONTAL collimations ALF1..4 come from the payload directly (arcmin); d-spacings DM/DA come
 from the crystal-id → d map below (card override wins). experiment_id comes from the card ([sample]
@@ -261,34 +264,54 @@ def _background_block(result: dict):
     return block if isinstance(block, dict) else None
 
 
-def _background_provenance(block: dict) -> dict:
-    """The SAFE half of the background block: identity only, never a rate/width/preset name."""
-    return {key: block.get(key) for key in BACKGROUND_SAFE_KEYS}
+def _launch_background_present(data: dict) -> bool:
+    """True when the payload's launch summary echoes a REQUESTED background spec."""
+    launch = data.get("launch")
+    return isinstance(launch, dict) and launch.get("background") is not None
 
 
-def _redact_background(data: dict, block: dict) -> dict:
+def _background_provenance(block, *, launch_source=None) -> dict:
+    """The SAFE half of the background block: identity only, never a rate/width/preset name.
+
+    `block` is ``None`` for a payload that requested a background (`launch.background`) but carries no
+    resolved `result.metadata.background` — a malformed or interrupted job. All five keys are then
+    populated from what exists (`launch.background_source` if present, the rest ``None``), which is a
+    provenance WITHOUT an effective fingerprint: collation classes it UNKNOWN and refuses to pool it,
+    which is the fail-closed answer for a scan whose background truth was never resolved.
+    """
+    if isinstance(block, dict):
+        return {key: block.get(key) for key in BACKGROUND_SAFE_KEYS}
+    provenance = {key: None for key in BACKGROUND_SAFE_KEYS}
+    provenance["source"] = launch_source
+    return provenance
+
+
+def _redact_background(data: dict, block) -> dict:
     """The stored payload with every numeric background trace replaced by a fingerprint pointer.
 
-    Two leak paths, both closed here: `result.metadata.background` (the resolved truth block) and
-    `launch.background` (TAVI's launch summary echoes the REQUESTED spec — the preset name in preset
-    form, the full numeric terms in the frozen form campaigns stamp). `launch.background_source` is
-    safe and kept; it is one of the five safe keys anyway.
+    Two leak paths, both closed here and INDEPENDENTLY: `result.metadata.background` (the resolved
+    truth block) and `launch.background` (TAVI's launch summary echoes the REQUESTED spec — the preset
+    name in preset form, the full numeric terms in the frozen form campaigns stamp). Either can appear
+    without the other: an interrupted job can carry the request with no result, and redacting the
+    launch spec only when the result block existed left that request's numerics on the record.
+    `launch.background_source` is safe and kept; it is one of the five safe keys anyway.
 
     Returns a SHALLOW COPY of `data` (and of the nested dicts it edits) so nothing the rest of
     `parse_file` reads — or any caller sharing the parsed object — is mutated. Every other key still
     aliases the original payload.
     """
     pointer = {"redacted": "sim_truth",
-               "effective_fingerprint": block.get("effective_fingerprint")}
-    result = dict(data.get("result") or {})
-    metadata = dict(result.get("metadata") or {})
-    metadata["background"] = dict(pointer)
-    result["metadata"] = metadata
+               "effective_fingerprint": (block.get("effective_fingerprint")
+                                         if isinstance(block, dict) else None)}
     stored = dict(data)
-    stored["result"] = result
-    launch = data.get("launch")
-    if isinstance(launch, dict) and launch.get("background") is not None:
-        launch = dict(launch)
+    if isinstance(block, dict):
+        result = dict(data.get("result") or {})
+        metadata = dict(result.get("metadata") or {})
+        metadata["background"] = dict(pointer)
+        result["metadata"] = metadata
+        stored["result"] = result
+    if _launch_background_present(data):
+        launch = dict(data["launch"])
         launch["background"] = dict(pointer)
         stored["launch"] = launch
     return stored
@@ -417,14 +440,21 @@ def parse_file(path: str | Path, card: Card) -> list[scan.ScanRecord]:
             "instrument truth from card constants (payload lacked): " + ", ".join(fallback_fields)))
 
     # Background truth firewall: safe provenance onto the record, planted numerics redacted out of the
-    # stored payload (module docstring). No block (older TAVI / real data) → neither key changes.
+    # stored payload (module docstring). NEITHER a resolved `result.metadata.background` nor a
+    # requested `launch.background` (older TAVI / real data) → neither key changes. A launch spec
+    # alone (interrupted job) is still redacted, and gets a fingerprint-less provenance so collation
+    # fails closed on it rather than pooling an unresolved background as background-free.
     bg_block = _background_block(result)
-    stored_payload = data if bg_block is None else _redact_background(data, bg_block)
+    bg_launch = _launch_background_present(data)
+    bg_present = bg_block is not None or bg_launch
+    stored_payload = _redact_background(data, bg_block) if bg_present else data
 
     raw_header = {"tavi": stored_payload, "params": cn_params, "provenance": prov,
                   "sample_key": sample_key}
-    if bg_block is not None:
-        raw_header["background_provenance"] = _background_provenance(bg_block)
+    if bg_present:
+        launch_source = (data.get("launch") or {}).get("background_source") if bg_launch else None
+        raw_header["background_provenance"] = _background_provenance(
+            bg_block, launch_source=launch_source)
     source = scan.Source(
         file=p.name, byte_range=None, line_range=None, plugin=name, plugin_version=version,
         format_version=pol.format_version, schema_version=scan.SCHEMA_VERSION)

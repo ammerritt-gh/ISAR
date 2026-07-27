@@ -2,10 +2,12 @@
 
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
-> **Verified against code revision:** `1a7013a` (2026-07-27)
+> **Verified against code revision:** `5574223` (2026-07-27)
 > **Owner:** @ammerritt-gh · **Exit criteria:** in the status block below
 
-**Status: design approved 2026-07-19; implementation not started; sequenced after the
+**Status: design approved 2026-07-19; the TAVI prerequisite has landed (decision T4 — generation,
+interface, truth firewall, pooling identity and campaign transport are Implemented); ISAR's own
+fitting / learning / steering work, Sub-phases A–C below, is not started, and is sequenced after the
 speedup sprint (`docs/SPEEDUP_DESIGN.md`),** whose fast test campaigns are what make this
 workstream cheap to iterate. **Owner: @ammerritt-gh.** Motivating finding — "backgrounds are a
 single flat constant", named the largest real-data risk by the 2026-07-19 statistics-contract
@@ -14,7 +16,8 @@ audit: `docs/STATS_PRIMER.md` §7.
 **Exit criteria.** A background family beyond the single flat constant is selectable by the
 deterministic model-selection path; the S30 gold set shows no safety regression (0 gold-REJECT
 scans resolved) with the sloped/tailed backgrounds enabled; and `DESIGN.md` §15 carries a
-background row that is no longer "single flat constant". Not started — nothing below is built.
+background row that is no longer "single flat constant". Not started — the "TAVI prerequisite
+(landed)" section below is built; nothing in §§1–4 is.
 
 Owner intent: real data has gnarly backgrounds — long elastic tails under the inelastic
 signal, sloped/non-flat baselines — and today ISAR's only background model is a single
@@ -67,14 +70,30 @@ along with the numbers: `flat_high` states a magnitude as plainly as `5e-9` does
 physical, not a naming convention. The raw TAVI JSON on disk is untouched, and validation scoring
 reads the planted truth there **after** fitting. Collation refuses to pool members whose effective
 fingerprints differ (or where one carries a fingerprint and another does not): the members are kept,
-fit and reported individually, and the group records a `pool_refusal` — refuse, never delete.
+fit and reported individually, and the group records a `pool_refusal` — refuse, never delete. Two
+members whose provenance carries *no* fingerprint refuse as well, because the `unknown` class is an
+admission, not an identity; a provenance whose `enabled` is literally `false` normalizes the other
+way, to the background-free class, since a disabled profile is bit-identical to pre-background
+output and pooling it with legacy data loses nothing.
 Campaigns resolve `CampaignConfig.sample_background` **once**, at compile time, into the frozen
 numeric form (`{"enabled", "terms": […]}`) plus its fingerprint, log it as
 `sample_background_frozen`, and stamp it verbatim on every validate and scan body as a per-scan
 override; a resume whose re-expansion disagrees aborts with `background_fingerprint_drift` before
-anything is submitted. The steering loop never calls `set_background` — stamping is transport, not a
-decision — so a GUI edit, another client, or a preset retune cannot change a running campaign's
-planted truth.
+anything is submitted. An **undeclared** background is not an absent one: it freezes to
+`{"enabled": false, "terms": []}` (logged with `"defaulted": true`) so a campaign cannot silently
+inherit whatever profile the instrument was last left holding, and so a resume that drops its
+declaration hits the drift guard before any spend. `sample_background = "instrument_config"` is the
+explicit opt-out for the rare case where inheriting the live config *is* the intent. The steering
+loop never calls `set_background` — stamping is transport, not a decision — so a GUI edit, another
+client, or a preset retune cannot change a running campaign's planted truth.
+
+**Deferred follow-up (not dangerous today).** ISAR's frozen form is canonicalized by ISAR: a
+campaign spec is expanded against the advertised preset registry and stamped as-is, so if TAVI ever
+defaults a term field that a preset leaves out, ISAR's frozen copy and TAVI's resolved profile could
+canonicalize differently. This is harmless at present because preset expansion carries the full
+numerics, and the effective fingerprint is computed by TAVI on the resolved profile either way. The
+clean fix is a TAVI profile-resolution surface (resolve-this-spec, return the canonical profile) so
+ISAR never duplicates TAVI's defaulting — deferred until a term shape actually acquires defaults.
 
 **Note for Sub-phase A.** TAVI's planted `elastic_tail` is a **pure** Lorentzian pinned to E = 0 —
 it is *not* convolved with the resolution. §2's `ElasticTail` must therefore either adopt the same
