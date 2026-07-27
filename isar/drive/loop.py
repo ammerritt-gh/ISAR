@@ -2155,6 +2155,14 @@ def _freeze_sample_background(cfg: CampaignConfig) -> tuple[dict | None, dict]:
         # No truthiness coercion: "false"/0 would silently become the opposite of what was declared.
         raise ValueError(f"{where}: 'enabled' must be a boolean, got {enabled!r}")
     frozen = {"enabled": enabled, "terms": terms}
+    # The profile-level strength knob (tavi.background/1 'scale', registry v2). Dropping it here
+    # would silently plant a background 'scale' times weaker/stronger than the sample declared.
+    scale = spec.get("scale")
+    if scale is not None:
+        if isinstance(scale, bool) or not isinstance(scale, (int, float)) \
+                or not math.isfinite(float(scale)) or float(scale) < 0.0:
+            raise ValueError(f"{where}: 'scale' must be a finite number >= 0, got {scale!r}")
+        frozen["scale"] = float(scale)
     prior = _prior_frozen_background(cfg.log_path)
     if prior is not None and canonical_json(prior) != canonical_json(frozen):
         raise ValueError(

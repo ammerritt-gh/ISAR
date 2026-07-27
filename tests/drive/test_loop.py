@@ -3387,6 +3387,30 @@ def test_campaign_stamps_the_frozen_preset_background_on_every_body(tmp_path):
     assert client.schema_calls == 2
 
 
+def test_campaign_background_scale_survives_the_freeze(tmp_path):
+    """The profile-level strength knob rides the sample declaration; dropping it would silently
+    plant a background 'scale' times off what the campaign declared."""
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _BackgroundTavi(omega)
+    summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega),
+                        sample_background={"preset": "flat_low", "scale": 2.5})
+
+    expected = {"enabled": True, "terms": _BG_PRESETS["flat_low"]["terms"], "scale": 2.5}
+    assert client.jobs and all(body["background"] == expected for body in client.jobs.values())
+    frozen = _frozen_events(summary["session_log"])
+    assert frozen[0]["frozen"]["scale"] == 2.5
+
+
+@pytest.mark.parametrize("scale", ["2", True, float("nan"), -1.0])
+def test_campaign_background_invalid_scale_aborts_setup(tmp_path, scale):
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _BackgroundTavi(omega)
+    with pytest.raises(ValueError, match="'scale' must be a finite number"):
+        _run(tmp_path, _objective(), client, make_mock_runner(omega),
+             sample_background={"preset": "flat_low", "scale": scale})
+    assert client.jobs == {}
+
+
 def test_campaign_background_frozen_form_passes_through_unchanged(tmp_path):
     omega = lambda h: (h - 2.0) * 2.0
     client = _BackgroundTavi(omega)
