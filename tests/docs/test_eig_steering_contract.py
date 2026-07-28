@@ -39,6 +39,9 @@ def test_predictive_v2_fixture_has_the_locked_contract_shape():
         "n_members",
     }
     exposure = contract["exposure_basis"]
+    assert math.isfinite(float(exposure["fit_reference_exposure"]))
+    assert float(exposure["fit_reference_exposure"]) > 0.0
+    assert isinstance(exposure["n_members"], int) and exposure["n_members"] > 0
     assert exposure["reference_incremental_exposure"] == (
         exposure["fit_reference_exposure"] / exposure["n_members"])
     assert contract["seed"] == 940301
@@ -52,6 +55,13 @@ def test_predictive_v2_fixture_has_the_locked_contract_shape():
     assert requests["shifted"]["energy_meV"] != contract["energy_meV"]
     assert len(requests["narrower"]["energy_meV"]) < len(contract["energy_meV"])
     assert len(requests["coarser"]["energy_meV"]) < len(contract["energy_meV"])
+    requested_exposures = {
+        float(request["exposure_per_point"]) for request in requests.values()}
+    assert len(requested_exposures) == len(requests)
+    assert all(math.isfinite(value) and value > 0.0 for value in requested_exposures)
+    unavailable = fixture["unavailable_contract"]["missing_scalar_exposure_basis"]
+    assert unavailable["available"] is False
+    assert unavailable["reason_code"] == "missing_exposure_basis"
 
 
 def test_predictive_v2_fixture_matrices_are_complete_finite_and_nonnegative():
@@ -59,36 +69,75 @@ def test_predictive_v2_fixture_matrices_are_complete_finite_and_nonnegative():
     requests = {request["name"]: request for request in fixture["evaluation_requests"]}
     cases = {case["name"]: case for case in fixture["cases"]}
     assert set(cases) == {
-        "phonon_background",
-        "null_background",
-        "multimode_background",
+        "null_vs_one_phonon",
+        "one_mode_vs_two_mode",
+        "branch_hypotheses",
     }
 
     for case in cases.values():
         assert case["models"]
+        assert case["model_order"] == [model["label"] for model in case["models"]]
         assert math.isclose(
             sum(float(model["weight"]) for model in case["models"]), 1.0)
+        assert len({float(model["weight"]) for model in case["models"]}) > 1
         for model in case["models"]:
             names = model["parameter_names"]
             draws = model["parameter_draws"]
             assert draws and all(len(draw) == len(names) for draw in draws)
+            assert model["draw_ids"] == [
+                f"draw-{index}" for index in range(len(draws))]
             manifest = model["model_manifest"]
             assert manifest["schema"] == "isar.model_manifest/1"
             assert manifest["components"]
-            assert len(model["expected_counts"]) == len(draws)
-            assert model["expected_counts"] == case["expected_counts_by_request"]["original"]
+            assert set(model["expected_counts_by_request"]) == set(requests)
             for request_name, request in requests.items():
-                matrix = case["expected_counts_by_request"][request_name]
+                matrix = model["expected_counts_by_request"][request_name]
                 assert len(matrix) == len(draws)
                 assert all(len(row) == len(request["energy_meV"]) for row in matrix)
                 assert all(
                     math.isfinite(float(value)) and float(value) >= 0.0
                     for row in matrix for value in row
                 )
+        for request_name in requests:
+            matrices = [
+                model["expected_counts_by_request"][request_name]
+                for model in case["models"]
+            ]
+            assert matrices[0] != matrices[1], (
+                f"{case['name']} must retain model-discriminating predictions "
+                f"for {request_name}")
 
-    assert cases["null_background"]["models"][0]["omega0_draws"] == []
-    assert len(cases["multimode_background"]["models"][0][
+    null_model = cases["null_vs_one_phonon"]["models"][0]
+    assert null_model["omega0_draws"] == []
+    fit_reference = fixture["artifact_contract"]["exposure_basis"][
+        "fit_reference_exposure"]
+    for request_name, request in requests.items():
+        ratio = float(request["exposure_per_point"]) / float(fit_reference)
+        for draw, row in zip(null_model["parameter_draws"],
+                             null_model["expected_counts_by_request"][request_name]):
+            assert all(math.isclose(value, draw[0] * ratio) for value in row)
+    assert len(cases["one_mode_vs_two_mode"]["models"][1][
         "model_manifest"]["components"]) == 3
+
+
+def test_predictive_v2_fixture_pins_model_draw_and_parameter_order():
+    fixture = json.loads(_FIXTURE.read_text(encoding="utf-8"))
+    cases = {case["name"]: case for case in fixture["cases"]}
+    assert cases["null_vs_one_phonon"]["model_order"] == [
+        "null+background", "one-phonon+background"]
+    assert cases["one_mode_vs_two_mode"]["model_order"] == [
+        "one-phonon+background", "two-phonon+background"]
+    assert cases["branch_hypotheses"]["model_order"] == [
+        "acoustic-branch+background", "optic-branch+background"]
+    assert cases["one_mode_vs_two_mode"]["models"][1]["parameter_names"] == [
+        "phonon.Omega_d",
+        "phonon.Gamma",
+        "phonon.A",
+        "phonon2.Omega_d",
+        "phonon2.Gamma",
+        "phonon2.A",
+        "bg.BG",
+    ]
 
 
 def test_predictive_v2_contract_contains_no_instrument_truth_or_selection_fields():

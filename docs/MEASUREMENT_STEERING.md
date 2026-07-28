@@ -88,7 +88,11 @@ Once an action is selected, `ScanDesignInventory` resolves it into exactly one `
 window/count candidate. The derived inventory is content-addressed under
 `report/scan-design/<sha256>.json` and referenced from proposal provenance. Its candidate id names the
 pre-finalization design; the existing proposal fingerprint separately names the exact request after
-live point/count clamps.
+live point/count clamps. A changed realization appends an `isar.scan_design_realization/1` record
+linking those identities through initial finalization, target-support step reduction, or missed-window
+recovery. Every physical submission and acquisition-provenance entry repeats the design reference,
+candidate/context fingerprints, and exact realized window/count, so crash recovery does not sever the
+join; the inventory itself remains derived and recomputed rather than loaded as controller state.
 Alongside the interval/no-progress brakes there is an identity-space one, `identity_saturated`, for
 the case those cannot speak to — an identity-ambiguous q never matches the target branch, so it never
 accumulates the pooled-master updates `interval_floored` reads. It requires both the target

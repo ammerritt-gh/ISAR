@@ -134,6 +134,34 @@ def test_the_persisted_probe_centre_is_the_predicted_rival_not_the_clamped_midpo
     assert probe.e_pred == pytest.approx(RIVAL_MEV, abs=1e-6)
 
 
+def test_rival_scan_design_context_keeps_target_and_design_distributions_distinct():
+    objective = _objective()
+    observations = _observations()
+    model = acq_model.fit(model_points(summarize_grid(objective, observations)))
+    rival = (RIVAL_MEV, 0.037)
+    plan = acq.plan_actions(
+        objective,
+        model,
+        observations,
+        resolution_info={"fwhm_dE": 0.8},
+        budget_state={},
+        rival_band=lambda _gridq: rival,
+    )
+    probe = next(
+        proposal for proposal in iter(plan.next_proposal, None)
+        if proposal.kind == "identity_rival_probe"
+    )
+    context = probe.scan_design_inventory.context
+    target_mean, target_sigma = model.predict(float((probe.meta or {})["q"]))
+
+    assert context.target_prediction_mean_meV == pytest.approx(target_mean)
+    assert context.target_prediction_sigma_meV == pytest.approx(target_sigma)
+    assert context.design_prediction_mean_meV == pytest.approx(rival[0])
+    assert context.design_prediction_sigma_meV == pytest.approx(rival[1])
+    assert context.target_prediction_sigma_meV != pytest.approx(
+        context.design_prediction_sigma_meV)
+
+
 def test_the_probe_is_cheaper_than_the_target_scan_it_supplements():
     """It answers a yes/no question about one predicted mode, so it must not cost a survey."""
     proposals = _proposals()

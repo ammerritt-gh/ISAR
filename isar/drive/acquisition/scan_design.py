@@ -84,8 +84,10 @@ class ScanDesignContext:
     window_family: str
     declared_energy_lo: float | None
     declared_energy_hi: float | None
-    predicted_energy_meV: float
-    predicted_sigma_meV: float
+    target_prediction_mean_meV: float
+    target_prediction_sigma_meV: float
+    design_prediction_mean_meV: float
+    design_prediction_sigma_meV: float
     resolution_fwhm_meV: float
     survey: bool
     energy_search_meV: tuple[float, float] | None
@@ -136,8 +138,10 @@ class ScanDesignContext:
             "window_family": self.window_family,
             "declared_energy_lo": _json_number(self.declared_energy_lo),
             "declared_energy_hi": _json_number(self.declared_energy_hi),
-            "predicted_energy_meV": _json_number(self.predicted_energy_meV),
-            "predicted_sigma_meV": _json_number(self.predicted_sigma_meV),
+            "target_prediction_mean_meV": _json_number(self.target_prediction_mean_meV),
+            "target_prediction_sigma_meV": _json_number(self.target_prediction_sigma_meV),
+            "design_prediction_mean_meV": _json_number(self.design_prediction_mean_meV),
+            "design_prediction_sigma_meV": _json_number(self.design_prediction_sigma_meV),
             "resolution_fwhm_meV": _json_number(self.resolution_fwhm_meV),
             "survey": self.survey,
             "energy_search_meV": _json_pair(self.energy_search_meV),
@@ -465,9 +469,9 @@ def design_legacy_scan(context: ScanDesignContext) -> ScanDesignInventory:
         )
     else:
         e_lo, e_hi, e_step, n_points = _energy_window(
-            context.predicted_energy_meV,
+            context.design_prediction_mean_meV,
             context.resolution_fwhm_meV,
-            context.predicted_sigma_meV,
+            context.design_prediction_sigma_meV,
             survey=context.survey,
             energy_search_meV=context.energy_search_meV,
             target_band=context.target_band,

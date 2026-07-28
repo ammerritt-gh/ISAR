@@ -2,7 +2,7 @@
 
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
-> **Verified against code revision:** `181a807` (2026-07-28)
+> **Verified against code revision:** `844a9de` (2026-07-28)
 > **Owner:** @ammerritt-gh
 > **Exit criteria:** `isar.master_predictive/2` is published, the pure arbitrary-grid evaluator passes
 > the normative fixtures, multiple same-action scan candidates are ranked and audited, and the shipped
@@ -38,6 +38,12 @@ exposure \(E\), evaluation multiplies the direct model mean by
 `E / fit_reference_exposure`. Evaluating the original grid at
 `reference_incremental_exposure = fit_reference_exposure / n_members` must reproduce `/1`
 `expected_counts` within the fixture tolerance.
+
+The first `/2` contract is deliberately scalar-exposure-only. `fit_reference_exposure` must be finite
+and positive and `n_members` must be a positive integer; requested grids may use different finite
+positive scalar exposures, but an artifact with no valid scalar fit-reference basis returns
+`missing_exposure_basis`. Per-energy exposure vectors for partially supported pooled grids are not
+specified in this phase.
 
 No `/2` artifact is published during this prep cycle, and `/1` is never guessed into `/2`: it lacks
 the original grid, evaluation context, and explicit exposure basis.
@@ -83,8 +89,16 @@ grid/exposure plus `PredictiveDesignEvaluation`; a selector records score compon
 reason, and the selected candidate in the same content-addressed inventory. The outer action/Q ranking,
 instrument finalization, validation, and existing request fingerprint remain separate.
 
-The normative fixture `tests/fixtures/eig_predictive_v2.json` covers phonon-plus-background,
-background-only/null, and two-mode-plus-background models on original, shifted, narrower, and coarser
-grids. Its expected matrices were produced by direct evaluation of the current registered ISAR
+The selected candidate remains immutable when instrument finalization, target-support adjustment, or
+missed-window recovery changes the request. Each changed realization is recorded as
+`isar.scan_design_realization/1`, chaining the inventory reference, candidate id, and context
+fingerprint to the previous and realized request fingerprints plus the exact emitted window/count.
+Physical-submission and acquisition-provenance records carry both identities so crash recovery retains
+the join without loading the derived inventory as controller state.
+
+The normative fixture `tests/fixtures/eig_predictive_v2.json` contains competing null/one-phonon,
+one-mode/two-mode, and acoustic/optic branch hypotheses on original, shifted, narrower, and coarser
+grids. Expected matrices live under each retained model, use nonuniform weights and fixed
+model/draw/parameter order, and were produced by direct evaluation of the current registered ISAR
 components with the declared exposure ratio. Prep tests validate the contract and fixture integrity;
 the first EIG implementation must reproduce those matrices without importing TAVI.

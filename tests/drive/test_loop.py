@@ -7,6 +7,7 @@ real acquisition, and real stopping — only the fitting and the instrument are 
 import csv
 import json
 import math
+import shutil
 from pathlib import Path
 
 import pytest
@@ -715,6 +716,22 @@ class MockTavi:
             "catalog_version": 2,
             "sources": {source_id: {} for source_id in source_ids},
         }}
+
+
+class _TargetSupportTavi(MockTavi):
+    def validate(self, body):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        return {
+            "would_queue": True,
+            "blockers": [],
+            "eta": {"estimated_seconds": 5.0},
+            "requested_points": len(grid),
+            "feasible_points": len(grid),
+            "point_manifest": [
+                {"feasible": True, "values": {"deltaE": energy}}
+                for energy in grid
+            ],
+        }
 
 
 class _UnreachableQTavi(MockTavi):
@@ -1777,6 +1794,50 @@ def test_campaign_incomplete_on_budget(tmp_path):
     assert any("budget" in r for r in summary["stop"]["reasons"])
 
 
+def test_minimum_target_support_adjustment_records_realized_request(tmp_path):
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    frozen["steering"] = {
+        **frozen["steering"],
+        "minimum_target_support_points": 80,
+    }
+    frozen["hypothesis_fingerprint"] = content_fingerprint(
+        frozen["hypotheses"], frozen["steering"])
+    objective = ObjectiveSpec(
+        path=[(2.0, 0.0, 0.0)],
+        tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e12},
+        target_branch="optic",
+        energy_search_meV=(-2.0, 12.0),
+        **frozen,
+    )
+    summary, _ws = _run(
+        tmp_path,
+        objective,
+        _TargetSupportTavi(lambda _h: 6.0),
+        make_mock_runner(lambda _h: 6.0),
+        max_iters=1,
+    )
+    events = read_log(summary["session_log"])
+    realization = next(
+        event["payload"] for event in events
+        if event["kind"] == "scan_design_realization"
+        and event["payload"].get("adjustment") == "minimum_target_support"
+    )
+    validation = next(
+        event["payload"] for event in events
+        if event["kind"] == "validate"
+        and event["payload"]["request_fingerprint"]
+        == realization["request_fingerprint"]
+    )
+    assert realization["previous_request_fingerprint"] != realization[
+        "request_fingerprint"]
+    assert realization["inventory_ref"]
+    assert realization["candidate_id"]
+    assert realization["context_fingerprint"]
+    assert realization["n_points"] == validation["requested_points"]
+    assert validation["target_supporting_feasible_points"] < 80
+
+
 def test_missed_window_triggers_recenter(tmp_path):
     # ω sits beyond the survey ceiling (SURVEY_E_HI_MEV=7) so even the wide unresolved-q survey window
     # misses it — the first scan then re-centers. (An ω inside the survey band is now caught outright,
@@ -1796,6 +1857,29 @@ def test_missed_window_triggers_recenter(tmp_path):
         by_acquisition.setdefault(submission["acquisition_id"], []).append(submission)
     retried = next(group for group in by_acquisition.values() if len(group) > 1)
     assert [item["attempt"] for item in retried[:2]] == [0, 1]
+    assert retried[0]["scan_design_inventory_ref"] == retried[1][
+        "scan_design_inventory_ref"]
+    assert retried[0]["scan_design_candidate_id"] == retried[1][
+        "scan_design_candidate_id"]
+    assert retried[0]["scan_design_context_fingerprint"] == retried[1][
+        "scan_design_context_fingerprint"]
+    assert retried[0]["proposal_fingerprint"] != retried[1]["proposal_fingerprint"]
+    realization = next(
+        event["payload"] for event in events
+        if event["kind"] == "scan_design_realization"
+        and event["payload"].get("adjustment") == "missed_window_recenter"
+        and event["payload"].get("request_fingerprint") == retried[1][
+            "proposal_fingerprint"]
+    )
+    assert realization["previous_request_fingerprint"] == retried[0][
+        "proposal_fingerprint"]
+    assert realization["inventory_ref"] == retried[1]["scan_design_inventory_ref"]
+    assert realization["candidate_id"] == retried[1]["scan_design_candidate_id"]
+    assert realization["e_lo"] == retried[1]["search_energy_lo"]
+    assert realization["e_hi"] == retried[1]["search_energy_hi"]
+    assert realization["e_step"] == retried[1]["search_energy_step"]
+    assert realization["n_points"] == retried[1]["requested_points"]
+    assert realization["ncount"] == retried[1]["submitted_ncount"]
     assert all(item["submitted_ncount"] == item["ncount"] for item in submissions)
     state = json.loads((ws / "card.state.json").read_text(encoding="utf-8"))
     provenance = state["acquisition_provenance"]
@@ -1806,6 +1890,51 @@ def test_missed_window_triggers_recenter(tmp_path):
         assert saved["acquisition_id"] == submission["acquisition_id"]
         assert saved["submitted_ncount"] == submission["submitted_ncount"]
         assert saved["scan_kind"] == submission["kind"]
+        assert saved["search_energy_lo"] == submission["search_energy_lo"]
+        assert saved["search_energy_hi"] == submission["search_energy_hi"]
+        assert saved["search_energy_step"] == submission["search_energy_step"]
+        assert saved["requested_points"] == submission["requested_points"]
+        assert saved["proposal_fingerprint"] == submission["proposal_fingerprint"]
+        assert saved["scan_design_inventory_ref"] == submission[
+            "scan_design_inventory_ref"]
+        assert saved["scan_design_candidate_id"] == submission[
+            "scan_design_candidate_id"]
+        assert saved["scan_design_context_fingerprint"] == submission[
+            "scan_design_context_fingerprint"]
+
+
+def test_missed_window_elastic_refusal_widening_preserves_design_lineage(tmp_path):
+    client = MockTavi(lambda _h: 0.0)
+    summary, _ws = _run(
+        tmp_path,
+        _objective(),
+        client,
+        make_mock_runner(lambda _h: 9.0, window_gate=True),
+        max_iters=1,
+    )
+    events = read_log(summary["session_log"])
+    realizations = [
+        event["payload"] for event in events
+        if event["kind"] == "scan_design_realization"
+        and event["payload"].get("adjustment")
+        == "missed_window_elastic_refusal_widening"
+    ]
+    assert realizations
+    submissions = [
+        event["payload"] for event in events
+        if event["kind"] == "physical_submission"
+    ]
+    by_request = {item["proposal_fingerprint"]: item for item in submissions}
+    realized = realizations[0]
+    before = by_request[realized["previous_request_fingerprint"]]
+    after = by_request[realized["request_fingerprint"]]
+    assert before["scan_design_inventory_ref"] == after["scan_design_inventory_ref"]
+    assert before["scan_design_candidate_id"] == after["scan_design_candidate_id"]
+    assert realized["inventory_ref"] == after["scan_design_inventory_ref"]
+    assert realized["candidate_id"] == after["scan_design_candidate_id"]
+    assert realized["e_lo"] == after["search_energy_lo"]
+    assert realized["e_hi"] == after["search_energy_hi"]
+    assert realized["e_step"] == after["search_energy_step"]
 
 
 # --------------------------------------------------------------------------- escalate_fit logging
@@ -2217,6 +2346,16 @@ def _seed_unmatched_submission(ws, *, job_id="old-job", state="queued"):
         "cost": 21.0 * ncount, "acquisition_id": "A-recover",
         "acquisition_target_energy": 0.2, "driver_inserted": False,
         "certification_eligible": True,
+        "search_energy_lo": -0.8, "search_energy_hi": 1.2,
+        "search_energy_step": 0.1,
+        "proposal_fingerprint": "request-recovered",
+        "scan_design_inventory_ref": {
+            "kind": "scan_design_inventory",
+            "sha256": "inventory-recovered",
+            "path": "report/scan-design/inventory-recovered.json",
+        },
+        "scan_design_candidate_id": "candidate-recovered",
+        "scan_design_context_fingerprint": "context-recovered",
     }
     log = ws / "report" / "session_log.jsonl"
     log_event(log, "run", payload)
@@ -2296,6 +2435,11 @@ def test_resume_recovers_remote_completed_job_without_resubmission(tmp_path, mon
     _no_subprocess(monkeypatch)
     ws = tmp_path / "remote"
     _payload, body = _seed_unmatched_submission(ws)
+    shutil.copy(
+        Path(__file__).resolve().parents[2]
+        / "isar" / "parsers" / "cards" / "tavi.policy.toml",
+        ws / "card.policy.toml",
+    )
     client = _RecoveryTavi(body, state="done")
     summary = run_campaign(
         _objective(), _recovery_config(ws, client, lambda _h: 0.2))
@@ -2306,6 +2450,20 @@ def test_resume_recovers_remote_completed_job_without_resubmission(tmp_path, mon
     assert any(event["kind"] == "recovery_completed" for event in events)
     assert any(event["kind"] == "analyze"
                and event["payload"].get("job_id") == "old-job" for event in events)
+    state = json.loads((ws / "card.state.json").read_text(encoding="utf-8"))
+    provenance = next(
+        item for item in state["acquisition_provenance"]
+        if item["job_id"] == "old-job"
+    )
+    assert provenance["proposal_fingerprint"] == "request-recovered"
+    assert provenance["scan_design_inventory_ref"] == _payload[
+        "scan_design_inventory_ref"]
+    assert provenance["scan_design_candidate_id"] == "candidate-recovered"
+    assert provenance["scan_design_context_fingerprint"] == "context-recovered"
+    assert provenance["search_energy_lo"] == -0.8
+    assert provenance["search_energy_hi"] == 1.2
+    assert provenance["search_energy_step"] == 0.1
+    assert client.submit_calls == 0
 
 
 def test_resume_reuses_saved_raw_job_without_contact_or_resubmission(tmp_path, monkeypatch):

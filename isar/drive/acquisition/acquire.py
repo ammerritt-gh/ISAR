@@ -186,8 +186,10 @@ def _count_request(gridq: GridQ, *, kind: str, n_points: int, tolerance: float,
         window_family="target",
         declared_energy_lo=None,
         declared_energy_hi=None,
-        predicted_energy_meV=0.0,
-        predicted_sigma_meV=0.0,
+        target_prediction_mean_meV=0.0,
+        target_prediction_sigma_meV=0.0,
+        design_prediction_mean_meV=0.0,
+        design_prediction_sigma_meV=0.0,
         resolution_fwhm_meV=DEFAULT_FWHM_MEV,
         survey=False,
         energy_search_meV=None,
@@ -1965,6 +1967,10 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
                         combined_information=_finite_or_none(combined))
 
     e_pred, e_sigma = model.predict(pick.q)
+    target_prediction_mean = float(e_pred)
+    target_prediction_sigma = float(e_sigma)
+    design_prediction_mean = target_prediction_mean
+    design_prediction_sigma = target_prediction_sigma
     h, k, l = pick.hkl
     fwhm = _resolve_fwhm(resolution_info, h, k, l, max(float(e_pred), 0.0))
     # Survey the band until this q has a confirmed resolved fit — a concave dispersion sits above the
@@ -1984,6 +1990,12 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
     rb = rival_band(pick) if callable(rival_band) else rival_band
     intent = chosen.evaluation.intent
     if intent.window_family == "rival" and intent.energy_lo is not None and intent.energy_hi is not None:
+        if (rb is None or len(rb) != 2
+                or not all(math.isfinite(float(value)) for value in rb)
+                or float(rb[1]) < 0.0):
+            raise ValueError(
+                "rival-window scan design requires a finite rival mean and non-negative sigma")
+        design_prediction_mean, design_prediction_sigma = map(float, rb)
         # The energy this scan is *about* is the rival, not the target. ``e_pred`` becomes the
         # persisted ``acquisition_target_energy`` and the centre the effective-exposure weighting is
         # computed around, so leaving it at the target model's prediction would score the probe's
@@ -2011,8 +2023,10 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
         window_family=str(intent.window_family),
         declared_energy_lo=intent.energy_lo,
         declared_energy_hi=intent.energy_hi,
-        predicted_energy_meV=float(e_pred),
-        predicted_sigma_meV=float(e_sigma),
+        target_prediction_mean_meV=target_prediction_mean,
+        target_prediction_sigma_meV=target_prediction_sigma,
+        design_prediction_mean_meV=design_prediction_mean,
+        design_prediction_sigma_meV=design_prediction_sigma,
         resolution_fwhm_meV=float(fwhm),
         survey=bool(survey),
         energy_search_meV=(

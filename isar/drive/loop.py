@@ -261,8 +261,9 @@ def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int
     return True
 
 
-def _stamp_proposal_provenance(proposal) -> None:
-    """Freeze the additive decision identity after all window/count clamps are known."""
+def _request_fingerprint_for(proposal, *, e_lo: float, e_hi: float, e_step: float,
+                             ncount: int) -> str:
+    """Hash one exact request without including additive audit references."""
     meta = proposal.meta if isinstance(proposal.meta, dict) else {}
     proposal.meta = meta
     action_role = meta.get("acquisition_action_role")
@@ -272,15 +273,28 @@ def _stamp_proposal_provenance(proposal) -> None:
         meta["acquisition_action_role"] = action_role
     basis = {
         "hkl": [float(proposal.h), float(proposal.k), float(proposal.l)],
-        "energy_window": [float(proposal.e_lo), float(proposal.e_hi), float(proposal.e_step)],
-        "ncount": int(proposal.ncount), "kind": str(proposal.kind),
+        "energy_window": [float(e_lo), float(e_hi), float(e_step)],
+        "ncount": int(ncount), "kind": str(proposal.kind),
         "action_role": str(action_role),
         "target_branch_role": meta.get("target_branch_role"),
         "rival_branch_role": meta.get("rival_branch_role"),
         "authoritative_evidence_revision": meta.get("authoritative_evidence_revision"),
     }
     encoded = json.dumps(basis, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    meta["proposal_fingerprint"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _stamp_proposal_provenance(proposal) -> None:
+    """Freeze the additive decision identity after all window/count clamps are known."""
+    meta = proposal.meta if isinstance(proposal.meta, dict) else {}
+    proposal.meta = meta
+    meta["proposal_fingerprint"] = _request_fingerprint_for(
+        proposal,
+        e_lo=proposal.e_lo,
+        e_hi=proposal.e_hi,
+        e_step=proposal.e_step,
+        ncount=proposal.ncount,
+    )
 
 
 def finalized_proposal(proposal) -> FinalizedProposal | None:
@@ -1391,6 +1405,9 @@ def _proposal_from_submission(payload: dict) -> ScanProposal:
         "rival_branch_role": payload.get("rival_branch_role"),
         "authoritative_evidence_revision": payload.get("authoritative_evidence_revision"),
         "proposal_fingerprint": payload.get("proposal_fingerprint"),
+        "scan_design_inventory_ref": payload.get("scan_design_inventory_ref"),
+        "scan_design_candidate_id": payload.get("scan_design_candidate_id"),
+        "scan_design_context_fingerprint": payload.get("scan_design_context_fingerprint"),
         # The action identity a resumed scan must not lose. Without the sink a recovered auxiliary
         # probe becomes canonical by default and pools into the certified master; the scientific and
         # feasibility fingerprints are its audit identity. All three are already persisted on the
@@ -1403,7 +1420,9 @@ def _proposal_from_submission(payload: dict) -> ScanProposal:
         meta["insertion_purpose"] = payload.get("insertion_purpose")
     return ScanProposal(
         h=float(hkl[0]), k=float(hkl[1]), l=float(hkl[2]),
-        e_lo=0.0, e_hi=0.0, e_step=1.0,
+        e_lo=float(payload.get("search_energy_lo") or 0.0),
+        e_hi=float(payload.get("search_energy_hi") or 0.0),
+        e_step=float(payload.get("search_energy_step") or 1.0),
         ncount=int(payload.get("submitted_ncount") or payload.get("ncount")
                    or PRODUCTION_NCOUNT),
         kind=str(payload.get("kind") or "production"),
@@ -2541,6 +2560,8 @@ def _persist_acquisition_provenance(workspace: Path, payload: dict) -> None:
         # evidence at analysis time (the session reads this record, not the driver's in-memory proposal).
         "search_energy_lo": payload.get("search_energy_lo"),
         "search_energy_hi": payload.get("search_energy_hi"),
+        "search_energy_step": payload.get("search_energy_step"),
+        "requested_points": payload.get("requested_points"),
         "submitted_ncount": int(payload["submitted_ncount"]),
         "scan_kind": str(payload["kind"]),
         "acquisition_action_role": payload.get("acquisition_action_role"),
@@ -2548,6 +2569,9 @@ def _persist_acquisition_provenance(workspace: Path, payload: dict) -> None:
         "rival_branch_role": payload.get("rival_branch_role"),
         "authoritative_evidence_revision": payload.get("authoritative_evidence_revision"),
         "proposal_fingerprint": payload.get("proposal_fingerprint"),
+        "scan_design_inventory_ref": payload.get("scan_design_inventory_ref"),
+        "scan_design_candidate_id": payload.get("scan_design_candidate_id"),
+        "scan_design_context_fingerprint": payload.get("scan_design_context_fingerprint"),
         # The one channel by which analysis learns this scan was not ordinary evidence. Written here,
         # before the raw scan is consumed, because reduction decides whether to pool it and the session
         # decides how the tracker may read it — both from this record, neither from the driver.
@@ -2808,6 +2832,44 @@ def _inventory_artifact_matches(path: Path, digest: str) -> bool:
     return hashlib.sha256(canonical_json(parsed).encode("utf-8")).hexdigest() == digest
 
 
+def _record_scan_design_realization(
+        cfg: CampaignConfig,
+        proposal,
+        *,
+        adjustment: str,
+        previous_request_fingerprint: str | None,
+        it: int,
+        attempt: int | None = None,
+) -> bool:
+    """Record how an immutable selected candidate became a different exact request."""
+    meta = proposal.meta if isinstance(proposal.meta, dict) else {}
+    current = meta.get("proposal_fingerprint")
+    inventory_ref = meta.get("scan_design_inventory_ref")
+    candidate_id = meta.get("scan_design_candidate_id")
+    context_fingerprint = meta.get("scan_design_context_fingerprint")
+    if (not current or current == previous_request_fingerprint or inventory_ref is None
+            or candidate_id is None or context_fingerprint is None):
+        return False
+    log_event(cfg.log_path, "scan_design_realization", {
+        "schema": "isar.scan_design_realization/1",
+        "iter": it,
+        "attempt": attempt,
+        "adjustment": str(adjustment),
+        "inventory_ref": inventory_ref,
+        "candidate_id": str(candidate_id),
+        "context_fingerprint": str(context_fingerprint),
+        "previous_request_fingerprint": previous_request_fingerprint,
+        "request_fingerprint": str(current),
+        "hkl": [float(proposal.h), float(proposal.k), float(proposal.l)],
+        "e_lo": float(proposal.e_lo),
+        "e_hi": float(proposal.e_hi),
+        "e_step": float(proposal.e_step),
+        "n_points": int(proposal.n_points or 0),
+        "ncount": int(proposal.ncount),
+    })
+    return True
+
+
 def _persist_scan_design_inventory(cfg: CampaignConfig, proposal, *, it: int) -> dict | None:
     """Persist and join the selected scan-design inventory to its finalized request.
 
@@ -2846,14 +2908,31 @@ def _persist_scan_design_inventory(cfg: CampaignConfig, proposal, *, it: int) ->
     proposal.meta = meta
     meta["scan_design_inventory_ref"] = ref
     meta["scan_design_candidate_id"] = inventory.selected_candidate_id
+    meta["scan_design_context_fingerprint"] = inventory.context.fingerprint
     log_event(cfg.log_path, "scan_design", {
         "iter": it,
         "scientific_action_fingerprint": meta.get("scientific_action_fingerprint"),
         "request_fingerprint": meta.get("proposal_fingerprint"),
         "selected_candidate_id": inventory.selected_candidate_id,
+        "context_fingerprint": inventory.context.fingerprint,
         "selection_basis": inventory.selection_basis,
         "inventory_ref": ref,
     })
+    candidate = inventory.selected_candidate
+    planned_request_fingerprint = _request_fingerprint_for(
+        proposal,
+        e_lo=candidate.e_lo,
+        e_hi=candidate.e_hi,
+        e_step=candidate.e_step,
+        ncount=candidate.ncount,
+    )
+    _record_scan_design_realization(
+        cfg,
+        proposal,
+        adjustment="initial_finalization_clamp",
+        previous_request_fingerprint=planned_request_fingerprint,
+        it=it,
+    )
     return ref
 
 
@@ -3141,7 +3220,16 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
     declined_verdict: str | None = None
     while True:
         # Single checkpoint before EVERY validate/submit, including support/recenter retries.
+        previous_request_fingerprint = (proposal.meta or {}).get("proposal_fingerprint")
         _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+        _record_scan_design_realization(
+            cfg,
+            proposal,
+            adjustment="execution_time_finalization_clamp",
+            previous_request_fingerprint=previous_request_fingerprint,
+            it=it,
+            attempt=attempt,
+        )
         finalized = finalized_proposal(proposal)
         with timed(log_path, "validate", iteration=it, attempt=attempt):
             val = client.validate(_validate_body(proposal, sample=cfg.sample,
@@ -3178,8 +3266,18 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             desired_step = max((4.0 * sigma) / max(min_support - 1, 1), 1e-6)
             if not support_adjusted and desired_step < proposal.e_step:
                 old_step = proposal.e_step
+                previous_request_fingerprint = (proposal.meta or {}).get(
+                    "proposal_fingerprint")
                 proposal.e_step = desired_step
                 _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+                _record_scan_design_realization(
+                    cfg,
+                    proposal,
+                    adjustment="minimum_target_support",
+                    previous_request_fingerprint=previous_request_fingerprint,
+                    it=it,
+                    attempt=attempt,
+                )
                 support_adjusted = True
                 log_event(log_path, "exception", {
                     "action": "increase_target_support", "hkl": [proposal.h, proposal.k, proposal.l],
@@ -3252,6 +3350,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             # crash-resume finalize rather than being re-derived by hkl-nearness.
             "search_energy_lo": float(proposal.e_lo),
             "search_energy_hi": float(proposal.e_hi),
+            "search_energy_step": float(proposal.e_step),
             "driver_inserted": bool((proposal.meta or {}).get("driver_inserted", False)),
             "certification_eligible": bool((proposal.meta or {}).get(
                 "certification_eligible", True)),
@@ -3264,6 +3363,12 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             "authoritative_evidence_revision": (proposal.meta or {}).get(
                 "authoritative_evidence_revision"),
             "proposal_fingerprint": (proposal.meta or {}).get("proposal_fingerprint"),
+            "scan_design_inventory_ref": (proposal.meta or {}).get(
+                "scan_design_inventory_ref"),
+            "scan_design_candidate_id": (proposal.meta or {}).get(
+                "scan_design_candidate_id"),
+            "scan_design_context_fingerprint": (proposal.meta or {}).get(
+                "scan_design_context_fingerprint"),
             # The other two lifecycle identities, so a submitted scan joins back to the scientific
             # question it answers and the geometry its request was accepted under.
             "scientific_action_fingerprint": (proposal.meta or {}).get(
@@ -3329,9 +3434,22 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         # ΔE ≈ 0. Any other action (escalate) ends the retry loop.
         if act.action not in ("recenter", "recenter_refused_elastic"):
             break
+        previous_request_fingerprint = (proposal.meta or {}).get("proposal_fingerprint")
         proposal.e_lo = act.params["e_lo"]
         proposal.e_hi = act.params["e_hi"]
         _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+        _record_scan_design_realization(
+            cfg,
+            proposal,
+            adjustment=(
+                "missed_window_recenter"
+                if act.action == "recenter"
+                else "missed_window_elastic_refusal_widening"
+            ),
+            previous_request_fingerprint=previous_request_fingerprint,
+            it=it,
+            attempt=attempt + 1,
+        )
         attempt += 1
 
     return rows, scan_counter, declined_verdict
