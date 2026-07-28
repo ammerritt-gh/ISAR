@@ -2,7 +2,7 @@
 
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
-> **Verified against code revision:** `5574223` (2026-07-27)
+> **Verified against code revision:** `b2ce5d1` (2026-07-28)
 > **Owner:** @ammerritt-gh · **Exit criteria:** in the status block below
 
 **Status: design approved 2026-07-19; the TAVI prerequisite has landed (decision T4 — generation,
@@ -38,62 +38,87 @@ background there is nothing for a background family to fit, and no way to score 
 correctly. That prerequisite is now built (decision **T4**). What follows is the contract as
 implemented, not a proposal.
 
-**TAVI generates background truth; it never infers it from measured data.** A profile is a
-superposition of analytic terms over four shapes — `flat`; `linear_e`
-(`rate(E) = max(0, rate0 + slope·(E − E_ref))`, `E_ref = 0.0`); `elastic_incoherent`, a
-resolution-width Gaussian planted at every q (not only at Bragg positions), using the marginalized
-σ_E with a declared fallback width when the resolution solve fails; and `elastic_tail`, a broad
-Lorentzian pinned to E = 0. Every term declares an **origin** — `instrument`, `sample_environment`,
-or `sample` — and the origin fixes the scaling: instrument and sample-environment terms contribute
-`N × rate`, sample terms contribute `N × diffuse_background × rate` through a new explicit
-calibration channel (`AnalyticCalibration.diffuse_background`), never through the phonon factor. A
-sample term with no such calibration is refused (`sample_background_scale_unavailable`) unless the
-preset declared it `optional`; there is no implicit fallback scale.
+**TAVI generates background truth; it never infers it from measured data.** Catalog version 2 of
+`tavi.background/2` has six fixed sources, grouped by assumed origin. Environment contains the
+ambient flat floor (`environment_flat`), energy-dependent slope (`environment_slope`), and sparse
+cosmic-ray spikes (`environment_cosmic_spikes`). Instrument contains aluminum powder lines from
+mounting or machinery caught in the beam (`instrument_aluminum_powder`). Sample contains only the
+elastic incoherent line (`sample_elastic`) and broad elastic tail (`sample_elastic_tail`).
+`sample_diffuse` was removed: diffuse scattering is measurable sample physics, not simulator
+background.
 
-**The interface is hybrid.** TAVI holds one background profile as instrument configuration, editable
+The smooth shapes are `flat`; `linear_e` (`rate(E) = max(0, rate0 + slope·E)`, clamped to zero above
+40 meV); `elastic_incoherent`, a resolution-width Gaussian at every q with a 0.5 meV fallback σ;
+`elastic_tail`, a broad Lorentzian pinned to E = 0; and composite `powder_elastic`. The powder source
+combines synthetic Al (111), (200), (220), (311), (222), and (400) reflections derived from
+fcc `a = 4.0495 Å`, with catalog-owned relative line weights and visibility normalization. It uses
+marginalized Q and E resolution widths where available and fixed fallbacks otherwise, deliberately
+ignores Q–E covariance, and is not a calibrated aluminum cross-section model. Smooth sources
+contribute `monitor counts × catalog shape/rate × source scale`, independent of the selected sample.
+Cosmic spikes are a separate post-Poisson event overlay:
+`Poisson(source scale × 0.005 × monitor counts / 1e10)` events with independently drawn, capped
+log-normal amplitudes. Their scale changes incidence, not amplitude, and events are realized even
+for noiseless deterministic scans. TAVI no longer consults sample calibration to plant background.
+
+**The interface is hybrid and source-addressed.** TAVI holds one global configuration, editable
 from its GUI and over `GET`/`PUT /background`, and a scan body may carry a per-scan `background`
-override which *replaces* that profile wholesale (never merges). `/validate` accepts and checks the
-same key, so a body that validates is a body that submits. Scan metadata **always** reports the
-resolved numerics, the preset, a delivery-source tag (`config_default` | `per_scan_override`), and
-two fingerprints: the **profile fingerprint** over the pre-sample-scaling physics (delivery source
-excluded — the same physics through either door fingerprints the same) and the **effective
-fingerprint**, which adds the sample scaling actually applied and the skipped-term set. The
-effective fingerprint is the pooling identity. A disabled profile still stamps a block: the absence
-of background is provenance too.
+override which *replaces* that configuration wholesale (never merges). The only v2 wire shape is
+`{catalog_version, enabled, sources: {id: {enabled, scale}}}`. Sparse source maps are accepted and
+normalized to all catalog IDs, with omitted entries disabled at ×1; unknown fields, IDs, invalid
+scales, and mismatched/missing catalog versions refuse. `/validate` accepts and checks the same key,
+so a body that validates is a body that submits. Scan metadata **always** reports the normalized
+source states and catalog numerics, a `delivery_source` tag (`config_default` |
+`per_scan_override`), and two fingerprints: the **profile fingerprint** over every remembered
+setting and the **effective fingerprint** over only globally and individually active sources.
+Delivery source is excluded from identity. The effective fingerprint is the pooling identity. A
+disabled configuration still stamps a block: absence of background is provenance too. Catalog
+version 2 remains current: the aluminum relative-weight and visibility recalibration landed before
+release, so the request envelope, source IDs, `background_schema`, and catalog version remain
+unchanged.
 
 **ISAR consumes it under a truth firewall.** The planted numerics are the answer to the question the
-fitter is being asked, so they never reach the analysis record. The TAVI parser copies only the safe
-half — `enabled`, `source`, `background_schema`, and the two fingerprints — into
-`raw_header["background_provenance"]`, and *redacts* the numeric block out of the stored payload,
-leaving `{"redacted": "sim_truth", "effective_fingerprint": …}`. The preset **name** is excluded
-along with the numbers: `flat_high` states a magnitude as plainly as `5e-9` does. The firewall is
-physical, not a naming convention. The raw TAVI JSON on disk is untouched, and validation scoring
-reads the planted truth there **after** fitting. Collation refuses to pool members whose effective
+fitter is being asked, so they never reach the analysis record. For v2 the TAVI parser copies only
+`enabled`, `delivery_source`, `background_schema`, `catalog_version`, and the two fingerprints into
+`raw_header["background_provenance"]`; it continues to accept historical `tavi.background/1` and
+its `source` field, plus historical `tavi.background/2` catalog-version-1 files. It *redacts* the
+complete numeric source block — including powder-line definitions, event seed, cosmic point
+indices, event counts, and added amplitudes — out of the stored payload,
+leaving `{"redacted": "sim_truth", "effective_fingerprint": …}`. Source IDs are excluded with the
+numbers because a name may itself reveal planted truth. The firewall is physical, not a naming
+convention. The raw TAVI JSON on disk is untouched, and validation scoring reads the planted truth
+there **after** fitting. Collation refuses to pool members whose effective
 fingerprints differ (or where one carries a fingerprint and another does not): the members are kept,
 fit and reported individually, and the group records a `pool_refusal` — refuse, never delete. Two
 members whose provenance carries *no* fingerprint refuse as well, because the `unknown` class is an
 admission, not an identity; a provenance whose `enabled` is literally `false` normalizes the other
 way, to the background-free class, since a disabled profile is bit-identical to pre-background
 output and pooling it with legacy data loses nothing.
-Campaigns resolve `CampaignConfig.sample_background` **once**, at compile time, into the frozen
-numeric form (`{"enabled", "terms": […]}`) plus its fingerprint, log it as
-`sample_background_frozen`, and stamp it verbatim on every validate and scan body as a per-scan
-override; a resume whose re-expansion disagrees aborts with `background_fingerprint_drift` before
-anything is submitted. An **undeclared** background is not an absent one: it freezes to
-`{"enabled": false, "terms": []}` (logged with `"defaulted": true`) so a campaign cannot silently
-inherit whatever profile the instrument was last left holding, and so a resume that drops its
-declaration hits the drift guard before any spend. `sample_background = "instrument_config"` is the
-explicit opt-out for the rare case where inheriting the live config *is* the intent. The steering
-loop never calls `set_background` — stamping is transport, not a decision — so a GUI edit, another
-client, or a preset retune cannot change a running campaign's planted truth.
+Campaigns resolve `CampaignConfig.sample_background` **once**, at compile time: ISAR reads the
+current catalog from `GET /schema`, validates the declared version and stable IDs, materializes
+omitted sources as disabled at ×1, logs that normalized request as `sample_background_frozen`, and
+stamps it verbatim on every validate and scan body. A resume whose normalized request disagrees
+aborts with `background_fingerprint_drift` before anything is submitted. An **undeclared**
+background is not an absent one: it freezes a disabled v2 request containing the current catalog
+version and all source IDs (logged with `"defaulted": true`) so a campaign cannot silently inherit
+whatever global configuration the instrument was last left holding. `sample_background =
+"instrument_config"` is the explicit opt-out for the rare case where inheriting the live config
+*is* the intent. The steering loop never calls `set_background` — stamping is transport, not a
+decision — so a GUI edit or another client cannot change a running campaign's planted truth.
+For example, a campaign requesting the composite aluminum powder source at ×1 and cosmic-ray
+incidence at ×0.5 declares:
 
-**Deferred follow-up (not dangerous today).** ISAR's frozen form is canonicalized by ISAR: a
-campaign spec is expanded against the advertised preset registry and stamped as-is, so if TAVI ever
-defaults a term field that a preset leaves out, ISAR's frozen copy and TAVI's resolved profile could
-canonicalize differently. This is harmless at present because preset expansion carries the full
-numerics, and the effective fingerprint is computed by TAVI on the resolved profile either way. The
-clean fix is a TAVI profile-resolution surface (resolve-this-spec, return the canonical profile) so
-ISAR never duplicates TAVI's defaulting — deferred until a term shape actually acquires defaults.
+```json
+{
+  "sample_background": {
+    "catalog_version": 2,
+    "enabled": true,
+    "sources": {
+      "instrument_aluminum_powder": {"enabled": true, "scale": 1.0},
+      "environment_cosmic_spikes": {"enabled": true, "scale": 0.5}
+    }
+  }
+}
+```
 
 **Note for Sub-phase A.** TAVI's planted `elastic_tail` is a **pure** Lorentzian pinned to E = 0 —
 it is *not* convolved with the resolution. §2's `ElasticTail` must therefore either adopt the same

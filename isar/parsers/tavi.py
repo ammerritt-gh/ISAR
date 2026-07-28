@@ -23,10 +23,12 @@ provenance (payload-truth vs card-fallback) is recorded in `raw_header["provenan
 as an info-level `card_fallback` scan flag so downstream QC can tell which CN inputs are constants.
 
 TRUTH FIREWALL (background). TAVI can *generate* background, and stamps the planted numeric truth
-(rates, widths, per-term parameters, preset name) into `result.metadata.background`. That truth must
-never reach ISAR's analysis record: the fitter would then be conditioning on the answer. So this
-plugin splits the block in two. The SAFE half — `enabled`, `source`, `background_schema`,
-`profile_fingerprint`, `effective_fingerprint` — is copied to `raw_header["background_provenance"]`;
+(rates, widths, source parameters, event seed, and sparse cosmic-event realizations) into
+`result.metadata.background`. That truth must never reach ISAR's analysis record: the fitter would
+then be conditioning on the answer. So this
+plugin splits the block in two. The SAFE half — `enabled`, the v1 `source` or v2
+`delivery_source`, `background_schema`, v2 `catalog_version`, `profile_fingerprint`, and
+`effective_fingerprint` — is copied to `raw_header["background_provenance"]`;
 it carries identity only (the effective fingerprint is the pooling identity collation keys on) and no
 magnitude, which is why the preset NAME is excluded too ("flat_high" states a magnitude as plainly as
 a number does). The NUMERIC half is REDACTED from the stored payload: `raw_header["tavi"]` holds a
@@ -251,10 +253,12 @@ def _cn_params(params: dict, card: Card, prov: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Background truth firewall (see the module docstring)
 # ---------------------------------------------------------------------------
-# The only fields of TAVI's background block allowed onto the record: identity and bookkeeping.
-# Everything else (terms, params, units, sample_scale, preset name, seed) states a magnitude.
-BACKGROUND_SAFE_KEYS = ("enabled", "source", "background_schema",
-                        "profile_fingerprint", "effective_fingerprint")
+# The only fields of TAVI's background blocks allowed onto the record: identity and bookkeeping.
+# ``source`` is retained for historical tavi.background/1 payloads; v2 calls it ``delivery_source``.
+# Everything else (terms/sources, params, units, scales, preset name, seed, realized events) states
+# planted truth.
+BACKGROUND_SAFE_KEYS = ("enabled", "source", "delivery_source", "background_schema",
+                        "catalog_version", "profile_fingerprint", "effective_fingerprint")
 
 
 def _background_block(result: dict):
@@ -274,7 +278,7 @@ def _background_provenance(block, *, launch_source=None) -> dict:
     """The SAFE half of the background block: identity only, never a rate/width/preset name.
 
     `block` is ``None`` for a payload that requested a background (`launch.background`) but carries no
-    resolved `result.metadata.background` — a malformed or interrupted job. All five keys are then
+    resolved `result.metadata.background` — a malformed or interrupted job. All safe keys are then
     populated from what exists (`launch.background_source` if present, the rest ``None``), which is a
     provenance WITHOUT an effective fingerprint: collation classes it UNKNOWN and refuses to pool it,
     which is the fail-closed answer for a scan whose background truth was never resolved.
@@ -290,11 +294,12 @@ def _redact_background(data: dict, block) -> dict:
     """The stored payload with every numeric background trace replaced by a fingerprint pointer.
 
     Two leak paths, both closed here and INDEPENDENTLY: `result.metadata.background` (the resolved
-    truth block) and `launch.background` (TAVI's launch summary echoes the REQUESTED spec — the preset
-    name in preset form, the full numeric terms in the frozen form campaigns stamp). Either can appear
-    without the other: an interrupted job can carry the request with no result, and redacting the
-    launch spec only when the result block existed left that request's numerics on the record.
-    `launch.background_source` is safe and kept; it is one of the five safe keys anyway.
+    truth block, including sparse cosmic-event realizations) and `launch.background` (TAVI's launch
+    summary echoes the requested spec — historical v1 preset/frozen terms or the current v2 keyed
+    sources). Either can appear without the other: an interrupted job can carry the request with no
+    result, and redacting the launch spec only when the result block existed left that request's
+    numerics on the record.
+    `launch.background_source` is safe and kept for historical payloads.
 
     Returns a SHALLOW COPY of `data` (and of the nested dicts it edits) so nothing the rest of
     `parse_file` reads — or any caller sharing the parsed object — is mutated. Every other key still

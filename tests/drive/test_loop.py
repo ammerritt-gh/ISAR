@@ -705,6 +705,17 @@ class MockTavi:
     def get_resolution(self, h, k, l, deltaE):
         return {"ok": True, "fwhm": {"dE": 0.8}}
 
+    def get_schema(self):
+        source_ids = (
+            "environment_flat", "environment_slope", "environment_cosmic_spikes",
+            "instrument_aluminum_powder", "sample_elastic", "sample_elastic_tail",
+        )
+        return {"background": {
+            "background_schema": "tavi.background/2",
+            "catalog_version": 2,
+            "sources": {source_id: {} for source_id in source_ids},
+        }}
+
 
 class _UnreachableQTavi(MockTavi):
     """A TAVI where one q is geometrically unreachable — every request there is refused."""
@@ -3315,36 +3326,58 @@ def test_a_known_budget_terminal_outranks_the_unrealizable_request_fault(tmp_pat
 # Campaign background: frozen at compile time, stamped as transport (Stage 5)
 # ---------------------------------------------------------------------------
 
-_BG_PRESETS = {
-    # The real instrument always advertises 'none' (zero terms) — the clean-instrument declaration.
-    "none": {"description": "no background", "terms": []},
-    "flat_low": {
-        "description": "weak instrument background",
-        "terms": [
-            {"name": "flat", "shape": "flat", "origin": "instrument", "method": "analytic",
-             "params": {"rate": 2e-10}, "optional": False},
-            {"name": "tail", "shape": "elastic_tail", "origin": "instrument", "method": "analytic",
-             "params": {"rate_integrated": 1e-9, "gamma_meV": 2.0}, "optional": False},
-        ],
-    },
-}
+_BG_SOURCE_IDS = (
+    "environment_flat", "environment_slope", "environment_cosmic_spikes",
+    "instrument_aluminum_powder", "sample_elastic", "sample_elastic_tail",
+)
+_CATALOG_V1_SOURCE_IDS = (
+    "environment_flat", "environment_slope", "sample_diffuse",
+    "sample_elastic", "sample_elastic_tail",
+)
+
+
+def _bg_spec(*, enabled=True, sources=None, catalog_version=2):
+    return {"catalog_version": catalog_version, "enabled": enabled, "sources": sources or {}}
+
+
+def _normalized_bg(*, enabled=True, sources=None, catalog_version=2,
+                   source_ids=_BG_SOURCE_IDS):
+    configured = sources or {}
+    return {
+        "catalog_version": catalog_version,
+        "enabled": enabled,
+        "sources": {
+            source_id: json.loads(json.dumps(
+                configured.get(source_id, {"enabled": False, "scale": 1.0})))
+            for source_id in source_ids
+        },
+    }
 
 
 class _BackgroundTavi(MockTavi):
-    """A MockTavi that advertises a background preset registry and records every body it sees."""
+    """A MockTavi that advertises the v2 source catalog and records every body it sees."""
 
-    def __init__(self, omega_true=lambda h: (h - 2.0) * 2.0, presets=None):
+    def __init__(self, omega_true=lambda h: (h - 2.0) * 2.0, *,
+                 catalog_version=2, source_ids=_BG_SOURCE_IDS,
+                 background_schema="tavi.background/2"):
         super().__init__(omega_true)
-        self.presets = json.loads(json.dumps(presets if presets is not None else _BG_PRESETS))
+        self.catalog_version = catalog_version
+        self.source_ids = tuple(source_ids)
+        self.background_schema = background_schema
         self.validate_bodies = []
         self.set_background_calls = []
         self.schema_calls = 0
 
     def get_schema(self):
         self.schema_calls += 1
-        return {"background": {"presets": self.presets,
-                               "preset_registry_version": "bg-registry-1",
-                               "background_schema": "tavi.background/1"}}
+        return {"background": {
+            "background_schema": self.background_schema,
+            "catalog_version": self.catalog_version,
+            "sources": {
+                source_id: {"category": source_id.split("_", 1)[0], "label": source_id}
+                for source_id in self.source_ids
+            },
+        }}
 
     def validate(self, body):
         self.validate_bodies.append(json.loads(json.dumps(body)))
@@ -3361,15 +3394,21 @@ def _frozen_events(session_log):
             and (e.get("payload") or {}).get("event") == "sample_background_frozen"]
 
 
-def test_campaign_stamps_the_frozen_preset_background_on_every_body(tmp_path):
+def test_campaign_stamps_the_normalized_source_background_on_every_body(tmp_path):
     """The campaign's background is its sample declaration, frozen once and carried by every request —
     never read from TAVI's mutable config default at scan time."""
     omega = lambda h: (h - 2.0) * 2.0
     client = _BackgroundTavi(omega)
     summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega),
-                        sample_background={"preset": "flat_low"})
+                        sample_background=_bg_spec(sources={
+                            "instrument_aluminum_powder": {"enabled": True, "scale": 1.0},
+                            "environment_cosmic_spikes": {"enabled": True, "scale": 0.5},
+                        }))
 
-    expected = {"enabled": True, "terms": _BG_PRESETS["flat_low"]["terms"]}
+    expected = _normalized_bg(sources={
+        "instrument_aluminum_powder": {"enabled": True, "scale": 1.0},
+        "environment_cosmic_spikes": {"enabled": True, "scale": 0.5},
+    })
     assert client.jobs, "the campaign submitted no scans"
     for body in client.jobs.values():
         assert body["background"] == expected
@@ -3380,27 +3419,38 @@ def test_campaign_stamps_the_frozen_preset_background_on_every_body(tmp_path):
     frozen = _frozen_events(summary["session_log"])
     assert len(frozen) == 1
     assert frozen[0]["frozen"] == expected
-    assert frozen[0]["spec"] == {"preset": "flat_low"}
-    assert frozen[0]["preset_registry_version"] == "bg-registry-1"
-    assert frozen[0]["background_schema"] == "tavi.background/1"
-    # Stamping, never config mutation; the preset registry is read once, at setup (the other
+    assert frozen[0]["spec"] == _bg_spec(sources={
+        "instrument_aluminum_powder": {"enabled": True, "scale": 1.0},
+        "environment_cosmic_spikes": {"enabled": True, "scale": 0.5},
+    })
+    assert frozen[0]["catalog_version"] == 2
+    # Stamping, never config mutation; the source catalog is read once, at setup (the other
     # GET /schema is the campaign's instrument-limits preflight).
     assert client.set_background_calls == []
     assert client.schema_calls == 2
 
 
-def test_campaign_background_scale_survives_the_freeze(tmp_path):
-    """The profile-level strength knob rides the sample declaration; dropping it would silently
-    plant a background 'scale' times off what the campaign declared."""
+def test_campaign_independent_source_scales_survive_the_freeze(tmp_path):
     omega = lambda h: (h - 2.0) * 2.0
     client = _BackgroundTavi(omega)
     summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega),
-                        sample_background={"preset": "flat_low", "scale": 2.5})
+                        sample_background=_bg_spec(sources={
+                            "environment_cosmic_spikes": {"enabled": True, "scale": 2.5},
+                            "instrument_aluminum_powder": {"enabled": True, "scale": 1.25},
+                            "sample_elastic_tail": {"enabled": False, "scale": 0.25},
+                        }))
 
-    expected = {"enabled": True, "terms": _BG_PRESETS["flat_low"]["terms"], "scale": 2.5}
+    expected = _normalized_bg(sources={
+        "environment_cosmic_spikes": {"enabled": True, "scale": 2.5},
+        "instrument_aluminum_powder": {"enabled": True, "scale": 1.25},
+        "sample_elastic_tail": {"enabled": False, "scale": 0.25},
+    })
     assert client.jobs and all(body["background"] == expected for body in client.jobs.values())
     frozen = _frozen_events(summary["session_log"])
-    assert frozen[0]["frozen"]["scale"] == 2.5
+    assert frozen[0]["frozen"]["sources"]["environment_cosmic_spikes"]["scale"] == 2.5
+    assert frozen[0]["frozen"]["sources"]["instrument_aluminum_powder"]["scale"] == 1.25
+    assert frozen[0]["frozen"]["sources"]["sample_elastic_tail"] == {
+        "enabled": False, "scale": 0.25}
 
 
 def test_campaign_can_declare_a_clean_instrument(tmp_path):
@@ -3409,9 +3459,9 @@ def test_campaign_can_declare_a_clean_instrument(tmp_path):
     omega = lambda h: (h - 2.0) * 2.0
     client = _BackgroundTavi(omega)
     summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega),
-                        sample_background={"enabled": False, "preset": "none"})
+                        sample_background=_bg_spec(enabled=False))
 
-    expected = {"enabled": False, "terms": []}
+    expected = _normalized_bg(enabled=False)
     assert client.jobs and all(body["background"] == expected for body in client.jobs.values())
     frozen = _frozen_events(summary["session_log"])
     assert len(frozen) == 1 and frozen[0]["frozen"] == expected
@@ -3424,46 +3474,38 @@ def test_campaign_background_invalid_scale_aborts_setup(tmp_path, scale):
     client = _BackgroundTavi(omega)
     with pytest.raises(ValueError, match="'scale' must be a finite number"):
         _run(tmp_path, _objective(), client, make_mock_runner(omega),
-             sample_background={"preset": "flat_low", "scale": scale})
+             sample_background=_bg_spec(sources={
+                 "environment_flat": {"enabled": True, "scale": scale}}))
     assert client.jobs == {}
 
 
-def test_campaign_background_frozen_form_passes_through_unchanged(tmp_path):
+def test_campaign_complete_background_form_passes_through_unchanged(tmp_path):
     omega = lambda h: (h - 2.0) * 2.0
     client = _BackgroundTavi(omega)
-    spec = {"enabled": True,
-            "terms": [{"name": "flat", "shape": "flat", "origin": "sample_environment",
-                       "method": "analytic", "params": {"rate": 7e-10}, "optional": True}]}
+    spec = _normalized_bg(sources={
+        "instrument_aluminum_powder": {"enabled": True, "scale": 3.0},
+    })
     summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega),
                         sample_background=json.loads(json.dumps(spec)))
 
     assert client.jobs and all(body["background"] == spec for body in client.jobs.values())
     assert _frozen_events(summary["session_log"])[0]["frozen"] == spec
-    # Only the instrument-limits preflight read the schema: a frozen spec needs no registry lookup.
-    assert client.schema_calls == 1
+    # One limits preflight plus one catalog-version/source-ID freeze.
+    assert client.schema_calls == 2
     assert client.set_background_calls == []
 
 
-def test_campaign_background_overrides_merge_into_the_frozen_terms(tmp_path):
-    omega = lambda h: (h - 2.0) * 2.0
-    client = _BackgroundTavi(omega)
-    summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega),
-                        sample_background={"enabled": True, "preset": "flat_low",
-                                           "overrides": {"tail": {"gamma_meV": 3.5}}})
-
-    frozen = _frozen_events(summary["session_log"])[0]["frozen"]
-    terms = {term["name"]: term for term in frozen["terms"]}
-    assert terms["tail"]["params"] == {"rate_integrated": 1e-9, "gamma_meV": 3.5}
-    assert terms["flat"]["params"] == {"rate": 2e-10}       # untouched terms keep preset numerics
-    assert all(body["background"] == frozen for body in client.jobs.values())
-
-
 @pytest.mark.parametrize("spec, needle", [
-    ({"preset": "does_not_exist"}, "unknown background preset"),
-    ({"preset": "flat_low", "overrides": {"nope": {"rate": 1.0}}}, "unknown term"),
-    ({"preset": "flat_low", "overrides": {"flat": {"rat": 1.0}}}, "unknown param"),
-    ({"enabled": True, "terms": "nope"}, "must be a list"),
-    ({"enabled": "false", "preset": "flat_low"}, "'enabled' must be a boolean"),
+    ({"enabled": True, "preset": "realistic"}, "unknown field"),
+    ({"catalog_version": 2, "enabled": True, "sources": {}, "scale": 2.0}, "unknown field"),
+    ({"catalog_version": 2, "enabled": True}, "missing required field"),
+    (_bg_spec(sources={"nope": {"enabled": True, "scale": 1.0}}), "unknown background source"),
+    (_bg_spec(sources={"sample_diffuse": {"enabled": True, "scale": 1.0}}),
+     "unknown background source"),
+    (_bg_spec(sources={"environment_flat": {"enabled": True}}), "missing required field"),
+    (_bg_spec(sources={"environment_flat": {"enabled": "true", "scale": 1.0}}),
+     "'enabled' must be a boolean"),
+    (_bg_spec(catalog_version=1), "catalog version mismatch"),
 ])
 def test_an_unusable_sample_background_aborts_the_campaign_before_any_scan(tmp_path, spec, needle):
     """An honest setup abort: nothing is submitted and nothing is silently defaulted."""
@@ -3472,6 +3514,15 @@ def test_an_unusable_sample_background_aborts_the_campaign_before_any_scan(tmp_p
     with pytest.raises(ValueError) as excinfo:
         _run(tmp_path, _objective(), client, make_mock_runner(omega), sample_background=spec)
     assert needle in str(excinfo.value)
+    assert client.jobs == {} and client.validate_bodies == []
+
+
+def test_campaign_refuses_a_v1_instrument_background_schema_before_any_scan(tmp_path):
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _BackgroundTavi(omega, background_schema="tavi.background/1")
+    with pytest.raises(ValueError, match=r"tavi\.background/2 is required"):
+        _run(tmp_path, _objective(), client, make_mock_runner(omega),
+             sample_background=_bg_spec(enabled=False))
     assert client.jobs == {} and client.validate_bodies == []
 
 
@@ -3497,7 +3548,7 @@ def test_an_undeclared_campaign_stamps_a_frozen_disabled_background(tmp_path):
     client = _BackgroundTavi(omega)
     summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega))
 
-    expected = {"enabled": False, "terms": []}
+    expected = _normalized_bg(enabled=False)
     assert client.jobs and all(body["background"] == expected for body in client.jobs.values())
     assert client.validate_bodies and all(body["background"] == expected
                                           for body in client.validate_bodies)
@@ -3505,8 +3556,8 @@ def test_an_undeclared_campaign_stamps_a_frozen_disabled_background(tmp_path):
     assert len(frozen) == 1 and frozen[0]["frozen"] == expected
     # The log distinguishes declared-clean from defaulted-clean.
     assert frozen[0]["defaulted"] is True and frozen[0]["spec"] is None
-    # The default is structural, so it costs no preset lookup: only the limits preflight reads schema.
-    assert client.schema_calls == 1
+    # One limits preflight plus one catalog freeze, including the current version.
+    assert client.schema_calls == 2
     assert client.set_background_calls == []
 
 
@@ -3514,7 +3565,7 @@ def test_a_declared_clean_campaign_is_not_marked_defaulted(tmp_path):
     omega = lambda h: (h - 2.0) * 2.0
     client = _BackgroundTavi(omega)
     summary, _ws = _run(tmp_path, _objective(), client, make_mock_runner(omega),
-                        sample_background={"enabled": False, "preset": "none"})
+                        sample_background=_bg_spec(enabled=False))
     assert "defaulted" not in _frozen_events(summary["session_log"])[0]
 
 
@@ -3526,7 +3577,8 @@ def test_dropping_a_declared_background_on_resume_aborts_before_any_spend(tmp_pa
     (ws / "report").mkdir(parents=True)
     cfg = {"workspace": ws, "client": _BackgroundTavi(omega), "run_isar": make_mock_runner(omega),
            "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7,
-           "sample_background": {"preset": "flat_low"}}
+           "sample_background": _bg_spec(sources={
+               "environment_flat": {"enabled": True, "scale": 1.0}})}
     run_campaign(_objective(), cfg)
 
     forgetful = _BackgroundTavi(omega)
@@ -3538,24 +3590,27 @@ def test_dropping_a_declared_background_on_resume_aborts_before_any_spend(tmp_pa
     assert forgetful.jobs == {} and forgetful.validate_bodies == []
 
 
-def test_resume_refuses_when_the_frozen_background_drifted(tmp_path):
-    """The workspace's scans were taken under one background; re-expanding the same spec against a
-    retuned preset registry must refuse rather than append scans under different truth."""
+def test_resume_refuses_when_the_background_catalog_version_drifted(tmp_path):
+    """A catalog-v1 workspace refuses a catalog-v2 resume before spending anything."""
     omega = lambda h: (h - 2.0) * 2.0
     ws = tmp_path / "ws"
     (ws / "report").mkdir(parents=True)
-    spec = {"preset": "flat_low"}
-    cfg = {"workspace": ws, "client": _BackgroundTavi(omega), "run_isar": make_mock_runner(omega),
+    spec = _bg_spec(
+        catalog_version=1,
+        sources={"environment_flat": {"enabled": True, "scale": 1.0}})
+    cfg = {"workspace": ws,
+           "client": _BackgroundTavi(
+               omega, catalog_version=1, source_ids=_CATALOG_V1_SOURCE_IDS),
+           "run_isar": make_mock_runner(omega),
            "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7,
            "sample_background": dict(spec)}
     run_campaign(_objective(), cfg)
 
-    retuned = json.loads(json.dumps(_BG_PRESETS))
-    retuned["flat_low"]["terms"][0]["params"]["rate"] = 9e-10        # preset retuned between runs
-    drifted = _BackgroundTavi(omega, presets=retuned)
+    drifted = _BackgroundTavi(omega)
     with pytest.raises(ValueError) as excinfo:
         run_campaign(_objective(), dict(cfg, client=drifted, sample_background=dict(spec)))
     assert "background_fingerprint_drift" in str(excinfo.value)
+    assert "start a new campaign workspace" in str(excinfo.value)
     assert drifted.jobs == {}
 
 
@@ -3565,7 +3620,8 @@ def test_a_resume_under_the_same_background_is_allowed(tmp_path):
     (ws / "report").mkdir(parents=True)
     cfg = {"workspace": ws, "client": _BackgroundTavi(omega), "run_isar": make_mock_runner(omega),
            "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7,
-           "sample_background": {"preset": "flat_low"}}
+           "sample_background": _bg_spec(sources={
+               "environment_flat": {"enabled": True, "scale": 1.0}})}
     summary1 = run_campaign(_objective(), cfg)
     summary2 = run_campaign(_objective(), dict(cfg, client=_BackgroundTavi(omega)))
 
@@ -3573,25 +3629,36 @@ def test_a_resume_under_the_same_background_is_allowed(tmp_path):
     assert len(_frozen_events(summary1["session_log"])) == 2, "one frozen record per invocation"
 
 
-def test_the_frozen_background_shares_nothing_with_the_spec_or_the_preset_registry(tmp_path):
-    """Freezing means freezing: a later mutation of the caller's spec or of the instrument's preset
-    registry must not reach the profile the campaign already stamped."""
+def test_resume_refuses_a_v1_frozen_workspace_with_a_clear_schema_error(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    cfg = _campaign_config(_objective(), {
+        "workspace": ws, "client": _BackgroundTavi(), "run_isar": lambda *a, **k: None,
+        "calibration": _UNITY_CAL, "sample_background": _bg_spec(enabled=False),
+    })
+    log_event(cfg.log_path, "decide", {
+        "event": "sample_background_frozen",
+        "frozen": {"enabled": False, "terms": []},
+    })
+
+    with pytest.raises(ValueError, match=r"frozen under tavi\.background/1.*new campaign workspace"):
+        loop_mod._freeze_sample_background(cfg)
+
+
+def test_the_frozen_background_shares_nothing_with_the_spec(tmp_path):
+    """Freezing means a later caller mutation cannot alter the profile already stamped."""
     ws = tmp_path / "ws"
     (ws / "report").mkdir(parents=True)
     client = _BackgroundTavi()
-    spec = {"preset": "flat_low", "overrides": {"tail": {"gamma_meV": 3.5}}}
+    spec = _bg_spec(sources={
+        "sample_elastic_tail": {"enabled": True, "scale": 3.5}})
     cfg = _campaign_config(_objective(), {"workspace": ws, "client": client,
                                           "run_isar": lambda *a, **k: None,
                                           "calibration": _UNITY_CAL, "sample_background": spec})
     frozen, _meta = loop_mod._freeze_sample_background(cfg)
 
-    spec["overrides"]["tail"]["gamma_meV"] = 99.0
-    client.presets["flat_low"]["terms"][0]["params"]["rate"] = 99.0
-    terms = {term["name"]: term for term in frozen["terms"]}
-    assert terms["tail"]["params"]["gamma_meV"] == 3.5
-    assert terms["flat"]["params"]["rate"] == 2e-10
-    # The registry the instrument handed over is untouched by the merge.
-    assert client.presets["flat_low"]["terms"][1]["params"]["gamma_meV"] == 2.0
+    spec["sources"]["sample_elastic_tail"]["scale"] = 99.0
+    assert frozen["sources"]["sample_elastic_tail"]["scale"] == 3.5
 
 
 def test_scan_and_validate_bodies_omit_background_when_none():
@@ -3599,8 +3666,7 @@ def test_scan_and_validate_bodies_omit_background_when_none():
     assert "background" not in _validate_body(proposal, sample="Al_phonon_DFT")
     assert "background" not in loop_mod._scan_body(proposal, "deterministic", 3,
                                                    sample="Al_phonon_DFT")
-    frozen = {"enabled": False,
-              "terms": [{"name": "flat", "shape": "flat", "params": {"rate": 0.0}}]}
+    frozen = _normalized_bg(enabled=False)
     body = loop_mod._scan_body(proposal, "deterministic", 3, sample="Al_phonon_DFT",
                                background=frozen)
     assert body["background"] == frozen and body["engine"] == "deterministic"

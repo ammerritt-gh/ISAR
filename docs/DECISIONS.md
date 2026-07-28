@@ -700,7 +700,8 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   measured energy extrema, so multiple detector rows still produce one box. If that global
   acquisition is outside the selected temperature/projection slice, the view draws nothing.
 
-- **T4.** (2026-07-27, Implemented for the TAVI interface and ISAR's plumbing; the fitting-side
+- **T4.** (2026-07-27; background catalog 2 revised 2026-07-28; Implemented for the TAVI interface
+  and ISAR's plumbing; the fitting-side
   family of `docs/BACKGROUND_DESIGN.md` §2–4 remains Planned) **Background is generated truth with a
   declared identity, and ISAR is allowed to know the identity but never the magnitude.** Backgrounds
   were the largest real-data risk named by the statistics-contract audit, and the workstream was
@@ -713,27 +714,39 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   partially-merged profile is a profile nobody declared. `/validate` accepts and checks the same key,
   so validate-then-submit cannot disagree.
 
-  **Origin fixes scaling.** Every term declares `instrument`, `sample_environment`, or `sample`, and
-  the origin alone determines the base: the first two scale as `N × rate`, `sample` as
-  `N × diffuse_background × rate` through an explicit new calibration channel — never the phonon
-  factor, which would make the background a function of the very signal it is supposed to be
-  independent of. A missing sample scale refuses; only a term the preset marked `optional` is
-  skipped, and the skip is recorded.
+  **Categories explain origin; each source owns its scale.** Catalog version 2 of
+  `tavi.background/2` has six stable source IDs grouped as Environment (flat floor,
+  energy-dependent slope, cosmic-ray spikes), Instrument (composite aluminum powder lines), and
+  Sample (elastic incoherent line, broad elastic tail). Diffuse scattering is removed because it is
+  measurable sample physics, not background. Category tells the scientist what the source is
+  assumed to represent; it does not invoke hidden calibration. Smooth sources scale independently
+  as `monitor counts × catalog shape/rate × source scale`, independent of the selected sample.
+  Aluminum is one synthetic six-reflection source whose catalog-owned relative line weights and
+  visibility treatment scale together; it uses marginalized Q/E resolution widths with documented
+  fallbacks and ignores Q–E covariance. Cosmic rays are a seeded post-Poisson event overlay: scale
+  changes event incidence, never event amplitude, and events remain present in noiseless
+  deterministic scans.
 
-  **Metadata always resolves, and identity is a fingerprint.** Every scan reports the resolved
-  numerics, the preset, the delivery source (`config_default` | `per_scan_override`), a **profile
-  fingerprint** over the pre-scaling physics (delivery source deliberately excluded — the same
-  physics through either door is the same physics), and an **effective fingerprint** adding the
-  applied sample scale and skipped terms. The effective fingerprint is the pooling identity. A
-  disabled profile still stamps a block: the absence of background is provenance too. There is no
-  lockdown flag; identity is carried by fingerprints, not by enforcement.
+  **Metadata always resolves, and identity is a fingerprint.** The v2 request is exactly
+  `{catalog_version, enabled, sources: {id: {enabled, scale}}}`; omitted source IDs normalize
+  disabled at ×1, while unknown fields/IDs, invalid scales, and catalog-version mismatches refuse.
+  Every scan reports the complete normalized source states and catalog numerics, the delivery
+  source (`config_default` | `per_scan_override`), a **profile fingerprint** over all remembered
+  settings, and an **effective fingerprint** over globally and individually active sources.
+  Delivery source, RNG seed, and realized events are deliberately excluded. The effective
+  fingerprint is the pooling identity. A disabled profile still stamps a block: the absence of
+  background is provenance too. Catalog version 2 remains current because the aluminum
+  relative-weight and visibility recalibration landed before release; the keyed envelope, source
+  IDs, and `tavi.background/2` schema identifier are unchanged.
 
   **The truth firewall is physical, not a naming convention.** The planted numbers are the answer to
   the question the fitter is being asked, so they are simply not on the record. The parser keeps
-  `enabled`, `source`, `background_schema` and the two fingerprints in
-  `raw_header["background_provenance"]` and redacts the numeric block out of the stored payload
-  (`{"redacted": "sim_truth", "effective_fingerprint": …}`). The preset **name** is excluded with the
-  numbers — `flat_high` states a magnitude as plainly as `5e-9`. The raw JSON on disk is untouched
+  `enabled`, v2 `delivery_source`, `background_schema`, `catalog_version` and the two fingerprints
+  in `raw_header["background_provenance"]` (historical v1 `source` remains readable), and redacts the
+  numeric block — source definitions and scales, event seed, cosmic point indices/counts/amplitudes
+  — out of the stored payload (`{"redacted": "sim_truth",
+  "effective_fingerprint": …}`). Source IDs are excluded with the numbers because names can reveal
+  planted truth. The raw JSON on disk is untouched
   (P4's mask-not-delete concerns data points, not the record's embedded copy) and validation scoring
   reads the truth there **after** fitting. Both leak paths are closed independently: a payload
   carrying only the requested `launch.background` (an interrupted job with no result block) is
@@ -750,14 +763,15 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   normalization is in the pooling key only; the full provenance stays on the record.
 
   **Campaign transport is a compile-time freeze, and steering never sets backgrounds.**
-  `CampaignConfig.sample_background` is expanded exactly once at setup into the frozen numeric form
-  plus fingerprint, logged as `sample_background_frozen`, and stamped verbatim onto every validate and
-  scan body as a per-scan override; resume refuses on `background_fingerprint_drift`. A campaign
-  therefore never depends on TAVI's mutable config default, so a GUI edit, another client, a crash
-  leftover, or a preset retune cannot change its planted truth mid-run. **Omission is a declaration
-  of clean, not an invitation to inherit:** an undeclared `sample_background` freezes the disabled
-  profile `{"enabled": false, "terms": []}`, stamps it like any other, and is subject to the same
-  drift check — the frozen event carries `"defaulted": true` so logs still separate declared-clean
+  `CampaignConfig.sample_background` is normalized exactly once at setup against TAVI's advertised
+  catalog version and source IDs, logged as `sample_background_frozen`, and stamped verbatim onto
+  every validate and scan body as a per-scan override; resume refuses on
+  `background_fingerprint_drift` whenever the frozen request no longer matches. A
+  campaign therefore never depends on TAVI's mutable config default, so a GUI edit, another client,
+  or a crash leftover cannot change its planted truth mid-run. **Omission is a declaration
+  of clean, not an invitation to inherit:** an undeclared `sample_background` freezes a complete
+  disabled v2 profile at the current catalog version, stamps it like any other, and is subject to
+  the same drift check — the frozen event carries `"defaulted": true` so logs still separate declared-clean
   from defaulted-clean. Sending no key instead let a persisted enabled TAVI profile silently consume
   a live campaign's whole iteration budget, and let a resume that dropped its declared background
   bypass the drift guard and be caught only downstream, after the spend. The sentinel string

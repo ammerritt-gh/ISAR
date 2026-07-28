@@ -620,9 +620,9 @@ def _make_classification_providers(card_state: dict, objective, resolution_cb, *
 def _validate_body(proposal, *, sample: str, background: dict | None = None) -> dict[str, Any]:
     """The ``POST /validate`` body — ``parameters`` only (engine/seed/isolated are scan-only fields).
 
-    ``background`` is the campaign's FROZEN numeric background profile (see
+    ``background`` is the campaign's frozen catalog-backed background profile (see
     :func:`_freeze_sample_background`), stamped as a per-scan override. It rides on the validate body
-    too, because the instrument validates the background block (missing sample scale, unknown term):
+    too, because the instrument validates the background block (catalog version, source IDs, scales):
     without it a scan could validate clean and then be refused at submit. ``None`` happens only for a
     campaign that opted out of freezing via ``sample_background="instrument_config"`` → the key is
     absent, the body is byte-identical to the pre-background one, and the instrument's live
@@ -1893,15 +1893,15 @@ class CampaignConfig:
       sample selection.
     - ``sample_background`` (:class:`dict` | :class:`str` | ``None``, config key
       ``sample_background``, default ``None``): the background spec bundled with the sample
-      declaration — preset form ``{enabled, preset, overrides}`` or frozen form
-      ``{enabled, terms: [...]}``. Expanded ONCE at campaign setup into ``sample_background_frozen``
+      declaration — ``{catalog_version, enabled, sources: {id: {enabled, scale}}}``.
+      Normalized ONCE at campaign setup into ``sample_background_frozen``
       (see :func:`_freeze_sample_background`) and stamped on every validate/scan body. ``None``
-      (undeclared) freezes to the DISABLED profile ``{"enabled": False, "terms": []}`` — an
+      (undeclared) freezes to a complete, DISABLED v2 profile — an
       undeclared campaign must not inherit TAVI's mutable configured profile. The sentinel string
       ``"instrument_config"`` (:data:`INSTRUMENT_CONFIG_BACKGROUND`) is the deliberate opt-out: no
       freeze, no stamping, no drift check, inherit the instrument's live config.
-    - ``sample_background_frozen`` (:class:`dict` | ``None``, NOT a config key): the frozen numeric
-      profile derived from ``sample_background`` by :func:`run_campaign` at setup.
+    - ``sample_background_frozen`` (:class:`dict` | ``None``, NOT a config key): the normalized,
+      catalog-versioned profile derived from ``sample_background`` by :func:`run_campaign` at setup.
     - ``bayes_errors`` (:class:`bool`, config key ``bayes_errors``, default ``False``): campaign-level
       opt-in for the ``bayes`` errors tier (superset of ``full``: bootstrap + MINOS + profile +
       posterior). When set, every place that would otherwise use the ``full`` tier (escalation in
@@ -1932,7 +1932,7 @@ class CampaignConfig:
     instrument_limits: dict | None = None
     sample: str = "Al_phonon_DFT"
     # The campaign's declared background (spec as given, or the "instrument_config" sentinel) and its
-    # compile-time frozen numeric form.
+    # compile-time frozen, catalog-versioned form.
     sample_background: dict | str | None = None
     sample_background_frozen: dict | None = None
     bayes_errors: bool = False
@@ -2037,42 +2037,78 @@ BACKGROUND_DRIFT = "background_fingerprint_drift"
 INSTRUMENT_CONFIG_BACKGROUND = "instrument_config"
 
 
-def _validated_background_terms(terms, *, where: str) -> list[dict]:
-    """Minimal shape check on a numeric background term list; returns an independent copy.
+def _background_catalog(schema, *, where: str) -> tuple[int, tuple[str, ...]]:
+    """Return TAVI's advertised v2 catalog version and source IDs, failing closed."""
+    block = (schema or {}).get("background") if isinstance(schema, dict) else None
+    if not isinstance(block, dict):
+        raise ValueError(f"{where}: GET /schema did not advertise a background catalog")
+    background_schema = block.get("background_schema")
+    if background_schema != "tavi.background/2":
+        raise ValueError(f"{where}: instrument advertises unsupported background schema "
+                         f"{background_schema!r}; tavi.background/2 is required")
+    version = block.get("catalog_version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise ValueError(f"{where}: GET /schema background.catalog_version must be an integer")
+    sources = block.get("sources")
+    if not isinstance(sources, dict) or not sources:
+        raise ValueError(f"{where}: GET /schema background.sources must be a non-empty object")
+    if any(not isinstance(source_id, str) or not source_id for source_id in sources):
+        raise ValueError(f"{where}: GET /schema contains an invalid background source ID")
+    return version, tuple(sources)
 
-    ISAR never interprets background physics — every key the instrument put on a term is passed
-    through verbatim. Only the structure it must stamp and compare is checked here. An EMPTY list
-    is valid: 'none' (and any disabled declaration) genuinely has zero terms, and refusing it would
-    make "this campaign declares a clean instrument" inexpressible — the declaration that insulates
-    a campaign from whatever profile the operator last left configured."""
-    if not isinstance(terms, list):
-        raise ValueError(f"{where}: 'terms' must be a list of background term objects")
-    out: list[dict] = []
-    seen: set[str] = set()
-    for term in terms:
-        if not isinstance(term, dict):
-            raise ValueError(f"{where}: each background term must be an object, got {type(term).__name__}")
-        name, shape = term.get("name"), term.get("shape")
-        if not isinstance(name, str) or not name:
-            raise ValueError(f"{where}: a background term is missing a non-empty 'name'")
-        if not isinstance(shape, str) or not shape:
-            raise ValueError(f"{where}: background term {name!r} is missing a non-empty 'shape'")
-        params = term.get("params", {})
-        if not isinstance(params, dict):
-            raise ValueError(f"{where}: background term {name!r} has a non-object 'params'")
-        if name in seen:
-            raise ValueError(f"{where}: background term name {name!r} appears twice")
-        seen.add(name)
-        # Deep copy through JSON: the frozen profile must share NOTHING with the caller's spec or
-        # the instrument's preset registry (a later mutation of either would silently change the
-        # campaign's stamped truth), and a term that cannot round-trip through JSON could not be
-        # stamped on a scan body or written to the session log anyway — so refuse it here.
-        try:
-            out.append(json.loads(canonical_json(term)))
-        except (TypeError, ValueError) as error:
-            raise ValueError(f"{where}: background term {name!r} is not JSON-serializable "
-                             f"({error})") from error
-    return out
+
+def _normalized_background_v2(spec: dict, *, catalog_version: int,
+                              source_ids: tuple[str, ...], where: str) -> dict:
+    """Strictly validate and normalize a sparse ``tavi.background/2`` request."""
+    expected = {"catalog_version", "enabled", "sources"}
+    unknown = set(spec) - expected
+    missing = expected - set(spec)
+    if unknown:
+        raise ValueError(f"{where}: unknown field(s) {sorted(unknown)}")
+    if missing:
+        raise ValueError(f"{where}: missing required field(s) {sorted(missing)}")
+    declared_version = spec["catalog_version"]
+    if isinstance(declared_version, bool) or not isinstance(declared_version, int):
+        raise ValueError(f"{where}: 'catalog_version' must be an integer")
+    if declared_version != catalog_version:
+        raise ValueError(
+            f"{where}: catalog version mismatch: request declares {declared_version}, "
+            f"instrument advertises {catalog_version}")
+    enabled = spec["enabled"]
+    if not isinstance(enabled, bool):
+        raise ValueError(f"{where}: 'enabled' must be a boolean, got {enabled!r}")
+    sources = spec["sources"]
+    if not isinstance(sources, dict):
+        raise ValueError(f"{where}: 'sources' must be an object keyed by source ID")
+    unknown_sources = set(sources) - set(source_ids)
+    if unknown_sources:
+        raise ValueError(f"{where}: unknown background source(s) {sorted(unknown_sources)}; "
+                         f"the instrument advertises {list(source_ids)}")
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for source_id in source_ids:
+        source = sources.get(source_id)
+        if source is None:
+            normalized[source_id] = {"enabled": False, "scale": 1.0}
+            continue
+        source_where = f"{where}.sources[{source_id!r}]"
+        if not isinstance(source, dict):
+            raise ValueError(f"{source_where} must be an object")
+        source_unknown = set(source) - {"enabled", "scale"}
+        source_missing = {"enabled", "scale"} - set(source)
+        if source_unknown:
+            raise ValueError(f"{source_where}: unknown field(s) {sorted(source_unknown)}")
+        if source_missing:
+            raise ValueError(f"{source_where}: missing required field(s) {sorted(source_missing)}")
+        source_enabled = source["enabled"]
+        if not isinstance(source_enabled, bool):
+            raise ValueError(f"{source_where}: 'enabled' must be a boolean")
+        scale = source["scale"]
+        if (isinstance(scale, bool) or not isinstance(scale, (int, float))
+                or not math.isfinite(float(scale)) or float(scale) < 0.0):
+            raise ValueError(f"{source_where}: 'scale' must be a finite number >= 0")
+        normalized[source_id] = {"enabled": source_enabled, "scale": float(scale)}
+    return {"catalog_version": catalog_version, "enabled": enabled, "sources": normalized}
 
 
 def _prior_frozen_background(log_path) -> dict | None:
@@ -2088,7 +2124,7 @@ def _prior_frozen_background(log_path) -> dict | None:
 
 
 def _freeze_sample_background(cfg: CampaignConfig) -> tuple[dict | None, dict]:
-    """Expand ``cfg.sample_background`` into the frozen numeric form ONCE, at campaign setup.
+    """Normalize ``cfg.sample_background`` against TAVI's v2 catalog ONCE at campaign setup.
 
     A campaign's background is part of its SAMPLE DECLARATION, not a steering choice: it is resolved
     here and then stamped verbatim onto every validate/scan body as a per-scan override. Nothing in
@@ -2097,14 +2133,14 @@ def _freeze_sample_background(cfg: CampaignConfig) -> tuple[dict | None, dict]:
     background truth mid-campaign without a trace. ``TaviClient.set_background`` is manual/test-only
     and is never called from here.
 
-    Preset form ``{enabled, preset, overrides}`` is expanded against the instrument's advertised
-    preset registry (``GET /schema`` → ``background.presets``), per-term overrides merged into the
-    term's ``params``. Frozen form ``{enabled, terms: [...]}`` is used as given. An absent
-    ``enabled`` means ``True`` (matching the instrument's semantics for a non-null spec).
+    The only accepted remote form is
+    ``{catalog_version, enabled, sources: {id: {enabled, scale}}}``. The source map may be sparse;
+    omitted catalog sources are frozen as disabled at ×1. Presets, numeric terms, raw parameter
+    overrides and profile-wide scaling belong to ``tavi.background/1`` and are rejected.
 
     OMISSION IS A DECLARATION OF CLEAN. ``sample_background=None`` (the default) is treated exactly
-    like ``{"enabled": False, "preset": "none"}``: it freezes to ``{"enabled": False, "terms": []}``,
-    is stamped on every validate/scan body, and is subject to the drift check below. It previously
+    like an empty, disabled v2 request: it freezes every advertised source disabled at ×1, is
+    stamped on every validate/scan body, and is subject to the drift check below. It previously
     meant "send no background key", which silently inherited whatever profile the operator had last
     configured on TAVI — an enabled persisted profile consumed a live campaign's whole iteration
     budget before anyone noticed. The frozen event carries ``"defaulted": True`` so a log still
@@ -2131,84 +2167,54 @@ def _freeze_sample_background(cfg: CampaignConfig) -> tuple[dict | None, dict]:
     where = "sample_background"
     if spec == INSTRUMENT_CONFIG_BACKGROUND:
         return None, {}
-    meta_defaulted: dict[str, Any] = {}
-    if spec is None:
-        # Undeclared → frozen disabled, never TAVI's mutable default (see the docstring). Expressed
-        # in the FROZEN form so the default costs no GET /schema and depends on no preset registry:
-        # "no background" is a structural statement, not something the instrument has to define.
-        spec = {"enabled": False, "terms": []}
-        meta_defaulted = {"defaulted": True}
+    defaulted = spec is None
+    try:
+        schema = cfg.client.get_schema()
+        catalog_version, source_ids = _background_catalog(schema, where=where)
+    except Exception as error:  # noqa: BLE001 — setup abort; campaign must not guess the catalog
+        log_event(cfg.log_path, "exception", {
+            "action": "sample_background_unresolved", "error": str(error)})
+        if isinstance(error, ValueError):
+            raise
+        raise ValueError(f"{where}: cannot read the background catalog — "
+                         f"GET /schema failed ({error})") from error
+    if defaulted:
+        spec = {"catalog_version": catalog_version, "enabled": False, "sources": {}}
     if not isinstance(spec, dict):
-        raise ValueError(f"{where} must be an object (preset form {{enabled, preset, overrides}} or "
-                         f"frozen form {{enabled, terms}}), omitted for a frozen disabled default, or "
-                         f"the sentinel {INSTRUMENT_CONFIG_BACKGROUND!r} to inherit the instrument's "
-                         f"live config; got {type(spec).__name__}")
-    meta: dict[str, Any] = dict(meta_defaulted)
-    if "terms" in spec:
-        terms = _validated_background_terms(spec.get("terms"), where=where)
-    else:
-        preset = spec.get("preset")
-        overrides = spec.get("overrides") or {}
-        if not isinstance(overrides, dict):
-            raise ValueError(f"{where}: 'overrides' must be an object keyed by term name")
-        try:
-            schema = cfg.client.get_schema()
-        except Exception as error:  # noqa: BLE001 — setup abort; the campaign must not guess a background
-            log_event(cfg.log_path, "exception", {
-                "action": "sample_background_unresolved", "preset": preset, "error": str(error)})
-            raise ValueError(
-                f"{where}: cannot expand preset {preset!r} — GET /schema failed ({error})") from error
-        block = (schema or {}).get("background") or {}
-        presets = block.get("presets") or {}
-        if not isinstance(presets, dict) or preset not in presets:
-            raise ValueError(f"{where}: unknown background preset {preset!r}; the instrument "
-                             f"advertises {sorted(presets) if isinstance(presets, dict) else []}")
-        terms = _validated_background_terms((presets[preset] or {}).get("terms"),
-                                            where=f"{where} preset {preset!r}")
-        by_name = {term["name"]: term for term in terms}
-        for name, override in overrides.items():
-            term = by_name.get(name)
-            if term is None:
-                raise ValueError(f"{where}: override names unknown term {name!r}; preset {preset!r} "
-                                 f"defines {sorted(by_name)}")
-            if not isinstance(override, dict):
-                raise ValueError(f"{where}: override for term {name!r} must be an object of params")
-            unknown = [key for key in override if key not in term["params"]]
-            if unknown:
-                raise ValueError(f"{where}: override for term {name!r} sets unknown "
-                                 f"param(s) {sorted(unknown)}; the preset defines "
-                                 f"{sorted(term['params'])}")
-            params = dict(term["params"])
-            try:
-                params.update(json.loads(canonical_json(override)))   # copied, never aliased
-            except (TypeError, ValueError) as error:
-                raise ValueError(f"{where}: override for term {name!r} is not JSON-serializable "
-                                 f"({error})") from error
-            term["params"] = params
-        meta["preset"] = preset
-        for key in ("preset_registry_version", "background_schema"):
-            if block.get(key) is not None:
-                meta[key] = block[key]
-    enabled = spec.get("enabled", True)
-    if not isinstance(enabled, bool):
-        # No truthiness coercion: "false"/0 would silently become the opposite of what was declared.
-        raise ValueError(f"{where}: 'enabled' must be a boolean, got {enabled!r}")
-    frozen = {"enabled": enabled, "terms": terms}
-    # The profile-level strength knob (tavi.background/1 'scale', registry v2). Dropping it here
-    # would silently plant a background 'scale' times weaker/stronger than the sample declared.
-    scale = spec.get("scale")
-    if scale is not None:
-        if isinstance(scale, bool) or not isinstance(scale, (int, float)) \
-                or not math.isfinite(float(scale)) or float(scale) < 0.0:
-            raise ValueError(f"{where}: 'scale' must be a finite number >= 0, got {scale!r}")
-        frozen["scale"] = float(scale)
+        raise ValueError(
+            f"{where} must be a tavi.background/2 object "
+            "{catalog_version, enabled, sources}, omitted for a frozen disabled default, or "
+            f"the sentinel {INSTRUMENT_CONFIG_BACKGROUND!r} to inherit the instrument's live config; "
+            f"got {type(spec).__name__}")
     prior = _prior_frozen_background(cfg.log_path)
+    if prior is not None and "catalog_version" not in prior:
+        raise ValueError(
+            f"{BACKGROUND_DRIFT}: this workspace was frozen under tavi.background/1. "
+            "Its numeric-term profile cannot be resumed under the tavi.background/2 source catalog; "
+            "start a new campaign workspace.")
+    if prior is not None and prior.get("catalog_version") != catalog_version:
+        raise ValueError(
+            f"{BACKGROUND_DRIFT}: this workspace was frozen under background catalog "
+            f"{prior.get('catalog_version')}, but the instrument now advertises catalog "
+            f"{catalog_version}. Catalog source definitions changed; start a new campaign workspace.")
+    try:
+        frozen = _normalized_background_v2(
+            spec, catalog_version=catalog_version, source_ids=source_ids, where=where)
+    except ValueError as error:
+        if prior is not None and "catalog version mismatch" in str(error):
+            raise ValueError(
+                f"{BACKGROUND_DRIFT}: {error}. The instrument catalog changed since this workspace "
+                "was frozen; start a new campaign workspace.") from error
+        raise
     if prior is not None and canonical_json(prior) != canonical_json(frozen):
         raise ValueError(
             f"{BACKGROUND_DRIFT}: this workspace's scans were taken under a different background "
             f"profile. Stored: {canonical_json(prior)} — re-expanded now: {canonical_json(frozen)}. "
             "Resuming would append scans generated under different truth; start a new campaign or "
             "restore the original background.")
+    meta: dict[str, Any] = {"catalog_version": catalog_version}
+    if defaulted:
+        meta["defaulted"] = True
     return frozen, meta
 
 

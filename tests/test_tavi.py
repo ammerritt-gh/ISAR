@@ -335,6 +335,7 @@ def test_background_provenance_carries_exactly_the_safe_keys(tmp_path):
     prov = rec.raw_header["background_provenance"]
     assert set(prov) == set(tavi.BACKGROUND_SAFE_KEYS)
     assert prov == {"enabled": True, "source": "config_default",
+                    "delivery_source": None, "catalog_version": None,
                     "background_schema": "tavi.background/1",
                     "profile_fingerprint": "0123456789abcdef",
                     "effective_fingerprint": "fedcba9876543210"}
@@ -413,9 +414,107 @@ def test_launch_only_background_is_redacted_and_pools_as_unknown(tmp_path):
     prov = rec.raw_header["background_provenance"]
     assert set(prov) == set(tavi.BACKGROUND_SAFE_KEYS)
     assert prov == {"enabled": None, "source": "per_scan_override", "background_schema": None,
+                    "delivery_source": None, "catalog_version": None,
                     "profile_fingerprint": None, "effective_fingerprint": None}
     # Fingerprint-less provenance fails CLOSED at collation rather than pooling as background-free.
     assert collate.background_pool_key(rec.raw_header) == collate.UNKNOWN_BACKGROUND
+
+
+def test_current_v2_background_redacts_cosmic_events_seed_and_source_numerics(tmp_path):
+    block = {
+        "background_schema": "tavi.background/2",
+        "catalog_version": 2,
+        "enabled": True,
+        "delivery_source": "per_scan_override",
+        "sources": {
+            "environment_cosmic_spikes": {
+                "enabled": True, "scale": 2.0, "shape": "cosmic_spikes",
+                "base_numerics": {
+                    "events_per_1e10_neutrons": 0.005,
+                    "amplitude_median_counts": 1000,
+                    "amplitude_log_sigma": 0.8,
+                    "amplitude_cap_counts": 100000,
+                },
+            },
+            "instrument_aluminum_powder": {
+                "enabled": True, "scale": 0.5, "shape": "powder_elastic",
+                "base_numerics": {
+                    "lattice_constant_ang": 4.0495,
+                    "q_centers_inv_ang": [2.687, 3.103, 4.389, 5.146, 5.375, 6.206],
+                    "rate_integrated_per_line": 1.5e-8,
+                },
+            },
+        },
+        "seed": 12345,
+        "realized_events": [{
+            "point_index": 47,
+            "source_id": "environment_cosmic_spikes",
+            "event_count": 1,
+            "added_counts": 1437,
+        }],
+        "profile_fingerprint": "v2-profile",
+        "effective_fingerprint": "v2-effective",
+    }
+    obj = _with_background(_deltae_json(), block)
+    obj["launch"]["background"] = {
+        "catalog_version": 2, "enabled": True,
+        "sources": {
+            "environment_cosmic_spikes": {"enabled": True, "scale": 2.0},
+            "instrument_aluminum_powder": {"enabled": True, "scale": 0.5},
+        },
+    }
+    rec = tavi.parse_file(_write(tmp_path, "j-0002.json", obj), _card())[0]
+
+    assert rec.raw_header["background_provenance"] == {
+        "enabled": True,
+        "source": None,
+        "delivery_source": "per_scan_override",
+        "background_schema": "tavi.background/2",
+        "catalog_version": 2,
+        "profile_fingerprint": "v2-profile",
+        "effective_fingerprint": "v2-effective",
+    }
+    stored = json.dumps(rec.raw_header["tavi"])
+    for forbidden in (
+        "environment_cosmic_spikes", "instrument_aluminum_powder", "realized_events",
+        "point_index", "added_counts", "1437", '"seed": 12345', "base_numerics",
+        "q_centers_inv_ang", "2.687", '"scale": 2.0',
+    ):
+        assert forbidden not in stored
+    assert rec.raw_header["tavi"]["result"]["metadata"]["background"] == {
+        "redacted": "sim_truth", "effective_fingerprint": "v2-effective"}
+
+
+def test_historical_v2_catalog1_background_remains_readable_and_redacted(tmp_path):
+    """The catalog moved; historical tavi.background/2 scan files remain valid evidence."""
+    block = {
+        "background_schema": "tavi.background/2",
+        "catalog_version": 1,
+        "enabled": True,
+        "delivery_source": "per_scan_override",
+        "sources": {
+            "sample_diffuse": {
+                "enabled": True, "scale": 3.0,
+                "shape": "flat", "base_numerics": {"rate": 1.5e-9},
+            },
+        },
+        "profile_fingerprint": "catalog1-profile",
+        "effective_fingerprint": "catalog1-effective",
+    }
+    obj = _with_background(_deltae_json(), block)
+    obj["launch"]["background"] = {
+        "catalog_version": 1, "enabled": True,
+        "sources": {"sample_diffuse": {"enabled": True, "scale": 3.0}},
+    }
+
+    rec = tavi.parse_file(_write(tmp_path, "j-catalog1.json", obj), _card())[0]
+
+    assert rec.raw_header["background_provenance"]["catalog_version"] == 1
+    assert rec.raw_header["background_provenance"]["effective_fingerprint"] == "catalog1-effective"
+    stored = json.dumps(rec.raw_header["tavi"])
+    assert "sample_diffuse" not in stored and "1.5e-09" not in stored
+    assert rec.raw_header["tavi"]["result"]["metadata"]["background"] == {
+        "redacted": "sim_truth", "effective_fingerprint": "catalog1-effective"}
 
 
 def test_payload_without_background_block_is_unchanged(tmp_path):

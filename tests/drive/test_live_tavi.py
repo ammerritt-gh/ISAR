@@ -110,8 +110,10 @@ def test_live_short_campaign_reaches_met(tmp_path):
     # a disabled background stamped on every scan insulates it from whatever profile the operator
     # last left configured on the instrument (an enabled config default silently costs the campaign
     # iterations it was never budgeted for — observed live 2026-07-27).
-    summary = run_campaign(objective, {"workspace": ws, "seed": 11, "max_iters": 80,
-                                       "sample_background": {"enabled": False, "preset": "none"}})
+    summary = run_campaign(objective, {
+        "workspace": ws, "seed": 11, "max_iters": 80,
+        "sample_background": {"catalog_version": schema["background"]["catalog_version"],
+                              "enabled": False, "sources": {}}})
     kinds = {e["kind"] for e in read_log(summary["session_log"])}
     print(f"[live] campaign stop={summary['stop']['state']} reasons={summary['stop']['reasons']}")
     for expected in ("propose", "analyze", "decide", "stop"):
@@ -128,8 +130,12 @@ def _require_background(client) -> dict:
     engines = schema.get("engines", [])
     if "deterministic" not in engines:
         pytest.skip(f"TAVI does not advertise the deterministic engine (engines={engines})")
-    if not isinstance(schema.get("background"), dict):
+    background = schema.get("background")
+    if not isinstance(background, dict):
         pytest.skip("TAVI advertises no background block in GET /schema (pre-background build)")
+    if background.get("background_schema") != "tavi.background/2":
+        pytest.skip(f"TAVI does not advertise tavi.background/2 "
+                    f"(got {background.get('background_schema')!r})")
     return schema
 
 
@@ -168,7 +174,14 @@ def test_live_background_round_trip(tmp_path):
     from isar.parsers import tavi as tavi_mod
 
     client = TaviClient()
-    _require_background(client)
+    schema = _require_background(client)
+    catalog_version = schema["background"]["catalog_version"]
+    flat_x2 = {
+        "catalog_version": catalog_version,
+        "enabled": True,
+        "sources": {"environment_flat": {"enabled": True, "scale": 2.0}},
+    }
+    disabled = {"catalog_version": catalog_version, "enabled": False, "sources": {}}
 
     # Save the operator's profile FIRST, and check it is restorable BEFORE the try — nothing has been
     # mutated yet at this point, so a malformed GET /background fails without leaving the instrument
@@ -177,47 +190,35 @@ def test_live_background_round_trip(tmp_path):
     assert isinstance(saved.get("spec"), dict), \
         f"GET /background answered without a restorable 'spec' object: {sorted(saved)}"
     try:
-        # 'flat' at scale 2.0: one preset, strength from the knob (registry v2 dropped the
-        # low/high pair), so this round trip also proves the knob survives the wire.
-        client.set_background({"enabled": True, "preset": "flat", "scale": 2.0})
+        client.set_background(flat_x2)
 
         # 1. No per-scan key: the scan must report the instrument's configured profile as its source.
         default_data = _noiseless_scan(client)
         default_block = default_data["result"]["metadata"]["background"]
         assert default_block["enabled"] is True
-        assert default_block["preset"] == "flat"
-        assert default_block["scale"] == pytest.approx(2.0)
-        assert default_block["source"] == "config_default"
+        assert default_block["catalog_version"] == catalog_version
+        assert default_block["sources"]["environment_flat"]["scale"] == pytest.approx(2.0)
+        assert default_block["delivery_source"] == "config_default"
         assert default_block["profile_fingerprint"]
         assert default_block["effective_fingerprint"]
 
         # 2. Paired exactness: the same scan with the background explicitly off, then explicitly on.
-        off_data = _noiseless_scan(client, background={"enabled": False, "preset": "none"})
-        on_data = _noiseless_scan(
-            client, background={"enabled": True, "preset": "flat", "scale": 2.0})
+        off_data = _noiseless_scan(client, background=disabled)
+        on_data = _noiseless_scan(client, background=flat_x2)
         off_block = off_data["result"]["metadata"]["background"]
         on_block = on_data["result"]["metadata"]["background"]
         assert off_block["enabled"] is False
-        assert off_block["source"] == "per_scan_override"
+        assert off_block["delivery_source"] == "per_scan_override"
         assert on_block["enabled"] is True
-        assert on_block["source"] == "per_scan_override"
+        assert on_block["delivery_source"] == "per_scan_override"
         # Identity is delivery-independent: the same physics through a different door fingerprints the
         # same, so the override-on scan must match the config-default one.
         assert on_block["profile_fingerprint"] == default_block["profile_fingerprint"]
         assert on_block["effective_fingerprint"] == default_block["effective_fingerprint"]
 
-        # The expected difference comes from the metadata's own resolved terms. 'flat' is a single
-        # flat instrument term, so the planted mean is monitor × rate × scale at every point (the
-        # terms stay the preset's published numbers; the knob is reported beside them); the
-        # assertions below pin that shape rather than assume it.
-        terms = on_block["terms"]
-        assert terms, "an enabled background stamped no resolved terms"
-        assert all(t["shape"] == "flat" for t in terms), \
-            f"this test's monitor × rate arithmetic only covers flat terms, got {terms}"
-        assert all(t["origin"] != "sample" for t in terms), \
-            "a sample-origin term would scale by diffuse_background, not by the monitor alone"
-        expected = (_NEUTRONS * float(on_block["scale"])
-                    * sum(float(t["params"]["rate"]) for t in terms))
+        flat = on_block["sources"]["environment_flat"]
+        assert flat["enabled"] is True and flat["shape"] == "flat"
+        expected = _NEUTRONS * float(flat["scale"]) * float(flat["base_numerics"]["rate"])
         assert expected > 0.0
 
         off_counts = off_data["result"]["counts"]
@@ -239,13 +240,15 @@ def test_live_background_round_trip(tmp_path):
         assert set(prov) == set(tavi_mod.BACKGROUND_SAFE_KEYS)
         assert prov["effective_fingerprint"] == on_block["effective_fingerprint"]
         assert prov["profile_fingerprint"] == on_block["profile_fingerprint"]
-        assert prov["source"] == "per_scan_override"
+        assert prov["delivery_source"] == "per_scan_override"
+        assert prov["catalog_version"] == catalog_version
         assert rec.raw_header["tavi"]["result"]["metadata"]["background"] == {
             "redacted": "sim_truth", "effective_fingerprint": on_block["effective_fingerprint"]}
         payload = json.dumps(rec.raw_header["tavi"]) + json.dumps(prov)
-        for forbidden in ('"flat"', "terms", "parameter_units", "sample_scale", '"scale"'):
+        for forbidden in ("environment_flat", "sources", "base_numerics", '"scale"'):
             assert forbidden not in payload, f"{forbidden!r} leaked onto the record"
-        print(f"[live] background round trip: preset=flat x2.0, planted {expected:.3f} counts/point, "
+        print(f"[live] background round trip: environment_flat x2.0, "
+              f"planted {expected:.3f} counts/point, "
               f"effective_fingerprint={on_block['effective_fingerprint']}")
     finally:
         client.set_background(saved["spec"])
@@ -262,7 +265,7 @@ def test_live_campaign_sample_background(tmp_path):
     from isar.drive.session_log import read_log
 
     client = TaviClient()
-    _require_background(client)
+    schema = _require_background(client)
 
     ws = _init_tavi_workspace(tmp_path / "ws")
     objective = ObjectiveSpec.along_h(
@@ -271,18 +274,21 @@ def test_live_campaign_sample_background(tmp_path):
 
     summary = run_campaign(objective, {
         "workspace": ws, "seed": 11, "max_iters": 12,
-        # scale rides the sample declaration too — the freeze must carry the knob through.
-        "sample_background": {"enabled": True, "preset": "flat", "scale": 0.5}})
+        "sample_background": {
+            "catalog_version": schema["background"]["catalog_version"],
+            "enabled": True,
+            "sources": {"environment_flat": {"enabled": True, "scale": 0.5}},
+        }})
     assert summary["stop"]["state"], "campaign produced no stop state"
 
     events = read_log(summary["session_log"])
     frozen = [(e.get("payload") or {}) for e in events
               if (e.get("payload") or {}).get("event") == "sample_background_frozen"]
     assert len(frozen) == 1, f"expected exactly one sample_background_frozen event, got {len(frozen)}"
-    assert frozen[0]["preset"] == "flat"
+    assert frozen[0]["catalog_version"] == schema["background"]["catalog_version"]
     assert frozen[0]["frozen"]["enabled"] is True
-    assert frozen[0]["frozen"]["terms"], "the frozen profile carries no numeric terms"
-    assert frozen[0]["frozen"]["scale"] == pytest.approx(0.5)
+    flat = frozen[0]["frozen"]["sources"]["environment_flat"]
+    assert flat["enabled"] is True and flat["scale"] == pytest.approx(0.5)
 
     # Every scan the campaign actually produced must carry that same frozen truth, delivered as a
     # per-scan override. The raw JSON on disk keeps the numerics (the record does not).
@@ -293,7 +299,7 @@ def test_live_campaign_sample_background(tmp_path):
     for path in scans:
         block = json.loads(path.read_text(encoding="utf-8"))["result"]["metadata"]["background"]
         assert block["enabled"] is True
-        assert block["source"] == "per_scan_override"
+        assert block["delivery_source"] == "per_scan_override"
         assert block["effective_fingerprint"]
     print(f"[live] campaign stop={summary['stop']['state']}; {len(scans)} scan(s) stamped with the "
           f"frozen flat x0.5 background")

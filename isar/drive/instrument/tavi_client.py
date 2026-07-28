@@ -82,11 +82,11 @@ class TaviClient:
         return self._request("GET", "/resolution", params=params)
 
     def get_background(self) -> dict[str, Any]:
-        """``GET /background`` — TAVI's configured background profile (spec, resolved terms, fingerprint).
+        """``GET /background`` — TAVI's normalized ``tavi.background/2`` source configuration.
 
-        MANUAL / TEST / CAMPAIGN-SETUP USE ONLY. The steering loop never calls this: a campaign resolves
-        its background once at compile time and stamps the frozen numeric form onto every scan as a
-        per-scan override, so acquisition never depends on TAVI's mutable config default.
+        MANUAL / TEST USE ONLY. Campaign compilation reads the catalog from :meth:`get_schema`,
+        normalizes its declared source selection once, and stamps that frozen request onto every
+        scan, so acquisition never depends on TAVI's mutable config default.
         """
         return self._request("GET", "/background")
 
@@ -108,9 +108,9 @@ class TaviClient:
         """``PUT /background`` — replace TAVI's configured background profile; returns the resolution.
 
         MANUAL / TEST / CAMPAIGN-SETUP USE ONLY (same rule as :meth:`get_background`) — the steering
-        loop never writes instrument background config. ``spec`` is the preset form
-        ``{enabled, preset, overrides}`` or the frozen form ``{enabled, terms: [...]}``; TAVI answers
-        400 (raised as :class:`TaviError`) on an unknown preset, term, or parameter.
+        loop never writes instrument background config. ``spec`` is exactly
+        ``{catalog_version, enabled, sources: {id: {enabled, scale}}}``; TAVI answers 400 (raised as
+        :class:`TaviError`) on a version mismatch, unknown field/source, or invalid scale.
         """
         return self._request("PUT", "/background", body=spec)
 
