@@ -119,6 +119,7 @@ statistics-contract audit as motivation; that audit's shared findings were promo
 | `docs/SPEEDUP_DESIGN.md` | Active plan | Phase 1 complete; Phase 2 Partial (async scheduling + fresh-master `auto` open, blocked on the shadow gate); 3/4 conditional | — |
 | `docs/STEERING_DESIGN.md` | Active plan | Phase 0 shipped as O27/O28/O29/O31; A→B→C Planned | Phase 0 is summarized only; the contract is `MEASUREMENT_STEERING.md` + DECISIONS O27–O31 |
 | `docs/BACKGROUND_DESIGN.md` | Active plan | approved 2026-07-19; implementation not started | — |
+| `docs/EIG_STEERING_DESIGN.md` | Active plan | maintenance seam shipped; `/2`, arbitrary-grid evaluation, and same-action window ranking Planned | Distinguishes future scan-window EIG from current master-grid action/Q ranking |
 
 ## `docs/campaigns/` — historical evidence
 

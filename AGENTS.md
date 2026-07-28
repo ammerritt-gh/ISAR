@@ -112,6 +112,7 @@ area.
 | Card / schema across facilities | `docs/SCHEMA_LANDSCAPE.md` |
 | Flag adjudication (opt-in LLM) | `docs/ADJUDICATION.md` |
 | The autonomous driver (`isar drive`) | `docs/MEASUREMENT_STEERING.md` |
+| Same-action scan-window EIG (Planned; maintenance seam only) | `docs/EIG_STEERING_DESIGN.md`, then `docs/MEASUREMENT_STEERING.md` |
 | Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
 | Campaign diagnostic report | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` |
 | Why a decision was made | `docs/DECISIONS.md` (IDs P*/D*/V/R/S/O/T/W are stable, safe to cite) |
@@ -123,7 +124,8 @@ area.
 templates in `parsers/cards/*.toml` — in8, s30, s30_raw, tavi) · `reduce` (QC mask-not-delete,
 combine-before-divide, collate) · `calibrate` (elastic fits, versioned energy-zero series) · `analyze`
 (structure enumeration, fitting, errors, model selection, verdict, confidence) · `session` (workspace/
-prior/branch-model assembly) · `cli` · `drive` (autonomous loop, EIG acquisition, TAVI I/O) ·
+prior/branch-model assembly) · `cli` · `drive` (autonomous loop, action/Q EIG, legacy-only scan design,
+TAVI I/O) ·
 `report` · `synth` (Phase-1 synthetic core) · `workspace_api` / `geometry` / `plotspec` (Qt-free) ·
 `isar_gui` (reads science through `workspace_api`; controls campaigns by subprocess + control
 files). The Stage II ↔ III boundary is a **frozen file contract**

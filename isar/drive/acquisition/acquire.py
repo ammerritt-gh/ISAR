@@ -55,27 +55,33 @@ from isar.drive.acquisition.inventory import (
     NARROW_RIVAL_PROBE_GENERATOR,
     RejectionClass,
 )
+from isar.drive.acquisition.scan_design import (
+    AUXILIARY_DETECTION_KINDS,
+    DEFAULT_FWHM_MEV,
+    HIGH_RES_FACTOR,
+    LOW_MARGIN_MEV,
+    MAX_POINTS,
+    STEP_RES_FRACTION,
+    SURVEY_E_HI_MEV,
+    SURVEY_SIGMA_K,
+    BudgetInsufficientForMinimumBatch,
+    InstrumentLimitBelowMinimumBatch,
+    ScanDesignContext,
+    ScanDesignInventory,
+    _count_request as _design_count_request,
+    _declared_window,
+    _energy_window,
+    design_legacy_scan,
+    points_in_window,
+)
 from isar.schema.steering import AUXILIARY_TRACK_NODE, NON_CANONICAL_SINKS, ProposalScore
 from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
 
-# Energy-window rule constants (LLM_HARNESS_DESIGN acquisition decisions, binding).
-LOW_MARGIN_MEV = 2.0          # low side = −(E_pred + LOW_MARGIN): span the anti-Stokes side
-HIGH_RES_FACTOR = 1.5         # high side = E_pred + HIGH_RES_FACTOR × resolution FWHM
-STEP_RES_FRACTION = 0.25      # step ≈ resolution FWHM / 4
-MAX_POINTS = 100              # budget cap on scan length
-DEFAULT_FWHM_MEV = 0.5        # fallback energy resolution when /resolution is unavailable / refuses
 # Where an identity probe sits in the selection order. Above zero so every ordinary action outranks it:
 # the probe is what to try when the cheap path has run out, never a competitor for beam while ordinary
 # work remains. One shared constant so the identity generators cannot drift apart.
 IDENTITY_PROBE_RANK = 100.0
 
-# Survey-window rule: when the ω(q) prediction is uncertain (cold model / far extrapolation) the tight
-# high side ``e_pred + 1.5·FWHM`` is unjustified — a dispersing branch can lie far above ``e_pred`` and
-# would never land in-window, so the model never gets an anchor and the acquisition deadlocks (no
-# anchor → narrow window → no anchor). While σ_pred exceeds a resolution width we instead scan the
-# plausible phonon band; as the model seeds, σ_pred drops below FWHM and the window tightens as before.
-SURVEY_SIGMA_K = 3.0          # survey high side covers e_pred + k·σ_pred of the ω(q) predictive spread
-SURVEY_E_HI_MEV = 7.0         # meV ceiling on the survey high side: spans the acoustic band, clips the optic
 ASSOCIATION_UNCERTAINTY_PER_UNMEASURED_STEP = 0.15
 
 
@@ -105,6 +111,10 @@ class ScanProposal:
     # ``meta["scientific_action_fingerprint"]``; the object itself is what lets the loop build the
     # finalized stage against the intent it belongs to instead of against a bare hash string.
     intent: MeasurementIntent | None = field(default=None, repr=False, compare=False)
+    # In-memory only: the complete scan-design inventory that produced this planned request. The drive
+    # loop persists it after finalization and adds only its content-addressed reference to ``meta``.
+    scan_design_inventory: ScanDesignInventory | None = field(
+        default=None, repr=False, compare=False)
 
     def scan_command(self) -> str:
         """The TAVI ``scan_command1`` for this window: ``deltaE <lo> <hi> <step>``."""
@@ -118,14 +128,6 @@ class ScanProposal:
             "acquisition_id": self.acquisition_id,
             "scan_command": self.scan_command(), "meta": dict(self.meta),
         }
-
-
-class BudgetInsufficientForMinimumBatch(ValueError):
-    """The remaining neutron budget cannot fund one policy-floor scan."""
-
-
-class InstrumentLimitBelowMinimumBatch(ValueError):
-    """The instrument cannot accept one policy-floor scan."""
 
 
 def _fisher_supports_exposure(provider) -> bool:
@@ -168,100 +170,58 @@ def normalize_proposal_score(proposal: ScanProposal, tolerance: float) -> None:
                              else _finite_or_none(eig_per_cost(float(information), dc)))
 
 
-def _ceil_production_ladder(exposure: float, floor: int) -> int:
-    """Smallest ``floor * 2**k`` not below ``exposure`` (``k >= 0``)."""
-    floor = max(int(floor), 1)
-    exposure = max(float(exposure), float(floor))
-    if exposure <= floor:
-        return floor
-    return floor * (2 ** int(math.ceil(math.log2(exposure / floor))))
-
-
-# Auxiliary detection kinds answer a yes/no "is the predicted mode there" question and are counted at
-# a fixed detection floor, never the target-production escalation ladder (they feed the auxiliary
-# tracker node, never the certified master).
-AUXILIARY_DETECTION_KINDS = frozenset({"identity_rival_probe"})
-
-
 def _count_request(gridq: GridQ, *, kind: str, n_points: int, tolerance: float,
                    policy: dict, budget_state: dict | None,
                    runtime_ncount_limit: int | None = None) -> tuple[int, dict[str, Any]]:
-    """Return the next per-point count request and deterministic scaling diagnostics."""
-    quicklook_floor = int(policy.get("quicklook_ncount", QUICKLOOK_NCOUNT))
-    production_floor = int(policy.get("production_batch_ncount", PRODUCTION_NCOUNT))
-    dynamic = bool(policy.get("dynamic_ncount", False))
-    diagnostics: dict[str, Any] = {"dynamic_ncount": dynamic, "exposure_required": None,
-                                   "exposure_current": None, "exposure_remaining": None}
-    if kind == "quicklook":
-        requested = quicklook_floor
-        minimum = quicklook_floor
-    elif kind in AUXILIARY_DETECTION_KINDS:
-        # A narrow yes/no identity probe (routed to auxiliary_track_node) answers a *detection*
-        # question, not a precision one, so it must not inherit the target-production dynamic
-        # escalation — that would spend a geometrically growing exposure to settle a cheap
-        # discriminator. It gets a dedicated detection floor instead; a predicted detection-power
-        # calculation can refine this later. The budget / runtime clamps below still apply.
-        detection_floor = int(policy.get("identity_detection_ncount",
-                                         policy.get("quicklook_ncount", QUICKLOOK_NCOUNT)))
-        requested = detection_floor
-        minimum = detection_floor
-    elif not dynamic:
-        requested = production_floor
-        minimum = production_floor
-    else:
-        master = gridq.master or {}
-        halfwidth = master.get("diagnostic_halfwidth", master.get("halfwidth"))
-        if halfwidth is None:
-            halfwidth = gridq.cert_halfwidth
-        current = master.get("effective_exposure")
-        if current is None:
-            current = gridq.submitted_exposure
-        try:
-            current = float(current)
-        except (TypeError, ValueError):
-            current = 0.0
-        if not math.isfinite(current) or current <= 0.0:
-            current = 0.0
-        # No interval yet: quicklook is attempt one, the production floor attempt two, and the final
-        # generic no-signal attempt grows geometrically. Once an interval exists, tolerance scaling
-        # below replaces this fallback with the authoritative remainder calculation.
-        remaining = float(production_floor * (2 ** max(int(gridq.n_production), 0)))
-        required = None
-        if halfwidth is not None and math.isfinite(float(halfwidth)) and current > 0.0:
-            margin = float(policy.get("tolerance_margin", 0.8))
-            required = current * (float(halfwidth) / (margin * float(tolerance))) ** 2
-            remaining = max(required - current, 0.0)
-        requested = _ceil_production_ladder(remaining, production_floor)
-        previous = int(gridq.last_submitted_ncount or production_floor)
-        requested = min(requested,
-                        int(math.floor(previous * float(policy.get("ncount_growth_cap", 4.0)))),
-                        int(policy.get("max_ncount_per_scan", MAX_NCOUNT_PER_SCAN)))
-        requested = max(requested, production_floor)
-        minimum = production_floor
-        diagnostics.update({"exposure_required": required, "exposure_current": current,
-                            "exposure_remaining": remaining})
-
+    """Compatibility adapter for direct callers; runtime design uses :func:`design_legacy_scan`."""
+    policy = dict(policy or {})
     budget = dict(budget_state or {})
-    if runtime_ncount_limit is not None:
-        runtime_ncount_limit = int(runtime_ncount_limit)
-        if runtime_ncount_limit < minimum:
-            raise InstrumentLimitBelowMinimumBatch(
-                f"instrument_limit_below_minimum_batch: {runtime_ncount_limit:g} neutrons/point "
-                f"is below the {minimum:g} {kind} floor")
-        if requested > runtime_ncount_limit:
-            diagnostics["requested_before_runtime_limit"] = int(requested)
-        requested = min(requested, runtime_ncount_limit)
-        diagnostics["runtime_ncount_limit"] = runtime_ncount_limit
-    if budget.get("kind") == "neutrons" and budget.get("amount") is not None:
-        remaining_budget = max(float(budget["amount"]) - float(budget.get("spent", 0.0)), 0.0)
-        affordable = int(math.floor(remaining_budget / max(int(n_points), 1)))
-        if affordable < minimum:
-            raise BudgetInsufficientForMinimumBatch(
-                f"budget_insufficient_for_minimum_batch: need {minimum * max(int(n_points), 1):g} "
-                f"neutrons, have {remaining_budget:g}")
-        requested = min(requested, affordable)
-        diagnostics["neutron_budget_clamp"] = affordable
-    return int(requested), diagnostics
+    master = gridq.master or {}
+    context = ScanDesignContext(
+        scientific_action_fingerprint="compatibility-count-request",
+        hkl=tuple(float(value) for value in gridq.hkl),
+        q=float(gridq.q),
+        kind=str(kind),
+        reason="compatibility count request",
+        window_family="target",
+        declared_energy_lo=None,
+        declared_energy_hi=None,
+        predicted_energy_meV=0.0,
+        predicted_sigma_meV=0.0,
+        resolution_fwhm_meV=DEFAULT_FWHM_MEV,
+        survey=False,
+        energy_search_meV=None,
+        target_band=None,
+        rival_band=None,
+        widen_factor=1.0,
+        positive_only=False,
+        policy_max_points=max(int(n_points), 2),
+        runtime_max_points=max(int(n_points), 2),
+        tolerance_meV=float(tolerance),
+        quicklook_ncount=int(policy.get("quicklook_ncount", QUICKLOOK_NCOUNT)),
+        production_ncount=int(policy.get("production_batch_ncount", PRODUCTION_NCOUNT)),
+        identity_detection_ncount=int(policy.get(
+            "identity_detection_ncount",
+            policy.get("quicklook_ncount", QUICKLOOK_NCOUNT))),
+        dynamic_ncount=bool(policy.get("dynamic_ncount", False)),
+        tolerance_margin=float(policy.get("tolerance_margin", 0.8)),
+        ncount_growth_cap=float(policy.get("ncount_growth_cap", 4.0)),
+        max_ncount_per_scan=int(policy.get("max_ncount_per_scan", MAX_NCOUNT_PER_SCAN)),
+        diagnostic_halfwidth_meV=master.get(
+            "diagnostic_halfwidth", master.get("halfwidth")),
+        certification_halfwidth_meV=gridq.cert_halfwidth,
+        effective_exposure=master.get("effective_exposure"),
+        submitted_exposure=gridq.submitted_exposure,
+        production_scans=int(gridq.n_production),
+        last_submitted_ncount=gridq.last_submitted_ncount,
+        runtime_max_neutrons_per_point=runtime_ncount_limit,
+        runtime_queue_neutron_budget=None,
+        budget_kind=budget.get("kind"),
+        budget_amount=budget.get("amount"),
+        budget_spent=float(budget.get("spent", 0.0)),
+    )
+    requested, diagnostics = _design_count_request(context, int(n_points))
+    return requested, dict(diagnostics)
 
 
 def _resolve_fwhm(resolution_info, h: float, k: float, l: float, deltaE: float) -> float:
@@ -292,104 +252,6 @@ def _fwhm_from(info) -> float:
         if isinstance(fwhm, (int, float)) and fwhm > 0:
             return float(fwhm)
     return DEFAULT_FWHM_MEV
-
-
-def points_in_window(e_lo: float, e_hi: float, e_step: float, *,
-                     max_points: int = MAX_POINTS) -> int:
-    """The number of scan points a ``deltaE e_lo e_hi e_step`` window has, capped by policy.
-
-    The single source of truth for a window's point count — used by :func:`_energy_window` and by the
-    loop's missed-window recenter so ``ScanProposal.n_points`` (hence the charged cost) stays truthful
-    after ``e_lo``/``e_hi`` are mutated (they otherwise are not recomputed).
-    """
-    step = max(float(e_step), 1e-9)
-    span = max(float(e_hi) - float(e_lo), 0.0)
-    # Mirror TAVI utilities.parse_scan_steps exactly: nearest integral number of intervals, plus the
-    # inclusive start point.  This also avoids a 23.999999999999996 quotient losing the last point.
-    return min(int(math.floor(span / step + 0.5)) + 1, max(int(max_points), 2))
-
-
-def _energy_window(e_pred: float, fwhm: float, e_sigma: float = 0.0,
-                   *, survey: bool = False, energy_search_meV=None,
-                   target_band=None, rival_band=None, widen: float = 1.0,
-                   positive_only: bool = False,
-                   max_points: int = MAX_POINTS) -> tuple[float, float, float, int]:
-    """Build ``(e_lo, e_hi, e_step, n_points)`` from the predicted ω, the resolution FWHM, and the
-    predictive uncertainty ``e_sigma`` on ω(q).
-
-    The high side is extended to survey the phonon band (capped at :data:`SURVEY_E_HI_MEV`) when the
-    peak is not yet pinned at this q — either because ``e_sigma`` exceeds a resolution width (cold model
-    / far extrapolation) or because ``survey`` is forced (the q has no confirmed resolved fit yet). The
-    latter matters even when the model *looks* confident: a concave dispersion curves above a local-linear
-    prediction, so a tight window centred on a biased-low ``e_pred`` misses the real peak by a hair and
-    the q never seeds. Once a q is resolved the caller drops ``survey`` and the tight window returns.
-    ``e_sigma=0`` and ``survey=False`` reproduce the tight window.
-    """
-    e = max(float(e_pred), 0.0)                    # a phonon energy is non-negative
-    fwhm = max(float(fwhm), 1e-3)
-    e_lo = -(e + LOW_MARGIN_MEV)
-    e_hi = e + HIGH_RES_FACTOR * fwhm
-    sig = float(e_sigma)
-    search_lo, search_hi = ((float(energy_search_meV[0]), float(energy_search_meV[1]))
-                            if energy_search_meV is not None else (-2.0, SURVEY_E_HI_MEV))
-    if survey:                                     # unconfirmed q → scan the configured plausible band
-        e_lo = min(e_lo, search_lo)
-        e_hi = max(e_hi, search_hi)
-    elif math.isfinite(sig) and sig > fwhm:        # ω(q) not yet localized → survey e_pred + k·σ
-        e_hi = max(e_hi, min(e + SURVEY_SIGMA_K * sig, search_hi))
-    if target_band is not None:
-        target_mu, target_sigma = map(float, target_band)
-        e_lo = min(e_lo, target_mu - 2.0 * target_sigma)
-        e_hi = max(e_hi, target_mu + 2.0 * target_sigma)
-    if rival_band is not None:
-        rival_mu, rival_sigma = map(float, rival_band)
-        e_lo = min(e_lo, rival_mu - 2.0 * rival_sigma)
-        e_hi = max(e_hi, rival_mu + 2.0 * rival_sigma)
-    if widen > 1.0:
-        e_hi = e + (e_hi - e) * float(widen)
-        if widen >= 2.5:  # persisted decline step 3+: full feasible search-band intersection
-            e_hi = search_hi
-    if target_band is not None or rival_band is not None or widen > 1.0 or positive_only:
-        e_lo, e_hi = max(e_lo, search_lo), min(e_hi, search_hi)
-    if positive_only:
-        e_lo = max(e_lo, 0.5 * fwhm)
-    if e_hi <= e_lo:                               # defensive: never invert
-        e_hi = e_lo + fwhm
-    e_step = STEP_RES_FRACTION * fwhm
-    span = e_hi - e_lo
-    point_cap = max(int(max_points), 2)
-    n_points = int(math.floor(span / e_step + 0.5)) + 1
-    if n_points > point_cap:                        # clamp to the frozen steering-policy cap
-        e_step = span / (point_cap - 1)
-        n_points = point_cap
-    return e_lo, e_hi, e_step, n_points
-
-
-def _declared_window(e_lo: float, e_hi: float, fwhm: float,
-                     max_points: int = MAX_POINTS) -> tuple[float, float, float, int]:
-    """Realize a window a generator *declared*, rather than deriving one from the target model.
-
-    :func:`_energy_window` exists to answer "where should we look for the target at this q", and every
-    rule in it — the low margin below ω, the survey extension, the clamp back into the target search
-    band — is in service of that question. An identity probe has already answered a different question:
-    its bounds came from the predicted rival and were clamped into the identity domain when the intent
-    was formed. Re-deriving them here would silently replace the window that makes the scan a
-    discriminator with the ordinary target window, which is precisely the AP6 failure — the emitted scan
-    would never reach the rival the action exists to observe. Only the step and point-cap arithmetic is
-    shared, because that is instrument realization rather than scientific choice.
-    """
-    e_lo, e_hi = float(e_lo), float(e_hi)
-    fwhm = max(float(fwhm), 1e-3)
-    if e_hi <= e_lo:                                # defensive: never invert
-        e_hi = e_lo + fwhm
-    e_step = STEP_RES_FRACTION * fwhm
-    span = e_hi - e_lo
-    point_cap = max(int(max_points), 2)
-    n_points = int(math.floor(span / e_step + 0.5)) + 1
-    if n_points > point_cap:
-        e_step = span / (point_cap - 1)
-        n_points = point_cap
-    return e_lo, e_hi, e_step, n_points
 
 
 def identity_domain(objective, *, rival_energy_meV: float | None,
@@ -2120,8 +1982,6 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
         getattr(pick, "n_decline", 0), step=float(policy.get("absent_signal_widen_step", 0.5)),
         max_steps=int(policy.get("absent_signal_widen_steps", 3)))
     rb = rival_band(pick) if callable(rival_band) else rival_band
-    point_cap = min(int(policy.get("max_scan_points", MAX_POINTS)),
-                    int(runtime_limits.get("max_points", policy.get("max_scan_points", MAX_POINTS))))
     intent = chosen.evaluation.intent
     if intent.window_family == "rival" and intent.energy_lo is not None and intent.energy_hi is not None:
         # The energy this scan is *about* is the rival, not the target. ``e_pred`` becomes the
@@ -2138,26 +1998,63 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
         # deliberate use of the rival-local FWHM to keep a broad-resolution mode from reading as a
         # false null.
         fwhm = _resolve_fwhm(resolution_info, h, k, l, e_pred)
-        # An identity probe's window is a scientific declaration already clamped into the identity
-        # domain. Honour it; see :func:`_declared_window`.
-        e_lo, e_hi, e_step, n_points = _declared_window(
-            intent.energy_lo, intent.energy_hi, fwhm, max_points=point_cap)
-    else:
-        e_lo, e_hi, e_step, n_points = _energy_window(
-            e_pred, fwhm, e_sigma, survey=survey,
-            energy_search_meV=getattr(objective, "energy_search_meV", None),
-            target_band=target_band, rival_band=rb, widen=widen, positive_only=positive_only,
-            max_points=point_cap)
-    runtime_ncount_limit = runtime_limits.get("max_neutrons_per_point")
-    queue_budget = runtime_limits.get("queue_neutron_budget")
-    if queue_budget is not None:
-        queue_cap = int(math.floor(float(queue_budget) / max(int(n_points), 1)))
-        runtime_ncount_limit = (queue_cap if runtime_ncount_limit is None
-                                else min(int(runtime_ncount_limit), queue_cap))
-    ncount, count_diagnostics = _count_request(
-        pick, kind=kind, n_points=n_points, tolerance=float(objective.tolerance_meV),
-        policy=policy, budget_state=budget_state,
-        runtime_ncount_limit=runtime_ncount_limit)
+
+    master = pick.master or {}
+    budget = dict(budget_state or {})
+    policy_max_points = int(policy.get("max_scan_points", MAX_POINTS))
+    design_context = ScanDesignContext(
+        scientific_action_fingerprint=intent.scientific_action_fingerprint,
+        hkl=(float(h), float(k), float(l)),
+        q=float(pick.q),
+        kind=str(kind),
+        reason=str(reason),
+        window_family=str(intent.window_family),
+        declared_energy_lo=intent.energy_lo,
+        declared_energy_hi=intent.energy_hi,
+        predicted_energy_meV=float(e_pred),
+        predicted_sigma_meV=float(e_sigma),
+        resolution_fwhm_meV=float(fwhm),
+        survey=bool(survey),
+        energy_search_meV=(
+            tuple(float(value) for value in objective.energy_search_meV)
+            if getattr(objective, "energy_search_meV", None) is not None else None),
+        target_band=(
+            tuple(float(value) for value in target_band)
+            if target_band is not None else None),
+        rival_band=tuple(float(value) for value in rb) if rb is not None else None,
+        widen_factor=float(widen),
+        positive_only=bool(positive_only),
+        policy_max_points=policy_max_points,
+        runtime_max_points=int(runtime_limits.get("max_points", policy_max_points)),
+        tolerance_meV=float(objective.tolerance_meV),
+        quicklook_ncount=int(policy.get("quicklook_ncount", QUICKLOOK_NCOUNT)),
+        production_ncount=int(policy.get("production_batch_ncount", PRODUCTION_NCOUNT)),
+        identity_detection_ncount=int(policy.get(
+            "identity_detection_ncount",
+            policy.get("quicklook_ncount", QUICKLOOK_NCOUNT))),
+        dynamic_ncount=bool(policy.get("dynamic_ncount", False)),
+        tolerance_margin=float(policy.get("tolerance_margin", 0.8)),
+        ncount_growth_cap=float(policy.get("ncount_growth_cap", 4.0)),
+        max_ncount_per_scan=int(policy.get("max_ncount_per_scan", MAX_NCOUNT_PER_SCAN)),
+        diagnostic_halfwidth_meV=master.get(
+            "diagnostic_halfwidth", master.get("halfwidth")),
+        certification_halfwidth_meV=pick.cert_halfwidth,
+        effective_exposure=master.get("effective_exposure"),
+        submitted_exposure=pick.submitted_exposure,
+        production_scans=int(pick.n_production),
+        last_submitted_ncount=pick.last_submitted_ncount,
+        runtime_max_neutrons_per_point=runtime_limits.get("max_neutrons_per_point"),
+        runtime_queue_neutron_budget=runtime_limits.get("queue_neutron_budget"),
+        budget_kind=budget.get("kind"),
+        budget_amount=budget.get("amount"),
+        budget_spent=float(budget.get("spent", 0.0)),
+    )
+    design_inventory = design_legacy_scan(design_context)
+    design = design_inventory.selected_candidate
+    e_lo, e_hi, e_step, n_points = (
+        design.e_lo, design.e_hi, design.e_step, design.n_points)
+    ncount = design.ncount
+    count_diagnostics = design.diagnostics
 
     selected_evidence = pick.evidence_master or pick.master or {}
     evidence_revision = ((score.evidence_transition or {}).get(
@@ -2220,7 +2117,8 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
               "count_diagnostics": count_diagnostics,
               "budget_state": dict(budget_state) if budget_state else {}},
         score_recompute=score_recompute,
-        intent=chosen.evaluation.intent)
+        intent=chosen.evaluation.intent,
+        scan_design_inventory=design_inventory)
     normalize_proposal_score(proposal, float(objective.tolerance_meV))
     normalized_score = proposal.meta["score"]
     epc = normalized_score.get("eig_per_cost")

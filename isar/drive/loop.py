@@ -35,16 +35,18 @@ import uuid
 
 from isar.drive.acquisition import model as acq_model
 from isar.drive.acquisition.acquire import (
-    MAX_POINTS,
-    BudgetInsufficientForMinimumBatch,
-    InstrumentLimitBelowMinimumBatch,
     ScanProposal,
     _candidate_precision,
     normalize_proposal_score,
     hkl_key,
     plan_actions,
-    points_in_window,
     propose_action,
+)
+from isar.drive.acquisition.scan_design import (
+    MAX_POINTS,
+    BudgetInsufficientForMinimumBatch,
+    InstrumentLimitBelowMinimumBatch,
+    points_in_window,
 )
 from isar.drive.acquisition.inventory import (
     GENERATOR_REGISTRY, GENERATOR_REGISTRY_VERSION, TERMINAL_ACTION_INVENTORY_EXHAUSTED,
@@ -2462,6 +2464,7 @@ def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
                 "class": str(entry.get("class") or "structural"),
                 "reason": str(entry.get("reason") or "previously refused")}
             continue
+        _persist_scan_design_inventory(cfg, proposal, it=it)
         return proposal, None
 
 
@@ -2803,6 +2806,55 @@ def _inventory_artifact_matches(path: Path, digest: str) -> bool:
     except (OSError, ValueError):
         return False
     return hashlib.sha256(canonical_json(parsed).encode("utf-8")).hexdigest() == digest
+
+
+def _persist_scan_design_inventory(cfg: CampaignConfig, proposal, *, it: int) -> dict | None:
+    """Persist and join the selected scan-design inventory to its finalized request.
+
+    The inventory describes the planned uniform candidate before loop-level realization clamps. The
+    existing ``proposal_fingerprint`` describes the exact request after those clamps. Carrying both IDs
+    preserves that distinction instead of silently rewriting the design artifact to match execution.
+    """
+    inventory = getattr(proposal, "scan_design_inventory", None)
+    if inventory is None:
+        return None
+    digest = inventory.content_hash()
+    path = cfg.workspace / "report" / "scan-design" / f"{digest}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt = path.exists() and not _inventory_artifact_matches(path, digest)
+    if corrupt:
+        log_event(cfg.log_path, "exception", {
+            "action": "scan_design_artifact_mismatch",
+            "sha256": digest,
+            "iter": it,
+            "path": f"report/scan-design/{digest}.json",
+            "error": "stored artifact did not match its content address; rewritten",
+        })
+    if corrupt or not path.exists():
+        temporary = path.with_suffix(".json.tmp")
+        with open(temporary, "w", encoding="utf-8") as stream:
+            json.dump(inventory.to_full_dict(), stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    ref = {
+        "kind": "scan_design_inventory",
+        "sha256": digest,
+        "path": f"report/scan-design/{digest}.json",
+    }
+    meta = proposal.meta if isinstance(proposal.meta, dict) else {}
+    proposal.meta = meta
+    meta["scan_design_inventory_ref"] = ref
+    meta["scan_design_candidate_id"] = inventory.selected_candidate_id
+    log_event(cfg.log_path, "scan_design", {
+        "iter": it,
+        "scientific_action_fingerprint": meta.get("scientific_action_fingerprint"),
+        "request_fingerprint": meta.get("proposal_fingerprint"),
+        "selected_candidate_id": inventory.selected_candidate_id,
+        "selection_basis": inventory.selection_basis,
+        "inventory_ref": ref,
+    })
+    return ref
 
 
 def _persist_action_inventory(cfg: CampaignConfig, inventory, *, it: int, proposal,

@@ -139,7 +139,7 @@ The per-file register is [DOC_INVENTORY.md](DOC_INVENTORY.md).
 | Which rulings are still in force? | [DECISION_INDEX.md (generated)](DECISION_INDEX.md) | Current |
 | What is every document, and what happened to the deleted ones? | [DOC_INVENTORY.md](DOC_INVENTORY.md) | Current |
 | Why steer measurements this way (Bayesian info-gain; prior art) — research foundation | [MEASUREMENT_STEERING.md](MEASUREMENT_STEERING.md) | Current |
-| What is being built next (speedup, backgrounds, steering A/B/C) | [SPEEDUP_DESIGN.md](SPEEDUP_DESIGN.md), [BACKGROUND_DESIGN.md](BACKGROUND_DESIGN.md), [STEERING_DESIGN.md](STEERING_DESIGN.md) | Active plan |
+| What is being built next (speedup, backgrounds, steering A/B/C, same-action scan-window EIG) | [SPEEDUP_DESIGN.md](SPEEDUP_DESIGN.md), [BACKGROUND_DESIGN.md](BACKGROUND_DESIGN.md), [STEERING_DESIGN.md](STEERING_DESIGN.md), [EIG_STEERING_DESIGN.md](EIG_STEERING_DESIGN.md) | Active plan |
 | Does it agree with a human on real data? | [assets/phase3_gold/FINDINGS.md](assets/phase3_gold/FINDINGS.md) (gold report) | Historical evidence |
 | Does the engine reproduce the trusted fitter + behave? | [assets/phase3_step1/FINDINGS.md](assets/phase3_step1/FINDINGS.md) | Historical evidence |
 | Does the same core work on another instrument (triple-axis)? | [assets/in8_phase1/FINDINGS.md](assets/in8_phase1/FINDINGS.md) | Historical evidence |

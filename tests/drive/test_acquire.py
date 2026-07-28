@@ -29,6 +29,10 @@ def test_cold_start_quicklooks_an_unvisited_q():
     p = acq.propose_scan(obj, acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
     assert p is not None and p.kind == "quicklook"
     assert p.ncount == acq.QUICKLOOK_NCOUNT
+    assert p.scan_design_inventory is not None
+    design = p.scan_design_inventory.selected_candidate
+    assert (design.e_lo, design.e_hi, design.e_step, design.n_points, design.ncount) == (
+        p.e_lo, p.e_hi, p.e_step, p.n_points, p.ncount)
 
 
 def test_unvisited_q_preferred_over_escalation():

@@ -1,0 +1,235 @@
+{
+  "fixture_schema": "isar.eig_predictive_fixture/1",
+  "description": "Normative direct-component predictions for the planned arbitrary-grid evaluator.",
+  "absolute_tolerance": 1e-09,
+  "artifact_contract": {
+    "schema": "isar.master_predictive/2",
+    "energy_meV": [-2.0, 0.0, 2.0, 4.0, 6.0],
+    "evaluation_context": {
+      "center_meV": 0.0,
+      "gaussian_fwhm_meV": 0.4,
+      "lorentzian_fwhm_meV": 0.1,
+      "temperature_K": 100.0,
+      "quasielastic_fwhm_meV": null
+    },
+    "exposure_basis": {
+      "unit": "monitor_counts_per_point",
+      "fit_reference_exposure": 1000.0,
+      "reference_incremental_exposure": 500.0,
+      "n_members": 2
+    },
+    "seed": 940301,
+    "uncertainty_provenance": {
+      "draw_basis": "fixed_contract_fixture",
+      "deterministic": true
+    }
+  },
+  "evaluation_requests": [
+    {
+      "name": "original",
+      "energy_meV": [-2.0, 0.0, 2.0, 4.0, 6.0],
+      "exposure_per_point": 500.0
+    },
+    {
+      "name": "shifted",
+      "energy_meV": [-1.5, 0.5, 2.5, 4.5, 6.5],
+      "exposure_per_point": 250.0
+    },
+    {
+      "name": "narrower",
+      "energy_meV": [1.0, 2.0, 3.0],
+      "exposure_per_point": 1000.0
+    },
+    {
+      "name": "coarser",
+      "energy_meV": [-2.0, 2.0, 6.0],
+      "exposure_per_point": 750.0
+    }
+  ],
+  "cases": [
+    {
+      "name": "phonon_background",
+      "models": [
+        {
+          "label": "phonon+background",
+          "weight": 1.0,
+          "basis": "fixed_contract_fixture",
+          "parameter_names": [
+            "phonon.Omega_d",
+            "phonon.Gamma",
+            "phonon.A",
+            "bg.BG"
+          ],
+          "parameter_draws": [
+            [2.0, 0.3, 120.0, 4.0],
+            [2.2, 0.4, 100.0, 5.0]
+          ],
+          "model_manifest": {
+            "schema": "isar.model_manifest/1",
+            "components": [
+              {
+                "type": "phonon_dho",
+                "prefix": "phonon",
+                "peak": "stokes+astokes"
+              },
+              {
+                "type": "constant_background",
+                "prefix": "bg"
+              }
+            ],
+            "parameters": {
+              "phonon.Omega_d": 2.0,
+              "phonon.Gamma": 0.3,
+              "phonon.A": 120.0,
+              "bg.BG": 4.0
+            }
+          },
+          "omega0_draws": [2.0223748416166684, 2.23606797749979],
+          "expected_counts": [
+            [385.885793796079, 32.919015393828, 485.583687118741, 21.786619522139, 7.351255987001],
+            [184.755953611775, 22.504662819862, 211.977104508665, 21.307038240606, 7.119005795525]
+          ]
+        }
+      ],
+      "expected_counts_by_request": {
+        "original": [
+          [385.885793796079, 32.919015393828, 485.583687118741, 21.786619522139, 7.351255987001],
+          [184.755953611775, 22.504662819862, 211.977104508665, 21.307038240606, 7.119005795525]
+        ],
+        "shifted": [
+          [98.501357397511, 19.911968249475, 122.185238756293, 7.45939053838, 3.151610183394],
+          [40.631698739069, 13.119970032866, 105.735303660757, 7.166629839754, 3.08656685767]
+        ],
+        "narrower": [
+          [138.609958625476, 971.167304314332, 155.789412176962],
+          [80.188018098945, 423.9541511274, 166.406980018935]
+        ],
+        "coarser": [
+          [578.828690694118, 728.375530678111, 11.026883980502],
+          [277.133930417662, 317.965656762997, 10.678508693287]
+        ]
+      }
+    },
+    {
+      "name": "null_background",
+      "models": [
+        {
+          "label": "null+background",
+          "weight": 1.0,
+          "basis": "fixed_contract_fixture",
+          "parameter_names": ["bg.BG"],
+          "parameter_draws": [[4.0], [5.0]],
+          "model_manifest": {
+            "schema": "isar.model_manifest/1",
+            "components": [
+              {
+                "type": "constant_background",
+                "prefix": "bg"
+              }
+            ],
+            "parameters": {
+              "bg.BG": 4.0
+            }
+          },
+          "omega0_draws": [],
+          "expected_counts": [
+            [2.0, 2.0, 2.0, 2.0, 2.0],
+            [2.5, 2.5, 2.5, 2.5, 2.5]
+          ]
+        }
+      ],
+      "expected_counts_by_request": {
+        "original": [
+          [2.0, 2.0, 2.0, 2.0, 2.0],
+          [2.5, 2.5, 2.5, 2.5, 2.5]
+        ],
+        "shifted": [
+          [1.0, 1.0, 1.0, 1.0, 1.0],
+          [1.25, 1.25, 1.25, 1.25, 1.25]
+        ],
+        "narrower": [
+          [4.0, 4.0, 4.0],
+          [5.0, 5.0, 5.0]
+        ],
+        "coarser": [
+          [3.0, 3.0, 3.0],
+          [3.75, 3.75, 3.75]
+        ]
+      }
+    },
+    {
+      "name": "multimode_background",
+      "models": [
+        {
+          "label": "two-phonon+background",
+          "weight": 1.0,
+          "basis": "fixed_contract_fixture",
+          "parameter_names": [
+            "phonon.Omega_d",
+            "phonon.Gamma",
+            "phonon.A",
+            "phonon2.Omega_d",
+            "phonon2.Gamma",
+            "phonon2.A",
+            "bg.BG"
+          ],
+          "parameter_draws": [
+            [2.0, 0.3, 100.0, 5.0, 0.5, 60.0, 3.0],
+            [2.2, 0.4, 90.0, 5.3, 0.6, 55.0, 4.0]
+          ],
+          "model_manifest": {
+            "schema": "isar.model_manifest/1",
+            "components": [
+              {
+                "type": "phonon_dho",
+                "prefix": "phonon",
+                "peak": "stokes+astokes"
+              },
+              {
+                "type": "phonon_dho",
+                "prefix": "phonon2",
+                "peak": "stokes+astokes"
+              },
+              {
+                "type": "constant_background",
+                "prefix": "bg"
+              }
+            ],
+            "parameters": {
+              "phonon.Omega_d": 2.0,
+              "phonon.Gamma": 0.3,
+              "phonon.A": 100.0,
+              "phonon2.Omega_d": 5.0,
+              "phonon2.Gamma": 0.5,
+              "phonon2.A": 60.0,
+              "bg.BG": 3.0
+            }
+          },
+          "omega0_draws": [2.0223748416166684, 2.23606797749979],
+          "expected_counts": [
+            [324.130354099605, 29.294002841302, 408.331786833916, 42.777444592943, 34.846180829051],
+            [168.049855511846, 21.607898868794, 193.409258848483, 32.778345612375, 42.605295898147]
+          ]
+        }
+      ],
+      "expected_counts_by_request": {
+        "original": [
+          [324.130354099605, 29.294002841302, 408.331786833916, 42.777444592943, 34.846180829051],
+          [168.049855511846, 21.607898868794, 193.409258848483, 32.778345612375, 42.605295898147]
+        ],
+        "shifted": [
+          [83.143580607804, 17.606493705533, 104.357225729556, 34.596000176034, 9.687731321606],
+          [37.315691151454, 12.547417197693, 96.92952786142, 19.90787806903, 11.5408940691]
+        ],
+        "narrower": [
+          [120.180147994946, 816.663481364713, 144.985569854571],
+          [75.577007560048, 386.818434283158, 159.892460428643]
+        ],
+        "coarser": [
+          [486.195531149408, 612.497680250873, 52.269271243577],
+          [252.074783267769, 290.113888272724, 63.907943847221]
+        ]
+      }
+    }
+  ]
+}

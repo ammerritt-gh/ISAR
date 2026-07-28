@@ -84,6 +84,11 @@ computed before acquisition ever enumerated the action space, is the early-termi
 It is `ActionInventory.terminal_cause` proving the space empty *relative to* `GENERATOR_REGISTRY`, so
 every declaratively registered generator — the narrow rival probe included — is asked before the
 campaign may call itself blocked, and growing the registry cannot leave an old proof looking current.
+Once an action is selected, `ScanDesignInventory` resolves it into exactly one `legacy_uniform/1`
+window/count candidate. The derived inventory is content-addressed under
+`report/scan-design/<sha256>.json` and referenced from proposal provenance. Its candidate id names the
+pre-finalization design; the existing proposal fingerprint separately names the exact request after
+live point/count clamps.
 Alongside the interval/no-progress brakes there is an identity-space one, `identity_saturated`, for
 the case those cannot speak to — an identity-ambiguous q never matches the target branch, so it never
 accumulates the pooled-master updates `interval_floored` reads. It requires both the target
@@ -330,6 +335,9 @@ So the chosen engine is:
    batches when the leading candidates are not separated. The older λ-weighted deterministic
    branch-confusion proxy remains only in the explicit classification/opening-move fallback where a
    master predictive artifact does not yet exist; it is not the acquisition score for a usable master.
+   Here a “candidate” is a scientific action/Q alternative whose counts are already evaluated on its
+   master's fitted grid. The current controller does **not** generate or score alternative energy
+   windows for one action; that planned interface is specified in `EIG_STEERING_DESIGN.md`.
 
 **Honest limit:** at single-digit counts the information is simply not there; no method conjures it.
 Correct behaviour is to report low confidence honestly and let EIG decide *count more here / move*;
@@ -734,7 +742,9 @@ identified ω. Missing simulation-grade draws trigger a single full-tier escalat
 Acquisition estimates information about the joint target-ω/model/branch latent state from incremental
 Poisson counts. Deterministic mode ranks per predicted analysis second; measurement-dominated tiers use
 the active measurement cost. ω-width and identity-entropy reductions remain separately reported.
-Uncertain or low utility is diagnostic, not a reason to abandon q.
+Uncertain or low utility is diagnostic, not a reason to abandon q. `isar.master_predictive/1` contains
+counts only on the fitted master grid and therefore cannot support arbitrary-window evaluation; the
+additive `/2` contract and future evaluator are planned in `EIG_STEERING_DESIGN.md`.
 
 The outer limits are independent. `budget` is optional measurement spend. `analysis_limit_seconds`
 charges monotonic wall time around serialized fitting, pooling, consistency, predictive scoring and
