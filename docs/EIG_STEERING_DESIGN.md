@@ -2,7 +2,7 @@
 
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
-> **Verified against code revision:** `844a9de` (2026-07-28)
+> **Verified against code revision:** `f19e819` (2026-07-29)
 > **Owner:** @ammerritt-gh
 > **Exit criteria:** `isar.master_predictive/2` is published, the pure arbitrary-grid evaluator passes
 > the normative fixtures, multiple same-action scan candidates are ranked and audited, and the shipped
@@ -30,20 +30,35 @@ adds the information needed to evaluate those same draws away from the fitted gr
 - `energy_meV`: the ordered fitted master grid on which the retained `/1` expected counts were made;
 - `evaluation_context`: `center_meV`, Gaussian/Lorentzian resolution FWHM, temperature, and optional
   quasielastic FWHM;
-- `exposure_basis`: `unit`, `fit_reference_exposure`, `reference_incremental_exposure`, and
-  `n_members`.
+- `exposure_basis`: `unit` (`monitor_counts`), `request_unit` (`number_neutrons`),
+  `request_to_exposure_factor` (`1.0`), `fit_reference_exposure`, `reference_incremental_exposure`,
+  `n_members`, `per_energy_monitor` (ΣM per bin, aligned to `energy_meV`),
+  `scalar_exposure_eligible`, `exposure_homogeneous`, `full_member_support`,
+  `exposure_ratio_span`, and `kept_point_count`.
 
-`fit_reference_exposure` is the amplitude basis of the pooled fitted model. For requested per-point
-exposure \(E\), evaluation multiplies the direct model mean by
-`E / fit_reference_exposure`. Evaluating the original grid at
-`reference_incremental_exposure = fit_reference_exposure / n_members` must reproduce `/1`
-`expected_counts` within the fixture tolerance.
+`fit_reference_exposure` is the amplitude basis of the pooled fitted model: the value
+`normalized_exposure` returned for that exact fit (`median(ΣM)` over the fit's kept mask). It must be
+persisted from the fit, never recomputed — recomputing it from a different kept set can move it by
+tens of percent. For requested per-point exposure \(E\), evaluation multiplies the direct model mean
+by `E / fit_reference_exposure`; this candidate-evaluation ratio is valid on every pool, including
+heterogeneous ones, and is not gated on `exposure_homogeneous`.
 
-The first `/2` contract is deliberately scalar-exposure-only. `fit_reference_exposure` must be finite
-and positive and `n_members` must be a positive integer; requested grids may use different finite
-positive scalar exposures, but an artifact with no valid scalar fit-reference basis returns
-`missing_exposure_basis`. Per-energy exposure vectors for partially supported pooled grids are not
-specified in this phase.
+The fitted grid's self-consistency is reproduced by the **per-energy** exposure vector
+`per_energy_monitor_i / fit_reference_exposure`, checked against the `/2` producer's own stored
+matrices (not `/1`, which is superseded once `/1` emission is deleted per ADR-006). The scalar
+`reference_incremental_exposure = fit_reference_exposure / n_members` reproduces the same grid
+**iff `exposure_homogeneous`** is true; `reference_incremental_exposure` is documented as a mean of
+per-member exposure, not any one member's request, and once `/1` is retired its only role is this
+diagnostic identity.
+
+`scalar_exposure_eligible` (equivalently `exposure_homogeneous`, `max(ΣM_kept)/min(ΣM_kept) - 1 <=
+1e-12`) is published as a declaration and diagnostic. It gates only the scalar fitted-grid parity
+assertion described above — it does **not** gate candidate (forward) evaluation, which uses the
+scalar ratio on every pool regardless of support profile.
+
+A master fitted on the legacy uniform path (no usable monitor; the pooled merge has no time
+fallback) has no exposure basis at all and returns `missing_exposure_basis`. This code stays
+reserved for that genuine no-monitor case.
 
 No `/2` artifact is published during this prep cycle, and `/1` is never guessed into `/2`: it lacks
 the original grid, evaluation context, and explicit exposure basis.
