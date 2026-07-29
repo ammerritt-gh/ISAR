@@ -263,6 +263,15 @@ def evaluate_master_predictive(artifact, energy_meV, exposure_per_point
             except manifest_mod.ModelManifestError as error:
                 return _refuse(error.reason_code,
                                f"predictive model {index}: {error.message}", **echo)
+        raw_omega = model.get("omega0_draws") or ()
+        if isinstance(raw_omega, (str, bytes)) or not isinstance(raw_omega, Sequence):
+            return _refuse(MALFORMED_DRAW_SHAPE,
+                           f"predictive model {index} omega0_draws must be a sequence", **echo)
+        try:
+            omega0_draws = [float(value) for value in raw_omega]
+        except (TypeError, ValueError):
+            return _refuse(MALFORMED_DRAW_SHAPE,
+                           f"predictive model {index} has non-numeric omega0_draws", **echo)
         evaluated.append({
             "label": model.get("label"),
             "identity_label": model.get("identity_label", model.get("label")),
@@ -272,7 +281,10 @@ def evaluate_master_predictive(artifact, energy_meV, exposure_per_point
             "draw_weights": model.get("draw_weights"),
             "draw_ids": list(model.get("draw_ids") or ()),
             "parameter_names": list(names or ()),
-            "omega0_draws": [float(value) for value in (model.get("omega0_draws") or ())],
+            # Coerced defensively: this function's contract is that ANY unusable artifact returns a
+            # stable reason_code, so a non-numeric omega draw must refuse here rather than escape as
+            # a ValueError past every structural check above.
+            "omega0_draws": omega0_draws,
             "target_present_by_draw": list(model.get("target_present_by_draw") or ()),
             "target_qoi_draws": list(model.get("target_qoi_draws") or ()),
             "expected_counts": expected,
