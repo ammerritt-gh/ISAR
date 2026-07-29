@@ -10,11 +10,46 @@
 
 ## Status and boundary
 
-**Alternative-window EIG is not implemented.** Current acquisition ranks scientific actions and Q
-positions using expected counts already stored on each master's fitted grid. The maintenance prep has
-only introduced the `ScanDesignContext → ScanDesignInventory` seam: it emits one
-`legacy_uniform/1` candidate, selects it as `legacy_only_candidate`, and persists the derived inventory
-under `report/scan-design/<sha256>.json`.
+**Alternative-window EIG scoring and selection are not implemented; candidate generation is.**
+Current acquisition ranks scientific actions and Q
+positions using expected counts already stored on each master's fitted grid. The
+`ScanDesignContext → ScanDesignInventory` seam now generates the bounded family of conventional
+uniform windows for the selected action and persists it under `report/scan-design/<sha256>.json`, but
+nothing scores or ranks them: the `legacy_uniform/1` candidate is always generated with the exact
+historical arithmetic and is always the selected, executed one.
+
+The `scan_window_eig_mode` steering knob (typed on `SteeringPolicy`, declared in the hand-edited
+policy card, frozen into `ScanDesignContext`) chooses the regime:
+
+- `off` — only the legacy candidate is designed; `selection_basis = legacy_control_off`.
+- `shadow` — the whole family is generated and persisted unscored;
+  `selection_basis = shadow_legacy_control_unscored`. The emitted request is identical to `off`.
+- `authoritative` — refuses at campaign setup with the stable error code
+  `scan_window_eig_authoritative_unavailable`; it is never silently degraded to shadow or off.
+
+The families are `legacy_uniform`, `target_core`, `target_paired` (only when anti-Stokes is
+admissible under the existing `positive_only` / detailed-balance gates), `target_low_anchor`,
+`target_high_anchor`, `target_plus_rival` (only with a declared rival band, always contiguous with
+the core so a canonical target action can never receive a rival-only window), and `broad_recovery`.
+Their construction constants live in one frozen, separately versioned
+`PhysicalWindowGeneratorConfig` serialized into every inventory. Non-legacy candidates are clipped
+to the authorized energy domain, must hold the policy's minimum target support, and are pre-clamped
+to the policy/runtime/budget limits already carried by the context. A family that cannot satisfy its
+invariants is recorded as a refused candidate with a structured reason code, never silently omitted;
+families landing on the same canonical grid and exposure deduplicate to one candidate carrying the
+others as alias provenance.
+
+`isar.scan_design_inventory/2` and `isar.scan_design_candidate/2` are used in **all** modes — there
+is no `/1` compatibility. Alongside the generator config the inventory carries the generic provider
+identity (`predictive_provider_id`, `predictive_provider_schema`, `generator_id`,
+`generator_version`, `objective_projection_schema`, `steering_regime`) so a later, differently
+grounded provider can slot in without changing this envelope; `candidate_family` and `generator_id`
+are versioned strings, never a closed enum.
+
+Materializing `scan_window_eig_mode` in the resolved steering dict reminted every
+`hypothesis_fingerprint` once, and with it every derived scientific-action and content-addressed
+audit identity. The *physical* behavior — action class, Q sequence, window, step, count request, and
+emitted request — is unchanged in both `off` and `shadow`.
 
 The future work described here is narrower than the physics-content work in `STEERING_DESIGN.md`.
 It may compare different uniform windows/counts for the **same already-selected scientific action**.
@@ -98,8 +133,8 @@ utility; generate candidates; or select a window.
 
 ## Future selection flow and audit
 
-The EIG phase replaces the legacy-only generator behind the existing scan-design interface. Multiple
-uniform `ScanDesignCandidate`s will share one frozen context. A separate scorer consumes only candidate
+The EIG phase adds scoring and selection behind the existing scan-design interface. Multiple
+uniform `ScanDesignCandidate`s already share one frozen context. A separate scorer consumes only candidate
 grid/exposure plus `PredictiveDesignEvaluation`; a selector records score components, cost, refusal
 reason, and the selected candidate in the same content-addressed inventory. The outer action/Q ranking,
 instrument finalization, validation, and existing request fingerprint remain separate.

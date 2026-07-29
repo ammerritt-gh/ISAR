@@ -71,9 +71,10 @@ from isar.drive.acquisition.scan_design import (
     _count_request as _design_count_request,
     _declared_window,
     _energy_window,
-    design_legacy_scan,
+    design_scan_windows,
     points_in_window,
 )
+from isar.drive.acquisition.scan_grid import format_scan_command
 from isar.schema.steering import AUXILIARY_TRACK_NODE, NON_CANONICAL_SINKS, ProposalScore
 from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
 
@@ -117,8 +118,12 @@ class ScanProposal:
         default=None, repr=False, compare=False)
 
     def scan_command(self) -> str:
-        """The TAVI ``scan_command1`` for this window: ``deltaE <lo> <hi> <step>``."""
-        return f"deltaE {self.e_lo:g} {self.e_hi:g} {self.e_step:g}"
+        """The TAVI ``scan_command1`` for this window: ``deltaE <lo> <hi> <step>``.
+
+        Rendered by the shared grid helper, which is also what candidate construction formats — one
+        rendering, so a designed window and the submitted request cannot drift apart.
+        """
+        return format_scan_command(self.e_lo, self.e_hi, self.e_step)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -2041,6 +2046,10 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
         policy_max_points=policy_max_points,
         runtime_max_points=int(runtime_limits.get("max_points", policy_max_points)),
         tolerance_meV=float(objective.tolerance_meV),
+        # Frozen into the design context so the whole candidate space is reconstructible from the
+        # persisted record; the loop never re-reads the live policy to decide what was designed.
+        scan_window_eig_mode=str(policy.get("scan_window_eig_mode", "off")),
+        minimum_target_support_points=int(policy.get("minimum_target_support_points", 6)),
         quicklook_ncount=int(policy.get("quicklook_ncount", QUICKLOOK_NCOUNT)),
         production_ncount=int(policy.get("production_batch_ncount", PRODUCTION_NCOUNT)),
         identity_detection_ncount=int(policy.get(
@@ -2063,7 +2072,7 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
         budget_amount=budget.get("amount"),
         budget_spent=float(budget.get("spent", 0.0)),
     )
-    design_inventory = design_legacy_scan(design_context)
+    design_inventory = design_scan_windows(design_context)
     design = design_inventory.selected_candidate
     e_lo, e_hi, e_step, n_points = (
         design.e_lo, design.e_hi, design.e_step, design.n_points)
