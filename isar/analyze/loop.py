@@ -164,6 +164,125 @@ class StructureFitResult:
     # Full fitted-parameter covariance in ``params`` insertion order.  Retained for posterior-
     # predictive acquisition; a missing/untrusted covariance is represented by ``None``.
     parameter_covariance: list | None = None
+    # Additive statistical provenance.  A construction failure leaves this ``None`` while the
+    # numerical fit remains usable.
+    fit_semantics: dict | None = None
+
+
+def _fit_semantics_for(prob: Problem, ctx, fit_kind: str) -> dict:
+    """Build semantics from the constraints that actually enter ``prob``."""
+    from isar.schema.statistics import (
+        FIT_SELECTION_SCHEMA,
+        EffectiveConstraint,
+        SemanticsConstructionError,
+        authority_scopes,
+        semantics_fingerprint,
+        validate_for_write,
+    )
+
+    constraints = getattr(ctx, "constraints", None)
+    origins = dict(getattr(constraints, "origins", None) or {})
+    names = list(prob.free_names)
+    fixed_names = {names[index] for index in prob.fixed_pos}
+    effective = []
+    if constraints is not None:
+        for name, value in (getattr(constraints, "hard", None) or {}).items():
+            if name not in fixed_names:
+                continue
+            effective.append(
+                EffectiveConstraint(
+                    parameter=str(name),
+                    constraint_kind="hard",
+                    value=float(value),
+                    origin=origins.get(name),
+                ).to_dict()
+            )
+        for name, value in (getattr(constraints, "soft", None) or {}).items():
+            if name not in names or name in fixed_names:
+                continue
+            mean, sigma = float(value[0]), float(value[1])
+            if sigma <= 0:
+                continue
+            effective.append(
+                EffectiveConstraint(
+                    parameter=str(name),
+                    constraint_kind="soft",
+                    mean=mean,
+                    sigma=sigma,
+                    origin=origins.get(name),
+                ).to_dict()
+            )
+    effective.sort(key=lambda item: (item["parameter"], item["constraint_kind"]))
+    if any(not item.get("origin") for item in effective):
+        missing = ",".join(item["parameter"] for item in effective if not item.get("origin"))
+        raise SemanticsConstructionError("missing_constraint_origin", missing)
+    origin_set = sorted({item["origin"] for item in effective})
+    aggregate_origin = (
+        "none" if not origin_set else origin_set[0] if len(origin_set) == 1 else "mixed"
+    )
+    has_soft = any(item["constraint_kind"] == "soft" for item in effective)
+    has_data_conditioning = any(
+        item["origin"] in {"data_dependent_rescue", "post_selection"} for item in effective
+    )
+    has_other_hard = any(
+        item["constraint_kind"] == "hard"
+        and item["origin"] in {"prespecified_scientific", "prior_predictive"}
+        for item in effective
+    )
+    if has_soft:
+        eligibility = "ineligible_soft_penalized"
+    elif has_data_conditioning:
+        eligibility = "ineligible_data_dependent_conditioning"
+    elif has_other_hard:
+        eligibility = "ineligible_unapproved_conditioning"
+    else:
+        eligibility = "eligible"
+    reasons = []
+    if has_soft:
+        reasons.append("effective_soft_constraint")
+    if has_data_conditioning:
+        reasons.append("data_dependent_or_post_selection_hard_constraint")
+    if has_other_hard:
+        reasons.append("unapproved_prespecified_or_prior_predictive_hard_constraint")
+    estimator_kind = (
+        "soft_penalized_likelihood"
+        if has_soft
+        else "hard_conditioned_likelihood"
+        if effective
+        else "data_likelihood_mle"
+    )
+    conditioning_payload = {"effective_constraints": effective}
+    record = {
+        "schema": FIT_SELECTION_SCHEMA,
+        "estimator_kind": estimator_kind,
+        "fit_kind": str(fit_kind),
+        "effective_constraints": effective,
+        "aggregate_constraint_origin": aggregate_origin,
+        "selection_eligibility": eligibility,
+        "selection_ineligibility_reasons": reasons,
+        "conditioning_fingerprint": semantics_fingerprint(
+            "isar.fit_conditioning/1", conditioning_payload
+        ),
+        "authority_scopes": authority_scopes(
+            single_fit_delivery="active",
+            user_diagnostic="active",
+        ),
+    }
+    return validate_for_write(record, FIT_SELECTION_SCHEMA)
+
+
+def _attach_fit_semantics(result: StructureFitResult, prob: Problem, ctx) -> None:
+    from isar.schema.statistics import SemanticsConstructionError
+
+    try:
+        result.fit_semantics = _fit_semantics_for(prob, ctx, result.fit_kind)
+    except SemanticsConstructionError as exc:
+        log.warning(
+            "semantics_construction_failed producer=isar.analyze.loop quantity=%s reason_code=%s",
+            result.label,
+            exc.reason_code,
+        )
+        result.fit_semantics = None
 
 
 def build_problem(hyp, ctx, *, x0=None) -> Problem:
@@ -371,10 +490,20 @@ def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False, x0=None) -> Stru
     be_names = [_sanitize(n) for n in prob.free_names]
     br = _minimize_fixed(backend, prob.objective, prob.x0, prob.bounds, be_names,
                          prob.fixed_pos, prob.fixed_vals, minos=minos)
-    return result_from_backend(hyp.label, prob.composite, prob.costv, prob.n_used, prob.k, br,
-                               prior_omega=getattr(ctx, "prior_omega", None),
-                               acoustic_omega=getattr(ctx, "acoustic_omega", None),
-                               penalty=prob.penalty, hard_fixed=prob.is_hard_fixed)
+    result = result_from_backend(
+        hyp.label,
+        prob.composite,
+        prob.costv,
+        prob.n_used,
+        prob.k,
+        br,
+        prior_omega=getattr(ctx, "prior_omega", None),
+        acoustic_omega=getattr(ctx, "acoustic_omega", None),
+        penalty=prob.penalty,
+        hard_fixed=prob.is_hard_fixed,
+    )
+    _attach_fit_semantics(result, prob, ctx)
+    return result
 
 
 def _fit_hypothesis_task(args):

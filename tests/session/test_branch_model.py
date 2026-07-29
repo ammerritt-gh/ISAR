@@ -80,13 +80,19 @@ def test_soft_constraints_scale_amplitude_to_exposure():
     p = BM.predict(b, 4.5)
     pc = p.soft_constraints(exposure=2.0e6)
     assert "phonon.Gamma" in pc.soft and "phonon.A" in pc.soft
+    assert pc.origins == {
+        "phonon.Gamma": "prior_predictive",
+        "phonon.A": "prior_predictive",
+    }
     mu_g, sig_g = pc.soft["phonon.Gamma"]
     assert mu_g == pytest.approx(p.gamma) and sig_g == pytest.approx(p.gamma_sigma)
     mu_a, sig_a = pc.soft["phonon.A"]
     assert mu_a == pytest.approx(p.amplitude_norm * 2.0e6)         # normalized → raw at this exposure
     assert sig_a >= BM.A_REL_SIGMA_FLOOR * mu_a - 1e-9            # loose relative σ, A stays soft
     # no exposure → no A constraint (Γ only)
-    assert "phonon.A" not in p.soft_constraints(exposure=0.0).soft
+    gamma_only = p.soft_constraints(exposure=0.0)
+    assert "phonon.A" not in gamma_only.soft
+    assert gamma_only.origins == {"phonon.Gamma": "prior_predictive"}
 
 
 # --------------------------------------------------------------------------- end-to-end via state

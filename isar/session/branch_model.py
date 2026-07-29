@@ -54,7 +54,10 @@ class BranchPrediction:
         if exposure and float(exposure) > 0 and self.amplitude_norm > 0:
             raw_a = float(self.amplitude_norm) * float(exposure)
             soft["phonon.A"] = (raw_a, max(self.amplitude_rel_sigma, A_REL_SIGMA_FLOOR) * raw_a)
-        return ParamConstraints(soft=soft)
+        return ParamConstraints(
+            soft=soft,
+            origins={name: "prior_predictive" for name in soft},
+        )
 
     def hard_constraints(self, exposure) -> ParamConstraints:
         """The near-Γ **constrained** recipe (Phase A; the old ``examples/old_fitters`` ``Constrained``
@@ -68,7 +71,10 @@ class BranchPrediction:
             hard["phonon.Gamma"] = float(self.gamma)
         if exposure and float(exposure) > 0 and self.amplitude_norm > 0:
             hard["phonon.A"] = float(self.amplitude_norm) * float(exposure)
-        return ParamConstraints(hard=hard)
+        return ParamConstraints(
+            hard=hard,
+            origins={name: "prior_predictive" for name in hard},
+        )
 
 
 def _is_clean_anchor(p: dict, sample, t_bin) -> bool:

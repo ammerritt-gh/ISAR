@@ -3,22 +3,24 @@ one honest answer.
 
 Selection is by information criterion, **never raw chi^2** (D2): raw chi^2 always prefers the
 model with more peaks and so fits noise as a phantom phonon — the named ``fit_phonons``
-anti-pattern (§0.2). Because the structure loop's ``cost`` is the Baker-Cousins -2lnL
-(``isar.synth.estimators.baker_cousins_cost``), the information criteria are exact:
+anti-pattern (§0.2). The structure loop's ``cost`` is the Baker-Cousins -2lnL
+(``isar.synth.estimators.baker_cousins_cost``), so the implemented formulas are:
 
     AIC  = cost + 2k
     AICc = AIC + 2k(k+1)/(n-k-1)         (small-n correction; n/k ~ 5-9 on these scans)
     BIC  = cost + k*ln(n)
 
-Akaike weights ``w_i = exp(-dAIC_i/2) / sum_j exp(-dAIC_j/2)`` rank the structures; those with
+A data-only cost evaluated at a constrained optimum is not automatically a comparable data-only
+MLE. STAT-1 records that eligibility without changing this legacy calculation; STAT-2 owns
+enforcement. Akaike weights ``w_i = exp(-dAIC_i/2) / sum_j exp(-dAIC_j/2)`` rank the structures; those with
 negligible weight drop out and the survivors are pooled (:mod:`pool_across_model`, built next)
 into the across-model omega0 distribution that the modality test disposes (fold vs fork).
 
 For strictly nested structures (e.g. ``stokes+bg`` subset of ``elastic+stokes+bg``) the
-"nested F-test" of D2 is realised as the likelihood-ratio test: the deviance drop
-``cost_reduced - cost_full`` is ~ chi2(dk) under the null, so the extra component is warranted
-when ``p`` is small. Non-converged fits are excluded — a fit the optimizer never settled is not
-a structure "the data supports".
+"nested F-test" of D2 is realised as the likelihood-ratio diagnostic: the deviance drop
+``cost_reduced - cost_full`` is compared with chi2(dk). That reference is not generally calibrated
+when an extra component lies on a boundary or is unidentified under the null. Non-converged fits
+are excluded — a fit the optimizer never settled is not a structure "the data supports".
 """
 from __future__ import annotations
 
@@ -30,6 +32,7 @@ import numpy as np
 from isar.analyze.errors.bootstrap import kde_modes
 
 DEFAULT_WEIGHT_FLOOR = 0.01
+MODEL_SELECTION_REVISION = "isar.model_selection/1"
 
 
 @dataclass
@@ -49,6 +52,7 @@ class ModelScore:
     weight: float
     nested: dict | None
     survives: bool
+    fit_semantics: dict | None = None
 
 
 def _aicc(aic: float, k: int, n: int) -> float:
@@ -91,6 +95,7 @@ def score_models(results, *, weight_floor: float = DEFAULT_WEIGHT_FLOOR) -> list
             aic=aic, aicc=_aicc(aic, r.k, n), bic=r.cost + r.k * math.log(n),
             delta_aic=aic - aic_min, weight=float(w),
             nested=_nested_test(r, conv), survives=bool(w >= weight_floor),
+            fit_semantics=getattr(r, "fit_semantics", None),
         ))
     return out
 
@@ -133,6 +138,7 @@ class Selection:
     survivors: list
     pooled: Pooled | None
     modality: str
+    fit_selection_semantics: dict | None = None
 
 
 def _weighted_quantile(values, weights, q: float) -> float:
