@@ -12,6 +12,13 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from isar.schema.statistics import (
+    FIT_SELECTION_SCHEMA,
+    INTERVAL_SCHEMA,
+    PROBABILITY_SCHEMA,
+    read_optional,
+)
+
 
 # ---------------------------------------------------------------------------
 # small coercion helpers
@@ -155,6 +162,24 @@ class FitView:
     @property
     def confidence(self) -> float | None:
         return _f(self._pick("confidence", "confidence"))
+
+    def _statistical_semantics(self, key: str, schema: str) -> dict | None:
+        # Full session provenance wins over the deliberately compact CSV projection.
+        if self._outcome.get(key) is not None:
+            return read_optional(self._outcome.get(key), schema)
+        return read_optional(_json_value(self._row.get(key)), schema)
+
+    @property
+    def fit_selection_semantics(self) -> dict | None:
+        return self._statistical_semantics("fit_selection_semantics", FIT_SELECTION_SCHEMA)
+
+    @property
+    def interval_semantics(self) -> dict | None:
+        return self._statistical_semantics("interval_semantics", INTERVAL_SCHEMA)
+
+    @property
+    def probability_semantics(self) -> dict | None:
+        return self._statistical_semantics("probability_semantics", PROBABILITY_SCHEMA)
 
     @property
     def modality(self) -> str | None:
