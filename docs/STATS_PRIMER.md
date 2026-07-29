@@ -68,6 +68,21 @@ Every authority declaration is scoped: for example, an interval can remain activ
 cannot construct valid metadata, it records a structured `semantics_construction_failed` warning
 and publishes the otherwise-valid scientific result with semantics unavailable.
 
+Candidate comparability is represented by four identities, not inferred from a shared model label:
+the exact data/energy-grid/mask/normalization/likelihood context, model parameterization, effective
+constraints, and their combined comparison context. Model-set fingerprints contain sorted
+structured model/context records, so enumeration order is irrelevant, while changing a candidate
+route or Akaike denominator changes the complete selection identity. The selection record publishes
+its aggregate eligibility and every candidate-specific reason; STAT-2 consumes those producer-owned
+classifications rather than re-deriving them.
+
+For intervals, producer capability and realized authority are separate. A bootstrap or profile
+producer may offer an interval to the delivery ladder, but only the value actually selected after
+reliability/trust gates, branch triage, and connected tracking carries delivery or stopping
+authority. Predictive/projection semantics fingerprints are authenticated by readers. Missing
+semantics remain valid legacy numerical input; present-but-modified semantics are refused under the
+stable `predictive_semantics_invalid` reason.
+
 Verify the map (no workspace needed):
 
 ```

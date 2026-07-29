@@ -980,6 +980,50 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   shadow-only after those gates; certification repair, target-presence support, scan-window scoring,
   and acquisition authority are outside this ruling.
 
+- **S7.** (2026-07-29, Implemented; amends S6)
+  **STAT-1 semantics identities prove their stated comparison context, and interval authority is
+  attached to the realized delivery rather than producer capability.** This STAT-1.5 repair is
+  metadata-only: it changes no fit, likelihood, information criterion, weight, interval value,
+  verdict, certification result, stop, action, cache contract, acquisition, or EIG calculation.
+
+  Candidate fit records now publish distinct `data_likelihood_fingerprint`,
+  `model_parameterization_fingerprint`, `constraint_fingerprint`, and
+  `comparison_context_fingerprint` values. The data identity includes observed counts, fitted
+  energy grid, mask, exposure normalization, fixed likelihood context, and the Baker–Cousins
+  revision. The parameterization identity includes component structure, parameter names, bounds,
+  fixed values, and effective parameter count. `conditioning_fingerprint` remains an additive
+  compatibility alias for the complete comparison-context identity rather than the former
+  constraint-only hash.
+
+  Every offered, scored, Akaike-denominator, error-attachment, and legacy-pool identity is now a
+  sorted set of structured model/context records. The complete selection identity also includes the
+  canonical candidate-generation route, each candidate's full fit semantics, criterion inputs, and
+  aggregate `selection_eligibility` with all structured contributing reasons. Merely permuting
+  candidate order cannot change these fingerprints. Data-dependent or post-selection conditioning
+  is the strongest candidate-level constraint defect; an incomparable data-likelihood context is
+  the strongest selection-level defect.
+
+  Interval records separately retain `producer_authority_scopes` and realized
+  `authority_scopes`. The latter is recomputed after the delivery ladder, branch triage, and
+  connected-tracker selection or withholding. A selected reliable bootstrap, certifiable profile,
+  or trusted HESSE interval can carry active delivery/stopping authority; a flagged bootstrap,
+  unselected profile, untrusted HESSE result, or withdrawn scalar delivery cannot.
+
+  Recognized predictive/projection semantics are self-authenticated on read by recomputing
+  `statistical_semantics_fingerprint`; the strict `isar.master_predictive/2` reader additionally
+  checks the artifact-level reference and every per-model semantics record against the authenticated
+  ensemble. Absence remains accepted for legacy numerical use and unavailable to later semantics
+  authority. The master interval records both the particle measure actually present and that the
+  `/2` contract permits heterogeneous fallback; an accidentally homogeneous artifact remains
+  design-ineligible until STAT-3 supplies the homogeneous contract.
+
+  The metadata identity firewall is pinned through result-content hashing, master revision and fit
+  cache inputs, tied model ordering, branch-track revision and assignments, calibration lookup,
+  predictive numerical identity, stopping, action fingerprints, and the deterministic campaign
+  harness. `PREDICTIVE_CONTRACT` and the unchanged-master carry gate remain unchanged. With these
+  repairs landed, the descriptive STAT-1 contract is complete enough for STAT-2 to begin enforcing
+  selection eligibility.
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:

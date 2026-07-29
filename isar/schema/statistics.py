@@ -132,6 +132,7 @@ _VOCABULARIES = {
     "model_weight_kind": MODEL_WEIGHT_KINDS,
     "bootstrap_measure_kind": BOOTSTRAP_MEASURE_KINDS,
     "particle_measure_kind": PARTICLE_MEASURE_KINDS,
+    "actual_particle_measure_kind": PARTICLE_MEASURE_KINDS,
     "draw_measure_kind": DRAW_MEASURE_KINDS,
     "quantity_kind": QUANTITY_KINDS,
     "source_measure_semantics": SOURCE_MEASURE_SEMANTICS,
@@ -328,6 +329,40 @@ def _validate_fingerprints(record: Mapping[str, Any]) -> None:
                 raise SemanticsConstructionError("malformed_fingerprint", path)
 
 
+_PREDICTIVE_FINGERPRINT_NAMESPACES = {
+    "master_predictive": "isar.predictive_statistical_semantics/1",
+    "target_projection": "isar.target_projection_statistical_semantics/1",
+}
+
+
+def _validate_predictive_self_fingerprint(
+    record: Mapping[str, Any],
+    *,
+    required: bool,
+) -> None:
+    if record.get("schema") != PREDICTIVE_SCHEMA:
+        return
+    stored = record.get("statistical_semantics_fingerprint")
+    if stored is None:
+        if required:
+            raise SemanticsConstructionError(
+                "missing_statistical_semantics_fingerprint"
+            )
+        return
+    namespace = _PREDICTIVE_FINGERPRINT_NAMESPACES.get(record.get("artifact_kind"))
+    if namespace is None:
+        raise SemanticsConstructionError(
+            "unsupported_predictive_semantics_artifact_kind"
+        )
+    payload = dict(record)
+    payload.pop("statistical_semantics_fingerprint", None)
+    recomputed = semantics_fingerprint(namespace, payload)
+    if recomputed != stored:
+        raise SemanticsConstructionError(
+            "statistical_semantics_fingerprint_mismatch"
+        )
+
+
 def _validate_semantics(record: Mapping[str, Any], expected_schema: str, *, for_write: bool) -> None:
     if not isinstance(expected_schema, str) or expected_schema not in SUPPORTED_SCHEMAS:
         raise SemanticsConstructionError("unsupported_expected_schema", expected_schema)
@@ -344,11 +379,35 @@ def _validate_semantics(record: Mapping[str, Any], expected_schema: str, *, for_
         raise SemanticsConstructionError("deprecated_formal_bayesian_flag")
     _validate_vocabularies(record)
     _validate_fingerprints(record)
+    if expected_schema == FIT_SELECTION_SCHEMA and "estimator_kind" in record:
+        required = (
+            "data_likelihood_fingerprint",
+            "model_parameterization_fingerprint",
+            "constraint_fingerprint",
+            "comparison_context_fingerprint",
+            "conditioning_fingerprint",
+        )
+        missing = [name for name in required if not record.get(name)]
+        if missing:
+            raise SemanticsConstructionError(
+                "missing_comparison_context_fingerprint", ",".join(missing)
+            )
+        if record["conditioning_fingerprint"] != record["comparison_context_fingerprint"]:
+            raise SemanticsConstructionError("conditioning_fingerprint_alias_mismatch")
+    if expected_schema == FIT_SELECTION_SCHEMA and "model_selection_fingerprint" in record:
+        if not record.get("selection_eligibility"):
+            raise SemanticsConstructionError("missing_aggregate_selection_eligibility")
+        if "selection_ineligibility_reasons" not in record:
+            raise SemanticsConstructionError("missing_aggregate_selection_reasons")
     for path, item in _walk(record):
         if not isinstance(item, Mapping):
             continue
         if "authority_scopes" in item:
             _validate_authority_scopes(item["authority_scopes"], for_write=for_write)
+        if "producer_authority_scopes" in item:
+            _validate_authority_scopes(
+                item["producer_authority_scopes"], for_write=for_write
+            )
 
         constraints = item.get("effective_constraints")
         if constraints is not None:
@@ -374,6 +433,14 @@ def _validate_semantics(record: Mapping[str, Any], expected_schema: str, *, for_
             "evidence_comparable",
             "bayesian_model_average",
             "availability",
+            "producer_availability",
+            "construction_complete",
+            "homogeneous_design_eligible",
+            "actual_particle_basis_homogeneous",
+            "contract_permits_heterogeneous_fallback",
+            "selected_for_delivery",
+            "passed_reliability_gate",
+            "selected_interval_certifiable",
         ):
             if key in item and not isinstance(item[key], bool):
                 raise SemanticsConstructionError("invalid_boolean_field", f"{path}.{key}")
@@ -393,6 +460,7 @@ def validate_for_write(record: Mapping[str, Any], expected_schema: str) -> dict[
     """Strictly validate producer metadata and return a detached canonical record."""
     try:
         _validate_semantics(record, expected_schema, for_write=True)
+        _validate_predictive_self_fingerprint(record, required=False)
         return json.loads(_canonical_json(record))
     except SemanticsConstructionError:
         raise
@@ -402,14 +470,57 @@ def validate_for_write(record: Mapping[str, Any], expected_schema: str) -> dict[
         ) from exc
 
 
+def _validate_for_read(
+    record: Mapping[str, Any],
+    expected_schema: str,
+    *,
+    require_predictive_fingerprint: bool = False,
+) -> dict[str, Any]:
+    _validate_semantics(record, expected_schema, for_write=False)
+    _validate_predictive_self_fingerprint(
+        record,
+        required=require_predictive_fingerprint,
+    )
+    return json.loads(_canonical_json(record))
+
+
+def validate_fit_selection_semantics(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a recognized fit/selection record read from persistence."""
+    return _validate_for_read(record, FIT_SELECTION_SCHEMA)
+
+
+def validate_interval_semantics(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a recognized interval record read from persistence."""
+    return _validate_for_read(record, INTERVAL_SCHEMA)
+
+
+def validate_probability_semantics(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a recognized probability-like record read from persistence."""
+    return _validate_for_read(record, PROBABILITY_SCHEMA)
+
+
+def validate_predictive_semantics(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and authenticate a recognized predictive/projection semantics record."""
+    return _validate_for_read(
+        record,
+        PREDICTIVE_SCHEMA,
+        require_predictive_fingerprint=True,
+    )
+
+
 def read_optional(record: Any, expected_schema: str) -> dict[str, Any] | None:
     """Read supported metadata, returning ``None`` for absent or unsupported legacy records."""
     if not isinstance(record, Mapping) or record.get("schema") != expected_schema:
         return None
     try:
-        _validate_semantics(record, expected_schema, for_write=False)
-        return json.loads(_canonical_json(record))
-    except (SemanticsConstructionError, TypeError, ValueError, OverflowError):
+        validators = {
+            FIT_SELECTION_SCHEMA: validate_fit_selection_semantics,
+            INTERVAL_SCHEMA: validate_interval_semantics,
+            PROBABILITY_SCHEMA: validate_probability_semantics,
+            PREDICTIVE_SCHEMA: validate_predictive_semantics,
+        }
+        return validators[expected_schema](record)
+    except (SemanticsConstructionError, KeyError, TypeError, ValueError, OverflowError):
         return None
 
 

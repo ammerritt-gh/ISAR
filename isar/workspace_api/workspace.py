@@ -475,6 +475,34 @@ class Workspace:
             raise ValueError(f"target projection carries no authority basis in {ref!r}")
         if not isinstance(payload.get("models"), list):
             raise ValueError(f"target projection models must be a list in {ref!r}")
+        semantics = payload.get("statistical_semantics")
+        if semantics is not None:
+            from isar.schema.statistics import (
+                SemanticsConstructionError,
+                validate_predictive_semantics,
+            )
+
+            try:
+                validated = validate_predictive_semantics(semantics)
+            except (SemanticsConstructionError, TypeError, ValueError, OverflowError) as exc:
+                reason = (
+                    exc.reason_code
+                    if isinstance(exc, SemanticsConstructionError)
+                    else type(exc).__name__
+                )
+                raise ValueError(
+                    f"target projection statistical semantics are invalid in {ref!r}: {reason}"
+                ) from exc
+            for name in (
+                "statistical_semantics_fingerprint",
+                "source_predictive_semantics_fingerprint",
+                "target_projection_set_fingerprint",
+            ):
+                if payload.get(name) != validated.get(name):
+                    raise ValueError(
+                        f"target projection {name} does not match its authenticated semantics "
+                        f"in {ref!r}"
+                    )
         return payload
 
     @property

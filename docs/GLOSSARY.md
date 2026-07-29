@@ -64,10 +64,13 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **statistical semantics** — additive producer metadata declaring what estimator, constraints,
   model denominator, interval/particle measure, probability-like score, and authority scope a
   quantity actually has. Missing metadata leaves a legacy quantity valid but semantically
-  unavailable; readers never fabricate producer provenance.
+  unavailable; readers never fabricate producer provenance. Candidate comparison identity is split
+  into data-likelihood, model-parameterization, constraint, and combined-context fingerprints;
+  predictive/projection semantics are self-authenticated when present.
 - **authority scope** — one named use for which a statistical quantity is active, diagnostic,
   shadow-only, inactive, or ineligible. Certification, stopping, EIG, acquisition selection, and
-  user diagnostics are separate scopes.
+  user diagnostics are separate scopes. For intervals, a producer's capability is distinct from
+  the realized authority of the value that survives reliability, triage, and tracking gates.
 - **model interval** — the current pooled-master ω quantile from retained ordinary-AIC-weighted
   particles. It is conditional on target-present models and may mix nested, bootstrap, and
   HESSE/Laplace particles. It remains active for legacy certification and stopping, but is

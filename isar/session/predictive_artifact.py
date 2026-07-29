@@ -185,14 +185,14 @@ def _predictive_statistical_semantics(models, fits, fit_selection_semantics, *, 
             "retained_source_weight_total": float(
                 sum(float(model["source_weight"]) for model in models)
             ),
-            "published_models": [
+            "published_models": sorted([
                 {
                     "label": str(model["label"]),
                     "source_weight": float(model["source_weight"]),
                     "published_weight": float(model["weight"]),
                 }
                 for model in models
-            ],
+            ], key=lambda item: item["label"]),
         }
         retained_fingerprint = semantics_fingerprint(
             "isar.predictive_retained_model_set/1", retained_payload
@@ -283,6 +283,10 @@ def _predictive_statistical_semantics(models, fits, fit_selection_semantics, *, 
             if len(distinct_particles) == 1
             else "heterogeneous_model_dependent"
         )
+        ensemble_inference_paradigm = (
+            "mixed" if len(distinct_particles) > 1 else
+            next(iter(per_model.values()))["inference_paradigm"]
+        )
         record = {
             "schema": PREDICTIVE_SCHEMA,
             "artifact_kind": "master_predictive",
@@ -301,12 +305,11 @@ def _predictive_statistical_semantics(models, fits, fit_selection_semantics, *, 
             "predictive_retained_set_fingerprint": retained_fingerprint,
             "model_weight_kind": "akaike_relative_weight",
             "particle_measure_kind": ensemble_particle_kind,
+            "actual_particle_measure_kind": ensemble_particle_kind,
             "draw_measure_kind": "equal_weight_empirical_particles",
             "actual_particle_basis_homogeneous": len(distinct_particles) == 1,
-            "inference_paradigm": (
-                "mixed" if len(distinct_particles) > 1 else
-                next(iter(per_model.values()))["inference_paradigm"]
-            ),
+            "contract_permits_heterogeneous_fallback": True,
+            "inference_paradigm": ensemble_inference_paradigm,
             "formal_bayesian_model": False,
             "construction_complete": bool(complete),
             "homogeneous_design_eligible": False,
@@ -316,9 +319,11 @@ def _predictive_statistical_semantics(models, fits, fit_selection_semantics, *, 
             "quantities": {
                 "model_interval": {
                     "interval_kind": "conditional_target_present_mixed_particle_quantile",
-                    "particle_measure_kind": "heterogeneous_model_dependent",
+                    "particle_measure_kind": ensemble_particle_kind,
+                    "actual_particle_measure_kind": ensemble_particle_kind,
                     "model_weight_kind": "akaike_relative_weight",
-                    "inference_paradigm": "mixed",
+                    "inference_paradigm": ensemble_inference_paradigm,
+                    "contract_permits_heterogeneous_fallback": True,
                     "formal_bayesian_model": False,
                     "conditioning": "target_present_models_only",
                     "authority_scopes": authority_scopes(
@@ -901,14 +906,14 @@ def build_target_projection(artifact, outcome, *, master_revision, calibration_f
     try:
         target_projection_set_fingerprint = semantics_fingerprint(
             "isar.target_projection_model_set/1",
-            [
+            sorted([
                 {
                     "label": item.get("label"),
                     "weight": item.get("weight"),
                     "draw_count": len(item.get("target_present_by_draw") or ()),
                 }
                 for item in projected
-            ],
+            ], key=lambda item: str(item["label"])),
         )
     except SemanticsConstructionError as exc:
         log.warning(

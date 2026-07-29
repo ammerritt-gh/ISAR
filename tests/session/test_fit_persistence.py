@@ -73,7 +73,9 @@ def test_fit_one_populates_amplitudes_and_candidates():
     assert isinstance(cands, list) and cands
     keys = {"label", "k", "ndof", "cost", "cost_per_dof", "n_modes",
             "delta_aic", "akaike_weight", "usable", "estimator_kind", "fit_kind",
-            "constraint_origin", "selection_eligibility", "conditioning_fingerprint"}
+            "constraint_origin", "selection_eligibility", "conditioning_fingerprint",
+            "data_likelihood_fingerprint", "model_parameterization_fingerprint",
+            "constraint_fingerprint", "comparison_context_fingerprint"}
     for row in cands:
         assert set(row) == keys
         assert isinstance(row["label"], str) and isinstance(row["k"], int)

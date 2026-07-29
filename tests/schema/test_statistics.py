@@ -21,10 +21,33 @@ def _fit_record(**overrides):
         "estimator_kind": "data_likelihood_mle",
         "selection_eligibility": "eligible",
         "effective_constraints": [],
-        "conditioning_fingerprint": semantics_fingerprint("conditioning", {"constraints": []}),
         "authority_scopes": authority_scopes(single_fit_delivery="active"),
     }
     record.update(overrides)
+    data_fingerprint = semantics_fingerprint(
+        "test.data_likelihood", {"energy": [0.0], "counts": [1.0], "mask": [False]}
+    )
+    model_fingerprint = semantics_fingerprint(
+        "test.model_parameterization", {"label": "one", "parameters": ["a"]}
+    )
+    constraint_fingerprint = semantics_fingerprint(
+        "test.constraints",
+        {"effective_constraints": record["effective_constraints"]},
+    )
+    comparison_fingerprint = semantics_fingerprint(
+        "test.comparison",
+        {
+            "data_likelihood_fingerprint": data_fingerprint,
+            "model_parameterization_fingerprint": model_fingerprint,
+            "constraint_fingerprint": constraint_fingerprint,
+            "estimator_kind": record["estimator_kind"],
+        },
+    )
+    record.setdefault("data_likelihood_fingerprint", data_fingerprint)
+    record.setdefault("model_parameterization_fingerprint", model_fingerprint)
+    record.setdefault("constraint_fingerprint", constraint_fingerprint)
+    record.setdefault("comparison_context_fingerprint", comparison_fingerprint)
+    record.setdefault("conditioning_fingerprint", comparison_fingerprint)
     return record
 
 
@@ -154,6 +177,23 @@ def test_data_dependent_prior_cannot_claim_comparable_evidence():
     record["evidence_comparable"] = False
     record["formal_bayesian"] = False
     with pytest.raises(SemanticsConstructionError, match="deprecated_formal_bayesian_flag"):
+        validate_for_write(record, PROBABILITY_SCHEMA)
+
+
+def test_producer_authority_and_actual_particle_measure_use_controlled_vocabularies():
+    record = {
+        "schema": PROBABILITY_SCHEMA,
+        "producer_authority_scopes": {"user_diagnostic": "active"},
+        "authority_scopes": authority_scopes(user_diagnostic="active"),
+    }
+    with pytest.raises(SemanticsConstructionError, match="malformed_authority_scopes"):
+        validate_for_write(record, PROBABILITY_SCHEMA)
+
+    record["producer_authority_scopes"] = authority_scopes(
+        user_diagnostic="active"
+    )
+    record["actual_particle_measure_kind"] = "made_up_particle_measure"
+    with pytest.raises(SemanticsConstructionError, match="invalid_vocabulary_value"):
         validate_for_write(record, PROBABILITY_SCHEMA)
 
 

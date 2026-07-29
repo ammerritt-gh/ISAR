@@ -159,6 +159,8 @@ PREDICTIVE_BASIS_INCOMPLETE = "predictive_basis_incomplete"
 PREDICTIVE_BASIS_FINGERPRINT_MISMATCH = "predictive_basis_fingerprint_mismatch"
 #: Structural/measure violations found by :func:`validate_master_predictive_artifact`.
 PREDICTIVE_ARTIFACT_INVALID = "predictive_artifact_invalid"
+#: A recognized additive statistical-semantics record does not authenticate against its contents.
+PREDICTIVE_SEMANTICS_INVALID = "predictive_semantics_invalid"
 
 
 class PredictiveArtifactError(ValueError):
@@ -420,6 +422,10 @@ def validate_master_predictive_artifact(artifact) -> Mapping:
 
 def _validate_master_predictive_artifact(artifact) -> Mapping:
     from isar.analyze import model_manifest as manifest_mod
+    from isar.schema.statistics import (
+        SemanticsConstructionError,
+        validate_predictive_semantics,
+    )
 
     if not isinstance(artifact, Mapping):
         _invalid("predictive artifact must be an object", ARTIFACT_SCHEMA_UNSUPPORTED)
@@ -459,6 +465,54 @@ def _validate_master_predictive_artifact(artifact) -> Mapping:
                for index, model in enumerate(models)]
     if not math.isclose(sum(weights), 1.0, rel_tol=1e-6, abs_tol=1e-9):
         _invalid("predictive model weights are not normalized")
+
+    semantics = artifact.get("statistical_semantics")
+    if semantics is not None:
+        try:
+            validated_semantics = validate_predictive_semantics(semantics)
+        except (SemanticsConstructionError, TypeError, ValueError, OverflowError) as error:
+            detail = (
+                error.reason_code
+                if isinstance(error, SemanticsConstructionError)
+                else type(error).__name__
+            )
+            _invalid(
+                f"predictive statistical semantics failed authentication ({detail})",
+                PREDICTIVE_SEMANTICS_INVALID,
+            )
+        semantics_fingerprint = validated_semantics["statistical_semantics_fingerprint"]
+        if artifact.get("statistical_semantics_fingerprint") != semantics_fingerprint:
+            _invalid(
+                "artifact statistical_semantics_fingerprint does not match its semantics record",
+                PREDICTIVE_SEMANTICS_INVALID,
+            )
+        for name in (
+            "predictive_retained_set_fingerprint",
+            "construction_complete",
+            "homogeneous_design_eligible",
+        ):
+            if artifact.get(name) != validated_semantics.get(name):
+                _invalid(
+                    f"artifact {name} does not match its authenticated semantics record",
+                    PREDICTIVE_SEMANTICS_INVALID,
+                )
+        semantic_models = {
+            str(item.get("label")): item
+            for item in validated_semantics.get("models") or ()
+            if isinstance(item, Mapping)
+        }
+        if set(semantic_models) != {str(model["label"]) for model in models}:
+            _invalid(
+                "predictive statistical semantics model set does not match the physical artifact",
+                PREDICTIVE_SEMANTICS_INVALID,
+            )
+        for model in models:
+            label = str(model["label"])
+            if model.get("statistical_semantics") != semantic_models[label]:
+                _invalid(
+                    f"predictive model {label!r} semantics do not match the authenticated ensemble",
+                    PREDICTIVE_SEMANTICS_INVALID,
+                )
 
     stored = artifact.get("predictive_basis_fingerprint")
     if not isinstance(stored, str) or not stored:

@@ -563,6 +563,18 @@ def _candidate_rows(scores, fits) -> list | None:
             "fit_kind": (s.fit_semantics or {}).get("fit_kind"),
             "constraint_origin": (s.fit_semantics or {}).get("aggregate_constraint_origin"),
             "selection_eligibility": (s.fit_semantics or {}).get("selection_eligibility"),
+            "data_likelihood_fingerprint": (s.fit_semantics or {}).get(
+                "data_likelihood_fingerprint"
+            ),
+            "model_parameterization_fingerprint": (s.fit_semantics or {}).get(
+                "model_parameterization_fingerprint"
+            ),
+            "constraint_fingerprint": (s.fit_semantics or {}).get(
+                "constraint_fingerprint"
+            ),
+            "comparison_context_fingerprint": (s.fit_semantics or {}).get(
+                "comparison_context_fingerprint"
+            ),
             "conditioning_fingerprint": (s.fit_semantics or {}).get(
                 "conditioning_fingerprint"
             ),
@@ -572,6 +584,77 @@ def _candidate_rows(scores, fits) -> list | None:
 
 def _model_set_fingerprint(kind: str, payload) -> str:
     return semantics_fingerprint(f"isar.{kind}/1", payload)
+
+
+_ELIGIBILITY_PRECEDENCE = {
+    "eligible": 0,
+    "ineligible_unapproved_conditioning": 1,
+    "ineligible_soft_penalized": 2,
+    "ineligible_data_dependent_conditioning": 3,
+    "ineligible_incomparable_context": 4,
+}
+
+
+def _canonical_candidate_generation_route(route: dict) -> dict:
+    """Order-invariant form of the model-set portions of a generation route."""
+    canonical = copy.deepcopy(dict(route))
+    for name in (
+        "guideline_structure_filter",
+        "labels_before_guideline",
+        "offered_labels",
+        "scored_labels",
+    ):
+        if canonical.get(name) is not None:
+            canonical[name] = sorted(str(value) for value in canonical[name])
+    return canonical
+
+
+def _model_set_record(label, fit_semantics: dict) -> dict:
+    """The structured model identity needed to distinguish equal labels in different contexts."""
+    return {
+        "label": str(label),
+        "data_likelihood_fingerprint": fit_semantics["data_likelihood_fingerprint"],
+        "model_parameterization_fingerprint": fit_semantics[
+            "model_parameterization_fingerprint"
+        ],
+        "constraint_fingerprint": fit_semantics["constraint_fingerprint"],
+        "comparison_context_fingerprint": fit_semantics[
+            "comparison_context_fingerprint"
+        ],
+        "selection_eligibility": fit_semantics["selection_eligibility"],
+    }
+
+
+def _aggregate_selection_eligibility(candidate_records: list[dict]) -> tuple[str, list[dict]]:
+    """Strongest complete normalization defect plus every candidate-specific cause."""
+    reason_labels: dict[str, list[str]] = {}
+    eligibilities = []
+    likelihoods = set()
+    for candidate in candidate_records:
+        label = str(candidate["label"])
+        fit_semantics = candidate["fit_semantics"]
+        eligibility = str(fit_semantics["selection_eligibility"])
+        eligibilities.append(eligibility)
+        likelihoods.add(str(fit_semantics["data_likelihood_fingerprint"]))
+        for reason in fit_semantics.get("selection_ineligibility_reasons") or ():
+            reason_labels.setdefault(str(reason), []).append(label)
+    if len(likelihoods) != 1:
+        eligibilities.append("ineligible_incomparable_context")
+        reason_labels.setdefault("candidate_data_likelihood_contexts_differ", []).extend(
+            str(candidate["label"]) for candidate in candidate_records
+        )
+    aggregate = max(
+        eligibilities or ["eligible"],
+        key=lambda value: _ELIGIBILITY_PRECEDENCE[value],
+    )
+    reasons = [
+        {
+            "reason_code": reason,
+            "candidate_labels": sorted(set(labels)),
+        }
+        for reason, labels in sorted(reason_labels.items())
+    ]
+    return aggregate, reasons
 
 
 def _build_selection_semantics(
@@ -588,14 +671,32 @@ def _build_selection_semantics(
             raise SemanticsConstructionError(
                 "missing_candidate_fit_semantics", ",".join(str(label) for label in missing)
             )
-        offered_labels = [str(r.label) for r in results]
-        scored_labels = [str(score.label) for score in selection.scores]
-        denominator = [
-            {"label": str(score.label), "aic": float(score.aic)}
-            for score in selection.scores
-        ]
-        pool_labels = []
         by_label = {r.label: r for r in results}
+        offered_records = sorted(
+            (
+                _model_set_record(r.label, r.fit_semantics)
+                for r in results
+            ),
+            key=lambda item: item["label"],
+        )
+        scored_records = sorted(
+            (
+                _model_set_record(score.label, score.fit_semantics)
+                for score in selection.scores
+            ),
+            key=lambda item: item["label"],
+        )
+        denominator = sorted(
+            (
+                {
+                    **_model_set_record(score.label, score.fit_semantics),
+                    "aic": float(score.aic),
+                }
+                for score in selection.scores
+            ),
+            key=lambda item: item["label"],
+        )
+        pool_labels = []
         for score in selection.scores:
             if not score.survives:
                 continue
@@ -604,21 +705,35 @@ def _build_selection_semantics(
             )
             if samples is not None and np.size(samples) > 0:
                 pool_labels.append(str(score.label))
+        error_attachment_records = sorted(
+            (
+                _model_set_record(label, by_label[label].fit_semantics)
+                for label in error_attachment_labels
+            ),
+            key=lambda item: item["label"],
+        )
+        pool_records = sorted(
+            (
+                _model_set_record(label, by_label[label].fit_semantics)
+                for label in pool_labels
+            ),
+            key=lambda item: item["label"],
+        )
         component_fingerprints = {
             "offered_model_set_fingerprint": _model_set_fingerprint(
-                "offered_model_set", offered_labels
+                "offered_model_set", offered_records
             ),
             "scored_model_set_fingerprint": _model_set_fingerprint(
-                "scored_model_set", scored_labels
+                "scored_model_set", scored_records
             ),
             "weight_denominator_fingerprint": _model_set_fingerprint(
                 "akaike_weight_denominator", denominator
             ),
             "error_attachment_set_fingerprint": _model_set_fingerprint(
-                "error_attachment_set", list(error_attachment_labels)
+                "error_attachment_set", error_attachment_records
             ),
             "legacy_pool_set_fingerprint": _model_set_fingerprint(
-                "legacy_pool_set", pool_labels
+                "legacy_pool_set", pool_records
             ),
         }
         candidate_records = []
@@ -633,24 +748,25 @@ def _build_selection_semantics(
                     "fit_semantics": score.fit_semantics,
                 }
             )
+        aggregate_eligibility, aggregate_reasons = _aggregate_selection_eligibility(
+            candidate_records
+        )
+        canonical_route = _canonical_candidate_generation_route(route)
         selection_payload = {
             **component_fingerprints,
             "ordinary_aic_revision": select.MODEL_SELECTION_REVISION,
             "weight_floor": float(select.DEFAULT_WEIGHT_FLOOR),
-            "candidates": [
-                {
-                    "label": item["label"],
-                    "cost": item["cost"],
-                    "effective_parameter_count": item["effective_parameter_count"],
-                    "akaike_weight": item["akaike_weight"],
-                }
-                for item in candidate_records
-            ],
+            "candidate_generation_route": canonical_route,
+            "selection_eligibility": aggregate_eligibility,
+            "selection_ineligibility_reasons": aggregate_reasons,
+            "candidates": sorted(candidate_records, key=lambda item: item["label"]),
         }
         record = {
             "schema": FIT_SELECTION_SCHEMA,
             "candidate_generation_route": route,
             "model_weight_kind": "akaike_relative_weight" if selection.scores else "none",
+            "selection_eligibility": aggregate_eligibility,
+            "selection_ineligibility_reasons": aggregate_reasons,
             **component_fingerprints,
             "model_selection_fingerprint": semantics_fingerprint(
                 "isar.model_selection_semantics/1", selection_payload
@@ -680,6 +796,7 @@ def _outcome_interval_semantics(
     hesse_interval,
     hesse_trusted,
     bayes_interval,
+    interval_reliable,
 ) -> dict | None:
     """Propagate producer-owned interval meaning onto the four persisted quantities."""
     try:
@@ -698,6 +815,7 @@ def _outcome_interval_semantics(
                 "nominal_level": 0.68,
                 "unavailable_reason": reason,
                 "calibration_target": None,
+                "producer_authority_scopes": authority_scopes(),
                 "authority_scopes": authority_scopes(),
             }
             if fit_semantics is not None:
@@ -756,12 +874,13 @@ def _outcome_interval_semantics(
                     },
                 ),
                 "calibration_target": None,
-                "authority_scopes": authority_scopes(
-                    single_fit_delivery="active",
-                    legacy_master_certification="active",
-                    stopping="active",
+                "producer_authority_scopes": authority_scopes(
+                    single_fit_delivery="candidate",
+                    legacy_master_certification="candidate",
+                    stopping="candidate",
                     user_diagnostic="active",
                 ),
+                "authority_scopes": authority_scopes(user_diagnostic="active"),
             }
         else:
             interval_item = unavailable("not_produced")
@@ -785,12 +904,13 @@ def _outcome_interval_semantics(
                     "inference_paradigm": "frequentist_asymptotic",
                     "hesse_trusted": bool(hesse_trusted),
                     "particle_measure_kind": "laplace_hesse_parameter_approximation",
-                    "authority_scopes": authority_scopes(
-                        single_fit_delivery="active",
-                        legacy_master_certification=("active" if hesse_trusted else "inactive"),
-                        stopping=("active" if hesse_trusted else "inactive"),
+                    "producer_authority_scopes": authority_scopes(
+                        single_fit_delivery="candidate",
+                        legacy_master_certification="candidate",
+                        stopping="candidate",
                         user_diagnostic="active",
                     ),
+                    "authority_scopes": authority_scopes(user_diagnostic="active"),
                 }
             )
 
@@ -800,17 +920,28 @@ def _outcome_interval_semantics(
             else unavailable("not_produced")
         )
         bayes_item["availability"] = bayes_interval is not None
+
+        quantity_items = {
+            "interval": interval_item,
+            "omega0_profile": profile_item,
+            "hesse_interval": hesse_item,
+            "bayes_interval": bayes_item,
+        }
+
         record = {
             "schema": INTERVAL_SCHEMA,
-            "quantities": {
-                "interval": interval_item,
-                "omega0_profile": profile_item,
-                "hesse_interval": hesse_item,
-                "bayes_interval": bayes_item,
-            },
+            "quantities": quantity_items,
             "authority_scopes": authority_scopes(user_diagnostic="active"),
         }
-        return validate_for_write(record, INTERVAL_SCHEMA)
+        return _realize_interval_authority(
+            record,
+            interval=interval,
+            omega0_profile=omega0_profile,
+            hesse_interval=hesse_interval,
+            bayes_interval=bayes_interval,
+            hesse_trusted=hesse_trusted,
+            interval_reliable=interval_reliable,
+        )
     except (SemanticsConstructionError, KeyError) as exc:
         reason_code = (
             exc.reason_code if isinstance(exc, SemanticsConstructionError)
@@ -822,6 +953,121 @@ def _outcome_interval_semantics(
             reason_code,
         )
         return None
+
+
+def _realize_interval_authority(
+    record: dict | None,
+    *,
+    interval,
+    omega0_profile,
+    hesse_interval,
+    bayes_interval,
+    hesse_trusted,
+    interval_reliable,
+) -> dict | None:
+    """Bind producer capability to the interval ladder's actual delivered outcome.
+
+    Branch triage and connected tracking can replace or withdraw the scalar interval after the
+    error producer has run.  Reapplying this small projection at every such boundary keeps the
+    recorded authority attached to the value that survives, without reverse-inferring the
+    interval's statistical kind.
+    """
+    if record is None:
+        return None
+    try:
+        realized = copy.deepcopy(record)
+        quantities = realized["quantities"]
+        values = {
+            "interval": interval,
+            "omega0_profile": omega0_profile,
+            "hesse_interval": hesse_interval,
+            "bayes_interval": bayes_interval,
+        }
+        selected_quantity = None
+        if interval is not None and interval_reliable is not False:
+            selected_quantity = "interval"
+        elif omega0_profile is not None:
+            selected_quantity = "omega0_profile"
+        elif hesse_interval is not None and hesse_trusted:
+            selected_quantity = "hesse_interval"
+        certifiable = bool(
+            selected_quantity is not None
+            and (
+                interval_reliable is not False
+                or selected_quantity == "hesse_interval" and hesse_trusted
+            )
+        )
+        for name, item in quantities.items():
+            item.setdefault("producer_availability", bool(item.get("availability")))
+            item["availability"] = values.get(name) is not None
+            selected = name == selected_quantity
+            item["selected_for_delivery"] = selected
+            item["passed_reliability_gate"] = bool(selected and certifiable)
+            if not item["availability"]:
+                item["authority_scopes"] = authority_scopes()
+            elif selected and certifiable:
+                item["authority_scopes"] = authority_scopes(
+                    single_fit_delivery="active",
+                    legacy_master_certification="active",
+                    stopping="active",
+                    user_diagnostic="active",
+                )
+            elif selected:
+                item["authority_scopes"] = authority_scopes(
+                    single_fit_delivery="active",
+                    legacy_master_certification="ineligible",
+                    stopping="ineligible",
+                    user_diagnostic="active",
+                )
+            else:
+                item["authority_scopes"] = authority_scopes(
+                    user_diagnostic="active"
+                )
+        if interval is not None and interval_reliable is False:
+            quantities["interval"]["authority_scopes"] = authority_scopes(
+                single_fit_delivery="inactive",
+                legacy_master_certification="ineligible",
+                stopping="ineligible",
+                user_diagnostic="active",
+            )
+            quantities["interval"]["passed_reliability_gate"] = False
+        if hesse_interval is not None and not hesse_trusted:
+            quantities["hesse_interval"]["authority_scopes"] = authority_scopes(
+                user_diagnostic="active"
+            )
+            quantities["hesse_interval"]["passed_reliability_gate"] = False
+        realized["selected_interval_quantity"] = selected_quantity
+        realized["selected_interval_certifiable"] = certifiable
+        realized["authority_scopes"] = (
+            copy.deepcopy(quantities[selected_quantity]["authority_scopes"])
+            if selected_quantity is not None
+            else authority_scopes()
+        )
+        return validate_for_write(realized, INTERVAL_SCHEMA)
+    except (SemanticsConstructionError, KeyError) as exc:
+        reason_code = (
+            exc.reason_code if isinstance(exc, SemanticsConstructionError)
+            else "missing_interval_semantics_field"
+        )
+        log.warning(
+            "semantics_construction_failed producer=isar.session.driver "
+            "quantity=realized_fit_outcome_intervals reason_code=%s",
+            reason_code,
+        )
+        return None
+
+
+def _refresh_interval_semantics(outcome: dict) -> None:
+    """Refresh only realized authority after a delivery mutation."""
+    outcome["interval_semantics"] = _realize_interval_authority(
+        outcome.get("interval_semantics"),
+        interval=outcome.get("interval"),
+        omega0_profile=outcome.get("omega0_profile"),
+        hesse_interval=outcome.get("hesse_interval"),
+        bayes_interval=outcome.get("bayes_interval"),
+        hesse_trusted=bool(outcome.get("hesse_trusted", False)),
+        interval_reliable=outcome.get("interval_reliable", True),
+    )
 
 
 def _refresh_probability_semantics(
@@ -1220,6 +1466,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         hesse_interval=hesse_interval,
         hesse_trusted=hesse_trusted,
         bayes_interval=bayes_interval,
+        interval_reliable=interval_reliable,
     )
 
     return {
@@ -2197,6 +2444,7 @@ def _select_mode(outcome: dict, candidate: dict, candidate_index: int, assignmen
     outcome["target_delivery_eligible"] = True
     outcome["identity_branch_id"] = None
     outcome["delivery_withheld_reason"] = None
+    _refresh_interval_semantics(outcome)
     outcome["probability_semantics"] = _refresh_probability_semantics(outcome)
 
 
@@ -2239,6 +2487,7 @@ def _clear_tracked_selection(outcome: dict, assignment: dict, revision: int) -> 
                   "hesse_interval", "bayes_interval"):
         outcome[field] = None
     outcome["interval_reliable"] = False
+    _refresh_interval_semantics(outcome)
     outcome["probability_semantics"] = _refresh_probability_semantics(outcome)
 
 
@@ -3782,6 +4031,7 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
                 fit["omega0_profile"] = fit["hesse_interval"] = None
                 fit["bayes_interval"] = None
                 fit["interval_reliable"] = False
+    _refresh_interval_semantics(fit)
     return (branch_id, assignment_entropy, branch_weight, resolvable, secondary_features,
             branch_posterior, candidate_id, candidate_state, selected_energy)
 

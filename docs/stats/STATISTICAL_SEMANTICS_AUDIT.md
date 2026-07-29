@@ -486,6 +486,33 @@ did not backfill legacy cached masters. STAT-2 must introduce or bump the select
 by both cache gates. STAT-3 must refuse pre-STAT-2 or semantics-incomplete inputs. A workspace
 cannot enter EIG-3 merely by carrying a pre-STAT-1 cached artifact.
 
+### STAT-1.5 — Semantics correctness repair — Implemented 2026-07-29
+
+The post-STAT-1 review found that the vocabulary was sound but several identities were too weak for
+STAT-2 enforcement. The repair now fingerprints the exact observed data, fitted grid, mask,
+exposure normalization, likelihood revision and fixed likelihood context separately from model
+components, parameter names, bounds, fixed values, effective constraints, and the combined
+comparison context. Every model-set transition hashes sorted structured model/context records. The
+complete selection fingerprint includes the canonical generation route, candidate fit semantics,
+criterion inputs, aggregate eligibility, and all structured reasons; model enumeration order is not
+part of set identity.
+
+Interval metadata now distinguishes what a producer could offer from what the delivered outcome
+actually selected and allowed through reliability/trust gates. Realized authority is refreshed
+after branch triage and connected-tracker replacement or withdrawal. Predictive and target-
+projection semantics self-fingerprints are recomputed on read, and the strict master-predictive
+reader verifies both the artifact reference and per-model chain. Missing semantics remain
+legacy-compatible; tampered recognized semantics are refused. The master interval also records its
+actual particle measure independently of the `/2` contract's permission to fall back
+heterogeneously, without making an accidentally homogeneous artifact design-eligible.
+
+The identity-firewall acceptance set now covers scientific result content hashes, master revision
+and cache inputs, tied candidate ordering, branch-track revision/assignment, calibration lookup,
+predictive basis, stopping, action identity, and the deterministic campaign harness. This repair
+does not change `PREDICTIVE_CONTRACT`, numerical behavior, legacy authority, or cache carry rules.
+Decision S7 records the closeout. STAT-2 enforcement is therefore unblocked; all later gates and the
+sequence below remain unchanged.
+
 ### STAT-2 — Selection and constraint consistency
 
 Separate the unconstrained data-only selection fit from penalized/conditional delivery fits, or make

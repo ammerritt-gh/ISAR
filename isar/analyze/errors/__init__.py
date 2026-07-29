@@ -56,6 +56,12 @@ def _interval_semantics_for(result, within: dict, *, level: float = 0.68) -> dic
         "conditioning_fingerprint": fit_semantics["conditioning_fingerprint"],
         "calibration_target": None,
     }
+    candidate_scopes = authority_scopes(
+        single_fit_delivery="candidate",
+        legacy_master_certification="candidate",
+        stopping="candidate",
+        user_diagnostic="active",
+    )
     quantities = {
         "freq_interval": {
             **common,
@@ -65,12 +71,10 @@ def _interval_semantics_for(result, within: dict, *, level: float = 0.68) -> dic
             "particle_measure_kind": "parametric_bootstrap_sampling_distribution",
             "draw_measure_kind": "equal_weight_empirical_particles",
             "inference_paradigm": "frequentist_sampling_distribution",
-            "authority_scopes": authority_scopes(
-                single_fit_delivery="active",
-                legacy_master_certification="active",
-                stopping="active",
-                user_diagnostic="active",
-            ),
+            # The producer can offer this interval to the delivery ladder.  The driver replaces
+            # ``authority_scopes`` with the realized selected/trust-gated authority for the outcome.
+            "producer_authority_scopes": candidate_scopes,
+            "authority_scopes": authority_scopes(user_diagnostic="active"),
         }
     }
     if "profile_interval" in within:
@@ -80,6 +84,7 @@ def _interval_semantics_for(result, within: dict, *, level: float = 0.68) -> dic
             "interval_kind": _profile_kind(estimator_kind),
             "inference_paradigm": "frequentist_profile",
             "minos_parameter_intervals_present": bool(within.get("minos")),
+            "producer_authority_scopes": candidate_scopes,
             "authority_scopes": authority_scopes(user_diagnostic="active"),
         }
     if "bayes_interval" in within:
@@ -102,6 +107,9 @@ def _interval_semantics_for(result, within: dict, *, level: float = 0.68) -> dic
             "bayesian_model_average": False,
             "conditioning_fingerprint": prior_fingerprint,
             "calibration_target": None,
+            "producer_authority_scopes": authority_scopes(
+                user_diagnostic="active"
+            ),
             "authority_scopes": authority_scopes(user_diagnostic="active"),
         }
     record = {

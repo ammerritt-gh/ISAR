@@ -6,6 +6,7 @@ conversion, before branch triage could withhold a delivery, and before the conne
 reassigned or cleared the target. Every one of those three can move the target, so a projection
 resolved before them can name the wrong mode with full confidence.
 """
+import copy
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -278,6 +279,34 @@ def test_the_projection_records_the_full_authority_basis_it_was_decided_under():
     # ``action_role`` lives INSIDE the authority block, and nowhere else: published beside it, the
     # documented "any authority field differs ⇒ stale" test could not see a role change.
     assert "action_role" not in projection
+
+
+def test_the_facade_authenticates_projection_semantics_when_present(tmp_path):
+    from isar.workspace_api import Workspace as ReadOnlyWorkspace
+
+    artifact = {
+        **_hand_artifact([[2.0, 5.0], [2.1, 5.1]]),
+        "predictive_retained_set_fingerprint": "0" * 64,
+        "statistical_semantics_fingerprint": "1" * 64,
+    }
+    projection = build_target_projection(artifact, _outcome(), **_AUTHORITY)
+    assert projection["statistical_semantics"] is not None
+
+    root = tmp_path / "ws"
+    target_root = root / "data" / "target_projection"
+    target_root.mkdir(parents=True)
+    (root / "card.policy.toml").write_text("", encoding="utf-8")
+    path = target_root / "projection.json"
+    path.write_text(json.dumps(projection), encoding="utf-8")
+    facade = ReadOnlyWorkspace.open(root)
+    assert facade.target_projection("data/target_projection/projection.json") == projection
+
+    tampered = copy.deepcopy(projection)
+    tampered["statistical_semantics"]["construction_complete"] = False
+    path.write_text(json.dumps(tampered), encoding="utf-8")
+    facade.refresh()
+    with pytest.raises(ValueError, match="statistical semantics are invalid"):
+        facade.target_projection("data/target_projection/projection.json")
 
 
 def test_a_role_change_alone_makes_a_stored_projection_stale():

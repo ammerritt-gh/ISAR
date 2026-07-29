@@ -788,6 +788,47 @@ def _valid_artifact():
     return _artifact_from_case(contract, case)
 
 
+def _with_authenticated_semantics(artifact):
+    from isar.schema.statistics import (
+        PREDICTIVE_SCHEMA,
+        authority_scopes,
+        semantics_fingerprint,
+        validate_for_write,
+    )
+
+    model_semantics = [
+        {
+            "label": str(model["label"]),
+            "particle_measure_kind": "parametric_bootstrap_sampling_distribution",
+        }
+        for model in artifact["models"]
+    ]
+    record = validate_for_write(
+        {
+            "schema": PREDICTIVE_SCHEMA,
+            "artifact_kind": "master_predictive",
+            "models": model_semantics,
+            "authority_scopes": authority_scopes(user_diagnostic="active"),
+        },
+        PREDICTIVE_SCHEMA,
+    )
+    record["statistical_semantics_fingerprint"] = semantics_fingerprint(
+        "isar.predictive_statistical_semantics/1", record
+    )
+    record = validate_for_write(record, PREDICTIVE_SCHEMA)
+    return {
+        **artifact,
+        "models": [
+            {**model, "statistical_semantics": model_semantics[index]}
+            for index, model in enumerate(artifact["models"])
+        ],
+        "statistical_semantics": record,
+        "statistical_semantics_fingerprint": record[
+            "statistical_semantics_fingerprint"
+        ],
+    }
+
+
 def _fixture_single_model_artifact():
     """The one-phonon case reduced to a single normalized model, so weight edits are meaningful."""
     fixture = _fixture()
@@ -795,6 +836,34 @@ def _fixture_single_model_artifact():
     case = next(item for item in fixture["cases"] if item["name"] == "null_vs_one_phonon")
     model = {**case["models"][1], "weight": 1.0, "source_weight": 1.0}
     return _refingerprint({**_artifact_from_case(contract, case), "models": [model]})
+
+
+def test_semantics_are_authenticated_when_present_and_absence_remains_legacy_compatible():
+    from isar.predictive import (
+        PREDICTIVE_SEMANTICS_INVALID,
+        PredictiveArtifactError,
+        validate_master_predictive_artifact,
+    )
+
+    legacy = _valid_artifact()
+    assert validate_master_predictive_artifact(legacy) is legacy
+
+    authenticated = _with_authenticated_semantics(legacy)
+    assert validate_master_predictive_artifact(authenticated) is authenticated
+
+    tampered = json.loads(json.dumps(authenticated))
+    tampered["statistical_semantics"]["artifact_kind"] = "target_projection"
+    with pytest.raises(PredictiveArtifactError) as raised:
+        validate_master_predictive_artifact(tampered)
+    assert raised.value.reason_code == PREDICTIVE_SEMANTICS_INVALID
+
+    broken_chain = json.loads(json.dumps(authenticated))
+    broken_chain["models"][0]["statistical_semantics"]["particle_measure_kind"] = (
+        "laplace_hesse_parameter_approximation"
+    )
+    with pytest.raises(PredictiveArtifactError) as raised:
+        validate_master_predictive_artifact(broken_chain)
+    assert raised.value.reason_code == PREDICTIVE_SEMANTICS_INVALID
 
 
 def test_all_three_readers_run_the_same_validator(tmp_path, monkeypatch):

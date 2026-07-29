@@ -29,6 +29,11 @@ from isar.synth.fit import assess_success, omega0_value_error
 GAMMA_FLOOR = 1e-3
 GAMMA_MAX = 5.0
 
+# STAT-1.5 metadata revisions.  These are descriptive fingerprints only: changing either label
+# changes semantic comparability identity, never a fit/cache/scientific identity.
+DATA_LIKELIHOOD_REVISION = "isar.baker_cousins_data_likelihood/1"
+MODEL_PARAMETERIZATION_REVISION = "isar.fit_model_parameterization/1"
+
 # A phonon Γ this close to the floor is a resolution-limited δ-spike, not a fitted intrinsic
 # width: ω₀ = √(Ω_d²+Γ²) ≈ Ω_d with Γ unmovable, so the parametric bootstrap collapses to a
 # degenerate ω₀ interval (halfwidth ~1e-3 meV) that is spuriously tight, not trustworthy. Fits
@@ -169,6 +174,143 @@ class StructureFitResult:
     fit_semantics: dict | None = None
 
 
+def _fingerprint_number(value):
+    """Finite JSON representation that preserves non-finite scientific inputs explicitly."""
+    if value is None:
+        return None
+    number = float(value)
+    if np.isnan(number):
+        return "nan"
+    if np.isposinf(number):
+        return "positive_infinity"
+    if np.isneginf(number):
+        return "negative_infinity"
+    return number
+
+
+def _fingerprint_vector(values) -> list:
+    return [_fingerprint_number(value) for value in np.asarray(values).reshape(-1)]
+
+
+def _data_likelihood_payload(ctx) -> dict:
+    """Everything that fixes the observed-data likelihood shared by candidate models."""
+    missing = [
+        name for name in ("x", "counts", "mask")
+        if not hasattr(ctx, name)
+    ]
+    if missing:
+        from isar.schema.statistics import SemanticsConstructionError
+        raise SemanticsConstructionError(
+            "missing_data_likelihood_provenance", ",".join(missing)
+        )
+    energy = np.asarray(ctx.x)
+    counts = np.asarray(ctx.counts)
+    mask = np.asarray(ctx.mask, dtype=bool)
+    if energy.shape != counts.shape or energy.shape != mask.shape:
+        from isar.schema.statistics import SemanticsConstructionError
+        raise SemanticsConstructionError("misaligned_data_likelihood_inputs")
+    exposure = getattr(ctx, "exposure_scale", None)
+    if exposure is not None and np.asarray(exposure).shape != energy.shape:
+        from isar.schema.statistics import SemanticsConstructionError
+        raise SemanticsConstructionError("misaligned_exposure_provenance")
+    return {
+        "revision": DATA_LIKELIHOOD_REVISION,
+        "estimator": {
+            "name": "baker_cousins",
+            "model_floor": float(estimators.FMIN),
+            "cost_scale": "minus_two_log_likelihood",
+        },
+        "observed_data": {
+            "energy": _fingerprint_vector(energy),
+            "counts": _fingerprint_vector(counts),
+            "mask": mask.reshape(-1).tolist(),
+        },
+        "normalization": {
+            "kind": (
+                "relative_exposure_scale"
+                if exposure is not None
+                else "uniform_raw_counts"
+            ),
+            "exposure_scale": (
+                None if exposure is None else _fingerprint_vector(exposure)
+            ),
+            "exposure_reference": _fingerprint_number(
+                getattr(ctx, "exposure_reference", None)
+            ),
+        },
+        "fixed_likelihood_context": {
+            "temperature": _fingerprint_number(getattr(ctx, "T", None)),
+            "center": _fingerprint_number(getattr(ctx, "center", None)),
+            "gaussian_fwhm": _fingerprint_number(
+                getattr(ctx, "gauss_fwhm", None)
+            ),
+            "lorentzian_fwhm": _fingerprint_number(
+                getattr(ctx, "lorentz_fwhm", None)
+            ),
+            "quasielastic_fwhm": _fingerprint_number(
+                getattr(ctx, "quasielastic_fwhm", None)
+            ),
+            "instrument": getattr(ctx, "instrument", None),
+            "energy_status": getattr(ctx, "energy_status", None),
+        },
+    }
+
+
+def _model_parameterization_payload(prob: Problem) -> dict:
+    """Declarative component, parameter, bound, and effective-free-space identity."""
+    names = [str(name) for name in prob.free_names]
+    fixed = {
+        names[index]: _fingerprint_number(value)
+        for index, value in zip(prob.fixed_pos, prob.fixed_vals)
+    }
+    components = []
+    for component in list(getattr(prob.composite, "components", ()) or ()):
+        parameters = [
+            {"name": str(parameter.name), "kind": str(parameter.kind)}
+            for parameter in (getattr(component, "params", ()) or ())
+        ]
+        item = {
+            "type": (
+                f"{type(component).__module__}.{type(component).__qualname__}"
+            ),
+            "prefix": str(getattr(component, "prefix", "")),
+            "parameters": parameters,
+        }
+        if hasattr(component, "peak"):
+            item["peak"] = str(component.peak)
+        components.append(item)
+    if not components:
+        components.append(
+            {
+                "type": (
+                    f"{type(prob.composite).__module__}."
+                    f"{type(prob.composite).__qualname__}"
+                ),
+                "prefix": None,
+                "parameters": [],
+            }
+        )
+    bounds = [
+        {
+            "parameter": name,
+            "lower": _fingerprint_number(bound[0]),
+            "upper": _fingerprint_number(bound[1]),
+        }
+        for name, bound in zip(names, prob.bounds)
+    ]
+    return {
+        "revision": MODEL_PARAMETERIZATION_REVISION,
+        "components": components,
+        "parameter_names": names,
+        "free_parameter_names": [name for name in names if name not in fixed],
+        "fixed_parameters": [
+            {"parameter": name, "value": fixed[name]} for name in sorted(fixed)
+        ],
+        "bounds": bounds,
+        "effective_parameter_count": int(prob.k),
+    }
+
+
 def _fit_semantics_for(prob: Problem, ctx, fit_kind: str) -> dict:
     """Build semantics from the constraints that actually enter ``prob``."""
     from isar.schema.statistics import (
@@ -229,10 +371,10 @@ def _fit_semantics_for(prob: Problem, ctx, fit_kind: str) -> dict:
         and item["origin"] in {"prespecified_scientific", "prior_predictive"}
         for item in effective
     )
-    if has_soft:
-        eligibility = "ineligible_soft_penalized"
-    elif has_data_conditioning:
+    if has_data_conditioning:
         eligibility = "ineligible_data_dependent_conditioning"
+    elif has_soft:
+        eligibility = "ineligible_soft_penalized"
     elif has_other_hard:
         eligibility = "ineligible_unapproved_conditioning"
     else:
@@ -251,7 +393,35 @@ def _fit_semantics_for(prob: Problem, ctx, fit_kind: str) -> dict:
         if effective
         else "data_likelihood_mle"
     )
-    conditioning_payload = {"effective_constraints": effective}
+    data_likelihood_fingerprint = semantics_fingerprint(
+        "isar.data_likelihood_context/1", _data_likelihood_payload(ctx)
+    )
+    model_parameterization_fingerprint = semantics_fingerprint(
+        "isar.model_parameterization_context/1",
+        _model_parameterization_payload(prob),
+    )
+    constraint_fingerprint = semantics_fingerprint(
+        "isar.effective_constraint_context/1",
+        {"effective_constraints": effective},
+    )
+    comparison_context_fingerprint = semantics_fingerprint(
+        "isar.fit_comparison_context/1",
+        {
+            "data_likelihood_fingerprint": data_likelihood_fingerprint,
+            "model_parameterization_fingerprint": model_parameterization_fingerprint,
+            "constraint_fingerprint": constraint_fingerprint,
+            "estimator_kind": estimator_kind,
+            "fit_kind": str(fit_kind),
+            "initialization_and_qoi_context": {
+                "prior_omega": _fingerprint_number(
+                    getattr(ctx, "prior_omega", None)
+                ),
+                "acoustic_omega": _fingerprint_number(
+                    getattr(ctx, "acoustic_omega", None)
+                ),
+            },
+        },
+    )
     record = {
         "schema": FIT_SELECTION_SCHEMA,
         "estimator_kind": estimator_kind,
@@ -260,9 +430,13 @@ def _fit_semantics_for(prob: Problem, ctx, fit_kind: str) -> dict:
         "aggregate_constraint_origin": aggregate_origin,
         "selection_eligibility": eligibility,
         "selection_ineligibility_reasons": reasons,
-        "conditioning_fingerprint": semantics_fingerprint(
-            "isar.fit_conditioning/1", conditioning_payload
-        ),
+        "data_likelihood_fingerprint": data_likelihood_fingerprint,
+        "model_parameterization_fingerprint": model_parameterization_fingerprint,
+        "constraint_fingerprint": constraint_fingerprint,
+        "comparison_context_fingerprint": comparison_context_fingerprint,
+        # Additive compatibility alias.  Since STAT-1.5 it names the complete comparison context,
+        # never merely the constraint payload.
+        "conditioning_fingerprint": comparison_context_fingerprint,
         "authority_scopes": authority_scopes(
             single_fit_delivery="active",
             user_diagnostic="active",
