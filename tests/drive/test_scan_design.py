@@ -33,8 +33,8 @@ from isar.drive.acquisition.scan_design import (
     _energy_window,
     design_scan_windows,
 )
+from isar.drive.acquisition.grid_adapters import DEFAULT_GRID_ADAPTER
 from isar.drive.acquisition.scan_grid import (
-    canonical_energies,
     format_scan_command,
     resolve_uniform_grid,
 )
@@ -382,7 +382,11 @@ def test_inventory_declares_generator_config_and_provider_identity():
     assert payload["generator"]["id"] == PHYSICAL_WINDOW_GENERATOR_ID
     assert payload["generator"]["version"] == PHYSICAL_WINDOW_GENERATOR_VERSION
     config = payload["generator"]["config"]
-    assert config["config_schema"] == "isar.physical_window_generator_config/1"
+    assert config["config_schema"] == "isar.physical_window_generator_config/2"
+    # Numeric precision is not a construction constant: which decimals a grid identity carries is
+    # owned by the instrument grid adapter, and the dead ``grid_energy_decimals`` field that claimed
+    # otherwise (serialized and fingerprinted, never read) is gone.
+    assert "grid_energy_decimals" not in config
     assert config["step_resolution_fraction"] == pytest.approx(0.25)
     assert config["core_fwhm_multiple"] == pytest.approx(2.0)
     assert config["core_sigma_multiple"] == pytest.approx(3.0)
@@ -542,9 +546,10 @@ def test_candidate_grid_is_explicit_ordered_and_inclusive_of_the_upper_bound():
     candidate = design_scan_windows(_context()).selected_candidate
     payload = candidate.to_dict()
 
-    assert payload["scoring_grid"] == list(
-        canonical_energies(candidate.e_lo, candidate.e_step, candidate.n_points))
+    assert payload["scoring_grid"] == list(DEFAULT_GRID_ADAPTER.executed_energies(
+        candidate.e_lo, candidate.e_step, candidate.n_points))
     assert len(payload["scoring_grid"]) == candidate.n_points
+    assert payload["grid_adapter"] == DEFAULT_GRID_ADAPTER.identity()
     assert payload["scoring_grid"] == sorted(payload["scoring_grid"])
     # TAVI's ``deltaE lo hi step`` is inclusive: the last point lands on the declared upper bound.
     assert payload["scoring_grid"][0] == pytest.approx(candidate.e_lo)
@@ -656,14 +661,16 @@ def test_a_target_family_clipped_off_its_own_core_is_refused_not_emitted():
                   if r.candidate_family == FAMILY_TARGET_PLUS_RIVAL).to_dict()["detail"]
     assert detail["target_core_lo"] == 5.0 and detail["target_core_hi"] == 7.0
 
-    # The same context *with* a target band was already refused correctly, by the support gate that
-    # only a declared band can arm; that earlier refusal is unchanged.
+    # Declaring a target band does not change *why* the window is unusable: it abandoned the target,
+    # which is a strictly more specific fact than undersampling it. The refusal reason is therefore
+    # the same with and without a declared band — before the sliver repair the declared-band case
+    # reported the weaker `insufficient_target_support` because the support gate ran first.
     declared = design_scan_windows(_context(
         scan_window_eig_mode="shadow", design_prediction_mean_meV=6.0,
         target_prediction_mean_meV=6.0, resolution_fwhm_meV=0.5,
         energy_search_meV=(-4.0, 2.0), rival_band=(0.5, 0.2), target_band=(6.0, 0.2)))
     assert _families(declared) == [FAMILY_LEGACY_UNIFORM]
-    assert _refusals(declared)[FAMILY_TARGET_PLUS_RIVAL] == "insufficient_target_support"
+    assert _refusals(declared)[FAMILY_TARGET_PLUS_RIVAL] == "rival_only_after_domain_clip"
 
 
 def test_dedup_merges_only_candidates_that_emit_the_same_request():
@@ -691,3 +698,72 @@ def test_dedup_merges_only_candidates_that_emit_the_same_request():
     assert FAMILY_TARGET_HIGH_ANCHOR in merged.alias_families
     commands = [c.grid.scan_command() for c in identical.candidates]
     assert len(commands) == len(set(commands))
+
+
+# ---- the sliver gate --------------------------------------------------------------------------
+#
+# The post-clip gate used to refuse only *complete* disjointness from the target core, so a window
+# reduced to a sliver of it survived as a full-fledged target candidate.
+
+
+def test_a_window_clipped_to_a_sliver_of_its_core_is_refused_not_emitted():
+    # The exact repro: core [3.4, 6.6] (e_pred 5.0, FWHM 0.8) against an authorized domain of
+    # [6.5, 7.0]. Every target family clips to a 0.1 meV sliver that does not contain the predicted
+    # centre; the old bounds-overlap test passed all of them.
+    inventory = design_scan_windows(_context(
+        scan_window_eig_mode="shadow", energy_search_meV=(6.5, 7.0)))
+
+    # Only the legacy control and the deliberately target-agnostic broad sweep survive.
+    assert _families(inventory) == [FAMILY_LEGACY_UNIFORM, FAMILY_BROAD_RECOVERY]
+    refusals = _refusals(inventory)
+    assert refusals[FAMILY_TARGET_CORE] == "target_core_lost_after_domain_clip"
+    assert refusals[FAMILY_TARGET_LOW_ANCHOR] == "target_core_lost_after_domain_clip"
+    assert refusals[FAMILY_TARGET_HIGH_ANCHOR] == "target_core_lost_after_domain_clip"
+    detail = next(r for r in inventory.refusals
+                  if r.candidate_family == FAMILY_TARGET_CORE).to_dict()["detail"]
+    assert detail["target_center"] == 5.0
+    assert detail["e_lo"] == 6.5 and detail["e_hi"] == 6.6
+
+
+def test_target_core_needs_its_whole_core_while_anchors_may_lose_margin():
+    # Domain [4.0, 7.0] keeps the predicted centre (5.0) but cuts the low side of the core [3.4, 6.6].
+    inventory = design_scan_windows(_context(
+        scan_window_eig_mode="shadow", energy_search_meV=(4.0, 7.0)))
+
+    assert _refusals(inventory)[FAMILY_TARGET_CORE] == (
+        "target_core_truncated_after_domain_clip")
+    # ...while an anchor, which never promised the full core, survives on centre + support.
+    anchor = next(c for c in inventory.candidates
+                  if c.candidate_family == FAMILY_TARGET_LOW_ANCHOR)
+    assert (anchor.e_lo, anchor.e_hi) == pytest.approx((4.0, 6.6))
+
+
+def test_minimum_target_support_is_enforced_against_a_fallback_band_without_a_target_band():
+    # No declared target_band: before the repair the support gate silently did not run at all, so a
+    # window with three points anywhere near the prediction counted as a target measurement.
+    context = _context(scan_window_eig_mode="shadow", target_band=None,
+                       policy_max_points=8, runtime_max_points=8,
+                       minimum_target_support_points=6)
+    inventory = design_scan_windows(context)
+
+    assert _refusals(inventory)[FAMILY_TARGET_PAIRED] == "insufficient_target_support"
+    detail = next(r for r in inventory.refusals
+                  if r.candidate_family == FAMILY_TARGET_PAIRED).to_dict()["detail"]
+    assert detail["support_band_source"] == "resolution_fallback"
+    # The fallback band spans exactly the intended core: mean ± 2σ == e_pred ± half-core.
+    assert detail["support_band_mean"] == 5.0
+    assert detail["support_band_sigma"] == pytest.approx(0.8)
+    assert detail["target_support_points"] < 6
+    # A window that does sample the core well is untouched, and broad_recovery/1 stays exempt.
+    assert FAMILY_TARGET_CORE in _families(inventory)
+    assert FAMILY_BROAD_RECOVERY in _families(inventory)
+
+
+def test_a_declared_target_band_still_wins_over_the_fallback():
+    inventory = design_scan_windows(_context(
+        scan_window_eig_mode="shadow", target_band=(5.0, 0.05),
+        minimum_target_support_points=50))
+    detail = next(r for r in inventory.refusals
+                  if r.candidate_family == FAMILY_TARGET_CORE).to_dict()["detail"]
+    assert detail["support_band_source"] == "declared"
+    assert detail["support_band_sigma"] == pytest.approx(0.05)
