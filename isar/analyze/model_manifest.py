@@ -53,6 +53,20 @@ MALFORMED_DRAW_SHAPE = "malformed_draw_shape"
 INVALID_ENERGY_GRID = "invalid_energy_grid"
 INVALID_REQUESTED_EXPOSURE = "invalid_requested_exposure"
 NONFINITE_PREDICTION = "nonfinite_prediction"
+NEGATIVE_PREDICTION = "negative_prediction"
+
+#: How far below zero an expected count may fall and still be read as floating-point noise around a
+#: genuinely zero mean. Anything below ``-NEGATIVE_PREDICTION_EPS`` is a real negative prediction —
+#: a broken model, not a rounding artefact — and refuses instead of being clamped away. It is hashed
+#: alongside :data:`EVALUATOR_VERSION` into ``predictive_basis_fingerprint``, so a score computed
+#: under one tolerance can never be reused under another (ADR-020).
+NEGATIVE_PREDICTION_EPS = 1e-9
+
+#: The registered PhononDHO peak vocabulary. ``Fitting_Functions.convolute_voigt_dho`` lowercases
+#: ``peak`` and either takes the literal ``all`` or splits it on ``+`` into these parts; an
+#: unrecognised part is silently dropped there, producing a plausible but wrong lineshape.
+PHONON_PEAK_PARTS = ("stokes", "astokes", "elastic")
+PHONON_PEAK_ALL = "all"
 
 
 class ModelManifestError(ValueError):
@@ -74,6 +88,23 @@ def _finite_float(value, label: str, *, reason_code: str = MALFORMED_DRAW_SHAPE)
     return result
 
 
+def _validated_peak(value, index: int) -> str:
+    """One PhononDHO ``peak`` selector checked against the registered vocabulary."""
+    if not isinstance(value, str) or not value:
+        raise ModelManifestError(MALFORMED_MANIFEST,
+                                 f"model component {index} peak must be a non-empty string")
+    lowered = value.lower()
+    if lowered == PHONON_PEAK_ALL:
+        return value
+    parts = lowered.split("+")
+    unknown = [part for part in parts if part not in PHONON_PEAK_PARTS]
+    if not parts or unknown:
+        raise ModelManifestError(
+            MALFORMED_MANIFEST,
+            f"model component {index} declares unregistered peak parts {unknown or parts}")
+    return value
+
+
 def build_composite(manifest, quasielastic_fwhm=None):
     """Reconstruct the registered :class:`~isar.analyze.components.CompositeModel` of a manifest.
 
@@ -89,11 +120,12 @@ def build_composite(manifest, quasielastic_fwhm=None):
             MALFORMED_MANIFEST,
             f"unsupported model manifest schema {manifest.get('schema')!r}")
     factories = {
-        "phonon_dho": lambda item: PhononDHO(prefix=str(item["prefix"]),
-                                             peak=str(item.get("peak", "stokes+astokes"))),
-        "elastic": lambda item: Elastic(),
-        "quasielastic": lambda item: QuasiElastic(),
-        "constant_background": lambda item: ConstantBackground(),
+        "phonon_dho": lambda item, index: PhononDHO(
+            prefix=str(item["prefix"]),
+            peak=_validated_peak(item.get("peak", "stokes+astokes"), index)),
+        "elastic": lambda item, index: Elastic(),
+        "quasielastic": lambda item, index: QuasiElastic(),
+        "constant_background": lambda item, index: ConstantBackground(),
     }
     components = []
     seen_prefixes = set()
@@ -113,7 +145,7 @@ def build_composite(manifest, quasielastic_fwhm=None):
             raise ModelManifestError(MALFORMED_MANIFEST,
                                      f"duplicate model component prefix {prefix!r}")
         seen_prefixes.add(prefix)
-        component = factories[kind](item)
+        component = factories[kind](item, index)
         if str(component.prefix) != prefix:
             raise ModelManifestError(MALFORMED_MANIFEST,
                                      f"component {kind!r} cannot use prefix {prefix!r}")
@@ -219,9 +251,22 @@ class EvaluationContext:
             raise ModelManifestError(
                 MALFORMED_MANIFEST,
                 "evaluation context temperature_K must be positive")
+        # Resolution widths are physical bounds, not merely finite numbers (ADR-020). A zero or
+        # negative Gaussian FWHM makes the resolution kernel degenerate/undefined, and a negative
+        # Lorentzian FWHM is a nonsensical width that still evaluates to a plausible-looking curve.
+        if not self.gauss_fwhm > 0.0:
+            raise ModelManifestError(
+                MALFORMED_MANIFEST, "evaluation context gaussian_fwhm_meV must be positive")
+        if self.lorentz_fwhm < 0.0:
+            raise ModelManifestError(
+                MALFORMED_MANIFEST, "evaluation context lorentzian_fwhm_meV must be non-negative")
         self.quasielastic_fwhm = (None if quasielastic_fwhm is None else _finite_float(
             quasielastic_fwhm, "evaluation context quasielastic_fwhm_meV",
             reason_code=MALFORMED_MANIFEST))
+        if self.quasielastic_fwhm is not None and not self.quasielastic_fwhm > 0.0:
+            raise ModelManifestError(
+                MALFORMED_MANIFEST,
+                "evaluation context quasielastic_fwhm_meV must be positive when present")
         self._exposure = exposure_ratio
 
     def exposure_for(self, x):
@@ -263,8 +308,12 @@ def expected_counts(manifest, parameter_names, draw, context, energy_meV,
 
     ``context`` is an :class:`EvaluationContext` (or any object with the same surface);
     ``exposure_ratio`` is the dimensionless multiplier requested-exposure / fit-reference-exposure,
-    scalar or aligned to ``energy_meV``. Values are clipped at zero after the finiteness check, so a
-    refusal is never hidden by the clip.
+    scalar or aligned to ``energy_meV``.
+
+    A value below ``-NEGATIVE_PREDICTION_EPS`` **refuses** with ``negative_prediction``: an expected
+    count is a Poisson mean, so a substantially negative one is a broken model, and clamping it to
+    zero published a plausible prediction from an impossible one. Only floating-point noise around a
+    genuinely zero mean is clipped.
     """
     grid = energy_grid(energy_meV)
     composite = build_composite(manifest, getattr(context, "quasielastic_fwhm", None))
@@ -282,4 +331,9 @@ def expected_counts(manifest, parameter_names, draw, context, energy_meV,
     if not np.all(np.isfinite(values)):
         raise ModelManifestError(NONFINITE_PREDICTION,
                                  "model evaluation produced a non-finite expected count")
+    if np.any(values < -NEGATIVE_PREDICTION_EPS):
+        raise ModelManifestError(
+            NEGATIVE_PREDICTION,
+            f"model evaluation produced an expected count of {float(values.min())!r}, below the "
+            f"negative-prediction tolerance {NEGATIVE_PREDICTION_EPS!r}")
     return np.maximum(values, 0.0)

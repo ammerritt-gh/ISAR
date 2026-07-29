@@ -19,11 +19,14 @@ import pytest
 from isar.analyze import model_manifest as mm
 from isar.analyze.context import ScanContext
 from isar.parsers import ill_in8
-from isar.predictive import evaluate_master_predictive
-from isar.session import driver
-from isar.session.driver import (_bounded_parameter_draws, _persist_master_predictive,
-                                 _predictive_basis_fingerprint, _predictive_ensemble,
-                                 _predictive_score)
+from isar.predictive import (evaluate_master_predictive, predictive_basis_fingerprint,
+                             predictive_score as _predictive_score)
+from isar.session import driver, predictive_artifact
+from isar.session.driver import _persist_master_predictive
+from isar.session.predictive_artifact import (bounded_parameter_draws as _bounded_parameter_draws,
+                                              build_master_predictive as _predictive_ensemble)
+
+_predictive_basis_fingerprint = predictive_basis_fingerprint
 from isar.session.workspace import Workspace
 from isar.synth_format import run_builder
 
@@ -64,9 +67,9 @@ def test_every_draw_basis_declares_the_equal_weight_measure_it_actually_produces
     # ADR-014: the measure is declared, not assumed. All three ISAR bases are equal-weight particle
     # sets at their source (dynesty is resample_equal'd; a bootstrap replicate and a Laplace draw are
     # one particle each), so none may publish implicit weights.
-    assert set(driver._DRAW_WEIGHTING) == {
+    assert set(predictive_artifact.DRAW_WEIGHTING) == {
         "nested_sampling", "parametric_bootstrap", "laplace_hesse"}
-    assert set(driver._DRAW_WEIGHTING.values()) == {"equal_weight_resampled"}
+    assert set(predictive_artifact.DRAW_WEIGHTING.values()) == {"equal_weight_resampled"}
     result = SimpleNamespace(
         within_model={"parameter_names": ["bg.BG"], "parameter_samples": [[1.0], [2.0]]},
         covariance_ok=False, parameter_covariance=None, params={"bg.BG": 1.0})
@@ -197,12 +200,17 @@ def test_the_predictive_contract_has_exactly_one_definition():
     # Two independent literals could be bumped apart: raising only the driver's copy forces the
     # carry gate to refit while master_fit_fingerprint stays unchanged, so a checkpoint store keeps
     # serving entries built under the superseded contract.
+    from isar import predictive
     from isar.predictive import PREDICTIVE_ARTIFACT_SCHEMA
     from isar.session import certification
 
     assert driver.PREDICTIVE_CONTRACT is certification.PREDICTIVE_CONTRACT
-    assert driver.PREDICTIVE_CONTRACT is PREDICTIVE_ARTIFACT_SCHEMA
+    assert driver.PREDICTIVE_CONTRACT is predictive.PREDICTIVE_CONTRACT
     assert PREDICTIVE_ARTIFACT_SCHEMA == "isar.master_predictive/2"
+    # The SCHEMA LABEL and the CONTRACT REVISION are different things: the payload shape changed
+    # under an unchanged /2 label (ADR-019), and only the revision may drive the cache bump.
+    assert predictive.PREDICTIVE_CONTRACT.startswith(PREDICTIVE_ARTIFACT_SCHEMA)
+    assert predictive.PREDICTIVE_CONTRACT != PREDICTIVE_ARTIFACT_SCHEMA
 
 
 @pytest.mark.parametrize("temperature", [0.0, -0.0, -1e-30, -300.0])
@@ -244,10 +252,10 @@ def _pool_context(monitor, *, n_points=None, T=100.0):
 
 
 def _stub_models(monkeypatch, manifests, draws, names=_NAMES):
-    monkeypatch.setattr(driver, "_model_manifest_of",
+    monkeypatch.setattr(predictive_artifact, "model_manifest_of",
                         lambda result, by_hyp: manifests[result.label])
     monkeypatch.setattr(
-        driver, "_bounded_parameter_draws",
+        predictive_artifact, "bounded_parameter_draws",
         lambda result, **kwargs: (
             tuple(names), np.asarray(draws[result.label], dtype=float), "laplace_hesse",
             {"draw_weighting": "equal_weight_resampled", "draw_weights": None,
@@ -338,7 +346,7 @@ def test_a_master_without_a_monitor_publishes_no_exposure_basis(monkeypatch):
         "missing_exposure_basis")
 
 
-def test_predictive_ensemble_keeps_a_null_model_without_a_target_projection(monkeypatch):
+def test_predictive_ensemble_keeps_a_null_model_with_no_modes(monkeypatch):
     ctx, _reference = _pool_context([1e9] * 5)
     null_manifest = {"schema": "isar.model_manifest/1",
                      "components": [{"type": "constant_background", "prefix": "bg"}],
@@ -350,11 +358,11 @@ def test_predictive_ensemble_keeps_a_null_model_without_a_target_projection(monk
         {"null": object()}, ctx, seed=7, n_members=2)
     model = payload["models"][0]
     assert model["omega0_draws"] == []
-    assert model["target_present_by_draw"] == [False, False]
-    assert model["target_qoi_draws"] == [None, None]
+    # ADR-019: /2 carries no target state at all — a no-phonon model simply has no modes.
+    assert model["mode_energies"] == [[], []]
+    assert "target_present_by_draw" not in model and "target_qoi_draws" not in model
+    assert "target_projection" not in payload
     assert model["expected_counts"] == [[2.0] * 5, [3.0] * 5]
-    assert payload["target_projection"]["complete"] is False
-    assert payload["target_projection"]["reason"] == "no_reference_target_energy"
     assert payload["diagnostics"]["usable"] is True
 
 
@@ -362,7 +370,7 @@ def test_a_model_whose_draws_do_not_map_onto_its_manifest_is_dropped_not_guessed
     ctx, _reference = _pool_context([1e9] * 5)
     manifests = {"good": _MANIFEST, "mismatched": _MANIFEST}
     _stub_models(monkeypatch, manifests, {"good": [_DRAW], "mismatched": [_DRAW]})
-    real = driver._bounded_parameter_draws
+    real = predictive_artifact.bounded_parameter_draws
 
     def draws(result, **kwargs):
         names, samples, basis, diagnostics = real(result, **kwargs)
@@ -371,7 +379,7 @@ def test_a_model_whose_draws_do_not_map_onto_its_manifest_is_dropped_not_guessed
                 basis, diagnostics
         return names, samples, basis, diagnostics
 
-    monkeypatch.setattr(driver, "_bounded_parameter_draws", draws)
+    monkeypatch.setattr(predictive_artifact, "bounded_parameter_draws", draws)
     fits = {label: SimpleNamespace(label=label, omega0=3.0) for label in manifests}
     payload = _predictive_ensemble(
         SimpleNamespace(omega0=3.0),
@@ -391,7 +399,7 @@ def test_completeness_tolerates_only_pruning_below_the_declared_floors(monkeypat
     ctx, _reference = _pool_context([1e9] * 5)
     manifests = {"good": _MANIFEST, "tiny": _MANIFEST}
     _stub_models(monkeypatch, manifests, {"good": [_DRAW], "tiny": [_DRAW]})
-    monkeypatch.setattr(driver, "_model_manifest_of",
+    monkeypatch.setattr(predictive_artifact, "model_manifest_of",
                         lambda result, by_hyp: None if result.label == "tiny" else _MANIFEST)
     fits = {label: SimpleNamespace(label=label, omega0=3.0) for label in manifests}
     payload = _predictive_ensemble(
@@ -419,8 +427,7 @@ def _fingerprint_inputs(monkeypatch):
     return payload, {
         "models": payload["models"], "energy_meV": payload["energy_meV"],
         "evaluation_context": payload["evaluation_context"],
-        "exposure_basis": payload["exposure_basis"],
-        "target_projection": payload["target_projection"]}
+        "exposure_basis": payload["exposure_basis"]}
 
 
 def test_the_basis_fingerprint_is_stable_and_covers_every_scored_input(monkeypatch):
@@ -444,8 +451,7 @@ def test_the_basis_fingerprint_is_stable_and_covers_every_scored_input(monkeypat
         parameter_draws=[[3.0, 0.3, 100.0, 4.000001]])) != baseline
     assert perturbed(models=with_model(draw_weighting="explicit_weights")) != baseline
     assert perturbed(models=with_model(draw_weights=[1.0])) != baseline
-    assert perturbed(models=with_model(target_present_by_draw=[False])) != baseline
-    assert perturbed(models=with_model(target_qoi_draws=[9.0])) != baseline
+    assert perturbed(models=with_model(mode_energies=[[9.0]])) != baseline
     assert perturbed(energy_meV=[value + 1e-9 for value in inputs["energy_meV"]]) != baseline
     assert perturbed(evaluation_context={**inputs["evaluation_context"],
                                          "temperature_K": 100.5}) != baseline
@@ -453,7 +459,7 @@ def test_the_basis_fingerprint_is_stable_and_covers_every_scored_input(monkeypat
                                      "fit_reference_exposure": 1.1e9}) != baseline
     assert perturbed(exposure_basis={**inputs["exposure_basis"],
                                      "scalar_exposure_eligible": False}) != baseline
-    assert perturbed(target_projection={**inputs["target_projection"], "qoi": "gamma"}) != baseline
+
 
 
 def test_the_basis_fingerprint_ignores_diagnostics_and_bookkeeping(monkeypatch):
@@ -469,13 +475,25 @@ def test_the_basis_fingerprint_ignores_diagnostics_and_bookkeeping(monkeypatch):
 # The pure evaluator against the normative fixture
 # ---------------------------------------------------------------------------
 def _artifact_from_case(contract, case):
+    """One evaluable artifact from the fixture, carrying the basis fingerprint it reproduces.
+
+    The fingerprint is not decorative: every reader recomputes it (ADR-020), so an artifact
+    assembled with a placeholder hash would be refused before a single count was evaluated.
+    """
     return {"schema": contract["schema"], "energy_meV": contract["energy_meV"],
             "evaluation_context": contract["evaluation_context"],
             "exposure_basis": contract["exposure_basis"],
             "completeness": contract["completeness"],
-            "target_projection": contract["target_projection"],
-            "predictive_basis_fingerprint": "fixture",
+            "predictive_basis_fingerprint": case["predictive_basis_fingerprint"],
             "models": case["models"]}
+
+
+def _refingerprint(artifact):
+    """The same artifact with its fingerprint recomputed — for tests that legitimately mutate it."""
+    return {**artifact, "predictive_basis_fingerprint": predictive_basis_fingerprint(
+        models=artifact["models"], energy_meV=artifact["energy_meV"],
+        evaluation_context=artifact["evaluation_context"],
+        exposure_basis=artifact["exposure_basis"])}
 
 
 @pytest.mark.parametrize("case_name", [
@@ -560,7 +578,7 @@ def test_evaluation_is_deterministic_and_order_stable():
     assert first.to_dict() == second.to_dict()
     assert [model["label"] for model in first.models] == case["model_order"]
     # Reordering the artifact's models reorders the result and nothing else.
-    reordered = {**artifact, "models": list(reversed(case["models"]))}
+    reordered = _refingerprint({**artifact, "models": list(reversed(case["models"]))})
     flipped = evaluate_master_predictive(reordered, grid, 750.0)
     assert [model["label"] for model in flipped.models] == list(reversed(case["model_order"]))
     assert flipped.models[0]["expected_counts"] == first.models[-1]["expected_counts"]
@@ -694,7 +712,7 @@ def test_a_real_master_publishes_the_v2_contract(published_artifact):
     assert payload["exposure_basis"]["request_unit"] == "number_neutrons"
     assert payload["exposure_basis"]["request_to_exposure_factor"] == 1.0
     assert payload["exposure_basis"]["fit_reference_exposure"] > 0.0
-    assert payload["target_projection"]["schema"] == "isar.target_projection/1"
+    assert "target_projection" not in payload
     assert payload["uncertainty_provenance"]["deterministic"] is True
     assert payload["predictive_basis_fingerprint"]
     assert payload["completeness"]["predictive_complete_for_eig"] in (True, False)
@@ -703,7 +721,7 @@ def test_a_real_master_publishes_the_v2_contract(published_artifact):
         assert model["draw_weighting"] == "equal_weight_resampled"
         assert len(model["parameter_draws"]) == len(model["expected_counts"])
         assert len(model["draw_ids"]) == len(model["parameter_draws"])
-        assert len(model["target_present_by_draw"]) == len(model["parameter_draws"])
+        assert len(model["mode_energies"]) == len(model["parameter_draws"])
     assert math.isclose(sum(model["weight"] for model in payload["models"]), 1.0)
 
 
@@ -749,3 +767,198 @@ def test_the_workspace_facade_requires_the_v2_schema(published_artifact, tmp_pat
     with pytest.raises(ValueError, match="unsupported master predictive schema"):
         facade.master_predictive("data/master_predictive/legacy.json")
     legacy.unlink()
+
+
+# ---------------------------------------------------------------------------
+# ADR-020 — the shared strict validator and the fail-closed measure
+# ---------------------------------------------------------------------------
+def _valid_artifact():
+    fixture = _fixture()
+    contract = fixture["artifact_contract"]
+    case = next(item for item in fixture["cases"] if item["name"] == "one_mode_vs_two_mode")
+    return _artifact_from_case(contract, case)
+
+
+def _fixture_single_model_artifact():
+    """The one-phonon case reduced to a single normalized model, so weight edits are meaningful."""
+    fixture = _fixture()
+    contract = fixture["artifact_contract"]
+    case = next(item for item in fixture["cases"] if item["name"] == "null_vs_one_phonon")
+    model = {**case["models"][1], "weight": 1.0, "source_weight": 1.0}
+    return _refingerprint({**_artifact_from_case(contract, case), "models": [model]})
+
+
+def test_all_three_readers_run_the_same_validator(tmp_path, monkeypatch):
+    """The workspace facade, the evaluator and the drive-loop reader must agree exactly.
+
+    Three independent subsets is how a basis one reader refuses reached another one and got scored.
+    """
+    from isar.drive import loop as drive_loop
+    from isar.predictive import PredictiveArtifactError, validate_master_predictive_artifact
+    from isar.workspace_api import Workspace as ReadOnlyWorkspace
+
+    artifact = _valid_artifact()
+    broken = _refingerprint({**artifact, "models": [
+        {**artifact["models"][0], "draw_weighting": "guessed"}, *artifact["models"][1:]]})
+
+    with pytest.raises(PredictiveArtifactError) as raised:
+        validate_master_predictive_artifact(broken)
+    assert raised.value.reason_code == "predictive_artifact_invalid"
+    assert evaluate_master_predictive(
+        broken, broken["energy_meV"], 500.0).reason_code == "predictive_artifact_invalid"
+
+    root = tmp_path / "ws"
+    (root / "data" / "master_predictive").mkdir(parents=True)
+    root.joinpath("card.policy.toml").write_text("", encoding="utf-8")
+    (root / "data" / "master_predictive" / "a.json").write_text(
+        json.dumps(broken), encoding="utf-8")
+    with pytest.raises(ValueError):
+        ReadOnlyWorkspace.open(root).master_predictive("data/master_predictive/a.json")
+
+    # The drive loop degrades to no-predictive rather than aborting, and says why.
+    events = []
+    monkeypatch.setattr(drive_loop, "log_event",
+                        lambda path, kind, payload: events.append((kind, payload)))
+    monkeypatch.setattr(drive_loop, "read_results_csv", lambda ws: [
+        {"pooled": True, "h": 2.0, "k": 0.0, "l": 0.0, "T": 300.0,
+         "predictive_ref": "data/master_predictive/a.json"}])
+    monkeypatch.setattr(drive_loop, "_master_obs_from_row",
+                        lambda row, calibration: {"usable": True})
+    rows = drive_loop._read_master_rows(root, None)
+    assert rows and "predictive" not in rows[0]
+    assert [payload["reason"] for _kind, payload in events] == ["predictive_artifact_invalid"]
+
+
+@pytest.mark.parametrize("mutate,reason", [
+    (lambda a: {**a, "models": [{**a["models"][0], "draw_weighting": "explicit_weights"}]},
+     "predictive_artifact_invalid"),                                   # weights must be present
+    (lambda a: {**a, "models": [{**a["models"][0], "draw_weighting": "explicit_weights",
+                                 "draw_weights": [0.0, 0.0]}]},
+     "predictive_artifact_invalid"),                                   # no positive mass
+    (lambda a: {**a, "models": [{**a["models"][0], "draw_weights": [1.0, 1.0]}]},
+     "predictive_artifact_invalid"),                                   # equal-weight ⇒ None
+    (lambda a: {**a, "models": [{**a["models"][0], "draw_ids": ["same", "same"]}]},
+     "predictive_artifact_invalid"),                                   # duplicate ids
+    (lambda a: {**a, "models": [{**a["models"][0], "draw_ids": ["only-one"]}]},
+     "predictive_artifact_invalid"),                                   # misaligned ids
+    (lambda a: {**a, "models": [{**a["models"][0], "omega0_draws": [1.0]}]},
+     "malformed_draw_shape"),                                          # neither absent nor aligned
+    (lambda a: {**a, "models": [{**a["models"][0], "omega0_draws": [1.0, float("nan")]}]},
+     "malformed_draw_shape"),
+    (lambda a: {**a, "models": [{**a["models"][0], "mode_energies": [[1.0]]}]},
+     "malformed_draw_shape"),                                          # misaligned mode energies
+    (lambda a: {**a, "models": [{**a["models"][0], "weight": 0.4}]},
+     "predictive_artifact_invalid"),                                   # weights not normalized
+    (lambda a: {**a, "exposure_basis": {key: value for key, value
+                                        in a["exposure_basis"].items()
+                                        if key != "request_to_exposure_factor"}},
+     "predictive_artifact_invalid"),
+    (lambda a: {**a, "exposure_basis": {**a["exposure_basis"], "kept_point_count": 99}},
+     "predictive_artifact_invalid"),
+    (lambda a: {**a, "evaluation_context": {**a["evaluation_context"],
+                                            "gaussian_fwhm_meV": 0.0}},
+     "artifact_schema_unsupported"),
+    (lambda a: {**a, "evaluation_context": {**a["evaluation_context"],
+                                            "lorentzian_fwhm_meV": -0.1}},
+     "artifact_schema_unsupported"),
+    (lambda a: {**a, "evaluation_context": {**a["evaluation_context"],
+                                            "quasielastic_fwhm_meV": 0.0}},
+     "artifact_schema_unsupported"),
+    (lambda a: {**a, "models": [{**a["models"][0], "model_manifest": {
+        **a["models"][0]["model_manifest"],
+        "components": [{"type": "phonon_dho", "prefix": "phonon", "peak": "magnon"},
+                       {"type": "constant_background", "prefix": "bg"}]}}]},
+     "artifact_schema_unsupported"),                                   # peak vocabulary
+])
+def test_the_validator_refuses_every_measure_and_bound_violation(mutate, reason):
+    artifact = mutate(_fixture_single_model_artifact())
+    result = evaluate_master_predictive(_refingerprint(artifact),
+                                        artifact["energy_meV"], 500.0)
+    assert result.available is False and result.reason_code == reason
+
+
+def test_a_tampered_basis_fingerprint_refuses_even_when_everything_else_is_valid():
+    artifact = {**_valid_artifact(), "predictive_basis_fingerprint": "0" * 64}
+    result = evaluate_master_predictive(artifact, artifact["energy_meV"], 500.0)
+    assert result.reason_code == "predictive_basis_fingerprint_mismatch"
+    # A silently edited draw changes the content, so the stored hash no longer reproduces.
+    edited = _valid_artifact()
+    edited["models"] = [{**edited["models"][0],
+                         "parameter_draws": [[value + 1e-6 for value in draw]
+                                             for draw in edited["models"][0]["parameter_draws"]]},
+                        *edited["models"][1:]]
+    assert evaluate_master_predictive(edited, edited["energy_meV"], 500.0).reason_code == (
+        "predictive_basis_fingerprint_mismatch")
+
+
+def test_machine_precision_negatives_clamp_but_substantial_negatives_refuse():
+    # A Poisson mean of -1e-15 is floating-point noise around zero; -1.0 is a broken model, and
+    # clamping it published a plausible prediction from an impossible one.
+    manifest = {"schema": "isar.model_manifest/1",
+                "components": [{"type": "constant_background", "prefix": "bg"}],
+                "parameters": {"bg.BG": 1.0}}
+    clamped = mm.expected_counts(manifest, ["bg.BG"], [-1e-15], _CONTEXT, _GRID)
+    assert np.all(clamped == 0.0)
+    with pytest.raises(mm.ModelManifestError) as raised:
+        mm.expected_counts(manifest, ["bg.BG"], [-1.0], _CONTEXT, _GRID)
+    assert raised.value.reason_code == "negative_prediction"
+    assert mm.NEGATIVE_PREDICTION_EPS == 1e-9
+
+
+def test_the_negative_prediction_tolerance_is_hashed_with_the_evaluator_version(monkeypatch):
+    payload, inputs = _fingerprint_inputs(monkeypatch)
+    baseline = payload["predictive_basis_fingerprint"]
+    monkeypatch.setattr(mm, "NEGATIVE_PREDICTION_EPS", 1e-6)
+    assert predictive_basis_fingerprint(**inputs) != baseline
+
+
+def test_the_request_to_exposure_factor_is_applied_not_merely_recorded():
+    # exposure_per_point is in REQUEST units; the fitted amplitudes are in exposure-basis units.
+    artifact = _fixture_single_model_artifact()
+    reference = float(artifact["exposure_basis"]["fit_reference_exposure"])
+    identity = evaluate_master_predictive(artifact, artifact["energy_meV"], reference)
+    assert identity.available and math.isclose(identity.exposure_ratio, 1.0)
+
+    scaled = _refingerprint({**artifact, "exposure_basis": {
+        **artifact["exposure_basis"], "request_to_exposure_factor": 4.0}})
+    result = evaluate_master_predictive(scaled, scaled["energy_meV"], reference)
+    assert result.available and math.isclose(result.exposure_ratio, 4.0)
+    assert np.allclose(result.models[0]["expected_counts"],
+                       4.0 * np.asarray(identity.models[0]["expected_counts"]))
+
+    bad = _refingerprint({**artifact, "exposure_basis": {
+        **artifact["exposure_basis"], "request_to_exposure_factor": 0.0}})
+    assert evaluate_master_predictive(bad, bad["energy_meV"], reference).reason_code == (
+        "predictive_artifact_invalid")
+
+
+def test_every_fingerprinted_field_is_structurally_validated_first():
+    # A field the fingerprint hashes but the validator never checks surfaces as an unexplained
+    # "the hash moved" instead of "this field is missing" — the exact confusion ADR-020 removes.
+    artifact = _fixture_single_model_artifact()
+    for field in ("identity_label", "source_weight"):
+        stripped = {**artifact, "models": [
+            {key: value for key, value in artifact["models"][0].items() if key != field}]}
+        result = evaluate_master_predictive(stripped, stripped["energy_meV"], 500.0)
+        assert result.reason_code == "predictive_artifact_invalid", field
+        assert field in result.message
+
+
+def test_a_published_artifact_still_fingerprints_after_a_json_round_trip(tmp_path, monkeypatch):
+    # The producer hashes live Python objects; every reader hashes the JSON it read back. If those
+    # two disagreed, every artifact on disk would refuse with a fingerprint mismatch.
+    ctx, _reference = _pool_context([1e9] * 5)
+    payload = _ensemble(monkeypatch, ctx, weights={"one-phonon": 1.0},
+                        manifests={"one-phonon": _MANIFEST},
+                        draws={"one-phonon": [_DRAW, [3.1, 0.35, 110.0, 5.0]]})
+    path = tmp_path / "artifact.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                               separators=(",", ":")), encoding="utf-8")
+    reloaded = json.loads(path.read_text(encoding="utf-8"))
+    assert predictive_basis_fingerprint(
+        models=reloaded["models"], energy_meV=reloaded["energy_meV"],
+        evaluation_context=reloaded["evaluation_context"],
+        exposure_basis=reloaded["exposure_basis"]) == payload["predictive_basis_fingerprint"]
+    assert evaluate_master_predictive(
+        reloaded, reloaded["energy_meV"],
+        reloaded["exposure_basis"]["reference_incremental_exposure"]).available

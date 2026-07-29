@@ -92,10 +92,10 @@ def test_predictive_v2_fixture_has_the_locked_contract_shape():
     assert contract["completeness"]["model_weight_floor"] == 0.005
     assert contract["completeness"]["max_pruned_mass"] == 0.01
     assert contract["completeness"]["max_dropped_draw_mass"] == 0.01
-    projection = contract["target_projection"]
-    assert projection["schema"] == "isar.target_projection/1"
-    assert projection["qoi"] == "omega0"
-    assert projection["projection_version"] and projection["complete"] is True
+    # ADR-019: /2 is PHYSICAL ONLY. The target projection is a separate, authority-bound artifact
+    # resolved after branch triage and the connected tracker, so a /2 that still carried one would
+    # be asserting a target the fit could not yet know.
+    assert "target_projection" not in contract
     assert contract["seed"] == 940301
     assert contract["uncertainty_provenance"]["deterministic"] is True
 
@@ -148,8 +148,13 @@ def test_predictive_v2_fixture_matrices_are_complete_finite_and_nonnegative():
             assert model["draw_weights"] is None
             # ADR-009: the identity seam defaults to the label and earns no reward.
             assert model["identity_label"] == model["label"]
-            assert len(model["target_present_by_draw"]) == len(draws)
-            assert len(model["target_qoi_draws"]) == len(draws)
+            # ADR-019: no target state inside /2 — only the per-draw physical menu of all fitted
+            # mode energies, which a later projection selects the target from without a refit.
+            assert "target_present_by_draw" not in model
+            assert "target_qoi_draws" not in model
+            assert len(model["mode_energies"]) == len(draws)
+            assert all(all(math.isfinite(float(value)) for value in row)
+                       for row in model["mode_energies"])
             manifest = model["model_manifest"]
             assert manifest["schema"] == "isar.model_manifest/1"
             assert manifest["components"]
@@ -173,7 +178,8 @@ def test_predictive_v2_fixture_matrices_are_complete_finite_and_nonnegative():
 
     null_model = cases["null_vs_one_phonon"]["models"][0]
     assert null_model["omega0_draws"] == []
-    assert not any(null_model["target_present_by_draw"])
+    # A no-phonon model has no modes at all, so no projection can ever select a target from it.
+    assert null_model["mode_energies"] == [[], []]
     fit_reference = fixture["artifact_contract"]["exposure_basis"][
         "fit_reference_exposure"]
     for request_name, request in requests.items():
@@ -183,6 +189,26 @@ def test_predictive_v2_fixture_matrices_are_complete_finite_and_nonnegative():
             assert all(math.isclose(value, draw[0] * ratio) for value in row)
     assert len(cases["one_mode_vs_two_mode"]["models"][1][
         "model_manifest"]["components"]) == 3
+
+
+def test_every_fixture_case_carries_a_reproducing_basis_fingerprint():
+    # ADR-020: every reader recomputes the stored fingerprint and refuses a mismatch, so a fixture
+    # that cannot reproduce its own fingerprint would be unusable by the evaluator it normalises.
+    from isar.predictive import predictive_basis_fingerprint
+
+    fixture = _load()
+    contract = fixture["artifact_contract"]
+    for case in fixture["cases"]:
+        assert case["predictive_basis_fingerprint"] == predictive_basis_fingerprint(
+            models=case["models"], energy_meV=contract["energy_meV"],
+            evaluation_context=contract["evaluation_context"],
+            exposure_basis=contract["exposure_basis"])
+    pool = fixture["heterogeneous_pool"]
+    pool_contract = pool["artifact_contract"]
+    assert pool["predictive_basis_fingerprint"] == predictive_basis_fingerprint(
+        models=pool["models"], energy_meV=pool_contract["energy_meV"],
+        evaluation_context=pool_contract["evaluation_context"],
+        exposure_basis=pool_contract["exposure_basis"])
 
 
 def test_predictive_v2_fixture_pins_model_draw_and_parameter_order():
@@ -213,6 +239,7 @@ def test_heterogeneous_support_pool_would_expose_a_scalar_vector_confusion():
     contract = pool["artifact_contract"]
     exposure = contract["exposure_basis"]
     assert set(exposure) == _EXPOSURE_BASIS_FIELDS
+    assert "target_projection" not in contract
     assert exposure["exposure_homogeneous"] is False
     assert exposure["scalar_exposure_eligible"] is False
     assert exposure["exposure_ratio_span"] == 2.0

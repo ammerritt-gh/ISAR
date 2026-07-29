@@ -14,7 +14,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from isar.predictive import PREDICTIVE_ARTIFACT_SCHEMA
+from isar.predictive import PREDICTIVE_CONTRACT as _PREDICTIVE_CONTRACT
 
 from .state import ScanEntry
 
@@ -36,7 +36,7 @@ MASTER_FIT_CONTRACT = "isar.master_fit/2"
 # Re-exported from the module that defines the artifact, never redeclared: a second literal here
 # could be bumped independently of the driver's publisher, leaving the fingerprint (and therefore
 # every checkpoint-store entry) keyed to a contract nobody publishes any more.
-PREDICTIVE_CONTRACT = PREDICTIVE_ARTIFACT_SCHEMA
+PREDICTIVE_CONTRACT = _PREDICTIVE_CONTRACT
 
 
 def _atomic_json(path: Path, value: dict) -> None:

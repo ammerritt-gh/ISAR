@@ -19,6 +19,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from isar.predictive import TARGET_PROJECTION_SCHEMA
 from isar.schema.card import CardState, load_policy, load_state
 from isar.session.state import SessionState
 from isar.session.workspace import (POLICY_NAME, SESSION_NAME, STATE_NAME, REPORT_DIRNAME)
@@ -420,54 +421,60 @@ class Workspace:
             monitor=monitor, mask=mask,
             members=tuple(tuple(item) for item in payload.get("members") or ()))
 
+    def _side_artifact(self, ref, subdirectory: str, label: str):
+        """Load one JSON side artifact, refusing any reference that escapes its own blob root."""
+        candidate = (self.root / str(ref)).resolve()
+        root = (self.root / "data" / subdirectory).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                f"{label} reference escapes data/{subdirectory}: {ref!r}") from exc
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"{label} payload must be an object in {ref!r}")
+        return payload
+
     def master_predictive(self, fit_or_ref):
-        """Load one validated, Qt-free posterior-predictive artifact."""
-        import numpy as np
+        """Load one strictly validated, Qt-free posterior-predictive artifact.
+
+        Validation is the ONE shared gate (:func:`isar.predictive.validate_master_predictive_artifact`,
+        ADR-020) — the same checks the arbitrary-grid evaluator and the drive loop apply, so no
+        reader can accept a basis another reader would refuse. That includes recomputing the stored
+        ``predictive_basis_fingerprint``. /2 only (ADR-006/013): a stale `/1` artifact refuses here
+        and never blocks opening the workspace or reading its scans and fits.
+        """
+        from isar.predictive import PredictiveArtifactError, validate_master_predictive_artifact
 
         ref = (fit_or_ref.predictive_ref if hasattr(fit_or_ref, "predictive_ref") else fit_or_ref)
         if not ref:
             return None
-        candidate = (self.root / str(ref)).resolve()
-        predictive_root = (self.root / "data" / "master_predictive").resolve()
+        payload = self._side_artifact(ref, "master_predictive", "master predictive")
         try:
-            candidate.relative_to(predictive_root)
-        except ValueError as exc:
-            raise ValueError(f"master predictive reference escapes data/master_predictive: {ref!r}") from exc
-        payload = json.loads(candidate.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError(f"master predictive payload must be an object in {ref!r}")
-        # /2 only (ADR-006/013, pre-release clean break): there is no dual-read layer and a `/1`
-        # artifact is never guessed into `/2` -- it lacks the fitted grid, evaluation context and
-        # exposure basis. A stale side artifact refuses here; it never blocks opening the workspace
-        # or reading its scans and fits.
-        if payload.get("schema") != "isar.master_predictive/2":
-            raise ValueError(f"unsupported master predictive schema in {ref!r}")
-        models = payload.get("models")
-        if not isinstance(models, list):
-            raise ValueError(f"master predictive models must be a list in {ref!r}")
-        weights = []
-        for index, model in enumerate(models):
-            if not isinstance(model, dict):
-                raise ValueError(f"master predictive model {index} must be an object in {ref!r}")
-            try:
-                weight = float(model["weight"])
-                names = model["parameter_names"]
-                draws = np.asarray(model["parameter_draws"], dtype=float)
-                omega = np.asarray(model["omega0_draws"], dtype=float)
-                expected = np.asarray(model["expected_counts"], dtype=float)
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ValueError(f"malformed master predictive model {index} in {ref!r}") from exc
-            if (not np.isfinite(weight) or weight <= 0.0 or not isinstance(names, list)
-                    or draws.ndim != 2 or expected.ndim != 2 or omega.ndim != 1
-                    or draws.shape[0] != expected.shape[0] or expected.shape[0] == 0
-                    or omega.size not in (0, expected.shape[0])
-                    or draws.shape[1] != len(names)
-                    or not np.all(np.isfinite(draws)) or not np.all(np.isfinite(omega))
-                    or not np.all(np.isfinite(expected)) or np.any(expected < 0.0)):
-                raise ValueError(f"invalid master predictive model {index} in {ref!r}")
-            weights.append(weight)
-        if weights and not np.isclose(sum(weights), 1.0, rtol=1e-6, atol=1e-9):
-            raise ValueError(f"master predictive model weights are not normalized in {ref!r}")
+            validate_master_predictive_artifact(payload)
+        except PredictiveArtifactError as exc:
+            raise ValueError(f"{exc.message} in {ref!r}") from exc
+        return payload
+
+    def target_projection(self, fit_or_ref):
+        """Load one ``isar.target_projection/2`` artifact (ADR-019), or ``None`` when unpublished.
+
+        The projection is bound to the authority basis that decided it (master revision, track
+        revision, candidate identity/state, calibration and policy fingerprints). A consumer whose
+        current state differs on any of those holds a stale projection and must re-resolve it —
+        this reader deliberately does not decide that for it.
+        """
+        ref = (fit_or_ref.target_projection_ref
+               if hasattr(fit_or_ref, "target_projection_ref") else fit_or_ref)
+        if not ref:
+            return None
+        payload = self._side_artifact(ref, "target_projection", "target projection")
+        if payload.get("schema") != TARGET_PROJECTION_SCHEMA:
+            raise ValueError(f"unsupported target projection schema in {ref!r}")
+        if not isinstance(payload.get("authority"), dict):
+            raise ValueError(f"target projection carries no authority basis in {ref!r}")
+        if not isinstance(payload.get("models"), list):
+            raise ValueError(f"target projection models must be a list in {ref!r}")
         return payload
 
     @property
