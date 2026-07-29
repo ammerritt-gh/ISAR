@@ -109,7 +109,7 @@ and verified by `git grep` at deletion time rather than by bookkeeping.
 
 ## `docs/` — active plans
 
-All three are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
+All five are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
 status block — `tests/docs/` fails the build if either is missing. Each cited the 2026-07-19
 statistics-contract audit as motivation; that audit's shared findings were promoted once into
 `STATS_PRIMER.md` §7, so the three plans do not carry three drifting copies.
@@ -120,6 +120,7 @@ statistics-contract audit as motivation; that audit's shared findings were promo
 | `docs/STEERING_DESIGN.md` | Active plan | Phase 0 shipped as O27/O28/O29/O31; A→B→C Planned | Phase 0 is summarized only; the contract is `MEASUREMENT_STEERING.md` + DECISIONS O27–O31 |
 | `docs/BACKGROUND_DESIGN.md` | Active plan | approved 2026-07-19; implementation not started | — |
 | `docs/EIG_STEERING_DESIGN.md` | Active plan | maintenance seam shipped; `/2`, arbitrary-grid evaluation, and same-action window ranking Planned | Distinguishes future scan-window EIG from current master-grid action/Q ranking |
+| `docs/stats/STATISTICAL_SEMANTICS_AUDIT.md` | Active plan | STAT-0 audit complete; STAT-1 through STAT-6 pending | Temporary pre-EIG-3 producer/consumer audit; STAT-6 folds accepted semantics into canonical documents, then deletes and tombstones it |
 
 ## `docs/campaigns/` — historical evidence
 
