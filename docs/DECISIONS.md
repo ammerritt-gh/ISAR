@@ -679,6 +679,76 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   compatibility branch (ADR-006/013 of the EIG plan; same reasoning as O32). References: O12,
   O32, `docs/EIG_STEERING_DESIGN.md`.
 
+- **O34.** (2026-07-29, Implemented in `isar/drive/acquisition/grid_adapters.py`,
+  `scan_grid.py` and `physical_windows.py`) **The grid a candidate is scored on is an
+  instrument-adapter contract, not ISAR arithmetic: the scored grid is the adapter-canonical
+  *executed* energies.** ISAR designs a uniform window as `(e_lo, e_hi, e_step)`, but the instrument
+  executes the point list its own parser derives from the submitted command *string*, at its own
+  numeric precision. Scoring against energies the instrument will never visit is a silent
+  correctness bug — the scored grid and the executed grid look equally plausible in isolation, and
+  the disagreement surfaces only as an unexplained score that never reproduces on the data.
+
+  An adapter is therefore the single authority on three things for one instrument: the wire
+  rendering, the point count, and the point positions. Every grid identity — candidate fingerprints,
+  dedup keys, target-support counts — is taken over the executed energies, and the adapter's
+  `id`/`version` are hashed into the `isar.uniform_scan_grid/2` fingerprint so the same
+  `(lo, hi, step)` executed under different instrument semantics is a different scoring object and a
+  stored candidate names the semantics it was scored under.
+
+  The shipped `tavi_delta_e` adapter reproduces `tavi.utilities.parse_scan_steps` **without
+  importing TAVI**: ISAR must not grow a runtime dependency on the instrument server to know what it
+  asked for. Two details of that reproduction are load-bearing and were both wrong in the arithmetic
+  it replaces — the `%g` wire round-trip (TAVI parses the command back with `float()`, so a designed
+  bound of `3.3999999999999995` is executed as `3.4`) and numpy's round-half-to-even at 3 decimals
+  (Python's `round` disagrees on exact `x.xxx5` ties). Cross-repo agreement is held by golden parity
+  fixtures plus one `live` round-trip test asserting the adapter-predicted grid equals TAVI's
+  returned `scan_values_1` exactly; that test is the whole point of the ruling, since a reproduction
+  nobody checks against the instrument is just a second guess.
+
+  The rejected alternative was keeping ISAR's own rounding and declaring a `grid_energy_decimals`
+  construction constant. That is what the generator config carried; it is removed in
+  `isar.physical_window_generator_config/2`, because a caller-supplied precision is a statement about
+  the instrument that the caller is not entitled to make. References: O33,
+  `docs/EIG_STEERING_DESIGN.md`.
+
+- **O35.** (2026-07-29, Implemented in `isar/session/predictive_artifact.py`, `isar/predictive.py`
+  and the three artifact readers) **The target projection is separated out of the physical
+  predictive artifact and bound to the tracker authority basis that produced it.**
+  `isar.master_predictive/2` carried a target projection resolved from the fit's own local best
+  mode. The fit's local best can disagree with the target the campaign stands behind once branch
+  triage and the connected tracker have run, so a scored design could aim at an energy the campaign
+  no longer believes in — and nothing in the artifact recorded which authority state the projection
+  came from, so a stale one was indistinguishable from a current one.
+
+  `/2` becomes physical only: manifests, named draws, expected counts, `omega0_draws`, and per-draw
+  `mode_energies` — the full menu of fitted mode energies a projection selects from without a refit.
+  The projection moves to `isar.target_projection/2`, resolved *after* triage and the tracker,
+  carrying an `authority` block (master revision, track revision and state, candidate id and state,
+  selected candidate index, calibration and policy fingerprints). A consumer whose state differs on
+  any of those holds a stale projection and must re-resolve rather than score.
+
+  An unresolvable projection **publishes** with `complete: false`, a structured `reason`, and no
+  target draws at all. Raising was rejected because a missing artifact is indistinguishable from a
+  producer that never ran; a *partially* populated one was rejected because it invites a consumer to
+  score the half it likes. The reasons are stable codes (`descriptor_only`, `withheld_delivery`,
+  `ambiguous_track`, `no_reference_target_energy`, `no_unique_mode`,
+  `no_retained_model_carries_the_target_mode`), and equidistant modes refuse rather than let a
+  nearest-energy rule publish a coin flip as a QoI.
+
+  The reshape reaches existing workspaces the same way O33's did, and by the same mechanism:
+  `PREDICTIVE_CONTRACT` — defined once in `isar/predictive.py` and re-exported, never re-declared —
+  advances to `isar.master_predictive/2+physical_only.1` and joins the master-fit fingerprint, so
+  every cached master regenerates its predictive artifact under the new shape without refitting the
+  science. A migration of stored `/2` artifacts was rejected: the projection cannot be reconstructed
+  from a stored artifact at all, since the authority basis it must bind to is not in there.
+
+  Paired with this, `validate_master_predictive_artifact` becomes the one strict read gate all three
+  readers run (ADR-020). The drive loop previously checked only the schema label, so the same
+  artifact was usable or not depending on who opened it; the gate also recomputes
+  `predictive_basis_fingerprint` from the artifact's own content, which is what makes a stale or
+  hand-edited basis a refusal instead of a plausible score. References: O33, O34,
+  `docs/EIG_STEERING_DESIGN.md`.
+
 - **S5.** (2026-07-25, Implemented; amends S1 and V5, both of which record the superseded status)
   **The Bayesian rung of the interval ladder is built and running; what is still Planned is its
   licence to certify, not its machinery.** S1 wrote the ladder as "Hessian (never certifies) →

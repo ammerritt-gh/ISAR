@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the steering research foundation and the current controller contract
 > **Provenance:** hand-written
-> **Verified against code revision:** `3afbff4` (2026-07-29)
+> **Verified against code revision:** `6935ec5` (2026-07-29)
 
 > **Status: design locked; the core is built.** The model-free descriptor (L0), branch model +
 > Bayesian branch assignment, soft/hard Γ constraints, Stokes-only rescue, under-model
@@ -746,7 +746,10 @@ Each merged pool carries a seeded exposure-scaled Poisson-deviance homogeneity r
 default α=0.01 blocks certification and requests review without excluding a member or ending the
 q-point. A usable master also publishes an `isar.master_predictive/2` artifact containing bounded full
 parameter draws and weights for every retained plausible model/branch, together with the fitted grid,
-the frozen evaluation context and the per-energy exposure basis those draws were fitted against.
+the frozen evaluation context and the per-energy exposure basis those draws were fitted against. That
+artifact is *physical only*: which mode is the campaign's target is resolved after branch triage and
+the connected tracker into a separate `isar.target_projection/2` bound to the authority basis that
+produced it (ADR-019; [`EIG_STEERING_DESIGN.md`](EIG_STEERING_DESIGN.md)).
 Nested draws win, then full-fit
 bootstrap draws, then a trusted multivariate HESSE/Laplace approximation. The model-weighted ω interval
 is the certification interval; therefore Γ may be `resolution_limited` without blocking an otherwise
