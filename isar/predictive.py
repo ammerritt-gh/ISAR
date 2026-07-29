@@ -1,7 +1,17 @@
-"""Qt-free posterior-predictive information scoring shared by analysis and steering."""
+"""Qt-free posterior-predictive information scoring shared by analysis and steering.
+
+Two independent surfaces live here:
+
+* :func:`predictive_score` — the existing outer action/Q ranking estimate (unchanged);
+* :func:`evaluate_master_predictive` — the pure arbitrary-grid evaluator over an
+  ``isar.master_predictive/2`` artifact. It owns prediction only: no fitting, no state mutation, no
+  utility, no candidate generation, no instrument truth.
+"""
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -98,3 +108,173 @@ def predictive_score(models: list[dict], *, seed: int, n_simulations: int = 512)
             max(joint_information, 1e-9) / math.sqrt(len(choices))),
         "seed": int(seed), "common_random_seed": int(seed),
     }
+
+
+PREDICTIVE_ARTIFACT_SCHEMA = "isar.master_predictive/2"
+PREDICTIVE_DESIGN_EVALUATION_SCHEMA = "isar.predictive_design_evaluation/1"
+
+#: Stable refusal codes. A consumer routes on these, never on message text.
+ARTIFACT_SCHEMA_UNSUPPORTED = "artifact_schema_unsupported"
+MISSING_EXPOSURE_BASIS = "missing_exposure_basis"
+MALFORMED_DRAW_SHAPE = "malformed_draw_shape"
+UNKNOWN_COMPONENT_KIND = "unknown_component_kind"
+NONFINITE_PREDICTION = "nonfinite_prediction"
+INVALID_ENERGY_GRID = "invalid_energy_grid"
+INVALID_REQUESTED_EXPOSURE = "invalid_requested_exposure"
+PREDICTIVE_BASIS_INCOMPLETE = "predictive_basis_incomplete"
+
+
+@dataclass(frozen=True)
+class PredictiveDesignEvaluation:
+    """One ``isar.predictive_design_evaluation/1`` result: available, or refused with a reason."""
+
+    available: bool
+    schema: str = PREDICTIVE_DESIGN_EVALUATION_SCHEMA
+    reason_code: str | None = None
+    message: str | None = None
+    energy_meV: tuple = ()
+    exposure_per_point: float | None = None
+    exposure_ratio: float | None = None
+    predictive_basis_fingerprint: str | None = None
+    models: tuple = field(default_factory=tuple)
+
+    def to_dict(self) -> dict:
+        return {
+            "schema": self.schema, "available": self.available,
+            "reason_code": self.reason_code, "message": self.message,
+            "energy_meV": list(self.energy_meV),
+            "exposure_per_point": self.exposure_per_point,
+            "exposure_ratio": self.exposure_ratio,
+            "predictive_basis_fingerprint": self.predictive_basis_fingerprint,
+            "models": [dict(model) for model in self.models],
+        }
+
+
+def _refuse(reason_code: str, message: str, **echo) -> PredictiveDesignEvaluation:
+    return PredictiveDesignEvaluation(available=False, reason_code=reason_code,
+                                      message=message, **echo)
+
+
+def evaluate_master_predictive(artifact, energy_meV, exposure_per_point
+                               ) -> PredictiveDesignEvaluation:
+    """Evaluate a published predictive basis on an arbitrary grid at one requested exposure.
+
+    Every retained model is reconstructed from its own manifest and every draw is substituted **by
+    name** through the shared evaluation path (:mod:`isar.analyze.model_manifest`) — the same path
+    that produced the artifact's stored matrices — then evaluated directly at each requested energy
+    and multiplied by the scalar ratio ``exposure_per_point / fit_reference_exposure``. Stored
+    expected counts are never interpolated.
+
+    The scalar ratio is valid on every pool, including exposure-heterogeneous ones: a fitted
+    amplitude is a rate (counts per ``fit_reference_exposure`` monitor counts), and a candidate scan
+    requests one uniform exposure per point (EIG-0 §7.1). ``exposure_homogeneous`` gates only the
+    artifact's own scalar fitted-grid parity claim, not this evaluation.
+
+    Deterministic and order-stable: model and draw order follow the artifact. Any unsupported input
+    returns ``available=False`` with a stable ``reason_code`` — nothing is dropped and continued.
+    """
+    from isar.analyze import model_manifest as manifest_mod
+
+    if not isinstance(artifact, Mapping):
+        return _refuse(ARTIFACT_SCHEMA_UNSUPPORTED, "predictive artifact must be an object")
+    schema = artifact.get("schema")
+    if schema != PREDICTIVE_ARTIFACT_SCHEMA:
+        return _refuse(ARTIFACT_SCHEMA_UNSUPPORTED,
+                       f"unsupported predictive artifact schema {schema!r}")
+    fingerprint = artifact.get("predictive_basis_fingerprint")
+    try:
+        grid = manifest_mod.energy_grid(energy_meV)
+    except manifest_mod.ModelManifestError as error:
+        return _refuse(error.reason_code, error.message,
+                       predictive_basis_fingerprint=fingerprint)
+    echo = {"energy_meV": tuple(float(value) for value in grid),
+            "predictive_basis_fingerprint": fingerprint}
+    try:
+        exposure = float(exposure_per_point)
+    except (TypeError, ValueError):
+        return _refuse(INVALID_REQUESTED_EXPOSURE,
+                       "requested exposure per point must be numeric", **echo)
+    if not math.isfinite(exposure) or exposure <= 0.0:
+        return _refuse(INVALID_REQUESTED_EXPOSURE,
+                       "requested exposure per point must be finite and positive", **echo)
+    echo["exposure_per_point"] = exposure
+
+    basis = artifact.get("exposure_basis")
+    reference = basis.get("fit_reference_exposure") if isinstance(basis, Mapping) else None
+    try:
+        reference = float(reference)
+    except (TypeError, ValueError):
+        reference = float("nan")
+    if not math.isfinite(reference) or reference <= 0.0:
+        # The genuine no-monitor case: the master fitted on the uniform path, so its amplitudes
+        # have no absolute exposure basis to scale (EIG-0 §4.6).
+        return _refuse(MISSING_EXPOSURE_BASIS,
+                       "predictive artifact has no finite positive fit reference exposure", **echo)
+    ratio = exposure / reference
+    echo["exposure_ratio"] = ratio
+
+    completeness = artifact.get("completeness")
+    if not isinstance(completeness, Mapping) \
+            or completeness.get("predictive_complete_for_eig") is not True:
+        return _refuse(PREDICTIVE_BASIS_INCOMPLETE,
+                       "predictive basis is not complete enough to score (ADR-014)", **echo)
+
+    context_values = artifact.get("evaluation_context")
+    if not isinstance(context_values, Mapping):
+        return _refuse(ARTIFACT_SCHEMA_UNSUPPORTED,
+                       "predictive artifact has no evaluation context", **echo)
+    try:
+        context = manifest_mod.EvaluationContext(
+            center=context_values.get("center_meV"),
+            gauss_fwhm=context_values.get("gaussian_fwhm_meV"),
+            lorentz_fwhm=context_values.get("lorentzian_fwhm_meV"),
+            T=context_values.get("temperature_K"),
+            quasielastic_fwhm=context_values.get("quasielastic_fwhm_meV"),
+            exposure_ratio=ratio)
+    except manifest_mod.ModelManifestError as error:
+        return _refuse(error.reason_code, error.message, **echo)
+
+    models = artifact.get("models")
+    if not isinstance(models, Sequence) or isinstance(models, (str, bytes)) or not models:
+        return _refuse(ARTIFACT_SCHEMA_UNSUPPORTED,
+                       "predictive artifact has no retained models", **echo)
+    evaluated = []
+    for index, model in enumerate(models):
+        if not isinstance(model, Mapping):
+            return _refuse(ARTIFACT_SCHEMA_UNSUPPORTED,
+                           f"predictive model {index} must be an object", **echo)
+        try:
+            weight = float(model.get("weight"))
+        except (TypeError, ValueError):
+            weight = float("nan")
+        if not math.isfinite(weight) or weight <= 0.0:
+            return _refuse(ARTIFACT_SCHEMA_UNSUPPORTED,
+                           f"predictive model {index} has no usable weight", **echo)
+        draws = model.get("parameter_draws")
+        if not isinstance(draws, Sequence) or isinstance(draws, (str, bytes)) or not draws:
+            return _refuse(MALFORMED_DRAW_SHAPE,
+                           f"predictive model {index} has no parameter draws", **echo)
+        names = model.get("parameter_names")
+        expected = []
+        for draw in draws:
+            try:
+                expected.append([float(value) for value in manifest_mod.expected_counts(
+                    model.get("model_manifest"), names, draw, context, grid)])
+            except manifest_mod.ModelManifestError as error:
+                return _refuse(error.reason_code,
+                               f"predictive model {index}: {error.message}", **echo)
+        evaluated.append({
+            "label": model.get("label"),
+            "identity_label": model.get("identity_label", model.get("label")),
+            "weight": weight,
+            "draw_basis": model.get("draw_basis"),
+            "draw_weighting": model.get("draw_weighting"),
+            "draw_weights": model.get("draw_weights"),
+            "draw_ids": list(model.get("draw_ids") or ()),
+            "parameter_names": list(names or ()),
+            "omega0_draws": [float(value) for value in (model.get("omega0_draws") or ())],
+            "target_present_by_draw": list(model.get("target_present_by_draw") or ()),
+            "target_qoi_draws": list(model.get("target_qoi_draws") or ()),
+            "expected_counts": expected,
+        })
+    return PredictiveDesignEvaluation(available=True, models=tuple(evaluated), **echo)

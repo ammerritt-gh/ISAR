@@ -32,6 +32,7 @@ from isar.analyze import gold as gold_mod
 from isar.analyze.context import (
     ScanContext, effective_exposure, normalized_exposure, select_exposure,
 )
+from isar.analyze import model_manifest as manifest_mod
 from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.reduce import collate as collate_mod
@@ -835,7 +836,8 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     candidates = _candidate_rows(sel.scores, fits)
     predictive_ensemble = (_predictive_ensemble(
         best, sel.scores, fits, by_hyp, ctx, seed=seed,
-        n_members=int(predictive_n_members)) if predictive_n_members is not None else None)
+        n_members=int(predictive_n_members), action_role=fit_role)
+        if predictive_n_members is not None else None)
 
     # Phase 4a — under-model falsification: the descriptor localised real signal the phonon model
     # can't fit. This is NOT an ω₀ measurement (machine contract): null the number/intervals and
@@ -1596,8 +1598,29 @@ def _mode_candidates(scan_id: str, detector: str, outcome: dict) -> list[dict]:
     return rows
 
 
+# Every draw basis ISAR produces is an EQUAL-WEIGHT particle set, verified at each source:
+#   nested_sampling      -- dynesty's importance weights are consumed by ``resample_equal`` before
+#                           the samples are stored (isar/analyze/errors/bayes.py:170-190);
+#   parametric_bootstrap -- one replicate = one equal-weight particle
+#                           (isar/analyze/errors/bootstrap.py:276-289);
+#   laplace_hesse        -- i.i.d. ``multivariate_normal`` draws (below).
+# ADR-014 requires the measure to be declared rather than assumed, so each model publishes this
+# declaration; a future weighted basis publishes explicit ``draw_weights`` instead.
+_DRAW_WEIGHTING = {
+    "nested_sampling": "equal_weight_resampled",
+    "parametric_bootstrap": "equal_weight_resampled",
+    "laplace_hesse": "equal_weight_resampled",
+}
+
+
 def _bounded_parameter_draws(result, *, seed: int, maximum: int = 64):
-    """Strongest valid full-parameter draw basis for one fitted candidate."""
+    """Strongest valid full-parameter draw basis for one fitted candidate.
+
+    Returns ``(names, samples, basis, diagnostics)``. ``diagnostics`` is the ADR-014 draw-level
+    completeness record: how many draws the source produced, which were dropped and why, and the
+    retained probability mass. Thinning an equal-weight ensemble to the draw cap is a deterministic
+    representative subsample, not lost mass, so it is reported separately from ``dropped_draws``.
+    """
     within = result.within_model or {}
     if within.get("bayes_ok") and within.get("bayes_parameter_samples") is not None:
         names = tuple(within.get("bayes_parameter_names") or ())
@@ -1621,60 +1644,295 @@ def _bounded_parameter_draws(result, *, seed: int, maximum: int = 64):
         return None
     if samples.ndim != 2 or samples.shape[1] != len(names) or samples.shape[0] == 0:
         return None
-    samples = samples[np.all(np.isfinite(samples), axis=1)]
+    source_count = int(samples.shape[0])
+    finite = np.all(np.isfinite(samples), axis=1)
+    dropped = [{"id": f"draw-{index}", "reason": "nonfinite_parameter_draw"}
+               for index in range(source_count) if not bool(finite[index])]
+    source_ids = [f"draw-{index}" for index in range(source_count) if bool(finite[index])]
+    samples = samples[finite]
     if samples.shape[0] == 0:
         return None
+    thinned_from = int(samples.shape[0])
     if samples.shape[0] > maximum:
-        samples = samples[np.linspace(0, samples.shape[0] - 1, maximum, dtype=int)]
+        keep = np.linspace(0, samples.shape[0] - 1, maximum, dtype=int)
+        samples = samples[keep]
+        source_ids = [source_ids[index] for index in keep]
     for column, name in enumerate(names):
         if name.endswith((".Omega_d", ".Gamma", ".A", ".E", ".QE", ".BG")):
             samples[:, column] = np.maximum(samples[:, column], 0.0)
-    return names, samples, basis
+    diagnostics = {
+        "draw_weighting": _DRAW_WEIGHTING[basis],
+        "draw_weights": None,
+        "draw_ids": source_ids,
+        "source_draw_count": source_count,
+        "retained_draw_count": int(samples.shape[0]),
+        "dropped_draws": dropped,
+        "draw_mass_retained": float(thinned_from) / float(source_count),
+        "draw_cap": int(maximum),
+        "thinned_from_draw_count": thinned_from,
+    }
+    return names, samples, basis, diagnostics
 
 
 _PREDICTIVE_SCORE_SEED = 940_301
 
+#: The published predictive contract. It joins the master-fit cache fingerprint
+#: (:func:`isar.session.certification.master_fit_fingerprint`) so an unchanged cached fit still
+#: regenerates its predictive artifact when this contract changes.
+PREDICTIVE_CONTRACT = "isar.master_predictive/2"
+TARGET_PROJECTION_SCHEMA = "isar.target_projection/1"
+#: The registered v1 QoI projection (ADR-009): the fitted mode nearest the delivered ω₀.
+TARGET_PROJECTION_VERSION = "isar.omega0_nearest_mode/1"
+TARGET_QOI = "omega0"
+# ADR-014 completeness constants. They live in the artifact and are hashed into
+# ``predictive_basis_fingerprint``, so a basis pruned under one rule can never be scored under
+# another.
+PREDICTIVE_MODEL_WEIGHT_FLOOR = 0.005
+PREDICTIVE_MAX_PRUNED_MASS = 0.01
+PREDICTIVE_MAX_DROPPED_DRAW_MASS = 0.01
+# ΣM_max/ΣM_min − 1 below this is one exposure (EIG-0 §6). It gates only the SCALAR fitted-grid
+# parity claim; forward evaluation of a new uniform-exposure candidate is valid on every pool.
+EXPOSURE_HOMOGENEITY_TOLERANCE = 1e-12
+
+
+def _predictive_exposure_basis(ctx, n_members: int) -> tuple[dict, np.ndarray]:
+    """``(exposure_basis, stored_exposure_ratio)`` for one pooled master's fit context.
+
+    The basis is read from the fit's OWN context — ``exposure_reference`` is the value
+    :func:`~isar.analyze.context.normalized_exposure` returned for this fit and
+    ``exposure_scale`` the per-bin relative exposure it fitted with — never recomputed from the
+    pooled spectrum (EIG-0 §4.5: the median reference is a rank statistic and moves with the kept
+    set). ``per_energy_monitor`` is ΣM aligned to the fitted grid.
+
+    ``stored_exposure_ratio`` is the exact multiplier used for the stored ``expected_counts``: the
+    per-member incremental exposure ΣM_i/(n_members · E_ref), which keeps the /1 meaning of the
+    stored matrices ("the counts one further member-equivalent scan would see"). A master with no
+    usable monitor has no exposure basis at all (EIG-0 §4.6) and fits on the uniform path; it
+    publishes null exposure fields and the evaluator refuses it with ``missing_exposure_basis``.
+    """
+    grid = np.asarray(ctx.x_used, dtype=float)
+    scale = ctx.exposure_used if getattr(ctx, "exposure_scale", None) is not None else None
+    reference = getattr(ctx, "exposure_reference", None)
+    basis = {
+        "unit": "monitor_counts",
+        "request_unit": "number_neutrons",
+        # TAVI's realized per-point monitor is identically the requested number_neutrons (EIG-0
+        # §4.1/§5). The seam is declared even though the map is the identity today.
+        "request_to_exposure_factor": 1.0,
+        "n_members": int(n_members),
+        "kept_point_count": int(grid.size),
+    }
+    if scale is None or reference is None or not math.isfinite(float(reference)) \
+            or float(reference) <= 0.0:
+        basis.update({
+            "fit_reference_exposure": None, "reference_incremental_exposure": None,
+            "per_energy_monitor": None, "scalar_exposure_eligible": False,
+            "exposure_homogeneous": True, "full_member_support": None,
+            "exposure_ratio_span": None,
+        })
+        return basis, np.full(grid.shape, 1.0 / float(n_members))
+    reference = float(reference)
+    scale = np.asarray(scale, dtype=float)
+    monitor = scale * reference
+    span = (float(np.max(monitor) / np.min(monitor))
+            if monitor.size and float(np.min(monitor)) > 0.0 else None)
+    homogeneous = span is not None and (span - 1.0) <= EXPOSURE_HOMOGENEITY_TOLERANCE
+    # Per-bin member support is not carried on the pooled spectrum, so it is reported only where it
+    # is known (a single-member pool supports every kept bin). The operative eligibility predicate
+    # is the ΣM profile itself (EIG-0 §6), which separates the partial-support cases as well.
+    full_support = True if int(n_members) == 1 else None
+    basis.update({
+        "fit_reference_exposure": reference,
+        # A MEAN over members, not any member's request (EIG-0 §5): a consumer must not read it as
+        # "the exposure of one scan". Its contractual role is the scalar fitted-grid parity check.
+        "reference_incremental_exposure": reference / float(n_members),
+        "per_energy_monitor": monitor.tolist(),
+        "scalar_exposure_eligible": bool(homogeneous and full_support is not False),
+        "exposure_homogeneous": bool(homogeneous),
+        "full_member_support": full_support,
+        "exposure_ratio_span": span,
+    })
+    return basis, scale / float(n_members)
+
+
+def _predictive_basis_fingerprint(*, models, energy_meV, evaluation_context, exposure_basis,
+                                  target_projection) -> str:
+    """Stable hash of exactly the scientific + evaluation content a score depends on.
+
+    Deliberately EXCLUDES diagnostics, timings, identity stamps, and the ensemble seed: two bases
+    that predict the same counts from the same draws must fingerprint the same, and any change to a
+    model, a draw, the grid, the context, the exposure basis, or the pruning rule must change it.
+    """
+    payload = {
+        "schema": PREDICTIVE_CONTRACT,
+        "evaluator_version": manifest_mod.EVALUATOR_VERSION,
+        "models": [{
+            "label": model["label"],
+            "identity_label": model["identity_label"],
+            "source_weight": model["source_weight"],
+            "model_manifest": model["model_manifest"],
+            "parameter_names": model["parameter_names"],
+            "parameter_draws": model["parameter_draws"],
+            "draw_weighting": model["draw_weighting"],
+            "draw_weights": model["draw_weights"],
+            "target_present_by_draw": model["target_present_by_draw"],
+            "target_qoi_draws": model["target_qoi_draws"],
+        } for model in models],
+        "energy_meV": list(energy_meV),
+        "evaluation_context": evaluation_context,
+        "exposure_basis": exposure_basis,
+        "target_projection": target_projection,
+        "completeness_constants": {
+            "model_weight_floor": PREDICTIVE_MODEL_WEIGHT_FLOOR,
+            "max_pruned_mass": PREDICTIVE_MAX_PRUNED_MASS,
+            "max_dropped_draw_mass": PREDICTIVE_MAX_DROPPED_DRAW_MASS,
+        },
+    }
+    return _json_fingerprint(payload)
+
 
 def _predictive_ensemble(best, scores, fits, by_hyp, ctx, *, seed: int,
-                         n_members: int) -> dict | None:
-    """Bounded model-weighted full-parameter ensemble retained with a master revision."""
+                         n_members: int, action_role: str = "master") -> dict | None:
+    """Bounded model-weighted full-parameter ensemble retained with a master revision.
+
+    Publishes ``isar.master_predictive/2``: the same draws the fit produced, plus everything needed
+    to re-evaluate them away from the fitted grid (the grid itself, the evaluation context, the
+    exposure basis) and everything needed to know whether the published probability measure is
+    complete enough to score (ADR-014) and whether the campaign QoI projects onto it (ADR-009).
+    Every stored matrix is produced by the shared evaluation path, so a stored prediction and an
+    arbitrary-grid prediction cannot disagree.
+    """
+    grid = np.asarray(ctx.x_used, dtype=float)
+    evaluation_context = {
+        "center_meV": float(ctx.center),
+        "gaussian_fwhm_meV": float(ctx.gauss_fwhm),
+        "lorentzian_fwhm_meV": float(ctx.lorentz_fwhm),
+        "temperature_K": float(ctx.T),
+        "quasielastic_fwhm_meV": (None if getattr(ctx, "quasielastic_fwhm", None) is None
+                                  else float(ctx.quasielastic_fwhm)),
+    }
+    exposure_basis, stored_ratio = _predictive_exposure_basis(ctx, max(int(n_members), 1))
+    exposure_basis["stored_exposure_ratio"] = [float(value) for value in stored_ratio]
+    eval_ctx = manifest_mod.EvaluationContext(
+        center=evaluation_context["center_meV"],
+        gauss_fwhm=evaluation_context["gaussian_fwhm_meV"],
+        lorentz_fwhm=evaluation_context["lorentzian_fwhm_meV"],
+        T=evaluation_context["temperature_K"],
+        quasielastic_fwhm=evaluation_context["quasielastic_fwhm_meV"],
+        exposure_ratio=stored_ratio)
+    try:
+        point_omega = float(best.omega0) if best is not None else float("nan")
+    except (TypeError, ValueError):
+        point_omega = float("nan")
+    target_reference = point_omega if math.isfinite(point_omega) else None
+
     models = []
+    dropped_models = []
     weights = {score.label: float(score.weight) for score in scores}
+    source_weight_total = sum(weight for weight in weights.values() if weight > 0.0)
     for model_index, label in enumerate(sorted(weights)):
         result = fits.get(label)
-        hyp = by_hyp.get(label)
-        if result is None or hyp is None or weights[label] <= 0.0:
+        weight = weights[label]
+        if result is None or by_hyp.get(label) is None or weight <= 0.0:
+            if weight > 0.0:
+                dropped_models.append({"label": label, "original_weight": weight,
+                                       "reason": "no_fitted_candidate"})
             continue
         draws = _bounded_parameter_draws(result, seed=seed + 7919 * (model_index + 1))
         manifest = _model_manifest_of(result, by_hyp)
-        if draws is None or manifest is None:
+        if draws is None:
+            dropped_models.append({"label": label, "original_weight": weight,
+                                   "reason": "no_usable_parameter_draws"})
             continue
-        names, samples, basis = draws
-        composite = hyp.build()
-        expected = []
-        omega0_draws = []
-        phonon_indices = composite.phonon_indices()
+        if manifest is None:
+            dropped_models.append({"label": label, "original_weight": weight,
+                                   "reason": "unsupported_model_manifest"})
+            continue
+        names, samples, basis, draw_diagnostics = draws
         try:
-            point_omega = float(result.omega0)
-        except (TypeError, ValueError):
-            point_omega = float("nan")
-        retain_omega = bool(phonon_indices) and math.isfinite(point_omega)
-        for sample in samples:
-            expected.append((np.maximum(composite.evaluate(ctx.x_used, sample, ctx), 0.0) /
-                             max(int(n_members), 1)).tolist())
-            if retain_omega:
-                candidates = [math.sqrt(float(sample[i]) ** 2 + float(sample[i + 1]) ** 2)
+            composite = manifest_mod.build_composite(
+                manifest, evaluation_context["quasielastic_fwhm_meV"])
+            phonon_indices = composite.phonon_indices()
+            expected, omega0_draws, present, qoi_draws = [], [], [], []
+            for sample in samples:
+                theta = manifest_mod.draw_theta(composite, names, sample)
+                expected.append(manifest_mod.expected_counts(
+                    manifest, names, sample, eval_ctx, grid).tolist())
+                candidates = [math.sqrt(theta[i] ** 2 + theta[i + 1] ** 2)
                               for i in phonon_indices]
-                omega0_draws.append(min(candidates, key=lambda value: abs(value - point_omega)))
-        models.append({"label": label, "weight": weights[label], "basis": basis,
-                       "parameter_names": list(names), "parameter_draws": samples.tolist(),
-                       "model_manifest": manifest, "omega0_draws": omega0_draws,
-                       "expected_counts": expected})
+                if candidates and target_reference is not None:
+                    omega0 = min(candidates, key=lambda value: abs(value - target_reference))
+                    omega0_draws.append(omega0)
+                    present.append(True)
+                    qoi_draws.append(omega0)
+                else:
+                    present.append(False)
+                    qoi_draws.append(None)
+        except manifest_mod.ModelManifestError as error:
+            # Fail closed: a model whose declared draws cannot be mapped onto its own manifest is
+            # dropped with its reason recorded, never evaluated positionally as a guess.
+            log.warning("predictive model %s refused (%s): %s", label, error.reason_code, error)
+            dropped_models.append({"label": label, "original_weight": weight,
+                                   "reason": error.reason_code})
+            continue
+        models.append({
+            "label": label,
+            # ADR-009: an additive seam for the parallel physics workstream. The fit-model label is
+            # never the rewarded identity, so this defaults to the label and earns no reward until a
+            # real per-particle identity projection exists.
+            "identity_label": label,
+            "source_weight": weight, "weight": weight, "draw_basis": basis,
+            "draw_weighting": draw_diagnostics["draw_weighting"],
+            "draw_weights": draw_diagnostics["draw_weights"],
+            "draw_ids": draw_diagnostics["draw_ids"],
+            "parameter_names": list(names), "parameter_draws": samples.tolist(),
+            "model_manifest": manifest, "omega0_draws": omega0_draws,
+            "target_present_by_draw": present, "target_qoi_draws": qoi_draws,
+            "expected_counts": expected,
+            "source_draw_count": draw_diagnostics["source_draw_count"],
+            "retained_draw_count": draw_diagnostics["retained_draw_count"],
+            "dropped_draws": draw_diagnostics["dropped_draws"],
+            "draw_mass_retained": draw_diagnostics["draw_mass_retained"],
+            "draw_cap": draw_diagnostics["draw_cap"],
+            "thinned_from_draw_count": draw_diagnostics["thinned_from_draw_count"],
+        })
     if not models:
         return None
-    total_weight = sum(model["weight"] for model in models)
+    retained_weight_total = sum(model["source_weight"] for model in models)
     for model in models:
-        model["weight"] /= total_weight
+        model["weight"] = model["source_weight"] / retained_weight_total
+    pruned_mass = max(source_weight_total - retained_weight_total, 0.0)
+    complete = (
+        all(item["original_weight"] < PREDICTIVE_MODEL_WEIGHT_FLOOR for item in dropped_models)
+        and pruned_mass <= PREDICTIVE_MAX_PRUNED_MASS
+        and all(1.0 - model["draw_mass_retained"] <= PREDICTIVE_MAX_DROPPED_DRAW_MASS
+                for model in models))
+    completeness = {
+        "source_model_weight_total": float(source_weight_total),
+        "retained_model_weight_total": float(retained_weight_total),
+        "pruned_model_weight": float(pruned_mass),
+        "dropped_models": dropped_models,
+        "model_weight_floor": PREDICTIVE_MODEL_WEIGHT_FLOOR,
+        "max_pruned_mass": PREDICTIVE_MAX_PRUNED_MASS,
+        "max_dropped_draw_mass": PREDICTIVE_MAX_DROPPED_DRAW_MASS,
+        "predictive_complete_for_eig": bool(complete),
+    }
+    projected = [model for model in models if any(model["target_present_by_draw"])]
+    target_projection = {
+        "schema": TARGET_PROJECTION_SCHEMA,
+        "qoi": TARGET_QOI,
+        "projection_version": TARGET_PROJECTION_VERSION,
+        "reference_energy_meV": target_reference,
+        # The role the fit was produced under. The acquisition-side action role that decides
+        # authority (ADR-009) is applied by the consumer, which knows the action.
+        "action_role": str(action_role),
+        # A null model has no target mode: its draws are a legitimate "target absent" state, so the
+        # projection is complete as long as SOME retained model could be projected at all.
+        "complete": bool(projected) and target_reference is not None,
+        "reason": (None if projected and target_reference is not None else
+                   ("no_reference_target_energy" if target_reference is None
+                    else "no_retained_model_carries_the_target_mode")),
+    }
     omega_values, omega_weights = [], []
     for model in models:
         draws = [float(value) for value in model["omega0_draws"] if math.isfinite(float(value))]
@@ -1693,8 +1951,20 @@ def _predictive_ensemble(best, scores, fits, by_hyp, ctx, *, seed: int,
     model_entropy = -sum(float(model["weight"]) * math.log(max(float(model["weight"]), 1e-300))
                          for model in models)
     diagnostics = _predictive_score(models, seed=_PREDICTIVE_SCORE_SEED, n_simulations=128)
-    return {"schema": "isar.master_predictive/1", "models": models,
-            "uncertainty_basis": sorted(set(model["basis"] for model in models)),
+    return {"schema": PREDICTIVE_CONTRACT, "models": models,
+            "evaluator_version": manifest_mod.EVALUATOR_VERSION,
+            "energy_meV": grid.tolist(),
+            "evaluation_context": evaluation_context,
+            "exposure_basis": exposure_basis,
+            "target_projection": target_projection,
+            "completeness": completeness,
+            "predictive_basis_fingerprint": _predictive_basis_fingerprint(
+                models=models, energy_meV=grid.tolist(),
+                evaluation_context=evaluation_context, exposure_basis=exposure_basis,
+                target_projection=target_projection),
+            "uncertainty_provenance": {
+                "draw_basis": sorted(set(model["draw_basis"] for model in models)),
+                "deterministic": True, "seed": int(seed)},
             "seed": int(seed), "omega_interval": omega_interval,
             "model_entropy_nats": float(model_entropy),
             # The ensemble itself is master-seeded; the simulated future-count stream deliberately
@@ -2501,6 +2771,10 @@ def _stamp_master_analysis(entry: ScanEntry, *, errors_tier: str,
         "analysis_tier_effective": (entry.provenance or {}).get(
             "errors_tier_effective", errors_tier),
         "master_fit_contract": _MASTER_FIT_CONTRACT,
+        # The predictive artifact this master was produced under. The carry path in
+        # :func:`_fit_masters` requires the current value, so a contract bump regenerates the
+        # artifact from an unchanged pool on the next run instead of carrying a stale one.
+        "predictive_contract": PREDICTIVE_CONTRACT,
     }
     if fit_fingerprint is not None:
         entry.provenance["master_fit_fingerprint"] = fit_fingerprint
@@ -2859,7 +3133,9 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
         master_id = "master:" + "_".join(str(k) for k in grp.key)
         chash = canonical_hash([list(m) for m in ms.members])
         prev = session.get(master_id)               # read BEFORE the refit overwrites the ledger
-        if not force and prev is not None and prev.content_hash == chash:
+        carried_contract = (prev.provenance or {}).get("predictive_contract") if prev else None
+        if not force and prev is not None and prev.content_hash == chash \
+                and carried_contract == PREDICTIVE_CONTRACT:
             # Member set unchanged → carry the prior master. Backfill the member provenance onto an
             # older ledger entry that predates this field: the content-hash match proves the member
             # set is byte-identical, so `_member_labels(ms.members)` is exact — pure bookkeeping, no
@@ -3048,8 +3324,10 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
     mask = np.asarray(ms.mask, dtype=bool)
     raw_monitor = getattr(ms, "monitor", None)
     monitor = None if raw_monitor is None else np.asarray(raw_monitor, dtype=float)
-    exposure_scale, _reference_exposure = ((None, None) if monitor is None
-                                           else normalized_exposure(monitor, mask))
+    # The reference is CARRIED into the fit context (never recomputed at publication time): it is
+    # the amplitude basis the predictive artifact publishes as ``fit_reference_exposure``.
+    exposure_scale, reference_exposure = ((None, None) if monitor is None
+                                          else normalized_exposure(monitor, mask))
     if exposure_scale is not None:
         mask = mask & (exposure_scale > 0)
     if int(mask.sum()) < g.min_fit_points:
@@ -3075,7 +3353,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                       gauss_fwhm=calres.gauss_fwhm, lorentz_fwhm=calres.lorentz_fwhm,
                       instrument=card.policy.instrument, energy_status=card.policy.energy_status,
                       prior_omega=ic_ao, quasielastic_fwhm=card.policy.quasielastic_fwhm,
-                      acoustic_omega=ao, exposure_scale=exposure_scale)
+                      acoustic_omega=ao, exposure_scale=exposure_scale,
+                      exposure_reference=reference_exposure)
     near_gamma = (target_branch == "acoustic" and ao is not None
                   and ao < BA.RESOLVABLE_FWHM_FACTOR * calres.gauss_fwhm)
     descriptor = _build_descriptor(ctx)

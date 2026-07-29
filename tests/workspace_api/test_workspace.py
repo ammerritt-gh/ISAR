@@ -178,7 +178,7 @@ def test_master_predictive_accepts_no_phonon_model(make_ws):
     artifact = root / "data" / "master_predictive" / "null-model.json"
     artifact.parent.mkdir(parents=True)
     artifact.write_text(json.dumps({
-        "schema": "isar.master_predictive/1",
+        "schema": "isar.master_predictive/2",
         "models": [{"weight": 1.0, "parameter_names": ["a"],
                     "parameter_draws": [[1.0]], "omega0_draws": [],
                     "expected_counts": [[1.0]]}],
@@ -188,12 +188,30 @@ def test_master_predictive_accepts_no_phonon_model(make_ws):
     assert payload["models"][0]["omega0_draws"] == []
 
 
+def test_master_predictive_refuses_the_pre_v2_artifact(make_ws):
+    # Clean break (ADR-006/013): a leftover /1 artifact is not upconverted, and refusing it must not
+    # keep the workspace's scans and fits from opening.
+    root = make_ws()
+    artifact = root / "data" / "master_predictive" / "legacy.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(json.dumps({
+        "schema": "isar.master_predictive/1",
+        "models": [{"weight": 1.0, "parameter_names": ["a"],
+                    "parameter_draws": [[1.0]], "omega0_draws": [],
+                    "expected_counts": [[1.0]]}],
+    }), encoding="utf-8")
+    workspace = Workspace.open(root)
+    with pytest.raises(ValueError, match="unsupported master predictive schema"):
+        workspace.master_predictive("data/master_predictive/legacy.json")
+    assert workspace.scans is not None
+
+
 def test_master_predictive_rejects_malformed_model(make_ws):
     root = make_ws()
     artifact = root / "data" / "master_predictive" / "bad.json"
     artifact.parent.mkdir(parents=True)
     artifact.write_text(json.dumps({
-        "schema": "isar.master_predictive/1",
+        "schema": "isar.master_predictive/2",
         "models": [{"weight": 1.0, "parameter_names": ["a"],
                     "parameter_draws": [[1.0]], "omega0_draws": [],
                     "expected_counts": [[1.0], [2.0]]}],

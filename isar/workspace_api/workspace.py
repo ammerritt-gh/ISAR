@@ -436,7 +436,11 @@ class Workspace:
         payload = json.loads(candidate.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise ValueError(f"master predictive payload must be an object in {ref!r}")
-        if payload.get("schema") != "isar.master_predictive/1":
+        # /2 only (ADR-006/013, pre-release clean break): there is no dual-read layer and a `/1`
+        # artifact is never guessed into `/2` -- it lacks the fitted grid, evaluation context and
+        # exposure basis. A stale side artifact refuses here; it never blocks opening the workspace
+        # or reading its scans and fits.
+        if payload.get("schema") != "isar.master_predictive/2":
             raise ValueError(f"unsupported master predictive schema in {ref!r}")
         models = payload.get("models")
         if not isinstance(models, list):
