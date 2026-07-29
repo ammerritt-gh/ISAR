@@ -84,8 +84,14 @@ computed before acquisition ever enumerated the action space, is the early-termi
 It is `ActionInventory.terminal_cause` proving the space empty *relative to* `GENERATOR_REGISTRY`, so
 every declaratively registered generator — the narrow rival probe included — is asked before the
 campaign may call itself blocked, and growing the registry cannot leave an old proof looking current.
-Once an action is selected, `ScanDesignInventory` resolves it into exactly one `legacy_uniform/1`
-window/count candidate. The derived inventory is content-addressed under
+Once an action is selected, `ScanDesignInventory` resolves it into window/count candidates. The
+`legacy_uniform/1` candidate — the exact historical window arithmetic — is always generated and is
+always the selected, executed one. The `scan_window_eig_mode` steering knob decides what else is
+recorded beside it: `off` designs that candidate alone (`legacy_control_off`), `shadow` additionally
+generates and persists the alternative uniform-window family unscored
+(`shadow_legacy_control_unscored`) without changing the emitted request by a single neutron.
+Declaring `authoritative` refuses at campaign setup with `scan_window_eig_authoritative_unavailable`,
+because no scorer or selector exists yet. The derived inventory is content-addressed under
 `report/scan-design/<sha256>.json` and referenced from proposal provenance. Its candidate id names the
 pre-finalization design; the existing proposal fingerprint separately names the exact request after
 live point/count clamps. A changed realization appends an `isar.scan_design_realization/1` record
@@ -340,8 +346,9 @@ So the chosen engine is:
    branch-confusion proxy remains only in the explicit classification/opening-move fallback where a
    master predictive artifact does not yet exist; it is not the acquisition score for a usable master.
    Here a “candidate” is a scientific action/Q alternative whose counts are already evaluated on its
-   master's fitted grid. The current controller does **not** generate or score alternative energy
-   windows for one action; that planned interface is specified in `EIG_STEERING_DESIGN.md`.
+   master's fitted grid. The controller generates alternative energy windows for one action in
+   `shadow` mode but does **not** score or select among them; that planned interface is specified in
+   `EIG_STEERING_DESIGN.md`.
 
 **Honest limit:** at single-digit counts the information is simply not there; no method conjures it.
 Correct behaviour is to report low confidence honestly and let EIG decide *count more here / move*;

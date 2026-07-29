@@ -1,4 +1,4 @@
-"""The legacy-only scan-design seam and its content-addressed audit artifact."""
+"""The scan-design seam: candidate families, shadow plumbing, and the audit artifact."""
 from __future__ import annotations
 
 import json
@@ -10,11 +10,33 @@ import pytest
 
 from isar.drive.acquisition.acquire import ScanProposal
 from isar.drive.acquisition.scan_design import (
-    LEGACY_SCAN_DESIGN_GENERATOR,
-    LEGACY_SELECTION_BASIS,
+    FAMILY_BROAD_RECOVERY,
+    FAMILY_LEGACY_UNIFORM,
+    FAMILY_TARGET_CORE,
+    FAMILY_TARGET_HIGH_ANCHOR,
+    FAMILY_TARGET_LOW_ANCHOR,
+    FAMILY_TARGET_PAIRED,
+    FAMILY_TARGET_PLUS_RIVAL,
+    OBJECTIVE_PROJECTION_SCHEMA,
+    PHYSICAL_WINDOW_GENERATOR_ID,
+    PHYSICAL_WINDOW_GENERATOR_VERSION,
+    PREDICTIVE_PROVIDER_ID,
+    PREDICTIVE_PROVIDER_SCHEMA,
+    SCAN_DESIGN_CANDIDATE_SCHEMA,
     SCAN_DESIGN_INVENTORY_SCHEMA,
+    SELECTION_BASIS_LEGACY_CONTROL_OFF,
+    SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED,
+    STEERING_REGIME,
+    PhysicalWindowGeneratorConfig,
     ScanDesignContext,
-    design_legacy_scan,
+    _declared_window,
+    _energy_window,
+    design_scan_windows,
+)
+from isar.drive.acquisition.scan_grid import (
+    canonical_energies,
+    format_scan_command,
+    resolve_uniform_grid,
 )
 from isar.drive.loop import (
     _persist_scan_design_inventory,
@@ -80,23 +102,26 @@ def test_context_is_frozen_and_strict_json_serializable():
 
 
 def test_legacy_design_returns_one_exact_uniform_candidate():
-    inventory = design_legacy_scan(_context())
+    inventory = design_scan_windows(_context())
     candidate = inventory.selected_candidate
 
     assert inventory.inventory_version == SCAN_DESIGN_INVENTORY_SCHEMA
-    assert inventory.selection_basis == LEGACY_SELECTION_BASIS
+    assert inventory.selection_basis == SELECTION_BASIS_LEGACY_CONTROL_OFF
     assert len(inventory.candidates) == 1
+    assert not inventory.refusals
     assert candidate.e_lo == pytest.approx(-7.0)
     assert candidate.e_hi == pytest.approx(6.2)
     assert candidate.e_step == pytest.approx(0.2)
     assert candidate.n_points == 67
     assert candidate.ncount == 1_000
     assert candidate.nominal_cost == 67_000
-    assert candidate.to_dict()["generator"] == LEGACY_SCAN_DESIGN_GENERATOR
+    assert candidate.candidate_family == FAMILY_LEGACY_UNIFORM
+    assert candidate.to_dict()["generator_id"] == PHYSICAL_WINDOW_GENERATOR_ID
+    assert candidate.to_dict()["generator_version"] == PHYSICAL_WINDOW_GENERATOR_VERSION
 
 
 def test_declared_rival_window_is_not_rederived_from_target_prediction():
-    inventory = design_legacy_scan(_context(
+    inventory = design_scan_windows(_context(
         kind="identity_rival_probe",
         window_family="rival",
         declared_energy_lo=7.0,
@@ -114,21 +139,23 @@ def test_declared_rival_window_is_not_rederived_from_target_prediction():
 
 
 def test_context_candidate_and_inventory_hashes_are_stable_and_sensitive():
-    first = design_legacy_scan(_context())
-    duplicate = design_legacy_scan(_context())
-    changed = design_legacy_scan(_context(resolution_fwhm_meV=1.0))
+    first = design_scan_windows(_context())
+    duplicate = design_scan_windows(_context())
+    changed = design_scan_windows(_context(resolution_fwhm_meV=1.0))
 
     assert first.context.fingerprint == duplicate.context.fingerprint
     assert first.selected_candidate_id == duplicate.selected_candidate_id
     assert first.content_hash() == duplicate.content_hash()
     assert changed.content_hash() != first.content_hash()
     payload = first.to_full_dict()
-    assert "eig" not in json.dumps(payload).lower()
+    # No score, utility, or ranking has been computed at this stage: the only permitted mention of
+    # EIG anywhere in the artifact is the declared mode, never a number a selector could act on.
+    assert _eig_mentions(payload) == {"scan_window_eig_mode"}
     json.dumps(payload, allow_nan=False)
 
 
 def test_provenance_artifact_joins_planned_candidate_to_final_request(tmp_path: Path):
-    inventory = design_legacy_scan(_context())
+    inventory = design_scan_windows(_context())
     proposal = ScanProposal(
         h=2.1,
         k=0.0,
@@ -161,7 +188,7 @@ def test_provenance_artifact_joins_planned_candidate_to_final_request(tmp_path: 
 
 
 def test_realization_records_chain_selected_candidate_to_each_exact_request(tmp_path: Path):
-    inventory = design_legacy_scan(_context())
+    inventory = design_scan_windows(_context())
     proposal = ScanProposal(
         h=2.1,
         k=0.0,
@@ -250,7 +277,7 @@ def test_recovered_submission_retains_realized_request_and_design_join():
 
 
 def test_content_address_deduplicates_and_repairs_corruption(tmp_path: Path):
-    inventory = design_legacy_scan(_context())
+    inventory = design_scan_windows(_context())
     proposal = SimpleNamespace(
         h=2.1,
         k=0.0,
@@ -289,3 +316,273 @@ def test_content_address_deduplicates_and_repairs_corruption(tmp_path: Path):
         and event["payload"]["action"] == "scan_design_artifact_mismatch"
         for event in events
     )
+
+
+# --- candidate families, shadow plumbing, and the grid seam --------------------------------------
+
+def _walk_keys(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield str(key)
+            yield from _walk_keys(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_keys(child)
+
+
+def _eig_mentions(payload) -> set[str]:
+    return {key for key in _walk_keys(payload) if "eig" in key.lower()}
+
+
+def _families(inventory) -> list[str]:
+    return [candidate.candidate_family for candidate in inventory.candidates]
+
+
+def _refusals(inventory) -> dict[str, str]:
+    return {refusal.candidate_family: refusal.reason_code
+            for refusal in inventory.refusals}
+
+
+def test_shadow_mode_generates_the_family_and_still_selects_the_legacy_control():
+    off = design_scan_windows(_context())
+    shadow = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+
+    assert _families(off) == [FAMILY_LEGACY_UNIFORM]
+    assert off.selection_basis == SELECTION_BASIS_LEGACY_CONTROL_OFF
+    assert shadow.selection_basis == SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED
+    assert _families(shadow)[0] == FAMILY_LEGACY_UNIFORM
+    assert set(_families(shadow)) | set(_refusals(shadow)) == {
+        FAMILY_LEGACY_UNIFORM, FAMILY_TARGET_CORE, FAMILY_TARGET_PAIRED,
+        FAMILY_TARGET_LOW_ANCHOR, FAMILY_TARGET_HIGH_ANCHOR, FAMILY_TARGET_PLUS_RIVAL,
+        FAMILY_BROAD_RECOVERY}
+    # The executed design is untouched by the mode — same window, same exposure, same identity.
+    legacy_off, legacy_shadow = off.selected_candidate, shadow.selected_candidate
+    assert (legacy_shadow.e_lo, legacy_shadow.e_hi, legacy_shadow.e_step,
+            legacy_shadow.n_points, legacy_shadow.ncount) == (
+        legacy_off.e_lo, legacy_off.e_hi, legacy_off.e_step,
+        legacy_off.n_points, legacy_off.ncount)
+    assert shadow.selected_candidate_id == off.selected_candidate_id
+    assert _eig_mentions(shadow.to_full_dict()) == {"scan_window_eig_mode"}
+
+
+def test_shadow_inventory_is_deterministic_and_json_serializable():
+    first = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    second = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+
+    assert first.content_hash() == second.content_hash()
+    assert [c.candidate_id for c in first.candidates] == [
+        c.candidate_id for c in second.candidates]
+    json.dumps(first.to_full_dict(), allow_nan=False)
+
+
+def test_inventory_declares_generator_config_and_provider_identity():
+    payload = design_scan_windows(
+        _context(scan_window_eig_mode="shadow")).to_full_dict()
+
+    assert payload["generator"]["id"] == PHYSICAL_WINDOW_GENERATOR_ID
+    assert payload["generator"]["version"] == PHYSICAL_WINDOW_GENERATOR_VERSION
+    config = payload["generator"]["config"]
+    assert config["config_schema"] == "isar.physical_window_generator_config/1"
+    assert config["step_resolution_fraction"] == pytest.approx(0.25)
+    assert config["core_fwhm_multiple"] == pytest.approx(2.0)
+    assert config["core_sigma_multiple"] == pytest.approx(3.0)
+    assert config["broad_recovery"] == {"default_lo_meV": -2.0, "default_hi_meV": 7.0}
+    assert payload["generator"]["config_fingerprint"] == (
+        PhysicalWindowGeneratorConfig().fingerprint)
+    assert payload["provider_identity"] == {
+        "predictive_provider_id": PREDICTIVE_PROVIDER_ID,
+        "predictive_provider_schema": PREDICTIVE_PROVIDER_SCHEMA,
+        "generator_id": PHYSICAL_WINDOW_GENERATOR_ID,
+        "generator_version": PHYSICAL_WINDOW_GENERATOR_VERSION,
+        "objective_projection_schema": OBJECTIVE_PROJECTION_SCHEMA,
+        "steering_regime": STEERING_REGIME,
+    }
+    assert payload["selection"]["scan_window_eig_mode"] == "shadow"
+
+
+def test_family_windows_follow_the_frozen_generator_constants():
+    inventory = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    by_family = {c.candidate_family: c for c in inventory.candidates}
+    # e_pred 5.0, FWHM 0.8, sigma 0.2 -> half-core = max(2*0.8, 3*0.2) = 1.6
+    core = by_family[FAMILY_TARGET_CORE]
+    assert (core.e_lo, core.e_hi) == pytest.approx((3.4, 6.6))
+    assert core.e_step == pytest.approx(0.2)
+    low = by_family[FAMILY_TARGET_LOW_ANCHOR]
+    assert (low.e_lo, low.e_hi) == pytest.approx((3.4 - 2.4, 6.6))
+    high = by_family[FAMILY_TARGET_HIGH_ANCHOR]
+    assert (high.e_lo, high.e_hi) == pytest.approx((3.4, min(6.6 + 2.4, 7.0)))
+    paired = by_family[FAMILY_TARGET_PAIRED]
+    assert (paired.e_lo, paired.e_hi) == pytest.approx((-2.0, 6.6))
+    broad = by_family[FAMILY_BROAD_RECOVERY]
+    assert (broad.e_lo, broad.e_hi) == pytest.approx((-2.0, 7.0))
+
+
+def test_every_generated_candidate_stays_inside_the_authorized_domain_and_limits():
+    inventory = design_scan_windows(_context(
+        scan_window_eig_mode="shadow", kind="production", policy_max_points=20,
+        runtime_max_points=12, runtime_max_neutrons_per_point=20_000,
+        dynamic_ncount=True, last_submitted_ncount=40_000, effective_exposure=40_000,
+        diagnostic_halfwidth_meV=2.0))
+
+    assert len(inventory.candidates) > 1
+    for candidate in inventory.candidates:
+        assert candidate.n_points <= 12, candidate.candidate_family
+        # The dynamic ladder asks for more than the instrument allows; every candidate is already
+        # clamped here, so loop-side finalization has nothing left to change.
+        assert candidate.diagnostics["requested_before_runtime_limit"] > 20_000
+        assert candidate.ncount == 20_000, candidate.candidate_family
+        assert candidate.hkl == (2.1, 0.0, 0.0) and candidate.q == 0.1
+        assert candidate.kind == "production" and candidate.reason == "cold-start survey"
+        if candidate.candidate_family == FAMILY_LEGACY_UNIFORM:
+            continue
+        assert candidate.e_lo >= -2.0 - 1e-12, candidate.candidate_family
+        assert candidate.e_hi <= 7.0 + 1e-12, candidate.candidate_family
+        assert candidate.energies[0] >= -2.0 - 1e-6
+        assert candidate.energies[-1] <= 7.0 + 1e-6
+
+
+def test_a_family_that_cannot_hold_target_support_is_refused_not_omitted():
+    inventory = design_scan_windows(_context(
+        scan_window_eig_mode="shadow", target_band=(5.0, 0.05),
+        minimum_target_support_points=50))
+
+    refusals = _refusals(inventory)
+    assert refusals[FAMILY_TARGET_CORE] == "insufficient_target_support"
+    detail = next(r for r in inventory.refusals
+                  if r.candidate_family == FAMILY_TARGET_CORE).to_dict()["detail"]
+    assert detail["required"] == 50 and detail["target_support_points"] < 50
+    # The control is never gated by the alternative families' invariants: it is what executes.
+    assert _families(inventory)[0] == FAMILY_LEGACY_UNIFORM
+
+
+def test_anti_stokes_gate_decides_whether_a_paired_window_exists():
+    admissible = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    paired = next(c for c in admissible.candidates
+                  if c.candidate_family == FAMILY_TARGET_PAIRED)
+    assert paired.e_lo < 0.0 < paired.e_hi
+
+    forbidden = design_scan_windows(_context(
+        scan_window_eig_mode="shadow", positive_only=True))
+    assert FAMILY_TARGET_PAIRED not in _families(forbidden)
+    assert _refusals(forbidden)[FAMILY_TARGET_PAIRED] == "anti_stokes_not_admissible"
+
+
+def test_rival_coverage_is_additive_and_never_produces_a_rival_only_window():
+    inventory = design_scan_windows(_context(
+        scan_window_eig_mode="shadow", rival_band=(6.5, 0.1)))
+    combined = next(c for c in inventory.candidates
+                    if c.candidate_family == FAMILY_TARGET_PLUS_RIVAL)
+    # Contiguous union with the core: a canonical target action never gets a window that has
+    # abandoned its own target for the rival.
+    assert combined.e_lo <= 3.4 + 1e-12
+    assert combined.e_hi >= 6.7 - 1e-12
+
+    without = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    assert _refusals(without)[FAMILY_TARGET_PLUS_RIVAL] == "no_rival_band_declared"
+
+
+def test_a_declared_rival_probe_window_is_never_widened_by_the_generator():
+    inventory = design_scan_windows(_context(
+        scan_window_eig_mode="shadow",
+        kind="identity_rival_probe",
+        window_family="rival",
+        declared_energy_lo=7.0,
+        declared_energy_hi=7.4,
+        design_prediction_mean_meV=7.2,
+        design_prediction_sigma_meV=2.0,
+        survey=True,
+    ))
+
+    assert _families(inventory) == [FAMILY_LEGACY_UNIFORM]
+    assert set(_refusals(inventory).values()) == {"declared_rival_window_is_authoritative"}
+    assert (inventory.selected_candidate.e_lo,
+            inventory.selected_candidate.e_hi) == (7.0, 7.4)
+
+
+def test_identical_grids_deduplicate_with_alias_provenance():
+    # A search band exactly equal to the target core makes several construction rules land on the
+    # same physical scan; one candidate must survive, carrying the others as provenance.
+    inventory = design_scan_windows(_context(
+        scan_window_eig_mode="shadow", energy_search_meV=(3.4, 6.6)))
+    repeat = design_scan_windows(_context(
+        scan_window_eig_mode="shadow", energy_search_meV=(3.4, 6.6)))
+    core = next(c for c in inventory.candidates
+                if c.candidate_family == FAMILY_TARGET_CORE)
+
+    assert core.alias_families == (FAMILY_TARGET_LOW_ANCHOR, FAMILY_TARGET_HIGH_ANCHOR,
+                                   FAMILY_BROAD_RECOVERY)
+    assert core.to_dict()["alias_families"] == list(core.alias_families)
+    grids = [(c.energies, c.ncount) for c in inventory.candidates]
+    assert len(grids) == len(set(grids))
+    assert [c.candidate_id for c in repeat.candidates] == [
+        c.candidate_id for c in inventory.candidates]
+
+
+def test_authoritative_mode_refuses_with_a_stable_code():
+    with pytest.raises(ValueError, match="scan_window_eig_authoritative_unavailable"):
+        _context(scan_window_eig_mode="authoritative")
+    with pytest.raises(ValueError, match="scan_window_eig_mode must be one of"):
+        _context(scan_window_eig_mode="on")
+
+
+def test_canonical_grid_helper_agrees_with_the_legacy_window_arithmetic():
+    for e_pred, fwhm, sigma in ((5.0, 0.8, 0.2), (3.0, 0.5, 1.4), (0.0, 1.0, 0.0)):
+        e_lo, e_hi, e_step, n_points = _energy_window(
+            e_pred, fwhm, sigma, energy_search_meV=(-2.0, 7.0), max_points=100)
+        grid = resolve_uniform_grid(e_lo, e_hi, 0.25 * max(fwhm, 1e-3), max_points=100)
+        assert (grid.e_lo, grid.e_hi, grid.n_points) == (e_lo, e_hi, n_points)
+        assert grid.e_step == pytest.approx(e_step)
+
+    declared = _declared_window(-2.0, 7.0, 0.05, max_points=40)
+    grid = resolve_uniform_grid(-2.0, 7.0, 0.25 * 0.05, max_points=40)
+    assert (grid.e_lo, grid.e_hi, grid.e_step, grid.n_points) == declared
+
+
+def test_candidate_grid_is_explicit_ordered_and_inclusive_of_the_upper_bound():
+    candidate = design_scan_windows(_context()).selected_candidate
+    payload = candidate.to_dict()
+
+    assert payload["scoring_grid"] == list(
+        canonical_energies(candidate.e_lo, candidate.e_step, candidate.n_points))
+    assert len(payload["scoring_grid"]) == candidate.n_points
+    assert payload["scoring_grid"] == sorted(payload["scoring_grid"])
+    # TAVI's ``deltaE lo hi step`` is inclusive: the last point lands on the declared upper bound.
+    assert payload["scoring_grid"][0] == pytest.approx(candidate.e_lo)
+    assert payload["scoring_grid"][-1] == pytest.approx(candidate.e_hi, abs=candidate.e_step)
+    assert payload["scan_command"] == format_scan_command(
+        candidate.e_lo, candidate.e_hi, candidate.e_step)
+    assert payload["grid_fingerprint"] == candidate.grid.fingerprint(candidate.ncount)
+
+
+def test_shadow_inventory_persists_every_candidate_and_refusal(tmp_path: Path):
+    inventory = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    selected = inventory.selected_candidate
+    proposal = ScanProposal(
+        h=2.1, k=0.0, l=0.0, e_lo=selected.e_lo, e_hi=selected.e_hi,
+        e_step=selected.e_step, ncount=selected.ncount, kind="quicklook",
+        reason="cold-start survey", n_points=selected.n_points,
+        meta={"scientific_action_fingerprint": "scientific-action"},
+        scan_design_inventory=inventory,
+    )
+    _stamp_proposal_provenance(proposal)
+    cfg = SimpleNamespace(workspace=tmp_path, log_path=tmp_path / "session.jsonl")
+
+    ref = _persist_scan_design_inventory(cfg, proposal, it=1)
+    stored = json.loads((tmp_path / ref["path"]).read_text(encoding="utf-8"))
+
+    assert stored == inventory.to_full_dict()
+    assert [c["candidate_family"] for c in stored["candidates"]] == _families(inventory)
+    assert stored["refused_candidates"]
+    assert all(entry["refused"] is True and entry["reason_code"]
+               for entry in stored["refused_candidates"])
+    assert proposal.meta["scan_design_candidate_id"] == selected.candidate_id
+
+
+def test_candidate_id_covers_the_grid_and_exposure_but_not_alias_provenance():
+    candidate = design_scan_windows(_context()).selected_candidate
+    aliased = design_scan_windows(_context(scan_window_eig_mode="shadow")).selected_candidate
+    assert candidate.candidate_id == aliased.candidate_id
+    assert SCAN_DESIGN_CANDIDATE_SCHEMA.endswith("/2")
+
+    payload = json.loads(json.dumps(candidate.to_dict()))
+    assert payload["candidate_id"] == candidate.candidate_id

@@ -705,3 +705,62 @@ def test_enumerate_actions_normalizes_the_driver_inserted_candidate_index():
     pick = candidates[0].pick
     assert tuple(pick.hkl) == pytest.approx((2.15, 0.0, 0.0))  # the inserted probe was selected
     assert pick.index == len(grid)                             # normalized to its real grid position
+
+
+# --- scan-window EIG mode: shadow plumbing must not move a single neutron ------------------------
+
+def _eig_objective(mode: str):
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": mode}
+    frozen["hypothesis_fingerprint"] = content_fingerprint(
+        frozen["hypotheses"], frozen["steering"])
+    return ObjectiveSpec.segment(
+        q_start=(2, 0, 0), q_end=(2, 0.2, 0), step_rlu=0.1, tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e12},
+        target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+
+
+def _request(proposal):
+    """The physical request: what the instrument is actually asked to do."""
+    return (proposal.h, proposal.k, proposal.l, proposal.e_lo, proposal.e_hi,
+            proposal.e_step, proposal.n_points, proposal.ncount, proposal.kind,
+            proposal.scan_command())
+
+
+def test_shadow_mode_emits_the_identical_request_as_the_off_mode_legacy_path():
+    # Only the *physical* request can be asserted identical: materializing the new steering field
+    # remints every hypothesis/scientific-action fingerprint once, by design (the knob is part of
+    # the frozen policy snapshot).  Neutrons, window, and ordering must not move at all.
+    off = acq.propose_scan(_eig_objective("off"), acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
+    shadow = acq.propose_scan(
+        _eig_objective("shadow"), acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
+
+    assert _request(off) == _request(shadow)
+    assert off.meta["count_diagnostics"] == shadow.meta["count_diagnostics"]
+    assert (off.scan_design_inventory.selected_candidate_id
+            == shadow.scan_design_inventory.selected_candidate_id)
+    assert len(off.scan_design_inventory.candidates) == 1
+    assert len(shadow.scan_design_inventory.candidates) > 1
+    assert shadow.scan_design_inventory.selection_basis == (
+        "shadow_legacy_control_unscored")
+    assert off.scan_design_inventory.selection_basis == "legacy_control_off"
+    assert shadow.scan_design_inventory.context.scan_window_eig_mode == "shadow"
+
+
+def test_shadow_candidates_share_the_selected_action_q_kind_and_reason():
+    proposal = acq.propose_scan(
+        _eig_objective("shadow"), acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
+    selected = proposal.scan_design_inventory.selected_candidate
+
+    for candidate in proposal.scan_design_inventory.candidates:
+        assert candidate.hkl == selected.hkl and candidate.q == selected.q
+        assert candidate.kind == selected.kind
+        assert candidate.reason == selected.reason
+    assert (selected.e_lo, selected.e_hi, selected.e_step, selected.n_points,
+            selected.ncount) == (proposal.e_lo, proposal.e_hi, proposal.e_step,
+                                 proposal.n_points, proposal.ncount)
+
+
+def test_declaring_authoritative_scan_window_eig_refuses_at_campaign_setup():
+    with pytest.raises(ValueError, match="scan_window_eig_authoritative_unavailable"):
+        _eig_objective("authoritative")

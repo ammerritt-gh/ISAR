@@ -111,6 +111,7 @@ FILE_SPEC_SCHEMA["properties"]["steering"] = {
         "interval_floor_window": {"type": "integer"},
         "interval_floor_min_improvement": {"type": "number"},
         "interval_floor_min_exposure_ratio": {"type": "number"},
+        "scan_window_eig_mode": {"type": "string"},
     },
 }
 # Compatibility alias for callers/tests that imported the original public name.

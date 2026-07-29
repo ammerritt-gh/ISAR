@@ -629,6 +629,30 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   on the cause changes behaviour. References: O28 (the AP6 strict-historical replay), O29 (the
   taxonomy this amends), `docs/MEASUREMENT_STEERING.md`.
 
+- **O32.** (2026-07-29, Implemented in `isar/schema/hypotheses.py` and
+  `isar/drive/acquisition/scan_design.py`) **The scan-window EIG regime is a typed steering knob that
+  is always serialized, and the resulting one-time fingerprint break is taken plainly rather than
+  hidden behind a dual representation.** `scan_window_eig_mode` (`off` | `shadow` |
+  `authoritative`) joins `SteeringPolicy` as an ordinary field, so it appears in every resolved
+  steering dict and therefore in `content_fingerprint`. Every campaign's `hypothesis_fingerprint`
+  changes once at this release, and with it every derived scientific-action fingerprint and
+  content-addressed audit artifact. The rejected alternative — omit the key when it holds its default
+  — would have kept old fingerprints alive at the cost of two representations of one policy, which is
+  exactly the ambiguity that makes a fingerprint untrustworthy later. Pre-release, a clean break is
+  cheaper than a permanent special case (ADR-013 of the EIG plan). Physical behaviour is unchanged:
+  the acceptance test asserts the same action class, Q sequence, window, step, count request and
+  emitted request in both `off` and `shadow`, and deliberately does **not** assert equal action
+  fingerprints, which is impossible by construction.
+
+  Two rules keep the knob honest. `authoritative` is refused at policy-freeze time with the stable
+  code `scan_window_eig_authoritative_unavailable` — never quietly read as `shadow`, because a
+  scientist would otherwise believe a scored window was executed when no scorer exists. And the
+  inventory schema moves to `isar.scan_design_inventory/2` +
+  `isar.scan_design_candidate/2` in **all** modes with no `/1` compatibility path, so one reader
+  shape covers every persisted record. References: O12 (the frozen Stage II↔III contract this stays
+  inside — the scan-design inventory is a workspace-internal audit artifact),
+  `docs/EIG_STEERING_DESIGN.md`, `docs/MEASUREMENT_STEERING.md`.
+
 - **S5.** (2026-07-25, Implemented; amends S1 and V5, both of which record the superseded status)
   **The Bayesian rung of the interval ladder is built and running; what is still Planned is its
   licence to certify, not its machinery.** S1 wrote the ladder as "Hessian (never certifies) →

@@ -26,6 +26,13 @@ DISPERSION_TYPES = ("branch", "level", "continuum")
 IMPLEMENTED_DISPERSION_TYPES = ("branch",)
 PRESET_NAMES = ("acoustic", "optic", "null")
 
+#: Same-action scan-window EIG regime.  ``off`` designs the single legacy window; ``shadow`` also
+#: generates and persists the alternative uniform-window family while still executing the legacy one;
+#: ``authoritative`` would let a scored winner be executed and is not implemented yet — declaring it
+#: refuses at campaign setup rather than silently degrading to shadow or off.
+SCAN_WINDOW_EIG_MODES = ("off", "shadow", "authoritative")
+SCAN_WINDOW_EIG_AUTHORITATIVE_UNAVAILABLE = "scan_window_eig_authoritative_unavailable"
+
 
 @dataclass(frozen=True)
 class GaussianPrior:
@@ -108,6 +115,7 @@ class SteeringPolicy:
     interval_floor_window: int = 3
     interval_floor_min_improvement: float = 0.05
     interval_floor_min_exposure_ratio: float = 2.0
+    scan_window_eig_mode: str = "off"
 
     def __post_init__(self) -> None:
         finite_values = {
@@ -177,6 +185,17 @@ class SteeringPolicy:
             raise ValueError("interval_floor_min_improvement must be in [0, 1)")
         if float(self.interval_floor_min_exposure_ratio) <= 1.0:
             raise ValueError("interval_floor_min_exposure_ratio must exceed one")
+        if self.scan_window_eig_mode not in SCAN_WINDOW_EIG_MODES:
+            raise ValueError(
+                "scan_window_eig_mode must be one of "
+                f"{', '.join(SCAN_WINDOW_EIG_MODES)}")
+        if self.scan_window_eig_mode == "authoritative":
+            # Refuse loudly at policy-freeze time.  Silently reading this as shadow (or off) would
+            # let a scientist believe a scored window was executed when no scorer exists.
+            raise ValueError(
+                f"{SCAN_WINDOW_EIG_AUTHORITATIVE_UNAVAILABLE}: scan-window EIG selection is not "
+                "implemented; declare 'shadow' to generate and persist candidates without "
+                "changing the executed scan")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
