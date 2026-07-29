@@ -3,10 +3,10 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the steering research foundation and the current controller contract
 > **Provenance:** hand-written
-> **Verified against code revision:** `6935ec5` (2026-07-29)
+> **Verified against code revision:** `da760f2` plus the STAT-1 working tree (2026-07-29)
 
 > **Status: design locked; the core is built.** The model-free descriptor (L0), branch model +
-> Bayesian branch assignment, soft/hard Γ constraints, Stokes-only rescue, under-model
+> normalized branch-assignment scoring, soft/hard Γ constraints, Stokes-only rescue, under-model
 > falsification, cost-normalised EIG acquisition, and the anti-Stokes fold + rival-branch banking
 > are implemented (`isar/analyze/descriptor.py`, `isar/session/branch_model.py` /
 > `branch_assignment.py`, `isar/drive/acquisition/eig.py`); what ran and what failed is recorded in
@@ -313,11 +313,12 @@ So the chosen engine is:
    **not** closed-form: for a multi-point scan the posterior-predictive `p(y|d)` is a mixture over the
    posterior samples, so EIG is a **sample-based estimate**, not an analytic quantity. (Only the
    linear-Gaussian special case, §6, is closed-form.)
-2. **Estimate it heavy-but-honest from the posterior samples ISAR already draws** (parametric bootstrap /
-   nested sampling): a **fixed sample-based posterior-predictive mutual-information / contrastive
-   estimator** per candidate — affordable at a minute/point, and **validated against expensive
-   nested-Monte-Carlo in Tier 1** (§3). Hold the estimator fixed when ranking designs so its bias is
-   common-mode.
+2. **Estimate it from one explicitly declared parameter measure.** ISAR currently stores
+   parametric-bootstrap, nested-posterior, and HESSE/Laplace particles. They are not interchangeable
+   posterior samples. The first scan-window design contract will therefore use a homogeneous
+   `akaike_weighted_parametric_bootstrap_predictive` shadow measure and validate it against realized
+   complete refit-and-reselect updates. A later all-model Bayesian posterior mixture is the formal
+   comparator. Hold the estimator fixed when ranking designs so its bias is common-mode.
 3. **Cheap Poisson-Fisher score `(∂λ/∂θ_ω₀)²/λ` as a fast screen** to shortlist candidates before the
    heavy rank (light for simulation/proof-of-concept, heavy where it matters). The **acquisition unit is a
    whole constant-Q scan**: rank scan proposals by EIG-per-cost first; per-energy-bin dwell optimisation
@@ -334,15 +335,18 @@ So the chosen engine is:
 5. **Escalate estimator honesty where the posterior is non-Gaussian** (weak signal): HESSE/Laplace when
    clean → bootstrap / nested sampling when not. ISAR already has all three; wire the acquisition to the
    same ladder.
-6. **Model-average the EIG** over competing hypotheses so the loop does not optimise for one possibly-wrong
-   model (see §4.2 and §6).
+6. **Average the design score over competing hypotheses using an explicitly named weight measure**
+   so the loop does not optimise for one possibly-wrong model (see §4.2 and §6).
 7. **Two-term scan value** *(Implemented 2026-07-17 — DECISIONS O6)*:
    The shipped master-authoritative path draws incremental Poisson counts from every retained
-   plausible model in `isar.master_predictive/2` and estimates mutual information about the joint
-   target-ω/model/branch state. It reports expected ω-half-width reduction and model/branch-identity
-   entropy reduction separately; neither is converted into the other's units by a λ weight. Common
-   random numbers make candidate comparisons deterministic, with progressively larger simulation
-   batches when the leading candidates are not separated. The older λ-weighted deterministic
+   plausible model in `isar.master_predictive/2` and computes a legacy sample-based information
+   score about the joint target-ω/model/branch state. Its model-dependent mix of nested,
+   bootstrap, and HESSE/Laplace particles is not a formal Bayesian posterior predictive and is
+   ineligible for scan-window EIG or acquisition under STAT-1 semantics. It reports expected
+   ω-half-width reduction and model/branch-identity entropy reduction separately; neither is
+   converted into the other's units by a λ weight. Common random numbers make action/Q comparisons
+   deterministic, with progressively larger simulation batches when the leading candidates are not
+   separated. The older λ-weighted deterministic
    branch-confusion proxy remains only in the explicit classification/opening-move fallback where a
    master predictive artifact does not yet exist; it is not the acquisition score for a usable master.
    Here a “candidate” is a scientific action/Q alternative whose counts are already evaluated on its
@@ -383,14 +387,16 @@ later "survey mode."
 
 ### 4.4 The fit-vs-decide contract (engineering invariants)
 
-Constraining a fit with a prior and *deciding what the data actually says* are different jobs; the
-implementation must keep them apart or the prior silently corrupts model selection and falsification:
+Constraining a fit with a prior and *deciding what the data actually says* are different jobs. This
+is the target contract; STAT-1 exposes where the current implementation does not yet satisfy it, and
+STAT-2 owns enforcement:
 
 - **Separate the data cost from the posterior cost.** A soft prior penalty enters the *optimiser's*
-  objective — so the reported error bar is the honest data∩prior width — but **never** the scalar that
-  goodness-of-fit, AIC/BIC model selection, and the falsification gate read; those are recomputed from the
-  pure Poisson `data_cost` at the fitted parameters. Selection and falsification judge the data alone;
-  only the point estimate and its error bar see the prior.
+  objective, while goodness-of-fit and AIC/BIC read the pure Poisson `data_cost`. Today that data cost
+  is nevertheless evaluated at the constrained optimum, so it is not generally the comparable
+  data-only MLE required by ordinary model comparison. STAT-1 labels such candidates
+  selection-ineligible but leaves their scores and weights unchanged; STAT-2 must separate
+  comparable selection fits from constrained delivery fits.
 - **Intensity is provenance-bearing, not a bare number.** A fitted amplitude is not portable across dwell
   time, monitor/time normalisation, resolution, detector, instrument, or merge state. What crosses between
   scans (to seed detection power or a branch prior) is a **normalised integrated intensity with its
@@ -752,8 +758,25 @@ the connected tracker into a separate `isar.target_projection/2` bound to the au
 produced it (ADR-019; [`EIG_STEERING_DESIGN.md`](EIG_STEERING_DESIGN.md)).
 Nested draws win, then full-fit
 bootstrap draws, then a trusted multivariate HESSE/Laplace approximation. The model-weighted ω interval
-is the certification interval; therefore Γ may be `resolution_limited` without blocking an otherwise
-identified ω. Missing simulation-grade draws trigger a single full-tier escalation for that revision.
+is conditional on target-present retained models and can therefore mix three different parameter
+measures. It remains the legacy certification and stopping interval; therefore Γ may be
+`resolution_limited` without blocking an otherwise identified ω. It is not a Bayesian
+model-averaged credible interval, does not carry no-target mass, and is ineligible for EIG and
+acquisition. Missing simulation-grade draws trigger a single full-tier escalation for that revision.
+
+STAT-1 records those facts additively in `isar.predictive_semantics/1`, including exact
+offered/scored/weight-denominator/retained/projection set fingerprints, per-model estimator and
+constraint eligibility, particle and draw measures, Bayesian prior dimensions, and named authority
+scopes. `construction_complete` and the legacy `predictive_complete_for_eig` describe artifact
+construction only; every `/2` artifact has `homogeneous_design_eligible=false` because its contract
+permits model-dependent fallback. `target_projection_complete` is an explicit alias for projection
+construction completeness, not target-presence support.
+
+STAT-1 deliberately neither bumps `PREDICTIVE_CONTRACT` nor regenerates cached masters. STAT-2 must
+introduce or bump the selection contract used by both the master-fit cache fingerprint and the
+unchanged-master carry gate. STAT-3 then refuses pre-STAT-2 or semantics-incomplete inputs when it
+builds the homogeneous shadow-design artifact. Carrying a pre-STAT-1 cached artifact can therefore
+never make a workspace eligible for EIG-3.
 
 Acquisition estimates information about the joint target-ω/model/branch latent state from incremental
 Poisson counts. Deterministic mode ranks per predicted analysis second; measurement-dominated tiers use

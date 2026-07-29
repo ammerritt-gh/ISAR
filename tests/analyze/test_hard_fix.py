@@ -130,6 +130,10 @@ def test_escalation_fires_when_gamma_only_soft(monkeypatch):
         descriptor=None, region_reasons=region_reasons, M=10, seed=0, errors_tier="fast",
         boot_workers=1, boot_executor=None, boot_adaptive=False)
     assert len(calls) == 1                                 # escalation attempted a re-fit
+    retry_context = calls[0][0][0]
+    assert retry_context.constraints.origins == {
+        "phonon.Gamma": "data_dependent_rescue"
+    }
     assert region_reasons and "hard-fix escalation" in region_reasons[0]
 
 

@@ -40,6 +40,16 @@ from isar.predictive import PREDICTIVE_CONTRACT
 from isar.predictive import json_fingerprint as _json_fingerprint
 from isar.schema.card import Card
 from isar.schema.hypotheses import preset as hypothesis_preset
+from isar.schema.statistics import (
+    FIT_SELECTION_SCHEMA,
+    INTERVAL_SCHEMA,
+    PROBABILITY_SCHEMA,
+    SemanticsConstructionError,
+    authority_scopes,
+    compact_for_csv,
+    semantics_fingerprint,
+    validate_for_write,
+)
 from isar.schema.steering import (AUXILIARY_TRACK_NODE, CANDIDATE_NOT_DETECTED, CANONICAL_MASTER,
                                   IntensityMeasure, ParamConstraints, evidence_sink_for,
                                   realized_outcome_for)
@@ -52,9 +62,10 @@ from isar.session.predictive_artifact import model_manifest_of as _model_manifes
 # phonon within this many resolution FWHM of the elastic line (the merging regime where Γ/A go
 # unidentifiable). Above it the peak is well separated and the fit is left unconstrained.
 LOW_Q_FWHM_FACTOR = 2.0
-# Error tiers that run the authoritative frequentist interval (MINOS + parametric bootstrap + ω₀
-# profile). "bayes" is a strict superset of "full" — everything full does, plus the nested-sampling
-# posterior on the prelim-best label (diagnostics-only; the bootstrap interval stays authoritative).
+# Error tiers that run the ordinary physical-fit frequentist interval (MINOS + parametric bootstrap
+# + ω₀ profile). "bayes" is a strict superset of "full" — everything full does, plus the
+# nested-sampling posterior on the prelim-best label. That single-fit Bayesian interval is
+# diagnostics-only; pooled-master certification separately uses the mixed predictive interval.
 FULL_TIERS = ("full", "bayes")
 from isar.session import unit_data
 from isar.session.state import ScanEntry, SessionState, canonical_hash, content_hash
@@ -119,10 +130,11 @@ class FitOutcome:
     # Fit provenance (steering contract 4): unconstrained | soft_prior | branch_conditional |
     # stokes_only | descriptor_only. Anything but "unconstrained" is not an ordinary phonon fit.
     fit_kind: str = "unconstrained"
-    # Phase A Bayesian branch assignment: which dispersion branch this scan's ω₀ was assigned to
-    # (acoustic | optic | new | ...), the Shannon entropy of that assignment, whether the acoustic ω₀
-    # was position-resolvable (ω₀ ≳ 1 FWHM), and the soft assignment weight fed to the branch model.
-    # None on older ledgers / when the branch-assignment posterior is off (no dispersion.zone_period).
+    # Phase A normalized branch-assignment scoring: which dispersion branch this scan's ω₀ was
+    # assigned to (acoustic | optic | new | ...), the Shannon entropy over assignment weights,
+    # whether the acoustic ω₀ was position-resolvable (ω₀ ≳ 1 FWHM), and the soft assignment weight
+    # fed to the branch model. These are probability-like scores, not calibrated posterior
+    # probabilities. None on older ledgers / when assignment is off (no dispersion.zone_period).
     branch_id: str | None = None
     assignment_entropy: float | None = None
     resolvable: bool | None = None
@@ -132,9 +144,10 @@ class FitOutcome:
     # belief can form and claim its own features at later q. None/empty on abstains + older ledgers.
     secondary_features: list | None = None
     # Bayes-errors tier (--errors bayes): the nested-sampling posterior on ω₀ + its §5.5
-    # three-method (HESSE / bootstrap / posterior) cross-check. Diagnostics-only — the bootstrap
-    # `interval` stays authoritative; certification/confidence never read these. All defaulted for
-    # back-compat with older ledgers and the non-bayes tiers.
+    # three-method (HESSE / bootstrap / posterior) cross-check. `bayes_interval` is diagnostics-only
+    # as a single-fit quantity; pooled-master predictive construction may use accepted nested
+    # particles inside its separate legacy mixed interval. All defaulted for back-compat with older
+    # ledgers and the non-bayes tiers.
     bayes_interval: tuple | None = None   # (lo, median, hi) 68% credible, diagnostics-only
     bayes_ok: bool | None = None          # None = tier didn't run bayes; False = ran, failed gate
     bayes_ess: float | None = None
@@ -222,6 +235,11 @@ class FitOutcome:
     consistency_pvalue: float | None = None
     consistency_alpha: float | None = None
     consistency_seed: int | None = None
+    # STAT-1 additive provenance. Full records persist in session.json; results.csv receives compact
+    # projections. Missing/legacy provenance is ``None`` and never invalidates the scientific result.
+    fit_selection_semantics: dict | None = None
+    interval_semantics: dict | None = None
+    probability_semantics: dict | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -541,8 +559,339 @@ def _candidate_rows(scores, fits) -> list | None:
             "delta_aic": float(s.delta_aic),
             "akaike_weight": float(s.weight),
             "usable": bool(r.analysis_usable) if r is not None else True,
+            "estimator_kind": (s.fit_semantics or {}).get("estimator_kind"),
+            "fit_kind": (s.fit_semantics or {}).get("fit_kind"),
+            "constraint_origin": (s.fit_semantics or {}).get("aggregate_constraint_origin"),
+            "selection_eligibility": (s.fit_semantics or {}).get("selection_eligibility"),
+            "conditioning_fingerprint": (s.fit_semantics or {}).get(
+                "conditioning_fingerprint"
+            ),
         })
     return rows
+
+
+def _model_set_fingerprint(kind: str, payload) -> str:
+    return semantics_fingerprint(f"isar.{kind}/1", payload)
+
+
+def _build_selection_semantics(
+    results,
+    selection,
+    route,
+    *,
+    error_attachment_labels,
+) -> dict | None:
+    """Describe the exact candidate-set transitions without changing selection behavior."""
+    try:
+        missing = [r.label for r in results if getattr(r, "fit_semantics", None) is None]
+        if missing:
+            raise SemanticsConstructionError(
+                "missing_candidate_fit_semantics", ",".join(str(label) for label in missing)
+            )
+        offered_labels = [str(r.label) for r in results]
+        scored_labels = [str(score.label) for score in selection.scores]
+        denominator = [
+            {"label": str(score.label), "aic": float(score.aic)}
+            for score in selection.scores
+        ]
+        pool_labels = []
+        by_label = {r.label: r for r in results}
+        for score in selection.scores:
+            if not score.survives:
+                continue
+            samples = (getattr(by_label.get(score.label), "within_model", None) or {}).get(
+                "omega0_samples"
+            )
+            if samples is not None and np.size(samples) > 0:
+                pool_labels.append(str(score.label))
+        component_fingerprints = {
+            "offered_model_set_fingerprint": _model_set_fingerprint(
+                "offered_model_set", offered_labels
+            ),
+            "scored_model_set_fingerprint": _model_set_fingerprint(
+                "scored_model_set", scored_labels
+            ),
+            "weight_denominator_fingerprint": _model_set_fingerprint(
+                "akaike_weight_denominator", denominator
+            ),
+            "error_attachment_set_fingerprint": _model_set_fingerprint(
+                "error_attachment_set", list(error_attachment_labels)
+            ),
+            "legacy_pool_set_fingerprint": _model_set_fingerprint(
+                "legacy_pool_set", pool_labels
+            ),
+        }
+        candidate_records = []
+        for score in selection.scores:
+            candidate_records.append(
+                {
+                    "label": str(score.label),
+                    "cost": float(score.cost),
+                    "effective_parameter_count": int(score.k),
+                    "aic": float(score.aic),
+                    "akaike_weight": float(score.weight),
+                    "fit_semantics": score.fit_semantics,
+                }
+            )
+        selection_payload = {
+            **component_fingerprints,
+            "ordinary_aic_revision": select.MODEL_SELECTION_REVISION,
+            "weight_floor": float(select.DEFAULT_WEIGHT_FLOOR),
+            "candidates": [
+                {
+                    "label": item["label"],
+                    "cost": item["cost"],
+                    "effective_parameter_count": item["effective_parameter_count"],
+                    "akaike_weight": item["akaike_weight"],
+                }
+                for item in candidate_records
+            ],
+        }
+        record = {
+            "schema": FIT_SELECTION_SCHEMA,
+            "candidate_generation_route": route,
+            "model_weight_kind": "akaike_relative_weight" if selection.scores else "none",
+            **component_fingerprints,
+            "model_selection_fingerprint": semantics_fingerprint(
+                "isar.model_selection_semantics/1", selection_payload
+            ),
+            "candidate_records": candidate_records,
+            "authority_scopes": authority_scopes(
+                single_fit_delivery="active",
+                user_diagnostic="active",
+            ),
+        }
+        return validate_for_write(record, FIT_SELECTION_SCHEMA)
+    except SemanticsConstructionError as exc:
+        log.warning(
+            "semantics_construction_failed producer=isar.analyze.select "
+            "quantity=model_selection reason_code=%s",
+            exc.reason_code,
+        )
+        return None
+
+
+def _outcome_interval_semantics(
+    *,
+    best,
+    selection,
+    interval,
+    omega0_profile,
+    hesse_interval,
+    hesse_trusted,
+    bayes_interval,
+) -> dict | None:
+    """Propagate producer-owned interval meaning onto the four persisted quantities."""
+    try:
+        source = (
+            ((getattr(best, "within_model", None) or {}).get("interval_semantics") or {}).get(
+                "quantities", {}
+            )
+            if best is not None
+            else {}
+        )
+        fit_semantics = getattr(best, "fit_semantics", None) if best is not None else None
+
+        def unavailable(reason: str) -> dict:
+            item = {
+                "availability": False,
+                "nominal_level": 0.68,
+                "unavailable_reason": reason,
+                "calibration_target": None,
+                "authority_scopes": authority_scopes(),
+            }
+            if fit_semantics is not None:
+                item.update(
+                    {
+                        "estimator_kind": fit_semantics["estimator_kind"],
+                        "effective_constraints": list(
+                            fit_semantics.get("effective_constraints") or []
+                        ),
+                        "conditioning_fingerprint": fit_semantics[
+                            "conditioning_fingerprint"
+                        ],
+                    }
+                )
+            return item
+
+        if interval is not None and source.get("freq_interval") is not None:
+            interval_item = copy.deepcopy(source["freq_interval"])
+        elif interval is not None and selection.pooled is not None:
+            # The exact contributing set and its observed-data weights are owned by the selection
+            # producer.  Reference both component-set and complete-selection fingerprints instead
+            # of reverse-engineering either from the interval values.
+            selection_semantics = selection.fit_selection_semantics or {}
+            legacy_pool_set_fingerprint = selection_semantics.get(
+                "legacy_pool_set_fingerprint"
+            )
+            source_model_selection_fingerprint = selection_semantics.get(
+                "model_selection_fingerprint"
+            )
+            if (
+                legacy_pool_set_fingerprint is None
+                or source_model_selection_fingerprint is None
+            ):
+                raise SemanticsConstructionError(
+                    "missing_selection_fingerprint", "legacy_pooled_interval"
+                )
+            interval_item = {
+                "availability": True,
+                "nominal_level": 0.68,
+                "interval_kind": "akaike_weighted_parametric_bootstrap_pool",
+                "particle_measure_kind": "parametric_bootstrap_sampling_distribution",
+                "draw_measure_kind": "explicit_weight_empirical_particles",
+                "model_weight_kind": "akaike_relative_weight",
+                "inference_paradigm": "frequentist_empirical_model_mixture",
+                "legacy_pool_set_fingerprint": legacy_pool_set_fingerprint,
+                "source_model_selection_fingerprint": (
+                    source_model_selection_fingerprint
+                ),
+                "conditioning_fingerprint": semantics_fingerprint(
+                    "isar.legacy_pooled_interval_conditioning/1",
+                    {
+                        "legacy_pool_set_fingerprint": legacy_pool_set_fingerprint,
+                        "source_model_selection_fingerprint": (
+                            source_model_selection_fingerprint
+                        ),
+                    },
+                ),
+                "calibration_target": None,
+                "authority_scopes": authority_scopes(
+                    single_fit_delivery="active",
+                    legacy_master_certification="active",
+                    stopping="active",
+                    user_diagnostic="active",
+                ),
+            }
+        else:
+            interval_item = unavailable("not_produced")
+        interval_item["availability"] = interval is not None
+
+        profile_item = (
+            copy.deepcopy(source["profile_interval"])
+            if source.get("profile_interval") is not None
+            else unavailable("not_produced")
+        )
+        profile_item["availability"] = omega0_profile is not None
+
+        if hesse_interval is not None and fit_semantics is None:
+            raise SemanticsConstructionError("missing_candidate_fit_semantics", "hesse_interval")
+        hesse_item = unavailable("not_produced")
+        if hesse_interval is not None:
+            hesse_item.update(
+                {
+                    "availability": True,
+                    "interval_kind": "hesse_delta",
+                    "inference_paradigm": "frequentist_asymptotic",
+                    "hesse_trusted": bool(hesse_trusted),
+                    "particle_measure_kind": "laplace_hesse_parameter_approximation",
+                    "authority_scopes": authority_scopes(
+                        single_fit_delivery="active",
+                        legacy_master_certification=("active" if hesse_trusted else "inactive"),
+                        stopping=("active" if hesse_trusted else "inactive"),
+                        user_diagnostic="active",
+                    ),
+                }
+            )
+
+        bayes_item = (
+            copy.deepcopy(source["bayes_interval"])
+            if source.get("bayes_interval") is not None
+            else unavailable("not_produced")
+        )
+        bayes_item["availability"] = bayes_interval is not None
+        record = {
+            "schema": INTERVAL_SCHEMA,
+            "quantities": {
+                "interval": interval_item,
+                "omega0_profile": profile_item,
+                "hesse_interval": hesse_item,
+                "bayes_interval": bayes_item,
+            },
+            "authority_scopes": authority_scopes(user_diagnostic="active"),
+        }
+        return validate_for_write(record, INTERVAL_SCHEMA)
+    except (SemanticsConstructionError, KeyError) as exc:
+        reason_code = (
+            exc.reason_code if isinstance(exc, SemanticsConstructionError)
+            else "missing_interval_semantics_field"
+        )
+        log.warning(
+            "semantics_construction_failed producer=isar.session.driver "
+            "quantity=fit_outcome_intervals reason_code=%s",
+            reason_code,
+        )
+        return None
+
+
+def _refresh_probability_semantics(
+    outcome: dict,
+    *,
+    predictive_payload: dict | None = None,
+) -> dict | None:
+    """Compose declarations supplied by the confidence, assignment, tracker, and predictive producers."""
+    from isar.analyze import confidence as confidence_mod
+
+    try:
+        quantities = {}
+        if outcome.get("confidence") is not None:
+            quantities["confidence"] = confidence_mod.probability_semantics()
+        if (
+            outcome.get("branch_posterior") is not None
+            or outcome.get("branch_weight") is not None
+            or outcome.get("assignment_entropy") is not None
+        ):
+            local = BA.probability_semantics(outcome.get("branch_posterior"))
+            for name in ("branch_posterior", "branch_weight", "assignment_entropy"):
+                if outcome.get(name) is not None:
+                    quantities[name] = local[name]
+        if outcome.get("target_probability") is not None or outcome.get("identity_entropy") is not None:
+            tracked = branch_tracking.probability_semantics(
+                outcome.get("branch_posterior"),
+                target_branch=str(outcome.get("target_branch") or "acoustic"),
+            )
+            for name in ("target_probability", "identity_entropy"):
+                if outcome.get(name) is not None:
+                    quantities[name] = tracked[name]
+        existing = outcome.get("probability_semantics")
+        existing_model_entropy = (
+            ((existing or {}).get("quantities") or {}).get("model_entropy")
+            if isinstance(existing, dict)
+            else None
+        )
+        if outcome.get("model_entropy") is not None:
+            predictive_retained = (
+                (predictive_payload or {}).get("predictive_retained_set_fingerprint")
+            )
+            if predictive_retained is not None:
+                quantities["model_entropy"] = (
+                    predictive_artifact.model_entropy_probability_semantics(
+                        predictive_retained
+                    )
+                )
+            elif existing_model_entropy is not None:
+                quantities["model_entropy"] = existing_model_entropy
+            else:
+                raise SemanticsConstructionError(
+                    "missing_predictive_retained_set_fingerprint", "model_entropy"
+                )
+        record = {
+            "schema": PROBABILITY_SCHEMA,
+            "quantities": quantities,
+            "authority_scopes": authority_scopes(user_diagnostic="active"),
+        }
+        return validate_for_write(record, PROBABILITY_SCHEMA)
+    except (SemanticsConstructionError, KeyError) as exc:
+        reason_code = (
+            exc.reason_code if isinstance(exc, SemanticsConstructionError)
+            else "missing_probability_semantics_field"
+        )
+        log.warning(
+            "semantics_construction_failed producer=isar.session.driver "
+            "quantity=probability_like_outputs reason_code=%s",
+            reason_code,
+        )
+        return None
 
 
 def _auto_escalation_reasons(prelim, fits, ctx) -> list[str]:
@@ -630,18 +979,42 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         ctx, minos=False, peaks=peaks, structure_hint=structure_hint,
         executor=boot_executor)
     two_stage_seconds = round(time.perf_counter() - _t_two_stage, 4)
+    labels_before_guideline = [str(r.label) for r in results]
     # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
     by_hyp = {h.label: h for h in enumerate_structures(ctx)}
     by_hyp.update({h.label: h for h in enumerate_multimode(ctx)})
 
     warn = None
+    guideline_changed_set = False
     if structure_labels:
         kept = [r for r in results if r.label in structure_labels]
         if kept:
+            guideline_changed_set = [r.label for r in kept] != [r.label for r in results]
             results = kept
         else:
             warn = (f"guideline structures {list(structure_labels)} match no admissible "
                     f"{[r.label for r in results]}; kept all")
+
+    if structure_skipped:
+        multimode_route = "not_evaluated_structure_hint"
+    elif any(int(getattr(r, "n_modes", 1)) > 1 for r in results):
+        multimode_route = "guideline_forced" if peaks is not None and len(peaks) >= 2 \
+            else "residual_triggered"
+    else:
+        multimode_route = "not_offered"
+    candidate_generation_route = {
+        "route": "structure_hint_shortcut" if structure_skipped else "full_two_stage",
+        "supplied_hint": None if structure_hint is None else str(structure_hint),
+        "hint_accepted": bool(structure_skipped),
+        "guideline_structure_filter": (
+            [str(label) for label in structure_labels] if structure_labels else []
+        ),
+        "guideline_changed_model_set": bool(guideline_changed_set),
+        "labels_before_guideline": labels_before_guideline,
+        "peak_hint_count": int(len(peaks)) if peaks is not None else 0,
+        "multimode_route": multimode_route,
+        "offered_labels": [str(r.label) for r in results],
+    }
 
     fits = {r.label: r for r in results}
 
@@ -654,6 +1027,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     effective_tier = ("full" if errors_tier == "auto" and run_full
                       else "fast" if errors_tier == "auto" else errors_tier)
     errors_attach_seconds = 0.0
+    error_attachment_labels = []
     if run_full:
         _t_errors = time.perf_counter()
         survivor_items = []
@@ -661,6 +1035,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
             r = fits.get(label)
             if r is not None and r.optimizer_converged and label in by_hyp:
                 survivor_items.append((r, by_hyp[label], ctx))
+        error_attachment_labels = [str(item[0].label) for item in survivor_items]
         errors.attach_batch(
             survivor_items, M=M, seed=seed, with_profile=True,
             bayes_label=(prelim.best if run_bayes else None),
@@ -668,6 +1043,14 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
             executor=boot_executor, boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
         errors_attach_seconds = round(time.perf_counter() - _t_errors, 4)
     sel = select.select_models(results)
+    candidate_generation_route["scored_labels"] = [str(score.label) for score in sel.scores]
+    fit_selection_semantics = _build_selection_semantics(
+        results,
+        sel,
+        candidate_generation_route,
+        error_attachment_labels=error_attachment_labels,
+    )
+    sel.fit_selection_semantics = fit_selection_semantics
     sv = verdict.classify(results, ctx, sel, prior=prior, descriptor=descriptor)
 
     best = fits.get(sel.best) if sel.best else None
@@ -810,7 +1193,8 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # is never published before the delivery decisions that follow this function have been made.
     predictive_inputs = (
         {"best": best, "scores": sel.scores, "fits": fits, "by_hyp": by_hyp, "seed": int(seed),
-         "n_members": int(predictive_n_members)}
+         "n_members": int(predictive_n_members),
+         "fit_selection_semantics": fit_selection_semantics}
         if predictive_n_members is not None else None)
 
     # Phase 4a — under-model falsification: the descriptor localised real signal the phonon model
@@ -828,6 +1212,16 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         log_evidence = log_evidence_err = None
         bayes_freq_ratio = hesse_freq_ratio = None
 
+    interval_semantics = _outcome_interval_semantics(
+        best=best,
+        selection=sel,
+        interval=interval,
+        omega0_profile=omega0_profile,
+        hesse_interval=hesse_interval,
+        hesse_trusted=hesse_trusted,
+        bayes_interval=bayes_interval,
+    )
+
     return {
         "verdict": sv.verdict, "confidence": sv.confidence, "reasons": reasons,
         "omega0": omega0, "omega0_err": omega0_err,
@@ -842,6 +1236,8 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "n_modes": n_modes, "modes": modes,
         "amplitudes": amplitudes, "candidates": candidates,
         "model_manifest": model_manifest,
+        "fit_selection_semantics": fit_selection_semantics,
+        "interval_semantics": interval_semantics,
         "predictive_inputs": predictive_inputs,
         "fit_kind": fit_kind,
         "gamma_at_bound": bool(getattr(best, "gamma_at_bound", False)) if best else False,
@@ -1801,6 +2197,7 @@ def _select_mode(outcome: dict, candidate: dict, candidate_index: int, assignmen
     outcome["target_delivery_eligible"] = True
     outcome["identity_branch_id"] = None
     outcome["delivery_withheld_reason"] = None
+    outcome["probability_semantics"] = _refresh_probability_semantics(outcome)
 
 
 def _carry_local_identity(outcome: dict, assignment: dict) -> None:
@@ -1842,6 +2239,7 @@ def _clear_tracked_selection(outcome: dict, assignment: dict, revision: int) -> 
                   "hesse_interval", "bayes_interval"):
         outcome[field] = None
     outcome["interval_reliable"] = False
+    outcome["probability_semantics"] = _refresh_probability_semantics(outcome)
 
 
 def _withhold_tracked_delivery(outcome: dict, candidate: dict, assignment: dict, revision: int,
@@ -2292,6 +2690,33 @@ def _predicted_master_analysis_seconds(payload: dict) -> float:
     return round(max(0.1, 0.1 + 0.00015 * complexity), 4)
 
 
+_PROMOTION_CANDIDATE_IDENTITY_FIELDS = (
+    "label",
+    "k",
+    "ndof",
+    "cost",
+    "cost_per_dof",
+    "n_modes",
+    "delta_aic",
+    "akaike_weight",
+    "usable",
+)
+
+
+def _promotion_candidate_identity(candidates) -> list[dict] | None:
+    """Pre-STAT-1 numerical candidate projection used by promotion identity."""
+    if candidates is None:
+        return None
+    return [
+        {
+            key: row.get(key)
+            for key in _PROMOTION_CANDIDATE_IDENTITY_FIELDS
+            if key in row
+        }
+        for row in candidates
+    ]
+
+
 def _record_master_promotion(data_dir, entry: ScanEntry, *, source_revision: str,
                              M: int, seed: int) -> None:
     """Persist and publish a synchronous auto-tier promotion for this exact master revision."""
@@ -2303,11 +2728,16 @@ def _record_master_promotion(data_dir, entry: ScanEntry, *, source_revision: str
     from isar.session.promotions import PromotionKey, PromotionStore
 
     outcomes = [outcome for outcome in entry.detectors.values() if outcome.get("pooled")]
+    # Candidate rows gained additive STAT-1 classifications.  Promotion identity remains the
+    # pre-STAT-1 numerical contract: content-addressed semantics may change without reminting the
+    # scientific retry for an otherwise identical master fit.
+    candidates = outcomes[0].get("candidates") if outcomes else None
+    scientific_candidates = _promotion_candidate_identity(candidates)
     point_fingerprint = _json_fingerprint({
         "master_id": entry.scan_id,
         "source_revision": source_revision,
         "best_label": outcomes[0].get("best_label") if outcomes else None,
-        "candidates": outcomes[0].get("candidates") if outcomes else None,
+        "candidates": scientific_candidates,
     })
     key = PromotionKey(
         master_id=entry.scan_id, source_revision=source_revision,
@@ -3016,6 +3446,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         consistency_pvalue=getattr(ms, "consistency_pvalue", None),
         consistency_alpha=getattr(ms, "consistency_alpha", None),
         consistency_seed=getattr(ms, "consistency_seed", None),
+        fit_selection_semantics=fit.get("fit_selection_semantics"),
+        interval_semantics=fit.get("interval_semantics"),
         descriptor=(descriptor.to_dict() if descriptor is not None else None),
         fit_kind=fit.get("fit_kind", "unconstrained"),
         branch_id=branch_id, assignment_entropy=assignment_entropy,
@@ -3033,6 +3465,10 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         target_branch=target_branch, target_label=target_label,
         effective_exposure=exposure_info.get("value"), exposure_provenance=exposure_info,
         acquisition_id=f"pooled:{chash}")
+    outcome.probability_semantics = _refresh_probability_semantics(
+        outcome.__dict__,
+        predictive_payload=predictive_payload,
+    )
     entry = ScanEntry(status="fitted", **base)
     entry.detectors[det] = outcome.to_dict()
     entry.provenance = {"pooled": True, "n_members": int(ms.n_members),
@@ -3241,7 +3677,8 @@ def _build_predictive_payload(fit, ctx, master_id: str) -> tuple[dict | None, di
     try:
         payload = predictive_artifact.build_master_predictive(
             inputs["best"], inputs["scores"], inputs["fits"], inputs["by_hyp"], ctx,
-            seed=inputs["seed"], n_members=inputs["n_members"])
+            seed=inputs["seed"], n_members=inputs["n_members"],
+            fit_selection_semantics=inputs.get("fit_selection_semantics"))
     except Exception as exc:  # noqa: BLE001 — the fit survives any predictive-construction failure
         log.warning("%s: predictive artifact construction failed (%s): %s",
                     master_id, type(exc).__name__, exc)
@@ -3487,9 +3924,15 @@ def _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descri
         pred = branch_model.branch_for(card.state, sample=sample, T=T, omega0=float(prior.omega0))
         if pred is not None and pred.in_anchor_range and pred.gamma > 0:
             soft = dict(ctx.constraints.soft) if ctx.constraints is not None else {}
+            origins = dict(ctx.constraints.origins) if ctx.constraints is not None else {}
             soft.pop("phonon.Gamma", None)                 # Γ becomes hard, not soft
+            origins.pop("phonon.Gamma", None)
+            origins["phonon.Gamma"] = "data_dependent_rescue"
             hctx = replace(ctx, constraints=ParamConstraints(
-                soft=soft, hard={"phonon.Gamma": float(pred.gamma)}))
+                soft=soft,
+                hard={"phonon.Gamma": float(pred.gamma)},
+                origins=origins,
+            ))
             try:
                 hfit = fit_one(hctx, card, prior=prior, M=M, seed=seed, structure_labels=labels,
                                peaks=peaks, errors_tier=errors_tier, boot_workers=boot_workers,
@@ -3573,8 +4016,11 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         acquisition_id=acquisition_id,
         search_energy_lo=(acquisition or {}).get("search_energy_lo"),
         search_energy_hi=(acquisition or {}).get("search_energy_hi"),
+        fit_selection_semantics=fit.get("fit_selection_semantics"),
+        interval_semantics=fit.get("interval_semantics"),
         evidence_sink=evidence_sink_for(getattr(rec, "raw_header", None),
                                         getattr(card.state, "acquisition_provenance", None)))
+    outcome.probability_semantics = _refresh_probability_semantics(outcome.__dict__)
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is
@@ -3727,6 +4173,8 @@ _CSV_COLUMNS = [
     # contract -- withheld delivery is only actionable downstream if the identity it kept, and the
     # reason the number is absent, travel with it.
     "target_delivery_eligible", "identity_branch_id", "delivery_withheld_reason",
+    # STAT-1 additive compact provenance. Full records remain in session.json.
+    "fit_selection_semantics", "interval_semantics", "probability_semantics",
 ]
 
 
@@ -3879,6 +4327,33 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                                if oc.get("candidates") is not None else None),
                 "model_manifest": (json.dumps(oc.get("model_manifest"), sort_keys=True)
                                    if oc.get("model_manifest") is not None else None),
+                "fit_selection_semantics": (
+                    json.dumps(
+                        compact_for_csv(oc.get("fit_selection_semantics")),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if oc.get("fit_selection_semantics") is not None
+                    else None
+                ),
+                "interval_semantics": (
+                    json.dumps(
+                        compact_for_csv(oc.get("interval_semantics")),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if oc.get("interval_semantics") is not None
+                    else None
+                ),
+                "probability_semantics": (
+                    json.dumps(
+                        compact_for_csv(oc.get("probability_semantics")),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if oc.get("probability_semantics") is not None
+                    else None
+                ),
             })
     temporary = path.with_name(path.name + ".tmp")
     with open(temporary, "w", newline="", encoding="utf-8") as f:

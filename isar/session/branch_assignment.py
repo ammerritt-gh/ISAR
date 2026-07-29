@@ -61,6 +61,32 @@ EXTRAP_MARGIN = 0.25       # rlu — how far past the highest ACOUSTIC anchor an
 #                            Generous enough to bootstrap outward (each delivery extends the range).
 ACOUSTIC = "acoustic"
 NEW = "new"
+BRANCH_ASSIGNMENT_SCORER_REVISION = "isar.branch_assignment/1"
+
+
+def probability_semantics(probabilities: dict | None) -> dict:
+    """Producer-owned declarations for local branch-assignment outputs."""
+    from isar.schema.statistics import authority_scopes
+
+    labels = sorted(str(label) for label in (probabilities or {}))
+    state_space = {"kind": "branch_assignment", "labels": labels}
+    common = {
+        "source_measure_semantics": "normalized_assignment_weight",
+        "scorer_revision": BRANCH_ASSIGNMENT_SCORER_REVISION,
+        "calibration_reference": None,
+        "conditioning": "observed_features_and_branch_beliefs",
+        "state_space": state_space,
+        "inference_paradigm": "normalized_score_distribution",
+        "authority_scopes": authority_scopes(
+            single_fit_delivery="active",
+            user_diagnostic="active",
+        ),
+    }
+    return {
+        "branch_posterior": {**common, "quantity_kind": "distribution"},
+        "branch_weight": {**common, "quantity_kind": "marginal_weight"},
+        "assignment_entropy": {**common, "quantity_kind": "entropy"},
+    }
 
 
 def reduced_q(q, period: float) -> float:

@@ -716,12 +716,21 @@ def test_a_real_master_publishes_the_v2_contract(published_artifact):
     assert payload["uncertainty_provenance"]["deterministic"] is True
     assert payload["predictive_basis_fingerprint"]
     assert payload["completeness"]["predictive_complete_for_eig"] in (True, False)
+    assert payload["construction_complete"] == \
+        payload["completeness"]["predictive_complete_for_eig"]
+    assert payload["homogeneous_design_eligible"] is False
+    assert payload["statistical_semantics"]["formal_bayesian_model"] is False
+    assert payload["statistical_semantics_fingerprint"]
+    assert payload["predictive_retained_set_fingerprint"]
+    assert payload["statistical_semantics"]["authority_scopes"]["eig_shadow"] == "ineligible"
     for model in payload["models"]:
         assert model["identity_label"] == model["label"]
         assert model["draw_weighting"] == "equal_weight_resampled"
         assert len(model["parameter_draws"]) == len(model["expected_counts"])
         assert len(model["draw_ids"]) == len(model["parameter_draws"])
         assert len(model["mode_energies"]) == len(model["parameter_draws"])
+        assert model["statistical_semantics"]["selection_eligibility"]
+        assert model["statistical_semantics"]["particle_measure_kind"]
     assert math.isclose(sum(model["weight"] for model in payload["models"]), 1.0)
 
 

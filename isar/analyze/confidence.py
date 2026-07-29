@@ -20,6 +20,7 @@ from __future__ import annotations
 import numpy as np
 
 SIGMA_REF = 0.1  # meV — interval-tightness reference (a typical target ω₀ σ)
+CONFIDENCE_SCORER_REVISION = "isar.confidence/1"
 _REGIME_S = {"asymptotic": 1.0, "unknown": 0.6, "sparse": 0.3}
 _PROVENANCE_S = {"absolute": 1.0, "needs_zero": 0.85, "needs_conversion_and_zero": 0.5}
 
@@ -78,3 +79,18 @@ def compute_confidence(result, ctx, selection, *, prior=None) -> tuple[float, di
     vals = np.clip(np.array(list(comp.values()), dtype=float), 1e-6, 1.0)
     score = float(np.exp(np.mean(np.log(vals))))         # geometric mean
     return score, comp
+
+
+def probability_semantics() -> dict:
+    """Producer-owned declaration for the persisted ``confidence`` score."""
+    from isar.schema.statistics import authority_scopes
+
+    return {
+        "quantity_kind": "heuristic_score",
+        "source_measure_semantics": "heuristic_triage_score",
+        "scorer_revision": CONFIDENCE_SCORER_REVISION,
+        "calibration_reference": None,
+        "conditioning": "fitted_candidate_and_available_error_diagnostics",
+        "inference_paradigm": "normalized_heuristic",
+        "authority_scopes": authority_scopes(user_diagnostic="active"),
+    }

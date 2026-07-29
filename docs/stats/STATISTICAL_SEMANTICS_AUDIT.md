@@ -423,7 +423,8 @@ Before a scientific behavior change, run and freeze these campaigns:
 
 ## 8. Documentation inconsistencies discovered
 
-These are audit findings, not STAT-0 edits to the canonical documents:
+These were STAT-0 audit findings. STAT-1 made the minimum canonical wording repairs needed to keep
+the active contracts honest; STAT-6 still owns final consolidation and audit retirement:
 
 - `STATS_PRIMER.md:47-53,326-334` and `GLOSSARY.md:55-58` say Bayesian credible intervals are
   diagnostics-only and every certifying interval is frequentist. The physical-row lane satisfies
@@ -441,27 +442,49 @@ These are audit findings, not STAT-0 edits to the canonical documents:
 - `EIG_STEERING_DESIGN.md:13-15` correctly says alternative-window EIG scoring/selection is not
   implemented. No status correction is needed in STAT-0.
 
-STAT-6 owns the canonical-doc repair after the semantics are decided. Editing those documents in
-STAT-0 would prematurely turn audit proposals into contract.
+The repairs now distinguish single-fit Bayesian intervals from the mixed master interval, ordinary
+Akaike support from Bayesian evidence, normalized branch-assignment scores from calibrated
+posteriors, and the intended fit-vs-decide contract from current behavior. Broader explanatory and
+figure-language consolidation remains deferred to STAT-6.
 
 ## 9. Exact PR sequence after STAT-0
 
-### STAT-1 — Additive semantics metadata
+### STAT-1 — Additive semantics metadata — Implemented 2026-07-29
 
-Add v2-compatible metadata without removing or renaming existing fields:
+STAT-1 landed as four metadata-only slices from clean base `da760f2`:
 
-`estimator_kind`, `fit_kind`, `constraint_origin`, `selection_eligibility`,
-`conditioning_fingerprint`, `candidate_generation_route`, `model_set_fingerprint`,
-`model_weight_kind`, `particle_measure_kind`, `draw_measure_kind`, `bootstrap_measure_kind`,
-`interval_kind`, `nominal_level`, `probability_semantics`, `formal_bayesian`,
-`calibration_target`, `authority_kind`, `prior_fingerprint`, and
-`model_selection_fingerprint`.
+1. `isar/schema/statistics.py` defines the pure vocabularies, frozen effective-constraint record,
+   strict writer/tolerant reader validation, finite canonical JSON SHA-256 fingerprints, scoped
+   authority, and compact CSV projection.
+2. Effective per-parameter constraint origin, candidate-generation route, estimator/fit
+   classification, selection eligibility, and separate offered/scored/weight-denominator/error/
+   legacy-pool fingerprints are now producer-owned and propagated without changing AIC or ranking.
+3. Producer-owned HESSE, profile, bootstrap, pooled, and optimizer-bound nested interval semantics
+   persist fully in `session.json` and compactly at the end of `results.csv`. Legacy rows return
+   `None`; metadata is excluded from scientific, tracking, action, and cache identities.
+4. `isar.master_predictive/2` and `isar.target_projection/2` now carry full predictive semantics,
+   exact retained/projection set fingerprints, actual per-model particle provenance, Bayesian
+   dimensions, construction-versus-design completeness, and scoped authority. Confidence,
+   branch/tracker weights, and entropy fields carry producer-owned probability-like semantics.
 
-Acceptance:
+The four schemas are `isar.fit_selection_semantics/1`, `isar.interval_semantics/1`,
+`isar.probability_semantics/1`, and `isar.predictive_semantics/1`. Writers never emit
+`unknown_legacy`. A construction failure emits `semantics_construction_failed` and publishes the
+scientific result with semantics `None`; it cannot create a `non_result`, alter a verdict, or
+suppress a predictive/projection artifact.
 
-- every decision-bearing interval/weight/score can state what statistical object it is;
-- legacy v2 fields remain readable and byte-position-sensitive CSV additions remain append-only;
-- missing metadata makes a new authority consumer abstain, never guess.
+Current nested output is explicitly a Bayesian posterior under an
+`optimizer_bound_data_dependent` prior kernel; `evidence_comparable=false` and
+`bayesian_model_average=false`. The current mixed predictive ensemble has
+`formal_bayesian_model=false`. Its model interval remains active for
+`legacy_master_certification`, `stopping`, and diagnostic display, while all EIG and acquisition
+scopes are ineligible. This is descriptive metadata, not a scientific promotion.
+
+STAT-1 intentionally did not change `PREDICTIVE_CONTRACT`, the numerical
+`predictive_basis_fingerprint`, master cache identity, or the unchanged-master carry gate, and it
+did not backfill legacy cached masters. STAT-2 must introduce or bump the selection contract used
+by both cache gates. STAT-3 must refuse pre-STAT-2 or semantics-incomplete inputs. A workspace
+cannot enter EIG-3 merely by carrying a pre-STAT-1 cached artifact.
 
 ### STAT-2 — Selection and constraint consistency
 
@@ -568,7 +591,7 @@ particle semantics =
 future-update approximation =
     likelihood-reweighted future outcomes
 
-formal_bayesian =
+formal_bayesian_model =
     false
 
 authority =

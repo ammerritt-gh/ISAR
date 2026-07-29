@@ -27,6 +27,40 @@ ORDERING_LOG_FLOOR = math.log(0.05)
 # favouring one branch over another.
 DEFAULT_ENERGY_DOMAIN_MEV = (-2.0, 18.0)
 BRANCH_TRACKING_SCORER_REVISION = 2
+BRANCH_TRACKING_SEMANTICS_REVISION = "isar.branch_tracking/2"
+
+
+def probability_semantics(probabilities: dict | None, *, target_branch: str) -> dict:
+    """Producer-owned declarations for connected-tracker probability-like outputs."""
+    from isar.schema.statistics import authority_scopes
+
+    labels = sorted(str(label) for label in (probabilities or {}))
+    state_space = {"kind": "tracked_branch_identity", "labels": labels}
+    common = {
+        "source_measure_semantics": "normalized_factor_graph_score",
+        "scorer_revision": BRANCH_TRACKING_SEMANTICS_REVISION,
+        "calibration_reference": None,
+        "state_space": state_space,
+        "inference_paradigm": "normalized_factor_graph_distribution",
+        "authority_scopes": authority_scopes(
+            single_fit_delivery="active",
+            stopping="active",
+            acquisition_selection="active",
+            user_diagnostic="active",
+        ),
+    }
+    return {
+        "target_probability": {
+            **common,
+            "quantity_kind": "marginal_weight",
+            "conditioning": f"tracked_target_branch={target_branch}",
+        },
+        "identity_entropy": {
+            **common,
+            "quantity_kind": "entropy",
+            "conditioning": "known_branch",
+        },
+    }
 
 # Character is a trajectory-level latent variable.  A finite floor keeps all hypotheses represented
 # numerically while making a local acoustic<->optic hand-off negligible relative to reconnecting the

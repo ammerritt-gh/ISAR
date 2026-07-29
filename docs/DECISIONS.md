@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the append-only ruling ledger; IDs are stable citation anchors (D2, D4)
 > **Provenance:** hand-written
-> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Verified against code revision:** `da760f2` plus the STAT-1 working tree (2026-07-29)
 
 Append-only ledger of design rulings. IDs are stable citation anchors (D2). Started at the
 2026-07-09 design review; each ruling is final unless explicitly reopened; "future" means
@@ -927,6 +927,58 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   stamping is transport and choosing a background would be a scientific decision the loop has no
   business making. References: T2 (same-interface backend rule), T3, P4,
   `docs/BACKGROUND_DESIGN.md` "TAVI prerequisite (landed)".
+
+- **S6.** (2026-07-29, Implemented; amends S1 and S5 without changing their legacy authority)
+  **Every decision-bearing statistical object now has an optional, producer-owned semantics record;
+  authority is named by use, never asserted once for the object.** STAT-1 is metadata-only. It changes
+  no fit, constraint value, likelihood, AIC/AICc/BIC value, Akaike weight, survivor, interval,
+  calibration, verdict, certification result, stop, action, acquisition, or EIG calculation.
+
+  The pure `isar/schema/statistics.py` seam defines four v1 records:
+  `isar.fit_selection_semantics/1`, `isar.interval_semantics/1`,
+  `isar.probability_semantics/1`, and `isar.predictive_semantics/1`. It owns controlled vocabulary,
+  strict writer and tolerant legacy-reader validation, finite canonical-JSON SHA-256 fingerprints,
+  compact CSV projections, and scoped authority. Full fit records persist in `session.json`; compact
+  projections are appended to the frozen `results.csv` columns; predictive and projection sidecars
+  keep full records. `unknown_legacy` is reader-only. Missing or invalid producer provenance emits
+  `semantics_construction_failed` and leaves semantics unavailable without suppressing or changing
+  the scientific result. New authority consumers must abstain on absent or unsupported semantics.
+
+  Effective constraints now carry per-parameter origin. Candidate semantics distinguish
+  data-likelihood, soft-penalized, and hard-conditioned estimates; record the candidate-generation
+  route; and fingerprint the offered, scored, Akaike-denominator, error-attachment, and legacy-pool
+  model sets separately. Effective soft constraints, data-dependent/post-selection hard constraints,
+  and prespecified/prior-predictive hard constraints are labeled selection-ineligible under their
+  respective reasons. Ordinary AIC nevertheless continues to score them until STAT-2 separates
+  comparable selection fits from constrained delivery fits and resolves AIC versus AICc.
+
+  Interval metadata is producer-owned: HESSE, unconstrained/penalized/conditional profile,
+  unconstrained/penalized/conditional parametric bootstrap, legacy Akaike-weighted bootstrap pool,
+  and optimizer-bound nested intervals are distinct measures. `confidence` is a heuristic triage
+  score; branch assignment is a normalized assignment-score distribution; tracker weights are
+  normalized factor-graph scores; every entropy names its state space and source measure. Existing
+  field names and thresholds remain unchanged.
+
+  Current nested output is classified as a Bayesian posterior under an
+  `optimizer_bound_data_dependent` prior kernel, with
+  `posterior_measure_kind=posterior_resample`, `evidence_comparable=false`, and
+  `bayesian_model_average=false`. A current `isar.master_predictive/2` artifact records its actual
+  per-model nested/bootstrap/Laplace particle basis, has `formal_bayesian_model=false`, and is always
+  design-ineligible because `/2` permits heterogeneous fallback. `predictive_complete_for_eig` and
+  `construction_complete` mean construction completeness only. The mixed `model_interval` remains
+  active for `legacy_master_certification`, `stopping`, and diagnostic display, but is explicitly
+  ineligible for EIG and acquisition. It remains conditional on target-present retained models;
+  target-presence aggregation is deferred to STAT-4a.
+
+  STAT-1 does not bump `PREDICTIVE_CONTRACT`, alter numerical `predictive_basis_fingerprint`, backfill
+  cached masters, or join semantics-bearing references into scientific/cache/tracking/action
+  identities. STAT-2 must introduce or bump the selection contract used by both the master-fit cache
+  fingerprint and the unchanged-master carry gate. STAT-3 refuses pre-STAT-2 or semantics-incomplete
+  inputs when constructing the homogeneous
+  `akaike_weighted_parametric_bootstrap_predictive` shadow artifact. A workspace cannot enter EIG-3
+  by carrying a pre-STAT-1 cached artifact. EIG-3 remains blocked on STAT-2, STAT-3, and STAT-4a and is
+  shadow-only after those gates; certification repair, target-presence support, scan-window scoring,
+  and acquisition authority are outside this ruling.
 
 ## Session status update
 
