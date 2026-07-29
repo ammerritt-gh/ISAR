@@ -62,6 +62,10 @@ from isar.drive.acquisition.scan_grid import (
     resolve_uniform_grid,
 )
 from isar.drive.supervisor.stopping import PRODUCTION_NCOUNT, QUICKLOOK_NCOUNT
+from isar.predictive import (
+    PREDICTIVE_ARTIFACT_SCHEMA,
+    TARGET_PROJECTION_SCHEMA,
+)
 from isar.schema.hypotheses import (
     MAX_NCOUNT_PER_SCAN,
     SCAN_WINDOW_EIG_AUTHORITATIVE_UNAVAILABLE,
@@ -77,9 +81,14 @@ SCAN_DESIGN_CANDIDATE_SCHEMA = "isar.scan_design_candidate/2"
 # Provider identity for the generic audit envelope.  Only the *physical* predictive provider and the
 # physical target-window generator exist in this release; a future discovery provider slots in beside
 # them by declaring different identities, without changing this envelope.
+#
+# Both schema strings are BOUND to their single definitions in :mod:`isar.predictive` rather than
+# re-declared here.  The audit envelope names the artifacts a candidate was scored against, so a
+# literal copy that drifts from the producer would make the envelope claim a basis that no longer
+# exists -- which is exactly what happened when the projection moved to /2 (ADR-019).
 PREDICTIVE_PROVIDER_ID = "physical_master"
-PREDICTIVE_PROVIDER_SCHEMA = "isar.master_predictive/2"
-OBJECTIVE_PROJECTION_SCHEMA = "isar.target_projection/1"
+PREDICTIVE_PROVIDER_SCHEMA = PREDICTIVE_ARTIFACT_SCHEMA
+OBJECTIVE_PROJECTION_SCHEMA = TARGET_PROJECTION_SCHEMA
 STEERING_REGIME = "physical_inference"
 
 SELECTION_BASIS_LEGACY_CONTROL_OFF = "legacy_control_off"
