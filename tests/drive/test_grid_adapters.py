@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 import os
+import random
 
 import pytest
 
@@ -258,3 +259,26 @@ def test_live_adapter_prediction_equals_the_executed_scan_values():
     executed = (client.get_scan_data(submit["job_id"])["result"] or {}).get("scan_values_1")
     assert executed is not None, "TAVI returned no scan_values_1"
     assert [float(value) for value in executed] == list(predicted)
+
+
+@pytest.mark.parametrize("point_cap", [2, 3, 5, 100, 200, 500, 5_000, 100_000])
+def test_coarsening_to_the_point_cap_never_exceeds_it(point_cap):
+    """The cap must hold for the cap it is handed, not the cap it usually gets.
+
+    The coarsened step has to be derived from the span the adapter counts over -- the wire span,
+    after the ``%g`` round trip -- not the raw designed span. Dividing the raw span yielded a step
+    fractionally too small whenever the rendering moved a bound, and the adapter then answered
+    ``point_cap + 1``: an over-limit scan request that every fingerprint downstream would have
+    recorded as legal.
+    """
+    rng = random.Random(4242)
+    for _ in range(4000):
+        e_lo = rng.uniform(-200.0, 200.0)
+        e_hi = e_lo + rng.uniform(1e-4, 400.0)
+        # A step far below the cap's implied resolution, so coarsening always engages.
+        e_step = rng.uniform(1e-9, 1e-4)
+        grid = resolve_uniform_grid(e_lo, e_hi, e_step, max_points=point_cap)
+        assert grid.n_points <= point_cap, (e_lo, e_hi, e_step, point_cap, grid.n_points)
+        # The count stays the instrument's answer rather than a clamp (ADR-018).
+        assert grid.n_points == DEFAULT_GRID_ADAPTER.point_count(
+            grid.e_lo, max(grid.e_hi, grid.e_lo), grid.e_step)

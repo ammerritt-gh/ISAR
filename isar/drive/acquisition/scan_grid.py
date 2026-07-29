@@ -124,13 +124,25 @@ def resolve_uniform_grid(e_lo: float, e_hi: float, e_step: float, *,
     widened to land exactly ``max_points`` points across the same span, and the count is re-asked of
     the adapter so the wire rendering of the coarsened step cannot smuggle an extra point past the
     cap.
+
+    Re-asking makes the count *honest*, which is not the same as making it fit: the coarsened step
+    must be derived from the span the adapter will actually count over — the **wire** span, after the
+    ``%g`` round trip — not the raw designed span.  Dividing the raw span by ``point_cap - 1`` yields
+    a step fractionally too small whenever the rendering moves a bound, and the adapter then answers
+    ``point_cap + 1``.  Clamping ``n_points`` instead would be exactly the bug ADR-018 exists to
+    remove: the count must stay the instrument's answer, never ISAR's preferred one.
+
+    The residual error is then only ``%g``'s own rendering of the step, which cannot cross the
+    adapter's ``0.5``-point rounding margin below a cap around ``10**6`` — six orders above TAVI's
+    200-point ceiling.  Past that the wire protocol has too few significant digits to express a
+    conforming step at all, and no arithmetic here can recover it.
     """
     e_lo, e_hi = float(e_lo), float(e_hi)
-    span = e_hi - e_lo
     point_cap = max(int(max_points), 2)
     n_points, step = resolve_point_count(e_lo, e_hi, e_step, adapter=adapter)
     if n_points > point_cap:
-        step = span / (point_cap - 1)
+        wire_lo, wire_hi, _ = adapter.wire_window(e_lo, max(e_hi, e_lo), step)
+        step = (wire_hi - wire_lo) / (point_cap - 1)
         n_points, step = resolve_point_count(e_lo, e_hi, step, adapter=adapter)
     return UniformGrid(e_lo=e_lo, e_hi=e_hi, e_step=step, n_points=n_points, adapter=adapter)
 
