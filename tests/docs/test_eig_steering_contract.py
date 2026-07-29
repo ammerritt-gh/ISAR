@@ -1,4 +1,9 @@
-"""Integrity checks for the planned arbitrary-grid predictive contract fixture."""
+"""Integrity checks for the normative arbitrary-grid predictive contract fixture.
+
+Structure only: that the fixture states the EIG-0-amended ``isar.master_predictive/2`` contract and
+carries matrices an evaluator can be held to. The evaluator is held to them in
+``tests/session/test_master_predictive.py``.
+"""
 from __future__ import annotations
 
 import json
@@ -7,6 +12,37 @@ from pathlib import Path
 
 
 _FIXTURE = Path(__file__).parents[1] / "fixtures" / "eig_predictive_v2.json"
+
+_EXPOSURE_BASIS_FIELDS = {
+    "unit",
+    "request_unit",
+    "request_to_exposure_factor",
+    "fit_reference_exposure",
+    "n_members",
+    "reference_incremental_exposure",
+    "per_energy_monitor",
+    "stored_exposure_ratio",
+    "scalar_exposure_eligible",
+    "exposure_homogeneous",
+    "full_member_support",
+    "exposure_ratio_span",
+    "kept_point_count",
+}
+
+_COMPLETENESS_FIELDS = {
+    "source_model_weight_total",
+    "retained_model_weight_total",
+    "pruned_model_weight",
+    "dropped_models",
+    "model_weight_floor",
+    "max_pruned_mass",
+    "max_dropped_draw_mass",
+    "predictive_complete_for_eig",
+}
+
+
+def _load():
+    return json.loads(_FIXTURE.read_text(encoding="utf-8"))
 
 
 def _walk_keys(value):
@@ -20,7 +56,7 @@ def _walk_keys(value):
 
 
 def test_predictive_v2_fixture_has_the_locked_contract_shape():
-    fixture = json.loads(_FIXTURE.read_text(encoding="utf-8"))
+    fixture = _load()
     assert fixture["fixture_schema"] == "isar.eig_predictive_fixture/1"
     contract = fixture["artifact_contract"]
     assert contract["schema"] == "isar.master_predictive/2"
@@ -32,18 +68,34 @@ def test_predictive_v2_fixture_has_the_locked_contract_shape():
         "temperature_K",
         "quasielastic_fwhm_meV",
     }
-    assert set(contract["exposure_basis"]) == {
-        "unit",
-        "fit_reference_exposure",
-        "reference_incremental_exposure",
-        "n_members",
-    }
+    assert set(contract["exposure_basis"]) == _EXPOSURE_BASIS_FIELDS
     exposure = contract["exposure_basis"]
+    # ADR-017: the exposure unit and the request unit are declared separately even where the map is
+    # the identity, so an instrument whose monitor is not its request needs no schema change.
+    assert exposure["unit"] == "monitor_counts"
+    assert exposure["request_unit"] == "number_neutrons"
+    assert exposure["request_to_exposure_factor"] == 1.0
     assert math.isfinite(float(exposure["fit_reference_exposure"]))
     assert float(exposure["fit_reference_exposure"]) > 0.0
     assert isinstance(exposure["n_members"], int) and exposure["n_members"] > 0
+    # A MEAN over members, never a per-scan exposure (EIG-0 §5).
     assert exposure["reference_incremental_exposure"] == (
         exposure["fit_reference_exposure"] / exposure["n_members"])
+    assert len(exposure["per_energy_monitor"]) == len(contract["energy_meV"])
+    assert len(exposure["stored_exposure_ratio"]) == len(contract["energy_meV"])
+    assert exposure["kept_point_count"] == len(contract["energy_meV"])
+    assert exposure["exposure_homogeneous"] is True
+    assert exposure["scalar_exposure_eligible"] is True
+    assert exposure["exposure_ratio_span"] == 1.0
+    assert set(contract["completeness"]) == _COMPLETENESS_FIELDS
+    assert contract["completeness"]["predictive_complete_for_eig"] is True
+    assert contract["completeness"]["model_weight_floor"] == 0.005
+    assert contract["completeness"]["max_pruned_mass"] == 0.01
+    assert contract["completeness"]["max_dropped_draw_mass"] == 0.01
+    projection = contract["target_projection"]
+    assert projection["schema"] == "isar.target_projection/1"
+    assert projection["qoi"] == "omega0"
+    assert projection["projection_version"] and projection["complete"] is True
     assert contract["seed"] == 940301
     assert contract["uncertainty_provenance"]["deterministic"] is True
 
@@ -59,13 +111,18 @@ def test_predictive_v2_fixture_has_the_locked_contract_shape():
         float(request["exposure_per_point"]) for request in requests.values()}
     assert len(requested_exposures) == len(requests)
     assert all(math.isfinite(value) and value > 0.0 for value in requested_exposures)
-    unavailable = fixture["unavailable_contract"]["missing_scalar_exposure_basis"]
-    assert unavailable["available"] is False
-    assert unavailable["reason_code"] == "missing_exposure_basis"
+
+
+def test_predictive_v2_fixture_states_every_refusal_it_covers():
+    unavailable = _load()["unavailable_contract"]
+    assert {entry["reason_code"] for entry in unavailable.values()} == {
+        "missing_exposure_basis", "artifact_schema_unsupported", "predictive_basis_incomplete"}
+    assert all(entry["available"] is False and entry["message"]
+               for entry in unavailable.values())
 
 
 def test_predictive_v2_fixture_matrices_are_complete_finite_and_nonnegative():
-    fixture = json.loads(_FIXTURE.read_text(encoding="utf-8"))
+    fixture = _load()
     requests = {request["name"]: request for request in fixture["evaluation_requests"]}
     cases = {case["name"]: case for case in fixture["cases"]}
     assert set(cases) == {
@@ -86,6 +143,13 @@ def test_predictive_v2_fixture_matrices_are_complete_finite_and_nonnegative():
             assert draws and all(len(draw) == len(names) for draw in draws)
             assert model["draw_ids"] == [
                 f"draw-{index}" for index in range(len(draws))]
+            # ADR-014: the draw measure is declared, never inferred.
+            assert model["draw_weighting"] == "equal_weight_resampled"
+            assert model["draw_weights"] is None
+            # ADR-009: the identity seam defaults to the label and earns no reward.
+            assert model["identity_label"] == model["label"]
+            assert len(model["target_present_by_draw"]) == len(draws)
+            assert len(model["target_qoi_draws"]) == len(draws)
             manifest = model["model_manifest"]
             assert manifest["schema"] == "isar.model_manifest/1"
             assert manifest["components"]
@@ -109,6 +173,7 @@ def test_predictive_v2_fixture_matrices_are_complete_finite_and_nonnegative():
 
     null_model = cases["null_vs_one_phonon"]["models"][0]
     assert null_model["omega0_draws"] == []
+    assert not any(null_model["target_present_by_draw"])
     fit_reference = fixture["artifact_contract"]["exposure_basis"][
         "fit_reference_exposure"]
     for request_name, request in requests.items():
@@ -121,7 +186,7 @@ def test_predictive_v2_fixture_matrices_are_complete_finite_and_nonnegative():
 
 
 def test_predictive_v2_fixture_pins_model_draw_and_parameter_order():
-    fixture = json.loads(_FIXTURE.read_text(encoding="utf-8"))
+    fixture = _load()
     cases = {case["name"]: case for case in fixture["cases"]}
     assert cases["null_vs_one_phonon"]["model_order"] == [
         "null+background", "one-phonon+background"]
@@ -140,8 +205,43 @@ def test_predictive_v2_fixture_pins_model_draw_and_parameter_order():
     ]
 
 
+def test_heterogeneous_support_pool_would_expose_a_scalar_vector_confusion():
+    # EIG-0 c5: the per-bin summed monitor alternates, so the stored fitted-grid matrices are
+    # reproduced only by the per-energy exposure vector. Without this pool the fixture set cannot
+    # detect a scalar/vector confusion at all (EIG-0 §8.7).
+    pool = _load()["heterogeneous_pool"]
+    contract = pool["artifact_contract"]
+    exposure = contract["exposure_basis"]
+    assert set(exposure) == _EXPOSURE_BASIS_FIELDS
+    assert exposure["exposure_homogeneous"] is False
+    assert exposure["scalar_exposure_eligible"] is False
+    assert exposure["exposure_ratio_span"] == 2.0
+    assert len(set(exposure["per_energy_monitor"])) == 2
+    reference = float(exposure["fit_reference_exposure"])
+    members = int(exposure["n_members"])
+    assert exposure["stored_exposure_ratio"] == [
+        value / reference / members for value in exposure["per_energy_monitor"]]
+
+    requests = {request["name"]: request for request in pool["evaluation_requests"]}
+    assert requests["original"]["energy_meV"] == contract["energy_meV"]
+    assert float(requests["original"]["exposure_per_point"]) == (
+        exposure["reference_incremental_exposure"])
+    assert pool["model_order"] == [model["label"] for model in pool["models"]]
+    for model in pool["models"]:
+        stored = model["stored_expected_counts"]
+        scalar = model["expected_counts_by_request"]["original"]
+        assert len(stored) == len(model["parameter_draws"])
+        assert all(len(row) == len(contract["energy_meV"]) for row in stored)
+        # Same grid, same draws, exposure requested at exactly the scalar reference: the two
+        # matrices must still differ, which is the whole point of this pool.
+        assert stored != scalar
+        for stored_row, scalar_row in zip(stored, scalar):
+            assert any(not math.isclose(left, right)
+                       for left, right in zip(stored_row, scalar_row))
+
+
 def test_predictive_v2_contract_contains_no_instrument_truth_or_selection_fields():
-    fixture = json.loads(_FIXTURE.read_text(encoding="utf-8"))
+    fixture = _load()
     keys = {key.lower() for key in _walk_keys(fixture)}
     assert keys.isdisjoint({
         "tavi_preset",

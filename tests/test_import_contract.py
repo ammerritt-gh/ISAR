@@ -44,6 +44,10 @@ WORKSPACE_API_ALLOWED = {
     "isar.drive.isar_io.readers",
     "isar.report.audit",
     "isar.analyze.components",
+    # The shared Qt-free manifest→curve reconstruction the facade evaluates through; the same path
+    # the predictive producer and evaluator use, so a workspace curve cannot disagree with a stored
+    # prediction.
+    "isar.analyze.model_manifest",
     "isar.geometry",
     "isar.reduce.collate",
     # config/consent validators the GUI reaches through the facade (config_gates.py): the LLM

@@ -48,6 +48,9 @@ def _stub(monkeypatch):
                       content_hash=chash, status="fitted")
         e.detectors["det"] = {"pooled": True, "n_members": ms.n_members, "omega0": 0.95,
                               "members": driver._member_labels(ms.members)}
+        # Stamped by _stamp_master_analysis on every real path; the carry gate requires it, so a
+        # predictive-contract bump regenerates the artifact instead of carrying a stale one.
+        e.provenance = {"predictive_contract": driver.PREDICTIVE_CONTRACT}
         return e
 
     monkeypatch.setattr(driver, "_fit_master_group", fake)
@@ -75,6 +78,13 @@ def test_master_fit_and_member_set_idempotency(monkeypatch):
     assert s.scans[mid].scan_number >= driver._MASTER_SCAN_BASE   # sorts after real scans
 
     # Same member set → carried, no refit.
+    assert driver._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000) == 0
+
+    # A predictive-contract bump refits the same member set exactly once, so an unchanged pool
+    # regenerates its predictive artifact under the new contract (ADR-006) instead of carrying a
+    # stale one forever.
+    s.scans[mid].provenance["predictive_contract"] = "isar.master_predictive/1"
+    assert driver._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000) == 1
     assert driver._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000) == 0
 
     # A new member arrives → the master refits and reflects the larger pool.
@@ -565,7 +575,8 @@ def test_carry_backfills_members_without_refit(monkeypatch):
 
     # Simulate an old ledger: strip members from the detector dict + a provenance lacking it.
     del s.scans[mid].detectors["det"]["members"]
-    s.scans[mid].provenance = {"pooled": True, "n_members": 3}
+    s.scans[mid].provenance = {"pooled": True, "n_members": 3,
+                               "predictive_contract": driver.PREDICTIVE_CONTRACT}
 
     # Same member set → carry path; the stub is not called again but members are restored.
     assert driver._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000) == 0

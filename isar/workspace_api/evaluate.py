@@ -153,54 +153,18 @@ def _component_manifest(fit, quasielastic_fwhm):
 
 
 def _compose_manifest(manifest: dict, quasielastic_fwhm):
-    """Build a registered composite and parameter vector from declarative persisted data."""
-    from isar.analyze.components import (CompositeModel, ConstantBackground, Elastic,
-                                         PhononDHO, QuasiElastic)
-    if not isinstance(manifest, Mapping):
-        raise UnsupportedFitView("model manifest must be an object")
-    if manifest.get("schema") != "isar.model_manifest/1":
-        raise UnsupportedFitView(f"unsupported model manifest schema {manifest.get('schema')!r}")
-    factories = {
-        "phonon_dho": lambda item: PhononDHO(prefix=str(item["prefix"]),
-                                               peak=str(item.get("peak", "stokes+astokes"))),
-        "elastic": lambda item: Elastic(),
-        "quasielastic": lambda item: QuasiElastic(),
-        "constant_background": lambda item: ConstantBackground(),
-    }
-    components = []
-    seen_prefixes = set()
-    for index, item in enumerate(manifest.get("components") or []):
-        if not isinstance(item, Mapping):
-            raise UnsupportedFitView(f"model component {index} must be an object")
-        kind = str(item.get("type"))
-        if kind not in factories:
-            raise UnsupportedFitView(f"unsupported model component type {kind!r}")
-        prefix = item.get("prefix")
-        if not isinstance(prefix, str) or not prefix:
-            raise UnsupportedFitView(f"model component {index} has no valid prefix")
-        if prefix in seen_prefixes:
-            raise UnsupportedFitView(f"duplicate model component prefix {prefix!r}")
-        seen_prefixes.add(prefix)
-        component = factories[kind](item)
-        if str(component.prefix) != str(item.get("prefix")):
-            raise UnsupportedFitView(
-                f"component {kind!r} cannot use prefix {item.get('prefix')!r}")
-        components.append(component)
-    if not components:
-        raise UnsupportedFitView("model manifest contains no components")
-    composite = CompositeModel(components)
-    if any(isinstance(component, QuasiElastic) for component in components) \
-            and quasielastic_fwhm is None:
-        raise UnsupportedFitView("quasielastic component has no persisted width")
-    values = manifest.get("parameters") or {}
-    if not isinstance(values, Mapping):
-        raise UnsupportedFitView("model manifest parameters must be an object")
-    missing = [name for name in composite.param_names() if name not in values]
-    if missing:
-        raise UnsupportedFitView(f"model manifest is missing parameters {missing}")
-    theta = [_finite_float(values[name], f"model parameter {name}")
-             for name in composite.param_names()]
-    return composite, theta
+    """Build a registered composite and parameter vector from declarative persisted data.
+
+    Thin caller of the shared analysis-owned reconstruction
+    (:mod:`isar.analyze.model_manifest`) so a workspace curve and a stored predictive matrix can
+    never be built by two different implementations; its structured refusals are re-raised as the
+    reader's own ``UnsupportedFitView``.
+    """
+    from isar.analyze.model_manifest import ModelManifestError, compose_manifest
+    try:
+        return compose_manifest(manifest, quasielastic_fwhm)
+    except ModelManifestError as exc:
+        raise UnsupportedFitView(str(exc)) from exc
 
 
 def evaluate_model(fit, data_dir, *, quasielastic_fwhm=None, x_eval=None):

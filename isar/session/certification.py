@@ -26,6 +26,11 @@ UNIT_SCHEMA = "isar.certification.unit/2"
 LEGACY_UNIT_SCHEMA = "isar.certification.unit/1"
 PROGRESS_SCHEMA = "isar.certification.progress/1"
 MASTER_FIT_CONTRACT = "isar.master_fit/2"
+# The predictive artifact a master fit publishes is part of that fit's output contract, so its
+# version participates in the fit's cache fingerprint: bumping it invalidates every cached master
+# fit, which is what makes an unchanged fit regenerate its predictive artifact under the new
+# contract on the next run instead of carrying a stale one forever (ADR-006).
+PREDICTIVE_CONTRACT = "isar.master_predictive/2"
 
 
 def _atomic_json(path: Path, value: dict) -> None:
@@ -46,6 +51,7 @@ def master_fit_fingerprint(*, spectrum_digest: str, policy, resolved_guidelines:
     """Hash the complete, worker-count-independent numerical contract for one master fit."""
     payload = {
         "schema": MASTER_FIT_CONTRACT,
+        "predictive_contract": PREDICTIVE_CONTRACT,
         "spectrum_digest": spectrum_digest,
         "policy": policy,
         "resolved_guidelines": resolved_guidelines,

@@ -133,6 +133,12 @@ class ScanContext:
     exposure_scale: np.ndarray | None = None  # relative per-point exposure.  It multiplies only the
     # model mean; observed counts and their Poisson variance are never rescaled.  None is the legacy
     # uniform-exposure path and deliberately avoids an extra multiply in model evaluation.
+    exposure_reference: float | None = None  # the ABSOLUTE exposure ``exposure_scale`` is relative
+    # to -- exactly the reference :func:`normalized_exposure` returned for this fit (median kept
+    # monitor).  A fitted amplitude therefore means "counts per ``exposure_reference``", which is
+    # the amplitude basis a predictive artifact must publish.  It is carried, never recomputed: the
+    # median is a rank statistic, so recomputing it on a different kept set can shift the declared
+    # basis (EIG-0 §4.5).  None wherever ``exposure_scale`` is None.
 
     @property
     def x_used(self) -> np.ndarray:
@@ -208,4 +214,5 @@ class ScanContext:
             prior_omega=prior_omega,
             quasielastic_fwhm=card.policy.quasielastic_fwhm,
             exposure_scale=exposure_scale,
+            exposure_reference=selected.reference,
         )

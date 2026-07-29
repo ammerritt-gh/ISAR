@@ -1182,9 +1182,17 @@ def _read_master_rows(workspace, calibration: Calibration) -> list[dict]:
                 try:
                     candidate.relative_to(root)
                     predictive = json.loads(candidate.read_text(encoding="utf-8"))
-                    if predictive.get("schema") == "isar.master_predictive/1":
+                    if predictive.get("schema") == "isar.master_predictive/2":
                         master["predictive"] = predictive
                         master["expected_next_information"] = predictive.get("diagnostics")
+                    else:
+                        # A leftover pre-/2 artifact is no predictive basis at all (ADR-006): the
+                        # master keeps every other property and the loop takes its ordinary
+                        # no-predictive path, refit or legacy, never a campaign abort.
+                        log_event(Path(workspace) / "report" / "session_log.jsonl", "exception", {
+                            "action": "predictive_artifact_unsupported", "reference": str(ref),
+                            "reason": "artifact_schema_unsupported",
+                            "schema": predictive.get("schema")})
                 except (ValueError, OSError, json.JSONDecodeError) as error:
                     log_event(Path(workspace) / "report" / "session_log.jsonl", "exception", {
                         "action": "predictive_artifact_unavailable", "reference": str(ref),
