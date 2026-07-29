@@ -37,6 +37,7 @@ from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
+from isar.predictive import PREDICTIVE_ARTIFACT_SCHEMA as _PREDICTIVE_ARTIFACT_SCHEMA
 from isar.predictive import predictive_score as _predictive_score
 from isar.schema.card import Card
 from isar.schema.hypotheses import preset as hypothesis_preset
@@ -1678,8 +1679,11 @@ _PREDICTIVE_SCORE_SEED = 940_301
 
 #: The published predictive contract. It joins the master-fit cache fingerprint
 #: (:func:`isar.session.certification.master_fit_fingerprint`) so an unchanged cached fit still
-#: regenerates its predictive artifact when this contract changes.
-PREDICTIVE_CONTRACT = "isar.master_predictive/2"
+#: regenerates its predictive artifact when this contract changes. It is the *same object* as
+#: :data:`isar.session.certification.PREDICTIVE_CONTRACT` — a second literal here could be bumped on
+#: its own, forcing the carry gate to refit while ``master_fit_fingerprint`` stayed unchanged, so a
+#: checkpoint store would keep serving entries built under the old contract.
+PREDICTIVE_CONTRACT = _PREDICTIVE_ARTIFACT_SCHEMA
 TARGET_PROJECTION_SCHEMA = "isar.target_projection/1"
 #: The registered v1 QoI projection (ADR-009): the fitted mode nearest the delivered ω₀.
 TARGET_PROJECTION_VERSION = "isar.omega0_nearest_mode/1"

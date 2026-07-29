@@ -22,7 +22,16 @@ Two rules make the mapping fail-closed rather than plausible:
   continuing would publish a plausible but incomplete model.
 
 Failures raise :class:`ModelManifestError`, which carries the stable ``reason_code`` the predictive
-evaluator republishes.
+evaluator republishes. The refusal taxonomy is the module constants below; two of them carry
+non-obvious scope:
+
+* ``artifact_schema_unsupported`` covers every malformed *declarative* input — the manifest itself,
+  its stored parameters, and the evaluation context. An evaluation context is malformed when a
+  value is non-finite **or physically impossible**: ``temperature_K`` must be strictly positive,
+  because the Bose factor ``exp(-ℏω/k_BT)`` divides by T (T = 0 raises) and a negative T inverts
+  detailed balance into a meaningless anti-Stokes explosion that would otherwise be published with
+  ``available=True``.
+* ``nonfinite_prediction`` covers a structurally valid input whose *evaluation* is unusable.
 """
 from __future__ import annotations
 
@@ -203,6 +212,13 @@ class EvaluationContext:
                                           reason_code=MALFORMED_MANIFEST)
         self.T = _finite_float(T, "evaluation context temperature_K",
                                reason_code=MALFORMED_MANIFEST)
+        # Strictly positive, not merely finite: the Bose factor divides by T, so T = 0 (or -0.0)
+        # escapes this evaluator as a ZeroDivisionError, and T < 0 evaluates to a physically
+        # meaningless anti-Stokes amplitude that would be published as an available prediction.
+        if not self.T > 0.0:
+            raise ModelManifestError(
+                MALFORMED_MANIFEST,
+                "evaluation context temperature_K must be positive")
         self.quasielastic_fwhm = (None if quasielastic_fwhm is None else _finite_float(
             quasielastic_fwhm, "evaluation context quasielastic_fwhm_meV",
             reason_code=MALFORMED_MANIFEST))

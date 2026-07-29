@@ -586,3 +586,108 @@ def test_candidate_id_covers_the_grid_and_exposure_but_not_alias_provenance():
 
     payload = json.loads(json.dumps(candidate.to_dict()))
     assert payload["candidate_id"] == candidate.candidate_id
+
+
+# ---- degenerate and clipped windows ----------------------------------------------------------
+#
+# All three of these were reachable from live instrument state: TAVI's ``GET /resolution`` accepts
+# any positive float (``Infinity`` included, since ``json.loads`` accepts it), a campaign may leave
+# a search band unbounded, and a rival probe is evaluated with no ``target_band`` at all.
+
+
+def test_an_infinite_resolution_still_designs_the_legacy_window_in_off_mode():
+    # Regression: the legacy candidate's grid fingerprint serialized raw floats, so a degenerate
+    # step made ``design_scan_windows`` raise "not JSON compliant: nan" on a context the pre-seam
+    # designer handled. Off mode must produce the legacy candidate for exactly the contexts the old
+    # code produced it for.
+    context = _context(resolution_fwhm_meV=float("inf"), target_band=(5.0, 0.2))
+    inventory = design_scan_windows(context)
+
+    legacy = inventory.selected_candidate
+    assert _families(inventory) == [FAMILY_LEGACY_UNIFORM]
+    assert (legacy.e_lo, legacy.e_hi, legacy.e_step, legacy.n_points) == _energy_window(
+        context.design_prediction_mean_meV, context.resolution_fwhm_meV,
+        context.design_prediction_sigma_meV,
+        survey=context.survey, energy_search_meV=context.energy_search_meV,
+        target_band=context.target_band, rival_band=context.rival_band,
+        widen=context.widen_factor, positive_only=context.positive_only,
+        max_points=min(context.policy_max_points, context.runtime_max_points))
+    # The single visited point is e_lo itself — never e_lo + 0·inf, which is NaN.
+    assert legacy.energies == (legacy.e_lo,)
+    assert legacy.grid.fingerprint(legacy.ncount)
+    assert json.loads(json.dumps(inventory.to_full_dict()))
+
+
+def test_an_unbounded_search_band_refuses_the_affected_family_not_the_inventory():
+    # Regression: ``(-inf, +inf)`` overflowed ``int(floor(inf))`` inside the grid resolver and took
+    # the whole inventory — including the already-built legacy control — down with an OverflowError.
+    context = _context(energy_search_meV=(float("-inf"), float("inf")))
+    off = design_scan_windows(context)
+    shadow = design_scan_windows(_context(
+        energy_search_meV=(float("-inf"), float("inf")), scan_window_eig_mode="shadow"))
+
+    # Off-mode parity: the legacy control is byte-identical in both modes and is still selected.
+    assert _families(off) == [FAMILY_LEGACY_UNIFORM]
+    assert shadow.candidates[0].candidate_id == off.selected_candidate.candidate_id
+    assert shadow.selected_candidate_id == shadow.candidates[0].candidate_id
+    # The unbounded family is a structured non-result, not a crash.
+    assert _refusals(shadow)[FAMILY_BROAD_RECOVERY] == "nonfinite_window_arithmetic"
+    detail = next(r for r in shadow.refusals
+                  if r.candidate_family == FAMILY_BROAD_RECOVERY).to_dict()["detail"]
+    assert detail["e_lo"] == "-inf" and detail["e_hi"] == "+inf"
+    assert json.loads(json.dumps(shadow.to_full_dict()))
+
+
+def test_a_target_family_clipped_off_its_own_core_is_refused_not_emitted():
+    # Regression: the core-containment invariant of target_plus_rival/1 holds only *before* the
+    # authorized-domain clip, and the insufficient_target_support gate is skipped when no
+    # target_band is declared — exactly the state a rival probe is evaluated in. The result was a
+    # rival-only window with zero target support presented as a target candidate.
+    rival_only = _context(scan_window_eig_mode="shadow", design_prediction_mean_meV=6.0,
+                          target_prediction_mean_meV=6.0, resolution_fwhm_meV=0.5,
+                          energy_search_meV=(-4.0, 2.0), rival_band=(0.5, 0.2),
+                          target_band=None)
+    inventory = design_scan_windows(rival_only)
+
+    assert _families(inventory) == [FAMILY_LEGACY_UNIFORM]
+    assert _refusals(inventory)[FAMILY_TARGET_PLUS_RIVAL] == "rival_only_after_domain_clip"
+    assert _refusals(inventory)[FAMILY_TARGET_PAIRED] == "target_core_lost_after_domain_clip"
+    detail = next(r for r in inventory.refusals
+                  if r.candidate_family == FAMILY_TARGET_PLUS_RIVAL).to_dict()["detail"]
+    assert detail["target_core_lo"] == 5.0 and detail["target_core_hi"] == 7.0
+
+    # The same context *with* a target band was already refused correctly, by the support gate that
+    # only a declared band can arm; that earlier refusal is unchanged.
+    declared = design_scan_windows(_context(
+        scan_window_eig_mode="shadow", design_prediction_mean_meV=6.0,
+        target_prediction_mean_meV=6.0, resolution_fwhm_meV=0.5,
+        energy_search_meV=(-4.0, 2.0), rival_band=(0.5, 0.2), target_band=(6.0, 0.2)))
+    assert _families(declared) == [FAMILY_LEGACY_UNIFORM]
+    assert _refusals(declared)[FAMILY_TARGET_PLUS_RIVAL] == "insufficient_target_support"
+
+
+def test_dedup_merges_only_candidates_that_emit_the_same_request():
+    # Regression: dedup keyed on (visited energies, ncount) while candidate_id also covers the
+    # scan command, so two families whose windows differ by less than half a step merged into a
+    # candidate whose emitted deltaE string was not the absorbed family's.
+    inventory = design_scan_windows(_context(
+        scan_window_eig_mode="shadow", energy_search_meV=(3.4, 6.65)))
+    core = next(c for c in inventory.candidates if c.candidate_family == FAMILY_TARGET_CORE)
+    anchor = next(c for c in inventory.candidates
+                  if c.candidate_family == FAMILY_TARGET_HIGH_ANCHOR)
+
+    # Same visited points and exposure — the old key would have merged them...
+    assert (core.energies, core.ncount) == (anchor.energies, anchor.ncount)
+    # ...but they are different requests, and therefore different candidates.
+    assert core.grid.scan_command() != anchor.grid.scan_command()
+    assert core.candidate_id != anchor.candidate_id
+    assert FAMILY_TARGET_HIGH_ANCHOR not in core.alias_families
+
+    # Genuinely identical requests still merge into one identity with alias provenance.
+    identical = design_scan_windows(_context(
+        scan_window_eig_mode="shadow", energy_search_meV=(3.4, 6.6)))
+    merged = next(c for c in identical.candidates
+                  if c.candidate_family == FAMILY_TARGET_CORE)
+    assert FAMILY_TARGET_HIGH_ANCHOR in merged.alias_families
+    commands = [c.grid.scan_command() for c in identical.candidates]
+    assert len(commands) == len(set(commands))

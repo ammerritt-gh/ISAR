@@ -119,6 +119,26 @@ def canonical_json(value) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def json_number(value):
+    """Return a strict-JSON representation of one number without losing non-finite provenance.
+
+    :func:`canonical_json` refuses NaN/Infinity outright, which is correct for the artifact but
+    would turn a merely *degenerate* input (an instrument that reported an infinite resolution, a
+    search band with no bound) into an unstructured ``ValueError`` from deep inside a fingerprint.
+    Every numeric field that reaches a canonical payload goes through here instead, so the
+    non-finiteness is recorded as a stable token rather than crashing or being silently zeroed.
+    Finite values pass through unchanged, so no existing content address moves.
+    """
+    if value is None or isinstance(value, bool) or isinstance(value, int):
+        return value
+    number = float(value)
+    if math.isnan(number):
+        return "nan"
+    if math.isinf(number):
+        return "+inf" if number > 0.0 else "-inf"
+    return number
+
+
 def registry_fingerprint(registry: tuple[GeneratorSpec, ...] = GENERATOR_REGISTRY) -> str:
     """Derive the registry version from the ordered generator ids + versions.
 

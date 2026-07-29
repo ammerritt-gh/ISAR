@@ -193,6 +193,34 @@ def test_an_unusable_energy_grid_is_refused(grid, reason):
     assert excinfo.value.reason_code == reason
 
 
+def test_the_predictive_contract_has_exactly_one_definition():
+    # Two independent literals could be bumped apart: raising only the driver's copy forces the
+    # carry gate to refit while master_fit_fingerprint stays unchanged, so a checkpoint store keeps
+    # serving entries built under the superseded contract.
+    from isar.predictive import PREDICTIVE_ARTIFACT_SCHEMA
+    from isar.session import certification
+
+    assert driver.PREDICTIVE_CONTRACT is certification.PREDICTIVE_CONTRACT
+    assert driver.PREDICTIVE_CONTRACT is PREDICTIVE_ARTIFACT_SCHEMA
+    assert PREDICTIVE_ARTIFACT_SCHEMA == "isar.master_predictive/2"
+
+
+@pytest.mark.parametrize("temperature", [0.0, -0.0, -1e-30, -300.0])
+def test_a_nonpositive_temperature_is_refused_by_the_evaluation_context(temperature):
+    # The Bose factor divides by T. Finiteness alone let T = 0 escape as a ZeroDivisionError from
+    # deep inside the component, and let T < 0 through as an "available" anti-Stokes explosion.
+    with pytest.raises(mm.ModelManifestError) as raised:
+        mm.EvaluationContext(center=0.0, gauss_fwhm=0.4, lorentz_fwhm=0.1, T=temperature)
+    assert raised.value.reason_code == mm.MALFORMED_MANIFEST
+
+
+@pytest.mark.parametrize("temperature", [0.5, 4.2, 100.0, 1000.0])
+def test_a_positive_temperature_still_evaluates(temperature):
+    context = mm.EvaluationContext(center=0.0, gauss_fwhm=0.4, lorentz_fwhm=0.1, T=temperature)
+    values = mm.expected_counts(_MANIFEST, _NAMES, _DRAW, context, _GRID)
+    assert np.all(np.isfinite(values)) and np.all(values >= 0.0)
+
+
 def test_the_workspace_curve_reader_uses_the_same_reconstruction():
     from isar.workspace_api.evaluate import _compose_manifest
 
@@ -575,6 +603,18 @@ def test_evaluation_never_interpolates_stored_counts():
         **a["models"][0]["model_manifest"],
         "components": [{"type": "roton", "prefix": "roton"}]}}]},
      "unknown_component_kind"),
+    # An unphysical temperature is not merely non-finite: T = 0 divides by zero inside the Bose
+    # factor and escaped as a ZeroDivisionError, and T < 0 evaluated to a meaningless anti-Stokes
+    # explosion that was published with available=True.
+    (lambda a: {**a, "evaluation_context": {**a["evaluation_context"],
+                                            "temperature_K": 0.0}},
+     "artifact_schema_unsupported"),
+    (lambda a: {**a, "evaluation_context": {**a["evaluation_context"],
+                                            "temperature_K": -0.0}},
+     "artifact_schema_unsupported"),
+    (lambda a: {**a, "evaluation_context": {**a["evaluation_context"],
+                                            "temperature_K": -300.0}},
+     "artifact_schema_unsupported"),
 ])
 def test_evaluator_refusals_are_stable_and_never_partial(mutate, reason):
     fixture = _fixture()

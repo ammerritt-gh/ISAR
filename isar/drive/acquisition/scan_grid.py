@@ -18,7 +18,7 @@ import hashlib
 import math
 from dataclasses import dataclass
 
-from isar.drive.acquisition.inventory import canonical_json
+from isar.drive.acquisition.inventory import canonical_json, json_number
 
 
 MAX_POINTS = 100
@@ -43,9 +43,16 @@ def canonical_energy(value: float) -> float:
 
 
 def canonical_energies(e_lo: float, e_step: float, n_points: int) -> tuple[float, ...]:
-    """The ordered inclusive point grid ``e_lo + i·e_step`` in canonical form."""
+    """The ordered inclusive point grid ``e_lo + i·e_step`` in canonical form.
+
+    The first point is ``e_lo`` by definition, never ``e_lo + 0·e_step``: with a degenerate
+    (infinite) step the product is NaN, which would manufacture a scan point that the instrument
+    never visits.  For a finite step the two forms are bit-identical, so no grid identity moves.
+    """
     count = max(int(n_points), 0)
-    return tuple(canonical_energy(float(e_lo) + index * float(e_step))
+    step = float(e_step)
+    return tuple(canonical_energy(float(e_lo) if index == 0
+                                  else float(e_lo) + index * step)
                  for index in range(count))
 
 
@@ -92,7 +99,10 @@ class UniformGrid:
         """Content address of ``(canonical grid, per-point exposure)`` — the scoring identity."""
         payload = canonical_json({
             "grid_schema": UNIFORM_SCAN_GRID_SCHEMA,
-            "energies": list(self.energies),
+            # Through the shared non-finite-safe rendering: a degenerate window must fingerprint to
+            # a stable address that records its degeneracy, not raise out of the designer.  Finite
+            # energies pass through unchanged, so no existing grid fingerprint moves.
+            "energies": [json_number(value) for value in self.energies],
             "ncount": int(ncount),
         })
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()

@@ -14,6 +14,8 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
+from isar.predictive import PREDICTIVE_ARTIFACT_SCHEMA
+
 from .state import ScanEntry
 
 log = logging.getLogger(__name__)
@@ -30,7 +32,11 @@ MASTER_FIT_CONTRACT = "isar.master_fit/2"
 # version participates in the fit's cache fingerprint: bumping it invalidates every cached master
 # fit, which is what makes an unchanged fit regenerate its predictive artifact under the new
 # contract on the next run instead of carrying a stale one forever (ADR-006).
-PREDICTIVE_CONTRACT = "isar.master_predictive/2"
+#
+# Re-exported from the module that defines the artifact, never redeclared: a second literal here
+# could be bumped independently of the driver's publisher, leaving the fingerprint (and therefore
+# every checkpoint-store entry) keyed to a contract nobody publishes any more.
+PREDICTIVE_CONTRACT = PREDICTIVE_ARTIFACT_SCHEMA
 
 
 def _atomic_json(path: Path, value: dict) -> None:

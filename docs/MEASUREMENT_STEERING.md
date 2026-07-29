@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the steering research foundation and the current controller contract
 > **Provenance:** hand-written
-> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Verified against code revision:** `3afbff4` (2026-07-29)
 
 > **Status: design locked; the core is built.** The model-free descriptor (L0), branch model +
 > Bayesian branch assignment, soft/hard Γ constraints, Stokes-only rescue, under-model
@@ -338,7 +338,7 @@ So the chosen engine is:
    model (see §4.2 and §6).
 7. **Two-term scan value** *(Implemented 2026-07-17 — DECISIONS O6)*:
    The shipped master-authoritative path draws incremental Poisson counts from every retained
-   plausible model in `isar.master_predictive/1` and estimates mutual information about the joint
+   plausible model in `isar.master_predictive/2` and estimates mutual information about the joint
    target-ω/model/branch state. It reports expected ω-half-width reduction and model/branch-identity
    entropy reduction separately; neither is converted into the other's units by a λ weight. Common
    random numbers make candidate comparisons deterministic, with progressively larger simulation
@@ -744,8 +744,10 @@ absent master remains an explicit gap.
 
 Each merged pool carries a seeded exposure-scaled Poisson-deviance homogeneity result. Failure at the
 default α=0.01 blocks certification and requests review without excluding a member or ending the
-q-point. A usable master also publishes an `isar.master_predictive/1` artifact containing bounded full
-parameter draws and weights for every retained plausible model/branch. Nested draws win, then full-fit
+q-point. A usable master also publishes an `isar.master_predictive/2` artifact containing bounded full
+parameter draws and weights for every retained plausible model/branch, together with the fitted grid,
+the frozen evaluation context and the per-energy exposure basis those draws were fitted against.
+Nested draws win, then full-fit
 bootstrap draws, then a trusted multivariate HESSE/Laplace approximation. The model-weighted ω interval
 is the certification interval; therefore Γ may be `resolution_limited` without blocking an otherwise
 identified ω. Missing simulation-grade draws trigger a single full-tier escalation for that revision.
@@ -753,9 +755,14 @@ identified ω. Missing simulation-grade draws trigger a single full-tier escalat
 Acquisition estimates information about the joint target-ω/model/branch latent state from incremental
 Poisson counts. Deterministic mode ranks per predicted analysis second; measurement-dominated tiers use
 the active measurement cost. ω-width and identity-entropy reductions remain separately reported.
-Uncertain or low utility is diagnostic, not a reason to abandon q. `isar.master_predictive/1` contains
-counts only on the fitted master grid and therefore cannot support arbitrary-window evaluation; the
-additive `/2` contract and future evaluator are planned in `EIG_STEERING_DESIGN.md`.
+Uncertain or low utility is diagnostic, not a reason to abandon q. `isar.master_predictive/2` carries
+the exposure basis and evaluation context, so `isar.predictive.evaluate_master_predictive` re-evaluates
+its draws on an arbitrary requested energy grid at an arbitrary uniform per-point exposure — the
+capability the superseded `/1` artifact could not support, because it stored counts on the fitted
+master grid alone. `/1` emission was removed rather than kept alongside `/2` (DECISIONS O33): every
+reader requires `/2`, and a leftover `/1` artifact is refused as a non-result with
+`artifact_schema_unsupported`, never guessed into `/2`. How that evaluator is consumed by scan-window
+scoring is specified in [`EIG_STEERING_DESIGN.md`](EIG_STEERING_DESIGN.md).
 
 The outer limits are independent. `budget` is optional measurement spend. `analysis_limit_seconds`
 charges monotonic wall time around serialized fitting, pooling, consistency, predictive scoring and

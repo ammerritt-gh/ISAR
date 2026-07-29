@@ -17,7 +17,11 @@ import hashlib
 import math
 from dataclasses import dataclass, field, replace
 
-from isar.drive.acquisition.inventory import CANONICALIZATION_VERSION, canonical_json
+from isar.drive.acquisition.inventory import (
+    CANONICALIZATION_VERSION,
+    canonical_json,
+    json_number,
+)
 from isar.drive.acquisition.scan_grid import (
     MAX_POINTS,
     UniformGrid,
@@ -80,6 +84,18 @@ SHADOW_CANDIDATE_FAMILIES = (
     FAMILY_BROAD_RECOVERY,
 )
 
+#: Families constructed *about the target prediction*.  Each of them promises to measure the target
+#: core, so each must still cover it after the authorized-domain clip.  ``broad_recovery/1`` is
+#: deliberately excluded: it is the misspecification escape hatch, whose whole point is to look
+#: where the target is predicted *not* to be.
+TARGET_WINDOW_FAMILIES = frozenset({
+    FAMILY_TARGET_CORE,
+    FAMILY_TARGET_PAIRED,
+    FAMILY_TARGET_LOW_ANCHOR,
+    FAMILY_TARGET_HIGH_ANCHOR,
+    FAMILY_TARGET_PLUS_RIVAL,
+})
+
 _DiagnosticValue = bool | int | float | None
 
 
@@ -91,16 +107,10 @@ class InstrumentLimitBelowMinimumBatch(ValueError):
     """The instrument cannot accept one policy-floor scan."""
 
 
-def _json_number(value: float | int | None) -> float | int | str | None:
-    """Return a strict-JSON representation without losing non-finite provenance."""
-    if value is None or isinstance(value, int):
-        return value
-    number = float(value)
-    if math.isnan(number):
-        return "nan"
-    if math.isinf(number):
-        return "+inf" if number > 0.0 else "-inf"
-    return number
+#: One shared non-finite-safe number rendering (:func:`isar.drive.acquisition.inventory.json_number`).
+#: The grid module fingerprints through the same helper, so a degenerate window cannot be strict-JSON
+#: clean in the candidate record and a raw ``ValueError`` inside the grid fingerprint.
+_json_number = json_number
 
 
 def _json_pair(value: tuple[float, float] | None) -> list[float | str] | None:
@@ -737,17 +747,28 @@ def _anti_stokes_admissible(context: ScanDesignContext,
     return True, None
 
 
-def _family_window(family: str, context: ScanDesignContext,
-                   config: PhysicalWindowGeneratorConfig,
-                   domain: tuple[float, float]) -> tuple[
-                       tuple[float, float] | None, str | None]:
-    """The unclipped ``(e_lo, e_hi)`` for one family, or ``(None, reason_code)`` when inapplicable."""
+def _target_core(context: ScanDesignContext,
+                 config: PhysicalWindowGeneratorConfig) -> tuple[float, float]:
+    """``(e_pred, half_core)`` — the target core every target family is built around.
+
+    Derived from the prediction and the resolution alone, so it exists even when the action declares
+    no ``target_band`` (which is exactly when the support gate below would otherwise be skipped).
+    """
     e_pred = max(float(context.design_prediction_mean_meV), 0.0)
     fwhm = max(float(context.resolution_fwhm_meV), 1e-3)
     sigma = float(context.design_prediction_sigma_meV)
     if not math.isfinite(sigma) or sigma < 0.0:
         sigma = 0.0
-    half_core = max(config.core_fwhm_multiple * fwhm, config.core_sigma_multiple * sigma)
+    return e_pred, max(config.core_fwhm_multiple * fwhm, config.core_sigma_multiple * sigma)
+
+
+def _family_window(family: str, context: ScanDesignContext,
+                   config: PhysicalWindowGeneratorConfig,
+                   domain: tuple[float, float]) -> tuple[
+                       tuple[float, float] | None, str | None]:
+    """The unclipped ``(e_lo, e_hi)`` for one family, or ``(None, reason_code)`` when inapplicable."""
+    e_pred, half_core = _target_core(context, config)
+    fwhm = max(float(context.resolution_fwhm_meV), 1e-3)
     extension = config.anchor_extension_fwhm_multiple * fwhm
 
     if family == FAMILY_TARGET_CORE:
@@ -769,8 +790,10 @@ def _family_window(family: str, context: ScanDesignContext,
             return None, "invalid_rival_band"
         rival_lo = rival_mu - config.rival_band_sigma_multiple * rival_sigma
         rival_hi = rival_mu + config.rival_band_sigma_multiple * rival_sigma
-        # Contiguous union: a single uniform scan cannot express a gap, and the core always stays in
-        # it, so a canonical target action can never be handed a rival-only window.
+        # Contiguous union: a single uniform scan cannot express a gap.  The core is inside this
+        # *unclipped* union by construction, but that is not enough on its own — the authorized
+        # domain can still cut the core away and leave a rival-only window, which the post-clip
+        # target-core gate in :func:`_alternative_candidate` refuses.
         return (min(e_pred - half_core, rival_lo), max(e_pred + half_core, rival_hi)), None
     if family == FAMILY_BROAD_RECOVERY:
         if context.energy_search_meV is not None:
@@ -815,8 +838,27 @@ def _alternative_candidate(family: str, context: ScanDesignContext,
 
     fwhm = max(float(context.resolution_fwhm_meV), 1e-3)
     point_cap = min(int(context.policy_max_points), int(context.runtime_max_points))
-    grid = resolve_uniform_grid(e_lo, e_hi, config.step_resolution_fraction * fwhm,
-                                max_points=point_cap)
+    e_step = config.step_resolution_fraction * fwhm
+    # A degenerate input (an instrument reporting an infinite resolution, an unbounded search band)
+    # makes the point-count arithmetic overflow or go NaN.  That is a fact about this family, so it
+    # becomes a structured refusal on this family — never an exception that destroys the whole
+    # inventory, including the legacy control that was already built successfully.
+    if not all(math.isfinite(value) for value in (e_lo, e_hi, e_step)):
+        return None, ScanDesignRefusal(
+            candidate_family=family,
+            reason_code="nonfinite_window_arithmetic",
+            detail=_diagnostic_items({
+                "e_lo": e_lo, "e_hi": e_hi, "e_step": e_step,
+                "domain_lo": float(domain[0]), "domain_hi": float(domain[1])}))
+    try:
+        grid = resolve_uniform_grid(e_lo, e_hi, e_step, max_points=point_cap)
+    except (OverflowError, ValueError) as error:
+        return None, ScanDesignRefusal(
+            candidate_family=family,
+            reason_code="nonfinite_window_arithmetic",
+            detail=_diagnostic_items({
+                "e_lo": e_lo, "e_hi": e_hi, "e_step": e_step,
+                "error": type(error).__name__}))
 
     support_band = _target_support_band(context)
     minimum_support = int(context.minimum_target_support_points)
@@ -829,6 +871,31 @@ def _alternative_candidate(family: str, context: ScanDesignContext,
                 "e_lo": grid.e_lo, "e_hi": grid.e_hi, "e_step": grid.e_step,
                 "n_points": grid.n_points,
                 "target_support_points": support, "required": minimum_support}))
+
+    if family in TARGET_WINDOW_FAMILIES:
+        core_center, core_halfwidth = _target_core(context, config)
+        core_lo, core_hi = core_center - core_halfwidth, core_center + core_halfwidth
+        if grid.e_lo > core_hi or grid.e_hi < core_lo:
+            # The core-containment invariant of every target family holds only *before* the
+            # authorized-domain clip.  Without this gate a clipped ``target_plus_rival/1`` survives
+            # as a rival-only window, and the ``insufficient_target_support`` gate above cannot
+            # catch it: that gate is skipped whenever the action declares no ``target_band``, which
+            # is exactly the case a rival probe is evaluated in.
+            #
+            # The test is on the *window bounds*, deliberately not on grid-point membership: at the
+            # point cap the step is coarsened, and a window that genuinely covers the core but whose
+            # coarse grid happens to straddle it is a sampling question the support gate above owns,
+            # not a window that has abandoned its target.
+            return None, ScanDesignRefusal(
+                candidate_family=family,
+                reason_code=("rival_only_after_domain_clip"
+                             if family == FAMILY_TARGET_PLUS_RIVAL
+                             else "target_core_lost_after_domain_clip"),
+                detail=_diagnostic_items({
+                    "e_lo": grid.e_lo, "e_hi": grid.e_hi, "e_step": grid.e_step,
+                    "n_points": grid.n_points,
+                    "target_core_lo": core_lo, "target_core_hi": core_hi,
+                    "domain_lo": float(domain[0]), "domain_hi": float(domain[1])}))
 
     try:
         ncount, diagnostics = _count_request(context, grid.n_points)
@@ -859,6 +926,19 @@ def _alternative_candidate(family: str, context: ScanDesignContext,
     return candidate, None
 
 
+def _dedup_identity(candidate: ScanDesignCandidate) -> tuple[str, tuple[float, ...], int]:
+    """The key two families must share before one is absorbed as an alias of the other.
+
+    It is deliberately a strict subset of :attr:`ScanDesignCandidate.candidate_id`'s inputs, and it
+    must include everything ``candidate_id`` distinguishes that is *observable in the emitted
+    request* — otherwise two families with the same visited points but different ``e_hi`` merge, and
+    the surviving candidate's ``deltaE`` string is not the one the absorbed family declared.  The
+    legacy control is keyed the same way and is never absorbed (it is inserted first), so this
+    cannot move the executed request.
+    """
+    return (candidate.grid.scan_command(), candidate.energies, candidate.ncount)
+
+
 def design_scan_windows(
         context: ScanDesignContext,
         config: PhysicalWindowGeneratorConfig = DEFAULT_WINDOW_GENERATOR_CONFIG,
@@ -875,8 +955,8 @@ def design_scan_windows(
 
     if context.scan_window_eig_mode == "shadow":
         domain = _authorized_domain(context, config)
-        by_identity: dict[tuple[tuple[float, ...], int], int] = {
-            (legacy.energies, legacy.ncount): 0}
+        by_identity: dict[tuple[str, tuple[float, ...], int], int] = {
+            _dedup_identity(legacy): 0}
         for family in SHADOW_CANDIDATE_FAMILIES:
             if family == FAMILY_LEGACY_UNIFORM:
                 continue
@@ -884,7 +964,7 @@ def design_scan_windows(
             if candidate is None:
                 refusals.append(refusal)
                 continue
-            identity = (candidate.energies, candidate.ncount)
+            identity = _dedup_identity(candidate)
             existing = by_identity.get(identity)
             if existing is not None:
                 kept = candidates[existing]
