@@ -37,6 +37,9 @@ SANDBOX_VM_ALLOWED = GUI_ALLOWED | {"isar.sandbox_api"}
 # schema/session/report/analyze pieces it reads through, and the vendored geometry).
 WORKSPACE_API_ALLOWED = {
     "isar.schema.card",
+    # Pure statistical-semantics read gate.  FitView delegates tolerant legacy handling to the
+    # canonical schema rather than duplicating validation inside the read-only facade.
+    "isar.schema.statistics",
     "isar.session.state",
     "isar.session.workspace",
     "isar.session.unit_data",

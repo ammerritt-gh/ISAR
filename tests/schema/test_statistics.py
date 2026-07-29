@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from isar.schema.statistics import (
+    FIT_SELECTION_SCHEMA,
+    PROBABILITY_SCHEMA,
+    SemanticsConstructionError,
+    authority_scopes,
+    compact_for_csv,
+    read_optional,
+    semantics_fingerprint,
+    validate_for_write,
+)
+
+
+def _fit_record(**overrides):
+    record = {
+        "schema": FIT_SELECTION_SCHEMA,
+        "estimator_kind": "data_likelihood_mle",
+        "selection_eligibility": "eligible",
+        "effective_constraints": [],
+        "conditioning_fingerprint": semantics_fingerprint("conditioning", {"constraints": []}),
+        "authority_scopes": authority_scopes(single_fit_delivery="active"),
+    }
+    record.update(overrides)
+    return record
+
+
+def test_fingerprint_is_canonical_and_namespace_separated():
+    left = semantics_fingerprint("test/a", {"b": [2, 3], "a": 1})
+    right = semantics_fingerprint("test/a", {"a": 1, "b": [2, 3]})
+    assert left == right
+    assert left == semantics_fingerprint(
+        "test/a", {"a": np.int64(1), "b": [np.int64(2), np.int64(3)]}
+    )
+    assert semantics_fingerprint("test/n", {"x": 3.0}) == semantics_fingerprint(
+        "test/n", {"x": np.float64(3.0)}
+    )
+    assert left != semantics_fingerprint("test/b", {"a": 1, "b": [2, 3]})
+    assert len(left) == 64
+    assert left == left.lower()
+
+
+@pytest.mark.parametrize("payload", [None, {"x": float("nan")}, {"x": {1, 2}}])
+def test_fingerprint_rejects_missing_nonfinite_or_noncanonical_inputs(payload):
+    with pytest.raises(SemanticsConstructionError):
+        semantics_fingerprint("test", payload)
+
+
+def test_writer_is_strict_but_legacy_reader_is_tolerant():
+    valid = validate_for_write(_fit_record(), FIT_SELECTION_SCHEMA)
+    assert read_optional(valid, FIT_SELECTION_SCHEMA) == valid
+    assert read_optional(None, FIT_SELECTION_SCHEMA) is None
+    assert read_optional({"schema": "isar.fit_selection_semantics/0"}, FIT_SELECTION_SCHEMA) is None
+
+    with pytest.raises(SemanticsConstructionError, match="writer_unknown_legacy"):
+        validate_for_write(
+            _fit_record(estimator_kind="unknown_legacy"),
+            FIT_SELECTION_SCHEMA,
+        )
+    malformed = _fit_record(estimator_kind=["not", "hashable"])
+    with pytest.raises(SemanticsConstructionError, match="malformed_semantics_record"):
+        validate_for_write(malformed, FIT_SELECTION_SCHEMA)
+    assert read_optional(malformed, FIT_SELECTION_SCHEMA) is None
+
+
+def test_eligible_record_cannot_carry_effective_constraint():
+    constrained = _fit_record(
+        effective_constraints=[
+            {
+                "parameter": "phonon.Gamma",
+                "constraint_kind": "hard",
+                "value": 0.001,
+                "origin": "prior_predictive",
+            }
+        ]
+    )
+    with pytest.raises(SemanticsConstructionError, match="eligible_with_effective_constraints"):
+        validate_for_write(constrained, FIT_SELECTION_SCHEMA)
+
+
+@pytest.mark.parametrize(
+    ("constraint", "reason"),
+    [
+        (
+            {
+                "parameter": "phonon.Gamma",
+                "constraint_kind": "hard",
+                "value": True,
+                "origin": "prior_predictive",
+            },
+            "invalid_constraint_value",
+        ),
+        (
+            {
+                "parameter": "phonon.Gamma",
+                "constraint_kind": "soft",
+                "mean": "not-a-number",
+                "sigma": 0.1,
+                "origin": "prior_predictive",
+            },
+            "invalid_constraint_mean",
+        ),
+        (
+            {
+                "parameter": "phonon.Gamma",
+                "constraint_kind": "soft",
+                "mean": 0.2,
+                "sigma": "not-a-number",
+                "origin": "prior_predictive",
+            },
+            "invalid_constraint_sigma",
+        ),
+    ],
+)
+def test_constraint_numbers_fail_with_stable_semantics_reason(constraint, reason):
+    record = _fit_record(
+        selection_eligibility="ineligible_unapproved_conditioning",
+        effective_constraints=[constraint],
+    )
+    with pytest.raises(SemanticsConstructionError, match=reason):
+        validate_for_write(record, FIT_SELECTION_SCHEMA)
+    assert read_optional(record, FIT_SELECTION_SCHEMA) is None
+
+
+def test_entropy_requires_source_and_declared_state_space_or_conditioning():
+    record = {
+        "schema": PROBABILITY_SCHEMA,
+        "quantity_kind": "entropy",
+        "source_measure_semantics": "normalized_assignment_weight",
+        "authority_scopes": authority_scopes(user_diagnostic="active"),
+    }
+    with pytest.raises(SemanticsConstructionError, match="entropy_missing_state_space"):
+        validate_for_write(record, PROBABILITY_SCHEMA)
+    record["state_space"] = {"kind": "branch_assignment", "labels": ["a", "b"]}
+    validate_for_write(record, PROBABILITY_SCHEMA)
+
+
+def test_data_dependent_prior_cannot_claim_comparable_evidence():
+    record = {
+        "schema": PROBABILITY_SCHEMA,
+        "quantity_kind": "distribution",
+        "source_measure_semantics": "normalized_factor_graph_score",
+        "prior_data_dependent": True,
+        "evidence_comparable": True,
+        "authority_scopes": authority_scopes(user_diagnostic="active"),
+    }
+    with pytest.raises(
+        SemanticsConstructionError, match="data_dependent_prior_evidence_comparable"
+    ):
+        validate_for_write(record, PROBABILITY_SCHEMA)
+    record["evidence_comparable"] = False
+    record["formal_bayesian"] = False
+    with pytest.raises(SemanticsConstructionError, match="deprecated_formal_bayesian_flag"):
+        validate_for_write(record, PROBABILITY_SCHEMA)
+
+
+def test_compact_csv_projection_removes_verbose_payloads_only():
+    record = _fit_record(
+        effective_constraints=[],
+        offered_models=[{"label": "elastic"}],
+        prior_specification={"bounds": [0.0, 1.0]},
+        offered_model_set_fingerprint=semantics_fingerprint("offered", ["elastic"]),
+        reference_id="artifact.json",
+    )
+    compact = compact_for_csv(record)
+    assert "effective_constraints" not in compact
+    assert "offered_models" not in compact
+    assert "prior_specification" not in compact
+    assert compact["offered_model_set_fingerprint"] == record["offered_model_set_fingerprint"]
+    assert compact["authority_scopes"] == record["authority_scopes"]
+    assert compact["reference_id"] == "artifact.json"
