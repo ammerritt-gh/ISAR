@@ -63,6 +63,35 @@ one `live`-marked round-trip test asserting the adapter-predicted grid equals TA
 `scan_values_1` exactly. A second instrument declares its own adapter id/version and is threaded
 through `resolve_uniform_grid`; nothing outside the adapter module is TAVI-specific.
 
+**The legacy control's point count goes through the adapter too.** For one release it did not: the
+legacy and generator-declared window paths kept a private `floor(span/e_step + 0.5) + 1` on the raw
+*designed* span, plus a clamp to the point cap. The adapter counts over the **wire** span, so
+whenever the `%g` rendering moved a bound the two disagreed, and ISAR recorded, priced and scored a
+point TAVI never visits — measured live, `deltaE -5.44493 7 0.162679` was recorded at 78 points and
+executed at 77, the 78th naming an energy of 7.081 meV outside the declared window. It is a near-tie
+regime (a few windows in 10⁵), which is precisely why a second arithmetic survived review.
+
+Both paths now take their count from `resolve_uniform_grid`, so ADR-018's claim covers every family.
+What stays frozen is the window *geometry*: the legacy step is rendered verbatim into the submitted
+`deltaE`, so when the cap coarsens it, it is still derived from the designed span
+(`COARSEN_FROM_DESIGNED_SPAN`) rather than the wire span every other family uses. That choice is
+named in `scan_grid.py` and is the reason the emitted command is byte-identical across this change —
+only `n_points`, `scoring_grid` and `nominal_cost` move, and only where ISAR was previously wrong.
+The count is never clamped: where the two coarsening rules disagree (reachable only far outside the
+meV energy range ISAR drives), the legacy candidate records the over-cap count the instrument will
+really execute, and the loop's existing point-count guard coarsens the request.
+
+**A window the instrument cannot accept is not a candidate.** TAVI refuses any single-point request
+outright (`HTTP 400 … Only 1 scan point!`), and `resolve_point_count` normalizes an inverted window
+to its single starting point, so both degeneracies present as `n_points == 1`. A non-legacy family
+that resolves to fewer than two points, or to inverted bounds, is refused with `degenerate_window`
+rather than emitted. It is reachable from ordinary state: `broad_recovery/1` on a narrow authorized
+domain such as `(6.9, 7.0)` resolves to exactly one point at any resolution-derived step wider than
+the domain. The check runs *after* the target and support gates, because it is the least informative
+diagnosis — a family that also lost its core must say that instead. The legacy control is not
+gated (§ legacy parity); a degenerate legacy request is refused by TAVI's validator as
+`would_queue: false`, which the loop already classes as a structural `validation_rejected`.
+
 The families are `legacy_uniform`, `target_core`, `target_paired` (only when anti-Stokes is
 admissible under the existing `positive_only` / detailed-balance gates), `target_low_anchor`,
 `target_high_anchor`, `target_plus_rival` (only with a declared rival band, always contiguous with
@@ -199,10 +228,32 @@ reference energy — the post-triage, post-tracker scalar, never the fit's local
 `target_present_by_draw` and `target_qoi_draws` per retained model.
 
 It is **bound to the authority basis that produced it**. The `authority` block records
-`master_revision`, `track_revision`, `track_state`, `candidate_id`, `candidate_state`,
-`selected_candidate_index`, `calibration_fingerprint`, and `policy_fingerprint`, plus the
-`predictive_basis_fingerprint` of the `/2` it projects. A consumer whose current state differs on
-any of these holds a stale projection and must re-resolve it rather than score against it.
+`action_role`, `master_revision`, `track_revision`, `track_state`, `candidate_id`,
+`candidate_state`, `selected_candidate_index`, `calibration_fingerprint`, and `policy_fingerprint`,
+plus the `predictive_basis_fingerprint` of the `/2` it projects. A consumer whose current state
+differs on any of these holds a stale projection and must re-resolve it rather than score against
+it. `action_role` was published *beside* the block rather than inside it, which made that staleness
+test blind to a role change — the same master re-resolved as a rival probe compared equal to its
+master projection and the stored one was reused. It is inside the block now; there is no `/1`
+compatibility for the old placement.
+
+### Selecting a mode is resolution-relative, and bounded
+
+Nearest-energy selection with no distance gate is unconditional: it returns the closest mode however
+far away it is. An authoritative ω₀ of 99.0 meV against modes at {2.0, 5.0} was therefore published
+as `complete: true` naming the 5.0 mode — a confident QoI about a target the model does not contain.
+Two constants close that, both derived from the artifact's own `evaluation_context` Gaussian
+resolution FWHM and both recorded in the projection's `mode_selection` block so a verdict can be
+re-derived from the record rather than from whatever the constants say today:
+
+- **`MODE_SUPPORT_FWHM_MULTIPLE = 3.0`** — the reference must lie within 3 × FWHM of the selected
+  mode. That is the same "outside the resolution function" line the fitting side uses to call two
+  features separate: inside it the reference and the mode are one feature the instrument cannot
+  split, outside it they are different physics.
+- **`MODE_AMBIGUITY_FWHM_FRACTION = 1e-6`** (floored at the absolute `MODE_AMBIGUITY_TOLERANCE_MEV`
+  `= 1e-9`) — the equidistance tolerance. An absolute 1e-9 meV decided "these two modes are the same
+  distance away" at a precision no measurement has, so a genuine numerical tie at a 0.4 meV
+  resolution was resolved by a coin flip.
 
 The artifact is **always published, never raised**: when a projection cannot be resolved it carries
 `complete: false` and a structured `reason`, and publishes no target draws at all — a
@@ -216,9 +267,20 @@ reasons are stable codes, routed on rather than read:
 - `ambiguous_track` — a track exists but its candidate is neither `confirmed` nor `individual`, or
   no candidate is selected;
 - `no_reference_target_energy` — no finite authoritative energy;
-- `no_unique_mode` — two modes are equidistant from the authoritative energy within
-  `MODE_AMBIGUITY_TOLERANCE_MEV`, so a nearest-energy rule would publish a coin flip as a QoI;
+- `reference_beyond_mode_support` — the authoritative energy is further than
+  `MODE_SUPPORT_FWHM_MULTIPLE × gaussian_fwhm_meV` from the nearest mode a draw offers, so no mode
+  here is the target;
+- `no_resolution_basis_for_mode_support` — the artifact declares no usable `gaussian_fwhm_meV`, so
+  the support distance has no scale to be measured in. This fails **closed**: a published `/2`
+  always carries a positive one (the strict validator refuses otherwise), so the state means the
+  basis is invalid, and disabling the gate would restore the unconditional nearest-mode rule for
+  exactly the artifacts least entitled to it;
+- `no_unique_mode` — two modes are equidistant from the authoritative energy within the
+  resolution-relative ambiguity tolerance, so a nearest-energy rule would publish a coin flip;
 - `no_retained_model_carries_the_target_mode` — no retained model has the target mode on any draw.
+
+Support outranks ambiguity when a draw trips both: "the reference is nowhere near any mode this draw
+offers" is the more fundamental failure, and reporting the tie would hide it.
 
 Where the predictive side produced nothing at all for an otherwise-successful master, the driver
 publishes `target_projection_construction_failed` instead of an absent record.
@@ -286,11 +348,20 @@ shipped:
   no-monitor master described above;
 - `invalid_energy_grid`, `invalid_requested_exposure`, `nonfinite_prediction` — the requested grid,
   the requested exposure, or a produced value is unusable;
-- `negative_prediction` — a produced expected count below `-NEGATIVE_PREDICTION_EPS` (`1e-9`). A
-  small negative value is float noise on a genuinely zero mean and clamps to zero; anything beyond
-  the tolerance is a real negative rate and refuses rather than being scored as if physical. The
-  tolerance is hashed into `predictive_basis_fingerprint` alongside `EVALUATOR_VERSION`, so a score
-  computed under one tolerance cannot be mistaken for one computed under another;
+- `negative_prediction` — a produced expected count below `-NEGATIVE_PREDICTION_EPS` (`1e-9`) **per
+  unit exposure**. A small negative value is float noise on a genuinely zero mean and clamps to
+  zero; anything beyond the tolerance is a real negative rate and refuses rather than being scored
+  as if physical.
+
+  The tolerance is stated at unit exposure and the threshold is multiplied by the exposure ratio
+  actually applied (`NEGATIVE_PREDICTION_EPS_RULE = "exposure_scaled"`), which makes the verdict a
+  property of the **model** rather than of the request. Applied absolutely to the already-scaled
+  value it was not: expected counts scale linearly with exposure, so one broken model refused at
+  `reference × 1e6` and passed at `reference / 1e6`, and a campaign could make an impossible
+  prediction disappear by asking for fewer neutrons. Both the value and the rule are hashed into
+  `predictive_basis_fingerprint` alongside `EVALUATOR_VERSION` (now
+  `isar.model_manifest_evaluator/2`), so a score computed under one cannot be mistaken for one
+  computed under another;
 - `predictive_basis_fingerprint_mismatch` and `predictive_artifact_invalid` — from the shared read
   gate above.
 

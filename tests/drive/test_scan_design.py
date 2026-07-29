@@ -600,6 +600,44 @@ def test_candidate_id_covers_the_grid_and_exposure_but_not_alias_provenance():
 # a search band unbounded, and a rival probe is evaluated with no ``target_band`` at all.
 
 
+def test_a_single_point_window_is_refused_rather_than_proposed():
+    """A grid the instrument will not run is not a candidate, however well it would score.
+
+    TAVI refuses any single-point request outright (``HTTP 400 ... Only 1 scan point!``), and
+    ``resolve_point_count`` normalizes an inverted window to its one starting point — so both
+    degeneracies present as ``n_points == 1``. ``broad_recovery/1`` reaches it from ordinary state:
+    on a narrow authorized domain the resolution-derived step is wider than the whole domain.
+    """
+    context = _context(scan_window_eig_mode="shadow", energy_search_meV=(6.9, 7.0),
+                       design_prediction_mean_meV=6.95, target_prediction_mean_meV=6.95,
+                       design_prediction_sigma_meV=0.02, target_prediction_sigma_meV=0.02,
+                       resolution_fwhm_meV=1.0)
+    inventory = design_scan_windows(context)
+
+    assert FAMILY_BROAD_RECOVERY not in _families(inventory)
+    assert _refusals(inventory)[FAMILY_BROAD_RECOVERY] == "degenerate_window"
+    detail = dict(next(refusal.detail for refusal in inventory.refusals
+                       if refusal.candidate_family == FAMILY_BROAD_RECOVERY))
+    assert detail["n_points"] == 1 and detail["minimum_points"] == 2
+    # Every candidate that survives is executable, and the legacy control is untouched.
+    assert all(candidate.n_points >= 2 and candidate.e_hi >= candidate.e_lo
+               for candidate in inventory.candidates)
+    assert _families(inventory)[0] == FAMILY_LEGACY_UNIFORM
+    assert inventory.selected_candidate.candidate_family == FAMILY_LEGACY_UNIFORM
+
+
+def test_the_degeneracy_refusal_never_masks_a_more_specific_one():
+    # It is the least informative diagnosis, so it runs last: a target family that also lost its
+    # core must still say THAT, not merely that the leftover window had one point.
+    context = _context(scan_window_eig_mode="shadow", energy_search_meV=(6.9, 7.0),
+                       design_prediction_mean_meV=6.95, target_prediction_mean_meV=6.95,
+                       design_prediction_sigma_meV=0.02, target_prediction_sigma_meV=0.02,
+                       resolution_fwhm_meV=1.0)
+    refusals = _refusals(design_scan_windows(context))
+    assert refusals[FAMILY_TARGET_CORE] == "target_core_truncated_after_domain_clip"
+    assert refusals[FAMILY_TARGET_LOW_ANCHOR] == "insufficient_target_support"
+
+
 def test_an_infinite_resolution_still_designs_the_legacy_window_in_off_mode():
     # Regression: the legacy candidate's grid fingerprint serialized raw floats, so a degenerate
     # step made ``design_scan_windows`` raise "not JSON compliant: nan" on a context the pre-seam

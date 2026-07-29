@@ -44,7 +44,7 @@ MANIFEST_SCHEMA = "isar.model_manifest/1"
 
 #: Version of this evaluation path. It is hashed into ``predictive_basis_fingerprint`` so a score
 #: computed under one evaluator can never be reused under another.
-EVALUATOR_VERSION = "isar.model_manifest_evaluator/1"
+EVALUATOR_VERSION = "isar.model_manifest_evaluator/2"
 
 #: Stable refusal codes raised from here (republished verbatim by the predictive evaluator).
 UNKNOWN_COMPONENT_KIND = "unknown_component_kind"
@@ -60,7 +60,22 @@ NEGATIVE_PREDICTION = "negative_prediction"
 #: a broken model, not a rounding artefact — and refuses instead of being clamped away. It is hashed
 #: alongside :data:`EVALUATOR_VERSION` into ``predictive_basis_fingerprint``, so a score computed
 #: under one tolerance can never be reused under another (ADR-020).
+#:
+#: The tolerance is stated **at unit exposure** and applied to the UNSCALED model mean; see
+#: :data:`NEGATIVE_PREDICTION_EPS_RULE`.
 NEGATIVE_PREDICTION_EPS = 1e-9
+
+#: How :data:`NEGATIVE_PREDICTION_EPS` is applied, hashed into ``predictive_basis_fingerprint`` beside
+#: the value so a verdict reached under one rule can never be reused under another.
+#:
+#: ``exposure_scaled`` means the threshold is multiplied by the exposure ratio actually applied to the
+#: model mean, which makes the sign test a property of the MODEL rather than of the request. An
+#: absolute threshold on the exposure-scaled value was not: expected counts scale linearly with
+#: exposure, so one broken model refused at ``exposure = reference × 1e6`` and passed at
+#: ``reference / 1e6``, and a campaign could make a negative prediction disappear by asking for fewer
+#: neutrons. Scaling both sides by the same ratio is algebraically the pre-scaling sign test, with the
+#: zero-exposure case (threshold and value both zero) falling out correctly.
+NEGATIVE_PREDICTION_EPS_RULE = "exposure_scaled"
 
 #: The registered PhononDHO peak vocabulary. ``Fitting_Functions.convolute_voigt_dho`` lowercases
 #: ``peak`` and either takes the literal ``all`` or splits it on ``+`` into these parts; an
@@ -314,6 +329,10 @@ def expected_counts(manifest, parameter_names, draw, context, energy_meV,
     count is a Poisson mean, so a substantially negative one is a broken model, and clamping it to
     zero published a plausible prediction from an impossible one. Only floating-point noise around a
     genuinely zero mean is clipped.
+
+    The threshold is scaled by the applied exposure ratio
+    (:data:`NEGATIVE_PREDICTION_EPS_RULE`), so the verdict describes the model and not the size of
+    the request that happened to be evaluated.
     """
     grid = energy_grid(energy_meV)
     composite = build_composite(manifest, getattr(context, "quasielastic_fwhm", None))
@@ -331,9 +350,17 @@ def expected_counts(manifest, parameter_names, draw, context, energy_meV,
     if not np.all(np.isfinite(values)):
         raise ModelManifestError(NONFINITE_PREDICTION,
                                  "model evaluation produced a non-finite expected count")
-    if np.any(values < -NEGATIVE_PREDICTION_EPS):
+    # ``values`` are already multiplied by the exposure ratio, so the tolerance is multiplied by the
+    # same ratio: the comparison is then the unscaled one at every exposure. A ratio of exactly zero
+    # makes both sides zero, which is right — every prediction is zero there and none is negative.
+    # Resolved exactly the way the components resolve it, so the threshold cannot be scaled by a
+    # ratio the evaluation did not apply.
+    applied = getattr(context, "exposure_for", lambda _x: None)(grid)
+    threshold = NEGATIVE_PREDICTION_EPS * (1.0 if applied is None else applied)
+    if np.any(values < -threshold):
         raise ModelManifestError(
             NEGATIVE_PREDICTION,
             f"model evaluation produced an expected count of {float(values.min())!r}, below the "
-            f"negative-prediction tolerance {NEGATIVE_PREDICTION_EPS!r}")
+            f"negative-prediction tolerance {NEGATIVE_PREDICTION_EPS!r} "
+            f"({NEGATIVE_PREDICTION_EPS_RULE})")
     return np.maximum(values, 0.0)

@@ -334,7 +334,7 @@
           ]
         }
       ],
-      "predictive_basis_fingerprint": "8f073331c0c7cbeaf0e8bcb06b779efc8c29ffe96b77ee5176e00de390ea9083"
+      "predictive_basis_fingerprint": "fa0ec7f661a8ebae732ffd6a2a6aaf04ad2bcd076d0d03a2cfed033d98b70936"
     },
     {
       "name": "one_mode_vs_two_mode",
@@ -609,7 +609,7 @@
           ]
         }
       ],
-      "predictive_basis_fingerprint": "f4a157d51f5ee6f37d79003e27689d5c4c07d60bfa44f502a84e28f5a9da0c2e"
+      "predictive_basis_fingerprint": "454259b628569ba6e1affe6d049e7bdc9ae7e25fd511549cabbddd6a127e56c4"
     },
     {
       "name": "branch_hypotheses",
@@ -865,7 +865,7 @@
           ]
         }
       ],
-      "predictive_basis_fingerprint": "c1d8fcb3db31d1248ea7e4229319a6b6862a36eb193c18a426d849ad8a137d3b"
+      "predictive_basis_fingerprint": "f6ed8f8b60401e2efaa8f2dab011932843f85b66fde9d9a3c587df7397dde6f5"
     }
   ],
   "unavailable_contract": {
@@ -1248,6 +1248,6 @@
         ]
       }
     ],
-    "predictive_basis_fingerprint": "00d82c7b87b48e90995a65c6615753a29bf249e0252aeeb7fa0f1881818b511a"
+    "predictive_basis_fingerprint": "ad53e168ec988e2fa0c93a3110f88646df39deb8b185942ea6b601732c0f79fb"
   }
 }

@@ -60,8 +60,15 @@ def _two_mode_artifact(monkeypatch, *, local_best: float):
         fits, {"two-mode": object()}, _pool_context(), seed=11, n_members=1)
 
 
-def _hand_artifact(mode_energies, *, label="m", weight=1.0):
+def _hand_artifact(mode_energies, *, label="m", weight=1.0, gauss_fwhm=0.4):
+    # The evaluation context is not decoration: the nearest-mode rule is resolution-relative, and a
+    # published /2 always carries a positive gaussian_fwhm_meV (the strict validator refuses one
+    # that does not). ``gauss_fwhm=None`` builds the artifact that omits it, on purpose.
+    context = (None if gauss_fwhm is None else
+               {"center_meV": 0.0, "gaussian_fwhm_meV": gauss_fwhm, "lorentzian_fwhm_meV": 0.1,
+                "temperature_K": 300.0})
     return {"schema": "isar.master_predictive/2", "predictive_basis_fingerprint": "fp",
+            "evaluation_context": context,
             "models": [{"label": label, "identity_label": label, "weight": weight,
                         "mode_energies": mode_energies}]}
 
@@ -113,6 +120,78 @@ def test_two_equidistant_modes_have_no_unique_target_and_refuse_to_guess():
     assert projection["complete"] is False
     assert projection["reason"] == "no_unique_mode"
     assert projection["models"][0]["target_present_by_draw"] == [False]
+
+
+# ---------------------------------------------------------------------------
+# Nearest-mode selection is resolution-relative, and bounded
+# ---------------------------------------------------------------------------
+def test_a_reference_far_from_every_mode_is_not_projected_onto_the_least_far_one():
+    """Nearest-energy selection with no distance gate answers confidently from arbitrarily far away.
+
+    An authoritative ω₀ of 99.0 meV against modes at {2.0, 5.0} was published as ``complete=true``
+    naming the 5.0 mode — a QoI about a target the model does not contain, bound to a full authority
+    basis and therefore trusted downstream.
+    """
+    projection = build_target_projection(
+        _hand_artifact([[2.0, 5.0]]), _outcome(omega0=99.0), **_AUTHORITY)
+    assert projection["complete"] is False
+    assert projection["reason"] == "reference_beyond_mode_support"
+    assert projection["models"][0]["target_present_by_draw"] == [False]
+    assert projection["models"][0]["target_qoi_draws"] == [None]
+
+
+@pytest.mark.parametrize("reference,complete", [
+    (5.0, True),          # on the mode
+    (6.1, True),          # 1.1 meV away, inside 3 x 0.4 meV FWHM
+    (6.19, True),         # just inside
+    (6.21, False),        # just outside
+    (6.3, False),         # 1.3 meV away
+])
+def test_the_support_distance_is_three_resolution_fwhm(reference, complete):
+    projection = build_target_projection(
+        _hand_artifact([[2.0, 5.0]]), _outcome(omega0=reference), **_AUTHORITY)
+    assert projection["complete"] is complete
+    assert projection["reason"] == (None if complete else "reference_beyond_mode_support")
+    # The gate scales with the declared resolution: a coarser instrument reaches further.
+    wide = build_target_projection(
+        _hand_artifact([[2.0, 5.0]], gauss_fwhm=4.0), _outcome(omega0=reference), **_AUTHORITY)
+    assert wide["complete"] is True
+
+
+def test_the_rule_the_projection_ran_under_is_recorded_in_the_projection():
+    projection = build_target_projection(
+        _hand_artifact([[2.0, 5.0]]), _outcome(omega0=5.0), **_AUTHORITY)
+    assert projection["mode_selection"] == {
+        "resolution_gaussian_fwhm_meV": 0.4,
+        "support_fwhm_multiple": 3.0,
+        "max_reference_distance_meV": pytest.approx(1.2),
+        "ambiguity_fwhm_fraction": 1e-6,
+        "ambiguity_tolerance_meV": pytest.approx(4e-7),
+    }
+
+
+def test_the_ambiguity_tolerance_is_resolution_relative_not_a_bare_float_comparison():
+    # 2e-7 meV of asymmetry at a 0.4 meV resolution is not a measurable preference for either mode;
+    # the old absolute 1e-9 tolerance declared it decisive and published one of them as the QoI.
+    tie = build_target_projection(
+        _hand_artifact([[5.0 - 1.0, 5.0 + 1.0 + 2e-7]]), _outcome(omega0=5.0), **_AUTHORITY)
+    assert tie["complete"] is False and tie["reason"] == "no_unique_mode"
+    # A separation an order of magnitude above the tolerance still resolves.
+    resolved = build_target_projection(
+        _hand_artifact([[5.0 - 1.0, 5.0 + 1.0 + 1e-5]]), _outcome(omega0=5.0), **_AUTHORITY)
+    assert resolved["complete"] is True
+    assert resolved["models"][0]["target_qoi_draws"] == pytest.approx([4.0])
+
+
+def test_an_artifact_declaring_no_resolution_cannot_establish_mode_support():
+    # Fail closed. A published /2 always carries a positive gaussian_fwhm_meV, so this state means
+    # the basis is invalid — and disabling the gate would restore the unconditional nearest-mode
+    # rule for exactly the artifacts least entitled to it.
+    projection = build_target_projection(
+        _hand_artifact([[2.0, 5.0]], gauss_fwhm=None), _outcome(omega0=5.0), **_AUTHORITY)
+    assert projection["complete"] is False
+    assert projection["reason"] == "no_resolution_basis_for_mode_support"
+    assert projection["mode_selection"]["resolution_gaussian_fwhm_meV"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -189,13 +268,28 @@ def test_the_projection_records_the_full_authority_basis_it_was_decided_under():
     projection = build_target_projection(
         _hand_artifact([[2.0, 5.0], [2.1, 5.1]]), _outcome(), action_role="master", **_AUTHORITY)
     assert projection["authority"] == {
+        "action_role": "master",
         "master_revision": "chash-1", "track_revision": 3, "track_state": "confirmed",
         "candidate_id": "cand-b", "candidate_state": "confirmed",
         "selected_candidate_index": 1,
         "calibration_fingerprint": "cal-1", "policy_fingerprint": "pol-1"}
     assert projection["qoi"] == "omega0"
     assert projection["projection_version"] == "isar.omega0_authoritative_mode/2"
-    assert projection["action_role"] == "master"
+    # ``action_role`` lives INSIDE the authority block, and nowhere else: published beside it, the
+    # documented "any authority field differs ⇒ stale" test could not see a role change.
+    assert "action_role" not in projection
+
+
+def test_a_role_change_alone_makes_a_stored_projection_stale():
+    # The staleness test a consumer is documented to run is a comparison of the authority block. A
+    # projection resolved for the master and one resolved for a rival probe are different bindings
+    # of the same fit, and that comparison has to say so.
+    artifact = _hand_artifact([[2.0, 5.0], [2.1, 5.1]])
+    master = build_target_projection(artifact, _outcome(), action_role="master", **_AUTHORITY)
+    probe = build_target_projection(
+        artifact, _outcome(), action_role="identity_rival_probe", **_AUTHORITY)
+    assert master["authority"] != probe["authority"]
+    assert probe["authority"]["action_role"] == "identity_rival_probe"
 
 
 # ---------------------------------------------------------------------------
@@ -300,8 +394,7 @@ def test_one_ambiguous_model_blanks_the_whole_projection_regardless_of_order(amb
     ambiguous = {"label": "ambiguous", "identity_label": "ambiguous", "weight": 0.5,
                  "mode_energies": [[4.0, 6.0]]}
     models = [ambiguous, clean] if ambiguous_first else [clean, ambiguous]
-    artifact = {"schema": "isar.master_predictive/2", "predictive_basis_fingerprint": "fp",
-                "models": models}
+    artifact = {**_hand_artifact([]), "models": models}
     projection = build_target_projection(artifact, _outcome(omega0=5.0), **_AUTHORITY)
     assert projection["complete"] is False
     assert projection["reason"] == "no_unique_mode"

@@ -711,6 +711,18 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   the instrument that the caller is not entitled to make. References: O33,
   `docs/EIG_STEERING_DESIGN.md`.
 
+  *Repaired 2026-07-29.* "Single authority on the point count" was stated but not delivered: the
+  legacy and generator-declared window paths kept a private `floor(span/e_step + 0.5) + 1` on the
+  raw designed span plus a clamp at the point cap, and the adapter counts over the **wire** span.
+  On near-tie windows ISAR therefore recorded and priced a point TAVI never visits — `deltaE
+  -5.44493 7 0.162679` recorded at 78 points, executed at 77. Both paths now take their count from
+  `resolve_uniform_grid`, so the ruling holds for every family. The window *geometry* stays frozen:
+  the legacy step is rendered verbatim into the submitted command, so its cap-coarsened form is
+  still derived from the designed span (`COARSEN_FROM_DESIGNED_SPAN`), which is why the emitted
+  command bytes are unchanged and only `n_points`/`scoring_grid`/`nominal_cost` move. The count is
+  never clamped back — where the two coarsening rules disagree the record states what the instrument
+  will really execute.
+
 - **O35.** (2026-07-29, Implemented in `isar/session/predictive_artifact.py`, `isar/predictive.py`
   and the three artifact readers) **The target projection is separated out of the physical
   predictive artifact and bound to the tracker authority basis that produced it.**
@@ -723,17 +735,30 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   `/2` becomes physical only: manifests, named draws, expected counts, `omega0_draws`, and per-draw
   `mode_energies` — the full menu of fitted mode energies a projection selects from without a refit.
   The projection moves to `isar.target_projection/2`, resolved *after* triage and the tracker,
-  carrying an `authority` block (master revision, track revision and state, candidate id and state,
-  selected candidate index, calibration and policy fingerprints). A consumer whose state differs on
-  any of those holds a stale projection and must re-resolve rather than score.
+  carrying an `authority` block (action role, master revision, track revision and state, candidate
+  id and state, selected candidate index, calibration and policy fingerprints). A consumer whose
+  state differs on any of those holds a stale projection and must re-resolve rather than score.
+  `action_role` was first published *beside* that block, which made the staleness test blind to the
+  one field it names — a master re-resolved as a rival probe compared equal and reused the master's
+  projection; it moved inside on 2026-07-29 as a clean break.
 
   An unresolvable projection **publishes** with `complete: false`, a structured `reason`, and no
   target draws at all. Raising was rejected because a missing artifact is indistinguishable from a
   producer that never ran; a *partially* populated one was rejected because it invites a consumer to
   score the half it likes. The reasons are stable codes (`descriptor_only`, `withheld_delivery`,
-  `ambiguous_track`, `no_reference_target_energy`, `no_unique_mode`,
+  `ambiguous_track`, `no_reference_target_energy`, `reference_beyond_mode_support`,
+  `no_resolution_basis_for_mode_support`, `no_unique_mode`,
   `no_retained_model_carries_the_target_mode`), and equidistant modes refuse rather than let a
   nearest-energy rule publish a coin flip as a QoI.
+
+  *Extended 2026-07-29.* Nearest-energy selection was unconditional, so an authoritative ω₀ of 99.0
+  meV against modes at {2.0, 5.0} published `complete: true` naming the 5.0 mode. Both selection
+  constants are now resolution-relative to the artifact's own `gaussian_fwhm_meV` and recorded in a
+  `mode_selection` block on the projection: a support gate at 3 × FWHM
+  (`reference_beyond_mode_support` outside it, and `no_resolution_basis_for_mode_support` when no
+  usable width is declared — fail closed, since a valid `/2` always carries one), and an equidistance
+  tolerance of 1e-6 × FWHM floored at the previous absolute 1e-9. An absolute 1e-9 meV decided a tie
+  at a precision no measurement has.
 
   The reshape reaches existing workspaces the same way O33's did, and by the same mechanism:
   `PREDICTIVE_CONTRACT` — defined once in `isar/predictive.py` and re-exported, never re-declared —

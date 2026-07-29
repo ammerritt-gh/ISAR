@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 from isar.drive.acquisition.inventory import canonical_json, json_number
 from isar.drive.acquisition.scan_grid import (
+    COARSEN_FROM_DESIGNED_SPAN,
     MAX_POINTS,
     UniformGrid,
     resolve_uniform_grid,
@@ -179,7 +180,32 @@ class WindowRefusal:
     detail: tuple[tuple[str, _DetailValue], ...] = ()
 
 
-# --- legacy window arithmetic (unchanged; the control the campaign actually executes) -------------
+# --- legacy window arithmetic (the control the campaign actually executes) ------------------------
+#
+# The window *geometry* below — every bound, and the step including its cap-coarsened form — is
+# frozen: it is rendered verbatim into the submitted ``deltaE`` command, so changing it would change
+# the scan ISAR has always executed.  The **point count** is not part of that request; it is the
+# instrument's answer to it, and it comes from the one adapter seam
+# (:func:`~isar.drive.acquisition.scan_grid.resolve_uniform_grid`) exactly as every other family's
+# does.  Deriving it here a second time from ``floor(span/step + 0.5) + 1`` on the *designed* span
+# was ADR-018's own counterexample: the adapter counts over the **wire** span, so a rendering that
+# moved a bound made ISAR record (and price, and score) one more point than TAVI would visit —
+# ``deltaE -5.44493 7 0.162679`` was recorded at 78 points and executed at 77, the extra one naming
+# an energy at 7.081 meV the instrument never reaches.  The old cap branch compounded it by
+# *clamping* the count to the cap rather than re-asking.
+
+def _frozen_window_count(e_lo: float, e_hi: float, e_step: float,
+                         point_cap: int) -> tuple[float, float, float, int]:
+    """``(e_lo, e_hi, e_step, n_points)`` for a frozen legacy window, counted by the adapter.
+
+    Coarsening at the cap keeps the historical designed-span rule
+    (:data:`~isar.drive.acquisition.scan_grid.COARSEN_FROM_DESIGNED_SPAN`) so the emitted command is
+    byte-identical; only the count changes, and only to the instrument's own answer.
+    """
+    grid = resolve_uniform_grid(e_lo, e_hi, e_step, max_points=point_cap,
+                                coarsen_span=COARSEN_FROM_DESIGNED_SPAN)
+    return grid.e_lo, grid.e_hi, grid.e_step, grid.n_points
+
 
 def _energy_window(e_pred: float, fwhm: float, e_sigma: float = 0.0, *,
                    survey: bool = False, energy_search_meV=None, target_band=None,
@@ -216,31 +242,17 @@ def _energy_window(e_pred: float, fwhm: float, e_sigma: float = 0.0, *,
         e_lo = max(e_lo, 0.5 * fwhm)
     if e_hi <= e_lo:
         e_hi = e_lo + fwhm
-    e_step = STEP_RES_FRACTION * fwhm
-    span = e_hi - e_lo
-    point_cap = max(int(max_points), 2)
-    n_points = int(math.floor(span / e_step + 0.5)) + 1
-    if n_points > point_cap:
-        e_step = span / (point_cap - 1)
-        n_points = point_cap
-    return e_lo, e_hi, e_step, n_points
+    return _frozen_window_count(e_lo, e_hi, STEP_RES_FRACTION * fwhm, max_points)
 
 
 def _declared_window(e_lo: float, e_hi: float, fwhm: float,
                      max_points: int = MAX_POINTS) -> tuple[float, float, float, int]:
-    """Legacy generator-declared window realization, moved intact."""
+    """Legacy generator-declared window realization; geometry intact, count from the adapter."""
     e_lo, e_hi = float(e_lo), float(e_hi)
     fwhm = max(float(fwhm), 1e-3)
     if e_hi <= e_lo:
         e_hi = e_lo + fwhm
-    e_step = STEP_RES_FRACTION * fwhm
-    span = e_hi - e_lo
-    point_cap = max(int(max_points), 2)
-    n_points = int(math.floor(span / e_step + 0.5)) + 1
-    if n_points > point_cap:
-        e_step = span / (point_cap - 1)
-        n_points = point_cap
-    return e_lo, e_hi, e_step, n_points
+    return _frozen_window_count(e_lo, e_hi, STEP_RES_FRACTION * fwhm, max_points)
 
 
 def uses_declared_rival_window(context: "ScanDesignContext") -> bool:
@@ -517,6 +529,21 @@ def alternative_window(family: str, context: "ScanDesignContext",
                 "support_band_mean": float(support_band[0]),
                 "support_band_sigma": float(support_band[1]),
                 "target_support_points": support, "required": minimum_support}))
+
+    # Last, because it is the least informative diagnosis: a family that also lost its target should
+    # say so.  A window the *instrument* cannot accept is nevertheless not a candidate — TAVI refuses
+    # any single-point request outright (HTTP 400 ``Only 1 scan point!``) and an inverted window
+    # renders a ``deltaE`` whose bounds run backwards — so it is refused here rather than emitted and
+    # rejected downstream, however well it would have scored.  It is reachable from ordinary state:
+    # ``broad_recovery/1`` on a narrow authorized domain such as ``(6.9, 7.0)`` resolves to exactly
+    # one point at any resolution-derived step wider than the domain.
+    if grid.n_points < 2 or grid.e_hi < grid.e_lo:
+        return WindowRefusal(
+            candidate_family=family,
+            reason_code="degenerate_window",
+            detail=_detail_items({
+                "e_lo": grid.e_lo, "e_hi": grid.e_hi, "e_step": grid.e_step,
+                "n_points": grid.n_points, "minimum_points": 2}))
 
     return PlannedWindow(candidate_family=family, grid=grid)
 

@@ -195,6 +195,9 @@ def predictive_basis_fingerprint(*, models, energy_meV, evaluation_context,
         "schema": PREDICTIVE_CONTRACT,
         "evaluator_version": manifest_mod.EVALUATOR_VERSION,
         "negative_prediction_eps": manifest_mod.NEGATIVE_PREDICTION_EPS,
+        # The value alone is not the rule: the same 1e-9 applied absolutely to the exposure-scaled
+        # mean and applied per unit exposure give different verdicts on the same model.
+        "negative_prediction_eps_rule": manifest_mod.NEGATIVE_PREDICTION_EPS_RULE,
         "models": [{
             "label": model["label"],
             "identity_label": model["identity_label"],

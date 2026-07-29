@@ -829,6 +829,43 @@ def test_all_three_readers_run_the_same_validator(tmp_path, monkeypatch):
     assert [payload["reason"] for _kind, payload in events] == ["predictive_artifact_invalid"]
 
 
+@pytest.mark.parametrize("payload", ["[]", '"a string"', "17", "null"],
+                         ids=["array", "string", "number", "null"])
+def test_a_non_object_predictive_payload_degrades_instead_of_crashing_the_loop(
+        tmp_path, monkeypatch, payload):
+    """Every malformed payload must leave the loop on its ordinary no-predictive path.
+
+    The validator already refuses a non-object artifact with ``artifact_schema_unsupported`` — but
+    the handler that recorded the refusal then read ``predictive.get("schema")`` off it. On a JSON
+    array, string, number or ``null`` that is an AttributeError, and it escaped ``_read_master_rows``
+    entirely: a file a consumer was supposed to shrug off aborted the campaign instead.
+    """
+    from isar.drive import loop as drive_loop
+
+    root = tmp_path / "ws"
+    (root / "data" / "master_predictive").mkdir(parents=True)
+    (root / "data" / "master_predictive" / "a.json").write_text(payload, encoding="utf-8")
+
+    events = []
+    monkeypatch.setattr(drive_loop, "log_event",
+                        lambda path, kind, event: events.append((kind, event)))
+    monkeypatch.setattr(drive_loop, "read_results_csv", lambda ws: [
+        {"pooled": True, "h": 2.0, "k": 0.0, "l": 0.0, "T": 300.0,
+         "predictive_ref": "data/master_predictive/a.json"}])
+    monkeypatch.setattr(drive_loop, "_master_obs_from_row",
+                        lambda row, calibration: {"usable": True})
+
+    rows = drive_loop._read_master_rows(root, None)
+
+    assert rows and "predictive" not in rows[0]        # the master survives, without a basis
+    assert len(events) == 1
+    kind, event = events[0]
+    assert kind == "exception"
+    assert event["action"] == "predictive_artifact_unsupported"
+    assert event["reason"] == "artifact_schema_unsupported"
+    assert event["schema"] is None                     # nothing to read, and nothing raised
+
+
 @pytest.mark.parametrize("mutate,reason", [
     (lambda a: {**a, "models": [{**a["models"][0], "draw_weighting": "explicit_weights"}]},
      "predictive_artifact_invalid"),                                   # weights must be present
@@ -909,6 +946,47 @@ def test_the_negative_prediction_tolerance_is_hashed_with_the_evaluator_version(
     payload, inputs = _fingerprint_inputs(monkeypatch)
     baseline = payload["predictive_basis_fingerprint"]
     monkeypatch.setattr(mm, "NEGATIVE_PREDICTION_EPS", 1e-6)
+    assert predictive_basis_fingerprint(**inputs) != baseline
+
+
+def test_the_negative_prediction_verdict_is_a_property_of_the_model_not_the_exposure():
+    """The same broken model must refuse at every exposure it is evaluated at.
+
+    Expected counts scale linearly with the exposure ratio, and the tolerance used to be an
+    ABSOLUTE 1e-9 applied to the already-scaled value. A model whose mean is -1e-8 counts per unit
+    exposure therefore refused at ``reference x 1e6`` and passed at ``reference / 1e6``: a campaign
+    could make an impossible prediction disappear by asking for fewer neutrons, and the surviving
+    scores were computed from a clamped negative Poisson mean.
+    """
+    manifest = {"schema": "isar.model_manifest/1",
+                "components": [{"type": "constant_background", "prefix": "bg"}],
+                "parameters": {"bg.BG": 1.0}}
+
+    def context(ratio):
+        return mm.EvaluationContext(center=0.0, gauss_fwhm=0.4, lorentz_fwhm=0.1, T=300.0,
+                                    exposure_ratio=ratio)
+
+    for ratio in (1e6, 1.0, 1e-6, 1e-12):
+        with pytest.raises(mm.ModelManifestError) as raised:
+            mm.expected_counts(manifest, ["bg.BG"], [-1e-8], context(ratio), _GRID)
+        assert raised.value.reason_code == "negative_prediction", ratio
+        # And noise below the tolerance still clamps rather than refusing, at the same extremes.
+        assert np.all(mm.expected_counts(
+            manifest, ["bg.BG"], [-1e-15], context(ratio), _GRID) == 0.0), ratio
+
+    # A zero exposure predicts zero everywhere; nothing there is negative.
+    assert np.all(mm.expected_counts(
+        manifest, ["bg.BG"], [-1e-8], context(0.0), _GRID) == 0.0)
+
+    # The rule is part of the scoring identity, beside the value it qualifies: the same 1e-9 applied
+    # absolutely and applied per unit exposure are different verdicts on the same artifact.
+    assert mm.NEGATIVE_PREDICTION_EPS_RULE == "exposure_scaled"
+
+
+def test_the_eps_rule_is_hashed_into_the_basis_fingerprint(monkeypatch):
+    payload, inputs = _fingerprint_inputs(monkeypatch)
+    baseline = payload["predictive_basis_fingerprint"]
+    monkeypatch.setattr(mm, "NEGATIVE_PREDICTION_EPS_RULE", "absolute")
     assert predictive_basis_fingerprint(**inputs) != baseline
 
 

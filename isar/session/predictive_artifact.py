@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Mapping
 
 import numpy as np
 
@@ -42,10 +43,26 @@ _PREDICTIVE_SCORE_SEED = 940_301
 # parity claim; forward evaluation of a new uniform-exposure candidate is valid on every pool.
 EXPOSURE_HOMOGENEITY_TOLERANCE = 1e-12
 
-#: When the two nearest modes are this close to EQUIDISTANT from the authoritative target energy, a
-#: nearest-energy rule cannot decide between them. Such a draw has no unique target mode and is
-#: refused rather than resolved by a coin flip.
+#: Absolute FLOOR for the equidistance tolerance below. It is not the tolerance itself: an absolute
+#: 1e-9 meV means "these two modes are the same distance away" is decided at a precision no
+#: measurement has, so a genuine numerical tie at a 0.4 meV resolution was resolved by a coin flip.
 MODE_AMBIGUITY_TOLERANCE_MEV = 1e-9
+
+#: The equidistance tolerance as a fraction of the artifact's Gaussian resolution FWHM. Small enough
+#: that two modes it merges are indistinguishable by any float bookkeeping the fit does (4e-7 meV at
+#: a 0.4 meV FWHM), never small enough to be a bare double-precision comparison.
+MODE_AMBIGUITY_FWHM_FRACTION = 1e-6
+
+#: How far the authoritative reference energy may sit from the mode a draw offers before that draw is
+#: held to carry no target mode at all, in multiples of the artifact's Gaussian resolution FWHM.
+#:
+#: Nearest-energy selection with no distance gate is *unconditional*: it returns the closest mode
+#: however far away it is, so an authoritative ω₀ of 99.0 meV projected onto modes at {2.0, 5.0} was
+#: published as ``complete=true`` naming the 5.0 mode — a confident answer about a target this model
+#: does not contain. Three FWHM is the same "outside the resolution function" line the fitting side
+#: uses to call two features separate: inside it the reference and the mode are one feature the
+#: instrument cannot split, outside it they are different physics and the projection must say so.
+MODE_SUPPORT_FWHM_MULTIPLE = 3.0
 
 #: Structured reasons a target projection is incomplete. A consumer routes on these, never on text.
 PROJECTION_DESCRIPTOR_ONLY = "descriptor_only"
@@ -55,6 +72,13 @@ PROJECTION_AMBIGUOUS_TRACK = "ambiguous_track"
 PROJECTION_NO_REFERENCE = "no_reference_target_energy"
 PROJECTION_NO_UNIQUE_MODE = "no_unique_mode"
 PROJECTION_NO_TARGET_MODE = "no_retained_model_carries_the_target_mode"
+PROJECTION_REFERENCE_BEYOND_SUPPORT = "reference_beyond_mode_support"
+#: The artifact declares no usable resolution width, so the support distance below has no scale to be
+#: measured in. Fail CLOSED: a published ``/2`` always carries a positive ``gaussian_fwhm_meV`` (the
+#: strict validator refuses otherwise), so this state means the basis is not a valid one — and the
+#: alternative, disabling the gate, would silently restore the unconditional nearest-mode rule for
+#: exactly the artifacts least entitled to it.
+PROJECTION_NO_RESOLUTION_BASIS = "no_resolution_basis_for_mode_support"
 
 #: Structured reasons the predictive side produced nothing for a master that otherwise fitted fine.
 PREDICTIVE_UNAVAILABLE_CONSTRUCTION_FAILED = "predictive_construction_failed"
@@ -398,6 +422,7 @@ def build_master_predictive(best, scores, fits, by_hyp, ctx, *, seed: int,
             "models": models,
             "evaluator_version": manifest_mod.EVALUATOR_VERSION,
             "negative_prediction_eps": manifest_mod.NEGATIVE_PREDICTION_EPS,
+            "negative_prediction_eps_rule": manifest_mod.NEGATIVE_PREDICTION_EPS_RULE,
             "energy_meV": grid.tolist(),
             "evaluation_context": evaluation_context,
             "exposure_basis": basis_values,
@@ -453,10 +478,44 @@ def _incompleteness_reason(outcome) -> str | None:
     return None
 
 
-def _project_model(model, reference: float) -> tuple[list, list, bool]:
-    """``(present_by_draw, qoi_draws, unique)`` for one model against the authoritative energy."""
+def mode_selection_rule(artifact) -> dict:
+    """The resolution-relative constants the nearest-mode rule is evaluated under, for this artifact.
+
+    Published inside the projection because both are *derived*: a consumer that reads only the
+    verdict cannot tell how far "near enough" was, and a later change to either constant must be
+    visible in the record it produced. The resolution comes from the artifact's own
+    ``evaluation_context`` — the width the fit was actually performed at.
+
+    A missing or unusable width leaves ``resolution_gaussian_fwhm_meV`` and
+    ``max_reference_distance_meV`` at ``None``, which the caller reads as
+    :data:`PROJECTION_NO_RESOLUTION_BASIS` and refuses on.
+    """
+    context = artifact.get("evaluation_context")
+    fwhm = None
+    if isinstance(context, Mapping):
+        try:
+            candidate = float(context.get("gaussian_fwhm_meV"))
+        except (TypeError, ValueError):
+            candidate = float("nan")
+        if math.isfinite(candidate) and candidate > 0.0:
+            fwhm = candidate
+    return {
+        "resolution_gaussian_fwhm_meV": fwhm,
+        "support_fwhm_multiple": MODE_SUPPORT_FWHM_MULTIPLE,
+        "max_reference_distance_meV": (None if fwhm is None
+                                       else MODE_SUPPORT_FWHM_MULTIPLE * fwhm),
+        "ambiguity_fwhm_fraction": MODE_AMBIGUITY_FWHM_FRACTION,
+        "ambiguity_tolerance_meV": (MODE_AMBIGUITY_TOLERANCE_MEV if fwhm is None else max(
+            MODE_AMBIGUITY_FWHM_FRACTION * fwhm, MODE_AMBIGUITY_TOLERANCE_MEV)),
+    }
+
+
+def _project_model(model, reference: float, rule: dict) -> tuple[list, list, str | None]:
+    """``(present_by_draw, qoi_draws, blocking_reason)`` for one model against the authoritative ω₀."""
     present, qoi = [], []
-    unique = True
+    blocked = None
+    max_distance = rule["max_reference_distance_meV"]
+    tolerance = rule["ambiguity_tolerance_meV"]
     for row in model.get("mode_energies") or ():
         candidates = [float(value) for value in row]
         if not candidates:
@@ -465,17 +524,29 @@ def _project_model(model, reference: float) -> tuple[list, list, bool]:
             qoi.append(None)
             continue
         ordered = sorted(candidates, key=lambda value: abs(value - reference))
+        if max_distance is None:
+            blocked = PROJECTION_NO_RESOLUTION_BASIS
+            present.append(False)
+            qoi.append(None)
+            continue
+        if abs(ordered[0] - reference) > max_distance:
+            # Checked before the tie test: "the reference is nowhere near any mode this draw offers"
+            # is a different and more fundamental failure than "two of them are equally near".
+            blocked = blocked or PROJECTION_REFERENCE_BEYOND_SUPPORT
+            present.append(False)
+            qoi.append(None)
+            continue
         if len(ordered) > 1 and abs(abs(ordered[0] - reference) - abs(ordered[1] - reference)) \
-                <= MODE_AMBIGUITY_TOLERANCE_MEV:
+                <= tolerance:
             # Two modes equidistant from the authoritative energy: a nearest-energy rule cannot
             # decide which one is the target, and guessing would publish a coin flip as a QoI.
-            unique = False
+            blocked = blocked or PROJECTION_NO_UNIQUE_MODE
             present.append(False)
             qoi.append(None)
             continue
         present.append(True)
         qoi.append(float(ordered[0]))
-    return present, qoi, unique
+    return present, qoi, blocked
 
 
 def build_target_projection(artifact, outcome, *, master_revision, calibration_fingerprint,
@@ -495,12 +566,21 @@ def build_target_projection(artifact, outcome, *, master_revision, calibration_f
     # Two passes on purpose. Blanking as we go would make the output order-dependent — the models
     # ahead of an ambiguous one would keep real draws while the ones behind it were zeroed — so the
     # completeness verdict is settled over ALL models first, then applied uniformly.
-    selected = ([(None, None, True)] * len(models) if reason is not None
-                else [_project_model(model, reference) for model in models])
-    if reason is None and not all(unique for _present, _qoi, unique in selected):
-        reason = PROJECTION_NO_UNIQUE_MODE
+    rule = mode_selection_rule(artifact)
+    selected = ([(None, None, None)] * len(models) if reason is not None
+                else [_project_model(model, reference, rule) for model in models])
+    if reason is None:
+        # First blocking reason in model order, so the verdict is deterministic; support outranks
+        # ambiguity because a draw can be both and the support failure is the informative one.
+        blocking = [blocked for _present, _qoi, blocked in selected if blocked]
+        for preferred in (PROJECTION_NO_RESOLUTION_BASIS, PROJECTION_REFERENCE_BEYOND_SUPPORT):
+            if preferred in blocking:
+                reason = preferred
+                break
+        else:
+            reason = blocking[0] if blocking else None
     projected = []
-    for model, (present, qoi, _unique) in zip(models, selected):
+    for model, (present, qoi, _blocked) in zip(models, selected):
         if reason is not None:
             # An incomplete projection publishes no target draws at all: a partially-populated one
             # invites a consumer to score the half it happens to like.
@@ -523,10 +603,18 @@ def build_target_projection(artifact, outcome, *, master_revision, calibration_f
         "projection_version": TARGET_PROJECTION_VERSION,
         "predictive_basis_fingerprint": artifact.get("predictive_basis_fingerprint"),
         "reference_energy_meV": reference,
-        "action_role": str(action_role),
+        # The resolution-relative rule the nearest-mode selection ran under, so the verdict can be
+        # re-derived from the record instead of from whatever the constants say today.
+        "mode_selection": rule,
         # The authority basis this projection is bound to. A consumer whose current state differs on
         # ANY of these fields holds a stale projection and must re-resolve it (EIG-3/4 eligibility).
+        #
+        # ``action_role`` is one of them. It was published OUTSIDE this block, which made the
+        # documented staleness test — any authority field differs ⇒ stale — silently blind to a role
+        # change: the same master re-resolved as a rival probe rather than the master compared equal
+        # and its projection was reused.
         "authority": {
+            "action_role": str(action_role),
             "master_revision": master_revision,
             "track_revision": outcome.get("track_revision"),
             "track_state": outcome.get("track_state"),

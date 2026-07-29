@@ -25,8 +25,14 @@ from isar.drive.acquisition.grid_adapters import (
     TAVI_GRID_ADAPTER,
     TaviUniformGridAdapter,
 )
+from isar.drive.acquisition.physical_windows import (
+    STEP_RES_FRACTION,
+    _declared_window,
+    _energy_window,
+)
 from isar.drive.acquisition.scan_design import ScanDesignContext, design_scan_windows
 from isar.drive.acquisition.scan_grid import (
+    COARSEN_FROM_DESIGNED_SPAN,
     points_in_window,
     resolve_point_count,
     resolve_uniform_grid,
@@ -220,6 +226,90 @@ def test_every_designed_candidate_scores_the_grid_it_will_execute():
                 candidate.e_lo, candidate.e_hi, candidate.e_step)
 
 
+# ---- the legacy/declared window is adapter-canonical for POINT COUNT too -------------------------
+#
+# ADR-018 claims the adapter is the single authority on how many points a request has. The legacy and
+# declared-window paths kept their own `floor(span/step + 0.5) + 1` on the RAW designed span plus a
+# clamp at the cap, so on near-tie windows ISAR recorded, priced and scored a point the instrument
+# never visits. The count now comes from the adapter; the emitted command does not change.
+
+def test_the_legacy_window_counts_the_points_tavi_will_actually_execute():
+    """The measured counterexample, pinned exactly.
+
+    Survey action, prediction 3.4449328224910514 meV at a 0.6507152993820858 meV resolution over the
+    (-2, 7) search band. The command is ``deltaE -5.44493 7 0.162679``; TAVI executes 77 points, and
+    ISAR recorded 78 — the extra one at 7.081 meV, past the declared upper bound and past anywhere
+    the instrument goes.
+    """
+    e_lo, e_hi, e_step, n_points = _energy_window(
+        3.4449328224910514, 0.6507152993820858, 0.0, survey=True,
+        energy_search_meV=(-2.0, 7.0), max_points=100)
+
+    assert DEFAULT_GRID_ADAPTER.format_scan_command(e_lo, e_hi, e_step) == (
+        "deltaE -5.44493 7 0.162679")
+    assert DEFAULT_GRID_ADAPTER.point_count(e_lo, e_hi, e_step) == 77
+    assert n_points == 77
+    # And the whole chain agrees: recorded count, scored grid, and the adapter's own point list.
+    grid = resolve_uniform_grid(e_lo, e_hi, e_step, max_points=100,
+                                coarsen_span=COARSEN_FROM_DESIGNED_SPAN)
+    assert grid.n_points == 77 and len(grid.energies) == 77
+    # The 78th point TAVI never visits sat at 7.081 meV, past the declared bound.
+    assert grid.energies[-1] == 6.919
+    assert max(grid.energies) <= e_hi
+
+
+def test_the_designed_candidate_records_the_adapter_count_for_that_context():
+    context = _context(
+        design_prediction_mean_meV=3.4449328224910514, target_prediction_mean_meV=3.4449328224910514,
+        design_prediction_sigma_meV=0.0, target_prediction_sigma_meV=0.0,
+        resolution_fwhm_meV=0.6507152993820858, survey=True, energy_search_meV=(-2.0, 7.0),
+        policy_max_points=100, runtime_max_points=100)
+    candidate = design_scan_windows(context).selected_candidate
+
+    assert candidate.grid.scan_command() == "deltaE -5.44493 7 0.162679"
+    assert candidate.n_points == 77
+    assert len(candidate.to_dict()["scoring_grid"]) == 77
+    assert candidate.nominal_cost == 77 * candidate.ncount
+
+
+@pytest.mark.parametrize("declared", [True, False], ids=["declared_window", "energy_window"])
+def test_routing_the_legacy_count_through_the_adapter_changes_no_command_byte(declared):
+    """The count may move; the request may not.
+
+    The legacy window's step — including its cap-coarsened form, which is derived from the RAW
+    designed span on purpose — is rendered verbatim into the submitted ``deltaE``. Coarsening against
+    the wire span instead would be the better rule in the abstract and changes the sixth significant
+    digit of the step on roughly one capped window in six, which is a different scan.
+    """
+    rng = random.Random(20260729)
+    moved = 0
+    samples = 60_000
+    for _ in range(samples):
+        e_lo = rng.uniform(-20.0, 0.0)
+        e_hi = e_lo + rng.uniform(0.01, 40.0)
+        fwhm = rng.uniform(1e-3, 3.0)
+        cap = rng.choice([20, 50, 100, 200])
+        if declared:
+            lo, hi, step, count = _declared_window(e_lo, e_hi, fwhm, max_points=cap)
+        else:
+            lo, hi, step, count = _energy_window(
+                (e_lo + e_hi) / 2.0, fwhm, 0.0, energy_search_meV=(e_lo, e_hi), max_points=cap)
+        historical_step = STEP_RES_FRACTION * max(fwhm, 1e-3)
+        span = hi - lo
+        historical_count = int(math.floor(span / historical_step + 0.5)) + 1
+        if historical_count > cap:
+            historical_step = span / (cap - 1)
+            historical_count = cap
+        assert f"{step:g}" == f"{historical_step:g}"                     # byte-identical request
+        assert count == DEFAULT_GRID_ADAPTER.point_count(lo, hi, step)   # honest count
+        moved += count != historical_count
+    # The counts that move are exactly the near-ties where the old arithmetic disagreed with TAVI:
+    # a handful in 60k (measured 2 declared / 3 derived), and every one of them was a scan ISAR
+    # mis-recorded. The bound is on the RATE — a change that starts moving counts in bulk is moving
+    # something other than the near-ties, and that is the failure this pins.
+    assert moved < samples // 1000
+
+
 def test_the_legacy_command_string_is_unchanged_by_the_adapter_seam():
     # The adapter changed the scoring *representation* of a window, never the request: the legacy
     # control's emitted deltaE string is still the plain %g rendering ISAR has always submitted.
@@ -259,6 +349,27 @@ def test_live_adapter_prediction_equals_the_executed_scan_values():
     executed = (client.get_scan_data(submit["job_id"])["result"] or {}).get("scan_values_1")
     assert executed is not None, "TAVI returned no scan_values_1"
     assert [float(value) for value in executed] == list(predicted)
+
+
+@pytest.mark.live
+@pytest.mark.skipif(not os.environ.get("ISAR_LIVE_TAVI"),
+                    reason="set ISAR_LIVE_TAVI (and run TAVI at 127.0.0.1:8642) to enable")
+def test_live_tavi_refuses_a_single_point_request():
+    """The external fact ``degenerate_window`` encodes, checked against the real instrument.
+
+    The refusal in ``alternative_window`` exists because TAVI will not run a one-point scan. If that
+    ever stops being true the refusal is over-strict and this says so, loudly, rather than leaving a
+    family suppressed for a reason that expired.
+    """
+    from isar.drive.instrument.tavi_client import TaviClient
+
+    client = TaviClient()
+    # deltaE 6.9 7 0.25 — exactly what broad_recovery/1 resolves to on a (6.9, 7.0) domain.
+    validation = client.validate({"parameters": {"scan_command1": "deltaE 6.9 7 0.25",
+                                                 "number_neutrons": 1000}})
+    assert validation.get("requested_points") == 1
+    assert validation.get("would_queue") is False
+    assert any("1 scan point" in str(blocker) for blocker in (validation.get("blockers") or ()))
 
 
 @pytest.mark.parametrize("point_cap", [2, 3, 5, 100, 200, 500, 5_000, 100_000])

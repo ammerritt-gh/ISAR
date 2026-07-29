@@ -19,6 +19,7 @@ TAVI client and shell out to ``isar run``.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -1193,10 +1194,17 @@ def _read_master_rows(workspace, calibration: Calibration) -> list[dict]:
                     # An unusable predictive artifact is no predictive basis at all (ADR-006): the
                     # master keeps every other property and the loop takes its ordinary
                     # no-predictive path, refit or legacy, never a campaign abort.
+                    #
+                    # The declared schema is read defensively because the refusal being handled is
+                    # exactly the one that fires when the payload is not an object at all: a JSON
+                    # array, string, number or ``null`` validates to ``artifact_schema_unsupported``,
+                    # and ``predictive.get`` on it raised an AttributeError that escaped this whole
+                    # function — turning a degrade-and-continue into a campaign abort.
                     log_event(Path(workspace) / "report" / "session_log.jsonl", "exception", {
                         "action": "predictive_artifact_unsupported", "reference": str(ref),
                         "reason": error.reason_code, "message": error.message,
-                        "schema": predictive.get("schema")})
+                        "schema": (predictive.get("schema")
+                                   if isinstance(predictive, Mapping) else None)})
                 except (ValueError, OSError, json.JSONDecodeError) as error:
                     log_event(Path(workspace) / "report" / "session_log.jsonl", "exception", {
                         "action": "predictive_artifact_unavailable", "reference": str(ref),

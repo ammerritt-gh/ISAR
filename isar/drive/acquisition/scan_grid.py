@@ -28,6 +28,22 @@ from isar.drive.acquisition.inventory import canonical_json, json_number
 MAX_POINTS = 100
 UNIFORM_SCAN_GRID_SCHEMA = "isar.uniform_scan_grid/2"
 
+#: Which span the step is widened against when a window exceeds the point cap.  The two values are
+#: **not** interchangeable, and the choice is a property of the caller, never of the arithmetic:
+#:
+#: * :data:`COARSEN_FROM_WIRE_SPAN` divides the span the adapter actually counts over — the bounds
+#:   after the ``%g`` round trip.  It is the correct rule and the only one that keeps the count at or
+#:   below the cap for every cap (ADR-018; see :func:`resolve_uniform_grid`).  Every *newly invented*
+#:   window uses it.
+#: * :data:`COARSEN_FROM_DESIGNED_SPAN` divides the raw designed span.  It is the historical rule,
+#:   and it is frozen for the legacy control alone: the coarsened step is rendered straight into the
+#:   emitted ``deltaE`` command, so changing it would change the scan ISAR has always submitted.  The
+#:   *count* is still the adapter's answer under it — the point of routing legacy through here — so
+#:   in the rare regime where the two rules disagree the legacy candidate records the over-cap count
+#:   the instrument will really execute instead of a clamp that hides it.
+COARSEN_FROM_WIRE_SPAN = "wire_span"
+COARSEN_FROM_DESIGNED_SPAN = "designed_span"
+
 
 def resolve_point_count(e_lo: float, e_hi: float, e_step: float, *,
                         adapter: TaviUniformGridAdapter = DEFAULT_GRID_ADAPTER) -> tuple[int, float]:
@@ -116,6 +132,7 @@ class UniformGrid:
 
 def resolve_uniform_grid(e_lo: float, e_hi: float, e_step: float, *,
                          max_points: int = MAX_POINTS,
+                         coarsen_span: str = COARSEN_FROM_WIRE_SPAN,
                          adapter: TaviUniformGridAdapter = DEFAULT_GRID_ADAPTER) -> UniformGrid:
     """Resolve a window into an executable grid, coarsening the step only at the point cap.
 
@@ -136,18 +153,30 @@ def resolve_uniform_grid(e_lo: float, e_hi: float, e_step: float, *,
     adapter's ``0.5``-point rounding margin below a cap around ``10**6`` — six orders above TAVI's
     200-point ceiling.  Past that the wire protocol has too few significant digits to express a
     conforming step at all, and no arithmetic here can recover it.
+
+    ``coarsen_span`` selects which span the widened step is derived from
+    (:data:`COARSEN_FROM_WIRE_SPAN` / :data:`COARSEN_FROM_DESIGNED_SPAN`).  Only the legacy control
+    passes the designed span, and only because that step is rendered verbatim into the submitted
+    command.  Either way the returned count is the adapter's, never a clamp.
     """
+    if coarsen_span not in (COARSEN_FROM_WIRE_SPAN, COARSEN_FROM_DESIGNED_SPAN):
+        raise ValueError(f"unknown coarsening span basis {coarsen_span!r}")
     e_lo, e_hi = float(e_lo), float(e_hi)
     point_cap = max(int(max_points), 2)
     n_points, step = resolve_point_count(e_lo, e_hi, e_step, adapter=adapter)
     if n_points > point_cap:
-        wire_lo, wire_hi, _ = adapter.wire_window(e_lo, max(e_hi, e_lo), step)
-        step = (wire_hi - wire_lo) / (point_cap - 1)
+        if coarsen_span == COARSEN_FROM_WIRE_SPAN:
+            span_lo, span_hi, _ = adapter.wire_window(e_lo, max(e_hi, e_lo), step)
+        else:
+            span_lo, span_hi = e_lo, max(e_hi, e_lo)
+        step = (span_hi - span_lo) / (point_cap - 1)
         n_points, step = resolve_point_count(e_lo, e_hi, step, adapter=adapter)
     return UniformGrid(e_lo=e_lo, e_hi=e_hi, e_step=step, n_points=n_points, adapter=adapter)
 
 
 __all__ = [
+    "COARSEN_FROM_DESIGNED_SPAN",
+    "COARSEN_FROM_WIRE_SPAN",
     "MAX_POINTS",
     "UNIFORM_SCAN_GRID_SCHEMA",
     "UniformGrid",
