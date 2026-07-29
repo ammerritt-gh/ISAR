@@ -653,6 +653,32 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   inside — the scan-design inventory is a workspace-internal audit artifact),
   `docs/EIG_STEERING_DESIGN.md`, `docs/MEASUREMENT_STEERING.md`.
 
+- **O33.** (2026-07-29, Implemented in `isar/session/driver.py`, `isar/predictive.py`,
+  `isar/session/certification.py` and `isar/workspace_api/workspace.py`) **The predictive artifact
+  moves to `isar.master_predictive/2` as a clean break, and the contract version joins the
+  master-fit fingerprint so cached fits regenerate exactly once.** `/1` emission is deleted rather
+  than kept alongside `/2`: every reader — the drive loop, the workspace facade, the arbitrary-grid
+  evaluator — requires `/2`, and no reader guesses a `/1` artifact into `/2`, which is impossible
+  anyway since `/1` carries neither the fitted grid, nor the evaluation context, nor an exposure
+  basis. The rejected alternative was a dual-read layer accepting both; it would have made every
+  consumer carry a permanent branch and, worse, would have let a `/1` artifact silently supply a
+  prediction with an *assumed* exposure basis, which is the exact error the `/2` work exists to
+  remove.
+
+  Because the predictive artifact is part of a master fit's output contract, `MASTER_FIT_CONTRACT`'s
+  fingerprint payload now includes `PREDICTIVE_CONTRACT`. A scientifically unchanged fit therefore
+  fails its cache check once at this release and regenerates under the new contract, instead of
+  carrying a stale `/1` side artifact forever behind a valid fingerprint. A leftover `/1` artifact
+  is a non-result, never a fault: the loop logs `predictive_artifact_unsupported` with
+  `artifact_schema_unsupported` and takes its ordinary no-predictive path, and the facade refuses
+  the artifact without blocking the workspace.
+
+  This is in-bounds of O12's frozen Stage II↔III contract: `master_predictive` is a
+  workspace-internal artifact, not one of the three frozen boundary files (`report/results.csv`,
+  `report/report.json`, `card.state.json`). Pre-release, a clean break is cheaper than a permanent
+  compatibility branch (ADR-006/013 of the EIG plan; same reasoning as O32). References: O12,
+  O32, `docs/EIG_STEERING_DESIGN.md`.
+
 - **S5.** (2026-07-25, Implemented; amends S1 and V5, both of which record the superseded status)
   **The Bayesian rung of the interval ladder is built and running; what is still Planned is its
   licence to certify, not its machinery.** S1 wrote the ladder as "Hessian (never certifies) →

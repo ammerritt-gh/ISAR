@@ -2,7 +2,7 @@
 
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
-> **Verified against code revision:** `f19e819` (2026-07-29)
+> **Verified against code revision:** `753dab3` (2026-07-29)
 > **Owner:** @ammerritt-gh
 > **Exit criteria:** `isar.master_predictive/2` is published, the pure arbitrary-grid evaluator passes
 > the normative fixtures, multiple same-action scan candidates are ranked and audited, and the shipped
@@ -10,7 +10,8 @@
 
 ## Status and boundary
 
-**Alternative-window EIG scoring and selection are not implemented; candidate generation is.**
+**Alternative-window EIG scoring and selection are not implemented; candidate generation, the
+`isar.master_predictive/2` artifact, and the pure arbitrary-grid evaluator are.**
 Current acquisition ranks scientific actions and Q
 positions using expected counts already stored on each master's fitted grid. The
 `ScanDesignContext → ScanDesignInventory` seam now generates the bounded family of conventional
@@ -56,18 +57,20 @@ It may compare different uniform windows/counts for the **same already-selected 
 It may not invent branch hypotheses, change evidence routing, fit data, alter QC, or move scientific
 selection out of the existing action inventory.
 
-## Future predictive artifact
+## Predictive artifact
 
-`isar.master_predictive/2` will be additive to `/1`. It retains the current model weights, labels,
-draw basis, parameter names/draws, model manifests, ω draws, seed, and uncertainty diagnostics, and
-adds the information needed to evaluate those same draws away from the fitted grid:
+`isar.master_predictive/2` is the only published predictive artifact; `/1` emission is deleted and
+every reader requires `/2` (ADR-006/013, DECISIONS O33). It retains the model weights, labels, draw
+basis, parameter names/draws, model manifests, ω draws, seed, and uncertainty diagnostics `/1`
+carried, and adds the information needed to evaluate those same draws away from the fitted grid:
 
-- `energy_meV`: the ordered fitted master grid on which the retained `/1` expected counts were made;
+- `energy_meV`: the ordered fitted master grid on which the stored expected counts were made;
 - `evaluation_context`: `center_meV`, Gaussian/Lorentzian resolution FWHM, temperature, and optional
   quasielastic FWHM;
 - `exposure_basis`: `unit` (`monitor_counts`), `request_unit` (`number_neutrons`),
   `request_to_exposure_factor` (`1.0`), `fit_reference_exposure`, `reference_incremental_exposure`,
-  `n_members`, `per_energy_monitor` (ΣM per bin, aligned to `energy_meV`),
+  `n_members`, `per_energy_monitor` (ΣM per bin, aligned to `energy_meV`), `stored_exposure_ratio`
+  (the per-bin multiplier the stored matrices were actually made with),
   `scalar_exposure_eligible`, `exposure_homogeneous`, `full_member_support`,
   `exposure_ratio_span`, and `kept_point_count`.
 
@@ -78,29 +81,42 @@ tens of percent. For requested per-point exposure \(E\), evaluation multiplies t
 by `E / fit_reference_exposure`; this candidate-evaluation ratio is valid on every pool, including
 heterogeneous ones, and is not gated on `exposure_homogeneous`.
 
-The fitted grid's self-consistency is reproduced by the **per-energy** exposure vector
-`per_energy_monitor_i / fit_reference_exposure`, checked against the `/2` producer's own stored
-matrices (not `/1`, which is superseded once `/1` emission is deleted per ADR-006). The scalar
-`reference_incremental_exposure = fit_reference_exposure / n_members` reproduces the same grid
-**iff `exposure_homogeneous`** is true; `reference_incremental_exposure` is documented as a mean of
-per-member exposure, not any one member's request, and once `/1` is retired its only role is this
-diagnostic identity.
+The stored expected counts keep `/1`'s per-member incremental meaning — "the counts one further
+member-equivalent scan would see" — so the multiplier they were made with is the per-bin
+`stored_exposure_ratio_i = ΣM_i / (n_members · fit_reference_exposure)`, and that vector is
+published rather than left to be re-derived. The fitted grid's self-consistency is therefore
+checked through the published ratio against the producer's own stored matrices. The scalar
+`reference_incremental_exposure = fit_reference_exposure / n_members` is the **parity point** of
+that vector: it reproduces the same grid **iff `exposure_homogeneous`** is true. It is a mean of
+per-member exposure, not any one member's request, and that diagnostic identity is its only role.
 
 `scalar_exposure_eligible` (equivalently `exposure_homogeneous`, `max(ΣM_kept)/min(ΣM_kept) - 1 <=
 1e-12`) is published as a declaration and diagnostic. It gates only the scalar fitted-grid parity
 assertion described above — it does **not** gate candidate (forward) evaluation, which uses the
 scalar ratio on every pool regardless of support profile.
 
+`full_member_support` is **nullable**, not a boolean: it is `true` for a single-member pool, which
+by construction supports every kept bin, and `null` otherwise. Per-bin member support is not
+carried on `MergedSpectrum`, so it is reported only where it is known rather than guessed, and the
+operative eligibility predicate is the ΣM profile itself, which separates the partial-support cases
+as well. A `null` here is an absence of knowledge, never a `false`.
+
 A master fitted on the legacy uniform path (no usable monitor; the pooled merge has no time
-fallback) has no exposure basis at all and returns `missing_exposure_basis`. This code stays
-reserved for that genuine no-monitor case.
+fallback) still publishes a `/2` artifact — with null `fit_reference_exposure`,
+`reference_incremental_exposure`, `per_energy_monitor` and `full_member_support`, and
+`scalar_exposure_eligible: false`. It is the arbitrary-grid evaluator, not the producer, that
+refuses such a master, with `missing_exposure_basis`; that code stays reserved for this genuine
+no-monitor case.
 
-No `/2` artifact is published during this prep cycle, and `/1` is never guessed into `/2`: it lacks
-the original grid, evaluation context, and explicit exposure basis.
+`/1` is never guessed into `/2`: it lacks the original grid, evaluation context, and explicit
+exposure basis. A leftover `/1` side artifact refuses where it is read — the drive loop logs
+`predictive_artifact_unsupported` / `artifact_schema_unsupported` and takes its ordinary
+no-predictive path, and the workspace facade raises rather than opening it — but it never blocks
+opening a workspace or aborts a campaign.
 
-## Future pure evaluator interface
+## Pure evaluator interface
 
-The Qt-free interface will be:
+The Qt-free interface is:
 
 ```python
 evaluate_master_predictive(
@@ -112,20 +128,31 @@ evaluate_master_predictive(
 
 An available result has schema `isar.predictive_design_evaluation/1`, echoes the requested ordered
 grid and exposure, and contains each retained model's label, normalized weight, draw basis, ω draws,
-and an `expected_counts[draw][point]` matrix. Values must be finite and non-negative, model/draw order
-must remain stable, and the evaluator must be deterministic.
+and an `expected_counts[draw][point]` matrix. Values are finite and non-negative, model/draw order
+follows the artifact, and the evaluator is deterministic and pure — it neither reads the workspace
+nor refits.
 
 The evaluator reconstructs every registered component from `model_manifest`, substitutes each
-parameter draw, evaluates the component functions directly at every requested energy, sums them, and
-applies the exposure ratio. It must never interpolate stored `/1` expected counts.
+parameter draw **by name**, evaluates the component functions directly at every requested energy,
+sums them, and applies the scalar exposure ratio `exposure_per_point / fit_reference_exposure`. It
+never interpolates stored expected counts. The producer and the evaluator share one evaluation path
+(`isar.analyze.model_manifest`), so they agree on component structure by construction rather than
+by parallel code.
 
-Expected unsupported inputs return `available=false` with a stable `reason_code` and message:
+Expected unsupported inputs return `available=false` with a stable `reason_code` and message. As
+shipped:
 
-- `artifact_schema_unsupported` for `/1` or an unknown artifact version;
-- `missing_exposure_basis`;
-- `malformed_draw_shape`;
-- `unknown_component_kind`;
-- `nonfinite_prediction`.
+- `artifact_schema_unsupported` — a non-`/2` schema (including `/1`), or a structural fault in the
+  artifact or a model manifest: a missing evaluation context, no retained models, an unusable model
+  weight, or a malformed manifest;
+- `unknown_component_kind` — a manifest naming a component kind the evaluator does not register;
+- `malformed_draw_shape` — a parameter-name/draw mapping fault, including a model with no draws;
+- `predictive_basis_incomplete` — the artifact's own `completeness.predictive_complete_for_eig` is
+  not `true` (ADR-014);
+- `missing_exposure_basis` — no finite positive `fit_reference_exposure`, i.e. the genuine
+  no-monitor master described above;
+- `invalid_energy_grid`, `invalid_requested_exposure`, `nonfinite_prediction` — the requested grid,
+  the requested exposure, or a produced value is unusable.
 
 The evaluator owns prediction only. It must not read TAVI presets, generated background truth,
 instrument rates, or request-time rate assumptions; fit or mutate scientific state; calculate EIG or
