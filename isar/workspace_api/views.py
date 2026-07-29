@@ -302,6 +302,11 @@ class FitView:
         return str(value) if value not in (None, "") else None
 
     @property
+    def target_projection_ref(self) -> str | None:
+        value = self._pick("target_projection_ref", "target_projection_ref")
+        return str(value) if value not in (None, "") else None
+
+    @property
     def master_revision(self) -> str | None:
         value = self._pick("master_revision", "master_revision")
         return str(value) if value not in (None, "") else None

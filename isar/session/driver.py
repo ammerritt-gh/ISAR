@@ -32,13 +32,12 @@ from isar.analyze import gold as gold_mod
 from isar.analyze.context import (
     ScanContext, effective_exposure, normalized_exposure, select_exposure,
 )
-from isar.analyze import model_manifest as manifest_mod
 from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
-from isar.predictive import PREDICTIVE_ARTIFACT_SCHEMA as _PREDICTIVE_ARTIFACT_SCHEMA
-from isar.predictive import predictive_score as _predictive_score
+from isar.predictive import PREDICTIVE_CONTRACT
+from isar.predictive import json_fingerprint as _json_fingerprint
 from isar.schema.card import Card
 from isar.schema.hypotheses import preset as hypothesis_preset
 from isar.schema.steering import (AUXILIARY_TRACK_NODE, CANDIDATE_NOT_DETECTED, CANONICAL_MASTER,
@@ -46,6 +45,8 @@ from isar.schema.steering import (AUXILIARY_TRACK_NODE, CANDIDATE_NOT_DETECTED, 
                                   realized_outcome_for)
 from isar.session import branch_assignment as BA
 from isar.session import branch_model, branch_tracking, calibrations, guidelines as guide_mod, ingest, router, session_prior
+from isar.session import predictive_artifact
+from isar.session.predictive_artifact import model_manifest_of as _model_manifest_of
 
 # Steering Phase 2c: apply the low-q branch soft-constraint when the dispersion prior predicts a
 # phonon within this many resolution FWHM of the elastic line (the merging regime where Γ/A go
@@ -207,6 +208,9 @@ class FitOutcome:
     is_reduced_q_origin: bool = False
     spectrum_ref: str | None = None
     predictive_ref: str | None = None
+    # The authority-bound target projection resolved after triage + the connected tracker (ADR-019).
+    # Written by :func:`_resolve_target_projections`, never by the fitter.
+    target_projection_ref: str | None = None
     master_revision: str | None = None
     model_interval: tuple | None = None
     model_robust: bool | None = None
@@ -508,41 +512,6 @@ def _amplitudes_of(best, by_hyp) -> dict | None:
     return {n: float(best.params[n]) for n in hyp.build().linear_names() if n in best.params}
 
 
-def _model_manifest_of(best, by_hyp) -> dict | None:
-    """Declarative ``isar.model_manifest/1`` payload for the delivered structure.
-
-    The manifest intentionally names only component kinds owned by ISAR.  It is sufficient for a
-    Qt-free reader to reconstruct multi-mode curves without importing a hypothesis class or solving
-    amplitudes again.  An unknown future component is omitted by returning ``None`` rather than
-    publishing a plausible but incomplete model.
-    """
-    if best is None:
-        return None
-    hyp = by_hyp.get(best.label)
-    if hyp is None:
-        return None
-    from isar.analyze.components import (ConstantBackground, Elastic, PhononDHO,
-                                         QuasiElastic)
-    kinds = {PhononDHO: "phonon_dho", Elastic: "elastic",
-             QuasiElastic: "quasielastic", ConstantBackground: "constant_background"}
-    components = []
-    composite = hyp.build()
-    for component in composite.components:
-        kind = kinds.get(type(component))
-        if kind is None:
-            return None
-        item = {"type": kind, "prefix": str(component.prefix)}
-        if isinstance(component, PhononDHO):
-            item["peak"] = str(component.peak)
-        components.append(item)
-    parameters = {name: float(best.params[name]) for name in composite.param_names()
-                  if name in best.params}
-    if set(parameters) != set(composite.param_names()):
-        return None
-    return {"schema": "isar.model_manifest/1", "components": components,
-            "parameters": parameters}
-
-
 def _candidate_rows(scores, fits) -> list | None:
     """The model-selection candidate table (P0-4): one compact row per SCORED structure. ``scores``
     is ``select.score_models``'s output (the exact ranking the driver selects on — AIC = cost + 2k,
@@ -835,9 +804,13 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     amplitudes = _amplitudes_of(best, by_hyp)
     model_manifest = _model_manifest_of(best, by_hyp)
     candidates = _candidate_rows(sel.scores, fits)
-    predictive_ensemble = (_predictive_ensemble(
-        best, sel.scores, fits, by_hyp, ctx, seed=seed,
-        n_members=int(predictive_n_members), action_role=fit_role)
+    # ADR-019 producer isolation: the predictive artifact is NOT built here. Its inputs are handed
+    # to the caller, which constructs it after branch triage inside its own try/except — so a
+    # predictive-construction failure can never convert this fit into a non_result, and the artifact
+    # is never published before the delivery decisions that follow this function have been made.
+    predictive_inputs = (
+        {"best": best, "scores": sel.scores, "fits": fits, "by_hyp": by_hyp, "seed": int(seed),
+         "n_members": int(predictive_n_members)}
         if predictive_n_members is not None else None)
 
     # Phase 4a — under-model falsification: the descriptor localised real signal the phonon model
@@ -869,7 +842,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "n_modes": n_modes, "modes": modes,
         "amplitudes": amplitudes, "candidates": candidates,
         "model_manifest": model_manifest,
-        "predictive_ensemble": predictive_ensemble,
+        "predictive_inputs": predictive_inputs,
         "fit_kind": fit_kind,
         "gamma_at_bound": bool(getattr(best, "gamma_at_bound", False)) if best else False,
         "fit_role": str(fit_role),
@@ -1599,383 +1572,6 @@ def _mode_candidates(scan_id: str, detector: str, outcome: dict) -> list[dict]:
     return rows
 
 
-# Every draw basis ISAR produces is an EQUAL-WEIGHT particle set, verified at each source:
-#   nested_sampling      -- dynesty's importance weights are consumed by ``resample_equal`` before
-#                           the samples are stored (isar/analyze/errors/bayes.py:170-190);
-#   parametric_bootstrap -- one replicate = one equal-weight particle
-#                           (isar/analyze/errors/bootstrap.py:276-289);
-#   laplace_hesse        -- i.i.d. ``multivariate_normal`` draws (below).
-# ADR-014 requires the measure to be declared rather than assumed, so each model publishes this
-# declaration; a future weighted basis publishes explicit ``draw_weights`` instead.
-_DRAW_WEIGHTING = {
-    "nested_sampling": "equal_weight_resampled",
-    "parametric_bootstrap": "equal_weight_resampled",
-    "laplace_hesse": "equal_weight_resampled",
-}
-
-
-def _bounded_parameter_draws(result, *, seed: int, maximum: int = 64):
-    """Strongest valid full-parameter draw basis for one fitted candidate.
-
-    Returns ``(names, samples, basis, diagnostics)``. ``diagnostics`` is the ADR-014 draw-level
-    completeness record: how many draws the source produced, which were dropped and why, and the
-    retained probability mass. Thinning an equal-weight ensemble to the draw cap is a deterministic
-    representative subsample, not lost mass, so it is reported separately from ``dropped_draws``.
-    """
-    within = result.within_model or {}
-    if within.get("bayes_ok") and within.get("bayes_parameter_samples") is not None:
-        names = tuple(within.get("bayes_parameter_names") or ())
-        samples = np.asarray(within["bayes_parameter_samples"], dtype=float)
-        basis = "nested_sampling"
-    elif within.get("parameter_samples") is not None:
-        names = tuple(within.get("parameter_names") or ())
-        samples = np.asarray(within["parameter_samples"], dtype=float)
-        basis = "parametric_bootstrap"
-    elif result.covariance_ok and result.parameter_covariance is not None:
-        names = tuple(result.params)
-        mean = np.asarray([result.params[name] for name in names], dtype=float)
-        covariance = np.asarray(result.parameter_covariance, dtype=float)
-        try:
-            samples = np.random.default_rng(int(seed)).multivariate_normal(
-                mean, covariance, size=int(maximum), check_valid="raise")
-        except (ValueError, np.linalg.LinAlgError):
-            return None
-        basis = "laplace_hesse"
-    else:
-        return None
-    if samples.ndim != 2 or samples.shape[1] != len(names) or samples.shape[0] == 0:
-        return None
-    source_count = int(samples.shape[0])
-    finite = np.all(np.isfinite(samples), axis=1)
-    dropped = [{"id": f"draw-{index}", "reason": "nonfinite_parameter_draw"}
-               for index in range(source_count) if not bool(finite[index])]
-    source_ids = [f"draw-{index}" for index in range(source_count) if bool(finite[index])]
-    samples = samples[finite]
-    if samples.shape[0] == 0:
-        return None
-    thinned_from = int(samples.shape[0])
-    if samples.shape[0] > maximum:
-        keep = np.linspace(0, samples.shape[0] - 1, maximum, dtype=int)
-        samples = samples[keep]
-        source_ids = [source_ids[index] for index in keep]
-    for column, name in enumerate(names):
-        if name.endswith((".Omega_d", ".Gamma", ".A", ".E", ".QE", ".BG")):
-            samples[:, column] = np.maximum(samples[:, column], 0.0)
-    diagnostics = {
-        "draw_weighting": _DRAW_WEIGHTING[basis],
-        "draw_weights": None,
-        "draw_ids": source_ids,
-        "source_draw_count": source_count,
-        "retained_draw_count": int(samples.shape[0]),
-        "dropped_draws": dropped,
-        "draw_mass_retained": float(thinned_from) / float(source_count),
-        "draw_cap": int(maximum),
-        "thinned_from_draw_count": thinned_from,
-    }
-    return names, samples, basis, diagnostics
-
-
-_PREDICTIVE_SCORE_SEED = 940_301
-
-#: The published predictive contract. It joins the master-fit cache fingerprint
-#: (:func:`isar.session.certification.master_fit_fingerprint`) so an unchanged cached fit still
-#: regenerates its predictive artifact when this contract changes. It is the *same object* as
-#: :data:`isar.session.certification.PREDICTIVE_CONTRACT` — a second literal here could be bumped on
-#: its own, forcing the carry gate to refit while ``master_fit_fingerprint`` stayed unchanged, so a
-#: checkpoint store would keep serving entries built under the old contract.
-PREDICTIVE_CONTRACT = _PREDICTIVE_ARTIFACT_SCHEMA
-TARGET_PROJECTION_SCHEMA = "isar.target_projection/1"
-#: The registered v1 QoI projection (ADR-009): the fitted mode nearest the delivered ω₀.
-TARGET_PROJECTION_VERSION = "isar.omega0_nearest_mode/1"
-TARGET_QOI = "omega0"
-# ADR-014 completeness constants. They live in the artifact and are hashed into
-# ``predictive_basis_fingerprint``, so a basis pruned under one rule can never be scored under
-# another.
-PREDICTIVE_MODEL_WEIGHT_FLOOR = 0.005
-PREDICTIVE_MAX_PRUNED_MASS = 0.01
-PREDICTIVE_MAX_DROPPED_DRAW_MASS = 0.01
-# ΣM_max/ΣM_min − 1 below this is one exposure (EIG-0 §6). It gates only the SCALAR fitted-grid
-# parity claim; forward evaluation of a new uniform-exposure candidate is valid on every pool.
-EXPOSURE_HOMOGENEITY_TOLERANCE = 1e-12
-
-
-def _predictive_exposure_basis(ctx, n_members: int) -> tuple[dict, np.ndarray]:
-    """``(exposure_basis, stored_exposure_ratio)`` for one pooled master's fit context.
-
-    The basis is read from the fit's OWN context — ``exposure_reference`` is the value
-    :func:`~isar.analyze.context.normalized_exposure` returned for this fit and
-    ``exposure_scale`` the per-bin relative exposure it fitted with — never recomputed from the
-    pooled spectrum (EIG-0 §4.5: the median reference is a rank statistic and moves with the kept
-    set). ``per_energy_monitor`` is ΣM aligned to the fitted grid.
-
-    ``stored_exposure_ratio`` is the exact multiplier used for the stored ``expected_counts``: the
-    per-member incremental exposure ΣM_i/(n_members · E_ref), which keeps the /1 meaning of the
-    stored matrices ("the counts one further member-equivalent scan would see"). A master with no
-    usable monitor has no exposure basis at all (EIG-0 §4.6) and fits on the uniform path; it
-    publishes null exposure fields and the evaluator refuses it with ``missing_exposure_basis``.
-    """
-    grid = np.asarray(ctx.x_used, dtype=float)
-    scale = ctx.exposure_used if getattr(ctx, "exposure_scale", None) is not None else None
-    reference = getattr(ctx, "exposure_reference", None)
-    basis = {
-        "unit": "monitor_counts",
-        "request_unit": "number_neutrons",
-        # TAVI's realized per-point monitor is identically the requested number_neutrons (EIG-0
-        # §4.1/§5). The seam is declared even though the map is the identity today.
-        "request_to_exposure_factor": 1.0,
-        "n_members": int(n_members),
-        "kept_point_count": int(grid.size),
-    }
-    if scale is None or reference is None or not math.isfinite(float(reference)) \
-            or float(reference) <= 0.0:
-        basis.update({
-            "fit_reference_exposure": None, "reference_incremental_exposure": None,
-            "per_energy_monitor": None, "scalar_exposure_eligible": False,
-            "exposure_homogeneous": True, "full_member_support": None,
-            "exposure_ratio_span": None,
-        })
-        return basis, np.full(grid.shape, 1.0 / float(n_members))
-    reference = float(reference)
-    scale = np.asarray(scale, dtype=float)
-    monitor = scale * reference
-    span = (float(np.max(monitor) / np.min(monitor))
-            if monitor.size and float(np.min(monitor)) > 0.0 else None)
-    homogeneous = span is not None and (span - 1.0) <= EXPOSURE_HOMOGENEITY_TOLERANCE
-    # Per-bin member support is not carried on the pooled spectrum, so it is reported only where it
-    # is known (a single-member pool supports every kept bin). The operative eligibility predicate
-    # is the ΣM profile itself (EIG-0 §6), which separates the partial-support cases as well.
-    full_support = True if int(n_members) == 1 else None
-    basis.update({
-        "fit_reference_exposure": reference,
-        # A MEAN over members, not any member's request (EIG-0 §5): a consumer must not read it as
-        # "the exposure of one scan". Its contractual role is the scalar fitted-grid parity check.
-        "reference_incremental_exposure": reference / float(n_members),
-        "per_energy_monitor": monitor.tolist(),
-        "scalar_exposure_eligible": bool(homogeneous and full_support is not False),
-        "exposure_homogeneous": bool(homogeneous),
-        "full_member_support": full_support,
-        "exposure_ratio_span": span,
-    })
-    return basis, scale / float(n_members)
-
-
-def _predictive_basis_fingerprint(*, models, energy_meV, evaluation_context, exposure_basis,
-                                  target_projection) -> str:
-    """Stable hash of exactly the scientific + evaluation content a score depends on.
-
-    Deliberately EXCLUDES diagnostics, timings, identity stamps, and the ensemble seed: two bases
-    that predict the same counts from the same draws must fingerprint the same, and any change to a
-    model, a draw, the grid, the context, the exposure basis, or the pruning rule must change it.
-    """
-    payload = {
-        "schema": PREDICTIVE_CONTRACT,
-        "evaluator_version": manifest_mod.EVALUATOR_VERSION,
-        "models": [{
-            "label": model["label"],
-            "identity_label": model["identity_label"],
-            "source_weight": model["source_weight"],
-            "model_manifest": model["model_manifest"],
-            "parameter_names": model["parameter_names"],
-            "parameter_draws": model["parameter_draws"],
-            "draw_weighting": model["draw_weighting"],
-            "draw_weights": model["draw_weights"],
-            "target_present_by_draw": model["target_present_by_draw"],
-            "target_qoi_draws": model["target_qoi_draws"],
-        } for model in models],
-        "energy_meV": list(energy_meV),
-        "evaluation_context": evaluation_context,
-        "exposure_basis": exposure_basis,
-        "target_projection": target_projection,
-        "completeness_constants": {
-            "model_weight_floor": PREDICTIVE_MODEL_WEIGHT_FLOOR,
-            "max_pruned_mass": PREDICTIVE_MAX_PRUNED_MASS,
-            "max_dropped_draw_mass": PREDICTIVE_MAX_DROPPED_DRAW_MASS,
-        },
-    }
-    return _json_fingerprint(payload)
-
-
-def _predictive_ensemble(best, scores, fits, by_hyp, ctx, *, seed: int,
-                         n_members: int, action_role: str = "master") -> dict | None:
-    """Bounded model-weighted full-parameter ensemble retained with a master revision.
-
-    Publishes ``isar.master_predictive/2``: the same draws the fit produced, plus everything needed
-    to re-evaluate them away from the fitted grid (the grid itself, the evaluation context, the
-    exposure basis) and everything needed to know whether the published probability measure is
-    complete enough to score (ADR-014) and whether the campaign QoI projects onto it (ADR-009).
-    Every stored matrix is produced by the shared evaluation path, so a stored prediction and an
-    arbitrary-grid prediction cannot disagree.
-    """
-    grid = np.asarray(ctx.x_used, dtype=float)
-    evaluation_context = {
-        "center_meV": float(ctx.center),
-        "gaussian_fwhm_meV": float(ctx.gauss_fwhm),
-        "lorentzian_fwhm_meV": float(ctx.lorentz_fwhm),
-        "temperature_K": float(ctx.T),
-        "quasielastic_fwhm_meV": (None if getattr(ctx, "quasielastic_fwhm", None) is None
-                                  else float(ctx.quasielastic_fwhm)),
-    }
-    exposure_basis, stored_ratio = _predictive_exposure_basis(ctx, max(int(n_members), 1))
-    exposure_basis["stored_exposure_ratio"] = [float(value) for value in stored_ratio]
-    eval_ctx = manifest_mod.EvaluationContext(
-        center=evaluation_context["center_meV"],
-        gauss_fwhm=evaluation_context["gaussian_fwhm_meV"],
-        lorentz_fwhm=evaluation_context["lorentzian_fwhm_meV"],
-        T=evaluation_context["temperature_K"],
-        quasielastic_fwhm=evaluation_context["quasielastic_fwhm_meV"],
-        exposure_ratio=stored_ratio)
-    try:
-        point_omega = float(best.omega0) if best is not None else float("nan")
-    except (TypeError, ValueError):
-        point_omega = float("nan")
-    target_reference = point_omega if math.isfinite(point_omega) else None
-
-    models = []
-    dropped_models = []
-    weights = {score.label: float(score.weight) for score in scores}
-    source_weight_total = sum(weight for weight in weights.values() if weight > 0.0)
-    for model_index, label in enumerate(sorted(weights)):
-        result = fits.get(label)
-        weight = weights[label]
-        if result is None or by_hyp.get(label) is None or weight <= 0.0:
-            if weight > 0.0:
-                dropped_models.append({"label": label, "original_weight": weight,
-                                       "reason": "no_fitted_candidate"})
-            continue
-        draws = _bounded_parameter_draws(result, seed=seed + 7919 * (model_index + 1))
-        manifest = _model_manifest_of(result, by_hyp)
-        if draws is None:
-            dropped_models.append({"label": label, "original_weight": weight,
-                                   "reason": "no_usable_parameter_draws"})
-            continue
-        if manifest is None:
-            dropped_models.append({"label": label, "original_weight": weight,
-                                   "reason": "unsupported_model_manifest"})
-            continue
-        names, samples, basis, draw_diagnostics = draws
-        try:
-            composite = manifest_mod.build_composite(
-                manifest, evaluation_context["quasielastic_fwhm_meV"])
-            phonon_indices = composite.phonon_indices()
-            expected, omega0_draws, present, qoi_draws = [], [], [], []
-            for sample in samples:
-                theta = manifest_mod.draw_theta(composite, names, sample)
-                expected.append(manifest_mod.expected_counts(
-                    manifest, names, sample, eval_ctx, grid).tolist())
-                candidates = [math.sqrt(theta[i] ** 2 + theta[i + 1] ** 2)
-                              for i in phonon_indices]
-                if candidates and target_reference is not None:
-                    omega0 = min(candidates, key=lambda value: abs(value - target_reference))
-                    omega0_draws.append(omega0)
-                    present.append(True)
-                    qoi_draws.append(omega0)
-                else:
-                    present.append(False)
-                    qoi_draws.append(None)
-        except manifest_mod.ModelManifestError as error:
-            # Fail closed: a model whose declared draws cannot be mapped onto its own manifest is
-            # dropped with its reason recorded, never evaluated positionally as a guess.
-            log.warning("predictive model %s refused (%s): %s", label, error.reason_code, error)
-            dropped_models.append({"label": label, "original_weight": weight,
-                                   "reason": error.reason_code})
-            continue
-        models.append({
-            "label": label,
-            # ADR-009: an additive seam for the parallel physics workstream. The fit-model label is
-            # never the rewarded identity, so this defaults to the label and earns no reward until a
-            # real per-particle identity projection exists.
-            "identity_label": label,
-            "source_weight": weight, "weight": weight, "draw_basis": basis,
-            "draw_weighting": draw_diagnostics["draw_weighting"],
-            "draw_weights": draw_diagnostics["draw_weights"],
-            "draw_ids": draw_diagnostics["draw_ids"],
-            "parameter_names": list(names), "parameter_draws": samples.tolist(),
-            "model_manifest": manifest, "omega0_draws": omega0_draws,
-            "target_present_by_draw": present, "target_qoi_draws": qoi_draws,
-            "expected_counts": expected,
-            "source_draw_count": draw_diagnostics["source_draw_count"],
-            "retained_draw_count": draw_diagnostics["retained_draw_count"],
-            "dropped_draws": draw_diagnostics["dropped_draws"],
-            "draw_mass_retained": draw_diagnostics["draw_mass_retained"],
-            "draw_cap": draw_diagnostics["draw_cap"],
-            "thinned_from_draw_count": draw_diagnostics["thinned_from_draw_count"],
-        })
-    if not models:
-        return None
-    retained_weight_total = sum(model["source_weight"] for model in models)
-    for model in models:
-        model["weight"] = model["source_weight"] / retained_weight_total
-    pruned_mass = max(source_weight_total - retained_weight_total, 0.0)
-    complete = (
-        all(item["original_weight"] < PREDICTIVE_MODEL_WEIGHT_FLOOR for item in dropped_models)
-        and pruned_mass <= PREDICTIVE_MAX_PRUNED_MASS
-        and all(1.0 - model["draw_mass_retained"] <= PREDICTIVE_MAX_DROPPED_DRAW_MASS
-                for model in models))
-    completeness = {
-        "source_model_weight_total": float(source_weight_total),
-        "retained_model_weight_total": float(retained_weight_total),
-        "pruned_model_weight": float(pruned_mass),
-        "dropped_models": dropped_models,
-        "model_weight_floor": PREDICTIVE_MODEL_WEIGHT_FLOOR,
-        "max_pruned_mass": PREDICTIVE_MAX_PRUNED_MASS,
-        "max_dropped_draw_mass": PREDICTIVE_MAX_DROPPED_DRAW_MASS,
-        "predictive_complete_for_eig": bool(complete),
-    }
-    projected = [model for model in models if any(model["target_present_by_draw"])]
-    target_projection = {
-        "schema": TARGET_PROJECTION_SCHEMA,
-        "qoi": TARGET_QOI,
-        "projection_version": TARGET_PROJECTION_VERSION,
-        "reference_energy_meV": target_reference,
-        # The role the fit was produced under. The acquisition-side action role that decides
-        # authority (ADR-009) is applied by the consumer, which knows the action.
-        "action_role": str(action_role),
-        # A null model has no target mode: its draws are a legitimate "target absent" state, so the
-        # projection is complete as long as SOME retained model could be projected at all.
-        "complete": bool(projected) and target_reference is not None,
-        "reason": (None if projected and target_reference is not None else
-                   ("no_reference_target_energy" if target_reference is None
-                    else "no_retained_model_carries_the_target_mode")),
-    }
-    omega_values, omega_weights = [], []
-    for model in models:
-        draws = [float(value) for value in model["omega0_draws"] if math.isfinite(float(value))]
-        if not draws:
-            continue
-        omega_values.extend(draws)
-        omega_weights.extend([float(model["weight"]) / len(draws)] * len(draws))
-    omega_interval = None
-    if omega_values:
-        order = np.argsort(np.asarray(omega_values, dtype=float))
-        values = np.asarray(omega_values, dtype=float)[order]
-        weights_array = np.asarray(omega_weights, dtype=float)[order]
-        cumulative = np.cumsum(weights_array)
-        cumulative /= cumulative[-1]
-        omega_interval = [float(np.interp(q, cumulative, values)) for q in (0.16, 0.5, 0.84)]
-    model_entropy = -sum(float(model["weight"]) * math.log(max(float(model["weight"]), 1e-300))
-                         for model in models)
-    diagnostics = _predictive_score(models, seed=_PREDICTIVE_SCORE_SEED, n_simulations=128)
-    return {"schema": PREDICTIVE_CONTRACT, "models": models,
-            "evaluator_version": manifest_mod.EVALUATOR_VERSION,
-            "energy_meV": grid.tolist(),
-            "evaluation_context": evaluation_context,
-            "exposure_basis": exposure_basis,
-            "target_projection": target_projection,
-            "completeness": completeness,
-            "predictive_basis_fingerprint": _predictive_basis_fingerprint(
-                models=models, energy_meV=grid.tolist(),
-                evaluation_context=evaluation_context, exposure_basis=exposure_basis,
-                target_projection=target_projection),
-            "uncertainty_provenance": {
-                "draw_basis": sorted(set(model["draw_basis"] for model in models)),
-                "deterministic": True, "seed": int(seed)},
-            "seed": int(seed), "omega_interval": omega_interval,
-            "model_entropy_nats": float(model_entropy),
-            # The ensemble itself is master-seeded; the simulated future-count stream deliberately
-            # uses one campaign-independent seed so candidates share random numbers during ranking.
-            "diagnostics": diagnostics}
-
-
 def _path_index(q: list, path: list[list[float]], tolerance: float = 1e-5) -> int | None:
     if not q or not path:
         return None
@@ -2574,6 +2170,10 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
     # Identity assignment is deliberately after pooled-master updates. It reads the complete
     # candidate field, may revise earlier labels, then rebuilds the connected fold-only prior.
     track = _apply_tracked_branch(session, card, t_round=t_round)
+    # ADR-019: only now is the target authoritative — triage has had its say and the tracker has
+    # reassigned or cleared every selection. The projection is resolved against `/2`'s stored
+    # per-draw mode energies, so a track revision changes it without any refit.
+    _resolve_target_projections(session, workspace.root / "data")
     if track is not None:
         summary.context_lines.append(
             f"branch track revision {track['revision']}: "
@@ -2613,12 +2213,6 @@ def _member_labels(members) -> list[str]:
     return [str(m[1]) if counts[m[1]] == 1 else f"{m[0]}:{m[1]}:{m[2]}" for m in members]
 
 
-def _json_fingerprint(value) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str,
-                         separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
 _MASTER_FIT_CONTRACT = "isar.master_fit/2"
 
 
@@ -2652,10 +2246,15 @@ def _master_fit_fingerprint(ms, card, calres, g, prior, *, errors_tier, M, seed,
 
 def _persist_master_predictive(data_dir, payload: dict) -> str:
     """Blob-first, content-addressed publication of one predictive ensemble."""
+    return _persist_content_addressed(data_dir, "master_predictive", payload)
+
+
+def _persist_content_addressed(data_dir, subdirectory: str, payload: dict) -> str:
+    """Blob-first, content-addressed publication of one JSON side artifact."""
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True,
                          separators=(",", ":")).encode("utf-8")
     digest = hashlib.sha256(encoded).hexdigest()
-    root = Path(data_dir) / "master_predictive"
+    root = Path(data_dir) / subdirectory
     root.mkdir(parents=True, exist_ok=True)
     target = root / f"{digest}.json"
     if not target.exists():
@@ -3055,6 +2654,7 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
         _materialize_branch_candidates(session)
     _rebuild_pooled_prior(card, session, session_prior, t_round=t_round)
     track = _apply_tracked_branch(session, card, t_round=t_round)
+    _resolve_target_projections(session, workspace.root / "data")
     # Tracking may annotate individual rows for display. Certification is master-only, so restore
     # their exact pre-publication ledger payload after the master-derived state has been rebuilt.
     for key, entry in physical_rows.items():
@@ -3389,7 +2989,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         None, ctx, fit, absolute_exposure=monitor,
         absolute_exposure_source=("monitor" if monitor is not None else None),
         target_center=selected_energy)
-    predictive_payload = fit.get("predictive_ensemble")
+    predictive_payload, predictive_unavailable = _build_predictive_payload(fit, ctx, master_id)
     model_interval = ((predictive_payload or {}).get("omega_interval")
                       if predictive_payload is not None else None)
     outcome = FitOutcome(
@@ -3441,17 +3041,29 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                         "two_stage_seconds": fit.get("two_stage_seconds"),
                         "errors_attach_seconds": fit.get("errors_attach_seconds"),
                         **_timing_provenance(fit)}
+    calibration_fingerprint = _json_fingerprint(calres.summary())
+    policy_fingerprint = _json_fingerprint(card.policy)
     if predictive_payload is not None:
         predictive_payload.update({
             "master_content_hash": chash,
-            "calibration_fingerprint": _json_fingerprint(calres.summary()),
-            "policy_fingerprint": _json_fingerprint(card.policy),
+            "calibration_fingerprint": calibration_fingerprint,
+            "policy_fingerprint": policy_fingerprint,
             "prior_fingerprint": _json_fingerprint(
                 None if prior is None else {"omega0": prior.omega0,
                                             "omega0_sigma": prior.omega0_sigma}),
             "q": q, "T": T, "members": [list(member) for member in ms.members],
         })
         entry.provenance["predictive_payload"] = predictive_payload
+        # The authority basis the target projection is later bound to. Carried here because the
+        # projection is resolved after the connected tracker, in a scope that has no calibration.
+        entry.provenance["target_projection_authority"] = {
+            "master_revision": chash,
+            "calibration_fingerprint": calibration_fingerprint,
+            "policy_fingerprint": policy_fingerprint,
+            "action_role": str(fit_role),
+        }
+    if predictive_unavailable is not None:
+        entry.provenance["predictive_unavailable"] = predictive_unavailable
     if fit.get("structure_skipped"):
         entry.provenance["structure_skipped"] = True
     return _stamp_master_analysis(
@@ -3613,6 +3225,84 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
     return {"deliver": False, "branch_id": bid, "weight": 0.0, "entropy": ent,
             "resolvable": bool(qoi["resolvable"]), "posterior": qoi.get("posterior"),
             "selected_energy": qoi.get("omega0")}
+
+
+def _build_predictive_payload(fit, ctx, master_id: str) -> tuple[dict | None, dict | None]:
+    """Build ``isar.master_predictive/2`` from a finished, triaged fit — isolated from the science.
+
+    Returns ``(payload, unavailable)``: exactly one is not None. ADR-019 producer isolation — the
+    predictive side is a *steering* artifact, so its failure degrades steering to the legacy path
+    and must never turn a perfectly good scientific fit into a ``non_result``. The reason is
+    structured and logged; nothing is swallowed.
+    """
+    inputs = fit.pop("predictive_inputs", None)
+    if inputs is None:
+        return None, None
+    try:
+        payload = predictive_artifact.build_master_predictive(
+            inputs["best"], inputs["scores"], inputs["fits"], inputs["by_hyp"], ctx,
+            seed=inputs["seed"], n_members=inputs["n_members"])
+    except Exception as exc:  # noqa: BLE001 — the fit survives any predictive-construction failure
+        log.warning("%s: predictive artifact construction failed (%s): %s",
+                    master_id, type(exc).__name__, exc)
+        return None, {
+            "reason_code": predictive_artifact.PREDICTIVE_UNAVAILABLE_CONSTRUCTION_FAILED,
+            "error_type": type(exc).__name__, "message": str(exc)}
+    if payload is None:
+        return None, {
+            "reason_code": predictive_artifact.PREDICTIVE_UNAVAILABLE_NO_RETAINED_MODELS,
+            "message": "no fitted candidate produced a usable manifest and draw basis"}
+    return payload, None
+
+
+def _resolve_target_projections(session: SessionState, data_dir) -> int:
+    """Resolve and publish one ``isar.target_projection/2`` per pooled master (ADR-019).
+
+    Called ONLY after branch triage, ``_materialize_branch_candidates`` and the connected tracker
+    have run, because all three can still move the target: triage can withhold the delivery, the
+    tracker can reassign the selected candidate or clear it entirely, and neither is visible at fit
+    time. Each projection is bound to the authority basis that decided it, so a later track revision
+    produces a NEW projection against the unchanged ``/2`` — no refit is involved.
+    """
+    if data_dir is None:
+        return 0
+    published = 0
+    for key in sorted(session.scans):
+        if not key.startswith("master:"):
+            continue
+        entry = session.scans[key]
+        authority = (entry.provenance or {}).get("target_projection_authority") or {}
+        for outcome in entry.detectors.values():
+            ref = outcome.get("predictive_ref")
+            if not outcome.get("pooled") or not ref:
+                continue
+            try:
+                artifact = json.loads(
+                    (Path(data_dir).parent / str(ref)).read_text(encoding="utf-8"))
+                projection = predictive_artifact.build_target_projection(
+                    artifact, outcome,
+                    master_revision=authority.get("master_revision")
+                    or outcome.get("master_revision"),
+                    calibration_fingerprint=authority.get("calibration_fingerprint"),
+                    policy_fingerprint=authority.get("policy_fingerprint"),
+                    action_role=authority.get("action_role") or "master")
+                projection_ref = _persist_content_addressed(
+                    data_dir, "target_projection", projection)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                # A projection is steering input, never a scientific number: record why it is
+                # missing and leave the master's fit and every other artifact untouched.
+                log.warning("%s: target projection unavailable (%s): %s",
+                            key, type(error).__name__, error)
+                entry.provenance["target_projection_unavailable"] = {
+                    "reason_code":
+                        predictive_artifact.PROJECTION_UNAVAILABLE_CONSTRUCTION_FAILED,
+                    "error_type": type(error).__name__, "message": str(error)}
+                continue
+            outcome["target_projection_ref"] = projection_ref
+            entry.provenance["target_projection_ref"] = projection_ref
+            entry.provenance.pop("target_projection_unavailable", None)
+            published += 1
+    return published
 
 
 def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, near_gamma,
@@ -4028,6 +3718,8 @@ _CSV_COLUMNS = [
     # go on the end. Which sink this scan's evidence was acquired for (PR2.6) — every historical row
     # reads "canonical_master".
     "evidence_sink",
+    # The authority-bound target projection (ADR-019), resolved after triage + the connected tracker.
+    "target_projection_ref",
     # Whether this row may supply the campaign target's delivered omega0 (PR review F2). False only
     # when the tracker's confirmed target identity rests on an auxiliary-probe candidate: the answer
     # is kept, the number is withheld, and the point still needs a canonical target measurement.
@@ -4117,6 +3809,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "is_reduced_q_origin": oc.get("is_reduced_q_origin"),
                 "spectrum_ref": oc.get("spectrum_ref"),
                 "predictive_ref": oc.get("predictive_ref"),
+                "target_projection_ref": oc.get("target_projection_ref"),
                 "master_revision": oc.get("master_revision"),
                 "model_interval_lo": (miv[0] if miv else None),
                 "model_interval_med": (miv[1] if miv and len(miv) > 2 else None),

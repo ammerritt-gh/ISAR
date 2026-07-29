@@ -59,15 +59,6 @@
       "max_pruned_mass": 0.01,
       "max_dropped_draw_mass": 0.01,
       "predictive_complete_for_eig": true
-    },
-    "target_projection": {
-      "schema": "isar.target_projection/1",
-      "qoi": "omega0",
-      "projection_version": "isar.omega0_nearest_mode/1",
-      "reference_energy_meV": 3.0,
-      "action_role": "master",
-      "complete": true,
-      "reason": null
     }
   },
   "evaluation_requests": [
@@ -155,14 +146,6 @@
             }
           },
           "omega0_draws": [],
-          "target_present_by_draw": [
-            false,
-            false
-          ],
-          "target_qoi_draws": [
-            null,
-            null
-          ],
           "expected_counts_by_request": {
             "original": [
               [
@@ -220,7 +203,12 @@
                 3.75
               ]
             ]
-          }
+          },
+          "source_weight": 0.35,
+          "mode_energies": [
+            [],
+            []
+          ]
         },
         {
           "label": "one-phonon+background",
@@ -274,14 +262,6 @@
             }
           },
           "omega0_draws": [
-            2.0223748416166685,
-            2.23606797749979
-          ],
-          "target_present_by_draw": [
-            true,
-            true
-          ],
-          "target_qoi_draws": [
             2.0223748416166685,
             2.23606797749979
           ],
@@ -342,9 +322,19 @@
                 10.678508693287
               ]
             ]
-          }
+          },
+          "source_weight": 0.65,
+          "mode_energies": [
+            [
+              2.0223748416156684
+            ],
+            [
+              2.23606797749979
+            ]
+          ]
         }
-      ]
+      ],
+      "predictive_basis_fingerprint": "8f073331c0c7cbeaf0e8bcb06b779efc8c29ffe96b77ee5176e00de390ea9083"
     },
     {
       "name": "one_mode_vs_two_mode",
@@ -408,14 +398,6 @@
             2.0223748416166685,
             2.23606797749979
           ],
-          "target_present_by_draw": [
-            true,
-            true
-          ],
-          "target_qoi_draws": [
-            2.0223748416166685,
-            2.23606797749979
-          ],
           "expected_counts_by_request": {
             "original": [
               [
@@ -473,7 +455,16 @@
                 10.678508693287
               ]
             ]
-          }
+          },
+          "source_weight": 0.55,
+          "mode_energies": [
+            [
+              2.0223748416156684
+            ],
+            [
+              2.23606797749979
+            ]
+          ]
         },
         {
           "label": "two-phonon+background",
@@ -547,14 +538,6 @@
             2.0223748416166685,
             2.23606797749979
           ],
-          "target_present_by_draw": [
-            true,
-            true
-          ],
-          "target_qoi_draws": [
-            2.0223748416166685,
-            2.23606797749979
-          ],
           "expected_counts_by_request": {
             "original": [
               [
@@ -612,9 +595,21 @@
                 63.907943847221
               ]
             ]
-          }
+          },
+          "source_weight": 0.45,
+          "mode_energies": [
+            [
+              2.0223748416156684,
+              5.024937810560445
+            ],
+            [
+              2.23606797749979,
+              5.333854141237834
+            ]
+          ]
         }
-      ]
+      ],
+      "predictive_basis_fingerprint": "f4a157d51f5ee6f37d79003e27689d5c4c07d60bfa44f502a84e28f5a9da0c2e"
     },
     {
       "name": "branch_hypotheses",
@@ -678,14 +673,6 @@
             2.0223748416166685,
             2.23606797749979
           ],
-          "target_present_by_draw": [
-            true,
-            true
-          ],
-          "target_qoi_draws": [
-            2.0223748416166685,
-            2.23606797749979
-          ],
           "expected_counts_by_request": {
             "original": [
               [
@@ -743,7 +730,16 @@
                 10.678508693287
               ]
             ]
-          }
+          },
+          "source_weight": 0.4,
+          "mode_energies": [
+            [
+              2.0223748416156684
+            ],
+            [
+              2.23606797749979
+            ]
+          ]
         },
         {
           "label": "optic-branch+background",
@@ -797,14 +793,6 @@
             }
           },
           "omega0_draws": [
-            4.513590588434002,
-            4.821047603996459
-          ],
-          "target_present_by_draw": [
-            true,
-            true
-          ],
-          "target_qoi_draws": [
             4.513590588434002,
             4.821047603996459
           ],
@@ -865,9 +853,19 @@
                 42.827965092392
               ]
             ]
-          }
+          },
+          "source_weight": 0.6,
+          "mode_energies": [
+            [
+              4.513590588434002
+            ],
+            [
+              4.821047603996459
+            ]
+          ]
         }
-      ]
+      ],
+      "predictive_basis_fingerprint": "c1d8fcb3db31d1248ea7e4229319a6b6862a36eb193c18a426d849ad8a137d3b"
     }
   ],
   "unavailable_contract": {
@@ -941,15 +939,6 @@
         "max_pruned_mass": 0.01,
         "max_dropped_draw_mass": 0.01,
         "predictive_complete_for_eig": true
-      },
-      "target_projection": {
-        "schema": "isar.target_projection/1",
-        "qoi": "omega0",
-        "projection_version": "isar.omega0_nearest_mode/1",
-        "reference_energy_meV": 3.0,
-        "action_role": "master",
-        "complete": true,
-        "reason": null
       },
       "seed": 940301,
       "uncertainty_provenance": {
@@ -1039,14 +1028,6 @@
           }
         },
         "omega0_draws": [],
-        "target_present_by_draw": [
-          false,
-          false
-        ],
-        "target_qoi_draws": [
-          null,
-          null
-        ],
         "stored_expected_counts": [
           [
             2.0,
@@ -1120,7 +1101,12 @@
               3.75
             ]
           ]
-        }
+        },
+        "source_weight": 0.4,
+        "mode_energies": [
+          [],
+          []
+        ]
       },
       {
         "label": "one-phonon+background",
@@ -1174,14 +1160,6 @@
           }
         },
         "omega0_draws": [
-          2.9154759474226504,
-          3.1196954979613
-        ],
-        "target_present_by_draw": [
-          true,
-          true
-        ],
-        "target_qoi_draws": [
           2.9154759474226504,
           3.1196954979613
         ],
@@ -1258,8 +1236,18 @@
               18.28906054668218
             ]
           ]
-        }
+        },
+        "source_weight": 0.6,
+        "mode_energies": [
+          [
+            2.9154759474226504
+          ],
+          [
+            3.1196954979613
+          ]
+        ]
       }
-    ]
+    ],
+    "predictive_basis_fingerprint": "00d82c7b87b48e90995a65c6615753a29bf249e0252aeeb7fa0f1881818b511a"
   }
 }

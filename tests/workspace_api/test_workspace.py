@@ -173,16 +173,47 @@ def test_pooled_spectrum_rejects_misaligned_artifact(make_ws):
         Workspace.open(root).pooled_spectrum("data/pooled/bad.json")
 
 
+def _valid_predictive_payload():
+    """One complete, fingerprint-reproducing /2 artifact for a no-phonon (null) model.
+
+    The facade runs the SHARED strict validator (ADR-020), so a hand-written stub with only a few
+    fields is no longer a valid artifact anywhere — the point of one validator is that this reader
+    accepts exactly what the evaluator and the drive loop accept.
+    """
+    from isar.predictive import predictive_basis_fingerprint
+
+    models = [{
+        "label": "null+bg", "identity_label": "null+bg", "weight": 1.0, "source_weight": 1.0,
+        "parameter_names": ["bg.BG"], "parameter_draws": [[1.0], [2.0]],
+        "draw_weighting": "equal_weight_resampled", "draw_weights": None,
+        "draw_ids": ["draw-0", "draw-1"], "omega0_draws": [], "mode_energies": [[], []],
+        "model_manifest": {"schema": "isar.model_manifest/1",
+                           "components": [{"type": "constant_background", "prefix": "bg"}],
+                           "parameters": {"bg.BG": 1.0}},
+        "expected_counts": [[1.0, 1.0], [2.0, 2.0]],
+    }]
+    energy = [0.0, 1.0]
+    context = {"center_meV": 0.0, "gaussian_fwhm_meV": 0.4, "lorentzian_fwhm_meV": 0.1,
+               "temperature_K": 100.0, "quasielastic_fwhm_meV": None}
+    exposure = {"unit": "monitor_counts", "request_unit": "number_neutrons",
+                "request_to_exposure_factor": 1.0, "fit_reference_exposure": 1e9,
+                "n_members": 1, "reference_incremental_exposure": 1e9,
+                "per_energy_monitor": [1e9, 1e9], "stored_exposure_ratio": [1.0, 1.0],
+                "scalar_exposure_eligible": True, "exposure_homogeneous": True,
+                "full_member_support": True, "exposure_ratio_span": 1.0, "kept_point_count": 2}
+    return {"schema": "isar.master_predictive/2", "models": models, "energy_meV": energy,
+            "evaluation_context": context, "exposure_basis": exposure,
+            "completeness": {"predictive_complete_for_eig": True},
+            "predictive_basis_fingerprint": predictive_basis_fingerprint(
+                models=models, energy_meV=energy, evaluation_context=context,
+                exposure_basis=exposure)}
+
+
 def test_master_predictive_accepts_no_phonon_model(make_ws):
     root = make_ws()
     artifact = root / "data" / "master_predictive" / "null-model.json"
     artifact.parent.mkdir(parents=True)
-    artifact.write_text(json.dumps({
-        "schema": "isar.master_predictive/2",
-        "models": [{"weight": 1.0, "parameter_names": ["a"],
-                    "parameter_draws": [[1.0]], "omega0_draws": [],
-                    "expected_counts": [[1.0]]}],
-    }), encoding="utf-8")
+    artifact.write_text(json.dumps(_valid_predictive_payload()), encoding="utf-8")
     payload = Workspace.open(root).master_predictive(
         "data/master_predictive/null-model.json")
     assert payload["models"][0]["omega0_draws"] == []
@@ -194,12 +225,8 @@ def test_master_predictive_refuses_the_pre_v2_artifact(make_ws):
     root = make_ws()
     artifact = root / "data" / "master_predictive" / "legacy.json"
     artifact.parent.mkdir(parents=True)
-    artifact.write_text(json.dumps({
-        "schema": "isar.master_predictive/1",
-        "models": [{"weight": 1.0, "parameter_names": ["a"],
-                    "parameter_draws": [[1.0]], "omega0_draws": [],
-                    "expected_counts": [[1.0]]}],
-    }), encoding="utf-8")
+    artifact.write_text(json.dumps({**_valid_predictive_payload(),
+                                    "schema": "isar.master_predictive/1"}), encoding="utf-8")
     workspace = Workspace.open(root)
     with pytest.raises(ValueError, match="unsupported master predictive schema"):
         workspace.master_predictive("data/master_predictive/legacy.json")
@@ -210,13 +237,10 @@ def test_master_predictive_rejects_malformed_model(make_ws):
     root = make_ws()
     artifact = root / "data" / "master_predictive" / "bad.json"
     artifact.parent.mkdir(parents=True)
-    artifact.write_text(json.dumps({
-        "schema": "isar.master_predictive/2",
-        "models": [{"weight": 1.0, "parameter_names": ["a"],
-                    "parameter_draws": [[1.0]], "omega0_draws": [],
-                    "expected_counts": [[1.0], [2.0]]}],
-    }), encoding="utf-8")
-    with pytest.raises(ValueError, match="invalid master predictive model"):
+    payload = _valid_predictive_payload()
+    payload["models"][0]["expected_counts"] = [[1.0, 1.0]]
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="expected_counts are not aligned"):
         Workspace.open(root).master_predictive("data/master_predictive/bad.json")
 
 

@@ -48,6 +48,11 @@ WORKSPACE_API_ALLOWED = {
     # the predictive producer and evaluator use, so a workspace curve cannot disagree with a stored
     # prediction.
     "isar.analyze.model_manifest",
+    # The ONE strict predictive-artifact validator (ADR-020). The facade must run exactly the same
+    # checks as the arbitrary-grid evaluator and the drive loop, so it imports the validator rather
+    # than maintaining its own subset — which is precisely how the three readers drifted apart.
+    # Qt-free and scipy-free (math + numpy only).
+    "isar.predictive",
     "isar.geometry",
     "isar.reduce.collate",
     # config/consent validators the GUI reaches through the facade (config_gates.py): the LLM
