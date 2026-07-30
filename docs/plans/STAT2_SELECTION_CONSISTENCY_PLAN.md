@@ -6,7 +6,8 @@
 > **Status:** STAT-2a, the STAT-2a.1 evidence-contract repair, and the corrected STAT-2b evidence
 > harness are implemented (repair commit `5767dea`); STAT-2b.1 scaling and corrected development
 > evidence are complete, and the renewed 103-realization held-out gate is owner-approved and
-> activated for 24 workers; STAT-2c and STAT-2d remain pending
+> activated for 24 workers; the clean operational restart is prepared but has not opened any seed;
+> STAT-2c and STAT-2d remain pending
 > **Exit criteria:** STAT-2a through STAT-2d are implemented and verified; accepted behavior is
 > folded into `docs/STATS_PRIMER.md`, `docs/GLOSSARY.md`, and an S-series ruling; this execution
 > plan is then deleted and tombstoned in `docs/DOC_INVENTORY.md`.
@@ -623,6 +624,19 @@ specification fingerprint is
 `43b9fcbc7f6c2cbb57510c4801ac8084e96caecc7b511e6707240e257e974a54`.
 That activation authorizes only the sealed STAT-2b held-out run. No criterion switch is
 authorized.
+
+The first corrected held-out attempt exited operationally on 2026-07-30 after writing 564 of
+2,163 atomic checkpoints: five scenario cells were complete and `continuum-absent` had 49
+checkpoints. No held-out scientific record was inspected, no complete summary was generated, and
+the attempt is scientifically ineligible. Its stale `running` ledger and checkpoints are preserved
+under
+`out/stat2b/stat2b1-selection-criterion-2026-07/heldout-failed-operational-2026-07-30/`.
+The owner authorized a clean operational restart with the unchanged 103 realizations per cell,
+24-worker count, sealed namespace, numerical margins, and runtime ceiling. Before that restart,
+the evidence-only runner was hardened to cancel queued futures after the first task exception,
+wait only for already-running work, close the runtime ledger with a safe failed-task identity, and
+retain a durable console traceback. The active gate's source hashes and recovery authorization
+were refreshed for that orchestration-only repair. The clean restart has not yet opened any seed.
 
 Compare:
 

@@ -35,15 +35,21 @@ if /i "%STAT2B_PHASE%"=="development" (
 
 rem STAT-2b.1 scaling selected 24 as the smallest tier within 90%% of best throughput.
 if "%ISAR_WORKERS%"=="" set "ISAR_WORKERS=24"
+if not exist "out\stat2b" mkdir "out\stat2b"
+set "STAT2B_LOG=out\stat2b\stat2b-%STAT2B_PHASE%-console.log"
 echo Running STAT-2b %STAT2B_PHASE% campaign with %ISAR_WORKERS% dataset workers...
+echo Durable console log: %STAT2B_LOG%
+> "%STAT2B_LOG%" echo [%DATE% %TIME%] Starting STAT-2b %STAT2B_PHASE% campaign with %ISAR_WORKERS% dataset workers.
 "%MICROMAMBA%" run -n isar python -m isar.synth.stat2b ^
     --spec "%STAT2B_SPEC%" ^
     --phase "%STAT2B_PHASE%" ^
     --output-root "out\stat2b" ^
-    --workers %ISAR_WORKERS%
+    --workers %ISAR_WORKERS% >> "%STAT2B_LOG%" 2>&1
 if errorlevel 1 (
     echo.
-    echo STAT-2b campaign failed. Check the message above and the resumable checkpoints under out\stat2b.
+    echo STAT-2b campaign failed. Check:
+    echo   %STAT2B_LOG%
+    echo Resumable checkpoints remain under out\stat2b.
     pause
     exit /b 1
 )

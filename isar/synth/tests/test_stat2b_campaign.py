@@ -255,6 +255,130 @@ def test_checkpoint_resume_is_scheduling_independent(tmp_path, monkeypatch):
     assert resumed.manifest["cumulative_runtime_seconds"] >= prior_runtime + 9.0
 
 
+def test_task_failure_closes_runtime_ledger_with_safe_identity(tmp_path, monkeypatch):
+    spec = _spec()
+    first_scenario_id = spec.scenarios[0].id
+
+    def fail_after_smoke(
+        spec_arg,
+        scenario_id,
+        realization_index,
+        phase,
+        source_fingerprint,
+        runtime_fingerprint,
+    ):
+        if realization_index == spec_arg.development_realizations:
+            return _fake_record(
+                spec_arg,
+                scenario_id,
+                realization_index,
+                phase,
+                source_fingerprint,
+                runtime_fingerprint,
+            )
+        raise ValueError("injected dataset failure")
+
+    monkeypatch.setattr(campaign, "_run_realization", fail_after_smoke)
+    with pytest.raises(
+        campaign._CampaignTaskError,
+        match=rf"{first_scenario_id}-00000",
+    ):
+        campaign.run_campaign(
+            spec,
+            phase="development",
+            output_root=tmp_path,
+            workers=1,
+        )
+
+    ledger_path = (
+        tmp_path / spec.campaign_id / "development" / "runtime_ledger.json"
+    )
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert ledger["status"] == "failed"
+    assert ledger["active_started_epoch"] is None
+    assert ledger["failure_type"] == "ValueError"
+    assert ledger["failed_scenario_id"] == first_scenario_id
+    assert ledger["failed_realization_index"] == 0
+    assert ledger["cumulative_runtime_seconds"] >= 0.0
+
+
+def test_parallel_task_failure_cancels_queue_before_shutdown(tmp_path, monkeypatch):
+    class FakeFuture:
+        def __init__(self, outcome):
+            self.outcome = outcome
+            self.cancel_calls = 0
+
+        def result(self):
+            if isinstance(self.outcome, BaseException):
+                raise self.outcome
+            return self.outcome
+
+        def cancel(self):
+            self.cancel_calls += 1
+            return True
+
+    first = FakeFuture(
+        {
+            "scenario_id": "weak",
+            "realization_index": 0,
+            "dataset_id": "first",
+        }
+    )
+    failed = FakeFuture(RuntimeError("injected parallel failure"))
+    pending = FakeFuture(
+        {
+            "scenario_id": "weak",
+            "realization_index": 2,
+            "dataset_id": "pending",
+        }
+    )
+    futures = [first, failed, pending]
+
+    class FakeExecutor:
+        def __init__(self, *, max_workers):
+            self.max_workers = max_workers
+            self.shutdown_calls = []
+            self.submitted = 0
+
+        def submit(self, function, task):
+            future = futures[self.submitted]
+            self.submitted += 1
+            return future
+
+        def shutdown(self, *, wait, cancel_futures=False):
+            self.shutdown_calls.append((wait, cancel_futures))
+
+    executor = FakeExecutor(max_workers=2)
+    monkeypatch.setattr(
+        campaign,
+        "ProcessPoolExecutor",
+        lambda *, max_workers: executor,
+    )
+    monkeypatch.setattr(campaign, "as_completed", lambda submitted: submitted)
+    tasks = [
+        (None, "weak", index, "development", "source", "runtime")
+        for index in range(3)
+    ]
+    records_by_id = {}
+
+    with pytest.raises(
+        campaign._CampaignTaskError,
+        match=r"weak-00001",
+    ) as error:
+        campaign._persist_completed_tasks(
+            tasks,
+            workers=2,
+            checkpoints=tmp_path,
+            records_by_id=records_by_id,
+        )
+
+    assert isinstance(error.value.__cause__, RuntimeError)
+    assert records_by_id == {"first": first.outcome}
+    assert (tmp_path / "weak-00000.json").is_file()
+    assert [future.cancel_calls for future in futures] == [1, 1, 1]
+    assert executor.shutdown_calls == [(True, True)]
+
+
 def test_heldout_refuses_unfrozen_count_before_opening_seeds(tmp_path, monkeypatch):
     monkeypatch.setattr(
         campaign,

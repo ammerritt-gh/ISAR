@@ -76,3 +76,13 @@ def test_windows_launchers_pin_numerical_threads_before_python(launcher_name):
         assert assignment in text
         assert text.index(assignment) < python_offset
     assert text.index("ISAR_PHYSICAL_CORES") < python_offset
+
+
+def test_campaign_launcher_persists_traceback_log():
+    repo_root = Path(__file__).resolve().parents[3]
+    text = (repo_root / "run-stat2b-campaign.bat").read_text(encoding="utf-8")
+
+    assert 'set "STAT2B_LOG=' in text
+    assert '>> "%STAT2B_LOG%" 2>&1' in text
+    assert "Durable console log: %STAT2B_LOG%" in text
+    assert "STAT-2b campaign failed. Check:" in text

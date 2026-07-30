@@ -108,6 +108,14 @@
   },
   "numerical_runtime_fingerprint": "9d0e5cbf15a54999545e4133d2029cb77c0132cfa58e2d59a955b2167554f18f",
   "owner_approved": true,
+  "recovery_authorization": {
+    "approved_on": "2026-07-30",
+    "checkpoint_count_at_stop": 564,
+    "failed_output_path": "out/stat2b/stat2b1-selection-criterion-2026-07/heldout-failed-operational-2026-07-30",
+    "heldout_records_inspected": false,
+    "reason": "coordinator_exited_without_closing_runtime_ledger",
+    "sealed_seed_namespace": "stat2b-heldout-sealed-v2"
+  },
   "runtime_ceiling_seconds": 5062.070407115563,
   "schema": "isar.stat2b_heldout_gate/1",
   "source_hashes": {
@@ -166,7 +174,7 @@
     "isar/synth/fit.py": "f9dc5e4dfe7378a0bd60e45ee05b4e6f13cd9ef477c3726a966c602398718ee8",
     "isar/synth/stat2b/__init__.py": "68330511d691b6f6e5be26551f8972d614f8761dcb98806ca475485fd5f69cf6",
     "isar/synth/stat2b/__main__.py": "8bc727b85501a8f2aae7000ba0a1dba9730d2d83f0cfa3e19a7c609b06a2d637",
-    "isar/synth/stat2b/campaign.py": "cb0a90d4c766504a6a337f3d9f2b918f3ad4fa96c8294796a5ca61ca0098eba7",
+    "isar/synth/stat2b/campaign.py": "6800a240ed4b42280d762f4d260e9a6630c4bf8caf3a31483e6d59ef28b65a64",
     "isar/synth/stat2b/criteria.py": "ca8870d5c1eff62f1c8995506ff178a8e9b3010a3ad138038a6790bf993af9d9",
     "isar/synth/stat2b/scaling.py": "d137a88b55cb800eef21228d993b725fe61b235ea10c871af0a801d3f52e48e2",
     "isar/synth/stat2b/spec.py": "e3062820621a4ad134e11f4790d0cbe5b6db0f1eb995a341c172424c66bb7f16",

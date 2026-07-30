@@ -135,6 +135,18 @@ class CampaignRun:
     manifest: Mapping[str, Any]
 
 
+class _CampaignTaskError(RuntimeError):
+    """A dataset task failed before its checkpoint could be persisted."""
+
+    def __init__(self, scenario_id: str, realization_index: int):
+        self.scenario_id = scenario_id
+        self.realization_index = realization_index
+        super().__init__(
+            "STAT-2b dataset task failed before checkpoint persistence: "
+            f"{scenario_id}-{realization_index:05d}"
+        )
+
+
 def _strict_json_value(value):
     if isinstance(value, np.generic):
         return _strict_json_value(value.item())
@@ -1156,6 +1168,83 @@ def _run_task(args):
     return _run_realization(*args)
 
 
+def _persist_completed_tasks(
+    tasks,
+    *,
+    workers: int,
+    checkpoints: Path,
+    records_by_id: dict[str, dict[str, Any]],
+) -> None:
+    """Run dataset tasks and atomically persist every successful completion."""
+
+    def persist(record) -> None:
+        checkpoint = checkpoints / (
+            f"{record['scenario_id']}-{record['realization_index']:05d}.json"
+        )
+        _write_json(checkpoint, record)
+        records_by_id[record["dataset_id"]] = record
+
+    if workers == 1:
+        for task in tasks:
+            try:
+                record = _run_task(task)
+            except BaseException as exc:
+                raise _CampaignTaskError(task[1], task[2]) from exc
+            persist(record)
+        return
+
+    executor = ProcessPoolExecutor(max_workers=workers)
+    futures = {}
+    try:
+        for task in tasks:
+            futures[executor.submit(_run_task, task)] = task
+        for future in as_completed(futures):
+            task = futures[future]
+            try:
+                record = future.result()
+            except BaseException as exc:
+                raise _CampaignTaskError(task[1], task[2]) from exc
+            persist(record)
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
+
+
+def _write_failed_runtime_ledger(
+    path: Path,
+    *,
+    identity: Mapping[str, Any],
+    prior_runtime: float,
+    started: float,
+    error: BaseException,
+) -> None:
+    cause = error.__cause__ if isinstance(error, _CampaignTaskError) else error
+    payload = {
+        "schema": RUNTIME_LEDGER_SCHEMA,
+        **identity,
+        "status": (
+            "interrupted"
+            if isinstance(cause, (KeyboardInterrupt, SystemExit))
+            else "failed"
+        ),
+        "cumulative_runtime_seconds": (
+            prior_runtime + max(time.perf_counter() - started, 0.0)
+        ),
+        "active_started_epoch": None,
+        "failure_type": type(cause).__name__,
+    }
+    if isinstance(error, _CampaignTaskError):
+        payload.update(
+            failed_scenario_id=error.scenario_id,
+            failed_realization_index=error.realization_index,
+        )
+    _write_json(path, payload)
+
+
 def _validate_gate(
     spec: CampaignSpec,
     gate_path: Path,
@@ -1337,24 +1426,22 @@ def run_campaign(
                 )
             )
 
-    if max_workers == 1:
-        completed = map(_run_task, tasks)
-        for record in completed:
-            checkpoint = checkpoints / (
-                f"{record['scenario_id']}-{record['realization_index']:05d}.json"
-            )
-            _write_json(checkpoint, record)
-            records_by_id[record["dataset_id"]] = record
-    else:
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(_run_task, task): task for task in tasks}
-            for future in as_completed(futures):
-                record = future.result()
-                checkpoint = checkpoints / (
-                    f"{record['scenario_id']}-{record['realization_index']:05d}.json"
-                )
-                _write_json(checkpoint, record)
-                records_by_id[record["dataset_id"]] = record
+    try:
+        _persist_completed_tasks(
+            tasks,
+            workers=max_workers,
+            checkpoints=checkpoints,
+            records_by_id=records_by_id,
+        )
+    except BaseException as exc:
+        _write_failed_runtime_ledger(
+            runtime_ledger_path,
+            identity=ledger_identity,
+            prior_runtime=prior_runtime,
+            started=started,
+            error=exc,
+        )
+        raise
 
     records = tuple(
         sorted(
