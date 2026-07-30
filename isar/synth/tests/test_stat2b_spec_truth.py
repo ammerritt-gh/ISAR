@@ -267,6 +267,9 @@ def test_hard_prior_uses_production_gamma_amplitude_surface_and_rescue_starts_fr
         "phonon.A",
     }
     assert "phonon.Omega_d" not in hard_dataset.fit_context.constraints.hard
+    assert hard_dataset.delivery_design is not None
+    assert "delivery_design" not in hard_dataset.truth_manifest
+    assert hard_dataset.truth_manifest["delivery_design_fingerprint"]
     assert generate_dataset(spec, "rescue", 0).fit_context.constraints.is_empty()
 
 

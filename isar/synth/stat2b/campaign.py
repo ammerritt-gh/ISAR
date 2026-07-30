@@ -277,23 +277,19 @@ def _delivery_prior_and_card(
     dataset: TruthDataset, scenario
 ) -> tuple[PhononPrior | None, card_mod.Card]:
     card = _campaign_card()
-    target_index = dataset.truth_manifest.get("target_mode_index")
-    if target_index is None or scenario.constraint_kind == "unconstrained":
+    design = dataset.delivery_design
+    if design is None:
         return None, card
-    target = dataset.truth_manifest["modes"][int(target_index)]
-    prior_omega = (
-        float(target["omega0"])
-        + scenario.constraint_offset_sign * scenario.constraint_offset_mev
-    )
+    prior_omega = float(design["prior_omega"])
     prior = PhononPrior(
         omega0=prior_omega,
-        amplitude=float(target["amplitude"]),
-        omega0_sigma=float(scenario.constraint_sigma_mev),
+        amplitude=float(design["amplitude"]),
+        omega0_sigma=float(design["omega0_sigma"]),
     )
     # Populate the real running-branch state with clean synthetic anchors.
     # The stored resolution belongs to the anchor scans and is intentionally
     # narrower than the target scan, so a near-elastic target can be in-range.
-    amplitude_scale = float(target["amplitude"]) * float(target["omega0"])
+    amplitude_scale = float(design["amplitude_norm"]) * prior_omega
     for index, factor in enumerate((0.7, 0.9, 1.1, 1.3)):
         omega0 = prior_omega * factor
         session_prior.add_point(
@@ -305,7 +301,7 @@ def _delivery_prior_and_card(
             omega0=omega0,
             modality="fold",
             verdict="resolved",
-            gamma=float(target["gamma"]),
+            gamma=float(design["gamma"]),
             intensity={
                 "value": amplitude_scale / omega0,
                 "exposure": 1.0,

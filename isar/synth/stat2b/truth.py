@@ -33,6 +33,7 @@ class TruthDataset:
     truth_manifest: dict[str, Any]
     dataset_id: str
     seed: int
+    delivery_design: dict[str, Any] | None = None
 
 
 def _stream_seed(
@@ -102,30 +103,23 @@ def _exposure_scale(scenario: ScenarioSpec, n: int) -> np.ndarray | None:
 
 
 def _constraints(
-    scenario: ScenarioSpec, target_mode: Mapping[str, Any] | None
+    scenario: ScenarioSpec, delivery_design: Mapping[str, Any] | None
 ) -> ParamConstraints:
     if scenario.constraint_kind in {"unconstrained", "post_rail_rescue"}:
         # A rescue cell starts unconstrained; the production delivery path decides whether it rails.
         return ParamConstraints()
-    if target_mode is None:
+    if delivery_design is None:
         raise ValueError(f"scenario {scenario.id}: a target constraint requires a target mode")
-    prior_omega = (
-        float(target_mode["omega0"])
-        + scenario.constraint_offset_sign * scenario.constraint_offset_mev
-    )
+    prior_omega = float(delivery_design["prior_omega"])
     if prior_omega <= 0:
         raise ValueError(f"scenario {scenario.id}: target constraint must remain positive")
     # Use the production branch-prediction constraint surface: Γ and the
     # exposure-normalized 1/ω intensity are constrained while ω0 remains free.
     prediction = BranchPrediction(
         omega0=prior_omega,
-        gamma=float(target_mode["gamma"]),
+        gamma=float(delivery_design["gamma"]),
         gamma_sigma=float(scenario.constraint_sigma_mev),
-        amplitude_norm=(
-            float(target_mode["amplitude"])
-            * float(target_mode["omega0"])
-            / prior_omega
-        ),
+        amplitude_norm=float(delivery_design["amplitude_norm"]),
         amplitude_rel_sigma=0.3,
         in_anchor_range=True,
         n_anchors=4,
@@ -133,6 +127,31 @@ def _constraints(
     if scenario.constraint_kind == "soft_prior_predictive":
         return prediction.soft_constraints(exposure=1.0)
     return prediction.hard_constraints(exposure=1.0)
+
+
+def _delivery_design(
+    scenario: ScenarioSpec, target_mode: Mapping[str, Any] | None
+) -> dict[str, Any] | None:
+    if target_mode is None or scenario.constraint_kind == "unconstrained":
+        return None
+    prior_omega = (
+        float(target_mode["omega0"])
+        + scenario.constraint_offset_sign * scenario.constraint_offset_mev
+    )
+    if prior_omega <= 0:
+        raise ValueError(f"scenario {scenario.id}: target prior must remain positive")
+    return {
+        "prior_omega": prior_omega,
+        "omega0_sigma": float(scenario.constraint_sigma_mev),
+        "amplitude": float(target_mode["amplitude"]),
+        "amplitude_norm": (
+            float(target_mode["amplitude"])
+            * float(target_mode["omega0"])
+            / prior_omega
+        ),
+        "gamma": float(target_mode["gamma"]),
+        "T": float(scenario.T),
+    }
 
 
 def _target_index(scenario: ScenarioSpec) -> int | None:
@@ -266,6 +285,7 @@ def generate_dataset(
 
     target_index = _target_index(scenario)
     target_mode = None if target_index is None else modes[target_index]
+    delivery_design = _delivery_design(scenario, target_mode)
     fit_context = ScanContext(
         x=x,
         counts=fit_counts,
@@ -277,7 +297,7 @@ def generate_dataset(
         instrument="STAT2B_SYNTH",
         energy_status="absolute",
         quasielastic_fwhm=float(scenario.qe_fwhm),
-        constraints=_constraints(scenario, target_mode),
+        constraints=_constraints(scenario, delivery_design),
         exposure_scale=exposure,
         exposure_reference=1.0 if exposure is not None else None,
     )
@@ -315,6 +335,13 @@ def generate_dataset(
         "constraint_origin": scenario.constraint_origin,
         "constraint_offset_sign": scenario.constraint_offset_sign,
         "constraint_offset_mev": float(scenario.constraint_offset_mev),
+        "delivery_design_fingerprint": (
+            semantics_fingerprint(
+                "isar.stat2b_delivery_design/1", delivery_design
+            )
+            if delivery_design is not None
+            else None
+        ),
         "critical_strata": list(scenario.critical_strata),
         "oracle_required": scenario.oracle_required,
         "lambda_fingerprint": semantics_fingerprint(
@@ -345,4 +372,5 @@ def generate_dataset(
         truth_manifest=manifest,
         dataset_id=dataset_id,
         seed=fit_seed,
+        delivery_design=delivery_design,
     )
