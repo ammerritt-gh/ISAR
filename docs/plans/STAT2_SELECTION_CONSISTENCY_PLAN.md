@@ -5,8 +5,8 @@
 > **Owner:** @ammerritt-gh
 > **Status:** STAT-2a, the STAT-2a.1 evidence-contract repair, and the corrected STAT-2b evidence
 > harness are implemented (repair commit `5767dea`); STAT-2b.1 scaling and corrected development
-> evidence are complete and awaiting renewed owner approval of the held-out gate; STAT-2c and
-> STAT-2d remain pending
+> evidence are complete, and the renewed 103-realization held-out gate is owner-approved and
+> activated for 24 workers; STAT-2c and STAT-2d remain pending
 > **Exit criteria:** STAT-2a through STAT-2d are implemented and verified; accepted behavior is
 > folded into `docs/STATS_PRIMER.md`, `docs/GLOSSARY.md`, and an S-series ruling; this execution
 > plan is then deleted and tombstoned in `docs/DOC_INVENTORY.md`.
@@ -613,11 +613,16 @@ realizations. Its campaign-spec fingerprint is
 development-summary fingerprint is
 `cae8a48fd687a2cb725b2a36bc9f82ae2a4cb4874ef490b8b7bb61b8dfcb0da7`.
 The corrected proposal retains 103 held-out realizations per cell, uses 24 workers, projects
-3,374.71 seconds, and proposes a 5,062.07-second ceiling. It remains explicitly unapproved.
+3,374.71 seconds, and proposes a 5,062.07-second ceiling. The promoted proposal remains the
+unaltered pre-approval historical artifact.
 Reviewed aggregate evidence is committed under
 [`../assets/stat2b/2026-07-30-stat2b1/`](../assets/stat2b/2026-07-30-stat2b1/).
-A fresh owner-approved gate is required before any new held-out seed is opened. No criterion
-switch is authorized.
+The owner approved those unchanged margins, replication count, worker count, and runtime ceiling
+on 2026-07-30. The active gate is `tools/stats/stat2b1-heldout-gate.json`; its held-out
+specification fingerprint is
+`43b9fcbc7f6c2cbb57510c4801ac8084e96caecc7b511e6707240e257e974a54`.
+That activation authorizes only the sealed STAT-2b held-out run. No criterion switch is
+authorized.
 
 Compare:
 
