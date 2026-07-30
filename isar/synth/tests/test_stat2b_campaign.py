@@ -126,7 +126,10 @@ def test_repo_specs_load_and_heldout_matrix_is_fingerprinted():
     development = load_campaign_spec(root / "tools/stats/stat2b-development.toml")
     heldout = load_campaign_spec(root / "tools/stats/stat2b-heldout.toml")
     assert development.development_realizations == 20
-    assert heldout.heldout_realizations == 0
+    assert heldout.heldout_realizations == 103
+    assert heldout.fingerprint == (
+        "2277ae64defbfa2391523f4a4456c3c46a48baa2c7fcc7c6888952d007835729"
+    )
     assert [cell.fingerprint for cell in heldout.scenarios] == [
         cell.fingerprint for cell in development.scenarios
     ]

@@ -2,8 +2,8 @@ schema = "isar.stat2b_campaign/1"
 campaign_id = "stat2b-selection-criterion-2026-07"
 base_seed = 20260730
 development_realizations = 20
-# Frozen only after owner review of the development summary. Zero makes held-out execution refuse.
-heldout_realizations = 0
+# Owner-approved from the development summary on 2026-07-30.
+heldout_realizations = 103
 delivery_replicates = 200
 certification_tolerance_mev = 0.10
 cell_weighting = "equal"
