@@ -5,6 +5,7 @@ These are deliberately light and synthetic (no real data files): a namespace-stu
 mask path, and the analyze two-peak spectrum pattern for the multimode path.
 """
 import types
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -13,6 +14,8 @@ from isar.analyze.context import ScanContext
 from isar.analyze.errors.bayes import BayesResult
 from isar.report import run_report
 from isar.schema import card as card_mod
+from isar.schema.statistics import validate_shadow_model_selection
+from isar.schema.steering import ParamConstraints
 from isar.session import driver
 from isar.session import guidelines as G
 from isar.session.state import ScanEntry, SessionState, canonical_hash
@@ -252,6 +255,14 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
     assert fit["hesse_trusted"] is True
     assert fit["interval"] is None and fit["omega0_profile"] is None     # no bootstrap/profile ran
     assert fit["interval_reliable"] is False
+    shadow = validate_shadow_model_selection(fit["shadow_model_selection"])
+    assert shadow["selection_status"] in {"complete", "degenerate_single_candidate"}
+    assert shadow["standard_selected_label"] == fit["best_label"]
+    assert {
+        item["label"]: item["weight"] for item in shadow["standard_model_weights"]
+    } == pytest.approx({
+        item["label"]: item["weight"] for item in shadow["legacy_model_weights"]
+    })
 
     outcome = driver.FitOutcome(
         detector_id="ana7", verdict=fit["verdict"], disposition="resolved",
@@ -260,7 +271,8 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
         gamma_provisional=False, best_label=fit["best_label"], cost_per_dof=fit["cost_per_dof"],
         q=[3.0, 0.2, 0.0], T=50.0, sample="S", prior_used=None, calib={},
         reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
-        hesse_interval=fit["hesse_interval"], hesse_trusted=fit["hesse_trusted"])
+        hesse_interval=fit["hesse_interval"], hesse_trusted=fit["hesse_trusted"],
+        shadow_model_selection=fit["shadow_model_selection"])
     st = SessionState()
     st.put(ScanEntry(scan_id="E:9:ana7", scan_number=9, scan_type="measurement",
                      status="fitted", detectors={"ana7": outcome.to_dict()}))
@@ -270,6 +282,148 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
     row = readers.read_results_csv(ws.root)[0]
     assert isinstance(row["hesse_lo"], float) and isinstance(row["hesse_hi"], float)
     assert row["hesse_trusted"] is True
+    assert row["shadow_model_selection"]["standard_selected_label"] == fit["best_label"]
+
+
+@pytest.mark.parametrize(
+    "constraints",
+    [
+        ParamConstraints(
+            soft={"phonon.Omega_d": (4.0, 0.2)},
+            origins={"phonon.Omega_d": "prior_predictive"},
+        ),
+        ParamConstraints(
+            hard={"phonon.Gamma": 0.3},
+            origins={"phonon.Gamma": "prior_predictive"},
+        ),
+    ],
+)
+def test_shadow_selection_is_invariant_to_delivery_constraints(constraints):
+    ctx = _single_peak_ctx_for_csv()
+    card = _card_with_fitting({})
+    baseline = driver.fit_one(
+        ctx, card, prior=None, M=20, seed=1, errors_tier="fast"
+    )
+    constrained = driver.fit_one(
+        replace(ctx, constraints=constraints),
+        card,
+        prior=None,
+        M=20,
+        seed=1,
+        errors_tier="fast",
+    )
+
+    baseline_shadow = validate_shadow_model_selection(
+        baseline["shadow_model_selection"]
+    )
+    constrained_shadow = validate_shadow_model_selection(
+        constrained["shadow_model_selection"]
+    )
+    assert constrained_shadow["standard_selection_fingerprint"] == (
+        baseline_shadow["standard_selection_fingerprint"]
+    )
+    assert {
+        item["label"]: item["weight"]
+        for item in constrained_shadow["standard_model_weights"]
+    } == pytest.approx({
+        item["label"]: item["weight"]
+        for item in baseline_shadow["standard_model_weights"]
+    })
+    assert constrained_shadow["delivery_effective_constraint_origins"] == [
+        "prior_predictive"
+    ]
+
+
+def test_soft_deadline_shadow_policy_skips_extra_candidate_fits(monkeypatch):
+    ctx = replace(
+        _single_peak_ctx_for_csv(),
+        constraints=ParamConstraints(
+            soft={"phonon.Omega_d": (4.0, 0.2)},
+            origins={"phonon.Omega_d": "prior_predictive"},
+        ),
+    )
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("deadline-bounded work launched shadow optimizers")
+
+    monkeypatch.setattr(driver.loop, "fit_shadow_candidates", forbidden)
+    fit = driver.fit_one(
+        ctx,
+        _card_with_fitting({}),
+        prior=None,
+        M=20,
+        seed=1,
+        errors_tier="fast",
+        shadow_enabled=False,
+    )
+
+    shadow = validate_shadow_model_selection(fit["shadow_model_selection"])
+    assert shadow["selection_status"] == "unavailable"
+    assert shadow["unavailable_reason_code"] == "shadow_skipped_soft_deadline"
+    assert shadow["runtime_increment_seconds"] == 0.0
+
+
+def test_shadow_comparator_failure_cannot_change_delivery(monkeypatch):
+    ctx = _single_peak_ctx_for_csv()
+    card = _card_with_fitting({})
+    baseline = driver.fit_one(
+        ctx,
+        card,
+        prior=None,
+        M=20,
+        seed=1,
+        errors_tier="fast",
+        shadow_enabled=False,
+    )
+
+    def injected_failure(*_args, **_kwargs):
+        raise RuntimeError("injected shadow-only failure")
+
+    monkeypatch.setattr(
+        driver.shadow_selection, "compare_shadow_selection", injected_failure
+    )
+    observed = driver.fit_one(
+        ctx, card, prior=None, M=20, seed=1, errors_tier="fast"
+    )
+
+    for key in (
+        "best_label",
+        "candidates",
+        "hesse_interval",
+        "verdict",
+        "confidence",
+        "omega0",
+        "gamma",
+    ):
+        assert observed[key] == baseline[key]
+    shadow = validate_shadow_model_selection(observed["shadow_model_selection"])
+    assert shadow["selection_status"] == "unavailable"
+    assert shadow["unavailable_reason_code"] == "shadow_comparison_failed"
+
+
+def test_shadow_unavailable_projection_has_a_nonraising_minimal_fallback(monkeypatch):
+    def injected_failure(*_args, **_kwargs):
+        raise RuntimeError("injected unavailable-record validator failure")
+
+    monkeypatch.setattr(
+        driver.shadow_selection, "unavailable_shadow_selection", injected_failure
+    )
+    record = driver._safe_shadow_unavailable(
+        "shadow_context_construction_failed",
+        "context_construction",
+        point={"runtime_increment_seconds": 0.01},
+        legacy_fingerprint=None,
+        legacy_selected_label="stokes+bg",
+        legacy_weights=[],
+    )
+
+    assert record["selection_status"] == "unavailable"
+    assert record["selection_changed"] is None
+    assert record["standard_model_weights"] == []
+    assert (
+        record["unavailable_reason_code"]
+        == "shadow_unavailable_record_construction_failed"
+    )
 
 
 # --------------------------------------------------------------------------- results.csv bayes columns

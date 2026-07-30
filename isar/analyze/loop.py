@@ -174,6 +174,24 @@ class StructureFitResult:
     fit_semantics: dict | None = None
 
 
+@dataclass
+class ShadowCandidateBundle:
+    """Point-fit-only evidence for the diagnostics-only STAT-2a comparison.
+
+    ``results`` deliberately remains the caller-owned list when the existing full, unconstrained
+    route is reused.  The shadow lane can therefore prove object/list identity without copying or
+    re-fitting the common path.
+    """
+
+    results: list[StructureFitResult]
+    offered_labels: list[str]
+    attempted_labels: list[str]
+    converged_labels: list[str]
+    failed_labels: list[str]
+    reused_labels: list[str]
+    multimode_route: str
+
+
 def _fingerprint_number(value):
     """Finite JSON representation that preserves non-finite scientific inputs explicitly."""
     if value is None:
@@ -256,6 +274,15 @@ def _data_likelihood_payload(ctx) -> dict:
     }
 
 
+def data_likelihood_fingerprint(ctx) -> str:
+    """Canonical identity of the observed likelihood shared by candidate models."""
+    from isar.schema.statistics import semantics_fingerprint
+
+    return semantics_fingerprint(
+        "isar.data_likelihood_context/1", _data_likelihood_payload(ctx)
+    )
+
+
 def _model_parameterization_payload(prob: Problem) -> dict:
     """Declarative component, parameter, bound, and effective-free-space identity."""
     names = [str(name) for name in prob.free_names]
@@ -309,6 +336,16 @@ def _model_parameterization_payload(prob: Problem) -> dict:
         "bounds": bounds,
         "effective_parameter_count": int(prob.k),
     }
+
+
+def model_parameterization_fingerprint(hypothesis, ctx) -> str:
+    """Canonical declarative parameter-space identity for one hypothesis/context."""
+    from isar.schema.statistics import semantics_fingerprint
+
+    return semantics_fingerprint(
+        "isar.model_parameterization_context/1",
+        _model_parameterization_payload(build_problem(hypothesis, ctx)),
+    )
 
 
 def _fit_semantics_for(prob: Problem, ctx, fit_kind: str) -> dict:
@@ -696,6 +733,159 @@ def _fit_hypothesis_batch(tasks, executor=None, *, phase="candidate"):
         log.warning("parallel %s fit failed; retrying serially: %s: %s",
                     phase, type(exc).__name__, exc)
         return [_fit_hypothesis_task(task) for task in tasks]
+
+
+def _shadow_result_matches(result, hyp, ctx, data_likelihood_fingerprint: str) -> bool:
+    """Whether ``result`` is exact unconstrained evidence for ``hyp`` under ``ctx``.
+
+    This is intentionally stricter than a label join.  STAT-2a reuse requires the same observed
+    likelihood, the same declarative parameterization, and an eligible data-likelihood estimate.
+    """
+    semantics = getattr(result, "fit_semantics", None)
+    if not isinstance(semantics, dict):
+        return False
+    if semantics.get("selection_eligibility") != "eligible":
+        return False
+    if semantics.get("estimator_kind") != "data_likelihood_mle":
+        return False
+    if semantics.get("data_likelihood_fingerprint") != data_likelihood_fingerprint:
+        return False
+    expected_parameterization = model_parameterization_fingerprint(hyp, ctx)
+    return (
+        semantics.get("model_parameterization_fingerprint")
+        == expected_parameterization
+    )
+
+
+def _fit_shadow_stage(hypotheses, ctx, reusable_by_label, *, backend, minos, executor,
+                      phase, x0_for=None):
+    """Fit the missing members of one canonical shadow stage and preserve hypothesis order."""
+    data_fingerprint = data_likelihood_fingerprint(ctx)
+    results_by_label = {}
+    reused_labels = []
+    tasks = []
+    task_hypotheses = []
+    for hypothesis in hypotheses:
+        reusable = reusable_by_label.get(str(hypothesis.label))
+        if reusable is not None and _shadow_result_matches(
+                reusable, hypothesis, ctx, data_fingerprint):
+            results_by_label[str(hypothesis.label)] = reusable
+            reused_labels.append(str(hypothesis.label))
+            continue
+        x0 = None if x0_for is None else x0_for(hypothesis)
+        tasks.append((hypothesis, ctx, backend, minos, x0))
+        task_hypotheses.append(hypothesis)
+    fitted = _fit_hypothesis_batch(tasks, executor, phase=phase)
+    for result, hypothesis in zip(fitted, task_hypotheses):
+        results_by_label[str(hypothesis.label)] = result
+    return (
+        [results_by_label[str(hypothesis.label)] for hypothesis in hypotheses],
+        reused_labels,
+    )
+
+
+def shadow_bundle_from_complete_results(results, *, peaks=None) -> ShadowCandidateBundle:
+    """Wrap an already-complete unconstrained two-stage result list without copying it."""
+    has_multimode = any(int(getattr(result, "n_modes", 1)) > 1 for result in results)
+    multimode_route = (
+        "guideline_forced"
+        if has_multimode and peaks is not None and len(peaks) >= 2
+        else "residual_triggered"
+        if has_multimode
+        else "not_offered"
+    )
+    labels = [str(result.label) for result in results]
+    converged = [
+        str(result.label) for result in results if result.optimizer_converged
+    ]
+    failed = [
+        str(result.label) for result in results if not result.optimizer_converged
+    ]
+    return ShadowCandidateBundle(
+        results=results,
+        offered_labels=labels,
+        attempted_labels=labels,
+        converged_labels=converged,
+        failed_labels=failed,
+        reused_labels=labels,
+        multimode_route=multimode_route,
+    )
+
+
+def fit_shadow_candidates(ctx, *, reusable_results=(), backend="iminuit", minos=False,
+                          peaks=None, executor=None) -> ShadowCandidateBundle:
+    """Fit the complete unconstrained STAT-2a candidate route, reusing exact results.
+
+    The hint itself is intentionally absent from this interface: a previous-structure hint may
+    provide a result in ``reusable_results``, but only the ordinary residual/expected-peak route
+    can offer a two-mode hypothesis.
+    """
+    reusable_by_label = {
+        str(result.label): result for result in reusable_results
+    }
+    one_hypotheses = list(enumerate_structures(ctx))
+    one_results, reused_one = _fit_shadow_stage(
+        one_hypotheses,
+        ctx,
+        reusable_by_label,
+        backend=backend,
+        minos=minos,
+        executor=executor,
+        phase="shadow one-mode candidate",
+    )
+
+    expected_two = peaks is not None and len(peaks) >= 2
+    residual_two = _offer_multimode(one_results, ctx)
+    multi_hypotheses = []
+    multi_results = []
+    reused_multi = []
+    if residual_two or expected_two:
+        best_one = _best_converged(one_results)
+        n_used = int(ctx.x_used.size)
+        multi_hypotheses = [
+            hypothesis for hypothesis in enumerate_multimode(ctx)
+            if n_used - hypothesis.k > 0
+        ]
+
+        def multimode_x0(hypothesis):
+            return greedy_multimode_ic(
+                hypothesis.build(), ctx, best_one, peaks=peaks
+            )
+
+        multi_results, reused_multi = _fit_shadow_stage(
+            multi_hypotheses,
+            ctx,
+            reusable_by_label,
+            backend=backend,
+            minos=minos,
+            executor=executor,
+            phase="shadow multi-mode candidate",
+            x0_for=multimode_x0,
+        )
+
+    results = one_results + multi_results
+    offered_labels = [
+        str(hypothesis.label) for hypothesis in one_hypotheses + multi_hypotheses
+    ]
+    return ShadowCandidateBundle(
+        results=results,
+        offered_labels=offered_labels,
+        attempted_labels=[str(result.label) for result in results],
+        converged_labels=[
+            str(result.label) for result in results if result.optimizer_converged
+        ],
+        failed_labels=[
+            str(result.label) for result in results if not result.optimizer_converged
+        ],
+        reused_labels=reused_one + reused_multi,
+        multimode_route=(
+            "guideline_forced"
+            if expected_two
+            else "residual_triggered"
+            if residual_two
+            else "not_offered"
+        ),
+    )
 
 
 def fit_admissible_structures(ctx, *, backend="iminuit", minos=False, errors=False,

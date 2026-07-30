@@ -108,3 +108,31 @@ def test_null_preferred_falls_through_to_full():
     _results, skipped = loop.fit_structures_two_stage_hinted(
         ctx, minos=False, structure_hint="stokes+bg")
     assert skipped is False                                    # …but the null gate still refuses it
+
+
+def test_complete_shadow_bundle_aliases_existing_results():
+    ctx = _one_peak_ctx()
+    results = loop.fit_structures_two_stage(ctx, minos=False)
+
+    bundle = loop.shadow_bundle_from_complete_results(results)
+
+    assert bundle.results is results
+    assert all(a is b for a, b in zip(bundle.results, results))
+    assert bundle.reused_labels == [result.label for result in results]
+
+
+def test_accepted_hint_is_reused_but_cannot_suppress_shadow_alternatives():
+    ctx = _one_peak_ctx()
+    hinted, skipped = loop.fit_structures_two_stage_hinted(
+        ctx, minos=False, structure_hint="stokes+bg")
+    assert skipped is True
+
+    bundle = loop.fit_shadow_candidates(ctx, reusable_results=hinted)
+
+    assert set(bundle.offered_labels) == {
+        hypothesis.label for hypothesis in enumerate_structures(ctx)
+    }
+    assert "stokes+bg" in bundle.reused_labels
+    assert next(
+        result for result in bundle.results if result.label == "stokes+bg"
+    ) is hinted[0]

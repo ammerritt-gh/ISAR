@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-from isar.analyze import errors, loop, select, verdict
+from isar.analyze import errors, loop, select, shadow_selection, verdict
 from isar.analyze import gold as gold_mod
 from isar.analyze.context import (
     ScanContext, effective_exposure, normalized_exposure, select_exposure,
@@ -43,7 +43,9 @@ from isar.schema.hypotheses import preset as hypothesis_preset
 from isar.schema.statistics import (
     FIT_SELECTION_SCHEMA,
     INTERVAL_SCHEMA,
+    MODEL_SELECTION_CONTRACT,
     PROBABILITY_SCHEMA,
+    SHADOW_MODEL_SELECTION_SCHEMA,
     SemanticsConstructionError,
     authority_scopes,
     compact_for_csv,
@@ -240,6 +242,8 @@ class FitOutcome:
     fit_selection_semantics: dict | None = None
     interval_semantics: dict | None = None
     probability_semantics: dict | None = None
+    # STAT-2a diagnostics only. It cannot drive any scientific or steering authority in this phase.
+    shadow_model_selection: dict | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -1184,10 +1188,322 @@ def _auto_escalation_reasons(prelim, fits, ctx) -> list[str]:
     return reasons
 
 
+def _delivery_constraint_origins(results) -> list[str]:
+    origins = set()
+    for result in results:
+        semantics = getattr(result, "fit_semantics", None)
+        if not isinstance(semantics, dict):
+            continue
+        for constraint in semantics.get("effective_constraints") or ():
+            origin = constraint.get("origin") if isinstance(constraint, dict) else None
+            if origin:
+                origins.add(str(origin))
+    return sorted(origins)
+
+
+def _shadow_can_alias_delivery(results, *, structure_skipped: bool) -> bool:
+    if structure_skipped:
+        return False
+    for result in results:
+        semantics = getattr(result, "fit_semantics", None)
+        if not isinstance(semantics, dict):
+            return False
+        if semantics.get("estimator_kind") != "data_likelihood_mle":
+            return False
+        if semantics.get("selection_eligibility") != "eligible":
+            return False
+        if semantics.get("effective_constraints"):
+            return False
+    return True
+
+
+def _shadow_model_identities(results, selection_ctx) -> list[dict]:
+    hypotheses = {hypothesis.label: hypothesis for hypothesis in enumerate_structures(selection_ctx)}
+    hypotheses.update(
+        {hypothesis.label: hypothesis for hypothesis in enumerate_multimode(selection_ctx)}
+    )
+    identities = []
+    for result in results:
+        hypothesis = hypotheses.get(result.label)
+        if hypothesis is None:
+            raise SemanticsConstructionError(
+                "shadow_candidate_identity_join_failed", str(result.label)
+            )
+        parameterization = loop.model_parameterization_fingerprint(
+            hypothesis, selection_ctx
+        )
+        identities.append(
+            shadow_selection.shadow_model_identity(result.label, parameterization)
+        )
+    return identities
+
+
+def _shadow_unavailable_context_fingerprint(stage: str, reason_code: str) -> str:
+    return semantics_fingerprint(
+        "isar.shadow_selection_context_unavailable/1",
+        {"stage": str(stage), "reason_code": str(reason_code)},
+    )
+
+
+def _minimal_shadow_unavailable(reason_code: str, stage: str, *, runtime_seconds: float) -> dict:
+    """Last-resort JSON-clean record when even shadow schema construction is unavailable."""
+    return {
+        "schema": SHADOW_MODEL_SELECTION_SCHEMA,
+        "selection_contract_revision": MODEL_SELECTION_CONTRACT,
+        "selection_status": "unavailable",
+        "selection_complete": False,
+        "selection_changed": None,
+        "standard_selected_label": None,
+        "standard_model_weights": [],
+        "unavailable_stage": str(stage),
+        "unavailable_reason_code": str(reason_code),
+        "runtime_increment_seconds": max(float(runtime_seconds), 0.0),
+        "authority_scopes": authority_scopes(user_diagnostic="active"),
+    }
+
+
+def _safe_shadow_unavailable(reason_code: str, stage: str, *, point, legacy_fingerprint,
+                             legacy_selected_label, legacy_weights) -> dict:
+    context_fingerprint = point.get("selection_context_fingerprint")
+    if not isinstance(context_fingerprint, str):
+        context_fingerprint = _shadow_unavailable_context_fingerprint(stage, reason_code)
+    try:
+        return shadow_selection.unavailable_shadow_selection(
+            reason_code,
+            stage=stage,
+            selection_context_fingerprint=context_fingerprint,
+            candidate_generation_route=point.get("candidate_generation_route") or {
+                "route": "shadow_not_evaluated"
+            },
+            legacy_model_selection_fingerprint=legacy_fingerprint,
+            legacy_selected_label=legacy_selected_label,
+            legacy_model_weights=legacy_weights,
+            offered_model_identities=point.get("offered_model_identities") or (),
+            affected_candidate_identities=point.get("affected_candidate_identities") or (),
+            delivery_effective_constraint_origins=point.get(
+                "delivery_effective_constraint_origins"
+            ) or (),
+            runtime_increment_seconds=point.get("runtime_increment_seconds", 0.0),
+        )
+    except Exception as exc:  # noqa: BLE001 — shadow metadata cannot invalidate a scientific fit
+        log.warning(
+            "shadow selection unavailable-record construction failed stage=%s reason_code=%s "
+            "(%s): %s",
+            stage, reason_code, type(exc).__name__, exc,
+        )
+        return _minimal_shadow_unavailable(
+            "shadow_unavailable_record_construction_failed",
+            "persistence_projection",
+            runtime_seconds=point.get("runtime_increment_seconds", 0.0),
+        )
+
+
+def _build_shadow_point_bundle(ctx, all_results, *, structure_labels, peaks,
+                               structure_hint, structure_skipped, boot_executor,
+                               shadow_enabled) -> dict:
+    """Produce point-fit-only standard evidence without touching legacy selection authority."""
+    started = time.perf_counter()
+    point = {
+        "delivery_effective_constraint_origins": _delivery_constraint_origins(all_results),
+        "candidate_generation_route": {
+            "route": "shadow_not_evaluated",
+            "supplied_hint": None if structure_hint is None else str(structure_hint),
+            "delivery_hint_accepted": bool(structure_skipped),
+            "guideline_structure_filter": (
+                [str(label) for label in structure_labels] if structure_labels else []
+            ),
+            "peak_hint_count": int(len(peaks)) if peaks is not None else 0,
+        },
+    }
+    try:
+        selection_ctx = replace(ctx, constraints=ParamConstraints())
+        point["selection_context_fingerprint"] = loop.data_likelihood_fingerprint(selection_ctx)
+    except Exception as exc:  # noqa: BLE001 — shadow context construction is isolated
+        log.warning(
+            "shadow selection context construction failed (%s): %s",
+            type(exc).__name__, exc,
+        )
+        point.update(
+            status="unavailable",
+            unavailable_stage="context_construction",
+            unavailable_reason_code="shadow_context_construction_failed",
+            runtime_increment_seconds=max(time.perf_counter() - started, 0.0),
+        )
+        return point
+
+    if not shadow_enabled:
+        point.update(
+            status="unavailable",
+            unavailable_stage="execution_policy",
+            unavailable_reason_code="shadow_skipped_soft_deadline",
+            runtime_increment_seconds=0.0,
+        )
+        return point
+
+    try:
+        if _shadow_can_alias_delivery(
+                all_results, structure_skipped=structure_skipped):
+            candidate_bundle = loop.shadow_bundle_from_complete_results(
+                all_results, peaks=peaks
+            )
+        else:
+            reusable = (
+                all_results
+                if not _delivery_constraint_origins(all_results)
+                else ()
+            )
+            candidate_bundle = loop.fit_shadow_candidates(
+                selection_ctx,
+                reusable_results=reusable,
+                peaks=peaks,
+                executor=boot_executor,
+            )
+    except Exception as exc:  # noqa: BLE001 — shadow fitting is isolated from delivery
+        log.warning(
+            "shadow selection candidate fitting failed (%s): %s",
+            type(exc).__name__, exc,
+        )
+        point.update(
+            status="unavailable",
+            unavailable_stage="candidate_fitting",
+            unavailable_reason_code="shadow_candidate_fitting_failed",
+            runtime_increment_seconds=max(time.perf_counter() - started, 0.0),
+        )
+        return point
+
+    try:
+        standard_results = candidate_bundle.results
+        guideline_changed = False
+        if structure_labels:
+            kept = [
+                result for result in standard_results
+                if result.label in structure_labels
+            ]
+            if kept:
+                guideline_changed = (
+                    [result.label for result in kept]
+                    != [result.label for result in standard_results]
+                )
+                standard_results = kept
+        selected_labels = {str(result.label) for result in standard_results}
+        route = {
+            "route": "full_two_stage",
+            "supplied_hint": None if structure_hint is None else str(structure_hint),
+            "delivery_hint_accepted": bool(structure_skipped),
+            "guideline_structure_filter": (
+                [str(label) for label in structure_labels] if structure_labels else []
+            ),
+            "guideline_changed_model_set": bool(guideline_changed),
+            "labels_before_guideline": list(candidate_bundle.offered_labels),
+            "peak_hint_count": int(len(peaks)) if peaks is not None else 0,
+            "multimode_route": candidate_bundle.multimode_route,
+            "offered_labels": [str(result.label) for result in standard_results],
+            "attempted_labels": [
+                label for label in candidate_bundle.attempted_labels
+                if label in selected_labels
+            ],
+            "converged_labels": [
+                label for label in candidate_bundle.converged_labels
+                if label in selected_labels
+            ],
+            "failed_labels": [
+                label for label in candidate_bundle.failed_labels
+                if label in selected_labels
+            ],
+        }
+        identities = _shadow_model_identities(standard_results, selection_ctx)
+        identity_by_label = {identity["label"]: identity for identity in identities}
+        point.update(
+            status="ready",
+            candidates=standard_results,
+            candidate_bundle=candidate_bundle,
+            offered_model_identities=identities,
+            attempted_model_identities=[
+                identity_by_label[label] for label in route["attempted_labels"]
+            ],
+            converged_model_identities=[
+                identity_by_label[label] for label in route["converged_labels"]
+            ],
+            failed_model_identities=[
+                identity_by_label[label] for label in route["failed_labels"]
+            ],
+            candidate_generation_route=route,
+            runtime_increment_seconds=max(time.perf_counter() - started, 0.0),
+        )
+        return point
+    except Exception as exc:  # noqa: BLE001 — projection cannot invalidate delivery
+        log.warning(
+            "shadow selection candidate projection failed (%s): %s",
+            type(exc).__name__, exc,
+        )
+        point.update(
+            status="unavailable",
+            unavailable_stage="candidate_projection",
+            unavailable_reason_code="shadow_candidate_projection_failed",
+            runtime_increment_seconds=max(time.perf_counter() - started, 0.0),
+        )
+        return point
+
+
+def _finalize_shadow_selection(point, selection, fit_selection_semantics) -> dict:
+    legacy_fingerprint = (
+        fit_selection_semantics.get("model_selection_fingerprint")
+        if isinstance(fit_selection_semantics, dict)
+        else None
+    )
+    legacy_weights = list(selection.scores)
+    if point.get("status") != "ready":
+        return _safe_shadow_unavailable(
+            point.get("unavailable_reason_code") or "shadow_point_bundle_unavailable",
+            point.get("unavailable_stage") or "point_bundle",
+            point=point,
+            legacy_fingerprint=legacy_fingerprint,
+            legacy_selected_label=selection.best,
+            legacy_weights=legacy_weights,
+        )
+    if legacy_fingerprint is None:
+        return _safe_shadow_unavailable(
+            "shadow_missing_legacy_model_selection_fingerprint",
+            "legacy_projection",
+            point=point,
+            legacy_fingerprint=None,
+            legacy_selected_label=selection.best,
+            legacy_weights=legacy_weights,
+        )
+    try:
+        return shadow_selection.compare_shadow_selection(
+            point["candidates"],
+            offered_model_identities=point["offered_model_identities"],
+            candidate_generation_route=point["candidate_generation_route"],
+            selection_context_fingerprint=point["selection_context_fingerprint"],
+            legacy_model_selection_fingerprint=legacy_fingerprint,
+            legacy_selected_label=selection.best,
+            legacy_model_weights=legacy_weights,
+            delivery_effective_constraint_origins=point.get(
+                "delivery_effective_constraint_origins"
+            ) or (),
+            runtime_increment_seconds=point["runtime_increment_seconds"],
+        )
+    except Exception as exc:  # noqa: BLE001 — comparator/validator failure is diagnostic only
+        log.warning(
+            "shadow selection comparison failed (%s): %s",
+            type(exc).__name__, exc,
+        )
+        return _safe_shadow_unavailable(
+            "shadow_comparison_failed",
+            "comparison",
+            point=point,
+            legacy_fingerprint=legacy_fingerprint,
+            legacy_selected_label=selection.best,
+            legacy_weights=legacy_weights,
+        )
+
+
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
             errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False,
             descriptor=None, structure_hint=None, bayes_opts=None,
-            predictive_n_members: int | None = None, fit_role="provisional_scan"):
+            predictive_n_members: int | None = None, fit_role="provisional_scan",
+            shadow_enabled=True):
     """Two-stage structure fit (§ multiplicity), optionally narrowed by guideline labels, then
     select + verdict. Mirrors docs/phase3_gold*_check.run_pipeline; returns extracted fields.
 
@@ -1225,6 +1541,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         ctx, minos=False, peaks=peaks, structure_hint=structure_hint,
         executor=boot_executor)
     two_stage_seconds = round(time.perf_counter() - _t_two_stage, 4)
+    all_results = results
     labels_before_guideline = [str(r.label) for r in results]
     # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
     by_hyp = {h.label: h for h in enumerate_structures(ctx)}
@@ -1262,6 +1579,17 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "offered_labels": [str(r.label) for r in results],
     }
 
+    shadow_point = _build_shadow_point_bundle(
+        ctx,
+        all_results,
+        structure_labels=structure_labels,
+        peaks=peaks,
+        structure_hint=structure_hint,
+        structure_skipped=structure_skipped,
+        boot_executor=boot_executor,
+        shadow_enabled=shadow_enabled,
+    )
+
     fits = {r.label: r for r in results}
 
     prelim = select.select_models(results, stamp=False)
@@ -1297,6 +1625,9 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         error_attachment_labels=error_attachment_labels,
     )
     sel.fit_selection_semantics = fit_selection_semantics
+    shadow_model_selection = _finalize_shadow_selection(
+        shadow_point, sel, fit_selection_semantics
+    )
     sv = verdict.classify(results, ctx, sel, prior=prior, descriptor=descriptor)
 
     best = fits.get(sel.best) if sel.best else None
@@ -1484,6 +1815,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "amplitudes": amplitudes, "candidates": candidates,
         "model_manifest": model_manifest,
         "fit_selection_semantics": fit_selection_semantics,
+        "shadow_model_selection": shadow_model_selection,
         "interval_semantics": interval_semantics,
         "predictive_inputs": predictive_inputs,
         "fit_kind": fit_kind,
@@ -1614,24 +1946,30 @@ def _process_one_task(args):
     the returned :class:`ScanEntry` carries everything; the parent applies ledger + prior mutations
     serially in submission order."""
     (rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
-     M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts) = args
+     M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts, shadow_enabled) = args
     return _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                         chash, ghash, M=M, seed=seed, errors_tier=errors_tier,
                         boot_workers=boot_workers, boot_adaptive=boot_adaptive,
-                        bayes_opts=bayes_opts)
+                        bayes_opts=bayes_opts, shadow_enabled=shadow_enabled)
 
 
 def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_workers,
                use_pool, scan_workers, boot_executor=None, boot_adaptive=False,
-               bayes_opts=None, on_complete=None, deadline_gate=None) -> list:
+               bayes_opts=None, on_complete=None, deadline_gate=None,
+               shadow_enabled=True) -> list:
     """Fit the fresh scan-detectors, serially or over a process pool, preserving submission order.
 
     ``boot_executor`` (a shared bootstrap pool) is threaded only through the SERIAL path — an
     executor is not picklable and must never enter a scan-pool worker (nested pools). The pool path
     only runs when ``boot_workers == 1`` (Layer A owns the workers), so it never wants a shared pool.
     """
+    effective_shadow_enabled = bool(
+        shadow_enabled
+        and (deadline_gate is None or deadline_gate.deadline is None)
+    )
     arg_list = [(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
-                 M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts)
+                 M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts,
+                 effective_shadow_enabled)
                 for (rec, det, q, T, sample, scan_id, chash, ghash, seed) in tasks]
     if not arg_list:
         return []
@@ -1642,11 +1980,12 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
                 raise AnalysisWorkIncomplete(
                     f"analysis deadline reached after {len(out)}/{len(arg_list)} scan fit units")
             (rec, det, q, T, sample, scan_id, card_, g_, runcal_, exclusions_, chash, ghash,
-             M_, tier_, seed, bw, adaptive_, bopts_) = a
+             M_, tier_, seed, bw, adaptive_, bopts_, shadow_enabled_) = a
             entry = _process_one(rec, det, q, T, sample, scan_id, card_, g_, runcal_,
                                  exclusions_, chash, ghash, M=M_, seed=seed, errors_tier=tier_,
                                  boot_workers=bw, boot_executor=boot_executor,
-                                 boot_adaptive=adaptive_, bayes_opts=bopts_)
+                                 boot_adaptive=adaptive_, bayes_opts=bopts_,
+                                 shadow_enabled=shadow_enabled_)
             if on_complete is not None:
                 on_complete(entry)
             out.append(entry)
@@ -1916,7 +2255,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
                 boot_workers=boot_workers, use_pool=use_pool,
                 scan_workers=scan_workers, boot_executor=shared_pool,
                 boot_adaptive=scan_boot_adaptive, bayes_opts=bayes_opts,
-                on_complete=checkpoint_entry, deadline_gate=deadline_gate)
+                on_complete=checkpoint_entry, deadline_gate=deadline_gate,
+                shadow_enabled=deadline_gate.deadline is None)
             cached.update(zip(remaining_indices, fresh_entries))
             entries = [cached[index] for index in range(len(tasks))]
             _m_fit["per_task"] = [
@@ -3034,6 +3374,7 @@ def _fit_master_group_task(args):
     (ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number, chash,
      M, seed, errors_tier, boot_adaptive, structure_hint, bayes_opts, *role_tail) = args
     fit_role = role_tail[0] if role_tail else "master"
+    shadow_enabled = bool(role_tail[1]) if len(role_tail) > 1 else True
     # Pass structure_hint only when set: with the reuse policy off (default) hint is None and this
     # call is byte-identical to the pre-B2 call (keeps the "change nothing when off" guarantee).
     hint_kw = {"structure_hint": structure_hint} if structure_hint is not None else {}
@@ -3041,7 +3382,8 @@ def _fit_master_group_task(args):
     return _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id,
                              scan_number, chash, M=M, seed=seed, errors_tier=errors_tier,
                              boot_workers=1, boot_executor=None, boot_adaptive=boot_adaptive,
-                             bayes_opts=bayes_opts, **role_kw, **hint_kw)
+                             bayes_opts=bayes_opts, shadow_enabled=shadow_enabled,
+                             **role_kw, **hint_kw)
 
 
 def _stamp_master_analysis(entry: ScanEntry, *, errors_tier: str,
@@ -3251,7 +3593,7 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
                 fit_card, runcal, g, str(item["unit"]["master_id"]),
                 _MASTER_SCAN_BASE + item["group_index"], item["content_hash"], M,
                 int(item["unit"]["seed"]), requested_tier, boot_adaptive, None, bayes_opts,
-                "certification",
+                "certification", deadline_gate.deadline is None,
             ) for item in wave]
             progress(active=len(wave))
             pool = None
@@ -3469,7 +3811,8 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
         # preserves order → entries[k] aligns with refits[k], keeping the serial ledger order.
         arg_list = [(ms, grp, member_rec, member_det, card, runcal, g, master_id,
                      _MASTER_SCAN_BASE + idx, chash, M, seed_base + _MASTER_SCAN_BASE + idx,
-                     errors_tier, boot_adaptive, hint, bayes_opts)
+                     errors_tier, boot_adaptive, hint, bayes_opts, "master",
+                     deadline_gate is None or deadline_gate.deadline is None)
                     for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in pending]
         max_workers = min(scan_workers, len(arg_list))
         with ProcessPoolExecutor(max_workers=max_workers) as ex_pool:
@@ -3506,6 +3849,7 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
                     seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier,
                     boot_workers=boot_workers, boot_executor=ex,
                     boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
+                    shadow_enabled=deadline_gate is None or deadline_gate.deadline is None,
                     **({"structure_hint": hint} if hint is not None else {}))
                 if checkpoint_store is not None:
                     checkpoint_store.save(f"master:{entry.scan_id}", entry)
@@ -3562,7 +3906,7 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
 def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number,
                       chash, *, M, seed, errors_tier="full", boot_workers=1, boot_executor=None,
                       boot_adaptive=False, structure_hint=None, bayes_opts=None,
-                      fit_role="master") -> ScanEntry:
+                      fit_role="master", shadow_enabled=True) -> ScanEntry:
     """Fit one merged group's pooled spectrum → a ``pooled=True`` ScanEntry (or a non_result).
 
     ``structure_hint`` (the group's previous fitted best_label, opt-in via card policy
@@ -3646,7 +3990,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                       boot_workers=boot_workers, boot_executor=boot_executor,
                       boot_adaptive=boot_adaptive, descriptor=descriptor,
                       structure_hint=structure_hint, bayes_opts=bayes_opts,
-                      predictive_n_members=int(ms.n_members), fit_role=fit_role)
+                      predictive_n_members=int(ms.n_members), fit_role=fit_role,
+                      shadow_enabled=shadow_enabled)
     except Exception as exc:  # noqa: BLE001 — one unfittable pool must not kill the batch (N=16 wrinkle)
         return _stamp_master_analysis(
             ScanEntry(status="non_result",
@@ -3697,6 +4042,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         consistency_seed=getattr(ms, "consistency_seed", None),
         fit_selection_semantics=fit.get("fit_selection_semantics"),
         interval_semantics=fit.get("interval_semantics"),
+        shadow_model_selection=fit.get("shadow_model_selection"),
         descriptor=(descriptor.to_dict() if descriptor is not None else None),
         fit_kind=fit.get("fit_kind", "unconstrained"),
         branch_id=branch_id, assignment_entropy=assignment_entropy,
@@ -4173,6 +4519,7 @@ def _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descri
             and not already_hard_gamma):
         pred = branch_model.branch_for(card.state, sample=sample, T=T, omega0=float(prior.omega0))
         if pred is not None and pred.in_anchor_range and pred.gamma > 0:
+            original_shadow = fit.get("shadow_model_selection")
             soft = dict(ctx.constraints.soft) if ctx.constraints is not None else {}
             origins = dict(ctx.constraints.origins) if ctx.constraints is not None else {}
             soft.pop("phonon.Gamma", None)                 # Γ becomes hard, not soft
@@ -4187,11 +4534,13 @@ def _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descri
                 hfit = fit_one(hctx, card, prior=prior, M=M, seed=seed, structure_labels=labels,
                                peaks=peaks, errors_tier=errors_tier, boot_workers=boot_workers,
                                boot_executor=boot_executor, boot_adaptive=boot_adaptive,
-                               descriptor=descriptor, bayes_opts=bayes_opts)
+                               descriptor=descriptor, bayes_opts=bayes_opts,
+                               shadow_enabled=False)
             except Exception:  # noqa: BLE001 — escalation is best-effort; keep the original fit
                 hfit = None
             if hfit is not None and hfit.get("omega0") is not None \
                     and not hfit.get("gamma_at_bound"):
+                hfit["shadow_model_selection"] = original_shadow
                 fit = hfit
                 region_reasons.append(
                     f"hard-fix escalation: Γ frozen to branch {pred.gamma:.2f} meV "
@@ -4268,6 +4617,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         search_energy_hi=(acquisition or {}).get("search_energy_hi"),
         fit_selection_semantics=fit.get("fit_selection_semantics"),
         interval_semantics=fit.get("interval_semantics"),
+        shadow_model_selection=fit.get("shadow_model_selection"),
         evidence_sink=evidence_sink_for(getattr(rec, "raw_header", None),
                                         getattr(card.state, "acquisition_provenance", None)))
     outcome.probability_semantics = _refresh_probability_semantics(outcome.__dict__)
@@ -4287,7 +4637,8 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
 
 def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                  chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
-                 boot_executor=None, boot_adaptive=False, bayes_opts=None) -> ScanEntry:
+                 boot_executor=None, boot_adaptive=False, bayes_opts=None,
+                 shadow_enabled=True) -> ScanEntry:
     _t_fit0 = time.perf_counter()
     base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
                 content_hash=chash, guidelines_hash=ghash)
@@ -4306,7 +4657,7 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
                       errors_tier=errors_tier, boot_workers=boot_workers,
                       boot_executor=boot_executor, boot_adaptive=boot_adaptive, descriptor=descriptor,
-                      bayes_opts=bayes_opts)
+                      bayes_opts=bayes_opts, shadow_enabled=shadow_enabled)
     except Exception as exc:  # noqa: BLE001 — one unfittable scan must not kill the batch
         return ScanEntry(status="non_result",
                          reasons=[f"fit error ({type(exc).__name__}): {exc}"] + region_reasons,
@@ -4425,6 +4776,8 @@ _CSV_COLUMNS = [
     "target_delivery_eligible", "identity_branch_id", "delivery_withheld_reason",
     # STAT-1 additive compact provenance. Full records remain in session.json.
     "fit_selection_semantics", "interval_semantics", "probability_semantics",
+    # STAT-2a diagnostics-only comparison. Kept last for positional legacy CSV readers.
+    "shadow_model_selection",
 ]
 
 
@@ -4602,6 +4955,15 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                         separators=(",", ":"),
                     )
                     if oc.get("probability_semantics") is not None
+                    else None
+                ),
+                "shadow_model_selection": (
+                    json.dumps(
+                        compact_for_csv(oc.get("shadow_model_selection")),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if oc.get("shadow_model_selection") is not None
                     else None
                 ),
             })
