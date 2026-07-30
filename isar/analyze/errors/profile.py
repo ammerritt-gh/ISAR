@@ -71,6 +71,18 @@ def _omega0_profile_crossing(hyp, ctx, fit_result, direction, delta: float = 1.0
     # itself is frozen, ω₀↔Ω_d is 1:1 and the scan re-minimises only the remaining free amplitudes.
     fixed_map = {names[i]: float(v) for i, v in zip(prob.fixed_pos, prob.fixed_vals)}
     g_fixed = g_name in fixed_map
+    # The derived coordinate has a physical lower edge set by the fitted model's Omega_d bound.
+    # A lower-side scan can step past that edge before reaching delta-cost=1, especially for
+    # weak/near-elastic fits. Keep the exact geometry explicit so we never hand scipy an inverted
+    # Gamma bound or manufacture a crossing outside the fitted parameter space.
+    od_lo = max(float(bounds[od_name][0]), _OD_FLOOR)
+    if g_fixed:
+        omega0_floor = float(np.hypot(fixed_map[g_name], od_lo))
+    else:
+        g_lo, g_hi = (float(v) for v in bounds[g_name])
+        min_abs_gamma = 0.0 if g_lo <= 0.0 <= g_hi else min(abs(g_lo), abs(g_hi))
+        omega0_floor = float(np.hypot(min_abs_gamma, od_lo))
+    omega0_edge = float(np.nextafter(omega0_floor, np.inf))
     reduced = [n for n in names if n != od_name and n not in fixed_map]   # free: (Γ), A, (E), BG
     costv = _cost_closure(prob, ctx)
     theta_fit = {n: float(fit_result.params[n]) for n in names}
@@ -80,18 +92,21 @@ def _omega0_profile_crossing(hyp, ctx, fit_result, direction, delta: float = 1.0
 
     def _full(omega0, red):
         g = _gamma_of(red)
-        od = float(np.sqrt(max(omega0 ** 2 - g ** 2, _OD_FLOOR ** 2)))
+        od = float(np.sqrt(max(omega0 ** 2 - g ** 2, od_lo ** 2)))
         vals = {n: float(red[reduced.index(n)]) for n in reduced}
         vals.update(fixed_map)                            # frozen params at their branch values
         vals[od_name] = od
         return np.array([vals[n] for n in names], dtype=float)
 
     def profile_cost(omega0: float) -> float:
+        if omega0 < omega0_edge:
+            return float("inf")
         rbounds, red0 = [], []
         for n in reduced:
             lo, hi = bounds[n]
             if n == g_name:
-                hi = min(hi, omega0 - _OD_FLOOR)         # Γ < ω₀ so Ω_d stays real
+                gamma_hi = float(np.sqrt(max(omega0 ** 2 - od_lo ** 2, 0.0)))
+                hi = min(hi, gamma_hi)
             lo, hi = float(lo), float(hi)
             rbounds.append((lo, hi))
             red0.append(min(max(theta_fit[n], lo), hi))
@@ -122,11 +137,14 @@ def _omega0_profile_crossing(hyp, ctx, fit_result, direction, delta: float = 1.0
             return float("nan")
         for _ in range(80):
             nxt = prev + direction * step
-            if nxt <= _OD_FLOOR:
-                return float("nan")
+            reached_lower_edge = direction < 0 and nxt <= omega0_edge
+            if reached_lower_edge:
+                nxt = omega0_edge
             if g(nxt) > 0:
                 a, b = (prev, nxt) if direction > 0 else (nxt, prev)
                 return float(brentq(g, a, b))
+            if reached_lower_edge:
+                return float("nan")
             prev, step = nxt, step * 1.4
         return float("nan")
 

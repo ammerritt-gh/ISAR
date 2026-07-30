@@ -3,6 +3,8 @@
 ω₀ is a derived quantity (√(Ω_d²+Γ²)); iminuit MINOS only profiles the fit parameters, so
 the ω₀ interval comes from a 1-D profile scan. In the well-counted regime it should match the
 bootstrap (both → the asymptotic interval)."""
+from types import SimpleNamespace
+
 import numpy as np
 
 from isar.analyze import loop
@@ -60,6 +62,71 @@ def test_omega0_profile_parallel_path_preserves_unavailable_side(monkeypatch):
                         float("nan") if direction < 0 else 6.0)
     lo, hi = P.omega0_profile_interval(hyp, ctx, fit, executor=OrderedExecutor())
     assert np.isnan(lo) and hi == 6.0
+
+
+def test_omega0_profile_lower_scan_stops_at_gamma_floor(monkeypatch):
+    """A weak fit may step below Gamma's floor before finding a lower cost crossing."""
+    best = 0.021
+    gamma = loop.GAMMA_FLOOR
+    omega_d = float(np.sqrt(best ** 2 - gamma ** 2))
+    problem = SimpleNamespace(
+        free_names=["phonon.Omega_d", "phonon.Gamma", "phonon.A"],
+        bounds=[
+            (loop.EPS_OMEGA_D, 10.0),
+            (loop.GAMMA_FLOOR, loop.GAMMA_MAX),
+            (0.0, 1e4),
+        ],
+        fixed_pos=[],
+        fixed_vals=[],
+    )
+    fit = SimpleNamespace(
+        params={"phonon.Omega_d": omega_d, "phonon.Gamma": gamma, "phonon.A": 1.0},
+        omega0=best,
+        omega0_err_hesse=0.02,
+        posterior_cost=None,
+        cost=0.0,
+    )
+    monkeypatch.setattr(P.loop, "build_problem", lambda _hyp, _ctx: problem)
+    monkeypatch.setattr(
+        P,
+        "_cost_closure",
+        lambda _prob, _ctx: lambda theta:
+        (float(np.hypot(theta[0], theta[1])) - best) ** 2,
+    )
+
+    assert np.isnan(P._omega0_profile_crossing(None, None, fit, -1))
+
+
+def test_omega0_profile_fixed_gamma_stops_at_omega_d_floor(monkeypatch):
+    best = 0.021
+    gamma = 0.02
+    omega_d = float(np.sqrt(best ** 2 - gamma ** 2))
+    problem = SimpleNamespace(
+        free_names=["phonon.Omega_d", "phonon.Gamma", "phonon.A"],
+        bounds=[
+            (loop.EPS_OMEGA_D, 10.0),
+            (loop.GAMMA_FLOOR, loop.GAMMA_MAX),
+            (0.0, 1e4),
+        ],
+        fixed_pos=[1],
+        fixed_vals=[gamma],
+    )
+    fit = SimpleNamespace(
+        params={"phonon.Omega_d": omega_d, "phonon.Gamma": gamma, "phonon.A": 1.0},
+        omega0=best,
+        omega0_err_hesse=0.02,
+        posterior_cost=None,
+        cost=0.0,
+    )
+    monkeypatch.setattr(P.loop, "build_problem", lambda _hyp, _ctx: problem)
+    monkeypatch.setattr(
+        P,
+        "_cost_closure",
+        lambda _prob, _ctx: lambda theta:
+        (float(np.hypot(theta[0], theta[1])) - best) ** 2,
+    )
+
+    assert np.isnan(P._omega0_profile_crossing(None, None, fit, -1))
 
 
 def test_omega0_profile_near_bootstrap_when_well_counted():
