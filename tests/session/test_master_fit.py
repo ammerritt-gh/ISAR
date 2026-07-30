@@ -215,6 +215,15 @@ def _prov_no_timing(prov):
             if k not in ("fit_seconds", "two_stage_seconds", "errors_attach_seconds")}
 
 
+def _detectors_no_timing(detectors):
+    out = copy.deepcopy(detectors)
+    for outcome in out.values():
+        shadow = outcome.get("shadow_model_selection")
+        if isinstance(shadow, dict):
+            shadow.pop("runtime_increment_seconds", None)
+    return out
+
+
 def test_run_batch_routes_scan_and_master_bootstrap_caps_by_role(tmp_path, monkeypatch):
     data = _in8_file(tmp_path, "ROLEM", 54500, 2.25)
     ws = Workspace.open(tmp_path / "role-ws")
@@ -307,7 +316,7 @@ def test_parallel_masters_match_serial_end_to_end(tmp_path):
         assert se.status == pe.status
         assert se.content_hash == pe.content_hash
         assert se.scan_number == pe.scan_number
-        assert se.detectors == pe.detectors            # omega0, intervals, modes, calib, ...
+        assert _detectors_no_timing(se.detectors) == _detectors_no_timing(pe.detectors)
         assert _prov_no_timing(se.provenance) == _prov_no_timing(pe.provenance)
 
     assert ser_csv == par_csv                           # results.csv byte-identical

@@ -1977,10 +1977,11 @@ def _process_one_task(args):
     serially in submission order."""
     (rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
      M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts, shadow_enabled) = args
+    shadow_kw = {} if shadow_enabled else {"shadow_enabled": False}
     return _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                         chash, ghash, M=M, seed=seed, errors_tier=errors_tier,
                         boot_workers=boot_workers, boot_adaptive=boot_adaptive,
-                        bayes_opts=bayes_opts, shadow_enabled=shadow_enabled)
+                        bayes_opts=bayes_opts, **shadow_kw)
 
 
 def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_workers,
@@ -2011,11 +2012,12 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
                     f"analysis deadline reached after {len(out)}/{len(arg_list)} scan fit units")
             (rec, det, q, T, sample, scan_id, card_, g_, runcal_, exclusions_, chash, ghash,
              M_, tier_, seed, bw, adaptive_, bopts_, shadow_enabled_) = a
+            shadow_kw = {} if shadow_enabled_ else {"shadow_enabled": False}
             entry = _process_one(rec, det, q, T, sample, scan_id, card_, g_, runcal_,
                                  exclusions_, chash, ghash, M=M_, seed=seed, errors_tier=tier_,
                                  boot_workers=bw, boot_executor=boot_executor,
                                  boot_adaptive=adaptive_, bayes_opts=bopts_,
-                                 shadow_enabled=shadow_enabled_)
+                                 **shadow_kw)
             if on_complete is not None:
                 on_complete(entry)
             out.append(entry)
@@ -3409,11 +3411,11 @@ def _fit_master_group_task(args):
     # call is byte-identical to the pre-B2 call (keeps the "change nothing when off" guarantee).
     hint_kw = {"structure_hint": structure_hint} if structure_hint is not None else {}
     role_kw = {"fit_role": fit_role} if fit_role != "master" else {}
+    shadow_kw = {} if shadow_enabled else {"shadow_enabled": False}
     return _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id,
                              scan_number, chash, M=M, seed=seed, errors_tier=errors_tier,
                              boot_workers=1, boot_executor=None, boot_adaptive=boot_adaptive,
-                             bayes_opts=bayes_opts, shadow_enabled=shadow_enabled,
-                             **role_kw, **hint_kw)
+                             bayes_opts=bayes_opts, **shadow_kw, **role_kw, **hint_kw)
 
 
 def _stamp_master_analysis(entry: ScanEntry, *, errors_tier: str,
@@ -3873,13 +3875,18 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
                     raise AnalysisWorkIncomplete(
                         f"analysis deadline reached after {len(fresh_entries)}/{len(pending)} "
                         "master fit units")
+                shadow_kw = (
+                    {}
+                    if deadline_gate is None or deadline_gate.deadline is None
+                    else {"shadow_enabled": False}
+                )
                 entry = _fit_master_group(
                     ms, grp, member_rec, member_det, card, runcal, g, master_id,
                     _MASTER_SCAN_BASE + idx, chash, M=M,
                     seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier,
                     boot_workers=boot_workers, boot_executor=ex,
                     boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
-                    shadow_enabled=deadline_gate is None or deadline_gate.deadline is None,
+                    **shadow_kw,
                     **({"structure_hint": hint} if hint is not None else {}))
                 if checkpoint_store is not None:
                     checkpoint_store.save(f"master:{entry.scan_id}", entry)

@@ -180,6 +180,9 @@ _VERBOSE_CSV_KEYS = frozenset(
         "converged_model_identities",
         "denominator_model_identities",
         "failed_model_identities",
+        # Runtime is execution telemetry, not compact scientific provenance. Keeping it in
+        # results.csv would make serial and parallel runs byte-different solely by wall clock.
+        "runtime_increment_seconds",
         "prior_specification",
         "prior_bounds",
         "prior_payload",
