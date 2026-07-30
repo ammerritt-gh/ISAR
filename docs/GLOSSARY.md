@@ -72,6 +72,8 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **shadow selection lane** — the diagnostics-only `isar.model_selection/2-shadow` comparison
   introduced by STAT-2a. It exactly reuses a complete unconstrained delivery fit bundle when
   possible; otherwise it fits the complete standard candidate family without delivery constraints.
+  Schema `/2` binds each candidate to the declared data-likelihood context and distinguishes exact,
+  partial, fresh, skipped, and unavailable execution while retaining `/1` read compatibility.
   Its weights and changed-selection flag cannot affect verdicts, intervals, certification,
   stopping, acquisition, or cache identity. STAT-2c may promote an evidence-backed successor only
   after the STAT-2b campaign.

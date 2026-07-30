@@ -19,7 +19,11 @@ FIT_SELECTION_SCHEMA = "isar.fit_selection_semantics/1"
 INTERVAL_SCHEMA = "isar.interval_semantics/1"
 PROBABILITY_SCHEMA = "isar.probability_semantics/1"
 PREDICTIVE_SCHEMA = "isar.predictive_semantics/1"
-SHADOW_MODEL_SELECTION_SCHEMA = "isar.shadow_model_selection/1"
+SHADOW_MODEL_SELECTION_SCHEMA_V1 = "isar.shadow_model_selection/1"
+SHADOW_MODEL_SELECTION_SCHEMA = "isar.shadow_model_selection/2"
+SHADOW_MODEL_SELECTION_SCHEMAS = frozenset(
+    {SHADOW_MODEL_SELECTION_SCHEMA_V1, SHADOW_MODEL_SELECTION_SCHEMA}
+)
 MODEL_SELECTION_CONTRACT = "isar.model_selection/2-shadow"
 SUPPORTED_SCHEMAS = frozenset(
     {
@@ -27,12 +31,15 @@ SUPPORTED_SCHEMAS = frozenset(
         INTERVAL_SCHEMA,
         PROBABILITY_SCHEMA,
         PREDICTIVE_SCHEMA,
-        SHADOW_MODEL_SELECTION_SCHEMA,
+        *SHADOW_MODEL_SELECTION_SCHEMAS,
     }
 )
 
 SHADOW_SELECTION_STATUSES = frozenset(
     {"complete", "degenerate_single_candidate", "unavailable"}
+)
+SHADOW_EXECUTION_KINDS = frozenset(
+    {"exact", "partial", "fresh", "skipped", "unavailable"}
 )
 
 ESTIMATOR_KINDS = frozenset(
@@ -449,7 +456,7 @@ def _validate_fingerprints(record: Mapping[str, Any]) -> None:
         if key.endswith("_fingerprint"):
             if (
                 value is None
-                and record.get("schema") == SHADOW_MODEL_SELECTION_SCHEMA
+                and record.get("schema") in SHADOW_MODEL_SELECTION_SCHEMAS
                 and key == "legacy_model_selection_fingerprint"
             ):
                 continue
@@ -513,8 +520,10 @@ def _same_number(left: Any, right: float) -> bool:
 
 
 def _validate_shadow_model_selection(record: Mapping[str, Any]) -> None:
-    if record.get("schema") != SHADOW_MODEL_SELECTION_SCHEMA:
+    schema = record.get("schema")
+    if schema not in SHADOW_MODEL_SELECTION_SCHEMAS:
         return
+    is_v2 = schema == SHADOW_MODEL_SELECTION_SCHEMA
     required = {
         "selection_contract_revision",
         "legacy_model_selection_fingerprint",
@@ -545,6 +554,14 @@ def _validate_shadow_model_selection(record: Mapping[str, Any]) -> None:
         "unavailable_reason_code",
         "affected_candidate_identities",
     }
+    if is_v2:
+        required.update(
+            {
+                "shadow_execution_kind",
+                "reused_model_identities",
+                "freshly_fitted_model_identities",
+            }
+        )
     missing = sorted(required - set(record))
     if missing:
         raise SemanticsConstructionError(
@@ -613,6 +630,32 @@ def _validate_shadow_model_selection(record: Mapping[str, Any]) -> None:
         item["model_identity"] for item in canonical_sets["denominator"]
     }
     failed_ids = {item["model_identity"] for item in canonical_sets["failed"]}
+    reused_ids: set[str] = set()
+    freshly_fitted_ids: set[str] = set()
+    if is_v2:
+        execution_sets = {}
+        for field in (
+            "reused_model_identities",
+            "freshly_fitted_model_identities",
+        ):
+            canonical = canonical_shadow_model_identities(record[field])
+            if canonical != record[field]:
+                raise SemanticsConstructionError(
+                    "noncanonical_shadow_execution_identity_set", field
+                )
+            execution_sets[field] = {
+                item["model_identity"] for item in canonical
+            }
+        reused_ids = execution_sets["reused_model_identities"]
+        freshly_fitted_ids = execution_sets["freshly_fitted_model_identities"]
+        if not reused_ids <= attempted_ids or not freshly_fitted_ids <= attempted_ids:
+            raise SemanticsConstructionError(
+                "shadow_execution_identity_not_attempted"
+            )
+        if reused_ids & freshly_fitted_ids:
+            raise SemanticsConstructionError(
+                "shadow_execution_identity_sets_overlap"
+            )
     if not attempted_ids <= offered_ids:
         raise SemanticsConstructionError("shadow_attempted_set_not_offered")
     if not converged_ids <= attempted_ids or not failed_ids <= attempted_ids:
@@ -698,6 +741,56 @@ def _validate_shadow_model_selection(record: Mapping[str, Any]) -> None:
         raise SemanticsConstructionError(
             "invalid_shadow_selection_number", "runtime_increment_seconds"
         )
+    if is_v2:
+        execution_kind = record["shadow_execution_kind"]
+        if execution_kind not in SHADOW_EXECUTION_KINDS:
+            raise SemanticsConstructionError("invalid_shadow_execution_kind")
+        execution_union = reused_ids | freshly_fitted_ids
+        if execution_kind == "exact":
+            valid_execution = (
+                bool(attempted_ids)
+                and reused_ids == attempted_ids
+                and not freshly_fitted_ids
+            )
+        elif execution_kind == "partial":
+            valid_execution = (
+                bool(reused_ids)
+                and bool(freshly_fitted_ids)
+                and execution_union == attempted_ids
+            )
+        elif execution_kind == "fresh":
+            valid_execution = (
+                bool(attempted_ids)
+                and freshly_fitted_ids == attempted_ids
+                and not reused_ids
+            )
+        elif execution_kind == "skipped":
+            valid_execution = (
+                status == "unavailable"
+                and not attempted_ids
+                and not reused_ids
+                and not freshly_fitted_ids
+                and reason == "shadow_skipped_soft_deadline"
+                and runtime == 0.0
+            )
+        else:
+            valid_execution = (
+                status == "unavailable"
+                and not attempted_ids
+                and not reused_ids
+                and not freshly_fitted_ids
+            )
+        if not valid_execution:
+            raise SemanticsConstructionError(
+                "inconsistent_shadow_execution_provenance"
+            )
+        if (
+            status != "unavailable"
+            and execution_kind in {"skipped", "unavailable"}
+        ):
+            raise SemanticsConstructionError(
+                "inconsistent_shadow_execution_provenance"
+            )
 
     legacy_selected = record["legacy_selected_label"]
     if legacy_selected is not None and (
@@ -779,6 +872,29 @@ def _validate_shadow_model_selection(record: Mapping[str, Any]) -> None:
                 raise SemanticsConstructionError(
                     "shadow_candidate_identity_join_failed", label
                 )
+        context_mismatch_reason = (
+            "shadow_candidate_context_does_not_match_declared_selection_context"
+        )
+        if (
+            is_v2
+            and validation_status == "valid"
+            and semantics is not None
+            and semantics.get("data_likelihood_fingerprint")
+            != record["selection_context_fingerprint"]
+        ):
+            raise SemanticsConstructionError(context_mismatch_reason, label)
+        if (
+            is_v2
+            and validation_reason == context_mismatch_reason
+            and (
+                semantics is None
+                or semantics.get("data_likelihood_fingerprint")
+                == record["selection_context_fingerprint"]
+            )
+        ):
+            raise SemanticsConstructionError(
+                "shadow_candidate_context_mismatch_reason_inconsistent", label
+            )
         if validation_status == "valid":
             if semantics is None:
                 raise SemanticsConstructionError("malformed_standard_candidate_record", label)
@@ -1012,6 +1128,10 @@ def _validate_semantics(record: Mapping[str, Any], expected_schema: str, *, for_
 def validate_for_write(record: Mapping[str, Any], expected_schema: str) -> dict[str, Any]:
     """Strictly validate producer metadata and return a detached canonical record."""
     try:
+        if expected_schema == SHADOW_MODEL_SELECTION_SCHEMA_V1:
+            raise SemanticsConstructionError(
+                "legacy_shadow_schema_is_read_only"
+            )
         _validate_semantics(record, expected_schema, for_write=True)
         _validate_predictive_self_fingerprint(record, required=False)
         _validate_shadow_model_selection(record)
@@ -1065,12 +1185,22 @@ def validate_predictive_semantics(record: Mapping[str, Any]) -> dict[str, Any]:
 
 def validate_shadow_model_selection(record: Mapping[str, Any]) -> dict[str, Any]:
     """Validate and authenticate a recognized STAT-2 shadow-selection record."""
-    return _validate_for_read(record, SHADOW_MODEL_SELECTION_SCHEMA)
+    schema = record.get("schema") if isinstance(record, Mapping) else None
+    if schema not in SHADOW_MODEL_SELECTION_SCHEMAS:
+        raise SemanticsConstructionError("schema_mismatch")
+    return _validate_for_read(record, schema)
 
 
 def read_optional(record: Any, expected_schema: str) -> dict[str, Any] | None:
     """Read supported metadata, returning ``None`` for absent or unsupported legacy records."""
-    if not isinstance(record, Mapping) or record.get("schema") != expected_schema:
+    if not isinstance(record, Mapping):
+        return None
+    actual_schema = record.get("schema")
+    shadow_compatible = (
+        expected_schema in SHADOW_MODEL_SELECTION_SCHEMAS
+        and actual_schema in SHADOW_MODEL_SELECTION_SCHEMAS
+    )
+    if actual_schema != expected_schema and not shadow_compatible:
         return None
     try:
         validators = {
@@ -1078,6 +1208,7 @@ def read_optional(record: Any, expected_schema: str) -> dict[str, Any] | None:
             INTERVAL_SCHEMA: validate_interval_semantics,
             PROBABILITY_SCHEMA: validate_probability_semantics,
             PREDICTIVE_SCHEMA: validate_predictive_semantics,
+            SHADOW_MODEL_SELECTION_SCHEMA_V1: validate_shadow_model_selection,
             SHADOW_MODEL_SELECTION_SCHEMA: validate_shadow_model_selection,
         }
         return validators[expected_schema](record)

@@ -304,6 +304,9 @@ def test_full_session_and_compact_csv_semantics_roundtrip(tmp_path):
         row["shadow_model_selection"]["unavailable_reason_code"]
         == "shadow_skipped_soft_deadline"
     )
+    assert row["shadow_model_selection"]["shadow_execution_kind"] == "skipped"
+    assert row["shadow_model_selection"]["reused_model_identities"] == []
+    assert row["shadow_model_selection"]["freshly_fitted_model_identities"] == []
 
     state = SessionState()
     state.put(ScanEntry(

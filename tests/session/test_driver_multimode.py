@@ -257,6 +257,9 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
     assert fit["interval_reliable"] is False
     shadow = validate_shadow_model_selection(fit["shadow_model_selection"])
     assert shadow["selection_status"] in {"complete", "degenerate_single_candidate"}
+    assert shadow["shadow_execution_kind"] == "exact"
+    assert shadow["reused_model_identities"] == shadow["attempted_model_identities"]
+    assert shadow["freshly_fitted_model_identities"] == []
     assert shadow["standard_selected_label"] == fit["best_label"]
     assert {
         item["label"]: item["weight"] for item in shadow["standard_model_weights"]
@@ -332,6 +335,46 @@ def test_shadow_selection_is_invariant_to_delivery_constraints(constraints):
     assert constrained_shadow["delivery_effective_constraint_origins"] == [
         "prior_predictive"
     ]
+    assert baseline_shadow["shadow_execution_kind"] == "exact"
+    assert constrained_shadow["shadow_execution_kind"] == "fresh"
+    assert constrained_shadow["reused_model_identities"] == []
+    assert constrained_shadow["freshly_fitted_model_identities"] == (
+        constrained_shadow["attempted_model_identities"]
+    )
+
+
+def test_accepted_delivery_hint_records_partial_shadow_execution():
+    base = _single_peak_ctx_for_csv()
+    ctx = replace(
+        base,
+        counts=np.random.default_rng(3).poisson(
+            np.clip(base.counts, 0.0, None)
+        ).astype(float),
+    )
+    card = _card_with_fitting({})
+    hinted = driver.fit_one(
+        ctx,
+        card,
+        prior=None,
+        M=20,
+        seed=1,
+        errors_tier="fast",
+        structure_hint="stokes+bg",
+    )
+
+    assert hinted["structure_skipped"] is True
+    shadow = validate_shadow_model_selection(hinted["shadow_model_selection"])
+    assert shadow["shadow_execution_kind"] == "partial"
+    assert shadow["reused_model_identities"]
+    assert shadow["freshly_fitted_model_identities"]
+    assert {
+        item["model_identity"] for item in shadow["reused_model_identities"]
+    } | {
+        item["model_identity"]
+        for item in shadow["freshly_fitted_model_identities"]
+    } == {
+        item["model_identity"] for item in shadow["attempted_model_identities"]
+    }
 
 
 def test_soft_deadline_shadow_policy_skips_extra_candidate_fits(monkeypatch):
@@ -361,6 +404,7 @@ def test_soft_deadline_shadow_policy_skips_extra_candidate_fits(monkeypatch):
     assert shadow["selection_status"] == "unavailable"
     assert shadow["unavailable_reason_code"] == "shadow_skipped_soft_deadline"
     assert shadow["runtime_increment_seconds"] == 0.0
+    assert shadow["shadow_execution_kind"] == "skipped"
 
 
 def test_shadow_comparator_failure_cannot_change_delivery(monkeypatch):
@@ -399,6 +443,7 @@ def test_shadow_comparator_failure_cannot_change_delivery(monkeypatch):
     shadow = validate_shadow_model_selection(observed["shadow_model_selection"])
     assert shadow["selection_status"] == "unavailable"
     assert shadow["unavailable_reason_code"] == "shadow_comparison_failed"
+    assert shadow["shadow_execution_kind"] == "unavailable"
 
 
 def test_shadow_unavailable_projection_has_a_nonraising_minimal_fallback(monkeypatch):
@@ -420,6 +465,9 @@ def test_shadow_unavailable_projection_has_a_nonraising_minimal_fallback(monkeyp
     assert record["selection_status"] == "unavailable"
     assert record["selection_changed"] is None
     assert record["standard_model_weights"] == []
+    assert record["shadow_execution_kind"] == "unavailable"
+    assert record["reused_model_identities"] == []
+    assert record["freshly_fitted_model_identities"] == []
     assert (
         record["unavailable_reason_code"]
         == "shadow_unavailable_record_construction_failed"

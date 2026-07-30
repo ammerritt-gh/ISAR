@@ -8,6 +8,7 @@ from isar.schema.statistics import (
     MODEL_SELECTION_CONTRACT,
     PROBABILITY_SCHEMA,
     SHADOW_MODEL_SELECTION_SCHEMA,
+    SHADOW_MODEL_SELECTION_SCHEMA_V1,
     SemanticsConstructionError,
     authority_scopes,
     canonical_shadow_model_identities,
@@ -248,10 +249,22 @@ def test_shadow_model_identity_and_set_fingerprint_are_order_independent():
     with pytest.raises(SemanticsConstructionError, match="shadow_model_identity_mismatch"):
         canonical_shadow_model_identities(tampered)
 
+    compact = compact_for_csv(
+        {
+            "reused_model_identities": canonical[:1],
+            "freshly_fitted_model_identities": canonical[1:],
+            "offered_model_identities": canonical,
+        }
+    )
+    assert compact["reused_model_identities"] == canonical[:1]
+    assert compact["freshly_fitted_model_identities"] == canonical[1:]
+    assert "offered_model_identities" not in compact
+
 
 def test_shadow_contract_is_separate_supported_schema():
     assert MODEL_SELECTION_CONTRACT == "isar.model_selection/2-shadow"
-    assert SHADOW_MODEL_SELECTION_SCHEMA == "isar.shadow_model_selection/1"
+    assert SHADOW_MODEL_SELECTION_SCHEMA == "isar.shadow_model_selection/2"
+    assert SHADOW_MODEL_SELECTION_SCHEMA_V1 == "isar.shadow_model_selection/1"
     assert read_optional(
         {"schema": "isar.shadow_model_selection/0"},
         SHADOW_MODEL_SELECTION_SCHEMA,

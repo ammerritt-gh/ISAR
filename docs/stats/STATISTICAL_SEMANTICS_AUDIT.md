@@ -528,6 +528,11 @@ constraints cause a separate complete unconstrained comparison over the same dat
 context. Full session and compact CSV persistence retain the comparison, while finite runtime
 allowances produce a structured skip and shadow failures fail soft. The lane is excluded from
 verdict, interval, certification, stopping, acquisition, rescue replacement, and cache identity.
+Schema `isar.shadow_model_selection/2` repairs two evidence defects without changing that
+authority: every otherwise-valid candidate must match the declared selection-context fingerprint,
+and exact/partial/fresh/skipped/unavailable execution provenance records which candidate identities
+were reused or newly fitted. Execution provenance is intentionally outside the standard-selection
+fingerprint, and `/1` remains a supported read format.
 STAT-2b remains the frozen evidence campaign; STAT-2c remains the first possible authority switch.
 
 Hard-conditioned fits may be weight-eligible only when the constraint is independently specified,

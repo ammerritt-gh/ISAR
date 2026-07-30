@@ -189,6 +189,7 @@ class ShadowCandidateBundle:
     converged_labels: list[str]
     failed_labels: list[str]
     reused_labels: list[str]
+    freshly_fitted_labels: list[str]
     multimode_route: str
 
 
@@ -808,6 +809,7 @@ def shadow_bundle_from_complete_results(results, *, peaks=None) -> ShadowCandida
         converged_labels=converged,
         failed_labels=failed,
         reused_labels=labels,
+        freshly_fitted_labels=[],
         multimode_route=multimode_route,
     )
 
@@ -878,6 +880,11 @@ def fit_shadow_candidates(ctx, *, reusable_results=(), backend="iminuit", minos=
             str(result.label) for result in results if not result.optimizer_converged
         ],
         reused_labels=reused_one + reused_multi,
+        freshly_fitted_labels=[
+            str(result.label)
+            for result in results
+            if str(result.label) not in set(reused_one + reused_multi)
+        ],
         multimode_route=(
             "guideline_forced"
             if expected_two

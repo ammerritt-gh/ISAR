@@ -143,6 +143,10 @@ mask, normalization, likelihood, and unconstrained parameterization. The full re
 in `session.json` and a compact projection is appended to `results.csv`. A finite runtime allowance
 skips the shadow work with a structured reason, and any shadow failure leaves the legacy selector,
 verdict, intervals, certification, stopping, cache identities, and acquisition behavior unchanged.
+The current `isar.shadow_model_selection/2` schema authenticates every candidate against the
+declared data-likelihood context and records whether shadow evidence was exactly reused, partly
+reused, freshly fitted, skipped, or unavailable. Those execution fields are provenance, not inputs
+to the standard-selection fingerprint; `/1` records remain readable.
 STAT-2c, not this shadow lane, owns authoritative enforcement after STAT-2b evidence.
 
 Fig. 3 is scan 507 of the archived workspace, chosen by criterion (`n_modes==2`,

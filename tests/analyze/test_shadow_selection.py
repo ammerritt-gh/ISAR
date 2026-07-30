@@ -8,14 +8,13 @@ from types import SimpleNamespace
 import pytest
 
 from isar.analyze.shadow_selection import (
-    SHADOW_REASON_INCOMPARABLE,
     SHADOW_REASON_INELIGIBLE,
     SHADOW_REASON_CANDIDATE_FIT_FAILED,
+    SHADOW_REASON_CONTEXT_MISMATCH,
     SHADOW_REASON_MALFORMED_SEMANTICS,
     SHADOW_REASON_MISSING_LEGACY_FINGERPRINT,
     SHADOW_REASON_MISSING_ATTEMPT,
     SHADOW_REASON_MISSING_SEMANTICS,
-    SHADOW_REASON_NO_DENOMINATOR,
     SHADOW_REASON_UNAPPROVED_ESTIMATOR,
     compare_shadow_selection,
     shadow_model_identity,
@@ -25,10 +24,14 @@ from isar.schema.statistics import (
     FIT_SELECTION_SCHEMA,
     MODEL_SELECTION_CONTRACT,
     SHADOW_MODEL_SELECTION_SCHEMA,
+    SHADOW_MODEL_SELECTION_SCHEMA_V1,
     SemanticsConstructionError,
     authority_scopes,
     semantics_fingerprint,
+    shadow_selection_fingerprint,
+    read_optional,
     validate_shadow_model_selection,
+    validate_for_write,
 )
 
 
@@ -100,6 +103,17 @@ def _identity(candidate) -> dict:
 
 def _compare(candidates, *, offered=None, route=None, **overrides):
     offered = offered if offered is not None else [_identity(item) for item in candidates]
+    candidate_labels = {item.label for item in candidates}
+    freshly_fitted = [
+        identity for identity in offered if identity["label"] in candidate_labels
+    ]
+    first_semantics = next(
+        (
+            item.fit_semantics for item in candidates
+            if isinstance(item.fit_semantics, dict)
+        ),
+        None,
+    )
     kwargs = {
         "offered_model_identities": offered,
         "candidate_generation_route": route
@@ -108,14 +122,17 @@ def _compare(candidates, *, offered=None, route=None, **overrides):
             "offered_labels": [item["label"] for item in offered],
             "guideline_structure_filter": ["z", "a"],
         },
-        "selection_context_fingerprint": semantics_fingerprint(
-            "test.shadow.selection_context", {"grid": [0.0, 1.0]}
-        ),
+        "selection_context_fingerprint": first_semantics[
+            "data_likelihood_fingerprint"
+        ],
         "legacy_model_selection_fingerprint": semantics_fingerprint(
             "test.shadow.legacy", {"winner": "legacy"}
         ),
         "legacy_selected_label": "legacy",
         "legacy_model_weights": {"legacy": 1.0},
+        "shadow_execution_kind": "fresh",
+        "reused_model_identities": [],
+        "freshly_fitted_model_identities": freshly_fitted,
         "delivery_effective_constraint_origins": ["prior_predictive"],
         "runtime_increment_seconds": 0.25,
     }
@@ -225,7 +242,7 @@ def test_required_candidate_semantics_defects_refuse_without_legacy_fallback(
     assert validate_shadow_model_selection(record) == record
 
 
-def test_incomparable_data_likelihood_context_refuses_whole_family():
+def test_candidate_context_must_match_declared_selection_context():
     one = _candidate("one", 10.0, 2)
     two = _candidate(
         "two",
@@ -240,8 +257,8 @@ def test_incomparable_data_likelihood_context_refuses_whole_family():
     )
     record = _compare([one, two])
     assert record["selection_status"] == "unavailable"
-    assert record["unavailable_reason_code"] == SHADOW_REASON_INCOMPARABLE
-    assert len(record["affected_candidate_identities"]) == 2
+    assert record["unavailable_reason_code"] == SHADOW_REASON_CONTEXT_MISMATCH
+    assert record["affected_candidate_identities"] == [_identity(two)["model_identity"]]
 
 
 def test_missing_required_attempt_refuses_instead_of_normalizing_subset():
@@ -302,6 +319,16 @@ def test_schema_authenticates_criteria_and_standard_fingerprint():
     ):
         validate_shadow_model_selection(denominator_tamper)
 
+    context_tamper = copy.deepcopy(record)
+    context_tamper["selection_context_fingerprint"] = semantics_fingerprint(
+        "test.shadow.other_declared_context", {}
+    )
+    context_tamper["standard_selection_fingerprint"] = (
+        shadow_selection_fingerprint(context_tamper)
+    )
+    with pytest.raises(SemanticsConstructionError, match=SHADOW_REASON_CONTEXT_MISMATCH):
+        validate_shadow_model_selection(context_tamper)
+
 
 def test_safe_unavailable_constructor_covers_soft_deadline_skip():
     record = unavailable_shadow_selection(
@@ -317,6 +344,9 @@ def test_safe_unavailable_constructor_covers_soft_deadline_skip():
     )
     assert record["selection_status"] == "unavailable"
     assert record["runtime_increment_seconds"] == 0.0
+    assert record["shadow_execution_kind"] == "skipped"
+    assert record["reused_model_identities"] == []
+    assert record["freshly_fitted_model_identities"] == []
     assert record["selection_changed"] is None
     assert validate_shadow_model_selection(record) == record
 
@@ -334,3 +364,57 @@ def test_missing_legacy_fingerprint_makes_comparator_structurally_unavailable():
     )
     assert record["legacy_selected_label"] == "legacy"
     assert record["legacy_model_weights"] == [{"label": "legacy", "weight": 1.0}]
+
+
+def test_execution_provenance_is_strict_but_outside_standard_fingerprint():
+    one = _candidate("one", 10.0, 2)
+    two = _candidate("two", 8.0, 4)
+    identities = [_identity(one), _identity(two)]
+    fresh = _compare([one, two])
+    exact = _compare(
+        [one, two],
+        shadow_execution_kind="exact",
+        reused_model_identities=identities,
+        freshly_fitted_model_identities=[],
+    )
+    partial = _compare(
+        [one, two],
+        shadow_execution_kind="partial",
+        reused_model_identities=[identities[0]],
+        freshly_fitted_model_identities=[identities[1]],
+    )
+
+    assert fresh["shadow_execution_kind"] == "fresh"
+    assert fresh["freshly_fitted_model_identities"] == sorted(
+        identities, key=lambda item: (item["model_identity"], item["label"])
+    )
+    assert exact["standard_selection_fingerprint"] == fresh[
+        "standard_selection_fingerprint"
+    ]
+    assert partial["standard_selection_fingerprint"] == fresh[
+        "standard_selection_fingerprint"
+    ]
+
+    malformed = copy.deepcopy(partial)
+    malformed["shadow_execution_kind"] = "exact"
+    with pytest.raises(
+        SemanticsConstructionError, match="inconsistent_shadow_execution_provenance"
+    ):
+        validate_shadow_model_selection(malformed)
+
+
+def test_v1_record_remains_readable_while_current_writer_publishes_v2():
+    current = _compare([_candidate("one", 10.0, 2)])
+    legacy = copy.deepcopy(current)
+    legacy["schema"] = SHADOW_MODEL_SELECTION_SCHEMA_V1
+    legacy.pop("shadow_execution_kind")
+    legacy.pop("reused_model_identities")
+    legacy.pop("freshly_fitted_model_identities")
+
+    assert current["schema"] == SHADOW_MODEL_SELECTION_SCHEMA
+    assert validate_shadow_model_selection(legacy) == legacy
+    assert read_optional(legacy, SHADOW_MODEL_SELECTION_SCHEMA) == legacy
+    with pytest.raises(
+        SemanticsConstructionError, match="legacy_shadow_schema_is_read_only"
+    ):
+        validate_for_write(legacy, SHADOW_MODEL_SELECTION_SCHEMA_V1)

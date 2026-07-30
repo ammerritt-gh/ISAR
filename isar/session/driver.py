@@ -1258,6 +1258,9 @@ def _minimal_shadow_unavailable(reason_code: str, stage: str, *, runtime_seconds
         "unavailable_stage": str(stage),
         "unavailable_reason_code": str(reason_code),
         "runtime_increment_seconds": max(float(runtime_seconds), 0.0),
+        "shadow_execution_kind": "unavailable",
+        "reused_model_identities": [],
+        "freshly_fitted_model_identities": [],
         "authority_scopes": authority_scopes(user_diagnostic="active"),
     }
 
@@ -1268,6 +1271,11 @@ def _safe_shadow_unavailable(reason_code: str, stage: str, *, point, legacy_fing
     if not isinstance(context_fingerprint, str):
         context_fingerprint = _shadow_unavailable_context_fingerprint(stage, reason_code)
     try:
+        execution_kind = (
+            "skipped"
+            if reason_code == "shadow_skipped_soft_deadline"
+            else "unavailable"
+        )
         return shadow_selection.unavailable_shadow_selection(
             reason_code,
             stage=stage,
@@ -1284,6 +1292,7 @@ def _safe_shadow_unavailable(reason_code: str, stage: str, *, point, legacy_fing
                 "delivery_effective_constraint_origins"
             ) or (),
             runtime_increment_seconds=point.get("runtime_increment_seconds", 0.0),
+            shadow_execution_kind=execution_kind,
         )
     except Exception as exc:  # noqa: BLE001 — shadow metadata cannot invalidate a scientific fit
         log.warning(
@@ -1305,6 +1314,9 @@ def _build_shadow_point_bundle(ctx, all_results, *, structure_labels, peaks,
     started = time.perf_counter()
     point = {
         "delivery_effective_constraint_origins": _delivery_constraint_origins(all_results),
+        "shadow_execution_kind": "unavailable",
+        "reused_model_identities": [],
+        "freshly_fitted_model_identities": [],
         "candidate_generation_route": {
             "route": "shadow_not_evaluated",
             "supplied_hint": None if structure_hint is None else str(structure_hint),
@@ -1334,6 +1346,7 @@ def _build_shadow_point_bundle(ctx, all_results, *, structure_labels, peaks,
     if not shadow_enabled:
         point.update(
             status="unavailable",
+            shadow_execution_kind="skipped",
             unavailable_stage="execution_policy",
             unavailable_reason_code="shadow_skipped_soft_deadline",
             runtime_increment_seconds=0.0,
@@ -1413,8 +1426,23 @@ def _build_shadow_point_bundle(ctx, all_results, *, structure_labels, peaks,
         }
         identities = _shadow_model_identities(standard_results, selection_ctx)
         identity_by_label = {identity["label"]: identity for identity in identities}
+        reused_labels = [
+            label for label in candidate_bundle.reused_labels
+            if label in selected_labels
+        ]
+        freshly_fitted_labels = [
+            label for label in candidate_bundle.freshly_fitted_labels
+            if label in selected_labels
+        ]
+        if reused_labels and freshly_fitted_labels:
+            execution_kind = "partial"
+        elif reused_labels:
+            execution_kind = "exact"
+        else:
+            execution_kind = "fresh"
         point.update(
             status="ready",
+            shadow_execution_kind=execution_kind,
             candidates=standard_results,
             candidate_bundle=candidate_bundle,
             offered_model_identities=identities,
@@ -1426,6 +1454,12 @@ def _build_shadow_point_bundle(ctx, all_results, *, structure_labels, peaks,
             ],
             failed_model_identities=[
                 identity_by_label[label] for label in route["failed_labels"]
+            ],
+            reused_model_identities=[
+                identity_by_label[label] for label in reused_labels
+            ],
+            freshly_fitted_model_identities=[
+                identity_by_label[label] for label in freshly_fitted_labels
             ],
             candidate_generation_route=route,
             runtime_increment_seconds=max(time.perf_counter() - started, 0.0),
@@ -1461,15 +1495,6 @@ def _finalize_shadow_selection(point, selection, fit_selection_semantics) -> dic
             legacy_selected_label=selection.best,
             legacy_weights=legacy_weights,
         )
-    if legacy_fingerprint is None:
-        return _safe_shadow_unavailable(
-            "shadow_missing_legacy_model_selection_fingerprint",
-            "legacy_projection",
-            point=point,
-            legacy_fingerprint=None,
-            legacy_selected_label=selection.best,
-            legacy_weights=legacy_weights,
-        )
     try:
         return shadow_selection.compare_shadow_selection(
             point["candidates"],
@@ -1479,6 +1504,11 @@ def _finalize_shadow_selection(point, selection, fit_selection_semantics) -> dic
             legacy_model_selection_fingerprint=legacy_fingerprint,
             legacy_selected_label=selection.best,
             legacy_model_weights=legacy_weights,
+            shadow_execution_kind=point["shadow_execution_kind"],
+            reused_model_identities=point["reused_model_identities"],
+            freshly_fitted_model_identities=point[
+                "freshly_fitted_model_identities"
+            ],
             delivery_effective_constraint_origins=point.get(
                 "delivery_effective_constraint_origins"
             ) or (),

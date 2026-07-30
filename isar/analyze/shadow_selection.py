@@ -37,6 +37,9 @@ SHADOW_REASON_MALFORMED_SEMANTICS = "shadow_malformed_candidate_fit_semantics"
 SHADOW_REASON_UNAPPROVED_ESTIMATOR = "shadow_unapproved_candidate_estimator"
 SHADOW_REASON_INELIGIBLE = "shadow_candidate_selection_ineligible"
 SHADOW_REASON_INCOMPARABLE = "shadow_incomparable_data_likelihood_context"
+SHADOW_REASON_CONTEXT_MISMATCH = (
+    "shadow_candidate_context_does_not_match_declared_selection_context"
+)
 SHADOW_REASON_MALFORMED_CANDIDATE = "shadow_malformed_candidate_result"
 SHADOW_REASON_NO_DENOMINATOR = "shadow_no_eligible_converged_candidates"
 SHADOW_REASON_DUPLICATE_ATTEMPT = "shadow_duplicate_candidate_attempt"
@@ -54,9 +57,10 @@ _ISSUE_PRECEDENCE = {
     SHADOW_REASON_MALFORMED_SEMANTICS: 4,
     SHADOW_REASON_UNAPPROVED_ESTIMATOR: 5,
     SHADOW_REASON_INELIGIBLE: 6,
-    SHADOW_REASON_INCOMPARABLE: 7,
-    SHADOW_REASON_MALFORMED_CANDIDATE: 8,
-    SHADOW_REASON_CANDIDATE_FIT_FAILED: 9,
+    SHADOW_REASON_CONTEXT_MISMATCH: 7,
+    SHADOW_REASON_INCOMPARABLE: 8,
+    SHADOW_REASON_MALFORMED_CANDIDATE: 9,
+    SHADOW_REASON_CANDIDATE_FIT_FAILED: 10,
 }
 
 _ROUTE_SET_KEYS = frozenset(
@@ -203,6 +207,9 @@ def _assemble_record(
     unavailable_stage: str | None,
     unavailable_reason_code: str | None,
     affected_candidate_identities: Sequence[str],
+    shadow_execution_kind: str,
+    reused_model_identities: Sequence[Mapping[str, Any]],
+    freshly_fitted_model_identities: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     origins = sorted(set(str(origin) for origin in delivery_effective_constraint_origins))
     if any(origin not in CONSTRAINT_ORIGINS for origin in origins):
@@ -240,6 +247,13 @@ def _assemble_record(
         "affected_candidate_identities": sorted(
             set(str(identity) for identity in affected_candidate_identities)
         ),
+        "shadow_execution_kind": str(shadow_execution_kind),
+        "reused_model_identities": canonical_shadow_model_identities(
+            reused_model_identities
+        ),
+        "freshly_fitted_model_identities": canonical_shadow_model_identities(
+            freshly_fitted_model_identities
+        ),
         "authority_scopes": authority_scopes(user_diagnostic="active"),
     }
     record["standard_selection_fingerprint"] = shadow_selection_fingerprint(record)
@@ -264,6 +278,9 @@ def unavailable_shadow_selection(
     delivery_effective_constraint_origins: Sequence[str] = (),
     runtime_increment_seconds: float = 0.0,
     selection_complete: bool = False,
+    shadow_execution_kind: str | None = None,
+    reused_model_identities: Sequence[Mapping[str, Any]] = (),
+    freshly_fitted_model_identities: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Construct an authenticated unavailable record without hand-rolled schema.
 
@@ -282,6 +299,13 @@ def unavailable_shadow_selection(
     affected = list(affected_candidate_identities)
     if not affected and offered:
         affected = [item["model_identity"] for item in offered]
+    execution_kind = shadow_execution_kind
+    if execution_kind is None:
+        execution_kind = (
+            "skipped"
+            if reason_code == "shadow_skipped_soft_deadline"
+            else "unavailable"
+        )
     return _assemble_record(
         selection_context_fingerprint=selection_context_fingerprint,
         candidate_generation_route=candidate_generation_route,
@@ -299,6 +323,9 @@ def unavailable_shadow_selection(
         unavailable_stage=stage,
         unavailable_reason_code=reason_code,
         affected_candidate_identities=affected,
+        shadow_execution_kind=execution_kind,
+        reused_model_identities=reused_model_identities,
+        freshly_fitted_model_identities=freshly_fitted_model_identities,
     )
 
 
@@ -321,6 +348,7 @@ def _safe_nonnegative_int(value: Any) -> int | None:
 def _candidate_record(
     candidate: Any,
     identity: Mapping[str, str],
+    selection_context_fingerprint: str,
 ) -> tuple[dict[str, Any], str | None]:
     label = identity["label"]
     converged_raw = _get(candidate, "optimizer_converged")
@@ -350,6 +378,11 @@ def _candidate_record(
         issue = SHADOW_REASON_UNAPPROVED_ESTIMATOR
     elif semantics is not None and semantics.get("selection_eligibility") != "eligible":
         issue = SHADOW_REASON_INELIGIBLE
+    elif semantics is not None and (
+        semantics.get("data_likelihood_fingerprint")
+        != selection_context_fingerprint
+    ):
+        issue = SHADOW_REASON_CONTEXT_MISMATCH
     if cost is None or k is None or n is None or n <= 0 or k > n:
         issue = issue or SHADOW_REASON_MALFORMED_CANDIDATE
     record = {
@@ -380,6 +413,9 @@ def compare_shadow_selection(
     legacy_model_selection_fingerprint: str | None,
     legacy_selected_label: str | None,
     legacy_model_weights: Any,
+    shadow_execution_kind: str,
+    reused_model_identities: Sequence[Mapping[str, Any]],
+    freshly_fitted_model_identities: Sequence[Mapping[str, Any]],
     delivery_effective_constraint_origins: Sequence[str] = (),
     runtime_increment_seconds: float = 0.0,
 ) -> dict[str, Any]:
@@ -440,7 +476,9 @@ def compare_shadow_selection(
     data_likelihoods: dict[str, str] = {}
     for model_id in sorted(attempted_by_id):
         record, issue = _candidate_record(
-            candidate_by_id[model_id], attempted_by_id[model_id]
+            candidate_by_id[model_id],
+            attempted_by_id[model_id],
+            selection_context_fingerprint,
         )
         candidate_records.append(record)
         if issue is not None:
@@ -505,6 +543,9 @@ def compare_shadow_selection(
             ),
             unavailable_reason_code=reason,
             affected_candidate_identities=affected,
+            shadow_execution_kind=shadow_execution_kind,
+            reused_model_identities=reused_model_identities,
+            freshly_fitted_model_identities=freshly_fitted_model_identities,
         )
 
     valid_converged_records = [
@@ -538,6 +579,9 @@ def compare_shadow_selection(
             affected_candidate_identities=[
                 item["model_identity"] for item in offered
             ],
+            shadow_execution_kind=shadow_execution_kind,
+            reused_model_identities=reused_model_identities,
+            freshly_fitted_model_identities=freshly_fitted_model_identities,
         )
 
     records_by_label = {record["label"]: record for record in valid_converged_records}
@@ -606,4 +650,7 @@ def compare_shadow_selection(
         unavailable_stage=None,
         unavailable_reason_code=None,
         affected_candidate_identities=[],
+        shadow_execution_kind=shadow_execution_kind,
+        reused_model_identities=reused_model_identities,
+        freshly_fitted_model_identities=freshly_fitted_model_identities,
     )

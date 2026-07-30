@@ -119,6 +119,7 @@ def test_complete_shadow_bundle_aliases_existing_results():
     assert bundle.results is results
     assert all(a is b for a, b in zip(bundle.results, results))
     assert bundle.reused_labels == [result.label for result in results]
+    assert bundle.freshly_fitted_labels == []
 
 
 def test_accepted_hint_is_reused_but_cannot_suppress_shadow_alternatives():
@@ -133,6 +134,9 @@ def test_accepted_hint_is_reused_but_cannot_suppress_shadow_alternatives():
         hypothesis.label for hypothesis in enumerate_structures(ctx)
     }
     assert "stokes+bg" in bundle.reused_labels
+    assert set(bundle.freshly_fitted_labels) == (
+        set(bundle.attempted_labels) - set(bundle.reused_labels)
+    )
     assert next(
         result for result in bundle.results if result.label == "stokes+bg"
     ) is hinted[0]
