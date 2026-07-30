@@ -3,7 +3,8 @@
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
 > **Owner:** @ammerritt-gh
-> **Status:** STAT-2a code-grounded at `36a69ce` (2026-07-30); implementation awaits approval
+> **Status:** STAT-2a implemented (code through `1310969`, evidence and docs completed 2026-07-30);
+> STAT-2b through STAT-2d pending
 > **Exit criteria:** STAT-2a through STAT-2d are implemented and verified; accepted behavior is
 > folded into `docs/STATS_PRIMER.md`, `docs/GLOSSARY.md`, and an S-series ruling; this execution
 > plan is then deleted and tombstoned in `docs/DOC_INVENTORY.md`.
@@ -330,15 +331,21 @@ drift checks, and `git diff --check`.
 
 ### Bounded implementation commits
 
-After this plan is approved:
-
 1. **STAT-2a schema and pure comparator** — versioned record, strict validation/authentication,
-   statuses/reasons, criterion and fingerprint invariants.
+   statuses/reasons, criterion and fingerprint invariants. Implemented in `5295475`.
 2. **STAT-2a shadow producer** — complete unconstrained candidate helper, exact reuse, hint/residual
-   route handling, rescue isolation, and focused zero-authority-change tests.
+   route handling, rescue isolation, and focused zero-authority-change tests. Implemented in
+   `1310969`.
 3. **STAT-2a persistence and evidence** — session/compact CSV plumbing, identity-firewall and
    deterministic campaign proofs, documentation updates, representative shadow observations,
    runtime overhead, unavailable cases, and a frozen proposed STAT-2b campaign specification.
+
+STAT-2a evidence records complete, degenerate-single-candidate, and structured-unavailable outcomes.
+Focused proofs cover exact common-path fit-object reuse, constraint-invariant standard identities
+and weights, finite-allowance skip, injected comparator/schema failure isolation, rescue
+preservation, persistence compatibility, and exclusion from cache and downstream authority
+fingerprints. `runtime_increment_seconds` is persisted for later campaign aggregation; STAT-2a
+makes no benchmark or overhead acceptance claim from the focused tests.
 
 # Binding statistical decisions
 
@@ -575,7 +582,9 @@ Do not expose these as new scientific verdicts.
 
 ## STAT-2b — Selection-criterion campaign
 
-This is evidence work, not a production switch.
+This is evidence work, not a production switch. The scenario matrix, metrics, and decision gate
+below are frozen as the proposed campaign specification on 2026-07-30. The campaign has not run,
+and no criterion switch is authorized.
 
 Compare:
 

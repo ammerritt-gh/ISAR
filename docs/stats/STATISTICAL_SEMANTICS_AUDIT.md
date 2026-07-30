@@ -2,7 +2,7 @@
 
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
-> **Verified against code revision:** `e37b7b4fe0debbd0aa32402165b16c4e2aee3a93` (2026-07-29)
+> **Verified against code revision:** `1310969` (2026-07-30)
 > **Owner:** @ammerritt-gh
 > **Exit criteria:** STAT-6 has transferred every accepted semantic contract into the canonical
 > statistical, steering, schema, and decision documents; every rejected hypothesis is recorded; the
@@ -482,8 +482,9 @@ scopes are ineligible. This is descriptive metadata, not a scientific promotion.
 
 STAT-1 intentionally did not change `PREDICTIVE_CONTRACT`, the numerical
 `predictive_basis_fingerprint`, master cache identity, or the unchanged-master carry gate, and it
-did not backfill legacy cached masters. STAT-2 must introduce or bump the selection contract used
-by both cache gates. STAT-3 must refuse pre-STAT-2 or semantics-incomplete inputs. A workspace
+did not backfill legacy cached masters. STAT-2c must introduce or bump the authoritative selection
+contract used by both cache gates; the STAT-2a shadow contract is deliberately excluded. STAT-3
+must refuse pre-STAT-2c or semantics-incomplete inputs. A workspace
 cannot enter EIG-3 merely by carrying a pre-STAT-1 cached artifact.
 
 ### STAT-1.5 — Semantics correctness repair — Implemented 2026-07-29
@@ -513,13 +514,21 @@ does not change `PREDICTIVE_CONTRACT`, numerical behavior, legacy authority, or 
 Decision S7 records the closeout. STAT-2 enforcement is therefore unblocked; all later gates and the
 sequence below remain unchanged.
 
-### STAT-2 — Selection and constraint consistency
+### STAT-2 — Selection and constraint consistency — STAT-2a implemented 2026-07-30
 
 Separate the unconstrained data-only selection fit from penalized/conditional delivery fits, or make
 the latter explicitly ineligible for ordinary AIC-family weights.
 
 The bounded execution sequence and current code seams are in
 [`../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md`](../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md).
+
+STAT-2a now publishes a strict, authenticated `isar.model_selection/2-shadow` record beside the
+legacy result. A complete unconstrained route reuses the exact fit bundle; effective delivery
+constraints cause a separate complete unconstrained comparison over the same data-likelihood
+context. Full session and compact CSV persistence retain the comparison, while finite runtime
+allowances produce a structured skip and shadow failures fail soft. The lane is excluded from
+verdict, interval, certification, stopping, acquisition, rescue replacement, and cache identity.
+STAT-2b remains the frozen evidence campaign; STAT-2c remains the first possible authority switch.
 
 Hard-conditioned fits may be weight-eligible only when the constraint is independently specified,
 common to the comparison question, and reflected in `k`. Data-dependent rescue/post-selection
@@ -597,7 +606,7 @@ ledger/index, and drift tests as appropriate. Then delete and tombstone this aud
 | What is the primary model-averaged objective: predictive accuracy, parameter inference, certification coverage, or design utility? | One weighting rule need not optimize all four. | Treat them as separate products; do not force one mixture to serve all authorities. |
 | Are near-gamma pre-fit hard constraints a legitimate prespecified conditional model for IC comparison? | Depends on the scientific conditioning question and ownership of previous-branch belief. | Mark ineligible until the owner approves a precise conditional contract and campaign. |
 | Must model-selection uncertainty rerun selection inside each bootstrap replicate? | Computational/statistical tradeoff and target estimand choice. | Yes for calibration of the complete frequentist procedure; compare a fixed-weight approximation only as a cheaper shadow estimator. |
-| AIC or AICc? | Requires empirical `n/k` and recovery evidence. | Keep ordinary AIC behavior unchanged until STAT-2 evidence; do not silently switch. |
+| AIC or AICc? | Requires empirical `n/k` and recovery evidence. | Keep ordinary AIC behavior unchanged until STAT-2b evidence; do not silently switch. STAT-2c is the first possible authority change. |
 | What is the target-absent state, and is an existing no-phonon family adequate? | Scientific model-family choice. | Reuse existing null mechanics if they answer the target question; add no model without evidence. |
 | What target-support threshold can certify? | Requires operating-characteristic and loss choice. | No default 0.95 or other threshold before calibration. |
 | May data-dependent/empirical priors be used for Bayesian evidence? | This defines what “evidence” means across designs/campaigns. | Fixed scientific priors for comparable evidence; otherwise label the result non-evidence/empirical. |

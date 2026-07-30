@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for statistical methods; §7 is the sole record of the 2026-07-19 audit
 > **Provenance:** hand-written
-> **Verified against code revision:** `da760f2` plus the STAT-1 working tree (2026-07-29)
+> **Verified against code revision:** `1310969` (2026-07-30)
 
 *For physicists who fit by hand — and who will check.*
 
@@ -73,8 +73,9 @@ the exact data/energy-grid/mask/normalization/likelihood context, model paramete
 constraints, and their combined comparison context. Model-set fingerprints contain sorted
 structured model/context records, so enumeration order is irrelevant, while changing a candidate
 route or Akaike denominator changes the complete selection identity. The selection record publishes
-its aggregate eligibility and every candidate-specific reason; STAT-2 consumes those producer-owned
-classifications rather than re-deriving them.
+its aggregate eligibility and every candidate-specific reason. STAT-2a consumes those
+producer-owned classifications in a diagnostics-only shadow comparison rather than re-deriving
+them; STAT-2c will enforce them for authority only after the STAT-2b evidence gate.
 
 For intervals, producer capability and realized authority are separate. A bootstrap or profile
 producer may offer an interval to the delivery ladder, but only the value actually selected after
@@ -133,7 +134,16 @@ nested pairs **[Implemented]**. An Akaike weight is neither a Bayesian posterior
 nor a Bayes factor. STAT-1 records estimator, effective constraints, candidate route, selection
 eligibility, and each model-set transition. It deliberately leaves the legacy calculation intact:
 soft-penalized and hard-conditioned candidates can still receive ordinary-AIC weights even when
-their new semantics mark them ineligible. STAT-2 owns enforcement.
+their new semantics mark them ineligible.
+
+STAT-2a now also records a diagnostics-only `isar.model_selection/2-shadow` comparison
+**[Implemented]**. For an unconstrained complete route it reuses the exact fitted candidate objects;
+when delivery constraints are effective it fits the complete standard family under the same data,
+mask, normalization, likelihood, and unconstrained parameterization. The full record is persisted
+in `session.json` and a compact projection is appended to `results.csv`. A finite runtime allowance
+skips the shadow work with a structured reason, and any shadow failure leaves the legacy selector,
+verdict, intervals, certification, stopping, cache identities, and acquisition behavior unchanged.
+STAT-2c, not this shadow lane, owns authoritative enforcement after STAT-2b evidence.
 
 Fig. 3 is scan 507 of the archived workspace, chosen by criterion (`n_modes==2`,
 `verdict=="resolved"`, `interval_reliable`), not by eye. The one-mode fit (dashed) leaves
@@ -371,8 +381,9 @@ record the regularizing prior and `fit_kind` records that it was used. The optim
 point estimate, not a stored posterior distribution or credible interval. The data-only cost is
 kept separate (`cost` vs `posterior_cost`), but the data cost is evaluated at the constrained
 optimum. STAT-1 therefore labels effective soft constraints and unapproved hard conditioning as
-selection-ineligible while retaining the legacy scores. STAT-2 must separate comparable selection
-fits from constrained delivery fits before ordinary-AIC eligibility is enforced.
+selection-ineligible while retaining the legacy scores. STAT-2a now observes comparable
+unconstrained selection fits beside constrained delivery fits without changing authority. STAT-2c
+must enforce that separation before ordinary-AIC eligibility controls production.
 
 **Nested-sampler credible intervals [Implemented, diagnostics-only].** Under `--errors bayes` the
 nested sampler runs on the preliminary-best label and records `bayes_interval`,

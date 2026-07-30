@@ -816,6 +816,7 @@ def test_metadata_is_excluded_from_scientific_selection_and_identity_firewalls()
                     "estimator_kind": "data_likelihood_mle",
                     "selection_eligibility": "eligible",
                     "conditioning_fingerprint": "0" * 64,
+                    "shadow_model_selection": {"selection_status": "complete"},
                 }
             ]
         )
@@ -839,7 +840,8 @@ def test_metadata_is_excluded_from_scientific_selection_and_identity_firewalls()
         exposure_basis={"unit": "monitor_counts"},
     )
     fp_after = predictive_basis_fingerprint(
-        models=[{**model, "statistical_semantics": {"schema": PREDICTIVE_SCHEMA}}],
+        models=[{**model, "statistical_semantics": {"schema": PREDICTIVE_SCHEMA},
+                 "shadow_model_selection": {"selection_status": "complete"}}],
         energy_meV=[0.0],
         evaluation_context={"temperature_K": 1.0},
         exposure_basis={"unit": "monitor_counts"},
@@ -860,7 +862,8 @@ def test_metadata_is_excluded_from_scientific_selection_and_identity_firewalls()
     }
     sig_before = driver._tracked_authority_signature([observation], **signature_args)
     sig_after = driver._tracked_authority_signature(
-        [{**observation, "probability_semantics": {"schema": "ignored"}}],
+        [{**observation, "probability_semantics": {"schema": "ignored"},
+          "shadow_model_selection": {"selection_status": "complete"}}],
         **signature_args,
     )
     assert sig_before == sig_after
@@ -909,6 +912,7 @@ def test_metadata_is_excluded_from_scientific_selection_and_identity_firewalls()
         "fit_selection_semantics",
         "interval_semantics",
         "probability_semantics",
+        "shadow_model_selection",
         "statistical_semantics",
     }.isdisjoint(cache_parameters)
 
@@ -946,6 +950,7 @@ def test_metadata_is_excluded_from_scientific_selection_and_identity_firewalls()
             {
                 **tracking_observation,
                 "probability_semantics": {"schema": "ignored"},
+                "shadow_model_selection": {"selection_status": "complete"},
             }
         ],
         **track_kwargs,

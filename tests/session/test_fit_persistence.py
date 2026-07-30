@@ -25,9 +25,11 @@ from isar.schema.statistics import (
     FIT_SELECTION_SCHEMA,
     INTERVAL_SCHEMA,
     PROBABILITY_SCHEMA,
+    SHADOW_MODEL_SELECTION_SCHEMA,
     authority_scopes,
     semantics_fingerprint,
 )
+from isar.analyze.shadow_selection import unavailable_shadow_selection
 from isar.session import driver
 from isar.session.state import ScanEntry, SessionState
 from isar.session.workspace import Workspace
@@ -278,15 +280,30 @@ def test_full_session_and_compact_csv_semantics_roundtrip(tmp_path):
         },
         "authority_scopes": scopes,
     }
+    shadow_record = unavailable_shadow_selection(
+        "shadow_skipped_soft_deadline",
+        stage="execution_policy",
+        selection_context_fingerprint=fingerprint,
+        candidate_generation_route={"route": "shadow_not_evaluated"},
+        legacy_model_selection_fingerprint=fingerprint,
+        legacy_selected_label="one",
+        legacy_model_weights={"one": 1.0},
+    )
     outcome = _outcome_with(None, None)
     outcome.fit_selection_semantics = fit_record
     outcome.interval_semantics = interval_record
     outcome.probability_semantics = probability_record
+    outcome.shadow_model_selection = shadow_record
 
     row = _write_read(tmp_path, outcome)
     assert row["fit_selection_semantics"]["schema"] == FIT_SELECTION_SCHEMA
     assert row["interval_semantics"]["schema"] == INTERVAL_SCHEMA
     assert row["probability_semantics"]["schema"] == PROBABILITY_SCHEMA
+    assert row["shadow_model_selection"]["schema"] == SHADOW_MODEL_SELECTION_SCHEMA
+    assert (
+        row["shadow_model_selection"]["unavailable_reason_code"]
+        == "shadow_skipped_soft_deadline"
+    )
 
     state = SessionState()
     state.put(ScanEntry(
@@ -298,6 +315,7 @@ def test_full_session_and_compact_csv_semantics_roundtrip(tmp_path):
     assert full["fit_selection_semantics"] == fit_record
     assert full["interval_semantics"] == interval_record
     assert full["probability_semantics"] == probability_record
+    assert full["shadow_model_selection"] == shadow_record
 
 
 def test_old_results_csv_without_columns_reads_none(tmp_path):
@@ -310,6 +328,7 @@ def test_old_results_csv_without_columns_reads_none(tmp_path):
     row = readers.read_results_csv(ws.root)[0]
     assert row["omega0"] == pytest.approx(5.0)
     assert "amplitudes" not in row and "candidates" not in row  # column absent → key absent
+    assert "shadow_model_selection" not in row
 
 
 # --------------------------------------------------------------------------- rehydration boundary

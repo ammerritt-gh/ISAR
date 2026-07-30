@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for term definitions
 > **Provenance:** hand-written
-> **Verified against code revision:** `da760f2` plus the STAT-1 working tree (2026-07-29)
+> **Verified against code revision:** `1310969` (2026-07-30)
 
 Plain-language definitions for the terms in ISAR's reports and figures. Written for a scientist who
 knows inelastic scattering and manual fitting but is new to ISAR. (Seeded during the
@@ -60,13 +60,21 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   called credible. See DECISIONS S5 and S6.
 - **AIC / Akaike weight** — a way to compare candidate models that penalizes extra parameters; the
   weight is relative information-criterion support within the exact scored model set (higher =
-  better supported), not a posterior model probability or Bayes factor.
+  better supported), not a posterior model probability or Bayes factor. Legacy production weights
+  may still be evaluated at constrained optima; the STAT-2a shadow weights use comparable
+  unconstrained fits but have no production authority.
 - **statistical semantics** — additive producer metadata declaring what estimator, constraints,
   model denominator, interval/particle measure, probability-like score, and authority scope a
   quantity actually has. Missing metadata leaves a legacy quantity valid but semantically
   unavailable; readers never fabricate producer provenance. Candidate comparison identity is split
   into data-likelihood, model-parameterization, constraint, and combined-context fingerprints;
   predictive/projection semantics are self-authenticated when present.
+- **shadow selection lane** — the diagnostics-only `isar.model_selection/2-shadow` comparison
+  introduced by STAT-2a. It exactly reuses a complete unconstrained delivery fit bundle when
+  possible; otherwise it fits the complete standard candidate family without delivery constraints.
+  Its weights and changed-selection flag cannot affect verdicts, intervals, certification,
+  stopping, acquisition, or cache identity. STAT-2c may promote an evidence-backed successor only
+  after the STAT-2b campaign.
 - **authority scope** — one named use for which a statistical quantity is active, diagnostic,
   shadow-only, inactive, or ineligible. Certification, stopping, EIG, acquisition selection, and
   user diagnostics are separate scopes. For intervals, a producer's capability is distinct from

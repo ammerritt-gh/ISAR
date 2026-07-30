@@ -51,7 +51,8 @@ _LIST_COLUMNS = frozenset({"members"})
 _JSON_COLUMNS = frozenset({"amplitudes", "candidates", "model_manifest",
                            "exposure_provenance", "branch_posterior",
                            "branch_candidates", "fit_selection_semantics",
-                           "interval_semantics", "probability_semantics"})
+                           "interval_semantics", "probability_semantics",
+                           "shadow_model_selection"})
 
 
 def _report_dir(workspace: str | Path) -> Path:
