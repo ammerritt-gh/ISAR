@@ -5,12 +5,17 @@ import pytest
 
 from isar.schema.statistics import (
     FIT_SELECTION_SCHEMA,
+    MODEL_SELECTION_CONTRACT,
     PROBABILITY_SCHEMA,
+    SHADOW_MODEL_SELECTION_SCHEMA,
     SemanticsConstructionError,
     authority_scopes,
+    canonical_shadow_model_identities,
     compact_for_csv,
     read_optional,
+    read_optional_shadow_selection,
     semantics_fingerprint,
+    shadow_model_set_fingerprint,
     validate_for_write,
 )
 
@@ -212,3 +217,46 @@ def test_compact_csv_projection_removes_verbose_payloads_only():
     assert compact["offered_model_set_fingerprint"] == record["offered_model_set_fingerprint"]
     assert compact["authority_scopes"] == record["authority_scopes"]
     assert compact["reference_id"] == "artifact.json"
+
+
+def test_shadow_model_identity_and_set_fingerprint_are_order_independent():
+    identities = []
+    for label in ("two", "one"):
+        parameterization = semantics_fingerprint(
+            "test.shadow.parameterization", {"label": label}
+        )
+        payload = {
+            "label": label,
+            "model_parameterization_fingerprint": parameterization,
+        }
+        identities.append(
+            {
+                **payload,
+                "model_identity": semantics_fingerprint(
+                    "isar.shadow_model_identity/1", payload
+                ),
+            }
+        )
+    canonical = canonical_shadow_model_identities(identities)
+    assert canonical == canonical_shadow_model_identities(list(reversed(identities)))
+    assert shadow_model_set_fingerprint(
+        "offered", identities
+    ) == shadow_model_set_fingerprint("offered", list(reversed(identities)))
+
+    tampered = [dict(canonical[0])]
+    tampered[0]["model_identity"] = semantics_fingerprint("test.tamper", {})
+    with pytest.raises(SemanticsConstructionError, match="shadow_model_identity_mismatch"):
+        canonical_shadow_model_identities(tampered)
+
+
+def test_shadow_contract_is_separate_supported_schema():
+    assert MODEL_SELECTION_CONTRACT == "isar.model_selection/2-shadow"
+    assert SHADOW_MODEL_SELECTION_SCHEMA == "isar.shadow_model_selection/1"
+    assert read_optional(
+        {"schema": "isar.shadow_model_selection/0"},
+        SHADOW_MODEL_SELECTION_SCHEMA,
+    ) is None
+    legacy = read_optional_shadow_selection(None)
+    assert legacy["selection_status"] == "unavailable"
+    assert legacy["selection_changed"] is None
+    assert legacy["unavailable_reason_code"] == "legacy_artifact_not_evaluated"

@@ -19,8 +19,20 @@ FIT_SELECTION_SCHEMA = "isar.fit_selection_semantics/1"
 INTERVAL_SCHEMA = "isar.interval_semantics/1"
 PROBABILITY_SCHEMA = "isar.probability_semantics/1"
 PREDICTIVE_SCHEMA = "isar.predictive_semantics/1"
+SHADOW_MODEL_SELECTION_SCHEMA = "isar.shadow_model_selection/1"
+MODEL_SELECTION_CONTRACT = "isar.model_selection/2-shadow"
 SUPPORTED_SCHEMAS = frozenset(
-    {FIT_SELECTION_SCHEMA, INTERVAL_SCHEMA, PROBABILITY_SCHEMA, PREDICTIVE_SCHEMA}
+    {
+        FIT_SELECTION_SCHEMA,
+        INTERVAL_SCHEMA,
+        PROBABILITY_SCHEMA,
+        PREDICTIVE_SCHEMA,
+        SHADOW_MODEL_SELECTION_SCHEMA,
+    }
+)
+
+SHADOW_SELECTION_STATUSES = frozenset(
+    {"complete", "degenerate_single_candidate", "unavailable"}
 )
 
 ESTIMATOR_KINDS = frozenset(
@@ -154,7 +166,13 @@ _VERBOSE_CSV_KEYS = frozenset(
         "offered_labels",
         "scored_labels",
         "candidate_records",
+        "standard_candidate_records",
         "model_records",
+        "offered_model_identities",
+        "attempted_model_identities",
+        "converged_model_identities",
+        "denominator_model_identities",
+        "failed_model_identities",
         "prior_specification",
         "prior_bounds",
         "prior_payload",
@@ -253,6 +271,112 @@ def semantics_fingerprint(namespace: str, payload: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _validate_one_fingerprint(value: Any, field: str) -> None:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or value.lower() != value
+        or any(ch not in "0123456789abcdef" for ch in value)
+    ):
+        raise SemanticsConstructionError("malformed_fingerprint", field)
+
+
+def canonical_shadow_model_identities(identities: Any) -> list[dict[str, str]]:
+    """Validate and sort shadow model identities independently of producer order."""
+    if not isinstance(identities, Sequence) or isinstance(
+        identities, (str, bytes, bytearray)
+    ):
+        raise SemanticsConstructionError("malformed_shadow_model_identity_set")
+    canonical = []
+    seen = set()
+    seen_labels = set()
+    for identity in identities:
+        if not isinstance(identity, Mapping):
+            raise SemanticsConstructionError("malformed_shadow_model_identity")
+        if set(identity) != {
+            "label",
+            "model_parameterization_fingerprint",
+            "model_identity",
+        }:
+            raise SemanticsConstructionError("malformed_shadow_model_identity")
+        label = identity.get("label")
+        parameterization = identity.get("model_parameterization_fingerprint")
+        model_identity = identity.get("model_identity")
+        if not isinstance(label, str) or not label:
+            raise SemanticsConstructionError("malformed_shadow_model_identity")
+        _validate_one_fingerprint(parameterization, "model_parameterization_fingerprint")
+        _validate_one_fingerprint(model_identity, "model_identity")
+        expected = semantics_fingerprint(
+            "isar.shadow_model_identity/1",
+            {
+                "label": label,
+                "model_parameterization_fingerprint": parameterization,
+            },
+        )
+        if model_identity != expected:
+            raise SemanticsConstructionError("shadow_model_identity_mismatch", label)
+        if model_identity in seen:
+            raise SemanticsConstructionError("duplicate_shadow_model_identity", label)
+        if label in seen_labels:
+            raise SemanticsConstructionError("duplicate_shadow_model_label", label)
+        seen.add(model_identity)
+        seen_labels.add(label)
+        canonical.append(
+            {
+                "label": label,
+                "model_parameterization_fingerprint": parameterization,
+                "model_identity": model_identity,
+            }
+        )
+    return sorted(canonical, key=lambda item: (item["model_identity"], item["label"]))
+
+
+def shadow_model_set_fingerprint(kind: str, identities: Any) -> str:
+    """Fingerprint one canonical shadow model-identity set."""
+    if not isinstance(kind, str) or not kind:
+        raise SemanticsConstructionError("missing_shadow_model_set_kind")
+    canonical = canonical_shadow_model_identities(identities)
+    return semantics_fingerprint(f"isar.shadow_{kind}_model_set/1", canonical)
+
+
+_SHADOW_FINGERPRINT_FIELDS = (
+    "selection_contract_revision",
+    "selection_context_fingerprint",
+    "candidate_generation_route",
+    "offered_model_identities",
+    "attempted_model_identities",
+    "converged_model_identities",
+    "denominator_model_identities",
+    "failed_model_identities",
+    "offered_model_set_fingerprint",
+    "attempted_model_set_fingerprint",
+    "converged_model_set_fingerprint",
+    "denominator_model_set_fingerprint",
+    "failed_model_set_fingerprint",
+    "standard_candidate_records",
+    "standard_selected_label",
+    "standard_model_weights",
+    "selection_complete",
+    "selection_status",
+    "unavailable_stage",
+    "unavailable_reason_code",
+    "affected_candidate_identities",
+)
+
+
+def shadow_selection_fingerprint(record: Mapping[str, Any]) -> str:
+    """Compute the self-authenticating standard-selection fingerprint."""
+    if not isinstance(record, Mapping):
+        raise SemanticsConstructionError("record_not_mapping")
+    missing = [name for name in _SHADOW_FINGERPRINT_FIELDS if name not in record]
+    if missing:
+        raise SemanticsConstructionError(
+            "missing_shadow_selection_field", ",".join(missing)
+        )
+    payload = {name: record[name] for name in _SHADOW_FINGERPRINT_FIELDS}
+    return semantics_fingerprint("isar.standard_shadow_selection/1", payload)
+
+
 def _walk(value: Any, path: str = "$"):
     yield path, value
     if isinstance(value, Mapping):
@@ -323,6 +447,12 @@ def _validate_fingerprints(record: Mapping[str, Any]) -> None:
     for path, value in _walk(record):
         key = path.rsplit(".", 1)[-1]
         if key.endswith("_fingerprint"):
+            if (
+                value is None
+                and record.get("schema") == SHADOW_MODEL_SELECTION_SCHEMA
+                and key == "legacy_model_selection_fingerprint"
+            ):
+                continue
             if not isinstance(value, str) or len(value) != 64:
                 raise SemanticsConstructionError("malformed_fingerprint", path)
             if value.lower() != value or any(ch not in "0123456789abcdef" for ch in value):
@@ -361,6 +491,429 @@ def _validate_predictive_self_fingerprint(
         raise SemanticsConstructionError(
             "statistical_semantics_fingerprint_mismatch"
         )
+
+
+def _require_finite_number(value: Any, field: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, Real)
+        or not math.isfinite(float(value))
+    ):
+        raise SemanticsConstructionError("invalid_shadow_selection_number", field)
+    return float(value)
+
+
+def _same_number(left: Any, right: float) -> bool:
+    return (
+        isinstance(left, Real)
+        and not isinstance(left, bool)
+        and math.isfinite(float(left))
+        and math.isclose(float(left), float(right), rel_tol=1e-12, abs_tol=1e-12)
+    )
+
+
+def _validate_shadow_model_selection(record: Mapping[str, Any]) -> None:
+    if record.get("schema") != SHADOW_MODEL_SELECTION_SCHEMA:
+        return
+    required = {
+        "selection_contract_revision",
+        "legacy_model_selection_fingerprint",
+        "standard_selection_fingerprint",
+        "selection_context_fingerprint",
+        "candidate_generation_route",
+        "legacy_selected_label",
+        "standard_selected_label",
+        "selection_changed",
+        "legacy_model_weights",
+        "standard_model_weights",
+        "standard_candidate_records",
+        "delivery_effective_constraint_origins",
+        "offered_model_identities",
+        "attempted_model_identities",
+        "converged_model_identities",
+        "denominator_model_identities",
+        "failed_model_identities",
+        "offered_model_set_fingerprint",
+        "attempted_model_set_fingerprint",
+        "converged_model_set_fingerprint",
+        "denominator_model_set_fingerprint",
+        "failed_model_set_fingerprint",
+        "selection_complete",
+        "selection_status",
+        "runtime_increment_seconds",
+        "unavailable_stage",
+        "unavailable_reason_code",
+        "affected_candidate_identities",
+    }
+    missing = sorted(required - set(record))
+    if missing:
+        raise SemanticsConstructionError(
+            "missing_shadow_selection_field", ",".join(missing)
+        )
+    allowed = required | {
+        "schema",
+        "standard_selection_fingerprint",
+        "authority_scopes",
+    }
+    extra = sorted(set(record) - allowed)
+    if extra:
+        raise SemanticsConstructionError(
+            "unexpected_shadow_selection_field", ",".join(extra)
+        )
+    if record["selection_contract_revision"] != MODEL_SELECTION_CONTRACT:
+        raise SemanticsConstructionError("shadow_selection_contract_mismatch")
+    legacy_fingerprint = record["legacy_model_selection_fingerprint"]
+    if legacy_fingerprint is None:
+        if record.get("selection_status") != "unavailable":
+            raise SemanticsConstructionError(
+                "missing_legacy_model_selection_fingerprint"
+            )
+    else:
+        _validate_one_fingerprint(
+            legacy_fingerprint,
+            "legacy_model_selection_fingerprint",
+        )
+    _validate_one_fingerprint(
+        record["selection_context_fingerprint"],
+        "selection_context_fingerprint",
+    )
+    _validate_one_fingerprint(
+        record["standard_selection_fingerprint"],
+        "standard_selection_fingerprint",
+    )
+    if not isinstance(record["candidate_generation_route"], Mapping):
+        raise SemanticsConstructionError("malformed_candidate_generation_route")
+
+    identity_fields = {
+        "offered": "offered_model_identities",
+        "attempted": "attempted_model_identities",
+        "converged": "converged_model_identities",
+        "denominator": "denominator_model_identities",
+        "failed": "failed_model_identities",
+    }
+    canonical_sets = {}
+    for kind, field in identity_fields.items():
+        canonical = canonical_shadow_model_identities(record[field])
+        if canonical != record[field]:
+            raise SemanticsConstructionError(
+                "noncanonical_shadow_model_identity_set", field
+            )
+        canonical_sets[kind] = canonical
+        fingerprint_field = f"{kind}_model_set_fingerprint"
+        expected = shadow_model_set_fingerprint(kind, canonical)
+        if record[fingerprint_field] != expected:
+            raise SemanticsConstructionError(
+                "shadow_model_set_fingerprint_mismatch", field
+            )
+
+    offered_ids = {item["model_identity"] for item in canonical_sets["offered"]}
+    attempted_ids = {item["model_identity"] for item in canonical_sets["attempted"]}
+    converged_ids = {item["model_identity"] for item in canonical_sets["converged"]}
+    denominator_ids = {
+        item["model_identity"] for item in canonical_sets["denominator"]
+    }
+    failed_ids = {item["model_identity"] for item in canonical_sets["failed"]}
+    if not attempted_ids <= offered_ids:
+        raise SemanticsConstructionError("shadow_attempted_set_not_offered")
+    if not converged_ids <= attempted_ids or not failed_ids <= attempted_ids:
+        raise SemanticsConstructionError("shadow_status_set_not_attempted")
+    if converged_ids & failed_ids or converged_ids | failed_ids != attempted_ids:
+        raise SemanticsConstructionError("shadow_attempt_status_partition_mismatch")
+    if not denominator_ids <= converged_ids:
+        raise SemanticsConstructionError("shadow_denominator_not_converged")
+    if (
+        record.get("selection_status") != "unavailable"
+        and denominator_ids != converged_ids
+    ):
+        raise SemanticsConstructionError("shadow_denominator_not_equal_converged")
+
+    if not isinstance(record["selection_complete"], bool):
+        raise SemanticsConstructionError("invalid_boolean_field", "selection_complete")
+    complete_attempts = attempted_ids == offered_ids
+    status = record["selection_status"]
+    if status not in SHADOW_SELECTION_STATUSES:
+        raise SemanticsConstructionError("invalid_shadow_selection_status")
+    reason = record["unavailable_reason_code"]
+    unavailable_stage = record["unavailable_stage"]
+    selected = record["standard_selected_label"]
+    changed = record["selection_changed"]
+    if status == "complete":
+        if (
+            not record["selection_complete"]
+            or not complete_attempts
+            or len(denominator_ids) < 2
+            or reason is not None
+            or unavailable_stage is not None
+            or selected is None
+        ):
+            raise SemanticsConstructionError("inconsistent_shadow_selection_status")
+    elif status == "degenerate_single_candidate":
+        if (
+            not record["selection_complete"]
+            or not complete_attempts
+            or len(denominator_ids) != 1
+            or reason is not None
+            or unavailable_stage is not None
+            or selected is None
+        ):
+            raise SemanticsConstructionError("inconsistent_shadow_selection_status")
+    else:
+        if (
+            not isinstance(reason, str)
+            or not reason
+            or not isinstance(unavailable_stage, str)
+            or not unavailable_stage
+            or record["selection_complete"]
+            or denominator_ids
+            or selected is not None
+            or changed is not None
+        ):
+            raise SemanticsConstructionError("inconsistent_shadow_selection_status")
+    if record["selection_complete"] and not complete_attempts:
+        raise SemanticsConstructionError("shadow_selection_completeness_mismatch")
+
+    affected = record["affected_candidate_identities"]
+    if (
+        not isinstance(affected, list)
+        or affected != sorted(set(affected))
+        or any(item not in offered_ids for item in affected)
+    ):
+        raise SemanticsConstructionError("malformed_affected_candidate_identities")
+    if status != "unavailable" and affected:
+        raise SemanticsConstructionError("unexpected_affected_candidate_identities")
+
+    origins = record["delivery_effective_constraint_origins"]
+    if (
+        not isinstance(origins, list)
+        or origins != sorted(set(origins))
+        or any(origin not in CONSTRAINT_ORIGINS for origin in origins)
+    ):
+        raise SemanticsConstructionError(
+            "malformed_delivery_effective_constraint_origins"
+        )
+    runtime = _require_finite_number(
+        record["runtime_increment_seconds"], "runtime_increment_seconds"
+    )
+    if runtime < 0:
+        raise SemanticsConstructionError(
+            "invalid_shadow_selection_number", "runtime_increment_seconds"
+        )
+
+    legacy_selected = record["legacy_selected_label"]
+    if legacy_selected is not None and (
+        not isinstance(legacy_selected, str) or not legacy_selected
+    ):
+        raise SemanticsConstructionError("malformed_legacy_selected_label")
+    legacy_weights = record["legacy_model_weights"]
+    if not isinstance(legacy_weights, list):
+        raise SemanticsConstructionError("malformed_legacy_model_weights")
+    legacy_labels = []
+    for item in legacy_weights:
+        if (
+            not isinstance(item, Mapping)
+            or set(item) != {"label", "weight"}
+            or not isinstance(item["label"], str)
+            or not item["label"]
+        ):
+            raise SemanticsConstructionError("malformed_legacy_model_weights")
+        weight = _require_finite_number(item["weight"], "legacy_model_weights.weight")
+        if weight < 0:
+            raise SemanticsConstructionError("malformed_legacy_model_weights")
+        legacy_labels.append(item["label"])
+    if legacy_labels != sorted(set(legacy_labels)):
+        raise SemanticsConstructionError("malformed_legacy_model_weights")
+
+    candidates = record["standard_candidate_records"]
+    if not isinstance(candidates, list):
+        raise SemanticsConstructionError("malformed_standard_candidate_records")
+    by_identity = {}
+    for candidate in candidates:
+        expected_keys = {
+            "label",
+            "model_identity",
+            "cost",
+            "k",
+            "n",
+            "optimizer_converged",
+            "candidate_validation_status",
+            "candidate_validation_reason_code",
+            "aic",
+            "aicc",
+            "bic",
+            "delta_aic",
+            "weight",
+            "fit_semantics",
+        }
+        if not isinstance(candidate, Mapping) or set(candidate) != expected_keys:
+            raise SemanticsConstructionError("malformed_standard_candidate_record")
+        identity = candidate["model_identity"]
+        if identity in by_identity or identity not in attempted_ids:
+            raise SemanticsConstructionError("malformed_standard_candidate_record")
+        label = candidate["label"]
+        matching_identity = next(
+            item for item in canonical_sets["attempted"]
+            if item["model_identity"] == identity
+        )
+        if label != matching_identity["label"]:
+            raise SemanticsConstructionError("shadow_candidate_identity_join_failed", label)
+        validation_status = candidate["candidate_validation_status"]
+        validation_reason = candidate["candidate_validation_reason_code"]
+        if validation_status not in {"valid", "invalid"}:
+            raise SemanticsConstructionError("malformed_standard_candidate_record", label)
+        if validation_status == "valid" and validation_reason is not None:
+            raise SemanticsConstructionError("malformed_standard_candidate_record", label)
+        if validation_status == "invalid" and (
+            status != "unavailable"
+            or not isinstance(validation_reason, str)
+            or not validation_reason
+            or identity not in affected
+        ):
+            raise SemanticsConstructionError("malformed_standard_candidate_record", label)
+        semantics = None
+        if candidate["fit_semantics"] is not None:
+            semantics = validate_fit_selection_semantics(candidate["fit_semantics"])
+            if (
+                semantics["model_parameterization_fingerprint"]
+                != matching_identity["model_parameterization_fingerprint"]
+            ):
+                raise SemanticsConstructionError(
+                    "shadow_candidate_identity_join_failed", label
+                )
+        if validation_status == "valid":
+            if semantics is None:
+                raise SemanticsConstructionError("malformed_standard_candidate_record", label)
+            if (
+                semantics.get("estimator_kind") != "data_likelihood_mle"
+                or semantics.get("selection_eligibility") != "eligible"
+            ):
+                raise SemanticsConstructionError("ineligible_shadow_candidate", label)
+            cost = _require_finite_number(candidate["cost"], f"{label}.cost")
+            k = candidate["k"]
+            n = candidate["n"]
+            if (
+                isinstance(k, bool)
+                or not isinstance(k, Integral)
+                or int(k) < 0
+                or isinstance(n, bool)
+                or not isinstance(n, Integral)
+                or int(n) <= 0
+                or int(k) > int(n)
+            ):
+                raise SemanticsConstructionError(
+                    "malformed_standard_candidate_record", label
+                )
+        else:
+            cost = candidate["cost"]
+            k = candidate["k"]
+            n = candidate["n"]
+            if cost is not None:
+                _require_finite_number(cost, f"{label}.cost")
+            if k is not None and (
+                isinstance(k, bool) or not isinstance(k, Integral) or int(k) < 0
+            ):
+                raise SemanticsConstructionError(
+                    "malformed_standard_candidate_record", label
+                )
+            if n is not None and (
+                isinstance(n, bool) or not isinstance(n, Integral) or int(n) <= 0
+            ):
+                raise SemanticsConstructionError(
+                    "malformed_standard_candidate_record", label
+                )
+        if not isinstance(candidate["optimizer_converged"], bool):
+            raise SemanticsConstructionError("malformed_standard_candidate_record", label)
+        if candidate["optimizer_converged"] != (identity in converged_ids):
+            raise SemanticsConstructionError("shadow_candidate_convergence_mismatch", label)
+        if identity in denominator_ids:
+            if validation_status != "valid":
+                raise SemanticsConstructionError("invalid_candidate_in_denominator", label)
+            aic = cost + 2.0 * int(k)
+            aicc_denom = int(n) - int(k) - 1
+            aicc = (
+                aic + 2.0 * int(k) * (int(k) + 1) / aicc_denom
+                if aicc_denom > 0
+                else None
+            )
+            bic = cost + int(k) * math.log(int(n))
+            if (
+                not _same_number(candidate["aic"], aic)
+                or (
+                    aicc is None
+                    and candidate["aicc"] is not None
+                    or aicc is not None
+                    and not _same_number(candidate["aicc"], aicc)
+                )
+                or not _same_number(candidate["bic"], bic)
+            ):
+                raise SemanticsConstructionError("shadow_selection_criterion_mismatch", label)
+        elif any(
+            candidate[name] is not None
+            for name in ("aic", "aicc", "bic", "delta_aic", "weight")
+        ):
+            raise SemanticsConstructionError("ineligible_candidate_carries_criteria", label)
+        by_identity[identity] = candidate
+    if set(by_identity) != attempted_ids:
+        raise SemanticsConstructionError("shadow_candidate_record_set_mismatch")
+    if candidates != sorted(
+        candidates, key=lambda item: (item["model_identity"], item["label"])
+    ):
+        raise SemanticsConstructionError("noncanonical_standard_candidate_records")
+
+    standard_weights = record["standard_model_weights"]
+    if not isinstance(standard_weights, list):
+        raise SemanticsConstructionError("malformed_standard_model_weights")
+    if denominator_ids:
+        denominator = [by_identity[identity] for identity in denominator_ids]
+        aic_min = min(float(item["aic"]) for item in denominator)
+        rel = {
+            item["model_identity"]: math.exp(-0.5 * (float(item["aic"]) - aic_min))
+            for item in denominator
+        }
+        normalizer = sum(rel.values())
+        expected_weights = {
+            identity: value / normalizer for identity, value in rel.items()
+        }
+        expected_best = min(
+            denominator,
+            key=lambda item: (float(item["aic"]), item["model_identity"]),
+        )
+        if status != "unavailable" and selected != expected_best["label"]:
+            raise SemanticsConstructionError("shadow_selected_label_mismatch")
+        for identity, expected_weight in expected_weights.items():
+            candidate = by_identity[identity]
+            if (
+                not _same_number(candidate["delta_aic"], float(candidate["aic"]) - aic_min)
+                or not _same_number(candidate["weight"], expected_weight)
+            ):
+                raise SemanticsConstructionError(
+                    "shadow_selection_weight_mismatch", candidate["label"]
+                )
+        expected_weight_records = sorted(
+            (
+                {
+                    "label": by_identity[identity]["label"],
+                    "model_identity": identity,
+                    "weight": expected_weights[identity],
+                }
+                for identity in denominator_ids
+            ),
+            key=lambda item: (item["model_identity"], item["label"]),
+        )
+    else:
+        expected_weight_records = []
+    if standard_weights != expected_weight_records:
+        raise SemanticsConstructionError("shadow_selection_weight_mismatch")
+
+    expected_changed = (
+        None
+        if status == "unavailable"
+        else bool(legacy_selected != record["standard_selected_label"])
+    )
+    if changed is not expected_changed:
+        raise SemanticsConstructionError("shadow_selection_changed_mismatch")
+    expected_fingerprint = shadow_selection_fingerprint(record)
+    if record["standard_selection_fingerprint"] != expected_fingerprint:
+        raise SemanticsConstructionError("standard_selection_fingerprint_mismatch")
 
 
 def _validate_semantics(record: Mapping[str, Any], expected_schema: str, *, for_write: bool) -> None:
@@ -461,6 +1014,7 @@ def validate_for_write(record: Mapping[str, Any], expected_schema: str) -> dict[
     try:
         _validate_semantics(record, expected_schema, for_write=True)
         _validate_predictive_self_fingerprint(record, required=False)
+        _validate_shadow_model_selection(record)
         return json.loads(_canonical_json(record))
     except SemanticsConstructionError:
         raise
@@ -481,6 +1035,7 @@ def _validate_for_read(
         record,
         required=require_predictive_fingerprint,
     )
+    _validate_shadow_model_selection(record)
     return json.loads(_canonical_json(record))
 
 
@@ -508,6 +1063,11 @@ def validate_predictive_semantics(record: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
+def validate_shadow_model_selection(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and authenticate a recognized STAT-2 shadow-selection record."""
+    return _validate_for_read(record, SHADOW_MODEL_SELECTION_SCHEMA)
+
+
 def read_optional(record: Any, expected_schema: str) -> dict[str, Any] | None:
     """Read supported metadata, returning ``None`` for absent or unsupported legacy records."""
     if not isinstance(record, Mapping) or record.get("schema") != expected_schema:
@@ -518,10 +1078,27 @@ def read_optional(record: Any, expected_schema: str) -> dict[str, Any] | None:
             INTERVAL_SCHEMA: validate_interval_semantics,
             PROBABILITY_SCHEMA: validate_probability_semantics,
             PREDICTIVE_SCHEMA: validate_predictive_semantics,
+            SHADOW_MODEL_SELECTION_SCHEMA: validate_shadow_model_selection,
         }
         return validators[expected_schema](record)
     except (SemanticsConstructionError, KeyError, TypeError, ValueError, OverflowError):
         return None
+
+
+def read_optional_shadow_selection(record: Any) -> dict[str, Any]:
+    """Return a validated shadow record or a structured legacy-artifact diagnostic view."""
+    recognized = read_optional(record, SHADOW_MODEL_SELECTION_SCHEMA)
+    if recognized is not None:
+        return recognized
+    return {
+        "selection_status": "unavailable",
+        "selection_complete": False,
+        "standard_selected_label": None,
+        "selection_changed": None,
+        "standard_model_weights": [],
+        "unavailable_stage": "artifact_read",
+        "unavailable_reason_code": "legacy_artifact_not_evaluated",
+    }
 
 
 def compact_for_csv(record: Any) -> dict[str, Any] | None:
