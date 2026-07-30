@@ -3,9 +3,9 @@
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
 > **Owner:** @ammerritt-gh
-> **Status:** STAT-2a and the STAT-2a.1 evidence-contract repair are implemented (code through
-> `e4a6e83`); the STAT-2b evidence harness is implemented and awaiting its development campaign;
-> STAT-2c and STAT-2d remain pending
+> **Status:** STAT-2a, the STAT-2a.1 evidence-contract repair, and the STAT-2b evidence harness
+> are implemented (code through `19f38c8`); the STAT-2b development campaign is complete and
+> awaiting owner approval of its held-out gate; STAT-2c and STAT-2d remain pending
 > **Exit criteria:** STAT-2a through STAT-2d are implemented and verified; accepted behavior is
 > folded into `docs/STATS_PRIMER.md`, `docs/GLOSSARY.md`, and an S-series ruling; this execution
 > plan is then deleted and tombstoned in `docs/DOC_INVENTORY.md`.
@@ -588,7 +588,13 @@ below were frozen as the proposed campaign specification on 2026-07-30. The evid
 implementation lives under `isar.synth.stat2b`; its public surface is `load_campaign_spec()`,
 `run_campaign()`, and `summarize_campaign()`. Development and sealed held-out specifications live
 under `tools/stats/`, and campaign outputs remain under `out/stat2b/` until reviewed evidence is
-promoted. The development campaign has not yet authorized a held-out run or criterion switch.
+promoted. The development campaign completed on 2026-07-30 with 21 full-path smoke realizations
+and 420 development realizations. Its campaign-spec fingerprint is
+`47c2a32b1a7d8a193b3f2c3caefb87b4beac60e4248fe0d538f887792ea136b1`, and its
+development-summary fingerprint is
+`dcd2fdddb37313a066402f1169616dec783545a62d889e174cc90331af55bd47`. Authority
+remains withheld pending owner approval of the numerical margins, runtime ceiling, held-out
+replication count, and frozen gate. No held-out run or criterion switch is authorized yet.
 
 Compare:
 
