@@ -33,7 +33,8 @@ if /i "%STAT2B_PHASE%"=="development" (
     exit /b 1
 )
 
-if "%ISAR_WORKERS%"=="" set "ISAR_WORKERS=4"
+rem STAT-2b.1 scaling selected 24 as the smallest tier within 90%% of best throughput.
+if "%ISAR_WORKERS%"=="" set "ISAR_WORKERS=24"
 echo Running STAT-2b %STAT2B_PHASE% campaign with %ISAR_WORKERS% dataset workers...
 "%MICROMAMBA%" run -n isar python -m isar.synth.stat2b ^
     --spec "%STAT2B_SPEC%" ^

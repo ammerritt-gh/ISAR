@@ -1,0 +1,50 @@
+{
+  "aborted_heldout": {
+    "checkpoint_count_at_stop": 1254,
+    "heldout_records_inspected": false,
+    "scientific_eligibility": "ineligible"
+  },
+  "arm_count_requiring_delivery_unchanged": true,
+  "corrected_stat2b1": {
+    "development_summary_fingerprint": "cae8a48fd687a2cb725b2a36bc9f82ae2a4cb4874ef490b8b7bb61b8dfcb0da7",
+    "projected_heldout_runtime_seconds": 3374.713604743709,
+    "runtime_ceiling_seconds": 5062.070407115563,
+    "unique_delivery_count": 651,
+    "worker_count": 24
+  },
+  "dataset_key_count": 420,
+  "delivery_outputs_except_declared_hint_and_timing_unchanged": true,
+  "delivery_target_hint_change": {
+    "by_arm": {
+      "unconstrained_aic": 86,
+      "unconstrained_aic_null": 84,
+      "unconstrained_aicc": 82,
+      "unconstrained_aicc_null": 80,
+      "unconstrained_bic": 72
+    },
+    "by_scenario": {
+      "near-gamma-hard-prior": 21,
+      "prior-accurate-negative-100": 96,
+      "prior-accurate-positive-30": 98,
+      "prior-offset-negative-100": 92,
+      "prior-offset-positive-300": 97
+    },
+    "dataset_arm_count": 404,
+    "dataset_count": 86
+  },
+  "identical_open_dataset_keys": true,
+  "pre_stat2b1": {
+    "development_summary_fingerprint": "dcd2fdddb37313a066402f1169616dec783545a62d889e174cc90331af55bd47",
+    "projected_heldout_runtime_seconds": 13650.577875740239,
+    "runtime_ceiling_seconds": 20475.86681361036,
+    "unique_delivery_count": 565,
+    "worker_count": 4
+  },
+  "proposed_heldout_realizations_unchanged": true,
+  "proposed_numerical_margins_unchanged": true,
+  "scaling_summary_fingerprint": "0c803fd7e2516b60dc7812819515067679f24ac9d1e0ffd24fa7b7c37d74342d",
+  "schema": "isar.stat2b_development_comparison/1",
+  "selected_worker_count": 24,
+  "selection_and_scored_arm_outputs_unchanged": true,
+  "unique_delivery_count_change": 86
+}

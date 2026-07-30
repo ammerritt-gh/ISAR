@@ -36,6 +36,12 @@ which ruling settled it. That is worth keeping and worth not mistaking for a con
 | 2026-07-20 | [2026-07-20_speedup_phases_1_2.md](2026-07-20_speedup_phases_1_2.md) | Phase 1–2 timing evidence | Recorded | [SPEEDUP_DESIGN.md](../SPEEDUP_DESIGN.md) |
 | 2026-07-20 | [2026-07-20_op7_speedup_checkpoint.md](2026-07-20_op7_speedup_checkpoint.md) | OP7 checkpoint | Recorded | [SPEEDUP_DESIGN.md](../SPEEDUP_DESIGN.md) |
 
+## Statistical evidence campaigns
+
+| Date | Record | Purpose | Outcome | Governing plan |
+|---|---|---|---|---|
+| 2026-07-30 | [2026-07-30_STAT2B1_CORRECTED_DEVELOPMENT.md](2026-07-30_STAT2B1_CORRECTED_DEVELOPMENT.md) | Repair STAT-2b delivery deduplication, measure 4/8/16/24/28-worker scaling, and rerun development | Corrected development complete; 24 workers selected; renewed held-out approval pending | [STAT2_SELECTION_CONSISTENCY_PLAN.md](../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md) |
+
 ## Analysis-core checks and forward notes
 
 | Record | What it is |

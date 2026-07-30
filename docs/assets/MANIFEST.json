@@ -273,6 +273,88 @@
           "sha256": "461e189b82395f35b972dcd004a98104bff43f14bad1482cbb40e64665d71426"
         }
       ]
+    },
+    {
+      "name": "stat2b",
+      "source": "stat2b_evidence",
+      "what": "Corrected STAT-2b.1 development evidence, delivery-separation comparison, and the 4/8/16/24/28-worker scaling preflight.",
+      "command": "python tools/docs/export_stat2b_evidence.py",
+      "replaces": [
+        "docs/plans/STAT2_SELECTION_CONSISTENCY_PLAN.md — corrected STAT-2b.1 development and scaling evidence"
+      ],
+      "input_fingerprint": {
+        "present": true,
+        "n_files": 234,
+        "sha256": "df946241512662d301bcec8663e164ce4002f14a3fb222cf1633e98c31e713dd"
+      },
+      "campaign_code_revision": "5767dea441dc0570f0a53c9d11983b7ec2cb7ee9",
+      "files": [
+        {
+          "path": "stat2b/2026-07-30-stat2b1/campaign-spec.toml",
+          "bytes": 8360,
+          "sha256": "cf61eff5aea7bf2910aa3b43ac81e0298cc6d78500deb0836ca1ad5d3a5b4d63"
+        },
+        {
+          "path": "stat2b/2026-07-30-stat2b1/run_manifest.json",
+          "bytes": 37141,
+          "sha256": "41b1d81117315fc1c9e40e1ffdefb97ebe45dc327f2814a537129137c0330bcb"
+        },
+        {
+          "path": "stat2b/2026-07-30-stat2b1/decision_summary.json",
+          "bytes": 124446,
+          "sha256": "3f40dd3fa93c7c43b59e13e77dc7275101115c4438129bb63ded7620530675f3"
+        },
+        {
+          "path": "stat2b/2026-07-30-stat2b1/cell_summaries.csv",
+          "bytes": 23626,
+          "sha256": "48e5ed5a1c212239a1c347d6d1f7b78219a59f1219695d37fd2828e242acbf0d"
+        },
+        {
+          "path": "stat2b/2026-07-30-stat2b1/FINDINGS.md",
+          "bytes": 517,
+          "sha256": "d5dc8c3c9dac1b40fc3c91517b5303e248f6a60b8ee0d8aec943ff68cf4ddd67"
+        },
+        {
+          "path": "stat2b/2026-07-30-stat2b1/proposed_owner_gate.json",
+          "bytes": 8450,
+          "sha256": "df762ea21dca96b6e0c02d49a6bc6e22d3bc848faf66f7fc0bd698af9a5f87b6"
+        },
+        {
+          "path": "stat2b/2026-07-30-stat2b1/development-comparison.json",
+          "bytes": 1820,
+          "sha256": "72288ba69b84abe6620c316a890b1b4cf81b33eb94e1403fda13988c055b5764"
+        },
+        {
+          "path": "stat2b/2026-07-30-stat2b1/scaling-summary.json",
+          "bytes": 9619,
+          "sha256": "1c81dad281d4f5eef6104cde336faf904b341ff9dc8f297565526d0e876858ef"
+        },
+        {
+          "path": "stat2b/2026-07-30-stat2b1/scaling-summary.csv",
+          "bytes": 686,
+          "sha256": "2b2862befb098d711baa52e2e1ef7a2aded15955287c2f0a35520799c3e9f411"
+        },
+        {
+          "path": "stat2b/2026-07-30-stat2b1/figures/predictive_loss_by_arm.png",
+          "bytes": 57340,
+          "sha256": "31721e7aea7b3fcf4cf5c6ab03f94205a48db7566c1ca659d9cf718129dcc03f"
+        },
+        {
+          "path": "stat2b/2026-07-30-stat2b1/figures/predictive_loss_by_arm.caption.md",
+          "bytes": 193,
+          "sha256": "688bddd0b9e0763ebf3e4a5531a4ad0f91849329aabf72247abe4a08fffe3cc3"
+        },
+        {
+          "path": "stat2b/2026-07-30-stat2b1/figures/critical_strata_predictive_difference.png",
+          "bytes": 56008,
+          "sha256": "592ceed0c30ee19655d9b58f379fdbb186038c5fa107c42dbe6d73413c62df7e"
+        },
+        {
+          "path": "stat2b/2026-07-30-stat2b1/figures/critical_strata_predictive_difference.caption.md",
+          "bytes": 217,
+          "sha256": "ad5883ae5ea2e1cf32702fb7675e27cdc287421cb255af2a440d456871a37873"
+        }
+      ]
     }
   ]
 }

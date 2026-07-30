@@ -32,6 +32,7 @@ this paragraph.
 | [`phase3_gold/`](phase3_gold/) | The **analysis-core 83-scan gold gate**: does ISAR agree with a human expert across the 83-scan S30 gold set, and does it ever confidently resolve a scan the expert rejected? (Drives the analysis modules directly — the CLI/session equivalence gate at M=200 is a separate, still-open validation, `VAL-2`.) |
 | [`in8_phase1/`](in8_phase1/) | Does the same fitting core work on a triple-axis instrument (ILL IN8)? Carries a real S30 IXS positive control, because the contrast is the point |
 | [`phase3_step1/`](phase3_step1/) | Does the structure-hypothesis loop reproduce the frozen Phase-1 fitter, and do the error and model-selection layers behave? |
+| [`stat2b/`](stat2b/) | The corrected STAT-2b.1 development campaign, pre/post delivery-separation comparison, and 4/8/16/24/28-worker scaling evidence. It proposes a held-out gate but does not authorize one. |
 
 Each group keeps its report's own `FINDINGS.md`, its summary CSV, and the figures a document
 actually cites — not everything the run produced. Every figure carries its `.caption.md` sidecar,

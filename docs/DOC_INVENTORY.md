@@ -147,6 +147,7 @@ a current behavioural contract.**
 | `docs/campaigns/2026-07-21_OP9_OP10_TRACKED_FRONTIER.md` | Historical evidence | Evidence behind O27; the contract itself is `MEASUREMENT_STEERING.md` |
 | `docs/campaigns/2026-07-23_AP6_ACTION_INVENTORY.md` | Historical evidence | Evidence behind O28 |
 | `docs/campaigns/2026-07-29_EIG_EXPOSURE_BASIS.md` | Historical evidence | EIG-0 spike evidence behind ADR-017; the contract itself is `EIG_STEERING_DESIGN.md` |
+| `docs/campaigns/2026-07-30_STAT2B1_CORRECTED_DEVELOPMENT.md` | Historical evidence | Corrected STAT-2b.1 development, scaling, and superseded held-out disposition; the contract remains the STAT-2 plan |
 | `docs/campaigns/2026-07_AP1_BRANCH_MAPPING_DEADLOCK.md` | Historical evidence | — |
 | `docs/campaigns/2026-07_AP3_GLOBAL_BRANCH_EVIDENCE.md` | Historical evidence | — |
 | `docs/campaigns/2026-07_MVP_ZONE_RETEST.md` | Historical evidence | Was cited by `README.md` as "current test state"; re-pointed |

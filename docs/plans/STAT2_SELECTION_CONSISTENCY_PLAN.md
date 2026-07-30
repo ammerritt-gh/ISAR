@@ -3,10 +3,10 @@
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
 > **Owner:** @ammerritt-gh
-> **Status:** STAT-2a, the STAT-2a.1 evidence-contract repair, and the initial STAT-2b evidence
-> harness are implemented (gate commit `58e9648`); a partially executed held-out run was stopped
-> after a delivery-deduplication defect was found, and STAT-2b.1 correctness/scaling repair is
-> active; STAT-2c and STAT-2d remain pending
+> **Status:** STAT-2a, the STAT-2a.1 evidence-contract repair, and the corrected STAT-2b evidence
+> harness are implemented (repair commit `5767dea`); STAT-2b.1 scaling and corrected development
+> evidence are complete and awaiting renewed owner approval of the held-out gate; STAT-2c and
+> STAT-2d remain pending
 > **Exit criteria:** STAT-2a through STAT-2d are implemented and verified; accepted behavior is
 > folded into `docs/STATS_PRIMER.md`, `docs/GLOSSARY.md`, and an S-series ruling; this execution
 > plan is then deleted and tombstoned in `docs/DOC_INVENTORY.md`.
@@ -588,8 +588,9 @@ This is evidence work, not a production switch. The scenario matrix, metrics, an
 below were frozen as the proposed campaign specification on 2026-07-30. The evidence-only
 implementation lives under `isar.synth.stat2b`; its public surface is `load_campaign_spec()`,
 `run_campaign()`, and `summarize_campaign()`. Development and sealed held-out specifications live
-under `tools/stats/`, and campaign outputs remain under `out/stat2b/` until reviewed evidence is
-promoted. The original development campaign completed on 2026-07-30 with 21 full-path smoke
+under `tools/stats/`; large local campaign outputs remain in the gitignored output tree, while
+reviewed aggregate evidence is promoted here. The original development campaign completed on
+2026-07-30 with 21 full-path smoke
 realizations and 420 development realizations. Its campaign-spec fingerprint was
 `47c2a32b1a7d8a193b3f2c3caefb87b4beac60e4248fe0d538f887792ea136b1`, and its
 development-summary fingerprint is
@@ -599,10 +600,24 @@ were opened before the run was stopped. No held-out scientific records were insp
 aborted and scientifically ineligible because full-delivery reuse was keyed too narrowly to
 represent every input consumed by delivery. The original development output and held-out output
 are preserved separately as pre-STAT-2b.1 and aborted evidence, and the approved gate remains
-byte-identical with a superseded-status sidecar. STAT-2b.1 must repair and authenticate delivery
-inputs, complete an open 4/8/16/24/28-worker scaling preflight, rerun development, and obtain a
-fresh owner-approved gate before any new held-out seed is opened. No criterion switch is
-authorized.
+byte-identical with a superseded-status sidecar.
+
+STAT-2b.1 then repaired and authenticated delivery inputs in commit `5767dea`. Its open scaling
+preflight completed 42 datasets at each of 4, 8, 16, 24, and 28 workers with zero failures and
+identical scientific record fingerprints. The frozen rule selected 24 workers; scaling-summary
+fingerprint
+`0c803fd7e2516b60dc7812819515067679f24ac9d1e0ffd24fa7b7c37d74342d`.
+Fresh corrected development completed 21 full-path smoke realizations plus 420 development
+realizations. Its campaign-spec fingerprint is
+`29f6b0623c4bf6c17666116741383d615f354eef939b12e72c901f3600b08c96`, and its
+development-summary fingerprint is
+`cae8a48fd687a2cb725b2a36bc9f82ae2a4cb4874ef490b8b7bb61b8dfcb0da7`.
+The corrected proposal retains 103 held-out realizations per cell, uses 24 workers, projects
+3,374.71 seconds, and proposes a 5,062.07-second ceiling. It remains explicitly unapproved.
+Reviewed aggregate evidence is committed under
+[`../assets/stat2b/2026-07-30-stat2b1/`](../assets/stat2b/2026-07-30-stat2b1/).
+A fresh owner-approved gate is required before any new held-out seed is opened. No criterion
+switch is authorized.
 
 Compare:
 
