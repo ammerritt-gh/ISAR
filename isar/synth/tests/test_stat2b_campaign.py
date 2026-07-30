@@ -5,6 +5,7 @@ from concurrent.futures import ProcessPoolExecutor
 import json
 import multiprocessing
 import pickle
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -197,6 +198,19 @@ def test_checkpoint_resume_is_scheduling_independent(tmp_path, monkeypatch):
     )
     assert calls == [("weak", 0)]
 
+    ledger_path = (
+        tmp_path / spec.campaign_id / "development" / "runtime_ledger.json"
+    )
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    prior_runtime = float(ledger["cumulative_runtime_seconds"])
+    ledger["status"] = "running"
+    ledger["active_started_epoch"] = time.time() - 10.0
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    resumed = campaign.run_campaign(
+        spec, phase="development", output_root=tmp_path, workers=1
+    )
+    assert resumed.manifest["cumulative_runtime_seconds"] >= prior_runtime + 9.0
+
 
 def test_heldout_refuses_unfrozen_count_before_opening_seeds(tmp_path):
     with pytest.raises(RuntimeError, match="replication count is not frozen"):
@@ -216,6 +230,7 @@ def test_heldout_gate_refuses_changed_spec_or_source_hash(tmp_path):
         "source_hashes": {"campaign.py": "hash"},
         "numerical_runtime_fingerprint": "runtime",
         "heldout_realizations": 20,
+        "workers": 1,
         "margins": {"predictive_loss_superiority": {"maximum": 0.0}},
         "runtime_ceiling_seconds": 100.0,
     }
@@ -226,6 +241,7 @@ def test_heldout_gate_refuses_changed_spec_or_source_hash(tmp_path):
         path,
         source_hashes=gate["source_hashes"],
         runtime_fingerprint="runtime",
+        workers=1,
     ) == gate
 
     changed_spec = replace(spec, heldout_realizations=21)
@@ -235,6 +251,7 @@ def test_heldout_gate_refuses_changed_spec_or_source_hash(tmp_path):
             path,
             source_hashes=gate["source_hashes"],
             runtime_fingerprint="runtime",
+            workers=1,
         )
     with pytest.raises(RuntimeError, match="source hashes changed"):
         campaign._validate_gate(
@@ -242,6 +259,7 @@ def test_heldout_gate_refuses_changed_spec_or_source_hash(tmp_path):
             path,
             source_hashes={"campaign.py": "changed"},
             runtime_fingerprint="runtime",
+            workers=1,
         )
     with pytest.raises(RuntimeError, match="numerical runtime changed"):
         campaign._validate_gate(
@@ -249,6 +267,15 @@ def test_heldout_gate_refuses_changed_spec_or_source_hash(tmp_path):
             path,
             source_hashes=gate["source_hashes"],
             runtime_fingerprint="changed",
+            workers=1,
+        )
+    with pytest.raises(RuntimeError, match="worker count"):
+        campaign._validate_gate(
+            spec,
+            path,
+            source_hashes=gate["source_hashes"],
+            runtime_fingerprint="runtime",
+            workers=2,
         )
 
 
@@ -263,6 +290,7 @@ def test_equal_cell_aggregation_does_not_weight_by_dataset_count():
             realized_log_score=0.0,
             candidate_route_regret=0.0,
             target_rmse=0.0,
+            target_bias=0.0,
             conditional_coverage=1.0,
             complete_delivery_coverage=1.0,
             missed_modes=0.0,
@@ -291,7 +319,8 @@ def test_summary_emits_six_proposed_gates_and_all_critical_vetoes(tmp_path):
                     "prediction_kl": 0.5 if improved else 1.0,
                     "realized_log_score": -1.0,
                     "candidate_route_regret": 0.0,
-                    "target_squared_error": 0.01,
+                        "target_squared_error": 0.01,
+                        "target_bias": 0.0,
                     "conditional_coverage": True,
                     "complete_delivery_coverage": True,
                     "missed_modes": 0,
@@ -334,6 +363,11 @@ def test_summary_emits_six_proposed_gates_and_all_critical_vetoes(tmp_path):
         "contender": "unconstrained_aicc",
         "baseline": "unconstrained_aic",
     }
+    assert {
+        "target_bias",
+        "conditional_coverage",
+        "complete_delivery_coverage",
+    }.issubset(summary["hierarchical_bootstrap_intervals"])
     assert summary["proposed_owner_gate"]["owner_approved"] is False
     assert summary["proposed_owner_gate"]["schema"] == campaign.GATE_SCHEMA
     assert summary["proposed_owner_gate"]["status"] == "authority_withheld"

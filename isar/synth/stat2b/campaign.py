@@ -54,6 +54,7 @@ RECORD_SCHEMA = "isar.stat2b_dataset_result/1"
 SUMMARY_SCHEMA = "isar.stat2b_development_summary/1"
 HELDOUT_SUMMARY_SCHEMA = "isar.stat2b_heldout_summary/1"
 GATE_SCHEMA = "isar.stat2b_heldout_gate/1"
+RUNTIME_LEDGER_SCHEMA = "isar.stat2b_runtime_ledger/1"
 
 STANDARD_ARMS = (
     ("legacy_aic", "legacy", "aic"),
@@ -695,6 +696,11 @@ def _arm_record(
             if target_estimate is not None and target_truth is not None
             else None
         ),
+        "target_bias": (
+            target_estimate - target_truth
+            if target_estimate is not None and target_truth is not None
+            else None
+        ),
         "interval": interval,
         "interval_reliable": (
             delivery.get("interval_reliable") if delivery is not None else None
@@ -957,6 +963,7 @@ def _validate_gate(
     *,
     source_hashes: Mapping[str, str],
     runtime_fingerprint: str,
+    workers: int,
 ) -> dict[str, Any]:
     if not gate_path.is_file():
         raise RuntimeError("held-out execution refused: owner-approved gate file is missing")
@@ -969,6 +976,8 @@ def _validate_gate(
         raise RuntimeError("held-out execution refused: campaign source hashes changed")
     if gate.get("numerical_runtime_fingerprint") != runtime_fingerprint:
         raise RuntimeError("held-out execution refused: numerical runtime changed")
+    if int(gate.get("workers", -1)) != workers:
+        raise RuntimeError("held-out execution refused: worker count does not match the gate")
     if int(gate.get("heldout_realizations", -1)) != spec.heldout_realizations:
         raise RuntimeError("held-out execution refused: sample size does not match the gate")
     for required in (
@@ -1001,7 +1010,37 @@ def run_campaign(
     source_fingerprint = _source_fingerprint(source_hashes)
     runtime_provenance = _runtime_provenance()
     runtime_fingerprint = _runtime_fingerprint(runtime_provenance)
+    max_workers = max(1, int(workers))
     started = time.perf_counter()
+    wall_started = time.time()
+    runtime_ledger_path = output_dir / "runtime_ledger.json"
+    ledger_identity = {
+        "campaign_id": spec.campaign_id,
+        "phase": phase,
+        "campaign_spec_fingerprint": spec.fingerprint,
+        "campaign_source_fingerprint": source_fingerprint,
+        "numerical_runtime_fingerprint": runtime_fingerprint,
+        "workers": max_workers,
+    }
+    prior_runtime = 0.0
+    if runtime_ledger_path.is_file():
+        previous_ledger = _read_json(runtime_ledger_path)
+        if (
+            previous_ledger.get("schema") == RUNTIME_LEDGER_SCHEMA
+            and all(
+                previous_ledger.get(key) == value
+                for key, value in ledger_identity.items()
+            )
+        ):
+            prior_runtime = float(
+                previous_ledger.get("cumulative_runtime_seconds", 0.0)
+            )
+            if previous_ledger.get("status") == "running":
+                prior_runtime += max(
+                    wall_started
+                    - float(previous_ledger.get("active_started_epoch", wall_started)),
+                    0.0,
+                )
     gate = None
     realizations = spec.development_realizations
     if phase == "heldout":
@@ -1019,8 +1058,19 @@ def run_campaign(
             gate_path,
             source_hashes=source_hashes,
             runtime_fingerprint=runtime_fingerprint,
+            workers=max_workers,
         )
         realizations = spec.heldout_realizations
+    _write_json(
+        runtime_ledger_path,
+        {
+            "schema": RUNTIME_LEDGER_SCHEMA,
+            **ledger_identity,
+            "status": "running",
+            "cumulative_runtime_seconds": prior_runtime,
+            "active_started_epoch": wall_started,
+        },
+    )
 
     smoke_records = []
     smoke_new_count = 0
@@ -1087,7 +1137,6 @@ def run_campaign(
                 )
             )
 
-    max_workers = max(1, int(workers))
     if max_workers == 1:
         completed = map(_run_task, tasks)
         for record in completed:
@@ -1115,6 +1164,18 @@ def run_campaign(
     )
     jsonl = b"".join(_json_bytes(record) for record in records)
     _atomic_write(output_dir / "datasets.jsonl", jsonl)
+    invocation_runtime = time.perf_counter() - started
+    cumulative_runtime = prior_runtime + invocation_runtime
+    _write_json(
+        runtime_ledger_path,
+        {
+            "schema": RUNTIME_LEDGER_SCHEMA,
+            **ledger_identity,
+            "status": "complete",
+            "cumulative_runtime_seconds": cumulative_runtime,
+            "active_started_epoch": None,
+        },
+    )
     manifest = {
         "schema": RUN_SCHEMA,
         "campaign_id": spec.campaign_id,
@@ -1141,7 +1202,9 @@ def run_campaign(
         "smoke_record_fingerprints": [
             record["record_fingerprint"] for record in smoke_records
         ],
-        "runtime_seconds": time.perf_counter() - started,
+        "runtime_seconds": cumulative_runtime,
+        "invocation_runtime_seconds": invocation_runtime,
+        "cumulative_runtime_seconds": cumulative_runtime,
         "gate": gate,
     }
     manifest["run_fingerprint"] = semantics_fingerprint(
@@ -1152,6 +1215,8 @@ def run_campaign(
             if key
             not in {
                 "runtime_seconds",
+                "invocation_runtime_seconds",
+                "cumulative_runtime_seconds",
                 "python",
                 "platform",
                 "workers",
@@ -1209,6 +1274,7 @@ def _arm_cell_metrics(records: Sequence[Mapping[str, Any]]) -> list[dict[str, An
                     if _mean(target_errors) is not None
                     else None
                 ),
+                "target_bias": _mean(arm["target_bias"] for arm in arms),
                 "conditional_coverage": _mean(
                     arm["conditional_coverage"]
                     for arm in arms
@@ -1239,6 +1305,7 @@ def _equal_cell_aggregate(cell_rows: Sequence[Mapping[str, Any]]) -> dict[str, d
         "realized_log_score",
         "candidate_route_regret",
         "target_rmse",
+        "target_bias",
         "conditional_coverage",
         "complete_delivery_coverage",
         "missed_modes",
@@ -1261,6 +1328,9 @@ def _paired_cell_differences(
 ) -> dict[str, dict[str, float | None]]:
     metrics = (
         "prediction_kl",
+        "target_bias",
+        "conditional_coverage",
+        "complete_delivery_coverage",
         "missed_modes",
         "extra_modes",
         "false_certification",
@@ -1314,6 +1384,9 @@ def _hierarchical_bootstrap(
     metrics = (
         "prediction_kl",
         "target_rmse",
+        "target_bias",
+        "conditional_coverage",
+        "complete_delivery_coverage",
         "missed_modes",
         "extra_modes",
         "false_certification",
@@ -1421,6 +1494,17 @@ def _critical_strata(
             ),
             "target_rmse_difference": (
                 _mean(values.get("target_rmse") for values in paired.values())
+            ),
+            "target_bias_difference": _mean(
+                values.get("target_bias") for values in paired.values()
+            ),
+            "conditional_coverage_difference": _mean(
+                values.get("conditional_coverage")
+                for values in paired.values()
+            ),
+            "complete_delivery_coverage_difference": _mean(
+                values.get("complete_delivery_coverage")
+                for values in paired.values()
             ),
             "missed_mode_difference": _mean(
                 values.get("missed_modes") for values in paired.values()
@@ -1871,6 +1955,7 @@ def summarize_campaign(run: CampaignRun, spec: CampaignSpec) -> dict[str, Any]:
                 "lower for minimum rules"
             ),
             "heldout_realizations": proposed_reps,
+            "workers": int(run.manifest.get("workers", 1)),
             "runtime_ceiling_seconds": projected_heldout_runtime * 1.5,
             "margins": margins,
             "development_campaign_spec_fingerprint": spec.fingerprint,
