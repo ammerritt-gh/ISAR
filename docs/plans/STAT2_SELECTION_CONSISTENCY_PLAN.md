@@ -3,8 +3,9 @@
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
 > **Owner:** @ammerritt-gh
-> **Status:** STAT-2a implemented (code through `1310969`, evidence and docs completed 2026-07-30);
-> STAT-2b through STAT-2d pending
+> **Status:** STAT-2a and the STAT-2a.1 evidence-contract repair are implemented (code through
+> `e4a6e83`); the STAT-2b evidence harness is implemented and awaiting its development campaign;
+> STAT-2c and STAT-2d remain pending
 > **Exit criteria:** STAT-2a through STAT-2d are implemented and verified; accepted behavior is
 > folded into `docs/STATS_PRIMER.md`, `docs/GLOSSARY.md`, and an S-series ruling; this execution
 > plan is then deleted and tombstoned in `docs/DOC_INVENTORY.md`.
@@ -583,8 +584,11 @@ Do not expose these as new scientific verdicts.
 ## STAT-2b — Selection-criterion campaign
 
 This is evidence work, not a production switch. The scenario matrix, metrics, and decision gate
-below are frozen as the proposed campaign specification on 2026-07-30. The campaign has not run,
-and no criterion switch is authorized.
+below were frozen as the proposed campaign specification on 2026-07-30. The evidence-only
+implementation lives under `isar.synth.stat2b`; its public surface is `load_campaign_spec()`,
+`run_campaign()`, and `summarize_campaign()`. Development and sealed held-out specifications live
+under `tools/stats/`, and campaign outputs remain under `out/stat2b/` until reviewed evidence is
+promoted. The development campaign has not yet authorized a held-out run or criterion switch.
 
 Compare:
 

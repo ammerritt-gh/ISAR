@@ -1,0 +1,345 @@
+schema = "isar.stat2b_campaign/1"
+campaign_id = "stat2b-selection-criterion-2026-07"
+base_seed = 20260730
+development_realizations = 20
+heldout_realizations = 0
+delivery_replicates = 200
+certification_tolerance_mev = 0.10
+cell_weighting = "equal"
+critical_strata = [
+  "near_elastic",
+  "weak_signal",
+  "partially_resolved_two_mode",
+  "target_absent",
+  "misspecified_background",
+]
+
+[phase_seed_namespaces]
+development = "stat2b-development-open-v1"
+heldout = "stat2b-heldout-sealed-v1"
+
+[[scenarios]]
+id = "weak-15"
+truth_kind = "one_mode"
+target_present = true
+target_rank = "single"
+peak_counts = 15
+x_min = -10.0
+x_max = 14.0
+x_step = 0.25
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.5
+energies = [4.0]
+critical_strata = ["weak_signal"]
+oracle_required = false
+
+[[scenarios]]
+id = "prior-accurate-positive-30"
+truth_kind = "one_mode"
+target_present = true
+target_rank = "single"
+peak_counts = 30
+x_min = -10.0
+x_max = 14.0
+x_step = 0.25
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.5
+energies = [4.0]
+constraint_kind = "soft_prior_predictive"
+constraint_origin = "prior_predictive"
+constraint_offset_sign = 1
+constraint_offset_mev = 0.0
+constraint_sigma_mev = 0.1
+critical_strata = []
+oracle_required = false
+
+[[scenarios]]
+id = "prior-accurate-negative-100"
+truth_kind = "one_mode"
+target_present = true
+target_rank = "single"
+peak_counts = 100
+x_min = -10.0
+x_max = 14.0
+x_step = 0.25
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.5
+energies = [4.0]
+constraint_kind = "soft_prior_predictive"
+constraint_origin = "prior_predictive"
+constraint_offset_sign = -1
+constraint_offset_mev = 0.0
+constraint_sigma_mev = 0.1
+critical_strata = []
+oracle_required = false
+
+[[scenarios]]
+id = "prior-offset-positive-300"
+truth_kind = "one_mode"
+target_present = true
+target_rank = "single"
+peak_counts = 300
+x_min = -10.0
+x_max = 14.0
+x_step = 0.25
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.5
+energies = [4.0]
+constraint_kind = "soft_prior_predictive"
+constraint_origin = "prior_predictive"
+constraint_offset_sign = 1
+constraint_offset_mev = 0.1
+constraint_sigma_mev = 0.1
+critical_strata = []
+oracle_required = false
+
+[[scenarios]]
+id = "prior-offset-negative-100"
+truth_kind = "one_mode"
+target_present = true
+target_rank = "single"
+peak_counts = 100
+x_min = -10.0
+x_max = 14.0
+x_step = 0.25
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.5
+energies = [4.0]
+constraint_kind = "soft_prior_predictive"
+constraint_origin = "prior_predictive"
+constraint_offset_sign = -1
+constraint_offset_mev = 0.1
+constraint_sigma_mev = 0.1
+critical_strata = []
+oracle_required = false
+
+[[scenarios]]
+id = "near-elastic-075-fwhm"
+truth_kind = "one_mode"
+target_present = true
+target_rank = "single"
+peak_counts = 30
+x_min = -6.0
+x_max = 8.0
+x_step = 0.20
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.5
+energies = [0.72075]
+elastic_height_ratio = 1.0
+critical_strata = ["near_elastic"]
+oracle_required = false
+
+[[scenarios]]
+id = "partial-two-lower"
+truth_kind = "two_mode"
+target_present = true
+target_rank = "lower"
+peak_counts = 30
+x_min = -8.0
+x_max = 12.0
+x_step = 0.20
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.5
+energies = [3.0, 4.20125]
+critical_strata = ["partially_resolved_two_mode"]
+oracle_required = true
+
+[[scenarios]]
+id = "partial-two-upper"
+truth_kind = "two_mode"
+target_present = true
+target_rank = "upper"
+peak_counts = 30
+x_min = -8.0
+x_max = 12.0
+x_step = 0.20
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.5
+energies = [3.0, 4.20125]
+critical_strata = ["partially_resolved_two_mode"]
+oracle_required = true
+
+[[scenarios]]
+id = "separated-two"
+truth_kind = "two_mode"
+target_present = true
+target_rank = "lower"
+peak_counts = 100
+x_min = -8.0
+x_max = 14.0
+x_step = 0.20
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.5
+energies = [3.0, 6.25]
+critical_strata = []
+oracle_required = true
+
+[[scenarios]]
+id = "stokes-only"
+truth_kind = "one_mode"
+target_present = true
+target_rank = "single"
+peak_counts = 30
+x_min = -8.0
+x_max = 12.0
+x_step = 0.25
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 20.0
+gamma = 0.5
+energies = [4.0]
+phonon_sides = "stokes"
+critical_strata = []
+oracle_required = false
+
+[[scenarios]]
+id = "absent-background"
+truth_kind = "target_absent"
+target_present = false
+target_rank = "none"
+peak_counts = 30
+x_min = -8.0
+x_max = 12.0
+x_step = 0.25
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.5
+energies = []
+critical_strata = ["target_absent"]
+oracle_required = true
+
+[[scenarios]]
+id = "absent-elastic"
+truth_kind = "target_absent"
+target_present = false
+target_rank = "none"
+peak_counts = 30
+x_min = -8.0
+x_max = 12.0
+x_step = 0.25
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.5
+energies = []
+elastic_height_ratio = 1.0
+critical_strata = ["target_absent"]
+oracle_required = true
+
+[[scenarios]]
+id = "absent-qe"
+truth_kind = "target_absent"
+target_present = false
+target_rank = "none"
+peak_counts = 30
+x_min = -8.0
+x_max = 12.0
+x_step = 0.25
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.5
+energies = []
+qe_height_ratio = 1.0
+qe_fwhm = 2.0
+critical_strata = ["target_absent"]
+oracle_required = true
+
+[[scenarios]]
+id = "absent-elastic-qe"
+truth_kind = "target_absent"
+target_present = false
+target_rank = "none"
+peak_counts = 30
+x_min = -8.0
+x_max = 12.0
+x_step = 0.25
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.5
+energies = []
+elastic_height_ratio = 1.0
+qe_height_ratio = 1.0
+qe_fwhm = 2.0
+critical_strata = ["target_absent"]
+oracle_required = true
+
+[[scenarios]]
+id = "misspecified-sloped-background"
+truth_kind = "misspecified_background"
+target_present = true
+target_rank = "single"
+peak_counts = 100
+x_min = -10.0
+x_max = 14.0
+x_step = 0.25
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.5
+energies = [4.0]
+background_slope_fraction = 0.5
+critical_strata = ["misspecified_background"]
+oracle_required = true
+
+[[scenarios]]
+id = "continuum-absent"
+truth_kind = "continuum"
+target_present = false
+target_rank = "none"
+peak_counts = 100
+x_min = -10.0
+x_max = 14.0
+x_step = 0.25
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.5
+energies = []
+continuum_height_ratio = 1.0
+continuum_center = 4.0
+continuum_fwhm = 4.0
+critical_strata = ["target_absent"]
+oracle_required = true
+
+[[scenarios]]
+id = "gamma-boundary"
+truth_kind = "one_mode"
+target_present = true
+target_rank = "single"
+peak_counts = 100
+x_min = -10.0
+x_max = 14.0
+x_step = 0.25
+gauss_fwhm = 0.961
+lorentz_fwhm = 0.596
+T = 100.0
+gamma = 0.005
+energies = [4.0]
+calibration_offset = 0.1
+resolution_scale = 1.15
+exposure_pattern = "alternating"
+exposure_min_scale = 0.8
+exposure_max_scale = 1.2
+critical_strata = []
+oracle_required = false
