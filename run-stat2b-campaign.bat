@@ -11,6 +11,16 @@ if not exist "%MICROMAMBA%" (
     exit /b 1
 )
 
+rem Dataset processes own parallelism. Prevent nested BLAS/OpenMP pools in every worker.
+set "OMP_NUM_THREADS=1"
+set "OPENBLAS_NUM_THREADS=1"
+set "MKL_NUM_THREADS=1"
+set "NUMEXPR_NUM_THREADS=1"
+set "BLIS_NUM_THREADS=1"
+if "%ISAR_PHYSICAL_CORES%"=="" (
+    for /f %%C in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum"') do set "ISAR_PHYSICAL_CORES=%%C"
+)
+
 set "STAT2B_PHASE=%~1"
 if "%STAT2B_PHASE%"=="" set "STAT2B_PHASE=development"
 if /i "%STAT2B_PHASE%"=="development" (

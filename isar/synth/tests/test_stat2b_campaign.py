@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from concurrent.futures import ProcessPoolExecutor
+import hashlib
 import json
 import multiprocessing
 import pickle
@@ -126,14 +127,36 @@ def test_repo_specs_load_and_heldout_matrix_is_fingerprinted():
     development = load_campaign_spec(root / "tools/stats/stat2b-development.toml")
     heldout = load_campaign_spec(root / "tools/stats/stat2b-heldout.toml")
     assert development.development_realizations == 20
-    assert heldout.heldout_realizations == 103
-    assert heldout.fingerprint == (
-        "2277ae64defbfa2391523f4a4456c3c46a48baa2c7fcc7c6888952d007835729"
+    assert heldout.heldout_realizations == 0
+    assert development.campaign_id == heldout.campaign_id == (
+        "stat2b1-selection-criterion-2026-07"
+    )
+    assert development.phase_seed_namespaces["heldout"] == (
+        heldout.phase_seed_namespaces["heldout"]
+    ) == "stat2b-heldout-sealed-v2"
+    assert heldout.heldout_gate_path == (
+        "tools/stats/stat2b-heldout-gate.pending.json"
     )
     assert [cell.fingerprint for cell in heldout.scenarios] == [
         cell.fingerprint for cell in development.scenarios
     ]
     assert development.fingerprint != heldout.fingerprint
+    old_gate_path = root / "tools/stats/stat2b-heldout-gate.json"
+    old_gate = json.loads(old_gate_path.read_text(encoding="utf-8"))
+    old_status = json.loads(
+        (
+            root
+            / "tools/stats/stat2b-heldout-gate.superseded-status.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert old_gate["owner_approved"] is True
+    assert hashlib.sha256(old_gate_path.read_bytes()).hexdigest() == (
+        "28d7c72d09d236a9092afca50b843b2ccaa195a1bf9e53897c3d57724fdfb868"
+    )
+    assert old_status["status"] == "superseded_by_stat2b_1"
+    assert old_status["checkpoint_count_at_stop"] == 1254
+    assert old_status["heldout_records_inspected"] is False
+    assert old_status["scientific_eligibility"] == "ineligible"
 
 
 def test_checkpoint_resume_is_scheduling_independent(tmp_path, monkeypatch):
@@ -215,7 +238,12 @@ def test_checkpoint_resume_is_scheduling_independent(tmp_path, monkeypatch):
     assert resumed.manifest["cumulative_runtime_seconds"] >= prior_runtime + 9.0
 
 
-def test_heldout_refuses_unfrozen_count_before_opening_seeds(tmp_path):
+def test_heldout_refuses_unfrozen_count_before_opening_seeds(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        campaign,
+        "generate_dataset",
+        lambda *args, **kwargs: pytest.fail("held-out seed was opened"),
+    )
     with pytest.raises(RuntimeError, match="replication count is not frozen"):
         campaign.run_campaign(
             _spec(heldout=0), phase="heldout", output_root=tmp_path, workers=1
@@ -458,7 +486,8 @@ def test_frozen_gate_applies_each_margin_to_each_critical_stratum():
     assert runtime_failure["status"] == "authority_withheld"
 
 
-def _candidate(ctx, label="stokes+bg", cost=1.0):
+def _candidate(ctx, label="stokes+bg", cost=1.0, modes=None):
+    modes = list(modes or [{"omega0": 4.0}])
     hypothesis = enumerate_structures(ctx)[0]
     result = SimpleNamespace(
         label=label,
@@ -467,8 +496,8 @@ def _candidate(ctx, label="stokes+bg", cost=1.0):
         cost=cost,
         optimizer_converged=True,
         params={},
-        n_modes=1,
-        modes=[{"omega0": 4.0}],
+        n_modes=len(modes),
+        modes=modes,
     )
     return CandidateEvidence(
         label=label,
@@ -559,6 +588,161 @@ def test_one_delivery_is_reused_across_same_winner_arms(monkeypatch):
     assert standard_reuse == [candidate.result]
     assert record["delivery_deduplication"]["unique_delivery_count"] == 1
     assert record["delivery_deduplication"]["arm_count_requiring_delivery"] == 6
+    delivered = [arm for arm in record["arms"] if arm["delivery"] is not None]
+    assert {arm["delivery_input_fingerprint"] for arm in delivered} == {
+        delivered[0]["delivery_reuse_group"]
+    }
+    assert sum(not arm["delivery_reused"] for arm in delivered) == 1
+    assert {arm["delivery_source_arm"] for arm in delivered} == {
+        min(arm["arm_id"] for arm in delivered)
+    }
+    for arm in delivered:
+        assert arm["delivery_input_fingerprint"] == (
+            campaign._delivery_input_fingerprint(arm["delivery_inputs"])
+        )
+
+
+@pytest.mark.parametrize(
+    ("legacy_modes", "standard_modes", "difference"),
+    (
+        ([{"omega0": 3.0}], [{"omega0": 4.0}], "target"),
+        (
+            [{"omega0": 3.0}, {"omega0": 7.0}],
+            [{"omega0": 3.0}, {"omega0": 8.0}],
+            "peaks",
+        ),
+    ),
+)
+def test_same_label_candidate_hints_separate_delivery_and_ignore_arm_order(
+    monkeypatch, legacy_modes, standard_modes, difference
+):
+    spec = _spec()
+    scenario = spec.scenario("weak")
+    x = np.linspace(-5.0, 8.0, 27)
+    ctx = ScanContext(
+        x=x,
+        counts=np.full(x.size, 10.0),
+        mask=np.ones(x.size, dtype=bool),
+        T=100.0,
+        center=0.0,
+        gauss_fwhm=0.961,
+        lorentz_fwhm=0.596,
+        instrument="STAT2B_SYNTH",
+        energy_status="absolute",
+        constraints=ParamConstraints(),
+    )
+    dataset = TruthDataset(
+        fit_context=ctx,
+        lambda_counts=np.full(x.size, 10.0),
+        heldout_counts=np.full(x.size, 10.0),
+        truth_manifest={
+            "target_present": True,
+            "target_rank": "lower",
+            "target_mode_index": 0,
+            "modes": [{"omega0": 3.0}],
+        },
+        dataset_id="dataset",
+        seed=1,
+    )
+    legacy = _candidate(ctx, modes=legacy_modes)
+    standard = _candidate(ctx, modes=standard_modes)
+
+    def provenance(candidate):
+        return {
+            "execution_kind": "fresh",
+            "offered_labels": [candidate.label],
+            "attempted_labels": [candidate.label],
+            "converged_labels": [candidate.label],
+            "failed_labels": [],
+            "reused_labels": [],
+            "freshly_fitted_labels": [candidate.label],
+            "multimode_route": "not_offered",
+        }
+
+    monkeypatch.setattr(campaign, "generate_dataset", lambda *a, **k: dataset)
+    monkeypatch.setattr(
+        campaign, "_legacy_evidence", lambda _ctx: ([legacy], provenance(legacy))
+    )
+    monkeypatch.setattr(
+        campaign,
+        "_standard_evidence",
+        lambda _ctx, *, reusable_results=(): ([standard], provenance(standard)),
+    )
+    monkeypatch.setattr(campaign, "fit_null_candidates", lambda _ctx: [])
+    deliveries = []
+
+    def fake_delivery(_dataset, _spec, *, delivery_inputs):
+        deliveries.append(dict(delivery_inputs))
+        return {
+            "best_label": delivery_inputs["selected_label"],
+            "omega0": delivery_inputs["candidate_target_hint"],
+            "interval": (2.9, 3.0, 4.1),
+            "interval_reliable": True,
+            "modality": "fold",
+            "n_modes": len(
+                delivery_inputs["candidate_multimode_peak_hints"] or [None]
+            ),
+            "modes": delivery_inputs["candidate_multimode_peak_hints"] or [],
+        }
+
+    monkeypatch.setattr(campaign, "_full_delivery", fake_delivery)
+    monkeypatch.setattr(
+        campaign,
+        "_certification_projection",
+        lambda *a, **k: {"certified": True},
+    )
+
+    original_arms = campaign.STANDARD_ARMS
+    first = campaign._run_realization(spec, scenario.id, 0, "development")
+    monkeypatch.setattr(campaign, "STANDARD_ARMS", tuple(reversed(original_arms)))
+    second = campaign._run_realization(spec, scenario.id, 0, "development")
+
+    assert len(deliveries) == 4
+    assert first["delivery_deduplication"]["unique_delivery_count"] == 2
+    assert first["delivery_deduplication"] == second["delivery_deduplication"]
+
+    def delivery_audit(record):
+        return {
+            arm["arm_id"]: {
+                key: arm[key]
+                for key in (
+                    "delivery_inputs",
+                    "delivery_input_fingerprint",
+                    "delivery_reused",
+                    "delivery_reuse_group",
+                    "delivery_source_arm",
+                    "delivery",
+                )
+            }
+            for arm in record["arms"]
+        }
+
+    first_audit = delivery_audit(first)
+    assert first_audit == delivery_audit(second)
+    for arm in first["arms"]:
+        assert arm["delivery_input_fingerprint"] == (
+            campaign._delivery_input_fingerprint(arm["delivery_inputs"])
+        )
+
+    legacy_inputs = first_audit["legacy_aic"]["delivery_inputs"]
+    standard_inputs = first_audit["unconstrained_aic"]["delivery_inputs"]
+    assert legacy_inputs["selected_label"] == standard_inputs["selected_label"]
+    if difference == "target":
+        assert legacy_inputs["candidate_multimode_peak_hints"] is None
+        assert standard_inputs["candidate_multimode_peak_hints"] is None
+        assert (
+            legacy_inputs["candidate_target_hint"]
+            != standard_inputs["candidate_target_hint"]
+        )
+    else:
+        assert (
+            legacy_inputs["candidate_target_hint"]
+            == standard_inputs["candidate_target_hint"]
+        )
+        assert (
+            legacy_inputs["candidate_multimode_peak_hints"]
+            != standard_inputs["candidate_multimode_peak_hints"]
+        )
 
 
 def test_fixed_target_rank_binds_production_primary_before_delivery():
@@ -581,6 +765,32 @@ def test_campaign_spec_is_picklable_for_windows_process_workers():
         assert executor.submit(_worker_spec_fingerprint, _spec()).result() == (
             _spec().fingerprint
         )
+
+
+def test_delivery_input_fingerprint_is_worker_count_independent():
+    inputs = {
+        "selected_label": "stokes+bg",
+        "delivery_context_fingerprint": "context",
+        "predeclared_target_rank": "single",
+        "candidate_target_hint": 4.0,
+        "candidate_multimode_peak_hints": None,
+        "errors_tier": "full",
+        "bootstrap_replicates": 200,
+        "delivery_seed": 123,
+    }
+    expected = campaign._delivery_input_fingerprint(inputs)
+    for worker_count in (1, 2):
+        with ProcessPoolExecutor(
+            max_workers=worker_count,
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as executor:
+            observed = list(
+                executor.map(
+                    campaign._delivery_input_fingerprint,
+                    [inputs] * (worker_count + 1),
+                )
+            )
+        assert observed == [expected] * (worker_count + 1)
 
 
 def test_package_public_surface_does_not_open_sealed_truth_generation():
@@ -647,7 +857,11 @@ def test_full_tier_delivery_smoke_uses_authoritative_m200():
     candidate = next(
         item for item in standard if item.label == selected.selected_label
     )
-    fit = campaign._full_delivery(dataset, candidate, spec, seed=123)
+    fit = campaign._full_delivery(
+        dataset,
+        spec,
+        delivery_inputs=campaign._delivery_inputs(dataset, candidate, spec),
+    )
     assert fit["errors_tier_effective"] == "full"
     assert fit["best_label"] == candidate.label
     assert fit["bootstrap_M_requested"] == 200

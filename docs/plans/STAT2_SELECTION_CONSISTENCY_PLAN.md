@@ -3,9 +3,10 @@
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
 > **Owner:** @ammerritt-gh
-> **Status:** STAT-2a, the STAT-2a.1 evidence-contract repair, and the STAT-2b evidence harness
-> are implemented (code through `19f38c8`); the STAT-2b development campaign is complete and
-> awaiting owner approval of its held-out gate; STAT-2c and STAT-2d remain pending
+> **Status:** STAT-2a, the STAT-2a.1 evidence-contract repair, and the initial STAT-2b evidence
+> harness are implemented (gate commit `58e9648`); a partially executed held-out run was stopped
+> after a delivery-deduplication defect was found, and STAT-2b.1 correctness/scaling repair is
+> active; STAT-2c and STAT-2d remain pending
 > **Exit criteria:** STAT-2a through STAT-2d are implemented and verified; accepted behavior is
 > folded into `docs/STATS_PRIMER.md`, `docs/GLOSSARY.md`, and an S-series ruling; this execution
 > plan is then deleted and tombstoned in `docs/DOC_INVENTORY.md`.
@@ -588,13 +589,20 @@ below were frozen as the proposed campaign specification on 2026-07-30. The evid
 implementation lives under `isar.synth.stat2b`; its public surface is `load_campaign_spec()`,
 `run_campaign()`, and `summarize_campaign()`. Development and sealed held-out specifications live
 under `tools/stats/`, and campaign outputs remain under `out/stat2b/` until reviewed evidence is
-promoted. The development campaign completed on 2026-07-30 with 21 full-path smoke realizations
-and 420 development realizations. Its campaign-spec fingerprint is
+promoted. The original development campaign completed on 2026-07-30 with 21 full-path smoke
+realizations and 420 development realizations. Its campaign-spec fingerprint was
 `47c2a32b1a7d8a193b3f2c3caefb87b4beac60e4248fe0d538f887792ea136b1`, and its
 development-summary fingerprint is
-`dcd2fdddb37313a066402f1169616dec783545a62d889e174cc90331af55bd47`. Authority
-remains withheld pending owner approval of the numerical margins, runtime ceiling, held-out
-replication count, and frozen gate. No held-out run or criterion switch is authorized yet.
+`dcd2fdddb37313a066402f1169616dec783545a62d889e174cc90331af55bd47`. The owner
+approved its proposed gate in commit `58e9648`, after which 1,254 of 2,163 held-out checkpoints
+were opened before the run was stopped. No held-out scientific records were inspected. The run is
+aborted and scientifically ineligible because full-delivery reuse was keyed too narrowly to
+represent every input consumed by delivery. The original development output and held-out output
+are preserved separately as pre-STAT-2b.1 and aborted evidence, and the approved gate remains
+byte-identical with a superseded-status sidecar. STAT-2b.1 must repair and authenticate delivery
+inputs, complete an open 4/8/16/24/28-worker scaling preflight, rerun development, and obtain a
+fresh owner-approved gate before any new held-out seed is opened. No criterion switch is
+authorized.
 
 Compare:
 

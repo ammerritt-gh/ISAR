@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, replace
+import ctypes
 import csv
 import hashlib
 from importlib import metadata
@@ -51,10 +52,19 @@ from isar.synth.stat2b.truth import TruthDataset, _dataset_id, generate_dataset
 
 RUN_SCHEMA = "isar.stat2b_run/1"
 RECORD_SCHEMA = "isar.stat2b_dataset_result/1"
+DELIVERY_INPUT_SCHEMA = "isar.stat2b_delivery_inputs/1"
+DELIVERY_CONTEXT_SCHEMA = "isar.stat2b_delivery_context/2"
 SUMMARY_SCHEMA = "isar.stat2b_development_summary/1"
 HELDOUT_SUMMARY_SCHEMA = "isar.stat2b_heldout_summary/1"
 GATE_SCHEMA = "isar.stat2b_heldout_gate/1"
 RUNTIME_LEDGER_SCHEMA = "isar.stat2b_runtime_ledger/1"
+THREAD_ENVIRONMENT_VARIABLES = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "BLIS_NUM_THREADS",
+)
 
 STANDARD_ARMS = (
     ("legacy_aic", "legacy", "aic"),
@@ -195,12 +205,74 @@ def _source_fingerprint(source_hashes: Mapping[str, str]) -> str:
     )
 
 
-def _runtime_provenance() -> dict[str, Any]:
+def _process_affinity() -> dict[str, Any]:
+    if os.name != "nt":
+        affinity = (
+            sorted(int(cpu) for cpu in os.sched_getaffinity(0))
+            if hasattr(os, "sched_getaffinity")
+            else None
+        )
+        return {
+            "kind": "sched_getaffinity" if affinity is not None else "unavailable",
+            "logical_processor_count": len(affinity) if affinity is not None else None,
+            "logical_processors": affinity,
+        }
+    process_mask = ctypes.c_size_t()
+    system_mask = ctypes.c_size_t()
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    available = bool(
+        kernel32.GetProcessAffinityMask(
+            kernel32.GetCurrentProcess(),
+            ctypes.byref(process_mask),
+            ctypes.byref(system_mask),
+        )
+    )
+    return {
+        "kind": "windows_process_affinity_mask",
+        "available": available,
+        "process_mask_hex": hex(process_mask.value) if available else None,
+        "system_mask_hex": hex(system_mask.value) if available else None,
+        "logical_processor_count": (
+            int(process_mask.value).bit_count() if available else None
+        ),
+    }
+
+
+def _blas_implementation() -> dict[str, Any]:
+    config = np.__config__.show(mode="dicts")
+    blas = config.get("Build Dependencies", {}).get("blas", {})
+    return {
+        key: blas.get(key)
+        for key in (
+            "name",
+            "version",
+            "detection method",
+            "openblas configuration",
+        )
+    }
+
+
+def _runtime_provenance(dataset_workers: int = 1) -> dict[str, Any]:
+    physical_cores = os.environ.get("ISAR_PHYSICAL_CORES")
+    try:
+        physical_core_count = (
+            int(physical_cores) if physical_cores is not None else None
+        )
+    except ValueError:
+        physical_core_count = None
     return {
         "python_implementation": platform.python_implementation(),
         "python_version": platform.python_version(),
         "platform": platform.platform(),
         "machine": platform.machine(),
+        "physical_core_count": physical_core_count,
+        "logical_processor_count": os.cpu_count(),
+        "dataset_worker_count": int(dataset_workers),
+        "blas_implementation": _blas_implementation(),
+        "thread_environment": {
+            name: os.environ.get(name) for name in THREAD_ENVIRONMENT_VARIABLES
+        },
+        "process_affinity": _process_affinity(),
         "packages": {
             package: metadata.version(package)
             for package in ("numpy", "scipy", "iminuit", "lmfit", "dynesty")
@@ -209,7 +281,37 @@ def _runtime_provenance() -> dict[str, Any]:
 
 
 def _runtime_fingerprint(provenance: Mapping[str, Any]) -> str:
-    return semantics_fingerprint("isar.stat2b_numerical_runtime/1", provenance)
+    return semantics_fingerprint("isar.stat2b_numerical_runtime/2", provenance)
+
+
+def _validate_parallel_runtime(
+    provenance: Mapping[str, Any], dataset_workers: int
+) -> None:
+    if dataset_workers <= 1:
+        return
+    thread_environment = provenance["thread_environment"]
+    invalid = [
+        name
+        for name in THREAD_ENVIRONMENT_VARIABLES
+        if thread_environment.get(name) != "1"
+    ]
+    if invalid:
+        raise RuntimeError(
+            "STAT-2b parallel execution requires numerical thread caps before "
+            f"Python starts: {', '.join(invalid)}"
+        )
+    physical_cores = provenance.get("physical_core_count")
+    if not isinstance(physical_cores, int) or physical_cores <= 0:
+        raise RuntimeError(
+            "STAT-2b parallel execution requires ISAR_PHYSICAL_CORES provenance"
+        )
+    affinity_count = provenance.get("process_affinity", {}).get(
+        "logical_processor_count"
+    )
+    if isinstance(affinity_count, int) and dataset_workers > affinity_count:
+        raise RuntimeError(
+            "STAT-2b dataset workers exceed the process-affinity processor count"
+        )
 
 
 def _record_fingerprint_payload(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -457,13 +559,13 @@ def _target_rank_hint(
     return float(modes[0]["omega0"])
 
 
-def _delivery_context_fingerprint(ctx, label: str) -> str:
+def _delivery_context_fingerprint(dataset: TruthDataset) -> str:
+    ctx = dataset.fit_context
     constraints = getattr(ctx, "constraints", None)
     return semantics_fingerprint(
-        "isar.stat2b_delivery_context/1",
+        DELIVERY_CONTEXT_SCHEMA,
         {
             "data_likelihood_fingerprint": loop.data_likelihood_fingerprint(ctx),
-            "label": label,
             "constraints": {
                 "soft": dict(sorted((getattr(constraints, "soft", None) or {}).items())),
                 "hard": dict(sorted((getattr(constraints, "hard", None) or {}).items())),
@@ -471,33 +573,91 @@ def _delivery_context_fingerprint(ctx, label: str) -> str:
                     sorted((getattr(constraints, "origins", None) or {}).items())
                 ),
             },
+            "delivery_design": _strict_json_value(dataset.delivery_design),
         },
+    )
+
+
+def _delivery_inputs(
+    dataset: TruthDataset,
+    candidate: CandidateEvidence,
+    spec: CampaignSpec,
+) -> dict[str, Any]:
+    """Declare exactly the candidate-specific inputs consumed by delivery."""
+
+    return {
+        "selected_label": str(candidate.label),
+        "delivery_context_fingerprint": _delivery_context_fingerprint(dataset),
+        "predeclared_target_rank": dataset.truth_manifest.get("target_rank"),
+        "candidate_target_hint": _target_rank_hint(candidate, dataset.truth_manifest),
+        "candidate_multimode_peak_hints": _strict_json_value(
+            _peaks_for_selected(candidate)
+        ),
+        "errors_tier": "full",
+        "bootstrap_replicates": int(spec.delivery_replicates),
+        "delivery_seed": int(_realization_seed(dataset, candidate.label)),
+    }
+
+
+def _delivery_input_fingerprint(inputs: Mapping[str, Any]) -> str:
+    return semantics_fingerprint(
+        DELIVERY_INPUT_SCHEMA, _strict_json_value(dict(inputs))
     )
 
 
 def _full_delivery(
     dataset: TruthDataset,
-    candidate: CandidateEvidence,
     spec: CampaignSpec,
     *,
-    seed: int,
+    delivery_inputs: Mapping[str, Any],
 ) -> dict[str, Any]:
     scenario = spec.scenario(str(dataset.truth_manifest["scenario_id"]))
-    target_hint = _target_rank_hint(candidate, dataset.truth_manifest)
+    expected_keys = {
+        "selected_label",
+        "delivery_context_fingerprint",
+        "predeclared_target_rank",
+        "candidate_target_hint",
+        "candidate_multimode_peak_hints",
+        "errors_tier",
+        "bootstrap_replicates",
+        "delivery_seed",
+    }
+    if set(delivery_inputs) != expected_keys:
+        raise ValueError("STAT-2b delivery inputs do not match the canonical record")
+    if (
+        delivery_inputs["delivery_context_fingerprint"]
+        != _delivery_context_fingerprint(dataset)
+    ):
+        raise ValueError("STAT-2b delivery context does not match the declared inputs")
+    if (
+        delivery_inputs["predeclared_target_rank"]
+        != dataset.truth_manifest.get("target_rank")
+    ):
+        raise ValueError("STAT-2b target rank does not match the declared inputs")
+    if delivery_inputs["errors_tier"] != "full":
+        raise ValueError("STAT-2b delivery requires the full errors tier")
+    if int(delivery_inputs["bootstrap_replicates"]) != spec.delivery_replicates:
+        raise ValueError("STAT-2b bootstrap count does not match the campaign spec")
+
+    selected_label = str(delivery_inputs["selected_label"])
+    target_hint = delivery_inputs["candidate_target_hint"]
+    peaks = delivery_inputs["candidate_multimode_peak_hints"]
+    errors_tier = str(delivery_inputs["errors_tier"])
+    bootstrap_replicates = int(delivery_inputs["bootstrap_replicates"])
+    seed = int(delivery_inputs["delivery_seed"])
     ctx = replace(dataset.fit_context, acoustic_omega=target_hint)
     prior, card = _delivery_prior_and_card(dataset, scenario)
     descriptor = driver._build_descriptor(ctx)
     region_reasons: list[str] = []
-    peaks = _peaks_for_selected(candidate)
     fit = driver.fit_one(
         ctx,
         card,
         prior=prior,
-        M=spec.delivery_replicates,
+        M=bootstrap_replicates,
         seed=seed,
-        structure_labels=[candidate.label],
+        structure_labels=[selected_label],
         peaks=peaks,
-        errors_tier="full",
+        errors_tier=errors_tier,
         boot_workers=1,
         descriptor=descriptor,
         shadow_enabled=False,
@@ -509,13 +669,13 @@ def _full_delivery(
         card,
         "STAT2B",
         ctx.T,
-        [candidate.label],
+        [selected_label],
         peaks,
         descriptor,
         region_reasons,
-        M=spec.delivery_replicates,
+        M=bootstrap_replicates,
         seed=seed,
-        errors_tier="full",
+        errors_tier=errors_tier,
         boot_workers=1,
         boot_executor=None,
         boot_adaptive=False,
@@ -604,6 +764,11 @@ def _arm_record(
     delivery: Mapping[str, Any] | None,
     certification: Mapping[str, Any] | None,
     certification_tolerance: float,
+    delivery_inputs: Mapping[str, Any] | None,
+    delivery_input_fingerprint: str | None,
+    delivery_reused: bool,
+    delivery_reuse_group: str | None,
+    delivery_source_arm: str | None,
 ) -> dict[str, Any]:
     by_label = {candidate.label: candidate for candidate in evidence}
     selected = by_label.get(selection.selected_label)
@@ -747,6 +912,13 @@ def _arm_record(
             if delivery is not None
             else None
         ),
+        "delivery_inputs": (
+            dict(delivery_inputs) if delivery_inputs is not None else None
+        ),
+        "delivery_input_fingerprint": delivery_input_fingerprint,
+        "delivery_reused": bool(delivery_reused),
+        "delivery_reuse_group": delivery_reuse_group,
+        "delivery_source_arm": delivery_source_arm,
         "certification": certification,
         "execution_provenance": dict(provenance),
     }
@@ -826,9 +998,10 @@ def _run_realization(
         for arm_id, family, criterion in arm_specs
     }
 
-    delivery_cache: dict[str, dict[str, Any]] = {}
+    arm_candidates: dict[str, CandidateEvidence | None] = {}
+    delivery_requests: dict[str, tuple[dict[str, Any], str]] = {}
     delivery_reuse: dict[str, list[str]] = {}
-    arm_rows = []
+    delivery_group_inputs: dict[str, dict[str, Any]] = {}
     for arm_id, family, criterion in arm_specs:
         evidence, provenance = families[family]
         selection = selections[arm_id]
@@ -840,23 +1013,44 @@ def _run_realization(
             ),
             None,
         )
-        delivery = None
-        certification = None
+        arm_candidates[arm_id] = selected
         if (
             selected is not None
             and selection.status == "available"
             and selected.label not in NULL_LABELS
         ):
-            key = _delivery_context_fingerprint(ctx, selected.label)
-            if key not in delivery_cache:
-                delivery_cache[key] = _full_delivery(
-                    dataset,
-                    selected,
-                    spec,
-                    seed=_realization_seed(dataset, selected.label),
-                )
-                delivery_reuse[key] = []
-            delivery_reuse[key].append(arm_id)
+            inputs = _delivery_inputs(dataset, selected, spec)
+            key = _delivery_input_fingerprint(inputs)
+            if key in delivery_group_inputs and delivery_group_inputs[key] != inputs:
+                raise RuntimeError("STAT-2b delivery-input fingerprint collision")
+            delivery_group_inputs[key] = inputs
+            delivery_requests[arm_id] = (inputs, key)
+            delivery_reuse.setdefault(key, []).append(arm_id)
+
+    delivery_cache: dict[str, dict[str, Any]] = {}
+    delivery_sources = {
+        key: min(arm_ids) for key, arm_ids in delivery_reuse.items()
+    }
+    for key in sorted(delivery_reuse):
+        delivery_cache[key] = _full_delivery(
+            dataset,
+            spec,
+            delivery_inputs=delivery_group_inputs[key],
+        )
+
+    arm_rows = []
+    for arm_id, family, criterion in arm_specs:
+        evidence, provenance = families[family]
+        selection = selections[arm_id]
+        selected = arm_candidates[arm_id]
+        delivery = None
+        certification = None
+        inputs = None
+        key = None
+        source_arm = None
+        if arm_id in delivery_requests:
+            inputs, key = delivery_requests[arm_id]
+            source_arm = delivery_sources[key]
             delivery = delivery_cache[key]
             certification = _certification_projection(
                 delivery, spec.certification_tolerance_mev
@@ -873,6 +1067,11 @@ def _run_realization(
                 delivery=delivery,
                 certification=certification,
                 certification_tolerance=spec.certification_tolerance_mev,
+                delivery_inputs=inputs,
+                delivery_input_fingerprint=key,
+                delivery_reused=bool(source_arm and arm_id != source_arm),
+                delivery_reuse_group=key,
+                delivery_source_arm=source_arm,
             )
         )
 
@@ -1008,9 +1207,10 @@ def run_campaign(
     repo_root = Path(__file__).resolve().parents[3]
     source_hashes = _source_hashes(repo_root)
     source_fingerprint = _source_fingerprint(source_hashes)
-    runtime_provenance = _runtime_provenance()
-    runtime_fingerprint = _runtime_fingerprint(runtime_provenance)
     max_workers = max(1, int(workers))
+    runtime_provenance = _runtime_provenance(max_workers)
+    _validate_parallel_runtime(runtime_provenance, max_workers)
+    runtime_fingerprint = _runtime_fingerprint(runtime_provenance)
     started = time.perf_counter()
     wall_started = time.time()
     runtime_ledger_path = output_dir / "runtime_ledger.json"

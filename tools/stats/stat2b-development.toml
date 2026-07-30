@@ -1,5 +1,5 @@
 schema = "isar.stat2b_campaign/1"
-campaign_id = "stat2b-selection-criterion-2026-07"
+campaign_id = "stat2b1-selection-criterion-2026-07"
 base_seed = 20260730
 development_realizations = 20
 heldout_realizations = 0
@@ -16,7 +16,7 @@ critical_strata = [
 
 [phase_seed_namespaces]
 development = "stat2b-development-open-v1"
-heldout = "stat2b-heldout-sealed-v1"
+heldout = "stat2b-heldout-sealed-v2"
 
 [[scenarios]]
 id = "weak-15"

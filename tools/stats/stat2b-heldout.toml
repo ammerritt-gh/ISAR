@@ -1,9 +1,9 @@
 schema = "isar.stat2b_campaign/1"
-campaign_id = "stat2b-selection-criterion-2026-07"
+campaign_id = "stat2b1-selection-criterion-2026-07"
 base_seed = 20260730
 development_realizations = 20
-# Owner-approved from the development summary on 2026-07-30.
-heldout_realizations = 103
+# Fail-closed after STAT-2b.1 invalidated the prior owner gate.
+heldout_realizations = 0
 delivery_replicates = 200
 certification_tolerance_mev = 0.10
 cell_weighting = "equal"
@@ -14,9 +14,9 @@ critical_strata = [
   "target_absent",
   "misspecified_background",
 ]
-heldout_gate_path = "tools/stats/stat2b-heldout-gate.json"
+heldout_gate_path = "tools/stats/stat2b-heldout-gate.pending.json"
 scenario_matrix_path = "stat2b-development.toml"
 
 [phase_seed_namespaces]
 development = "stat2b-development-open-v1"
-heldout = "stat2b-heldout-sealed-v1"
+heldout = "stat2b-heldout-sealed-v2"
