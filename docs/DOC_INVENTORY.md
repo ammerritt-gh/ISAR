@@ -109,10 +109,11 @@ and verified by `git grep` at deletion time rather than by bookkeeping.
 
 ## `docs/` — active plans
 
-All five are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
-status block — `tests/docs/` fails the build if either is missing. Each cited the 2026-07-19
-statistics-contract audit as motivation; that audit's shared findings were promoted once into
-`STATS_PRIMER.md` §7, so these plans do not carry drifting copies.
+All six are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
+status block — `tests/docs/` fails the build if either is missing. Their shared statistical
+motivation and current sequence are recorded in the 2026-07-19 statistics-contract audit; its
+accepted findings were promoted once into `STATS_PRIMER.md` §7, so the plans do not carry drifting
+copies.
 
 | Path | Lifecycle | Status as written | Maintenance note |
 |---|---|---|---|
@@ -121,6 +122,13 @@ statistics-contract audit as motivation; that audit's shared findings were promo
 | `docs/BACKGROUND_DESIGN.md` | Active plan | approved 2026-07-19; implementation not started | — |
 | `docs/EIG_STEERING_DESIGN.md` | Active plan | maintenance seam shipped; `/2`, arbitrary-grid evaluation, and same-action window ranking Planned | Distinguishes future scan-window EIG from current master-grid action/Q ranking |
 | `docs/stats/STATISTICAL_SEMANTICS_AUDIT.md` | Active plan | STAT-0 and STAT-1 complete; STAT-2 through STAT-6 pending | Temporary pre-EIG-3 producer/consumer audit; STAT-6 folds accepted semantics into canonical documents, then deletes and tombstones it |
+| `docs/plans/STAT2_SELECTION_CONSISTENCY_PLAN.md` | Active plan | STAT-2a code-grounded; implementation awaits approval | Temporary execution plan; STAT-2d folds accepted behavior into canonical statistics documents, then deletes and tombstones it |
+
+## `docs/` — historical evidence
+
+| Path | Lifecycle | Maintenance note |
+|---|---|---|
+| `docs/ISAR_PRE_EIG3_STATISTICAL_CONSISTENCY_HANDOFF.md` | Historical evidence | Original pre-EIG roadmap retained temporarily for its through-STAT-5 rationale; current stage names and contracts live in the statistical-semantics audit and code-grounded plans |
 
 ## `docs/campaigns/` — historical evidence
 

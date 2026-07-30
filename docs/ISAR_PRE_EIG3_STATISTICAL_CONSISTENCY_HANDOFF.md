@@ -1,5 +1,12 @@
 # ISAR Pre-EIG-3 Statistical Consistency Pass
 
+> **Lifecycle:** Historical evidence
+> **Provenance:** hand-written
+> **Maintenance note:** Retained temporarily for the original through-STAT-5 rationale. Its stage
+> names and anchor revision are historical; current execution is governed by
+> `docs/stats/STATISTICAL_SEMANTICS_AUDIT.md` and the applicable code-grounded plan under
+> `docs/plans/`.
+
 **Working name:** STAT-CONSISTENCY  
 **Repository:** `ammerritt-gh/ISAR`  
 **Anchor revision:** `e37b7b4fe0debbd0aa32402165b16c4e2aee3a93`  

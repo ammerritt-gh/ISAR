@@ -518,6 +518,9 @@ sequence below remain unchanged.
 Separate the unconstrained data-only selection fit from penalized/conditional delivery fits, or make
 the latter explicitly ineligible for ordinary AIC-family weights.
 
+The bounded execution sequence and current code seams are in
+[`../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md`](../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md).
+
 Hard-conditioned fits may be weight-eligible only when the constraint is independently specified,
 common to the comparison question, and reflected in `k`. Data-dependent rescue/post-selection
 fits are ineligible by default. Resolve AIC versus AICc only after the §7 selection campaign.
