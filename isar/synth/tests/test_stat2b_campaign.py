@@ -212,6 +212,7 @@ def test_heldout_gate_refuses_changed_spec_or_source_hash(tmp_path):
         "owner_approved": True,
         "campaign_spec_fingerprint": spec.fingerprint,
         "development_summary_fingerprint": "development",
+        "evaluation_statistic": "one-sided bounds",
         "source_hashes": {"campaign.py": "hash"},
         "numerical_runtime_fingerprint": "runtime",
         "heldout_realizations": 20,
@@ -343,6 +344,30 @@ def test_summary_emits_six_proposed_gates_and_all_critical_vetoes(tmp_path):
     )
     assert (tmp_path / "decision_summary.json").is_file()
     assert (tmp_path / "cell_summaries.csv").is_file()
+
+    heldout_spec = _spec(heldout=1)
+    heldout_dir = tmp_path / "heldout"
+    heldout_run = replace(
+        run,
+        phase="heldout",
+        output_dir=heldout_dir,
+        spec_fingerprint=heldout_spec.fingerprint,
+        manifest={
+            **run.manifest,
+            "gate": {
+                **summary["proposed_owner_gate"],
+                "owner_approved": True,
+                "campaign_spec_fingerprint": heldout_spec.fingerprint,
+            },
+        },
+    )
+    heldout_summary = campaign.summarize_campaign(
+        heldout_run, heldout_spec
+    )
+    assert heldout_summary["schema"] == campaign.HELDOUT_SUMMARY_SCHEMA
+    assert "heldout_summary_fingerprint" in heldout_summary
+    assert "proposed_owner_gate" not in heldout_summary
+    assert not (heldout_dir / "proposed_owner_gate.json").exists()
 
 
 def test_frozen_gate_applies_each_margin_to_each_critical_stratum():

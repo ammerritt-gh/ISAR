@@ -52,6 +52,7 @@ from isar.synth.stat2b.truth import TruthDataset, _dataset_id, generate_dataset
 RUN_SCHEMA = "isar.stat2b_run/1"
 RECORD_SCHEMA = "isar.stat2b_dataset_result/1"
 SUMMARY_SCHEMA = "isar.stat2b_development_summary/1"
+HELDOUT_SUMMARY_SCHEMA = "isar.stat2b_heldout_summary/1"
 GATE_SCHEMA = "isar.stat2b_heldout_gate/1"
 
 STANDARD_ARMS = (
@@ -103,6 +104,12 @@ CAMPAIGN_SOURCE_PATHS = (
     "isar/synth/backends.py",
     "isar/synth/estimators.py",
     "isar/synth/fit.py",
+)
+CAMPAIGN_SOURCE_ROOTS = (
+    "isar/analyze",
+    "isar/schema",
+    "isar/session",
+    "isar/synth/stat2b",
 )
 
 
@@ -167,7 +174,13 @@ def _read_json(path: Path):
 
 def _source_hashes(repo_root: Path) -> dict[str, str]:
     hashes = {}
-    for relative in CAMPAIGN_SOURCE_PATHS:
+    relatives = set(CAMPAIGN_SOURCE_PATHS)
+    for root in CAMPAIGN_SOURCE_ROOTS:
+        relatives.update(
+            path.relative_to(repo_root).as_posix()
+            for path in (repo_root / root).rglob("*.py")
+        )
+    for relative in sorted(relatives):
         path = repo_root / relative
         if not path.is_file():
             raise FileNotFoundError(f"campaign source is missing: {relative}")
@@ -185,6 +198,8 @@ def _runtime_provenance() -> dict[str, Any]:
     return {
         "python_implementation": platform.python_implementation(),
         "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "machine": platform.machine(),
         "packages": {
             package: metadata.version(package)
             for package in ("numpy", "scipy", "iminuit", "lmfit", "dynesty")
@@ -962,6 +977,7 @@ def _validate_gate(
         raise RuntimeError("held-out execution refused: sample size does not match the gate")
     for required in (
         "development_summary_fingerprint",
+        "evaluation_statistic",
         "margins",
         "runtime_ceiling_seconds",
     ):
@@ -1305,6 +1321,7 @@ def _hierarchical_bootstrap(
         "missed_modes",
         "extra_modes",
         "false_certification",
+        "complete_comparison_rate",
     )
     rng = np.random.default_rng(seed)
     distributions = {metric: [] for metric in metrics}
@@ -1324,6 +1341,14 @@ def _hierarchical_bootstrap(
                 for record in sampled:
                     arms = {arm["arm_id"]: arm for arm in record["arms"]}
                     if contender not in arms or baseline not in arms:
+                        continue
+                    if metric == "complete_comparison_rate":
+                        diffs.append(
+                            float(
+                                arms[contender]["comparison_status"]
+                                == "available"
+                            )
+                        )
                         continue
                     if metric == "target_rmse":
                         lhs = arms[contender]["target_squared_error"]
@@ -1381,6 +1406,15 @@ def _critical_strata(
             if stratum in record.get("critical_strata", ())
         ]
         paired = _paired_cell_differences(selected, contender, baseline)
+        stratum_seed = int.from_bytes(
+            hashlib.sha256(stratum.encode("utf-8")).digest()[:4], "big"
+        )
+        bootstrap = _hierarchical_bootstrap(
+            selected,
+            contender,
+            baseline,
+            seed=20260730 + stratum_seed,
+        )
         selected_cells = _arm_cell_metrics(selected)
         selected_aggregate = _equal_cell_aggregate(selected_cells).get(contender, {})
         out[stratum] = {
@@ -1404,6 +1438,7 @@ def _critical_strata(
             "complete_comparison_rate": selected_aggregate.get(
                 "complete_comparison_rate"
             ),
+            "hierarchical_bootstrap_intervals": bootstrap,
         }
     return out
 
@@ -1524,10 +1559,8 @@ def _evidence_completeness(
 
 
 def _gate_observations(
-    paired: Mapping[str, Mapping[str, float | None]],
-    aggregate: Mapping[str, Mapping[str, Any]],
     critical: Mapping[str, Mapping[str, Any]],
-    contender: str,
+    bootstrap: Mapping[str, Mapping[str, float | None]],
 ) -> tuple[dict[str, float | None], dict[str, dict[str, float | None]]]:
     mapping = {
         "prediction_kl_difference": "prediction_kl",
@@ -1537,25 +1570,23 @@ def _gate_observations(
         "false_certification_difference": "false_certification",
     }
     overall = {
-        observed_name: _mean(
-            values.get(paired_name) for values in paired.values()
-        )
+        observed_name: bootstrap[paired_name]["high"]
         for observed_name, paired_name in mapping.items()
     }
-    overall["complete_comparison_rate"] = aggregate.get(contender, {}).get(
+    overall["complete_comparison_rate"] = bootstrap[
         "complete_comparison_rate"
-    )
+    ]["low"]
     return overall, {
         stratum: {
-            metric: values.get(metric)
-            for metric in (
-                "prediction_kl_difference",
-                "target_rmse_difference",
-                "missed_mode_difference",
-                "false_extra_mode_difference",
-                "false_certification_difference",
-                "complete_comparison_rate",
-            )
+            observed_name: values["hierarchical_bootstrap_intervals"][
+                paired_name
+            ]["high"]
+            for observed_name, paired_name in mapping.items()
+        }
+        | {
+            "complete_comparison_rate": values[
+                "hierarchical_bootstrap_intervals"
+            ]["complete_comparison_rate"]["low"]
         }
         for stratum, values in critical.items()
     }
@@ -1596,11 +1627,16 @@ def _evaluate_frozen_gate(
     for gate_name, rule in gate["margins"].items():
         metric = str(rule["metric"])
         checks = {}
-        for scope, value in [("overall", overall.get(metric))] + [
-            (name, values.get(metric)) for name, values in sorted(strata.items())
-        ]:
+        applicable = set(rule.get("applicable_strata", strata))
+        scoped = [("overall", overall.get(metric))] + [
+            (name, values.get(metric))
+            for name, values in sorted(strata.items())
+            if name in applicable
+        ]
+        for scope, value in scoped:
             if value is None:
-                checks[scope] = {"status": "not_applicable", "value": None}
+                checks[scope] = {"status": "unavailable", "value": None}
+                all_pass = False
                 continue
             passed = (
                 float(value) <= float(rule["maximum"])
@@ -1612,8 +1648,6 @@ def _evaluate_frozen_gate(
                 "value": float(value),
             }
             all_pass = all_pass and passed
-        if checks.get("overall", {}).get("status") == "not_applicable":
-            all_pass = False
         results[gate_name] = checks
     runtime_ceiling = float(gate["runtime_ceiling_seconds"])
     runtime_pass = float(runtime_seconds) <= runtime_ceiling
@@ -1683,41 +1717,51 @@ def summarize_campaign(run: CampaignRun, spec: CampaignSpec) -> dict[str, Any]:
         )
     else:
         proposed_reps = spec.development_realizations
-    proposed_reps = min(max(proposed_reps, spec.development_realizations), 1000)
+    proposed_reps = max(proposed_reps, spec.development_realizations)
     prediction_high = predictive_ci["high"]
     rmse_high = bootstrap["target_rmse"]["high"]
     margins = {
         "predictive_loss_superiority": {
             "metric": "prediction_kl_difference",
+            "applicable_strata": sorted(spec.critical_strata),
             "maximum": min(float(prediction_high), 0.0)
             if prediction_high is not None
             else 0.0,
         },
         "omega_rmse_noninferiority": {
             "metric": "target_rmse_difference",
+            "applicable_strata": sorted(
+                set(spec.critical_strata) - {"target_absent"}
+            ),
             "maximum": max(float(rmse_high), 0.0)
             if rmse_high is not None
             else 0.0,
         },
         "missed_mode_noninferiority": {
             "metric": "missed_mode_difference",
+            "applicable_strata": sorted(
+                set(spec.critical_strata) - {"target_absent"}
+            ),
             "maximum": 0.0,
         },
         "false_extra_mode_noninferiority": {
             "metric": "false_extra_mode_difference",
+            "applicable_strata": sorted(spec.critical_strata),
             "maximum": 0.0,
         },
         "comparative_false_certification_noninferiority": {
             "metric": "false_certification_difference",
+            "applicable_strata": sorted(spec.critical_strata),
             "maximum": 0.0,
         },
         "minimum_complete_comparison_rate": {
             "metric": "complete_comparison_rate",
+            "applicable_strata": sorted(spec.critical_strata),
             "minimum": float(contender_metrics.get("complete_comparison_rate") or 0.0),
         },
     }
     observed_gate_metrics, observed_stratum_metrics = _gate_observations(
-        paired, aggregate, critical, contender
+        critical, bootstrap
     )
     runtime_values = [
         float(record["runtime_seconds"])
@@ -1758,8 +1802,11 @@ def summarize_campaign(run: CampaignRun, spec: CampaignSpec) -> dict[str, Any]:
         )
         for record in run.records
     )
+    summary_schema = (
+        SUMMARY_SCHEMA if run.phase == "development" else HELDOUT_SUMMARY_SCHEMA
+    )
     summary = {
-        "schema": SUMMARY_SCHEMA,
+        "schema": summary_schema,
         "campaign_id": run.campaign_id,
         "phase": run.phase,
         "campaign_spec_fingerprint": spec.fingerprint,
@@ -1796,7 +1843,7 @@ def summarize_campaign(run: CampaignRun, spec: CampaignSpec) -> dict[str, Any]:
             "reused_delivery_count": max(delivery_required - delivery_unique, 0),
         },
         "runtime": {
-            "development_wall_seconds": float(run.manifest["runtime_seconds"]),
+            "phase_wall_seconds": float(run.manifest["runtime_seconds"]),
             "mean_dataset_runtime_seconds": mean_dataset_runtime,
             "projected_heldout_runtime_seconds": projected_heldout_runtime,
         },
@@ -1814,7 +1861,8 @@ def summarize_campaign(run: CampaignRun, spec: CampaignSpec) -> dict[str, Any]:
                 record["two_mode_omission"] for record in run.records
             ),
         },
-        "proposed_owner_gate": {
+    }
+    proposed_owner_gate = {
             "schema": GATE_SCHEMA,
             "status": (
                 "ready_for_owner_review"
@@ -1822,6 +1870,10 @@ def summarize_campaign(run: CampaignRun, spec: CampaignSpec) -> dict[str, Any]:
                 else "authority_withheld"
             ),
             "owner_approved": False,
+            "evaluation_statistic": (
+                "one_sided_95_percent_bound; upper for maximum rules, "
+                "lower for minimum rules"
+            ),
             "heldout_realizations": proposed_reps,
             "runtime_ceiling_seconds": projected_heldout_runtime * 1.5,
             "margins": margins,
@@ -1834,26 +1886,30 @@ def summarize_campaign(run: CampaignRun, spec: CampaignSpec) -> dict[str, Any]:
             "numerical_runtime_fingerprint": run.manifest[
                 "numerical_runtime_fingerprint"
             ],
-        },
     }
-    fingerprint_payload = {
-        key: value for key, value in summary.items() if key != "proposed_owner_gate"
-    }
-    summary["development_summary_fingerprint"] = semantics_fingerprint(
-        SUMMARY_SCHEMA, fingerprint_payload
-    )
-    summary["proposed_owner_gate"]["development_summary_fingerprint"] = summary[
-        "development_summary_fingerprint"
-    ]
-    if run.phase == "heldout":
+    if run.phase == "development":
+        summary["development_summary_fingerprint"] = semantics_fingerprint(
+            SUMMARY_SCHEMA, summary
+        )
+        proposed_owner_gate["development_summary_fingerprint"] = summary[
+            "development_summary_fingerprint"
+        ]
+        summary["proposed_owner_gate"] = proposed_owner_gate
+    else:
         gate = run.manifest.get("gate")
         if not isinstance(gate, Mapping):
             raise RuntimeError("held-out summary lacks its frozen owner gate")
+        summary["frozen_owner_gate_fingerprint"] = semantics_fingerprint(
+            GATE_SCHEMA, gate
+        )
         summary["heldout_gate_evaluation"] = _evaluate_frozen_gate(
             gate,
             observed_gate_metrics,
             observed_stratum_metrics,
             runtime_seconds=float(run.manifest["runtime_seconds"]),
+        )
+        summary["heldout_summary_fingerprint"] = semantics_fingerprint(
+            HELDOUT_SUMMARY_SCHEMA, summary
         )
     _write_figures(
         run.output_dir,
@@ -1863,7 +1919,8 @@ def summarize_campaign(run: CampaignRun, spec: CampaignSpec) -> dict[str, Any]:
         baseline=baseline,
     )
     _write_json(run.output_dir / "decision_summary.json", summary)
-    _write_json(run.output_dir / "proposed_owner_gate.json", summary["proposed_owner_gate"])
+    if run.phase == "development":
+        _write_json(run.output_dir / "proposed_owner_gate.json", proposed_owner_gate)
     _write_cell_csv(run.output_dir / "cell_summaries.csv", cell_rows)
     findings = (
         "# STAT-2b Generated Findings\n\n"
@@ -1874,10 +1931,15 @@ def summarize_campaign(run: CampaignRun, spec: CampaignSpec) -> dict[str, Any]:
         f"- Phase: `{run.phase}`\n"
         f"- Dataset count: {len(run.records)}\n"
         f"- Frozen criterion comparison: `{contender}` versus `{baseline}`\n"
-        f"- Development summary fingerprint: "
-        f"`{summary['development_summary_fingerprint']}`\n"
-        "- Authority remains withheld until the owner approves numerical margins, "
-        "runtime ceiling, and held-out replication counts.\n"
+        f"- Summary fingerprint: "
+        f"`{summary.get('development_summary_fingerprint') or summary.get('heldout_summary_fingerprint')}`\n"
+        + (
+            "- Authority remains withheld until the owner approves numerical margins, "
+            "runtime ceiling, and held-out replication counts.\n"
+            if run.phase == "development"
+            else f"- Held-out gate status: "
+            f"`{summary['heldout_gate_evaluation']['status']}`.\n"
+        )
     )
     _atomic_write(run.output_dir / "generated_findings.md", findings.encode("utf-8"))
     return summary

@@ -31,9 +31,14 @@ def main(argv=None) -> int:
     )
     summary = summarize_campaign(run, spec)
     print(f"STAT-2b {args.phase} complete: {run.output_dir}")
+    fingerprint_key = (
+        "development_summary_fingerprint"
+        if args.phase == "development"
+        else "heldout_summary_fingerprint"
+    )
     print(
         "summary fingerprint: "
-        f"{summary['development_summary_fingerprint']}"
+        f"{summary[fingerprint_key]}"
     )
     if args.phase == "development":
         print("STOP: owner approval is required before held-out execution.")
