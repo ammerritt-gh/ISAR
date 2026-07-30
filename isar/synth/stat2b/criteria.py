@@ -14,6 +14,7 @@ from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 
+from isar.analyze import loop
 from isar.analyze.components import ConstantBackground, Elastic, QuasiElastic
 from isar.analyze.loop import _minimize_fixed, _sanitize, build_problem
 from isar.analyze.structures import (
@@ -41,6 +42,8 @@ class CandidateEvidence:
     result: object
     hypothesis: Hypothesis
     source: str
+    selection_eligible: bool = True
+    selection_ineligibility_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +136,13 @@ def select_by_criterion(
         return CriterionSelection(
             criterion, "unavailable", "required_candidate_fit_failed", None, ()
         )
+    ineligible = [
+        label for label in required if not by_label[label].selection_eligible
+    ]
+    if ineligible:
+        return CriterionSelection(
+            criterion, "unavailable", "required_candidate_ineligible", None, ()
+        )
 
     scored = []
     for label in required:
@@ -206,6 +216,17 @@ def evidence_from_results(
         hypothesis = hypothesis_by_label.get(label)
         if hypothesis is None:
             raise ValueError(f"result has no declared hypothesis: {label}")
+        selection_eligible = True
+        ineligibility_reason = None
+        if source in {"standard", "oracle_missing"}:
+            data_fingerprint = loop.data_likelihood_fingerprint(ctx)
+            selection_eligible = loop._shadow_result_matches(
+                result, hypothesis, ctx, data_fingerprint
+            )
+            if not selection_eligible:
+                ineligibility_reason = (
+                    "invalid_or_ineligible_fit_selection_semantics"
+                )
         evidence.append(
             CandidateEvidence(
                 label=label,
@@ -217,6 +238,8 @@ def evidence_from_results(
                 result=result,
                 hypothesis=hypothesis,
                 source=source,
+                selection_eligible=selection_eligible,
+                selection_ineligibility_reason=ineligibility_reason,
             )
         )
     return evidence

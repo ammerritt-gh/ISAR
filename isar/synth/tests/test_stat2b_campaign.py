@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from concurrent.futures import ProcessPoolExecutor
 import json
+import multiprocessing
+import pickle
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +14,7 @@ import pytest
 from isar.analyze.context import ScanContext
 from isar.analyze.structures import enumerate_structures
 from isar.schema.steering import ParamConstraints
+from isar.session import branch_model
 from isar.synth.stat2b import campaign
 from isar.synth.stat2b.criteria import CandidateEvidence, NULL_LABELS
 from isar.synth.stat2b.spec import (
@@ -89,17 +93,26 @@ def _spec(*, heldout=0):
     )
 
 
-def _fake_record(spec, scenario_id, index, phase, source_fingerprint):
+def _worker_spec_fingerprint(spec):
+    return spec.fingerprint
+
+
+def _fake_record(
+    spec, scenario_id, index, phase, source_fingerprint, runtime_fingerprint
+):
     record = {
         "schema": campaign.RECORD_SCHEMA,
         "campaign_id": spec.campaign_id,
         "campaign_spec_fingerprint": spec.fingerprint,
         "campaign_source_fingerprint": source_fingerprint,
+        "numerical_runtime_fingerprint": runtime_fingerprint,
         "phase": phase,
         "scenario_id": scenario_id,
         "scenario_fingerprint": spec.scenario(scenario_id).fingerprint,
         "realization_index": index,
-        "dataset_id": f"{phase}-{scenario_id}-{index}",
+        "dataset_id": campaign._dataset_id(
+            spec, spec.scenario(scenario_id), phase, index
+        ),
     }
     record["record_fingerprint"] = campaign.semantics_fingerprint(
         campaign.RECORD_SCHEMA, campaign._record_fingerprint_payload(record)
@@ -124,11 +137,21 @@ def test_checkpoint_resume_is_scheduling_independent(tmp_path, monkeypatch):
     calls = []
 
     def fake_realization(
-        spec_arg, scenario_id, realization_index, phase, source_fingerprint
+        spec_arg,
+        scenario_id,
+        realization_index,
+        phase,
+        source_fingerprint,
+        runtime_fingerprint,
     ):
         calls.append((scenario_id, realization_index))
         return _fake_record(
-            spec_arg, scenario_id, realization_index, phase, source_fingerprint
+            spec_arg,
+            scenario_id,
+            realization_index,
+            phase,
+            source_fingerprint,
+            runtime_fingerprint,
         )
 
     monkeypatch.setattr(campaign, "_run_realization", fake_realization)
@@ -157,6 +180,23 @@ def test_checkpoint_resume_is_scheduling_independent(tmp_path, monkeypatch):
     assert len(calls) == 1
     assert third.manifest["run_fingerprint"] == first.manifest["run_fingerprint"]
 
+    calls.clear()
+    smoke = (
+        tmp_path / spec.campaign_id / "development" / "smoke" / "weak.json"
+    )
+    moved = (
+        tmp_path
+        / spec.campaign_id
+        / "development"
+        / "checkpoints"
+        / "weak-00000.json"
+    )
+    moved.write_bytes(smoke.read_bytes())
+    campaign.run_campaign(
+        spec, phase="development", output_root=tmp_path, workers=1
+    )
+    assert calls == [("weak", 0)]
+
 
 def test_heldout_refuses_unfrozen_count_before_opening_seeds(tmp_path):
     with pytest.raises(RuntimeError, match="replication count is not frozen"):
@@ -173,6 +213,7 @@ def test_heldout_gate_refuses_changed_spec_or_source_hash(tmp_path):
         "campaign_spec_fingerprint": spec.fingerprint,
         "development_summary_fingerprint": "development",
         "source_hashes": {"campaign.py": "hash"},
+        "numerical_runtime_fingerprint": "runtime",
         "heldout_realizations": 20,
         "margins": {"predictive_loss_superiority": {"maximum": 0.0}},
         "runtime_ceiling_seconds": 100.0,
@@ -180,17 +221,33 @@ def test_heldout_gate_refuses_changed_spec_or_source_hash(tmp_path):
     path = tmp_path / "gate.json"
     path.write_text(json.dumps(gate), encoding="utf-8")
     assert campaign._validate_gate(
-        spec, path, source_hashes=gate["source_hashes"]
+        spec,
+        path,
+        source_hashes=gate["source_hashes"],
+        runtime_fingerprint="runtime",
     ) == gate
 
     changed_spec = replace(spec, heldout_realizations=21)
     with pytest.raises(RuntimeError, match="specification changed"):
         campaign._validate_gate(
-            changed_spec, path, source_hashes=gate["source_hashes"]
+            changed_spec,
+            path,
+            source_hashes=gate["source_hashes"],
+            runtime_fingerprint="runtime",
         )
     with pytest.raises(RuntimeError, match="source hashes changed"):
         campaign._validate_gate(
-            spec, path, source_hashes={"campaign.py": "changed"}
+            spec,
+            path,
+            source_hashes={"campaign.py": "changed"},
+            runtime_fingerprint="runtime",
+        )
+    with pytest.raises(RuntimeError, match="numerical runtime changed"):
+        campaign._validate_gate(
+            spec,
+            path,
+            source_hashes=gate["source_hashes"],
+            runtime_fingerprint="changed",
         )
 
 
@@ -220,7 +277,11 @@ def test_summary_emits_six_proposed_gates_and_all_critical_vetoes(tmp_path):
     records = []
     for index, scenario in enumerate(spec.scenarios):
         arms = []
-        for arm_id in ("legacy_aic", "unconstrained_aicc"):
+        for arm_id in (
+            "legacy_aic",
+            "unconstrained_aic",
+            "unconstrained_aicc",
+        ):
             improved = arm_id == "unconstrained_aicc"
             arms.append(
                 {
@@ -240,6 +301,7 @@ def test_summary_emits_six_proposed_gates_and_all_critical_vetoes(tmp_path):
         records.append(
             {
                 "scenario_id": scenario.id,
+                "realization_index": index,
                 "critical_strata": list(scenario.critical_strata),
                 "oracle_winner_available_in_standard": (
                     True if scenario.oracle_required else None
@@ -255,16 +317,30 @@ def test_summary_emits_six_proposed_gates_and_all_critical_vetoes(tmp_path):
         spec_fingerprint=spec.fingerprint,
         source_hashes={"source": "hash"},
         records=tuple(records),
-        manifest={"run_fingerprint": "run", "runtime_seconds": 1.0},
+        manifest={
+            "run_fingerprint": "run",
+            "runtime_seconds": 1.0,
+            "numerical_runtime": {"test": True},
+            "numerical_runtime_fingerprint": "runtime",
+        },
     )
     summary = campaign.summarize_campaign(run, spec)
     gates = summary["proposed_owner_gate"]["margins"]
     assert len(gates) == 6
     assert set(summary["critical_strata_vetoes"]) == set(CRITICAL_STRATA)
     assert summary["cell_weighting"] == "equal"
+    assert summary["decision_comparison"] == {
+        "contender": "unconstrained_aicc",
+        "baseline": "unconstrained_aic",
+    }
     assert summary["proposed_owner_gate"]["owner_approved"] is False
     assert summary["proposed_owner_gate"]["schema"] == campaign.GATE_SCHEMA
     assert summary["proposed_owner_gate"]["status"] == "authority_withheld"
+    assert summary["proposed_owner_gate"]["campaign_spec_fingerprint"] is None
+    assert (
+        summary["proposed_owner_gate"]["development_campaign_spec_fingerprint"]
+        == spec.fingerprint
+    )
     assert (tmp_path / "decision_summary.json").is_file()
     assert (tmp_path / "cell_summaries.csv").is_file()
 
@@ -296,9 +372,28 @@ def test_frozen_gate_applies_each_margin_to_each_critical_stratum():
             "complete_comparison_rate": 1.0,
         },
     }
-    evaluation = campaign._evaluate_frozen_gate(gate, overall, strata)
+    gate["runtime_ceiling_seconds"] = 10.0
+    evaluation = campaign._evaluate_frozen_gate(
+        gate, overall, strata, runtime_seconds=1.0
+    )
     assert evaluation["status"] == "authority_withheld"
     assert evaluation["checks"]["prediction"]["target_absent"]["status"] == "fail"
+    runtime_failure = campaign._evaluate_frozen_gate(
+        gate,
+        {
+            "prediction_kl_difference": -0.1,
+            "complete_comparison_rate": 1.0,
+        },
+        {
+            "weak_signal": {
+                "prediction_kl_difference": -0.05,
+                "complete_comparison_rate": 1.0,
+            }
+        },
+        runtime_seconds=11.0,
+    )
+    assert runtime_failure["runtime_ceiling"]["status"] == "fail"
+    assert runtime_failure["status"] == "authority_withheld"
 
 
 def _candidate(ctx, label="stokes+bg", cost=1.0):
@@ -367,13 +462,16 @@ def test_one_delivery_is_reused_across_same_winner_arms(monkeypatch):
         "multimode_route": "not_offered",
     }
     deliveries = []
+    standard_reuse = []
     monkeypatch.setattr(campaign, "generate_dataset", lambda *a, **k: dataset)
     monkeypatch.setattr(
         campaign, "_legacy_evidence", lambda _ctx: ([candidate], provenance)
     )
-    monkeypatch.setattr(
-        campaign, "_standard_evidence", lambda _ctx: ([candidate], provenance)
-    )
+    def fake_standard(_ctx, *, reusable_results=()):
+        standard_reuse.extend(reusable_results)
+        return [candidate], provenance
+
+    monkeypatch.setattr(campaign, "_standard_evidence", fake_standard)
     monkeypatch.setattr(campaign, "fit_null_candidates", lambda _ctx: [])
 
     def fake_delivery(*args, **kwargs):
@@ -396,17 +494,74 @@ def test_one_delivery_is_reused_across_same_winner_arms(monkeypatch):
     )
     record = campaign._run_realization(spec, scenario.id, 0, "development")
     assert len(deliveries) == 1
+    assert standard_reuse == [candidate.result]
     assert record["delivery_deduplication"]["unique_delivery_count"] == 1
     assert record["delivery_deduplication"]["arm_count_requiring_delivery"] == 6
 
 
-def test_fixed_target_rank_never_rematches_nearest_mode():
-    fit = {
-        "omega0": 8.1,
-        "modes": [{"omega0": 3.9}, {"omega0": 8.1}],
-    }
+def test_fixed_target_rank_binds_production_primary_before_delivery():
+    candidate = SimpleNamespace(
+        result=SimpleNamespace(
+            modes=[{"omega0": 3.9}, {"omega0": 8.1}]
+        )
+    )
+    assert campaign._target_rank_hint(candidate, {"target_rank": "lower"}) == 3.9
+    assert campaign._target_rank_hint(candidate, {"target_rank": "upper"}) == 8.1
+    fit = {"omega0": 3.9, "modes": candidate.result.modes}
     assert campaign._fixed_target_estimate(fit, {"target_rank": "lower"}) == 3.9
-    assert campaign._fixed_target_estimate(fit, {"target_rank": "upper"}) == 8.1
+
+
+def test_campaign_spec_is_picklable_for_windows_process_workers():
+    assert pickle.loads(pickle.dumps(_spec())).fingerprint == _spec().fingerprint
+    with ProcessPoolExecutor(
+        max_workers=1, mp_context=multiprocessing.get_context("spawn")
+    ) as executor:
+        assert executor.submit(_worker_spec_fingerprint, _spec()).result() == (
+            _spec().fingerprint
+        )
+
+
+def test_package_public_surface_does_not_open_sealed_truth_generation():
+    import isar.synth.stat2b as stat2b
+
+    assert stat2b.__all__ == [
+        "load_campaign_spec",
+        "run_campaign",
+        "summarize_campaign",
+    ]
+    assert not hasattr(stat2b, "generate_dataset")
+
+
+def test_rescue_cell_builds_a_real_in_range_production_branch():
+    base = _spec()
+    weak = base.scenario("weak")
+    rescue = replace(
+        weak,
+        id="rescue",
+        energies=(0.72075,),
+        gamma=0.05,
+        constraint_kind="post_rail_rescue",
+        constraint_origin="data_dependent_rescue",
+        constraint_offset_sign=1,
+        constraint_offset_mev=0.0,
+    )
+    spec = replace(
+        base,
+        scenarios=tuple(
+            rescue if scenario.id == "weak" else scenario
+            for scenario in base.scenarios
+        ),
+    )
+    dataset = generate_dataset(spec, "rescue", 0)
+    prior, card = campaign._delivery_prior_and_card(dataset, rescue)
+    prediction = branch_model.branch_for(
+        card.state,
+        sample="STAT2B",
+        T=rescue.T,
+        omega0=prior.omega0,
+    )
+    assert prediction is not None
+    assert prediction.in_anchor_range
 
 
 def test_campaign_only_candidates_never_enter_production_enumeration():
@@ -464,3 +619,52 @@ def test_oracle_realization_is_complete_for_multimode_cell():
     assert arms["oracle_aic"]["execution_provenance"]["multimode_route"] == (
         "oracle_complete"
     )
+    for arm in arms.values():
+        delivery = arm["delivery"]
+        if delivery and delivery["n_modes"] == 2:
+            assert delivery["campaign_target_rank"] == "lower"
+            assert delivery["omega0"] == pytest.approx(
+                min(mode["omega0"] for mode in delivery["modes"])
+            )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("constraint_kind", "constraint_origin"),
+    [
+        ("hard_prior_predictive", "prior_predictive"),
+        ("post_rail_rescue", "data_dependent_rescue"),
+    ],
+)
+def test_constrained_and_rescue_cells_complete_real_delivery(
+    constraint_kind, constraint_origin
+):
+    base = _spec()
+    weak = base.scenario("weak")
+    constrained = replace(
+        weak,
+        id="constrained",
+        energies=(0.72075,),
+        gamma=0.05,
+        constraint_kind=constraint_kind,
+        constraint_origin=constraint_origin,
+        constraint_offset_sign=1,
+        constraint_offset_mev=0.0,
+    )
+    spec = replace(
+        base,
+        scenarios=tuple(
+            constrained if scenario.id == "weak" else scenario
+            for scenario in base.scenarios
+        ),
+    )
+    record = campaign._run_realization(
+        spec, constrained.id, 0, "development"
+    )
+    deliveries = [
+        arm["delivery"] for arm in record["arms"] if arm["delivery"] is not None
+    ]
+    assert deliveries
+    assert all(item["bootstrap_M_requested"] == 200 for item in deliveries)
+    if constraint_kind == "hard_prior_predictive":
+        assert any(item["fit_kind"] == "branch_conditional" for item in deliveries)

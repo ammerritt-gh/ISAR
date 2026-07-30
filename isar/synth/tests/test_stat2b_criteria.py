@@ -5,10 +5,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from isar.analyze import loop
 from isar.analyze.context import ScanContext
+from isar.analyze.structures import enumerate_structures
 from isar.synth.stat2b.criteria import (
     CandidateEvidence,
     criterion_values,
+    evidence_from_results,
     fit_null_candidates,
     mean_poisson_kl,
     mean_poisson_log_score,
@@ -17,7 +20,7 @@ from isar.synth.stat2b.criteria import (
 )
 
 
-def _candidate(label, cost, k, n=20, converged=True):
+def _candidate(label, cost, k, n=20, converged=True, eligible=True):
     return CandidateEvidence(
         label=label,
         k=k,
@@ -28,6 +31,7 @@ def _candidate(label, cost, k, n=20, converged=True):
         result=SimpleNamespace(params={}),
         hypothesis=SimpleNamespace(),
         source="test",
+        selection_eligible=eligible,
     )
 
 
@@ -82,6 +86,16 @@ def test_complete_family_refuses_missing_or_failed_candidate():
         select_by_criterion(failed, "aic", required_labels=("a", "b")).reason
         == "required_candidate_fit_failed"
     )
+    ineligible = [
+        _candidate("a", 1.0, 1),
+        _candidate("b", 2.0, 1, eligible=False),
+    ]
+    assert (
+        select_by_criterion(
+            ineligible, "aic", required_labels=("a", "b")
+        ).reason
+        == "required_candidate_ineligible"
+    )
 
 
 def test_null_family_obeys_production_gates_and_fits():
@@ -103,6 +117,20 @@ def test_null_family_obeys_production_gates_and_fits():
 
     off_window = _context(qe=False, center=20.0)
     assert [hyp.label for hyp in null_hypotheses(off_window)] == ["bg"]
+
+
+def test_standard_evidence_refuses_missing_fit_selection_semantics():
+    ctx = _context()
+    hypothesis = enumerate_structures(ctx)[0]
+    result = loop.fit_hypothesis(hypothesis, ctx)
+    result.fit_semantics = None
+    evidence = evidence_from_results(
+        [result], [hypothesis], ctx, source="standard"
+    )
+    assert evidence[0].selection_eligible is False
+    assert select_by_criterion(evidence, "aic").reason == (
+        "required_candidate_ineligible"
+    )
 
 
 def test_poisson_kl_and_shared_realized_log_score_formulas():

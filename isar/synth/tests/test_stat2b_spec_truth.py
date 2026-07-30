@@ -243,3 +243,35 @@ def test_four_target_absent_component_combinations(elastic_ratio, qe_ratio):
     assert dataset.truth_manifest["target_present"] is False
     assert dataset.truth_manifest["elastic_height_ratio"] == elastic_ratio
     assert dataset.truth_manifest["qe_height_ratio"] == qe_ratio
+
+
+def test_hard_prior_uses_production_gamma_amplitude_surface_and_rescue_starts_free():
+    hard = _scenario(
+        "hard",
+        energies=(0.72075,),
+        constraint_kind="hard_prior_predictive",
+        constraint_origin="prior_predictive",
+        constraint_offset_sign=1,
+    )
+    rescue = replace(
+        hard,
+        id="rescue",
+        constraint_kind="post_rail_rescue",
+        constraint_origin="data_dependent_rescue",
+    )
+    scenarios = list(_scenarios()) + [hard, rescue]
+    spec = _spec(scenarios)
+    hard_dataset = generate_dataset(spec, "hard", 0)
+    assert set(hard_dataset.fit_context.constraints.hard) == {
+        "phonon.Gamma",
+        "phonon.A",
+    }
+    assert "phonon.Omega_d" not in hard_dataset.fit_context.constraints.hard
+    assert generate_dataset(spec, "rescue", 0).fit_context.constraints.is_empty()
+
+
+def test_truth_manifest_authenticates_realized_draws_and_fit_inputs():
+    manifest = generate_dataset(_spec(), "one", 0).truth_manifest
+    assert manifest["fit_counts_fingerprint"]
+    assert manifest["heldout_counts_fingerprint"]
+    assert manifest["grid_mask_exposure_fingerprint"]

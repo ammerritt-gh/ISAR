@@ -17,6 +17,7 @@ from isar.analyze.components import (
 from isar.analyze.context import ScanContext
 from isar.schema.statistics import semantics_fingerprint
 from isar.schema.steering import ParamConstraints
+from isar.session.branch_model import BranchPrediction
 from isar.synth._ff import Voigt
 
 from .spec import CampaignSpec, ScenarioSpec
@@ -59,6 +60,23 @@ def _stream_seed(
     return int(digest[:16], 16)
 
 
+def _dataset_id(
+    spec: CampaignSpec,
+    scenario: ScenarioSpec,
+    phase: str,
+    realization_index: int,
+) -> str:
+    return semantics_fingerprint(
+        "isar.stat2b_dataset/1",
+        {
+            "campaign_fingerprint": spec.fingerprint,
+            "phase_namespace": spec.phase_seed_namespaces[phase],
+            "scenario_fingerprint": scenario.fingerprint,
+            "realization_index": realization_index,
+        },
+    )
+
+
 def _energy_grid(scenario: ScenarioSpec) -> np.ndarray:
     n = int(round((scenario.x_max - scenario.x_min) / scenario.x_step)) + 1
     x = scenario.x_min + scenario.x_step * np.arange(n, dtype=float)
@@ -83,25 +101,38 @@ def _exposure_scale(scenario: ScenarioSpec, n: int) -> np.ndarray | None:
     return values
 
 
-def _constraints(scenario: ScenarioSpec, target_omega_d: float | None) -> ParamConstraints:
+def _constraints(
+    scenario: ScenarioSpec, target_mode: Mapping[str, Any] | None
+) -> ParamConstraints:
     if scenario.constraint_kind in {"unconstrained", "post_rail_rescue"}:
         # A rescue cell starts unconstrained; the production delivery path decides whether it rails.
         return ParamConstraints()
-    if target_omega_d is None:
+    if target_mode is None:
         raise ValueError(f"scenario {scenario.id}: a target constraint requires a target mode")
-    value = (
-        target_omega_d
+    prior_omega = (
+        float(target_mode["omega0"])
         + scenario.constraint_offset_sign * scenario.constraint_offset_mev
     )
-    if value <= 0:
+    if prior_omega <= 0:
         raise ValueError(f"scenario {scenario.id}: target constraint must remain positive")
-    name = "phonon2.Omega_d" if scenario.target_rank == "upper" else "phonon.Omega_d"
-    origins = {name: scenario.constraint_origin}
+    # Use the production branch-prediction constraint surface: Γ and the
+    # exposure-normalized 1/ω intensity are constrained while ω0 remains free.
+    prediction = BranchPrediction(
+        omega0=prior_omega,
+        gamma=float(target_mode["gamma"]),
+        gamma_sigma=float(scenario.constraint_sigma_mev),
+        amplitude_norm=(
+            float(target_mode["amplitude"])
+            * float(target_mode["omega0"])
+            / prior_omega
+        ),
+        amplitude_rel_sigma=0.3,
+        in_anchor_range=True,
+        n_anchors=4,
+    )
     if scenario.constraint_kind == "soft_prior_predictive":
-        return ParamConstraints(
-            soft={name: (value, scenario.constraint_sigma_mev)}, origins=origins
-        )
-    return ParamConstraints(hard={name: value}, origins=origins)
+        return prediction.soft_constraints(exposure=1.0)
+    return prediction.hard_constraints(exposure=1.0)
 
 
 def _target_index(scenario: ScenarioSpec) -> int | None:
@@ -234,7 +265,7 @@ def generate_dataset(
     heldout_counts = np.random.default_rng(heldout_seed).poisson(lam)
 
     target_index = _target_index(scenario)
-    target_omega_d = None if target_index is None else modes[target_index]["omega_d"]
+    target_mode = None if target_index is None else modes[target_index]
     fit_context = ScanContext(
         x=x,
         counts=fit_counts,
@@ -246,19 +277,11 @@ def generate_dataset(
         instrument="STAT2B_SYNTH",
         energy_status="absolute",
         quasielastic_fwhm=float(scenario.qe_fwhm),
-        constraints=_constraints(scenario, target_omega_d),
+        constraints=_constraints(scenario, target_mode),
         exposure_scale=exposure,
         exposure_reference=1.0 if exposure is not None else None,
     )
-    dataset_id = semantics_fingerprint(
-        "isar.stat2b_dataset/1",
-        {
-            "campaign_fingerprint": spec.fingerprint,
-            "phase_namespace": spec.phase_seed_namespaces[phase],
-            "scenario_fingerprint": scenario.fingerprint,
-            "realization_index": realization_index,
-        },
-    )
+    dataset_id = _dataset_id(spec, scenario, phase, realization_index)
     manifest = {
         "schema": "isar.stat2b_truth/1",
         "dataset_id": dataset_id,
@@ -290,10 +313,26 @@ def generate_dataset(
         "exposure_pattern": scenario.exposure_pattern,
         "constraint_kind": scenario.constraint_kind,
         "constraint_origin": scenario.constraint_origin,
+        "constraint_offset_sign": scenario.constraint_offset_sign,
+        "constraint_offset_mev": float(scenario.constraint_offset_mev),
         "critical_strata": list(scenario.critical_strata),
         "oracle_required": scenario.oracle_required,
         "lambda_fingerprint": semantics_fingerprint(
             "isar.stat2b_lambda/1", {"values": lam.tolist()}
+        ),
+        "fit_counts_fingerprint": semantics_fingerprint(
+            "isar.stat2b_fit_counts/1", {"values": fit_counts.tolist()}
+        ),
+        "heldout_counts_fingerprint": semantics_fingerprint(
+            "isar.stat2b_heldout_counts/1", {"values": heldout_counts.tolist()}
+        ),
+        "grid_mask_exposure_fingerprint": semantics_fingerprint(
+            "isar.stat2b_grid_mask_exposure/1",
+            {
+                "x": x.tolist(),
+                "mask": mask.tolist(),
+                "exposure": None if exposure is None else exposure.tolist(),
+            },
         ),
     }
     manifest["truth_fingerprint"] = semantics_fingerprint(

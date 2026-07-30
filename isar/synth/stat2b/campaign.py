@@ -11,6 +11,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, replace
 import csv
 import hashlib
+from importlib import metadata
 import json
 import math
 import os
@@ -24,6 +25,7 @@ import numpy as np
 
 from isar.analyze import loop
 from isar.analyze.ic import greedy_multimode_ic
+from isar.analyze.prior import PhononPrior
 from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.drive.objective import ObjectiveSpec
 from isar.drive.supervisor.stopping import evaluate_stop, summarize_grid
@@ -31,6 +33,7 @@ from isar.schema import card as card_mod
 from isar.schema.statistics import semantics_fingerprint
 from isar.schema.steering import ParamConstraints
 from isar.session import driver
+from isar.session import session_prior
 from isar.synth.stat2b.criteria import (
     NULL_LABELS,
     CandidateEvidence,
@@ -43,7 +46,7 @@ from isar.synth.stat2b.criteria import (
     select_by_criterion,
 )
 from isar.synth.stat2b.spec import CampaignSpec
-from isar.synth.stat2b.truth import TruthDataset, generate_dataset
+from isar.synth.stat2b.truth import TruthDataset, _dataset_id, generate_dataset
 
 
 RUN_SCHEMA = "isar.stat2b_run/1"
@@ -83,6 +86,7 @@ CAMPAIGN_SOURCE_PATHS = (
     "isar/analyze/ic.py",
     "isar/analyze/loop.py",
     "isar/analyze/model_manifest.py",
+    "isar/analyze/prior.py",
     "isar/analyze/select.py",
     "isar/analyze/shadow_selection.py",
     "isar/analyze/structures.py",
@@ -93,6 +97,12 @@ CAMPAIGN_SOURCE_PATHS = (
     "isar/schema/statistics.py",
     "isar/schema/steering.py",
     "isar/session/driver.py",
+    "isar/session/branch_model.py",
+    "isar/session/session_prior.py",
+    "isar/synth/_ff.py",
+    "isar/synth/backends.py",
+    "isar/synth/estimators.py",
+    "isar/synth/fit.py",
 )
 
 
@@ -171,6 +181,21 @@ def _source_fingerprint(source_hashes: Mapping[str, str]) -> str:
     )
 
 
+def _runtime_provenance() -> dict[str, Any]:
+    return {
+        "python_implementation": platform.python_implementation(),
+        "python_version": platform.python_version(),
+        "packages": {
+            package: metadata.version(package)
+            for package in ("numpy", "scipy", "iminuit", "lmfit", "dynesty")
+        },
+    }
+
+
+def _runtime_fingerprint(provenance: Mapping[str, Any]) -> str:
+    return semantics_fingerprint("isar.stat2b_numerical_runtime/1", provenance)
+
+
 def _record_fingerprint_payload(record: Mapping[str, Any]) -> dict[str, Any]:
     return {
         key: value
@@ -184,8 +209,10 @@ def _record_is_reusable(
     *,
     spec: CampaignSpec,
     scenario_id: str,
+    realization_index: int,
     phase: str,
     source_fingerprint: str,
+    runtime_fingerprint: str,
 ) -> bool:
     scenario = spec.scenario(scenario_id)
     fingerprint = record.get("record_fingerprint")
@@ -194,9 +221,13 @@ def _record_is_reusable(
         and record.get("campaign_id") == spec.campaign_id
         and record.get("campaign_spec_fingerprint") == spec.fingerprint
         and record.get("campaign_source_fingerprint") == source_fingerprint
+        and record.get("numerical_runtime_fingerprint") == runtime_fingerprint
         and record.get("phase") == phase
         and record.get("scenario_id") == scenario_id
         and record.get("scenario_fingerprint") == scenario.fingerprint
+        and record.get("realization_index") == realization_index
+        and record.get("dataset_id")
+        == _dataset_id(spec, scenario, phase, realization_index)
         and isinstance(fingerprint, str)
         and fingerprint
         == semantics_fingerprint(
@@ -227,13 +258,64 @@ def _campaign_card() -> card_mod.Card:
     return card_mod.Card(policy, card_mod.CardState())
 
 
+def _delivery_prior_and_card(
+    dataset: TruthDataset, scenario
+) -> tuple[PhononPrior | None, card_mod.Card]:
+    card = _campaign_card()
+    target_index = dataset.truth_manifest.get("target_mode_index")
+    if target_index is None or scenario.constraint_kind == "unconstrained":
+        return None, card
+    target = dataset.truth_manifest["modes"][int(target_index)]
+    prior_omega = (
+        float(target["omega0"])
+        + scenario.constraint_offset_sign * scenario.constraint_offset_mev
+    )
+    prior = PhononPrior(
+        omega0=prior_omega,
+        amplitude=float(target["amplitude"]),
+        omega0_sigma=float(scenario.constraint_sigma_mev),
+    )
+    # Populate the real running-branch state with clean synthetic anchors.
+    # The stored resolution belongs to the anchor scans and is intentionally
+    # narrower than the target scan, so a near-elastic target can be in-range.
+    amplitude_scale = float(target["amplitude"]) * float(target["omega0"])
+    for index, factor in enumerate((0.7, 0.9, 1.1, 1.3)):
+        omega0 = prior_omega * factor
+        session_prior.add_point(
+            card.state,
+            scan_id=f"STAT2B:anchor:{index}",
+            sample="STAT2B",
+            T=float(scenario.T),
+            q=[float(index), 0.0, 0.0],
+            omega0=omega0,
+            modality="fold",
+            verdict="resolved",
+            gamma=float(target["gamma"]),
+            intensity={
+                "value": amplitude_scale / omega0,
+                "exposure": 1.0,
+                "counting_mode": "time",
+                "gauss_fwhm": 0.05,
+                "lorentz_fwhm": 0.0,
+                "instrument": "STAT2B_SYNTH",
+            },
+            branch_id="acoustic",
+            weight=1.0,
+        )
+    return prior, card
+
+
 def _all_production_hypotheses(ctx) -> list:
     return list(enumerate_structures(ctx)) + list(enumerate_multimode(ctx))
 
 
-def _standard_evidence(ctx) -> tuple[list[CandidateEvidence], dict[str, Any]]:
+def _standard_evidence(
+    ctx, *, reusable_results: Sequence[Any] = ()
+) -> tuple[list[CandidateEvidence], dict[str, Any]]:
     unconstrained = replace(ctx, constraints=ParamConstraints())
-    bundle = loop.fit_shadow_candidates(unconstrained)
+    bundle = loop.fit_shadow_candidates(
+        unconstrained, reusable_results=reusable_results
+    )
     hypotheses = _all_production_hypotheses(unconstrained)
     evidence = evidence_from_results(
         bundle.results, hypotheses, unconstrained, source="standard"
@@ -346,6 +428,23 @@ def _peaks_for_selected(candidate: CandidateEvidence | None):
     )
 
 
+def _target_rank_hint(
+    candidate: CandidateEvidence, manifest: Mapping[str, Any]
+) -> float | None:
+    modes = sorted(
+        list(getattr(candidate.result, "modes", ()) or ()),
+        key=lambda item: float(item["omega0"]),
+    )
+    if not modes:
+        return None
+    rank = manifest.get("target_rank")
+    if rank == "lower":
+        return float(modes[0]["omega0"])
+    if rank == "upper":
+        return float(modes[-1]["omega0"])
+    return float(modes[0]["omega0"])
+
+
 def _delivery_context_fingerprint(ctx, label: str) -> str:
     constraints = getattr(ctx, "constraints", None)
     return semantics_fingerprint(
@@ -371,15 +470,17 @@ def _full_delivery(
     *,
     seed: int,
 ) -> dict[str, Any]:
-    ctx = dataset.fit_context
-    card = _campaign_card()
+    scenario = spec.scenario(str(dataset.truth_manifest["scenario_id"]))
+    target_hint = _target_rank_hint(candidate, dataset.truth_manifest)
+    ctx = replace(dataset.fit_context, acoustic_omega=target_hint)
+    prior, card = _delivery_prior_and_card(dataset, scenario)
     descriptor = driver._build_descriptor(ctx)
     region_reasons: list[str] = []
     peaks = _peaks_for_selected(candidate)
     fit = driver.fit_one(
         ctx,
         card,
-        prior=None,
+        prior=prior,
         M=spec.delivery_replicates,
         seed=seed,
         structure_labels=[candidate.label],
@@ -392,7 +493,7 @@ def _full_delivery(
     fit = driver._hard_fix_escalation(
         fit,
         ctx,
-        None,
+        prior,
         card,
         "STAT2B",
         ctx.T,
@@ -408,6 +509,8 @@ def _full_delivery(
         boot_adaptive=False,
     )
     fit["reasons"] = list(fit.get("reasons") or ()) + region_reasons
+    fit["campaign_target_rank"] = dataset.truth_manifest.get("target_rank")
+    fit["campaign_target_hint"] = target_hint
     return fit
 
 
@@ -472,16 +575,8 @@ def _target_truth(manifest: Mapping[str, Any]) -> float | None:
 def _fixed_target_estimate(
     fit: Mapping[str, Any], manifest: Mapping[str, Any]
 ) -> float | None:
-    modes = sorted(
-        list(fit.get("modes") or ()), key=lambda item: float(item["omega0"])
-    )
-    rank = manifest.get("target_rank")
-    if not modes:
-        return fit.get("omega0")
-    if rank == "lower":
-        return float(modes[0]["omega0"])
-    if rank == "upper":
-        return float(modes[-1]["omega0"])
+    # _full_delivery binds the production scalar QoI to the predeclared target
+    # rank through acoustic_omega. Its scalar interval is therefore aligned.
     return float(fit["omega0"]) if fit.get("omega0") is not None else None
 
 
@@ -625,6 +720,8 @@ def _arm_record(
                     "errors_tier_effective",
                     "bootstrap_M_requested",
                     "bootstrap_M_effective",
+                    "campaign_target_rank",
+                    "campaign_target_hint",
                     "two_stage_seconds",
                     "errors_attach_seconds",
                     "reasons",
@@ -649,10 +746,13 @@ def _run_realization(
     realization_index: int,
     phase: str,
     source_fingerprint: str | None = None,
+    runtime_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     if source_fingerprint is None:
         repo_root = Path(__file__).resolve().parents[3]
         source_fingerprint = _source_fingerprint(_source_hashes(repo_root))
+    if runtime_fingerprint is None:
+        runtime_fingerprint = _runtime_fingerprint(_runtime_provenance())
     started = time.perf_counter()
     dataset = generate_dataset(
         spec, scenario_id, realization_index, phase=phase
@@ -663,7 +763,14 @@ def _run_realization(
     legacy, legacy_provenance = _legacy_evidence(ctx)
     legacy_provenance["runtime_seconds"] = time.perf_counter() - family_started
     family_started = time.perf_counter()
-    standard, standard_provenance = _standard_evidence(ctx)
+    reusable_results = (
+        [candidate.result for candidate in legacy]
+        if ctx.constraints is None or ctx.constraints.is_empty()
+        else []
+    )
+    standard, standard_provenance = _standard_evidence(
+        ctx, reusable_results=reusable_results
+    )
     standard_provenance["runtime_seconds"] = time.perf_counter() - family_started
     family_started = time.perf_counter()
     nulls = fit_null_candidates(replace(ctx, constraints=ParamConstraints()))
@@ -760,6 +867,7 @@ def _run_realization(
         "campaign_id": spec.campaign_id,
         "campaign_spec_fingerprint": spec.fingerprint,
         "campaign_source_fingerprint": source_fingerprint,
+        "numerical_runtime_fingerprint": runtime_fingerprint,
         "phase": phase,
         "dataset_id": dataset.dataset_id,
         "scenario_id": scenario_id,
@@ -837,6 +945,7 @@ def _validate_gate(
     gate_path: Path,
     *,
     source_hashes: Mapping[str, str],
+    runtime_fingerprint: str,
 ) -> dict[str, Any]:
     if not gate_path.is_file():
         raise RuntimeError("held-out execution refused: owner-approved gate file is missing")
@@ -847,6 +956,8 @@ def _validate_gate(
         raise RuntimeError("held-out execution refused: campaign specification changed")
     if gate.get("source_hashes") != dict(source_hashes):
         raise RuntimeError("held-out execution refused: campaign source hashes changed")
+    if gate.get("numerical_runtime_fingerprint") != runtime_fingerprint:
+        raise RuntimeError("held-out execution refused: numerical runtime changed")
     if int(gate.get("heldout_realizations", -1)) != spec.heldout_realizations:
         raise RuntimeError("held-out execution refused: sample size does not match the gate")
     for required in (
@@ -876,6 +987,8 @@ def run_campaign(
     repo_root = Path(__file__).resolve().parents[3]
     source_hashes = _source_hashes(repo_root)
     source_fingerprint = _source_fingerprint(source_hashes)
+    runtime_provenance = _runtime_provenance()
+    runtime_fingerprint = _runtime_fingerprint(runtime_provenance)
     started = time.perf_counter()
     gate = None
     realizations = spec.development_realizations
@@ -889,7 +1002,12 @@ def run_campaign(
         )
         if not gate_path.is_absolute():
             gate_path = repo_root / gate_path
-        gate = _validate_gate(spec, gate_path, source_hashes=source_hashes)
+        gate = _validate_gate(
+            spec,
+            gate_path,
+            source_hashes=source_hashes,
+            runtime_fingerprint=runtime_fingerprint,
+        )
         realizations = spec.heldout_realizations
 
     smoke_records = []
@@ -906,8 +1024,10 @@ def run_campaign(
                     candidate,
                     spec=spec,
                     scenario_id=scenario.id,
+                    realization_index=spec.development_realizations,
                     phase=phase,
                     source_fingerprint=source_fingerprint,
+                    runtime_fingerprint=runtime_fingerprint,
                 ):
                     smoke = candidate
             if smoke is None:
@@ -919,6 +1039,7 @@ def run_campaign(
                     spec.development_realizations,
                     phase,
                     source_fingerprint,
+                    runtime_fingerprint,
                 )
                 _write_json(smoke_path, smoke)
                 smoke_new_count += 1
@@ -936,13 +1057,22 @@ def run_campaign(
                     record,
                     spec=spec,
                     scenario_id=scenario.id,
+                    realization_index=realization_index,
                     phase=phase,
                     source_fingerprint=source_fingerprint,
+                    runtime_fingerprint=runtime_fingerprint,
                 ):
                     records_by_id[record["dataset_id"]] = record
                     continue
             tasks.append(
-                (spec, scenario.id, realization_index, phase, source_fingerprint)
+                (
+                    spec,
+                    scenario.id,
+                    realization_index,
+                    phase,
+                    source_fingerprint,
+                    runtime_fingerprint,
+                )
             )
 
     max_workers = max(1, int(workers))
@@ -980,6 +1110,8 @@ def run_campaign(
         "campaign_spec_fingerprint": spec.fingerprint,
         "source_hashes": source_hashes,
         "campaign_source_fingerprint": source_fingerprint,
+        "numerical_runtime": runtime_provenance,
+        "numerical_runtime_fingerprint": runtime_fingerprint,
         "python": sys.version,
         "platform": platform.platform(),
         "workers": max_workers,
@@ -1111,7 +1243,9 @@ def _equal_cell_aggregate(cell_rows: Sequence[Mapping[str, Any]]) -> dict[str, d
 
 
 def _paired_cell_differences(
-    records: Sequence[Mapping[str, Any]], contender: str, baseline: str = "legacy_aic"
+    records: Sequence[Mapping[str, Any]],
+    contender: str,
+    baseline: str,
 ) -> dict[str, dict[str, float | None]]:
     metrics = (
         "prediction_kl",
@@ -1155,6 +1289,7 @@ def _paired_cell_differences(
 def _hierarchical_bootstrap(
     records: Sequence[Mapping[str, Any]],
     contender: str,
+    baseline: str,
     *,
     repetitions: int = 2000,
     seed: int = 20260730,
@@ -1188,17 +1323,17 @@ def _hierarchical_bootstrap(
                 baseline_errors = []
                 for record in sampled:
                     arms = {arm["arm_id"]: arm for arm in record["arms"]}
-                    if contender not in arms or "legacy_aic" not in arms:
+                    if contender not in arms or baseline not in arms:
                         continue
                     if metric == "target_rmse":
                         lhs = arms[contender]["target_squared_error"]
-                        rhs = arms["legacy_aic"]["target_squared_error"]
+                        rhs = arms[baseline]["target_squared_error"]
                         if lhs is not None and rhs is not None:
                             contender_errors.append(float(lhs))
                             baseline_errors.append(float(rhs))
                         continue
                     lhs = arms[contender][metric]
-                    rhs = arms["legacy_aic"][metric]
+                    rhs = arms[baseline][metric]
                     if lhs is not None and rhs is not None:
                         diffs.append(float(lhs) - float(rhs))
                 if (
@@ -1229,7 +1364,7 @@ def _hierarchical_bootstrap(
 
 
 def _critical_strata(
-    records: Sequence[Mapping[str, Any]], contender: str
+    records: Sequence[Mapping[str, Any]], contender: str, baseline: str
 ) -> dict[str, dict[str, Any]]:
     strata = sorted(
         {
@@ -1245,7 +1380,7 @@ def _critical_strata(
             for record in records
             if stratum in record.get("critical_strata", ())
         ]
-        paired = _paired_cell_differences(selected, contender)
+        paired = _paired_cell_differences(selected, contender, baseline)
         selected_cells = _arm_cell_metrics(selected)
         selected_aggregate = _equal_cell_aggregate(selected_cells).get(contender, {})
         out[stratum] = {
@@ -1290,6 +1425,9 @@ def _write_figures(
     output_dir: Path,
     aggregate: Mapping[str, Mapping[str, Any]],
     critical: Mapping[str, Mapping[str, Any]],
+    *,
+    contender: str,
+    baseline: str,
 ) -> None:
     import matplotlib
 
@@ -1326,22 +1464,11 @@ def _write_figures(
     ax.bar(np.arange(len(strata)), differences, color=colors)
     ax.axhline(0.0, color="black", linewidth=0.8)
     ax.set_xticks(np.arange(len(strata)), strata, rotation=30, ha="right")
-    ax.set_ylabel("Contender − legacy Poisson KL")
+    ax.set_ylabel(f"{contender} − {baseline} Poisson KL")
     ax.set_title("STAT-2b critical-stratum veto evidence")
     fig.tight_layout()
     fig.savefig(figure_dir / "critical_strata_predictive_difference.png", dpi=160)
     plt.close(fig)
-
-
-def _proposed_contender(aggregate: Mapping[str, Mapping[str, Any]]) -> str:
-    eligible = [
-        (arm_id, metrics.get("prediction_kl"))
-        for arm_id, metrics in aggregate.items()
-        if arm_id.startswith("unconstrained_")
-        and metrics.get("prediction_kl") is not None
-        and metrics.get("complete_comparison_rate", 0.0) > 0.0
-    ]
-    return min(eligible, key=lambda item: (item[1], item[0]))[0] if eligible else "unconstrained_aic"
 
 
 def _evidence_completeness(
@@ -1357,10 +1484,20 @@ def _evidence_completeness(
     )
     expected_count = len(spec.scenarios) * expected_realizations
     counts = Counter(record.get("scenario_id") for record in run.records)
+    expected_indices = set(range(expected_realizations))
+    observed_indices = {
+        scenario.id: {
+            int(record["realization_index"])
+            for record in run.records
+            if record.get("scenario_id") == scenario.id
+        }
+        for scenario in spec.scenarios
+    }
     missing_or_miscounted = [
         scenario.id
         for scenario in spec.scenarios
         if counts.get(scenario.id, 0) != expected_realizations
+        or observed_indices[scenario.id] != expected_indices
     ]
     missing_intervals = [
         metric
@@ -1451,6 +1588,8 @@ def _evaluate_frozen_gate(
     gate: Mapping[str, Any],
     overall: Mapping[str, float | None],
     strata: Mapping[str, Mapping[str, float | None]],
+    *,
+    runtime_seconds: float,
 ) -> dict[str, Any]:
     results = {}
     all_pass = True
@@ -1476,10 +1615,18 @@ def _evaluate_frozen_gate(
         if checks.get("overall", {}).get("status") == "not_applicable":
             all_pass = False
         results[gate_name] = checks
+    runtime_ceiling = float(gate["runtime_ceiling_seconds"])
+    runtime_pass = float(runtime_seconds) <= runtime_ceiling
+    all_pass = all_pass and runtime_pass
     return {
         "status": "pass" if all_pass else "authority_withheld",
         "all_required_gates_pass": all_pass,
         "checks": results,
+        "runtime_ceiling": {
+            "status": "pass" if runtime_pass else "fail",
+            "value": float(runtime_seconds),
+            "maximum": runtime_ceiling,
+        },
     }
 
 
@@ -1490,10 +1637,29 @@ def summarize_campaign(run: CampaignRun, spec: CampaignSpec) -> dict[str, Any]:
         raise ValueError("run and specification fingerprints do not match")
     cell_rows = _arm_cell_metrics(run.records)
     aggregate = _equal_cell_aggregate(cell_rows)
-    contender = _proposed_contender(aggregate)
-    paired = _paired_cell_differences(run.records, contender)
-    bootstrap = _hierarchical_bootstrap(run.records, contender)
-    critical = _critical_strata(run.records, contender)
+    contender = "unconstrained_aicc"
+    baseline = "unconstrained_aic"
+    paired = _paired_cell_differences(run.records, contender, baseline)
+    legacy_paired = {
+        arm_id: _paired_cell_differences(run.records, arm_id, "legacy_aic")
+        for arm_id in (
+            "unconstrained_aic",
+            "unconstrained_aicc",
+            "unconstrained_bic",
+            "unconstrained_aic_null",
+            "unconstrained_aicc_null",
+        )
+    }
+    null_family_paired = {
+        "aic_null_vs_standard": _paired_cell_differences(
+            run.records, "unconstrained_aic_null", "unconstrained_aic"
+        ),
+        "aicc_null_vs_standard": _paired_cell_differences(
+            run.records, "unconstrained_aicc_null", "unconstrained_aicc"
+        ),
+    }
+    bootstrap = _hierarchical_bootstrap(run.records, contender, baseline)
+    critical = _critical_strata(run.records, contender, baseline)
     completeness = _evidence_completeness(run, spec, bootstrap, critical)
     contender_metrics = aggregate.get(contender, {})
     predictive_ci = bootstrap["prediction_kl"]
@@ -1605,8 +1771,16 @@ def summarize_campaign(run: CampaignRun, spec: CampaignSpec) -> dict[str, Any]:
         "evidence_completeness": completeness,
         "cell_summaries": cell_rows,
         "equal_cell_aggregate": aggregate,
-        "proposed_contender": contender,
-        "paired_cell_differences_vs_legacy": paired,
+        "decision_comparison": {
+            "contender": contender,
+            "baseline": baseline,
+        },
+        "paired_cell_differences_aicc_vs_aic": paired,
+        "paired_cell_differences_vs_legacy": legacy_paired,
+        "null_family_adequacy": {
+            "paired_cell_differences": null_family_paired,
+            "production_enumeration_unchanged": True,
+        },
         "same_set_selection_change_rates": _same_set_change_rates(run.records),
         "hierarchical_bootstrap_intervals": bootstrap,
         "critical_strata_vetoes": critical,
@@ -1651,8 +1825,15 @@ def summarize_campaign(run: CampaignRun, spec: CampaignSpec) -> dict[str, Any]:
             "heldout_realizations": proposed_reps,
             "runtime_ceiling_seconds": projected_heldout_runtime * 1.5,
             "margins": margins,
-            "campaign_spec_fingerprint": spec.fingerprint,
+            "development_campaign_spec_fingerprint": spec.fingerprint,
+            # Filled only after the owner freezes heldout_realizations in the
+            # held-out TOML; that edit intentionally changes its fingerprint.
+            "campaign_spec_fingerprint": None,
             "source_hashes": dict(run.source_hashes),
+            "numerical_runtime": run.manifest["numerical_runtime"],
+            "numerical_runtime_fingerprint": run.manifest[
+                "numerical_runtime_fingerprint"
+            ],
         },
     }
     fingerprint_payload = {
@@ -1669,9 +1850,18 @@ def summarize_campaign(run: CampaignRun, spec: CampaignSpec) -> dict[str, Any]:
         if not isinstance(gate, Mapping):
             raise RuntimeError("held-out summary lacks its frozen owner gate")
         summary["heldout_gate_evaluation"] = _evaluate_frozen_gate(
-            gate, observed_gate_metrics, observed_stratum_metrics
+            gate,
+            observed_gate_metrics,
+            observed_stratum_metrics,
+            runtime_seconds=float(run.manifest["runtime_seconds"]),
         )
-    _write_figures(run.output_dir, aggregate, critical)
+    _write_figures(
+        run.output_dir,
+        aggregate,
+        critical,
+        contender=contender,
+        baseline=baseline,
+    )
     _write_json(run.output_dir / "decision_summary.json", summary)
     _write_json(run.output_dir / "proposed_owner_gate.json", summary["proposed_owner_gate"])
     _write_cell_csv(run.output_dir / "cell_summaries.csv", cell_rows)
@@ -1683,7 +1873,7 @@ def summarize_campaign(run: CampaignRun, spec: CampaignSpec) -> dict[str, Any]:
         f"- Campaign: `{run.campaign_id}`\n"
         f"- Phase: `{run.phase}`\n"
         f"- Dataset count: {len(run.records)}\n"
-        f"- Equal-weight contender proposed for owner review: `{contender}`\n"
+        f"- Frozen criterion comparison: `{contender}` versus `{baseline}`\n"
         f"- Development summary fingerprint: "
         f"`{summary['development_summary_fingerprint']}`\n"
         "- Authority remains withheld until the owner approves numerical margins, "

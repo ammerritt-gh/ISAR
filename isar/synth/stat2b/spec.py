@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Any, Mapping
+from collections.abc import Iterator, Mapping
+from typing import Any
 import math
 import tomllib
-from types import MappingProxyType
 
 from isar.schema.statistics import semantics_fingerprint
 
@@ -34,6 +34,20 @@ CONSTRAINT_ORIGINS = frozenset(
 EXPOSURE_PATTERNS = frozenset({"uniform", "linear", "alternating"})
 TARGET_RANKS = frozenset({"none", "single", "lower", "upper"})
 PEAK_COUNT_LEVELS = frozenset({15.0, 30.0, 100.0, 300.0})
+
+
+@dataclass(frozen=True)
+class _FrozenMapping(Mapping[str, str]):
+    pairs: tuple[tuple[str, str], ...]
+
+    def __getitem__(self, key: str) -> str:
+        return dict(self.pairs)[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return (key for key, _value in self.pairs)
+
+    def __len__(self) -> int:
+        return len(self.pairs)
 
 
 def _finite(value: Any, name: str, *, positive: bool = False, nonnegative: bool = False) -> float:
@@ -279,7 +293,12 @@ class CampaignSpec:
                 and (not isinstance(self.heldout_gate_path, str) or not self.heldout_gate_path):
             raise ValueError("heldout_gate_path must be a nonempty string when supplied")
 
-        object.__setattr__(self, "phase_seed_namespaces", MappingProxyType(namespaces))
+        # Tuple-backed immutability remains picklable under Windows spawn.
+        object.__setattr__(
+            self,
+            "phase_seed_namespaces",
+            _FrozenMapping(tuple(sorted(namespaces.items()))),
+        )
         object.__setattr__(self, "critical_strata", tuple(sorted(strata)))
         object.__setattr__(self, "scenarios", tuple(sorted(self.scenarios, key=lambda item: item.id)))
 
