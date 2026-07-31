@@ -41,6 +41,7 @@ which ruling settled it. That is worth keeping and worth not mistaking for a con
 | Date | Record | Purpose | Outcome | Governing plan |
 |---|---|---|---|---|
 | 2026-07-30 | [2026-07-30_STAT2B1_CORRECTED_DEVELOPMENT.md](2026-07-30_STAT2B1_CORRECTED_DEVELOPMENT.md) | Repair STAT-2b delivery deduplication, measure 4/8/16/24/28-worker scaling, and rerun development | Corrected development complete; 24 workers selected; renewed held-out approval pending | [STAT2_SELECTION_CONSISTENCY_PLAN.md](../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md) |
+| 2026-07-31 | [2026-07-31_STAT2B1_HELDOUT.md](2026-07-31_STAT2B1_HELDOUT.md) | Sealed STAT-2b.1 held-out criterion comparison | Complete; frozen gate withheld authority for an AICc switch | [STAT2_SELECTION_CONSISTENCY_PLAN.md](../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md) |
 
 ## Analysis-core checks and forward notes
 
