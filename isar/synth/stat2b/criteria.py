@@ -343,11 +343,12 @@ def mean_poisson_kl(truth_mean, fitted_mean, keep=None) -> float:
     mu = np.maximum(mu, np.finfo(float).tiny)
     terms = mu.copy()
     positive = lam > 0.0
-    terms[positive] = (
-        lam[positive] * np.log(lam[positive] / mu[positive])
-        + mu[positive]
-        - lam[positive]
-    )
+    # Compute log(lambda / mu) as a difference.  The direct ratio can overflow
+    # for a legitimate near-zero fitted mean even when the KL contribution is
+    # comfortably representable, which would otherwise make the fingerprinted
+    # campaign record nonfinite.
+    log_ratio = np.log(lam[positive]) - np.log(mu[positive])
+    terms[positive] = lam[positive] * log_ratio + mu[positive] - lam[positive]
     return float(np.mean(terms))
 
 

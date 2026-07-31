@@ -146,3 +146,18 @@ def test_poisson_kl_and_shared_realized_log_score_formulas():
         - np.asarray([0.0, np.log(2.0), np.log(24.0)])
     )
     assert mean_poisson_log_score(observed, fitted) == pytest.approx(expected_log)
+
+
+def test_poisson_kl_is_finite_for_a_zero_fitted_mean_without_ratio_overflow():
+    truth = np.asarray([2.0, 4.0])
+    fitted = np.asarray([0.0, 0.0])
+    tiny = np.finfo(float).tiny
+    expected = np.mean(
+        truth * (np.log(truth) - np.log(tiny)) + tiny - truth
+    )
+
+    with np.errstate(over="raise", divide="raise", invalid="raise"):
+        observed = mean_poisson_kl(truth, fitted)
+
+    assert np.isfinite(observed)
+    assert observed == pytest.approx(expected)

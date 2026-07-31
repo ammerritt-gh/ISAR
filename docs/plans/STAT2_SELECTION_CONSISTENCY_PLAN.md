@@ -6,7 +6,8 @@
 > **Status:** STAT-2a, the STAT-2a.1 evidence-contract repair, and the corrected STAT-2b evidence
 > harness are implemented (repair commit `5767dea`); STAT-2b.1 scaling and corrected development
 > evidence are complete, and the renewed 103-realization held-out gate is owner-approved and
-> activated for 24 workers; the clean operational restart is prepared but has not opened any seed;
+> activated for 24 workers; two incomplete, uninspected held-out attempts are quarantined and the
+> next clean restart is prepared but has not opened any seed;
 > STAT-2c and STAT-2d remain pending
 > **Exit criteria:** STAT-2a through STAT-2d are implemented and verified; accepted behavior is
 > folded into `docs/STATS_PRIMER.md`, `docs/GLOSSARY.md`, and an S-series ruling; this execution
@@ -637,6 +638,16 @@ the evidence-only runner was hardened to cancel queued futures after the first t
 wait only for already-running work, close the runtime ledger with a safe failed-task identity, and
 retain a durable console traceback. The active gate's source hashes and recovery authorization
 were refreshed for that orchestration-only repair. The clean restart has not yet opened any seed.
+
+That clean restart also stopped fail-closed after 564 checkpoints on 2026-07-31. Its durable
+traceback identified a finite analytic Poisson-KL contribution that had become nonfinite solely
+because the direct `lambda / mu` ratio overflowed before the record fingerprint was constructed.
+No held-out scientific record was inspected. The incomplete output is preserved under
+`out/stat2b/stat2b1-selection-criterion-2026-07/heldout-failed-numerical-kl-2026-07-31/`.
+The owner authorized a numerically stable, log-space evaluation of the same tiny-clamped
+mean-per-kept-bin KL definition. The source-bound active gate was refreshed for that repair; no
+scenario, seed namespace, replication count, worker count, margin, or runtime ceiling changed.
+The next clean restart has not opened any seed.
 
 Compare:
 
