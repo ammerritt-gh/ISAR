@@ -2,16 +2,19 @@
 
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
-> **Verified against code revision:** `6935ec5` (2026-07-29)
+> **Verified against code revision:** `b543f6f` (2026-08-02)
 > **Owner:** @ammerritt-gh
-> **Exit criteria:** `isar.master_predictive/2` is published, the pure arbitrary-grid evaluator passes
-> the normative fixtures, multiple same-action scan candidates are ranked and audited, and the shipped
-> behavior is folded into `MEASUREMENT_STEERING.md`; this plan is then removed.
+> **Exit criteria:** the restricted authoritative selector exists; Slice 10 completes the deterministic
+> TAVI EIG-4 demonstration; exact eligible selection and ineligible non-EIG return behavior are
+> verified; accepted behavior is folded into `MEASUREMENT_STEERING.md`; this plan is then removed and
+> tombstoned according to policy.
 
 ## Status and boundary
 
-**Alternative-window EIG scoring and selection are not implemented; candidate generation, the
-`isar.master_predictive/2` artifact, and the pure arbitrary-grid evaluator are.**
+**EIG-4 is the approved execution roadmap and current SVP, not implemented runtime authority.**
+Alternative-window EIG candidate scoring, scored shadow selection, and authoritative selection are
+not implemented. Candidate generation, predictive `/2`, arbitrary-grid evaluation, executed-grid
+identity, and target projection are implemented.
 Current acquisition ranks scientific actions and Q
 positions using expected counts already stored on each master's fitted grid. The
 `ScanDesignContext → ScanDesignInventory` seam now generates the bounded family of conventional
@@ -140,6 +143,77 @@ The future work described here is narrower than the physics-content work in `STE
 It may compare different uniform windows/counts for the **same already-selected scientific action**.
 It may not invent branch hypotheses, change evidence routing, fit data, alter QC, or move scientific
 selection out of the existing action inventory.
+
+## Locked EIG-4 authority envelope
+
+O36 authorizes only a clean, confirmed target at an already-selected scientific action and Q, using
+canonical target production or confirmation. The frozen eligible comparison is
+`legacy_uniform/1` versus `target_core/1`, with equal per-point exposure. Rank candidates by
+conditional target-QoI information per executed point; paired uncertainty must resolve the
+comparison before `target_core/1` may win.
+
+Absolute target-QoI information noninferiority is not required: a narrower design may deliberately
+contain less total information. `legacy_uniform/1` is the eligible comparison control, not a
+universal recovery rule. Outside eligibility, EIG returns to the existing non-EIG design/recovery
+path and does not alter that path's choice; it may use the legacy window, a broad/recovery window,
+or another already-established action-specific behavior.
+
+This authority excludes target-presence calibration, AICc, STAT-2c completion, formal Bayesian
+model averaging, general phenomenon support, TAVI virtual wall-clock completion, and McStas campaign
+completion. It must not choose Q, scientific action, target identity, fit model, hypothesis,
+physical constraint, interval method, certification rule, or model-selection authority.
+Target-presence, model-identity, and branch-identity values may be calculated as diagnostics only.
+Current production AIC weights remain the input source and are not validated by the held-out campaign.
+
+### Generic QoI seam
+
+The future scorer consumes a generic QoI projection. The first adapter is documented as
+`qoi_id = "excitation.energy"` and `qoi_unit = "meV"`. The scorer core must not import or branch on
+`omega0`, `PhononDHO`, phonon implementation classes, acoustic/optic labels, or DHO parameter names.
+The adapter isolates current target-energy knowledge, so the scorer later operates on QoI values
+without knowing which physical model produced them. This is documentation only: it defines neither a
+Python signature nor a JSON, persistence, or runtime schema.
+
+The first comparison is local to one selected Q and fit-model context. Information transfer across Q
+or energy, a phenomenon registry, continuum support, magnon support, and a general model refactor
+are post-SVP work.
+
+### Slice 0–10 execution sequence
+
+1. **Slice 0 — decisions and plan.** Record S8; record restricted EIG authority; amend the active
+   statistical audit; update active plans; disambiguate SVP terminology; make no runtime changes.
+2. **Slice 1 — completed-campaign eligibility census.** Inspect full local campaign artifacts; count
+   every proposed eligibility rejection; distinguish shadow deadline skips from real shadow failures;
+   make no behavior changes.
+3. **Slice 2 — freeze eligibility and generic QoI adapter.** Define stable eligibility reason codes
+   and a generic QoI view over `target_projection/2`; do not break target-projection schema unless a
+   real ambiguity is found.
+4. **Slice 3 — EIG-local homogeneous design measure.** Build an Akaike-weighted parametric-bootstrap
+   empirical measure, inspect actual per-model particle basis, and make no production selection switch.
+5. **Slice 4 — pure full-vector Poisson scorer.** Use conditional target-QoI information, the full
+   count vector, common random numbers, paired uncertainty, and information per executed point.
+6. **Slice 5 — offline legacy versus target_core scoring.** Use completed campaign states at equal
+   per-point exposure; grant no inventory or execution authority.
+7. **Slice 6 — scored shadow inventories.** Score `legacy_uniform` and `target_core`; execute legacy
+   exactly within eligible same-action comparisons. Existing non-EIG behavior remains responsible
+   outside eligibility.
+8. **Slice 7 — exact realized-request rescoring.** Score the grid and exposure actually submitted;
+   retain candidate → realization → submission provenance.
+9. **Slice 8 — bounded EIG-3 shadow gate.** Add exact mathematical fixtures, existing predictive
+   fixtures, and a small full-pipeline authority-envelope set.
+10. **Slice 9 — opt-in authoritative selector.** `target_core` may win on resolved EIG-per-point
+    superiority; unresolved eligible comparisons retain the eligible control; ineligible states
+    return to the existing non-EIG design/recovery path.
+11. **Slice 10 — deterministic TAVI EIG-4 SVP.** Execute at least one narrower EIG-selected scan;
+    show exact scored/executed grid agreement, fewer executed points, normal fit/campaign rejoining,
+    and return to the existing non-EIG path on an ineligible state.
+
+### Serial review workflow
+
+Implement one slice, run local targeted verification, commit, write a short exact-anchor handoff,
+review the landing, then begin the next slice. Slices proceed serially. Parallel work is allowed
+only when it does not touch the active slice's contracts or implementation surfaces. GitHub CI
+certification is not part of this workflow. Slice 0 ends after this documentation landing.
 
 ## Predictive artifact
 

@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the append-only ruling ledger; IDs are stable citation anchors (D2, D4)
 > **Provenance:** hand-written
-> **Verified against code revision:** `da760f2` plus the STAT-1 working tree (2026-07-29)
+> **Verified against code revision:** `b543f6f` (2026-08-02)
 
 Append-only ledger of design rulings. IDs are stable citation anchors (D2). Started at the
 2026-07-09 design review; each ruling is final unless explicitly reopened; "future" means
@@ -1023,6 +1023,60 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   harness. `PREDICTIVE_CONTRACT` and the unchanged-master carry gate remain unchanged. With these
   repairs landed, the descriptive STAT-1 contract is complete enough for STAT-2 to begin enforcing
   selection eligibility.
+
+- **S8.** (2026-08-02, In force; no production behavior change)
+  **STAT-2b.1 held-out disposition: retain AIC and withhold an AICc switch.** The completed sealed
+  STAT-2b.1 campaign is accepted as valid evidence under its frozen decision gate. It found no
+  reproducible practical basis for replacing production AIC with AICc. Production model selection
+  therefore remains on AIC.
+
+  This ruling does not declare AIC, the current candidate-generation route, or the current
+  constrained-delivery selection path ideal or fully calibrated. The held-out evidence leaves
+  difficult-regime, comparison-completeness, RMSE, missed-mode, and false-certification problems
+  open for continuing statistical work.
+
+  No AICc switch is authorized. S8 does not authorize STAT-2c or any production-selection authority
+  change; STAT-2c remains pending a separate owner decision. The continuing selection and
+  error-method program may address the open problems without blocking the separately bounded EIG-4
+  workstream established by O36.
+
+- **O36.** (2026-08-02, Planned; amends the milestone naming in T1 and T2 without changing their
+  validation requirements) **Restricted same-action EIG may proceed before the full statistical and
+  phenomenon-generalization programs are complete.** EIG-4 is the current SVP. Its first authority
+  is frozen to a clean, already-confirmed target at an already-selected scientific action and Q,
+  using canonical target production or confirmation only. It compares `legacy_uniform/1` as the
+  control with `target_core/1` as the possible narrower winner at equal per-point exposure.
+
+  The objective is conditional target-QoI information per executed point. A narrower scan may
+  contain less total target-QoI information; absolute-information noninferiority is not required.
+  Authority requires paired uncertainty to resolve superiority in information per executed point.
+  An unresolved comparison does not authorize `target_core/1`.
+
+  `legacy_uniform/1` is the control for the first eligible same-action comparison, not the universal
+  safety or recovery scan. An ineligible EIG state returns control to the existing non-EIG design and
+  recovery path without EIG altering its choice. That path may choose the legacy window, a
+  broad/recovery window, or another already-established action-specific behavior.
+
+  EIG must not choose or change Q, scientific action, target identity, fit model, hypothesis,
+  physical constraint, interval method, certification rule, or model-selection authority.
+  Target-presence, model-identity, and branch-identity information may be calculated but remain
+  diagnostics-only for this first authority. Current production AIC weights remain the input source;
+  the held-out campaign did not validate those weights.
+
+  A later change that alters the EIG design measure, model weights, particle semantics, QoI
+  projection, or eligibility basis must change the affected fingerprints. Earlier shadow or
+  authority evidence is then non-reusable until the changed path is re-evaluated.
+
+  The scorer core consumes a generic QoI projection. Its first adapter exposes
+  `qoi_id = "excitation.energy"` and `qoi_unit = "meV"`; the scorer core must not import or branch
+  on `PhononDHO`, phonon classes, acoustic/optic labels, `omega0`, or DHO parameter names. This is a
+  bounded local fit-model comparison at one already-selected Q. Phenomenon-level information transfer
+  across Q and energy, a phenomenon registry, continuum framework, magnon implementation, and a full
+  model refactor are post-SVP. This documents a future seam; it introduces no runtime interface here.
+
+  O36 amends the milestone naming in both T1 and T2. T1's backend-validation ladder and T2's
+  realistic-clock requirement remain required, but are backend-runtime and fidelity-validation rungs,
+  not the current SVP definition. Historical evidence and filenames remain unchanged.
 
 ## Session status update
 

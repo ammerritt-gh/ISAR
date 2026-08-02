@@ -120,9 +120,9 @@ copies.
 | `docs/SPEEDUP_DESIGN.md` | Active plan | Phase 1 complete; Phase 2 Partial (async scheduling + fresh-master `auto` open, blocked on the shadow gate); 3/4 conditional | — |
 | `docs/STEERING_DESIGN.md` | Active plan | Phase 0 shipped as O27/O28/O29/O31; A→B→C Planned | Phase 0 is summarized only; the contract is `MEASUREMENT_STEERING.md` + DECISIONS O27–O31 |
 | `docs/BACKGROUND_DESIGN.md` | Active plan | approved 2026-07-19; implementation not started | — |
-| `docs/EIG_STEERING_DESIGN.md` | Active plan | maintenance seam shipped; `/2`, arbitrary-grid evaluation, and same-action window ranking Planned | Distinguishes future scan-window EIG from current master-grid action/Q ranking |
-| `docs/stats/STATISTICAL_SEMANTICS_AUDIT.md` | Active plan | STAT-0 and STAT-1 complete; STAT-2 through STAT-6 pending | Temporary pre-EIG-3 producer/consumer audit; STAT-6 folds accepted semantics into canonical documents, then deletes and tombstones it |
-| `docs/plans/STAT2_SELECTION_CONSISTENCY_PLAN.md` | Active plan | STAT-2a code-grounded; implementation awaits approval | Temporary execution plan; STAT-2d folds accepted behavior into canonical statistics documents, then deletes and tombstones it |
+| `docs/EIG_STEERING_DESIGN.md` | Active plan | predictive `/2`, arbitrary-grid evaluation, candidate generation, executed-grid identity, and target projection implemented; scoring/selection/authority Planned under the EIG-4 Slice 0–10 roadmap | Distinguishes same-action scan-window EIG from current action/Q ranking; EIG-4 is the current SVP |
+| `docs/stats/STATISTICAL_SEMANTICS_AUDIT.md` | Active plan | STAT-0/1/1.5 and STAT-2a/2b.1 complete; S8 recorded; STAT-2c through STAT-6 remain active, with the restricted O36 EIG-4 sequencing exception | Temporary producer/consumer audit; findings remain authoritative for the broader statistics program and STAT-6 closeout |
+| `docs/plans/STAT2_SELECTION_CONSISTENCY_PLAN.md` | Active plan | STAT-2a and STAT-2b.1 complete; S8 retains AIC; STAT-2c and STAT-2d pending | Temporary execution plan; STAT-2d folds accepted behavior into canonical statistics documents, then deletes and tombstones it |
 
 ## `docs/` — historical evidence
 
@@ -148,7 +148,7 @@ a current behavioural contract.**
 | `docs/campaigns/2026-07-23_AP6_ACTION_INVENTORY.md` | Historical evidence | Evidence behind O28 |
 | `docs/campaigns/2026-07-29_EIG_EXPOSURE_BASIS.md` | Historical evidence | EIG-0 spike evidence behind ADR-017; the contract itself is `EIG_STEERING_DESIGN.md` |
 | `docs/campaigns/2026-07-30_STAT2B1_CORRECTED_DEVELOPMENT.md` | Historical evidence | Corrected STAT-2b.1 development, scaling, and superseded held-out disposition; the contract remains the STAT-2 plan |
-| `docs/campaigns/2026-07-31_STAT2B1_HELDOUT.md` | Historical evidence | Completed STAT-2b.1 held-out evidence; the frozen gate withheld authority and S8 remains owner-reviewed |
+| `docs/campaigns/2026-07-31_STAT2B1_HELDOUT.md` | Historical evidence | Completed STAT-2b.1 held-out evidence; the frozen gate withheld authority for an AICc switch, and S8 records the resulting retain-AIC disposition |
 | `docs/campaigns/2026-07_AP1_BRANCH_MAPPING_DEADLOCK.md` | Historical evidence | — |
 | `docs/campaigns/2026-07_AP3_GLOBAL_BRANCH_EVIDENCE.md` | Historical evidence | — |
 | `docs/campaigns/2026-07_MVP_ZONE_RETEST.md` | Historical evidence | Was cited by `README.md` as "current test state"; re-pointed |

@@ -16,9 +16,9 @@ Design references: [DESIGN.md](DESIGN.md) (architecture + per-capability status 
 capstone in the sibling TAVI repo (`..\TAVI\docs\CLOSED_LOOP_DESIGN.md` — TAVI = instrument,
 ISAR = analysis authority). Forward workstreams live in their own plans:
 [SPEEDUP](docs/SPEEDUP_DESIGN.md), [STEERING](docs/STEERING_DESIGN.md),
-[BACKGROUND](docs/BACKGROUND_DESIGN.md).
+[BACKGROUND](docs/BACKGROUND_DESIGN.md), [EIG](docs/EIG_STEERING_DESIGN.md).
 
-Last updated: 2026-07-26.
+Last updated: 2026-08-02.
 
 ---
 
@@ -176,13 +176,14 @@ Speedup work is governed by [SPEEDUP_DESIGN.md](docs/SPEEDUP_DESIGN.md); steerin
 - [ ] **DRV-2 — Objective-aware Γ exclusion.** Acoustic ω₀ → 0 at zone centers is structurally
       unmeasurable; parse-time exclusion beats spending ~4 scans per campaign discovering it.
       **Acceptance:** a zone-center q is excluded at objective-compile time with the reason recorded.
-- [ ] **DRV-3 — The SVP, remaining rungs.** (a) Realistic clocks — counting time reported as the
+- [ ] **DRV-3 — TAVI runtime and McStas validation rungs.** (a) Realistic clocks — counting time reported as the
       instrument would report it (TAVI-side virtual clock), exercising wall-clock budget semantics
       (§8, O2); today `budget.spent` sums TAVI's *compute* eta, which is the root cause of the
       MVP16 "10.6 of 28 800" (a semantics gap, not units). (b) The McStas rung. The deterministic
       rung ran 2026-07-10.
-      **Governing:** T1/T2, `DESIGN.md` §9. **Acceptance:** a campaign runs against a virtual
-      clock with honest budget accounting; `DESIGN.md` §15 SVP row moves off Partial.
+      **Governing:** T1/T2 as amended by O36, `DESIGN.md` §9. **Acceptance:** a campaign runs
+      against a virtual clock with honest budget accounting; the McStas fidelity rung completes;
+      the corresponding TAVI validation row in `DESIGN.md` §15 reflects completion.
 - [ ] **DRV-4 — Confirm-churn intent confirmations** (SVP_RECERT, still open): `n_uncertifiable`
       never resets, so a chronically flaky q is never abandoned; and triage should show confidence
       beside `(unreliable)`. Related: a q with its half-width right at tolerance re-confirms

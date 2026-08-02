@@ -2,12 +2,13 @@
 
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
+> **Verified against code revision:** `b543f6f` (2026-08-02)
 > **Owner:** @ammerritt-gh
 > **Status:** STAT-2a, the STAT-2a.1 evidence-contract repair, and the corrected STAT-2b evidence
-> harness are implemented (repair commit `5767dea`); STAT-2b.1 scaling and corrected development
-> evidence are complete, and the renewed 103-realization held-out gate is owner-approved and
-> activated for 24 workers; the completed held-out gate withheld authority for an AICc switch;
-> S8 owner review and STAT-2c/STAT-2d remain pending
+> harness are implemented (repair commit `5767dea`); corrected STAT-2b.1 evidence is complete and
+> S8 is recorded. Production remains AIC; no AICc switch is authorized. Difficult-regime findings
+> remain open, STAT-2c and STAT-2d remain pending, and restricted EIG-4 may proceed independently
+> under O36.
 > **Exit criteria:** STAT-2a through STAT-2d are implemented and verified; accepted behavior is
 > folded into `docs/STATS_PRIMER.md`, `docs/GLOSSARY.md`, and an S-series ruling; this execution
 > plan is then deleted and tombstoned in `docs/DOC_INVENTORY.md`.
@@ -653,7 +654,9 @@ target-absent comparison completeness, partially resolved two-mode predictive/mi
 performance, and near-elastic/partially-resolved/weak-signal RMSE violated independent vetoes.
 The complete held-out aggregate is preserved with the dated historical record at
 [`../campaigns/2026-07-31_STAT2B1_HELDOUT.md`](../campaigns/2026-07-31_STAT2B1_HELDOUT.md).
-No criterion switch or STAT-2c work is authorized; S8 remains owner-reviewed.
+S8 accepts the completed evidence, retains production AIC, and authorizes no AICc switch. S8 does
+not authorize STAT-2c or another production-selection authority change; STAT-2c requires a separate
+owner decision.
 
 Compare:
 
@@ -728,6 +731,8 @@ Choose AICc over AIC only when it provides a reproducible practical improvement 
 When practically tied, retain AIC to minimize behavioral change.
 
 Record the decision as a new S-series ruling.
+
+The completed held-out run did not clear this frozen gate. S8 therefore retained production AIC.
 
 ## STAT-2c — Authoritative selection switch
 
@@ -893,10 +898,13 @@ STAT-2 does not implement:
 * target-presence aggregation or a no-target certification rule—that is STAT-4a/4b;
 * full-pipeline bootstrap model-weight uncertainty;
 * Bayesian model weights or scientific priors—that is STAT-5;
-* scan-window EIG;
+* scan-window EIG implementation; a separate restricted workstream is authorized by O36;
 * TAVI changes;
 * EIG acquisition authority.
 
-# Recommended immediate task
+# Next state
 
-Begin with **STAT-2a only**: create the unconstrained selection-fit lane, persist side-by-side evidence, and prove that the common unconstrained path reuses the existing fit exactly. Do not switch model-selection authority until the criterion campaign has shown what the new lane actually does to real and synthetic ISAR cases.
+STAT-2c remains pending a separate owner decision, and STAT-2d remains pending. Difficult-regime
+findings remain open; no AICc switch is scheduled. The restricted EIG-4 workstream may proceed
+independently under O36, but O36 does not relax STAT-2 requirements for later broader statistical
+authority.

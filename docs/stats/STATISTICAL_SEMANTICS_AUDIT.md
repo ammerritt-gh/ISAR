@@ -2,7 +2,7 @@
 
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
-> **Verified against code revision:** `1310969` (2026-07-30)
+> **Verified against code revision:** `b543f6f` (2026-08-02)
 > **Owner:** @ammerritt-gh
 > **Exit criteria:** STAT-6 has transferred every accepted semantic contract into the canonical
 > statistical, steering, schema, and decision documents; every rejected hypothesis is recorded; the
@@ -31,6 +31,23 @@ The immediate result is a **hold on statistical authority**, not a hold on all d
   acquire authority;
 - an all-retained-model Bayesian posterior mixture remains the coherent candidate for formal
   Bayesian EIG, subject to STAT-5's prior and evidence gates.
+
+### Owner amendment — S8/O36 restricted EIG-4 sequence
+
+S8 and O36 amend the execution sequence, not the audit findings. The completed STAT-2b.1 evidence
+is accepted, AIC remains production behavior, and no AICc or STAT-2c authority change is authorized.
+The full statistical cleanup remains active.
+
+O36 creates one bounded exception to the earlier sequencing recommendation: a narrowly scoped EIG-4
+demonstration may proceed using conditional target-QoI information per executed point for clean,
+already-confirmed targets at an already-selected action and Q. Target-presence authority,
+constrained or rescued estimators, difficult regimes, broader statistical promotion, and general
+phenomenon support remain outside this exception.
+
+Where later sections say that STAT-4a, full-pipeline calibration, or Bayesian model averaging blocks
+all EIG-4 authority, O36 supersedes that product-sequencing recommendation only for the restricted
+confirmed-target pathway. The audit's statistical findings, caveats, and recommended broader program
+remain intact.
 
 ### Evidence vocabulary
 
