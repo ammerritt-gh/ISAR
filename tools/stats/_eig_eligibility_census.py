@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -102,16 +103,37 @@ def _canonical_json(value: Any) -> str:
 def _sanitize(value: Any) -> Any:
     """Make output JSON finite and deliberately exclude accidental absolute paths."""
     if isinstance(value, Mapping):
-        return {str(key): _sanitize(item) for key, item in value.items()}
+        sanitized: dict[str, Any] = {}
+        for key, item in sorted(value.items(), key=lambda pair: str(pair[0])):
+            original = str(key)
+            safe_key = str(_sanitize(original))
+            if safe_key in sanitized:
+                # Redaction can collapse distinct absolute-path keys.  Preserve
+                # both values without putting any part of either path back into
+                # the serialized key.
+                identity = f"{type(key).__name__}:{key!r}".encode("utf-8")
+                suffix = hashlib.sha256(identity).hexdigest()[:12]
+                collision_index = 0
+                candidate = f"{safe_key}#{suffix}"
+                while candidate in sanitized:
+                    collision_index += 1
+                    candidate = f"{safe_key}#{suffix}-{collision_index}"
+                safe_key = candidate
+            sanitized[safe_key] = _sanitize(item)
+        return sanitized
     if isinstance(value, (list, tuple)):
         return [_sanitize(item) for item in value]
     if isinstance(value, float) and not math.isfinite(value):
         return None
     if isinstance(value, Path):
-        return value.name
-    if isinstance(value, str) and (Path(value).is_absolute() or value.startswith("/")
-                                   or ":\\" in value or "/Users/" in value):
-        return "<redacted-absolute-path>"
+        value = str(value)
+    if isinstance(value, str):
+        windows_absolute_fragment = re.search(r"(?:^|[^A-Za-z0-9])[A-Za-z]:[\\/]", value)
+        sensitive_directory_fragment = re.search(
+            r"(?i)(?:^|[\\/:=])(?:users|home|tmp|temp)(?:[\\/]|$)", value)
+        if (Path(value).is_absolute() or value.startswith(("/", "\\\\"))
+                or windows_absolute_fragment or sensitive_directory_fragment):
+            return "<redacted-absolute-path>"
     return value
 
 
@@ -218,8 +240,10 @@ def _preflight(spec: CampaignSpec) -> tuple[Path | None, list[str]]:
 
 
 def _resolve_reference(root: Path, ref: Any, directory: str) -> tuple[Path | None, str | None]:
-    if not isinstance(ref, str) or not ref:
+    if ref is None or ref == "":
         return None, "reference_missing"
+    if not isinstance(ref, str):
+        return None, "reference_invalid"
     expected = (root / directory).resolve()
     path = (root / ref).resolve()
     try:
@@ -279,7 +303,8 @@ def _predictive_details(root: Path, ref: Any, cache: dict[tuple[str, str], dict]
         "exposure_basis": record.get("exposure_basis") if isinstance(record, Mapping) else None,
         "models": _model_diagnostics(models),
         "dropped_models": _dropped_model_diagnostics(record),
-        "masses": _masses(models, record),
+        "masses": (_masses(models, record)
+                   if strict["status"] == "passed" else _empty_masses()),
         "legacy_unauthenticated": (
             _legacy_predictive_diagnostics(models)
             if schema == "isar.master_predictive/1" else None),
@@ -376,7 +401,8 @@ def _masses(models: Any, record: Any) -> dict[str, float]:
         weight = float(weight)
         basis = model.get("draw_basis")
         key = {"parametric_bootstrap": "observed_bootstrap_source_mass",
-               "nested": "observed_nested_source_mass", "laplace": "observed_laplace_source_mass"}.get(basis)
+               "nested_sampling": "observed_nested_source_mass",
+               "laplace_hesse": "observed_laplace_source_mass"}.get(basis)
         if key:
             masses[key] += weight
         else:
@@ -453,7 +479,14 @@ def _projection_details(raw: Mapping[str, Any], predictive: Mapping[str, Any], o
                         entry: Any, policy_fingerprint: str | None) -> dict[str, Any]:
     record = raw.get("record")
     result = {key: value for key, value in raw.items() if key != "record"}
-    result["joins"] = _projection_joins(record, predictive)
+    authenticated = (
+        result.get("strict_validation", {}).get("status") == "passed"
+        and predictive.get("strict_validation", {}).get("status") == "passed")
+    result["joins"] = (
+        _projection_joins(record, predictive) if authenticated
+        else {key: "unknown" for key in (
+            "predictive_basis", "retained_set", "semantics", "projection_set",
+            "models", "draw_alignment")})
     result["authority_fields"] = _projection_currentness(record, outcome, entry, policy_fingerprint)
     statuses = list(result["authority_fields"].values())
     result["currentness"] = ("stale" if "fail" in statuses else
@@ -462,7 +495,9 @@ def _projection_details(raw: Mapping[str, Any], predictive: Mapping[str, Any], o
         "complete" if result.get("complete") is True
         else "projection_incomplete" if result.get("complete") is False
         else "unknown")
-    result["particle_masses"] = _projection_particle_masses(record, predictive)
+    result["particle_masses"] = (
+        _projection_particle_masses(record, predictive) if authenticated
+        else {"qoi_unavailable_source_mass": 0.0, "target_absent_source_mass": 0.0})
     result["findings"] = sorted(set(result.get("findings", []) +
                                      [f"projection_{key}_mismatch" for key, value in result["joins"].items() if value == "fail"] +
                                      (["projection_incomplete"] if result.get("complete") is False else []) +
@@ -507,10 +542,11 @@ def _projection_joins(record: Any, predictive: Mapping[str, Any]) -> dict[str, s
                 target = right.get("target_present_by_draw")
                 count = left.get("retained_draw_count")
                 valid_pairs = (isinstance(qoi, list) and isinstance(target, list)
-                               and all(isinstance(value, bool) for value in target)
-                               and all((not present and value is None) or (present and (_is_finite(value) or value is None))
+                               and len(qoi) == len(target)
+                               and all(isinstance(present, bool) for present in target)
+                               and all((not present and value is None) or (present and _is_finite(value))
                                        for present, value in zip(target, qoi)))
-                if isinstance(count, int) and (not valid_pairs or len(qoi) != count or len(target) != count):
+                if not isinstance(count, int) or (not valid_pairs or len(qoi) != count or len(target) != count):
                     aligned = "fail"
             joins["draw_alignment"] = aligned
     return joins
@@ -571,16 +607,21 @@ def _shadow_category(record: Any, strict: Mapping[str, Any]) -> str:
         return "unsupported_schema"
     if strict["status"] == "failed":
         return "malformed"
+    if not isinstance(record, Mapping):
+        return "malformed"
+    if record.get("schema") != "isar.shadow_model_selection/2":
+        return "legacy_unobservable"
     status = record.get("selection_status")
     if status == "complete":
         return "complete_disagrees" if record.get("selection_changed") else "complete_agrees"
     if status == "degenerate_single_candidate":
         return "complete_meaning_differs"
-    reason = str(record.get("unavailable_reason_code") or "other")
-    if "deadline" in reason:
+    if (record.get("shadow_execution_kind") == "skipped"
+            and record.get("unavailable_reason_code") == "shadow_skipped_soft_deadline"
+            and record.get("runtime_increment_seconds") == 0):
         return "soft_deadline_skip"
     stage = str(record.get("unavailable_stage") or "other")
-    return f"failure:{stage if stage in {'construction', 'candidate_fit', 'identity_projection', 'comparison'} else 'other'}"
+    return f"failure:{stage}"
 
 
 def _member_triple(value: Any) -> tuple[str, str, str] | None:
@@ -746,23 +787,86 @@ def _selection_science_findings(record: Any, strict: Mapping[str, Any]) -> list[
         findings.append("selection_not_aggregate_akaike")
     if record.get("selection_eligibility") != "eligible":
         findings.append("selection_ineligible")
-    if record.get("estimator_kind") not in (None, "data_likelihood_mle"):
+    diagnostics = _selection_diagnostics(record, strict)
+    if any(kind != "data_likelihood_mle" for kind in diagnostics["estimator_kinds"]):
         findings.append("selection_estimator_not_data_likelihood_mle")
-    route = record.get("candidate_generation_route")
-    if isinstance(route, Mapping) and route.get("route") not in (None, "full_two_stage"):
+    if diagnostics["route"]["route_kind"] not in (None, "standard_two_stage"):
         findings.append("selection_not_full_two_stage")
-    if record.get("effective_constraints"):
+    if diagnostics["soft_effective_constraint_count"] or diagnostics["hard_effective_constraint_count"]:
         findings.append("selection_effective_constraints_or_rescue")
-    reasons = record.get("selection_ineligibility_reasons") or []
+    reasons = diagnostics["selection_ineligibility_reason_codes"]
     if any("rescue" in str(reason) or "post_selection" in str(reason) for reason in reasons):
         findings.append("selection_rescued_or_postselection")
-    if isinstance(route, Mapping) and route.get("multimode_route") == "guideline_forced":
+    if diagnostics["route"]["guideline_altered"]:
         findings.append("selection_guideline_altered_model_set")
-    if isinstance(route, Mapping):
-        offered, scored = route.get("offered_labels"), route.get("scored_labels")
-        if isinstance(offered, list) and isinstance(scored, list) and set(offered) != set(scored):
-            findings.append("selection_model_set_incomplete")
+    if diagnostics["route"]["offered_scored_incomplete"]:
+        findings.append("selection_model_set_incomplete")
     return findings
+
+
+def _selection_diagnostics(record: Any, strict: Mapping[str, Any]) -> dict[str, Any]:
+    """Explain validated selection semantics without changing selection policy."""
+    empty = {"estimator_kinds": [], "candidate_selection_eligibilities": [],
+             "selection_ineligibility_reason_codes": [], "soft_effective_constraint_count": 0,
+             "hard_effective_constraint_count": 0, "constraint_kinds": [],
+             "constraint_origins": [], "rescue_or_post_selection_reason_codes": [],
+             "route": {"route_kind": None, "labels_before_guideline": [],
+                       "guideline_structure_filter": [], "offered_labels": [], "scored_labels": [],
+                       "guideline_altered": False, "offered_scored_incomplete": False}}
+    if strict.get("status") != "passed" or not isinstance(record, Mapping):
+        return empty
+    estimators: list[str] = []
+    eligibilities: list[str] = []
+    reasons: list[str] = []
+    kinds: list[str] = []
+    origins: list[str] = []
+    soft = hard = 0
+    for candidate in record.get("candidate_records") or []:
+        semantics = candidate.get("fit_semantics") if isinstance(candidate, Mapping) else None
+        if not isinstance(semantics, Mapping):
+            continue
+        if isinstance(semantics.get("estimator_kind"), str):
+            estimators.append(semantics["estimator_kind"])
+        if isinstance(semantics.get("selection_eligibility"), str):
+            eligibilities.append(semantics["selection_eligibility"])
+        for reason in semantics.get("selection_ineligibility_reasons") or []:
+            if isinstance(reason, str):
+                reasons.append(reason)
+        for constraint in semantics.get("effective_constraints") or []:
+            if not isinstance(constraint, Mapping):
+                continue
+            kind = constraint.get("constraint_kind")
+            origin = constraint.get("origin")
+            if isinstance(kind, str):
+                kinds.append(kind)
+                soft += kind == "soft"
+                hard += kind == "hard"
+            if isinstance(origin, str):
+                origins.append(origin)
+    route = record.get("candidate_generation_route")
+    view = empty["route"]
+    if isinstance(route, Mapping):
+        explicit_route = route.get("route_kind")
+        producer_route = route.get("route")
+        raw_route = explicit_route if isinstance(explicit_route, str) else producer_route
+        view["route_kind"] = (
+            "standard_two_stage" if raw_route == "full_two_stage" else raw_route
+            if isinstance(raw_route, str) else None)
+        for key in ("labels_before_guideline", "guideline_structure_filter", "offered_labels", "scored_labels"):
+            value = route.get(key)
+            view[key] = sorted(str(item) for item in value) if isinstance(value, list) else []
+        view["guideline_altered"] = (isinstance(route.get("labels_before_guideline"), list)
+                                     and isinstance(route.get("offered_labels"), list)
+                                     and set(view["labels_before_guideline"]) != set(view["offered_labels"]))
+        view["offered_scored_incomplete"] = (isinstance(route.get("offered_labels"), list)
+                                             and isinstance(route.get("scored_labels"), list)
+                                             and set(view["offered_labels"]) != set(view["scored_labels"]))
+    empty.update({"estimator_kinds": sorted(estimators), "candidate_selection_eligibilities": sorted(eligibilities),
+                  "selection_ineligibility_reason_codes": sorted(reasons), "soft_effective_constraint_count": soft,
+                  "hard_effective_constraint_count": hard, "constraint_kinds": sorted(kinds),
+                  "constraint_origins": sorted(origins),
+                  "rescue_or_post_selection_reason_codes": sorted(reason for reason in reasons if "rescue" in reason or "post_selection" in reason)})
+    return empty
 
 
 def _scan_design_details(root: Path, ref: Any, *, acquisition_ids: tuple[str, ...] = ()) -> dict[str, Any]:
@@ -789,13 +893,20 @@ def _scan_design_details(root: Path, ref: Any, *, acquisition_ids: tuple[str, ..
         return {"status": "failed", "reason_code": _error_code(error)}
     if actual != digest or path.name != f"{digest}.json":
         return {"status": "failed", "reason_code": "content_address_mismatch"}
-    if not isinstance(record, Mapping) or record.get("schema") != "isar.scan_design_inventory/2":
+    if not isinstance(record, Mapping) or record.get("inventory_version") != "isar.scan_design_inventory/2":
         return {"status": "failed", "reason_code": "schema_unsupported"}
-    selected = record.get("selected_candidate_id")
+    selection = record.get("selection")
+    selected = selection.get("selected_candidate_id") if isinstance(selection, Mapping) else None
     candidates = record.get("candidates") or []
-    candidate = next((item for item in candidates if isinstance(item, Mapping)
-                      and item.get("candidate_id") == selected), None)
-    if candidate is None or candidate.get("schema") != "isar.scan_design_candidate/2":
+    ids = [item.get("candidate_id") for item in candidates if isinstance(item, Mapping)]
+    if (not isinstance(candidates, list) or len(ids) != len(candidates)
+            or any(not isinstance(candidate_id, str) for candidate_id in ids)
+            or len(ids) != len(set(ids))):
+        return {"status": "failed", "reason_code": "candidate_ids_nonunique_or_malformed"}
+    selected_candidates = [item for item in candidates if isinstance(item, Mapping)
+                           and item.get("candidate_id") == selected]
+    candidate = selected_candidates[0] if len(selected_candidates) == 1 else None
+    if candidate is None or not isinstance(candidate.get("candidate_family"), str):
         return {"status": "failed", "reason_code": "selected_candidate_invalid"}
     events: list[str] = []
     log_path = root / "report" / "session_log.jsonl"
@@ -833,7 +944,92 @@ def _scan_design_details(root: Path, ref: Any, *, acquisition_ids: tuple[str, ..
             _LOG.warning("scan-design event diagnostics unavailable: %s", error)
     return {"status": "passed", "reason_code": None, "reference": _safe_relative(path, root),
             "sha256": digest, "selected_candidate_id": selected,
-            "window_family": candidate.get("window_family"), "realization_events": sorted(set(events))}
+            "selected_candidate_family": candidate.get("candidate_family"), "realization_events": sorted(set(events))}
+
+
+_SCIENTIFIC_REASON_PRECEDENCE = (
+    # 1. Target / delivery / tracking / action / modality / pool / member / recovery.
+    "target_not_finite", "target_delivery_ineligible", "track_not_confirmed",
+    "action_not_canonical_production", "modality_fork", "modality_not_fold",
+    "pool_inconsistent", "member_provenance_inconsistent", "scan_design_recovery_or_missed_window",
+    # 2. Selection semantics.
+    "selection_ineligible", "selection_not_aggregate_akaike", "selection_estimator_not_data_likelihood_mle",
+    "selection_not_full_two_stage", "selection_effective_constraints_or_rescue",
+    "selection_rescued_or_postselection", "selection_guideline_altered_model_set", "selection_model_set_incomplete",
+    # 3. Predictive scientific exclusions: none; validity failures are observability gaps.
+    # 4. Projection validity/currentness/alignment.
+    "projection_incomplete", "projection_stale", "projection_predictive_basis_mismatch",
+    "projection_retained_set_mismatch", "projection_semantics_mismatch", "projection_projection_set_mismatch",
+    "projection_models_mismatch", "projection_draw_alignment_mismatch",
+    # 5. Particle mass.
+    "material_nonbootstrap_mass", "material_qoi_unavailable_mass",
+    # 6. Shadow comparison.
+    "shadow_complete_disagrees", "shadow_complete_meaning_differs",
+    "shadow_failure:construction", "shadow_failure:candidate_fit", "shadow_failure:identity_projection",
+    "shadow_failure:comparison", "shadow_failure:comparison_validation", "shadow_failure:context_construction",
+    "shadow_failure:legacy_projection", "shadow_failure:other",
+)
+_OBSERVABILITY_REASON_PRECEDENCE = (
+    # 1. Target / member / acquisition / scan-design envelope.
+    "target_delivery_eligibility_unknown", "track_state_unknown", "action_intent_unknown", "modality_unknown",
+    "member_member_provenance_missing", "member_declared_member_identity_unrecognized",
+    "member_outcome_member_identity_ambiguous", "member_physical_member_ambiguous",
+    "acquisition_card_state_unavailable", "acquisition_card_state_provenance_malformed",
+    "acquisition_physical_acquisition_ids_missing", "acquisition_mapping_missing",
+    "acquisition_mapping_ambiguous", "acquisition_unknown",
+    "scan_design_reference_missing", "scan_design_reference_invalid",
+    "scan_design_reference_escaped", "scan_design_reference_unreadable",
+    "scan_design_reference_malformed", "scan_design_reference_kind_invalid",
+    "scan_design_content_address_mismatch", "scan_design_schema_unsupported",
+    "scan_design_candidate_ids_nonunique_or_malformed", "scan_design_selected_candidate_invalid",
+    "scan_design_JSONDecodeError", "scan_design_UnicodeDecodeError", "scan_design_OSError",
+    "scan_design_TypeError", "scan_design_ValueError",
+    # 2. Selection semantics.
+    "selection_record_missing", "selection_schema_unsupported", "selection_TypeError",
+    "selection_ValueError", "selection_KeyError", "selection_OverflowError",
+    # 3. Predictive validity.
+    "predictive_reference_missing", "predictive_reference_invalid", "predictive_reference_escaped",
+    "predictive_reference_unreadable", "predictive_legacy_unauthenticated",
+    "predictive_record_missing", "predictive_schema_unsupported",
+    "predictive_artifact_schema_unsupported", "predictive_missing_exposure_basis",
+    "predictive_malformed_draw_shape", "predictive_unknown_component_kind",
+    "predictive_nonfinite_prediction", "predictive_negative_prediction",
+    "predictive_invalid_energy_grid", "predictive_invalid_requested_exposure",
+    "predictive_predictive_basis_incomplete",
+    "predictive_predictive_basis_fingerprint_mismatch",
+    "predictive_predictive_artifact_invalid", "predictive_predictive_semantics_invalid",
+    "predictive_JSONDecodeError", "predictive_UnicodeDecodeError",
+    "predictive_OSError", "predictive_TypeError", "predictive_ValueError",
+    "predictive_KeyError", "predictive_OverflowError",
+    # 4. Projection validity/currentness/alignment.
+    "projection_reference_missing", "projection_reference_invalid", "projection_reference_escaped",
+    "projection_reference_unreadable", "projection_schema_unsupported",
+    "projection_authority_missing_or_malformed", "projection_models_not_list",
+    "projection_projection_semantics_payload_mismatch", "projection_JSONDecodeError",
+    "projection_UnicodeDecodeError", "projection_OSError", "projection_TypeError",
+    "projection_ValueError", "projection_OverflowError",
+    "projection_currentness_unknown", "projection_completeness_unknown",
+    "projection_predictive_basis_unknown", "projection_retained_set_unknown", "projection_semantics_unknown",
+    "projection_projection_set_unknown", "projection_models_unknown", "projection_draw_alignment_unknown",
+    # 5. Particle measure gaps.
+    "material_particle_basis_unknown_or_pruned", "material_draw_mass_unknown",
+    # 6. Shadow validity, deliberately last.
+    "shadow_record_missing", "shadow_schema_unsupported", "shadow_TypeError",
+    "shadow_ValueError", "shadow_KeyError", "shadow_OverflowError",
+    "shadow_legacy_unauthenticated",
+)
+_SCIENTIFIC_REASON_RANKS = {reason: index for index, reason in enumerate(_SCIENTIFIC_REASON_PRECEDENCE)}
+_OBSERVABILITY_REASON_RANKS = {reason: index for index, reason in enumerate(_OBSERVABILITY_REASON_PRECEDENCE)}
+
+
+def _reason_sort_key(reason: str, ranks: Mapping[str, int]) -> tuple[int, str]:
+    """Frozen local precedence; future producer codes stay deterministic but subordinate."""
+    rank = ranks.get(reason)
+    return (rank, reason) if rank is not None else (len(ranks), reason)
+
+
+def _primary_reason(reasons: list[str], ranks: Mapping[str, int]) -> str | None:
+    return min(set(reasons), key=lambda reason: _reason_sort_key(reason, ranks)) if reasons else None
 
 
 def _classify(row: dict[str, Any]) -> None:
@@ -843,6 +1039,18 @@ def _classify(row: dict[str, Any]) -> None:
     outcome = row["outcome"]
     if not _is_finite(outcome.get("omega0")):
         science.append("target_not_finite")
+    delivery = outcome.get("target_delivery_eligible")
+    if not isinstance(delivery, bool):
+        gaps.append("target_delivery_eligibility_unknown")
+    elif not delivery:
+        science.append("target_delivery_ineligible")
+    modality = outcome.get("modality")
+    if modality is None:
+        gaps.append("modality_unknown")
+    elif modality == "fork":
+        science.append("modality_fork")
+    elif modality != "fold":
+        science.append("modality_not_fold")
     track = outcome.get("track_state")
     if track is None:
         gaps.append("track_state_unknown")
@@ -903,11 +1111,13 @@ def _classify(row: dict[str, Any]) -> None:
         science.append("material_qoi_unavailable_mass")
     if row["shadow"]["category"] in {"complete_disagrees", "complete_meaning_differs"} or row["shadow"]["category"].startswith("failure:"):
         science.append(f"shadow_{row['shadow']['category']}")
+    elif row["shadow"]["category"] == "legacy_unobservable":
+        gaps.append("shadow_legacy_unauthenticated")
     science.extend(_selection_science_findings(row["selection_record"], row["selection"]["strict_validation"]))
     findings.extend(science + gaps)
     row["findings"] = sorted(set(findings))
-    row["primary_scientific_exclusion"] = science[0] if science else None
-    row["primary_observability_gap"] = gaps[0] if gaps else None
+    row["primary_scientific_exclusion"] = _primary_reason(science, _SCIENTIFIC_REASON_RANKS)
+    row["primary_observability_gap"] = _primary_reason(gaps, _OBSERVABILITY_REASON_RANKS)
     row["current_contract_observability"] = "complete" if not gaps else "incomplete"
     row["provisional_eligibility"] = ("ineligible" if science else
                                         "eligible" if not gaps else "unassessable")
@@ -916,7 +1126,7 @@ def _classify(row: dict[str, Any]) -> None:
 def _outcome_view(outcome: Mapping[str, Any]) -> dict[str, Any]:
     """The audit-facing subset; raw outcomes can carry unrelated local provenance."""
     return {name: outcome.get(name) for name in (
-        "omega0", "pooled", "n_members", "members", "target_delivery_eligible",
+        "omega0", "pooled", "n_members", "members", "target_delivery_eligible", "modality",
         "track_state", "track_revision", "candidate_id", "candidate_state",
         "selected_candidate_index", "master_revision", "pool_consistent", "fit_kind",
         "evidence_sink", "predictive_ref", "target_projection_ref", "acquisition_id",
@@ -971,6 +1181,7 @@ def _master_rows(spec: CampaignSpec, session: SessionState, preflight_findings: 
                    "acquisition_intent": _acquisition_intent(member_join, entry, outcome),
                    "predictive": predictive, "projection": projection,
                    "selection": selection, "selection_record": selection_record,
+                   "selection_diagnostics": _selection_diagnostics(selection_record, selection["strict_validation"]),
                    "scan_design": _scan_design_details(
                        spec.root, scan_design_ref,
                        acquisition_ids=tuple(member_join.get("acquisition_ids") or ())),
@@ -1138,6 +1349,18 @@ def _summary(result: CensusResult) -> dict[str, Any]:
             "scan_design_events": distribution(
                 event for row in rows
                 for event in row.get("scan_design", {}).get("realization_events", [])),
+            "selection_estimator_kinds": distribution(
+                item for row in rows for item in row.get("selection_diagnostics", {}).get("estimator_kinds", [])),
+            "selection_candidate_eligibilities": distribution(
+                item for row in rows for item in row.get("selection_diagnostics", {}).get("candidate_selection_eligibilities", [])),
+            "selection_ineligibility_reason_codes": distribution(
+                item for row in rows for item in row.get("selection_diagnostics", {}).get("selection_ineligibility_reason_codes", [])),
+            "selection_constraint_kinds": distribution(
+                item for row in rows for item in row.get("selection_diagnostics", {}).get("constraint_kinds", [])),
+            "selection_constraint_origins": distribution(
+                item for row in rows for item in row.get("selection_diagnostics", {}).get("constraint_origins", [])),
+            "selection_rescue_or_post_selection_reasons": distribution(
+                item for row in rows for item in row.get("selection_diagnostics", {}).get("rescue_or_post_selection_reason_codes", [])),
         }
     all_findings = Counter(finding for row in pooled for finding in row.get("findings", []))
     primary_exclusions = Counter(row.get("primary_scientific_exclusion") for row in pooled if row.get("primary_scientific_exclusion"))
@@ -1182,6 +1405,21 @@ def _findings_markdown(summary: Mapping[str, Any]) -> str:
             f"{values['eligible']} | {values['ineligible']} | {values['unassessable']} |")
     particle = primary["particle_source_masses"]
     legacy_particle = primary["legacy_particle_description"]
+    def compact_counts(values: Mapping[str, Any]) -> str:
+        return ", ".join(f"{key}={value}" for key, value in sorted(values.items())) or "—"
+
+    selection_by_population: list[str] = [
+        "| Population | Estimators | Candidate eligibility | Ineligibility reasons | Constraints | Origins | Rescue/post-selection |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for name, values in summary["groups"].items():
+        selection_by_population.append(
+            f"| {name} | {compact_counts(values['selection_estimator_kinds'])} | "
+            f"{compact_counts(values['selection_candidate_eligibilities'])} | "
+            f"{compact_counts(values['selection_ineligibility_reason_codes'])} | "
+            f"{compact_counts(values['selection_constraint_kinds'])} | "
+            f"{compact_counts(values['selection_constraint_origins'])} | "
+            f"{compact_counts(values['selection_rescue_or_post_selection_reasons'])} |")
     lines = [
         "# EIG-4 Slice 1 census findings", "", rate, "",
         "This is a read-only, provisional contract-observability census; it does not establish runtime EIG authority.",
@@ -1223,6 +1461,7 @@ def _findings_markdown(summary: Mapping[str, Any]) -> str:
         *bullets(primary["projection_reason_codes"], empty="No projection reason was recorded."), "",
         "Projection currentness:", "",
         *bullets(primary["projection_currentness"], empty="No projection evidence was present."), "",
+        "## Selection diagnostics by population", "", *selection_by_population, "",
         "Shadow categories:", "",
         *bullets(primary["shadow_categories"], empty="No shadow evidence was present."), "",
         "## Historical limitations", "",
@@ -1276,15 +1515,16 @@ def write_census_bundle(result: CensusResult, output_dir: Path | str, *, repo_ro
     try:
         parent.mkdir(parents=True, exist_ok=True)
         stage = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=parent))
-        summary = _summary(result)
-        rows_jsonl = "".join(_canonical_json(_public_row(row)) + "\n" for row in result.rows)
+        public_rows = [_sanitize(_public_row(row)) for row in result.rows]
+        summary = _sanitize(_summary(result))
+        rows_jsonl = "".join(_canonical_json(row) + "\n" for row in public_rows)
         _write_text(stage / "masters.jsonl", rows_jsonl)
-        fields, csv_rows = _csv_rows(result.rows)
+        fields, csv_rows = _csv_rows(public_rows)
         with (stage / "masters.csv").open("w", encoding="utf-8", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
             writer.writeheader()
             writer.writerows(csv_rows)
-        _write_text(stage / "summary.json", json.dumps(_sanitize(summary), indent=2, sort_keys=True,
+        _write_text(stage / "summary.json", json.dumps(summary, indent=2, sort_keys=True,
                                                           ensure_ascii=False, allow_nan=False) + "\n")
         _write_text(stage / "findings.md", _findings_markdown(summary))
         deterministic = ["masters.jsonl", "masters.csv", "summary.json", "findings.md"]
