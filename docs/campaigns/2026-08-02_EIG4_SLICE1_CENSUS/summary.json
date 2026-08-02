@@ -1,0 +1,2362 @@
+{
+  "all_reason_counts": {
+    "acquisition_acquisition_mapping_ambiguous": 1,
+    "acquisition_acquisition_mapping_missing": 21,
+    "acquisition_physical_acquisition_ids_missing": 18,
+    "action_intent_unknown": 106,
+    "action_not_canonical_production": 124,
+    "modality_fork": 7,
+    "modality_not_fold": 135,
+    "pool_inconsistent": 1,
+    "predictive_legacy_unauthenticated": 211,
+    "predictive_reference_missing": 19,
+    "projection_currentness_unknown": 230,
+    "projection_draw_alignment_unknown": 230,
+    "projection_models_unknown": 230,
+    "projection_predictive_basis_unknown": 230,
+    "projection_projection_set_unknown": 230,
+    "projection_reference_missing": 230,
+    "projection_retained_set_unknown": 230,
+    "projection_semantics_unknown": 230,
+    "scan_design_reference_missing": 230,
+    "selection_record_missing": 230,
+    "shadow_record_missing": 230,
+    "target_delivery_eligibility_unknown": 230,
+    "target_not_finite": 97,
+    "track_not_confirmed": 47,
+    "track_state_unknown": 61
+  },
+  "groups": {
+    "campaign:ap1": {
+      "all_reason_counts": {
+        "acquisition_acquisition_mapping_ambiguous": 1,
+        "action_intent_unknown": 21,
+        "modality_not_fold": 21,
+        "predictive_legacy_unauthenticated": 21,
+        "projection_currentness_unknown": 21,
+        "projection_draw_alignment_unknown": 21,
+        "projection_models_unknown": 21,
+        "projection_predictive_basis_unknown": 21,
+        "projection_projection_set_unknown": 21,
+        "projection_reference_missing": 21,
+        "projection_retained_set_unknown": 21,
+        "projection_semantics_unknown": 21,
+        "scan_design_reference_missing": 21,
+        "selection_record_missing": 21,
+        "shadow_record_missing": 21,
+        "target_delivery_eligibility_unknown": 21,
+        "target_not_finite": 21,
+        "track_state_unknown": 21
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 0,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 21,
+      "legacy_particle_description": {
+        "artifact_rows": 21,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 21.0,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 0.0
+        },
+        "raw_legacy_weight_total": 21.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 21,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 21
+      },
+      "primary_scientific_exclusion_counts": {
+        "target_not_finite": 21
+      },
+      "projection_completeness": {
+        "unknown": 21
+      },
+      "projection_currentness": {
+        "unknown": 21
+      },
+      "projection_reason_codes": {
+        "reference_missing": 21
+      },
+      "projection_strict_status": {
+        "missing": 21
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 21
+      },
+      "tracker_confirmed": 0,
+      "unassessable": 0
+    },
+    "campaign:ap2": {
+      "all_reason_counts": {
+        "action_intent_unknown": 4,
+        "modality_not_fold": 4,
+        "predictive_legacy_unauthenticated": 4,
+        "projection_currentness_unknown": 4,
+        "projection_draw_alignment_unknown": 4,
+        "projection_models_unknown": 4,
+        "projection_predictive_basis_unknown": 4,
+        "projection_projection_set_unknown": 4,
+        "projection_reference_missing": 4,
+        "projection_retained_set_unknown": 4,
+        "projection_semantics_unknown": 4,
+        "scan_design_reference_missing": 4,
+        "selection_record_missing": 4,
+        "shadow_record_missing": 4,
+        "target_delivery_eligibility_unknown": 4,
+        "target_not_finite": 1,
+        "track_not_confirmed": 4
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 3,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 4,
+      "legacy_particle_description": {
+        "artifact_rows": 4,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 4.0,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 0.0
+        },
+        "raw_legacy_weight_total": 4.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 4,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 4
+      },
+      "primary_scientific_exclusion_counts": {
+        "target_not_finite": 1,
+        "track_not_confirmed": 3
+      },
+      "projection_completeness": {
+        "unknown": 4
+      },
+      "projection_currentness": {
+        "unknown": 4
+      },
+      "projection_reason_codes": {
+        "reference_missing": 4
+      },
+      "projection_strict_status": {
+        "missing": 4
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 4
+      },
+      "tracker_confirmed": 0,
+      "unassessable": 0
+    },
+    "campaign:ap3": {
+      "all_reason_counts": {
+        "action_not_canonical_production": 21,
+        "modality_not_fold": 21,
+        "predictive_legacy_unauthenticated": 21,
+        "projection_currentness_unknown": 21,
+        "projection_draw_alignment_unknown": 21,
+        "projection_models_unknown": 21,
+        "projection_predictive_basis_unknown": 21,
+        "projection_projection_set_unknown": 21,
+        "projection_reference_missing": 21,
+        "projection_retained_set_unknown": 21,
+        "projection_semantics_unknown": 21,
+        "scan_design_reference_missing": 21,
+        "selection_record_missing": 21,
+        "shadow_record_missing": 21,
+        "target_delivery_eligibility_unknown": 21,
+        "target_not_finite": 21,
+        "track_not_confirmed": 21
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 0,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 21,
+      "legacy_particle_description": {
+        "artifact_rows": 21,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 21.0,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 0.0
+        },
+        "raw_legacy_weight_total": 21.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 21,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 21
+      },
+      "primary_scientific_exclusion_counts": {
+        "target_not_finite": 21
+      },
+      "projection_completeness": {
+        "unknown": 21
+      },
+      "projection_currentness": {
+        "unknown": 21
+      },
+      "projection_reason_codes": {
+        "reference_missing": 21
+      },
+      "projection_strict_status": {
+        "missing": 21
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 21
+      },
+      "tracker_confirmed": 0,
+      "unassessable": 0
+    },
+    "campaign:ap6": {
+      "all_reason_counts": {
+        "action_not_canonical_production": 20,
+        "modality_not_fold": 14,
+        "predictive_legacy_unauthenticated": 20,
+        "projection_currentness_unknown": 20,
+        "projection_draw_alignment_unknown": 20,
+        "projection_models_unknown": 20,
+        "projection_predictive_basis_unknown": 20,
+        "projection_projection_set_unknown": 20,
+        "projection_reference_missing": 20,
+        "projection_retained_set_unknown": 20,
+        "projection_semantics_unknown": 20,
+        "scan_design_reference_missing": 20,
+        "selection_record_missing": 20,
+        "shadow_record_missing": 20,
+        "target_delivery_eligibility_unknown": 20,
+        "target_not_finite": 3,
+        "track_not_confirmed": 3
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 17,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 20,
+      "legacy_particle_description": {
+        "artifact_rows": 20,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 14.000001268342,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 5.999998731658
+        },
+        "raw_legacy_weight_total": 20.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 20,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 20
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 17,
+        "target_not_finite": 3
+      },
+      "projection_completeness": {
+        "unknown": 20
+      },
+      "projection_currentness": {
+        "unknown": 20
+      },
+      "projection_reason_codes": {
+        "reference_missing": 20
+      },
+      "projection_strict_status": {
+        "missing": 20
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 20
+      },
+      "tracker_confirmed": 17,
+      "unassessable": 0
+    },
+    "campaign:ap8-pool-inconsistent": {
+      "all_reason_counts": {
+        "action_not_canonical_production": 20,
+        "modality_fork": 1,
+        "modality_not_fold": 16,
+        "pool_inconsistent": 1,
+        "predictive_legacy_unauthenticated": 20,
+        "projection_currentness_unknown": 20,
+        "projection_draw_alignment_unknown": 20,
+        "projection_models_unknown": 20,
+        "projection_predictive_basis_unknown": 20,
+        "projection_projection_set_unknown": 20,
+        "projection_reference_missing": 20,
+        "projection_retained_set_unknown": 20,
+        "projection_semantics_unknown": 20,
+        "scan_design_reference_missing": 20,
+        "selection_record_missing": 20,
+        "shadow_record_missing": 20,
+        "target_delivery_eligibility_unknown": 20,
+        "target_not_finite": 7,
+        "track_not_confirmed": 7,
+        "track_state_unknown": 1
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 13,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 20,
+      "legacy_particle_description": {
+        "artifact_rows": 20,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 16.00000001083,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 3.99999998917
+        },
+        "raw_legacy_weight_total": 20.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 20,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 20
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 13,
+        "target_not_finite": 7
+      },
+      "projection_completeness": {
+        "unknown": 20
+      },
+      "projection_currentness": {
+        "unknown": 20
+      },
+      "projection_reason_codes": {
+        "reference_missing": 20
+      },
+      "projection_strict_status": {
+        "missing": 20
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 20
+      },
+      "tracker_confirmed": 12,
+      "unassessable": 0
+    },
+    "campaign:op10": {
+      "all_reason_counts": {
+        "action_not_canonical_production": 21,
+        "modality_not_fold": 21,
+        "predictive_legacy_unauthenticated": 21,
+        "projection_currentness_unknown": 21,
+        "projection_draw_alignment_unknown": 21,
+        "projection_models_unknown": 21,
+        "projection_predictive_basis_unknown": 21,
+        "projection_projection_set_unknown": 21,
+        "projection_reference_missing": 21,
+        "projection_retained_set_unknown": 21,
+        "projection_semantics_unknown": 21,
+        "scan_design_reference_missing": 21,
+        "selection_record_missing": 21,
+        "shadow_record_missing": 21,
+        "target_delivery_eligibility_unknown": 21,
+        "target_not_finite": 6,
+        "track_not_confirmed": 6
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 15,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 21,
+      "legacy_particle_description": {
+        "artifact_rows": 21,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 21.0,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 0.0
+        },
+        "raw_legacy_weight_total": 21.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 21,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 21
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 15,
+        "target_not_finite": 6
+      },
+      "projection_completeness": {
+        "unknown": 21
+      },
+      "projection_currentness": {
+        "unknown": 21
+      },
+      "projection_reason_codes": {
+        "reference_missing": 21
+      },
+      "projection_strict_status": {
+        "missing": 21
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 21
+      },
+      "tracker_confirmed": 15,
+      "unassessable": 0
+    },
+    "campaign:op11-repair-replay": {
+      "all_reason_counts": {
+        "action_not_canonical_production": 21,
+        "predictive_legacy_unauthenticated": 21,
+        "projection_currentness_unknown": 21,
+        "projection_draw_alignment_unknown": 21,
+        "projection_models_unknown": 21,
+        "projection_predictive_basis_unknown": 21,
+        "projection_projection_set_unknown": 21,
+        "projection_reference_missing": 21,
+        "projection_retained_set_unknown": 21,
+        "projection_semantics_unknown": 21,
+        "scan_design_reference_missing": 21,
+        "selection_record_missing": 21,
+        "shadow_record_missing": 21,
+        "target_delivery_eligibility_unknown": 21
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 21,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 21,
+      "legacy_particle_description": {
+        "artifact_rows": 21,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 6.085514e-06,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 20.999993914486
+        },
+        "raw_legacy_weight_total": 21.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 21,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 21
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 21
+      },
+      "projection_completeness": {
+        "unknown": 21
+      },
+      "projection_currentness": {
+        "unknown": 21
+      },
+      "projection_reason_codes": {
+        "reference_missing": 21
+      },
+      "projection_strict_status": {
+        "missing": 21
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 21
+      },
+      "tracker_confirmed": 21,
+      "unassessable": 0
+    },
+    "campaign:op7": {
+      "all_reason_counts": {
+        "action_intent_unknown": 21,
+        "predictive_legacy_unauthenticated": 21,
+        "projection_currentness_unknown": 21,
+        "projection_draw_alignment_unknown": 21,
+        "projection_models_unknown": 21,
+        "projection_predictive_basis_unknown": 21,
+        "projection_projection_set_unknown": 21,
+        "projection_reference_missing": 21,
+        "projection_retained_set_unknown": 21,
+        "projection_semantics_unknown": 21,
+        "scan_design_reference_missing": 21,
+        "selection_record_missing": 21,
+        "shadow_record_missing": 21,
+        "target_delivery_eligibility_unknown": 21
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 21,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 0,
+      "legacy_particle_description": {
+        "artifact_rows": 21,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 0.0,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 21.0
+        },
+        "raw_legacy_weight_total": 21.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 21,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 21
+      },
+      "primary_scientific_exclusion_counts": {},
+      "projection_completeness": {
+        "unknown": 21
+      },
+      "projection_currentness": {
+        "unknown": 21
+      },
+      "projection_reason_codes": {
+        "reference_missing": 21
+      },
+      "projection_strict_status": {
+        "missing": 21
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 21
+      },
+      "tracker_confirmed": 21,
+      "unassessable": 21
+    },
+    "campaign:op7-role-split": {
+      "all_reason_counts": {
+        "action_intent_unknown": 21,
+        "predictive_legacy_unauthenticated": 21,
+        "projection_currentness_unknown": 21,
+        "projection_draw_alignment_unknown": 21,
+        "projection_models_unknown": 21,
+        "projection_predictive_basis_unknown": 21,
+        "projection_projection_set_unknown": 21,
+        "projection_reference_missing": 21,
+        "projection_retained_set_unknown": 21,
+        "projection_semantics_unknown": 21,
+        "scan_design_reference_missing": 21,
+        "selection_record_missing": 21,
+        "shadow_record_missing": 21,
+        "target_delivery_eligibility_unknown": 21
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 21,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 0,
+      "legacy_particle_description": {
+        "artifact_rows": 21,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 2.04e-10,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 20.999999999796
+        },
+        "raw_legacy_weight_total": 21.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 21,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 21
+      },
+      "primary_scientific_exclusion_counts": {},
+      "projection_completeness": {
+        "unknown": 21
+      },
+      "projection_currentness": {
+        "unknown": 21
+      },
+      "projection_reason_codes": {
+        "reference_missing": 21
+      },
+      "projection_strict_status": {
+        "missing": 21
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 21
+      },
+      "tracker_confirmed": 21,
+      "unassessable": 21
+    },
+    "campaign:op9": {
+      "all_reason_counts": {
+        "action_not_canonical_production": 21,
+        "modality_not_fold": 21,
+        "predictive_legacy_unauthenticated": 21,
+        "projection_currentness_unknown": 21,
+        "projection_draw_alignment_unknown": 21,
+        "projection_models_unknown": 21,
+        "projection_predictive_basis_unknown": 21,
+        "projection_projection_set_unknown": 21,
+        "projection_reference_missing": 21,
+        "projection_retained_set_unknown": 21,
+        "projection_semantics_unknown": 21,
+        "scan_design_reference_missing": 21,
+        "selection_record_missing": 21,
+        "shadow_record_missing": 21,
+        "target_delivery_eligibility_unknown": 21,
+        "target_not_finite": 6,
+        "track_not_confirmed": 6
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 15,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 21,
+      "legacy_particle_description": {
+        "artifact_rows": 21,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 21.0,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 0.0
+        },
+        "raw_legacy_weight_total": 21.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 21,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 21
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 15,
+        "target_not_finite": 6
+      },
+      "projection_completeness": {
+        "unknown": 21
+      },
+      "projection_currentness": {
+        "unknown": 21
+      },
+      "projection_reason_codes": {
+        "reference_missing": 21
+      },
+      "projection_strict_status": {
+        "missing": 21
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 21
+      },
+      "tracker_confirmed": 15,
+      "unassessable": 0
+    },
+    "campaign:speedup-phase2-auto": {
+      "all_reason_counts": {
+        "acquisition_acquisition_mapping_missing": 21,
+        "action_intent_unknown": 21,
+        "modality_fork": 4,
+        "modality_not_fold": 2,
+        "predictive_legacy_unauthenticated": 20,
+        "predictive_reference_missing": 1,
+        "projection_currentness_unknown": 21,
+        "projection_draw_alignment_unknown": 21,
+        "projection_models_unknown": 21,
+        "projection_predictive_basis_unknown": 21,
+        "projection_projection_set_unknown": 21,
+        "projection_reference_missing": 21,
+        "projection_retained_set_unknown": 21,
+        "projection_semantics_unknown": 21,
+        "scan_design_reference_missing": 21,
+        "selection_record_missing": 21,
+        "shadow_record_missing": 21,
+        "target_delivery_eligibility_unknown": 21,
+        "target_not_finite": 19,
+        "track_state_unknown": 21
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 2,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 20,
+      "legacy_particle_description": {
+        "artifact_rows": 20,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 1.002135021565,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 18.997864978435
+        },
+        "raw_legacy_weight_total": 20.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 21,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 21
+      },
+      "primary_scientific_exclusion_counts": {
+        "modality_fork": 1,
+        "target_not_finite": 19
+      },
+      "projection_completeness": {
+        "unknown": 21
+      },
+      "projection_currentness": {
+        "unknown": 21
+      },
+      "projection_reason_codes": {
+        "reference_missing": 21
+      },
+      "projection_strict_status": {
+        "missing": 21
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 21
+      },
+      "tracker_confirmed": 0,
+      "unassessable": 1
+    },
+    "campaign:svp-recert1": {
+      "all_reason_counts": {
+        "acquisition_physical_acquisition_ids_missing": 18,
+        "action_intent_unknown": 18,
+        "modality_fork": 2,
+        "modality_not_fold": 15,
+        "predictive_reference_missing": 18,
+        "projection_currentness_unknown": 18,
+        "projection_draw_alignment_unknown": 18,
+        "projection_models_unknown": 18,
+        "projection_predictive_basis_unknown": 18,
+        "projection_projection_set_unknown": 18,
+        "projection_reference_missing": 18,
+        "projection_retained_set_unknown": 18,
+        "projection_semantics_unknown": 18,
+        "scan_design_reference_missing": 18,
+        "selection_record_missing": 18,
+        "shadow_record_missing": 18,
+        "target_delivery_eligibility_unknown": 18,
+        "target_not_finite": 13,
+        "track_state_unknown": 18
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 5,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 18,
+      "legacy_particle_description": {
+        "artifact_rows": 0,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 0.0,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 0.0
+        },
+        "raw_legacy_weight_total": 0.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 18,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 18
+      },
+      "primary_scientific_exclusion_counts": {
+        "modality_not_fold": 5,
+        "target_not_finite": 13
+      },
+      "projection_completeness": {
+        "unknown": 18
+      },
+      "projection_currentness": {
+        "unknown": 18
+      },
+      "projection_reason_codes": {
+        "reference_missing": 18
+      },
+      "projection_strict_status": {
+        "missing": 18
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 18
+      },
+      "tracker_confirmed": 0,
+      "unassessable": 0
+    },
+    "cohort:difficult": {
+      "all_reason_counts": {
+        "acquisition_acquisition_mapping_ambiguous": 1,
+        "acquisition_acquisition_mapping_missing": 21,
+        "acquisition_physical_acquisition_ids_missing": 18,
+        "action_intent_unknown": 64,
+        "action_not_canonical_production": 103,
+        "modality_fork": 7,
+        "modality_not_fold": 135,
+        "pool_inconsistent": 1,
+        "predictive_legacy_unauthenticated": 148,
+        "predictive_reference_missing": 19,
+        "projection_currentness_unknown": 167,
+        "projection_draw_alignment_unknown": 167,
+        "projection_models_unknown": 167,
+        "projection_predictive_basis_unknown": 167,
+        "projection_projection_set_unknown": 167,
+        "projection_reference_missing": 167,
+        "projection_retained_set_unknown": 167,
+        "projection_semantics_unknown": 167,
+        "scan_design_reference_missing": 167,
+        "selection_record_missing": 167,
+        "shadow_record_missing": 167,
+        "target_delivery_eligibility_unknown": 167,
+        "target_not_finite": 97,
+        "track_not_confirmed": 47,
+        "track_state_unknown": 61
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 70,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 166,
+      "legacy_particle_description": {
+        "artifact_rows": 148,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 119.002136300737,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 28.997863699263
+        },
+        "raw_legacy_weight_total": 148.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 167,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 167
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 60,
+        "modality_fork": 1,
+        "modality_not_fold": 5,
+        "target_not_finite": 97,
+        "track_not_confirmed": 3
+      },
+      "projection_completeness": {
+        "unknown": 167
+      },
+      "projection_currentness": {
+        "unknown": 167
+      },
+      "projection_reason_codes": {
+        "reference_missing": 167
+      },
+      "projection_strict_status": {
+        "missing": 167
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 167
+      },
+      "tracker_confirmed": 59,
+      "unassessable": 1
+    },
+    "cohort:ordinary": {
+      "all_reason_counts": {
+        "action_intent_unknown": 42,
+        "action_not_canonical_production": 21,
+        "predictive_legacy_unauthenticated": 63,
+        "projection_currentness_unknown": 63,
+        "projection_draw_alignment_unknown": 63,
+        "projection_models_unknown": 63,
+        "projection_predictive_basis_unknown": 63,
+        "projection_projection_set_unknown": 63,
+        "projection_reference_missing": 63,
+        "projection_retained_set_unknown": 63,
+        "projection_semantics_unknown": 63,
+        "scan_design_reference_missing": 63,
+        "selection_record_missing": 63,
+        "shadow_record_missing": 63,
+        "target_delivery_eligibility_unknown": 63
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 63,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 21,
+      "legacy_particle_description": {
+        "artifact_rows": 63,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 6.085718e-06,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 62.999993914282
+        },
+        "raw_legacy_weight_total": 63.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 63,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 63
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 21
+      },
+      "projection_completeness": {
+        "unknown": 63
+      },
+      "projection_currentness": {
+        "unknown": 63
+      },
+      "projection_reason_codes": {
+        "reference_missing": 63
+      },
+      "projection_strict_status": {
+        "missing": 63
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 63
+      },
+      "tracker_confirmed": 63,
+      "unassessable": 42
+    },
+    "lineage:ap1-ap2": {
+      "all_reason_counts": {
+        "acquisition_acquisition_mapping_ambiguous": 1,
+        "action_intent_unknown": 25,
+        "modality_not_fold": 25,
+        "predictive_legacy_unauthenticated": 25,
+        "projection_currentness_unknown": 25,
+        "projection_draw_alignment_unknown": 25,
+        "projection_models_unknown": 25,
+        "projection_predictive_basis_unknown": 25,
+        "projection_projection_set_unknown": 25,
+        "projection_reference_missing": 25,
+        "projection_retained_set_unknown": 25,
+        "projection_semantics_unknown": 25,
+        "scan_design_reference_missing": 25,
+        "selection_record_missing": 25,
+        "shadow_record_missing": 25,
+        "target_delivery_eligibility_unknown": 25,
+        "target_not_finite": 22,
+        "track_not_confirmed": 4,
+        "track_state_unknown": 21
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 3,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 25,
+      "legacy_particle_description": {
+        "artifact_rows": 25,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 25.0,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 0.0
+        },
+        "raw_legacy_weight_total": 25.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 25,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 25
+      },
+      "primary_scientific_exclusion_counts": {
+        "target_not_finite": 22,
+        "track_not_confirmed": 3
+      },
+      "projection_completeness": {
+        "unknown": 25
+      },
+      "projection_currentness": {
+        "unknown": 25
+      },
+      "projection_reason_codes": {
+        "reference_missing": 25
+      },
+      "projection_strict_status": {
+        "missing": 25
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 25
+      },
+      "tracker_confirmed": 0,
+      "unassessable": 0
+    },
+    "lineage:ap3": {
+      "all_reason_counts": {
+        "action_not_canonical_production": 21,
+        "modality_not_fold": 21,
+        "predictive_legacy_unauthenticated": 21,
+        "projection_currentness_unknown": 21,
+        "projection_draw_alignment_unknown": 21,
+        "projection_models_unknown": 21,
+        "projection_predictive_basis_unknown": 21,
+        "projection_projection_set_unknown": 21,
+        "projection_reference_missing": 21,
+        "projection_retained_set_unknown": 21,
+        "projection_semantics_unknown": 21,
+        "scan_design_reference_missing": 21,
+        "selection_record_missing": 21,
+        "shadow_record_missing": 21,
+        "target_delivery_eligibility_unknown": 21,
+        "target_not_finite": 21,
+        "track_not_confirmed": 21
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 0,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 21,
+      "legacy_particle_description": {
+        "artifact_rows": 21,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 21.0,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 0.0
+        },
+        "raw_legacy_weight_total": 21.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 21,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 21
+      },
+      "primary_scientific_exclusion_counts": {
+        "target_not_finite": 21
+      },
+      "projection_completeness": {
+        "unknown": 21
+      },
+      "projection_currentness": {
+        "unknown": 21
+      },
+      "projection_reason_codes": {
+        "reference_missing": 21
+      },
+      "projection_strict_status": {
+        "missing": 21
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 21
+      },
+      "tracker_confirmed": 0,
+      "unassessable": 0
+    },
+    "lineage:ap6": {
+      "all_reason_counts": {
+        "action_not_canonical_production": 20,
+        "modality_not_fold": 14,
+        "predictive_legacy_unauthenticated": 20,
+        "projection_currentness_unknown": 20,
+        "projection_draw_alignment_unknown": 20,
+        "projection_models_unknown": 20,
+        "projection_predictive_basis_unknown": 20,
+        "projection_projection_set_unknown": 20,
+        "projection_reference_missing": 20,
+        "projection_retained_set_unknown": 20,
+        "projection_semantics_unknown": 20,
+        "scan_design_reference_missing": 20,
+        "selection_record_missing": 20,
+        "shadow_record_missing": 20,
+        "target_delivery_eligibility_unknown": 20,
+        "target_not_finite": 3,
+        "track_not_confirmed": 3
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 17,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 20,
+      "legacy_particle_description": {
+        "artifact_rows": 20,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 14.000001268342,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 5.999998731658
+        },
+        "raw_legacy_weight_total": 20.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 20,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 20
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 17,
+        "target_not_finite": 3
+      },
+      "projection_completeness": {
+        "unknown": 20
+      },
+      "projection_currentness": {
+        "unknown": 20
+      },
+      "projection_reason_codes": {
+        "reference_missing": 20
+      },
+      "projection_strict_status": {
+        "missing": 20
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 20
+      },
+      "tracker_confirmed": 17,
+      "unassessable": 0
+    },
+    "lineage:ap8": {
+      "all_reason_counts": {
+        "action_not_canonical_production": 20,
+        "modality_fork": 1,
+        "modality_not_fold": 16,
+        "pool_inconsistent": 1,
+        "predictive_legacy_unauthenticated": 20,
+        "projection_currentness_unknown": 20,
+        "projection_draw_alignment_unknown": 20,
+        "projection_models_unknown": 20,
+        "projection_predictive_basis_unknown": 20,
+        "projection_projection_set_unknown": 20,
+        "projection_reference_missing": 20,
+        "projection_retained_set_unknown": 20,
+        "projection_semantics_unknown": 20,
+        "scan_design_reference_missing": 20,
+        "selection_record_missing": 20,
+        "shadow_record_missing": 20,
+        "target_delivery_eligibility_unknown": 20,
+        "target_not_finite": 7,
+        "track_not_confirmed": 7,
+        "track_state_unknown": 1
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 13,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 20,
+      "legacy_particle_description": {
+        "artifact_rows": 20,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 16.00000001083,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 3.99999998917
+        },
+        "raw_legacy_weight_total": 20.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 20,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 20
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 13,
+        "target_not_finite": 7
+      },
+      "projection_completeness": {
+        "unknown": 20
+      },
+      "projection_currentness": {
+        "unknown": 20
+      },
+      "projection_reason_codes": {
+        "reference_missing": 20
+      },
+      "projection_strict_status": {
+        "missing": 20
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 20
+      },
+      "tracker_confirmed": 12,
+      "unassessable": 0
+    },
+    "lineage:op10-repair-replay": {
+      "all_reason_counts": {
+        "action_not_canonical_production": 21,
+        "predictive_legacy_unauthenticated": 21,
+        "projection_currentness_unknown": 21,
+        "projection_draw_alignment_unknown": 21,
+        "projection_models_unknown": 21,
+        "projection_predictive_basis_unknown": 21,
+        "projection_projection_set_unknown": 21,
+        "projection_reference_missing": 21,
+        "projection_retained_set_unknown": 21,
+        "projection_semantics_unknown": 21,
+        "scan_design_reference_missing": 21,
+        "selection_record_missing": 21,
+        "shadow_record_missing": 21,
+        "target_delivery_eligibility_unknown": 21
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 21,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 21,
+      "legacy_particle_description": {
+        "artifact_rows": 21,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 6.085514e-06,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 20.999993914486
+        },
+        "raw_legacy_weight_total": 21.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 21,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 21
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 21
+      },
+      "projection_completeness": {
+        "unknown": 21
+      },
+      "projection_currentness": {
+        "unknown": 21
+      },
+      "projection_reason_codes": {
+        "reference_missing": 21
+      },
+      "projection_strict_status": {
+        "missing": 21
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 21
+      },
+      "tracker_confirmed": 21,
+      "unassessable": 0
+    },
+    "lineage:op7": {
+      "all_reason_counts": {
+        "action_intent_unknown": 42,
+        "predictive_legacy_unauthenticated": 42,
+        "projection_currentness_unknown": 42,
+        "projection_draw_alignment_unknown": 42,
+        "projection_models_unknown": 42,
+        "projection_predictive_basis_unknown": 42,
+        "projection_projection_set_unknown": 42,
+        "projection_reference_missing": 42,
+        "projection_retained_set_unknown": 42,
+        "projection_semantics_unknown": 42,
+        "scan_design_reference_missing": 42,
+        "selection_record_missing": 42,
+        "shadow_record_missing": 42,
+        "target_delivery_eligibility_unknown": 42
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 42,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 0,
+      "legacy_particle_description": {
+        "artifact_rows": 42,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 2.04e-10,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 41.999999999796
+        },
+        "raw_legacy_weight_total": 42.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 42,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 42
+      },
+      "primary_scientific_exclusion_counts": {},
+      "projection_completeness": {
+        "unknown": 42
+      },
+      "projection_currentness": {
+        "unknown": 42
+      },
+      "projection_reason_codes": {
+        "reference_missing": 42
+      },
+      "projection_strict_status": {
+        "missing": 42
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 42
+      },
+      "tracker_confirmed": 42,
+      "unassessable": 42
+    },
+    "lineage:op9-op10": {
+      "all_reason_counts": {
+        "action_not_canonical_production": 42,
+        "modality_not_fold": 42,
+        "predictive_legacy_unauthenticated": 42,
+        "projection_currentness_unknown": 42,
+        "projection_draw_alignment_unknown": 42,
+        "projection_models_unknown": 42,
+        "projection_predictive_basis_unknown": 42,
+        "projection_projection_set_unknown": 42,
+        "projection_reference_missing": 42,
+        "projection_retained_set_unknown": 42,
+        "projection_semantics_unknown": 42,
+        "scan_design_reference_missing": 42,
+        "selection_record_missing": 42,
+        "shadow_record_missing": 42,
+        "target_delivery_eligibility_unknown": 42,
+        "target_not_finite": 12,
+        "track_not_confirmed": 12
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 30,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 42,
+      "legacy_particle_description": {
+        "artifact_rows": 42,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 42.0,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 0.0
+        },
+        "raw_legacy_weight_total": 42.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 42,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 42
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 30,
+        "target_not_finite": 12
+      },
+      "projection_completeness": {
+        "unknown": 42
+      },
+      "projection_currentness": {
+        "unknown": 42
+      },
+      "projection_reason_codes": {
+        "reference_missing": 42
+      },
+      "projection_strict_status": {
+        "missing": 42
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 42
+      },
+      "tracker_confirmed": 30,
+      "unassessable": 0
+    },
+    "lineage:svp-force-refit": {
+      "all_reason_counts": {
+        "acquisition_acquisition_mapping_missing": 21,
+        "acquisition_physical_acquisition_ids_missing": 18,
+        "action_intent_unknown": 39,
+        "modality_fork": 6,
+        "modality_not_fold": 17,
+        "predictive_legacy_unauthenticated": 20,
+        "predictive_reference_missing": 19,
+        "projection_currentness_unknown": 39,
+        "projection_draw_alignment_unknown": 39,
+        "projection_models_unknown": 39,
+        "projection_predictive_basis_unknown": 39,
+        "projection_projection_set_unknown": 39,
+        "projection_reference_missing": 39,
+        "projection_retained_set_unknown": 39,
+        "projection_semantics_unknown": 39,
+        "scan_design_reference_missing": 39,
+        "selection_record_missing": 39,
+        "shadow_record_missing": 39,
+        "target_delivery_eligibility_unknown": 39,
+        "target_not_finite": 32,
+        "track_state_unknown": 39
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 7,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 38,
+      "legacy_particle_description": {
+        "artifact_rows": 20,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 1.002135021565,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 18.997864978435
+        },
+        "raw_legacy_weight_total": 20.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 39,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 39
+      },
+      "primary_scientific_exclusion_counts": {
+        "modality_fork": 1,
+        "modality_not_fold": 5,
+        "target_not_finite": 32
+      },
+      "projection_completeness": {
+        "unknown": 39
+      },
+      "projection_currentness": {
+        "unknown": 39
+      },
+      "projection_reason_codes": {
+        "reference_missing": 39
+      },
+      "projection_strict_status": {
+        "missing": 39
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 39
+      },
+      "tracker_confirmed": 0,
+      "unassessable": 1
+    },
+    "primary_cohort:difficult": {
+      "all_reason_counts": {
+        "acquisition_acquisition_mapping_ambiguous": 1,
+        "acquisition_acquisition_mapping_missing": 21,
+        "acquisition_physical_acquisition_ids_missing": 18,
+        "action_intent_unknown": 64,
+        "action_not_canonical_production": 83,
+        "modality_fork": 6,
+        "modality_not_fold": 119,
+        "predictive_legacy_unauthenticated": 128,
+        "predictive_reference_missing": 19,
+        "projection_currentness_unknown": 147,
+        "projection_draw_alignment_unknown": 147,
+        "projection_models_unknown": 147,
+        "projection_predictive_basis_unknown": 147,
+        "projection_projection_set_unknown": 147,
+        "projection_reference_missing": 147,
+        "projection_retained_set_unknown": 147,
+        "projection_semantics_unknown": 147,
+        "scan_design_reference_missing": 147,
+        "selection_record_missing": 147,
+        "shadow_record_missing": 147,
+        "target_delivery_eligibility_unknown": 147,
+        "target_not_finite": 90,
+        "track_not_confirmed": 40,
+        "track_state_unknown": 60
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 57,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 146,
+      "legacy_particle_description": {
+        "artifact_rows": 128,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 103.002136289907,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 24.997863710093
+        },
+        "raw_legacy_weight_total": 128.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 147,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 147
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 47,
+        "modality_fork": 1,
+        "modality_not_fold": 5,
+        "target_not_finite": 90,
+        "track_not_confirmed": 3
+      },
+      "projection_completeness": {
+        "unknown": 147
+      },
+      "projection_currentness": {
+        "unknown": 147
+      },
+      "projection_reason_codes": {
+        "reference_missing": 147
+      },
+      "projection_strict_status": {
+        "missing": 147
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 147
+      },
+      "tracker_confirmed": 47,
+      "unassessable": 1
+    },
+    "primary_cohort:ordinary": {
+      "all_reason_counts": {
+        "action_intent_unknown": 42,
+        "predictive_legacy_unauthenticated": 42,
+        "projection_currentness_unknown": 42,
+        "projection_draw_alignment_unknown": 42,
+        "projection_models_unknown": 42,
+        "projection_predictive_basis_unknown": 42,
+        "projection_projection_set_unknown": 42,
+        "projection_reference_missing": 42,
+        "projection_retained_set_unknown": 42,
+        "projection_semantics_unknown": 42,
+        "scan_design_reference_missing": 42,
+        "selection_record_missing": 42,
+        "shadow_record_missing": 42,
+        "target_delivery_eligibility_unknown": 42
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 42,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 0,
+      "legacy_particle_description": {
+        "artifact_rows": 42,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 2.04e-10,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 41.999999999796
+        },
+        "raw_legacy_weight_total": 42.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 42,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 42
+      },
+      "primary_scientific_exclusion_counts": {},
+      "projection_completeness": {
+        "unknown": 42
+      },
+      "projection_currentness": {
+        "unknown": 42
+      },
+      "projection_reason_codes": {
+        "reference_missing": 42
+      },
+      "projection_strict_status": {
+        "missing": 42
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 42
+      },
+      "tracker_confirmed": 42,
+      "unassessable": 42
+    },
+    "primary_combined": {
+      "all_reason_counts": {
+        "acquisition_acquisition_mapping_ambiguous": 1,
+        "acquisition_acquisition_mapping_missing": 21,
+        "acquisition_physical_acquisition_ids_missing": 18,
+        "action_intent_unknown": 106,
+        "action_not_canonical_production": 83,
+        "modality_fork": 6,
+        "modality_not_fold": 119,
+        "predictive_legacy_unauthenticated": 170,
+        "predictive_reference_missing": 19,
+        "projection_currentness_unknown": 189,
+        "projection_draw_alignment_unknown": 189,
+        "projection_models_unknown": 189,
+        "projection_predictive_basis_unknown": 189,
+        "projection_projection_set_unknown": 189,
+        "projection_reference_missing": 189,
+        "projection_retained_set_unknown": 189,
+        "projection_semantics_unknown": 189,
+        "scan_design_reference_missing": 189,
+        "selection_record_missing": 189,
+        "shadow_record_missing": 189,
+        "target_delivery_eligibility_unknown": 189,
+        "target_not_finite": 90,
+        "track_not_confirmed": 40,
+        "track_state_unknown": 60
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 99,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 146,
+      "legacy_particle_description": {
+        "artifact_rows": 170,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 103.002136290111,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 66.997863709889
+        },
+        "raw_legacy_weight_total": 170.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 189,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 189
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 47,
+        "modality_fork": 1,
+        "modality_not_fold": 5,
+        "target_not_finite": 90,
+        "track_not_confirmed": 3
+      },
+      "projection_completeness": {
+        "unknown": 189
+      },
+      "projection_currentness": {
+        "unknown": 189
+      },
+      "projection_reason_codes": {
+        "reference_missing": 189
+      },
+      "projection_strict_status": {
+        "missing": 189
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 189
+      },
+      "tracker_confirmed": 89,
+      "unassessable": 43
+    },
+    "supplementary": {
+      "all_reason_counts": {
+        "action_not_canonical_production": 41,
+        "modality_fork": 1,
+        "modality_not_fold": 16,
+        "pool_inconsistent": 1,
+        "predictive_legacy_unauthenticated": 41,
+        "projection_currentness_unknown": 41,
+        "projection_draw_alignment_unknown": 41,
+        "projection_models_unknown": 41,
+        "projection_predictive_basis_unknown": 41,
+        "projection_projection_set_unknown": 41,
+        "projection_reference_missing": 41,
+        "projection_retained_set_unknown": 41,
+        "projection_semantics_unknown": 41,
+        "scan_design_reference_missing": 41,
+        "selection_record_missing": 41,
+        "shadow_record_missing": 41,
+        "target_delivery_eligibility_unknown": 41,
+        "target_not_finite": 7,
+        "track_not_confirmed": 7,
+        "track_state_unknown": 1
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 34,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 41,
+      "legacy_particle_description": {
+        "artifact_rows": 41,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 16.000006096344,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 24.999993903656
+        },
+        "raw_legacy_weight_total": 41.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 41,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 41
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 34,
+        "target_not_finite": 7
+      },
+      "projection_completeness": {
+        "unknown": 41
+      },
+      "projection_currentness": {
+        "unknown": 41
+      },
+      "projection_reason_codes": {
+        "reference_missing": 41
+      },
+      "projection_strict_status": {
+        "missing": 41
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 41
+      },
+      "tracker_confirmed": 33,
+      "unassessable": 0
+    },
+    "supplementary_cohort:difficult": {
+      "all_reason_counts": {
+        "action_not_canonical_production": 20,
+        "modality_fork": 1,
+        "modality_not_fold": 16,
+        "pool_inconsistent": 1,
+        "predictive_legacy_unauthenticated": 20,
+        "projection_currentness_unknown": 20,
+        "projection_draw_alignment_unknown": 20,
+        "projection_models_unknown": 20,
+        "projection_predictive_basis_unknown": 20,
+        "projection_projection_set_unknown": 20,
+        "projection_reference_missing": 20,
+        "projection_retained_set_unknown": 20,
+        "projection_semantics_unknown": 20,
+        "scan_design_reference_missing": 20,
+        "selection_record_missing": 20,
+        "shadow_record_missing": 20,
+        "target_delivery_eligibility_unknown": 20,
+        "target_not_finite": 7,
+        "track_not_confirmed": 7,
+        "track_state_unknown": 1
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 13,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 20,
+      "legacy_particle_description": {
+        "artifact_rows": 20,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 16.00000001083,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 3.99999998917
+        },
+        "raw_legacy_weight_total": 20.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 20,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 20
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 13,
+        "target_not_finite": 7
+      },
+      "projection_completeness": {
+        "unknown": 20
+      },
+      "projection_currentness": {
+        "unknown": 20
+      },
+      "projection_reason_codes": {
+        "reference_missing": 20
+      },
+      "projection_strict_status": {
+        "missing": 20
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 20
+      },
+      "tracker_confirmed": 12,
+      "unassessable": 0
+    },
+    "supplementary_cohort:ordinary": {
+      "all_reason_counts": {
+        "action_not_canonical_production": 21,
+        "predictive_legacy_unauthenticated": 21,
+        "projection_currentness_unknown": 21,
+        "projection_draw_alignment_unknown": 21,
+        "projection_models_unknown": 21,
+        "projection_predictive_basis_unknown": 21,
+        "projection_projection_set_unknown": 21,
+        "projection_reference_missing": 21,
+        "projection_retained_set_unknown": 21,
+        "projection_semantics_unknown": 21,
+        "scan_design_reference_missing": 21,
+        "selection_record_missing": 21,
+        "shadow_record_missing": 21,
+        "target_delivery_eligibility_unknown": 21
+      },
+      "canonical_target_production_or_confirmation": 0,
+      "eligible": 0,
+      "finite_target": 21,
+      "fully_observable": 0,
+      "headline_eligibility_rate": null,
+      "ineligible": 21,
+      "legacy_particle_description": {
+        "artifact_rows": 21,
+        "authority": "legacy_unauthenticated",
+        "basis_weight_distribution": {
+          "laplace_hesse": 6.085514e-06,
+          "legacy_basis_unknown": 0.0,
+          "nested_sampling": 0.0,
+          "parametric_bootstrap": 20.999993914486
+        },
+        "raw_legacy_weight_total": 21.0,
+        "unreadable_weight_model_count": 0
+      },
+      "particle_source_masses": {
+        "basis_unknown_or_pruned_source_mass": 0.0,
+        "draw_mass_unknown_source_mass": 0.0,
+        "dropped_draw_mass": 0.0,
+        "observed_bootstrap_source_mass": 0.0,
+        "observed_laplace_source_mass": 0.0,
+        "observed_nested_source_mass": 0.0,
+        "qoi_unavailable_source_mass": 0.0,
+        "target_absent_source_mass": 0.0
+      },
+      "pooled_outcomes": 21,
+      "primary_observability_gap_counts": {
+        "target_delivery_eligibility_unknown": 21
+      },
+      "primary_scientific_exclusion_counts": {
+        "action_not_canonical_production": 21
+      },
+      "projection_completeness": {
+        "unknown": 21
+      },
+      "projection_currentness": {
+        "unknown": 21
+      },
+      "projection_reason_codes": {
+        "reference_missing": 21
+      },
+      "projection_strict_status": {
+        "missing": 21
+      },
+      "scan_design_events": {},
+      "selection_candidate_eligibilities": {},
+      "selection_constraint_kinds": {},
+      "selection_constraint_origins": {},
+      "selection_estimator_kinds": {},
+      "selection_ineligibility_reason_codes": {},
+      "selection_rescue_or_post_selection_reasons": {},
+      "shadow_categories": {
+        "missing_legacy": 21
+      },
+      "tracker_confirmed": 21,
+      "unassessable": 0
+    }
+  },
+  "legacy_particle_description": {
+    "artifact_rows": 211,
+    "authority": "legacy_unauthenticated",
+    "basis_weight_distribution": {
+      "laplace_hesse": 119.002142386455,
+      "legacy_basis_unknown": 0.0,
+      "nested_sampling": 0.0,
+      "parametric_bootstrap": 91.997857613545
+    },
+    "raw_legacy_weight_total": 211.0,
+    "unreadable_weight_model_count": 0
+  },
+  "particle_source_masses": {
+    "basis_unknown_or_pruned_source_mass": 0.0,
+    "draw_mass_unknown_source_mass": 0.0,
+    "dropped_draw_mass": 0.0,
+    "observed_bootstrap_source_mass": 0.0,
+    "observed_laplace_source_mass": 0.0,
+    "observed_nested_source_mass": 0.0,
+    "qoi_unavailable_source_mass": 0.0,
+    "target_absent_source_mass": 0.0
+  },
+  "primary_observability_gap_counts": {
+    "target_delivery_eligibility_unknown": 230
+  },
+  "primary_scientific_exclusion_counts": {
+    "action_not_canonical_production": 81,
+    "modality_fork": 1,
+    "modality_not_fold": 5,
+    "target_not_finite": 97,
+    "track_not_confirmed": 3
+  },
+  "projection_completeness": {
+    "unknown": 230
+  },
+  "projection_currentness": {
+    "unknown": 230
+  },
+  "row_kinds": {
+    "ambiguous_master_join": 0,
+    "master_entry_without_pooled_outcome": 3,
+    "pooled_outcome": 230
+  },
+  "ruleset": "isar.eig4_slice1_census_rules/1",
+  "schema": "isar.eig4_slice1_census_summary/1",
+  "shadow_categories": {
+    "missing_legacy": 230
+  },
+  "warnings": []
+}
