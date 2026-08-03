@@ -1,0 +1,54 @@
+{
+  "schema": "isar.eig4_slice5_offline_run_manifest/1",
+  "generated_utc": "2026-08-03T17:19:25.241176Z",
+  "code_provenance": {
+    "repair_revision": "e13a6b9d9dc4a624a39f7ecf5bb52f9023b35ea3",
+    "working_tree_clean_at_run_start": true,
+    "implementation_source_hashes": {
+      "isar/drive/acquisition/physical_windows.py": "d08702464399788e448535a21dd008592bff6438e970cad314ec05229c3ba694",
+      "isar/eig/offline_compare.py": "4490c6d7b6ffddcc46d1b7d047695908aa32a8cebfd2da4244cbee6d80762d59",
+      "isar/eig/scorer.py": "f70bcb71d59b581c2686e3e0844a74eb5ea79d4d5dd97e16c4fab2ee0a3e078e",
+      "tools/stats/eig_slice5_compare.py": "0ca9af8b0d1fff8e546418fb9aa2a12dc5eb3ca5fb79e686798321ba0ef2e8bc"
+    }
+  },
+  "commands": {
+    "discover": "python tools/stats/eig_slice5_compare.py discover --campaign-set tools/stats/eig4_slice1_campaigns.toml --output docs/campaigns/2026-08-03_EIG4_SLICE5_OFFLINE/corpus-index.json",
+    "score": "python tools/stats/eig_slice5_compare.py score --campaign-set tools/stats/eig4_slice1_campaigns.toml --corpus-index docs/campaigns/2026-08-03_EIG4_SLICE5_OFFLINE/corpus-index.json --output docs/campaigns/2026-08-03_EIG4_SLICE5_OFFLINE/zero-policy-report.json --seed 9006000 --simulation-count 128 --block-count 8"
+  },
+  "campaign_manifest": {
+    "path": "tools/stats/eig4_slice1_campaigns.toml",
+    "sha256": "0fb4bfb1e0d032a494eb8e5ceb69e1f397ccf1ebb24965a1d7d463879ee0b08d"
+  },
+  "scoring_configuration": {
+    "policy_file": null,
+    "seed": 9006000,
+    "simulation_count": 128,
+    "block_count": 8
+  },
+  "artifacts": {
+    "corpus-index.json": {
+      "sha256": "85ef0f398d95e591286b03f916079cd344a16182d505df2a226528ca9f5a5c15",
+      "corpus_fingerprint": "b234c33ddfdc1389d367c348f247bcf974808e5192271bcc39ddfa40a013de95",
+      "counts": {
+        "comparison_unavailable": 0,
+        "nonterminal_or_unclassified": 64,
+        "ready": 0,
+        "scientifically_ineligible": 74,
+        "unassessable": 92
+      }
+    },
+    "zero-policy-report.json": {
+      "sha256": "4dc4ee02973a8fe77b59fe4b5444b1890bec5cf92ecfb608421f40a7178cb420",
+      "report_fingerprint": "ebfd2056608bf3ae90a5a0339516489813c0ba5f82e4e0e6edfef1a698133888",
+      "status": "complete",
+      "counts": {
+        "complete": 0,
+        "unavailable": 0
+      }
+    }
+  },
+  "warnings": [
+    "Campaign configuration was unavailable for svp_recert1 because its objective schema is not isar.objective/2.",
+    "Campaign configuration was unavailable for speedup_phase2_auto because its objective schema is not isar.objective/2."
+  ]
+}
