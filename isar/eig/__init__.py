@@ -1,16 +1,17 @@
-"""Pure eligibility seam for same-action scan-window EIG.
+"""Pure evidence seams for same-action scan-window EIG.
 
-The package deliberately answers only whether a selected action may be considered
-by the shadow EIG path.  Candidate construction, scoring, and authority changes
-belong to later slices.
+Candidate construction, scoring, and authority changes belong to later slices.
 """
+from .design_measure import ScanWindowDesignMeasure, build_scan_window_design_measure
 from .eligibility import EligibilityInput, EligibilityResult, evaluate_eig_eligibility
 from .qoi import QoIProjectionEvidence, adapt_omega0_target_projection
 
 __all__ = [
     "QoIProjectionEvidence",
+    "ScanWindowDesignMeasure",
     "EligibilityInput",
     "EligibilityResult",
     "adapt_omega0_target_projection",
+    "build_scan_window_design_measure",
     "evaluate_eig_eligibility",
 ]

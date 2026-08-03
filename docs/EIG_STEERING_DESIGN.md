@@ -14,7 +14,8 @@
 **EIG-4 is the approved execution roadmap and current SVP, not implemented runtime authority.**
 Alternative-window EIG candidate scoring, scored shadow selection, and authoritative selection are
 not implemented. Candidate generation, predictive `/2`, arbitrary-grid evaluation, executed-grid
-identity, and target projection are implemented.
+identity, target projection, Slice 2 eligibility/QoI adaptation, and the Slice 3 homogeneous design
+measure are implemented.
 Current acquisition ranks scientific actions and Q
 positions using expected counts already stored on each master's fitted grid. The
 `ScanDesignContext → ScanDesignInventory` seam now generates the bounded family of conventional
@@ -186,7 +187,7 @@ its content-addressed action inventory; otherwise it reports `action_context_unk
 retrospectively inferring production or confirmation.
 
 Eligibility is before candidate generation and comparison. It neither inspects window families nor
-checks paired exposure, scores, or selection. Those belong to Slices 3–6. Source predictive/projection
+checks paired exposure, scores, or selection. Those belong to Slices 4–6. Source predictive/projection
 artifacts retain `eig_shadow = eig_authoritative = ineligible`; derived eligible evidence is only an
 `eig_shadow = candidate` input to later shadow work and cannot enable authority.
 
@@ -231,6 +232,65 @@ member acquisitions as diagnostics only, and aggregates particle masses only fro
 The scorer core remains independent of omega0/DHO implementation details. The adapter is the sole place
 where the current target-energy producer layout is known.
 
+### Homogeneous predictive-scenario design measure (Slice 3)
+
+`isar.eig.build_scan_window_design_measure()` is the pure, non-persisting constructor for
+`isar.scan_window_design_measure/o36.3`. It recomputes Slice 2 eligibility over the exact
+`EligibilityInput` it consumes, passes the accompanying `isar.master_predictive/2` through the shared
+strict validator, and authenticates the public QoI-model view against that artifact. An ineligible,
+unassessable, malformed, stale, or mismatched source returns an immutable unavailable measure with
+separate scientific, observability, and construction codes and no partial model or scenario output.
+
+A **source draw** is one producer-owned parameter draw. A **predictive scenario** joins one retained
+fit model, one identified source draw, one authenticated target-QoI value, and one statistical weight.
+The normalized set of those scenarios is the **design ensemble**; the complete **design measure** also
+records semantics, provenance, exclusions, mass scales, authority, and fingerprints. New `o36.3`
+fields use this vocabulary rather than statistical “particle,” which is ambiguous in a scattering
+codebase. Slice 2's older `particle_source_masses` diagnostic is read only by a private compatibility
+translator and compared with independently recomputed values at its published 12-decimal precision;
+that spelling never enters `o36.3` serialization.
+
+The design ensemble is explicitly a frequentist, Akaike-weighted parametric-bootstrap empirical
+measure, not a Bayesian model average. Slice 3 inspects every retained model's declared draw basis.
+Slice 2 remains authoritative for material nested-sampling, Laplace/HESSE, unknown-basis, retention,
+and dropped-model vetoes. After an eligible result, Slice 3 defensively requires those source masses
+to agree; an impossible disagreement is `design_measure_input_mismatch`. Permitted sub-material
+non-bootstrap or unknown-basis retained models are omitted and reported, and the remaining published
+bootstrap weights are transparently renormalized. Current predictive semantics authenticate
+equal-weight empirical draws only; an otherwise structurally valid explicit-weight artifact is held
+as `design_measure_input_mismatch` until an additive source-semantics revision can describe it.
+The measure also authenticates source and retained draw counts against the actual aligned draw arrays,
+keeps those counts distinct in each model summary, and fingerprints the producer's model/draw pruning
+limits and completeness totals as a separate source-completeness diagnostic.
+
+Within each retained bootstrap model, preconditioning mass is its renormalized model weight times its
+normalized source-draw weight. The final ensemble conditions globally on authenticated target-QoI
+availability: only target-present draws with finite QoI enter, and their mass normalizes to one.
+Target-unavailable mass is diagnostic only—there is no target-presence latent state, threshold, score,
+or authority. If no positive conditional mass remains, construction returns
+`conditional_target_qoi_ensemble_empty` without models or scenarios. Source-AIC, retained-bootstrap,
+and conditional-design scales remain structurally separate in the audit record.
+
+Every consumed model requires aligned, unique, non-empty string draw IDs. The
+`source_draw_identity_fingerprint` is the first content-addressed binding of producer-ordered draw IDs
+into the EIG chain; `/2`'s predictive-basis fingerprint does not cover those IDs. A scenario ID is the
+derived join identity of predictive-basis fingerprint, model label, and source-draw ID, so changing only
+the QoI leaves it stable. The enclosing design-measure fingerprint also binds selection, projection,
+QoI and eligibility identities, draw-ID binding, source bases and weights, exclusions, QoI values,
+conditional weights, materiality constants, and measure semantics. All fingerprints use strict canonical
+finite JSON.
+
+An available measure grants only `eig_shadow = candidate`; `eig_authoritative` and
+`acquisition_selection` remain `ineligible`. It does not generate or score a window, touch an inventory,
+write campaign state, or produce a request. Retained Slice 1 campaigns contain legacy predictive `/1`
+rather than current authenticated `/2` plus projection evidence, so they do not demonstrate observed
+campaign availability of this measure.
+
+Slice 4 must preserve the source join across serialization by matching recomputed predictive-basis and
+source-draw-identity fingerprints before expected-count evaluation. Requiring the same Python object
+instance is neither necessary nor a valid persistence contract. A future additive `/2` revision may
+instead include draw IDs in its own fingerprint, but Slice 3 does not change that source contract.
+
 The first comparison is local to one selected Q and fit-model context. Information transfer across Q
 or energy, a phenomenon registry, continuum support, magnon support, and a general model refactor
 are post-SVP work.
@@ -245,8 +305,9 @@ are post-SVP work.
 3. **Slice 2 — freeze eligibility and generic QoI adapter.** Define stable eligibility reason codes
    and a generic QoI view over `target_projection/2`; `o36.2` strengthens derived identities and
    fail-closed joins without breaking either source schema.
-4. **Slice 3 — EIG-local homogeneous design measure.** Build an Akaike-weighted parametric-bootstrap
-   empirical measure, inspect actual per-model particle basis, and make no production selection switch.
+4. **Slice 3 — EIG-local homogeneous design measure (implemented).** Build the immutable
+   Akaike-weighted parametric-bootstrap predictive-scenario measure, inspect actual per-model source
+   basis, condition on authenticated target-QoI availability, and make no production selection switch.
 5. **Slice 4 — pure full-vector Poisson scorer.** Use conditional target-QoI information, the full
    count vector, common random numbers, paired uncertainty, and information per executed point.
 6. **Slice 5 — offline legacy versus target_core scoring.** Use completed campaign states at equal
