@@ -1216,6 +1216,9 @@ def _validate_score_candidate(
             and (not isinstance(candidate.source_reason_code, str)
                  or not candidate.source_reason_code.strip())):
         raise ValueError("candidate score source reason code is invalid")
+    if (candidate.simulation_count != score_set.simulation_count
+            or candidate.block_count != score_set.block_count):
+        raise ValueError("candidate score simulation configuration is inconsistent")
     expected_scopes = _AVAILABLE_SCOPES if candidate.status == "available" else _INELIGIBLE_SCOPES
     if candidate.authority_scopes != tuple(sorted(expected_scopes.items())):
         raise ValueError("candidate score authority scopes are invalid")
@@ -1255,13 +1258,23 @@ def _validate_score_candidate(
                 or len(candidate.block_information_nats) != score_set.block_count):
             raise ValueError("available candidate score numerics are invalid")
         count = int(candidate.executed_point_count)
-        if (not _close(candidate.information_per_executed_point_nats,
+        expected_information = math.fsum(candidate.block_information_nats) / score_set.block_count
+        expected_standard_error = float(
+            np.std(np.asarray(candidate.block_information_nats), ddof=1)
+            / math.sqrt(score_set.block_count)
+        )
+        if (not _close(candidate.conditional_target_qoi_information_nats,
+                       expected_information)
+                or not _close(candidate.conditional_target_qoi_information_standard_error_nats,
+                              expected_standard_error)
+                or not _close(candidate.information_per_executed_point_nats,
                        float(candidate.conditional_target_qoi_information_nats) / count)
                 or not _close(candidate.information_per_executed_point_standard_error_nats,
                               float(candidate.conditional_target_qoi_information_standard_error_nats) / count)):
-            raise ValueError("available candidate per-point numerics are invalid")
+            raise ValueError("available candidate block estimates are invalid")
     else:
-        if (any(value is not None for value in (
+        if (not candidate.reason_codes
+                or any(value is not None for value in (
                     candidate.predictive_basis_fingerprint,
                     candidate.source_draw_identity_fingerprint,
                     candidate.executed_grid_fingerprint,
@@ -1327,6 +1340,13 @@ def _validate_pairwise_comparison(
     expected_per_point_blocks = tuple(
         right / int(second.executed_point_count) - left / int(first.executed_point_count)
         for left, right in zip(first.block_information_nats, second.block_information_nats))
+    expected_standard_error = float(
+        np.std(np.asarray(expected_blocks), ddof=1) / math.sqrt(score_set.block_count)
+    )
+    expected_per_point_standard_error = float(
+        np.std(np.asarray(expected_per_point_blocks), ddof=1)
+        / math.sqrt(score_set.block_count)
+    )
     if (any(not _close(actual, expected)
             for actual, expected in zip(comparison.paired_block_deltas, expected_blocks))
             or any(not _close(actual, expected)
@@ -1338,7 +1358,12 @@ def _validate_pairwise_comparison(
                           - float(first.conditional_target_qoi_information_nats))
             or not _close(comparison.delta_information_per_executed_point_nats,
                           float(second.information_per_executed_point_nats)
-                          - float(first.information_per_executed_point_nats))):
+                          - float(first.information_per_executed_point_nats))
+            or not _close(comparison.delta_information_standard_error_nats,
+                          expected_standard_error)
+            or not _close(
+                comparison.delta_information_per_executed_point_standard_error_nats,
+                expected_per_point_standard_error)):
         raise ValueError("pairwise comparison values do not join candidate scores")
     expected = _fingerprint(
         _PAIRWISE_FINGERPRINT_DOMAIN,
@@ -1385,7 +1410,9 @@ def validate_scan_window_score_set(value: Any) -> ScanWindowScoreSet:
     backend = dict(score_set.numerical_backend)
     if (not isinstance(score_set.numerical_backend, tuple)
             or score_set.numerical_backend != tuple(sorted(score_set.numerical_backend))
-            or backend != _backend_identities()):
+            or set(backend) != set(_backend_identities())
+            or any(not isinstance(value, str) or not value.strip() or value != value.strip()
+                   for value in backend.values())):
         raise ValueError("score set numerical backend is invalid")
     has_scoring_configuration = score_set.status in {"complete", "partial"}
     if has_scoring_configuration:

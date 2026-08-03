@@ -404,6 +404,18 @@ def test_inventory_declares_generator_config_and_provider_identity():
     assert payload["selection"]["scan_window_eig_mode"] == "shadow"
 
 
+def test_generator_configuration_strictly_round_trips_nondefault_values():
+    configured = PhysicalWindowGeneratorConfig(core_fwhm_multiple=4.25)
+    restored = PhysicalWindowGeneratorConfig.from_dict(configured.to_dict())
+    assert restored == configured
+    assert restored.fingerprint == configured.fingerprint
+
+    malformed = configured.to_dict()
+    malformed["unexpected"] = True
+    with pytest.raises(ValueError, match="fields"):
+        PhysicalWindowGeneratorConfig.from_dict(malformed)
+
+
 def test_family_windows_follow_the_frozen_generator_constants():
     inventory = design_scan_windows(_context(scan_window_eig_mode="shadow"))
     by_family = {c.candidate_family: c for c in inventory.candidates}

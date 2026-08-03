@@ -83,6 +83,60 @@ def test_shadow_alias_and_refusal_remain_distinct_pair_outcomes():
             SimpleNamespace(candidate_family="legacy_uniform/1", alias_families=()),), refusals=(refused,)))
 
 
+def test_persisted_generator_rehydrates_nondefault_configuration_and_authenticates_it():
+    from isar.drive.acquisition.scan_design import (
+        PHYSICAL_WINDOW_GENERATOR_ID,
+        PHYSICAL_WINDOW_GENERATOR_VERSION,
+        PhysicalWindowGeneratorConfig,
+    )
+
+    config = PhysicalWindowGeneratorConfig(core_fwhm_multiple=2.5)
+    record = {"generator": {
+        "id": PHYSICAL_WINDOW_GENERATOR_ID,
+        "version": PHYSICAL_WINDOW_GENERATOR_VERSION,
+        "config": config.to_dict(),
+        "config_fingerprint": config.fingerprint,
+    }}
+    restored, identity = RUNNER._persisted_generator(record)
+    assert restored == config
+    assert identity["config"] == config.to_dict()
+
+    record["generator"]["config_fingerprint"] = "0" * 64
+    with pytest.raises(RUNNER.OfflineRunnerError, match="generator_config_fingerprint_mismatch"):
+        RUNNER._persisted_generator(record)
+
+
+def test_authenticated_pair_construction_failure_is_comparison_unavailable(monkeypatch, tmp_path: Path):
+    core = RUNNER._offline_core()
+    row = {
+        "campaign_id": "one",
+        "master_session_key": "master",
+        "detector_id": "detector",
+        "cohort": "ordinary",
+        "evidence_tier": "primary",
+        "campaign_stop": {"status": "terminal", "state": "met", "reasons": []},
+        "outcome": {},
+        "qoi_evidence": {"status": "missing"},
+        "eligibility": {"scientific_codes": [], "observability_codes": []},
+    }
+
+    def unavailable(*_args, **_kwargs):
+        raise RUNNER.ComparisonUnavailableError("candidate_exposure_mismatch")
+
+    monkeypatch.setattr(RUNNER, "_prepare_discovery_case", unavailable)
+    cases, recipes = RUNNER._build_cases(
+        core,
+        (row,),
+        {"one": ({"producer_revision": "tests.scope/1", "fingerprint": "1" * 64}, None)},
+        {"one": tmp_path},
+    )
+    assert recipes == {}
+    assert cases[0].status == "comparison_unavailable"
+    assert cases[0].reason_codes == ("candidate_exposure_mismatch",)
+    assert cases[0].qoi_id is None
+    assert cases[0].qoi_unit is None
+
+
 def test_sidecar_requires_content_addressed_filename(tmp_path: Path):
     directory = tmp_path / "data" / "master_predictive"
     directory.mkdir(parents=True)
@@ -164,3 +218,59 @@ def test_zero_ready_corpus_scores_without_a_policy_file(tmp_path: Path, monkeypa
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["status"] == "complete"
     assert payload["results"] == []
+
+
+def test_hand_authored_policy_toml_needs_no_fingerprints(tmp_path: Path):
+    policy = tmp_path / "policy.toml"
+    policy.write_text(
+        "contract = 'isar.qoi_distinction_policy_set/o36.5'\n"
+        "[[policies]]\n"
+        "contract = 'isar.qoi_distinction_policy/o36.5'\n"
+        "policy_id = 'analysis'\n"
+        "policy_kind = 'isar.scalar_absolute_partitions/o36.5'\n"
+        "[policies.source_qoi]\n"
+        "id = 'excitation.energy'\nunit = 'meV'\n"
+        "[policies.scope]\nkind = 'case_identity'\n"
+        f"fingerprint = '{'1' * 64}'\n"
+        "[policies.scope.annotation]\n"
+        "campaign_name = 'fixture'\nexperiment_description = 'literal TOML'\n"
+        "date = '2026-08-03'\n"
+        "[policies.provenance]\nkind = 'explicit_user_analysis/1'\n"
+        "source_id = 'owner'\nrationale = 'hand authored sensitivity analysis'\n"
+        "[[policies.variants]]\nvariant_id = 'fine'\n"
+        "[policies.variants.parameters]\norigin = 0.0\nbin_width = 0.1\n"
+        "offsets = [0.0]\n",
+        encoding="utf-8",
+    )
+    loaded = RUNNER.load_qoi_distinction_policies(policy)
+    assert loaded.policy_set_fingerprint
+    assert loaded.policies[0].policy_fingerprint
+    assert loaded.policies[0].variants[0].variant_fingerprint
+
+
+def test_malformed_supported_policy_fails_before_replacing_output(tmp_path: Path, monkeypatch):
+    manifest = _campaign(tmp_path)
+    monkeypatch.setattr(RUNNER, "_REPO_ROOT", tmp_path)
+    index = tmp_path / "index.json"
+    report = tmp_path / "report.json"
+    policy = tmp_path / "policy.toml"
+    RUNNER.discover(Path(manifest.name), Path(index.name))
+    report.write_text('{"old":true}\n', encoding="utf-8")
+    policy.write_text(
+        "contract = 'isar.qoi_distinction_policy_set/o36.5'\n"
+        "[[policies]]\ncontract = 'isar.qoi_distinction_policy/o36.5'\n"
+        "policy_id = 'bad'\npolicy_kind = 'isar.scalar_absolute_partitions/o36.5'\n"
+        "[policies.source_qoi]\nid = 'x'\nunit = 'u'\n"
+        f"[policies.scope]\nkind = 'case_identity'\nfingerprint = '{'2' * 64}'\n"
+        "[policies.scope.annotation]\ncampaign_name = 'c'\nexperiment_description = 'd'\ndate = '2026-08-03'\n"
+        "[policies.provenance]\nkind = 'explicit_user_analysis/1'\nsource_id = 'owner'\nrationale = 'bad width'\n"
+        "[[policies.variants]]\nvariant_id = 'bad'\n"
+        "[policies.variants.parameters]\norigin = 0.0\nbin_width = -1.0\noffsets = [0.0]\n",
+        encoding="utf-8",
+    )
+    assert RUNNER.main([
+        "score", "--campaign-set", manifest.name, "--corpus-index", index.name,
+        "--policy-file", policy.name, "--output", report.name, "--overwrite",
+        "--seed", "1", "--simulation-count", "8", "--block-count", "2",
+    ]) == 2
+    assert report.read_text(encoding="utf-8") == '{"old":true}\n'

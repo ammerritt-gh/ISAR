@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Mapping
 
 from isar.drive.acquisition.inventory import canonical_json, json_number
 from isar.drive.acquisition.scan_grid import (
@@ -122,6 +122,11 @@ class PhysicalWindowGeneratorConfig:
     broad_recovery_default_hi_meV: float = SURVEY_E_HI_MEV
 
     def __post_init__(self) -> None:
+        if (self.config_schema != "isar.physical_window_generator_config/2"
+                or not isinstance(self.config_version, int)
+                or isinstance(self.config_version, bool)
+                or self.config_version != 2):
+            raise ValueError("physical-window generator configuration contract is unsupported")
         positives = {
             "step_resolution_fraction": self.step_resolution_fraction,
             "core_fwhm_multiple": self.core_fwhm_multiple,
@@ -131,10 +136,53 @@ class PhysicalWindowGeneratorConfig:
             "target_support_sigma_multiple": self.target_support_sigma_multiple,
         }
         for name, value in positives.items():
-            if not math.isfinite(float(value)) or float(value) <= 0.0:
+            if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                    or not math.isfinite(float(value)) or float(value) <= 0.0):
                 raise ValueError(f"{name} must be finite and positive")
-        if self.broad_recovery_default_hi_meV <= self.broad_recovery_default_lo_meV:
+        if (not isinstance(self.broad_recovery_default_lo_meV, (int, float))
+                or isinstance(self.broad_recovery_default_lo_meV, bool)
+                or not isinstance(self.broad_recovery_default_hi_meV, (int, float))
+                or isinstance(self.broad_recovery_default_hi_meV, bool)
+                or not math.isfinite(float(self.broad_recovery_default_lo_meV))
+                or not math.isfinite(float(self.broad_recovery_default_hi_meV))
+                or self.broad_recovery_default_hi_meV
+                <= self.broad_recovery_default_lo_meV):
             raise ValueError("broad-recovery defaults must be [low, high] with low < high")
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "PhysicalWindowGeneratorConfig":
+        """Strictly reconstruct one persisted version-2 generator configuration."""
+        if not isinstance(value, Mapping):
+            raise TypeError("physical-window generator configuration must be a mapping")
+        expected = {
+            "config_schema",
+            "config_version",
+            "step_resolution_fraction",
+            "core_fwhm_multiple",
+            "core_sigma_multiple",
+            "anchor_extension_fwhm_multiple",
+            "rival_band_sigma_multiple",
+            "target_support_sigma_multiple",
+            "broad_recovery",
+        }
+        if set(value) != expected:
+            raise ValueError("physical-window generator configuration fields are invalid")
+        broad = value.get("broad_recovery")
+        if (not isinstance(broad, Mapping)
+                or set(broad) != {"default_lo_meV", "default_hi_meV"}):
+            raise ValueError("physical-window broad-recovery configuration is invalid")
+        return cls(
+            config_schema=value["config_schema"],
+            config_version=value["config_version"],
+            step_resolution_fraction=value["step_resolution_fraction"],
+            core_fwhm_multiple=value["core_fwhm_multiple"],
+            core_sigma_multiple=value["core_sigma_multiple"],
+            anchor_extension_fwhm_multiple=value["anchor_extension_fwhm_multiple"],
+            rival_band_sigma_multiple=value["rival_band_sigma_multiple"],
+            target_support_sigma_multiple=value["target_support_sigma_multiple"],
+            broad_recovery_default_lo_meV=broad["default_lo_meV"],
+            broad_recovery_default_hi_meV=broad["default_hi_meV"],
+        )
 
     def to_dict(self) -> dict:
         return {

@@ -37,6 +37,10 @@ class OfflineRunnerError(RuntimeError):
     """A read-only corpus cannot be safely discovered or published."""
 
 
+class ComparisonUnavailableError(OfflineRunnerError):
+    """Authenticated evidence whose counterfactual comparison cannot be constructed."""
+
+
 def _strict_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -200,11 +204,46 @@ def _stop_cases(campaign_set, census_result, raw_roots: Mapping[str, str]) -> li
     return cases
 
 
-def _campaign_configuration(campaign_root: Path, core: Any) -> tuple[str, str | None]:
+def _current_objective_comparison_scope(objective: Any) -> Mapping[str, str]:
+    """Adapt the current objective to an opaque, versioned applicability identity."""
+    from isar.drive.objective import OBJECTIVE_SCHEMA, ObjectiveSpec
+    from isar.schema.statistics import semantics_fingerprint
+
+    if not isinstance(objective, ObjectiveSpec):
+        raise TypeError("objective must be an ObjectiveSpec")
+    raw = objective.to_dict()
+    if raw.get("schema") != OBJECTIVE_SCHEMA:
+        raise ValueError("objective schema is unsupported")
+    payload = {
+        "schema": raw["schema"],
+        "path": raw["path"],
+        "tolerance_meV": raw["tolerance_meV"],
+        "target_branch": raw["target_branch"],
+        "target_label": raw["target_label"],
+        "target_selector": raw["target_selector"],
+        "target_energy_meV": raw["target_energy_meV"],
+        "energy_search_meV": raw["energy_search_meV"],
+        "identity_search_meV": raw["identity_search_meV"],
+        "target_temperature_K": raw["target_temperature_K"],
+        "hypotheses": raw["hypotheses"],
+        "target_hypothesis": raw["target_hypothesis"],
+        "hypothesis_fingerprint": raw["hypothesis_fingerprint"],
+    }
+    revision = "isar.current_objective_comparison_scope/1"
+    return {
+        "producer_revision": revision,
+        "fingerprint": semantics_fingerprint(revision, payload),
+    }
+
+
+def _campaign_configuration(
+    campaign_root: Path,
+    core: Any,
+) -> tuple[Mapping[str, str] | None, str | None]:
     """Read the frozen campaign-start objective, never mutable card state."""
     path = campaign_root / "report" / "session_log.jsonl"
     if not path.is_file():
-        return hashlib.sha256(b"isar.eig.slice5:campaign-configuration-unavailable").hexdigest(), "campaign_configuration_missing"
+        return None, "campaign_configuration_missing"
     starts = []
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
@@ -218,13 +257,15 @@ def _campaign_configuration(campaign_root: Path, core: Any) -> tuple[str, str | 
                 and payload.get("event") == "campaign_start"):
             starts.append(payload.get("objective"))
     if len(starts) != 1 or not isinstance(starts[0], Mapping):
-        return hashlib.sha256(b"isar.eig.slice5:campaign-configuration-unavailable").hexdigest(), "campaign_configuration_missing"
+        return None, "campaign_configuration_missing"
     try:
         from isar.drive.objective import ObjectiveSpec
-        return core.campaign_configuration_fingerprint(ObjectiveSpec.from_dict(dict(starts[0]))), None
+        del core
+        return _current_objective_comparison_scope(
+            ObjectiveSpec.from_dict(dict(starts[0]))), None
     except (TypeError, ValueError) as error:
         _LOG.warning("campaign configuration is unavailable for %s: %s", campaign_root.name, error)
-        return hashlib.sha256(b"isar.eig.slice5:campaign-configuration-unavailable").hexdigest(), "campaign_configuration_invalid"
+        return None, "campaign_configuration_invalid"
 
 
 def _build_discovery_config(core: Any, campaign_set_path: Path, raw_roots: Mapping[str, str]):
@@ -355,14 +396,42 @@ def _load_sidecar(campaign_root: Path, reference: str, directory: str) -> Mappin
     return value
 
 
-def _prepare_scientific_case(core: Any, campaign_root: Path, row: Mapping[str, Any]):
-    """Reconstruct one ready-only score input from authenticated persisted artifacts."""
+def _persisted_generator(record: Mapping[str, Any]):
+    """Authenticate and rehydrate the generator envelope persisted by scan design."""
+    from isar.drive.acquisition.scan_design import (
+        PHYSICAL_WINDOW_GENERATOR_ID,
+        PHYSICAL_WINDOW_GENERATOR_VERSION,
+        PhysicalWindowGeneratorConfig,
+    )
+
+    generator = record.get("generator")
+    if not isinstance(generator, Mapping) or set(generator) != {
+            "id", "version", "config", "config_fingerprint"}:
+        raise OfflineRunnerError("generator_config_invalid")
+    if (generator["id"] != PHYSICAL_WINDOW_GENERATOR_ID
+            or generator["version"] != PHYSICAL_WINDOW_GENERATOR_VERSION):
+        raise ComparisonUnavailableError("generator_config_unsupported")
+    try:
+        config = PhysicalWindowGeneratorConfig.from_dict(generator["config"])
+    except (TypeError, ValueError) as error:
+        raise OfflineRunnerError("generator_config_invalid") from error
+    if generator["config_fingerprint"] != config.fingerprint:
+        raise OfflineRunnerError("generator_config_fingerprint_mismatch")
+    return config, {
+        "id": generator["id"],
+        "version": generator["version"],
+        "config": config.to_dict(),
+        "config_fingerprint": config.fingerprint,
+    }
+
+
+def _prepare_discovery_case(core: Any, campaign_root: Path, row: Mapping[str, Any]):
+    """Authenticate one comparison case without evaluating either candidate grid."""
     from isar.eig.design_measure import build_scan_window_design_measure
     from isar.eig.eligibility import EligibilityInput
     from isar.eig.qoi import adapt_omega0_target_projection
-    from isar.predictive import evaluate_master_predictive, validate_master_predictive_artifact
+    from isar.predictive import validate_master_predictive_artifact
     from isar.drive.acquisition.scan_design import design_scan_windows
-    from isar.eig.scorer import CandidateEvaluationInput
 
     entry, outcome = _raw_outcome(campaign_root, row)
     action = row.get("action_context") if isinstance(row.get("action_context"), Mapping) else {}
@@ -378,17 +447,27 @@ def _prepare_scientific_case(core: Any, campaign_root: Path, row: Mapping[str, A
     persisted_candidate = next((item for item in candidates if isinstance(item, Mapping)
                                 and item.get("candidate_id") == selected), None)
     if not isinstance(persisted_candidate, Mapping):
-        raise OfflineRunnerError("persisted_legacy_candidate_missing")
+        raise ComparisonUnavailableError("persisted_legacy_candidate_missing")
+    generator_config, generator_identity = _persisted_generator(persisted)
     context = _context_from_record(context_raw)
-    regenerated = design_scan_windows(context)
+    regenerated = design_scan_windows(context, generator_config)
     legacy = regenerated.selected_candidate
-    shadow_transform = core.offline_shadow_context_transform(context)
+    shadow_transform = core.offline_shadow_context_transform(
+        context, generator_config.fingerprint)
     shadow_context = _context_from_record(shadow_transform["offline_context"])
-    shadow = design_scan_windows(shadow_context)
-    shadow_legacy, target = _shadow_pair_candidates(shadow)
-    pair = core.validate_offline_candidate_pair(
-        _persisted_candidate_view(persisted_candidate), _candidate_view(shadow_legacy), _candidate_view(target),
-        regenerated_persisted_legacy=_candidate_view(legacy))
+    shadow = design_scan_windows(shadow_context, generator_config)
+    try:
+        shadow_legacy, target = _shadow_pair_candidates(shadow)
+        pair = core.validate_offline_candidate_pair(
+            _persisted_candidate_view(persisted_candidate),
+            _candidate_view(shadow_legacy),
+            _candidate_view(target),
+            regenerated_persisted_legacy=_candidate_view(legacy),
+            generator_identity=generator_identity,
+        )
+    except (OfflineRunnerError, TypeError, ValueError) as error:
+        raise ComparisonUnavailableError(
+            str(error) or "offline_candidate_reconstruction_failed") from error
 
     predictive_ref = outcome.get("predictive_ref")
     projection_ref = outcome.get("target_projection_ref")
@@ -422,21 +501,37 @@ def _prepare_scientific_case(core: Any, campaign_root: Path, row: Mapping[str, A
     )
     measure = build_scan_window_design_measure(predictive, eligibility_input)
     if measure.status != "available":
-        raise OfflineRunnerError("design_measure_unavailable")
-    # Exactly one pure evaluator call per distinct candidate; the scorer reuses
-    # these immutable evaluations for every policy variant.
+        codes = tuple(measure.reason_codes) + tuple(measure.construction_codes)
+        raise ComparisonUnavailableError(codes[0] if codes else "design_measure_unavailable")
+    recipe = {
+        "measure": measure,
+        "predictive": predictive,
+        "candidates": (shadow_legacy, target),
+    }
+    return pair, shadow_transform, recipe
+
+
+def _prepare_scoring_case(recipe: Mapping[str, Any]):
+    """Evaluate exactly the two authenticated grids for one selected case."""
+    from isar.eig.scorer import CandidateEvaluationInput
+    from isar.predictive import evaluate_master_predictive
+
     evaluations = []
-    for candidate in (shadow_legacy, target):
-        evaluation = evaluate_master_predictive(predictive, candidate.energies, candidate.ncount)
-        if evaluation.available is not True:
-            raise OfflineRunnerError(str(evaluation.reason_code or "predictive_evaluation_unavailable"))
+    for candidate in recipe["candidates"]:
+        evaluation = evaluate_master_predictive(
+            recipe["predictive"], candidate.energies, candidate.ncount)
         evaluations.append(CandidateEvaluationInput(candidate.candidate_id, evaluation))
-    return pair, shadow_transform, (measure, tuple(evaluations))
+    return recipe["measure"], tuple(evaluations)
 
 
-def _build_cases(core: Any, case_payloads: list[dict[str, Any]], configurations: Mapping[str, tuple[str, str | None]], roots: Mapping[str, Path]):
+def _build_cases(
+    core: Any,
+    case_payloads: list[dict[str, Any]],
+    configurations: Mapping[str, tuple[Mapping[str, str] | None, str | None]],
+    roots: Mapping[str, Path],
+):
     """Turn census rows into fail-closed, root-independent core snapshots."""
-    cases, scientific_cases = [], {}
+    cases, scoring_recipes = [], {}
     for row in case_payloads:
         outcome = row.get("outcome") if isinstance(row.get("outcome"), Mapping) else {}
         qoi = row.get("qoi_evidence") if isinstance(row.get("qoi_evidence"), Mapping) else {}
@@ -447,8 +542,8 @@ def _build_cases(core: Any, case_payloads: list[dict[str, Any]], configurations:
         observable = tuple(str(code) for code in eligibility.get("observability_codes", ())
                            if isinstance(code, str))
         stop = row["campaign_stop"]
-        configuration_fingerprint, configuration_problem = configurations[campaign_id]
-        candidate_pair, context_transform, scientific_case = {}, {}, None
+        configuration_scope, configuration_problem = configurations[campaign_id]
+        candidate_pair, context_transform, scoring_recipe = {}, {}, None
         if stop["status"] != "terminal":
             status, reasons = "nonterminal_or_unclassified", ("nonterminal_or_unclassified",)
         elif configuration_problem:
@@ -459,13 +554,18 @@ def _build_cases(core: Any, case_payloads: list[dict[str, Any]], configurations:
             status, reasons = "unassessable", observable
         else:
             try:
-                candidate_pair, context_transform, scientific_case = _prepare_scientific_case(
+                candidate_pair, context_transform, scoring_recipe = _prepare_discovery_case(
                     core, roots[campaign_id], row)
                 status, reasons = "ready", ()
+            except ComparisonUnavailableError as error:
+                _LOG.info("Slice 5.1 case %s comparison is unavailable: %s", campaign_id, error)
+                status, reasons = "comparison_unavailable", (
+                    str(error) or "offline_comparison_reconstruction_failed",)
+                candidate_pair, context_transform, scoring_recipe = {}, {}, None
             except (OfflineRunnerError, OSError, TypeError, ValueError, KeyError) as error:
-                _LOG.info("Slice 5 case %s is unassessable: %s", campaign_id, error)
+                _LOG.info("Slice 5.1 case %s is unassessable: %s", campaign_id, error)
                 status, reasons = "unassessable", (str(error) or "offline_reconstruction_failed",)
-                candidate_pair, context_transform, scientific_case = {}, {"revision": "unavailable"}, None
+                candidate_pair, context_transform, scoring_recipe = {}, {}, None
         action = row.get("action_context") if isinstance(row.get("action_context"), Mapping) else {}
         scan_design = row.get("scan_design") if isinstance(row.get("scan_design"), Mapping) else {}
         projection = row.get("projection") if isinstance(row.get("projection"), Mapping) else {}
@@ -486,15 +586,18 @@ def _build_cases(core: Any, case_payloads: list[dict[str, Any]], configurations:
             "scan_design_inventory": scan_design.get("inventory_fingerprint"),
             "scan_design_context": scan_design.get("context_fingerprint"),
         }
-        if scientific_case is not None:
-            measure, _evaluations = scientific_case
+        if scoring_recipe is not None:
+            measure = scoring_recipe["measure"]
             source_fingerprints.update({
                 "design_measure": measure.design_measure_fingerprint,
                 "source_draw_identity": measure.source_draw_identity_fingerprint,
+                "predictive_basis": dict(measure.source_identities).get(
+                    "predictive_basis_fingerprint"),
+                "generator_config": candidate_pair["generator"]["config_fingerprint"],
             })
-        identity = hashlib.sha256(_canonical_json({
+        decision_identity = hashlib.sha256(_canonical_json({
             "terminal": {"state": stop.get("state"), "reasons": stop.get("reasons")},
-            "campaign_configuration": configuration_fingerprint,
+            "campaign_configuration": configuration_scope,
             "outcome": {key: outcome.get(key) for key in ("master_revision", "hkl", "evidence_sink",
                         "track_revision", "track_state", "candidate_id", "candidate_state",
                         "selected_candidate_index")},
@@ -512,11 +615,25 @@ def _build_cases(core: Any, case_payloads: list[dict[str, Any]], configurations:
             "design_measure": source_fingerprints.get("design_measure"),
             "source_draw_identity": source_fingerprints.get("source_draw_identity"),
         }).encode("utf-8")).hexdigest()
+        source_provenance = core.make_source_provenance(
+            reviewed_campaign_id=campaign_id,
+            master_session_key=str(row["master_session_key"]),
+            detector_id=str(row["detector_id"]),
+            cohort=str(row["cohort"]),
+            evidence_tier=str(row["evidence_tier"]),
+        )
+        case_identity = source_provenance["source_provenance_fingerprint"]
         cases.append(core.OfflineCaseSnapshot(
-            case_identity=identity,
-            campaign_configuration_fingerprint=configuration_fingerprint,
-            qoi_id=str(qoi.get("qoi_id") or "excitation.energy"),
-            qoi_unit=str(qoi.get("qoi_unit") or "meV"),
+            case_identity=case_identity,
+            decision_snapshot_identity=decision_identity,
+            source_provenance=source_provenance,
+            campaign_configuration_scope=configuration_scope,
+            qoi_id=(str(qoi["qoi_id"])
+                    if qoi.get("status") in {"valid", "qualified"}
+                    and isinstance(qoi.get("qoi_id"), str) and qoi.get("qoi_id") else None),
+            qoi_unit=(str(qoi["qoi_unit"])
+                      if qoi.get("status") in {"valid", "qualified"}
+                      and isinstance(qoi.get("qoi_unit"), str) and qoi.get("qoi_unit") else None),
             status=status,
             reason_codes=tuple(dict.fromkeys(reasons)),
             source_fingerprints=source_fingerprints,
@@ -529,9 +646,9 @@ def _build_cases(core: Any, case_payloads: list[dict[str, Any]], configurations:
                  ("eig_shadow", "ineligible"))
             ),
         ))
-        if scientific_case is not None:
-            scientific_cases[identity] = scientific_case
-    return tuple(sorted(cases, key=lambda item: item.case_identity)), scientific_cases
+        if scoring_recipe is not None:
+            scoring_recipes[case_identity] = scoring_recipe
+    return tuple(sorted(cases, key=lambda item: item.case_identity)), scoring_recipes
 
 
 def discover(campaign_set_path: Path, output: Path, *, overwrite: bool = False) -> Mapping[str, Any]:
@@ -582,12 +699,64 @@ def load_offline_corpus_index(path: Path, core: Any | None = None):
 
 
 def load_qoi_distinction_policies(path: Path | None, core: Any | None = None):
-    """Strictly load policy serialization and delegate all validation to the core."""
+    """Load hand-authored TOML; fingerprints are optional but authenticated when supplied."""
     core = _offline_core() if core is None else core
     if path is None:
         return core.QoIDistinctionPolicySet(())
     raw = _strict_toml(_resolve_output(path))
-    return core.QoIDistinctionPolicySet.from_dict(raw)
+    if not isinstance(raw, Mapping) or set(raw) - {
+            "contract", "policies", "policy_set_fingerprint"}:
+        raise OfflineRunnerError("qoi_policy_file_invalid")
+    if raw.get("contract") != core.QOI_DISTINCTION_POLICY_SET_CONTRACT:
+        raise OfflineRunnerError("qoi_policy_file_contract_unsupported")
+    policy_records = raw.get("policies")
+    if not isinstance(policy_records, list):
+        raise OfflineRunnerError("qoi_policy_file_invalid")
+    policies = []
+    try:
+        for policy_raw in policy_records:
+            if not isinstance(policy_raw, Mapping) or set(policy_raw) - {
+                    "contract", "policy_id", "policy_kind", "source_qoi", "scope",
+                    "provenance", "variants", "policy_fingerprint"}:
+                raise ValueError("policy fields are invalid")
+            if policy_raw.get("contract") != core.QOI_DISTINCTION_POLICY_CONTRACT:
+                raise ValueError("policy contract is unsupported")
+            variant_records = policy_raw.get("variants")
+            if not isinstance(variant_records, list):
+                raise ValueError("policy variants are invalid")
+            variants = []
+            for variant_raw in variant_records:
+                if not isinstance(variant_raw, Mapping) or set(variant_raw) - {
+                        "variant_id", "parameters", "variant_fingerprint"}:
+                    raise ValueError("policy variant fields are invalid")
+                variant = core.QoIDistinctionVariant(
+                    variant_raw.get("variant_id"), variant_raw.get("parameters"))
+                supplied = variant_raw.get("variant_fingerprint")
+                if supplied is not None and supplied != variant.variant_fingerprint:
+                    raise ValueError("variant_fingerprint does not authenticate policy variant")
+                variants.append(variant)
+            policy = core.QoIDistinctionPolicy(
+                policy_id=policy_raw.get("policy_id"),
+                policy_kind=policy_raw.get("policy_kind"),
+                source_qoi=policy_raw.get("source_qoi"),
+                scope=policy_raw.get("scope"),
+                provenance=policy_raw.get("provenance"),
+                variants=tuple(variants),
+            )
+            supplied = policy_raw.get("policy_fingerprint")
+            if supplied is not None and supplied != policy.policy_fingerprint:
+                raise ValueError("policy_fingerprint does not authenticate policy")
+            if policy.policy_kind == "isar.scalar_absolute_partitions/o36.5":
+                for variant in policy.variants:
+                    core.compile_qoi_distinction_policy(policy, variant)
+            policies.append(policy)
+        policy_set = core.QoIDistinctionPolicySet(tuple(policies))
+        supplied = raw.get("policy_set_fingerprint")
+        if supplied is not None and supplied != policy_set.policy_set_fingerprint:
+            raise ValueError("policy_set_fingerprint does not authenticate policy set")
+        return core.validate_qoi_distinction_policy_set(policy_set)
+    except (KeyError, TypeError, ValueError) as error:
+        raise OfflineRunnerError(f"qoi_policy_file_invalid: {error}") from error
 
 
 def score(campaign_set_path: Path, corpus_index_path: Path, output: Path, *, policy_file: Path | None,
@@ -602,7 +771,7 @@ def score(campaign_set_path: Path, corpus_index_path: Path, output: Path, *, pol
     fresh = analyze_campaign_set(campaign_set, _REPO_ROOT)
     configurations = {spec.campaign_id: _campaign_configuration(spec.root, core)
                       for spec in campaign_set.campaigns}
-    cases, discovered_scientific_cases = _build_cases(
+    cases, discovered_scoring_recipes = _build_cases(
         core, _stop_cases(campaign_set, fresh, raw_roots), configurations,
         {spec.campaign_id: spec.root for spec in campaign_set.campaigns})
     rediscovered = core.OfflineCorpusIndex(
@@ -623,12 +792,15 @@ def score(campaign_set_path: Path, corpus_index_path: Path, output: Path, *, pol
                          "rediscovered_corpus_fingerprint": rediscovered.corpus_fingerprint},
         )
     else:
-        # Tests and a future artifact-reader pass prepared pure inputs through
-        # this seam.  The filesystem discovery remains the sole place allowed
-        # to obtain those artifacts; the core still receives no paths.
+        if prepared_scientific_cases is None:
+            def scientific_case_provider(case):
+                recipe = discovered_scoring_recipes.get(case.case_identity)
+                return None if recipe is None else _prepare_scoring_case(recipe)
+        else:
+            def scientific_case_provider(case):
+                return prepared_scientific_cases.get(case.case_identity)
         report = core.score_offline_comparison(
-            supplied, policy_set, scoring_config,
-            discovered_scientific_cases if prepared_scientific_cases is None else prepared_scientific_cases)
+            supplied, policy_set, scoring_config, scientific_case_provider)
     payload = report.to_dict()
     _atomic_write_json(output_path, payload, overwrite=overwrite)
     return payload

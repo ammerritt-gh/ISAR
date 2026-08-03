@@ -425,28 +425,30 @@ eligible for later shadow computation, `diagnostic` means computed shadow eviden
 power, and `ineligible` grants neither. An unavailable set has all three scopes ineligible. No Slice 4
 record contains a winner, recommendation, authority threshold, selected candidate, or acquisition act.
 
-### Controlled offline counterfactual (Slice 5)
+### Controlled offline counterfactual (Slice 5.1)
 
 Slice 5 is an offline transformation from a completed campaign in `off` mode to a diagnostic
 `shadow` counterfactual. It neither replays the campaign nor changes any persisted acquisition:
-`isar.eig_offline_corpus_index/o36.5` discovers completed decision snapshots, strict loaders open
-the artifacts they name, and `isar.eig_offline_comparison_report/o36.5` scores the frozen eligible
+`isar.eig_offline_corpus_index/o36.5.1` discovers completed decision snapshots, strict loaders open
+the artifacts they name, and `isar.eig_offline_comparison_report/o36.5.1` scores the frozen eligible
 pair `legacy_uniform/1` and `target_core/1` at equal per-point exposure. The pure
-`isar.offline_shadow_context_transform/o36.5` is I/O-free; corpus indexing, strict loading,
+`isar.offline_shadow_context_transform/o36.5.1` is I/O-free; corpus indexing, strict loading,
 stale-artifact rejection, and report serialization are tools-layer adapters around it. No
 tools-layer result is a new production decision.
 
 Discovery is complete only when its decision snapshots are coherent: a snapshot must name one
 completed decision context whose inventory, action identity, predictive/QoI evidence, and policy
-provenance join under their recorded fingerprints. Its `campaign_configuration` scope fingerprint
-matches only the chosen narrow validated objective payload: objective schema, ordered Q path,
-tolerance, target identity/selector/anchor, target and identity-search domains, target temperature,
-and hypotheses, target hypothesis, and hypothesis fingerprint. It excludes name, metadata, budget,
-tier, runtime/source provenance, and all steering. The separate `case_identity` records the selected
-action and canonical Q, target and master/authority revisions, policy identity, and completed decision
-snapshot. Neither identity claims a global discovery or distinction scale. Variants remain separate
-diagnostics: their fingerprints and refusal reasons are never collapsed into one inferred scientific
-category.
+provenance join under their recorded fingerprints. The generic core consumes an opaque, versioned
+`campaign_configuration` applicability identity. The current tools-layer producer,
+`isar.current_objective_comparison_scope/1`, fingerprints only the narrow validated objective payload:
+objective schema, ordered Q path, tolerance, target identity/selector/anchor, target and
+identity-search domains, target temperature, hypotheses, target hypothesis, and hypothesis
+fingerprint. It excludes name, metadata, budget, tier, runtime/source provenance, and all steering.
+`case_identity` is the population identity over reviewed campaign, master, detector, cohort, and
+evidence tier; `decision_snapshot_identity` separately records the scientific semantic content.
+Case-scoped policies target the population identity. Neither identity claims a global discovery or
+distinction scale. Variants remain separate diagnostics: their fingerprints and refusal reasons are
+never collapsed into one inferred scientific category.
 
 The distinction-policy set `isar.qoi_distinction_policy_set/o36.5` and each
 `isar.qoi_distinction_policy/o36.5` are hand-authored, exactly scoped scientific intent. A policy
@@ -456,29 +458,46 @@ default, or a general model of physical phenomena. The sole currently supported 
 `isar.scalar_absolute_partitions/o36.5`, is the first compiler for the conditional target-QoI
 calculation, not a universal phenomenon model; its identity stays explicit in the score set.
 
+The TOML authoring loader computes omitted variant, policy, and policy-set fingerprints, but every
+supplied fingerprint must authenticate exactly. JSON artifact readers remain strict. Supported
+policy parameters compile while the file is loaded, so malformed scientific configuration fails
+before report writing. Unknown versioned policy kinds remain authenticated and are reported as
+`qoi_policy_unsupported` without evaluating candidates.
+
 Loaders fail closed. Missing, malformed, stale, mismatched, or mutually incoherent artifacts are
 reported as discovery/loader diagnostics and cannot enter the retained corpus. The public refusal
 surface includes `nonterminal_or_unclassified`, `corpus_index_stale`, `qoi_policy_missing`,
-`qoi_policy_ambiguous`, and `qoi_policy_unsupported`. The retained corpus may legitimately contain
+`qoi_policy_ambiguous`, `qoi_policy_unsupported`, `offline_scientific_case_missing`,
+`offline_scientific_case_mismatch`, `score_set_incomplete`, and `comparison_unavailable`. Missing or
+unauthenticated source evidence is `unassessable`; an authenticated eligible case whose
+counterfactual construction fails is `comparison_unavailable`. The retained corpus may legitimately contain
 zero ready comparisons: a zero-ready result is evidence that no completed state met the narrow
 contract, not a request to relax it. The retained evidence basis presently covers 12 reviewed roots,
 233 master rows, and 230 pooled outcomes, with zero authenticated predictive `/2` plus projection
-evidence. The implemented runner classified those 230 comparison snapshots as 64
-`nonterminal_or_unclassified`, 74 `scientifically_ineligible`, 92 `unassessable`, and zero `ready`;
-the corresponding no-policy score report completed with zero scored results. These are observed
+evidence. The repaired `o36.5.1` runner classified those 230 comparison snapshots as 64
+`nonterminal_or_unclassified`, 74 `scientifically_ineligible`, 92 `unassessable`, zero
+`comparison_unavailable`, and zero `ready`. Its corpus fingerprint is
+`b234c33ddfdc1389d367c348f247bcf974808e5192271bcc39ddfa40a013de95`; the corresponding
+no-policy score report completed with zero scored results and fingerprint
+`ebfd2056608bf3ae90a5a0339516489813c0ba5f82e4e0e6edfef1a698133888`. The dated Slice 5.1
+historical-evidence record under `docs/campaigns/` indexes the retained artifacts. These are observed
 availability counts, not an observed successful comparison, and they do not authorize relaxing the
 contract.
 
-For every ready record the transform verifies the exact candidate pair, their canonical executed
-grids, and equal per-point exposure before passing both evaluations to one common score set. The
+For every ready record the transform authenticates and rehydrates the inventory's exact generator
+configuration, applies it to both regenerations, and verifies the candidate pair, canonical executed
+grids, and equal per-point exposure. Discovery performs no arbitrary-grid evaluation. After stale
+corpus and policy refusals clear, one lazy scoring adapter evaluates legacy and target-core exactly
+once and reuses those two evaluations across every policy variant. The
 comparison is `target_core_minus_legacy` (candidate B minus candidate A) on the absolute and
 per-executed-point target-QoI scales; a candidate mismatch or exposure mismatch is a diagnostic
 refusal, never a substituted control or normalized estimate. In particular,
 `persisted_legacy_candidate_mismatch`, `shadow_legacy_candidate_mismatch`,
 `candidate_pair_degenerate`, `candidate_family_missing`, and `candidate_exposure_mismatch` remain
-separate diagnoses. The retained result carries the completed-source and counterfactual identities,
-`isar.eig_offline_scoring_config/o36.5` identity, score-set identity, policy provenance, and
-diagnostic codes needed to audit that transformation.
+separate diagnoses. Each result embeds `isar.offline_score_evidence/o36.5.1`: exact policy and
+partition identities, candidate-pair and candidate-score identities, absolute and per-point scores,
+the original Slice 4 pair orientation, the signed Slice 5.1 deltas, and all score-set/candidate/source
+refusal codes. `isar.eig_offline_scoring_config/o36.5.1` binds the simulation configuration.
 
 Slice 5 grants only `eig_shadow = diagnostic`; `eig_authoritative` and
 `acquisition_selection` remain ineligible. It does not write an inventory, produce a recommendation,
@@ -501,9 +520,11 @@ planned, separately gated step that will build scored shadow inventories.
 5. **Slice 4 — pure full-vector Poisson scorer (implemented).** Use conditional target-QoI
    information, the full count vector, common random numbers, paired uncertainty, and information per
    executed point, with no candidate construction or selection authority.
-6. **Slice 5 — offline legacy versus target_core scoring (implemented).** Transform coherent
-   completed `off` decisions into controlled `shadow` counterfactual diagnostics; require the exact
-   pair and equal per-point exposure; grant no inventory, execution, or selection authority.
+6. **Slice 5.1 — repaired offline legacy versus target_core scoring (implemented).** Transform
+   coherent completed `off` decisions into controlled `shadow` counterfactual diagnostics; use the
+   persisted generator configuration, evaluate lazily after policy resolution, retain complete score
+   evidence, require the exact pair and equal per-point exposure, and grant no inventory, execution,
+   or selection authority.
 7. **Slice 6 — scored shadow inventories.** Score `legacy_uniform` and `target_core`; execute legacy
    exactly within eligible same-action comparisons. Existing non-EIG behavior remains responsible
    outside eligibility.

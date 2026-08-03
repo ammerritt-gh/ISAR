@@ -386,6 +386,105 @@ def test_score_set_read_gate_rejects_impossible_empty_complete_set():
         scorer_module.validate_scan_window_score_set(forged)
 
 
+def _refingerprint_single_candidate_score_set(score_set, candidate):
+    candidate = replace(candidate, candidate_score_fingerprint="")
+    candidate = replace(candidate, candidate_score_fingerprint=scorer_module._fingerprint(
+        scorer_module._CANDIDATE_SCORE_FINGERPRINT_DOMAIN,
+        scorer_module._candidate_fingerprint_payload(
+            candidate,
+            measure_fingerprint=score_set.design_measure_fingerprint,
+            discretization_fingerprint=score_set.qoi_discretization_fingerprint,
+            seed=score_set.seed,
+            simulation_count=score_set.simulation_count,
+            block_count=score_set.block_count,
+            backend=dict(score_set.numerical_backend),
+        ),
+    ))
+    forged = replace(
+        score_set, _candidate_scores=(candidate,), score_set_fingerprint="")
+    return replace(forged, score_set_fingerprint=scorer_module._fingerprint(
+        scorer_module._SCORE_SET_FINGERPRINT_DOMAIN,
+        scorer_module._score_set_payload(forged),
+    ))
+
+
+def test_score_set_read_gate_accepts_authenticated_foreign_backend(monkeypatch):
+    measure = _measure()
+    alternate = {
+        "numpy_version": "foreign-numpy",
+        "scipy_version": "foreign-scipy",
+        "poisson_inverse_cdf": "scipy.stats.poisson.ppf",
+        "mixture_logsumexp": "scipy.special.logsumexp",
+    }
+    monkeypatch.setattr(scorer_module, "_backend_identities", lambda: alternate)
+    score_set = _score(measure, [("candidate", _evaluation(
+        measure, [[1.0, 2.0, 3.0], [2.0, 3.0, 4.0]]))])
+    monkeypatch.setattr(scorer_module, "_backend_identities", lambda: {
+        **alternate, "numpy_version": "current-numpy"})
+    assert scorer_module.validate_scan_window_score_set(score_set) is score_set
+
+
+def test_score_set_read_gate_reproduces_candidate_block_estimate():
+    measure = _measure()
+    score_set = _score(measure, [("candidate", _evaluation(
+        measure, [[1.0, 2.0, 3.0], [2.0, 3.0, 4.0]]))])
+    candidate = replace(
+        score_set._candidate_scores[0],
+        conditional_target_qoi_information_nats=(
+            score_set._candidate_scores[0].conditional_target_qoi_information_nats + 0.1),
+    )
+    forged = _refingerprint_single_candidate_score_set(score_set, candidate)
+    with pytest.raises(ValueError, match="block estimates"):
+        scorer_module.validate_scan_window_score_set(forged)
+
+
+def test_score_set_read_gate_requires_unavailable_candidate_reason():
+    measure = _measure()
+    score_set = _score(measure, [("candidate", _evaluation(
+        measure, [], available=False, reason_code="source_refusal"))])
+    candidate = replace(score_set._candidate_scores[0], reason_codes=())
+    forged = _refingerprint_single_candidate_score_set(score_set, candidate)
+    with pytest.raises(ValueError, match="scientific values"):
+        scorer_module.validate_scan_window_score_set(forged)
+
+
+def test_score_set_read_gate_reproduces_paired_standard_error():
+    measure = _measure()
+    score_set = _score(measure, [
+        ("a", _evaluation(measure, [[1.0, 2.0, 3.0], [2.0, 3.0, 4.0]])),
+        ("b", _evaluation(measure, [[2.0, 3.0, 4.0], [3.0, 4.0, 5.0]])),
+    ])
+    comparison = replace(
+        score_set._pairwise_comparisons[0],
+        delta_information_standard_error_nats=(
+            score_set._pairwise_comparisons[0].delta_information_standard_error_nats + 0.1),
+        pairwise_comparison_fingerprint="",
+    )
+    comparison = replace(
+        comparison,
+        pairwise_comparison_fingerprint=scorer_module._fingerprint(
+            scorer_module._PAIRWISE_FINGERPRINT_DOMAIN,
+            scorer_module._pairwise_fingerprint_payload(
+                comparison,
+                measure_fingerprint=score_set.design_measure_fingerprint,
+                discretization_fingerprint=score_set.qoi_discretization_fingerprint,
+                seed=score_set.seed,
+                simulation_count=score_set.simulation_count,
+                block_count=score_set.block_count,
+                backend=dict(score_set.numerical_backend),
+            ),
+        ),
+    )
+    forged = replace(
+        score_set, _pairwise_comparisons=(comparison,), score_set_fingerprint="")
+    forged = replace(forged, score_set_fingerprint=scorer_module._fingerprint(
+        scorer_module._SCORE_SET_FINGERPRINT_DOMAIN,
+        scorer_module._score_set_payload(forged),
+    ))
+    with pytest.raises(ValueError, match="pairwise comparison values"):
+        scorer_module.validate_scan_window_score_set(forged)
+
+
 def test_real_producer_chain_joins_arbitrary_grid_evaluation(monkeypatch):
     helpers = runpy.run_path(str(Path(__file__).with_name("test_design_measure.py")))
     artifact, _projection, _qoi, eligibility = helpers["_bundle"](monkeypatch)
