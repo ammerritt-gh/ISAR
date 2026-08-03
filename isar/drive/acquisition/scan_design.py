@@ -19,8 +19,11 @@ the whole family, unscored).
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Any, Mapping
 
 from isar.drive.acquisition.inventory import (
     CANONICALIZATION_VERSION,
@@ -71,11 +74,19 @@ from isar.schema.hypotheses import (
     SCAN_WINDOW_EIG_AUTHORITATIVE_UNAVAILABLE,
     SCAN_WINDOW_EIG_MODES,
 )
+from isar.eig.shadow_inventory import (
+    STATUS_COMPLETE as SHADOW_STATUS_COMPLETE,
+    STATUS_PARTIAL as SHADOW_STATUS_PARTIAL,
+    ScanDesignShadowScoring,
+    validate_shadow_candidate_pair,
+    validate_scan_design_shadow_scoring,
+)
 
 
 AUXILIARY_DETECTION_KINDS = frozenset({"identity_rival_probe"})
 
-SCAN_DESIGN_INVENTORY_SCHEMA = "isar.scan_design_inventory/2"
+SCAN_DESIGN_INVENTORY_SCHEMA_V2 = "isar.scan_design_inventory/2"
+SCAN_DESIGN_INVENTORY_SCHEMA = "isar.scan_design_inventory/3"
 SCAN_DESIGN_CANDIDATE_SCHEMA = "isar.scan_design_candidate/2"
 
 # Provider identity for the generic audit envelope.  Only the *physical* predictive provider and the
@@ -93,6 +104,12 @@ STEERING_REGIME = "physical_inference"
 
 SELECTION_BASIS_LEGACY_CONTROL_OFF = "legacy_control_off"
 SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED = "shadow_legacy_control_unscored"
+SELECTION_BASIS_SHADOW_LEGACY_CONTROL_SCORED = "shadow_legacy_control_scored"
+
+_FORBIDDEN_SHADOW_DECISION_FIELDS = frozenset({
+    "winner", "winning_candidate", "recommended_candidate", "recommendation",
+    "threshold", "selection_threshold", "eig_selected_candidate_id",
+})
 
 _DiagnosticValue = bool | int | float | None
 
@@ -125,6 +142,35 @@ def _diagnostic_items(values: dict[str, _DiagnosticValue]) -> tuple[
 def _diagnostic_dict(values: tuple[tuple[str, _DiagnosticValue], ...]) -> dict[
         str, _DiagnosticValue]:
     return dict(values)
+
+
+def _decoded_number(value: Any) -> Any:
+    """Reverse :func:`json_number` when reconstructing a persisted audit record."""
+    if value == "nan":
+        return float("nan")
+    if value == "+inf":
+        return float("inf")
+    if value == "-inf":
+        return float("-inf")
+    return value
+
+
+def _decoded_pair(value: Any) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) != 2:
+        raise ValueError("persisted scan-design pair must contain two values")
+    return tuple(_decoded_number(item) for item in value)
+
+
+def _contains_forbidden_shadow_decision(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return (bool(set(value) & _FORBIDDEN_SHADOW_DECISION_FIELDS)
+                or any(_contains_forbidden_shadow_decision(item)
+                       for item in value.values()))
+    if isinstance(value, (list, tuple)):
+        return any(_contains_forbidden_shadow_decision(item) for item in value)
+    return False
 
 
 @dataclass(frozen=True)
@@ -250,6 +296,89 @@ class ScanDesignContext:
             },
         }
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "ScanDesignContext":
+        if not isinstance(value, Mapping):
+            raise TypeError("scan-design context must be a mapping")
+        expected = {
+            "scientific_action_fingerprint", "hkl", "q", "kind", "reason",
+            "window_family", "declared_energy_lo", "declared_energy_hi",
+            "target_prediction_mean_meV", "target_prediction_sigma_meV",
+            "design_prediction_mean_meV", "design_prediction_sigma_meV",
+            "resolution_fwhm_meV", "survey", "energy_search_meV", "target_band",
+            "rival_band", "widen_factor", "positive_only", "policy_max_points",
+            "runtime_max_points", "tolerance_meV", "scan_window_eig_mode",
+            "minimum_target_support_points", "count_policy", "count_state",
+            "runtime_limits", "budget",
+        }
+        if set(value) != expected:
+            raise ValueError("scan-design context fields are invalid")
+        hkl = value["hkl"]
+        if not isinstance(hkl, list) or len(hkl) != 3:
+            raise ValueError("scan-design hkl must contain exactly three values")
+        count_policy = value["count_policy"]
+        count_state = value["count_state"]
+        runtime_limits = value["runtime_limits"]
+        budget = value["budget"]
+        if (not isinstance(count_policy, Mapping)
+                or set(count_policy) != {"quicklook_ncount", "production_ncount",
+                                         "identity_detection_ncount", "dynamic_ncount",
+                                         "tolerance_margin", "ncount_growth_cap",
+                                         "max_ncount_per_scan"}
+                or not isinstance(count_state, Mapping)
+                or set(count_state) != {"diagnostic_halfwidth_meV",
+                                        "certification_halfwidth_meV", "effective_exposure",
+                                        "submitted_exposure", "production_scans",
+                                        "last_submitted_ncount"}
+                or not isinstance(runtime_limits, Mapping)
+                or set(runtime_limits) != {"max_neutrons_per_point", "queue_neutron_budget"}
+                or not isinstance(budget, Mapping)
+                or set(budget) != {"kind", "amount", "spent"}):
+            raise ValueError("scan-design nested context fields are invalid")
+        item = cls(
+            scientific_action_fingerprint=value["scientific_action_fingerprint"],
+            hkl=tuple(_decoded_number(item) for item in hkl),
+            q=_decoded_number(value["q"]), kind=value["kind"], reason=value["reason"],
+            window_family=value["window_family"],
+            declared_energy_lo=_decoded_number(value["declared_energy_lo"]),
+            declared_energy_hi=_decoded_number(value["declared_energy_hi"]),
+            target_prediction_mean_meV=_decoded_number(value["target_prediction_mean_meV"]),
+            target_prediction_sigma_meV=_decoded_number(value["target_prediction_sigma_meV"]),
+            design_prediction_mean_meV=_decoded_number(value["design_prediction_mean_meV"]),
+            design_prediction_sigma_meV=_decoded_number(value["design_prediction_sigma_meV"]),
+            resolution_fwhm_meV=_decoded_number(value["resolution_fwhm_meV"]),
+            survey=value["survey"], energy_search_meV=_decoded_pair(value["energy_search_meV"]),
+            target_band=_decoded_pair(value["target_band"]),
+            rival_band=_decoded_pair(value["rival_band"]),
+            widen_factor=_decoded_number(value["widen_factor"]),
+            positive_only=value["positive_only"], policy_max_points=value["policy_max_points"],
+            runtime_max_points=value["runtime_max_points"],
+            tolerance_meV=_decoded_number(value["tolerance_meV"]),
+            scan_window_eig_mode=value["scan_window_eig_mode"],
+            minimum_target_support_points=value["minimum_target_support_points"],
+            quicklook_ncount=count_policy["quicklook_ncount"],
+            production_ncount=count_policy["production_ncount"],
+            identity_detection_ncount=count_policy["identity_detection_ncount"],
+            dynamic_ncount=count_policy["dynamic_ncount"],
+            tolerance_margin=_decoded_number(count_policy["tolerance_margin"]),
+            ncount_growth_cap=_decoded_number(count_policy["ncount_growth_cap"]),
+            max_ncount_per_scan=count_policy["max_ncount_per_scan"],
+            diagnostic_halfwidth_meV=_decoded_number(count_state["diagnostic_halfwidth_meV"]),
+            certification_halfwidth_meV=_decoded_number(
+                count_state["certification_halfwidth_meV"]),
+            effective_exposure=_decoded_number(count_state["effective_exposure"]),
+            submitted_exposure=_decoded_number(count_state["submitted_exposure"]),
+            production_scans=count_state["production_scans"],
+            last_submitted_ncount=count_state["last_submitted_ncount"],
+            runtime_max_neutrons_per_point=runtime_limits["max_neutrons_per_point"],
+            runtime_queue_neutron_budget=_decoded_number(runtime_limits["queue_neutron_budget"]),
+            budget_kind=budget["kind"], budget_amount=_decoded_number(budget["amount"]),
+            budget_spent=_decoded_number(budget["spent"]),
+        )
+        if canonical_json(item.to_dict()) != canonical_json(dict(value)):
+            raise ValueError("scan-design context does not reproduce from persisted content")
+        return item
+
     @property
     def fingerprint(self) -> str:
         payload = canonical_json(self.to_dict())
@@ -328,6 +457,49 @@ class ScanDesignCandidate:
         value["candidate_id"] = self.candidate_id
         return value
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "ScanDesignCandidate":
+        if not isinstance(value, Mapping):
+            raise TypeError("scan-design candidate must be a mapping")
+        expected = {
+            "candidate_family", "generator_id", "generator_version", "hkl", "q",
+            "energy_window", "scan_command", "grid_adapter", "scoring_grid",
+            "grid_fingerprint", "ncount", "kind", "reason", "nominal_cost",
+            "count_diagnostics", "alias_families", "candidate_id",
+        }
+        if set(value) != expected:
+            raise ValueError("scan-design candidate fields are invalid")
+        window = value["energy_window"]
+        nominal_cost = value["nominal_cost"]
+        diagnostics = value["count_diagnostics"]
+        hkl = value["hkl"]
+        aliases = value["alias_families"]
+        if (not isinstance(window, Mapping)
+                or set(window) != {"e_lo", "e_hi", "e_step", "n_points"}
+                or not isinstance(nominal_cost, Mapping)
+                or set(nominal_cost) != {"kind", "value"}
+                or nominal_cost["kind"] != "point_neutrons"
+                or not isinstance(diagnostics, Mapping)
+                or not isinstance(hkl, list) or len(hkl) != 3
+                or not isinstance(aliases, list)
+                or any(not isinstance(alias, str) for alias in aliases)):
+            raise ValueError("scan-design candidate nested fields are invalid")
+        item = cls(
+            hkl=tuple(_decoded_number(part) for part in hkl),
+            q=_decoded_number(value["q"]),
+            e_lo=_decoded_number(window["e_lo"]), e_hi=_decoded_number(window["e_hi"]),
+            e_step=_decoded_number(window["e_step"]), n_points=window["n_points"],
+            ncount=value["ncount"], kind=value["kind"], reason=value["reason"],
+            nominal_cost=nominal_cost["value"],
+            count_diagnostics=tuple(sorted(
+                (str(key), _decoded_number(item)) for key, item in diagnostics.items())),
+            candidate_family=value["candidate_family"], generator_id=value["generator_id"],
+            generator_version=value["generator_version"], alias_families=tuple(aliases),
+        )
+        if canonical_json(item.to_dict()) != canonical_json(dict(value)):
+            raise ValueError("scan-design candidate does not reproduce from persisted content")
+        return item
+
     @property
     def candidate_id(self) -> str:
         payload = canonical_json({
@@ -366,6 +538,25 @@ class ScanDesignRefusal:
             },
         }
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "ScanDesignRefusal":
+        if not isinstance(value, Mapping) or set(value) != {
+                "candidate_family", "generator_id", "generator_version", "refused",
+                "reason_code", "detail"}:
+            raise ValueError("scan-design refusal fields are invalid")
+        if (value["generator_id"] != PHYSICAL_WINDOW_GENERATOR_ID
+                or value["generator_version"] != PHYSICAL_WINDOW_GENERATOR_VERSION
+                or value["refused"] is not True or not isinstance(value["detail"], Mapping)):
+            raise ValueError("scan-design refusal metadata is invalid")
+        item = cls(
+            candidate_family=value["candidate_family"], reason_code=value["reason_code"],
+            detail=tuple(sorted((str(key), _decoded_number(part))
+                                for key, part in value["detail"].items())),
+        )
+        if canonical_json(item.to_dict()) != canonical_json(dict(value)):
+            raise ValueError("scan-design refusal does not reproduce from persisted content")
+        return item
+
 
 @dataclass(frozen=True)
 class ScanDesignInventory:
@@ -379,6 +570,7 @@ class ScanDesignInventory:
     refusals: tuple[ScanDesignRefusal, ...] = ()
     generator_config: PhysicalWindowGeneratorConfig = field(
         default_factory=lambda: DEFAULT_WINDOW_GENERATOR_CONFIG)
+    shadow_scoring: ScanDesignShadowScoring | None = None
 
     def __post_init__(self) -> None:
         candidate_ids = [candidate.candidate_id for candidate in self.candidates]
@@ -386,6 +578,45 @@ class ScanDesignInventory:
             raise ValueError("scan-design inventory must contain at least one candidate")
         if candidate_ids.count(self.selected_candidate_id) != 1:
             raise ValueError("selected scan-design candidate must occur exactly once")
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("scan-design candidate identities must be unique")
+        legacy = [candidate for candidate in self.candidates
+                  if candidate.candidate_family == FAMILY_LEGACY_UNIFORM]
+        if len(legacy) != 1 or self.selected_candidate_id != legacy[0].candidate_id:
+            raise ValueError("scan-design selection must retain exactly one legacy control")
+        if self.inventory_version not in {
+                SCAN_DESIGN_INVENTORY_SCHEMA_V2, SCAN_DESIGN_INVENTORY_SCHEMA}:
+            raise ValueError("scan-design inventory contract is unsupported")
+        scoring = self.shadow_scoring
+        if self.inventory_version == SCAN_DESIGN_INVENTORY_SCHEMA_V2:
+            if scoring is not None:
+                raise ValueError("historical /2 inventories cannot carry Slice 6 evidence")
+            expected_basis = (SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED
+                              if self.context.scan_window_eig_mode == "shadow"
+                              else SELECTION_BASIS_LEGACY_CONTROL_OFF)
+        else:
+            if scoring is None:
+                scoring = (ScanDesignShadowScoring.not_requested()
+                           if self.context.scan_window_eig_mode == "off"
+                           else ScanDesignShadowScoring.unavailable(
+                               "shadow_scoring_not_run"))
+                object.__setattr__(self, "shadow_scoring", scoring)
+            validate_scan_design_shadow_scoring(scoring)
+            if scoring.candidate_pair is not None:
+                validate_shadow_candidate_pair(self, scoring.candidate_pair)
+            if self.context.scan_window_eig_mode == "off":
+                if scoring.status != "not_requested":
+                    raise ValueError("off-mode scan design cannot carry shadow scores")
+                expected_basis = SELECTION_BASIS_LEGACY_CONTROL_OFF
+            else:
+                if scoring.status == "not_requested":
+                    raise ValueError("shadow-mode scan design must record a scoring outcome")
+                expected_basis = (
+                    SELECTION_BASIS_SHADOW_LEGACY_CONTROL_SCORED
+                    if scoring.status in {SHADOW_STATUS_COMPLETE, SHADOW_STATUS_PARTIAL}
+                    else SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED)
+        if self.selection_basis != expected_basis:
+            raise ValueError("scan-design selection basis is inconsistent with shadow evidence")
 
     @property
     def selected_candidate(self) -> ScanDesignCandidate:
@@ -393,7 +624,7 @@ class ScanDesignInventory:
                     if candidate.candidate_id == self.selected_candidate_id)
 
     def to_full_dict(self) -> dict:
-        return {
+        value = {
             "inventory_version": self.inventory_version,
             "canonicalization_version": CANONICALIZATION_VERSION,
             "context_fingerprint": self.context.fingerprint,
@@ -423,10 +654,130 @@ class ScanDesignInventory:
             "candidates": [candidate.to_dict() for candidate in self.candidates],
             "refused_candidates": [refusal.to_dict() for refusal in self.refusals],
         }
+        if self.inventory_version == SCAN_DESIGN_INVENTORY_SCHEMA:
+            value["shadow_scoring"] = self.shadow_scoring.to_dict()
+        return value
+
+    def with_shadow_scoring(self, scoring: ScanDesignShadowScoring) -> "ScanDesignInventory":
+        """Attach diagnostic evidence without changing the selected candidate."""
+        validate_scan_design_shadow_scoring(scoring)
+        basis = (SELECTION_BASIS_SHADOW_LEGACY_CONTROL_SCORED
+                 if scoring.status in {SHADOW_STATUS_COMPLETE, SHADOW_STATUS_PARTIAL}
+                 else SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED)
+        return replace(self, shadow_scoring=scoring, selection_basis=basis)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "ScanDesignInventory":
+        if not isinstance(value, Mapping):
+            raise TypeError("scan-design inventory must be a mapping")
+        if _contains_forbidden_shadow_decision(value):
+            raise ValueError("scan-design inventory contains an authoritative EIG decision field")
+        version = value.get("inventory_version")
+        expected = {
+            "inventory_version", "canonicalization_version", "context_fingerprint", "context",
+            "generator", "provider_identity", "selection", "candidates", "refused_candidates",
+        }
+        if version == SCAN_DESIGN_INVENTORY_SCHEMA:
+            expected.add("shadow_scoring")
+        elif version != SCAN_DESIGN_INVENTORY_SCHEMA_V2:
+            raise ValueError("scan-design inventory contract is unsupported")
+        if set(value) != expected or value["canonicalization_version"] != CANONICALIZATION_VERSION:
+            raise ValueError("scan-design inventory fields are invalid")
+        generator = value["generator"]
+        provider = value["provider_identity"]
+        selection = value["selection"]
+        if (not isinstance(generator, Mapping)
+                or set(generator) != {"id", "version", "config", "config_fingerprint"}
+                or generator["id"] != PHYSICAL_WINDOW_GENERATOR_ID
+                or generator["version"] != PHYSICAL_WINDOW_GENERATOR_VERSION
+                or not isinstance(provider, Mapping)
+                or dict(provider) != {
+                    "predictive_provider_id": PREDICTIVE_PROVIDER_ID,
+                    "predictive_provider_schema": PREDICTIVE_PROVIDER_SCHEMA,
+                    "generator_id": PHYSICAL_WINDOW_GENERATOR_ID,
+                    "generator_version": PHYSICAL_WINDOW_GENERATOR_VERSION,
+                    "objective_projection_schema": OBJECTIVE_PROJECTION_SCHEMA,
+                    "steering_regime": STEERING_REGIME,
+                }
+                or not isinstance(selection, Mapping)
+                or set(selection) != {"basis", "selected_candidate_id", "scan_window_eig_mode"}
+                or not isinstance(value["candidates"], list)
+                or not isinstance(value["refused_candidates"], list)):
+            raise ValueError("scan-design inventory metadata is invalid")
+        context = ScanDesignContext.from_dict(value["context"])
+        config = PhysicalWindowGeneratorConfig.from_dict(generator["config"])
+        if (value["context_fingerprint"] != context.fingerprint
+                or generator["config_fingerprint"] != config.fingerprint
+                or selection["scan_window_eig_mode"] != context.scan_window_eig_mode):
+            raise ValueError("scan-design inventory nested fingerprint is invalid")
+        item = cls(
+            context=context,
+            candidates=tuple(ScanDesignCandidate.from_dict(candidate)
+                             for candidate in value["candidates"]),
+            selected_candidate_id=selection["selected_candidate_id"],
+            selection_basis=selection["basis"], inventory_version=version,
+            refusals=tuple(ScanDesignRefusal.from_dict(refusal)
+                           for refusal in value["refused_candidates"]),
+            generator_config=config,
+            shadow_scoring=(ScanDesignShadowScoring.from_dict(value["shadow_scoring"])
+                            if version == SCAN_DESIGN_INVENTORY_SCHEMA else None),
+        )
+        if canonical_json(item.to_full_dict()) != canonical_json(dict(value)):
+            raise ValueError("scan-design inventory does not reproduce from persisted content")
+        return item
 
     def content_hash(self) -> str:
         return hashlib.sha256(
             canonical_json(self.to_full_dict()).encode("utf-8")).hexdigest()
+
+
+def validate_scan_design_inventory(value: Any) -> ScanDesignInventory:
+    """Reauthenticate one in-memory inventory and every nested Slice 6 record."""
+    if not isinstance(value, ScanDesignInventory):
+        raise TypeError("value must be a ScanDesignInventory")
+    return ScanDesignInventory.from_dict(value.to_full_dict())
+
+
+def load_scan_design_inventory(reference: Mapping[str, Any], workspace: str | Path
+                               ) -> ScanDesignInventory:
+    """Strictly load one content-addressed inventory below ``report/scan-design``.
+
+    New artifacts are canonical JSON bytes, so the filename/reference, raw-byte digest, parsed
+    semantics, and reconstructed inventory all authenticate the same address.
+    """
+    if (not isinstance(reference, Mapping)
+            or set(reference) != {"kind", "sha256", "path"}
+            or reference.get("kind") != "scan_design_inventory"):
+        raise ValueError("scan-design inventory reference is invalid")
+    digest = reference.get("sha256")
+    if (not isinstance(digest, str) or len(digest) != 64 or digest != digest.lower()
+            or any(character not in "0123456789abcdef" for character in digest)):
+        raise ValueError("scan-design inventory reference digest is invalid")
+    expected_relative = f"report/scan-design/{digest}.json"
+    relative = reference.get("path")
+    if not isinstance(relative, str) or relative.replace("\\", "/") != expected_relative:
+        raise ValueError("scan-design inventory reference path is invalid")
+    root = Path(workspace).resolve()
+    allowed = (root / "report" / "scan-design").resolve()
+    path = (root / Path(relative)).resolve()
+    if path.parent != allowed or path.name != f"{digest}.json":
+        raise ValueError("scan-design inventory reference escapes its allowed directory")
+    try:
+        raw = path.read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("scan-design inventory artifact is unreadable") from error
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError("scan-design inventory artifact raw-byte address is invalid")
+    if not isinstance(payload, Mapping):
+        raise ValueError("scan-design inventory artifact must contain an object")
+    semantic_digest = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+    if semantic_digest != digest:
+        raise ValueError("scan-design inventory artifact content address is invalid")
+    inventory = ScanDesignInventory.from_dict(payload)
+    if inventory.content_hash() != digest:
+        raise ValueError("scan-design inventory reconstructed content address is invalid")
+    return inventory
 
 
 def _ceil_production_ladder(exposure: float, floor: int) -> int:
@@ -685,6 +1036,13 @@ __all__ = [
     "ScanDesignContext",
     "ScanDesignInventory",
     "ScanDesignRefusal",
+    "SCAN_DESIGN_INVENTORY_SCHEMA",
+    "SCAN_DESIGN_INVENTORY_SCHEMA_V2",
+    "SELECTION_BASIS_LEGACY_CONTROL_OFF",
+    "SELECTION_BASIS_SHADOW_LEGACY_CONTROL_SCORED",
+    "SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED",
     "design_scan_windows",
+    "load_scan_design_inventory",
     "points_in_window",
+    "validate_scan_design_inventory",
 ]

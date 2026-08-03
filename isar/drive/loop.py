@@ -32,6 +32,7 @@ import math
 import os
 import subprocess
 import sys
+import time
 import uuid
 
 from isar.drive.acquisition import model as acq_model
@@ -48,6 +49,11 @@ from isar.drive.acquisition.scan_design import (
     BudgetInsufficientForMinimumBatch,
     InstrumentLimitBelowMinimumBatch,
     points_in_window,
+)
+from isar.drive.acquisition.eig_shadow import (
+    SHADOW_SCORING_ALLOWANCE_SECONDS,
+    attach_unavailable_shadow,
+    score_proposal_shadow_inventory,
 )
 from isar.drive.acquisition.inventory import (
     GENERATOR_REGISTRY, GENERATOR_REGISTRY_VERSION, TERMINAL_ACTION_INVENTORY_EXHAUSTED,
@@ -1026,6 +1032,12 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         "consistency_alpha": row.get("consistency_alpha"),
         "spectrum_ref": row.get("spectrum_ref"),
         "predictive_ref": row.get("predictive_ref"),
+        "target_projection_ref": row.get("target_projection_ref"),
+        "fit_selection_semantics": row.get("fit_selection_semantics"),
+        "shadow_model_selection": row.get("shadow_model_selection"),
+        "master_session_key": row.get("scan_id"),
+        "detector_id": row.get("detector"),
+        "acquisition_id": row.get("acquisition_id"),
         "content_hash": row.get("content_hash"),
         "master_revision": row.get("master_revision"),
         "fit_kind": row.get("fit_kind"),
@@ -1166,6 +1178,56 @@ def _record_pooled_master_update(workspace, calibration: Calibration, proposal, 
     return payload
 
 
+def _exact_pooled_master_sources(workspace) -> dict[tuple[str, str, str], dict[str, str]]:
+    """Join pooled revisions to their originating physical request by durable identities only.
+
+    ``results.csv`` deliberately identifies a pooled scientific result with ``pooled:<hash>``.  That
+    is not the acquisition whose executed scan-design inventory supplied the data.  The session log
+    records the missing join on ``pooled_master_update``: exact master key/detector/revision plus the
+    physical acquisition and submitted request fingerprint.  Ambiguous, incomplete, or orphaned
+    joins are omitted so callers fail closed instead of substituting a same-Q or newer master.
+    """
+    events = read_log(Path(workspace) / "report" / "session_log.jsonl")
+    submitted: set[tuple[str, str]] = set()
+    for event in events:
+        if event.get("kind") != "physical_submission":
+            continue
+        payload = event.get("payload") or {}
+        acquisition_id = payload.get("acquisition_id")
+        request_fingerprint = payload.get("proposal_fingerprint")
+        if acquisition_id is not None and request_fingerprint is not None:
+            submitted.add((str(acquisition_id), str(request_fingerprint)))
+
+    candidates: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
+    for event in events:
+        if event.get("kind") != "pooled_master_update":
+            continue
+        payload = event.get("payload") or {}
+        identity = (
+            payload.get("master_session_key"),
+            payload.get("detector_id"),
+            payload.get("master_revision"),
+        )
+        source = (payload.get("acquisition_id"), payload.get("proposal_fingerprint"))
+        if any(value is None for value in identity) or any(value is None for value in source):
+            continue
+        exact_identity = tuple(str(value) for value in identity)
+        exact_source = tuple(str(value) for value in source)
+        if exact_source in submitted:
+            candidates.setdefault(exact_identity, set()).add(exact_source)
+
+    result: dict[tuple[str, str, str], dict[str, str]] = {}
+    for identity, sources in candidates.items():
+        if len(sources) != 1:
+            continue
+        acquisition_id, request_fingerprint = next(iter(sources))
+        result[identity] = {
+            "source_acquisition_id": acquisition_id,
+            "source_submission_request_fingerprint": request_fingerprint,
+        }
+    return result
+
+
 def _read_master_rows(workspace, calibration: Calibration) -> list[dict]:
     """All current master (pooled=True) rows in results.csv → convergence observations. Read FRESH
     every iteration (not consume-once): a master's interval shrinks as scans accumulate into it."""
@@ -1173,10 +1235,23 @@ def _read_master_rows(workspace, calibration: Calibration) -> list[dict]:
         rows = read_results_csv(workspace)
     except FileNotFoundError:
         return []
+    source_index = _exact_pooled_master_sources(workspace)
     out = []
     for r in rows:
         if r.get("pooled") and _row_hkl(r) is not None:
             master = _master_obs_from_row(r, calibration)
+            session_key = r.get("scan_id")
+            detector_id = r.get("detector")
+            if session_key is not None:
+                master["master_session_key"] = str(session_key)
+            if detector_id is not None:
+                master["detector_id"] = str(detector_id)
+            revision = master.get("master_revision")
+            if session_key is not None and detector_id is not None and revision is not None:
+                exact_source = source_index.get(
+                    (str(session_key), str(detector_id), str(revision)))
+                if exact_source is not None:
+                    master.update(exact_source)
             ref = r.get("predictive_ref")
             if ref:
                 candidate = (Path(workspace) / str(ref)).resolve()
@@ -1428,6 +1503,11 @@ def _proposal_from_submission(payload: dict) -> ScanProposal:
         "scan_design_inventory_ref": payload.get("scan_design_inventory_ref"),
         "scan_design_candidate_id": payload.get("scan_design_candidate_id"),
         "scan_design_context_fingerprint": payload.get("scan_design_context_fingerprint"),
+        "scan_design_selection_basis": payload.get("scan_design_selection_basis"),
+        "scan_design_shadow_status": payload.get("scan_design_shadow_status"),
+        "scan_design_shadow_fingerprint": payload.get("scan_design_shadow_fingerprint"),
+        "scan_design_shadow_variant_fingerprints": payload.get(
+            "scan_design_shadow_variant_fingerprints"),
         # The action identity a resumed scan must not lose. Without the sink a recovered auxiliary
         # probe becomes canonical by default and pools into the certified master; the scientific and
         # feasibility fingerprints are its audit identity. All three are already persisted on the
@@ -2387,6 +2467,60 @@ def _record_action_rejection(cfg, plan, proposal, verdict: str,
     return plan.next_proposal() if plan is not None else None
 
 
+def _score_shadow_proposal(proposal, objective, cfg, *, it: int) -> None:
+    """Run diagnostic scan-window scoring after selection and before realization clamps."""
+    inventory = getattr(proposal, "scan_design_inventory", None)
+    if inventory is None or inventory.context.scan_window_eig_mode != "shadow":
+        return
+    selected_id = inventory.selected_candidate_id
+    selected = inventory.selected_candidate
+    if selected.candidate_family != "legacy_uniform/1":
+        raise RuntimeError("shadow scoring requires the legacy control to remain selected")
+    operation_id = ":".join((
+        "scan-window-shadow",
+        str(cfg.run_nonce),
+        str(it),
+        str(inventory.context.fingerprint),
+        str(selected_id),
+    ))
+    deadline = time.monotonic() + SHADOW_SCORING_ALLOWANCE_SECONDS
+    try:
+        with analysis_operation(
+                cfg.log_path,
+                operation_id,
+                "scan_window_shadow_scoring",
+                limit_seconds=objective.analysis_limit_seconds,
+                checkpoint_seconds=1.0,
+                iteration=it,
+                scientific_action_fingerprint=(proposal.meta or {}).get(
+                    "scientific_action_fingerprint")):
+            score_proposal_shadow_inventory(
+                proposal, objective, cfg.workspace, deadline_monotonic=deadline)
+    except AnalysisLimitExceeded as error:
+        attach_unavailable_shadow(
+            proposal, "shadow_scoring_deadline", error=str(error))
+        log_event(cfg.log_path, "exception", {
+            "action": "shadow_scoring_deadline",
+            "severity": "high",
+            "error": str(error),
+            "iter": it,
+        })
+    except Exception as error:  # noqa: BLE001 — Slice 6 is deliberately fail-open
+        _LOG.exception("scan-window shadow scoring failed; continuing with legacy control")
+        attach_unavailable_shadow(
+            proposal, "shadow_scoring_failed", error=str(error))
+        log_event(cfg.log_path, "exception", {
+            "action": "shadow_scoring_failed",
+            "severity": "high",
+            "error": str(error),
+            "iter": it,
+        })
+    scored = proposal.scan_design_inventory
+    if (scored.selected_candidate_id != selected_id
+            or scored.selected_candidate.candidate_family != "legacy_uniform/1"):
+        raise RuntimeError("shadow scoring changed the legacy scan-design selection")
+
+
 def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
                              request_suppressions: dict, *, it: int):
     """Select the best not-yet-tried action, finalize it, and hand back a ready proposal (O29).
@@ -2433,6 +2567,7 @@ def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
         try:
             proposal = plan.next_proposal()
             if proposal is not None:
+                _score_shadow_proposal(proposal, objective, cfg, it=it)
                 _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
         except InstrumentLimitBelowMinimumBatch as error:
             log_event(cfg.log_path, "exception", {
@@ -2592,6 +2727,11 @@ def _persist_acquisition_provenance(workspace: Path, payload: dict) -> None:
         "scan_design_inventory_ref": payload.get("scan_design_inventory_ref"),
         "scan_design_candidate_id": payload.get("scan_design_candidate_id"),
         "scan_design_context_fingerprint": payload.get("scan_design_context_fingerprint"),
+        "scan_design_selection_basis": payload.get("scan_design_selection_basis"),
+        "scan_design_shadow_status": payload.get("scan_design_shadow_status"),
+        "scan_design_shadow_fingerprint": payload.get("scan_design_shadow_fingerprint"),
+        "scan_design_shadow_variant_fingerprints": payload.get(
+            "scan_design_shadow_variant_fingerprints"),
         # The one channel by which analysis learns this scan was not ordinary evidence. Written here,
         # before the raw scan is consumed, because reduction decides whether to pool it and the session
         # decides how the tracker may read it — both from this record, neither from the driver.
@@ -2846,10 +2986,14 @@ def _selected_action_record(proposal, inventory) -> dict:
 def _inventory_artifact_matches(path: Path, digest: str) -> bool:
     """Whether an existing content-addressed artifact still hashes to the address it is stored under."""
     try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        raw = path.read_bytes()
+        parsed = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
         return False
-    return hashlib.sha256(canonical_json(parsed).encode("utf-8")).hexdigest() == digest
+    return (
+        hashlib.sha256(raw).hexdigest() == digest
+        and hashlib.sha256(canonical_json(parsed).encode("utf-8")).hexdigest() == digest
+    )
 
 
 def _record_scan_design_realization(
@@ -2914,8 +3058,9 @@ def _persist_scan_design_inventory(cfg: CampaignConfig, proposal, *, it: int) ->
         })
     if corrupt or not path.exists():
         temporary = path.with_suffix(".json.tmp")
-        with open(temporary, "w", encoding="utf-8") as stream:
-            json.dump(inventory.to_full_dict(), stream, indent=2)
+        encoded = canonical_json(inventory.to_full_dict()).encode("utf-8")
+        with open(temporary, "wb") as stream:
+            stream.write(encoded)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
@@ -2929,6 +3074,13 @@ def _persist_scan_design_inventory(cfg: CampaignConfig, proposal, *, it: int) ->
     meta["scan_design_inventory_ref"] = ref
     meta["scan_design_candidate_id"] = inventory.selected_candidate_id
     meta["scan_design_context_fingerprint"] = inventory.context.fingerprint
+    meta["scan_design_selection_basis"] = inventory.selection_basis
+    shadow = inventory.shadow_scoring
+    meta["scan_design_shadow_status"] = shadow.status
+    meta["scan_design_shadow_fingerprint"] = shadow.shadow_scoring_fingerprint
+    meta["scan_design_shadow_variant_fingerprints"] = [
+        item.variant_evidence_fingerprint for item in shadow.variants
+    ]
     log_event(cfg.log_path, "scan_design", {
         "iter": it,
         "scientific_action_fingerprint": meta.get("scientific_action_fingerprint"),
@@ -2936,6 +3088,11 @@ def _persist_scan_design_inventory(cfg: CampaignConfig, proposal, *, it: int) ->
         "selected_candidate_id": inventory.selected_candidate_id,
         "context_fingerprint": inventory.context.fingerprint,
         "selection_basis": inventory.selection_basis,
+        "shadow_status": shadow.status,
+        "shadow_scoring_fingerprint": shadow.shadow_scoring_fingerprint,
+        "shadow_variant_fingerprints": [
+            item.variant_evidence_fingerprint for item in shadow.variants
+        ],
         "inventory_ref": ref,
     })
     candidate = inventory.selected_candidate
@@ -3389,6 +3546,14 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                 "scan_design_candidate_id"),
             "scan_design_context_fingerprint": (proposal.meta or {}).get(
                 "scan_design_context_fingerprint"),
+            "scan_design_selection_basis": (proposal.meta or {}).get(
+                "scan_design_selection_basis"),
+            "scan_design_shadow_status": (proposal.meta or {}).get(
+                "scan_design_shadow_status"),
+            "scan_design_shadow_fingerprint": (proposal.meta or {}).get(
+                "scan_design_shadow_fingerprint"),
+            "scan_design_shadow_variant_fingerprints": (proposal.meta or {}).get(
+                "scan_design_shadow_variant_fingerprints"),
             # The other two lifecycle identities, so a submitted scan joins back to the scientific
             # question it answers and the geometry its request was accepted under.
             "scientific_action_fingerprint": (proposal.meta or {}).get(
@@ -4274,18 +4439,6 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                             "acquisition_id": proposal.acquisition_id, "iter": it,
                             **transition,
                         })
-
-                    analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
-                    if (objective.analysis_limit_seconds is not None
-                            and analysis_spent >= float(objective.analysis_limit_seconds)):
-                        decision = StopDecision(
-                            "incomplete",
-                            [f"analysis limit exhausted ({analysis_spent:.1f}/"
-                             f"{float(objective.analysis_limit_seconds):.1f}s) before measurement submission"],
-                            evaluate_stop(objective, grid, budget_state,
-                                          calibration=cfg.calibration, floor=cfg.floor).per_q)
-                        stop_campaign = True
-                        break
 
                     b_act = exc.handle_budget(budget_state)
                     if b_act is not None:

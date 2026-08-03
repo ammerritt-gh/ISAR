@@ -438,7 +438,11 @@ def test_missing_draw_mass_is_unknown_not_inferred_from_thinned_counts():
 
 def test_scan_design_events_use_typed_realization_and_acquisition_linked_recovery(tmp_path: Path):
     from isar.drive.acquisition.inventory import canonical_json
-    from isar.drive.acquisition.scan_design import ScanDesignContext, design_scan_windows
+    from isar.drive.acquisition.scan_design import (
+        SCAN_DESIGN_INVENTORY_SCHEMA_V2,
+        ScanDesignContext,
+        design_scan_windows,
+    )
 
     root = tmp_path / "campaign"
     directory = root / "report" / "scan-design"
@@ -456,10 +460,14 @@ def test_scan_design_events_use_typed_realization_and_acquisition_linked_recover
         certification_halfwidth_meV=None, effective_exposure=None, submitted_exposure=None,
         production_scans=0, last_submitted_ncount=None, runtime_max_neutrons_per_point=None,
         runtime_queue_neutron_budget=None, budget_kind="neutrons", budget_amount=1e12, budget_spent=0.0)
-    produced = design_scan_windows(context)
+    produced = replace(
+        design_scan_windows(context),
+        inventory_version=SCAN_DESIGN_INVENTORY_SCHEMA_V2,
+        shadow_scoring=None,
+    )
     inventory = produced.to_full_dict()
     digest = produced.content_hash()
-    (directory / f"{digest}.json").write_text(json.dumps(inventory), encoding="utf-8")
+    (directory / f"{digest}.json").write_text(canonical_json(inventory), encoding="utf-8")
     ref = {"kind": "scan_design_inventory", "sha256": digest,
            "path": f"report/scan-design/{digest}.json"}
     events = [

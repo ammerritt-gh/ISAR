@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,7 @@ from isar.drive.acquisition.scan_design import (
     STEERING_REGIME,
     PhysicalWindowGeneratorConfig,
     ScanDesignContext,
+    ScanDesignInventory,
     _declared_window,
     _energy_window,
     design_scan_windows,
@@ -148,9 +150,11 @@ def test_context_candidate_and_inventory_hashes_are_stable_and_sensitive():
     assert first.content_hash() == duplicate.content_hash()
     assert changed.content_hash() != first.content_hash()
     payload = first.to_full_dict()
-    # No score, utility, or ranking has been computed at this stage: the only permitted mention of
-    # EIG anywhere in the artifact is the declared mode, never a number a selector could act on.
-    assert _eig_mentions(payload) == {"scan_window_eig_mode"}
+    # Slice 6 always emits the diagnostic envelope, but an unscored inventory still carries no
+    # utility, ranking, winner, or authoritative selection.
+    assert _eig_mentions(payload) == {
+        "scan_window_eig_mode", "eig_authoritative", "eig_shadow"}
+    assert payload["shadow_scoring"]["status"] == "not_requested"
     json.dumps(payload, allow_nan=False)
 
 
@@ -181,7 +185,13 @@ def test_provenance_artifact_joins_planned_candidate_to_final_request(tmp_path: 
     assert proposal.meta["scan_design_context_fingerprint"] == inventory.context.fingerprint
     artifact = tmp_path / ref["path"]
     assert artifact.is_file()
+    assert hashlib.sha256(artifact.read_bytes()).hexdigest() == ref["sha256"]
     assert json.loads(artifact.read_text(encoding="utf-8")) == inventory.to_full_dict()
+    assert proposal.meta["scan_design_selection_basis"] == inventory.selection_basis
+    assert proposal.meta["scan_design_shadow_status"] == "not_requested"
+    assert proposal.meta["scan_design_shadow_fingerprint"] == (
+        inventory.shadow_scoring.shadow_scoring_fingerprint)
+    assert proposal.meta["scan_design_shadow_variant_fingerprints"] == []
     assert proposal.meta["proposal_fingerprint"] == request_fingerprint
     _stamp_proposal_provenance(proposal)
     assert proposal.meta["proposal_fingerprint"] == request_fingerprint
@@ -362,7 +372,10 @@ def test_shadow_mode_generates_the_family_and_still_selects_the_legacy_control()
         legacy_off.e_lo, legacy_off.e_hi, legacy_off.e_step,
         legacy_off.n_points, legacy_off.ncount)
     assert shadow.selected_candidate_id == off.selected_candidate_id
-    assert _eig_mentions(shadow.to_full_dict()) == {"scan_window_eig_mode"}
+    payload = shadow.to_full_dict()
+    assert _eig_mentions(payload) == {
+        "scan_window_eig_mode", "eig_authoritative", "eig_shadow"}
+    assert payload["shadow_scoring"]["status"] == "unavailable"
 
 
 def test_shadow_inventory_is_deterministic_and_json_serializable():
@@ -373,6 +386,22 @@ def test_shadow_inventory_is_deterministic_and_json_serializable():
     assert [c.candidate_id for c in first.candidates] == [
         c.candidate_id for c in second.candidates]
     json.dumps(first.to_full_dict(), allow_nan=False)
+
+
+def test_inventory_v3_rejects_nonlegacy_selection_and_inconsistent_basis():
+    inventory = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    target = next(candidate for candidate in inventory.candidates
+                  if candidate.candidate_family == FAMILY_TARGET_CORE)
+
+    nonlegacy = inventory.to_full_dict()
+    nonlegacy["selection"]["selected_candidate_id"] = target.candidate_id
+    with pytest.raises(ValueError, match="legacy"):
+        ScanDesignInventory.from_dict(nonlegacy)
+
+    inconsistent = inventory.to_full_dict()
+    inconsistent["selection"]["basis"] = "shadow_legacy_control_scored"
+    with pytest.raises(ValueError, match="basis"):
+        ScanDesignInventory.from_dict(inconsistent)
 
 
 def test_inventory_declares_generator_config_and_provider_identity():

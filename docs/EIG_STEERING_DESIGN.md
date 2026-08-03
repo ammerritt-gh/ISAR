@@ -12,24 +12,27 @@
 ## Status and boundary
 
 **EIG-4 is the approved execution roadmap and current SVP, not implemented runtime authority.**
-The pure full-vector Poisson score kernel and the controlled offline Slice 5 counterfactual are
-implemented, but scored shadow inventories, exact request rescoring, and authoritative selection are
-not. Candidate generation, predictive `/2`, arbitrary-grid evaluation, executed-grid identity, target
+The pure full-vector Poisson score kernel, the controlled offline Slice 5 counterfactual, and Slice 6
+scored shadow inventories are implemented, but exact realized-request rescoring and authoritative
+selection are not. Candidate generation, predictive `/2`, arbitrary-grid evaluation, executed-grid identity, target
 projection, Slice 2 eligibility/QoI adaptation, the Slice 3 homogeneous design measure, the Slice 4
 caller-supplied score set, and Slice 5 completed-campaign comparison are implemented.
 Current acquisition ranks scientific actions and Q
 positions using expected counts already stored on each master's fitted grid. The
 `ScanDesignContext → ScanDesignInventory` seam now generates the bounded family of conventional
-uniform windows for the selected action and persists it under `report/scan-design/<sha256>.json`, but
-nothing scores or ranks them: the `legacy_uniform/1` candidate is always generated with the exact
-historical arithmetic and is always the selected, executed one.
+uniform windows for the selected action and persists it under `report/scan-design/<sha256>.json`.
+In `shadow` mode it may attach diagnostic scores for exactly `legacy_uniform/1` and `target_core/1`;
+the `legacy_uniform/1` candidate is still generated with the exact historical arithmetic and is
+always the selected, finalized, and executed one.
 
 The `scan_window_eig_mode` steering knob (typed on `SteeringPolicy`, declared in the hand-edited
 policy card, frozen into `ScanDesignContext`) chooses the regime:
 
 - `off` — only the legacy candidate is designed; `selection_basis = legacy_control_off`.
-- `shadow` — the whole family is generated and persisted unscored;
-  `selection_basis = shadow_legacy_control_unscored`. The emitted request is identical to `off`.
+- `shadow` — the whole family is generated. Exact eligible source evidence scores only legacy versus
+  target-core and records `selection_basis = shadow_legacy_control_scored`; every unavailable or
+  scoreless comparison records `shadow_legacy_control_unscored`. The emitted request is identical to
+  `off` in either case.
 - `authoritative` — refuses at campaign setup with the stable error code
   `scan_window_eig_authoritative_unavailable`; it is never silently degraded to shadow or off.
 
@@ -129,8 +132,10 @@ Alongside them, `empty_after_domain_clip`, `insufficient_target_support`, and
 `nonfinite_window_arithmetic` (degenerate instrument state becomes a structured refusal on the one
 family, never an exception that destroys the whole inventory) complete the refusal vocabulary.
 
-`isar.scan_design_inventory/2` and `isar.scan_design_candidate/2` are used in **all** modes — there
-is no `/1` compatibility. Alongside the generator config the inventory carries the generic provider
+New production inventories use `isar.scan_design_inventory/3`; `/2` is an explicit historical read
+contract and is never migrated or reminted. Candidates remain `isar.scan_design_candidate/2` — there
+is no candidate `/1` compatibility. Every `/3` inventory carries a mandatory authenticated shadow
+envelope and still selects exactly the unique legacy control. Alongside the generator config the inventory carries the generic provider
 identity (`predictive_provider_id`, `predictive_provider_schema`, `generator_id`,
 `generator_version`, `objective_projection_schema`, `steering_regime`) so a later, differently
 grounded provider can slot in without changing this envelope; `candidate_family` and `generator_id`
@@ -501,8 +506,8 @@ refusal codes. `isar.eig_offline_scoring_config/o36.5.1` binds the simulation co
 
 Slice 5 grants only `eig_shadow = diagnostic`; `eig_authoritative` and
 `acquisition_selection` remain ineligible. It does not write an inventory, produce a recommendation,
-choose a request, change `off` mode, or grant authority to the `shadow` mode. Slice 6 remains the
-planned, separately gated step that will build scored shadow inventories.
+choose a request, change `off` mode, or grant authority to the `shadow` mode. Slice 6 is the separately
+gated live scored-shadow step described by O38; it preserves those same authority denials.
 
 ### Slice 0–10 execution sequence
 
@@ -525,9 +530,10 @@ planned, separately gated step that will build scored shadow inventories.
    persisted generator configuration, evaluate lazily after policy resolution, retain complete score
    evidence, require the exact pair and equal per-point exposure, and grant no inventory, execution,
    or selection authority.
-7. **Slice 6 — scored shadow inventories.** Score `legacy_uniform` and `target_core`; execute legacy
-   exactly within eligible same-action comparisons. Existing non-EIG behavior remains responsible
-   outside eligibility.
+7. **Slice 6 — scored shadow inventories (implemented).** Authenticate the exact selected completed
+   source master; score `legacy_uniform` and `target_core` once per candidate and reuse those
+   evaluations across bounded policy variants; persist diagnostic `/3` evidence; execute legacy in
+   every outcome. Existing non-EIG behavior remains responsible outside eligibility.
 8. **Slice 7 — exact realized-request rescoring.** Score the grid and exposure actually submitted;
    retain candidate → realization → submission provenance.
 9. **Slice 8 — bounded EIG-3 shadow gate.** Add exact mathematical fixtures, existing predictive

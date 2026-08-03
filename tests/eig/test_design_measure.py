@@ -672,9 +672,5 @@ def test_design_measure_import_boundary_in_fresh_process():
     completed = subprocess.run(
         [sys.executable, "-c", command], check=True, capture_output=True,
         text=True, encoding="utf-8")
-    loaded = set(completed.stdout.splitlines())
-    # Eligibility's pre-existing scientific-action fingerprint dependency is the baseline.
-    assert loaded <= {
-        "isar.drive", "isar.drive.acquisition", "isar.drive.acquisition.inventory",
-        "isar.drive.objective",
-    }
+    loaded = {name for name in completed.stdout.splitlines() if name}
+    assert loaded == set()

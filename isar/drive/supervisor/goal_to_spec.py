@@ -16,13 +16,20 @@ Two entry points:
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
 from typing import Any
 
 import isar.reduce.llm_client as _llm  # boundary carve-out: the shared LLMM HTTP plumbing only
-from isar.drive.objective import ObjectiveSpec, resolve_hypothesis_snapshot
+from isar.drive.objective import (
+    ObjectiveSpec,
+    current_objective_comparison_scope,
+    resolve_hypothesis_snapshot,
+)
+from isar.eig.policy import compile_card_eig_policy_set
+from isar.schema.eig_policy import ScanWindowEIGConfig
 
 Dispatcher = _llm.Dispatcher
 LLMMClient = _llm.LLMMClient
@@ -166,6 +173,7 @@ class GoalParseError(ValueError):
 # --------------------------------------------------------------------------- LLM path
 def goal_to_spec(goal: str, *, dispatcher: Dispatcher | None = None, defaults: dict | None = None,
                  card_hypotheses: dict[str, Any] | None = None,
+                 card_eig_policy_set: dict[str, Any] | None = None,
                  endpoint: str | None = None, model_pin: str | None = None,
                  temperature: float = 0.1, max_tokens: int = 800) -> ObjectiveSpec:
     """Parse ``goal`` into an :class:`ObjectiveSpec` via the LLM supervisor.
@@ -198,12 +206,18 @@ def goal_to_spec(goal: str, *, dispatcher: Dispatcher | None = None, defaults: d
             "goal→ObjectiveSpec failed: the supervisor LLM did not return a schema-valid objective"
             + detail + (f"; raw: {raw!r}" if raw else "")
             + ". Use `isar drive --spec <file.json>` for an LLM-free run.")
-    return _build_spec(data, merged, card_hypotheses=card_hypotheses)
+    return _build_spec(
+        data,
+        merged,
+        card_hypotheses=card_hypotheses,
+        card_eig_policy_set=card_eig_policy_set,
+    )
 
 
 # --------------------------------------------------------------------------- LLM-free path
 def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec",
-                   card_hypotheses: dict[str, Any] | None = None) -> ObjectiveSpec:
+                   card_hypotheses: dict[str, Any] | None = None,
+                   card_eig_policy_set: dict[str, Any] | None = None) -> ObjectiveSpec:
     """Build an :class:`ObjectiveSpec` from an already-parsed dict — no LLM, no file I/O.
 
     Accepts either the goal schema (``{"path": {"h_start", …}, "step_h", "tolerance_meV", …}``) or a
@@ -221,18 +235,30 @@ def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec"
         raise GoalParseError(f"{where}: not a valid goal spec (needs path{{h_start,h_end,k,l}}, step_h, "
                              "tolerance_meV, and a budget)")
     merged = {**DEFAULTS, **(defaults or {})}
-    return _build_spec(d, merged, card_hypotheses=card_hypotheses)
+    return _build_spec(
+        d,
+        merged,
+        card_hypotheses=card_hypotheses,
+        card_eig_policy_set=card_eig_policy_set,
+    )
 
 
 def spec_from_json(path: str | Path, *, defaults: dict | None = None,
-                   card_hypotheses: dict[str, Any] | None = None) -> ObjectiveSpec:
+                   card_hypotheses: dict[str, Any] | None = None,
+                   card_eig_policy_set: dict[str, Any] | None = None) -> ObjectiveSpec:
     """Build an :class:`ObjectiveSpec` from a JSON file — no LLM.
 
     Accepts either the goal schema (``{"path": {"h_start", …}, "step_h", "tolerance_meV", …}``) or a
     full ``ObjectiveSpec.to_dict()`` (``path`` is a list of triples).
     """
     d = json.loads(Path(path).read_text(encoding="utf-8"))
-    return spec_from_dict(d, defaults=defaults, where=str(path), card_hypotheses=card_hypotheses)
+    return spec_from_dict(
+        d,
+        defaults=defaults,
+        where=str(path),
+        card_hypotheses=card_hypotheses,
+        card_eig_policy_set=card_eig_policy_set,
+    )
 
 
 def make_envelope(spec: ObjectiveSpec, *, source: dict, original_goal: str | None = None) -> dict:
@@ -257,7 +283,8 @@ def envelope_from_json(path: str | Path) -> tuple[ObjectiveSpec, dict, str | Non
 
 # --------------------------------------------------------------------------- shared
 def _build_spec(data: dict, merged: dict, *,
-                card_hypotheses: dict[str, Any] | None = None) -> ObjectiveSpec:
+                card_hypotheses: dict[str, Any] | None = None,
+                card_eig_policy_set: dict[str, Any] | None = None) -> ObjectiveSpec:
     tier = str(merged.get("tier", "deterministic"))
     budget = _budget(data, tier=tier)
     branch = str(data.get("target_branch", "acoustic"))
@@ -323,15 +350,33 @@ def _build_spec(data: dict, merged: dict, *,
             raise GoalParseError("goal spec needs both q_start and q_end")
         if list(data["q_start"]) == list(data["q_end"]):
             raise GoalParseError("natural-language path is degenerate; q_start and q_end are identical")
-        return ObjectiveSpec.segment(q_start=data["q_start"], q_end=data["q_end"],
-                                     step_rlu=float(data.get("step_rlu") or 0.05), **common)
-    if "path" not in data:
-        raise GoalParseError("goal spec needs q_start/q_end or legacy path")
-    p = data["path"]
-    return ObjectiveSpec.along_h(
-        h_start=float(p["h_start"]), h_end=float(p["h_end"]),
-        k=float(p.get("k", 0.0)), l=float(p.get("l", 0.0)),
-        step=float(data.get("step_h") or merged.get("step_h") or 0.05), **common)
+        objective = ObjectiveSpec.segment(
+            q_start=data["q_start"], q_end=data["q_end"],
+            step_rlu=float(data.get("step_rlu") or 0.05), **common)
+    else:
+        if "path" not in data:
+            raise GoalParseError("goal spec needs q_start/q_end or legacy path")
+        p = data["path"]
+        objective = ObjectiveSpec.along_h(
+            h_start=float(p["h_start"]), h_end=float(p["h_end"]),
+            k=float(p.get("k", 0.0)), l=float(p.get("l", 0.0)),
+            step=float(data.get("step_h") or merged.get("step_h") or 0.05), **common)
+    scope = current_objective_comparison_scope(objective)
+    policy_set = compile_card_eig_policy_set(
+        card_eig_policy_set,
+        scope,
+        max_runtime_variants=objective.scan_window_eig.scoring_config.max_runtime_variants,
+    )
+    frozen = replace(
+        objective,
+        scan_window_eig=ScanWindowEIGConfig(
+            policy_set=policy_set,
+            scoring_config=objective.scan_window_eig.scoring_config,
+        ),
+    )
+    if current_objective_comparison_scope(frozen) != scope:
+        raise ValueError("scan-window EIG policy binding changed objective comparison scope")
+    return frozen
 
 
 def _budget(data: dict, *, tier: str) -> dict[str, Any] | None:

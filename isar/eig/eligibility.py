@@ -9,7 +9,7 @@ import math
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from isar.drive.acquisition.inventory import (
+from isar.schema.action_identity import (
     canonical_json,
     canonical_hkl,
     scientific_fingerprint_from_mapping,

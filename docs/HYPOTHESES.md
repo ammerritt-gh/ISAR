@@ -163,6 +163,14 @@ prior-vs-data-only check under `hypothesis_mismatch`, drive regression ingredien
 `label_probabilities`, `assignment_entropy`, and `p_is_target`; there is no ambiguous
 `target_probability` field.
 
+Scan-window distinction policy is frozen separately under the objective's top-level
+`scan_window_eig` block. Its authenticated policy-set and numerical-scoring fingerprints are
+deliberately excluded from `hypothesis_fingerprint` and from the stable current-objective comparison
+scope: changing a diagnostic partition or Monte Carlo count must not claim the excitation hypothesis
+changed, and a policy may bind to the current campaign without recursively hashing itself. The
+`scan_window_eig_mode` intent remains in the ordinary steering snapshot; card-only scope-binding
+markers and authoring records never survive into a frozen objective.
+
 Resolution precedence is deterministic: an energy/gap stated in the natural-language goal wins;
 otherwise a matching `[hypotheses.<target>]` card declaration wins; otherwise the shipped preset is
 frozen. `hypothesis_source` records which source won. Frozen objectives use `isar.objective/2` inside

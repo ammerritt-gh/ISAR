@@ -87,11 +87,14 @@ campaign may call itself blocked, and growing the registry cannot leave an old p
 Once an action is selected, `ScanDesignInventory` resolves it into window/count candidates. The
 `legacy_uniform/1` candidate — the exact historical window arithmetic — is always generated and is
 always the selected, executed one. The `scan_window_eig_mode` steering knob decides what else is
-recorded beside it: `off` designs that candidate alone (`legacy_control_off`), `shadow` additionally
-generates and persists the alternative uniform-window family unscored
-(`shadow_legacy_control_unscored`) without changing the emitted request by a single neutron.
+recorded beside it: `off` designs that candidate alone (`legacy_control_off`), while `shadow`
+additionally generates the alternative uniform-window family and, when one exact completed source
+master passes the frozen eligibility and policy joins, scores only `legacy_uniform/1` against
+`target_core/1`. A valid score records `shadow_legacy_control_scored`; every scoreless or unavailable
+case records `shadow_legacy_control_unscored`. Both retain the unique legacy selection and leave the
+emitted request unchanged by a single neutron.
 Declaring `authoritative` refuses at campaign setup with `scan_window_eig_authoritative_unavailable`,
-because no scorer or selector exists yet. The derived inventory is content-addressed under
+because no authoritative selector exists. The derived `/3` inventory is content-addressed under
 `report/scan-design/<sha256>.json` and referenced from proposal provenance. Its candidate id names the
 pre-finalization design; the existing proposal fingerprint separately names the exact request after
 live point/count clamps. A changed realization appends an `isar.scan_design_realization/1` record
@@ -99,6 +102,13 @@ linking those identities through initial finalization, target-support step reduc
 recovery. Every physical submission and acquisition-provenance entry repeats the design reference,
 candidate/context fingerprints, and exact realized window/count, so crash recovery does not sever the
 join; the inventory itself remains derived and recomputed rather than loaded as controller state.
+Shadow scoring runs at the loop's pre-finalization seam under its own five-second soft allowance and
+is charged to the cumulative analysis clock. It resolves the source through its exact session key,
+detector, revision, and side-artifact references—never by Q or recency. Deadline, missing evidence,
+unsupported policy, and unexpected scorer failure all persist diagnostic unavailable evidence and
+continue with the same legacy request. The score envelope and variant fingerprints travel only as
+compact provenance; they do not enter the finalized request fingerprint. Historical inventory `/2`
+remains a strict read contract and is never reminted as `/3`.
 Alongside the interval/no-progress brakes there is an identity-space one, `identity_saturated`, for
 the case those cannot speak to — an identity-ambiguous q never matches the target branch, so it never
 accumulates the pooled-master updates `interval_floored` reads. It requires both the target

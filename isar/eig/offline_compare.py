@@ -11,8 +11,17 @@ from isar.drive.acquisition.inventory import canonical_json
 from isar.drive.acquisition.scan_design import (
     PHYSICAL_WINDOW_GENERATOR_ID,
     PHYSICAL_WINDOW_GENERATOR_VERSION,
-    SCAN_DESIGN_INVENTORY_SCHEMA,
     ScanDesignContext,
+)
+from isar.eig.policy import POLICY_COMPILER_REVISION, compile_qoi_distinction_policy
+from isar.schema.eig_policy import (
+    QOI_DISTINCTION_POLICY_CONTRACT,
+    QOI_DISTINCTION_POLICY_SET_CONTRACT,
+    QoIDistinctionPolicy,
+    QoIDistinctionPolicySet,
+    QoIDistinctionVariant,
+    matching_qoi_policies as _matching_qoi_policies,
+    validate_qoi_distinction_policy_set,
 )
 from isar.schema.statistics import semantics_fingerprint
 
@@ -31,17 +40,14 @@ from .scorer import (
 OFFLINE_DISCOVERY_CONFIG_CONTRACT = "isar.offline_eig_discovery_config/o36.5.1"
 OFFLINE_CASE_SNAPSHOT_CONTRACT = "isar.offline_eig_case_snapshot/o36.5.1"
 OFFLINE_CORPUS_INDEX_CONTRACT = "isar.eig_offline_corpus_index/o36.5.1"
-QOI_DISTINCTION_POLICY_CONTRACT = "isar.qoi_distinction_policy/o36.5"
-QOI_DISTINCTION_POLICY_SET_CONTRACT = "isar.qoi_distinction_policy_set/o36.5"
 OFFLINE_SCORING_CONFIG_CONTRACT = "isar.eig_offline_scoring_config/o36.5.1"
 OFFLINE_SCORE_EVIDENCE_CONTRACT = "isar.offline_score_evidence/o36.5.1"
 OFFLINE_COMPARISON_RESULT_CONTRACT = "isar.offline_comparison_result/o36.5.1"
 OFFLINE_COMPARISON_REPORT_CONTRACT = "isar.eig_offline_comparison_report/o36.5.1"
 CANDIDATE_PAIR_REVISION = "isar.offline_eig_candidate_pair/o36.5.1"
 COUNTERFACTUAL_TRANSFORM_REVISION = "isar.offline_shadow_context_transform/o36.5.1"
-POLICY_COMPILER_REVISION = "isar.offline_eig_policy_compiler/o36.5"
 _FINGERPRINT_DOMAIN = "isar.offline_eig/o36.5.1"
-_POLICY_FINGERPRINT_DOMAIN = "isar.offline_eig/o36.5"
+SCAN_DESIGN_INVENTORY_SCHEMA_V2 = "isar.scan_design_inventory/2"
 _READY = "ready"
 _CASE_STATUSES = {
     _READY,
@@ -80,10 +86,6 @@ def _thaw(value: Any) -> Any:
 
 def _fp(kind: str, value: Any) -> str:
     return semantics_fingerprint(f"{_FINGERPRINT_DOMAIN}/{kind}", _thaw(value))
-
-
-def _policy_fp(kind: str, value: Any) -> str:
-    return semantics_fingerprint(f"{_POLICY_FINGERPRINT_DOMAIN}/{kind}", _thaw(value))
 
 
 def _valid_fp(value: Any) -> bool:
@@ -156,7 +158,7 @@ class OfflineDiscoveryConfig:
     design_measure_contract: str = "isar.scan_window_design_measure/o36.3"
     predictive_contract: str = "isar.master_predictive/2+physical_only.1"
     projection_contract: str = "isar.target_projection/2"
-    inventory_contract: str = SCAN_DESIGN_INVENTORY_SCHEMA
+    inventory_contract: str = SCAN_DESIGN_INVENTORY_SCHEMA_V2
     generator_id: str = PHYSICAL_WINDOW_GENERATOR_ID
     generator_version: int = PHYSICAL_WINDOW_GENERATOR_VERSION
     generator_config_contract: str = "isar.physical_window_generator_config/2"
@@ -174,7 +176,7 @@ class OfflineDiscoveryConfig:
             or self.design_measure_contract != "isar.scan_window_design_measure/o36.3"
             or self.predictive_contract != "isar.master_predictive/2+physical_only.1"
             or self.projection_contract != "isar.target_projection/2"
-            or self.inventory_contract != SCAN_DESIGN_INVENTORY_SCHEMA
+            or self.inventory_contract != SCAN_DESIGN_INVENTORY_SCHEMA_V2
             or self.generator_id != PHYSICAL_WINDOW_GENERATOR_ID
             or self.generator_version != PHYSICAL_WINDOW_GENERATOR_VERSION
             or self.generator_config_contract != "isar.physical_window_generator_config/2"
@@ -530,191 +532,26 @@ def validate_offline_corpus_index(value: Any) -> OfflineCorpusIndex:
     return OfflineCorpusIndex.from_dict(value.to_dict())
 
 
-@dataclass(frozen=True)
-class QoIDistinctionVariant:
-    variant_id: str
-    parameters: Mapping[str, Any]
-    variant_fingerprint: str = field(default="", init=False)
-
-    def __post_init__(self) -> None:
-        _string(self.variant_id, "variant_id")
-        object.__setattr__(self, "parameters", _mapping(self.parameters, "variant parameters"))
-        object.__setattr__(self, "variant_fingerprint", _policy_fp("variant", self._payload()))
-
-    def _payload(self) -> dict[str, Any]:
-        return {"variant_id": self.variant_id, "parameters": _thaw(self.parameters)}
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._payload(), "variant_fingerprint": self.variant_fingerprint}
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "QoIDistinctionVariant":
-        _exact_keys(value, {"variant_id", "parameters", "variant_fingerprint"}, "policy variant")
-        item = cls(value["variant_id"], value["parameters"])
-        if value["variant_fingerprint"] != item.variant_fingerprint:
-            raise ValueError("variant_fingerprint does not authenticate policy variant")
-        return item
-
-
-def _validate_provenance(value: Mapping[str, Any]) -> Mapping[str, Any]:
-    allowed = {"kind", "source_id", "source_fingerprint", "rationale", "author", "authority_role"}
-    if not isinstance(value, Mapping) or set(value) - allowed:
-        raise ValueError("policy provenance fields are invalid")
-    kind = _string(value.get("kind"), "provenance kind")
-    if kind not in {
-        "scientific_protocol/1", "experiment_objective/1",
-        "explicit_user_analysis/1", "exploratory_sensitivity/1",
-    }:
-        raise ValueError("policy provenance kind is unsupported")
-    rationale = _string(value.get("rationale"), "provenance rationale")
-    result = {"kind": kind, "rationale": rationale}
-    for name in ("source_id", "source_fingerprint", "author", "authority_role"):
-        if value.get(name) is not None:
-            result[name] = _string(value[name], name)
-    if kind in {"scientific_protocol/1", "experiment_objective/1"}:
-        if not _valid_fp(result.get("source_fingerprint")):
-            raise ValueError("authenticated provenance source fingerprint is required")
-    elif "source_id" not in result:
-        raise ValueError("stable provenance source ID is required")
-    return _freeze(result)
-
-
-@dataclass(frozen=True)
-class QoIDistinctionPolicy:
-    policy_id: str
-    policy_kind: str
-    source_qoi: Mapping[str, str]
-    scope: Mapping[str, Any]
-    provenance: Mapping[str, Any]
-    variants: tuple[QoIDistinctionVariant, ...]
-    contract: str = field(default=QOI_DISTINCTION_POLICY_CONTRACT, init=False)
-    policy_fingerprint: str = field(default="", init=False)
-
-    def __post_init__(self) -> None:
-        _string(self.policy_id, "policy_id")
-        kind = _string(self.policy_kind, "policy_kind")
-        if "/" not in kind:
-            raise ValueError("policy kind must be versioned")
-        _exact_keys(self.source_qoi, {"id", "unit"}, "source QoI")
-        source_qoi = {"id": _string(self.source_qoi["id"], "QoI id"), "unit": _string(self.source_qoi["unit"], "QoI unit")}
-        _exact_keys(self.scope, {"kind", "fingerprint", "annotation"}, "policy scope")
-        scope_kind = self.scope["kind"]
-        if scope_kind not in {"case_identity", "campaign_configuration"} or not _valid_fp(self.scope["fingerprint"]):
-            raise ValueError("policy scope is invalid")
-        annotation = self.scope["annotation"]
-        _exact_keys(annotation, {"campaign_name", "experiment_description", "date"}, "scope annotation")
-        normalized_annotation = {key: _string(annotation[key], key) for key in sorted(annotation)}
-        variants = tuple(self.variants)
-        ids = tuple(variant.variant_id for variant in variants)
-        if (
-            not variants
-            or any(not isinstance(variant, QoIDistinctionVariant) for variant in variants)
-            or ids != tuple(sorted(ids))
-            or len(ids) != len(set(ids))
-        ):
-            raise ValueError("policy variants must be non-empty, ordered, and unique")
-        object.__setattr__(self, "source_qoi", _freeze(source_qoi))
-        object.__setattr__(self, "scope", _freeze({"kind": scope_kind, "fingerprint": self.scope["fingerprint"], "annotation": normalized_annotation}))
-        object.__setattr__(self, "provenance", _validate_provenance(self.provenance))
-        object.__setattr__(self, "variants", variants)
-        object.__setattr__(self, "policy_fingerprint", _policy_fp("policy", self._semantic_payload()))
-
-    def _semantic_payload(self) -> dict[str, Any]:
-        return {
-            "contract": self.contract,
-            "policy_id": self.policy_id,
-            "policy_kind": self.policy_kind,
-            "source_qoi": _thaw(self.source_qoi),
-            "scope": {"kind": self.scope["kind"], "fingerprint": self.scope["fingerprint"]},
-            "provenance": _thaw(self.provenance),
-            "variants": [variant.to_dict() for variant in self.variants],
-        }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            **self._semantic_payload(),
-            "scope": _thaw(self.scope),
-            "policy_fingerprint": self.policy_fingerprint,
-        }
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "QoIDistinctionPolicy":
-        expected = {"contract", "policy_id", "policy_kind", "source_qoi", "scope", "provenance", "variants", "policy_fingerprint"}
-        _exact_keys(value, expected, "QoI distinction policy")
-        if value["contract"] != QOI_DISTINCTION_POLICY_CONTRACT:
-            raise ValueError("QoI distinction policy contract is unsupported")
-        item = cls(
-            value["policy_id"], value["policy_kind"], value["source_qoi"], value["scope"],
-            value["provenance"], tuple(QoIDistinctionVariant.from_dict(item) for item in value["variants"]),
-        )
-        if value["policy_fingerprint"] != item.policy_fingerprint:
-            raise ValueError("policy_fingerprint does not authenticate policy")
-        return item
-
-
-@dataclass(frozen=True)
-class QoIDistinctionPolicySet:
-    policies: tuple[QoIDistinctionPolicy, ...]
-    contract: str = field(default=QOI_DISTINCTION_POLICY_SET_CONTRACT, init=False)
-    policy_set_fingerprint: str = field(default="", init=False)
-
-    def __post_init__(self) -> None:
-        policies = tuple(self.policies)
-        ids = tuple(policy.policy_id for policy in policies)
-        if any(not isinstance(policy, QoIDistinctionPolicy) for policy in policies) or ids != tuple(sorted(ids)) or len(ids) != len(set(ids)):
-            raise ValueError("policies must be ordered and unique")
-        object.__setattr__(self, "policies", policies)
-        payload = {"contract": self.contract, "policies": [policy.to_dict() for policy in policies]}
-        object.__setattr__(self, "policy_set_fingerprint", _policy_fp("policy_set", payload))
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"contract": self.contract, "policies": [policy.to_dict() for policy in self.policies], "policy_set_fingerprint": self.policy_set_fingerprint}
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "QoIDistinctionPolicySet":
-        _exact_keys(value, {"contract", "policies", "policy_set_fingerprint"}, "policy set")
-        if value["contract"] != QOI_DISTINCTION_POLICY_SET_CONTRACT:
-            raise ValueError("policy set contract is unsupported")
-        item = cls(tuple(QoIDistinctionPolicy.from_dict(policy) for policy in value["policies"]))
-        if value["policy_set_fingerprint"] != item.policy_set_fingerprint:
-            raise ValueError("policy_set_fingerprint does not authenticate policy set")
-        return item
-
-
-def validate_qoi_distinction_policy_set(value: Any) -> QoIDistinctionPolicySet:
-    if not isinstance(value, QoIDistinctionPolicySet):
-        raise TypeError("value must be a QoIDistinctionPolicySet")
-    return QoIDistinctionPolicySet.from_dict(value.to_dict())
-
-
 def matching_qoi_policies(case: OfflineCaseSnapshot, policy_set: QoIDistinctionPolicySet) -> tuple[QoIDistinctionPolicy, ...]:
-    validate_qoi_distinction_policy_set(policy_set)
-    if case.qoi_id is None:
-        return ()
-    matches = []
-    for policy in policy_set.policies:
-        if dict(policy.source_qoi) != {"id": case.qoi_id, "unit": case.qoi_unit}:
-            continue
-        if policy.scope["kind"] == "case_identity":
-            identity = case.case_identity
-        else:
-            scope = case.campaign_configuration_scope
-            identity = None if scope is None else scope["fingerprint"]
-        if policy.scope["fingerprint"] == identity:
-            matches.append(policy)
-    return tuple(matches)
-
-
-def compile_qoi_distinction_policy(policy: QoIDistinctionPolicy, variant: QoIDistinctionVariant) -> ScalarQoIDiscretization:
-    if not isinstance(policy, QoIDistinctionPolicy) or variant not in policy.variants:
-        raise TypeError("policy and variant must be authenticated records")
-    if policy.policy_kind != "isar.scalar_absolute_partitions/o36.5":
-        raise ValueError("qoi_policy_unsupported")
-    parameters = variant.parameters
-    _exact_keys(parameters, {"origin", "bin_width", "offsets"}, "scalar policy parameters")
-    return ScalarQoIDiscretization(
-        qoi_id=policy.source_qoi["id"], qoi_unit=policy.source_qoi["unit"],
-        origin=parameters["origin"], bin_width=parameters["bin_width"], offsets=tuple(parameters["offsets"]),
+    """Compatibility adapter from an offline case to the shared exact matcher."""
+    case_matches = _matching_qoi_policies(
+        policy_set,
+        qoi_id=case.qoi_id,
+        qoi_unit=case.qoi_unit,
+        scope_kind="case_identity",
+        scope_fingerprint=case.case_identity,
+    )
+    campaign_scope = case.campaign_configuration_scope
+    campaign_matches = _matching_qoi_policies(
+        policy_set,
+        qoi_id=case.qoi_id,
+        qoi_unit=case.qoi_unit,
+        scope_kind="campaign_configuration",
+        scope_fingerprint=(None if campaign_scope is None else campaign_scope["fingerprint"]),
+    )
+    return tuple(
+        policy for policy in policy_set.policies
+        if policy in case_matches or policy in campaign_matches
     )
 
 

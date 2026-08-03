@@ -1103,6 +1103,41 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   recommendation, request, or execution authority; Slice 6 remains the planned separately gated
   scored-shadow-inventory step.
 
+- **O38.** (2026-08-03, Implemented in the Slice 6 scored-shadow inventory contract; does not grant
+  Slice 7 or authoritative selection) **A live shadow comparison authenticates one exact completed
+  source master, scores only `legacy_uniform/1` versus `target_core/1`, and always executes the
+  legacy control.** The proposal carries an in-memory source reference naming the atomic master
+  session key, detector, master revision, predictive/projection artifacts, selection identities,
+  and source acquisition provenance. The adapter resolves only those references; a same-Q or newer
+  master is never a substitute.
+
+  New inventories use `isar.scan_design_inventory/3` with a mandatory shadow envelope. `off` records
+  `not_requested`; `shadow` records complete, partial, or unavailable diagnostic evidence and chooses
+  the scored/unscored legacy-control basis accordingly. Every basis still selects the unique legacy
+  candidate. `isar.scan_design_candidate/2` and historical inventory `/2` remain unchanged; retained
+  Slice 5.1 artifacts are not migrated or reminted.
+
+  Policy authoring is human-owned card content, compiled against the non-recursive current campaign
+  configuration scope before campaign start. Frozen objectives are self-contained and carry the
+  authenticated policy set plus the separately fingerprinted `isar.scan_window_shadow_scoring_config/o36.6`.
+  Card/goal defaults are 128 simulations, eight blocks, and at most eight runtime variants. Explicit
+  frozen specs may reduce the simulation count within the validated bounds, but runtime policy and
+  variant limits are always enforced before acquisition begins.
+
+  The pure scorer evaluates the exact legacy and target-core predictive grids once each, reuses those
+  results across supported policy variants, and preserves the Slice 4 paired orientation alongside a
+  normalized target-core-minus-legacy diagnostic. Its seed is the signed-63-bit prefix of SHA-256 over
+  the scoring-configuration, design-measure, and candidate-pair identities in the
+  `isar.scan_window_shadow_seed/o36.6` domain. Complete or partial evidence grants only
+  `eig_shadow = diagnostic`; every selection scope remains ineligible.
+
+  Live scoring occurs between action selection and request finalization under a fixed five-second
+  soft allowance charged to the cumulative analysis clock. Deadline, local analysis-limit, and
+  unexpected failures persist valid unavailable evidence and fail open to the same legacy request;
+  they never catch process interrupts. Realization clamps run afterward and do not relabel the
+  pre-finalization comparison. Slice 7 realized-request rescoring, thresholds, winners,
+  recommendations, and authoritative selection remain planned and forbidden in Slice 6 evidence.
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:

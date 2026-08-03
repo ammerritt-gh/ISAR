@@ -144,6 +144,23 @@ def test_resume_latest_errors_cleanly_when_no_log(tmp_path, monkeypatch, capsys)
     assert "no campaign to resume" in capsys.readouterr().err
 
 
+def test_resume_rejects_legacy_objective_without_explicit_scan_window_eig(tmp_path, monkeypatch, capsys):
+    workspace = tmp_path / "ws"
+    (workspace / "report").mkdir(parents=True)
+    objective = ObjectiveSpec.along_h(
+        h_start=2.1, h_end=2.2, step=0.1, tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e3}).to_dict()
+    del objective["scan_window_eig"]
+    log_event(
+        workspace / "report" / "session_log.jsonl", "decide",
+        {"event": "campaign_start", "action": "campaign_start", "objective": objective,
+         "source": {"kind": "goal", "sha256": "legacy"}},
+    )
+    _stub_run_campaign(monkeypatch)
+    assert main(["drive", "--resume-latest", "--workspace", str(workspace)]) == 2
+    assert "requires scan_window_eig" in capsys.readouterr().err
+
+
 # --------------------------------------------------------------------------- provenance fingerprint
 def test_spec_start_fingerprint_is_sha256_of_file_bytes(tmp_path, monkeypatch):
     captured = _stub_run_campaign(monkeypatch)
@@ -163,6 +180,34 @@ def test_goal_start_fingerprint_is_sha256_of_goal_text(tmp_path, monkeypatch):
     main(["drive", "--goal", goal, "--workspace", str(tmp_path / "ws")])
     expected = hashlib.sha256(goal.encode("utf-8")).hexdigest()
     assert captured[0][1]["source"] == {"kind": "goal", "sha256": expected}
+
+
+def test_natural_goal_passes_inline_card_eig_authoring_to_objective_compiler(tmp_path, monkeypatch):
+    import isar.schema.card as card_module
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "card.policy.toml").write_text("# mocked card\n", encoding="utf-8")
+    authoring = {"policies": []}
+
+    class _Policy:
+        hypotheses = {"acoustic": {}}
+        scan_window_eig_policy_set = authoring
+
+    monkeypatch.setattr(card_module, "load_policy", lambda _path: _Policy())
+    seen = {}
+
+    def fake_goal_to_spec(goal, **kwargs):
+        seen.update(kwargs)
+        return ObjectiveSpec.along_h(
+            h_start=2.0, h_end=2.1, step=0.1, tolerance_meV=0.5,
+            budget={"kind": "neutrons", "amount": 1e3})
+
+    monkeypatch.setattr(g2s, "goal_to_spec", fake_goal_to_spec)
+    _stub_run_campaign(monkeypatch)
+    assert main(["drive", "--goal", "map acoustic", "--workspace", str(workspace)]) == 0
+    assert seen["card_hypotheses"] == _Policy.hypotheses
+    assert seen["card_eig_policy_set"] is authoring
 
 
 # --------------------------------------------------------------------------- exit codes
@@ -198,6 +243,48 @@ def test_compile_only_writes_frozen_envelope_without_running_campaign(tmp_path, 
     assert envelope["objective"]["path"][0] == [2.1, 0.0, 0.0]
 
 
+def test_compact_spec_compile_only_freezes_inline_card_eig_policy(tmp_path, monkeypatch):
+    import isar.schema.card as card_module
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "card.policy.toml").write_text("# mocked card\n", encoding="utf-8")
+
+    class _Policy:
+        hypotheses = {}
+        scan_window_eig_policy_set = {"policies": []}
+
+    monkeypatch.setattr(card_module, "load_policy", lambda _path: _Policy())
+    out = tmp_path / "compact-envelope.json"
+    assert main([
+        "drive", "--spec", str(_spec_file(tmp_path)), "--workspace", str(workspace),
+        "--compile-only", str(out),
+    ]) == 0
+    objective = json.loads(out.read_text(encoding="utf-8"))["objective"]
+    assert objective["scan_window_eig"]["policy_set"]["policies"] == []
+    assert objective["scan_window_eig"]["scoring_config"]["simulation_count"] == 128
+
+
+def test_full_spec_never_reads_or_supplements_card_policy(tmp_path, monkeypatch):
+    import isar.schema.card as card_module
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "card.policy.toml").write_text("malformed on purpose", encoding="utf-8")
+    monkeypatch.setattr(
+        card_module, "load_policy",
+        lambda _path: (_ for _ in ()).throw(AssertionError("full spec read card policy")),
+    )
+    frozen = ObjectiveSpec.along_h(
+        h_start=2.1, h_end=2.2, step=0.1, tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e3})
+    path = tmp_path / "frozen.json"
+    path.write_text(json.dumps(frozen.to_dict()), encoding="utf-8")
+    captured = _stub_run_campaign(monkeypatch)
+    assert main(["drive", "--spec", str(path), "--workspace", str(workspace)]) == 0
+    assert captured[0][0].scan_window_eig.policy_set is None
+
+
 def test_envelope_start_preserves_original_source_fingerprint(tmp_path, monkeypatch):
     spec = ObjectiveSpec.segment(q_start=[2, 0, 0], q_end=[2, 0.5, 0], step_rlu=0.05,
                                  tolerance_meV=0.5,
@@ -213,6 +300,21 @@ def test_envelope_start_preserves_original_source_fingerprint(tmp_path, monkeypa
     assert captured[0][0].target_branch == "optic"
     assert captured[0][1]["source"]["sha256"] == envelope["source"]["sha256"]
     assert captured[0][1]["source"]["original_goal"] == "map transverse optic"
+
+
+def test_envelope_rejects_objective_without_explicit_scan_window_eig(tmp_path, monkeypatch, capsys):
+    objective = ObjectiveSpec.along_h(
+        h_start=2.1, h_end=2.2, step=0.1, tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e3}).to_dict()
+    del objective["scan_window_eig"]
+    path = tmp_path / "legacy-envelope.json"
+    path.write_text(json.dumps({
+        "schema": "isar.objective-envelope/2", "objective": objective,
+        "source": {"kind": "goal", "sha256": "legacy"},
+    }), encoding="utf-8")
+    _stub_run_campaign(monkeypatch)
+    assert main(["drive", "--envelope", str(path), "--workspace", str(tmp_path / "ws")]) == 2
+    assert "requires scan_window_eig" in capsys.readouterr().err
 
 
 def test_envelope_start_applies_absolute_budget_override(tmp_path, monkeypatch):

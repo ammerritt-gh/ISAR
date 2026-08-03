@@ -255,12 +255,23 @@ def main(argv=None) -> int:
         from isar.drive.session_log import read_log
         from isar.drive.supervisor.goal_to_spec import (
             ENVELOPE_SCHEMA, GoalParseError, envelope_from_json, goal_to_spec, make_envelope, spec_from_dict,
-            spec_from_json)
+        )
         try:
             if args.compile_only and (args.resume_latest or args.envelope):
                 raise GoalParseError("--compile-only accepts --goal or --spec, not resume/envelope")
             if not args.compile_only and not args.workspace:
                 raise GoalParseError("--workspace is required unless --compile-only is used")
+
+            def card_objective_authoring():
+                if not args.workspace:
+                    return None, None
+                policy_path = Path(args.workspace) / "card.policy.toml"
+                if not policy_path.exists():
+                    return None, None
+                from isar.schema.card import load_policy
+                card_policy = load_policy(policy_path)
+                return card_policy.hypotheses, card_policy.scan_window_eig_policy_set
+
             if args.resume_latest:
                 # LLM-free resume: rebuild the FROZEN objective from the last campaign_start event; a
                 # goal is NEVER re-compiled through the LLM (spec_from_dict is a pure dict path).
@@ -292,19 +303,28 @@ def main(argv=None) -> int:
                 if original_goal is not None:
                     source["original_goal"] = original_goal
             elif args.spec:
-                objective = spec_from_json(args.spec, defaults={"tier": args.tier or "deterministic"})
+                spec_data = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+                card_hypotheses = None
+                card_eig_policy_set = None
+                # Compact goal-schema specs are authoring input and may inherit the human-owned
+                # card.  A full ObjectiveSpec is already frozen and must never reread card policy.
+                if not isinstance(spec_data, dict) or not isinstance(spec_data.get("path"), list):
+                    card_hypotheses, card_eig_policy_set = card_objective_authoring()
+                objective = spec_from_dict(
+                    spec_data,
+                    defaults={"tier": args.tier or "deterministic"},
+                    where=str(args.spec),
+                    card_hypotheses=card_hypotheses,
+                    card_eig_policy_set=card_eig_policy_set,
+                )
                 source = {"kind": "spec",
                           "sha256": hashlib.sha256(Path(args.spec).read_bytes()).hexdigest()}
             else:
-                card_hypotheses = None
-                if args.workspace:
-                    policy_path = Path(args.workspace) / "card.policy.toml"
-                    if policy_path.exists():
-                        from isar.schema.card import load_policy
-                        card_hypotheses = load_policy(policy_path).hypotheses
+                card_hypotheses, card_eig_policy_set = card_objective_authoring()
                 objective = goal_to_spec(
                     args.goal, defaults={"tier": args.tier or "deterministic"},
-                    card_hypotheses=card_hypotheses)
+                    card_hypotheses=card_hypotheses,
+                    card_eig_policy_set=card_eig_policy_set)
                 source = {"kind": "goal",
                           "sha256": hashlib.sha256(args.goal.encode("utf-8")).hexdigest()}
             if args.budget:

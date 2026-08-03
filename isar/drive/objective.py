@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
+from isar.schema.eig_policy import ScanWindowEIGConfig
 from isar.schema.hypotheses import (
     SteeringPolicy,
     content_fingerprint,
@@ -29,6 +30,7 @@ TIERS = ("deterministic", "mcstas")
 TARGET_BRANCHES = ("acoustic", "optic")
 TARGET_SELECTORS = ("lowest_energy", "highest_energy", "nearest_energy", "tracked_branch")
 OBJECTIVE_SCHEMA = "isar.objective/2"
+CURRENT_OBJECTIVE_SCOPE_REVISION = "isar.current_objective_comparison_scope/1"
 _DEFAULT_ANALYSIS_LIMIT = object()
 
 
@@ -83,6 +85,8 @@ class ObjectiveSpec:
     hypothesis_source: str | None = None
     hypothesis_fingerprint: str | None = None
     steering: dict[str, Any] = field(default_factory=dict)
+    scan_window_eig: ScanWindowEIGConfig | Mapping[str, Any] = field(
+        default_factory=ScanWindowEIGConfig)
     analysis_limit_seconds: float | None | object = _DEFAULT_ANALYSIS_LIMIT
 
     def __post_init__(self) -> None:
@@ -156,6 +160,22 @@ class ObjectiveSpec:
         self.target_label = str(self.target_label or self.target_branch)
         self.hypotheses = [dict(h) for h in self.hypotheses]
         self.steering = dict(self.steering)
+        if isinstance(self.scan_window_eig, Mapping):
+            self.scan_window_eig = ScanWindowEIGConfig.from_dict(self.scan_window_eig)
+        elif isinstance(self.scan_window_eig, ScanWindowEIGConfig):
+            self.scan_window_eig = ScanWindowEIGConfig.from_dict(self.scan_window_eig.to_dict())
+        else:
+            raise TypeError("scan_window_eig must be a frozen ScanWindowEIGConfig")
+        # A full frozen objective is a campaign-start contract, not merely a policy container.
+        # Validate every currently supported scientific policy before beamtime starts.  Unknown
+        # versioned policy kinds remain authenticated and are refused diagnostically at runtime.
+        policy_set = self.scan_window_eig.policy_set
+        if policy_set is not None:
+            from isar.eig.policy import compile_qoi_distinction_policy
+            for policy in policy_set.policies:
+                if policy.policy_kind == "isar.scalar_absolute_partitions/o36.5":
+                    for variant in policy.variants:
+                        compile_qoi_distinction_policy(policy, variant)
         if self.hypotheses:
             names: set[str] = set()
             for hypothesis in self.hypotheses:
@@ -220,6 +240,7 @@ class ObjectiveSpec:
                 target_hypothesis: str | None = None, hypothesis_source: str | None = None,
                 hypothesis_fingerprint: str | None = None,
                 steering: dict[str, Any] | None = None,
+                scan_window_eig: ScanWindowEIGConfig | Mapping[str, Any] | None = None,
                 analysis_limit_seconds: float | None | object = _DEFAULT_ANALYSIS_LIMIT) -> "ObjectiveSpec":
         """A path that walks H from ``h_start`` to ``h_end`` in increments of ``step`` at fixed K, L.
 
@@ -244,7 +265,10 @@ class ObjectiveSpec:
                    hypotheses=list(hypotheses or []), target_hypothesis=target_hypothesis,
                    hypothesis_source=hypothesis_source,
                    hypothesis_fingerprint=hypothesis_fingerprint,
-                   steering=dict(steering or {}), analysis_limit_seconds=analysis_limit_seconds)
+                   steering=dict(steering or {}),
+                   scan_window_eig=(ScanWindowEIGConfig() if scan_window_eig is None
+                                    else scan_window_eig),
+                   analysis_limit_seconds=analysis_limit_seconds)
 
     @classmethod
     def segment(cls, *, q_start, q_end, step_rlu: float, tolerance_meV: float,
@@ -261,6 +285,7 @@ class ObjectiveSpec:
                 target_hypothesis: str | None = None, hypothesis_source: str | None = None,
                 hypothesis_fingerprint: str | None = None,
                 steering: dict[str, Any] | None = None,
+                scan_window_eig: ScanWindowEIGConfig | Mapping[str, Any] | None = None,
                 analysis_limit_seconds: float | None | object = _DEFAULT_ANALYSIS_LIMIT) -> "ObjectiveSpec":
         """A straight reciprocal-space segment whose intervals never exceed ``step_rlu``.
 
@@ -291,7 +316,10 @@ class ObjectiveSpec:
                    hypotheses=list(hypotheses or []), target_hypothesis=target_hypothesis,
                    hypothesis_source=hypothesis_source,
                    hypothesis_fingerprint=hypothesis_fingerprint,
-                   steering=dict(steering or {}), analysis_limit_seconds=analysis_limit_seconds)
+                   steering=dict(steering or {}),
+                   scan_window_eig=(ScanWindowEIGConfig() if scan_window_eig is None
+                                    else scan_window_eig),
+                   analysis_limit_seconds=analysis_limit_seconds)
 
     # ---- (de)serialization -------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
@@ -319,12 +347,18 @@ class ObjectiveSpec:
             "hypothesis_source": self.hypothesis_source,
             "hypothesis_fingerprint": self.hypothesis_fingerprint,
             "steering": dict(self.steering),
+            "scan_window_eig": self.scan_window_eig.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ObjectiveSpec":
         if d.get("schema") != OBJECTIVE_SCHEMA:
             raise ValueError(f"objective schema must be {OBJECTIVE_SCHEMA!r}")
+        unknown = set(d) - ({"schema"} | set(cls.__dataclass_fields__))
+        if unknown:
+            raise ValueError(f"full frozen objective fields are invalid: {sorted(unknown)}")
+        if "scan_window_eig" not in d:
+            raise ValueError("full frozen objective requires scan_window_eig")
         return cls(
             path=[tuple(p) for p in d["path"]],
             tolerance_meV=float(d["tolerance_meV"]),
@@ -348,9 +382,44 @@ class ObjectiveSpec:
             hypothesis_source=d.get("hypothesis_source"),
             hypothesis_fingerprint=d.get("hypothesis_fingerprint"),
             steering=dict(d.get("steering") or {}),
+            scan_window_eig=d["scan_window_eig"],
             analysis_limit_seconds=(d["analysis_limit_seconds"]
                                     if "analysis_limit_seconds" in d else _DEFAULT_ANALYSIS_LIMIT),
         )
+
+
+def current_objective_comparison_scope(objective: ObjectiveSpec) -> Mapping[str, str]:
+    """Adapt the scientific objective to the stable campaign-policy applicability identity.
+
+    Steering and ``scan_window_eig`` are deliberately excluded.  A policy can therefore bind to
+    this exact identity and then be embedded in the objective without a recursive fingerprint.
+    """
+    from isar.schema.statistics import semantics_fingerprint
+
+    if not isinstance(objective, ObjectiveSpec):
+        raise TypeError("objective must be an ObjectiveSpec")
+    raw = objective.to_dict()
+    if raw.get("schema") != OBJECTIVE_SCHEMA:
+        raise ValueError("objective schema is unsupported")
+    payload = {
+        "schema": raw["schema"],
+        "path": raw["path"],
+        "tolerance_meV": raw["tolerance_meV"],
+        "target_branch": raw["target_branch"],
+        "target_label": raw["target_label"],
+        "target_selector": raw["target_selector"],
+        "target_energy_meV": raw["target_energy_meV"],
+        "energy_search_meV": raw["energy_search_meV"],
+        "identity_search_meV": raw["identity_search_meV"],
+        "target_temperature_K": raw["target_temperature_K"],
+        "hypotheses": raw["hypotheses"],
+        "target_hypothesis": raw["target_hypothesis"],
+        "hypothesis_fingerprint": raw["hypothesis_fingerprint"],
+    }
+    return {
+        "producer_revision": CURRENT_OBJECTIVE_SCOPE_REVISION,
+        "fingerprint": semantics_fingerprint(CURRENT_OBJECTIVE_SCOPE_REVISION, payload),
+    }
 
 
 def shipped_hypothesis_snapshot(target_branch: str, energy_search_meV) -> dict[str, Any]:

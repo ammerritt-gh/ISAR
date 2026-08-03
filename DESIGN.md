@@ -19,6 +19,7 @@ the drive loop (Stage III) is built and has passed its first certification campa
 **analytic synthetic tier** (`fn:phonon_dft`; see `docs/campaigns/`). Deterministic TAVI backend
 validation ran on 2026-07-10; realistic-clock and McStas validation remain Planned backend-runtime
 and fidelity-validation rungs (§9, §15). EIG-4 is the current SVP; same-action scan-window scoring
+is implemented through diagnostic scored-shadow inventories, while exact realized-request rescoring
 and authority remain Planned. Statuses in this document follow the discipline:
 every capability is **Implemented**, **Partial**, or **Planned**, and nothing is described in the
 implemented voice unless it is.
@@ -436,7 +437,7 @@ DECISIONS W1–W3.)*
 | γ-at-bound calibration v2; Γ prior | Planned |
 | `tas4d` convolution (TAVI-supplied ellipsoids) | Planned |
 | Stage III: per-point objective, EIG acquisition, stop-and-report | Implemented (analytic tier certified) |
-| Same-action scan-window EIG | **Partial:** predictive `/2`, arbitrary-grid evaluation, candidate generation, executed-grid identity, and target projection Implemented; candidate scoring, scored shadow selection, realized-request rescoring, and restricted authority Planned. EIG-4 is the current SVP. |
+| Same-action scan-window EIG | **Partial:** predictive `/2`, arbitrary-grid evaluation, candidate generation, executed-grid identity, target projection, pure candidate scoring, and Slice 6 diagnostic scored-shadow inventories Implemented; exact realized-request rescoring and restricted authority Planned. Slice 6 always executes the legacy control. EIG-4 is the current SVP. |
 | Exposure-aware pooling + tolerance-driven dynamic `ncount` | **Partial** (O13, 2026-07-18; raw counts/ΣN retained and deterministic interval scaling/brakes/replay Implemented, Fisher/sample-based dwell optimisation Planned) |
 | Bayesian optic cold-start + selector-driven provisional evidence | **Partial** (2026-07-18; posterior assignment, neighboring-q evidence and probabilistic rejection implemented, sampled Stage-C MI Planned) |
 | Separate measurement budget + cumulative analysis guardrail | Implemented (2026-07-19; durable ten-second checkpoints) |

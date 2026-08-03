@@ -86,6 +86,31 @@ IDENTITY_PROBE_RANK = 100.0
 ASSOCIATION_UNCERTAINTY_PER_UNMEASURED_STEP = 0.15
 
 
+@dataclass(frozen=True)
+class ShadowScoringSource:
+    """Exact completed-master evidence carried to the live shadow-scoring adapter.
+
+    This value is deliberately in-memory only.  It freezes the selected action's source records at
+    realization time so the adapter never has to search the workspace for a plausible same-Q or
+    newer master after action selection has already happened.
+    """
+
+    master_session_key: str | None
+    detector_id: str | None
+    master_revision: str | None
+    source_acquisition_id: str | None
+    source_submission_request_fingerprint: str | None
+    scientific_action_fingerprint: str
+    predictive_ref: str | None
+    target_projection_ref: str | None
+    target_outcome: dict[str, Any] | None
+    selection_record: dict[str, Any] | None
+    shadow_record: dict[str, Any] | None
+    target_projection_authority: dict[str, Any] | None
+    action_intent: MeasurementIntent
+    action_provenance: dict[str, Any]
+
+
 @dataclass
 class ScanProposal:
     """A complete constant-Q energy-scan request the instrument client can submit."""
@@ -115,6 +140,10 @@ class ScanProposal:
     # In-memory only: the complete scan-design inventory that produced this planned request. The drive
     # loop persists it after finalization and adds only its content-addressed reference to ``meta``.
     scan_design_inventory: ScanDesignInventory | None = field(
+        default=None, repr=False, compare=False)
+    # In-memory only: exact source evidence for diagnostic scan-window scoring.  It is intentionally
+    # absent from ``to_dict`` and therefore cannot affect the request fingerprint or wire payload.
+    shadow_scoring_source: ShadowScoringSource | None = field(
         default=None, repr=False, compare=False)
 
     def scan_command(self) -> str:
@@ -2080,11 +2109,13 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
     count_diagnostics = design.diagnostics
 
     selected_evidence = pick.evidence_master or pick.master or {}
-    evidence_revision = ((score.evidence_transition or {}).get(
-        "authoritative_evidence_revision")
+    evidence_revision = (
+        selected_evidence.get("master_revision")
+        or (score.evidence_transition or {}).get("authoritative_evidence_revision")
         or selected_evidence.get("content_hash")
         or selected_evidence.get("production_batch_fingerprint")
-        or selected_evidence.get("track_revision"))
+        or selected_evidence.get("track_revision")
+    )
     action_role = ("classification" if score.purpose == "differentiate" else
                    "discovery" if kind == "quicklook" else "production")
     target_branch = getattr(objective, "target_branch", None)
@@ -2142,6 +2173,53 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
         score_recompute=score_recompute,
         intent=chosen.evaluation.intent,
         scan_design_inventory=design_inventory)
+    proposal.shadow_scoring_source = ShadowScoringSource(
+        master_session_key=(
+            str(selected_evidence["master_session_key"])
+            if selected_evidence.get("master_session_key") is not None else None),
+        detector_id=(
+            str(selected_evidence["detector_id"])
+            if selected_evidence.get("detector_id") is not None else None),
+        master_revision=(
+            str(selected_evidence["master_revision"])
+            if selected_evidence.get("master_revision") is not None else None),
+        source_acquisition_id=(
+            str(selected_evidence["source_acquisition_id"])
+            if selected_evidence.get("source_acquisition_id") is not None else None),
+        source_submission_request_fingerprint=(
+            str(selected_evidence["source_submission_request_fingerprint"])
+            if selected_evidence.get("source_submission_request_fingerprint") is not None else None),
+        scientific_action_fingerprint=intent.scientific_action_fingerprint,
+        predictive_ref=(
+            str(selected_evidence["predictive_ref"])
+            if selected_evidence.get("predictive_ref") is not None else None),
+        target_projection_ref=(
+            str(selected_evidence["target_projection_ref"])
+            if selected_evidence.get("target_projection_ref") is not None else None),
+        target_outcome=dict(selected_evidence) if selected_evidence else None,
+        selection_record=(
+            dict(selected_evidence["fit_selection_semantics"])
+            if isinstance(selected_evidence.get("fit_selection_semantics"), dict) else None),
+        shadow_record=(
+            dict(selected_evidence["shadow_model_selection"])
+            if isinstance(selected_evidence.get("shadow_model_selection"), dict) else None),
+        target_projection_authority=(
+            dict(selected_evidence["target_projection_authority"])
+            if isinstance(selected_evidence.get("target_projection_authority"), dict) else None),
+        action_intent=intent,
+        action_provenance={
+            "action_class": proposal.meta.get("action_class"),
+            "scientific_action_fingerprint": intent.scientific_action_fingerprint,
+            "proposal_scientific_action_fingerprint": intent.scientific_action_fingerprint,
+            "acquisition_action_role": proposal.meta.get("acquisition_action_role"),
+            "evidence_sink": proposal.meta.get("evidence_sink"),
+            "driver_inserted": proposal.meta.get("driver_inserted"),
+            "insertion_purpose": proposal.meta.get("insertion_purpose"),
+            "authoritative_evidence_revision": proposal.meta.get(
+                "authoritative_evidence_revision"),
+            "hkl": [float(h), float(k), float(l)],
+        },
+    )
     normalize_proposal_score(proposal, float(objective.tolerance_meV))
     normalized_score = proposal.meta["score"]
     epc = normalized_score.get("eig_per_cost")
