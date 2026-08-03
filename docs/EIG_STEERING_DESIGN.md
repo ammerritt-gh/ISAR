@@ -12,10 +12,11 @@
 ## Status and boundary
 
 **EIG-4 is the approved execution roadmap and current SVP, not implemented runtime authority.**
-Alternative-window EIG candidate scoring, scored shadow selection, and authoritative selection are
-not implemented. Candidate generation, predictive `/2`, arbitrary-grid evaluation, executed-grid
-identity, target projection, Slice 2 eligibility/QoI adaptation, and the Slice 3 homogeneous design
-measure are implemented.
+The pure full-vector Poisson score kernel is implemented, but campaign candidate evaluation,
+offline comparison, scored shadow selection, and authoritative selection are not. Candidate
+generation, predictive `/2`, arbitrary-grid evaluation, executed-grid identity, target projection,
+Slice 2 eligibility/QoI adaptation, the Slice 3 homogeneous design measure, and the Slice 4
+caller-supplied score set are implemented.
 Current acquisition ranks scientific actions and Q
 positions using expected counts already stored on each master's fitted grid. The
 `ScanDesignContext → ScanDesignInventory` seam now generates the bounded family of conventional
@@ -309,14 +310,98 @@ write campaign state, or produce a request. Retained Slice 1 campaigns contain l
 rather than current authenticated `/2` plus projection evidence, so they do not demonstrate observed
 campaign availability of this measure.
 
-Slice 4 must preserve the source join across serialization by matching recomputed predictive-basis and
-source-draw-identity fingerprints before expected-count evaluation. Requiring the same Python object
+Slice 4 preserves the source join across serialization by matching recomputed predictive-basis and
+source-draw-identity fingerprints before scoring expected counts. Requiring the same Python object
 instance is neither necessary nor a valid persistence contract. A future additive `/2` revision may
 instead include draw IDs in its own fingerprint, but Slice 3 does not change that source contract.
 
 The first comparison is local to one selected Q and fit-model context. Information transfer across Q
 or energy, a phenomenon registry, continuum support, magnon support, and a general model refactor
 are post-SVP work.
+
+### Pure full-vector Poisson information scorer (Slice 4)
+
+`isar.eig.score_scan_window_candidates()` is the pure, non-persisting scorer for
+`isar.scan_window_eig_score_set/o36.4`, under
+`isar.full_vector_poisson_mixture_scorer/o36.4`. It accepts one strictly re-authenticated
+`ScanWindowDesignMeasure`, an explicit `isar.scalar_qoi_discretization/o36.4`, and caller-supplied
+`PredictiveDesignEvaluation` values. It does not call the evaluator, read campaign or instrument
+state, construct a candidate, rank a result, write an inventory, or issue a request. The new
+`validate_scan_window_design_measure()` read gate accepts only the real frozen `o36.3` class and
+reproduces its complete semantic fingerprint. Constructor, validator, and scorer share the same
+source-draw and scenario-identity functions, so their payload recipes cannot drift while merely
+retaining the same domain string.
+
+The evaluation join first reproduces the complete producer-ordered model/source-draw identity. Every
+conditional design scenario then joins exactly once by model label and source-draw ID, with matching
+identity label, predictive weight, draw basis, draw weighting, and scenario ID. Source-authenticated
+rows outside the conditional ensemble are legitimate only when Slice 3 excluded their model or
+conditioned that retained-model draw out because its target QoI was unavailable. Their join keys and
+category enter the scorer-evaluation fingerprint, but their expected-count values do not: those values
+cannot affect the score. Changing an ignored row's source identity still changes the complete source
+fingerprint. The scorer authenticates these identities, joins, the exact grid/exposure, and the count
+vectors it consumes; it does **not** rederive whether those count vectors are numerically correct for
+the claimed physical model. That remains `evaluate_master_predictive()`'s responsibility behind the
+frozen `/2` seam.
+
+The discretization declares a finite scalar QoI origin, positive bin width, and at least one unique
+offset in `[0, bin_width)`. For offset (a), scenario value (q) belongs to
+`floor((q - origin - a) / bin_width)`. For simulated observation (i), the conditional mixture is
+the bin containing the **selected scenario's** QoI under that offset; no bin is inferred from the
+future counts. Partition contributions are averaged equally. A partition containing every scenario
+in one bin is exactly zero by definition, avoiding a subtractive log-sum-exp roundoff. No distribution-
+derived quantile, omega0 rule, campaign objective, or default physical tolerance enters the scorer.
+
+For candidate (c), scenario (s), and its complete executed count vector (Y_c), the observation
+model is conditionally independent Poisson counts at every point. The scorer evaluates
+
+\[
+\log p_c(Y_c\mid Q=q_s)-\log p_c(Y_c)
+\]
+
+with the full scenario-by-point expected-count matrix and stable log-sum-exp mixtures. It never reduces
+the observation to total counts, centroid, a fitted peak, or another summary. The common
+`-log(y_i!)` term cancels. Exact zero-rate rules are `lambda=0,y=0 -> 0` and
+`lambda=0,y>0 -> -infinity`; simulation likewise returns zero directly for a zero rate rather than
+delegating the degenerate distribution to SciPy. Positive rates use `scipy.stats.poisson.ppf`, whose
+result must be finite, non-negative, and exactly integer-valued as a float. The expensive likelihood
+path is vectorized over simulation, scenario, and point matrices.
+
+Common random numbers use `isar.sha256_energy_keyed_poisson_crn/1`. Domain-separated SHA-256 payloads
+bind the design-measure fingerprint, signed seed, and simulation index; the count stream also binds the
+selected scenario ID and exact canonical energy identity, never candidate ID. Signed zero is normalized
+before `float.hex()`, so `-0.0` and `+0.0` are one executed energy. The stream retains the high 52 bits
+of the first hash word and maps them to `(m + 0.5) / 2**52`, exactly spanning
+`[2**-53, 1 - 2**-53]` in binary64 without an endpoint repair. Candidate order and later candidate
+addition therefore leave existing scenario selections, shared-energy streams, candidate results,
+candidate fingerprints, and existing pairwise records unchanged; the enlarged score-set collection
+and score-set fingerprint change.
+
+Each simulation averages its configured offset contributions, and contiguous equal-size blocks produce
+the candidate estimate and uncertainty. Standard errors use the `ddof=1` sample standard deviation of
+block means divided by the square root of the block count; two blocks are legal but weak evidence.
+Absolute information and information per executed point are reported in nats. Negative Monte Carlo
+estimates are retained rather than clamped. Pairwise deltas are always candidate B minus candidate A,
+and their errors come from shared blockwise differences on the absolute and per-point scales, never from
+independently combined errors.
+
+Candidate-score fingerprints independently bind scorer, likelihood, CRN, design-measure,
+discretization, evaluation, seed, simulation/block, numerical-backend, output, and authority semantics.
+Pairwise fingerprints additionally bind both candidate fingerprints and their paired block differences;
+neither depends on unrelated candidates. NumPy and SciPy versions enter these fingerprints deliberately:
+numerically different environments must not publish indistinguishable evidence. Scores sharing a
+design-measure and discretization fingerprint describe the same information quantity, but reported
+paired uncertainty is comparable only within one common execution basis (revisions, seed, simulation
+count, block structure, and numerical backend). Slice 5 must therefore compare candidates from one
+score set rather than joining independent estimates after the fact.
+
+An individually malformed evaluation becomes an unavailable candidate record without a partial number;
+valid candidates in the same call continue. Global evidence/configuration faults return an unavailable
+score set. Complete and partial sets carry `eig_shadow = diagnostic`; `eig_authoritative` and
+`acquisition_selection` remain `ineligible`. Within the EIG chain, `candidate` means authenticated input
+eligible for later shadow computation, `diagnostic` means computed shadow evidence with no selection
+power, and `ineligible` grants neither. An unavailable set has all three scopes ineligible. No Slice 4
+record contains a winner, recommendation, authority threshold, selected candidate, or acquisition act.
 
 ### Slice 0–10 execution sequence
 
@@ -331,8 +416,9 @@ are post-SVP work.
 4. **Slice 3 — EIG-local homogeneous design measure (implemented).** Build the immutable
    Akaike-weighted parametric-bootstrap predictive-scenario measure, inspect actual per-model source
    basis, condition on authenticated target-QoI availability, and make no production selection switch.
-5. **Slice 4 — pure full-vector Poisson scorer.** Use conditional target-QoI information, the full
-   count vector, common random numbers, paired uncertainty, and information per executed point.
+5. **Slice 4 — pure full-vector Poisson scorer (implemented).** Use conditional target-QoI
+   information, the full count vector, common random numbers, paired uncertainty, and information per
+   executed point, with no candidate construction or selection authority.
 6. **Slice 5 — offline legacy versus target_core scoring.** Use completed campaign states at equal
    per-point exposure; grant no inventory or execution authority.
 7. **Slice 6 — scored shadow inventories.** Score `legacy_uniform` and `target_core`; execute legacy

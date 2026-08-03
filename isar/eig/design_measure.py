@@ -16,7 +16,7 @@ from isar.predictive import (
 )
 from isar.schema.statistics import semantics_fingerprint
 
-from .eligibility import EligibilityInput, evaluate_eig_eligibility
+from .eligibility import ELIGIBILITY_CONTRACT, EligibilityInput, evaluate_eig_eligibility
 from .qoi import validate_qoi_projection_evidence
 
 
@@ -74,6 +74,28 @@ def _fingerprint(domain: str, payload: Any) -> str:
     return semantics_fingerprint(domain, _thaw(payload))
 
 
+def _source_draw_identity_fingerprint(
+        records: Sequence[Mapping[str, Any]]) -> str:
+    """Bind the producer-ordered model/source-draw identity used across EIG slices."""
+    payload = [{
+        "model_label": record["model_label"],
+        "source_draw_ids": list(record["source_draw_ids"]),
+    } for record in records]
+    return _fingerprint(SOURCE_DRAW_IDENTITY_DOMAIN, payload)
+
+
+def _predictive_scenario_id(
+        predictive_basis_fingerprint: str,
+        model_label: str,
+        source_draw_id: str) -> str:
+    """Return the one Slice 3/4 join identity for a predictive scenario."""
+    return _fingerprint(PREDICTIVE_SCENARIO_DOMAIN, {
+        "predictive_basis_fingerprint": predictive_basis_fingerprint,
+        "model_label": model_label,
+        "source_draw_id": source_draw_id,
+    })
+
+
 def _dedupe(*groups: Sequence[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(code for group in groups for code in group))
 
@@ -88,6 +110,14 @@ def _close(left: Any, right: Any) -> bool:
             and math.isclose(float(left), float(right),
                              rel_tol=_NORMALIZATION_REL_TOL,
                              abs_tol=_NORMALIZATION_ABS_TOL))
+
+
+def _materiality_values() -> dict[str, float]:
+    return {
+        "predictive_model_weight_floor": PREDICTIVE_MODEL_WEIGHT_FLOOR,
+        "normalization_relative_tolerance": _NORMALIZATION_REL_TOL,
+        "normalization_absolute_tolerance": _NORMALIZATION_ABS_TOL,
+    }
 
 
 @dataclass(frozen=True)
@@ -166,11 +196,8 @@ class ScanWindowDesignMeasure:
     qoi: tuple[tuple[str, Any], ...] = ()
     semantics: tuple[tuple[str, Any], ...] = field(default_factory=lambda: _pairs(_SEMANTICS))
     source_identities: tuple[tuple[str, Any], ...] = ()
-    materiality: tuple[tuple[str, Any], ...] = field(default_factory=lambda: _pairs({
-        "predictive_model_weight_floor": PREDICTIVE_MODEL_WEIGHT_FLOOR,
-        "normalization_relative_tolerance": _NORMALIZATION_REL_TOL,
-        "normalization_absolute_tolerance": _NORMALIZATION_ABS_TOL,
-    }))
+    materiality: tuple[tuple[str, Any], ...] = field(
+        default_factory=lambda: _pairs(_materiality_values()))
     mass_diagnostics: tuple[tuple[str, Any], ...] = ()
     excluded_models: tuple[Mapping[str, Any], ...] = ()
     authority_scopes: tuple[tuple[str, str], ...] = field(
@@ -209,6 +236,213 @@ class ScanWindowDesignMeasure:
             "design_measure_fingerprint": self.design_measure_fingerprint,
             "diagnostics": _thaw(dict(self.diagnostics)),
         }
+
+
+def _design_measure_fingerprint_payload(measure: ScanWindowDesignMeasure) -> dict[str, Any]:
+    """Return the complete ``o36.3`` semantic envelope, excluding diagnostics."""
+    payload = measure.to_dict()
+    payload.pop("design_measure_fingerprint")
+    payload.pop("diagnostics")
+    return payload
+
+
+def _valid_fingerprint(value: Any) -> bool:
+    return (isinstance(value, str) and len(value) == 64 and value.lower() == value
+            and all(character in "0123456789abcdef" for character in value))
+
+
+def _validate_measure_codes(measure: ScanWindowDesignMeasure) -> None:
+    for name in ("reason_codes", "construction_codes"):
+        codes = getattr(measure, name)
+        if (not isinstance(codes, tuple)
+                or any(not isinstance(code, str) or not code for code in codes)
+                or len(codes) != len(set(codes))):
+            raise ValueError(f"design measure {name} must be a unique non-empty string tuple")
+    eligibility = dict(measure.eligibility)
+    scientific = eligibility.get("scientific_codes")
+    observability = eligibility.get("observability_codes")
+    if (not isinstance(scientific, tuple) or not isinstance(observability, tuple)
+            or any(not isinstance(code, str) or not code
+                   for code in (*scientific, *observability))
+            or len(scientific) != len(set(scientific))
+            or len(observability) != len(set(observability))):
+        raise ValueError("design measure eligibility codes are malformed")
+    expected = _dedupe(scientific, observability, measure.construction_codes)
+    if measure.reason_codes != expected:
+        raise ValueError("design measure reason codes disagree with their sources")
+
+
+def _validate_available_design_measure(measure: ScanWindowDesignMeasure) -> None:
+    eligibility = dict(measure.eligibility)
+    if (eligibility.get("contract") != ELIGIBILITY_CONTRACT
+            or eligibility.get("status") != "eligible"
+            or eligibility.get("scientific_codes") != ()
+            or eligibility.get("observability_codes") != ()
+            or not _valid_fingerprint(eligibility.get("input_fingerprint"))
+            or not _valid_fingerprint(eligibility.get("result_fingerprint"))):
+        raise ValueError("available design measure eligibility is not authenticated and eligible")
+    if measure.reason_codes or measure.construction_codes:
+        raise ValueError("available design measure cannot carry refusal codes")
+    if tuple(measure.semantics) != _pairs(_SEMANTICS):
+        raise ValueError("available design measure semantics do not match o36.3")
+    if tuple(measure.materiality) != _pairs(_materiality_values()):
+        raise ValueError("available design measure materiality does not match o36.3")
+    if tuple(measure.authority_scopes) != tuple(sorted(_AVAILABLE_SCOPES.items())):
+        raise ValueError("available design measure authority scopes exceed o36.3")
+
+    qoi = dict(measure.qoi)
+    if (set(qoi) != {"id", "unit", "source_qoi", "conditioning"}
+            or any(not isinstance(qoi.get(name), str) or not qoi[name]
+                   for name in ("id", "unit", "source_qoi"))
+            or qoi.get("conditioning") != _SEMANTICS["conditioning"]):
+        raise ValueError("available design measure QoI metadata is malformed")
+    source_identities = dict(measure.source_identities)
+    expected_source_names = {
+        "predictive_basis_fingerprint",
+        "predictive_retained_set_fingerprint",
+        "predictive_statistical_semantics_fingerprint",
+        "source_model_selection_fingerprint",
+        "target_projection_set_fingerprint",
+        "projection_statistical_semantics_fingerprint",
+        "projection_authority_fingerprint",
+        "qoi_evidence_fingerprint",
+    }
+    if (set(source_identities) != expected_source_names
+            or any(not _valid_fingerprint(value) for value in source_identities.values())
+            or not _valid_fingerprint(measure.source_draw_identity_fingerprint)):
+        raise ValueError("available design measure source identities are malformed")
+
+    models = list(measure.models)
+    scenarios = list(measure.predictive_scenarios)
+    if not models or not scenarios:
+        raise ValueError("available design measure has an empty design ensemble")
+    model_labels = [model.get("label") for model in models]
+    if (any(not isinstance(label, str) or not label for label in model_labels)
+            or len(model_labels) != len(set(model_labels))):
+        raise ValueError("available design measure model labels are malformed")
+    excluded_labels = [model.get("label") for model in measure.excluded_models
+                       if isinstance(model, Mapping)]
+    if (len(excluded_labels) != len(measure.excluded_models)
+            or any(not isinstance(label, str) or not label for label in excluded_labels)
+            or len(excluded_labels) != len(set(excluded_labels))
+            or set(excluded_labels) & set(model_labels)):
+        raise ValueError("available design measure excluded models are malformed")
+
+    scenario_ids: list[str] = []
+    join_keys: list[tuple[str, str]] = []
+    scenario_weights: list[float] = []
+    predictive_basis = source_identities["predictive_basis_fingerprint"]
+    for scenario in scenarios:
+        scenario_id = scenario.get("scenario_id")
+        model_label = scenario.get("model_label")
+        source_draw_id = scenario.get("source_draw_id")
+        if (not _valid_fingerprint(scenario_id)
+                or not isinstance(model_label, str) or not model_label
+                or not isinstance(source_draw_id, str) or not source_draw_id
+                or model_label not in model_labels
+                or scenario_id != _predictive_scenario_id(
+                    predictive_basis, model_label, source_draw_id)):
+            raise ValueError("available design measure scenario identity is malformed")
+        numeric_names = (
+            "qoi_value", "source_weight", "published_predictive_weight",
+            "retained_predictive_weight", "source_draw_weight",
+            "preconditioning_scenario_mass", "conditional_scenario_weight",
+        )
+        if any(not _finite(scenario.get(name)) for name in numeric_names):
+            raise ValueError("available design measure scenario values must be finite")
+        if any(float(scenario[name]) <= 0.0 for name in numeric_names if name != "qoi_value"):
+            raise ValueError("available design measure scenario masses must be positive")
+        weight = float(scenario["conditional_scenario_weight"])
+        scenario_ids.append(scenario_id)
+        join_keys.append((model_label, source_draw_id))
+        scenario_weights.append(weight)
+    if len(scenario_ids) != len(set(scenario_ids)) or len(join_keys) != len(set(join_keys)):
+        raise ValueError("available design measure scenario identities are not unique")
+    if join_keys != sorted(join_keys):
+        raise ValueError("available design measure scenario order is not canonical")
+    if not _close(math.fsum(scenario_weights), 1.0):
+        raise ValueError("available design measure scenario weights are not normalized")
+
+    model_weights: list[float] = []
+    for model in models:
+        numeric_names = (
+            "source_weight", "published_predictive_weight", "retained_predictive_weight",
+            "design_ensemble_weight", "source_target_qoi_available_mass",
+            "source_target_qoi_unavailable_mass",
+        )
+        if (not isinstance(model.get("identity_label"), str) or not model["identity_label"]
+                or model.get("draw_basis") != "parametric_bootstrap"
+                or model.get("draw_weighting") != "equal_weight_resampled"
+                or any(not _finite(model.get(name)) or float(model[name]) < 0.0
+                       for name in numeric_names)):
+            raise ValueError("available design measure model values are malformed")
+        for name in ("source_draw_count", "retained_source_draw_count",
+                     "conditional_scenario_count"):
+            value = model.get(name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError("available design measure model counts are malformed")
+        if (model["source_draw_count"] < model["retained_source_draw_count"]
+                or model["retained_source_draw_count"] < model["conditional_scenario_count"]):
+            raise ValueError("available design measure model counts disagree")
+        matching = [scenario for scenario in scenarios
+                    if scenario["model_label"] == model["label"]]
+        if (len(matching) != model["conditional_scenario_count"]
+                or not _close(math.fsum(float(item["conditional_scenario_weight"])
+                                        for item in matching),
+                              model["design_ensemble_weight"])
+                or any(item["identity_label"] != model["identity_label"]
+                       or not _close(item["source_weight"], model["source_weight"])
+                       or not _close(item["published_predictive_weight"],
+                                     model["published_predictive_weight"])
+                       or not _close(item["retained_predictive_weight"],
+                                     model["retained_predictive_weight"])
+                       for item in matching)):
+            raise ValueError("available design measure model/scenario masses disagree")
+        model_weights.append(float(model["design_ensemble_weight"]))
+    if not _close(math.fsum(model_weights), 1.0):
+        raise ValueError("available design measure model weights are not normalized")
+
+
+def validate_scan_window_design_measure(measure: Any) -> ScanWindowDesignMeasure:
+    """Strictly re-authenticate one immutable ``o36.3`` design measure."""
+    if not isinstance(measure, ScanWindowDesignMeasure):
+        raise TypeError("measure must be a ScanWindowDesignMeasure")
+    if measure.contract != DESIGN_MEASURE_CONTRACT or measure.status not in {
+            "available", "unavailable"}:
+        raise ValueError("design measure metadata does not match o36.3")
+    _validate_measure_codes(measure)
+    eligibility = dict(measure.eligibility)
+    if (set(eligibility) != {
+            "contract", "status", "scientific_codes", "observability_codes",
+            "input_fingerprint", "result_fingerprint"}
+            or eligibility.get("contract") != ELIGIBILITY_CONTRACT
+            or eligibility.get("status") not in {"eligible", "ineligible", "unassessable"}
+            or not _valid_fingerprint(eligibility.get("input_fingerprint"))
+            or not _valid_fingerprint(eligibility.get("result_fingerprint"))):
+        raise ValueError("design measure eligibility envelope is malformed")
+    if tuple(measure.semantics) != _pairs(_SEMANTICS):
+        raise ValueError("design measure semantics do not match o36.3")
+    if tuple(measure.materiality) != _pairs(_materiality_values()):
+        raise ValueError("design measure materiality does not match o36.3")
+    expected_scopes = _AVAILABLE_SCOPES if measure.status == "available" else _INELIGIBLE_SCOPES
+    if tuple(measure.authority_scopes) != tuple(sorted(expected_scopes.items())):
+        raise ValueError("design measure authority scopes disagree with status")
+    if measure.status == "available":
+        _validate_available_design_measure(measure)
+    elif measure.models or measure.predictive_scenarios:
+        raise ValueError("unavailable design measure contains a partial design ensemble")
+    try:
+        expected = _fingerprint(
+            DESIGN_MEASURE_FINGERPRINT_DOMAIN,
+            _design_measure_fingerprint_payload(measure),
+        )
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
+        log.warning("design measure read gate could not canonicalize evidence: %s", error)
+        raise ValueError("design measure contains malformed immutable records") from error
+    if (not _valid_fingerprint(measure.design_measure_fingerprint)
+            or expected != measure.design_measure_fingerprint):
+        raise ValueError("design_measure_fingerprint does not authenticate the design measure")
+    return measure
 
 
 def _eligibility_payload(result: Any) -> dict[str, Any]:
@@ -253,10 +487,10 @@ def _finish(*, eligibility: Any, construction_codes: Sequence[str] = (),
         "_predictive_scenarios": tuple(scenarios),
     }
     provisional = ScanWindowDesignMeasure(**values)
-    payload = provisional.to_dict()
-    payload.pop("design_measure_fingerprint")
-    payload.pop("diagnostics")
-    fingerprint = _fingerprint(DESIGN_MEASURE_FINGERPRINT_DOMAIN, payload)
+    fingerprint = _fingerprint(
+        DESIGN_MEASURE_FINGERPRINT_DOMAIN,
+        _design_measure_fingerprint_payload(provisional),
+    )
     return ScanWindowDesignMeasure(**values, design_measure_fingerprint=fingerprint)
 
 
@@ -445,7 +679,7 @@ def build_scan_window_design_measure(
         # authenticated evidence and its source have diverged.
         return _finish(eligibility=eligibility, construction_codes=("design_measure_input_mismatch",))
 
-    source_draw_fingerprint = _fingerprint(SOURCE_DRAW_IDENTITY_DOMAIN, source_draw_records)
+    source_draw_fingerprint = _source_draw_identity_fingerprint(source_draw_records)
     qoi = {
         "id": qoi_evidence.qoi_id,
         "unit": qoi_evidence.qoi_unit,
@@ -504,9 +738,8 @@ def build_scan_window_design_measure(
                 available_masses.append(scenario_mass)
                 conditional_count += 1
                 provisional.append({
-                    "scenario_id": _fingerprint(PREDICTIVE_SCENARIO_DOMAIN, {
-                        "predictive_basis_fingerprint": artifact["predictive_basis_fingerprint"],
-                        "model_label": model["label"], "source_draw_id": draw_id}),
+                    "scenario_id": _predictive_scenario_id(
+                        artifact["predictive_basis_fingerprint"], model["label"], draw_id),
                     "model_label": model["label"], "identity_label": model["identity_label"],
                     "source_draw_id": draw_id, "qoi_value": float(qoi_value),
                     "source_weight": float(model["source_weight"]),
@@ -638,4 +871,8 @@ def build_scan_window_design_measure(
         models=models, scenarios=scenarios)
 
 
-__all__ = ["ScanWindowDesignMeasure", "build_scan_window_design_measure"]
+__all__ = [
+    "ScanWindowDesignMeasure",
+    "build_scan_window_design_measure",
+    "validate_scan_window_design_measure",
+]
