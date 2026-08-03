@@ -39,12 +39,12 @@ def _fp(name: str) -> str:
 def _measure(
         *,
         qoi_values=(0.0, 1.0),
-        weights=None,
         draw_ids=None,
         unavailable_draw_ids=()):
-    weights = weights or tuple(1.0 / len(qoi_values) for _ in qoi_values)
     draw_ids = draw_ids or tuple(f"draw-{index}" for index in range(
         len(qoi_values) + len(unavailable_draw_ids)))
+    source_draw_weight = 1.0 / len(draw_ids)
+    conditional_weight = 1.0 / len(qoi_values)
     predictive_basis = _fp("predictive-basis")
     source_records = [{"model_label": "model", "source_draw_ids": list(draw_ids)}]
     source_fingerprint = _source_draw_identity_fingerprint(source_records)
@@ -58,11 +58,11 @@ def _measure(
             source_weight=1.0,
             published_predictive_weight=1.0,
             retained_predictive_weight=1.0,
-            source_draw_weight=1.0 / len(draw_ids),
-            preconditioning_scenario_mass=float(weight),
-            conditional_scenario_weight=float(weight),
+            source_draw_weight=source_draw_weight,
+            preconditioning_scenario_mass=source_draw_weight,
+            conditional_scenario_weight=conditional_weight,
         )
-        for draw_id, qoi_value, weight in zip(draw_ids, qoi_values, weights)
+        for draw_id, qoi_value in zip(draw_ids, qoi_values)
     )
     model = _DesignModel(
         label="model",
@@ -163,6 +163,38 @@ def _score(measure, evaluations, **kwargs):
     )
 
 
+def _refinish_measure(measure, *, models=None, scenarios=None):
+    return _finish(
+        eligibility=SimpleNamespace(**dict(measure.eligibility)),
+        status="available",
+        qoi=dict(measure.qoi),
+        source_identities=dict(measure.source_identities),
+        mass_diagnostics=dict(measure.mass_diagnostics),
+        excluded_models=measure.excluded_models,
+        source_draw_identity_fingerprint=measure.source_draw_identity_fingerprint,
+        models=measure._models if models is None else tuple(models),
+        scenarios=(measure._predictive_scenarios
+                   if scenarios is None else tuple(scenarios)),
+    )
+
+
+def _refinish_score_set(score_set, candidate):
+    return scorer_module._finish_score_set(
+        status=score_set.status,
+        reason_codes=score_set.reason_codes,
+        measure_fingerprint=score_set.design_measure_fingerprint,
+        source_draw_identity_fingerprint=score_set.source_draw_identity_fingerprint,
+        discretization_fingerprint=score_set.qoi_discretization_fingerprint,
+        seed=score_set.seed,
+        simulation_count=score_set.simulation_count,
+        block_count=score_set.block_count,
+        backend=dict(score_set.numerical_backend),
+        candidate_scores=(candidate,),
+        comparisons=score_set._pairwise_comparisons,
+        diagnostic_values=dict(score_set.diagnostics),
+    )
+
+
 def test_design_measure_read_gate_returns_same_instance_and_rejects_stale_content():
     measure = _measure()
     assert validate_scan_window_design_measure(measure) is measure
@@ -215,6 +247,51 @@ def test_design_measure_read_gate_rejects_stale_authenticated_fields(tamper):
         validate_scan_window_design_measure(measure)
 
 
+@pytest.mark.parametrize("tamper", [
+    "preconditioning_mass",
+    "conditional_weight",
+    "equal_draw_weight",
+    "retained_model_normalization",
+])
+def test_design_measure_read_gate_rejects_refingerprinted_mass_semantics(tamper):
+    base = _measure()
+    models = list(base._models)
+    scenarios = list(base._predictive_scenarios)
+    if tamper == "preconditioning_mass":
+        scenarios[0] = replace(
+            scenarios[0], preconditioning_scenario_mass=0.4,
+            conditional_scenario_weight=0.4)
+        scenarios[1] = replace(
+            scenarios[1], preconditioning_scenario_mass=0.6,
+            conditional_scenario_weight=0.6)
+    elif tamper == "conditional_weight":
+        scenarios[0] = replace(scenarios[0], conditional_scenario_weight=0.4)
+        scenarios[1] = replace(scenarios[1], conditional_scenario_weight=0.6)
+    elif tamper == "equal_draw_weight":
+        scenarios[0] = replace(
+            scenarios[0], source_draw_weight=0.4,
+            preconditioning_scenario_mass=0.4,
+            conditional_scenario_weight=0.4)
+        scenarios[1] = replace(
+            scenarios[1], source_draw_weight=0.6,
+            preconditioning_scenario_mass=0.6,
+            conditional_scenario_weight=0.6)
+    else:
+        models[0] = replace(models[0], retained_predictive_weight=0.9)
+        scenarios = [
+            replace(
+                scenario,
+                retained_predictive_weight=0.9,
+                preconditioning_scenario_mass=0.45,
+            )
+            for scenario in scenarios
+        ]
+    refingerprinted = _refinish_measure(base, models=models, scenarios=scenarios)
+    assert refingerprinted.design_measure_fingerprint != base.design_measure_fingerprint
+    with pytest.raises(ValueError, match="mass|weight"):
+        validate_scan_window_design_measure(refingerprinted)
+
+
 def test_authentic_unavailable_measure_reaches_global_unavailable_code():
     available = _measure()
     eligibility = SimpleNamespace(
@@ -231,6 +308,65 @@ def test_authentic_unavailable_measure_reaches_global_unavailable_code():
         available, ([2.0, 2.0, 2.0], [4.0, 4.0, 4.0])))])
     assert result.status == "unavailable"
     assert result.reason_codes == ("design_measure_unavailable",)
+    assert result.design_measure_fingerprint == unavailable.design_measure_fingerprint
+    assert result.source_draw_identity_fingerprint is None
+    assert result.qoi_discretization_fingerprint is None
+
+    late_unavailable = _finish(
+        eligibility=SimpleNamespace(**dict(available.eligibility)),
+        construction_codes=("conditional_target_qoi_ensemble_empty",),
+        qoi=dict(available.qoi),
+        source_identities=dict(available.source_identities),
+        source_draw_identity_fingerprint=available.source_draw_identity_fingerprint,
+    )
+    assert validate_scan_window_design_measure(late_unavailable) is late_unavailable
+    late_result = _score(late_unavailable, [("candidate", _evaluation(
+        available, ([2.0, 2.0, 2.0], [4.0, 4.0, 4.0])))])
+    assert late_result.design_measure_fingerprint == late_unavailable.design_measure_fingerprint
+    assert (late_result.source_draw_identity_fingerprint
+            == late_unavailable.source_draw_identity_fingerprint)
+    assert late_result.qoi_discretization_fingerprint is None
+
+
+def test_global_refusal_records_only_identities_authenticated_before_failure():
+    measure = _measure()
+    evaluation = _evaluation(measure, ([2.0, 2.0, 2.0], [4.0, 4.0, 4.0]))
+    stale_measure = replace(measure)
+    object.__setattr__(stale_measure, "design_measure_fingerprint", "a" * 64)
+    object.__setattr__(stale_measure, "source_draw_identity_fingerprint", "b" * 64)
+    invalid_measure = _score(stale_measure, [("candidate", evaluation)])
+    assert invalid_measure.reason_codes == ("design_measure_invalid",)
+    assert invalid_measure.design_measure_fingerprint is None
+    assert invalid_measure.source_draw_identity_fingerprint is None
+    assert invalid_measure.qoi_discretization_fingerprint is None
+
+    stale_discretization = replace(_discretization())
+    object.__setattr__(stale_discretization, "origin", 0.1)
+    invalid_discretization = _score(
+        measure,
+        [("candidate", evaluation)],
+        qoi_discretization=stale_discretization,
+    )
+    assert invalid_discretization.reason_codes == ("qoi_discretization_invalid",)
+    assert invalid_discretization.design_measure_fingerprint == measure.design_measure_fingerprint
+    assert (invalid_discretization.source_draw_identity_fingerprint
+            == measure.source_draw_identity_fingerprint)
+    assert invalid_discretization.qoi_discretization_fingerprint is None
+
+    discretization = _discretization()
+    invalid_configuration = _score(
+        measure,
+        [("candidate", evaluation)],
+        qoi_discretization=discretization,
+        simulation_count=1,
+        block_count=2,
+    )
+    assert invalid_configuration.reason_codes == ("simulation_configuration_invalid",)
+    assert invalid_configuration.design_measure_fingerprint == measure.design_measure_fingerprint
+    assert (invalid_configuration.source_draw_identity_fingerprint
+            == measure.source_draw_identity_fingerprint)
+    assert (invalid_configuration.qoi_discretization_fingerprint
+            == discretization.discretization_fingerprint)
 
 
 def test_real_producer_chain_joins_arbitrary_grid_evaluation(monkeypatch):
@@ -267,6 +403,24 @@ def test_discretization_offsets_are_canonical_and_fingerprinted():
     assert first.offsets == (0.0, 0.25)
     assert first.to_dict() == second.to_dict()
     assert first.discretization_fingerprint != _discretization(width=0.6).discretization_fingerprint
+
+
+def test_discretization_signed_zero_is_canonical_and_read_gate_enforced():
+    positive = ScalarQoIDiscretization(
+        qoi_id="excitation.energy", qoi_unit="meV",
+        origin=0.0, bin_width=0.5, offsets=(0.0, 0.25))
+    negative = ScalarQoIDiscretization(
+        qoi_id="excitation.energy", qoi_unit="meV",
+        origin=-0.0, bin_width=0.5, offsets=(-0.0, 0.25))
+    assert positive.to_dict() == negative.to_dict()
+    assert positive.discretization_fingerprint == negative.discretization_fingerprint
+    assert math.copysign(1.0, negative.origin) == 1.0
+    assert math.copysign(1.0, negative.offsets[0]) == 1.0
+
+    tampered = replace(positive)
+    object.__setattr__(tampered, "origin", -0.0)
+    with pytest.raises(ValueError, match="signed zero"):
+        scorer_module._validated_discretization(tampered)
 
 
 def test_one_bin_partition_is_exact_zero():
@@ -343,6 +497,22 @@ def test_poisson_ppf_backend_anomalies_refuse_candidate(monkeypatch, returned):
     assert result.status == "unavailable"
     assert result.candidate_scores[0]["reason_codes"] == ("poisson_simulation_failed",)
     assert result.candidate_scores[0]["conditional_target_qoi_information_nats"] is None
+
+
+def test_nonfinite_mixture_evaluation_has_its_own_refusal_code(monkeypatch):
+    measure = _measure()
+    evaluation = _evaluation(measure, ([2.0, 2.0, 2.0], [3.0, 3.0, 3.0]))
+    monkeypatch.setattr(
+        scorer_module,
+        "_likelihood_matrix",
+        lambda observations, rates: np.full(
+            (observations.shape[0], rates.shape[0]), math.inf),
+    )
+    with np.errstate(invalid="ignore"):
+        result = _score(measure, [("bad", evaluation)])
+    assert result.status == "unavailable"
+    assert result.candidate_scores[0]["reason_codes"] == (
+        "information_evaluation_failed",)
 
 
 def test_integer_valued_float_ppf_output_is_accepted(monkeypatch):
@@ -483,6 +653,33 @@ def test_unavailable_evaluator_reason_is_preserved_separately():
     candidate = result.candidate_scores[0]
     assert candidate["reason_codes"] == ("predictive_evaluation_unavailable",)
     assert candidate["source_reason_code"] == "missing_exposure_basis"
+
+
+def test_candidate_diagnostic_prose_is_not_score_set_identity():
+    measure = _measure()
+    invalid = _evaluation(measure, ([2.0, 2.0, 2.0], [-1.0, 4.0, 4.0]))
+    first = _score(measure, [("invalid", invalid)])
+    candidate = first._candidate_scores[0]
+    changed_diagnostic = replace(
+        candidate, diagnostics=(("message", "different diagnostic prose"),))
+    second = _refinish_score_set(first, changed_diagnostic)
+
+    assert first.to_dict()["candidate_scores"][0]["diagnostics"] != (
+        second.to_dict()["candidate_scores"][0]["diagnostics"])
+    assert first.score_set_fingerprint == second.score_set_fingerprint
+    assert candidate.candidate_score_fingerprint == changed_diagnostic.candidate_score_fingerprint
+    assert scorer_module._candidate_semantic_payload(
+        candidate.to_dict(), include_fingerprint=False) == (
+            scorer_module._candidate_semantic_payload(
+                changed_diagnostic.to_dict(), include_fingerprint=False))
+
+    changed_reason = replace(candidate, reason_codes=("different_structured_reason",))
+    third = _refinish_score_set(first, changed_reason)
+    assert third.score_set_fingerprint != first.score_set_fingerprint
+    assert scorer_module._candidate_semantic_payload(
+        candidate.to_dict(), include_fingerprint=False) != (
+            scorer_module._candidate_semantic_payload(
+                changed_reason.to_dict(), include_fingerprint=False))
 
 
 @pytest.mark.parametrize(("candidate_id", "reason"), [
@@ -632,8 +829,9 @@ def _exact_one_point_information(weights, rates):
 
 @pytest.mark.slow
 def test_one_point_monte_carlo_converges_to_exact_information():
-    measure = _measure(weights=(0.4, 0.6))
-    evaluation = _evaluation(measure, ([1.0], [6.0]), energy=(0.0,))
+    measure = _measure(qoi_values=(0.0, 0.0, 1.0, 1.0, 1.0))
+    evaluation = _evaluation(
+        measure, ([1.0], [1.0], [6.0], [6.0], [6.0]), energy=(0.0,))
     result = _score(
         measure,
         [("one", evaluation)],

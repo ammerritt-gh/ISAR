@@ -294,6 +294,13 @@ or authority. If no positive conditional mass remains, construction returns
 `conditional_target_qoi_ensemble_empty` without models or scenarios. Source-AIC, retained-bootstrap,
 and conditional-design scales remain structurally separate in the audit record.
 
+The strict read gate independently rechecks those landed mass semantics rather than treating a valid
+fingerprint as sufficient: retained bootstrap model weights sum to one before target conditioning;
+equal-weight draws carry `1 / retained_source_draw_count`; each preconditioning scenario mass is its
+retained model weight times that source-draw weight; and every conditional scenario weight is its
+preconditioning mass divided by the globally included preconditioning mass. All four relations use the
+same recorded `1e-12` normalization tolerances as construction.
+
 Every consumed model requires aligned, unique, non-empty string draw IDs. The
 `source_draw_identity_fingerprint` is the first content-addressed binding of producer-ordered draw IDs
 into the EIG chain; `/2`'s predictive-basis fingerprint does not cover those IDs. A scenario ID is the
@@ -351,6 +358,8 @@ the bin containing the **selected scenario's** QoI under that offset; no bin is 
 future counts. Partition contributions are averaged equally. A partition containing every scenario
 in one bin is exactly zero by definition, avoiding a subtractive log-sum-exp roundoff. No distribution-
 derived quantile, omega0 rule, campaign objective, or default physical tolerance enters the scorer.
+Origin and offsets canonicalize either spelling of signed zero to `+0.0` before validation, ordering,
+serialization, and fingerprinting, so mathematically identical policies have one identity.
 
 For candidate (c), scenario (s), and its complete executed count vector (Y_c), the observation
 model is conditionally independent Poisson counts at every point. The scorer evaluates
@@ -364,8 +373,12 @@ the observation to total counts, centroid, a fitted peak, or another summary. Th
 `-log(y_i!)` term cancels. Exact zero-rate rules are `lambda=0,y=0 -> 0` and
 `lambda=0,y>0 -> -infinity`; simulation likewise returns zero directly for a zero rate rather than
 delegating the degenerate distribution to SciPy. Positive rates use `scipy.stats.poisson.ppf`, whose
-result must be finite, non-negative, and exactly integer-valued as a float. The expensive likelihood
-path is vectorized over simulation, scenario, and point matrices.
+result must be finite, non-negative, and exactly integer-valued as a float; validated values remain in
+the floating observation matrix rather than making a no-op trip through `int64`. PPF exceptions or
+invalid returned counts are `poisson_simulation_failed`. A non-finite result from the later mixture
+calculation is instead `information_evaluation_failed`, keeping simulation and information-evaluation
+faults attributable to their actual numerical subsystem. The expensive likelihood path is vectorized
+over simulation, scenario, and point matrices.
 
 Common random numbers use `isar.sha256_energy_keyed_poisson_crn/1`. Domain-separated SHA-256 payloads
 bind the design-measure fingerprint, signed seed, and simulation index; the count stream also binds the
@@ -395,9 +408,18 @@ paired uncertainty is comparable only within one common execution basis (revisio
 count, block structure, and numerical backend). Slice 5 must therefore compare candidates from one
 score set rather than joining independent estimates after the fact.
 
+Diagnostic prose remains visible in candidate and score-set serialization but is excluded from both
+candidate-score identity and the enclosing score-set identity, including diagnostics nested inside
+candidate records. Structured status, refusal/source-reason codes, authority, and numerical evidence
+remain fingerprinted. The enclosing recipe was corrected before any score set was persisted or consumed,
+so existing in-memory pre-closure score-set hashes are deliberately reminted without a contract bump.
+
 An individually malformed evaluation becomes an unavailable candidate record without a partial number;
 valid candidates in the same call continue. Global evidence/configuration faults return an unavailable
-score set. Complete and partial sets carry `eig_shadow = diagnostic`; `eig_authoritative` and
+score set. Refusal provenance records a design-measure, source-draw, or discretization fingerprint only
+after the corresponding object has passed its strict read gate; a plausible-looking hash supplied by the
+object that failed validation is represented as `null`. Complete and partial sets carry
+`eig_shadow = diagnostic`; `eig_authoritative` and
 `acquisition_selection` remain `ineligible`. Within the EIG chain, `candidate` means authenticated input
 eligible for later shadow computation, `diagnostic` means computed shadow evidence with no selection
 power, and `ineligible` grants neither. An unavailable set has all three scopes ineligible. No Slice 4

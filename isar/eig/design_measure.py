@@ -330,6 +330,7 @@ def _validate_available_design_measure(measure: ScanWindowDesignMeasure) -> None
 
     scenario_ids: list[str] = []
     join_keys: list[tuple[str, str]] = []
+    preconditioning_masses: list[float] = []
     scenario_weights: list[float] = []
     predictive_basis = source_identities["predictive_basis_fingerprint"]
     for scenario in scenarios:
@@ -355,6 +356,7 @@ def _validate_available_design_measure(measure: ScanWindowDesignMeasure) -> None
         weight = float(scenario["conditional_scenario_weight"])
         scenario_ids.append(scenario_id)
         join_keys.append((model_label, source_draw_id))
+        preconditioning_masses.append(float(scenario["preconditioning_scenario_mass"]))
         scenario_weights.append(weight)
     if len(scenario_ids) != len(set(scenario_ids)) or len(join_keys) != len(set(join_keys)):
         raise ValueError("available design measure scenario identities are not unique")
@@ -362,8 +364,21 @@ def _validate_available_design_measure(measure: ScanWindowDesignMeasure) -> None
         raise ValueError("available design measure scenario order is not canonical")
     if not _close(math.fsum(scenario_weights), 1.0):
         raise ValueError("available design measure scenario weights are not normalized")
+    preconditioning_total = math.fsum(preconditioning_masses)
+    if (preconditioning_total <= 0.0
+            or any(not _close(
+                scenario["preconditioning_scenario_mass"],
+                float(scenario["retained_predictive_weight"])
+                * float(scenario["source_draw_weight"]),
+            ) for scenario in scenarios)
+            or any(not _close(
+                scenario["conditional_scenario_weight"],
+                float(scenario["preconditioning_scenario_mass"]) / preconditioning_total,
+            ) for scenario in scenarios)):
+        raise ValueError("available design measure scenario mass semantics disagree")
 
     model_weights: list[float] = []
+    retained_model_weights: list[float] = []
     for model in models:
         numeric_names = (
             "source_weight", "published_predictive_weight", "retained_predictive_weight",
@@ -396,11 +411,18 @@ def _validate_available_design_measure(measure: ScanWindowDesignMeasure) -> None
                                      model["published_predictive_weight"])
                        or not _close(item["retained_predictive_weight"],
                                      model["retained_predictive_weight"])
+                       or not _close(
+                           item["source_draw_weight"],
+                           1.0 / model["retained_source_draw_count"],
+                       )
                        for item in matching)):
             raise ValueError("available design measure model/scenario masses disagree")
         model_weights.append(float(model["design_ensemble_weight"]))
+        retained_model_weights.append(float(model["retained_predictive_weight"]))
     if not _close(math.fsum(model_weights), 1.0):
         raise ValueError("available design measure model weights are not normalized")
+    if not _close(math.fsum(retained_model_weights), 1.0):
+        raise ValueError("available design measure retained model weights are not normalized")
 
 
 def validate_scan_window_design_measure(measure: Any) -> ScanWindowDesignMeasure:

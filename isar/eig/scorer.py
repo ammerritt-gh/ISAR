@@ -133,6 +133,11 @@ def _discretization_payload(discretization: "ScalarQoIDiscretization") -> dict[s
     }
 
 
+def _canonical_scalar(value: float) -> float:
+    value = float(value)
+    return 0.0 if value == 0.0 else value
+
+
 def _validated_discretization(
         discretization: Any,
         *,
@@ -152,9 +157,15 @@ def _validated_discretization(
         raise ValueError("scalar QoI discretization metadata is invalid")
     width = float(discretization.bin_width)
     offsets = discretization.offsets
-    if (any(not _finite_number(offset) or float(offset) < 0.0 or float(offset) >= width
-            for offset in offsets)
-            or tuple(sorted(float(offset) for offset in offsets)) != offsets
+    if any(not _finite_number(offset) or float(offset) < 0.0 or float(offset) >= width
+           for offset in offsets):
+        raise ValueError("scalar QoI discretization offsets are invalid")
+    if (float(discretization.origin).hex() != _canonical_scalar(
+            discretization.origin).hex()
+            or any(float(offset).hex() != _canonical_scalar(offset).hex()
+                   for offset in offsets)):
+        raise ValueError("scalar QoI discretization signed zero is not canonical")
+    if (tuple(sorted(float(offset) for offset in offsets)) != offsets
             or len(offsets) != len(set(offsets))):
         raise ValueError("scalar QoI discretization offsets are invalid")
     if qoi_id is not None and (discretization.qoi_id != qoi_id
@@ -195,13 +206,14 @@ class ScalarQoIDiscretization:
                 or isinstance(self.offsets, (str, bytes)) or not self.offsets):
             raise ValueError("offsets must be a non-empty sequence")
         width = float(self.bin_width)
-        offsets = tuple(float(offset) for offset in self.offsets
+        origin = _canonical_scalar(self.origin)
+        offsets = tuple(_canonical_scalar(offset) for offset in self.offsets
                         if _finite_number(offset))
         if (len(offsets) != len(self.offsets)
                 or any(offset < 0.0 or offset >= width for offset in offsets)
                 or len(offsets) != len(set(offsets))):
             raise ValueError("offsets must be unique, finite, and inside one bin width")
-        object.__setattr__(self, "origin", float(self.origin))
+        object.__setattr__(self, "origin", origin)
         object.__setattr__(self, "bin_width", width)
         object.__setattr__(self, "offsets", tuple(sorted(offsets)))
         object.__setattr__(self, "discretization_fingerprint", _fingerprint(
@@ -624,9 +636,6 @@ def _observation_matrix(
         if not np.all(valid):
             raise _CandidateRefusal(
                 "poisson_simulation_failed", "Poisson inverse-CDF returned invalid counts")
-        int64_ceiling = np.nextafter(float(2 ** 63), 0.0)
-        if values.size and float(np.max(values)) <= int64_ceiling:
-            values = values.astype(np.int64).astype(float)
         observations[positive] = values
     return observations
 
@@ -696,12 +705,23 @@ def _information_contributions(
             contributions = conditional - marginal
         if not np.all(np.isfinite(contributions)):
             raise _CandidateRefusal(
-                "poisson_simulation_failed", "information contributions are non-finite")
+                "information_evaluation_failed", "information contributions are non-finite")
         partition_rows.append(contributions)
         partition_means.append(math.fsum(contributions.tolist()) / len(contributions))
     per_simulation = np.sum(np.stack(partition_rows, axis=0), axis=0, dtype=float)
     per_simulation /= len(partition_rows)
     return per_simulation, tuple(partition_means)
+
+
+def _candidate_semantic_payload(
+        candidate: Mapping[str, Any],
+        *,
+        include_fingerprint: bool) -> dict[str, Any]:
+    payload = dict(candidate)
+    payload.pop("diagnostics")
+    if not include_fingerprint:
+        payload.pop("candidate_score_fingerprint")
+    return payload
 
 
 def _candidate_fingerprint_payload(
@@ -713,9 +733,8 @@ def _candidate_fingerprint_payload(
         simulation_count: int | None,
         block_count: int | None,
         backend: Mapping[str, Any]) -> dict[str, Any]:
-    payload = score.to_dict()
-    payload.pop("candidate_score_fingerprint")
-    payload.pop("diagnostics")
+    payload = _candidate_semantic_payload(
+        score.to_dict(), include_fingerprint=False)
     return {
         "scorer_revision": SCORER_REVISION,
         "likelihood_revision": LIKELIHOOD_REVISION,
@@ -935,6 +954,10 @@ def _score_set_payload(score_set: ScanWindowScoreSet) -> dict[str, Any]:
     payload = score_set.to_dict()
     payload.pop("score_set_fingerprint")
     payload.pop("diagnostics")
+    payload["candidate_scores"] = [
+        _candidate_semantic_payload(candidate, include_fingerprint=True)
+        for candidate in payload["candidate_scores"]
+    ]
     return payload
 
 
@@ -985,20 +1008,24 @@ def _safe_int(value: Any) -> int | None:
 def _global_refusal(
         reason_code: str,
         *,
-        measure: Any,
-        discretization: Any,
+        authenticated_measure: ScanWindowDesignMeasure | None,
+        authenticated_discretization: ScalarQoIDiscretization | None,
         seed: Any,
         simulation_count: Any,
         block_count: Any,
         message: str) -> ScanWindowScoreSet:
     log.warning("scan-window score set refused (%s): %s", reason_code, message)
-    measure_fingerprint = getattr(measure, "design_measure_fingerprint", None)
+    measure_fingerprint = (authenticated_measure.design_measure_fingerprint
+                           if authenticated_measure is not None else None)
     if not _valid_fingerprint(measure_fingerprint):
         measure_fingerprint = None
-    source_fingerprint = getattr(measure, "source_draw_identity_fingerprint", None)
+    source_fingerprint = (authenticated_measure.source_draw_identity_fingerprint
+                          if authenticated_measure is not None else None)
     if not _valid_fingerprint(source_fingerprint):
         source_fingerprint = None
-    discretization_fingerprint = getattr(discretization, "discretization_fingerprint", None)
+    discretization_fingerprint = (
+        authenticated_discretization.discretization_fingerprint
+        if authenticated_discretization is not None else None)
     if not _valid_fingerprint(discretization_fingerprint):
         discretization_fingerprint = None
     return _finish_score_set(
@@ -1028,15 +1055,15 @@ def score_scan_window_candidates(
         measure = validate_scan_window_design_measure(design_measure)
     except (TypeError, ValueError) as error:
         return _global_refusal(
-            "design_measure_invalid", measure=design_measure,
-            discretization=qoi_discretization, seed=seed,
+            "design_measure_invalid", authenticated_measure=None,
+            authenticated_discretization=None, seed=seed,
             simulation_count=simulation_count, block_count=block_count,
             message=str(error),
         )
     if measure.status != "available":
         return _global_refusal(
-            "design_measure_unavailable", measure=measure,
-            discretization=qoi_discretization, seed=seed,
+            "design_measure_unavailable", authenticated_measure=measure,
+            authenticated_discretization=None, seed=seed,
             simulation_count=simulation_count, block_count=block_count,
             message="design measure is unavailable",
         )
@@ -1047,8 +1074,8 @@ def score_scan_window_candidates(
     except (KeyError, TypeError, ValueError) as error:
         log.warning("QoI discretization refused: %s", error)
         return _global_refusal(
-            "qoi_discretization_invalid", measure=measure,
-            discretization=qoi_discretization, seed=seed,
+            "qoi_discretization_invalid", authenticated_measure=measure,
+            authenticated_discretization=None, seed=seed,
             simulation_count=simulation_count, block_count=block_count,
             message=str(error),
         )
@@ -1059,23 +1086,23 @@ def score_scan_window_candidates(
             or block_count > simulation_count
             or simulation_count % block_count != 0):
         return _global_refusal(
-            "simulation_configuration_invalid", measure=measure,
-            discretization=discretization, seed=seed,
+            "simulation_configuration_invalid", authenticated_measure=measure,
+            authenticated_discretization=discretization, seed=seed,
             simulation_count=simulation_count, block_count=block_count,
             message="simulation and block configuration is invalid",
         )
     if (not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes))
             or not candidates):
         return _global_refusal(
-            "candidate_input_empty", measure=measure,
-            discretization=discretization, seed=seed,
+            "candidate_input_empty", authenticated_measure=measure,
+            authenticated_discretization=discretization, seed=seed,
             simulation_count=simulation_count, block_count=block_count,
             message="candidate inputs must be a non-empty sequence",
         )
     if any(not isinstance(item, CandidateEvaluationInput) for item in candidates):
         return _global_refusal(
-            "candidate_id_invalid", measure=measure,
-            discretization=discretization, seed=seed,
+            "candidate_id_invalid", authenticated_measure=measure,
+            authenticated_discretization=discretization, seed=seed,
             simulation_count=simulation_count, block_count=block_count,
             message="every candidate must be a CandidateEvaluationInput",
         )
@@ -1083,15 +1110,15 @@ def score_scan_window_candidates(
     if any(not isinstance(value, str) or not value or value != value.strip()
            for value in candidate_ids):
         return _global_refusal(
-            "candidate_id_invalid", measure=measure,
-            discretization=discretization, seed=seed,
+            "candidate_id_invalid", authenticated_measure=measure,
+            authenticated_discretization=discretization, seed=seed,
             simulation_count=simulation_count, block_count=block_count,
             message="candidate IDs must be non-empty stripped strings",
         )
     if len(candidate_ids) != len(set(candidate_ids)):
         return _global_refusal(
-            "candidate_id_duplicate", measure=measure,
-            discretization=discretization, seed=seed,
+            "candidate_id_duplicate", authenticated_measure=measure,
+            authenticated_discretization=discretization, seed=seed,
             simulation_count=simulation_count, block_count=block_count,
             message="candidate IDs must be unique",
         )
@@ -1102,8 +1129,8 @@ def score_scan_window_candidates(
     except (KeyError, TypeError, ValueError, OverflowError) as error:
         log.warning("QoI discretization bin arithmetic refused: %s", error)
         return _global_refusal(
-            "qoi_discretization_invalid", measure=measure,
-            discretization=discretization, seed=seed,
+            "qoi_discretization_invalid", authenticated_measure=measure,
+            authenticated_discretization=discretization, seed=seed,
             simulation_count=simulation_count, block_count=block_count,
             message=str(error),
         )
