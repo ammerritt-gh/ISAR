@@ -165,14 +165,40 @@ physical constraint, interval method, certification rule, or model-selection aut
 Target-presence, model-identity, and branch-identity values may be calculated as diagnostics only.
 Current production AIC weights remain the input source and are not validated by the held-out campaign.
 
+Slice 2 freezes the pre-comparison eligibility seam. Its action predicate admits only the selected
+`MeasurementIntent.action_class` values `production` and `confirm`, both with
+`acquisition_action_role = "production"`, `evidence_sink = "canonical_master"`, no driver insertion,
+and the same canonical nine-decimal HKL as the target. A projection authority `action_role` describes
+fit/refit authority (for example `certification`), not acquisition intent, and never decides this gate.
+
+The runtime supplies the contemporaneous selected intent and finalized-proposal provenance. A completed
+member acquisition is historical input to a master, never a substitute for the pending action whose
+window is under consideration. The census may audit an unresolved persisted `propose` snapshot joined to
+its content-addressed action inventory; otherwise it reports `action_context_unknown` rather than
+retrospectively inferring production or confirmation.
+
+Eligibility is before candidate generation and comparison. It neither inspects window families nor
+checks paired exposure, scores, or selection. Those belong to Slices 3–6. Source predictive/projection
+artifacts retain `eig_shadow = eig_authoritative = ineligible`; derived eligible evidence is only an
+`eig_shadow = candidate` input to later shadow work and cannot enable authority.
+
+The frozen pure runtime surface is `isar.eig.evaluate_eig_eligibility()` over an immutable
+`EligibilityInput`, returning `eligible`, `ineligible`, or `unassessable` with deterministic ordered
+scientific exclusions and observability gaps. Its public reason taxonomy is intentionally compact;
+reader-specific validation detail remains diagnostic. It performs no workspace I/O or persistence, so
+the census is only one adapter of the same contract rather than a second policy implementation.
+
 ### Generic QoI seam
 
-The future scorer consumes a generic QoI projection. The first adapter is documented as
-`qoi_id = "excitation.energy"` and `qoi_unit = "meV"`. The scorer core must not import or branch on
-`omega0`, `PhononDHO`, phonon implementation classes, acoustic/optic labels, or DHO parameter names.
-The adapter isolates current target-energy knowledge, so the scorer later operates on QoI values
-without knowing which physical model produced them. This is documentation only: it defines neither a
-Python signature nor a JSON, persistence, or runtime schema.
+`isar.eig` now exposes a pure generic QoI interface. Its first adapter,
+`adapt_omega0_target_projection()`, converts authenticated `isar.master_predictive/2` plus
+`isar.target_projection/2` evidence into immutable target-QoI evidence for `omega0`. It requires strict
+predictive and projection semantics, positional model/draw alignment, source EIG-ineligible scopes, and
+the current authority record. A target-present draw must have a finite QoI; a target-absent draw must have
+`null`. Invalid combinations fail closed as projection-record invalidity, not as target absence.
+
+The scorer core remains independent of omega0/DHO implementation details. The adapter is the sole place
+where the current target-energy producer layout is known.
 
 The first comparison is local to one selected Q and fit-model context. Information transfer across Q
 or energy, a phenomenon registry, continuum support, magnon support, and a general model refactor

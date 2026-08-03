@@ -152,6 +152,21 @@ def registry_fingerprint(registry: tuple[GeneratorSpec, ...] = GENERATOR_REGISTR
 GENERATOR_REGISTRY_VERSION = registry_fingerprint()
 
 
+def canonical_hkl(hkl) -> tuple[float, float, float]:
+    """Canonical scientific Q identity shared by action and EIG policy.
+
+    Fingerprints have always used nine decimal places.  Giving that rule one
+    named implementation prevents a nearby-but-not-identical tolerance from
+    becoming a second scientific identity rule in a later consumer.
+    """
+    if not isinstance(hkl, (list, tuple)) or len(hkl) != 3:
+        raise ValueError("HKL must contain exactly three values")
+    values = tuple(float(value) for value in hkl)
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("HKL values must be finite")
+    return tuple(round(value, 9) for value in values)
+
+
 def scientific_fingerprint(intent: "MeasurementIntent") -> str:
     """Stable hash of the *scientific question* an intent resolves — its dedup / anti-repeat id.
 
@@ -161,7 +176,7 @@ def scientific_fingerprint(intent: "MeasurementIntent") -> str:
     """
     payload = canonical_json([
         intent.action_class,
-        [round(float(x), 9) for x in intent.hkl],
+        list(canonical_hkl(intent.hkl)),
         None if intent.energy_lo is None else round(float(intent.energy_lo), 6),
         None if intent.energy_hi is None else round(float(intent.energy_hi), 6),
         intent.window_family,

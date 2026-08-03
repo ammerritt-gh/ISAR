@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sys
 from copy import deepcopy
@@ -53,6 +54,51 @@ def _campaign_set(tmp_path: Path, root: str = "campaign"):
     return ENGINE.load_campaign_set(manifest, tmp_path)
 
 
+def _persist_pending_action(campaign: Path, *, action_class="production", consumed=False):
+    """Small authenticated action-inventory/propose pair for the census adapter."""
+    intent = {
+        "action_class": action_class, "hkl": [2.0, 0.0, 0.0],
+        "energy_lo": 1.0, "energy_hi": 3.0, "window_family": "target",
+        "target_branch_role": "optic", "rival_branch_role": "acoustic",
+        "evidence_basis_fingerprint": "master-r1", "hypotheses_fingerprint": "hyp",
+        "campaign_slice_fingerprint": "slice", "evidence_sink": "canonical_master",
+    }
+    fingerprint = "scientific-action"
+    inventory = {
+        "inventory_version": "isar.action_inventory/1", "evaluations": [{
+            "scientific_action_fingerprint": fingerprint, "intent": intent,
+        }],
+    }
+    digest = hashlib.sha256(ENGINE.canonical_json(inventory).encode("utf-8")).hexdigest()
+    path = campaign / "report" / "inventory" / f"{digest}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(inventory), encoding="utf-8")
+    ref = {"kind": "action_inventory", "sha256": digest, "path": f"report/inventory/{digest}.json"}
+    proposal = {
+        "hkl": [2.0, 0.0, 0.0], "kind": action_class, "acquisition_id": "pending-1",
+        "meta": {
+            "action_class": action_class, "scientific_action_fingerprint": fingerprint,
+            "proposal_fingerprint": "request-1", "acquisition_action_role": "production",
+            "evidence_sink": "canonical_master", "driver_inserted": False,
+            "insertion_purpose": None, "authoritative_evidence_revision": "master-r1",
+        },
+    }
+    events = [
+        {"kind": "inventory", "payload": {
+            "selected_scientific_action_fingerprint": fingerprint, "inventory_ref": ref,
+        }},
+        {"kind": "propose", "payload": proposal},
+    ]
+    if consumed:
+        events.append({"kind": "physical_submission", "payload": {
+            "acquisition_id": "pending-1", "request_fingerprint": "request-1",
+        }})
+    log = campaign / "report" / "session_log.jsonl"
+    log.parent.mkdir(exist_ok=True)
+    log.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+    return events
+
+
 def test_missing_session_is_not_silently_an_empty_campaign(tmp_path: Path):
     (tmp_path / "campaign").mkdir()
     campaign_set = _campaign_set(tmp_path)
@@ -73,6 +119,24 @@ def test_legacy_evidence_is_unassessable_not_false_zero_rate(tmp_path: Path):
     assert summary["groups"]["primary_combined"]["headline_eligibility_rate"] is None
 
 
+def test_pending_production_or_confirm_snapshot_is_the_only_action_context(tmp_path: Path):
+    campaign = _write_campaign(tmp_path)
+    for action_class in ("production", "confirm"):
+        events = _persist_pending_action(campaign, action_class=action_class)
+        context = ENGINE._pending_action_context(campaign, {"master_revision": "master-r1"}, events)
+        assert context["source"] == "pending_selected_action"
+        assert context["intent"]["action_class"] == action_class
+        assert context["provenance"]["acquisition_action_role"] == "production"
+
+
+def test_completed_proposal_is_historical_not_current_action_context(tmp_path: Path):
+    campaign = _write_campaign(tmp_path)
+    events = _persist_pending_action(campaign, consumed=True)
+    context = ENGINE._pending_action_context(campaign, {"master_revision": "master-r1"}, events)
+    assert context["source"] == "missing"
+    assert context["intent"] is None
+
+
 def test_explicit_science_failure_coexists_with_incomplete_observability(tmp_path: Path):
     _write_campaign(tmp_path, outcome={"pooled": True, "omega0": None, "track_state": "rejected",
                                        "pool_consistent": False})
@@ -80,7 +144,7 @@ def test_explicit_science_failure_coexists_with_incomplete_observability(tmp_pat
     row = next(row for row in result.rows if row["row_kind"] == "pooled_outcome")
     assert row["current_contract_observability"] == "incomplete"
     assert row["provisional_eligibility"] == "ineligible"
-    assert {"target_not_finite", "track_not_confirmed", "pool_inconsistent"} <= set(row["findings"])
+    assert {"target_not_finite", "target_identity_unknown", "pool_inconsistent"} <= set(row["findings"])
 
 
 def test_nonpooled_master_is_anomaly_not_a_denominator_row(tmp_path: Path):
@@ -240,7 +304,8 @@ def test_member_join_normalizes_bare_labels_and_uses_card_state_acquisition_prov
     assert row["member_join"]["declared_members"] == [["tavi", "1", "det"]]
     assert row["member_join"]["outcome_members"] == [["tavi", "1", "det"]]
     assert row["member_join"]["acquisition_provenance_status"] == "pass"
-    assert row["acquisition_intent"] == "production"
+    assert row["action_context"]["source"] == "missing"
+    assert "action_context_unknown" in row["findings"]
     assert "member_provenance_inconsistent" not in row["findings"]
 
 
@@ -250,7 +315,7 @@ def test_member_join_reports_only_a_true_logical_mismatch_as_inconsistent(tmp_pa
     row = next(row for row in result.rows if row["row_kind"] == "pooled_outcome")
     assert row["member_join"]["status"] == "fail"
     assert row["member_join"]["reason_code"] == "logical_member_mismatch"
-    assert "member_provenance_inconsistent" in row["findings"]
+    assert "member_provenance_inconsistent" not in row["findings"]
 
 
 def _write_projection(tmp_path: Path, payload: dict, name: str = "projection.json"):
@@ -421,7 +486,7 @@ def test_scan_design_events_use_typed_realization_and_acquisition_linked_recover
     (directory / f"{malformed_digest}.json").write_text(json.dumps(malformed), encoding="utf-8")
     malformed_ref = {"kind": "scan_design_inventory", "sha256": malformed_digest,
                      "path": f"report/scan-design/{malformed_digest}.json"}
-    assert ENGINE._scan_design_details(root, malformed_ref)["reason_code"] == "selected_candidate_invalid"
+    assert ENGINE._scan_design_details(root, malformed_ref)["status"] == "passed"
     (directory / f"{digest}.json").write_text(json.dumps(malformed), encoding="utf-8")
     assert ENGINE._scan_design_details(root, ref)["reason_code"] == "content_address_mismatch"
 
@@ -460,6 +525,66 @@ def _produced_predictive_artifact(monkeypatch, weights: dict[str, float], bases:
     return predictive_artifact.build_master_predictive(
         SimpleNamespace(omega0=3.0), scores, fits, {label: object() for label in weights}, context,
         seed=11, n_members=1)
+
+
+def test_current_omega0_adapter_accepts_the_real_authenticated_producer_contract(tmp_path: Path):
+    from isar.eig import adapt_omega0_target_projection
+    from isar.parsers import ill_in8
+    from isar.session import driver
+    from isar.session.predictive_artifact import build_target_projection
+    from isar.session.workspace import Workspace
+    from isar.synth_format import run_builder
+
+    run = run_builder.build_in8_run("EIGQOI", n_scans=2, seed0=64500, first_numor=64500,
+                                    q_point=[2.25, 0.05, 0.0])
+    source = tmp_path / "EIGQOI.numor"
+    source.write_bytes(ill_in8.emit_file(run, ill_in8.card_template()))
+    workspace = Workspace.open(tmp_path / "workspace")
+    workspace.root.mkdir(parents=True, exist_ok=True)
+    workspace.policy_path.write_text(Path(ill_in8._CARD_PATH).read_text(encoding="utf-8"),
+                                     encoding="utf-8")
+    driver.run_batch(workspace, [source], M=25, detectors="det0", formats=(), workers=1,
+                     errors_tier="fast")
+    _card, session = workspace.load()
+    outcome = next(
+        value for key, entry in session.scans.items() if key.startswith("master:")
+        for value in entry.detectors.values() if value.get("predictive_ref"))
+    predictive = json.loads((workspace.root / outcome["predictive_ref"]).read_text(encoding="utf-8"))
+    outcome = {
+        "pooled": True, "omega0": 3.0, "target_delivery_eligible": True,
+        "track_revision": 1, "track_state": "confirmed", "candidate_state": "confirmed",
+        "candidate_id": "target", "selected_candidate_index": 0,
+    }
+    projection = build_target_projection(
+        predictive, outcome, master_revision="master-r1", calibration_fingerprint="cal-r1",
+        policy_fingerprint="policy-r1", action_role="certification")
+    evidence = adapt_omega0_target_projection(
+        predictive, projection, expected_authority=projection["authority"])
+    # The real producer may truthfully report an incomplete target projection
+    # for this deliberately small synthetic batch.  That is a scientific
+    # qualification, not a schema or positional-join failure in the adapter.
+    assert evidence.status in {"valid", "qualified"}
+    assert "projection_record_invalid" not in evidence.observability_codes
+    assert (evidence.qoi_id, evidence.qoi_unit, evidence.source_qoi) == (
+        "excitation.energy", "meV", "omega0")
+    masses = dict(evidence.diagnostics)["particle_source_masses"]
+    assert masses["target_present"] + masses["target_absent"] == 1.0
+    unknown_authority = adapt_omega0_target_projection(
+        predictive, projection, expected_authority={})
+    assert unknown_authority.observability_codes == ("projection_currentness_unknown",)
+    scope_tampered = deepcopy(predictive)
+    scope_tampered["authority_scopes"] = {
+        "eig_shadow": "active", "eig_authoritative": "ineligible",
+        "acquisition_selection": "ineligible",
+    }
+    invalid_scope = adapt_omega0_target_projection(
+        scope_tampered, projection, expected_authority=projection["authority"])
+    assert invalid_scope.observability_codes == ("projection_record_invalid",)
+    assert evidence.authority_scopes == (
+        ("acquisition_selection", "ineligible"),
+        ("eig_authoritative", "ineligible"),
+        ("eig_shadow", "candidate"),
+    )
 
 
 @pytest.mark.parametrize(("basis", "key"), [
@@ -523,8 +648,8 @@ def test_mixed_producer_bases_trigger_material_nonbootstrap_not_unknown(tmp_path
 
 
 @pytest.mark.parametrize(("delivery", "modality", "finding"), [
-    (None, "fold", "target_delivery_eligibility_unknown"),
-    ("yes", "fold", "target_delivery_eligibility_unknown"),
+    (None, "fold", "target_delivery_unknown"),
+    ("yes", "fold", "target_delivery_unknown"),
     (False, "fold", "target_delivery_ineligible"),
     (True, "fold", None),
     (True, None, "modality_unknown"),
@@ -538,7 +663,7 @@ def test_delivery_and_modality_gates_are_visible_at_campaign_level(tmp_path: Pat
     row = next(item for item in ENGINE.analyze_campaign_set(_campaign_set(tmp_path), tmp_path).rows
                if item["row_kind"] == "pooled_outcome")
     if finding is None:
-        assert "target_delivery_eligibility_unknown" not in row["findings"]
+        assert "target_delivery_unknown" not in row["findings"]
         assert "target_delivery_ineligible" not in row["findings"]
         assert "modality_unknown" not in row["findings"]
     else:

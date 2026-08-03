@@ -31,6 +31,12 @@ from isar.predictive import (
     json_fingerprint,
     validate_master_predictive_artifact,
 )
+from isar.eig import (
+    EligibilityInput,
+    adapt_omega0_target_projection,
+    evaluate_eig_eligibility,
+)
+from isar.drive.acquisition.inventory import canonical_json
 from isar.schema.statistics import (
     SemanticsConstructionError,
     validate_fit_selection_semantics,
@@ -42,7 +48,7 @@ from isar.schema.card import Card, CardState, load_state
 from isar.session.state import SessionState
 
 
-RULESET = "isar.eig4_slice1_census_rules/1"
+RULESET = "isar.eig4_slice2_census_rules/2"
 _LOG = logging.getLogger(__name__)
 _VALID_COHORTS = {"ordinary", "difficult"}
 _VALID_TIERS = {"primary", "supplementary"}
@@ -266,6 +272,166 @@ def _strict_block(record: Any, validator, *, expected_schema: str | None = None)
             KeyError, OverflowError) as error:
         return {"status": "failed", "reason_code": _error_code(error)}
     return {"status": "passed", "reason_code": None}
+
+
+def _session_events(root: Path) -> list[dict[str, Any]]:
+    """Read the append-only session log without making it a source of inferred science."""
+    path = root / "report" / "session_log.jsonl"
+    if not path.is_file():
+        return []
+    try:
+        return [item for item in (
+            json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+        ) if isinstance(item, Mapping)]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        _LOG.warning("pending action log unavailable: %s", error)
+        return []
+
+
+def _event_matches_action(payload: Mapping[str, Any], candidate: Mapping[str, Any]) -> bool:
+    """Match durable lifecycle records by their explicit action/request identities only."""
+    candidate_meta = candidate.get("meta") if isinstance(candidate.get("meta"), Mapping) else {}
+    identities = {
+        "acquisition_id": candidate.get("acquisition_id"),
+        "scientific_action_fingerprint": candidate_meta.get("scientific_action_fingerprint"),
+        # Lifecycle records historically used either name for this same
+        # proposal identity.  Treating them as aliases avoids leaving a
+        # submitted action falsely pending just because the event kind chose
+        # the other durable field name.
+        "proposal_fingerprint": candidate_meta.get("proposal_fingerprint"),
+        "request_fingerprint": candidate_meta.get("proposal_fingerprint"),
+    }
+    for key, expected in identities.items():
+        observed = payload.get(key)
+        if observed is not None and expected is not None and str(observed) == str(expected):
+            return True
+    return False
+
+
+def _inventory_intent(root: Path, ref: Any, scientific_fingerprint: str) -> tuple[Mapping[str, Any] | None, str | None]:
+    """Authenticate one persisted action-inventory intent by content address."""
+    if not isinstance(ref, Mapping) or ref.get("kind") != "action_inventory":
+        return None, "inventory_reference_missing"
+    digest = ref.get("sha256")
+    relative = ref.get("path")
+    if not isinstance(digest, str) or len(digest) != 64 or not isinstance(relative, str):
+        return None, "inventory_reference_invalid"
+    path, problem = _resolve_reference(root, relative, "report/inventory")
+    if problem:
+        return None, f"inventory_{problem}"
+    try:
+        record = _read_json(path)
+        if path.name != f"{digest}.json" or hashlib.sha256(
+                canonical_json(record).encode("utf-8")).hexdigest() != digest:
+            return None, "inventory_content_address_mismatch"
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        return None, f"inventory_{_error_code(error)}"
+    evaluations = record.get("evaluations") if isinstance(record, Mapping) else None
+    if not isinstance(evaluations, list):
+        return None, "inventory_record_invalid"
+    matches = [item for item in evaluations if isinstance(item, Mapping)
+               and item.get("scientific_action_fingerprint") == scientific_fingerprint]
+    if len(matches) != 1 or not isinstance(matches[0].get("intent"), Mapping):
+        return None, "inventory_intent_missing_or_ambiguous"
+    intent = dict(matches[0]["intent"])
+    intent["scientific_action_fingerprint"] = scientific_fingerprint
+    return intent, None
+
+
+def _pending_action_context(root: Path, outcome: Mapping[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Recover an unresolved selected action, never a completed acquisition.
+
+    A ``propose`` event is the only current-action source.  Its compact fields are
+    authenticated against the content-addressed action inventory that supplied its
+    full ``MeasurementIntent``.  Anything ambiguous is deliberately missing
+    evidence, not an excuse to inspect a master member retrospectively.
+    """
+    master_revision = outcome.get("master_revision")
+    if not isinstance(master_revision, str) or not master_revision:
+        return {"source": "missing", "reason_code": "pending_action_master_revision_missing",
+                "intent": None, "provenance": None, "scan_design_ref": None,
+                "acquisition_id": None}
+    candidates: list[tuple[int, Mapping[str, Any]]] = []
+    for index, event in enumerate(events):
+        if event.get("kind") != "propose":
+            continue
+        payload = event.get("payload")
+        meta = payload.get("meta") if isinstance(payload, Mapping) else None
+        if not isinstance(payload, Mapping) or not isinstance(meta, Mapping):
+            continue
+        if meta.get("authoritative_evidence_revision") == master_revision:
+            candidates.append((index, payload))
+    pending: list[tuple[int, Mapping[str, Any]]] = []
+    consuming_kinds = {
+        "physical_submission", "run", "recovery_pending", "recovery_completed",
+        "action_suppressed", "validate", "exception",
+    }
+    for index, proposal in candidates:
+        consumed = False
+        for later in events[index + 1:]:
+            kind = later.get("kind")
+            payload = later.get("payload")
+            if not isinstance(payload, Mapping):
+                continue
+            if kind == "propose" and _event_matches_action(payload, proposal):
+                consumed = True
+                break
+            if kind in consuming_kinds and _event_matches_action(payload, proposal):
+                consumed = True
+                break
+        if not consumed:
+            pending.append((index, proposal))
+    if len(pending) != 1:
+        return {"source": "missing", "reason_code": "pending_action_missing_or_ambiguous",
+                "intent": None, "provenance": None, "scan_design_ref": None,
+                "acquisition_id": None}
+    index, proposal = pending[0]
+    meta = proposal["meta"]
+    fingerprint = meta.get("scientific_action_fingerprint")
+    if not isinstance(fingerprint, str) or not fingerprint:
+        return {"source": "missing", "reason_code": "pending_action_fingerprint_missing",
+                "intent": None, "provenance": None, "scan_design_ref": None,
+                "acquisition_id": None}
+    inventory_ref = None
+    for event in reversed(events[:index + 1]):
+        if event.get("kind") != "inventory":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        if payload.get("selected_scientific_action_fingerprint") != fingerprint:
+            continue
+        if isinstance(payload.get("inventory_ref"), Mapping):
+            inventory_ref = payload["inventory_ref"]
+            break
+    intent, problem = _inventory_intent(root, inventory_ref, fingerprint)
+    if problem:
+        return {"source": "missing", "reason_code": problem, "intent": None,
+                "provenance": None, "scan_design_ref": None, "acquisition_id": None}
+    if (intent.get("action_class") != meta.get("action_class")
+            or intent.get("hkl") != proposal.get("hkl")
+            or intent.get("evidence_sink") != meta.get("evidence_sink")):
+        return {"source": "missing", "reason_code": "pending_action_inventory_mismatch",
+                "intent": None, "provenance": None, "scan_design_ref": None,
+                "acquisition_id": None}
+    provenance = {
+        "action_class": meta.get("action_class"),
+        "scientific_action_fingerprint": fingerprint,
+        "request_fingerprint": meta.get("proposal_fingerprint"),
+        "acquisition_action_role": meta.get("acquisition_action_role"),
+        "evidence_sink": meta.get("evidence_sink"),
+        "driver_inserted": meta.get("driver_inserted"),
+        "insertion_purpose": meta.get("insertion_purpose"),
+        "authoritative_evidence_revision": meta.get("authoritative_evidence_revision"),
+    }
+    return {
+        "source": "pending_selected_action",
+        "reason_code": None,
+        "intent": intent,
+        "provenance": provenance,
+        "scan_design_ref": meta.get("scan_design_inventory_ref"),
+        "acquisition_id": proposal.get("acquisition_id"),
+    }
 
 
 def _predictive_details(root: Path, ref: Any, cache: dict[tuple[str, str], dict]) -> dict[str, Any]:
@@ -752,31 +918,6 @@ def _member_join(session: SessionState, entry: Any, outcome: Mapping[str, Any],
     return result
 
 
-def _acquisition_intent(member_join: Mapping[str, Any], entry: Any,
-                        outcome: Mapping[str, Any]) -> str:
-    if member_join.get("status") != "pass" or member_join.get("acquisition_provenance_status") != "pass":
-        return "unknown"
-    roles = set(member_join.get("acquisition_roles") or [])
-    identities = set(member_join.get("acquisition_ids") or [])
-    if not roles:
-        return "unknown"
-    if roles == {"production"}:
-        if outcome.get("evidence_sink") != "canonical_master":
-            return "noncanonical"
-        transition = entry.provenance.get("confirmation_transition") if isinstance(entry.provenance, Mapping) else None
-        if (isinstance(transition, Mapping)
-                and str(transition.get("acquisition_id")) in identities
-                and transition.get("confirmed") is True):
-            return "confirmation"
-        # A production target must carry an explicit branch/candidate identity, not merely a role.
-        if outcome.get("candidate_id") is not None or outcome.get("identity_branch_id") is not None:
-            return "production"
-        return "unknown"
-    if "classification" in roles or "discovery" in roles:
-        return "noncanonical"
-    return "mixed"
-
-
 def _selection_science_findings(record: Any, strict: Mapping[str, Any]) -> list[str]:
     if strict["status"] != "passed":
         return []
@@ -895,19 +1036,18 @@ def _scan_design_details(root: Path, ref: Any, *, acquisition_ids: tuple[str, ..
         return {"status": "failed", "reason_code": "content_address_mismatch"}
     if not isinstance(record, Mapping) or record.get("inventory_version") != "isar.scan_design_inventory/2":
         return {"status": "failed", "reason_code": "schema_unsupported"}
+    context = record.get("context")
+    if not isinstance(context, Mapping) or not isinstance(context.get("scientific_action_fingerprint"), str):
+        return {"status": "failed", "reason_code": "context_malformed"}
+    # Slice 2 authenticates the selected action's design provenance only.  It deliberately does not
+    # decide whether a candidate family exists, is paired, or was chosen correctly; those are the
+    # later comparison/selection slices.
     selection = record.get("selection")
     selected = selection.get("selected_candidate_id") if isinstance(selection, Mapping) else None
     candidates = record.get("candidates") or []
-    ids = [item.get("candidate_id") for item in candidates if isinstance(item, Mapping)]
-    if (not isinstance(candidates, list) or len(ids) != len(candidates)
-            or any(not isinstance(candidate_id, str) for candidate_id in ids)
-            or len(ids) != len(set(ids))):
-        return {"status": "failed", "reason_code": "candidate_ids_nonunique_or_malformed"}
     selected_candidates = [item for item in candidates if isinstance(item, Mapping)
                            and item.get("candidate_id") == selected]
-    candidate = selected_candidates[0] if len(selected_candidates) == 1 else None
-    if candidate is None or not isinstance(candidate.get("candidate_family"), str):
-        return {"status": "failed", "reason_code": "selected_candidate_invalid"}
+    candidate = selected_candidates[0] if len(selected_candidates) == 1 else {}
     events: list[str] = []
     log_path = root / "report" / "session_log.jsonl"
     if log_path.is_file():
@@ -1033,6 +1173,10 @@ def _primary_reason(reasons: list[str], ranks: Mapping[str, int]) -> str | None:
 
 
 def _classify(row: dict[str, Any]) -> None:
+    # Historical diagnostic-fixture helper only.  Slice 2 runtime census rows
+    # are classified exclusively by ``isar.eig.evaluate_eig_eligibility`` in
+    # ``_master_rows``; retain this isolated legacy reader coverage until the
+    # accepted Slice 1 diagnostic tests are retired as a separate cleanup.
     findings = row["findings"]
     science: list[str] = []
     gaps: list[str] = []
@@ -1123,21 +1267,26 @@ def _classify(row: dict[str, Any]) -> None:
                                         "eligible" if not gaps else "unassessable")
 
 
-def _outcome_view(outcome: Mapping[str, Any]) -> dict[str, Any]:
+def _outcome_view(outcome: Mapping[str, Any], entry: Any = None) -> dict[str, Any]:
     """The audit-facing subset; raw outcomes can carry unrelated local provenance."""
-    return {name: outcome.get(name) for name in (
+    view = {name: outcome.get(name) for name in (
         "omega0", "pooled", "n_members", "members", "target_delivery_eligible", "modality",
         "track_state", "track_revision", "candidate_id", "candidate_state",
         "selected_candidate_index", "master_revision", "pool_consistent", "fit_kind",
         "evidence_sink", "predictive_ref", "target_projection_ref", "acquisition_id",
         "identity_branch_id", "scan_design_inventory_ref",
     )}
+    provenance = entry.provenance if isinstance(getattr(entry, "provenance", None), Mapping) else {}
+    view["hkl"] = outcome.get("hkl") or provenance.get("target_hkl") or provenance.get("hkl")
+    return view
 
 
 def _master_rows(spec: CampaignSpec, session: SessionState, preflight_findings: list[str],
                  predictive_cache: dict, projection_cache: dict, policy_fingerprint: str | None,
-                 card_state: CardState | None, only_key: str | None = None) -> list[dict[str, Any]]:
+                 card_state: CardState | None, only_key: str | None = None,
+                 events: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    events = events if events is not None else _session_events(spec.root)
     for key, entry in sorted(session.scans.items()):
         if not key.startswith("master:"):
             continue
@@ -1160,35 +1309,74 @@ def _master_rows(spec: CampaignSpec, session: SessionState, preflight_findings: 
             continue
         for detector, outcome in pooled:
             member_join = _member_join(session, entry, outcome, card_state)
+            outcome_view = _outcome_view(outcome, entry)
             predictive = _predictive_details(spec.root, outcome.get("predictive_ref"), predictive_cache)
-            projection = _projection_details(_projection_raw(spec.root, outcome.get("target_projection_ref"), projection_cache),
-                                             predictive, outcome, entry, policy_fingerprint)
+            projection_raw = _projection_raw(spec.root, outcome.get("target_projection_ref"), projection_cache)
+            projection = _projection_details(projection_raw, predictive, outcome, entry, policy_fingerprint)
             selection_record = outcome.get("fit_selection_semantics")
             selection = _semantics_details(selection_record, validate_fit_selection_semantics)
             shadow_record = outcome.get("shadow_model_selection")
             shadow_strict = _strict_block(shadow_record, validate_shadow_model_selection)
-            scan_design_ref = (outcome.get("scan_design_inventory_ref")
-                               or entry.provenance.get("scan_design_inventory_ref"))
-            if scan_design_ref is None:
-                refs = member_join.get("scan_design_inventory_refs") or []
-                unique_refs = {_canonical_json(item): item for item in refs if isinstance(item, Mapping)}
-                if len(unique_refs) == 1:
-                    scan_design_ref = next(iter(unique_refs.values()))
+            action_context = _pending_action_context(spec.root, outcome_view, events)
+            scan_design_ref = action_context.get("scan_design_ref")
+            current_acquisition = action_context.get("acquisition_id")
+            scan_design = _scan_design_details(
+                spec.root, scan_design_ref,
+                acquisition_ids=((str(current_acquisition),) if current_acquisition is not None else ()),
+            )
+            scan_design_events = list(scan_design.get("realization_events") or ())
+            if scan_design.get("status") != "passed":
+                scan_design_events.append(
+                    "scan_design_provenance_missing"
+                    if scan_design.get("reason_code") == "reference_missing"
+                    else "scan_design_provenance_invalid"
+                )
+            authority_source = (entry.provenance.get("target_projection_authority", {})
+                                if isinstance(entry.provenance, Mapping) else {})
+            authority_source = authority_source if isinstance(authority_source, Mapping) else {}
+            expected_authority = {
+                "action_role": authority_source.get("action_role"),
+                "master_revision": authority_source.get("master_revision", outcome.get("master_revision")),
+                "track_revision": outcome.get("track_revision"),
+                "track_state": outcome.get("track_state"),
+                "candidate_id": outcome.get("candidate_id"),
+                "candidate_state": outcome.get("candidate_state"),
+                "selected_candidate_index": outcome.get("selected_candidate_index"),
+                "calibration_fingerprint": authority_source.get("calibration_fingerprint"),
+                "policy_fingerprint": policy_fingerprint,
+            }
+            qoi_evidence = adapt_omega0_target_projection(
+                predictive.get("_record"), projection_raw.get("record"),
+                expected_authority=expected_authority,
+            )
+            eligibility = evaluate_eig_eligibility(EligibilityInput.from_current_contract(
+                action_intent=action_context.get("intent"),
+                action_provenance=action_context.get("provenance"),
+                target_outcome=outcome_view,
+                selection_record=selection_record,
+                qoi_evidence=qoi_evidence,
+                shadow_record=shadow_record,
+                scan_design_events=scan_design_events,
+            ))
             row = {"row_kind": "pooled_outcome", "campaign_id": spec.campaign_id,
                    "cohort": spec.cohort, "evidence_tier": spec.evidence_tier, "lineage": spec.lineage,
-                   "master_session_key": key, "detector_id": detector, "outcome": _outcome_view(outcome),
+                   "master_session_key": key, "detector_id": detector, "outcome": outcome_view,
                    "member_join": member_join,
-                   "acquisition_intent": _acquisition_intent(member_join, entry, outcome),
+                   "action_context": action_context,
                    "predictive": predictive, "projection": projection,
                    "selection": selection, "selection_record": selection_record,
                    "selection_diagnostics": _selection_diagnostics(selection_record, selection["strict_validation"]),
-                   "scan_design": _scan_design_details(
-                       spec.root, scan_design_ref,
-                       acquisition_ids=tuple(member_join.get("acquisition_ids") or ())),
+                   "scan_design": scan_design,
                    "shadow": {"strict_validation": shadow_strict,
                               "category": _shadow_category(shadow_record, shadow_strict)},
-                   "findings": list(preflight_findings)}
-            _classify(row)
+                   "eligibility": eligibility.to_dict(),
+                   "findings": sorted(set(preflight_findings + list(eligibility.scientific_codes)
+                                             + list(eligibility.observability_codes))),
+                   "primary_scientific_exclusion": eligibility.primary_scientific_code,
+                   "primary_observability_gap": eligibility.primary_observability_code,
+                   "current_contract_observability": (
+                       "complete" if not eligibility.observability_codes else "incomplete"),
+                   "provisional_eligibility": eligibility.status}
             rows.append(row)
     return rows
 
@@ -1235,13 +1423,14 @@ def analyze_campaign_set(campaign_set: CampaignSet, repo_root: Path | str) -> Ce
         except (OSError, UnicodeDecodeError, ValueError, TypeError, KeyError, tomllib.TOMLDecodeError) as error:
             _LOG.warning("campaign %s policy fingerprint unavailable: %s", spec.campaign_id, error)
             preflight_findings.append("policy_fingerprint_unknown")
+        events = _session_events(spec.root)
         for key, entry in sorted(session.scans.items()):
             if not key.startswith("master:"):
                 continue
             try:
                 rows.extend(_master_rows(spec, session, preflight_findings, predictive_cache,
                                          projection_cache, policy_fingerprint, card_state,
-                                         only_key=key))
+                                         only_key=key, events=events))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
                 _LOG.exception("master %s/%s census failed: %s", spec.campaign_id, key, error)
                 rows.append({"row_kind": "ambiguous_master_join", "campaign_id": spec.campaign_id,
@@ -1310,8 +1499,13 @@ def _summary(result: CensusResult) -> dict[str, Any]:
     def counts(rows: list[dict[str, Any]]) -> dict[str, Any]:
         observable = sum(row["current_contract_observability"] == "complete" for row in rows)
         eligible = sum(row["provisional_eligibility"] == "eligible" for row in rows)
-        canonical = sum(row.get("acquisition_intent") in {"production", "confirmation"}
-                        and row["outcome"].get("track_state") == "confirmed" for row in rows)
+        canonical = sum(
+            row.get("action_context", {}).get("source") == "pending_selected_action"
+            and row.get("action_context", {}).get("intent", {}).get("action_class")
+            in {"production", "confirm"}
+            and row["outcome"].get("track_state") == "confirmed"
+            for row in rows
+        )
         return {
             "pooled_outcomes": len(rows),
             "finite_target": sum(_is_finite(row["outcome"].get("omega0")) for row in rows),
@@ -1373,7 +1567,7 @@ def _summary(result: CensusResult) -> dict[str, Any]:
         else "unknown" for row in pooled)
     particle = {name: round(sum(float(row.get("particle_masses", {}).get(name, 0.0))
                                for row in pooled), 12) for name in _empty_masses()}
-    return {"schema": "isar.eig4_slice1_census_summary/1", "ruleset": RULESET,
+    return {"schema": "isar.eig4_slice2_census_summary/1", "ruleset": RULESET,
             "groups": {name: counts(rows) for name, rows in sorted(groups.items())},
             "row_kinds": {kind: sum(row["row_kind"] == kind for row in result.rows)
                           for kind in ("pooled_outcome", "master_entry_without_pooled_outcome", "ambiguous_master_join")},
@@ -1421,7 +1615,7 @@ def _findings_markdown(summary: Mapping[str, Any]) -> str:
             f"{compact_counts(values['selection_constraint_origins'])} | "
             f"{compact_counts(values['selection_rescue_or_post_selection_reasons'])} |")
     lines = [
-        "# EIG-4 Slice 1 census findings", "", rate, "",
+        "# EIG-4 Slice 2 eligibility census findings", "", rate, "",
         "This is a read-only, provisional contract-observability census; it does not establish runtime EIG authority.",
         "", "## Contract observability", "",
         "| Population | Pooled | Observable | Eligible | Ineligible | Unassessable |",
@@ -1528,7 +1722,7 @@ def write_census_bundle(result: CensusResult, output_dir: Path | str, *, repo_ro
                                                           ensure_ascii=False, allow_nan=False) + "\n")
         _write_text(stage / "findings.md", _findings_markdown(summary))
         deterministic = ["masters.jsonl", "masters.csv", "summary.json", "findings.md"]
-        manifest = {"schema": "isar.eig4_slice1_census_run_manifest/1", "ruleset": RULESET,
+        manifest = {"schema": "isar.eig4_slice2_census_run_manifest/1", "ruleset": RULESET,
                     "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     "elapsed_seconds": round(result.elapsed_seconds, 6), "campaign_set": result.campaign_set.source.name,
                     "campaigns": [{"id": spec.campaign_id, "cohort": spec.cohort,

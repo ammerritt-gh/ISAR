@@ -22,6 +22,7 @@ from isar.drive.acquisition.inventory import (
     LEGACY_SELECTOR_GENERATOR,
     MeasurementIntent,
     RejectionClass,
+    canonical_hkl,
     canonical_json,
     registry_fingerprint,
     scientific_fingerprint,
@@ -70,6 +71,16 @@ def test_fingerprint_ignores_nothing_material_but_is_stable_across_equal_content
         scientific_fingerprint(_intent(action_class="same_q_identity"))
     assert scientific_fingerprint(_intent(evidence_basis="rev51")) == \
         scientific_fingerprint(_intent(evidence_basis="rev51"))
+
+
+def test_canonical_hkl_is_the_shared_nine_decimal_scientific_identity():
+    assert canonical_hkl((2.0, 0.0, 0.12345678949)) == (2.0, 0.0, 0.123456789)
+    assert canonical_hkl((2.0, 0.0, 0.123456789499)) == canonical_hkl(
+        (2.0, 0.0, 0.123456789401))
+    with pytest.raises(ValueError):
+        canonical_hkl((2.0, 0.0))
+    with pytest.raises(ValueError):
+        canonical_hkl((2.0, float("nan"), 0.0))
 
 
 # -- completeness / terminal cause -----------------------------------------------------------------
