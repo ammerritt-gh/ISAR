@@ -21,8 +21,8 @@ from isar.predictive import (
 from isar.schema.statistics import SemanticsConstructionError, validate_predictive_semantics
 
 
-QOI_EVIDENCE_CONTRACT = "isar.eig_qoi_projection_evidence/o36.2"
-OMEGA0_ADAPTER_REVISION = "isar.target_projection_omega0_adapter/2"
+QOI_EVIDENCE_CONTRACT = "isar.eig_qoi_projection_evidence/o36.2.1"
+OMEGA0_ADAPTER_REVISION = "isar.target_projection_omega0_adapter/3"
 
 _SOURCE_SCOPES = {
     "eig_shadow": "ineligible",
@@ -34,6 +34,7 @@ _DERIVED_SCOPES = {
     "eig_authoritative": "ineligible",
     "acquisition_selection": "ineligible",
 }
+_QOI_STATUSES = {"missing", "invalid", "qualified", "valid"}
 _AUTHORITY_FIELDS = (
     "action_role", "master_revision", "track_revision", "track_state",
     "candidate_id", "candidate_state", "selected_candidate_index",
@@ -108,8 +109,16 @@ def _models_payload(models: tuple[_QoIModel, ...]) -> list[dict[str, Any]]:
 
 
 def _qoi_evidence_fingerprint_payload(evidence: Any, models: Any) -> dict[str, Any]:
-    """The frozen ``o36.2`` payload; keep byte-for-byte field semantics stable."""
+    """The complete ``o36.2.1`` semantic envelope, excluding diagnostics."""
     return {
+        "contract": evidence.contract,
+        "adapter_revision": evidence.adapter_revision,
+        "qoi_id": evidence.qoi_id,
+        "qoi_unit": evidence.qoi_unit,
+        "source_qoi": evidence.source_qoi,
+        "status": evidence.status,
+        "scientific_codes": list(evidence.scientific_codes),
+        "observability_codes": list(evidence.observability_codes),
         "predictive_basis_fingerprint": evidence.predictive_basis_fingerprint,
         "predictive_retained_set_fingerprint": evidence.predictive_retained_set_fingerprint,
         "predictive_statistical_semantics_fingerprint": evidence.predictive_statistical_semantics_fingerprint,
@@ -118,8 +127,64 @@ def _qoi_evidence_fingerprint_payload(evidence: Any, models: Any) -> dict[str, A
         "projection_statistical_semantics_fingerprint": evidence.projection_statistical_semantics_fingerprint,
         "projection_authority": _thaw(dict(evidence.projection_authority)),
         "projection_authority_fingerprint": evidence.projection_authority_fingerprint,
+        "source_authority_scopes": _thaw(dict(evidence.source_authority_scopes)),
+        "authority_scopes": _thaw(dict(evidence.authority_scopes)),
         "models": _thaw(models),
     }
+
+
+def _validate_qoi_projection_evidence_invariants(
+        evidence: Any, models: Any, *, require_evidence_fingerprint: bool = True) -> None:
+    """Validate the semantic envelope shared by construction and public reads."""
+    expected_metadata = {
+        "contract": QOI_EVIDENCE_CONTRACT,
+        "adapter_revision": OMEGA0_ADAPTER_REVISION,
+        "qoi_id": "excitation.energy",
+        "qoi_unit": "meV",
+        "source_qoi": "omega0",
+    }
+    if any(getattr(evidence, name) != expected for name, expected in expected_metadata.items()):
+        raise ValueError("QoI evidence metadata does not match the o36.2.1 contract")
+    if evidence.status not in _QOI_STATUSES:
+        raise ValueError("QoI evidence has an invalid status")
+    for name in ("scientific_codes", "observability_codes"):
+        codes = getattr(evidence, name)
+        if (not isinstance(codes, tuple)
+                or any(not isinstance(code, str) or not code for code in codes)
+                or len(codes) != len(set(codes))):
+            raise ValueError(f"QoI evidence {name} must be a unique non-empty string tuple")
+    has_codes = bool(evidence.scientific_codes or evidence.observability_codes)
+    if (evidence.status == "valid") == has_codes:
+        raise ValueError("QoI evidence valid status and reason codes disagree")
+    expected_scopes = _DERIVED_SCOPES if evidence.status == "valid" else _SOURCE_SCOPES
+    if tuple(evidence.authority_scopes) != _frozen_pairs(expected_scopes):
+        raise ValueError("QoI evidence derived authority scopes disagree with status")
+    try:
+        source_scopes = dict(evidence.source_authority_scopes)
+    except (TypeError, ValueError) as error:
+        raise ValueError("QoI evidence source authority scopes are malformed") from error
+    for source, scopes in source_scopes.items():
+        if not isinstance(source, str) or not isinstance(scopes, Mapping):
+            raise ValueError("QoI evidence source authority scopes are malformed")
+        if any(scopes.get(name) != expected for name, expected in _SOURCE_SCOPES.items()):
+            raise ValueError("QoI evidence source authority scopes exceed their authority")
+    if evidence.status == "valid" and not {
+            "predictive_semantics", "projection_semantics", "projection"}.issubset(source_scopes):
+        raise ValueError("valid QoI evidence is missing source authority records")
+    if evidence.projection_fingerprint != evidence.target_projection_set_fingerprint:
+        raise ValueError("projection_fingerprint disagrees with target_projection_set_fingerprint")
+    try:
+        authority = _thaw(dict(evidence.projection_authority))
+    except (TypeError, ValueError) as error:
+        raise ValueError("QoI evidence projection authority is malformed") from error
+    expected_authority_fingerprint = _fingerprint(authority) if authority else None
+    if evidence.projection_authority_fingerprint != expected_authority_fingerprint:
+        raise ValueError("projection_authority_fingerprint does not authenticate projection_authority")
+    if require_evidence_fingerprint:
+        expected_evidence_fingerprint = _fingerprint(
+            _qoi_evidence_fingerprint_payload(evidence, models))
+        if evidence.qoi_evidence_fingerprint != expected_evidence_fingerprint:
+            raise ValueError("qoi_evidence_fingerprint does not authenticate QoI evidence")
 
 
 @dataclass(frozen=True)
@@ -156,15 +221,6 @@ class QoIProjectionEvidence:
     _models: tuple[_QoIModel, ...] = ()
 
     def __post_init__(self) -> None:
-        expected_metadata = {
-            "contract": QOI_EVIDENCE_CONTRACT,
-            "adapter_revision": OMEGA0_ADAPTER_REVISION,
-            "qoi_id": "excitation.energy",
-            "qoi_unit": "meV",
-            "source_qoi": "omega0",
-        }
-        if any(getattr(self, name) != expected for name, expected in expected_metadata.items()):
-            raise ValueError("QoI evidence metadata does not match the o36.2 contract")
         target_set = self.target_projection_set_fingerprint
         legacy = self.projection_fingerprint
         if target_set is None:
@@ -173,7 +229,10 @@ class QoIProjectionEvidence:
             raise ValueError("projection_fingerprint disagrees with target_projection_set_fingerprint")
         object.__setattr__(self, "target_projection_set_fingerprint", target_set)
         object.__setattr__(self, "projection_fingerprint", target_set)
-        authority = _thaw(dict(self.projection_authority))
+        try:
+            authority = _thaw(dict(self.projection_authority))
+        except (TypeError, ValueError) as error:
+            raise ValueError("QoI evidence projection authority is malformed") from error
         expected_authority_fingerprint = _fingerprint(authority) if authority else None
         authority_fingerprint = self.projection_authority_fingerprint
         if authority_fingerprint is None:
@@ -181,8 +240,11 @@ class QoIProjectionEvidence:
         elif authority_fingerprint != expected_authority_fingerprint:
             raise ValueError("projection_authority_fingerprint does not authenticate projection_authority")
         object.__setattr__(self, "projection_authority_fingerprint", authority_fingerprint)
+        models = _models_payload(self._models)
+        _validate_qoi_projection_evidence_invariants(
+            self, models, require_evidence_fingerprint=False)
         expected_evidence_fingerprint = _fingerprint(
-            _qoi_evidence_fingerprint_payload(self, _models_payload(self._models)))
+            _qoi_evidence_fingerprint_payload(self, models))
         if self.qoi_evidence_fingerprint is None:
             object.__setattr__(self, "qoi_evidence_fingerprint", expected_evidence_fingerprint)
         elif self.qoi_evidence_fingerprint != expected_evidence_fingerprint:
@@ -220,7 +282,7 @@ class QoIProjectionEvidence:
 
 
 def validate_qoi_projection_evidence(evidence: Any) -> QoIProjectionEvidence:
-    """Strictly re-authenticate one immutable ``o36.2`` evidence object.
+    """Strictly re-authenticate one immutable ``o36.2.1`` evidence object.
 
     The returned object is the same instance.  This seam deliberately accepts
     only the real frozen class so a duck-typed public view cannot inherit its
@@ -228,30 +290,24 @@ def validate_qoi_projection_evidence(evidence: Any) -> QoIProjectionEvidence:
     """
     if not isinstance(evidence, QoIProjectionEvidence):
         raise TypeError("evidence must be a QoIProjectionEvidence")
-    expected_metadata = {
-        "contract": QOI_EVIDENCE_CONTRACT,
-        "adapter_revision": OMEGA0_ADAPTER_REVISION,
-        "qoi_id": "excitation.energy",
-        "qoi_unit": "meV",
-        "source_qoi": "omega0",
-    }
-    if any(getattr(evidence, name) != expected for name, expected in expected_metadata.items()):
-        raise ValueError("QoI evidence metadata does not match the o36.2 contract")
-    if evidence.projection_fingerprint != evidence.target_projection_set_fingerprint:
-        raise ValueError("projection_fingerprint disagrees with target_projection_set_fingerprint")
     try:
-        authority = _thaw(dict(evidence.projection_authority))
         public_models = list(evidence.models)
     except (AttributeError, KeyError, TypeError, ValueError) as error:
         raise ValueError("QoI evidence contains malformed immutable records") from error
-    expected_authority_fingerprint = _fingerprint(authority) if authority else None
-    if evidence.projection_authority_fingerprint != expected_authority_fingerprint:
-        raise ValueError("projection_authority_fingerprint does not authenticate projection_authority")
-    expected_evidence_fingerprint = _fingerprint(
-        _qoi_evidence_fingerprint_payload(evidence, public_models))
-    if evidence.qoi_evidence_fingerprint != expected_evidence_fingerprint:
-        raise ValueError("qoi_evidence_fingerprint does not authenticate QoI evidence")
+    _validate_qoi_projection_evidence_invariants(evidence, public_models)
     return evidence
+
+
+def _safe_source_scopes(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Retain only source scope records that preserve all three EIG denials."""
+    if not isinstance(value, Mapping):
+        return {}
+    safe = {}
+    for source, scopes in value.items():
+        if (isinstance(scopes, Mapping)
+                and all(scopes.get(name) == expected for name, expected in _SOURCE_SCOPES.items())):
+            safe[str(source)] = scopes
+    return safe
 
 
 def _evidence(*, status: str, science: tuple[str, ...] = (), gaps: tuple[str, ...] = (),
@@ -297,8 +353,8 @@ def _evidence(*, status: str, science: tuple[str, ...] = (), gaps: tuple[str, ..
                                                        else None),
         projection_authority=authority_pairs,
         projection_authority_fingerprint=(_fingerprint(authority_payload) if authority_payload else None),
-        source_authority_scopes=_frozen_pairs(source_scopes),
-        authority_scopes=_frozen_pairs(_DERIVED_SCOPES),
+        source_authority_scopes=_frozen_pairs(_safe_source_scopes(source_scopes)),
+        authority_scopes=_frozen_pairs(_DERIVED_SCOPES if status == "valid" else _SOURCE_SCOPES),
         diagnostics=_diagnostics(**diagnostic_values),
         _models=models,
     )

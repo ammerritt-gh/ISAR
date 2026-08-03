@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import math
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -19,10 +20,11 @@ from isar.schema.statistics import (
     validate_shadow_model_selection,
 )
 
-from .qoi import QoIProjectionEvidence
+from .qoi import QoIProjectionEvidence, validate_qoi_projection_evidence
 
 
-ELIGIBILITY_CONTRACT = "isar.eig_eligibility/o36.2"
+ELIGIBILITY_CONTRACT = "isar.eig_eligibility/o36.2.1"
+log = logging.getLogger(__name__)
 
 SCIENTIFIC_REASON_ORDER = (
     "target_delivery_ineligible", "target_not_finite", "target_not_confirmed",
@@ -479,19 +481,29 @@ def evaluate_eig_eligibility(value: EligibilityInput) -> EligibilityResult:
     action_fingerprint = _action_checks(
         value.action_intent, value.action_provenance, value.target_outcome, science, gaps)
     validated_selection = _selection_checks(value.selection_record, science, gaps)
+    validated_qoi = None
+    qoi_status = "missing"
     if value.qoi_evidence is None:
         gaps.append("projection_record_missing")
     else:
-        science.extend(value.qoi_evidence.scientific_codes)
-        gaps.extend(value.qoi_evidence.observability_codes)
-        selection_fingerprint = (
-            validated_selection.get("model_selection_fingerprint")
-            if isinstance(validated_selection, Mapping) else None)
-        predictive_fingerprint = value.qoi_evidence.predictive_source_model_selection_fingerprint
-        if not isinstance(selection_fingerprint, str) or not isinstance(predictive_fingerprint, str):
-            gaps.append("projection_join_unknown")
-        elif selection_fingerprint != predictive_fingerprint:
-            science.append("projection_join_mismatch")
+        try:
+            validated_qoi = validate_qoi_projection_evidence(value.qoi_evidence)
+        except (TypeError, ValueError) as error:
+            log.warning("EIG eligibility refused unauthenticated QoI evidence: %s", error)
+            gaps.append("projection_record_invalid")
+            qoi_status = "invalid"
+        else:
+            qoi_status = validated_qoi.status
+            science.extend(validated_qoi.scientific_codes)
+            gaps.extend(validated_qoi.observability_codes)
+            selection_fingerprint = (
+                validated_selection.get("model_selection_fingerprint")
+                if isinstance(validated_selection, Mapping) else None)
+            predictive_fingerprint = validated_qoi.predictive_source_model_selection_fingerprint
+            if not isinstance(selection_fingerprint, str) or not isinstance(predictive_fingerprint, str):
+                gaps.append("projection_join_unknown")
+            elif selection_fingerprint != predictive_fingerprint:
+                science.append("projection_join_mismatch")
     _shadow_checks(value.shadow_record, science, gaps)
     if "scan_design_provenance_missing" in value.scan_design_events:
         gaps.append("scan_design_provenance_missing")
@@ -510,7 +522,7 @@ def evaluate_eig_eligibility(value: EligibilityInput) -> EligibilityResult:
         "target": _target_identity(value.target_outcome),
         "selection": _selection_identity(validated_selection),
         "qoi_evidence_fingerprint": (
-            value.qoi_evidence.qoi_evidence_fingerprint if value.qoi_evidence is not None else None),
+            validated_qoi.qoi_evidence_fingerprint if validated_qoi is not None else None),
         "shadow": _shadow_identity(value.shadow_record),
         "scan_design": _scan_design_identity(value.scan_design_provenance, value.scan_design_events),
     }
@@ -525,7 +537,7 @@ def evaluate_eig_eligibility(value: EligibilityInput) -> EligibilityResult:
     }
     result_fingerprint = _fingerprint(result_payload)
     diagnostics = tuple(sorted((
-        ("qoi_status", value.qoi_evidence.status if value.qoi_evidence is not None else "missing"),
+        ("qoi_status", qoi_status),
         ("scan_design_event_count", len(value.scan_design_events)),
     )))
     return EligibilityResult(

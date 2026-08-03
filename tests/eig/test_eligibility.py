@@ -4,17 +4,20 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
 from isar.drive.acquisition.inventory import scientific_fingerprint_from_mapping
 from isar.analyze.shadow_selection import unavailable_shadow_selection
 from isar.eig import EligibilityInput, QoIProjectionEvidence, evaluate_eig_eligibility
+from isar.eig.qoi import OMEGA0_ADAPTER_REVISION, QOI_EVIDENCE_CONTRACT
 from isar.schema.statistics import FIT_SELECTION_SCHEMA, authority_scopes, semantics_fingerprint, validate_for_write
 from isar.session import driver
 
 
 def _evidence(**overrides):
     values = {
-        "contract": "isar.eig_qoi_projection_evidence/o36.2",
-        "adapter_revision": "isar.target_projection_omega0_adapter/2",
+        "contract": QOI_EVIDENCE_CONTRACT,
+        "adapter_revision": OMEGA0_ADAPTER_REVISION,
         "qoi_id": "excitation.energy",
         "qoi_unit": "meV",
         "source_qoi": "omega0",
@@ -24,8 +27,22 @@ def _evidence(**overrides):
             ("eig_authoritative", "ineligible"),
             ("eig_shadow", "candidate"),
         ),
+        "source_authority_scopes": tuple(sorted({
+            name: {
+                "eig_shadow": "ineligible", "eig_authoritative": "ineligible",
+                "acquisition_selection": "ineligible",
+            }
+            for name in ("predictive_semantics", "projection_semantics", "projection")
+        }.items())),
     }
     values.update(overrides)
+    if ((values.get("scientific_codes") or values.get("observability_codes"))
+            and values.get("status") == "valid"):
+        values["status"] = "qualified"
+        values["authority_scopes"] = tuple(sorted({
+            "eig_shadow": "ineligible", "eig_authoritative": "ineligible",
+            "acquisition_selection": "ineligible",
+        }.items()))
     return QoIProjectionEvidence(**values)
 
 
@@ -139,6 +156,52 @@ def test_clean_current_contract_is_eligible_and_deterministic():
     assert first.scientific_codes == ()
     assert first.observability_codes == ()
     assert first.to_dict() == second.to_dict()
+
+
+def test_current_eligibility_contract_revision_is_exact():
+    result = evaluate_eig_eligibility(
+        _input(selection_record=_clean_selection(), shadow_record=_neutral_shadow()))
+    assert result.contract == "isar.eig_eligibility/o36.2.1"
+
+
+def test_unauthenticated_qoi_is_refused_without_consuming_codes_or_join_identity(caplog):
+    base = _input(selection_record=_clean_selection(), shadow_record=_neutral_shadow())
+    first_qoi = replace(base.qoi_evidence)
+    object.__setattr__(first_qoi, "scientific_codes", ("projection_stale",))
+    object.__setattr__(first_qoi, "predictive_source_model_selection_fingerprint", "other")
+    second_qoi = replace(base.qoi_evidence)
+    object.__setattr__(second_qoi, "observability_codes", ("projection_record_missing",))
+    object.__setattr__(second_qoi, "predictive_source_model_selection_fingerprint", "another")
+
+    first = evaluate_eig_eligibility(replace(base, qoi_evidence=first_qoi))
+    second = evaluate_eig_eligibility(replace(base, qoi_evidence=second_qoi))
+
+    assert first.status == "unassessable"
+    assert first.scientific_codes == ()
+    assert first.observability_codes == ("projection_record_invalid",)
+    assert "projection_stale" not in first.scientific_codes
+    assert "projection_join_mismatch" not in first.scientific_codes
+    assert "projection_record_missing" not in second.observability_codes
+    assert first.input_fingerprint == second.input_fingerprint
+    assert dict(first.diagnostics)["qoi_status"] == "invalid"
+    assert "refused unauthenticated QoI evidence" in caplog.text
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("contract", "isar.eig_qoi_projection_evidence/o36.2"),
+    ("adapter_revision", "isar.target_projection_omega0_adapter/2"),
+])
+def test_old_qoi_revision_is_refused_before_eligibility_consumption(field, value):
+    base = _input(selection_record=_clean_selection(), shadow_record=_neutral_shadow())
+    old = replace(base.qoi_evidence)
+    object.__setattr__(old, field, value)
+
+    result = evaluate_eig_eligibility(replace(base, qoi_evidence=old))
+
+    assert result.status == "unassessable"
+    assert result.scientific_codes == ()
+    assert result.observability_codes == ("projection_record_invalid",)
+    assert dict(result.diagnostics)["qoi_status"] == "invalid"
 
 
 def test_semantic_eligibility_fingerprint_ignores_shadow_runtime_telemetry():

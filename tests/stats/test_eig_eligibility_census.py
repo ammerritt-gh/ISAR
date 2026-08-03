@@ -620,10 +620,19 @@ def test_current_omega0_adapter_accepts_the_real_authenticated_producer_contract
     invalid_scope = adapt_omega0_target_projection(
         scope_tampered, projection, expected_authority=projection["authority"])
     assert invalid_scope.observability_codes == ("projection_record_invalid",)
+    assert dict(invalid_scope.authority_scopes) == {
+        "eig_shadow": "ineligible",
+        "eig_authoritative": "ineligible",
+        "acquisition_selection": "ineligible",
+    }
+    # A source that tried to elevate its scope is omitted, never republished
+    # as if the adapter had authenticated that authority.
+    assert "predictive" not in dict(invalid_scope.source_authority_scopes)
+    expected_shadow_scope = "candidate" if evidence.status == "valid" else "ineligible"
     assert evidence.authority_scopes == (
         ("acquisition_selection", "ineligible"),
         ("eig_authoritative", "ineligible"),
-        ("eig_shadow", "candidate"),
+        ("eig_shadow", expected_shadow_scope),
     )
 
 

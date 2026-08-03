@@ -345,7 +345,12 @@ def test_split_nonbootstrap_mass_combines_at_the_upstream_gate(monkeypatch):
 def test_material_unknown_basis_remains_an_upstream_observability_category(monkeypatch):
     artifact, _projection, qoi, eligibility = _bundle(monkeypatch)
     unknown = replace(
-        qoi, observability_codes=("predictive_material_basis_unknown",),
+        qoi, status="qualified",
+        observability_codes=("predictive_material_basis_unknown",),
+        authority_scopes=tuple(sorted({
+            "eig_shadow": "ineligible", "eig_authoritative": "ineligible",
+            "acquisition_selection": "ineligible",
+        }.items())),
         qoi_evidence_fingerprint=None)
     result = build_scan_window_design_measure(
         artifact, replace(eligibility, qoi_evidence=unknown))
@@ -437,7 +442,57 @@ def test_stale_qoi_fingerprint_never_authorizes_scenarios(monkeypatch, tamper):
     result = build_scan_window_design_measure(
         artifact, replace(eligibility, qoi_evidence=stale))
     assert result.status == "unavailable"
-    assert result.construction_codes == ("design_measure_input_mismatch",)
+    assert "projection_record_invalid" in result.reason_codes
+    assert result.construction_codes == ()
+    assert result.models == () and result.predictive_scenarios == ()
+
+
+def test_erased_authentic_stale_verdict_never_authorizes_scenarios(monkeypatch):
+    artifact, projection, _qoi, eligibility = _bundle(monkeypatch)
+    expected = dict(projection["authority"])
+    expected["policy_fingerprint"] = "policy-current"
+    stale = adapt_omega0_target_projection(
+        artifact, projection, expected_authority=expected)
+    assert stale.status == "qualified"
+    assert stale.scientific_codes == ("projection_stale",)
+
+    erased = replace(stale)
+    object.__setattr__(erased, "status", "valid")
+    object.__setattr__(erased, "scientific_codes", ())
+    object.__setattr__(erased, "authority_scopes", (
+        ("acquisition_selection", "ineligible"),
+        ("eig_authoritative", "ineligible"),
+        ("eig_shadow", "candidate"),
+    ))
+    result = build_scan_window_design_measure(
+        artifact, replace(eligibility, qoi_evidence=erased))
+
+    assert result.status == "unavailable"
+    assert result.reason_codes == ("projection_record_invalid",)
+    assert result.construction_codes == ()
+    assert result.models == () and result.predictive_scenarios == ()
+    assert dict(result.authority_scopes) == {
+        "eig_shadow": "ineligible",
+        "eig_authoritative": "ineligible",
+        "acquisition_selection": "ineligible",
+    }
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("contract", "isar.eig_qoi_projection_evidence/o36.2"),
+    ("adapter_revision", "isar.target_projection_omega0_adapter/2"),
+])
+def test_old_qoi_contract_never_authorizes_scenarios(monkeypatch, field, value):
+    artifact, _projection, qoi, eligibility = _bundle(monkeypatch)
+    old = replace(qoi)
+    object.__setattr__(old, field, value)
+
+    result = build_scan_window_design_measure(
+        artifact, replace(eligibility, qoi_evidence=old))
+
+    assert result.status == "unavailable"
+    assert result.reason_codes == ("projection_record_invalid",)
+    assert result.construction_codes == ()
     assert result.models == () and result.predictive_scenarios == ()
 
 
@@ -536,7 +591,8 @@ def test_public_qoi_model_join_mismatch_refuses(monkeypatch, field, value):
     result = build_scan_window_design_measure(
         artifact, replace(eligibility, qoi_evidence=mismatched))
     assert result.status == "unavailable"
-    assert result.construction_codes == ("design_measure_input_mismatch",)
+    assert "projection_record_invalid" in result.reason_codes
+    assert result.construction_codes == ()
     assert result.models == () and result.predictive_scenarios == ()
 
 

@@ -172,8 +172,9 @@ Slice 2 freezes the pre-comparison eligibility seam. Its action predicate admits
 and the same canonical nine-decimal HKL as the target. A projection authority `action_role` describes
 fit/refit authority (for example `certification`), not acquisition intent, and never decides this gate.
 
-The derived Slice 2 evidence revision is `o36.2`; predictive `/2` and target-projection `/2` payloads
-remain unchanged. An action is authenticated by reconstructing the persisted `MeasurementIntent` and
+The derived Slice 2 evidence and eligibility revision is `o36.2.1`, with omega0 adapter revision `3`;
+predictive `/2` and target-projection `/2` payloads remain unchanged. An action is authenticated by
+reconstructing the persisted `MeasurementIntent` and
 recomputing its scientific fingerprint. The content-addressed inventory evaluation, proposal metadata,
 and action provenance must all carry that same value; class, sink, canonical Q, and authoritative master
 revision must agree as well. Target Q is normalized in the single order `hkl`, then `target_hkl`, then
@@ -208,19 +209,26 @@ the current authority record. A target-present draw must have a finite QoI; a ta
 
 The immutable evidence retains the actual projection authority and its canonical fingerprint; predictive
 basis, retained-set, statistical-semantics, and source-model-selection identities; target-projection-set
-and projection-semantics identities; and a derived QoI-evidence fingerprint over those identities plus
-normalized model/draw evidence. `target_projection_set_fingerprint` is recomputed from actual projection
-records by the shared predictive-contract helper before a stored value is accepted. The old
+and projection-semantics identities; and a derived QoI-evidence fingerprint over the complete semantic
+envelope. That envelope includes fixed contract/QoI metadata, status, ordered scientific and
+observability codes, source and derived authority scopes, the source identities and authority, and
+normalized model/draw evidence. Diagnostics are deliberately excluded. `target_projection_set_fingerprint`
+is recomputed from actual projection records by the shared predictive-contract helper before a stored
+value is accepted. The old
 `projection_fingerprint` spelling remains a read/constructor compatibility alias only; serialized evidence
 uses the explicit target-projection-set name.
 
 `validate_qoi_projection_evidence()` is the strict public read gate for that derived evidence. It accepts
-only a real `QoIProjectionEvidence`, verifies the frozen `o36.2` contract/adapter/QoI metadata, recomputes
-the projection-authority fingerprint, and recomputes the existing evidence fingerprint from the ordered
-public model/QoI records and all source identities. The constructor and validator share that exact
-fingerprint payload; supplying a stale authority or evidence hash raises rather than silently blessing
-altered target-presence or QoI values. This strengthens reads without changing the `o36.2` payload or
-revision.
+only a real `QoIProjectionEvidence`, verifies the frozen `o36.2.1` contract/adapter/QoI metadata, and
+recomputes both authority and evidence fingerprints. The constructor and validator share one payload
+helper and one invariant validator. Status is exactly `missing`, `invalid`, `qualified`, or `valid`;
+both code fields are unique non-empty-string tuples; only `valid` may have no codes; and only `valid`
+has the exact derived `eig_shadow = candidate` scope. Every other status has all three EIG scopes
+ineligible. Present source-scope records must retain all three source denials (extra diagnostic fields
+are allowed), while valid evidence requires the predictive-semantics, projection-semantics, and
+projection records. An invalid upstream source-scope record is omitted from the derived source view so
+its attempted elevation cannot propagate. Supplying a stale authority or evidence hash raises rather
+than silently blessing altered verdicts, target-presence, or QoI values.
 
 Particle mass is a measure, not a draw count. Equal-weight draws publish `1/n`; explicit predictive draw
 weights are validated and normalized by their positive total, exposed read-only in QoI diagnostics, and
@@ -229,6 +237,12 @@ retained-set, semantics, projection-set, model identity/weight, or draw-alignmen
 `projection_join_mismatch`. Both outcomes publish no joined QoI models and no authenticated particle mass.
 The validated fit-selection model-selection fingerprint must equal the QoI evidence's predictive source
 identity; absence is an observability gap and disagreement is a scientific join mismatch.
+
+Eligibility validates the complete QoI envelope before consuming any of its codes or join identities.
+An unauthenticated or old-revision object is logged and represented only as
+`projection_record_invalid`; its supplied reason codes and source-model-selection fingerprint are ignored,
+and the semantic eligibility input records no QoI fingerprint. Slice 3 retains its own defensive
+re-validation after the eligibility gate.
 
 Eligibility's persisted `input_fingerprint` is semantic-only: authenticated action/Q, target/master/tracker
 predicate state, checked selection comparison state, derived QoI identity, standard shadow-selection (or
@@ -312,7 +326,7 @@ are post-SVP work.
    every proposed eligibility rejection; distinguish shadow deadline skips from real shadow failures;
    make no behavior changes.
 3. **Slice 2 — freeze eligibility and generic QoI adapter.** Define stable eligibility reason codes
-   and a generic QoI view over `target_projection/2`; `o36.2` strengthens derived identities and
+   and a generic QoI view over `target_projection/2`; `o36.2.1` authenticates verdict semantics and
    fail-closed joins without breaking either source schema.
 4. **Slice 3 — EIG-local homogeneous design measure (implemented).** Build the immutable
    Akaike-weighted parametric-bootstrap predictive-scenario measure, inspect actual per-model source
