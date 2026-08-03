@@ -5,3 +5,5 @@ tools/stats/stat2b1-heldout-gate.json -text
 tools/stats/stat2b1-production-source-closure.candidate.json -text
 tools/stats/stat2b1-production-source-closure.json -text
 docs/campaigns/2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP/** -text
+docs/campaigns/2026-07-31_STAT2B1_HELDOUT/** -text
+docs/campaigns/2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR/** -text

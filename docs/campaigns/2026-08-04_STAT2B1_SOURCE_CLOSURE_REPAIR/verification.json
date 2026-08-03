@@ -1,0 +1,64 @@
+{
+  "commands": [
+    {
+      "command": "python -m py_compile tools\\stats\\_stat2b_source_closure.py tools\\stats\\stat2b_source_closure.py tests\\stats\\test_stat2b_source_closure.py",
+      "deselected": 0,
+      "failed": 0,
+      "files_checked": 3,
+      "passed": 3,
+      "skipped": 0
+    },
+    {
+      "command": "python -m pytest tests\\stats\\test_stat2b_source_closure.py tests\\analyze\\test_select.py tests\\analyze\\test_select_modality.py tests\\analyze\\test_shadow_selection.py isar\\synth\\tests\\test_stat2b_campaign.py isar\\synth\\tests\\test_stat2b_criteria.py isar\\synth\\tests\\test_stat2b_runtime.py isar\\synth\\tests\\test_stat2b_scaling.py isar\\synth\\tests\\test_stat2b_spec_truth.py tests\\session\\test_statistical_semantics.py tests\\session\\test_master_predictive.py tests\\session\\test_target_projection.py tests\\schema\\test_statistics.py tests\\docs\\test_stat2b_heldout_evidence.py -q",
+      "deselected": 0,
+      "duration_seconds": 105.77,
+      "failed": 0,
+      "passed": 287,
+      "skipped": 0
+    },
+    {
+      "command": "python -m pytest tests\\docs -q",
+      "deselected": 0,
+      "duration_seconds": 3.87,
+      "failed": 0,
+      "passed": 92,
+      "skipped": 1
+    },
+    {
+      "command": "python -m pytest -m \"not slow\" -n 16 --dist worksteal",
+      "deselected": 39,
+      "deselection_basis": "the unchanged slow-marker set contains 39 tests; xdist selected 3469 items",
+      "duration_seconds": 77.31,
+      "failed": 0,
+      "passed": 3461,
+      "skipped": 8
+    }
+  ],
+  "parity_checks": [
+    {
+      "check": "complete held-out summary semantic fingerprint and raw-byte SHA-256 reproduce before gate evaluation",
+      "status": "passed"
+    },
+    {
+      "check": "bootstrap preserves the historical three-addition/three-modification/zero-deletion review without hard-coding it in the reusable drift engine",
+      "status": "passed"
+    },
+    {
+      "check": "renewal authenticates committed active provenance, preserves the active file byte-identically, and compares source and graph drift against it",
+      "status": "passed"
+    },
+    {
+      "check": "every protected non-exempt module is AST-traversed and newly imported local dependencies fail unclassified",
+      "status": "passed"
+    },
+    {
+      "check": "selection, shadow-selection, predictive, target-projection, statistical-join, schema, and held-out evidence parity remain unchanged",
+      "status": "passed"
+    },
+    {
+      "check": "portable candidate verification and exact Git-backed production-anchor parity",
+      "status": "passed"
+    }
+  ],
+  "status": "passed"
+}

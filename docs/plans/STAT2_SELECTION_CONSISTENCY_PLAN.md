@@ -6,8 +6,9 @@
 > **Owner:** @ammerritt-gh
 > **Status:** STAT-2a, the STAT-2a.1 evidence-contract repair, and the corrected STAT-2b evidence
 > harness are implemented (repair commit `5767dea`); corrected STAT-2b.1 evidence is complete and
-> S8 is recorded. The STAT-2b.1 source-closure upkeep candidate is constructed but remains
-> unapproved. Production remains AIC; no AICc switch is authorized. Difficult-regime findings
+> S8 is recorded. The first STAT-2b.1 source-closure candidate was rejected; its schema-v2
+> lifecycle/authentication replacement is constructed but remains unapproved. Production remains
+> AIC; no AICc switch is authorized. Difficult-regime findings
 > remain open, STAT-2c and STAT-2d remain pending, and restricted EIG-4 may proceed independently
 > under O36.
 > **Exit criteria:** STAT-2a through STAT-2d are implemented and verified; accepted behavior is
@@ -668,7 +669,15 @@ source review and focused parity; a newly reached dependency remains unclassifie
 A branch may be temporarily red while its boundary is being updated, but the mismatch must be
 closed before the statistical slice or containing PR merges. Passing checks never constitute owner
 approval. The dated upkeep evidence is
-[`../campaigns/2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md`](../campaigns/2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md).
+[`../campaigns/2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md`](../campaigns/2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md).
+
+The cycle has two modes. Bootstrap uses the frozen historical source map only when no active
+closure exists. Renewal authenticates and preserves the active closure, compares source and graph
+drift against it, and writes a candidate beside it using an explicit proposed production anchor
+and new review path. Every protected non-exempt module is AST-traversed. The complete held-out
+summary fingerprint is recomputed from its contents and its raw bytes are pinned. Git-backed active
+verification proves the preceding candidate and review bytes at the declared candidate artifact
+commit; owner/date/anchor/commit formats are validated portably first.
 
 Compare:
 

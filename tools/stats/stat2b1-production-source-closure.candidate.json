@@ -9,21 +9,30 @@
   "approved_by": null,
   "approved_candidate_fingerprint": null,
   "approved_on": null,
-  "approved_production_anchor": "ce490fec5badbc76e8799b7fb3f84ef5c201b855",
-  "boundary_revision": "isar.stat2b_production_dependency_boundary/1",
-  "candidate_closure_fingerprint": "889c86bc889c51b9c261c0e8195394b91157e96c0ae2ba02468eaecf025b12be",
-  "closure_artifact_commit": null,
+  "approved_production_anchor": null,
+  "boundary_revision": "isar.stat2b_production_dependency_boundary/2",
+  "candidate_artifact_commit": null,
+  "candidate_artifact_path": "tools/stats/stat2b1-production-source-closure.candidate.json",
+  "candidate_artifact_sha256": null,
+  "candidate_closure_fingerprint": "ea8d5718eb7dd84e1aaf7ef15fb1d996410a784467506347b431da7f9c02e1e0",
+  "comparison_basis": {
+    "candidate_closure_fingerprint": null,
+    "dependency_graph_fingerprint": null,
+    "manifest_path": "tools/stats/stat2b1-heldout-gate.json",
+    "mode": "bootstrap",
+    "production_source_fingerprint": "e655e3bbf92f2f57b1fbab4074120f8194d15930f46f55fb56590909f0662525"
+  },
   "current_change_reviews": [
     {
-      "changed_symbols": [
+      "basis_hash": "97a124360654d37467c026ec088519a863964b4da1a74475f979dcc385d8913d",
+      "current_change_disposition": "adjacent_nonsemantic",
+      "current_hash": "06d131c865058044327feded48c245991acf0b0b435cc775c073c64306dbce49",
+      "current_public_symbols": [
         "ObjectiveSpec",
         "current_objective_comparison_scope",
         "resolve_hypothesis_snapshot",
         "shipped_hypothesis_snapshot"
       ],
-      "current_change_disposition": "adjacent_nonsemantic",
-      "current_hash": "06d131c865058044327feded48c245991acf0b0b435cc775c073c64306dbce49",
-      "historical_hash": "97a124360654d37467c026ec088519a863964b4da1a74475f979dcc385d8913d",
       "path": "isar/drive/objective.py",
       "proof_tests": [
         "isar/synth/tests/test_stat2b_campaign.py",
@@ -32,14 +41,14 @@
       "status": "modified"
     },
     {
-      "changed_symbols": [
+      "basis_hash": null,
+      "current_change_disposition": "unrelated_exempt",
+      "current_hash": "ee854664627898e868a88579301eebca833d5c65f5060f5ba130790093556395",
+      "current_public_symbols": [
         "canonical_hkl",
         "canonical_json",
         "scientific_fingerprint_from_mapping"
       ],
-      "current_change_disposition": "unrelated_exempt",
-      "current_hash": "ee854664627898e868a88579301eebca833d5c65f5060f5ba130790093556395",
-      "historical_hash": null,
       "path": "isar/schema/action_identity.py",
       "proof_tests": [
         "tests/eig/test_eligibility.py"
@@ -47,7 +56,10 @@
       "status": "added"
     },
     {
-      "changed_symbols": [
+      "basis_hash": "d597e3ecd4f4a8622d7178d2a05f511acf26cce8736a61f207d07c66f6602ac6",
+      "current_change_disposition": "adjacent_nonsemantic",
+      "current_hash": "b3e88eaa4c9ecdf47c55afc4e5413184059c85d461dd5c267a3ee7bdf926eddf",
+      "current_public_symbols": [
         "Card",
         "CardPolicy",
         "CardState",
@@ -58,9 +70,6 @@
         "unknown_toml_tables",
         "validate_policy_text"
       ],
-      "current_change_disposition": "adjacent_nonsemantic",
-      "current_hash": "b3e88eaa4c9ecdf47c55afc4e5413184059c85d461dd5c267a3ee7bdf926eddf",
-      "historical_hash": "d597e3ecd4f4a8622d7178d2a05f511acf26cce8736a61f207d07c66f6602ac6",
       "path": "isar/schema/card.py",
       "proof_tests": [
         "isar/synth/tests/test_stat2b_campaign.py",
@@ -69,7 +78,10 @@
       "status": "modified"
     },
     {
-      "changed_symbols": [
+      "basis_hash": null,
+      "current_change_disposition": "adjacent_nonsemantic",
+      "current_hash": "45e4eb0ef951733526338890c0ff84ad2bda5b5da3f46f64e402131b1e091047",
+      "current_public_symbols": [
         "QoIDistinctionPolicy",
         "QoIDistinctionPolicySet",
         "QoIDistinctionVariant",
@@ -81,9 +93,6 @@
         "validate_scan_window_eig_config",
         "validate_scan_window_shadow_scoring_config"
       ],
-      "current_change_disposition": "adjacent_nonsemantic",
-      "current_hash": "45e4eb0ef951733526338890c0ff84ad2bda5b5da3f46f64e402131b1e091047",
-      "historical_hash": null,
       "path": "isar/schema/eig_policy.py",
       "proof_tests": [
         "tests/schema/test_eig_policy.py"
@@ -91,7 +100,10 @@
       "status": "added"
     },
     {
-      "changed_symbols": [
+      "basis_hash": null,
+      "current_change_disposition": "unrelated_exempt",
+      "current_hash": "8d098db53490357517ad34aa4422d571a88ec0fb49b4e8d794a27a19ef91a8fe",
+      "current_public_symbols": [
         "ScanDesignShadowScoring",
         "ScanDesignShadowVariant",
         "ScoreRefusalEvidence",
@@ -102,9 +114,6 @@
         "valid_fingerprint",
         "validate_scan_design_shadow_scoring"
       ],
-      "current_change_disposition": "unrelated_exempt",
-      "current_hash": "8d098db53490357517ad34aa4422d571a88ec0fb49b4e8d794a27a19ef91a8fe",
-      "historical_hash": null,
       "path": "isar/schema/eig_shadow.py",
       "proof_tests": [
         "tests/schema/test_eig_shadow.py"
@@ -112,7 +121,10 @@
       "status": "added"
     },
     {
-      "changed_symbols": [
+      "basis_hash": "963c424cd2c921a2c52f708b347f7fba68f00a0dc61d48757daf2e5993d80f0e",
+      "current_change_disposition": "evidence_contract_semantic",
+      "current_hash": "22069fc10957c8c176164c8c6ca1e262786ea33a5cb2af3c9e10ef7bb6da77c8",
+      "current_public_symbols": [
         "bounded_parameter_draws",
         "build_master_predictive",
         "build_target_projection",
@@ -121,9 +133,6 @@
         "model_entropy_probability_semantics",
         "model_manifest_of"
       ],
-      "current_change_disposition": "evidence_contract_semantic",
-      "current_hash": "22069fc10957c8c176164c8c6ca1e262786ea33a5cb2af3c9e10ef7bb6da77c8",
-      "historical_hash": "963c424cd2c921a2c52f708b347f7fba68f00a0dc61d48757daf2e5993d80f0e",
       "path": "isar/session/predictive_artifact.py",
       "proof_tests": [
         "tests/session/test_master_predictive.py",
@@ -133,6 +142,11 @@
       "status": "modified"
     }
   ],
+  "cycle_mode": "bootstrap",
+  "dependency_drift": {
+    "added": [],
+    "removed": []
+  },
   "dependency_edges": [
     {
       "edge_kind": "runtime",
@@ -393,6 +407,11 @@
       "edge_kind": "conditional",
       "imported": "isar/schema/statistics.py",
       "importer": "isar/drive/objective.py"
+    },
+    {
+      "edge_kind": "conditional",
+      "imported": "isar/drive/acquisition/eig.py",
+      "importer": "isar/drive/supervisor/stopping.py"
     },
     {
       "edge_kind": "conditional",
@@ -846,6 +865,11 @@
     },
     {
       "edge_kind": "runtime",
+      "imported": "isar/drive/session_log.py",
+      "importer": "isar/session/shadow.py"
+    },
+    {
+      "edge_kind": "runtime",
       "imported": "isar/schema/_json.py",
       "importer": "isar/session/state.py"
     },
@@ -853,6 +877,26 @@
       "edge_kind": "conditional",
       "imported": "isar/schema/axes.py",
       "importer": "isar/session/unit_data.py"
+    },
+    {
+      "edge_kind": "conditional",
+      "imported": "isar/session/certification.py",
+      "importer": "isar/session/worker.py"
+    },
+    {
+      "edge_kind": "conditional",
+      "imported": "isar/session/driver.py",
+      "importer": "isar/session/worker.py"
+    },
+    {
+      "edge_kind": "conditional",
+      "imported": "isar/session/timing.py",
+      "importer": "isar/session/worker.py"
+    },
+    {
+      "edge_kind": "conditional",
+      "imported": "isar/session/workspace.py",
+      "importer": "isar/session/worker.py"
     },
     {
       "edge_kind": "runtime",
@@ -903,6 +947,166 @@
       "edge_kind": "runtime",
       "imported": "isar/synth/config.py",
       "importer": "isar/synth/noise.py"
+    },
+    {
+      "edge_kind": "package_reexport",
+      "imported": "isar/synth/stat2b/campaign.py",
+      "importer": "isar/synth/stat2b/__init__.py"
+    },
+    {
+      "edge_kind": "package_reexport",
+      "imported": "isar/synth/stat2b/spec.py",
+      "importer": "isar/synth/stat2b/__init__.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/synth/stat2b/campaign.py",
+      "importer": "isar/synth/stat2b/__main__.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/synth/stat2b/spec.py",
+      "importer": "isar/synth/stat2b/__main__.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/analyze/ic.py",
+      "importer": "isar/synth/stat2b/campaign.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/analyze/loop.py",
+      "importer": "isar/synth/stat2b/campaign.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/analyze/prior.py",
+      "importer": "isar/synth/stat2b/campaign.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/analyze/structures.py",
+      "importer": "isar/synth/stat2b/campaign.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/drive/objective.py",
+      "importer": "isar/synth/stat2b/campaign.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/drive/supervisor/stopping.py",
+      "importer": "isar/synth/stat2b/campaign.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/schema/card.py",
+      "importer": "isar/synth/stat2b/campaign.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/schema/statistics.py",
+      "importer": "isar/synth/stat2b/campaign.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/schema/steering.py",
+      "importer": "isar/synth/stat2b/campaign.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/session/driver.py",
+      "importer": "isar/synth/stat2b/campaign.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/session/session_prior.py",
+      "importer": "isar/synth/stat2b/campaign.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/synth/stat2b/criteria.py",
+      "importer": "isar/synth/stat2b/campaign.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/synth/stat2b/spec.py",
+      "importer": "isar/synth/stat2b/campaign.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/synth/stat2b/truth.py",
+      "importer": "isar/synth/stat2b/campaign.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/analyze/components.py",
+      "importer": "isar/synth/stat2b/criteria.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/analyze/loop.py",
+      "importer": "isar/synth/stat2b/criteria.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/analyze/structures.py",
+      "importer": "isar/synth/stat2b/criteria.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/schema/statistics.py",
+      "importer": "isar/synth/stat2b/scaling.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/synth/stat2b/campaign.py",
+      "importer": "isar/synth/stat2b/scaling.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/synth/stat2b/spec.py",
+      "importer": "isar/synth/stat2b/scaling.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/schema/statistics.py",
+      "importer": "isar/synth/stat2b/spec.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/analyze/components.py",
+      "importer": "isar/synth/stat2b/truth.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/analyze/context.py",
+      "importer": "isar/synth/stat2b/truth.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/schema/statistics.py",
+      "importer": "isar/synth/stat2b/truth.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/schema/steering.py",
+      "importer": "isar/synth/stat2b/truth.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/session/branch_model.py",
+      "importer": "isar/synth/stat2b/truth.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/synth/_ff.py",
+      "importer": "isar/synth/stat2b/truth.py"
+    },
+    {
+      "edge_kind": "runtime",
+      "imported": "isar/synth/stat2b/spec.py",
+      "importer": "isar/synth/stat2b/truth.py"
     }
   ],
   "dependency_entrypoints": [
@@ -915,7 +1119,7 @@
     "isar/session/driver.py",
     "isar/session/predictive_artifact.py"
   ],
-  "dependency_graph_fingerprint": "a6f5783c7d755fa79f07aa4789e400dc3a49478710f1fb7d448f82d36ae4b383",
+  "dependency_graph_fingerprint": "e1272ce8b6f65b65523e7c3e554b0adf09d1ee8a239f74666d747a97f8af7cbb",
   "historical_evidence": {
     "aggregate_replay_fingerprint": "48b17e372543eca0e7d848d4eda595f7fa3b9a5381a5acbd15ed8a348e3b8f56",
     "development_summary_fingerprint": "cae8a48fd687a2cb725b2a36bc9f82ae2a4cb4874ef490b8b7bb61b8dfcb0da7",
@@ -924,6 +1128,7 @@
     "heldout_run_fingerprint": "262e6c93932650f4576deb8edb906abb60a180906e80db14226cfb7fd328912d",
     "heldout_specification_fingerprint": "43b9fcbc7f6c2cbb57510c4801ac8084e96caecc7b511e6707240e257e974a54",
     "heldout_summary_fingerprint": "e85c05edb6114f0f014e66a30074147a5f086622af9db5d6df296b7666ef438c",
+    "heldout_summary_sha256": "e4d626d813d1f827cc5c077963674c123073134589281cab8b7e2c361b64fb8b",
     "historical_campaign_source_fingerprint": "e655e3bbf92f2f57b1fbab4074120f8194d15930f46f55fb56590909f0662525",
     "historical_evaluator_path": "isar/synth/stat2b/campaign.py",
     "historical_evaluator_sha256": "6800a240ed4b42280d762f4d260e9a6630c4bf8caf3a31483e6d59ef28b65a64",
@@ -1102,9 +1307,23 @@
     {
       "dependency_disposition": "protected_adjacent",
       "module_role": "campaign_runtime_dependency",
+      "path": "isar/drive/acquisition/eig.py",
+      "rationale": "Transitively discovered local runtime dependency; conservatively hashed pending a separately reviewed narrower proof.",
+      "sha256": "96818dcce152b1ddea5e7ba6101c691e0331ec3ea6ea1df2fda1cdbea0bbebef"
+    },
+    {
+      "dependency_disposition": "protected_adjacent",
+      "module_role": "campaign_runtime_dependency",
       "path": "isar/drive/objective.py",
       "rationale": "Reached by the frozen campaign/runtime path but does not own accepted selection or evidence semantics.",
       "sha256": "81c0138fd33ae8e2e9a558b0dbfa6e859f673c150ac626008f1bf9420ff01f82"
+    },
+    {
+      "dependency_disposition": "protected_adjacent",
+      "module_role": "campaign_runtime_dependency",
+      "path": "isar/drive/session_log.py",
+      "rationale": "Transitively discovered local runtime dependency; conservatively hashed pending a separately reviewed narrower proof.",
+      "sha256": "4a6abbe96503026796bf6d4cf0d62a6ca7fed139e6e2beccf6a0c6616d9a7042"
     },
     {
       "dependency_disposition": "protected_adjacent",
@@ -1528,12 +1747,13 @@
     }
   ],
   "owner_approved": false,
-  "production_source_fingerprint": "861a75d6386f0d953d2e1e15dfc1a2b4a4ded9b779518b025d8c51d72a30196b",
+  "production_source_fingerprint": "34ae255263a289deeb4bc91a48d0feae318414340ab60edd4f6338ad9ea74a87",
+  "proposed_production_anchor": "ce490fec5badbc76e8799b7fb3f84ef5c201b855",
   "review_record": {
-    "path": "docs/campaigns/2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP/review.json",
-    "semantic_fingerprint": "53d80a289aa60687fb46ccfd727bf09a18f9b4aa9b799141f872c833f21b35a3",
-    "sha256": "75251d3d96431f3199f787f6cfe9951ec62a533969bbe9101dabae4242f9d2f3"
+    "path": "docs/campaigns/2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR/review.json",
+    "semantic_fingerprint": "ab6c3f105b0c6dfc52a6bf17960b557e0fba517e982404ee87206e369bb8650d",
+    "sha256": "11edb2e1aad198deb3216d224003fc6d9aaa1aeb59a74c0f4c49a5cc9b060265"
   },
-  "schema": "isar.stat2b_production_source_closure/1",
+  "schema": "isar.stat2b_production_source_closure/2",
   "status": "candidate"
 }

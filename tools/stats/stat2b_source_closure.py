@@ -19,7 +19,6 @@ if str(REPO_ROOT) not in sys.path:
 from _stat2b_source_closure import (  # noqa: E402
     DEFAULT_ACTIVE_PATH,
     DEFAULT_CANDIDATE_PATH,
-    DEFAULT_REVIEW_PATH,
     ClosureError,
     build_candidate,
     git_provenance,
@@ -33,11 +32,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     candidate = commands.add_parser("candidate", help="write an unapproved closure candidate")
     candidate.add_argument("--output", default=DEFAULT_CANDIDATE_PATH)
-    candidate.add_argument("--review-output", default=DEFAULT_REVIEW_PATH)
+    candidate.add_argument("--production-anchor", required=True)
+    candidate.add_argument("--review-output", required=True)
     candidate.add_argument(
         "--verification-evidence",
         type=Path,
         help="strict JSON summary of completed verification; omission records pending evidence",
+    )
+    candidate.add_argument(
+        "--change-review-file",
+        type=Path,
+        help="JSON mapping of changed paths to reviewed dispositions and proof tests",
     )
 
     audit = commands.add_parser("audit", help="compare current source with a closure manifest")
@@ -71,6 +76,21 @@ def _read_verification(path: Path | None) -> dict:
     return value
 
 
+def _read_change_reviews(path: Path | None) -> dict:
+    if path is None:
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ClosureError(f"cannot read change-review mapping {path}: {exc}") from exc
+    if not isinstance(value, dict) or any(
+        not isinstance(key, str) or not isinstance(item, dict)
+        for key, item in value.items()
+    ):
+        raise ClosureError("change-review file must map paths to JSON objects")
+    return value
+
+
 def _print_result(result) -> None:
     label = "PASSED" if result.ok else "FAILED"
     print(f"STAT-2b production source closure: {label} ({result.status})")
@@ -87,9 +107,11 @@ def main(argv: list[str] | None = None) -> int:
             review_output = str(args.review_output).replace("\\", "/")
             manifest, review = build_candidate(
                 REPO_ROOT,
+                proposed_production_anchor=args.production_anchor,
                 candidate_path=output,
                 review_path=review_output,
                 verification_evidence=_read_verification(args.verification_evidence),
+                change_reviews=_read_change_reviews(args.change_review_file),
             )
             print(f"wrote unapproved candidate: {output}")
             print(f"wrote review record: {review_output}")

@@ -56,6 +56,70 @@ def _rewrite_json(path: Path, value: dict) -> None:
     )
 
 
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _initialize_git(repo: Path) -> str:
+    _git(repo, "init")
+    _git(repo, "config", "user.name", "Closure Test")
+    _git(repo, "config", "user.email", "closure@example.invalid")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "production anchor")
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _promote_candidate(repo: Path, artifact_commit: str) -> dict:
+    candidate_path = repo / ENGINE.DEFAULT_CANDIDATE_PATH
+    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    active = deepcopy(candidate)
+    active.update(
+        {
+            "status": "active",
+            "owner_approved": True,
+            "approved_by": ENGINE.APPROVED_OWNER,
+            "approved_on": "2026-08-04",
+            "approved_production_anchor": candidate["proposed_production_anchor"],
+            "candidate_artifact_commit": artifact_commit,
+            "candidate_artifact_sha256": ENGINE.sha256_file(candidate_path),
+            "approved_candidate_fingerprint": candidate[
+                "candidate_closure_fingerprint"
+            ],
+        }
+    )
+    active_path = repo / ENGINE.DEFAULT_ACTIVE_PATH
+    _rewrite_json(active_path, active)
+    return active
+
+
+def _approved_fixture(tmp_path: Path) -> tuple[Path, dict, str]:
+    repo = _closure_repo(tmp_path)
+    original = _candidate()
+    (repo / ENGINE.DEFAULT_CANDIDATE_PATH).unlink()
+    (repo / original["review_record"]["path"]).unlink()
+    anchor = _initialize_git(repo)
+    candidate, _ = ENGINE.build_candidate(
+        repo,
+        proposed_production_anchor=anchor,
+        review_path="docs/campaigns/cycle-1/review.json",
+        verification_evidence={"status": "passed", "commands": [], "parity_checks": []},
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "candidate artifact")
+    artifact_commit = _git(repo, "rev-parse", "HEAD")
+    active = _promote_candidate(repo, artifact_commit)
+    assert candidate["candidate_closure_fingerprint"] == active[
+        "approved_candidate_fingerprint"
+    ]
+    return repo, active, artifact_commit
+
+
 def test_historical_gate_and_aggregate_replay_are_exact():
     gate = ENGINE.authenticate_historical_gate(ROOT)
     replay = ENGINE.replay_heldout_aggregate(ROOT, gate)
@@ -89,7 +153,22 @@ def test_historical_replay_rejects_development_summary_substitution(tmp_path):
     heldout.write_bytes(development.read_bytes())
 
     gate = ENGINE.authenticate_historical_gate(repo)
-    with pytest.raises(ENGINE.ClosureError, match="held-out aggregate has unexpected"):
+    with pytest.raises(ENGINE.ClosureError, match="held-out aggregate bytes changed"):
+        ENGINE.replay_heldout_aggregate(repo, gate)
+
+
+def test_historical_replay_recomputes_the_complete_summary_fingerprint(
+    tmp_path, monkeypatch
+):
+    repo = _closure_repo(tmp_path)
+    heldout = repo / ENGINE.HELDOUT_SUMMARY_PATH
+    summary = json.loads(heldout.read_text(encoding="utf-8"))
+    summary["cell_summaries"][0]["n"] = 102
+    _rewrite_json(heldout, summary)
+    monkeypatch.setattr(ENGINE, "HELDOUT_SUMMARY_SHA256", ENGINE.sha256_file(heldout))
+
+    gate = ENGINE.authenticate_historical_gate(repo)
+    with pytest.raises(ENGINE.ClosureError, match="semantic fingerprint does not reproduce"):
         ENGINE.replay_heldout_aggregate(repo, gate)
 
 
@@ -125,6 +204,32 @@ def test_historical_drift_inventory_is_the_reviewed_three_three_zero():
     }
     assert dispositions["isar/schema/action_identity.py"] == "unrelated_exempt"
     assert dispositions["isar/schema/eig_shadow.py"] == "unrelated_exempt"
+    assert all("current_public_symbols" in entry for entry in inventory["entries"])
+    assert all("changed_symbols" not in entry for entry in inventory["entries"])
+
+
+def test_reusable_drift_engine_accepts_nonhistorical_counts(tmp_path):
+    source = tmp_path / "isar/example.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def current():\n    return 1\n", encoding="utf-8")
+    current_hash = ENGINE.source_content_sha256(source)
+    inventory = ENGINE._drift_inventory(
+        tmp_path,
+        {},
+        {"isar/example.py": current_hash},
+        change_reviews={
+            "isar/example.py": {
+                "current_change_disposition": "adjacent_nonsemantic",
+                "proof_tests": ["tests/example.py"],
+            }
+        },
+    )
+    assert inventory["counts"] == {
+        "added": 1,
+        "modified": 0,
+        "deleted": 0,
+        "unchanged": 0,
+    }
 
 
 def test_candidate_is_unapproved_and_reconstructs_portably():
@@ -137,7 +242,10 @@ def test_candidate_is_unapproved_and_reconstructs_portably():
     assert manifest["owner_approved"] is False
     assert manifest["approved_by"] is None
     assert manifest["approved_on"] is None
-    assert manifest["closure_artifact_commit"] is None
+    assert manifest["candidate_artifact_commit"] is None
+    assert manifest["candidate_artifact_sha256"] is None
+    assert manifest["approved_production_anchor"] is None
+    assert manifest["proposed_production_anchor"] == ENGINE.BOOTSTRAP_PRODUCTION_ANCHOR
     assert manifest["approved_candidate_fingerprint"] is None
     assert manifest["candidate_closure_fingerprint"] == ENGINE._candidate_fingerprint(
         manifest
@@ -159,8 +267,8 @@ def test_dependency_graph_is_deterministic_and_contains_real_edges():
 
     assert first == second
     modules, edges = first
-    assert len(modules) >= 80
-    assert len(edges) >= 150
+    assert len(modules) == 87
+    assert len(edges) == 192
     assert {
         (edge["importer"], edge["imported"])
         for edge in edges
@@ -215,6 +323,38 @@ def test_new_import_from_protected_source_fails_unclassified(tmp_path):
         "dependency_graph_changed",
         "unclassified_dependencies",
     } <= codes
+
+
+def test_every_protected_module_is_traversed_for_new_dependencies(tmp_path):
+    repo = _closure_repo(tmp_path)
+    manifest = _candidate()
+    inbound = {edge["imported"] for edge in manifest["dependency_edges"]}
+    entrypoints = set(manifest["dependency_entrypoints"])
+    protected = next(
+        module["path"]
+        for module in manifest["modules"]
+        if module["dependency_disposition"] != "unrelated_exempt"
+        and module["path"] not in inbound
+        and module["path"] not in entrypoints
+    )
+    addition = repo / "isar" / "schema" / "deep_unclassified_example.py"
+    addition.write_text("VALUE = 1\n", encoding="utf-8")
+    source = repo / protected
+    source.write_text(
+        source.read_text(encoding="utf-8")
+        + "\nimport isar.schema.deep_unclassified_example\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    result = ENGINE.verify_manifest(
+        repo, ENGINE.DEFAULT_CANDIDATE_PATH, candidate=True
+    )
+    assert not result.ok
+    unclassified = next(
+        item for item in result.findings if item.get("code") == "unclassified_dependencies"
+    )
+    assert "isar/schema/deep_unclassified_example.py" in unclassified["paths"]
 
 
 @pytest.mark.parametrize(
@@ -349,6 +489,60 @@ def test_active_contract_requires_explicit_independent_approval_fields(tmp_path)
     assert any("not owner approved" in finding.get("message", "") for finding in result.findings)
 
 
+def test_active_contract_validates_owner_date_commit_and_committed_artifacts(tmp_path):
+    repo, active, _ = _approved_fixture(tmp_path)
+    portable = ENGINE.verify_manifest(repo, ENGINE.DEFAULT_ACTIVE_PATH)
+    assert portable.ok, portable.findings
+    provenance = ENGINE.git_provenance(repo, portable.manifest)
+    assert provenance.ok, provenance.findings
+
+    active_path = repo / ENGINE.DEFAULT_ACTIVE_PATH
+    invalid_owner = deepcopy(active)
+    invalid_owner["approved_by"] = "someone-else"
+    _rewrite_json(active_path, invalid_owner)
+    result = ENGINE.verify_manifest(repo, ENGINE.DEFAULT_ACTIVE_PATH)
+    assert not result.ok
+    assert "repository owner" in result.findings[-1]["message"]
+
+    invalid_date = deepcopy(active)
+    invalid_date["approved_on"] = "not-a-date"
+    _rewrite_json(active_path, invalid_date)
+    result = ENGINE.verify_manifest(repo, ENGINE.DEFAULT_ACTIVE_PATH)
+    assert not result.ok
+    assert "approval date" in result.findings[-1]["message"]
+
+    invalid_commit = deepcopy(active)
+    invalid_commit["candidate_artifact_commit"] = "not-a-commit"
+    _rewrite_json(active_path, invalid_commit)
+    result = ENGINE.verify_manifest(repo, ENGINE.DEFAULT_ACTIVE_PATH)
+    assert not result.ok
+    assert "artifact commit" in result.findings[-1]["message"]
+
+    missing_commit = deepcopy(active)
+    missing_commit["candidate_artifact_commit"] = "0" * 40
+    _rewrite_json(active_path, missing_commit)
+    portable = ENGINE.verify_manifest(repo, ENGINE.DEFAULT_ACTIVE_PATH)
+    assert portable.ok, portable.findings
+    provenance = ENGINE.git_provenance(repo, portable.manifest)
+    assert not provenance.ok
+    assert any(
+        finding["code"] == "candidate_artifact_unavailable"
+        for finding in provenance.findings
+    )
+
+    wrong_hash = deepcopy(active)
+    wrong_hash["candidate_artifact_sha256"] = "0" * 64
+    _rewrite_json(active_path, wrong_hash)
+    portable = ENGINE.verify_manifest(repo, ENGINE.DEFAULT_ACTIVE_PATH)
+    assert portable.ok, portable.findings
+    provenance = ENGINE.git_provenance(repo, portable.manifest)
+    assert not provenance.ok
+    assert any(
+        finding["code"] == "candidate_artifact_hash_mismatch"
+        for finding in provenance.findings
+    )
+
+
 def test_ast_edges_distinguish_runtime_type_and_conditional_imports(tmp_path):
     for relative in (
         "isar/__init__.py",
@@ -410,14 +604,67 @@ def test_package_reexports_and_manual_dynamic_edges_are_explicit(tmp_path, monke
     assert declaration in edges
 
 
-def test_candidate_builder_never_manufactures_approval(tmp_path):
+def test_candidate_builder_refuses_an_unauthenticated_active_without_overwriting(tmp_path):
     repo = _closure_repo(tmp_path)
-    # Candidate generation refuses while an active filename exists, even if malformed.
     active = repo / ENGINE.DEFAULT_ACTIVE_PATH
     active.parent.mkdir(parents=True, exist_ok=True)
     active.write_text("{}\n", encoding="utf-8")
-    with pytest.raises(ENGINE.ClosureError, match="cannot replace"):
-        ENGINE.build_candidate(repo)
+    original = active.read_bytes()
+    with pytest.raises(ENGINE.ClosureError, match="cannot be authenticated"):
+        ENGINE.build_candidate(
+            repo,
+            proposed_production_anchor=ENGINE.BOOTSTRAP_PRODUCTION_ANCHOR,
+            review_path="docs/campaigns/cycle-2/review.json",
+        )
+    assert active.read_bytes() == original
+
+
+def test_renewal_preserves_active_and_compares_against_it(tmp_path):
+    repo, active, _ = _approved_fixture(tmp_path)
+    active_path = repo / ENGINE.DEFAULT_ACTIVE_PATH
+    active_bytes = active_path.read_bytes()
+
+    protected = repo / "isar/analyze/select.py"
+    protected.write_text(
+        protected.read_text(encoding="utf-8") + "\n# renewal review drift\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _git(repo, "add", "isar/analyze/select.py")
+    _git(repo, "commit", "-m", "reviewed production change")
+    proposed_anchor = _git(repo, "rev-parse", "HEAD")
+    candidate, review = ENGINE.build_candidate(
+        repo,
+        proposed_production_anchor=proposed_anchor,
+        review_path="docs/campaigns/cycle-2/review.json",
+        verification_evidence={"status": "passed", "commands": [], "parity_checks": []},
+        change_reviews={
+            "isar/analyze/select.py": {
+                "current_change_disposition": "selection_semantic",
+                "proof_tests": ["tests/analyze/test_select.py"],
+            }
+        },
+    )
+
+    assert active_path.read_bytes() == active_bytes
+    assert candidate["cycle_mode"] == "renewal"
+    assert candidate["comparison_basis"]["manifest_path"] == ENGINE.DEFAULT_ACTIVE_PATH
+    assert candidate["comparison_basis"]["candidate_closure_fingerprint"] == active[
+        "candidate_closure_fingerprint"
+    ]
+    assert review["drift_inventory"]["counts"]["modified"] == 1
+    assert review["drift_inventory"]["entries"][0]["path"] == (
+        "isar/analyze/select.py"
+    )
+    assert review["dependency_drift"] == {"added": [], "removed": []}
+    result = ENGINE.verify_manifest(
+        repo, ENGINE.DEFAULT_CANDIDATE_PATH, candidate=True
+    )
+    assert result.ok, result.findings
+    provenance = ENGINE.git_provenance(
+        repo, result.manifest, release_anchor=proposed_anchor
+    )
+    assert provenance.ok, provenance.findings
 
 
 def test_review_record_does_not_reference_its_manifest():

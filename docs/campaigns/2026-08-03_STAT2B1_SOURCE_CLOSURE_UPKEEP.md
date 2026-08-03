@@ -3,6 +3,11 @@
 > **Lifecycle:** Historical evidence
 > **Provenance:** hand-written
 
+> **Superseded candidate:** Owner review withheld approval on 2026-08-04. Candidate schema v1 at
+> commit `77529b6` is retained as historical evidence; it was never active. The lifecycle and
+> aggregate-authentication repair is recorded in
+> [2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md](2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md).
+
 ## Scope and disposition
 
 This record captures the 2026-08-03 upkeep cycle for the production source boundary behind the
@@ -63,7 +68,7 @@ and verification. `tools/stats/stat2b_source_closure.py` is a thin command adapt
 `candidate`, `audit`, and `verify`; it intentionally has no approval command. Candidate generation
 writes the immutable review first and never places the candidate fingerprint in that review.
 
-The candidate at `tools/stats/stat2b1-production-source-closure.candidate.json` has
+The schema-v1 candidate at commit `77529b6` had
 `owner_approved=false`. Its candidate closure fingerprint is
 `889c86bc889c51b9c261c0e8195394b91157e96c0ae2ba02468eaecf025b12be`; the immutable review-record
 fingerprint is `53d80a289aa60687fb46ccfd727bf09a18f9b4aa9b799141f872c833f21b35a3`. Passing checks cannot

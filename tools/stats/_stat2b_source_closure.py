@@ -8,23 +8,27 @@ does not import or execute any inspected ISAR source module.
 from __future__ import annotations
 
 import ast
+import datetime as dt
 import hashlib
 import json
 import math
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 
-CLOSURE_SCHEMA = "isar.stat2b_production_source_closure/1"
-REVIEW_SCHEMA = "isar.stat2b_source_closure_review/1"
-BOUNDARY_REVISION = "isar.stat2b_production_dependency_boundary/1"
+CLOSURE_SCHEMA = "isar.stat2b_production_source_closure/2"
+REVIEW_SCHEMA = "isar.stat2b_source_closure_review/2"
+BOUNDARY_REVISION = "isar.stat2b_production_dependency_boundary/2"
 REPLAY_SCHEMA = "isar.stat2b1_aggregate_replay/1"
 CAMPAIGN_SOURCE_SCHEMA = "isar.stat2b_campaign_sources/1"
 GATE_SCHEMA = "isar.stat2b_heldout_gate/1"
+HELDOUT_SUMMARY_SCHEMA = "isar.stat2b_heldout_summary/1"
 
-PRODUCTION_ANCHOR = "ce490fec5badbc76e8799b7fb3f84ef5c201b855"
+BOOTSTRAP_PRODUCTION_ANCHOR = "ce490fec5badbc76e8799b7fb3f84ef5c201b855"
+APPROVED_OWNER = "ammerritt-gh"
 HISTORICAL_GATE_PATH = "tools/stats/stat2b1-heldout-gate.json"
 HELDOUT_SUMMARY_PATH = (
     "docs/campaigns/2026-07-31_STAT2B1_HELDOUT/decision_summary.json"
@@ -33,9 +37,6 @@ DEFAULT_CANDIDATE_PATH = (
     "tools/stats/stat2b1-production-source-closure.candidate.json"
 )
 DEFAULT_ACTIVE_PATH = "tools/stats/stat2b1-production-source-closure.json"
-DEFAULT_REVIEW_PATH = (
-    "docs/campaigns/2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP/review.json"
-)
 
 HISTORICAL_GATE_SHA256 = (
     "c4d7ef5cba4ee42c71c8aa1e112a4e77b300c2bac5fc29954ce797d71024e6e0"
@@ -58,6 +59,9 @@ DEVELOPMENT_SUMMARY_FINGERPRINT = (
 )
 HELDOUT_SUMMARY_FINGERPRINT = (
     "e85c05edb6114f0f014e66a30074147a5f086622af9db5d6df296b7666ef438c"
+)
+HELDOUT_SUMMARY_SHA256 = (
+    "e4d626d813d1f827cc5c077963674c123073134589281cab8b7e2c361b64fb8b"
 )
 HELDOUT_RUN_FINGERPRINT = (
     "262e6c93932650f4576deb8edb906abb60a180906e80db14226cfb7fd328912d"
@@ -280,6 +284,10 @@ def sha256_file(path: Path) -> str:
     return sha256_bytes(path.read_bytes())
 
 
+def _is_commit_sha(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) is not None
+
+
 def source_content_sha256(path: Path) -> str:
     """Hash canonical UTF-8 source content independently of checkout line endings."""
     if not path.is_file():
@@ -402,7 +410,21 @@ def replay_heldout_aggregate(repo_root: Path, gate: Mapping[str, Any]) -> dict[s
     if sha256_file(evaluator) != HISTORICAL_EVALUATOR_SHA256:
         raise ClosureError("historical evaluator source is unavailable at its frozen identity")
     summary_path = _repo_path(repo_root, HELDOUT_SUMMARY_PATH)
+    if sha256_file(summary_path) != HELDOUT_SUMMARY_SHA256:
+        raise ClosureError("held-out aggregate bytes changed")
     summary = _read_json(summary_path)
+    stored_summary_fingerprint = summary.get("heldout_summary_fingerprint")
+    summary_payload = dict(summary)
+    summary_payload.pop("heldout_summary_fingerprint", None)
+    recomputed_summary_fingerprint = semantics_fingerprint(
+        HELDOUT_SUMMARY_SCHEMA, summary_payload
+    )
+    if not (
+        stored_summary_fingerprint
+        == recomputed_summary_fingerprint
+        == HELDOUT_SUMMARY_FINGERPRINT
+    ):
+        raise ClosureError("held-out aggregate semantic fingerprint does not reproduce")
     exact = {
         "campaign_spec_fingerprint": HELDOUT_SPEC_FINGERPRINT,
         "heldout_summary_fingerprint": HELDOUT_SUMMARY_FINGERPRINT,
@@ -469,6 +491,7 @@ def replay_heldout_aggregate(repo_root: Path, gate: Mapping[str, Any]) -> dict[s
         "aggregate_path": HELDOUT_SUMMARY_PATH,
         "campaign_spec_fingerprint": HELDOUT_SPEC_FINGERPRINT,
         "heldout_summary_fingerprint": HELDOUT_SUMMARY_FINGERPRINT,
+        "heldout_summary_sha256": HELDOUT_SUMMARY_SHA256,
         "run_fingerprint": HELDOUT_RUN_FINGERPRINT,
         "gate_fingerprint": HISTORICAL_GATE_FINGERPRINT,
         "historical_evaluator_path": HISTORICAL_EVALUATOR_PATH,
@@ -497,7 +520,7 @@ def historical_source_hashes(repo_root: Path, gate: Mapping[str, Any]) -> dict[s
     return result
 
 
-def _public_symbols(path: Path) -> list[str]:
+def _current_public_symbols(path: Path) -> list[str]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     except (OSError, UnicodeError, SyntaxError) as exc:
@@ -510,41 +533,106 @@ def _public_symbols(path: Path) -> list[str]:
     )
 
 
-def drift_inventory(repo_root: Path, gate: Mapping[str, Any]) -> dict[str, Any]:
-    historical = dict(gate["source_hashes"])
-    current = historical_source_hashes(repo_root, gate)
+def _drift_inventory(
+    repo_root: Path,
+    basis: Mapping[str, str | None],
+    current: Mapping[str, str | None],
+    *,
+    change_reviews: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    overrides = dict(change_reviews or {})
     entries = []
     counts = {"added": 0, "modified": 0, "deleted": 0, "unchanged": 0}
-    for path in sorted(set(historical) | set(current)):
+    for path in sorted(set(basis) | set(current)):
         status = (
             "added"
-            if path not in historical
+            if path not in basis
             else "deleted"
             if path not in current
             else "modified"
-            if historical[path] != current[path]
+            if basis[path] != current[path]
             else "unchanged"
         )
         counts[status] += 1
         if status == "unchanged":
             continue
         source = _repo_path(repo_root, path)
+        override = dict(overrides.get(path, {}))
+        disposition = override.get(
+            "current_change_disposition", CURRENT_CHANGE_DISPOSITIONS.get(path)
+        )
+        proof_tests = override.get("proof_tests", PROOF_TESTS.get(path, []))
         entries.append(
             {
                 "path": path,
-                "historical_hash": historical.get(path),
+                "basis_hash": basis.get(path),
                 "current_hash": current.get(path),
                 "status": status,
-                "changed_symbols": _public_symbols(source) if source.is_file() else [],
-                "current_change_disposition": CURRENT_CHANGE_DISPOSITIONS.get(path),
-                "proof_tests": PROOF_TESTS.get(path, []),
+                "current_public_symbols": (
+                    _current_public_symbols(source) if source.is_file() else []
+                ),
+                "current_change_disposition": disposition,
+                "proof_tests": list(proof_tests),
             }
         )
-    if counts != {"added": 3, "modified": 3, "deleted": 0, "unchanged": 57}:
-        raise ClosureError(f"historical source drift is not the reviewed 3/3/0 inventory: {counts}")
     if any(entry["current_change_disposition"] not in CHANGE_DISPOSITIONS for entry in entries):
         raise ClosureError("one or more current source changes lack a reviewed disposition")
     return {"counts": counts, "entries": entries}
+
+
+def drift_inventory(repo_root: Path, gate: Mapping[str, Any]) -> dict[str, Any]:
+    """Bootstrap drift against the immutable historical campaign source map."""
+    return _drift_inventory(
+        repo_root,
+        dict(gate["source_hashes"]),
+        historical_source_hashes(repo_root, gate),
+    )
+
+
+def renewal_drift_inventory(
+    repo_root: Path,
+    basis_modules: Sequence[Mapping[str, Any]],
+    current_modules: Sequence[Mapping[str, Any]],
+    *,
+    change_reviews: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    basis = {
+        item["path"]: item.get("sha256")
+        for item in basis_modules
+        if item.get("dependency_disposition") != "unrelated_exempt"
+    }
+    current = {
+        item["path"]: item.get("sha256")
+        for item in current_modules
+        if item.get("dependency_disposition") != "unrelated_exempt"
+    }
+    return _drift_inventory(
+        repo_root,
+        basis,
+        current,
+        change_reviews=change_reviews,
+    )
+
+
+def dependency_drift(
+    basis_edges: Sequence[Mapping[str, Any]],
+    current_edges: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    def key(edge: Mapping[str, Any]) -> tuple[str, str, str]:
+        return (edge["importer"], edge["imported"], edge["edge_kind"])
+
+    basis = {key(edge) for edge in basis_edges}
+    current = {key(edge) for edge in current_edges}
+    return {
+        "added": [
+            {"importer": item[0], "imported": item[1], "edge_kind": item[2]}
+            for item in sorted(current - basis)
+        ],
+        "removed": [
+            {"importer": item[0], "imported": item[1], "edge_kind": item[2]}
+            for item in sorted(basis - current)
+        ],
+    }
 
 
 def _path_to_module(relative: str) -> str:
@@ -680,15 +768,46 @@ def _module_policy(path: str, historical_paths: set[str]) -> dict[str, Any]:
 
 
 def dependency_closure(
-    repo_root: Path, gate: Mapping[str, Any]
+    repo_root: Path,
+    gate: Mapping[str, Any],
+    *,
+    basis_modules: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     historical_paths = set(gate["source_hashes"])
-    policies: dict[str, dict[str, Any]] = {
-        path: _module_policy(path, historical_paths)
-        for path in sorted(historical_paths | set(EXPLICIT_EXEMPT) | EXPLICIT_ADJACENT | EVIDENCE_CRITICAL | SELECTION_CRITICAL)
-        if (repo_root / path).is_file()
-    }
-    queue = list(DEPENDENCY_ENTRYPOINTS)
+    if basis_modules is None:
+        initial_paths = (
+            historical_paths
+            | set(EXPLICIT_EXEMPT)
+            | EXPLICIT_ADJACENT
+            | EVIDENCE_CRITICAL
+            | SELECTION_CRITICAL
+        )
+        policies: dict[str, dict[str, Any]] = {
+            path: _module_policy(path, historical_paths)
+            for path in sorted(initial_paths)
+            if (repo_root / path).is_file()
+        }
+    else:
+        policies = {
+            item["path"]: {
+                "module_role": item["module_role"],
+                "dependency_disposition": item["dependency_disposition"],
+                "rationale": item["rationale"],
+            }
+            for item in basis_modules
+            if (repo_root / item["path"]).is_file()
+        }
+    for path in DEPENDENCY_ENTRYPOINTS:
+        if (repo_root / path).is_file():
+            policies.setdefault(path, _module_policy(path, historical_paths))
+    # Conservative closure: every protected module is parsed, not merely the
+    # modules reached from the public entrypoints.  New local imports from any
+    # hashed source therefore enter the review graph.
+    queue = sorted(
+        path
+        for path, policy in policies.items()
+        if policy["dependency_disposition"] != "unrelated_exempt"
+    )
     visited: set[str] = set()
     edges: dict[tuple[str, str], str] = {}
     while queue:
@@ -771,7 +890,7 @@ def _graph_fingerprint(
         "edges": list(edges),
         "manual_dependencies": list(MANUAL_DEPENDENCIES),
     }
-    return semantics_fingerprint("isar.stat2b_dependency_graph/1", payload)
+    return semantics_fingerprint("isar.stat2b_dependency_graph/2", payload)
 
 
 def _review_fingerprint(review: Mapping[str, Any]) -> str:
@@ -786,33 +905,100 @@ def _candidate_fingerprint(manifest: Mapping[str, Any]) -> str:
         "owner_approved",
         "approved_by",
         "approved_on",
-        "closure_artifact_commit",
+        "candidate_artifact_commit",
+        "candidate_artifact_sha256",
+        "approved_production_anchor",
         "approved_candidate_fingerprint",
         "candidate_closure_fingerprint",
     }
     payload = {key: value for key, value in manifest.items() if key not in excluded}
-    return semantics_fingerprint("isar.stat2b_production_source_closure_candidate/1", payload)
+    return semantics_fingerprint("isar.stat2b_production_source_closure_candidate/2", payload)
 
 
 def build_candidate(
     repo_root: Path,
     *,
+    proposed_production_anchor: str,
+    review_path: str,
     candidate_path: str = DEFAULT_CANDIDATE_PATH,
-    review_path: str = DEFAULT_REVIEW_PATH,
     verification_evidence: Mapping[str, Any] | None = None,
+    change_reviews: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    if (_repo_path(repo_root, DEFAULT_ACTIVE_PATH)).exists():
-        raise ClosureError("active closure already exists; candidate generation cannot replace it")
+    if not _is_commit_sha(proposed_production_anchor):
+        raise ClosureError("proposed production anchor must be a 40-character Git SHA")
+    if _repo_path(repo_root, candidate_path) == _repo_path(repo_root, DEFAULT_ACTIVE_PATH):
+        raise ClosureError("candidate output cannot replace the active closure")
     gate = authenticate_historical_gate(repo_root)
     replay = replay_heldout_aggregate(repo_root, gate)
-    drift = drift_inventory(repo_root, gate)
-    modules, edges = dependency_closure(repo_root, gate)
+    active_path = _repo_path(repo_root, DEFAULT_ACTIVE_PATH)
+    if active_path.exists():
+        active_result = verify_manifest(
+            repo_root,
+            DEFAULT_ACTIVE_PATH,
+            candidate=False,
+            compare_current=False,
+        )
+        if not active_result.ok or active_result.manifest is None:
+            raise ClosureError(
+                f"active closure cannot be authenticated for renewal: {active_result.findings}"
+            )
+        basis_manifest = active_result.manifest
+        active_git = git_provenance(repo_root, basis_manifest)
+        if not active_git.ok:
+            raise ClosureError(
+                f"active closure Git provenance failed for renewal: {active_git.findings}"
+            )
+        if _repo_path(repo_root, review_path) == _repo_path(
+            repo_root, basis_manifest["review_record"]["path"]
+        ):
+            raise ClosureError("renewal review path must be new and versioned")
+        cycle_mode = "renewal"
+        modules, edges = dependency_closure(
+            repo_root,
+            gate,
+            basis_modules=basis_manifest["modules"],
+        )
+        drift = renewal_drift_inventory(
+            repo_root,
+            basis_manifest["modules"],
+            modules,
+            change_reviews=change_reviews,
+        )
+        graph_drift = dependency_drift(basis_manifest["dependency_edges"], edges)
+        comparison_basis = {
+            "mode": cycle_mode,
+            "manifest_path": DEFAULT_ACTIVE_PATH,
+            "candidate_closure_fingerprint": basis_manifest[
+                "candidate_closure_fingerprint"
+            ],
+            "production_source_fingerprint": basis_manifest[
+                "production_source_fingerprint"
+            ],
+            "dependency_graph_fingerprint": basis_manifest[
+                "dependency_graph_fingerprint"
+            ],
+        }
+    else:
+        basis_manifest = None
+        cycle_mode = "bootstrap"
+        modules, edges = dependency_closure(repo_root, gate)
+        drift = drift_inventory(repo_root, gate)
+        graph_drift = {"added": [], "removed": []}
+        comparison_basis = {
+            "mode": cycle_mode,
+            "manifest_path": HISTORICAL_GATE_PATH,
+            "candidate_closure_fingerprint": None,
+            "production_source_fingerprint": HISTORICAL_SOURCE_FINGERPRINT,
+            "dependency_graph_fingerprint": None,
+        }
     source_fingerprint = _source_fingerprint(modules)
     graph_fingerprint = _graph_fingerprint(modules, edges)
     verification = dict(verification_evidence or {})
     review = {
         "schema": REVIEW_SCHEMA,
-        "reviewed_source_anchor": PRODUCTION_ANCHOR,
+        "cycle_mode": cycle_mode,
+        "proposed_production_anchor": proposed_production_anchor,
+        "comparison_basis": comparison_basis,
         "historical_gate": {
             "path": HISTORICAL_GATE_PATH,
             "file_sha256": HISTORICAL_GATE_SHA256,
@@ -820,6 +1006,7 @@ def build_candidate(
             "gate_fingerprint": HISTORICAL_GATE_FINGERPRINT,
         },
         "drift_inventory": drift,
+        "dependency_drift": graph_drift,
         "module_summary": {
             disposition: sum(
                 module["dependency_disposition"] == disposition for module in modules
@@ -851,8 +1038,13 @@ def build_candidate(
         "owner_approved": False,
         "approved_by": None,
         "approved_on": None,
-        "approved_production_anchor": PRODUCTION_ANCHOR,
-        "closure_artifact_commit": None,
+        "cycle_mode": cycle_mode,
+        "comparison_basis": comparison_basis,
+        "proposed_production_anchor": proposed_production_anchor,
+        "approved_production_anchor": None,
+        "candidate_artifact_commit": None,
+        "candidate_artifact_path": candidate_path,
+        "candidate_artifact_sha256": None,
         "approved_candidate_fingerprint": None,
         "accepted_disposition": review["accepted_disposition"],
         "historical_evidence": {
@@ -861,6 +1053,7 @@ def build_candidate(
             "heldout_specification_fingerprint": HELDOUT_SPEC_FINGERPRINT,
             "development_summary_fingerprint": DEVELOPMENT_SUMMARY_FINGERPRINT,
             "heldout_summary_fingerprint": HELDOUT_SUMMARY_FINGERPRINT,
+            "heldout_summary_sha256": HELDOUT_SUMMARY_SHA256,
             "heldout_run_fingerprint": HELDOUT_RUN_FINGERPRINT,
             "historical_campaign_source_fingerprint": HISTORICAL_SOURCE_FINGERPRINT,
             "historical_gate_fingerprint": HISTORICAL_GATE_FINGERPRINT,
@@ -874,6 +1067,7 @@ def build_candidate(
         "dependency_edges": edges,
         "manual_dependencies": list(MANUAL_DEPENDENCIES),
         "dependency_graph_fingerprint": graph_fingerprint,
+        "dependency_drift": graph_drift,
         "production_source_fingerprint": source_fingerprint,
         "current_change_reviews": drift["entries"],
         "review_record": {
@@ -899,11 +1093,14 @@ def _validate_manifest_shape(manifest: Mapping[str, Any], *, candidate: bool) ->
         manifest,
         {
             "schema", "status", "owner_approved", "approved_by", "approved_on",
-            "approved_production_anchor", "closure_artifact_commit",
+            "cycle_mode", "comparison_basis", "proposed_production_anchor",
+            "approved_production_anchor", "candidate_artifact_commit",
+            "candidate_artifact_path", "candidate_artifact_sha256",
             "approved_candidate_fingerprint", "accepted_disposition",
             "historical_evidence", "boundary_revision", "modules",
             "dependency_entrypoints", "dependency_edges", "manual_dependencies",
-            "dependency_graph_fingerprint", "production_source_fingerprint",
+            "dependency_graph_fingerprint", "dependency_drift",
+            "production_source_fingerprint",
             "current_change_reviews", "review_record", "candidate_closure_fingerprint",
         },
         "closure manifest",
@@ -915,11 +1112,22 @@ def _validate_manifest_shape(manifest: Mapping[str, Any], *, candidate: bool) ->
         {
             "gate_path", "gate_file_sha256", "heldout_specification_fingerprint",
             "development_summary_fingerprint", "heldout_summary_fingerprint",
-            "heldout_run_fingerprint", "historical_campaign_source_fingerprint",
+            "heldout_summary_sha256", "heldout_run_fingerprint",
+            "historical_campaign_source_fingerprint",
             "historical_gate_fingerprint", "historical_evaluator_path",
             "historical_evaluator_sha256", "aggregate_replay_fingerprint",
         },
         "historical evidence",
+    )
+    if not isinstance(manifest.get("comparison_basis"), Mapping):
+        raise ClosureError("closure comparison basis is invalid")
+    _exact_keys(
+        manifest["comparison_basis"],
+        {
+            "mode", "manifest_path", "candidate_closure_fingerprint",
+            "production_source_fingerprint", "dependency_graph_fingerprint",
+        },
+        "comparison basis",
     )
     if not isinstance(manifest.get("review_record"), Mapping):
         raise ClosureError("closure manifest review reference is invalid")
@@ -938,14 +1146,7 @@ def _validate_manifest_shape(manifest: Mapping[str, Any], *, candidate: bool) ->
             {"path", "module_role", "dependency_disposition", "sha256", "rationale"},
             "closure module",
         )
-    if not isinstance(manifest.get("dependency_edges"), list):
-        raise ClosureError("closure dependency edges are invalid")
-    for edge in manifest["dependency_edges"]:
-        if not isinstance(edge, Mapping):
-            raise ClosureError("closure dependency edge is invalid")
-        _exact_keys(edge, {"importer", "imported", "edge_kind"}, "dependency edge")
-        if edge["edge_kind"] not in EDGE_KINDS:
-            raise ClosureError("closure dependency edge kind is invalid")
+    _validate_edge_records(manifest.get("dependency_edges"), "closure dependency edges")
     if not isinstance(manifest.get("manual_dependencies"), list):
         raise ClosureError("closure manual dependencies are invalid")
     for edge in manifest["manual_dependencies"]:
@@ -962,13 +1163,48 @@ def _validate_manifest_shape(manifest: Mapping[str, Any], *, candidate: bool) ->
         _exact_keys(
             change,
             {
-                "path", "historical_hash", "current_hash", "status", "changed_symbols",
-                "current_change_disposition", "proof_tests",
+                "path", "basis_hash", "current_hash", "status",
+                "current_public_symbols", "current_change_disposition", "proof_tests",
             },
             "current change review",
         )
+    _validate_dependency_drift(manifest.get("dependency_drift"))
     if manifest["schema"] != CLOSURE_SCHEMA:
         raise ClosureError("closure manifest schema is unsupported")
+    if manifest["cycle_mode"] not in {"bootstrap", "renewal"}:
+        raise ClosureError("closure cycle mode is invalid")
+    if manifest["comparison_basis"].get("mode") != manifest["cycle_mode"]:
+        raise ClosureError("comparison basis mode differs from closure cycle")
+    basis = manifest["comparison_basis"]
+    if manifest["cycle_mode"] == "bootstrap":
+        if basis != {
+            "mode": "bootstrap",
+            "manifest_path": HISTORICAL_GATE_PATH,
+            "candidate_closure_fingerprint": None,
+            "production_source_fingerprint": HISTORICAL_SOURCE_FINGERPRINT,
+            "dependency_graph_fingerprint": None,
+        }:
+            raise ClosureError("bootstrap comparison basis changed")
+    else:
+        if basis.get("manifest_path") != DEFAULT_ACTIVE_PATH or any(
+            not isinstance(basis.get(field), str)
+            or re.fullmatch(r"[0-9a-f]{64}", basis[field]) is None
+            for field in (
+                "candidate_closure_fingerprint",
+                "production_source_fingerprint",
+                "dependency_graph_fingerprint",
+            )
+        ):
+            raise ClosureError("renewal comparison basis is invalid")
+    if not _is_commit_sha(manifest["proposed_production_anchor"]):
+        raise ClosureError("proposed production anchor is invalid")
+    artifact_path = manifest.get("candidate_artifact_path")
+    if (
+        not isinstance(artifact_path, str)
+        or not artifact_path.endswith(".candidate.json")
+        or artifact_path == DEFAULT_ACTIVE_PATH
+    ):
+        raise ClosureError("candidate artifact path is invalid")
     expected_status = "candidate" if candidate else "active"
     if manifest["status"] != expected_status:
         raise ClosureError(f"closure manifest is not {expected_status}")
@@ -976,7 +1212,8 @@ def _validate_manifest_shape(manifest: Mapping[str, Any], *, candidate: bool) ->
         if manifest["owner_approved"] is not False or any(
             manifest[field] is not None
             for field in (
-                "approved_by", "approved_on", "closure_artifact_commit",
+                "approved_by", "approved_on", "approved_production_anchor",
+                "candidate_artifact_commit", "candidate_artifact_sha256",
                 "approved_candidate_fingerprint",
             )
         ):
@@ -984,16 +1221,24 @@ def _validate_manifest_shape(manifest: Mapping[str, Any], *, candidate: bool) ->
     else:
         if manifest["owner_approved"] is not True:
             raise ClosureError("active closure is not owner approved")
-        for field in (
-            "approved_by", "approved_on", "closure_artifact_commit",
-            "approved_candidate_fingerprint",
+        if manifest["approved_by"] != APPROVED_OWNER:
+            raise ClosureError("active closure approver is not the repository owner")
+        try:
+            dt.date.fromisoformat(manifest["approved_on"])
+        except (TypeError, ValueError) as exc:
+            raise ClosureError("active closure approval date is invalid") from exc
+        if manifest["approved_production_anchor"] != manifest[
+            "proposed_production_anchor"
+        ]:
+            raise ClosureError("active approval changed the proposed production anchor")
+        if not _is_commit_sha(manifest["candidate_artifact_commit"]):
+            raise ClosureError("active closure candidate artifact commit is invalid")
+        if not isinstance(manifest["candidate_artifact_sha256"], str) or not re.fullmatch(
+            r"[0-9a-f]{64}", manifest["candidate_artifact_sha256"]
         ):
-            if not isinstance(manifest[field], str) or not manifest[field]:
-                raise ClosureError(f"active closure lacks {field}")
+            raise ClosureError("active closure candidate artifact hash is invalid")
         if manifest["approved_candidate_fingerprint"] != manifest["candidate_closure_fingerprint"]:
             raise ClosureError("active approval does not bind the reviewed candidate")
-    if manifest["approved_production_anchor"] != PRODUCTION_ANCHOR:
-        raise ClosureError("approved production anchor changed")
     if manifest["boundary_revision"] != BOUNDARY_REVISION:
         raise ClosureError("dependency boundary revision changed")
     if manifest["accepted_disposition"] != {
@@ -1006,6 +1251,25 @@ def _validate_manifest_shape(manifest: Mapping[str, Any], *, candidate: bool) ->
         raise ClosureError("S8 accepted disposition changed")
 
 
+def _validate_edge_records(value: Any, label: str) -> None:
+    if not isinstance(value, list):
+        raise ClosureError(f"{label} are invalid")
+    for edge in value:
+        if not isinstance(edge, Mapping):
+            raise ClosureError(f"{label} contain an invalid record")
+        _exact_keys(edge, {"importer", "imported", "edge_kind"}, label)
+        if edge["edge_kind"] not in EDGE_KINDS:
+            raise ClosureError(f"{label} contain an invalid edge kind")
+
+
+def _validate_dependency_drift(value: Any) -> None:
+    if not isinstance(value, Mapping):
+        raise ClosureError("dependency drift is invalid")
+    _exact_keys(value, {"added", "removed"}, "dependency drift")
+    _validate_edge_records(value["added"], "added dependency edges")
+    _validate_edge_records(value["removed"], "removed dependency edges")
+
+
 def _expected_historical_evidence(replay: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "gate_path": HISTORICAL_GATE_PATH,
@@ -1013,6 +1277,7 @@ def _expected_historical_evidence(replay: Mapping[str, Any]) -> dict[str, Any]:
         "heldout_specification_fingerprint": HELDOUT_SPEC_FINGERPRINT,
         "development_summary_fingerprint": DEVELOPMENT_SUMMARY_FINGERPRINT,
         "heldout_summary_fingerprint": HELDOUT_SUMMARY_FINGERPRINT,
+        "heldout_summary_sha256": HELDOUT_SUMMARY_SHA256,
         "heldout_run_fingerprint": HELDOUT_RUN_FINGERPRINT,
         "historical_campaign_source_fingerprint": HISTORICAL_SOURCE_FINGERPRINT,
         "historical_gate_fingerprint": HISTORICAL_GATE_FINGERPRINT,
@@ -1026,8 +1291,9 @@ def _validate_review_shape(review: Mapping[str, Any]) -> None:
     _exact_keys(
         review,
         {
-            "schema", "reviewed_source_anchor", "historical_gate", "drift_inventory",
-            "module_summary", "modules", "dependency_entrypoints", "dependency_edges",
+            "schema", "cycle_mode", "proposed_production_anchor", "comparison_basis",
+            "historical_gate", "drift_inventory", "dependency_drift", "module_summary",
+            "modules", "dependency_entrypoints", "dependency_edges",
             "manual_dependencies", "dependency_graph_fingerprint",
             "production_source_fingerprint", "aggregate_replay", "accepted_disposition",
             "verification_evidence", "review_record_fingerprint",
@@ -1044,6 +1310,7 @@ def _validate_review_shape(review: Mapping[str, Any]) -> None:
     if not isinstance(review.get("drift_inventory"), Mapping):
         raise ClosureError("review drift inventory is invalid")
     _exact_keys(review["drift_inventory"], {"counts", "entries"}, "review drift inventory")
+    _validate_dependency_drift(review.get("dependency_drift"))
 
 
 def verify_manifest(
@@ -1051,6 +1318,7 @@ def verify_manifest(
     manifest_path: str,
     *,
     candidate: bool = False,
+    compare_current: bool = True,
 ) -> VerificationResult:
     findings: list[dict[str, Any]] = []
     try:
@@ -1058,6 +1326,33 @@ def verify_manifest(
         replay = replay_heldout_aggregate(repo_root, gate)
         manifest = _read_json(_repo_path(repo_root, manifest_path))
         _validate_manifest_shape(manifest, candidate=candidate)
+        if candidate and manifest["candidate_artifact_path"] != manifest_path:
+            raise ClosureError("candidate manifest path differs from its artifact path")
+        if candidate and manifest["cycle_mode"] == "renewal":
+            active_result = verify_manifest(
+                repo_root,
+                DEFAULT_ACTIVE_PATH,
+                candidate=False,
+                compare_current=False,
+            )
+            if not active_result.ok or active_result.manifest is None:
+                raise ClosureError("renewal candidate has no authenticated active basis")
+            active = active_result.manifest
+            expected_basis = {
+                "mode": "renewal",
+                "manifest_path": DEFAULT_ACTIVE_PATH,
+                "candidate_closure_fingerprint": active[
+                    "candidate_closure_fingerprint"
+                ],
+                "production_source_fingerprint": active[
+                    "production_source_fingerprint"
+                ],
+                "dependency_graph_fingerprint": active[
+                    "dependency_graph_fingerprint"
+                ],
+            }
+            if manifest["comparison_basis"] != expected_basis:
+                raise ClosureError("renewal candidate comparison basis changed")
         if manifest["historical_evidence"] != _expected_historical_evidence(replay):
             raise ClosureError("closure manifest historical evidence changed")
         if manifest["dependency_entrypoints"] != list(DEPENDENCY_ENTRYPOINTS):
@@ -1080,7 +1375,7 @@ def verify_manifest(
             if disposition == "unrelated_exempt":
                 if module.get("sha256") is not None:
                     raise ClosureError(f"unrelated exemption is unexpectedly hashed: {module['path']}")
-            elif not path.is_file():
+            elif compare_current and not path.is_file():
                 findings.append(
                     {
                         "code": "protected_source_missing",
@@ -1094,7 +1389,7 @@ def verify_manifest(
                         ),
                     }
                 )
-            elif source_content_sha256(path) != module.get("sha256"):
+            elif compare_current and source_content_sha256(path) != module.get("sha256"):
                 findings.append(
                     {
                         "code": "protected_hash_mismatch",
@@ -1107,26 +1402,31 @@ def verify_manifest(
                         ),
                     }
                 )
-        current_modules, current_edges = dependency_closure(repo_root, gate)
-        if current_edges != manifest["dependency_edges"]:
-            findings.append(
-                {
-                    "code": "dependency_graph_changed",
-                    "required_response": "classify every new or removed local dependency edge",
-                }
+        if compare_current:
+            current_modules, current_edges = dependency_closure(
+                repo_root,
+                gate,
+                basis_modules=modules,
             )
-        manifest_paths = {item["path"] for item in modules}
-        unclassified = sorted(
-            item["path"] for item in current_modules if item["path"] not in manifest_paths
-        )
-        if unclassified:
-            findings.append(
-                {
-                    "code": "unclassified_dependencies",
-                    "paths": unclassified,
-                    "required_response": "classify and review before candidate promotion",
-                }
+            if current_edges != manifest["dependency_edges"]:
+                findings.append(
+                    {
+                        "code": "dependency_graph_changed",
+                        "required_response": "classify every new or removed local dependency edge",
+                    }
+                )
+            manifest_paths = {item["path"] for item in modules}
+            unclassified = sorted(
+                item["path"] for item in current_modules if item["path"] not in manifest_paths
             )
+            if unclassified:
+                findings.append(
+                    {
+                        "code": "unclassified_dependencies",
+                        "paths": unclassified,
+                        "required_response": "classify and review before candidate promotion",
+                    }
+                )
         if _source_fingerprint(modules) != manifest["production_source_fingerprint"]:
             raise ClosureError("production source fingerprint does not reproduce")
         if _graph_fingerprint(modules, manifest["dependency_edges"]) != manifest[
@@ -1153,8 +1453,14 @@ def verify_manifest(
             "dependency_graph_fingerprint"
         ]:
             raise ClosureError("review and manifest dependency fingerprints differ")
-        if review.get("reviewed_source_anchor") != manifest["approved_production_anchor"]:
+        if review.get("proposed_production_anchor") != manifest[
+            "proposed_production_anchor"
+        ]:
             raise ClosureError("review and manifest production anchors differ")
+        if review.get("cycle_mode") != manifest["cycle_mode"]:
+            raise ClosureError("review and manifest cycle modes differ")
+        if review.get("comparison_basis") != manifest["comparison_basis"]:
+            raise ClosureError("review and manifest comparison bases differ")
         if review.get("modules") != modules:
             raise ClosureError("review and manifest module records differ")
         if review.get("dependency_entrypoints") != manifest["dependency_entrypoints"]:
@@ -1167,6 +1473,8 @@ def verify_manifest(
             "current_change_reviews"
         ]:
             raise ClosureError("review and manifest current-change records differ")
+        if review.get("dependency_drift") != manifest["dependency_drift"]:
+            raise ClosureError("review and manifest dependency drift differs")
         if review.get("aggregate_replay") != replay:
             raise ClosureError("review aggregate replay differs from authenticated evidence")
         if review.get("accepted_disposition") != manifest["accepted_disposition"]:
@@ -1191,7 +1499,11 @@ def git_provenance(
     release_anchor: str | None = None,
 ) -> VerificationResult:
     findings = []
-    anchor = manifest["approved_production_anchor"]
+    anchor = (
+        manifest["approved_production_anchor"]
+        if manifest["owner_approved"]
+        else manifest["proposed_production_anchor"]
+    )
     if release_anchor is not None and release_anchor != anchor:
         return VerificationResult(
             False,
@@ -1199,6 +1511,35 @@ def git_provenance(
             ({"code": "release_anchor_mismatch", "expected": anchor, "actual": release_anchor},),
             manifest,
         )
+    if not manifest["owner_approved"] and manifest["cycle_mode"] == "renewal":
+        active_result = verify_manifest(
+            repo_root,
+            DEFAULT_ACTIVE_PATH,
+            candidate=False,
+            compare_current=False,
+        )
+        if not active_result.ok or active_result.manifest is None:
+            return VerificationResult(
+                False,
+                "failed",
+                ({"code": "active_basis_authentication_failed"},),
+                manifest,
+            )
+        active_provenance = git_provenance(repo_root, active_result.manifest)
+        if not active_provenance.ok:
+            return VerificationResult(
+                False,
+                "failed",
+                tuple(
+                    {
+                        "code": "active_basis_provenance_failed",
+                        "finding": finding,
+                    }
+                    for finding in active_provenance.findings
+                    if finding.get("code") != "ancestry_report"
+                ),
+                manifest,
+            )
     try:
         subprocess.run(
             ["git", "cat-file", "-e", f"{anchor}^{{commit}}"],
@@ -1231,6 +1572,87 @@ def git_provenance(
             continue
         if sha256_bytes(blob) != module["sha256"]:
             findings.append({"code": "anchor_content_mismatch", "path": module["path"]})
+    if manifest["owner_approved"]:
+        artifact_commit = manifest["candidate_artifact_commit"]
+        artifact_path = manifest["candidate_artifact_path"]
+        try:
+            subprocess.run(
+                ["git", "cat-file", "-e", f"{artifact_commit}^{{commit}}"],
+                cwd=repo_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            candidate_blob = subprocess.run(
+                ["git", "show", f"{artifact_commit}:{artifact_path}"],
+                cwd=repo_root,
+                check=True,
+                capture_output=True,
+            ).stdout
+        except (OSError, subprocess.CalledProcessError) as exc:
+            findings.append(
+                {"code": "candidate_artifact_unavailable", "message": str(exc)}
+            )
+        else:
+            if sha256_bytes(candidate_blob) != manifest["candidate_artifact_sha256"]:
+                findings.append({"code": "candidate_artifact_hash_mismatch"})
+            try:
+                candidate_record = json.loads(candidate_blob.decode("utf-8"))
+                if not isinstance(candidate_record, dict):
+                    raise ValueError("candidate artifact is not an object")
+                _validate_manifest_shape(candidate_record, candidate=True)
+            except (UnicodeError, json.JSONDecodeError, ValueError, ClosureError) as exc:
+                findings.append(
+                    {"code": "candidate_artifact_invalid", "message": str(exc)}
+                )
+            else:
+                if candidate_record["candidate_closure_fingerprint"] != _candidate_fingerprint(
+                    candidate_record
+                ):
+                    findings.append({"code": "candidate_artifact_fingerprint_invalid"})
+                if candidate_record["candidate_closure_fingerprint"] != manifest[
+                    "approved_candidate_fingerprint"
+                ]:
+                    findings.append({"code": "candidate_artifact_fingerprint_mismatch"})
+                if candidate_record["review_record"] != manifest["review_record"]:
+                    findings.append({"code": "candidate_artifact_review_mismatch"})
+                review_ref = candidate_record["review_record"]
+                try:
+                    review_blob = subprocess.run(
+                        [
+                            "git",
+                            "show",
+                            f"{artifact_commit}:{review_ref['path']}",
+                        ],
+                        cwd=repo_root,
+                        check=True,
+                        capture_output=True,
+                    ).stdout
+                except (OSError, subprocess.CalledProcessError) as exc:
+                    findings.append(
+                        {"code": "candidate_review_unavailable", "message": str(exc)}
+                    )
+                else:
+                    if sha256_bytes(review_blob) != review_ref["sha256"]:
+                        findings.append({"code": "candidate_review_hash_mismatch"})
+                    try:
+                        committed_review = json.loads(review_blob.decode("utf-8"))
+                    except (UnicodeError, json.JSONDecodeError) as exc:
+                        findings.append(
+                            {"code": "candidate_review_invalid", "message": str(exc)}
+                        )
+                    else:
+                        try:
+                            review_fingerprint = _review_fingerprint(committed_review)
+                        except ClosureError as exc:
+                            findings.append(
+                                {"code": "candidate_review_invalid", "message": str(exc)}
+                            )
+                        else:
+                            if review_fingerprint != review_ref["semantic_fingerprint"]:
+                                findings.append(
+                                    {"code": "candidate_review_fingerprint_mismatch"}
+                                )
     try:
         ancestry = subprocess.run(
             ["git", "merge-base", "--is-ancestor", anchor, "HEAD"],

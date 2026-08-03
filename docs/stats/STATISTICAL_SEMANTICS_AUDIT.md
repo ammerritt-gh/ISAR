@@ -555,8 +555,10 @@ S9 separates immutable historical execution evidence from the maintained product
 closure. Protected-semantic drift requires selection/evidence review and proportionate proof;
 protected-adjacent drift requires bounded source review and focused parity. A newly reached local
 dependency is unclassified until reviewed, and no passing audit can manufacture owner approval.
-The 2026-08-03 upkeep candidate is pending that explicit approval and changes no statistical
-authority.
+The 2026-08-03 schema-v1 candidate was rejected without approval. Its schema-v2 replacement adds
+renewal against an authenticated active closure, complete held-out-summary fingerprint
+reproduction, committed candidate/review proof, and conservative traversal of every protected
+module. It remains unapproved and changes no statistical authority.
 
 Hard-conditioned fits may be weight-eligible only when the constraint is independently specified,
 common to the comparison question, and reflected in `k`. Data-dependent rescue/post-selection
