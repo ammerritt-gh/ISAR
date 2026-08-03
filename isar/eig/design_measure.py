@@ -17,6 +17,7 @@ from isar.predictive import (
 from isar.schema.statistics import semantics_fingerprint
 
 from .eligibility import EligibilityInput, evaluate_eig_eligibility
+from .qoi import validate_qoi_projection_evidence
 
 
 DESIGN_MEASURE_CONTRACT = "isar.scan_window_design_measure/o36.3"
@@ -303,8 +304,12 @@ def _source_mass_state(artifact: Mapping[str, Any], models: Sequence[Mapping[str
             masses["retention_unknown"] += source_weight
         else:
             masses["dropped_draw"] += source_weight * (1.0 - float(retention))
-        for present, draw_weight in zip(qmodel["target_present_by_draw"], qmodel["draw_weights"]):
-            masses["target_present" if present else "target_absent"] += source_weight * float(draw_weight)
+        masses["target_present"] += source_weight * sum(
+            float(draw_weight) for present, draw_weight in zip(
+                qmodel["target_present_by_draw"], qmodel["draw_weights"]) if present)
+        masses["target_absent"] += source_weight * sum(
+            float(draw_weight) for present, draw_weight in zip(
+                qmodel["target_present_by_draw"], qmodel["draw_weights"]) if not present)
     completeness = artifact.get("completeness")
     dropped = completeness.get("dropped_models") if isinstance(completeness, Mapping) else None
     if isinstance(dropped, list):
@@ -350,10 +355,20 @@ def build_scan_window_design_measure(
     qoi_evidence = eligibility_input.qoi_evidence
     if qoi_evidence is None:
         return _finish(eligibility=eligibility, construction_codes=("design_measure_input_mismatch",))
+    try:
+        qoi_evidence = validate_qoi_projection_evidence(qoi_evidence)
+    except (TypeError, ValueError) as error:
+        log.warning("QoI design-measure input refused: %s", error)
+        return _finish(eligibility=eligibility,
+                       construction_codes=("design_measure_input_mismatch",))
     artifact_models = artifact.get("models")
     qoi_models = qoi_evidence.models
     if not isinstance(artifact_models, list) or len(artifact_models) != len(qoi_models):
         return _finish(eligibility=eligibility, construction_codes=("design_measure_input_mismatch",))
+    model_labels = tuple(model.get("label") for model in artifact_models)
+    if len(model_labels) != len(set(model_labels)):
+        return _finish(eligibility=eligibility,
+                       construction_codes=("scenario_identity_mismatch",))
 
     identity_pairs = (
         (qoi_evidence.predictive_basis_fingerprint, artifact.get("predictive_basis_fingerprint")),
@@ -406,9 +421,18 @@ def build_scan_window_design_measure(
         # Keep explicit-weight normalization available for an additive source-contract revision,
         # but do not claim those weights are authenticated by today's semantics.
         if model.get("draw_weighting") != "equal_weight_resampled":
-            return _finish(eligibility=eligibility, construction_codes=("design_measure_input_mismatch",))
+            return _finish(eligibility=eligibility,
+                           construction_codes=("source_draw_weighting_unsupported",))
         source_draw_records.append({
             "model_label": model["label"], "source_draw_ids": list(draw_ids)})
+
+    scenario_join_keys = [
+        (record["model_label"], source_draw_id)
+        for record in source_draw_records for source_draw_id in record["source_draw_ids"]
+    ]
+    if len(scenario_join_keys) != len(set(scenario_join_keys)):
+        return _finish(eligibility=eligibility,
+                       construction_codes=("scenario_identity_mismatch",))
 
     recomputed_masses = _source_mass_state(artifact, artifact_models, qoi_models)
     if not _compatibility_masses_match(qoi_evidence, recomputed_masses):
@@ -441,7 +465,8 @@ def build_scan_window_design_measure(
 
     retained_indices = [index for index, model in enumerate(artifact_models)
                         if model.get("draw_basis") == "parametric_bootstrap"]
-    retained_total = sum(float(artifact_models[index]["weight"]) for index in retained_indices)
+    retained_total = math.fsum(float(artifact_models[index]["weight"])
+                               for index in retained_indices)
     if not math.isfinite(retained_total) or retained_total <= 0.0:
         return _finish(
             eligibility=eligibility, construction_codes=("conditional_target_qoi_ensemble_empty",),
@@ -451,8 +476,8 @@ def build_scan_window_design_measure(
     excluded_models: list[dict[str, Any]] = []
     provisional: list[dict[str, Any]] = []
     model_state: list[dict[str, Any]] = []
-    available_mass = 0.0
-    unavailable_mass = 0.0
+    available_masses: list[float] = []
+    unavailable_masses: list[float] = []
     for index, (model, qmodel) in enumerate(zip(artifact_models, qoi_models)):
         basis = _basis_name(model.get("draw_basis"))
         if basis != "bootstrap":
@@ -461,12 +486,13 @@ def build_scan_window_design_measure(
                 "draw_basis": model.get("draw_basis"), "basis_class": basis,
                 "source_weight": float(model["source_weight"]),
                 "published_predictive_weight": float(model["weight"]),
-                "reason": "nonbootstrap_source_basis",
+                "reason": ("unknown_source_basis" if basis == "unknown_basis"
+                           else "nonbootstrap_source_basis"),
             })
             continue
         retained_weight = float(model["weight"]) / retained_total
-        source_available = 0.0
-        source_unavailable = 0.0
+        source_available_masses: list[float] = []
+        source_unavailable_masses: list[float] = []
         conditional_count = 0
         for draw_id, draw_weight, present, qoi_value in zip(
                 model["draw_ids"], qmodel["draw_weights"],
@@ -474,8 +500,8 @@ def build_scan_window_design_measure(
             draw_weight = float(draw_weight)
             scenario_mass = retained_weight * draw_weight
             if present and _finite(qoi_value) and scenario_mass > 0.0:
-                source_available += float(model["source_weight"]) * draw_weight
-                available_mass += scenario_mass
+                source_available_masses.append(float(model["source_weight"]) * draw_weight)
+                available_masses.append(scenario_mass)
                 conditional_count += 1
                 provisional.append({
                     "scenario_id": _fingerprint(PREDICTIVE_SCENARIO_DOMAIN, {
@@ -490,13 +516,24 @@ def build_scan_window_design_measure(
                     "preconditioning_scenario_mass": scenario_mass,
                 })
             else:
-                source_unavailable += float(model["source_weight"]) * draw_weight
-                unavailable_mass += scenario_mass
+                source_unavailable_masses.append(float(model["source_weight"]) * draw_weight)
+                unavailable_masses.append(scenario_mass)
         model_state.append({
             "model": model, "qmodel": qmodel, "retained_weight": retained_weight,
-            "source_available": source_available, "source_unavailable": source_unavailable,
+            "source_available": math.fsum(source_available_masses),
+            "source_unavailable": math.fsum(source_unavailable_masses),
             "conditional_count": conditional_count,
         })
+
+    scenario_ids = [item["scenario_id"] for item in provisional]
+    if len(scenario_ids) != len(set(scenario_ids)):
+        return _finish(
+            eligibility=eligibility, construction_codes=("scenario_identity_mismatch",),
+            qoi=qoi, source_identities=source_identities,
+            excluded_models=excluded_models,
+            source_draw_identity_fingerprint=source_draw_fingerprint)
+    available_mass = math.fsum(available_masses)
+    unavailable_mass = math.fsum(unavailable_masses)
 
     source_aic_scale = {
         "bootstrap_model_mass": recomputed_masses["bootstrap"],
@@ -514,10 +551,10 @@ def build_scan_window_design_measure(
     if (any(not _finite(completeness.get(name)) or float(completeness[name]) < 0.0
             for name in completeness_numbers)
             or completeness.get("predictive_complete_for_eig") is not True
-            or not _close(completeness["retained_model_weight_total"], sum(
+            or not _close(completeness["retained_model_weight_total"], math.fsum(
                 float(model["source_weight"]) for model in artifact_models))
             or not _close(completeness["source_model_weight_total"],
-                          sum(float(model["source_weight"]) for model in artifact_models)
+                          math.fsum(float(model["source_weight"]) for model in artifact_models)
                           + recomputed_masses["dropped_model"])
             or not _close(completeness["pruned_model_weight"], max(
                 float(completeness["source_model_weight_total"])
@@ -539,6 +576,10 @@ def build_scan_window_design_measure(
         "max_dropped_draw_mass": completeness.get("max_dropped_draw_mass"),
         "predictive_complete_for_eig": completeness.get("predictive_complete_for_eig"),
     }
+    included_scenario_weight = (
+        math.fsum(item["preconditioning_scenario_mass"] / available_mass
+                  for item in provisional)
+        if provisional and math.isfinite(available_mass) and available_mass > 0.0 else 0.0)
     mass_diagnostics = {
         "source_aic_scale": source_aic_scale,
         "source_completeness": source_completeness,
@@ -547,7 +588,7 @@ def build_scan_window_design_measure(
             "target_qoi_unavailable_mass_before_conditioning": unavailable_mass,
         },
         "conditional_design_scale": {
-            "included_scenario_weight": 1.0 if provisional else 0.0,
+            "included_scenario_weight": included_scenario_weight,
         },
     }
     if not provisional or not math.isfinite(available_mass) or available_mass <= 0.0:
@@ -564,7 +605,7 @@ def build_scan_window_design_measure(
     models: list[_DesignModel] = []
     for item in model_state:
         model = item["model"]
-        model_conditional_mass = sum(
+        model_conditional_mass = math.fsum(
             scenario.conditional_scenario_weight for scenario in scenarios
             if scenario.model_label == model["label"])
         models.append(_DesignModel(
@@ -580,9 +621,9 @@ def build_scan_window_design_measure(
             source_target_qoi_available_mass=item["source_available"],
             source_target_qoi_unavailable_mass=item["source_unavailable"],
         ))
-    if (not math.isclose(sum(item.conditional_scenario_weight for item in scenarios), 1.0,
+    if (not math.isclose(math.fsum(item.conditional_scenario_weight for item in scenarios), 1.0,
                          rel_tol=_NORMALIZATION_REL_TOL, abs_tol=_NORMALIZATION_ABS_TOL)
-            or not math.isclose(sum(item.design_ensemble_weight for item in models), 1.0,
+            or not math.isclose(math.fsum(item.design_ensemble_weight for item in models), 1.0,
                                 rel_tol=_NORMALIZATION_REL_TOL, abs_tol=_NORMALIZATION_ABS_TOL)):
         return _finish(
             eligibility=eligibility, construction_codes=("design_measure_normalization_failed",),

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import isar.eig.design_measure as design_measure_module
 from isar.analyze.shadow_selection import unavailable_shadow_selection
 from isar.drive.acquisition.inventory import scientific_fingerprint_from_mapping
 from isar.eig import (
@@ -279,8 +280,36 @@ def test_submaterial_nonbootstrap_model_is_omitted_and_reported(monkeypatch):
     assert result.status == "available"
     assert [item["label"] for item in result.models] == ["bootstrap"]
     assert result.to_dict()["excluded_models"][0]["label"] == "laplace"
+    assert result.to_dict()["excluded_models"][0]["reason"] == "nonbootstrap_source_basis"
     assert result.to_dict()["mass_diagnostics"]["source_aic_scale"][
         "laplace_hesse_model_mass"] == pytest.approx(small)
+
+
+def test_submaterial_unknown_basis_has_an_honest_exclusion_reason(monkeypatch):
+    small = PREDICTIVE_MODEL_WEIGHT_FLOOR / 2
+    artifact, _projection, qoi, eligibility = _bundle(monkeypatch, [
+        {"label": "bootstrap", "weight": 1.0 - small, "basis": "parametric_bootstrap",
+         "draw_ids": ["b-0"], "phonon": True},
+        {"label": "other", "weight": small, "basis": "laplace_hesse",
+         "draw_ids": ["o-0"], "phonon": True},
+    ])
+    artifact = deepcopy(artifact)
+    artifact["models"][1]["draw_basis"] = "future_unclassified_basis"
+    qoi_models = list(qoi._models)
+    qoi_models[1] = replace(qoi_models[1], draw_basis="future_unclassified_basis")
+    diagnostics = qoi.to_dict()["diagnostics"]
+    masses = diagnostics["particle_source_masses"]
+    masses["basis_unknown"] += masses["laplace"]
+    masses["laplace"] = 0.0
+    unknown_qoi = replace(
+        qoi, _models=tuple(qoi_models), diagnostics=tuple(sorted(diagnostics.items())),
+        qoi_evidence_fingerprint=None)
+    result = build_scan_window_design_measure(
+        artifact, replace(eligibility, qoi_evidence=unknown_qoi))
+    assert result.status == "available"
+    excluded = result.to_dict()["excluded_models"]
+    assert excluded[0]["basis_class"] == "unknown_basis"
+    assert excluded[0]["reason"] == "unknown_source_basis"
 
 
 @pytest.mark.parametrize("basis", ["nested_sampling", "laplace_hesse"])
@@ -346,6 +375,10 @@ def test_partial_target_absence_is_excluded_and_remaining_mass_renormalized(monk
     projection["models"][0]["target_qoi_draws"][0] = None
     qoi = adapt_omega0_target_projection(
         artifact, projection, expected_authority=projection["authority"])
+    recomputed = design_measure_module._source_mass_state(
+        artifact, artifact["models"], qoi.models)
+    published = qoi.to_dict()["diagnostics"]["particle_source_masses"]
+    assert {name: round(value, 12) for name, value in recomputed.items()} == published
     result = build_scan_window_design_measure(
         artifact, replace(eligibility, qoi_evidence=qoi))
     assert result.status == "available"
@@ -354,6 +387,8 @@ def test_partial_target_absence_is_excluded_and_remaining_mass_renormalized(monk
     retained = result.to_dict()["mass_diagnostics"]["bootstrap_retained_scale"]
     assert retained["target_qoi_available_mass_before_conditioning"] == pytest.approx(0.5)
     assert retained["target_qoi_unavailable_mass_before_conditioning"] == pytest.approx(0.5)
+    assert result.to_dict()["mass_diagnostics"]["conditional_design_scale"][
+        "included_scenario_weight"] == pytest.approx(1.0)
 
 
 def test_scenario_id_is_qoi_invariant_while_measure_fingerprint_is_not(monkeypatch):
@@ -381,6 +416,108 @@ def test_source_draw_identity_changes_derived_identities(monkeypatch):
     assert first.source_draw_identity_fingerprint != second.source_draw_identity_fingerprint
     assert first.design_measure_fingerprint != second.design_measure_fingerprint
     assert first.predictive_scenarios[0]["scenario_id"] != second.predictive_scenarios[0]["scenario_id"]
+
+
+@pytest.mark.parametrize("tamper", ["qoi_draws", "target_presence", "authority"])
+def test_stale_qoi_fingerprint_never_authorizes_scenarios(monkeypatch, tamper):
+    artifact, _projection, qoi, eligibility = _bundle(monkeypatch)
+    stale = replace(qoi)
+    if tamper in {"qoi_draws", "target_presence"}:
+        models = list(stale._models)
+        if tamper == "qoi_draws":
+            models[0] = replace(models[0], qoi_draws=(99.0, *models[0].qoi_draws[1:]))
+        else:
+            models[0] = replace(
+                models[0], target_present=(False, *models[0].target_present[1:]))
+        object.__setattr__(stale, "_models", tuple(models))
+    else:
+        authority = dict(stale.projection_authority)
+        authority["policy_fingerprint"] = "tampered"
+        object.__setattr__(stale, "projection_authority", tuple(sorted(authority.items())))
+    result = build_scan_window_design_measure(
+        artifact, replace(eligibility, qoi_evidence=stale))
+    assert result.status == "unavailable"
+    assert result.construction_codes == ("design_measure_input_mismatch",)
+    assert result.models == () and result.predictive_scenarios == ()
+
+
+def test_stale_qoi_from_another_predictive_basis_refuses(monkeypatch):
+    artifact, _projection, _qoi, eligibility = _bundle(monkeypatch)
+    changed = deepcopy(artifact)
+    changed["models"][0]["parameter_draws"][0][0] += 0.01
+    changed["predictive_basis_fingerprint"] = predictive_basis_fingerprint(
+        models=changed["models"], energy_meV=changed["energy_meV"],
+        evaluation_context=changed["evaluation_context"],
+        exposure_basis=changed["exposure_basis"])
+    result = build_scan_window_design_measure(changed, eligibility)
+    assert result.status == "unavailable"
+    assert result.construction_codes == ("design_measure_input_mismatch",)
+    assert result.predictive_scenarios == ()
+
+
+def test_missing_and_invalid_predictive_inputs_preserve_stable_refusals(monkeypatch):
+    _artifact, _projection, _qoi, eligibility = _bundle(monkeypatch)
+    missing = build_scan_window_design_measure(None, eligibility)
+    assert missing.construction_codes == ("predictive_record_missing",)
+    invalid = build_scan_window_design_measure({"schema": "wrong"}, eligibility)
+    assert invalid.construction_codes == ("artifact_schema_unsupported",)
+    assert "unsupported master predictive schema" in dict(invalid.diagnostics)[
+        "predictive_validation_message"]
+    assert invalid.models == () and invalid.predictive_scenarios == ()
+
+
+@pytest.mark.parametrize("draw_ids", [
+    ["duplicate", "duplicate"],
+    ["only-one"],
+])
+def test_duplicate_or_misaligned_draw_ids_remain_owned_by_the_shared_predictive_validator(
+        monkeypatch, draw_ids):
+    artifact, _projection, _qoi, eligibility = _bundle(monkeypatch)
+    artifact = deepcopy(artifact)
+    artifact["models"][0]["draw_ids"] = draw_ids
+    result = build_scan_window_design_measure(artifact, eligibility)
+    assert result.construction_codes == ("predictive_artifact_invalid",)
+    assert result.models == () and result.predictive_scenarios == ()
+
+
+def test_duplicate_model_labels_refuse_before_scenario_construction(monkeypatch):
+    artifact, _projection, qoi, eligibility = _bundle(monkeypatch, [
+        {"label": "one", "weight": 0.75, "basis": "parametric_bootstrap",
+         "draw_ids": ["one-0"], "phonon": True},
+        {"label": "two", "weight": 0.25, "basis": "parametric_bootstrap",
+         "draw_ids": ["two-0"], "phonon": True},
+    ])
+    duplicate = deepcopy(artifact)
+    duplicate["models"][1]["label"] = "one"
+    qoi_models = list(qoi._models)
+    qoi_models[1] = replace(qoi_models[1], label="one")
+    duplicate_qoi = replace(qoi, _models=tuple(qoi_models), qoi_evidence_fingerprint=None)
+    monkeypatch.setattr(
+        design_measure_module, "validate_master_predictive_artifact", lambda _artifact: duplicate)
+    result = build_scan_window_design_measure(
+        duplicate, replace(eligibility, qoi_evidence=duplicate_qoi))
+    assert result.construction_codes == ("scenario_identity_mismatch",)
+    assert result.models == () and result.predictive_scenarios == ()
+
+
+def test_forced_scenario_hash_collision_refuses_without_partial_output(monkeypatch):
+    artifact, _projection, _qoi, eligibility = _bundle(monkeypatch, [
+        {"label": "one", "weight": 0.5, "basis": "parametric_bootstrap",
+         "draw_ids": ["one-0"], "phonon": True},
+        {"label": "two", "weight": 0.5, "basis": "parametric_bootstrap",
+         "draw_ids": ["two-0"], "phonon": True},
+    ])
+    original = design_measure_module._fingerprint
+
+    def colliding_fingerprint(domain, payload):
+        if domain == design_measure_module.PREDICTIVE_SCENARIO_DOMAIN:
+            return "0" * 64
+        return original(domain, payload)
+
+    monkeypatch.setattr(design_measure_module, "_fingerprint", colliding_fingerprint)
+    result = build_scan_window_design_measure(artifact, eligibility)
+    assert result.construction_codes == ("scenario_identity_mismatch",)
+    assert result.models == () and result.predictive_scenarios == ()
 
 
 @pytest.mark.parametrize(("field", "value"), [
@@ -442,7 +579,7 @@ def test_explicit_weights_wait_for_authenticated_source_semantics(monkeypatch):
     eligibility = _eligibility_input(qoi, selection, target)
     result = build_scan_window_design_measure(artifact, eligibility)
     assert result.status == "unavailable"
-    assert result.construction_codes == ("design_measure_input_mismatch",)
+    assert result.construction_codes == ("source_draw_weighting_unsupported",)
 
 
 def test_public_contract_has_no_statistical_particle_keys(monkeypatch):

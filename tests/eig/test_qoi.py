@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from isar.eig import adapt_omega0_target_projection
+from isar.eig import adapt_omega0_target_projection, validate_qoi_projection_evidence
 from isar.predictive import predictive_basis_fingerprint
 from isar.schema.statistics import semantics_fingerprint
 from isar.session.predictive_artifact import build_target_projection
@@ -134,6 +135,77 @@ def test_adapter_retains_authority_identities_and_serializes_json_deterministica
     assert first["projection_authority_fingerprint"]
     assert first["predictive_source_model_selection_fingerprint"]
     assert first["qoi_evidence_fingerprint"] == evidence.qoi_evidence_fingerprint
+
+
+def test_public_qoi_validator_returns_the_same_authenticated_object(monkeypatch):
+    predictive, projection = _authenticated_projection(monkeypatch)
+    evidence = adapt_omega0_target_projection(
+        predictive, projection, expected_authority=projection["authority"])
+    assert validate_qoi_projection_evidence(evidence) is evidence
+
+
+def test_public_qoi_validator_rejects_wrong_runtime_type():
+    with pytest.raises(TypeError, match="QoIProjectionEvidence"):
+        validate_qoi_projection_evidence(SimpleNamespace())
+
+
+@pytest.mark.parametrize("tamper", [
+    "qoi_draws", "target_presence", "model_label", "authority", "stored_fingerprint",
+])
+def test_public_qoi_validator_rejects_stale_or_tampered_content(monkeypatch, tamper):
+    predictive, projection = _authenticated_projection(monkeypatch)
+    evidence = adapt_omega0_target_projection(
+        predictive, projection, expected_authority=projection["authority"])
+    altered = replace(evidence)
+    if tamper in {"qoi_draws", "target_presence", "model_label"}:
+        models = list(altered._models)
+        model = models[0]
+        if tamper == "qoi_draws":
+            model = replace(model, qoi_draws=(99.0, *model.qoi_draws[1:]))
+        elif tamper == "target_presence":
+            model = replace(model, target_present=(False, *model.target_present[1:]))
+        else:
+            model = replace(model, label="tampered")
+        models[0] = model
+        object.__setattr__(altered, "_models", tuple(models))
+    elif tamper == "authority":
+        authority = dict(altered.projection_authority)
+        authority["policy_fingerprint"] = "tampered"
+        object.__setattr__(altered, "projection_authority", tuple(sorted(authority.items())))
+    elif tamper == "stored_fingerprint":
+        object.__setattr__(altered, "qoi_evidence_fingerprint", "0" * 64)
+    with pytest.raises(ValueError):
+        validate_qoi_projection_evidence(altered)
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("contract", "isar.eig_qoi_projection_evidence/future"),
+    ("adapter_revision", "isar.target_projection_omega0_adapter/future"),
+    ("qoi_id", "other.quantity"),
+    ("qoi_unit", "eV"),
+    ("source_qoi", "other_qoi"),
+])
+def test_public_qoi_validator_rejects_wrong_contract_metadata(monkeypatch, field, value):
+    predictive, projection = _authenticated_projection(monkeypatch)
+    evidence = adapt_omega0_target_projection(
+        predictive, projection, expected_authority=projection["authority"])
+    altered = replace(evidence)
+    object.__setattr__(altered, field, value)
+    with pytest.raises(ValueError, match="metadata"):
+        validate_qoi_projection_evidence(altered)
+
+
+def test_qoi_constructor_rejects_stale_supplied_hashes(monkeypatch):
+    predictive, projection = _authenticated_projection(monkeypatch)
+    evidence = adapt_omega0_target_projection(
+        predictive, projection, expected_authority=projection["authority"])
+    changed_model = replace(evidence._models[0], qoi_draws=(99.0, 3.1))
+    with pytest.raises(ValueError, match="qoi_evidence_fingerprint"):
+        replace(evidence, _models=(changed_model,))
+    changed_authority = tuple(sorted({**dict(evidence.projection_authority),
+                                      "policy_fingerprint": "tampered"}.items()))
+    with pytest.raises(ValueError, match="projection_authority_fingerprint"):
+        replace(evidence, projection_authority=changed_authority)
 
 
 def test_adapter_normalizes_explicit_draw_weights_for_particle_mass(monkeypatch):

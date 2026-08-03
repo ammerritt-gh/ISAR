@@ -56,7 +56,7 @@ def _freeze(value: Any) -> Any:
 def _thaw(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {str(key): _thaw(item) for key, item in value.items()}
-    if isinstance(value, tuple):
+    if isinstance(value, (list, tuple)):
         return [_thaw(item) for item in value]
     return value
 
@@ -107,6 +107,21 @@ def _models_payload(models: tuple[_QoIModel, ...]) -> list[dict[str, Any]]:
     } for item in models]
 
 
+def _qoi_evidence_fingerprint_payload(evidence: Any, models: Any) -> dict[str, Any]:
+    """The frozen ``o36.2`` payload; keep byte-for-byte field semantics stable."""
+    return {
+        "predictive_basis_fingerprint": evidence.predictive_basis_fingerprint,
+        "predictive_retained_set_fingerprint": evidence.predictive_retained_set_fingerprint,
+        "predictive_statistical_semantics_fingerprint": evidence.predictive_statistical_semantics_fingerprint,
+        "predictive_source_model_selection_fingerprint": evidence.predictive_source_model_selection_fingerprint,
+        "target_projection_set_fingerprint": evidence.target_projection_set_fingerprint,
+        "projection_statistical_semantics_fingerprint": evidence.projection_statistical_semantics_fingerprint,
+        "projection_authority": _thaw(dict(evidence.projection_authority)),
+        "projection_authority_fingerprint": evidence.projection_authority_fingerprint,
+        "models": _thaw(models),
+    }
+
+
 @dataclass(frozen=True)
 class QoIProjectionEvidence:
     """Immutable generic view of a predictive target-QoI projection.
@@ -141,6 +156,15 @@ class QoIProjectionEvidence:
     _models: tuple[_QoIModel, ...] = ()
 
     def __post_init__(self) -> None:
+        expected_metadata = {
+            "contract": QOI_EVIDENCE_CONTRACT,
+            "adapter_revision": OMEGA0_ADAPTER_REVISION,
+            "qoi_id": "excitation.energy",
+            "qoi_unit": "meV",
+            "source_qoi": "omega0",
+        }
+        if any(getattr(self, name) != expected for name, expected in expected_metadata.items()):
+            raise ValueError("QoI evidence metadata does not match the o36.2 contract")
         target_set = self.target_projection_set_fingerprint
         legacy = self.projection_fingerprint
         if target_set is None:
@@ -150,22 +174,19 @@ class QoIProjectionEvidence:
         object.__setattr__(self, "target_projection_set_fingerprint", target_set)
         object.__setattr__(self, "projection_fingerprint", target_set)
         authority = _thaw(dict(self.projection_authority))
+        expected_authority_fingerprint = _fingerprint(authority) if authority else None
         authority_fingerprint = self.projection_authority_fingerprint
-        if authority_fingerprint is None and authority:
-            authority_fingerprint = _fingerprint(authority)
+        if authority_fingerprint is None:
+            authority_fingerprint = expected_authority_fingerprint
+        elif authority_fingerprint != expected_authority_fingerprint:
+            raise ValueError("projection_authority_fingerprint does not authenticate projection_authority")
         object.__setattr__(self, "projection_authority_fingerprint", authority_fingerprint)
+        expected_evidence_fingerprint = _fingerprint(
+            _qoi_evidence_fingerprint_payload(self, _models_payload(self._models)))
         if self.qoi_evidence_fingerprint is None:
-            object.__setattr__(self, "qoi_evidence_fingerprint", _fingerprint({
-                "predictive_basis_fingerprint": self.predictive_basis_fingerprint,
-                "predictive_retained_set_fingerprint": self.predictive_retained_set_fingerprint,
-                "predictive_statistical_semantics_fingerprint": self.predictive_statistical_semantics_fingerprint,
-                "predictive_source_model_selection_fingerprint": self.predictive_source_model_selection_fingerprint,
-                "target_projection_set_fingerprint": target_set,
-                "projection_statistical_semantics_fingerprint": self.projection_statistical_semantics_fingerprint,
-                "projection_authority": authority,
-                "projection_authority_fingerprint": authority_fingerprint,
-                "models": _models_payload(self._models),
-            }))
+            object.__setattr__(self, "qoi_evidence_fingerprint", expected_evidence_fingerprint)
+        elif self.qoi_evidence_fingerprint != expected_evidence_fingerprint:
+            raise ValueError("qoi_evidence_fingerprint does not authenticate QoI evidence")
 
     @property
     def models(self) -> tuple[Mapping[str, Any], ...]:
@@ -196,6 +217,41 @@ class QoIProjectionEvidence:
             "diagnostics": _thaw(dict(self.diagnostics)),
             "models": [_thaw(item) for item in self.models],
         }
+
+
+def validate_qoi_projection_evidence(evidence: Any) -> QoIProjectionEvidence:
+    """Strictly re-authenticate one immutable ``o36.2`` evidence object.
+
+    The returned object is the same instance.  This seam deliberately accepts
+    only the real frozen class so a duck-typed public view cannot inherit its
+    authentication claim.
+    """
+    if not isinstance(evidence, QoIProjectionEvidence):
+        raise TypeError("evidence must be a QoIProjectionEvidence")
+    expected_metadata = {
+        "contract": QOI_EVIDENCE_CONTRACT,
+        "adapter_revision": OMEGA0_ADAPTER_REVISION,
+        "qoi_id": "excitation.energy",
+        "qoi_unit": "meV",
+        "source_qoi": "omega0",
+    }
+    if any(getattr(evidence, name) != expected for name, expected in expected_metadata.items()):
+        raise ValueError("QoI evidence metadata does not match the o36.2 contract")
+    if evidence.projection_fingerprint != evidence.target_projection_set_fingerprint:
+        raise ValueError("projection_fingerprint disagrees with target_projection_set_fingerprint")
+    try:
+        authority = _thaw(dict(evidence.projection_authority))
+        public_models = list(evidence.models)
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
+        raise ValueError("QoI evidence contains malformed immutable records") from error
+    expected_authority_fingerprint = _fingerprint(authority) if authority else None
+    if evidence.projection_authority_fingerprint != expected_authority_fingerprint:
+        raise ValueError("projection_authority_fingerprint does not authenticate projection_authority")
+    expected_evidence_fingerprint = _fingerprint(
+        _qoi_evidence_fingerprint_payload(evidence, public_models))
+    if evidence.qoi_evidence_fingerprint != expected_evidence_fingerprint:
+        raise ValueError("qoi_evidence_fingerprint does not authenticate QoI evidence")
+    return evidence
 
 
 def _evidence(*, status: str, science: tuple[str, ...] = (), gaps: tuple[str, ...] = (),

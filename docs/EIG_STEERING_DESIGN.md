@@ -214,6 +214,14 @@ records by the shared predictive-contract helper before a stored value is accept
 `projection_fingerprint` spelling remains a read/constructor compatibility alias only; serialized evidence
 uses the explicit target-projection-set name.
 
+`validate_qoi_projection_evidence()` is the strict public read gate for that derived evidence. It accepts
+only a real `QoIProjectionEvidence`, verifies the frozen `o36.2` contract/adapter/QoI metadata, recomputes
+the projection-authority fingerprint, and recomputes the existing evidence fingerprint from the ordered
+public model/QoI records and all source identities. The constructor and validator share that exact
+fingerprint payload; supplying a stale authority or evidence hash raises rather than silently blessing
+altered target-presence or QoI values. This strengthens reads without changing the `o36.2` payload or
+revision.
+
 Particle mass is a measure, not a draw count. Equal-weight draws publish `1/n`; explicit predictive draw
 weights are validated and normalized by their positive total, exposed read-only in QoI diagnostics, and
 used for present/absent mass. A missing linkage produces `projection_join_unknown`; any predictive-basis,
@@ -258,7 +266,7 @@ to agree; an impossible disagreement is `design_measure_input_mismatch`. Permitt
 non-bootstrap or unknown-basis retained models are omitted and reported, and the remaining published
 bootstrap weights are transparently renormalized. Current predictive semantics authenticate
 equal-weight empirical draws only; an otherwise structurally valid explicit-weight artifact is held
-as `design_measure_input_mismatch` until an additive source-semantics revision can describe it.
+as `source_draw_weighting_unsupported` until an additive source-semantics revision can describe it.
 The measure also authenticates source and retained draw counts against the actual aligned draw arrays,
 keeps those counts distinct in each model summary, and fingerprints the producer's model/draw pruning
 limits and completeness totals as a separate source-completeness diagnostic.
@@ -278,7 +286,8 @@ derived join identity of predictive-basis fingerprint, model label, and source-d
 the QoI leaves it stable. The enclosing design-measure fingerprint also binds selection, projection,
 QoI and eligibility identities, draw-ID binding, source bases and weights, exclusions, QoI values,
 conditional weights, materiality constants, and measure semantics. All fingerprints use strict canonical
-finite JSON.
+finite JSON. Model labels, global `(model_label, source_draw_id)` join keys, and resulting scenario IDs
+must each be unique; any collision is `scenario_identity_mismatch` and publishes no partial ensemble.
 
 An available measure grants only `eig_shadow = candidate`; `eig_authoritative` and
 `acquisition_selection` remain `ineligible`. It does not generate or score a window, touch an inventory,
