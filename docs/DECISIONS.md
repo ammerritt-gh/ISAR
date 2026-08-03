@@ -1078,6 +1078,31 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   realistic-clock requirement remain required, but are backend-runtime and fidelity-validation rungs,
   not the current SVP definition. Historical evidence and filenames remain unchanged.
 
+- **O37.** (2026-08-03, Implemented in the Slice 5 offline comparison contract; does not amend O36)
+  **Slice 5 distinguishes exactly scoped scientific policy from diagnostic discovery and grants no
+  acquisition authority.** A distinction policy is hand-authored scientific intent, matched only to
+  the completed decision context and policy provenance it declares. Discovery has no global
+  distinction scale: completed variants remain separate diagnostics, and their identities and refusal
+  reasons must not be collapsed into an inferred scientific class.
+
+  The first supported conditional target-QoI compiler is
+  `isar.scalar_absolute_partitions/o36.5`. That is a bounded scoring mechanism, not a universal
+  model of phenomena, branches, continua, or discovery.
+  Slice 5 may transform coherent completed `off` decisions into `shadow` counterfactual diagnostics,
+  compare only `legacy_uniform/1` with `target_core/1` at equal per-point exposure, and report
+  `target_core_minus_legacy`. Candidate-pair or exposure mismatches are refusals, never substitutions
+  or normalized estimates.
+
+  Strict loaders must reject missing, malformed, stale, mismatched, or incoherent completed
+  artifacts. The established retained evidence basis has 12 reviewed roots, 233 master rows, and
+  230 pooled outcomes, but zero authenticated predictive `/2` plus projection evidence; zero
+  Slice 5-ready comparisons are therefore expected until a runner establishes otherwise. A retained
+  corpus with zero ready comparisons is a truthful result of the narrow contract, not permission to
+  broaden it. Slice 5 has `eig_shadow = diagnostic` only:
+  `eig_authoritative` and `acquisition_selection` remain ineligible. It creates no scored inventory,
+  recommendation, request, or execution authority; Slice 6 remains the planned separately gated
+  scored-shadow-inventory step.
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:

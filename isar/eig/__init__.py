@@ -15,6 +15,7 @@ from .scorer import (
     ScalarQoIDiscretization,
     ScanWindowScoreSet,
     score_scan_window_candidates,
+    validate_scan_window_score_set,
 )
 
 __all__ = [
@@ -31,4 +32,5 @@ __all__ = [
     "score_scan_window_candidates",
     "validate_qoi_projection_evidence",
     "validate_scan_window_design_measure",
+    "validate_scan_window_score_set",
 ]

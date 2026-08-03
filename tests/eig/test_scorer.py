@@ -369,6 +369,23 @@ def test_global_refusal_records_only_identities_authenticated_before_failure():
             == discretization.discretization_fingerprint)
 
 
+def test_score_set_read_gate_rejects_impossible_empty_complete_set():
+    forged = scorer_module._finish_score_set(
+        status="complete",
+        reason_codes=(),
+        measure_fingerprint=_fp("measure"),
+        source_draw_identity_fingerprint=_fp("source-draws"),
+        discretization_fingerprint=_fp("discretization"),
+        seed=7,
+        simulation_count=8,
+        block_count=2,
+        backend=scorer_module._backend_identities(),
+    )
+
+    with pytest.raises(ValueError, match="must contain only available candidates"):
+        scorer_module.validate_scan_window_score_set(forged)
+
+
 def test_real_producer_chain_joins_arbitrary_grid_evaluation(monkeypatch):
     helpers = runpy.run_path(str(Path(__file__).with_name("test_design_measure.py")))
     artifact, _projection, _qoi, eligibility = helpers["_bundle"](monkeypatch)

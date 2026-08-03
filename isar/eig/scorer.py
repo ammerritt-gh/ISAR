@@ -1194,9 +1194,258 @@ def score_scan_window_candidates(
     )
 
 
+def _validate_score_candidate(
+        candidate: Any,
+        *,
+        score_set: ScanWindowScoreSet,
+        available_ids: set[str]) -> None:
+    """Authenticate one private score record retained by a score set."""
+    if not isinstance(candidate, _CandidateScore):
+        raise ValueError("score set contains a malformed candidate score")
+    if (not isinstance(candidate.candidate_id, str) or not candidate.candidate_id
+            or candidate.candidate_id != candidate.candidate_id.strip()):
+        raise ValueError("candidate score ID is invalid")
+    if candidate.status not in {"available", "unavailable"}:
+        raise ValueError("candidate score status is invalid")
+    if (not isinstance(candidate.reason_codes, tuple)
+            or any(not isinstance(code, str) or not code or code != code.strip()
+                   for code in candidate.reason_codes)
+            or len(candidate.reason_codes) != len(set(candidate.reason_codes))):
+        raise ValueError("candidate score reason codes are invalid")
+    if (candidate.source_reason_code is not None
+            and (not isinstance(candidate.source_reason_code, str)
+                 or not candidate.source_reason_code.strip())):
+        raise ValueError("candidate score source reason code is invalid")
+    expected_scopes = _AVAILABLE_SCOPES if candidate.status == "available" else _INELIGIBLE_SCOPES
+    if candidate.authority_scopes != tuple(sorted(expected_scopes.items())):
+        raise ValueError("candidate score authority scopes are invalid")
+    if candidate.status == "available":
+        available_ids.add(candidate.candidate_id)
+        required_fingerprints = (
+            candidate.predictive_basis_fingerprint,
+            candidate.source_draw_identity_fingerprint,
+            candidate.executed_grid_fingerprint,
+            candidate.candidate_evaluation_fingerprint,
+        )
+        if (any(not _valid_fingerprint(value) for value in required_fingerprints)
+                or candidate.source_draw_identity_fingerprint
+                != score_set.source_draw_identity_fingerprint):
+            raise ValueError("available candidate score fingerprints are invalid")
+        if (not isinstance(candidate.energy_meV, tuple) or not candidate.energy_meV
+                or any(not _finite_number(value) for value in candidate.energy_meV)
+                or len({_energy_identity(value) for value in candidate.energy_meV})
+                != len(candidate.energy_meV)
+                or candidate.executed_point_count != len(candidate.energy_meV)
+                or not _finite_number(candidate.exposure_per_point)
+                or float(candidate.exposure_per_point) <= 0.0):
+            raise ValueError("available candidate score grid is invalid")
+        numeric_values = (
+            candidate.conditional_target_qoi_information_nats,
+            candidate.conditional_target_qoi_information_standard_error_nats,
+            candidate.information_per_executed_point_nats,
+            candidate.information_per_executed_point_standard_error_nats,
+        )
+        if (any(not _finite_number(value) for value in numeric_values)
+                or float(candidate.conditional_target_qoi_information_standard_error_nats) < 0.0
+                or float(candidate.information_per_executed_point_standard_error_nats) < 0.0
+                or not isinstance(candidate.partition_information_nats, tuple)
+                or not isinstance(candidate.block_information_nats, tuple)
+                or any(not _finite_number(value) for value in (
+                    *candidate.partition_information_nats, *candidate.block_information_nats))
+                or len(candidate.block_information_nats) != score_set.block_count):
+            raise ValueError("available candidate score numerics are invalid")
+        count = int(candidate.executed_point_count)
+        if (not _close(candidate.information_per_executed_point_nats,
+                       float(candidate.conditional_target_qoi_information_nats) / count)
+                or not _close(candidate.information_per_executed_point_standard_error_nats,
+                              float(candidate.conditional_target_qoi_information_standard_error_nats) / count)):
+            raise ValueError("available candidate per-point numerics are invalid")
+    else:
+        if (any(value is not None for value in (
+                    candidate.predictive_basis_fingerprint,
+                    candidate.source_draw_identity_fingerprint,
+                    candidate.executed_grid_fingerprint,
+                    candidate.candidate_evaluation_fingerprint,
+                    candidate.executed_point_count,
+                    candidate.exposure_per_point,
+                    candidate.conditional_target_qoi_information_nats,
+                    candidate.conditional_target_qoi_information_standard_error_nats,
+                    candidate.information_per_executed_point_nats,
+                    candidate.information_per_executed_point_standard_error_nats))
+                or candidate.energy_meV or candidate.partition_information_nats
+                or candidate.block_information_nats):
+            raise ValueError("unavailable candidate score has scientific values")
+    expected = _fingerprint(
+        _CANDIDATE_SCORE_FINGERPRINT_DOMAIN,
+        _candidate_fingerprint_payload(
+            candidate,
+            measure_fingerprint=score_set.design_measure_fingerprint,
+            discretization_fingerprint=score_set.qoi_discretization_fingerprint,
+            seed=score_set.seed,
+            simulation_count=score_set.simulation_count,
+            block_count=score_set.block_count,
+            backend=dict(score_set.numerical_backend),
+        ),
+    )
+    if candidate.candidate_score_fingerprint != expected:
+        raise ValueError("candidate_score_fingerprint does not authenticate the candidate score")
+
+
+def _validate_pairwise_comparison(
+        comparison: Any,
+        *,
+        score_set: ScanWindowScoreSet,
+        candidates: Mapping[str, _CandidateScore]) -> tuple[str, str]:
+    if not isinstance(comparison, _PairwiseComparison):
+        raise ValueError("score set contains a malformed pairwise comparison")
+    first = candidates.get(comparison.candidate_a_id)
+    second = candidates.get(comparison.candidate_b_id)
+    if (first is None or second is None or first.status != "available"
+            or second.status != "available" or first.candidate_id >= second.candidate_id
+            or comparison.candidate_a_score_fingerprint != first.candidate_score_fingerprint
+            or comparison.candidate_b_score_fingerprint != second.candidate_score_fingerprint):
+        raise ValueError("pairwise comparison candidate join is invalid")
+    numeric_values = (
+        comparison.delta_information_nats,
+        comparison.delta_information_standard_error_nats,
+        comparison.delta_information_per_executed_point_nats,
+        comparison.delta_information_per_executed_point_standard_error_nats,
+        *comparison.paired_block_deltas,
+        *comparison.paired_block_deltas_per_executed_point_nats,
+    )
+    if (not isinstance(comparison.paired_block_deltas, tuple)
+            or not isinstance(comparison.paired_block_deltas_per_executed_point_nats, tuple)
+            or len(comparison.paired_block_deltas) != score_set.block_count
+            or len(comparison.paired_block_deltas_per_executed_point_nats) != score_set.block_count
+            or any(not _finite_number(value) for value in numeric_values)
+            or float(comparison.delta_information_standard_error_nats) < 0.0
+            or float(comparison.delta_information_per_executed_point_standard_error_nats) < 0.0):
+        raise ValueError("pairwise comparison numerics are invalid")
+    expected_blocks = tuple(
+        right - left for left, right in zip(
+            first.block_information_nats, second.block_information_nats))
+    expected_per_point_blocks = tuple(
+        right / int(second.executed_point_count) - left / int(first.executed_point_count)
+        for left, right in zip(first.block_information_nats, second.block_information_nats))
+    if (any(not _close(actual, expected)
+            for actual, expected in zip(comparison.paired_block_deltas, expected_blocks))
+            or any(not _close(actual, expected)
+                   for actual, expected in zip(
+                       comparison.paired_block_deltas_per_executed_point_nats,
+                       expected_per_point_blocks))
+            or not _close(comparison.delta_information_nats,
+                          float(second.conditional_target_qoi_information_nats)
+                          - float(first.conditional_target_qoi_information_nats))
+            or not _close(comparison.delta_information_per_executed_point_nats,
+                          float(second.information_per_executed_point_nats)
+                          - float(first.information_per_executed_point_nats))):
+        raise ValueError("pairwise comparison values do not join candidate scores")
+    expected = _fingerprint(
+        _PAIRWISE_FINGERPRINT_DOMAIN,
+        _pairwise_fingerprint_payload(
+            comparison,
+            measure_fingerprint=score_set.design_measure_fingerprint,
+            discretization_fingerprint=score_set.qoi_discretization_fingerprint,
+            seed=score_set.seed,
+            simulation_count=score_set.simulation_count,
+            block_count=score_set.block_count,
+            backend=dict(score_set.numerical_backend),
+        ),
+    )
+    if comparison.pairwise_comparison_fingerprint != expected:
+        raise ValueError("pairwise_comparison_fingerprint does not authenticate the comparison")
+    return first.candidate_id, second.candidate_id
+
+
+def validate_scan_window_score_set(value: Any) -> ScanWindowScoreSet:
+    """Strictly authenticate a persisted :class:`ScanWindowScoreSet`.
+
+    This is deliberately a read gate, not a deserializer: callers must retain the
+    immutable score object created by the scorer.  Every nested score and comparison
+    is rechecked before its enclosing semantic fingerprint is trusted.
+    """
+    if not isinstance(value, ScanWindowScoreSet):
+        raise TypeError("value must be a ScanWindowScoreSet")
+    score_set = value
+    if (score_set.contract != SCAN_WINDOW_SCORE_SET_CONTRACT
+            or score_set.scorer_revision != SCORER_REVISION
+            or score_set.likelihood_revision != LIKELIHOOD_REVISION
+            or score_set.crn_revision != CRN_REVISION
+            or score_set.status not in {"complete", "partial", "unavailable"}):
+        raise ValueError("score set contract metadata is invalid")
+    if (not isinstance(score_set.reason_codes, tuple)
+            or any(not isinstance(code, str) or not code or code != code.strip()
+                   for code in score_set.reason_codes)
+            or len(score_set.reason_codes) != len(set(score_set.reason_codes))):
+        raise ValueError("score set reason codes are invalid")
+    if score_set.authority_scopes != tuple(sorted((
+            _AVAILABLE_SCOPES if score_set.status in {"complete", "partial"}
+            else _INELIGIBLE_SCOPES).items())):
+        raise ValueError("score set authority scopes are invalid")
+    backend = dict(score_set.numerical_backend)
+    if (not isinstance(score_set.numerical_backend, tuple)
+            or score_set.numerical_backend != tuple(sorted(score_set.numerical_backend))
+            or backend != _backend_identities()):
+        raise ValueError("score set numerical backend is invalid")
+    has_scoring_configuration = score_set.status in {"complete", "partial"}
+    if has_scoring_configuration:
+        if (not all(_valid_fingerprint(item) for item in (
+                    score_set.design_measure_fingerprint,
+                    score_set.source_draw_identity_fingerprint,
+                    score_set.qoi_discretization_fingerprint))
+                or not isinstance(score_set.seed, int) or isinstance(score_set.seed, bool)
+                or not isinstance(score_set.simulation_count, int)
+                or isinstance(score_set.simulation_count, bool)
+                or not isinstance(score_set.block_count, int) or isinstance(score_set.block_count, bool)
+                or score_set.simulation_count < 2 or score_set.block_count < 2
+                or score_set.block_count > score_set.simulation_count
+                or score_set.simulation_count % score_set.block_count != 0):
+            raise ValueError("score set scoring configuration is invalid")
+    candidates = score_set._candidate_scores
+    if (not isinstance(candidates, tuple)
+            or tuple(sorted(candidate.candidate_id for candidate in candidates))
+            != tuple(candidate.candidate_id for candidate in candidates)
+            or len({candidate.candidate_id for candidate in candidates}) != len(candidates)):
+        raise ValueError("score set candidate order or uniqueness is invalid")
+    available_ids: set[str] = set()
+    for candidate in candidates:
+        _validate_score_candidate(candidate, score_set=score_set, available_ids=available_ids)
+    if score_set.status == "complete" and (
+            not candidates or len(available_ids) != len(candidates)):
+        raise ValueError("complete score set must contain only available candidates")
+    if score_set.status == "partial" and (not available_ids or len(available_ids) == len(candidates)):
+        raise ValueError("partial score set candidate availability is invalid")
+    if score_set.status == "unavailable":
+        # A global refusal is empty, but a valid scoring pass may retain one
+        # authenticated refusal per candidate when every candidate is unavailable.
+        # Neither form can carry an available result or a pairwise estimate.
+        if available_ids or score_set._pairwise_comparisons:
+            raise ValueError("unavailable score set has scientific score results")
+    indexed = {candidate.candidate_id: candidate for candidate in candidates}
+    pairs: set[tuple[str, str]] = set()
+    for comparison in score_set._pairwise_comparisons:
+        pair = _validate_pairwise_comparison(comparison, score_set=score_set, candidates=indexed)
+        if pair in pairs:
+            raise ValueError("score set contains duplicate pairwise comparisons")
+        pairs.add(pair)
+    expected_pairs = {
+        (first, second) for first_index, first in enumerate(sorted(available_ids))
+        for second in sorted(available_ids)[first_index + 1:]
+    }
+    if pairs != expected_pairs:
+        raise ValueError("score set pairwise comparisons are incomplete")
+    if not _valid_fingerprint(score_set.score_set_fingerprint):
+        raise ValueError("score_set_fingerprint is invalid")
+    expected = _fingerprint(_SCORE_SET_FINGERPRINT_DOMAIN, _score_set_payload(score_set))
+    if score_set.score_set_fingerprint != expected:
+        raise ValueError("score_set_fingerprint does not authenticate the score set")
+    return score_set
+
+
 __all__ = [
     "CandidateEvaluationInput",
     "ScalarQoIDiscretization",
     "ScanWindowScoreSet",
     "score_scan_window_candidates",
+    "validate_scan_window_score_set",
 ]
