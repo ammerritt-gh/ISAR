@@ -88,6 +88,60 @@ def _fingerprint(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical_json(_thaw(value)).encode("utf-8")).hexdigest()
 
 
+def _result_payload(*, status: str, scientific_codes: tuple[str, ...] | list[str],
+                    observability_codes: tuple[str, ...] | list[str],
+                    input_fingerprint: str) -> dict[str, Any]:
+    scopes = _ELIGIBLE_SCOPES if status == "eligible" else _INELIGIBLE_SCOPES
+    return {
+        "contract": ELIGIBILITY_CONTRACT, "status": status,
+        "scientific_codes": list(scientific_codes),
+        "observability_codes": list(observability_codes),
+        "input_fingerprint": input_fingerprint, "authority_scopes": scopes,
+    }
+
+
+def eligibility_summary(value: "EligibilityResult") -> dict[str, Any]:
+    """Return the compact authenticated eligibility record embedded by downstream evidence."""
+    return {
+        "contract": value.contract, "status": value.status,
+        "scientific_codes": list(value.scientific_codes),
+        "observability_codes": list(value.observability_codes),
+        "input_fingerprint": value.input_fingerprint,
+        "result_fingerprint": value.result_fingerprint,
+    }
+
+
+def validate_eligibility_summary(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Authenticate a compact summary with the producer's own ordering and fingerprint recipe."""
+    expected = {"contract", "status", "scientific_codes", "observability_codes",
+                "input_fingerprint", "result_fingerprint"}
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise ValueError("EIG eligibility summary fields are invalid")
+    science = value["scientific_codes"]
+    gaps = value["observability_codes"]
+    valid_fp = lambda item: (isinstance(item, str) and len(item) == 64
+                             and item == item.lower()
+                             and all(character in "0123456789abcdef" for character in item))
+    if (value["contract"] != ELIGIBILITY_CONTRACT
+            or not isinstance(science, list) or not isinstance(gaps, list)
+            or science != list(_ordered(science, _SCIENCE_RANK))
+            or gaps != list(_ordered(gaps, _GAP_RANK))
+            or any(code not in _SCIENCE_RANK for code in science)
+            or any(code not in _GAP_RANK for code in gaps)
+            or not valid_fp(value["input_fingerprint"])
+            or not valid_fp(value["result_fingerprint"])):
+        raise ValueError("EIG eligibility summary is invalid")
+    status = "ineligible" if science else "unassessable" if gaps else "eligible"
+    if value["status"] != status:
+        raise ValueError("EIG eligibility status is invalid")
+    expected_fingerprint = _fingerprint(_result_payload(
+        status=status, scientific_codes=science, observability_codes=gaps,
+        input_fingerprint=value["input_fingerprint"]))
+    if value["result_fingerprint"] != expected_fingerprint:
+        raise ValueError("EIG eligibility result fingerprint is invalid")
+    return value
+
+
 def _ordered(codes: list[str], ranks: Mapping[str, int]) -> tuple[str, ...]:
     return tuple(sorted(set(codes), key=lambda code: (ranks.get(code, len(ranks)), code)))
 
@@ -527,14 +581,9 @@ def evaluate_eig_eligibility(value: EligibilityInput) -> EligibilityResult:
         "scan_design": _scan_design_identity(value.scan_design_provenance, value.scan_design_events),
     }
     input_fingerprint = _fingerprint(input_payload)
-    result_payload = {
-        "contract": ELIGIBILITY_CONTRACT,
-        "status": status,
-        "scientific_codes": scientific_codes,
-        "observability_codes": observability_codes,
-        "input_fingerprint": input_fingerprint,
-        "authority_scopes": scopes,
-    }
+    result_payload = _result_payload(
+        status=status, scientific_codes=scientific_codes,
+        observability_codes=observability_codes, input_fingerprint=input_fingerprint)
     result_fingerprint = _fingerprint(result_payload)
     diagnostics = tuple(sorted((
         ("qoi_status", qoi_status),

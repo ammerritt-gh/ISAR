@@ -2,7 +2,7 @@
 
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
-> **Verified against code revision:** `b543f6f` (2026-08-02)
+> **Verified against code revision:** `b6db5bc` (2026-08-03)
 > **Owner:** @ammerritt-gh
 > **Exit criteria:** the restricted authoritative selector exists; Slice 10 completes the deterministic
 > TAVI EIG-4 demonstration; exact eligible selection and ineligible non-EIG return behavior are
@@ -35,6 +35,13 @@ policy card, frozen into `ScanDesignContext`) chooses the regime:
   `off` in either case.
 - `authoritative` — refuses at campaign setup with the stable error code
   `scan_window_eig_authoritative_unavailable`; it is never silently degraded to shadow or off.
+
+Because `scan_window_eig` was added additively to `isar.objective/2`, the `/2` reader treats an
+omitted block as the frozen no-policy/default-scoring configuration. This is historical read
+compatibility, not card supplementation: full specs, envelopes, and resume records remain
+self-contained. New writers always serialize the block, while explicit null, malformed records,
+unknown fields, and card authoring or scope-binding markers refuse. A retained `shadow` objective
+without a policy therefore remains a valid unscored legacy control.
 
 ### The scored grid is the instrument's, not ISAR's (ADR-018)
 
@@ -141,10 +148,38 @@ identity (`predictive_provider_id`, `predictive_provider_schema`, `generator_id`
 grounded provider can slot in without changing this envelope; `candidate_family` and `generator_id`
 are versioned strings, never a closed enum.
 
+The immutable shadow envelope, status constants, seed evidence, variant records, and structural
+fingerprint checks live in `isar.schema.eig_shadow`. Ordinary scan-design construction therefore
+depends only on schema records and does not import the numerical EIG stack or SciPy. Public inventory
+validation and content-addressed loading cross a lazy seam into `isar.eig.shadow_inventory` only when
+a `/3` record contains scored evidence; that deep gate replays policy joins and Slice 4 arithmetic.
+
+Before either predictive evaluation, the live pair gate reports one ordered diagnosis: aliasing or
+equal candidate IDs/grids is `candidate_pair_degenerate`; an explicit target-core generator refusal
+retains its exact reason; a missing or duplicate family is respectively `candidate_family_missing`
+or `candidate_family_ambiguous`; unequal per-point exposure is `candidate_exposure_mismatch`; and
+remaining action, Q, context, or generator incoherence is `candidate_pair_invalid`. An incomplete
+Slice 4 result may attach fingerprinted `score_refusal_evidence` to that variant. It contains only
+the score-set status/reasons and the two authenticated candidate refusal identities and codes—never
+score estimates—and its codes are also aggregated into the variant reason list. The field is omitted
+when absent, preserving historical variant payloads and fingerprints.
+
 Materializing `scan_window_eig_mode` in the resolved steering dict reminted every
 `hypothesis_fingerprint` once, and with it every derived scientific-action and content-addressed
 audit identity. The *physical* behavior — action class, Q sequence, window, step, count request, and
 emitted request — is unchanged in both `off` and `shadow`.
+
+Two evidence revisions remain intentionally distinct. Proposal metadata and the finalized request
+fingerprint use the established transition-first `authoritative_evidence_revision` chain. The
+in-memory `ShadowScoringSource` instead puts the exact selected completed master's
+`master_revision` (or null) into prospective action provenance. Eligibility joins on that exact
+master identity and never substitutes the proposal-wide transition revision, a same-Q master, or a
+later revision.
+
+The five-second shadow allowance is cooperative. Each variant checks the deadline before calling the
+synchronous scorer and again immediately after it returns, before score-set validation. A post-call
+overrun discards that returned numerical result, records `shadow_scoring_deadline`, marks the remaining
+variants likewise, and still submits the unchanged legacy request.
 
 The future work described here is narrower than the physics-content work in `STEERING_DESIGN.md`.
 It may compare different uniform windows/counts for the **same already-selected scientific action**.

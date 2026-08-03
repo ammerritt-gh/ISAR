@@ -1,5 +1,6 @@
 """The acquisition function: target selection, escalation ladder, and the energy-window rule."""
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -727,6 +728,29 @@ def _request(proposal):
             proposal.scan_command())
 
 
+def _proposal_with_divergent_evidence_revisions(mode: str):
+    """Build through the real proposal seam with distinct transition and master identities."""
+    objective = _eig_objective(mode)
+    model = acq_model.fit([])
+    plan = acq.plan_actions(
+        objective, model, [], resolution_info={"fwhm_dE": 0.8}, budget_state={})
+    chosen = acq.select_action(plan.inventory, plan.candidates)
+    assert chosen is not None
+    chosen.pick.evidence_master = {
+        "master_revision": "master-revision-exact",
+        "content_hash": "master-content-fallback",
+    }
+    transitioned_score = replace(
+        chosen.score,
+        evidence_transition={"authoritative_evidence_revision": "transition-revision"},
+    )
+    chosen = replace(
+        chosen, generated=replace(chosen.generated, score=transitioned_score))
+    build = plan._build_context
+    return acq._build_proposal(
+        build[0], chosen, build[1], build[2], build[3], build[4], build[5], build[6])
+
+
 def test_shadow_mode_emits_the_identical_request_as_the_off_mode_legacy_path():
     # Only the *physical* request can be asserted identical: materializing the new steering field
     # remints every hypothesis/scientific-action fingerprint once, by design (the knob is part of
@@ -736,6 +760,15 @@ def test_shadow_mode_emits_the_identical_request_as_the_off_mode_legacy_path():
         _eig_objective("shadow"), acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
 
     assert _request(off) == _request(shadow)
+    assert (off.meta["authoritative_evidence_revision"]
+            == shadow.meta["authoritative_evidence_revision"])
+    from isar.drive import loop as drive_loop
+    assert drive_loop._request_fingerprint_for(
+        off, e_lo=off.e_lo, e_hi=off.e_hi, e_step=off.e_step, ncount=off.ncount,
+    ) == drive_loop._request_fingerprint_for(
+        shadow, e_lo=shadow.e_lo, e_hi=shadow.e_hi,
+        e_step=shadow.e_step, ncount=shadow.ncount,
+    )
     assert off.meta["count_diagnostics"] == shadow.meta["count_diagnostics"]
     assert (off.scan_design_inventory.selected_candidate_id
             == shadow.scan_design_inventory.selected_candidate_id)
@@ -745,6 +778,27 @@ def test_shadow_mode_emits_the_identical_request_as_the_off_mode_legacy_path():
         "shadow_legacy_control_unscored")
     assert off.scan_design_inventory.selection_basis == "legacy_control_off"
     assert shadow.scan_design_inventory.context.scan_window_eig_mode == "shadow"
+
+
+def test_shadow_exact_source_uses_master_revision_without_reminting_proposal_identity():
+    off = _proposal_with_divergent_evidence_revisions("off")
+    shadow = _proposal_with_divergent_evidence_revisions("shadow")
+
+    assert _request(off) == _request(shadow)
+    assert off.meta["authoritative_evidence_revision"] == "transition-revision"
+    assert shadow.meta["authoritative_evidence_revision"] == "transition-revision"
+    source = shadow.shadow_scoring_source
+    assert source.master_revision == "master-revision-exact"
+    assert source.action_provenance["authoritative_evidence_revision"] == (
+        "master-revision-exact")
+
+    from isar.drive import loop as drive_loop
+    assert drive_loop._request_fingerprint_for(
+        off, e_lo=off.e_lo, e_hi=off.e_hi, e_step=off.e_step, ncount=off.ncount,
+    ) == drive_loop._request_fingerprint_for(
+        shadow, e_lo=shadow.e_lo, e_hi=shadow.e_hi,
+        e_step=shadow.e_step, ncount=shadow.ncount,
+    )
 
 
 def test_shadow_candidates_share_the_selected_action_q_kind_and_reason():

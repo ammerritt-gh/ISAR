@@ -2110,8 +2110,7 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
 
     selected_evidence = pick.evidence_master or pick.master or {}
     evidence_revision = (
-        selected_evidence.get("master_revision")
-        or (score.evidence_transition or {}).get("authoritative_evidence_revision")
+        (score.evidence_transition or {}).get("authoritative_evidence_revision")
         or selected_evidence.get("content_hash")
         or selected_evidence.get("production_batch_fingerprint")
         or selected_evidence.get("track_revision")
@@ -2215,8 +2214,12 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
             "evidence_sink": proposal.meta.get("evidence_sink"),
             "driver_inserted": proposal.meta.get("driver_inserted"),
             "insertion_purpose": proposal.meta.get("insertion_purpose"),
-            "authoritative_evidence_revision": proposal.meta.get(
-                "authoritative_evidence_revision"),
+            # The proposal-wide identity keeps the established transition-first chain.  Shadow
+            # eligibility instead joins prospectively formed provenance to the exact selected
+            # completed master, so it must never inherit that transition identity.
+            "authoritative_evidence_revision": (
+                str(selected_evidence["master_revision"])
+                if selected_evidence.get("master_revision") is not None else None),
             "hkl": [float(h), float(k), float(l)],
         },
     )

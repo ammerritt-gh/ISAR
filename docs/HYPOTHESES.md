@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for declaring expected excitations
 > **Provenance:** hand-written
-> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Verified against code revision:** `b6db5bc` (2026-08-03)
 
 > **Status: Implemented (branch hypotheses).** The branch schema, shipped presets, frozen objective fingerprint, parameter
 > priors, branch-MI acquisition, opening moves, deterministic widening, incremental count batches,
@@ -170,6 +170,12 @@ scope: changing a diagnostic partition or Monte Carlo count must not claim the e
 changed, and a policy may bind to the current campaign without recursively hashing itself. The
 `scan_window_eig_mode` intent remains in the ordinary steering snapshot; card-only scope-binding
 markers and authoring records never survive into a frozen objective.
+
+The block was added without changing `isar.objective/2`, so historical `/2` records may omit it. On
+read, omission materializes the authenticated no-policy/default-scoring value; new serialization
+always writes the block. This compatibility rule does not merge current card intent into a frozen
+record: full specs, envelopes, and resumes remain self-contained, and explicit null or authoring
+markers are invalid.
 
 Resolution precedence is deterministic: an energy/gap stated in the natural-language goal wins;
 otherwise a matching `[hypotheses.<target>]` card declaration wins; otherwise the shipped preset is

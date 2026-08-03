@@ -234,14 +234,9 @@ def _campaign_configuration(
         return None, "campaign_configuration_missing"
     try:
         from isar.drive.objective import ObjectiveSpec
-        from isar.schema.eig_policy import ScanWindowEIGConfig
         del core
-        objective_record = dict(starts[0])
-        # Retained Slice 5.1 campaigns predate the additive Slice 6 objective block.  This
-        # historical adapter is intentionally local to offline discovery; live --spec, envelope,
-        # and resume reads require the explicit frozen block.
-        objective_record.setdefault("scan_window_eig", ScanWindowEIGConfig().to_dict())
-        return _current_objective_comparison_scope(ObjectiveSpec.from_dict(objective_record)), None
+        return _current_objective_comparison_scope(
+            ObjectiveSpec.from_dict(dict(starts[0]))), None
     except (TypeError, ValueError) as error:
         _LOG.warning("campaign configuration is unavailable for %s: %s", campaign_root.name, error)
         return None, "campaign_configuration_invalid"

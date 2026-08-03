@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the steering research foundation and the current controller contract
 > **Provenance:** hand-written
-> **Verified against code revision:** `da760f2` plus the STAT-1 working tree (2026-07-29)
+> **Verified against code revision:** `b6db5bc` (2026-08-03)
 
 > **Status: design locked; the core is built.** The model-free descriptor (L0), branch model +
 > normalized branch-assignment scoring, soft/hard Γ constraints, Stokes-only rescue, under-model
@@ -109,6 +109,19 @@ unsupported policy, and unexpected scorer failure all persist diagnostic unavail
 continue with the same legacy request. The score envelope and variant fingerprints travel only as
 compact provenance; they do not enter the finalized request fingerprint. Historical inventory `/2`
 remains a strict read contract and is never reminted as `/3`.
+
+The allowance is cooperative, not preemptive: the adapter checks before each synchronous variant
+score and again after it returns. If the second check crosses the deadline, that raw score set is
+discarded before validation, the current and remaining variants record `shadow_scoring_deadline`,
+and the in-flight legacy proposal continues normally.
+
+The proposal-wide `authoritative_evidence_revision` remains transition-first and continues to name
+the evidence transition used by proposal/request identity. Shadow scoring has a narrower exact-source
+join: its in-memory action provenance names the selected completed master's `master_revision` (or
+null), independently of the proposal-wide revision. This preserves off/shadow request parity while
+refusing same-Q or later-master substitution. Historical `isar.objective/2` records that omit the
+additive `scan_window_eig` block load as no-policy/default-scoring objectives; readers never consult
+the current card to supplement such a full spec, envelope, or resume record.
 Alongside the interval/no-progress brakes there is an identity-space one, `identity_saturated`, for
 the case those cannot speak to — an identity-ambiguous q never matches the target branch, so it never
 accumulates the pooled-master updates `interval_floored` reads. It requires both the target
@@ -360,9 +373,10 @@ So the chosen engine is:
    branch-confusion proxy remains only in the explicit classification/opening-move fallback where a
    master predictive artifact does not yet exist; it is not the acquisition score for a usable master.
    Here a “candidate” is a scientific action/Q alternative whose counts are already evaluated on its
-   master's fitted grid. The controller generates alternative energy windows for one action in
-   `shadow` mode but does **not** score or select among them; that planned interface is specified in
-   `EIG_STEERING_DESIGN.md`.
+   master's fitted grid. In `shadow` mode the controller may diagnostically score the exact
+   `legacy_uniform/1` and `target_core/1` pair from one exact eligible source master, but still never
+   selects among them: it executes the legacy control in every outcome. The restricted contract is
+   specified in `EIG_STEERING_DESIGN.md`.
 
 **Honest limit:** at single-digit counts the information is simply not there; no method conjures it.
 Correct behaviour is to report low confidence honestly and let EIG decide *count more here / move*;

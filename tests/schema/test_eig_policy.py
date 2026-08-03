@@ -137,12 +137,20 @@ def test_explicit_frozen_spec_accepts_bounded_nondefault_scoring_and_rejects_aut
         ObjectiveSpec.from_dict(malformed)
 
 
-def test_full_frozen_objective_requires_explicit_scan_window_eig_and_never_uses_card_authoring():
+def test_legacy_objective_two_omission_materializes_no_policy_defaults_without_card_supplement():
     objective = _build_spec(_goal_data(), {"tier": "deterministic", "step_h": 0.05})
     missing = objective.to_dict()
     del missing["scan_window_eig"]
-    with pytest.raises(ValueError, match="requires scan_window_eig"):
-        ObjectiveSpec.from_dict(missing)
+    restored = ObjectiveSpec.from_dict(missing)
+    assert restored.steering["scan_window_eig_mode"] == "shadow"
+    assert restored.scan_window_eig.policy_set is None
+    assert restored.scan_window_eig.scoring_config == ScanWindowShadowScoringConfig()
+    assert restored.to_dict()["scan_window_eig"] == ScanWindowEIGConfig().to_dict()
+
+    explicit_null = objective.to_dict()
+    explicit_null["scan_window_eig"] = None
+    with pytest.raises(TypeError, match="scan_window_eig"):
+        ObjectiveSpec.from_dict(explicit_null)
 
     authoring_marker = objective.to_dict()
     authoring_marker["scan_window_eig_policy_set"] = _authoring()
@@ -150,7 +158,7 @@ def test_full_frozen_objective_requires_explicit_scan_window_eig_and_never_uses_
         ObjectiveSpec.from_dict(authoring_marker)
 
     restored = spec_from_dict(
-        objective.to_dict(),
+        missing,
         card_eig_policy_set={"this would fail if consulted": True},
     )
     assert restored.scan_window_eig.policy_set is None

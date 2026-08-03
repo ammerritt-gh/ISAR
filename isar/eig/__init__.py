@@ -21,6 +21,7 @@ from .scorer import (
 from .shadow_inventory import (
     ScanDesignShadowScoring,
     ScanDesignShadowVariant,
+    ScoreRefusalEvidence,
     ShadowSeedEvidence,
     derive_shadow_seed,
     score_shadow_inventory,
@@ -54,6 +55,7 @@ __all__ = [
     "ScanWindowShadowScoringConfig",
     "ScanDesignShadowScoring",
     "ScanDesignShadowVariant",
+    "ScoreRefusalEvidence",
     "ShadowSeedEvidence",
     "adapt_omega0_target_projection",
     "build_scan_window_design_measure",

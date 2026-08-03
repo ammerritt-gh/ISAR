@@ -357,8 +357,6 @@ class ObjectiveSpec:
         unknown = set(d) - ({"schema"} | set(cls.__dataclass_fields__))
         if unknown:
             raise ValueError(f"full frozen objective fields are invalid: {sorted(unknown)}")
-        if "scan_window_eig" not in d:
-            raise ValueError("full frozen objective requires scan_window_eig")
         return cls(
             path=[tuple(p) for p in d["path"]],
             tolerance_meV=float(d["tolerance_meV"]),
@@ -382,7 +380,12 @@ class ObjectiveSpec:
             hypothesis_source=d.get("hypothesis_source"),
             hypothesis_fingerprint=d.get("hypothesis_fingerprint"),
             steering=dict(d.get("steering") or {}),
-            scan_window_eig=d["scan_window_eig"],
+            # ``scan_window_eig`` was added to objective/2 without minting a new objective schema.
+            # Old frozen objective/2 records therefore read as the frozen no-policy/default-scoring
+            # value.  New writers still materialize the block through ``to_dict``; an explicit null
+            # remains invalid and is deliberately not treated as omission.
+            scan_window_eig=(
+                ScanWindowEIGConfig() if "scan_window_eig" not in d else d["scan_window_eig"]),
             analysis_limit_seconds=(d["analysis_limit_seconds"]
                                     if "analysis_limit_seconds" in d else _DEFAULT_ANALYSIS_LIMIT),
         )

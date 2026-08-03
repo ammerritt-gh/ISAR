@@ -74,11 +74,10 @@ from isar.schema.hypotheses import (
     SCAN_WINDOW_EIG_AUTHORITATIVE_UNAVAILABLE,
     SCAN_WINDOW_EIG_MODES,
 )
-from isar.eig.shadow_inventory import (
+from isar.schema.eig_shadow import (
     STATUS_COMPLETE as SHADOW_STATUS_COMPLETE,
     STATUS_PARTIAL as SHADOW_STATUS_PARTIAL,
     ScanDesignShadowScoring,
-    validate_shadow_candidate_pair,
     validate_scan_design_shadow_scoring,
 )
 
@@ -602,8 +601,6 @@ class ScanDesignInventory:
                                "shadow_scoring_not_run"))
                 object.__setattr__(self, "shadow_scoring", scoring)
             validate_scan_design_shadow_scoring(scoring)
-            if scoring.candidate_pair is not None:
-                validate_shadow_candidate_pair(self, scoring.candidate_pair)
             if self.context.scan_window_eig_mode == "off":
                 if scoring.status != "not_requested":
                     raise ValueError("off-mode scan design cannot carry shadow scores")
@@ -735,7 +732,20 @@ def validate_scan_design_inventory(value: Any) -> ScanDesignInventory:
     """Reauthenticate one in-memory inventory and every nested Slice 6 record."""
     if not isinstance(value, ScanDesignInventory):
         raise TypeError("value must be a ScanDesignInventory")
-    return ScanDesignInventory.from_dict(value.to_full_dict())
+    inventory = ScanDesignInventory.from_dict(value.to_full_dict())
+    scoring = inventory.shadow_scoring
+    has_deep_evidence = bool(scoring is not None and (
+        scoring.status in {SHADOW_STATUS_COMPLETE, SHADOW_STATUS_PARTIAL}
+        or scoring.scoring_config is not None or scoring.policy_set is not None
+            or scoring.policy_match is not None or scoring.eligibility is not None
+            or scoring.design_measure is not None or scoring.candidate_pair is not None
+            or scoring.seed_evidence is not None or scoring.variants))
+    if inventory.inventory_version == SCAN_DESIGN_INVENTORY_SCHEMA and has_deep_evidence:
+        # The construction/import path stays lightweight.  Strict public validation deliberately
+        # crosses the deep EIG seam only when a /3 inventory actually contains shadow evidence.
+        from isar.eig.shadow_inventory import validate_scan_design_shadow_scoring as deep_validate
+        deep_validate(scoring, inventory=inventory)
+    return inventory
 
 
 def load_scan_design_inventory(reference: Mapping[str, Any], workspace: str | Path
@@ -774,7 +784,7 @@ def load_scan_design_inventory(reference: Mapping[str, Any], workspace: str | Pa
     semantic_digest = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
     if semantic_digest != digest:
         raise ValueError("scan-design inventory artifact content address is invalid")
-    inventory = ScanDesignInventory.from_dict(payload)
+    inventory = validate_scan_design_inventory(ScanDesignInventory.from_dict(payload))
     if inventory.content_hash() != digest:
         raise ValueError("scan-design inventory reconstructed content address is invalid")
     return inventory

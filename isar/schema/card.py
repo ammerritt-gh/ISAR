@@ -275,7 +275,7 @@ class Card:
                     errs.append(f"hypotheses.{name}: {exc}")
         if not isinstance(pol.scan_window_eig_policy_set, dict):
             errs.append("scan_window_eig_policy_set must be a table")
-        else:
+        elif pol.scan_window_eig_policy_set:
             try:
                 from isar.eig.policy import validate_card_eig_policy_authoring
                 validate_card_eig_policy_authoring(pol.scan_window_eig_policy_set)

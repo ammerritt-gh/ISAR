@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the append-only ruling ledger; IDs are stable citation anchors (D2, D4)
 > **Provenance:** hand-written
-> **Verified against code revision:** `b543f6f` (2026-08-02)
+> **Verified against code revision:** `b6db5bc` (2026-08-03)
 
 Append-only ledger of design rulings. IDs are stable citation anchors (D2). Started at the
 2026-07-09 design review; each ruling is final unless explicitly reopened; "future" means
@@ -1137,6 +1137,32 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   they never catch process interrupts. Realization clamps run afterward and do not relabel the
   pre-finalization comparison. Slice 7 realized-request rescoring, thresholds, winners,
   recommendations, and authoritative selection remain planned and forbidden in Slice 6 evidence.
+
+- **O39.** (2026-08-03, Implemented compatibility and provenance correction to O38) **An omitted
+  `scan_window_eig` block in a frozen `isar.objective/2` means the authenticated no-policy default
+  scoring configuration; it does not authorize card supplementation, and exact-master shadow
+  provenance does not rewrite the proposal's established evidence identity.** Slice 6 added the
+  top-level block without minting an objective `/3`, so the `/2` reader accepts historical omission
+  and materializes `ScanWindowEIGConfig()` (128 simulations, eight blocks, eight runtime variants,
+  no policy). New serialization always emits the complete frozen block. Explicit null, malformed
+  records, unknown fields, and card authoring or binding markers still refuse. Full spec, envelope,
+  and resume inputs remain self-contained; a historical `shadow` objective with no policy therefore
+  produces an unscored legacy control, never a card-derived score.
+
+  The proposal-wide `authoritative_evidence_revision` retains the pre-Slice transition-first fallback
+  chain because it participates in finalized request identity. The in-memory
+  `ShadowScoringSource.action_provenance`, by contrast, records the exact selected completed master's
+  `master_revision` (or null) used by Slice 2 eligibility. These are deliberately separate meanings:
+  a transition revision preserves off/shadow request parity, while the exact master revision prevents
+  same-Q, later-master, or cross-revision substitution in diagnostic scoring.
+
+  The scan-design layer owns only lightweight `isar.schema.eig_shadow` records; strict scored `/3`
+  reads invoke numerical EIG validation lazily. Pair refusal precedence is degenerate alias, exact
+  target-generator refusal, missing family, ambiguous family, exposure mismatch, then remaining pair
+  invalidity, all before prediction. Incomplete Slice 4 variants may retain fingerprinted nonnumeric
+  `score_refusal_evidence`, omitted otherwise for payload compatibility. The five-second allowance is
+  cooperative: a deadline check immediately after a synchronous scorer return discards that raw score
+  set and marks the current and remaining variants unavailable without changing the legacy request.
 
 ## Session status update
 
