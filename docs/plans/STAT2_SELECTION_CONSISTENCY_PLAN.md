@@ -2,11 +2,12 @@
 
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
-> **Verified against code revision:** `b543f6f` (2026-08-02)
+> **Verified against production anchor:** `ce490fec5badbc76e8799b7fb3f84ef5c201b855` (2026-08-03)
 > **Owner:** @ammerritt-gh
 > **Status:** STAT-2a, the STAT-2a.1 evidence-contract repair, and the corrected STAT-2b evidence
 > harness are implemented (repair commit `5767dea`); corrected STAT-2b.1 evidence is complete and
-> S8 is recorded. Production remains AIC; no AICc switch is authorized. Difficult-regime findings
+> S8 is recorded. The STAT-2b.1 source-closure upkeep candidate is constructed but remains
+> unapproved. Production remains AIC; no AICc switch is authorized. Difficult-regime findings
 > remain open, STAT-2c and STAT-2d remain pending, and restricted EIG-4 may proceed independently
 > under O36.
 > **Exit criteria:** STAT-2a through STAT-2d are implemented and verified; accepted behavior is
@@ -657,6 +658,17 @@ The complete held-out aggregate is preserved with the dated historical record at
 S8 accepts the completed evidence, retains production AIC, and authorizes no AICc switch. S8 does
 not authorize STAT-2c or another production-selection authority change; STAT-2c requires a separate
 owner decision.
+
+STAT-2b.1 source-closure upkeep is governed separately by S9. The historical gate and completed
+aggregate are immutable execution evidence, not refreshable production manifests. Current
+production closure is maintained in a candidate/active manifest cycle rooted at production anchor
+`ce490fec5badbc76e8799b7fb3f84ef5c201b855`. A protected-semantic mismatch requires selection or
+evidence-contract review with proportionate proof; a protected-adjacent mismatch requires bounded
+source review and focused parity; a newly reached dependency remains unclassified until reviewed.
+A branch may be temporarily red while its boundary is being updated, but the mismatch must be
+closed before the statistical slice or containing PR merges. Passing checks never constitute owner
+approval. The dated upkeep evidence is
+[`../campaigns/2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md`](../campaigns/2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md).
 
 Compare:
 

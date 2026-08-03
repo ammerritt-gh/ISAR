@@ -151,13 +151,24 @@ def test_repo_specs_load_and_heldout_matrix_is_fingerprinted():
     assert active_gate["heldout_realizations"] == 103
     assert active_gate["workers"] == 24
     assert active_gate["campaign_spec_fingerprint"] == heldout.fingerprint
+    # The gate authenticates only the frozen execution environment.  Its own
+    # historical source map remains valid, while the present production tree is
+    # expected to be refused before any held-out work is initialized.
     assert campaign._validate_gate(
         heldout,
         active_gate_path,
-        source_hashes=campaign._source_hashes(root),
+        source_hashes=active_gate["source_hashes"],
         runtime_fingerprint=active_gate["numerical_runtime_fingerprint"],
         workers=24,
     ) == active_gate
+    with pytest.raises(RuntimeError, match="campaign source hashes changed"):
+        campaign._validate_gate(
+            heldout,
+            active_gate_path,
+            source_hashes=campaign._source_hashes(root),
+            runtime_fingerprint=active_gate["numerical_runtime_fingerprint"],
+            workers=24,
+        )
     old_gate_path = root / "tools/stats/stat2b-heldout-gate.json"
     old_gate = json.loads(old_gate_path.read_text(encoding="utf-8"))
     old_status = json.loads(

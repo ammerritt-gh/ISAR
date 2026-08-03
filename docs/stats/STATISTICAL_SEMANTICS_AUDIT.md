@@ -2,7 +2,7 @@
 
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
-> **Verified against code revision:** `b543f6f` (2026-08-02)
+> **Verified against production anchor:** `ce490fec5badbc76e8799b7fb3f84ef5c201b855` (2026-08-03)
 > **Owner:** @ammerritt-gh
 > **Exit criteria:** STAT-6 has transferred every accepted semantic contract into the canonical
 > statistical, steering, schema, and decision documents; every rejected hypothesis is recorded; the
@@ -551,6 +551,12 @@ and exact/partial/fresh/skipped/unavailable execution provenance records which c
 were reused or newly fitted. Execution provenance is intentionally outside the standard-selection
 fingerprint, and `/1` remains a supported read format.
 STAT-2b remains the frozen evidence campaign; STAT-2c remains the first possible authority switch.
+S9 separates immutable historical execution evidence from the maintained production source
+closure. Protected-semantic drift requires selection/evidence review and proportionate proof;
+protected-adjacent drift requires bounded source review and focused parity. A newly reached local
+dependency is unclassified until reviewed, and no passing audit can manufacture owner approval.
+The 2026-08-03 upkeep candidate is pending that explicit approval and changes no statistical
+authority.
 
 Hard-conditioned fits may be weight-eligible only when the constraint is independently specified,
 common to the comparison question, and reflected in `k`. Data-dependent rescue/post-selection

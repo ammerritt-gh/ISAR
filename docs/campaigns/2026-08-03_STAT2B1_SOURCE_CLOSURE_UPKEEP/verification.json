@@ -1,0 +1,65 @@
+{
+  "commands": [
+    {
+      "command": "python -m py_compile tools\\stats\\_stat2b_source_closure.py tools\\stats\\stat2b_source_closure.py tests\\stats\\test_stat2b_source_closure.py isar\\synth\\tests\\test_stat2b_campaign.py tests\\session\\test_target_projection.py",
+      "deselected": 0,
+      "duration_seconds": 0.2,
+      "failed": 0,
+      "files_checked": 5,
+      "passed": 5,
+      "skipped": 0
+    },
+    {
+      "command": "python -m pytest tests\\stats\\test_stat2b_source_closure.py tests\\analyze\\test_select.py tests\\analyze\\test_select_modality.py tests\\analyze\\test_shadow_selection.py isar\\synth\\tests\\test_stat2b_campaign.py isar\\synth\\tests\\test_stat2b_criteria.py isar\\synth\\tests\\test_stat2b_runtime.py isar\\synth\\tests\\test_stat2b_scaling.py isar\\synth\\tests\\test_stat2b_spec_truth.py tests\\session\\test_statistical_semantics.py tests\\session\\test_master_predictive.py tests\\session\\test_target_projection.py tests\\schema\\test_statistics.py tests\\docs\\test_stat2b_heldout_evidence.py -q",
+      "deselected": 0,
+      "duration_seconds": 91.53,
+      "failed": 0,
+      "passed": 282,
+      "skipped": 0
+    },
+    {
+      "command": "python -m pytest tests\\docs -q",
+      "deselected": 0,
+      "duration_seconds": 3.78,
+      "failed": 0,
+      "passed": 92,
+      "skipped": 1
+    },
+    {
+      "command": "python -m pytest -m \"not slow\" -n 16 --dist worksteal",
+      "deselected": 39,
+      "deselection_basis": "3503 full-suite items minus 3464 non-slow items",
+      "duration_seconds": 80.67,
+      "failed": 0,
+      "passed": 3456,
+      "skipped": 8
+    },
+    {
+      "command": "python -m pytest -n 16 --dist worksteal",
+      "deselected": 0,
+      "duration_seconds": 508.34,
+      "failed": 0,
+      "passed": 3495,
+      "skipped": 8
+    }
+  ],
+  "parity_checks": [
+    {
+      "check": "historical gate bytes, campaign-source identity, semantic gate identity, and evaluator identity",
+      "status": "passed"
+    },
+    {
+      "check": "authenticated held-out aggregate replay reproduces authority_withheld and the committed replay fingerprint",
+      "status": "passed"
+    },
+    {
+      "check": "selection, shadow-selection, predictive, target-projection, statistical-join, and held-out evidence parity",
+      "status": "passed"
+    },
+    {
+      "check": "portable candidate content verification and Git-backed protected-source parity with the approved production anchor",
+      "status": "passed"
+    }
+  ],
+  "status": "passed"
+}

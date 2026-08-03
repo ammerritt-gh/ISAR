@@ -144,6 +144,19 @@ contract changes are additive only (DESIGN §4).
    it. Real-data subset needs local `test_data/`; `live` needs TAVI at `127.0.0.1:8642`.
 4. **Status discipline:** DESIGN §15 marks every capability Implemented / Partial / Planned. Do not
    describe Planned work in the implemented voice, and match that table when you change status.
+5. **STAT-2b history is immutable:** never refresh the completed held-out gate or aggregate to match
+   current production. Authenticate and replay them at their frozen byte/source identities; maintain
+   current production closure in the separate candidate/active manifest cycle governed by S9.
+6. **Close protected drift before merge:** a protected-semantic mismatch requires selection or
+   evidence-contract review with proportionate proof; protected-adjacent drift requires bounded
+   source review and focused parity. A branch may be temporarily red while the boundary is updated,
+   but the mismatch must be closed before its statistical slice or containing PR merges.
+7. **No automatic source-closure approval:** passing tests and verification establish eligibility
+   for review, never owner approval. Promotion requires an explicit owner decision and a separate
+   minimal commit that changes no protected production source.
+8. **The whole driver is selection-critical:** protect all of `isar/session/driver.py`. Even a
+   harmless change needs source review and focused parity until authority-seam extraction lands as a
+   separately reviewed refactor.
 
 ## Documentation policy (what a document is allowed to be)
 

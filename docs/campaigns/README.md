@@ -43,6 +43,7 @@ which ruling settled it. That is worth keeping and worth not mistaking for a con
 | 2026-07-30 | [2026-07-30_STAT2B1_CORRECTED_DEVELOPMENT.md](2026-07-30_STAT2B1_CORRECTED_DEVELOPMENT.md) | Repair STAT-2b delivery deduplication, measure 4/8/16/24/28-worker scaling, and rerun development | Corrected development complete; 24 workers selected; renewed held-out approval pending | [STAT2_SELECTION_CONSISTENCY_PLAN.md](../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md) |
 | 2026-07-31 | [2026-07-31_STAT2B1_HELDOUT.md](2026-07-31_STAT2B1_HELDOUT.md) | Sealed STAT-2b.1 held-out criterion comparison | Complete; frozen gate withheld authority for an AICc switch | [STAT2_SELECTION_CONSISTENCY_PLAN.md](../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md) |
 | 2026-08-02 | [2026-08-02_EIG4_SLICE1_CENSUS.md](2026-08-02_EIG4_SLICE1_CENSUS.md) | EIG-4 Slice 1 eligibility census | Eligibility not measurable; current contract incomplete | [EIG_STEERING_DESIGN.md](../EIG_STEERING_DESIGN.md) |
+| 2026-08-03 | [2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md](2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md) | Authenticate historical STAT-2b.1 evidence and construct a current production source-closure candidate | Candidate constructed; owner approval deliberately pending | [STAT2_SELECTION_CONSISTENCY_PLAN.md](../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md) |
 
 ## Analysis-core checks and forward notes
 

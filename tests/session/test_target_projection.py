@@ -15,6 +15,8 @@ import numpy as np
 import pytest
 
 from isar.analyze.context import ScanContext
+from isar.predictive import target_projection_set_fingerprint
+from isar.schema.statistics import semantics_fingerprint
 from isar.session import driver, predictive_artifact
 from isar.session.predictive_artifact import build_master_predictive, build_target_projection
 
@@ -105,6 +107,39 @@ def test_the_projection_follows_the_tracked_target_not_the_fits_local_best(monke
     assert model["target_qoi_draws"] == pytest.approx([row[1] for row in modes])
     # The whole point: the old in-/2 projection would have published the 2.0 mode here.
     assert model["target_qoi_draws"] != pytest.approx(payload["models"][0]["omega0_draws"])
+
+
+def test_projection_set_helper_is_byte_semantic_parity_with_the_historical_producer():
+    """The Slice-6 helper extraction must not change the accepted evidence identity."""
+    artifact = {
+        **_hand_artifact([[2.0], [2.1]], label="one", weight=0.75),
+        "models": [
+            _hand_artifact([[2.0], [2.1]], label="one", weight=0.75)["models"][0],
+            _hand_artifact([[5.0], [5.1]], label="two", weight=0.25)["models"][0],
+        ],
+    }
+    projection = build_target_projection(
+        artifact, _outcome(omega0=2.0), **_AUTHORITY
+    )
+    historical_payload = sorted(
+        [
+            {
+                "label": model.get("label"),
+                "weight": model.get("weight"),
+                "draw_count": len(model.get("target_present_by_draw") or ()),
+            }
+            for model in projection["models"]
+        ],
+        key=lambda item: str(item["label"]),
+    )
+    historical = semantics_fingerprint(
+        "isar.target_projection_model_set/1", historical_payload
+    )
+
+    assert [model["label"] for model in projection["models"]] == ["one", "two"]
+    assert [model["weight"] for model in projection["models"]] == [0.75, 0.25]
+    assert target_projection_set_fingerprint(projection["models"]) == historical
+    assert projection["target_projection_set_fingerprint"] == historical
 
 
 def test_mode_identity_can_switch_between_draws_without_switching_the_target():

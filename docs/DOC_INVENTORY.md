@@ -151,6 +151,7 @@ a current behavioural contract.**
 | `docs/campaigns/2026-07-31_STAT2B1_HELDOUT.md` | Historical evidence | Completed STAT-2b.1 held-out evidence; the frozen gate withheld authority for an AICc switch, and S8 records the resulting retain-AIC disposition |
 | `docs/campaigns/2026-08-02_EIG4_SLICE1_CENSUS.md` | Historical evidence | Reviewed Slice 1 census evidence; the current contract remains `EIG_STEERING_DESIGN.md` |
 | `docs/campaigns/2026-08-03_EIG4_SLICE5_OFFLINE.md` | Historical evidence | Retained Slice 5.1 discovery and zero-policy score evidence; the current contract remains `EIG_STEERING_DESIGN.md` |
+| `docs/campaigns/2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md` | Historical evidence | STAT-2b.1 historical replay and unapproved production source-closure upkeep evidence; S9 and the STAT-2 plan govern the current approval boundary |
 | `docs/campaigns/2026-07_AP1_BRANCH_MAPPING_DEADLOCK.md` | Historical evidence | — |
 | `docs/campaigns/2026-07_AP3_GLOBAL_BRANCH_EVIDENCE.md` | Historical evidence | — |
 | `docs/campaigns/2026-07_MVP_ZONE_RETEST.md` | Historical evidence | Was cited by `README.md` as "current test state"; re-pointed |

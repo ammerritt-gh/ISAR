@@ -1164,6 +1164,29 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   cooperative: a deadline check immediately after a synchronous scorer return discards that raw score
   set and marks the current and remaining variants unavailable without changing the legacy request.
 
+- **S9.** (2026-08-03, In force; governance and evidence-maintenance rule, no production behavior
+  change) **Completed STAT-2b.1 execution evidence is immutable, while current production source
+  closure is maintained through an explicitly approved candidate cycle.** The historical held-out
+  gate, evaluator identity, and committed aggregate are authenticated and replayed at their frozen
+  identities; they are never refreshed to make current source pass. Current production closure is a
+  separate manifest rooted at an approved production anchor.
+
+  Protected-semantic drift requires selection or evidence-contract review and proportionate proof.
+  Protected-adjacent drift requires bounded source review and focused parity. A repository-local
+  dependency newly reached from the protected boundary is unclassified until reviewed; only a
+  dependency incapable of affecting that path may be recorded as unrelated and exempt. The whole
+  `isar/session/driver.py` remains protected as the high-churn selection-critical owner until any
+  authority-seam extraction is separately reviewed.
+
+  A mismatch may remain visible while an in-flight branch updates its closure record, but it must be
+  closed before that statistical slice or containing PR merges. Candidate construction and passing
+  verification never grant approval. Promotion requires explicit owner review of the complete
+  boundary, exemptions, classifications, and candidate fingerprint, followed by a separate minimal
+  approval commit that changes no protected production source or immutable review evidence.
+
+  S9 does not amend S8: production remains AIC, no AICc switch is authorized, difficult-regime
+  findings remain open, and neither STAT-2c, Slice 7, nor another statistical campaign is authorized.
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:
