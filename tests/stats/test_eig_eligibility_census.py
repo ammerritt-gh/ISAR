@@ -63,7 +63,7 @@ def _persist_pending_action(campaign: Path, *, action_class="production", consum
         "evidence_basis_fingerprint": "master-r1", "hypotheses_fingerprint": "hyp",
         "campaign_slice_fingerprint": "slice", "evidence_sink": "canonical_master",
     }
-    fingerprint = "scientific-action"
+    fingerprint = ENGINE.scientific_fingerprint_from_mapping(intent)
     inventory = {
         "inventory_version": "isar.action_inventory/1", "evaluations": [{
             "scientific_action_fingerprint": fingerprint, "intent": intent,
@@ -486,7 +486,20 @@ def test_scan_design_events_use_typed_realization_and_acquisition_linked_recover
     (directory / f"{malformed_digest}.json").write_text(json.dumps(malformed), encoding="utf-8")
     malformed_ref = {"kind": "scan_design_inventory", "sha256": malformed_digest,
                      "path": f"report/scan-design/{malformed_digest}.json"}
-    assert ENGINE._scan_design_details(root, malformed_ref)["status"] == "passed"
+    malformed_details = ENGINE._scan_design_details(root, malformed_ref)
+    assert malformed_details["status"] == "failed"
+    assert malformed_details["reason_code"] == "selected_candidate_invalid"
+    for broken in (
+        {**inventory, "candidates": ["not-a-mapping"]},
+        {**inventory, "candidates": inventory["candidates"] * 2},
+    ):
+        broken_digest = ENGINE._sha256_bytes(canonical_json(broken).encode("utf-8"))
+        (directory / f"{broken_digest}.json").write_text(json.dumps(broken), encoding="utf-8")
+        details = ENGINE._scan_design_details(root, {
+            "kind": "scan_design_inventory", "sha256": broken_digest,
+            "path": f"report/scan-design/{broken_digest}.json"})
+        assert details["status"] == "failed"
+        assert details["reason_code"] == "candidate_ids_nonunique_or_malformed"
     (directory / f"{digest}.json").write_text(json.dumps(malformed), encoding="utf-8")
     assert ENGINE._scan_design_details(root, ref)["reason_code"] == "content_address_mismatch"
 
@@ -546,9 +559,31 @@ def test_current_omega0_adapter_accepts_the_real_authenticated_producer_contract
     driver.run_batch(workspace, [source], M=25, detectors="det0", formats=(), workers=1,
                      errors_tier="fast")
     _card, session = workspace.load()
-    outcome = next(
-        value for key, entry in session.scans.items() if key.startswith("master:")
+    producer_entry, producer_outcome = next(
+        (entry, value) for key, entry in session.scans.items() if key.startswith("master:")
         for value in entry.detectors.values() if value.get("predictive_ref"))
+    outcome_view = ENGINE._outcome_view(producer_outcome, producer_entry)
+    assert outcome_view["hkl"] == producer_outcome["q"]
+    action_intent = {
+        "action_class": "production", "hkl": outcome_view["hkl"],
+        "energy_lo": 1.0, "energy_hi": 3.0, "window_family": "target",
+        "target_branch_role": None, "rival_branch_role": None,
+        "evidence_basis_fingerprint": "basis", "hypotheses_fingerprint": "hyp",
+        "campaign_slice_fingerprint": "slice", "evidence_sink": "canonical_master",
+    }
+    action_fingerprint = ENGINE.scientific_fingerprint_from_mapping(action_intent)
+    action_result = ENGINE.evaluate_eig_eligibility(ENGINE.EligibilityInput.from_current_contract(
+        action_intent={**action_intent, "scientific_action_fingerprint": action_fingerprint},
+        action_provenance={
+            "action_class": "production", "scientific_action_fingerprint": action_fingerprint,
+            "proposal_scientific_action_fingerprint": action_fingerprint,
+            "acquisition_action_role": "production", "evidence_sink": "canonical_master",
+            "driver_inserted": False, "insertion_purpose": None,
+            "authoritative_evidence_revision": "producer-master", "hkl": outcome_view["hkl"],
+        }, target_outcome={**outcome_view, "master_revision": "producer-master"},
+        selection_record=None, qoi_evidence=None, shadow_record=None))
+    assert "action_not_canonical_target" not in action_result.scientific_codes
+    outcome = producer_outcome
     predictive = json.loads((workspace.root / outcome["predictive_ref"]).read_text(encoding="utf-8"))
     outcome = {
         "pooled": True, "omega0": 3.0, "target_delivery_eligible": True,
@@ -569,6 +604,11 @@ def test_current_omega0_adapter_accepts_the_real_authenticated_producer_contract
         "excitation.energy", "meV", "omega0")
     masses = dict(evidence.diagnostics)["particle_source_masses"]
     assert masses["target_present"] + masses["target_absent"] == 1.0
+    census_masses = ENGINE._qoi_particle_masses(evidence)
+    assert sum(census_masses[name] for name in (
+        "observed_bootstrap_source_mass", "observed_nested_source_mass",
+        "observed_laplace_source_mass")) == 1.0
+    assert census_masses["target_absent_source_mass"] == masses["target_absent"]
     unknown_authority = adapt_omega0_target_projection(
         predictive, projection, expected_authority={})
     assert unknown_authority.observability_codes == ("projection_currentness_unknown",)

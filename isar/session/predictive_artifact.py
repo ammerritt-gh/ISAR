@@ -32,7 +32,8 @@ from isar.predictive import (PREDICTIVE_ARTIFACT_SCHEMA, PREDICTIVE_CONTRACT,
                              PREDICTIVE_MAX_DROPPED_DRAW_MASS,
                              PREDICTIVE_MAX_PRUNED_MASS, PREDICTIVE_MODEL_WEIGHT_FLOOR,
                              TARGET_PROJECTION_SCHEMA, TARGET_PROJECTION_VERSION, TARGET_QOI,
-                             predictive_basis_fingerprint)
+                             predictive_basis_fingerprint,
+                             target_projection_set_fingerprint as _target_projection_set_fingerprint)
 from isar.predictive import predictive_score as _predictive_score
 from isar.schema.statistics import (
     PREDICTIVE_SCHEMA,
@@ -904,18 +905,8 @@ def build_target_projection(artifact, outcome, *, master_revision, calibration_f
         for item in projected:
             item["target_qoi_draws"] = [None] * len(item["target_present_by_draw"])
     try:
-        target_projection_set_fingerprint = semantics_fingerprint(
-            "isar.target_projection_model_set/1",
-            sorted([
-                {
-                    "label": item.get("label"),
-                    "weight": item.get("weight"),
-                    "draw_count": len(item.get("target_present_by_draw") or ()),
-                }
-                for item in projected
-            ], key=lambda item: str(item["label"])),
-        )
-    except SemanticsConstructionError as exc:
+        target_projection_set_fingerprint = _target_projection_set_fingerprint(projected)
+    except (SemanticsConstructionError, TypeError, ValueError) as exc:
         log.warning(
             "semantics_construction_failed producer=isar.session.predictive_artifact "
             "quantity=target_projection_set reason_code=%s",

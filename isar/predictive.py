@@ -223,6 +223,40 @@ def predictive_basis_fingerprint(*, models, energy_meV, evaluation_context,
     return json_fingerprint(payload)
 
 
+def target_projection_set_fingerprint(models: Sequence[Mapping]) -> str:
+    """Fingerprint the actual records in an ``isar.target_projection/2`` model set.
+
+    The target projection is deliberately outside the physical predictive `/2`
+    artifact.  Its producer and every adapting reader therefore share this
+    small, structural identity calculation rather than trusting a duplicated
+    stored value.  It intentionally captures the historic projection-set
+    identity only: model label, model weight, and the aligned draw count.
+    """
+    records = []
+    for index, model in enumerate(models):
+        if not isinstance(model, Mapping):
+            raise ValueError(f"target projection model {index} must be a mapping")
+        label = model.get("label")
+        if not isinstance(label, str) or not label:
+            raise ValueError(f"target projection model {index} has no label")
+        try:
+            weight = float(model.get("weight"))
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"target projection model {label!r} has no finite weight") from error
+        if not math.isfinite(weight) or weight <= 0.0:
+            raise ValueError(f"target projection model {label!r} has no finite positive weight")
+        present = model.get("target_present_by_draw")
+        if not _is_list(present):
+            raise ValueError(f"target projection model {label!r} has no target-presence draws")
+        records.append({"label": label, "weight": model.get("weight"), "draw_count": len(present)})
+    from isar.schema.statistics import semantics_fingerprint
+
+    return semantics_fingerprint(
+        "isar.target_projection_model_set/1",
+        sorted(records, key=lambda item: str(item["label"])),
+    )
+
+
 # --------------------------------------------------------------------------------------------
 # The one strict validator (ADR-020)
 # --------------------------------------------------------------------------------------------

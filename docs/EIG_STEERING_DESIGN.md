@@ -171,6 +171,14 @@ Slice 2 freezes the pre-comparison eligibility seam. Its action predicate admits
 and the same canonical nine-decimal HKL as the target. A projection authority `action_role` describes
 fit/refit authority (for example `certification`), not acquisition intent, and never decides this gate.
 
+The derived Slice 2 evidence revision is `o36.2`; predictive `/2` and target-projection `/2` payloads
+remain unchanged. An action is authenticated by reconstructing the persisted `MeasurementIntent` and
+recomputing its scientific fingerprint. The content-addressed inventory evaluation, proposal metadata,
+and action provenance must all carry that same value; class, sink, canonical Q, and authoritative master
+revision must agree as well. Target Q is normalized in the single order `hkl`, then `target_hkl`, then
+producer-owned `q`. Any missing or inconsistent action identity is `action_context_unknown`, never a
+plausible canonical action.
+
 The runtime supplies the contemporaneous selected intent and finalized-proposal provenance. A completed
 member acquisition is historical input to a master, never a substitute for the pending action whose
 window is under consideration. The census may audit an unresolved persisted `propose` snapshot joined to
@@ -197,6 +205,29 @@ predictive and projection semantics, positional model/draw alignment, source EIG
 the current authority record. A target-present draw must have a finite QoI; a target-absent draw must have
 `null`. Invalid combinations fail closed as projection-record invalidity, not as target absence.
 
+The immutable evidence retains the actual projection authority and its canonical fingerprint; predictive
+basis, retained-set, statistical-semantics, and source-model-selection identities; target-projection-set
+and projection-semantics identities; and a derived QoI-evidence fingerprint over those identities plus
+normalized model/draw evidence. `target_projection_set_fingerprint` is recomputed from actual projection
+records by the shared predictive-contract helper before a stored value is accepted. The old
+`projection_fingerprint` spelling remains a read/constructor compatibility alias only; serialized evidence
+uses the explicit target-projection-set name.
+
+Particle mass is a measure, not a draw count. Equal-weight draws publish `1/n`; explicit predictive draw
+weights are validated and normalized by their positive total, exposed read-only in QoI diagnostics, and
+used for present/absent mass. A missing linkage produces `projection_join_unknown`; any predictive-basis,
+retained-set, semantics, projection-set, model identity/weight, or draw-alignment disagreement produces
+`projection_join_mismatch`. Both outcomes publish no joined QoI models and no authenticated particle mass.
+The validated fit-selection model-selection fingerprint must equal the QoI evidence's predictive source
+identity; absence is an observability gap and disagreement is a scientific join mismatch.
+
+Eligibility's persisted `input_fingerprint` is semantic-only: authenticated action/Q, target/master/tracker
+predicate state, checked selection comparison state, derived QoI identity, standard shadow-selection (or
+the neutral-skip identity), and scan-design inventory/context/recovery identities. It deliberately excludes
+paths, diagnostics, timing, and shadow runtime increments. The census delegates every operational predicate
+to this shared evaluator, uses `FitOutcome.q` before legacy provenance aliases for its target Q, treats past
+member acquisitions as diagnostics only, and aggregates particle masses only from joined QoI evidence.
+
 The scorer core remains independent of omega0/DHO implementation details. The adapter is the sole place
 where the current target-energy producer layout is known.
 
@@ -212,8 +243,8 @@ are post-SVP work.
    every proposed eligibility rejection; distinguish shadow deadline skips from real shadow failures;
    make no behavior changes.
 3. **Slice 2 — freeze eligibility and generic QoI adapter.** Define stable eligibility reason codes
-   and a generic QoI view over `target_projection/2`; do not break target-projection schema unless a
-   real ambiguity is found.
+   and a generic QoI view over `target_projection/2`; `o36.2` strengthens derived identities and
+   fail-closed joins without breaking either source schema.
 4. **Slice 3 — EIG-local homogeneous design measure.** Build an Akaike-weighted parametric-bootstrap
    empirical measure, inspect actual per-model particle basis, and make no production selection switch.
 5. **Slice 4 — pure full-vector Poisson scorer.** Use conditional target-QoI information, the full

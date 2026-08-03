@@ -1,8 +1,10 @@
 """The public EIG eligibility seam, independent of census persistence."""
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
+from isar.drive.acquisition.inventory import scientific_fingerprint_from_mapping
 from isar.analyze.shadow_selection import unavailable_shadow_selection
 from isar.eig import EligibilityInput, QoIProjectionEvidence, evaluate_eig_eligibility
 from isar.schema.statistics import FIT_SELECTION_SCHEMA, authority_scopes, semantics_fingerprint, validate_for_write
@@ -11,8 +13,8 @@ from isar.session import driver
 
 def _evidence(**overrides):
     values = {
-        "contract": "isar.eig_qoi_projection_evidence/o36.1",
-        "adapter_revision": "isar.target_projection_omega0_adapter/1",
+        "contract": "isar.eig_qoi_projection_evidence/o36.2",
+        "adapter_revision": "isar.target_projection_omega0_adapter/2",
         "qoi_id": "excitation.energy",
         "qoi_unit": "meV",
         "source_qoi": "omega0",
@@ -35,15 +37,23 @@ def _input(action_class="production", **overrides):
         "selected_candidate_index": 0, "pool_consistent": True,
         "modality": "fold", "master_revision": "revision-1",
     }
+    intent = {
+        "action_class": action_class, "hkl": [2.0, 0.0, 0.0],
+        "energy_lo": 1.0, "energy_hi": 3.0, "window_family": "target",
+        "target_branch_role": None, "rival_branch_role": None,
+        "evidence_basis_fingerprint": "basis", "hypotheses_fingerprint": "hyp",
+        "campaign_slice_fingerprint": "slice", "evidence_sink": "canonical_master",
+    }
+    fingerprint = scientific_fingerprint_from_mapping(intent)
     provenance = {
-        "action_class": action_class, "scientific_action_fingerprint": "action-fp",
+        "action_class": action_class, "scientific_action_fingerprint": fingerprint,
+        "proposal_scientific_action_fingerprint": fingerprint,
         "acquisition_action_role": "production", "evidence_sink": "canonical_master",
         "driver_inserted": False, "insertion_purpose": None,
-        "authoritative_evidence_revision": "revision-1",
+        "authoritative_evidence_revision": "revision-1", "hkl": [2.0, 0.0, 0.0],
     }
     values = {
-        "action_intent": {"action_class": action_class, "hkl": [2.0, 0.0, 0.0],
-                          "evidence_sink": "canonical_master"},
+        "action_intent": {**intent, "scientific_action_fingerprint": fingerprint},
         "action_provenance": provenance,
         "target_outcome": target,
         "selection_record": None,
@@ -51,6 +61,15 @@ def _input(action_class="production", **overrides):
         "shadow_record": None,
     }
     values.update(overrides)
+    selection = values.get("selection_record")
+    evidence = values.get("qoi_evidence")
+    if (isinstance(selection, dict) and isinstance(evidence, QoIProjectionEvidence)
+            and evidence.predictive_source_model_selection_fingerprint is None):
+        values["qoi_evidence"] = replace(
+            evidence,
+            predictive_source_model_selection_fingerprint=selection["model_selection_fingerprint"],
+            qoi_evidence_fingerprint=None,
+        )
     return EligibilityInput.from_current_contract(**values)
 
 
@@ -98,13 +117,16 @@ def _clean_selection() -> dict:
         error_attachment_labels=list(labels))
 
 
-def _neutral_shadow() -> dict:
+def _neutral_shadow(*, runtime_increment_seconds: float = 0.0,
+                    shadow_execution_kind: str | None = None) -> dict:
     return unavailable_shadow_selection(
         "shadow_skipped_soft_deadline", stage="execution_policy",
         selection_context_fingerprint=semantics_fingerprint("tests.eig.shadow", {}),
         candidate_generation_route={"route_kind": "standard_two_stage"},
         legacy_model_selection_fingerprint=None, legacy_selected_label="one",
-        legacy_model_weights={"one": 1.0})
+        legacy_model_weights={"one": 1.0},
+        runtime_increment_seconds=runtime_increment_seconds,
+        shadow_execution_kind=shadow_execution_kind)
 
 
 def test_clean_current_contract_is_eligible_and_deterministic():
@@ -119,11 +141,41 @@ def test_clean_current_contract_is_eligible_and_deterministic():
     assert first.to_dict() == second.to_dict()
 
 
+def test_semantic_eligibility_fingerprint_ignores_shadow_runtime_telemetry():
+    selection = _clean_selection()
+    first = evaluate_eig_eligibility(_input(
+        selection_record=selection, shadow_record=_neutral_shadow(
+            runtime_increment_seconds=0.0, shadow_execution_kind="unavailable")))
+    second = evaluate_eig_eligibility(_input(
+        selection_record=selection, shadow_record=_neutral_shadow(
+            runtime_increment_seconds=17.25, shadow_execution_kind="unavailable")))
+
+    assert first.input_fingerprint == second.input_fingerprint
+    assert first.result_fingerprint == second.result_fingerprint
+
+
 def test_production_and_confirm_pass_the_action_gate():
     for action_class in ("production", "confirm"):
         result = evaluate_eig_eligibility(_input(action_class))
         assert "action_not_canonical_target" not in result.scientific_codes
         assert result.primary_scientific_code is None
+
+
+def test_action_gate_uses_producer_q_after_empty_legacy_target_aliases():
+    record = _input()
+    target = dict(record.target_outcome)
+    target.update({"hkl": None, "target_hkl": None, "q": [2.0, 0.0, 0.0]})
+    result = evaluate_eig_eligibility(EligibilityInput.from_current_contract(
+        action_intent=record.action_intent,
+        action_provenance=record.action_provenance,
+        target_outcome=target,
+        selection_record=None,
+        qoi_evidence=record.qoi_evidence,
+        shadow_record=None,
+    ))
+
+    assert "action_not_canonical_target" not in result.scientific_codes
+    assert "action_context_unknown" not in result.observability_codes
 
 
 def test_quicklook_and_auxiliary_actions_fail_the_action_gate():
@@ -181,3 +233,48 @@ def test_scientific_exclusions_outrank_observability_gaps():
     assert result.status == "ineligible"
     assert result.primary_scientific_code == "action_not_canonical_target"
     assert result.primary_observability_code == "selection_record_missing"
+
+
+def test_selection_and_predictive_source_model_identities_must_match():
+    selection = _clean_selection()
+    matched = _input(selection_record=selection, shadow_record=_neutral_shadow())
+    mismatched = EligibilityInput.from_current_contract(
+        action_intent=matched.action_intent, action_provenance=matched.action_provenance,
+        target_outcome=matched.target_outcome, selection_record=matched.selection_record,
+        qoi_evidence=replace(matched.qoi_evidence,
+                             predictive_source_model_selection_fingerprint="other",
+                             qoi_evidence_fingerprint=None), shadow_record=matched.shadow_record)
+    result = evaluate_eig_eligibility(mismatched)
+    assert "projection_join_mismatch" in result.scientific_codes
+
+
+def test_guideline_forced_and_accepted_hints_are_incomplete_comparisons():
+    for route_updates in (
+        {"multimode_route": "guideline_forced"},
+        {"supplied_hint": "two modes", "hint_accepted": True},
+    ):
+        selection = _clean_selection()
+        selection = driver._build_selection_semantics(
+            [SimpleNamespace(label=item["label"], fit_semantics=item["fit_semantics"],
+                             within_model={"omega0_samples": [1.0, 1.1]})
+             for item in selection["candidate_records"]],
+            SimpleNamespace(scores=[SimpleNamespace(label=item["label"], cost=item["cost"],
+                                                     k=item["effective_parameter_count"], aic=item["aic"],
+                                                     weight=item["akaike_weight"], survives=True,
+                                                     fit_semantics=item["fit_semantics"])
+                                    for item in selection["candidate_records"]], pooled=object()),
+            {**selection["candidate_generation_route"], **route_updates},
+            error_attachment_labels=[item["label"] for item in selection["candidate_records"]])
+        result = evaluate_eig_eligibility(_input(selection_record=selection, shadow_record=_neutral_shadow()))
+        assert "selection_comparison_incomplete" in result.scientific_codes
+
+
+def test_action_fingerprint_disagreement_is_an_observability_gap():
+    record = _input()
+    intent = dict(record.action_intent)
+    intent["scientific_action_fingerprint"] = "wrong"
+    result = evaluate_eig_eligibility(EligibilityInput.from_current_contract(
+        action_intent=intent, action_provenance=record.action_provenance,
+        target_outcome=record.target_outcome, selection_record=None,
+        qoi_evidence=record.qoi_evidence, shadow_record=None))
+    assert "action_context_unknown" in result.observability_codes

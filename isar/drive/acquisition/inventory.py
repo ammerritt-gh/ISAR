@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -259,6 +260,66 @@ class MeasurementIntent:
     @property
     def scientific_action_fingerprint(self) -> str:
         return scientific_fingerprint(self)
+
+
+def scientific_fingerprint_from_mapping(payload: Mapping[str, object]) -> str:
+    """Reconstruct and authenticate a persisted :class:`MeasurementIntent`.
+
+    Inventory consumers must never hash a convenient subset of an intent map.
+    Rebuilding the value type keeps the persisted action identity subject to the
+    same Q, finite-number, and evidence-sink rules as a live proposal.
+    """
+    if not isinstance(payload, Mapping):
+        raise ValueError("measurement intent must be a mapping")
+
+    def required_text(name: str) -> str:
+        if name not in payload:
+            raise ValueError(f"measurement intent is missing {name!r}")
+        value = payload.get(name)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"measurement intent {name!r} must be a non-empty string")
+        return value
+
+    def optional_text(name: str) -> str | None:
+        if name not in payload:
+            raise ValueError(f"measurement intent is missing {name!r}")
+        value = payload.get(name)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"measurement intent {name!r} must be a string or null")
+        return value
+
+    def optional_number(name: str) -> float | None:
+        if name not in payload:
+            raise ValueError(f"measurement intent is missing {name!r}")
+        value = payload.get(name)
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            raise ValueError(f"measurement intent {name!r} must be a finite number or null")
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"measurement intent {name!r} must be a finite number or null") from error
+        if not math.isfinite(number):
+            raise ValueError(f"measurement intent {name!r} must be a finite number or null")
+        return number
+
+    intent = MeasurementIntent(
+        action_class=required_text("action_class"),
+        hkl=canonical_hkl(payload.get("hkl")),
+        energy_lo=optional_number("energy_lo"),
+        energy_hi=optional_number("energy_hi"),
+        window_family=required_text("window_family"),
+        target_branch_role=optional_text("target_branch_role"),
+        rival_branch_role=optional_text("rival_branch_role"),
+        evidence_basis_fingerprint=optional_text("evidence_basis_fingerprint"),
+        hypotheses_fingerprint=optional_text("hypotheses_fingerprint"),
+        campaign_slice_fingerprint=optional_text("campaign_slice_fingerprint"),
+        evidence_sink=required_text("evidence_sink"),
+        window_center_meV=(optional_number("window_center_meV")
+                           if "window_center_meV" in payload else None),
+    )
+    return scientific_fingerprint(intent)
 
 
 @dataclass(frozen=True)

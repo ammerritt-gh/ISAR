@@ -8,7 +8,11 @@ import math
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from isar.drive.acquisition.inventory import canonical_json, canonical_hkl
+from isar.drive.acquisition.inventory import (
+    canonical_json,
+    canonical_hkl,
+    scientific_fingerprint_from_mapping,
+)
 from isar.schema.statistics import (
     SemanticsConstructionError,
     validate_fit_selection_semantics,
@@ -18,7 +22,7 @@ from isar.schema.statistics import (
 from .qoi import QoIProjectionEvidence
 
 
-ELIGIBILITY_CONTRACT = "isar.eig_eligibility/o36.1"
+ELIGIBILITY_CONTRACT = "isar.eig_eligibility/o36.2"
 
 SCIENTIFIC_REASON_ORDER = (
     "target_delivery_ineligible", "target_not_finite", "target_not_confirmed",
@@ -96,13 +100,15 @@ class EligibilityInput:
     selection_record: Mapping[str, Any] | None
     qoi_evidence: QoIProjectionEvidence | None
     shadow_record: Mapping[str, Any] | None
+    scan_design_provenance: Mapping[str, Any] | None = None
     scan_design_events: tuple[str, ...] = ()
 
     @classmethod
     def from_current_contract(cls, *, action_intent: Any, action_provenance: Any,
                               target_outcome: Any, selection_record: Any,
                               qoi_evidence: QoIProjectionEvidence | None,
-                              shadow_record: Any, scan_design_events: Any = ()) -> "EligibilityInput":
+                              shadow_record: Any, scan_design_provenance: Any = None,
+                              scan_design_events: Any = ()) -> "EligibilityInput":
         return cls(
             action_intent=_freeze(_mapping(action_intent)) if _mapping(action_intent) is not None else None,
             action_provenance=_freeze(_mapping(action_provenance)) if _mapping(action_provenance) is not None else None,
@@ -110,6 +116,8 @@ class EligibilityInput:
             selection_record=_freeze(_mapping(selection_record)) if _mapping(selection_record) is not None else None,
             qoi_evidence=qoi_evidence,
             shadow_record=_freeze(_mapping(shadow_record)) if _mapping(shadow_record) is not None else None,
+            scan_design_provenance=(_freeze(_mapping(scan_design_provenance))
+                                    if _mapping(scan_design_provenance) is not None else None),
             scan_design_events=tuple(str(item) for item in (scan_design_events or ())),
         )
 
@@ -175,38 +183,64 @@ def _target_checks(value: Mapping[str, Any] | None, science: list[str], gaps: li
         science.append("pool_inconsistent")
 
 
+def _target_hkl(target: Mapping[str, Any]) -> Any:
+    """Read the one producer-owned target-Q alias order used by the EIG seam."""
+    for name in ("hkl", "target_hkl", "q"):
+        value = target.get(name)
+        if value is not None:
+            return value
+    return None
+
+
 def _action_checks(intent: Mapping[str, Any] | None, provenance: Mapping[str, Any] | None,
-                   target: Mapping[str, Any] | None, science: list[str], gaps: list[str]) -> None:
+                   target: Mapping[str, Any] | None, science: list[str], gaps: list[str]) -> str | None:
     if not isinstance(intent, Mapping) or not isinstance(provenance, Mapping):
         gaps.append("action_context_unknown")
-        return
-    action_class = intent.get("action_class")
-    if provenance.get("action_class") not in (None, action_class):
+        return None
+    if not isinstance(target, Mapping):
         gaps.append("action_context_unknown")
-        return
-    intent_sink = intent.get("evidence_sink")
-    provenance_sink = provenance.get("evidence_sink")
-    if intent_sink is not None and provenance_sink is not None and intent_sink != provenance_sink:
-        gaps.append("action_context_unknown")
-        return
-    required = (
-        intent.get("scientific_action_fingerprint") or provenance.get("scientific_action_fingerprint"),
-        action_class,
-        intent.get("hkl"),
-        provenance.get("acquisition_action_role"),
-        intent_sink if intent_sink is not None else provenance_sink,
-    )
-    if any(item is None for item in required):
-        gaps.append("action_context_unknown")
-        return
-    if not isinstance(provenance.get("driver_inserted"), bool):
-        gaps.append("action_context_unknown")
-        return
+        return None
     try:
-        same_q = canonical_hkl(intent["hkl"]) == canonical_hkl(target.get("hkl", target.get("target_hkl")))
+        recomputed_fingerprint = scientific_fingerprint_from_mapping(intent)
     except (TypeError, ValueError):
         gaps.append("action_context_unknown")
-        return
+        recomputed_fingerprint = None
+    inventory_fingerprint = intent.get("scientific_action_fingerprint")
+    proposal_fingerprint = provenance.get(
+        "proposal_scientific_action_fingerprint", provenance.get("scientific_action_fingerprint"))
+    provenance_fingerprint = provenance.get("scientific_action_fingerprint")
+    authenticated = (isinstance(recomputed_fingerprint, str)
+                     and all(isinstance(item, str) and item for item in (
+        inventory_fingerprint, proposal_fingerprint, provenance_fingerprint))
+                     and all(item == recomputed_fingerprint for item in (
+                         inventory_fingerprint, proposal_fingerprint, provenance_fingerprint)))
+    if not authenticated:
+        gaps.append("action_context_unknown")
+    action_class = intent.get("action_class")
+    if provenance.get("action_class") != action_class:
+        gaps.append("action_context_unknown")
+        authenticated = False
+    intent_sink = intent.get("evidence_sink")
+    provenance_sink = provenance.get("evidence_sink")
+    if intent_sink != provenance_sink:
+        gaps.append("action_context_unknown")
+        authenticated = False
+    required = (action_class, intent.get("hkl"), provenance.get("acquisition_action_role"), intent_sink)
+    if any(item is None for item in required):
+        gaps.append("action_context_unknown")
+        return None
+    if not isinstance(provenance.get("driver_inserted"), bool):
+        gaps.append("action_context_unknown")
+        return None
+    try:
+        same_q = canonical_hkl(intent["hkl"]) == canonical_hkl(_target_hkl(target))
+        provenance_q = provenance.get("hkl", provenance.get("target_hkl", provenance.get("q")))
+        if provenance_q is None or canonical_hkl(provenance_q) != canonical_hkl(intent["hkl"]):
+            gaps.append("action_context_unknown")
+            authenticated = False
+    except (TypeError, ValueError):
+        gaps.append("action_context_unknown")
+        return None
     if action_class not in {"production", "confirm"}:
         science.append("action_not_canonical_target")
     if provenance.get("acquisition_action_role") != "production":
@@ -221,12 +255,14 @@ def _action_checks(intent: Mapping[str, Any] | None, provenance: Mapping[str, An
     action_revision = provenance.get("authoritative_evidence_revision")
     if expected_revision is None or action_revision is None or str(expected_revision) != str(action_revision):
         gaps.append("action_context_unknown")
+        authenticated = False
+    return recomputed_fingerprint if authenticated else None
 
 
-def _selection_checks(record: Mapping[str, Any] | None, science: list[str], gaps: list[str]) -> None:
+def _selection_checks(record: Mapping[str, Any] | None, science: list[str], gaps: list[str]) -> Mapping[str, Any] | None:
     if record is None:
         gaps.append("selection_record_missing")
-        return
+        return None
     try:
         # Schema readers intentionally work on ordinary JSON containers.  The
         # public input is frozen, so thaw only for validation; no caller-owned
@@ -234,13 +270,13 @@ def _selection_checks(record: Mapping[str, Any] | None, science: list[str], gaps
         validated = validate_fit_selection_semantics(_thaw(record))
     except (SemanticsConstructionError, TypeError, ValueError, KeyError, OverflowError):
         gaps.append("selection_record_invalid")
-        return
+        return None
     if validated.get("model_weight_kind") != "akaike_relative_weight" or validated.get("selection_eligibility") != "eligible":
         science.append("selection_ineligible")
     candidates = validated.get("candidate_records")
     if not isinstance(candidates, list) or not candidates:
         science.append("selection_comparison_incomplete")
-        return
+        return validated
     for candidate in candidates:
         semantics = candidate.get("fit_semantics") if isinstance(candidate, Mapping) else None
         if not isinstance(semantics, Mapping):
@@ -261,7 +297,7 @@ def _selection_checks(record: Mapping[str, Any] | None, science: list[str], gaps
     route = validated.get("candidate_generation_route")
     if not isinstance(route, Mapping):
         science.append("selection_comparison_incomplete")
-        return
+        return validated
     # The persisted producer uses ``route`` while the read-only census exposes
     # its normalized ``route_kind`` diagnostic.  They carry the same contract
     # value; accepting both keeps this pure seam grounded in either caller.
@@ -276,8 +312,13 @@ def _selection_checks(record: Mapping[str, Any] | None, science: list[str], gaps
     filtered = route.get("guideline_structure_filter")
     if isinstance(before, list) and isinstance(filtered, list) and set(before) != set(filtered):
         science.append("selection_comparison_incomplete")
-    if route.get("structure_hint") is not None or route.get("guideline_changed") is True:
+    if (route.get("structure_hint") is not None or route.get("guideline_changed") is True
+            or route.get("guideline_changed_model_set") is True
+            or route.get("multimode_route") == "guideline_forced"
+            or (route.get("supplied_hint") is not None
+                and (route.get("hint_accepted") is True or route.get("delivery_hint_accepted") is True))):
         science.append("selection_comparison_incomplete")
+    return validated
 
 
 def _shadow_checks(record: Mapping[str, Any] | None, science: list[str], gaps: list[str]) -> None:
@@ -313,18 +354,144 @@ def _shadow_checks(record: Mapping[str, Any] | None, science: list[str], gaps: l
         science.append("shadow_comparison_invalid")
 
 
+def _selection_identity(validated: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if not isinstance(validated, Mapping):
+        return None
+    route = validated.get("candidate_generation_route")
+    candidates = validated.get("candidate_records")
+    candidate_state = []
+    if isinstance(candidates, list):
+        for candidate in candidates:
+            semantics = candidate.get("fit_semantics") if isinstance(candidate, Mapping) else None
+            if not isinstance(semantics, Mapping):
+                candidate_state.append({"valid": False})
+                continue
+            candidate_state.append({
+                "label": candidate.get("label"),
+                "estimator_kind": semantics.get("estimator_kind"),
+                "selection_eligibility": semantics.get("selection_eligibility"),
+                "constraint_count": len(semantics.get("effective_constraints") or ()),
+                "rescue_or_post_selection": any(
+                    "rescue" in str(reason) or "post_selection" in str(reason)
+                    for reason in (semantics.get("selection_ineligibility_reasons") or ())),
+            })
+    route_state = {
+        "route_kind": route.get("route_kind", route.get("route")) if isinstance(route, Mapping) else None,
+        "multimode_route": route.get("multimode_route") if isinstance(route, Mapping) else None,
+        "offered_labels": sorted(str(item) for item in route.get("offered_labels") or ()) if isinstance(route, Mapping) else [],
+        "scored_labels": sorted(str(item) for item in route.get("scored_labels") or ()) if isinstance(route, Mapping) else [],
+        "labels_before_guideline": sorted(str(item) for item in route.get("labels_before_guideline") or ()) if isinstance(route, Mapping) else [],
+        "guideline_structure_filter": sorted(str(item) for item in route.get("guideline_structure_filter") or ()) if isinstance(route, Mapping) else [],
+        "supplied_hint": bool(isinstance(route, Mapping) and route.get("supplied_hint") is not None),
+        "hint_accepted": bool(isinstance(route, Mapping) and (
+            route.get("hint_accepted") is True or route.get("delivery_hint_accepted") is True)),
+        "guideline_changed": bool(isinstance(route, Mapping) and (
+            route.get("guideline_changed") is True or route.get("guideline_changed_model_set") is True)),
+    }
+    return {
+        "model_selection_fingerprint": validated.get("model_selection_fingerprint"),
+        "model_weight_kind": validated.get("model_weight_kind"),
+        "selection_eligibility": validated.get("selection_eligibility"),
+        "candidate_state": sorted(candidate_state, key=lambda item: str(item.get("label", ""))),
+        "route_state": route_state,
+    }
+
+
+def _shadow_identity(record: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if not isinstance(record, Mapping):
+        return None
+    try:
+        validated = validate_shadow_model_selection(_thaw(record))
+    except (SemanticsConstructionError, TypeError, ValueError, KeyError, OverflowError):
+        return None
+    status = validated.get("selection_status")
+    if status == "complete":
+        fingerprint = validated.get("standard_selection_fingerprint")
+        return {"kind": "standard_selection", "fingerprint": fingerprint if isinstance(fingerprint, str) else None}
+    neutral_skip = (
+        status == "unavailable"
+        and validated.get("shadow_execution_kind") == "skipped"
+        and validated.get("unavailable_reason_code") == "shadow_skipped_soft_deadline"
+        and validated.get("runtime_increment_seconds") == 0.0
+        and not validated.get("attempted_model_identities")
+        and not validated.get("reused_model_identities")
+        and not validated.get("freshly_fitted_model_identities")
+    )
+    if neutral_skip:
+        return {"kind": "neutral_skip", "identity": "isar.shadow_neutral_skip/1"}
+    return {
+        "kind": "nonstandard",
+        "selection_status": status,
+        "standard_selection_fingerprint": validated.get("standard_selection_fingerprint"),
+    }
+
+
+def _target_identity(target: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if not isinstance(target, Mapping):
+        return None
+    try:
+        q = list(canonical_hkl(_target_hkl(target)))
+    except (TypeError, ValueError):
+        q = None
+    return {
+        "hkl": q,
+        "master_revision": target.get("master_revision"),
+        "track_revision": target.get("track_revision"),
+        "track_state": target.get("track_state"),
+        "candidate_id": target.get("candidate_id"),
+        "candidate_state": target.get("candidate_state"),
+        "selected_candidate_index": target.get("selected_candidate_index"),
+        "target_delivery_eligible": target.get("target_delivery_eligible"),
+        "pooled": target.get("pooled"),
+        "omega0_is_finite": _finite(target.get("omega0")),
+        "modality": target.get("modality"),
+        "pool_consistent": target.get("pool_consistent"),
+    }
+
+
+def _intent_q(intent: Mapping[str, Any] | None) -> list[float] | None:
+    if not isinstance(intent, Mapping):
+        return None
+    try:
+        return list(canonical_hkl(intent.get("hkl")))
+    except (TypeError, ValueError):
+        return None
+
+
+def _scan_design_identity(provenance: Mapping[str, Any] | None,
+                          events: tuple[str, ...]) -> Mapping[str, Any]:
+    source = provenance if isinstance(provenance, Mapping) else {}
+    return {
+        "inventory_fingerprint": source.get("inventory_fingerprint"),
+        "context_fingerprint": source.get("context_fingerprint"),
+        "selected_candidate_id": source.get("selected_candidate_id"),
+        "status": source.get("status"),
+        "recovery_state": source.get("recovery_state"),
+        "events": sorted(str(event) for event in events),
+    }
+
+
 def evaluate_eig_eligibility(value: EligibilityInput) -> EligibilityResult:
     """Apply the frozen O36 eligibility policy to immutable current-contract evidence."""
     science: list[str] = []
     gaps: list[str] = []
     _target_checks(value.target_outcome, science, gaps)
-    _action_checks(value.action_intent, value.action_provenance, value.target_outcome, science, gaps)
-    _selection_checks(value.selection_record, science, gaps)
+    action_fingerprint = _action_checks(
+        value.action_intent, value.action_provenance, value.target_outcome, science, gaps)
+    validated_selection = _selection_checks(value.selection_record, science, gaps)
     if value.qoi_evidence is None:
         gaps.append("projection_record_missing")
     else:
         science.extend(value.qoi_evidence.scientific_codes)
         gaps.extend(value.qoi_evidence.observability_codes)
+        selection_fingerprint = (
+            validated_selection.get("model_selection_fingerprint")
+            if isinstance(validated_selection, Mapping) else None)
+        predictive_fingerprint = value.qoi_evidence.predictive_source_model_selection_fingerprint
+        if not isinstance(selection_fingerprint, str) or not isinstance(predictive_fingerprint, str):
+            gaps.append("projection_join_unknown")
+        elif selection_fingerprint != predictive_fingerprint:
+            science.append("projection_join_mismatch")
     _shadow_checks(value.shadow_record, science, gaps)
     if "scan_design_provenance_missing" in value.scan_design_events:
         gaps.append("scan_design_provenance_missing")
@@ -338,13 +505,14 @@ def evaluate_eig_eligibility(value: EligibilityInput) -> EligibilityResult:
     scopes = _ELIGIBLE_SCOPES if status == "eligible" else _INELIGIBLE_SCOPES
     input_payload = {
         "contract": ELIGIBILITY_CONTRACT,
-        "action_intent": value.action_intent,
-        "action_provenance": value.action_provenance,
-        "target_outcome": value.target_outcome,
-        "selection_record": value.selection_record,
-        "qoi_evidence": value.qoi_evidence.to_dict() if value.qoi_evidence is not None else None,
-        "shadow_record": value.shadow_record,
-        "scan_design_events": value.scan_design_events,
+        "authenticated_action_fingerprint": action_fingerprint,
+        "canonical_action_q": _intent_q(value.action_intent),
+        "target": _target_identity(value.target_outcome),
+        "selection": _selection_identity(validated_selection),
+        "qoi_evidence_fingerprint": (
+            value.qoi_evidence.qoi_evidence_fingerprint if value.qoi_evidence is not None else None),
+        "shadow": _shadow_identity(value.shadow_record),
+        "scan_design": _scan_design_identity(value.scan_design_provenance, value.scan_design_events),
     }
     input_fingerprint = _fingerprint(input_payload)
     result_payload = {

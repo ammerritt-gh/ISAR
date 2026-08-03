@@ -26,6 +26,7 @@ from isar.drive.acquisition.inventory import (
     canonical_json,
     registry_fingerprint,
     scientific_fingerprint,
+    scientific_fingerprint_from_mapping,
 )
 
 
@@ -81,6 +82,16 @@ def test_canonical_hkl_is_the_shared_nine_decimal_scientific_identity():
         canonical_hkl((2.0, 0.0))
     with pytest.raises(ValueError):
         canonical_hkl((2.0, float("nan"), 0.0))
+
+
+def test_persisted_intent_fingerprint_reconstructs_the_live_value_type():
+    intent = _intent()
+    payload = ActionInventory(evaluations=[_eligible(intent)], reports=[_report("g", generated=1)]).to_full_dict()[
+        "evaluations"][0]["intent"]
+    assert scientific_fingerprint_from_mapping(payload) == intent.scientific_action_fingerprint
+    with pytest.raises(ValueError):
+        scientific_fingerprint_from_mapping({key: value for key, value in payload.items()
+                                             if key != "window_family"})
 
 
 # -- completeness / terminal cause -----------------------------------------------------------------

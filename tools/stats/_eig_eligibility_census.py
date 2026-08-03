@@ -29,6 +29,7 @@ from isar.predictive import (
     PredictiveArtifactError,
     TARGET_PROJECTION_SCHEMA,
     json_fingerprint,
+    target_projection_set_fingerprint,
     validate_master_predictive_artifact,
 )
 from isar.eig import (
@@ -36,7 +37,12 @@ from isar.eig import (
     adapt_omega0_target_projection,
     evaluate_eig_eligibility,
 )
-from isar.drive.acquisition.inventory import canonical_json
+from isar.drive.acquisition.inventory import (
+    canonical_hkl,
+    canonical_json,
+    scientific_fingerprint_from_mapping,
+)
+from isar.drive.acquisition.scan_design import ScanDesignCandidate
 from isar.schema.statistics import (
     SemanticsConstructionError,
     validate_fit_selection_semantics,
@@ -334,7 +340,14 @@ def _inventory_intent(root: Path, ref: Any, scientific_fingerprint: str) -> tupl
     if len(matches) != 1 or not isinstance(matches[0].get("intent"), Mapping):
         return None, "inventory_intent_missing_or_ambiguous"
     intent = dict(matches[0]["intent"])
-    intent["scientific_action_fingerprint"] = scientific_fingerprint
+    try:
+        recomputed = scientific_fingerprint_from_mapping(intent)
+    except (TypeError, ValueError):
+        return None, "inventory_intent_invalid"
+    if recomputed != scientific_fingerprint:
+        return None, "inventory_evaluation_fingerprint_mismatch"
+    intent["scientific_action_fingerprint"] = recomputed
+    intent["inventory_scientific_action_fingerprint"] = recomputed
     return intent, None
 
 
@@ -408,8 +421,12 @@ def _pending_action_context(root: Path, outcome: Mapping[str, Any], events: list
     if problem:
         return {"source": "missing", "reason_code": problem, "intent": None,
                 "provenance": None, "scan_design_ref": None, "acquisition_id": None}
+    try:
+        same_q = canonical_hkl(intent.get("hkl")) == canonical_hkl(proposal.get("hkl"))
+    except (TypeError, ValueError):
+        same_q = False
     if (intent.get("action_class") != meta.get("action_class")
-            or intent.get("hkl") != proposal.get("hkl")
+            or not same_q
             or intent.get("evidence_sink") != meta.get("evidence_sink")):
         return {"source": "missing", "reason_code": "pending_action_inventory_mismatch",
                 "intent": None, "provenance": None, "scan_design_ref": None,
@@ -417,12 +434,14 @@ def _pending_action_context(root: Path, outcome: Mapping[str, Any], events: list
     provenance = {
         "action_class": meta.get("action_class"),
         "scientific_action_fingerprint": fingerprint,
+        "proposal_scientific_action_fingerprint": fingerprint,
         "request_fingerprint": meta.get("proposal_fingerprint"),
         "acquisition_action_role": meta.get("acquisition_action_role"),
         "evidence_sink": meta.get("evidence_sink"),
         "driver_inserted": meta.get("driver_inserted"),
         "insertion_purpose": meta.get("insertion_purpose"),
         "authoritative_evidence_revision": meta.get("authoritative_evidence_revision"),
+        "hkl": proposal.get("hkl"),
     }
     return {
         "source": "pending_selected_action",
@@ -684,10 +703,7 @@ def _projection_joins(record: Any, predictive: Mapping[str, Any]) -> dict[str, s
         if isinstance(expected, str) and isinstance(actual, str):
             joins[key] = "pass" if expected == actual else "fail"
     try:
-        expected_set = semantics_fingerprint("isar.target_projection_model_set/1", sorted([
-            {"label": item.get("label"), "weight": item.get("weight"),
-             "draw_count": len(item.get("target_present_by_draw") or ())}
-            for item in record.get("models") or []], key=lambda item: str(item["label"])))
+        expected_set = target_projection_set_fingerprint(record.get("models"))
         joins["projection_set"] = "pass" if record.get("target_projection_set_fingerprint") == expected_set else "fail"
     except (SemanticsConstructionError, TypeError, ValueError):
         joins["projection_set"] = "fail"
@@ -1039,15 +1055,66 @@ def _scan_design_details(root: Path, ref: Any, *, acquisition_ids: tuple[str, ..
     context = record.get("context")
     if not isinstance(context, Mapping) or not isinstance(context.get("scientific_action_fingerprint"), str):
         return {"status": "failed", "reason_code": "context_malformed"}
-    # Slice 2 authenticates the selected action's design provenance only.  It deliberately does not
-    # decide whether a candidate family exists, is paired, or was chosen correctly; those are the
-    # later comparison/selection slices.
+    # Slice 2 authenticates only the selected record's structural provenance.
+    # Candidate-family comparison and ranking remain deferred, but an inventory
+    # with ambiguous or malformed candidate identities is not provenance.
     selection = record.get("selection")
     selected = selection.get("selected_candidate_id") if isinstance(selection, Mapping) else None
-    candidates = record.get("candidates") or []
-    selected_candidates = [item for item in candidates if isinstance(item, Mapping)
-                           and item.get("candidate_id") == selected]
-    candidate = selected_candidates[0] if len(selected_candidates) == 1 else {}
+    candidates = record.get("candidates")
+    if not isinstance(selected, str) or not selected or not isinstance(candidates, list):
+        return {"status": "failed", "reason_code": "selected_candidate_invalid"}
+    if (not candidates or not all(isinstance(item, Mapping) for item in candidates)
+            or any(not isinstance(item.get("candidate_id"), str) or not item.get("candidate_id")
+                   for item in candidates)):
+        return {"status": "failed", "reason_code": "candidate_ids_nonunique_or_malformed"}
+    candidate_ids = [str(item["candidate_id"]) for item in candidates]
+    if len(candidate_ids) != len(set(candidate_ids)):
+        return {"status": "failed", "reason_code": "candidate_ids_nonunique_or_malformed"}
+    selected_candidates = [item for item in candidates if item.get("candidate_id") == selected]
+    if len(selected_candidates) != 1:
+        return {"status": "failed", "reason_code": "selected_candidate_invalid"}
+    candidate = selected_candidates[0]
+    try:
+        window = candidate.get("energy_window")
+        cost = candidate.get("nominal_cost")
+        diagnostics = candidate.get("count_diagnostics")
+        raw_hkl = candidate.get("hkl")
+        aliases = candidate.get("alias_families")
+        if (not isinstance(window, Mapping) or not isinstance(cost, Mapping)
+                or not isinstance(diagnostics, Mapping) or not isinstance(aliases, list)
+                or not all(isinstance(item, str) for item in aliases)
+                or cost.get("kind") != "point_neutrons"):
+            raise ValueError("candidate shape")
+        if not isinstance(raw_hkl, (list, tuple)) or len(raw_hkl) != 3:
+            raise ValueError("candidate hkl")
+        candidate_hkl = tuple(float(value) for value in raw_hkl)
+        reconstructed = ScanDesignCandidate(
+            hkl=candidate_hkl,
+            q=float(candidate.get("q")),
+            e_lo=float(window.get("e_lo")),
+            e_hi=float(window.get("e_hi")),
+            e_step=float(window.get("e_step")),
+            n_points=int(window.get("n_points")),
+            ncount=int(candidate.get("ncount")),
+            kind=str(candidate.get("kind")),
+            reason=str(candidate.get("reason")),
+            nominal_cost=int(cost.get("value")),
+            count_diagnostics=tuple(sorted((str(key), value) for key, value in diagnostics.items())),
+            candidate_family=str(candidate.get("candidate_family")),
+            generator_id=str(candidate.get("generator_id")),
+            generator_version=int(candidate.get("generator_version")),
+            alias_families=tuple(aliases),
+        )
+        if (not all(math.isfinite(value) for value in (
+                *reconstructed.hkl, reconstructed.q, reconstructed.e_lo, reconstructed.e_hi, reconstructed.e_step))
+                or reconstructed.n_points < 1 or reconstructed.ncount < 1
+                or reconstructed.nominal_cost < 0 or not reconstructed.kind or not reconstructed.reason
+                or not reconstructed.candidate_family or not reconstructed.generator_id
+                or reconstructed.candidate_id != selected
+                or any(candidate.get(name) != value for name, value in reconstructed.to_dict().items())):
+            raise ValueError("candidate identity")
+    except (TypeError, ValueError, OverflowError):
+        return {"status": "failed", "reason_code": "selected_candidate_invalid"}
     events: list[str] = []
     log_path = root / "report" / "session_log.jsonl"
     if log_path.is_file():
@@ -1083,8 +1150,13 @@ def _scan_design_details(root: Path, ref: Any, *, acquisition_ids: tuple[str, ..
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             _LOG.warning("scan-design event diagnostics unavailable: %s", error)
     return {"status": "passed", "reason_code": None, "reference": _safe_relative(path, root),
-            "sha256": digest, "selected_candidate_id": selected,
-            "selected_candidate_family": candidate.get("candidate_family"), "realization_events": sorted(set(events))}
+            "sha256": digest, "inventory_fingerprint": digest,
+            "context_fingerprint": record.get("context_fingerprint"),
+            "selected_candidate_id": selected,
+            "selected_candidate_family": candidate.get("candidate_family"),
+            "recovery_state": sorted(set(event for event in events
+                                          if "recovery" in event or "missed" in event)),
+            "realization_events": sorted(set(events))}
 
 
 _SCIENTIFIC_REASON_PRECEDENCE = (
@@ -1277,8 +1349,35 @@ def _outcome_view(outcome: Mapping[str, Any], entry: Any = None) -> dict[str, An
         "identity_branch_id", "scan_design_inventory_ref",
     )}
     provenance = entry.provenance if isinstance(getattr(entry, "provenance", None), Mapping) else {}
-    view["hkl"] = outcome.get("hkl") or provenance.get("target_hkl") or provenance.get("hkl")
+    # ``FitOutcome.q`` is the pooled-fit Q, hence the primary identity.  Older
+    # provenance aliases remain diagnostic fallback only.
+    view["hkl"] = outcome.get("q") or outcome.get("hkl") or provenance.get("target_hkl") or provenance.get("hkl")
     return view
+
+
+def _qoi_particle_masses(qoi_evidence) -> dict[str, float]:
+    """Translate authenticated QoI particle mass into the census' historic vocabulary."""
+    masses = _empty_masses()
+    if qoi_evidence is None or not getattr(qoi_evidence, "models", ()):
+        return masses
+    evidence = qoi_evidence.to_dict()
+    diagnostic = evidence.get("diagnostics")
+    source = diagnostic.get("particle_source_masses") if isinstance(diagnostic, Mapping) else None
+    if not isinstance(source, Mapping):
+        return masses
+
+    def value(name: str) -> float:
+        return float(source[name]) if _is_finite(source.get(name)) else 0.0
+
+    masses["observed_bootstrap_source_mass"] = value("bootstrap")
+    masses["observed_nested_source_mass"] = value("nested")
+    masses["observed_laplace_source_mass"] = value("laplace")
+    masses["basis_unknown_or_pruned_source_mass"] = value("basis_unknown") + value("dropped_model")
+    masses["dropped_draw_mass"] = value("dropped_draw")
+    masses["draw_mass_unknown_source_mass"] = value("retention_unknown")
+    masses["qoi_unavailable_source_mass"] = value("qoi_unavailable")
+    masses["target_absent_source_mass"] = value("target_absent")
+    return {name: round(amount, 12) for name, amount in masses.items()}
 
 
 def _master_rows(spec: CampaignSpec, session: SessionState, preflight_findings: list[str],
@@ -1356,6 +1455,7 @@ def _master_rows(spec: CampaignSpec, session: SessionState, preflight_findings: 
                 selection_record=selection_record,
                 qoi_evidence=qoi_evidence,
                 shadow_record=shadow_record,
+                scan_design_provenance=scan_design,
                 scan_design_events=scan_design_events,
             ))
             row = {"row_kind": "pooled_outcome", "campaign_id": spec.campaign_id,
@@ -1369,6 +1469,9 @@ def _master_rows(spec: CampaignSpec, session: SessionState, preflight_findings: 
                    "scan_design": scan_design,
                    "shadow": {"strict_validation": shadow_strict,
                               "category": _shadow_category(shadow_record, shadow_strict)},
+                   "qoi_evidence": qoi_evidence.to_dict(),
+                   "qoi_evidence_fingerprint": qoi_evidence.qoi_evidence_fingerprint,
+                   "particle_masses": _qoi_particle_masses(qoi_evidence),
                    "eligibility": eligibility.to_dict(),
                    "findings": sorted(set(preflight_findings + list(eligibility.scientific_codes)
                                              + list(eligibility.observability_codes))),
