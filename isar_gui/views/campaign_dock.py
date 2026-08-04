@@ -49,7 +49,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from isar.drive.supervisor.goal_to_spec import DEFAULT_BUDGET_HOURS_BY_TIER
 from isar_gui.commands import DriveOptions, source_fingerprint
 from isar_gui.log_render import BUDGET_KIND, BudgetAnnouncer, RenderedEvent, format_payload
 from isar_gui.viewmodels.campaign import (analysis_readout, budget_readout, current_activity_text,
@@ -136,9 +135,9 @@ class CampaignDock(QDockWidget):
             "Authoritative mode is restricted to the exact 128-simulation, 8-block O41 profile "
             "frozen from card.policy.toml.")
         self._budget = QLineEdit(body)
-        self._budget.setPlaceholderText(
-            f"default {DEFAULT_BUDGET_HOURS_BY_TIER['deterministic']:g}h deterministic / "
-            f"{DEFAULT_BUDGET_HOURS_BY_TIER['mcstas']:g}h mcstas; e.g. 2h or 1e10n")
+        # The GUI may not import isar.drive (G16), so no literal default is quoted
+        # here — blank inherits the driver's per-tier default.
+        self._budget.setPlaceholderText("blank = tier default; e.g. 2h or 1e10n")
         self._analysis_limit = QLineEdit(body)
         self._analysis_limit.setPlaceholderText("analysis: 1h | none")
         self._seed = QSpinBox(body)
