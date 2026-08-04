@@ -8,7 +8,7 @@
 EIG-4 Slice 7 landed at production anchor
 `d3f2ee24baabf03519b21705df730408992e4243`. The source-closure workflow produced a replacement
 schema-v2 **bootstrap candidate** with fingerprint
-`7b5539af494327ae3ed34806a10075387afa7de286d6efcecd5c598555b0176b`. No active closure exists;
+`e1989c7ceab3efe949dda0b3fff71a243acf9b985274a8b00e42bc7cf7c28b52`. No active closure exists;
 this candidate supersedes the earlier unapproved proposal and approves neither one.
 
 The reviewed historical drift is four additions, three modifications, zero deletions, and 57
@@ -25,7 +25,7 @@ The candidate and its generated review record authenticate:
 - dependency-graph fingerprint
   `db1258426e112ca2fe97fce541695c48e910166c9bcb5d7e421c7c95ae103e9c`;
 - review fingerprint
-  `afd0989c65860e7bc76bf7810d7b3c1af6feba33e3bc116b7538d8d4cfa1b23d`.
+  `aba0713adc03c06bdf19a3ae8fa92747f519e2d2bf325614e1e9637b18a0565f`.
 
 `python tools\stats\stat2b_source_closure.py verify --candidate
 tools\stats\stat2b1-production-source-closure.candidate.json` returned `candidate_valid` before the
@@ -39,7 +39,8 @@ The retained [verification record](2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE/verific
 - six changed closure/Slice 7 modules compiled;
 - 300 focused source-closure, selection, predictive, schema, held-out, and Slice 7 tests passed;
 - 92 documentation tests passed and one skipped;
-- the non-slow suite passed with 3,477 tests and eight skips.
+- the non-slow suite passed with 3,477 tests and eight skips;
+- the full suite passed with 3,516 tests and eight skips.
 
 The immutable held-out campaign and aggregate were authenticated, not rerun or rewritten.
 

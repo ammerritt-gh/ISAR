@@ -2086,7 +2086,7 @@
   ],
   "production_source_fingerprint": "34ae255263a289deeb4bc91a48d0feae318414340ab60edd4f6338ad9ea74a87",
   "proposed_production_anchor": "d3f2ee24baabf03519b21705df730408992e4243",
-  "review_record_fingerprint": "afd0989c65860e7bc76bf7810d7b3c1af6feba33e3bc116b7538d8d4cfa1b23d",
+  "review_record_fingerprint": "aba0713adc03c06bdf19a3ae8fa92747f519e2d2bf325614e1e9637b18a0565f",
   "schema": "isar.stat2b_source_closure_review/2",
   "verification_evidence": {
     "commands": [
@@ -2101,7 +2101,7 @@
       {
         "command": "python -m pytest tests\\stats\\test_stat2b_source_closure.py tests\\analyze\\test_select.py tests\\analyze\\test_select_modality.py tests\\analyze\\test_shadow_selection.py isar\\synth\\tests\\test_stat2b_campaign.py isar\\synth\\tests\\test_stat2b_criteria.py isar\\synth\\tests\\test_stat2b_runtime.py isar\\synth\\tests\\test_stat2b_scaling.py isar\\synth\\tests\\test_stat2b_spec_truth.py tests\\session\\test_statistical_semantics.py tests\\session\\test_master_predictive.py tests\\session\\test_target_projection.py tests\\schema\\test_statistics.py tests\\docs\\test_stat2b_heldout_evidence.py tests\\drive\\test_realized_comparison.py tests\\eig\\test_realized_score.py -q",
         "deselected": 0,
-        "duration_seconds": 88.0,
+        "duration_seconds": 111.22,
         "failed": 0,
         "passed": 300,
         "skipped": 0
@@ -2109,7 +2109,7 @@
       {
         "command": "python -m pytest tests\\docs -q",
         "deselected": 0,
-        "duration_seconds": 3.47,
+        "duration_seconds": 3.74,
         "failed": 0,
         "passed": 92,
         "skipped": 1
@@ -2118,9 +2118,17 @@
         "command": "python -m pytest -m \"not slow\" -n 16 --dist worksteal",
         "deselected": 39,
         "deselection_basis": "the unchanged slow-marker set contains 39 tests; xdist selected 3485 items",
-        "duration_seconds": 64.2,
+        "duration_seconds": 73.83,
         "failed": 0,
         "passed": 3477,
+        "skipped": 8
+      },
+      {
+        "command": "python -m pytest -n 16 --dist worksteal",
+        "deselected": 0,
+        "duration_seconds": 509.38,
+        "failed": 0,
+        "passed": 3516,
         "skipped": 8
       }
     ],
@@ -2147,6 +2155,10 @@
       },
       {
         "check": "portable candidate verification and exact Git-backed production-anchor parity",
+        "status": "passed"
+      },
+      {
+        "check": "the complete serial-marker population passed under the repository full-suite xdist configuration",
         "status": "passed"
       }
     ],

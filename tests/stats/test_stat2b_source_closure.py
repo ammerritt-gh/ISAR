@@ -247,7 +247,8 @@ def test_candidate_is_unapproved_and_reconstructs_portably():
     assert manifest["candidate_artifact_commit"] is None
     assert manifest["candidate_artifact_sha256"] is None
     assert manifest["approved_production_anchor"] is None
-    assert manifest["proposed_production_anchor"] == ENGINE.BOOTSTRAP_PRODUCTION_ANCHOR
+    provenance = ENGINE.git_provenance(ROOT, manifest)
+    assert provenance.ok, provenance.findings
     assert manifest["approved_candidate_fingerprint"] is None
     assert manifest["candidate_closure_fingerprint"] == ENGINE._candidate_fingerprint(
         manifest

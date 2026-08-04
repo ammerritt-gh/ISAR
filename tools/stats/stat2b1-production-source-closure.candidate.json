@@ -14,7 +14,7 @@
   "candidate_artifact_commit": null,
   "candidate_artifact_path": "tools/stats/stat2b1-production-source-closure.candidate.json",
   "candidate_artifact_sha256": null,
-  "candidate_closure_fingerprint": "7b5539af494327ae3ed34806a10075387afa7de286d6efcecd5c598555b0176b",
+  "candidate_closure_fingerprint": "e1989c7ceab3efe949dda0b3fff71a243acf9b985274a8b00e42bc7cf7c28b52",
   "comparison_basis": {
     "candidate_closure_fingerprint": null,
     "dependency_graph_fingerprint": null,
@@ -1779,8 +1779,8 @@
   "proposed_production_anchor": "d3f2ee24baabf03519b21705df730408992e4243",
   "review_record": {
     "path": "docs/campaigns/2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE/review.json",
-    "semantic_fingerprint": "afd0989c65860e7bc76bf7810d7b3c1af6feba33e3bc116b7538d8d4cfa1b23d",
-    "sha256": "a59be910ab4c5725948d5cb33d916d699209cec035e78a785f388ff60684d4f5"
+    "semantic_fingerprint": "aba0713adc03c06bdf19a3ae8fa92747f519e2d2bf325614e1e9637b18a0565f",
+    "sha256": "03d9b67c65887e5548f6025be76cf21ceabd2907ed308875062210ee9bcf5f32"
   },
   "schema": "isar.stat2b_production_source_closure/2",
   "status": "candidate"
