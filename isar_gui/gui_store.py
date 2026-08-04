@@ -141,7 +141,7 @@ class GuiStore:
 
     # ---- campaign setup form (GUI Pass 3) ----------------------------------
     def campaign_form(self) -> dict:
-        """The remembered campaign setup form (goal/spec/tier/budget/seed/max_iters), or ``{}``."""
+        """The remembered campaign setup form (goal/spec/tier/budget/seed), or ``{}``."""
         val = self._data.get("campaign")
         return dict(val) if isinstance(val, dict) else {}
 

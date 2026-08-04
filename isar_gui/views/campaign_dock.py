@@ -20,8 +20,10 @@ import json
 
 import shiboken6
 
+import time
+
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFontDatabase
 from PySide6.QtWidgets import (
     QCheckBox,
     QApplication,
@@ -35,18 +37,20 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QRadioButton,
     QSpinBox,
+    QStyle,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from isar_gui.commands import DriveOptions, source_fingerprint
+from isar_gui.log_render import BUDGET_KIND, BudgetAnnouncer, RenderedEvent, format_payload
 from isar_gui.viewmodels.campaign import (analysis_readout, budget_readout, current_activity_text,
                                           terminal_status_text)
 
@@ -54,6 +58,9 @@ log = logging.getLogger(__name__)
 
 _SEVERITY_BG = {"warn": QColor("#fff3e0"), "terminal": QColor("#e8eaf6"),
                 "notice": QColor("#e3f2fd")}
+#: Loud rows (exceptions, fit escalations) are coloured as well as backgrounded — they are the two
+#: things an operator is actually watching for, and they survive every feed filter.
+_LOUD_FG = {"exception": QColor("#b71c1c"), "escalate_fit": QColor("#b26a00")}
 _MAX_FEED_ROWS = 500
 
 
@@ -133,16 +140,11 @@ class CampaignDock(QDockWidget):
         self._analysis_limit.setPlaceholderText("analysis: 1h | none")
         self._seed = QSpinBox(body)
         self._seed.setRange(0, 99_999_999)
-        self._max_iters = QSpinBox(body)
-        self._max_iters.setRange(1, 100_000)
-        self._max_iters.setValue(200)
-        self._max_iters.setToolTip("Iteration cap PER INVOCATION — a resume gets a fresh cap.")
         form.addRow("Tier", self._tier)
         form.addRow("Scan-window EIG", self._eig_mode)
         form.addRow("Measurement budget", self._budget)
         form.addRow("Analysis limit", self._analysis_limit)
         form.addRow("Seed", self._seed)
-        form.addRow("Max iters", self._max_iters)
         outer.addLayout(form)
 
         self._mismatch = QLabel(body)
@@ -222,7 +224,9 @@ class CampaignDock(QDockWidget):
         self._now_label.setStyleSheet(
             "font-weight: bold; background: #e8f1fb; border: 1px solid #9abbd8; padding: 5px;")
         outer.addWidget(self._now_label)
-        self._exceptions_only = QCheckBox("exceptions only", body)
+        self._exceptions_only = QCheckBox("problems only", body)
+        self._exceptions_only.setToolTip(
+            "Show only exceptions, fit escalations, blocked checks and terminal outcomes.")
         self._exceptions_only.toggled.connect(self._rebuild_feed)
         feed_tools = QHBoxLayout()
         feed_tools.addWidget(self._exceptions_only)
@@ -237,9 +241,18 @@ class CampaignDock(QDockWidget):
         feed_tools.addWidget(self._copy_all_btn)
         feed_tools.addWidget(self._save_log_btn)
         outer.addLayout(feed_tools)
-        self._feed = QListWidget(body)
+        # A tree, not a list: every row carries one child holding its raw JSON payload, so the
+        # operator-facing sentence stays short and the audit detail is one click away (the log on
+        # disk is never abridged — this dock only chooses what to say out loud).
+        self._feed = QTreeWidget(body)
+        self._feed.setHeaderHidden(True)
+        self._feed.setColumnCount(1)
         self._feed.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._feed.setUniformRowHeights(False)
+        self._feed.setWordWrap(True)
+        self._feed.itemClicked.connect(self._toggle_expanded)
         outer.addWidget(self._feed, 1)
+        self._budget_announcer = BudgetAnnouncer()
 
         self.setWidget(body)
 
@@ -266,7 +279,6 @@ class CampaignDock(QDockWidget):
         self._tier.currentTextChanged.connect(self._on_form_edited)
         self._eig_mode.currentIndexChanged.connect(self._on_form_edited)
         self._seed.valueChanged.connect(self._on_form_edited)
-        self._max_iters.valueChanged.connect(self._on_form_edited)
 
         self._load_form()
         self._activity_timer = QTimer(self)
@@ -308,9 +320,8 @@ class CampaignDock(QDockWidget):
         self._analysis_limit.setText(str(form.get("analysis_limit", "")))
         try:
             self._seed.setValue(int(form.get("seed", 0)))
-            self._max_iters.setValue(max(1, int(form.get("max_iters", 200))))
         except (TypeError, ValueError):
-            log.debug("campaign form carried non-numeric seed/max_iters; defaults kept")
+            log.debug("campaign form carried a non-numeric seed; the default is kept")
 
     def form_dict(self) -> dict:
         """The current form as the plain dict the GuiStore persists — the window uses this to
@@ -324,7 +335,6 @@ class CampaignDock(QDockWidget):
             "budget": self._budget.text(),
             "analysis_limit": self._analysis_limit.text(),
             "seed": self._seed.value(),
-            "max_iters": self._max_iters.value(),
         }
 
     def apply_form(self, form: dict) -> None:
@@ -378,11 +388,11 @@ class CampaignDock(QDockWidget):
     # ---- controls --------------------------------------------------------------
     def _launch_resume(self) -> None:
         """Launch ``--resume-latest``: the frozen objective, no LLM. Tier is frozen with the
-        objective (the CLI ignores it on resume); budget/seed/max-iters still apply per run."""
+        objective (the CLI ignores it on resume); budget/seed still apply per run."""
         opts = DriveOptions(resume_latest=True, tier=self._tier.currentText(),
                             budget=self._budget.text().strip() or None,
                             analysis_limit=self._analysis_limit.text().strip() or None,
-                            seed=self._seed.value(), max_iters=self._max_iters.value(),
+                            seed=self._seed.value(),
                             scan_window_eig_mode=str(self._eig_mode.currentData()))
         if not self._operations.request_drive(opts, env=dict(self._llm_env())):
             self._status_line.setText("could not start — workspace not ready")
@@ -402,14 +412,12 @@ class CampaignDock(QDockWidget):
         if self._src_spec.isChecked():
             opts = DriveOptions(spec_path=self._spec_path.text().strip(),
                                 tier=self._tier.currentText(), budget=budget,
-                                analysis_limit=analysis_limit,
-                                seed=self._seed.value(), max_iters=self._max_iters.value(),
+                                analysis_limit=analysis_limit, seed=self._seed.value(),
                                 scan_window_eig_mode=str(self._eig_mode.currentData()))
         else:
             opts = DriveOptions(goal=self._goal.toPlainText().strip(),
                                 tier=self._tier.currentText(), budget=budget,
-                                analysis_limit=analysis_limit,
-                                seed=self._seed.value(), max_iters=self._max_iters.value(),
+                                analysis_limit=analysis_limit, seed=self._seed.value(),
                                 scan_window_eig_mode=str(self._eig_mode.currentData()))
         if not hasattr(self._operations, "request_drive_compile"):
             self._status_line.setText("could not compile objective — coordinator is unavailable")
@@ -431,8 +439,7 @@ class CampaignDock(QDockWidget):
             return
         # Branch, tier, energy window, tolerance, and budget are exactly what the operator just
         # confirmed. Only invocation controls that are outside the objective remain mutable here.
-        opts = DriveOptions(envelope_path=path, seed=self._seed.value(),
-                            max_iters=self._max_iters.value())
+        opts = DriveOptions(envelope_path=path, seed=self._seed.value())
         if self._workspace_state() == "none":
             self.virtual_start_requested.emit(opts, dict(self._llm_env()))
             return
@@ -595,7 +602,7 @@ class CampaignDock(QDockWidget):
         self._resume_btn.setEnabled((not busy) and self._tavi_status == "ok")
         self._resume_btn.setToolTip(
             "Continues the frozen objective from the campaign log (no LLM). Goal/spec and tier "
-            "are ignored; budget/seed/max-iters still apply to this run."
+            "are ignored; budget and seed still apply to this run."
             + ("" if self._tavi_status == "ok" else "\nTAVI backend is not reachable — launch it first."))
 
         # Tier is frozen with a resumed objective — a live combo implying otherwise would lie.
@@ -621,12 +628,10 @@ class CampaignDock(QDockWidget):
                 + ("  — stopping after the current scan…" if self._stop_pending() else ""))
         elif running:
             it = state.iteration
-            # Launch-captured cap: the spinbox can be edited mid-run and no longer describes the
-            # subprocess. Iterations are logged zero-based; operators count from 1.
-            opts = self._operations.drive_options()
-            cap = opts.max_iters if opts is not None else "—"
+            # Iterations are logged zero-based; operators count from 1. There is no iteration cap
+            # any more — the budgets are the only stop conditions, and each has its own bar.
             self._status_line.setText(
-                f"running — iteration {it + 1 if it is not None else '…'} of {cap} (this run)"
+                f"running — iteration {it + 1 if it is not None else '…'} (this run)"
                 + ("  — stopping after the current scan…" if self._stop_pending() else ""))
         elif state.stop_state == "operator_stopped":
             self._status_line.setText("stopped by operator — press Resume to continue")
@@ -679,48 +684,97 @@ class CampaignDock(QDockWidget):
         return bool(self._operations.is_stop_pending())
 
     # ---- feed -----------------------------------------------------------------------
+    @staticmethod
+    def _is_visible(item, show_all: bool) -> bool:
+        """Loud rows (exception / escalate_fit) are never filtered out — that is the point of them."""
+        return show_all or bool(getattr(item, "loud", False)) or item.severity in ("warn", "terminal")
+
     def _append_feed(self, items: list) -> None:
+        items = list(items)
+        show_all = not self._exceptions_only.isChecked()
+        # The budget line is paced by rows the operator actually SEES, so a filtered feed does not
+        # get budget updates at the unfiltered rate.
+        shown = [item for item in items if self._is_visible(item, show_all)]
+        budget = self._budget_line(len(shown))
+        if budget is not None:
+            items.append(budget)
+            shown.append(budget)
         self._feed_items = list(reversed(items)) + self._feed_items
         del self._feed_items[_MAX_FEED_ROWS:]
-        show_all = not self._exceptions_only.isChecked()
-        for item in items:
-            if not show_all and item.severity not in ("warn", "terminal"):
-                continue
+        for item in shown:
             self._add_row(item, prepend=True)
         self._feed.scrollToTop()
+
+    def _budget_line(self, rows: int):
+        """A synthesized budget-status row, when one is due (see :class:`BudgetAnnouncer`)."""
+        text = self._budget_announcer.maybe_line(self._vm.state, now=time.time(), rows=rows)
+        if text is None:
+            return None
+        state = self._vm.state
+        return RenderedEvent(
+            ts=time.time(), kind=BUDGET_KIND, text=text, severity="notice", loud=False,
+            payload={"budget_kind": state.budget_kind, "budget_amount": state.budget_amount,
+                     "spent_neutrons": state.spent_neutrons, "spent_seconds": state.spent_seconds,
+                     "analysis_limit_seconds": state.analysis_limit_seconds,
+                     "analysis_spent_seconds": state.analysis_spent_seconds,
+                     "scan_count": state.scan_count,
+                     "note": "synthesized by the GUI from campaign state; not a logged event"})
 
     def _clear_feed(self) -> None:
         self._feed_items.clear()
         self._feed.clear()
+        self._budget_announcer.reset()
 
     def _rebuild_feed(self) -> None:
         self._feed.clear()
         show_all = not self._exceptions_only.isChecked()
         for item in self._feed_items:
-            if show_all or item.severity in ("warn", "terminal"):
+            if self._is_visible(item, show_all):
                 self._add_row(item)
         self._feed.scrollToTop()
 
     def _add_row(self, item, *, prepend=False) -> None:
-        row = QListWidgetItem(item.text)
+        row = QTreeWidgetItem([item.text])
         bg = _SEVERITY_BG.get(item.severity)
         if bg is not None:
-            row.setBackground(bg)
-        if item.severity == "terminal":
-            font = row.font()
+            row.setBackground(0, bg)
+        fg = _LOUD_FG.get(item.kind) if getattr(item, "loud", False) else None
+        if fg is not None:
+            row.setForeground(0, fg)
+        if item.severity == "terminal" or getattr(item, "loud", False):
+            font = row.font(0)
             font.setBold(True)
-            row.setFont(font)
-        row.setToolTip(f"{item.kind} @ {item.ts:.0f}")
+            row.setFont(0, font)
+        icon = self._row_icon(item)
+        if icon is not None:
+            row.setIcon(0, icon)
+        row.setToolTip(0, f"{item.kind} @ {item.ts:.0f} — click to show the raw payload")
+        detail = QTreeWidgetItem([format_payload(getattr(item, "payload", {}) or {})])
+        detail.setFont(0, QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        detail.setFlags(Qt.ItemFlag.ItemIsEnabled)   # payload text is context, not a selectable row
+        row.addChild(detail)
         if prepend:
-            self._feed.insertItem(0, row)
+            self._feed.insertTopLevelItem(0, row)
         else:
-            self._feed.addItem(row)
-        while self._feed.count() > _MAX_FEED_ROWS:
-            self._feed.takeItem(self._feed.count() - 1)
-        # QListWidgetItem alignment default is fine; keep rows compact and selectable/copyable.
+            self._feed.addTopLevelItem(row)
+        while self._feed.topLevelItemCount() > _MAX_FEED_ROWS:
+            self._feed.takeTopLevelItem(self._feed.topLevelItemCount() - 1)
+
+    def _row_icon(self, item):
+        """A standard-style icon for the loud kinds; ``None`` for everything else."""
+        pixmaps = {"exception": QStyle.StandardPixmap.SP_MessageBoxCritical,
+                   "escalate_fit": QStyle.StandardPixmap.SP_MessageBoxWarning}
+        pixmap = pixmaps.get(item.kind)
+        return self.style().standardIcon(pixmap) if pixmap is not None else None
+
+    def _toggle_expanded(self, item, _column=0) -> None:
+        """Click a rendered line to expand it in place onto its raw JSON payload."""
+        if item is None or item.parent() is not None:
+            return
+        item.setExpanded(not item.isExpanded())
 
     def _copy_feed_selection(self) -> None:
-        lines = [item.text() for item in self._feed.selectedItems()]
+        lines = [item.text(0) for item in self._feed.selectedItems() if item.parent() is None]
         if lines:
             QApplication.clipboard().setText("\n".join(lines))
 

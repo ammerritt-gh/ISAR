@@ -126,8 +126,9 @@ def test_reducer_surfaces_authority_selection_and_campaign_predicate_failures():
     assert state.scan_design_authority["selected_role"] == "target_core"
     assert state.authority_predicate_failure_counts == {
         "per_point_ncount_equal": 1, "o41_margin_not_decisive": 1}
-    item = render_feed_item(events[1])
-    assert "selected legacy" in item.text and "41→21" in item.text
+    # The per-iteration authority decisions are audit trail: the dock's dedicated authority label
+    # carries the current selection (from the state above), so the rows stay out of the feed.
+    assert render_feed_item(events[1]) is None
 
 
 def test_reducer_captures_last_scan_identical_to_the_feed_line(make_ws):
@@ -185,10 +186,10 @@ def test_feed_renders_kinds_and_skips_timing():
     assert render_feed_item({"kind": "timing", "payload": {"stage": "x"}, "ts": 1}) is None
     prop = render_feed_item({"kind": "propose", "ts": 1, "payload": {
         "hkl": [2, 0, 0], "e_lo": 1.0, "e_hi": 9.0, "ncount": 200, "kind": "production"}})
-    assert "q=(2, 0, 0)" in prop.text and prop.severity == "info"
+    assert "H=2" in prop.text and prop.severity == "info"
     stop = render_feed_item({"kind": "stop", "ts": 1, "payload": {
         "state": "operator_stopped", "reasons": ["op"]}})
-    assert stop.severity == "terminal" and "operator_stopped" in stop.text
+    assert stop.severity == "terminal" and "operator stopped" in stop.text
     unknown = render_feed_item({"kind": "mystery", "ts": 1, "payload": {}})
     assert unknown is not None                       # unknown kinds surface, never vanish
 

@@ -126,7 +126,6 @@ def test_start_maps_form_to_drive_options_with_llm_env(dock_env):
     dock._budget.setText("1e9n")
     dock._analysis_limit.setText("10m")
     dock._seed.setValue(7)
-    dock._max_iters.setValue(12)
     dock._start_btn.click()
     assert len(ops.compile_requests) == 1
     assert len(ops.drive_requests) == 1
@@ -136,7 +135,8 @@ def test_start_maps_form_to_drive_options_with_llm_env(dock_env):
             and compile_opts.budget == "1e9n" and compile_opts.analysis_limit == "10m")
     assert compile_env == {"ISAR_LLM": "x"}
     assert opts.envelope_path == "frozen-objective.json" and not opts.resume_latest
-    assert opts.budget is None and opts.seed == 7 and opts.max_iters == 12
+    assert opts.budget is None and opts.seed == 7
+    assert not hasattr(opts, "max_iters")            # budgets are the only stop conditions now
     assert env == {"ISAR_LLM": "x"}
 
 
@@ -242,13 +242,11 @@ def test_tier_combo_frozen_when_primary_offers_resume(dock_env):
     assert dock._tier.isEnabled()
 
 
-def test_running_status_is_one_based_with_the_launch_captured_cap(dock_env):
+def test_running_status_is_one_based_and_names_no_iteration_cap(dock_env):
     dock, vm, ops, ws, root = dock_env
     dock.set_backend_status("tavi", "ok", "up")
     dock._goal.setPlainText("map the branch")
-    dock._max_iters.setValue(12)
     dock._start_btn.click()                          # ops fake captures the options, running=True
-    dock._max_iters.setValue(99)                     # editing mid-run must not change the display
     path = root / "report" / "session_log.jsonl"
     log_event(path, "decide", {"event": "campaign_start", "action": "campaign_start",
                                "objective": {}, "source": {"kind": "goal", "sha256": "x"}})
@@ -256,7 +254,8 @@ def test_running_status_is_one_based_with_the_launch_captured_cap(dock_env):
     log_event(path, "run", _run_event_iter0)
     ws.refresh()
     vm.on_workspace_changed({"events"})
-    assert "iteration 1 of 12 (this run)" in dock._status_line.text()
+    assert "iteration 1 (this run)" in dock._status_line.text()
+    assert "of" not in dock._status_line.text()      # no iteration cap exists to report
     assert "iteration: 1 " in dock._iter_label.text()
 
 
@@ -292,7 +291,7 @@ def test_pending_running_status_names_the_coming_workspace(dock_env):
 def test_form_dict_round_trips_through_apply_form(qtbot, dock_env):
     dock, vm, ops, ws, root = dock_env
     dock._goal.setPlainText("carry me")
-    dock._max_iters.setValue(17)
+    dock._seed.setValue(17)
     dock._budget.setText("1e9n")
     form = dock.form_dict()
 
@@ -300,7 +299,7 @@ def test_form_dict_round_trips_through_apply_form(qtbot, dock_env):
     qtbot.addWidget(other)
     other.apply_form(form)
     assert other.form_dict() == form
-    assert other._goal.toPlainText() == "carry me" and other._max_iters.value() == 17
+    assert other._goal.toPlainText() == "carry me" and other._seed.value() == 17
 
 
 def test_stop_and_force_route_to_coordinator(dock_env):
@@ -359,6 +358,10 @@ def test_selected_master_shows_revision_consistent_reasoning(dock_env):
     assert "press Resume" in dock._status_line.text()
 
 
+def _feed_lines(dock):
+    return [dock._feed.topLevelItem(i).text(0) for i in range(dock._feed.topLevelItemCount())]
+
+
 def test_feed_renders_and_filters_exceptions(dock_env):
     dock, vm, ops, ws, root = dock_env
     path = root / "report" / "session_log.jsonl"
@@ -366,12 +369,69 @@ def test_feed_renders_and_filters_exceptions(dock_env):
                                "objective": {}, "source": {"kind": "goal", "sha256": "x"}})
     log_event(path, "exception", {"action": "proposal_clamped", "iter": 0})
     log_event(path, "timing", {"stage": "propose", "seconds": 0.1})
+    log_event(path, "branch_track_update", {"revision": "rev-2", "iter": 0})
     ws.refresh()
     vm.on_workspace_changed({"events"})
-    assert dock._feed.count() == 2                   # timing never reaches the feed
+    # Profiling and audit-trail kinds never reach the feed; the JSONL on disk keeps them.
+    assert dock._feed.topLevelItemCount() == 2
     dock._exceptions_only.setChecked(True)
-    assert dock._feed.count() == 1
-    assert "proposal_clamped" in dock._feed.item(0).text()
+    assert dock._feed.topLevelItemCount() == 1
+    assert "proposal clamped" in dock._feed.topLevelItem(0).text(0)
+
+
+def test_feed_row_expands_onto_its_raw_payload(dock_env):
+    dock, vm, ops, ws, root = dock_env
+    path = root / "report" / "session_log.jsonl"
+    log_event(path, "decide", {"event": "campaign_start", "action": "campaign_start",
+                               "objective": {}, "source": {"kind": "goal", "sha256": "x"}})
+    log_event(path, "exception", {"action": "proposal_clamped", "iter": 0,
+                                  "reason": "outside the accessible window"})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+
+    row = dock._feed.topLevelItem(0)
+    assert row.childCount() == 1                     # exactly one detail child per rendered line
+    assert "proposal_clamped" in row.child(0).text(0)   # the RAW kind/action, verbatim
+    assert not row.isExpanded()
+    dock._toggle_expanded(row)
+    assert row.isExpanded()
+    dock._toggle_expanded(row)
+    assert not row.isExpanded()
+    dock._toggle_expanded(row.child(0))              # clicking the payload must not collapse it
+    assert not row.isExpanded()
+
+
+def test_loud_rows_survive_the_problems_only_filter_and_are_styled(dock_env):
+    dock, vm, ops, ws, root = dock_env
+    path = root / "report" / "session_log.jsonl"
+    log_event(path, "decide", {"event": "campaign_start", "action": "campaign_start",
+                               "objective": {}, "source": {"kind": "goal", "sha256": "x"}})
+    log_event(path, "escalate_fit", {"phase": "promote", "hkl": [2.75, 0.0, 0.0],
+                                     "from_tier": "fast", "to_tier": "full", "iter": 21})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+    dock._exceptions_only.setChecked(True)
+    lines = _feed_lines(dock)
+    assert len(lines) == 1 and "Refitting more carefully" in lines[0]
+    row = dock._feed.topLevelItem(0)
+    assert not row.icon(0).isNull()                  # loud rows carry an icon…
+    assert row.font(0).bold()                        # …and are bold
+    assert row.foreground(0).color().name() == "#b26a00"
+
+
+def test_budget_status_line_is_synthesized_into_the_feed(dock_env):
+    dock, vm, ops, ws, root = dock_env
+    path = root / "report" / "session_log.jsonl"
+    log_event(path, "decide", {
+        "event": "campaign_start", "action": "campaign_start",
+        "objective": {"budget": {"kind": "neutrons", "amount": 1e10},
+                      "analysis_limit_seconds": 3600.0},
+        "source": {"kind": "goal", "sha256": "x"}})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+    budget = [line for line in _feed_lines(dock) if line.startswith("Budget —")]
+    assert len(budget) == 1
+    assert "neutrons left" in budget[0] and "analysis time left" in budget[0]
 
 
 def test_feed_hydrates_events_consumed_before_dock_connected(qtbot, make_ws):
@@ -386,10 +446,9 @@ def test_feed_hydrates_events_consumed_before_dock_connected(qtbot, make_ws):
     dock = CampaignDock(vm, _Ops(), store=None)
     qtbot.addWidget(dock)
 
-    assert dock._feed.count() == 2
-    assert "proposal_clamped" in dock._feed.item(0).text()
-    assert all("timing" not in dock._feed.item(index).text().lower()
-               for index in range(dock._feed.count()))
+    assert dock._feed.topLevelItemCount() == 2
+    assert "proposal clamped" in dock._feed.topLevelItem(0).text(0)
+    assert all("timing" not in line.lower() for line in _feed_lines(dock))
 
 
 def test_feed_copy_selection_copy_all_and_save_text(dock_env, tmp_path, monkeypatch):
@@ -403,11 +462,11 @@ def test_feed_copy_selection_copy_all_and_save_text(dock_env, tmp_path, monkeypa
     ws.refresh()
     vm.on_workspace_changed({"events"})
 
-    dock._feed.item(0).setSelected(True)  # newest-first visible order
+    dock._feed.topLevelItem(0).setSelected(True)  # newest-first visible order
     dock._copy_feed_selection()
-    assert "proposal_clamped" in QApplication.clipboard().text()
+    assert "proposal clamped" in QApplication.clipboard().text()
     dock._copy_feed_all()
-    visible = "\n".join(dock._feed.item(i).text() for i in range(dock._feed.count()))
+    visible = "\n".join(_feed_lines(dock))
     assert QApplication.clipboard().text() == visible
 
     destination = tmp_path / "campaign-log.txt"
@@ -422,7 +481,7 @@ def test_form_round_trips_through_gui_store(qtbot, dock_env, tmp_path):
     store = GuiStore.load(root)
     dock.set_store(store)
     dock._goal.setPlainText("persist me")
-    dock._max_iters.setValue(42)
+    dock._seed.setValue(42)
     dock._save_timer.stop()
     dock._save_form()          # flush the debounce deterministically
 
@@ -430,4 +489,4 @@ def test_form_round_trips_through_gui_store(qtbot, dock_env, tmp_path):
     dock2 = CampaignDock(vm, ops, store=store2)
     qtbot.addWidget(dock2)
     assert dock2._goal.toPlainText() == "persist me"
-    assert dock2._max_iters.value() == 42
+    assert dock2._seed.value() == 42
