@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import isar.reduce.llm_client as _llm  # boundary carve-out: the shared LLMM HTTP plumbing only
+import isar.drive.objective as _obj
 from isar.drive.objective import (
     ObjectiveSpec,
     current_objective_comparison_scope,
@@ -166,6 +167,15 @@ _REPAIR_SUFFIX = (
 DEFAULTS: dict[str, Any] = {"step_h": 0.05, "tier": "deterministic"}
 ENVELOPE_SCHEMA = "isar.objective-envelope/2"
 
+# The canonical, tier-aware budget defaults. Defined next to the dataclass they configure
+# (:mod:`isar.drive.objective`) and re-exported here, which is the import site every other surface —
+# the CLI, the GUI campaign form, example goal resources — should use. There is exactly one copy of
+# these numbers in the tree; do not restate them.
+DEFAULT_BUDGET_HOURS_BY_TIER = _obj.DEFAULT_BUDGET_HOURS_BY_TIER
+DEFAULT_BUDGET_HOURS = _obj.DEFAULT_BUDGET_HOURS
+DEFAULT_BUDGET_NEUTRONS = _obj.DEFAULT_BUDGET_NEUTRONS
+default_budget_hours = _obj.default_budget_hours
+
 
 class GoalParseError(ValueError):
     """The goal could not be turned into a valid ObjectiveSpec (LLM refusal / non-conforming output)."""
@@ -234,7 +244,7 @@ def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec"
         return ObjectiveSpec.from_dict(d)         # already a full ObjectiveSpec
     if not _conforms(d, FILE_SPEC_SCHEMA):
         raise GoalParseError(f"{where}: not a valid goal spec (needs path{{h_start,h_end,k,l}}, step_h, "
-                             "tolerance_meV, and a budget)")
+                             "and tolerance_meV; a budget is optional and defaults per tier)")
     merged = {**DEFAULTS, **(defaults or {})}
     return _build_spec(
         d,
@@ -392,13 +402,17 @@ def _build_spec(data: dict, merged: dict, *,
 
 
 def _budget(data: dict, *, tier: str) -> dict[str, Any] | None:
-    if data.get("budget_neutrons"):
-        return {"kind": "neutrons", "amount": float(data["budget_neutrons"])}
-    if data.get("budget_hours"):
-        return {"kind": "counting_seconds", "amount": float(data["budget_hours"]) * 3600.0}
-    if tier != "deterministic":
-        return {"kind": "counting_seconds", "amount": 8.0 * 3600.0}
-    return None
+    """The campaign budget for this goal: what it declared, else the canonical tier default.
+
+    A declared neutron budget wins; otherwise the budget is counting-time, and an undeclared one
+    falls back to :func:`default_budget_hours`. There is deliberately no "no budget at all" outcome
+    here: a goal that states nothing gets the documented tier default rather than an unbounded run.
+    """
+    neutrons = data.get("budget_neutrons", DEFAULT_BUDGET_NEUTRONS)
+    if neutrons:
+        return {"kind": "neutrons", "amount": float(neutrons)}
+    hours = data.get("budget_hours") or default_budget_hours(tier)
+    return {"kind": "counting_seconds", "amount": float(hours) * 3600.0}
 
 
 def _extract(res) -> dict | None:

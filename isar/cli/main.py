@@ -18,14 +18,6 @@ def _reconfigure_stdio() -> None:
             pass
 
 
-def _positive_int(text: str) -> int:
-    """argparse ``type`` for ``--max-iters``: a strictly-positive integer (>= 1)."""
-    value = int(text)   # a non-integer raises ValueError, which argparse reports as an invalid value
-    if value < 1:
-        raise argparse.ArgumentTypeError(f"must be >= 1, got {value}")
-    return value
-
-
 def _control_token(text: str) -> str:
     """argparse ``type`` for ``--control-token``: a bounded opaque-token alphabet.
 
@@ -158,10 +150,6 @@ def build_parser() -> argparse.ArgumentParser:
                     help="ISAR workspace the driver drives (auto-init'd after the first scan)")
     pd.add_argument("--compile-only", dest="compile_only", metavar="OUTPUT",
                     help="compile --goal/--spec to a frozen envelope and exit without contacting TAVI")
-    pd.add_argument("--max-iters", dest="max_iters", type=_positive_int, default=None,
-                    help="cap the adaptive-loop iterations for THIS invocation (>= 1). Applies per "
-                         "invocation: each run_campaign restarts iteration numbering at zero, so a "
-                         "restart grants a fresh cap. Default: the built-in cap")
     pd.add_argument("--control-token", dest="control_token", default=None, type=_control_token,
                     help="opaque token ([A-Za-z0-9_-], max 64) enabling a cooperative operator stop: "
                          "writing <workspace>/report/control/stop-<token>.json makes the loop finish "
@@ -415,8 +403,6 @@ def main(argv=None) -> int:
         config = {"workspace": args.workspace, "calibration": args.calibration,
                   "tavi_url": args.tavi, "seed": args.seed, "worker": args.worker,
                   "control_token": args.control_token, "source": source}
-        if args.max_iters is not None:
-            config["max_iters"] = args.max_iters      # per-invocation cap; else the loop's built-in default
         try:
             summary = run_campaign(objective, config)
         except Exception as exc:  # noqa: BLE001  (a campaign error is exit 2, not a stack trace)

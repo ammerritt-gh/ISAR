@@ -1322,14 +1322,49 @@ def test_campaign_certify_pass_uses_bayes_tier_when_flag_set(tmp_path):
     assert "full" not in tiers_seen
 
 
-def _objective(tol=0.5, amount=1e13):
+# The driver has no iteration cap — the budget is the only stop condition — so a test campaign is
+# bounded by its neutron budget. ~2e11 funds a few tens of scans against the mock instrument: enough
+# for every behaviour these tests exercise, and short enough that a campaign which never converges
+# (a deliberately unreachable tolerance, a repeatedly refused window) still ends in seconds.
+def _objective(tol=0.5, amount=2e11):
     return ObjectiveSpec.along_h(h_start=2.1, h_end=2.4, step=0.1, tolerance_meV=tol,
                                  budget={"kind": "neutrons", "amount": amount}, name="mvp")
 
 
-def _run(tmp_path, objective, client, runner, **extra):
+_SCAN_BOUND_TOKEN = "scan-bound"
+
+
+def _stop_after_scans(client, workspace, count):
+    """Arm a cooperative operator stop once ``count`` requests have been validated.
+
+    The loop has no iteration cap, so a test that only needs the campaign's first request bounds it
+    the way an operator does — a stop file honoured at the next iteration boundary. The in-flight
+    iteration still completes (submit -> wait -> persist -> analyze), so the first submission is
+    fully recorded. Armed on ``validate`` rather than ``wait_scan`` because every realized request
+    is validated, including one the instrument then refuses.
+    """
+    control = Path(workspace) / "report" / "control"
+    original = client.validate
+    seen = {"n": 0}
+
+    def validate(body):
+        seen["n"] += 1
+        if seen["n"] >= count:
+            control.mkdir(parents=True, exist_ok=True)
+            (control / f"stop-{_SCAN_BOUND_TOKEN}.json").write_text(
+                json.dumps({"requested_by": "test", "reason": "scan bound"}), encoding="utf-8")
+        return original(body)
+
+    client.validate = validate
+    return client
+
+
+def _run(tmp_path, objective, client, runner, *, stop_after=None, **extra):
     ws = tmp_path / "ws"
     (ws / "report").mkdir(parents=True, exist_ok=True)
+    if stop_after is not None:
+        _stop_after_scans(client, ws, stop_after)
+        extra.setdefault("control_token", _SCAN_BOUND_TOKEN)
     cfg = {"workspace": ws, "client": client, "run_isar": runner, "calibration": _UNITY_CAL,
            "resolution": {"fwhm_dE": 0.8}, "seed": 7, **extra}
     return run_campaign(objective, cfg), ws
@@ -1503,7 +1538,7 @@ def test_certification_regression_automatically_acquires_and_recertifies(
         return observations, True
 
     monkeypatch.setattr(loop_mod, "_certify", widen_first_certification)
-    monkeypatch.setattr(loop_mod, "_predictive_escalation_candidate", lambda *_args: None)
+    monkeypatch.setattr(loop_mod, "_predictive_promotion_target", lambda *_args: None)
     summary, ws = _run(tmp_path, _objective(), MockTavi(omega), runner)
 
     assert summary["stop"]["state"] == "met"
@@ -1536,7 +1571,7 @@ def test_certification_retry_stops_when_provisional_basis_did_not_change(
         tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega))
 
     # One predictive full-fit escalation legitimately changes the basis and permits a second check;
-    # the unchanged second basis is then stopped rather than spinning through max_iters.
+    # the unchanged second basis is then stopped rather than spinning on unchanged evidence.
     assert len(certification_calls) == 2
     assert summary["stop"]["state"] == "incomplete"
     assert "without a changed scientific state" in summary["stop"]["reasons"][0]
@@ -1673,7 +1708,7 @@ def test_optic_campaign_tracks_target_amid_acoustic_distractor_deterministically
             energy_search_meV=(-2.0, 12.0), **frozen)
         client = BranchAwareOpticTavi(lambda _h: 0.0)
         summary, workspace = _run(
-            root, objective, client, make_branch_aware_optic_runner(objective), max_iters=60)
+            root, objective, client, make_branch_aware_optic_runner(objective))
         events = read_log(summary["session_log"])
         proposals = [event["payload"] for event in events if event["kind"] == "propose"]
         return summary, proposals, workspace
@@ -1753,7 +1788,7 @@ def test_optic_campaign_with_supplied_energy_runs_nearest_selector(tmp_path, mon
 
     summary, _workspace = _run(
         tmp_path, objective, BranchAwareOpticTavi(lambda _h: 0.0),
-        make_branch_aware_optic_runner(objective), max_iters=40)
+        make_branch_aware_optic_runner(objective))
     proposals = [event["payload"] for event in read_log(summary["session_log"])
                  if event["kind"] == "propose"]
     assert proposals[0]["e_lo"] < 6.1 < proposals[0]["e_hi"]
@@ -1816,7 +1851,7 @@ def test_minimum_target_support_adjustment_records_realized_request(tmp_path):
         objective,
         _TargetSupportTavi(lambda _h: 6.0),
         make_mock_runner(lambda _h: 6.0),
-        max_iters=1,
+        stop_after=1,
     )
     events = read_log(summary["session_log"])
     realization = next(
@@ -1855,7 +1890,7 @@ def test_shadow_submission_carries_the_exact_selected_legacy_sidecar(tmp_path):
 
     summary, workspace = _run(
         tmp_path, objective, MockTavi(lambda _h: 6.0),
-        make_mock_runner(lambda _h: 6.0), max_iters=1)
+        make_mock_runner(lambda _h: 6.0), stop_after=1)
     events = read_log(summary["session_log"])
     submission = next(event["payload"] for event in events
                       if event["kind"] == "physical_submission")
@@ -1893,7 +1928,7 @@ def test_missed_window_triggers_recenter(tmp_path):
     omega = lambda h: 9.0
     client = MockTavi(omega)
     summary, ws = _run(tmp_path, _objective(), client,
-                       make_mock_runner(omega, window_gate=True), max_iters=60)
+                       make_mock_runner(omega, window_gate=True))
     events = read_log(summary["session_log"])
     recenters = [e for e in events if e["kind"] == "exception"
                  and e["payload"].get("action") == "recenter"]
@@ -1983,7 +2018,7 @@ def test_missed_window_point_limit_refuses_recovery_without_resubmitting(
     client = MockTavi(lambda _h: 9.0)
     summary, _workspace = _run(
         tmp_path, _objective(), client,
-        make_mock_runner(lambda _h: 9.0, window_gate=True), max_iters=60)
+        make_mock_runner(lambda _h: 9.0, window_gate=True))
     submissions = [event["payload"] for event in read_log(summary["session_log"])
                    if event["kind"] == "physical_submission"]
     first_acquisition = submissions[0]["acquisition_id"]
@@ -2015,7 +2050,6 @@ def test_missed_window_elastic_refusal_widening_preserves_design_lineage(tmp_pat
         _objective(),
         client,
         make_mock_runner(lambda _h: 9.0, window_gate=True),
-        max_iters=1,
     )
     events = read_log(summary["session_log"])
     realizations = [
@@ -2105,8 +2139,7 @@ def test_full_tier_promotion_logs_paired_escalate_fit_events(tmp_path):
     # repeat production. Each promotion must appear as a paired escalate_fit promote/outcome record.
     omega = lambda h: (h - 2.0) * 2.0
     client = MockTavi(omega)
-    summary, ws = _run(tmp_path, _objective(), client, make_untrusted_hesse_runner(omega),
-                       max_iters=80)
+    summary, ws = _run(tmp_path, _objective(), client, make_untrusted_hesse_runner(omega))
     events = read_log(summary["session_log"])
     esc = [e for e in events if e["kind"] == "escalate_fit"]
     promotes = [e for e in esc if (e["payload"] or {}).get("phase") == "promote"]
@@ -2141,8 +2174,7 @@ def test_full_tier_promotion_logs_paired_escalate_fit_events(tmp_path):
 def test_bayes_master_promotion_logs_actual_tier_and_outcome(tmp_path):
     omega = lambda h: (h - 2.0) * 2.0
     summary, _ws = _run(
-        tmp_path, _objective(), MockTavi(omega), make_untrusted_hesse_runner(omega),
-        max_iters=80, bayes_errors=True)
+        tmp_path, _objective(), MockTavi(omega), make_untrusted_hesse_runner(omega), bayes_errors=True)
     events = read_log(summary["session_log"])
     promoted = [event for event in events if event["kind"] == "escalate_fit"
                 and (event.get("payload") or {}).get("phase") == "promote"
@@ -2495,10 +2527,23 @@ class _RecoveryTavi(MockTavi):
         return {"job_id": job_id, "state": self.wait_state}
 
 
-def _recovery_config(ws, client, omega, *, max_iters=0):
+_RECOVERY_STOP_TOKEN = "recovery-bound"
+
+
+def _recovery_config(ws, client, omega):
+    """A campaign config that performs crash recovery and then acquires nothing.
+
+    The loop has no iteration cap to set to zero, so the bound is a cooperative operator stop that
+    is already present at the first iteration boundary — the supported way to say "recover, then
+    stop". Recovery itself runs before the loop, so every recovery event still appears.
+    """
+    control = Path(ws) / "report" / "control"
+    control.mkdir(parents=True, exist_ok=True)
+    (control / f"stop-{_RECOVERY_STOP_TOKEN}.json").write_text(
+        json.dumps({"requested_by": "test", "reason": "recover only"}), encoding="utf-8")
     return {"workspace": ws, "client": client, "run_isar": make_mock_runner(omega),
             "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8},
-            "seed": 7, "max_iters": max_iters}
+            "seed": 7, "control_token": _RECOVERY_STOP_TOKEN}
 
 
 def test_resume_reconstructs_analyzed_zero_rows_and_terminal_failure(tmp_path):
@@ -2595,7 +2640,7 @@ def test_resume_pending_recovery_never_submits_new_scan(
     client = _RecoveryTavi(
         body, state=state, wait_state=wait_state, unreachable=unreachable)
     summary = run_campaign(
-        _objective(), _recovery_config(ws, client, lambda _h: 0.2, max_iters=5))
+        _objective(), _recovery_config(ws, client, lambda _h: 0.2))
     assert summary["stop"]["state"] == "pending_recovery"
     assert client.submit_calls == 0
     assert client.wait_calls == (0 if unreachable else 1)
@@ -3050,7 +3095,7 @@ def test_campaign_clamps_dynamic_400m_batch_and_publishes_limit_envelope(
 
     monkeypatch.setattr(loop_mod, "plan_actions", desired_400m)
     summary, _ws = _run(
-        tmp_path, _objective(), client, make_mock_runner(omega), max_iters=1)
+        tmp_path, _objective(), client, make_mock_runner(omega), stop_after=1)
     assert client.validated_ncounts == [100_000_000]
     assert client.submitted_ncounts == [100_000_000]
     events = read_log(summary["session_log"])
@@ -3086,8 +3131,7 @@ def test_validation_refusals_use_distinct_logical_acquisitions(tmp_path):
 
     client = _RejectingTavi()
     summary, _ws = _run(
-        tmp_path, _objective(), client, make_mock_runner(lambda h: (h - 2.0) * 2.0),
-        max_iters=20)
+        tmp_path, _objective(), client, make_mock_runner(lambda h: (h - 2.0) * 2.0))
     proposals = [e["payload"] for e in read_log(summary["session_log"])
                  if e["kind"] == "propose"]
 
@@ -3115,7 +3159,7 @@ def test_campaign_never_submits_over_limit_scan(tmp_path):
     omega = lambda h: 9.0
     client = _StateTavi(omega, max_points=50)
     summary, ws = _run(tmp_path, _objective(), client,
-                       make_mock_runner(omega, window_gate=True), max_iters=40)
+                       make_mock_runner(omega, window_gate=True))
     assert client.submitted_cmds
     assert all(_cmd_points(c) <= 50 for c in client.submitted_cmds), \
         [(_cmd_points(c), c) for c in client.submitted_cmds if _cmd_points(c) > 50]
@@ -3147,7 +3191,7 @@ def test_campaign_submit_idempotency_key_contains_run_nonce(tmp_path):
 def test_submission_failure_finishes_with_terminal_summary_instead_of_sticking(tmp_path):
     omega = lambda h: (h - 2.0) * 2.0
     summary, _ws = _run(
-        tmp_path, _objective(), _SubmitFailingTavi(omega), make_mock_runner(omega), max_iters=1)
+        tmp_path, _objective(), _SubmitFailingTavi(omega), make_mock_runner(omega))
 
     assert summary["stop"]["state"] == "incomplete"
     assert any("instrument submission failed" in reason
@@ -3162,7 +3206,7 @@ def test_submission_failure_finishes_with_terminal_summary_instead_of_sticking(t
 def test_post_submission_failure_remains_pending_for_resume_recovery(tmp_path):
     omega = lambda h: (h - 2.0) * 2.0
     summary, _ws = _run(
-        tmp_path, _objective(), _WaitFailingTavi(omega), make_mock_runner(omega), max_iters=1)
+        tmp_path, _objective(), _WaitFailingTavi(omega), make_mock_runner(omega))
 
     assert summary["stop"]["state"] == "pending_recovery"
     assert any("press Resume" in reason for reason in summary["stop"]["reasons"])
@@ -3314,7 +3358,7 @@ def test_operator_stop_during_final_allowed_iteration_is_honored(tmp_path, monke
     client = _StopFileTavi(omega, ws, token)
     cfg = {"workspace": ws, "client": client, "run_isar": make_mock_runner(omega),
            "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7,
-           "control_token": token, "max_iters": 1}
+           "control_token": token}
     summary = run_campaign(_objective(), cfg)
 
     assert summary["stop"]["state"] == "operator_stopped"
@@ -3322,7 +3366,7 @@ def test_operator_stop_during_final_allowed_iteration_is_honored(tmp_path, monke
     assert any(e["kind"] == "run" for e in events)              # the final iteration completed its scan
     acks = [e for e in events if e["kind"] == "decide"
             and (e.get("payload") or {}).get("event") == "operator_stop"]
-    assert len(acks) == 1 and acks[0]["payload"]["iter"] == 1   # the post-exhaustion boundary (== max_iters)
+    assert len(acks) == 1 and acks[0]["payload"]["iter"] == 1   # the next iteration boundary
     # Certification must not run on an operator stop, even on this path.
     assert not any((e.get("payload") or {}).get("event") == "certify_start"
                    for e in events if e["kind"] == "decide")
@@ -3331,27 +3375,21 @@ def test_operator_stop_during_final_allowed_iteration_is_honored(tmp_path, monke
     assert stops[0]["payload"]["state"] == "operator_stopped"
 
 
-# --------------------------------------------------------------------------- per-invocation max_iters
-def test_max_iters_restart_grants_fresh_cap(tmp_path):
-    # --max-iters is per invocation: each run_campaign restarts iteration numbering at zero (range over
-    # cfg.max_iters), so a second run with the same cap does MORE work rather than treating the cap as
-    # already exhausted. (Not "one run event per invocation" — a single iteration may submit several
-    # scans via recenter/widen retries.)
+# --------------------------------------------------------------------------- budget-bounded loop
+def test_counting_time_budget_terminates_a_neutron_unlimited_campaign(tmp_path):
+    # There is no iteration cap: with the neutron budget unset (unlimited by operator choice) the
+    # counting-time budget is the only thing that can stop an unconverged campaign, and it must.
     omega = lambda h: (h - 2.0) * 2.0
-    ws = tmp_path / "ws"
-    (ws / "report").mkdir(parents=True)
-    base = {"workspace": ws, "run_isar": make_mock_runner(omega), "calibration": _UNITY_CAL,
-            "resolution": {"fwhm_dE": 0.8}, "seed": 7, "max_iters": 1}
-    s1 = run_campaign(_objective(), dict(base, client=MockTavi(omega)))
-    runs1 = [e for e in read_log(s1["session_log"]) if e["kind"] == "run"]
-    assert runs1                                               # the first capped invocation did work
-    s2 = run_campaign(_objective(), dict(base, client=MockTavi(omega)))
-    runs2 = [e for e in read_log(s2["session_log"]) if e["kind"] == "run"]
-    assert len(runs2) > len(runs1)                            # the restart's fresh cap submitted more scans
-    # The restart resumed the prior spend ledger (didn't reset) and started a fresh campaign.
-    starts = [e for e in read_log(s2["session_log"])
-              if (e.get("payload") or {}).get("action") == "campaign_start"]
-    assert starts[-1]["payload"]["resumed"]["scan_counter"] == len(runs1)
+    objective = ObjectiveSpec.along_h(
+        h_start=2.1, h_end=2.4, step=0.1, tolerance_meV=0.001,       # never reachable
+        budget={"kind": "counting_seconds", "amount": 12.0},         # MockTavi bills 5 s per scan
+        name="time-bounded")
+    assert objective.budget["kind"] == "counting_seconds"            # no neutron limit anywhere
+    summary, _ws = _run(tmp_path, objective, MockTavi(omega), make_mock_runner(omega))
+    assert summary["stop"]["state"] == "incomplete"
+    assert any("budget exhausted" in reason for reason in summary["stop"]["reasons"]), \
+        summary["stop"]["reasons"]
+    assert summary["budget"]["spent"] >= 12.0
 
 
 # --------------------------------------------------------------------------- campaign_start fingerprint
@@ -3506,7 +3544,7 @@ def test_a_sole_refused_request_terminates_instead_of_being_re_emitted(tmp_path,
     ``validation_rejected``, ``insufficient_target_support`` and
     ``budget_insufficient_for_minimum_batch`` ever reach ``request_suppressions`` -- transient verdicts
     are scoped "none" and never recorded -- so every re-emission re-submitted a request the instrument
-    or budget had refused *structurally*, once per iteration until max_iters.
+    or budget had refused *structurally*, once per iteration for the rest of the campaign.
 
     The scientific intent stays eligible: one refused realization does not prove the action is
     scientifically exhausted, and saying so would collapse the request/action distinction the

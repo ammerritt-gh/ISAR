@@ -1,4 +1,4 @@
-"""`isar drive` CLI plumbing: --max-iters validation, --control-token, --resume-latest (LLM-free),
+"""`isar drive` CLI plumbing: --control-token, --resume-latest (LLM-free),
 the campaign_start provenance fingerprint, and the operator_stopped exit code.
 
 These exercise the argument parser and the drive handler's config assembly with run_campaign stubbed —
@@ -38,29 +38,21 @@ def _stub_run_campaign(monkeypatch, *, state="met"):
     return captured
 
 
-# --------------------------------------------------------------------------- --max-iters validation
-def test_max_iters_rejects_zero_and_negative_at_argparse():
+# --------------------------------------------------------------------------- no iteration cap
+def test_no_max_iters_option_exists():
+    # The budgets are the only stop conditions; an iteration cap silently truncated campaigns that
+    # were still making progress with beam time left, so the flag is gone rather than deprecated.
     parser = build_parser()
-    for bad in ("0", "-1"):
-        with pytest.raises(SystemExit):
-            parser.parse_args(["drive", "--spec", "s.json", "--workspace", "w", "--max-iters", bad])
-    # a valid value parses to the int
-    ns = parser.parse_args(["drive", "--spec", "s.json", "--workspace", "w", "--max-iters", "3"])
-    assert ns.max_iters == 3
+    with pytest.raises(SystemExit):
+        parser.parse_args(["drive", "--spec", "s.json", "--workspace", "w", "--max-iters", "3"])
+    ns = parser.parse_args(["drive", "--spec", "s.json", "--workspace", "w"])
+    assert not hasattr(ns, "max_iters")
 
 
-def test_max_iters_lands_in_config(tmp_path, monkeypatch):
-    captured = _stub_run_campaign(monkeypatch)
-    rc = main(["drive", "--spec", str(_spec_file(tmp_path)), "--workspace", str(tmp_path / "ws"),
-               "--max-iters", "5"])
-    assert rc == 0
-    assert captured[0][1]["max_iters"] == 5
-
-
-def test_max_iters_absent_is_not_in_config(tmp_path, monkeypatch):
+def test_drive_config_carries_no_iteration_cap(tmp_path, monkeypatch):
     captured = _stub_run_campaign(monkeypatch)
     main(["drive", "--spec", str(_spec_file(tmp_path)), "--workspace", str(tmp_path / "ws")])
-    assert "max_iters" not in captured[0][1]         # the loop's built-in default is used
+    assert "max_iters" not in captured[0][1]
 
 
 def test_analysis_limit_accepts_gui_minute_duration(tmp_path, monkeypatch):

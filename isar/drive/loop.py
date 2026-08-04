@@ -28,6 +28,7 @@ from typing import Any, Callable
 import json
 import hashlib
 import inspect
+import itertools
 import logging
 import math
 import os
@@ -121,7 +122,6 @@ from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
 from isar.schema.steering import (ANALYSIS_UNUSABLE, AUXILIARY_TRACK_NODE, CANDIDATE_NOT_DETECTED,
                                   CANONICAL_MASTER, realized_outcome_for)
 
-DEFAULT_MAX_ITERS = 200
 DEFAULT_WAIT_TIMEOUT = 600.0
 # The instrument point-count ceiling (TAVI enforces max_points=200 on a scan command). An over-limit
 # scan latches TAVI's validator state and blocks all later API calls until restart (see
@@ -1366,29 +1366,161 @@ def _grid_state(objective, observations: list[dict], workspace, calibration: Cal
     return master_rows, grid
 
 
-def _predictive_escalation_candidate(grid, log_path):
-    """First usable unresolved master that has no simulation-grade predictive ensemble.
+#: Draw bases whose particles are a simulation-grade resample of the fitted likelihood/posterior —
+#: one replicate (or one resampled nested-sampling point) per equal-weight particle. ``laplace_hesse``
+#: is deliberately absent: its "particles" are i.i.d. Gaussian draws about the HESSE covariance, a
+#: quadratic stand-in that carries no information the covariance did not already contain, so an EIG
+#: design measure built on it re-scores its own approximation rather than the evidence.
+#: (isar/session/predictive_artifact.py: ``bounded_parameter_draws`` / ``DRAW_WEIGHTING``.)
+EIG_SIMULATION_GRADE_DRAW_BASES = frozenset({"parametric_bootstrap", "nested_sampling"})
 
-    Each published revision is escalated at most once, including across resume.  A failed full-tier
-    attempt therefore remains visible but cannot trap the campaign in analysis-only retry loops.
+
+def _predictive_draw_bases(predictive) -> list[str]:
+    """The distinct draw bases a published predictive artifact was built from."""
+    if not isinstance(predictive, Mapping):
+        return []
+    provenance = predictive.get("uncertainty_provenance")
+    declared = provenance.get("draw_basis") if isinstance(provenance, Mapping) else None
+    if isinstance(declared, str):
+        declared = [declared]
+    if not isinstance(declared, (list, tuple)):
+        # Pre-provenance payloads: fall back to the per-model declaration the artifact must carry.
+        models = predictive.get("models")
+        declared = [model.get("draw_basis") for model in models
+                    if isinstance(model, Mapping)] if isinstance(models, list) else []
+    return sorted({str(value) for value in declared if value})
+
+
+def _predictive_design_measure_ready(master) -> bool:
+    """Whether this master's predictive artifact can serve as the EIG design measure.
+
+    "Has a predictive artifact" and "is ready to be designed against" are different questions, and
+    conflating them is what previously suppressed the promotion EIG needs: a cheap Laplace/HESSE
+    ensemble is a perfectly valid artifact — the workspace facade publishes it, the loop scores
+    expected counts from it — while being exactly the basis the design measure refuses. Readiness
+    therefore mirrors what the design measure itself requires of the particle basis:
+
+    - a validated artifact is present (the loader already refused an incomplete one — ADR-014's
+      ``predictive_complete_for_eig`` — and it is re-checked here defensively);
+    - its particle basis is **homogeneous**: one draw basis across every retained model, so the
+      particles are exchangeable and can be pooled into a single design measure;
+    - and that basis is **simulation-grade** (:data:`EIG_SIMULATION_GRADE_DRAW_BASES`); a
+      ``laplace_hesse`` ensemble is rejected exactly as a non-bootstrap particle set is.
     """
-    attempted = {
+    predictive = (master or {}).get("predictive")
+    if not isinstance(predictive, Mapping):
+        return False
+    completeness = predictive.get("completeness")
+    if isinstance(completeness, Mapping) \
+            and completeness.get("predictive_complete_for_eig") is not True:
+        return False
+    bases = _predictive_draw_bases(predictive)
+    return len(bases) == 1 and bases[0] in EIG_SIMULATION_GRADE_DRAW_BASES
+
+
+def _master_revision_key(master) -> str:
+    """The identity of the exact published master revision a promotion is charged against."""
+    return ":".join(str(value or "unknown") for value in (
+        (master or {}).get("content_hash") or (master or {}).get("production_batch_fingerprint"),
+        (master or {}).get("master_revision") or (master or {}).get("track_revision")))
+
+
+def _promoted_master_revisions(log_path) -> set[str]:
+    """Master revisions a full-tier predictive promotion has already been spent on.
+
+    Read from the durable log, so a resume never re-charges a promotion the previous invocation
+    already paid for, and a *failed* attempt stays visible without trapping the campaign in an
+    analysis-only retry loop.
+    """
+    return {
         str((record.get("payload") or {}).get("revision_key"))
         for record in read_log(log_path)
         if record.get("kind") == "escalate_fit"
         and (record.get("payload") or {}).get("reason") == "master_predictive_basis_missing"
         and (record.get("payload") or {}).get("phase") == "outcome"
     }
+
+
+def _predictive_promotion_target(proposal, grid, log_path):
+    """The one master a full-tier predictive promotion is owed, or ``None``.
+
+    Scoped to the source master of the *selected* proposal rather than swept across the grid: a
+    promotion costs a charged full-tier reanalysis, and the only master whose design measure the
+    campaign is about to consume is the one the planned canonical production/confirmation request
+    scores against. A global sweep spent that analysis on q points nothing had asked about.
+
+    Convergence is deliberately not a disqualifier. Whether a q has stopped needing counts and
+    whether its predictive basis can carry an EIG design measure are different questions; a
+    converged master still supplies the basis for the requests that follow it.
+    """
+    if proposal is None or str(proposal.kind) not in ("production", "confirm"):
+        return None
+    intent = getattr(proposal, "intent", None)
+    sink = getattr(intent, "evidence_sink", CANONICAL_MASTER) if intent is not None \
+        else CANONICAL_MASTER
+    if sink != CANONICAL_MASTER:
+        return None
+    hkl = (float(proposal.h), float(proposal.k), float(proposal.l))
     for item in grid:
-        master = item.master or {}
-        if item.converged or not master.get("usable") or master.get("predictive"):
+        if not _hkl_close(tuple(item.hkl), hkl):
             continue
-        revision_key = ":".join(str(value or "unknown") for value in (
-            master.get("content_hash") or master.get("production_batch_fingerprint"),
-            master.get("master_revision") or master.get("track_revision")))
-        if revision_key not in attempted:
-            return item, revision_key
+        master = item.master or {}
+        if not master.get("usable") or _predictive_design_measure_ready(master):
+            return None
+        revision_key = _master_revision_key(master)
+        if revision_key in _promoted_master_revisions(log_path):
+            return None
+        return item, revision_key
     return None
+
+
+def _promote_master_predictive_basis(cfg, objective, item, revision_key: str, *, it: int):
+    """Run one charged full-tier reanalysis so ``item``'s master publishes an EIG-grade basis.
+
+    Returns ``(outcome, error)`` where outcome is ``"completed"``, ``"failed"``, or
+    ``"analysis_limit"``. Both terminal outcomes are recorded as paired ``escalate_fit``
+    promote/outcome events, which is also what stops the same master revision being promoted twice
+    (see :func:`_promoted_master_revisions`).
+    """
+    full_tier = _full_tier(cfg)
+    log_event(cfg.log_path, "escalate_fit", {
+        "phase": "promote", "iter": it, "hkl": list(item.hkl),
+        "from_tier": (item.master or {}).get("fit_kind"),
+        "to_tier": full_tier, "reason": "master_predictive_basis_missing",
+        "revision_key": revision_key})
+    try:
+        with activity(cfg.log_path, "full_fit", q=list(item.hkl),
+                      fit_tier=full_tier, iteration=it):
+            with analysis_operation(
+                    cfg.log_path, f"predictive-escalation:{revision_key}",
+                    "master_predictive_escalation",
+                    limit_seconds=objective.analysis_limit_seconds,
+                    iteration=it, q=list(item.hkl)):
+                run_result = cfg.runner.run(
+                    cfg.workspace, [cfg.data_dir], errors_tier=full_tier,
+                    scan_errors_tier="fast", master_errors_tier=full_tier,
+                    force=True, render=False,
+                    **_analysis_runner_kwargs(cfg, objective))
+                _require_complete_analysis(run_result, objective)
+    except AnalysisLimitExceeded as error:
+        # The analysis clock is a campaign terminal, not a promotion failure: it is NOT recorded as
+        # an outcome, so the revision stays promotable after a resume that grants more analysis time.
+        _LOG.warning("predictive promotion for %s stopped on the analysis limit: %s",
+                     revision_key, error)
+        return "analysis_limit", error
+    except Exception as error:  # noqa: BLE001 — visible failure, then measure again
+        log_event(cfg.log_path, "escalate_fit", {
+            "phase": "outcome", "iter": it, "hkl": list(item.hkl),
+            "to_tier": full_tier, "reason": "master_predictive_basis_missing",
+            "revision_key": revision_key, "outcome": "failed", "error": str(error)})
+        _LOG.warning("predictive promotion for %s failed: %s: %s",
+                     revision_key, type(error).__name__, error)
+        return "failed", error
+    log_event(cfg.log_path, "escalate_fit", {
+        "phase": "outcome", "iter": it, "hkl": list(item.hkl),
+        "to_tier": full_tier, "reason": "master_predictive_basis_missing",
+        "revision_key": revision_key, "outcome": "completed"})
+    return "completed", None
 
 
 def _record_eligible_crossings(grid, observations: list[dict], log_path=None) -> int:
@@ -2085,8 +2217,6 @@ class CampaignConfig:
     - ``engine`` (:class:`str`, ``= objective.tier`` — NOT a config key, derived from the objective):
       the scan engine tier stamped into every ``POST /scan`` body.
     - ``base_seed`` (:class:`int`, config key ``seed``, default 0): scan ``n`` uses ``base_seed + n``.
-    - ``max_iters`` (:class:`int`, config key ``max_iters``, default :data:`DEFAULT_MAX_ITERS`): the
-      adaptive-loop iteration cap.
     - ``wait_timeout`` (:class:`float`, config key ``wait_timeout``, default
       :data:`DEFAULT_WAIT_TIMEOUT`): the per-scan ``wait_scan`` timeout in seconds.
     - ``floor`` (:class:`float`, ``= systematic_floor(calibration, config["floor"])`` — config key
@@ -2122,7 +2252,6 @@ class CampaignConfig:
     resolution_cb: Callable
     engine: str
     base_seed: int
-    max_iters: int
     wait_timeout: float
     floor: float
     worker: bool = True
@@ -2211,7 +2340,6 @@ def _campaign_config(objective: ObjectiveSpec, config: dict | None) -> CampaignC
         resolution_cb=_make_resolution_cb(client, config.get("resolution")),
         engine=objective.tier,
         base_seed=int(config.get("seed", 0)),
-        max_iters=int(config.get("max_iters", DEFAULT_MAX_ITERS)),
         wait_timeout=float(config.get("wait_timeout", DEFAULT_WAIT_TIMEOUT)),
         floor=systematic_floor(calibration, config.get("floor")),
         worker=worker,
@@ -2625,7 +2753,7 @@ def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
     ``insufficient_target_support`` and ``budget_insufficient_for_minimum_batch`` ever reach
     ``request_suppressions`` — transient verdicts are scoped ``"none"`` and recorded for forensics only
     — so every entry there is a structural or budget refusal, and re-submitting it would repeat a
-    refused request once per iteration until ``max_iters``.
+    refused request once per iteration for the rest of the campaign.
 
     When the only realizable action is such a request, the honest report is a **resumable
     controller fault** naming the refusal. Note what is deliberately *not* done: the scientific intent
@@ -4889,7 +5017,14 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
         # "timing" event (resume-inert — _resume_state reads only "run" events), and every in-loop
         # log_event carries the iteration index ``it``. The outer ``timed(... "iteration")`` covers the
         # whole body including all break paths (a break exits the span normally, ok=True).
-        for it in range(0 if pending_recovery_reason is not None else cfg.max_iters):
+        # Budget-bounded, with NO iteration cap: the campaign runs until it completes, is stopped,
+        # or its declared budget (counting time, or neutrons when that is the declared kind) trips.
+        # An iteration ceiling is not a scientific limit — it silently truncated campaigns that were
+        # still making progress and still had beam time — so ``it`` is a counter for the log and the
+        # records only. A budget of ``None`` is unlimited by operator choice, and the loop honours it.
+        for it in itertools.count():
+            if pending_recovery_reason is not None:
+                break
             with timed(cfg.log_path, "iteration", iteration=it):
                 # Cooperative operator stop: honoured at the iteration boundary so the previous
                 # iteration's scan is already persisted/analysed (no stranded in-flight spend). Log ONE
@@ -4997,97 +5132,102 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                         decision.per_q)
                     break
 
-                predictive_escalation = _predictive_escalation_candidate(grid, cfg.log_path)
-                if predictive_escalation is not None:
-                    item, revision_key = predictive_escalation
-                    full_tier = _full_tier(cfg)
-                    log_event(cfg.log_path, "escalate_fit", {
-                        "phase": "promote", "iter": it, "hkl": list(item.hkl),
-                        "from_tier": (item.master or {}).get("fit_kind"),
-                        "to_tier": full_tier, "reason": "master_predictive_basis_missing",
-                        "revision_key": revision_key})
-                    try:
-                        with activity(cfg.log_path, "full_fit", q=list(item.hkl),
-                                      fit_tier=full_tier, iteration=it):
+                # Plan, select, and — at most once per iteration — provision the predictive basis
+                # the selected request will be scored against, then replan against it. The promotion
+                # is deliberately inside the planning step rather than a sweep before it: only the
+                # source master of the request the controller actually chose is worth a charged
+                # full-tier reanalysis (R1-C).
+                predictive_promotion_spent = False
+                promotion_changed_stop = False
+                for _plan_attempt in range(2):
+                    with timed(cfg.log_path, "model_fit", iteration=it):
+                        model = acq_model.fit(model_points(grid))
+                    # Classification still consumes durable branch state. Expected-count acquisition is
+                    # supplied exclusively by each master's frozen predictive artifact; the driver never
+                    # reconstructs an analysis model from branch summaries.
+                    with timed(cfg.log_path, "classification_provider", iteration=it):
+                        durable_state = read_card_state(cfg.workspace)
+                        campaign_slice, campaign_slice_error = resolve_campaign_slice(
+                            durable_state, objective, sample=cfg.sample,
+                            binning_policy_fingerprint=_temperature_binning_fingerprint(cfg.workspace))
+                        classify, rival_band = _make_classification_providers(
+                            durable_state, objective, cfg.resolution_cb, sample=cfg.sample,
+                            temperature_bin=(campaign_slice.temperature_bin
+                                             if campaign_slice is not None else None))
+                    action_inventory = None
+                    plan = None
+                    proposal = None
+                    selection_terminal: StopDecision | None = None
+                    with timed(cfg.log_path, "propose", iteration=it):
+                        try:
+                            analysis_remaining = (float("inf") if objective.analysis_limit_seconds is None
+                                                  else max(float(objective.analysis_limit_seconds) -
+                                                           float(analysis_clock_state(
+                                                               cfg.log_path)["spent_seconds"]), 0.0))
+                            scoring_allowance = min(60.0, 0.05 * analysis_remaining)
                             with analysis_operation(
-                                    cfg.log_path, f"predictive-escalation:{revision_key}",
-                                    "master_predictive_escalation",
-                                    limit_seconds=objective.analysis_limit_seconds,
-                                    iteration=it, q=list(item.hkl)):
-                                run_result = cfg.runner.run(
-                                    cfg.workspace, [cfg.data_dir], errors_tier=full_tier,
-                                    scan_errors_tier="fast", master_errors_tier=full_tier,
-                                    force=True, render=False,
-                                    **_analysis_runner_kwargs(cfg, objective))
-                                _require_complete_analysis(run_result, objective)
-                        log_event(cfg.log_path, "escalate_fit", {
-                            "phase": "outcome", "iter": it, "hkl": list(item.hkl),
-                            "to_tier": full_tier, "reason": "master_predictive_basis_missing",
-                            "revision_key": revision_key, "outcome": "completed"})
-                        continue
-                    except AnalysisLimitExceeded as error:
-                        decision = StopDecision("incomplete", [str(error)], decision.per_q)
+                                    cfg.log_path, f"score:{cfg.run_nonce}:{proposal_counter}",
+                                    "predictive_scoring",
+                                    limit_seconds=objective.analysis_limit_seconds, iteration=it):
+                                plan = plan_actions(
+                                    objective, model, observations, cfg.resolution_cb, budget_state,
+                                    master_rows=master_rows, fisher=None,
+                                    classify=classify, rival_band=rival_band,
+                                    runtime_limits=_runtime_limits(cfg, objective),
+                                    track_anchor_index=((durable_state.get("branch_tracks") or {}).get(
+                                        "acquisition_seed_index",
+                                        (durable_state.get("branch_tracks") or {}).get("anchor_index"))),
+                                    track_zone_period=_workspace_zone_period(cfg.workspace),
+                                    branch_track=(durable_state.get("branch_tracks") or {}),
+                                    scoring_allowance_seconds=scoring_allowance,
+                                    suppressed=action_suppressions,
+                                    unreachable_hkl=unreachable_hkl,
+                                    campaign_slice=campaign_slice,
+                                    campaign_slice_error=campaign_slice_error)
+                                action_inventory = plan.inventory
+                            # Selection + finalization are one bounded step: an unaffordable / instrument-
+                            # refused first action is charged and the next eligible candidate tried, rather
+                            # than terminating the campaign while a cheaper action is still affordable (O29).
+                            proposal, selection_terminal = _next_finalized_proposal(
+                                plan, objective, cfg, grid, budget_state, request_suppressions, it=it)
+                        except AnalysisLimitExceeded as error:
+                            decision = StopDecision("incomplete", [str(error)], decision.per_q)
+                            proposal = None
+                    if predictive_promotion_spent or proposal is None:
                         break
-                    except Exception as error:  # noqa: BLE001 — visible failure, then measure again
-                        log_event(cfg.log_path, "escalate_fit", {
-                            "phase": "outcome", "iter": it, "hkl": list(item.hkl),
-                            "to_tier": full_tier, "reason": "master_predictive_basis_missing",
-                            "revision_key": revision_key, "outcome": "failed",
-                            "error": str(error)})
-
-                with timed(cfg.log_path, "model_fit", iteration=it):
-                    model = acq_model.fit(model_points(grid))
-                # Classification still consumes durable branch state. Expected-count acquisition is
-                # supplied exclusively by each master's frozen predictive artifact; the driver never
-                # reconstructs an analysis model from branch summaries.
-                with timed(cfg.log_path, "classification_provider", iteration=it):
-                    durable_state = read_card_state(cfg.workspace)
-                    campaign_slice, campaign_slice_error = resolve_campaign_slice(
-                        durable_state, objective, sample=cfg.sample,
-                        binning_policy_fingerprint=_temperature_binning_fingerprint(cfg.workspace))
-                    classify, rival_band = _make_classification_providers(
-                        durable_state, objective, cfg.resolution_cb, sample=cfg.sample,
-                        temperature_bin=(campaign_slice.temperature_bin
-                                         if campaign_slice is not None else None))
-                action_inventory = None
-                plan = None
-                proposal = None
-                selection_terminal: StopDecision | None = None
-                with timed(cfg.log_path, "propose", iteration=it):
-                    try:
-                        analysis_remaining = (float("inf") if objective.analysis_limit_seconds is None
-                                              else max(float(objective.analysis_limit_seconds) -
-                                                       float(analysis_clock_state(
-                                                           cfg.log_path)["spent_seconds"]), 0.0))
-                        scoring_allowance = min(60.0, 0.05 * analysis_remaining)
-                        with analysis_operation(
-                                cfg.log_path, f"score:{cfg.run_nonce}:{proposal_counter}",
-                                "predictive_scoring",
-                                limit_seconds=objective.analysis_limit_seconds, iteration=it):
-                            plan = plan_actions(
-                                objective, model, observations, cfg.resolution_cb, budget_state,
-                                master_rows=master_rows, fisher=None,
-                                classify=classify, rival_band=rival_band,
-                                runtime_limits=_runtime_limits(cfg, objective),
-                                track_anchor_index=((durable_state.get("branch_tracks") or {}).get(
-                                    "acquisition_seed_index",
-                                    (durable_state.get("branch_tracks") or {}).get("anchor_index"))),
-                                track_zone_period=_workspace_zone_period(cfg.workspace),
-                                branch_track=(durable_state.get("branch_tracks") or {}),
-                                scoring_allowance_seconds=scoring_allowance,
-                                suppressed=action_suppressions,
-                                unreachable_hkl=unreachable_hkl,
-                                campaign_slice=campaign_slice,
-                                campaign_slice_error=campaign_slice_error)
-                            action_inventory = plan.inventory
-                        # Selection + finalization are one bounded step: an unaffordable / instrument-
-                        # refused first action is charged and the next eligible candidate tried, rather
-                        # than terminating the campaign while a cheaper action is still affordable (O29).
-                        proposal, selection_terminal = _next_finalized_proposal(
-                            plan, objective, cfg, grid, budget_state, request_suppressions, it=it)
-                    except AnalysisLimitExceeded as error:
-                        decision = StopDecision("incomplete", [str(error)], decision.per_q)
+                    promotion = _predictive_promotion_target(proposal, grid, cfg.log_path)
+                    if promotion is None:
+                        break
+                    promotion_item, promotion_revision = promotion
+                    outcome, promotion_error = _promote_master_predictive_basis(
+                        cfg, objective, promotion_item, promotion_revision, it=it)
+                    predictive_promotion_spent = True
+                    if outcome == "analysis_limit":
+                        decision = StopDecision(
+                            "incomplete", [str(promotion_error)], decision.per_q)
                         proposal = None
+                        break
+                    if outcome != "completed":
+                        # The failure is already logged as an escalate_fit outcome. Keep the request
+                        # that was selected against the basis that exists rather than stalling: a
+                        # measurement still advances the campaign, and the revision is not retried.
+                        break
+                    master_rows, grid = _grid_state(
+                        objective, observations, cfg.workspace, cfg.calibration)
+                    promoted_decision = evaluate_stop(
+                        objective, grid, budget_state,
+                        calibration=cfg.calibration, floor=cfg.floor)
+                    if promoted_decision.state != "continue":
+                        # The promoted basis answered the stopping question. Hand the iteration back
+                        # to the top so the terminal/certification path decides what happens next —
+                        # replanning here would reach the no-proposal path instead and report a
+                        # blocked frontier for a campaign that is actually finished.
+                        decision = promoted_decision
+                        proposal = None
+                        promotion_changed_stop = True
+                        break
+                if promotion_changed_stop:
+                    continue
                 if selection_terminal is not None:
                     # No remaining candidate could be finalized/afforded: a budget (incomplete) or
                     # instrument (infeasible) terminal. The proposal-less path below leaves an already
@@ -5260,30 +5400,6 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                             "reason": "requested dwell repeatedly clamped to the same instrument limit",
                             "clamped_productions": point.clamped_productions, "iter": it,
                         })
-        else:
-            # The loop exhausted max_iters without a break, so the top-of-iteration check will never
-            # run again — but the boundary AFTER the final allowed iteration is still an iteration
-            # boundary, and a stop requested during that last scan must be honoured there (with
-            # --max-iters 1 it is the ONLY boundary that can see it). Same ordering rule as in-loop:
-            # the stop wins before any terminal bookkeeping (certification must not run). The break
-            # paths (met/incomplete/infeasible/no-proposal/budget) deliberately get no post-check — their
-            # boundary check already ran before the decision, and a campaign that ended on its own
-            # reports its true state. ``iter`` is cfg.max_iters, the would-be next iteration (the
-            # loop variable is unbound when max_iters == 0, so it is never referenced here).
-            if pending_recovery_reason is None and _operator_stop_requested(cfg, cfg.max_iters):
-                log_event(cfg.log_path, "decide",
-                          {"event": "operator_stop", "action": "operator_stop",
-                           "iter": cfg.max_iters, "token": cfg.control_token})
-                operator_stop = True
-                op_stop_iter = cfg.max_iters
-            elif pending_recovery_reason is None:
-                master_rows, grid = _grid_state(
-                    objective, observations, cfg.workspace, cfg.calibration)
-                snapshot = evaluate_stop(
-                    objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
-                decision = StopDecision(
-                    "incomplete", [f"global iteration limit exhausted ({cfg.max_iters})"],
-                    snapshot.per_q)
 
         if pending_recovery_reason is not None:
             master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
@@ -5374,7 +5490,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     decision.per_q, terminal_cause=TERMINAL_CONTROLLER_FAULT)
 
             # Recompute the stop decision on the FINAL grid unconditionally: the in-loop decision is from
-            # the top of the last iteration, so a campaign that exhausts max_iters (or breaks on budget)
+            # the top of the last iteration, so a campaign that breaks on budget or completion
             # would otherwise report a stale pre-scan verdict in the summary.
             master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
             final_decision = evaluate_stop(

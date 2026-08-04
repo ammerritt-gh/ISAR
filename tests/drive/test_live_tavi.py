@@ -111,7 +111,7 @@ def test_live_short_campaign_reaches_met(tmp_path):
     # last left configured on the instrument (an enabled config default silently costs the campaign
     # iterations it was never budgeted for — observed live 2026-07-27).
     summary = run_campaign(objective, {
-        "workspace": ws, "seed": 11, "max_iters": 80,
+        "workspace": ws, "seed": 11,
         "sample_background": {"catalog_version": schema["background"]["catalog_version"],
                               "enabled": False, "sources": {}}})
     kinds = {e["kind"] for e in read_log(summary["session_log"])}
@@ -273,7 +273,7 @@ def test_live_campaign_sample_background(tmp_path):
         budget={"kind": "neutrons", "amount": 1e13}, tier="deterministic", name="live-background")
 
     summary = run_campaign(objective, {
-        "workspace": ws, "seed": 11, "max_iters": 12,
+        "workspace": ws, "seed": 11,
         "sample_background": {
             "catalog_version": schema["background"]["catalog_version"],
             "enabled": True,
