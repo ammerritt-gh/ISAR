@@ -553,6 +553,8 @@ def test_temp_workspace_not_added_to_recents(qtbot, tmp_path, monkeypatch):
 def test_save_as_notes_dest_in_recents(qtbot, tmp_path, monkeypatch):
     import tempfile
 
+    from PySide6.QtWidgets import QFileDialog
+
     import isar_gui.workspace_manager as wm
 
     # note_workspace refuses recents under the OS temp dir; the Save-As destination here lives under
@@ -567,12 +569,15 @@ def test_save_as_notes_dest_in_recents(qtbot, tmp_path, monkeypatch):
     qtbot.addWidget(w)
     assert w.load_workspace(str(root)) is True
 
-    dest = tmp_path / "kept"
+    # A folder the operator merely NAMED: neither it nor its parents exist yet.
+    dest = tmp_path / "2026-08" / "beamtime" / "kept"
 
     class _FakeDialog:
+        Option = QFileDialog.Option
+
         @staticmethod
-        def getExistingDirectory(*a, **k):
-            return str(dest)
+        def getSaveFileName(*a, **k):
+            return str(dest), ""
 
     monkeypatch.setattr("isar_gui.main_window.QFileDialog", _FakeDialog)
     assert w.save_workspace_as() is True

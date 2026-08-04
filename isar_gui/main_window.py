@@ -837,7 +837,6 @@ class MainWindow(QMainWindow):
                 "budget": "1e10n",
                 "analysis_limit": "10m",
                 "seed": 0,
-                "max_iters": 3,
             })
             self.campaign_dock._save_form()
         self.statusBar().showMessage(
@@ -921,7 +920,13 @@ class MainWindow(QMainWindow):
         if not (self._wsm.state() == "ready" and self._wsm.is_temporary()):
             self.statusBar().showMessage("Save As is only for an unsaved temporary workspace")
             return False
-        dest = QFileDialog.getExistingDirectory(self, "Save Workspace As (choose an empty folder)")
+        # Save mode, not directory mode: the operator names the folder to create rather than being
+        # forced to pre-create an empty one and then pick it. Overwrite confirmation is declined
+        # here because the manager's own "absent or empty" check is the authority (and Qt would
+        # otherwise ask about a folder we are going to refuse anyway).
+        dest, _selected = QFileDialog.getSaveFileName(
+            self, "Save Workspace As — name a new folder", "isar-workspace", "",
+            options=QFileDialog.Option.DontConfirmOverwrite)
         if not dest:
             return False
         # Flush a pending GUI-store write into the temp workspace BEFORE it is copied, so the saved
