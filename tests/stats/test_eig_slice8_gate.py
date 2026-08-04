@@ -308,3 +308,12 @@ def test_capture_copy_accepts_a_relative_bundle_root(tmp_path, monkeypatch):
 
     assert retained == reference
     assert (tmp_path / "bundle" / "report" / "artifact.json").read_bytes() == b"slice-8"
+
+
+def test_retained_slice8_bundle_is_self_contained_and_reproduces_exact_bytes():
+    bundle = Path("docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE")
+
+    reproduced = gate.evaluate_bundle(bundle)
+
+    assert gate._canonical_bytes(reproduced) == (bundle / "gate-result.json").read_bytes()
+    assert reproduced["overall_disposition"] == "passed"

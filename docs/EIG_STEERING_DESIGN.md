@@ -572,11 +572,11 @@ gated live scored-shadow step described by O38; it preserves those same authorit
 8. **Slice 7 — exact realized-request rescoring (implemented).** Score or reuse evidence for the
    adapter-exact grid and equal per-point exposure relevant at submission; retain candidate →
    realization → submission provenance and verify the returned TAVI grid.
-9. **Slice 8 — bounded EIG-3 shadow gate (partial).** The tools-only `o36.8` evaluator, frozen
-   six-case/fault manifest contract, conditional eligibility evidence rules, and self-contained
-   `/3` inventory plus realized-comparison retention path are implemented. Final manifests,
-   deterministic-TAVI evidence, retained gate disposition, and owner review remain pending. The
-   gate cannot select or submit a request.
+9. **Slice 8 — bounded EIG-3 shadow gate (partial pending owner acceptance).** The tools-only
+   `o36.8` evaluator, frozen six-case/fault manifest, conditional eligibility evidence rules,
+   self-contained `/3` inventory plus realized-comparison retention, deterministic-TAVI analysis,
+   and byte-reproducible passed gate are implemented. Owner review and any O41 ruling remain
+   pending. The gate cannot select or submit a request.
 10. **Slice 9 — opt-in authoritative selector.** `target_core` may win on resolved EIG-per-point
     superiority; unresolved eligible comparisons retain the eligible control; ineligible states
     return to the existing non-EIG design/recovery path.

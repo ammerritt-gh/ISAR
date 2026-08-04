@@ -1,0 +1,95 @@
+# EIG-4 Slice 8 bounded shadow gate
+
+> **Lifecycle:** Historical evidence
+> **Provenance:** hand-written
+
+## Outcome
+
+The frozen `o36.8` gate passed. This is retained evidence for owner review, not a grant of runtime
+authority: shadow mode still submits `legacy_uniform/1`, authoritative setup still refuses, and no
+Slice 9 selector exists. O41 has deliberately not been added.
+
+The gate used implementation anchor `3b7f8eb263353ac55585498bad177a2bf631c0ad` and evidence-
+generation anchor `0dc20a475a426ef485ec9c82cb956a5e2227da79`. The primary policy was
+`eig4_slice8_excitation_energy`, variant `primary_0p5_mev`, with 0.5 meV bins, offsets
+`[0.0, 0.25]`, and the existing runtime configuration of 128 simulations in eight paired blocks.
+The frozen pragmatic engineering rule was:
+
+```text
+target_core information per executed point
+  - legacy information per executed point
+  - 2 * paired standard error > 0
+```
+
+It is not a calibrated 95% criterion. The structural conditions also required equal per-point
+`ncount`, a wire-contained request, contained and strictly narrower adapter-canonical executed
+support, and fewer executed points.
+
+## Frozen cases
+
+| Case | Eligibility evidence | Counterfactual result |
+|---|---|---|
+| `s8-c01-strong-confirmed` | eligible | `target_core_would_win` |
+| `s8-c02-weak-unresolved-confirmed` | eligible | `legacy_control_would_be_retained` |
+| `s8-c03-near-elastic-selection-time` | eligible at the pre-recovery selection snapshot | `legacy_control_would_be_retained` |
+| `s8-c04-forked-target` | ineligible: `modality_fork` | `non_eig_path_would_be_used` |
+| `s8-c05-projection-join-mismatch` | ineligible: `projection_join_mismatch` | `non_eig_path_would_be_used` |
+| `s8-c06-constrained-selection` | ineligible: `selection_constrained` | `non_eig_path_would_be_used` |
+| `s8-f01-grid-order-mismatch` | returned-grid fault | `selection_evidence_unavailable` |
+
+Case 1 reduced the executed grid from 46 to 17 points. Legacy total information was
+`0.69317626953125` nats and target-core total information was slightly lower at
+`0.693145751953125` nats, while target-core's information per executed point was decisively
+higher: delta `0.02570423018901854` nats/point, paired SE `0.0`, and frozen lower margin
+`0.02570423018901854`. This is the intended exact fixture where total information decreases but
+information per point wins.
+
+Case 2 had positive delta `0.0002815128198910869` nats/point but paired SE
+`0.00030888610646366235`, giving lower margin `-0.00033625939303623777`; unresolved Monte Carlo
+evidence therefore retained legacy. Case 3 honestly records the current envelope: O36 does not
+exclude its pre-recovery near-elastic state, so it remained eligible and retained legacy because
+both candidates carried zero target-QoI information. It is not presented as recovery invalidation
+or as a fabricated near-elastic refusal.
+
+## Ordinary analysis and retained authentication
+
+The deterministic TAVI Case 1 scan used the exact 17-point target-core realized grid and the same
+per-point `ncount`. An isolated copy seeded only with ordinary clean acoustic fold anchors passed
+normal raw ingestion, reduction, fitting, pooled-master update, and usable target delivery through
+`isar run`. The authenticated source workspace was unchanged and no EIG-specific fit route was
+used.
+
+For every eligible case the bundle copies both the exact source `/3` inventory and realized
+comparison under their original authenticated relative paths. The existing strict loaders can
+therefore reproduce the source join without any external workspace. Re-running the pure evaluator
+over this directory reproduced `gate-result.json` byte for byte.
+
+## Verification and fingerprints
+
+- Focused authority, scorer, eligibility, realized-comparison, adapter, recovery, and documentation
+  tests: 384 passed, 3 skipped.
+- Day-to-day suite: 3,502 passed, 8 skipped in 74.97 seconds.
+- Full suite: 3,541 passed, 8 skipped in 508.05 seconds.
+- The tools-only retention repair added after the first rejected capture: 13 focused tests passed.
+- The current unapproved STAT-2b source-closure candidate audited `candidate_valid`; no new
+  candidate was minted and STAT-2b was not rerun.
+- Gate manifest fingerprint:
+  `fcc2ad3187352e2949e1a32b98677a96962175c22ec9abf4739185fb0a02aad1`.
+- Case manifest fingerprint:
+  `96c9861099e7b615dacae06c029bf6e1ad26fec0fb98301df61bac23eda34347`.
+- Gate result fingerprint:
+  `63e3e96f317aea4012c419b8b35d90db45425c6f5c6e95cca6322810a2d606b0`.
+
+## Review boundary and limitations
+
+The positive envelope contains one strong point. Any future O41 should say so explicitly and may
+authorize implementation of only the already-restricted Slice 9 selector. It must not describe
+this evidence as runtime authority.
+
+Planned and realized scoring still use duplicated pipelines. Current parity is tested, but no test
+file is architectural authority; consolidating that seam remains technical debt. The removed
+2,048-simulation diagnostic was not run or retained because it would require a distinct tools-only
+configuration and fingerprint without affecting this gate.
+
+The machine-readable bundle is
+[`2026-08-04_EIG4_SLICE8_SHADOW_GATE/`](2026-08-04_EIG4_SLICE8_SHADOW_GATE/).

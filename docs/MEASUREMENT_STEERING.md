@@ -137,11 +137,10 @@ pre-submit authentication after its single forced refresh removes all five curre
 marks applicability unavailable, and leaves the ordinary legacy request available for submission.
 
 `isar.scan_design_realization/1` is additive-open: readers must ignore unknown additive fields. Slice
-8 gate tooling is now Partial: it can reauthenticate retained eligibility, `/3` inventory,
-realized-comparison, submission, and executed-grid evidence and calculate a counterfactual
-classification after the run. It is not imported by the controller and grants no eligibility,
-selection, proposal, or submission authority. Final retained evidence and owner review remain
-pending.
+8 remains Partial pending owner acceptance: its passed retained gate reauthenticates eligibility,
+`/3` inventory, realized-comparison, submission, and executed-grid evidence and calculates a
+counterfactual classification after the run. It is not imported by the controller and grants no
+eligibility, selection, proposal, or submission authority. Owner review remains pending.
 
 The allowance is cooperative, not preemptive: the adapter checks before each synchronous variant
 score and again after it returns. If the second check crosses the deadline, that raw score set is

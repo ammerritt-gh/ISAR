@@ -47,6 +47,7 @@ which ruling settled it. That is worth keeping and worth not mistaking for a con
 | 2026-08-04 | [2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md](2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md) | Repair renewable upkeep, aggregate authentication, approval provenance, and conservative traversal | Replacement schema-v2 candidate constructed; owner approval pending | [STAT2_SELECTION_CONSISTENCY_PLAN.md](../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md) |
 | 2026-08-04 | [2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE.md](2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE.md) | Review Slice 7 protected-boundary drift and supersede the unapproved bootstrap candidate | New schema-v2 bootstrap candidate constructed; owner approval pending | [STAT2_SELECTION_CONSISTENCY_PLAN.md](../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md) |
 | 2026-08-04 | [2026-08-04_EIG4_SLICE7_REPAIR_SOURCE_CLOSURE.md](2026-08-04_EIG4_SLICE7_REPAIR_SOURCE_CLOSURE.md) | Authenticate the Slice 7 repair and renew its production source-closure candidate | Replacement schema-v2 bootstrap candidate constructed; owner approval pending | [STAT2_SELECTION_CONSISTENCY_PLAN.md](../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md) |
+| 2026-08-04 | [2026-08-04_EIG4_SLICE8_SHADOW_GATE.md](2026-08-04_EIG4_SLICE8_SHADOW_GATE.md) | Run the frozen bounded EIG-3 shadow gate | Passed; owner acceptance and any O41 ruling pending | [EIG_STEERING_DESIGN.md](../EIG_STEERING_DESIGN.md) |
 
 ## Analysis-core checks and forward notes
 
