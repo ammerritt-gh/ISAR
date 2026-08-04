@@ -1977,6 +1977,74 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
     return proposal
 
 
+SAME_Q_SOURCE_MODEL_INTERVAL = "same_q_master_model_interval"
+SAME_Q_SOURCE_DIAGNOSTIC_INTERVAL = "same_q_master_diagnostic_interval"
+
+
+def _positive_finite(value) -> float | None:
+    """``value`` as a strictly positive finite float, or ``None`` — never an exception."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0.0 else None
+
+
+def _same_q_design_prediction(pick, intent, *, driver_inserted: bool) -> tuple[
+        float, float, str] | None:
+    """``(mean, sigma, source)`` from this q's own confirmed master, or ``None`` to use ω(q).
+
+    A canonical production/confirmation action at a q that already carries a confirmed pooled master
+    is not asking where the mode *might* be — that q supplied the predictive artifact, and its own
+    ω₀ and interval are a strictly better centre and spread than the global dispersion fit's
+    extrapolation.  Using the global model there is what made late-q target cores wider than the
+    authorized domain (the core half-width is ``max(2·FWHM, 3·σ)``, and the tricube/WLS σ grows to
+    tens of meV at high q), so ``target_core/1`` was refused with
+    ``target_core_truncated_after_domain_clip`` at exactly the points that were best measured.
+
+    Deliberately narrow — every clause names a case where the local number is *not* better:
+
+    * a driver-inserted probe or a non-``target`` window family (rival probe, differentiation probe)
+      is about a different energy, and the families that declare their own window own it outright;
+    * a non-canonical evidence sink never delivered the target, so it has no target QoI to speak for;
+    * an unvisited/survey q, or one whose identity is ambiguous (``master`` absent, fork modality,
+      inconsistent pool, unusable fit, withheld delivery, non-confirmed track), has no confirmed
+      same-q answer at all and keeps the global prediction exactly as before.
+
+    The spread prefers the certifying model/projection interval and falls back to the conservative
+    local diagnostic half-width; with neither, there is no local spread evidence and the global
+    prediction stands.
+    """
+    if driver_inserted or intent.window_family != "target":
+        return None
+    if intent.evidence_sink in NON_CANONICAL_SINKS:
+        return None
+    if getattr(pick, "track_state", None) not in (None, "confirmed"):
+        return None
+    master = getattr(pick, "master", None) or {}
+    if not master.get("usable") or master.get("target_delivery_eligible") is False:
+        return None
+    if master.get("modality") == "fork" or master.get("pool_consistent") is False:
+        return None
+    try:
+        mean = float(master["omega0"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not math.isfinite(mean):
+        return None
+    certifiable = master.get("certifiable")
+    if certifiable is None:
+        certifiable = master.get("reliable")
+    source = SAME_Q_SOURCE_MODEL_INTERVAL
+    sigma = _positive_finite(master.get("halfwidth")) if certifiable else None
+    if sigma is None:
+        source = SAME_Q_SOURCE_DIAGNOSTIC_INTERVAL
+        sigma = _positive_finite(master.get("diagnostic_halfwidth"))
+    if sigma is None:
+        return None
+    return mean, sigma, source
+
+
 def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_info,
                     budget_state, fisher, rival_band, classify) -> ScanProposal:
     """Build the executable :class:`ScanProposal` from a selected candidate.
@@ -1994,6 +2062,7 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
     # Reuse the decision the intent was fixed against — never re-derive it here, or the emitted
     # action's scientific class can disagree with the inventory's.
     driver_inserted = chosen.driver_inserted
+    intent = chosen.evaluation.intent
     if driver_inserted:
         reason = (f"driver-inserted classification probe q={pick.q:g} (hkl={list(pick.hkl)}); "
                   "higher expected branch-information value than every certification point")
@@ -2004,29 +2073,52 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
                         classification_weight=classification_weight,
                         combined_information=_finite_or_none(combined))
 
+    # The evidence this action responds to is identified *first*: when this q already carries a
+    # confirmed master it, not the global dispersion fit, is the authority on where the target sits,
+    # and the whole window geometry below is built from that decision.
+    selected_evidence = pick.evidence_master or pick.master or {}
+    same_q = _same_q_design_prediction(pick, intent, driver_inserted=driver_inserted)
+
     e_pred, e_sigma = model.predict(pick.q)
     target_prediction_mean = float(e_pred)
     target_prediction_sigma = float(e_sigma)
     design_prediction_mean = target_prediction_mean
     design_prediction_sigma = target_prediction_sigma
+    design_prediction_source = "dispersion_model"
+    if same_q is not None:
+        design_prediction_mean, design_prediction_sigma, design_prediction_source = same_q
+        # ``e_pred`` is the energy this scan is *about*: it becomes the persisted
+        # ``acquisition_target_energy`` and the centre the effective-exposure weighting is computed
+        # around. Leaving it on the extrapolation while the window is built around the measured ω₀
+        # would attribute the scan's counts to an energy it deliberately did not centre on.
+        e_pred, e_sigma = design_prediction_mean, design_prediction_sigma
     h, k, l = pick.hkl
     fwhm = _resolve_fwhm(resolution_info, h, k, l, max(float(e_pred), 0.0))
     # Survey the band until this q has a confirmed resolved fit — a concave dispersion sits above the
     # local-linear e_pred, so a tight window on an unconfirmed q misses the peak and never seeds.
     survey = not bool(getattr(pick, "best_resolved", False))
+    optic_survey = (target_hypothesis is not None
+                    and target_hypothesis.get("name") == "optic" and survey)
+    # The detailed-balance / optic restriction is a fact about the excitation, not about which
+    # prediction centred the window, so it survives the same-q path unchanged.
+    positive_only = bool(optic_survey)
     target_band = None
-    positive_only = False
-    if target_hypothesis is not None and target_hypothesis.get("name") == "optic" and survey:
-        zc = target_hypothesis.get("zc_energy") or {}
-        target_band = (zc.get("mean", zc.get("mode", e_pred)), zc.get("sigma", e_sigma))
-        positive_only = True
-    elif target_hypothesis is not None:
-        target_band = (max(float(e_pred), 0.0), max(float(e_sigma), 0.5 * fwhm))
+    if target_hypothesis is not None:
+        if same_q is not None:
+            # The support band has to travel with the centre it certifies. Left on the hypothesis'
+            # or the global model's band, the support gate would measure coverage of a region the
+            # window no longer spans — the same core/band disagreement this slice removes.
+            target_band = (max(design_prediction_mean, 0.0),
+                           max(design_prediction_sigma, 0.5 * fwhm))
+        elif optic_survey:
+            zc = target_hypothesis.get("zc_energy") or {}
+            target_band = (zc.get("mean", zc.get("mode", e_pred)), zc.get("sigma", e_sigma))
+        else:
+            target_band = (max(float(e_pred), 0.0), max(float(e_sigma), 0.5 * fwhm))
     widen = widen_factor(
         getattr(pick, "n_decline", 0), step=float(policy.get("absent_signal_widen_step", 0.5)),
         max_steps=int(policy.get("absent_signal_widen_steps", 3)))
     rb = rival_band(pick) if callable(rival_band) else rival_band
-    intent = chosen.evaluation.intent
     if intent.window_family == "rival" and intent.energy_lo is not None and intent.energy_hi is not None:
         if (rb is None or len(rb) != 2
                 or not all(math.isfinite(float(value)) for value in rb)
@@ -2034,6 +2126,7 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
             raise ValueError(
                 "rival-window scan design requires a finite rival mean and non-negative sigma")
         design_prediction_mean, design_prediction_sigma = map(float, rb)
+        design_prediction_source = "rival_band"
         # The energy this scan is *about* is the rival, not the target. ``e_pred`` becomes the
         # persisted ``acquisition_target_energy`` and the centre the effective-exposure weighting is
         # computed around, so leaving it at the target model's prediction would score the probe's
@@ -2112,7 +2205,6 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
     ncount = design.ncount
     count_diagnostics = design.diagnostics
 
-    selected_evidence = pick.evidence_master or pick.master or {}
     evidence_revision = (
         (score.evidence_transition or {}).get("authoritative_evidence_revision")
         or selected_evidence.get("content_hash")
@@ -2144,6 +2236,11 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
         reason=reason, e_pred=float(e_pred), fwhm_dE=float(fwhm), n_points=n_points,
         meta={"e_sigma": _finite_or_none(e_sigma), "q": pick.q, "score": score.to_dict(),
               "purpose": score.purpose, "widen_factor": widen,
+              # Which prediction the emitted window was centred and sized from, so a scan's geometry
+              # can be attributed without re-deriving it from the model of the day.
+              "design_prediction_source": design_prediction_source,
+              "design_prediction_mean": _finite_or_none(design_prediction_mean),
+              "design_prediction_sigma": _finite_or_none(design_prediction_sigma),
               "acquisition_action_role": action_role,
               "target_branch_role": target_branch,
               "rival_branch_role": rival_branch,
