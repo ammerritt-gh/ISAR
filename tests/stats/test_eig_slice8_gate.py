@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import runpy
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from isar.schema.eig_policy import (
     ScanWindowShadowScoringConfig,
 )
 from tools.stats import eig_slice8_gate as gate
+from tools.stats import eig_slice8_cases as cases
 
 
 def _eligibility_helpers() -> dict:
@@ -289,3 +291,20 @@ def test_eligible_gate_uses_existing_strict_inventory_and_realized_loaders(
     assert outcome == (
         gate.OUTCOME_TARGET if all(expected_structural.values())
         and diagnostics["lower_margin_nats"] > 0.0 else gate.OUTCOME_LEGACY)
+
+
+def test_capture_copy_accepts_a_relative_bundle_root(tmp_path, monkeypatch):
+    source_root = tmp_path / "source"
+    source = source_root / "report" / "artifact.json"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"slice-8")
+    monkeypatch.chdir(tmp_path)
+    reference = {
+        "path": "report/artifact.json",
+        "sha256": hashlib.sha256(b"slice-8").hexdigest(),
+    }
+
+    retained = cases._copy_artifact(source_root, Path("bundle"), reference)
+
+    assert retained == reference
+    assert (tmp_path / "bundle" / "report" / "artifact.json").read_bytes() == b"slice-8"

@@ -88,6 +88,8 @@ def _copy_artifact(source_root: Path, destination_root: Path,
     relative = reference.get("path") if isinstance(reference, Mapping) else None
     if not isinstance(relative, str) or Path(relative).is_absolute():
         raise gate.GateEvidenceError("artifact reference path is invalid")
+    source_root = source_root.resolve()
+    destination_root = destination_root.resolve()
     source = (source_root / relative).resolve()
     try:
         source.relative_to(source_root)
