@@ -33,7 +33,47 @@ paired blocks, scorer seed `8374860497622894989`, and the score-set fingerprint.
 fixture therefore keeps Case 2's expected unresolved outcome; no later ladder row may replace the
 first qualifying value.
 
-The gate used implementation anchor `3b7f8eb263353ac55585498bad177a2bf631c0ad` and evidence-
+## Coherent replacement outcome
+
+The first opened `o36.8.2` evidence bundle was retained as an invalid superseded attempt. Its
+evaluator incorrectly required the analysis-facing card-state acquisition record to contain a
+scientific-action field that production deliberately records on the physical-submission event.
+The additive disposition in `2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR/` authenticates that opened
+invalid result and records that neither production behaviour nor any case definition changed.
+
+The versioned `2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V2/` replacement authenticates the actual
+production two-record join: acquisition ID and job ID join card-state provenance to the physical
+submission, after which comparison, request, grid, and scientific-action identities must all agree.
+The replacement passed with gate-result fingerprint
+`9dcc11744ca9807a9bd6708b476e2a577333f1e4c43fb782e098331439c03f67`.
+Its implementation anchor is `7dc193223cb8eafd1fbdc87e9aa8d5d42189e8dd` and its evidence-
+generation anchor is `13886648c3dd279b080c06814ca988d2c79140ee`.
+
+Case 1 began from one completed prior-source acquisition and one frozen source tree. Byte-identical
+legacy and target-core clones reproduced that tree identity. The production controller submitted
+the exact legacy request captured before submission; deterministic TAVI returned the exact legacy
+adapter grid and ordinary ingestion and analysis completed. The target clone submitted the exact
+target-core request from that captured sidecar and returned its exact adapter grid. Prior-source
+acquisition provenance supports eligibility and prediction; the distinct current inventory and
+realized comparison describe the proposed next action. The current inventory is never accepted as
+its own prior source.
+
+Case seeds `8040801` through `8040806` generate their respective predictive fixtures. They do not
+replace the production scorer seed contract: each eligible score derives its scorer seed from the
+authenticated design measure, candidate pair, and unchanged 128/8 runtime configuration. Case 2's
+derived scorer seed remains `8374860497622894989`.
+
+An earlier path-containment rejection occurred before scientific evaluation and established no
+case or gate disposition. The authentic grid-order fault was later bound to the exact mismatching
+physical job rather than a recovery job sharing its logical acquisition ID; its emitted event,
+mismatch provenance, and fitted/pooled continuation evidence now rejoin coherently.
+
+All six expected case outcomes and the authentic fault matched. The positive authority envelope is
+exactly one case: `s8-c01-strong-confirmed`. This remains evidence eligible for owner review, not
+owner acceptance or O41 authority.
+
+The invalidated first-attempt gate used implementation anchor
+`3b7f8eb263353ac55585498bad177a2bf631c0ad` and evidence-
 generation anchor `0dc20a475a426ef485ec9c82cb956a5e2227da79`. The primary policy was
 `eig4_slice8_excitation_energy`, variant `primary_0p5_mev`, with 0.5 meV bins, offsets
 `[0.0, 0.25]`, and the existing runtime configuration of 128 simulations in eight paired blocks.
@@ -93,6 +133,22 @@ over this directory reproduced `gate-result.json` byte for byte.
 
 ## Verification and fingerprints
 
+For the coherent V2 replacement:
+
+- Focused gate, scorer, eligibility, realization, controller, recovery, predictive, and
+  documentation tests: 705 passed, 3 skipped in 173.23 seconds.
+- Day-to-day suite: 3,527 passed, 8 skipped in 81.43 seconds.
+- Full suite: 3,566 passed, 8 skipped in 510.42 seconds.
+- An isolated copy of the V2 directory reproduced `gate-result.json` byte for byte.
+- Gate manifest fingerprint:
+  `7b85bf826bbf639f0dbb04482048b5b58f240fef1f18c3faa2a9da75f598aacd`.
+- Case manifest fingerprint:
+  `e5dff0b1f40492914bdd00581bbfef24aad641e71e4898729b8da6cc18cc45eb`.
+- Gate result fingerprint:
+  `9dcc11744ca9807a9bd6708b476e2a577333f1e4c43fb782e098331439c03f67`.
+
+For the invalidated first attempt, retained for historical comparison:
+
 - Focused authority, scorer, eligibility, realized-comparison, adapter, recovery, and documentation
   tests: 384 passed, 3 skipped.
 - Day-to-day suite: 3,502 passed, 8 skipped in 74.97 seconds.
@@ -120,3 +176,5 @@ configuration and fingerprint without affecting this gate.
 
 The machine-readable bundle is
 [`2026-08-04_EIG4_SLICE8_SHADOW_GATE/`](2026-08-04_EIG4_SLICE8_SHADOW_GATE/).
+The coherent replacement bundle is
+[`2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V2/`](2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V2/).

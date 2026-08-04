@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import runpy
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -411,8 +412,11 @@ def test_capture_copy_accepts_a_relative_bundle_root(tmp_path, monkeypatch):
     assert (tmp_path / "bundle" / "report" / "artifact.json").read_bytes() == b"slice-8"
 
 
-def test_retained_slice8_bundle_is_self_contained_and_reproduces_exact_bytes():
-    bundle = Path("docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE")
+def test_repaired_slice8_bundle_is_self_contained_and_reproduces_exact_bytes(tmp_path):
+    source = Path(
+        "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V2")
+    bundle = tmp_path / "isolated-repaired-bundle"
+    shutil.copytree(source, bundle)
 
     reproduced = gate.evaluate_bundle(bundle)
 

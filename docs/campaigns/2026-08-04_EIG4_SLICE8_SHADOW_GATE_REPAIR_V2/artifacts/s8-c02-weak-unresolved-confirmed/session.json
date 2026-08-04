@@ -1,0 +1,171 @@
+{
+  "schema_version": "isar.session/3",
+  "files": {},
+  "scans": {
+    "s8-c02-weak-unresolved-confirmed:source-master": {
+      "scan_id": "s8-c02-weak-unresolved-confirmed:source-master",
+      "scan_number": 9800000,
+      "scan_type": "pooled_master",
+      "status": "fitted",
+      "content_hash": "",
+      "guidelines_hash": "",
+      "detectors": {
+        "pooled": {
+          "omega0": 2.0,
+          "target_delivery_eligible": true,
+          "track_revision": 1,
+          "track_state": "confirmed",
+          "candidate_state": "confirmed",
+          "candidate_id": "slice8-target",
+          "selected_candidate_index": 0,
+          "hkl": [
+            2.15,
+            0.0,
+            0.0
+          ],
+          "pooled": true,
+          "pool_consistent": true,
+          "modality": "fold",
+          "master_revision": "slice8-master-r1",
+          "predictive_ref": "data/master_predictive/28db659823d333a7ce1b9cb797691648f2070d16027b487ca34b5ea7d3c776d0.json",
+          "target_projection_ref": "data/target_projection/69702cf9f6ce9012cbe0478de1223e5b67ecedf510c2a622d92b1db20f3bddfd.json",
+          "fit_selection_semantics": {
+            "authority_scopes": {
+              "acquisition_selection": "inactive",
+              "eig_authoritative": "inactive",
+              "eig_shadow": "inactive",
+              "legacy_master_certification": "inactive",
+              "single_fit_delivery": "active",
+              "stopping": "inactive",
+              "user_diagnostic": "active"
+            },
+            "candidate_generation_route": {
+              "guideline_structure_filter": [
+                "phonon"
+              ],
+              "labels_before_guideline": [
+                "phonon"
+              ],
+              "offered_labels": [
+                "phonon"
+              ],
+              "route": "full_two_stage",
+              "scored_labels": [
+                "phonon"
+              ]
+            },
+            "candidate_records": [
+              {
+                "aic": 18.0,
+                "akaike_weight": 1.0,
+                "cost": 10.0,
+                "effective_parameter_count": 4,
+                "fit_semantics": {
+                  "aggregate_constraint_origin": "none",
+                  "authority_scopes": {
+                    "acquisition_selection": "inactive",
+                    "eig_authoritative": "inactive",
+                    "eig_shadow": "inactive",
+                    "legacy_master_certification": "inactive",
+                    "single_fit_delivery": "active",
+                    "stopping": "inactive",
+                    "user_diagnostic": "inactive"
+                  },
+                  "comparison_context_fingerprint": "428ac226acbd24cdf4d2bbf3241c666abc3172f5bccfbb2c3083bb462373947f",
+                  "conditioning_fingerprint": "428ac226acbd24cdf4d2bbf3241c666abc3172f5bccfbb2c3083bb462373947f",
+                  "constraint_fingerprint": "31c8fcbbebb727222efa87ac50dfd7cfa64997e9c771f1ff762c5a10c8e6f218",
+                  "data_likelihood_fingerprint": "fa264c7c24007424efda6c34b8a7884ccdc8cfaf748a213f3d636c5b513c32de",
+                  "effective_constraints": [],
+                  "estimator_kind": "data_likelihood_mle",
+                  "fit_kind": "unconstrained",
+                  "model_parameterization_fingerprint": "23afcd1e1ec000bdd4c64da840f894b2ed0fe29333768b096e190fac479946e4",
+                  "schema": "isar.fit_selection_semantics/1",
+                  "selection_eligibility": "eligible",
+                  "selection_ineligibility_reasons": []
+                },
+                "label": "phonon"
+              }
+            ],
+            "error_attachment_set_fingerprint": "a54aa9bf449fbc4d9d711a184ba3df4e21b5a1de51547efb1f61a0970858580c",
+            "legacy_pool_set_fingerprint": "4316a1f8f00b0ec18abda61b3422d020908ed16e8e9d3ae7d01769e252a15ce3",
+            "model_selection_fingerprint": "6e47b62f8e835830a4c54d3470112eb3ef21820a94f686b69d2adc870d7eed45",
+            "model_weight_kind": "akaike_relative_weight",
+            "offered_model_set_fingerprint": "dc9ea988db2275548d3db40889564821790c8d1e0475150d3d45d89090e96e13",
+            "schema": "isar.fit_selection_semantics/1",
+            "scored_model_set_fingerprint": "23d36a29f0a2c3428412628a1fa5aab2cb8a6908260449aa8b191ac78dc16cf7",
+            "selection_eligibility": "eligible",
+            "selection_ineligibility_reasons": [],
+            "weight_denominator_fingerprint": "2b3db5d1793be6762c7481d8a68fea763d6a46fb1a5c1119bbcd3358ce388e76"
+          },
+          "shadow_model_selection": {
+            "affected_candidate_identities": [],
+            "attempted_model_identities": [],
+            "attempted_model_set_fingerprint": "2c512e1326e04e6bc7e28c720e5776da245074829450eaa2c06f067922c53ec2",
+            "authority_scopes": {
+              "acquisition_selection": "inactive",
+              "eig_authoritative": "inactive",
+              "eig_shadow": "inactive",
+              "legacy_master_certification": "inactive",
+              "single_fit_delivery": "inactive",
+              "stopping": "inactive",
+              "user_diagnostic": "active"
+            },
+            "candidate_generation_route": {
+              "route_kind": "standard_two_stage"
+            },
+            "converged_model_identities": [],
+            "converged_model_set_fingerprint": "3132de99c008f59b4455468dbf7e06346034657f605b500a33374dabbfb0da4f",
+            "delivery_effective_constraint_origins": [],
+            "denominator_model_identities": [],
+            "denominator_model_set_fingerprint": "62abf26a2f61f3bd62e1dd8583dbf91f3088d9f5a8b96d6b4711baf40017dbbc",
+            "failed_model_identities": [],
+            "failed_model_set_fingerprint": "ea1d50ec0e0546dae19aff5b4874b294735b913ae2340653dce895cb789f41db",
+            "freshly_fitted_model_identities": [],
+            "legacy_model_selection_fingerprint": null,
+            "legacy_model_weights": [
+              {
+                "label": "phonon",
+                "weight": 1.0
+              }
+            ],
+            "legacy_selected_label": "phonon",
+            "offered_model_identities": [],
+            "offered_model_set_fingerprint": "02913eae4098ab45c82c2bbea2bd94186370515484a8804bad8c7ac3ec2c75bd",
+            "reused_model_identities": [],
+            "runtime_increment_seconds": 0.0,
+            "schema": "isar.shadow_model_selection/2",
+            "selection_changed": null,
+            "selection_complete": false,
+            "selection_context_fingerprint": "22c86ae5b6d60525c8e9a87e0c22e88441f294b54f17aa0acad0c373f91410a3",
+            "selection_contract_revision": "isar.model_selection/2-shadow",
+            "selection_status": "unavailable",
+            "shadow_execution_kind": "skipped",
+            "standard_candidate_records": [],
+            "standard_model_weights": [],
+            "standard_selected_label": null,
+            "standard_selection_fingerprint": "9c7ffb61ddf88efd23a8735e83d5a6cdf4da965fee78ac856ca185be22344135",
+            "unavailable_reason_code": "shadow_skipped_soft_deadline",
+            "unavailable_stage": "execution_policy"
+          }
+        }
+      },
+      "reasons": [],
+      "provenance": {
+        "target_projection_authority": {
+          "action_role": "certification",
+          "master_revision": "slice8-master-r1",
+          "track_revision": 1,
+          "track_state": "confirmed",
+          "candidate_id": "slice8-target",
+          "candidate_state": "confirmed",
+          "selected_candidate_index": 0,
+          "calibration_fingerprint": "slice8-cal-r1",
+          "policy_fingerprint": "slice8-policy-r1"
+        }
+      }
+    }
+  },
+  "data_paths": [],
+  "last_run": {},
+  "last_ingest": {}
+}
