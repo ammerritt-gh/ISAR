@@ -63,6 +63,15 @@ def test_max_iters_absent_is_not_in_config(tmp_path, monkeypatch):
     assert "max_iters" not in captured[0][1]         # the loop's built-in default is used
 
 
+def test_analysis_limit_accepts_gui_minute_duration(tmp_path, monkeypatch):
+    captured = _stub_run_campaign(monkeypatch)
+    assert main([
+        "drive", "--spec", str(_spec_file(tmp_path)),
+        "--workspace", str(tmp_path / "ws"), "--analysis-limit", "10m",
+    ]) == 0
+    assert captured[0][0].analysis_limit_seconds == 600.0
+
+
 def test_control_token_lands_in_config(tmp_path, monkeypatch):
     captured = _stub_run_campaign(monkeypatch)
     main(["drive", "--spec", str(_spec_file(tmp_path)), "--workspace", str(tmp_path / "ws"),

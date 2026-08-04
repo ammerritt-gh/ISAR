@@ -31,9 +31,13 @@ def test_o41_seed_opens_and_compiles_through_the_normal_workspace_path(tmp_path)
     assert main([
         "drive", "--spec", str(workspace / "compact-goal.json"),
         "--workspace", str(workspace), "--scan-window-eig-mode", "authoritative",
+        "--analysis-limit", "10m",
         "--compile-only", str(envelope_path),
     ]) == 0
     objective = json.loads(envelope_path.read_text(encoding="utf-8"))["objective"]
+    assert objective["path"] == [
+        [round(2.0 + index * 0.05, 10), 0.0, 0.0] for index in range(21)]
+    assert objective["analysis_limit_seconds"] == 600.0
     assert objective["steering"]["scan_window_eig_mode"] == "authoritative"
     assert objective["scan_window_eig"]["scoring_config"]["simulation_count"] == 128
     assert objective["scan_window_eig"]["scoring_config"]["block_count"] == 8
@@ -65,3 +69,4 @@ def test_file_action_creates_and_prefills_the_normal_campaign_workspace(
     assert window.campaign_dock._eig_mode.currentData() == "authoritative"
     assert window.campaign_dock._spec_path.text() == str(
         destination / "compact-goal.json")
+    assert window.campaign_dock._analysis_limit.text() == "10m"

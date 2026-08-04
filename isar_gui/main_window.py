@@ -1627,7 +1627,9 @@ class MainWindow(QMainWindow):
         self._health_closed = False
         self._health_statuses: dict[str, str] = {}
         self._health_timer = QTimer(self)
-        self._health_timer.setInterval(30000)
+        # Campaign controls are health-gated.  Keep the localhost readiness view fresh enough that
+        # starting TAVI outside ISAR never leaves Start disabled behind a stale 30-second result.
+        self._health_timer.setInterval(3000)
         self._health_timer.timeout.connect(self._refresh_health)
         self._health_timer.start()
         self._health_poll_timer = QTimer(self)
@@ -1644,8 +1646,8 @@ class MainWindow(QMainWindow):
         llm_url = self._settings().get("llm_endpoint") or LLM_DEFAULT_ENDPOINT
         # Probe each backend's liveness endpoint, never its bare base — both bases 404 by design,
         # which would render a running backend amber (and block campaign launch) — see health_url.
-        self._health_generation = self._health_probe.request({"llm": health_url(llm_url),
-                                                               "tavi": health_url(TAVI_DEFAULT_URL)})
+        self._health_generation = self._health_probe.request({"tavi": health_url(TAVI_DEFAULT_URL),
+                                                               "llm": health_url(llm_url)})
         if not self._health_poll_timer.isActive():
             self._health_poll_timer.start()
 

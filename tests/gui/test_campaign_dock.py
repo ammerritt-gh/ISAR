@@ -124,6 +124,7 @@ def test_start_maps_form_to_drive_options_with_llm_env(dock_env):
     dock.set_backend_status("tavi", "ok", "up")
     dock._goal.setPlainText("map the branch")
     dock._budget.setText("1e9n")
+    dock._analysis_limit.setText("10m")
     dock._seed.setValue(7)
     dock._max_iters.setValue(12)
     dock._start_btn.click()
@@ -132,7 +133,7 @@ def test_start_maps_form_to_drive_options_with_llm_env(dock_env):
     opts, env = ops.drive_requests[0]
     compile_opts, compile_env = ops.compile_requests[0]
     assert (compile_opts.goal == "map the branch" and compile_opts.spec_path is None
-            and compile_opts.budget == "1e9n")
+            and compile_opts.budget == "1e9n" and compile_opts.analysis_limit == "10m")
     assert compile_env == {"ISAR_LLM": "x"}
     assert opts.envelope_path == "frozen-objective.json" and not opts.resume_latest
     assert opts.budget is None and opts.seed == 7 and opts.max_iters == 12

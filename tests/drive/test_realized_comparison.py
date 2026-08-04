@@ -28,6 +28,7 @@ from isar.drive.acquisition.realized_comparison import (
 from isar.drive.acquisition.scan_design import (
     SCAN_DESIGN_INVENTORY_SCHEMA_V2,
     SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED,
+    ScanDesignRefusal,
     design_scan_windows,
 )
 from isar.drive.acquisition.scan_grid import UniformGrid
@@ -166,6 +167,46 @@ def test_one_clone_exposure_adjustment_persists_visible_unavailable_authority(
     assert loaded.physical_role == "legacy"
     assert loaded.target_core_validation["validated_request_status"] == "refused"
     assert "realized_exposure_mismatch" in loaded.target_core_validation["adjustments"]
+
+
+def test_generator_refused_target_persists_unavailable_authority_without_exception(
+        tmp_path):
+    inventory = _inventory()
+    target = next(item for item in inventory.candidates
+                  if item.candidate_family == "target_core/1")
+    inventory = replace(
+        inventory,
+        context=replace(inventory.context, scientific_action_fingerprint="8" * 64),
+        candidates=tuple(item for item in inventory.candidates if item is not target),
+        refusals=inventory.refusals + (ScanDesignRefusal(
+            candidate_family="target_core/1",
+            reason_code="target_core_truncated_after_domain_clip",
+            detail=(("e_hi", target.e_hi), ("e_lo", target.e_lo),
+                    ("e_step", target.e_step), ("n_points", target.n_points))),),
+    )
+    proposal = _proposal(inventory)
+    pair = construct_realized_pair(
+        proposal, inventory, SimpleNamespace(), SimpleNamespace(), {},
+        it=1, finalizer=lambda *_args, **_kwargs: None)
+    assert isinstance(pair.target_core, RealizedCandidateRefusal)
+    assert pair.target_core.source_candidate_id is None
+    inventory_ref = _inventory_reference(tmp_path, inventory)
+    comparison = build_realized_comparison(
+        inventory, inventory_ref, pair, remaining_seconds=0.0, rescorer=None)
+    comparison_ref = persist_realized_comparison(tmp_path, comparison)
+    profile = O41AuthoritativeProfile(
+        policy_fingerprint="1" * 64, variant_fingerprint="2" * 64,
+        policy_set_fingerprint="3" * 64, scoring_config_fingerprint="4" * 64)
+
+    decision = build_authority_decision(
+        inventory=inventory, inventory_ref=inventory_ref,
+        comparison=comparison, comparison_ref=comparison_ref, profile=profile,
+        legacy_validation_status="validated", target_validation_status="refused")
+
+    assert decision.decision_outcome == "selection_evidence_unavailable"
+    assert decision.physical_role == "legacy"
+    assert decision.target_core_validation["validated_request_status"] == "refused"
+    assert decision.target_core_validation["scored_grid_join_status"] == "unavailable"
 
 
 def test_bounded_authority_refresh_restores_the_initial_authenticated_legacy_without_third_pass(

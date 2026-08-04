@@ -67,7 +67,38 @@ def _refused_target_evidence(inventory: Any, refusal: Any) -> O41CandidateEviden
                       and (refusal.source_candidate_id is None
                            or item.candidate_id == refusal.source_candidate_id)), None)
     if candidate is None:
-        raise ValueError("target_core refusal does not identify an inventory candidate")
+        # Some target families are refused by the generator itself, before an inventory candidate
+        # can exist (for example a quicklook target clipped back to the complete legacy domain).
+        # The refusal is still content-addressed evidence.  Reconstruct its attempted grid where
+        # diagnostics permit it; otherwise use the authenticated legacy envelope only as the
+        # schema's unavailable-grid carrier.  The refused/unavailable statuses prevent authority.
+        planned_refusal = next((item for item in inventory.refusals
+                                if item.candidate_family == "target_core/1"), None)
+        if planned_refusal is None:
+            raise ValueError("target_core refusal has no inventory refusal evidence")
+        refusal_id = hashlib.sha256(
+            canonical_json(planned_refusal.to_dict()).encode("utf-8")).hexdigest()
+        detail = dict(planned_refusal.detail)
+        legacy = inventory.selected_candidate
+        try:
+            grid = UniformGrid(
+                float(detail["e_lo"]), float(detail["e_hi"]), float(detail["e_step"]),
+                int(detail["n_points"]), adapter=TAVI_GRID_ADAPTER)
+        except (KeyError, TypeError, ValueError):
+            grid = legacy.grid
+        return O41CandidateEvidence(
+            role=ROLE_TARGET,
+            candidate_id=refusal_id,
+            request_fingerprint=refusal_id,
+            grid_fingerprint=grid.fingerprint(legacy.ncount),
+            e_lo=grid.e_lo,
+            e_hi=grid.e_hi,
+            executed_energies=grid.energies,
+            ncount=legacy.ncount,
+            scan_command=grid.scan_command(),
+            validated_request_status="refused",
+            scored_grid_join_status="unavailable",
+        )
     grid = candidate.grid
     if (refusal.source_grid_fingerprint is not None
             and refusal.source_grid_fingerprint != grid.fingerprint(candidate.ncount)):

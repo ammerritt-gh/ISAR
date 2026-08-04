@@ -11,6 +11,7 @@ import queue
 import threading
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
@@ -153,7 +154,12 @@ class HealthProbe:
 
     def _work(self, generation: int, urls: dict[str, str]) -> None:
         try:
-            health = {name: self._prober(url) for name, url in urls.items()}
+            # Backends are independent.  In particular, a slow or absent LLMM must not make the
+            # local TAVI launch gate wait for a second serial network timeout.
+            with ThreadPoolExecutor(max_workers=max(1, len(urls)),
+                                    thread_name_prefix="isar-gui-health-endpoint") as pool:
+                futures = {name: pool.submit(self._prober, url) for name, url in urls.items()}
+                health = {name: future.result() for name, future in futures.items()}
             result = HealthProbeResult(generation, urls, health=health)
         except Exception as exc:  # noqa: BLE001 — a broken probe must never kill the worker
             result = HealthProbeResult(generation, urls, error=f"{type(exc).__name__}: {exc}")

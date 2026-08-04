@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--budget", default=None,
                     help="override budget as '<amount><unit>' e.g. '8h', '1e10n' (else from the spec/goal)")
     pd.add_argument("--analysis-limit", default=None,
-                    help="absolute cumulative analysis ceiling, e.g. '1h', '3600s', or 'none'")
+                    help="absolute cumulative analysis ceiling, e.g. '1h', '10m', '3600s', or 'none'")
     pd.add_argument("--scan-window-eig-mode", choices=["off", "shadow", "authoritative"],
                     default=None,
                     help="operator authoring choice for scan-window EIG; authoritative is restricted "
@@ -190,18 +190,19 @@ def build_parser() -> argparse.ArgumentParser:
 def _parse_budget(text: str) -> dict:
     """Parse a ``--budget`` override: ``'8h'`` → counting_seconds, ``'1e10n'`` → neutrons.
 
-    A bare number is treated as counting-seconds. Accepts ``h``/``hour(s)``, ``s``/``sec``, ``n``.
+    A bare number is treated as counting-seconds. Accepts hours, minutes, seconds, and neutrons.
     """
     s = str(text).strip().lower()
-    if s.endswith(("h", "hour", "hours")):
-        num = s.rstrip("hours").rstrip("h")
-        return {"kind": "counting_seconds", "amount": float(num) * 3600.0}
-    if s.endswith("n") or s.endswith("neutrons"):
-        num = s.rstrip("neutrons").rstrip("n")
-        return {"kind": "neutrons", "amount": float(num)}
-    if s.endswith(("s", "sec", "secs")):
-        num = s.rstrip("secs").rstrip("s")
-        return {"kind": "counting_seconds", "amount": float(num)}
+    units = (
+        (("neutrons", "neutron", "n"), "neutrons", 1.0),
+        (("hours", "hour", "hrs", "hr", "h"), "counting_seconds", 3600.0),
+        (("minutes", "minute", "mins", "min", "m"), "counting_seconds", 60.0),
+        (("seconds", "second", "secs", "sec", "s"), "counting_seconds", 1.0),
+    )
+    for suffixes, kind, multiplier in units:
+        suffix = next((item for item in suffixes if s.endswith(item)), None)
+        if suffix is not None:
+            return {"kind": kind, "amount": float(s[:-len(suffix)].strip()) * multiplier}
     return {"kind": "counting_seconds", "amount": float(s)}
 
 
