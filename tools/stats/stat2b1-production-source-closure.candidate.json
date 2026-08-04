@@ -14,7 +14,7 @@
   "candidate_artifact_commit": null,
   "candidate_artifact_path": "tools/stats/stat2b1-production-source-closure.candidate.json",
   "candidate_artifact_sha256": null,
-  "candidate_closure_fingerprint": "ea8d5718eb7dd84e1aaf7ef15fb1d996410a784467506347b431da7f9c02e1e0",
+  "candidate_closure_fingerprint": "7b5539af494327ae3ed34806a10075387afa7de286d6efcecd5c598555b0176b",
   "comparison_basis": {
     "candidate_closure_fingerprint": null,
     "dependency_graph_fingerprint": null,
@@ -96,6 +96,27 @@
       "path": "isar/schema/eig_policy.py",
       "proof_tests": [
         "tests/schema/test_eig_policy.py"
+      ],
+      "status": "added"
+    },
+    {
+      "basis_hash": null,
+      "current_change_disposition": "unrelated_exempt",
+      "current_hash": "61d9a3f15e3409cfa5f760cf0c40aa116aaa0dd5c926e575c886938541b8ad00",
+      "current_public_symbols": [
+        "RealizedCandidatePair",
+        "RealizedCandidateRefusal",
+        "RealizedScanRequest",
+        "RealizedScoreVariant",
+        "RealizedSeedEvidence",
+        "ScanDesignRealizedComparison",
+        "derive_realized_seed",
+        "validate_scan_design_realized_comparison"
+      ],
+      "path": "isar/schema/eig_realized.py",
+      "proof_tests": [
+        "tests/drive/test_realized_comparison.py",
+        "tests/eig/test_realized_score.py"
       ],
       "status": "added"
     },
@@ -1119,7 +1140,7 @@
     "isar/session/driver.py",
     "isar/session/predictive_artifact.py"
   ],
-  "dependency_graph_fingerprint": "e1272ce8b6f65b65523e7c3e554b0adf09d1ee8a239f74666d747a97f8af7cbb",
+  "dependency_graph_fingerprint": "db1258426e112ca2fe97fce541695c48e910166c9bcb5d7e421c7c95ae103e9c",
   "historical_evidence": {
     "aggregate_replay_fingerprint": "48b17e372543eca0e7d848d4eda595f7fa3b9a5381a5acbd15ed8a348e3b8f56",
     "development_summary_fingerprint": "cae8a48fd687a2cb725b2a36bc9f82ae2a4cb4874ef490b8b7bb61b8dfcb0da7",
@@ -1475,6 +1496,13 @@
     {
       "dependency_disposition": "unrelated_exempt",
       "module_role": "unrelated",
+      "path": "isar/schema/eig_realized.py",
+      "rationale": "EIG realized-request comparison serialization is diagnostic-only and is not imported by the STAT-2b selection or predictive evidence path.",
+      "sha256": null
+    },
+    {
+      "dependency_disposition": "unrelated_exempt",
+      "module_role": "unrelated",
       "path": "isar/schema/eig_shadow.py",
       "rationale": "EIG shadow-score serialization is diagnostic-only and is not imported by the STAT-2b selection or predictive evidence path.",
       "sha256": null
@@ -1748,11 +1776,11 @@
   ],
   "owner_approved": false,
   "production_source_fingerprint": "34ae255263a289deeb4bc91a48d0feae318414340ab60edd4f6338ad9ea74a87",
-  "proposed_production_anchor": "ce490fec5badbc76e8799b7fb3f84ef5c201b855",
+  "proposed_production_anchor": "d3f2ee24baabf03519b21705df730408992e4243",
   "review_record": {
-    "path": "docs/campaigns/2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR/review.json",
-    "semantic_fingerprint": "ab6c3f105b0c6dfc52a6bf17960b557e0fba517e982404ee87206e369bb8650d",
-    "sha256": "11edb2e1aad198deb3216d224003fc6d9aaa1aeb59a74c0f4c49a5cc9b060265"
+    "path": "docs/campaigns/2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE/review.json",
+    "semantic_fingerprint": "afd0989c65860e7bc76bf7810d7b3c1af6feba33e3bc116b7538d8d4cfa1b23d",
+    "sha256": "a59be910ab4c5725948d5cb33d916d699209cec035e78a785f388ff60684d4f5"
   },
   "schema": "isar.stat2b_production_source_closure/2",
   "status": "candidate"

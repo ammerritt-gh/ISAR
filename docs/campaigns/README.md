@@ -45,6 +45,7 @@ which ruling settled it. That is worth keeping and worth not mistaking for a con
 | 2026-08-02 | [2026-08-02_EIG4_SLICE1_CENSUS.md](2026-08-02_EIG4_SLICE1_CENSUS.md) | EIG-4 Slice 1 eligibility census | Eligibility not measurable; current contract incomplete | [EIG_STEERING_DESIGN.md](../EIG_STEERING_DESIGN.md) |
 | 2026-08-03 | [2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md](2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md) | Authenticate historical STAT-2b.1 evidence and construct a production source-closure candidate | Schema-v1 candidate rejected in owner review; never active | [STAT2_SELECTION_CONSISTENCY_PLAN.md](../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md) |
 | 2026-08-04 | [2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md](2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md) | Repair renewable upkeep, aggregate authentication, approval provenance, and conservative traversal | Replacement schema-v2 candidate constructed; owner approval pending | [STAT2_SELECTION_CONSISTENCY_PLAN.md](../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md) |
+| 2026-08-04 | [2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE.md](2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE.md) | Review Slice 7 protected-boundary drift and supersede the unapproved bootstrap candidate | New schema-v2 bootstrap candidate constructed; owner approval pending | [STAT2_SELECTION_CONSISTENCY_PLAN.md](../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md) |
 
 ## Analysis-core checks and forward notes
 

@@ -1,0 +1,64 @@
+{
+  "commands": [
+    {
+      "command": "python -m py_compile tools\\stats\\_stat2b_source_closure.py tools\\stats\\stat2b_source_closure.py tests\\stats\\test_stat2b_source_closure.py isar\\schema\\eig_realized.py isar\\eig\\realized_score.py isar\\drive\\acquisition\\realized_comparison.py",
+      "deselected": 0,
+      "failed": 0,
+      "files_checked": 6,
+      "passed": 6,
+      "skipped": 0
+    },
+    {
+      "command": "python -m pytest tests\\stats\\test_stat2b_source_closure.py tests\\analyze\\test_select.py tests\\analyze\\test_select_modality.py tests\\analyze\\test_shadow_selection.py isar\\synth\\tests\\test_stat2b_campaign.py isar\\synth\\tests\\test_stat2b_criteria.py isar\\synth\\tests\\test_stat2b_runtime.py isar\\synth\\tests\\test_stat2b_scaling.py isar\\synth\\tests\\test_stat2b_spec_truth.py tests\\session\\test_statistical_semantics.py tests\\session\\test_master_predictive.py tests\\session\\test_target_projection.py tests\\schema\\test_statistics.py tests\\docs\\test_stat2b_heldout_evidence.py tests\\drive\\test_realized_comparison.py tests\\eig\\test_realized_score.py -q",
+      "deselected": 0,
+      "duration_seconds": 88.0,
+      "failed": 0,
+      "passed": 300,
+      "skipped": 0
+    },
+    {
+      "command": "python -m pytest tests\\docs -q",
+      "deselected": 0,
+      "duration_seconds": 3.47,
+      "failed": 0,
+      "passed": 92,
+      "skipped": 1
+    },
+    {
+      "command": "python -m pytest -m \"not slow\" -n 16 --dist worksteal",
+      "deselected": 39,
+      "deselection_basis": "the unchanged slow-marker set contains 39 tests; xdist selected 3485 items",
+      "duration_seconds": 64.2,
+      "failed": 0,
+      "passed": 3477,
+      "skipped": 8
+    }
+  ],
+  "parity_checks": [
+    {
+      "check": "complete held-out summary semantic fingerprint and raw-byte SHA-256 reproduce before gate evaluation",
+      "status": "passed"
+    },
+    {
+      "check": "bootstrap records the reviewed four-addition/three-modification/zero-deletion inventory; the new realized-EIG schema is diagnostic-only and unrelated to the STAT-2b selection and predictive evidence path",
+      "status": "passed"
+    },
+    {
+      "check": "the replacement bootstrap candidate supersedes the earlier unapproved proposal without approving either artifact",
+      "status": "passed"
+    },
+    {
+      "check": "every protected non-exempt module is AST-traversed and newly imported local dependencies fail unclassified",
+      "status": "passed"
+    },
+    {
+      "check": "selection, shadow-selection, predictive, target-projection, statistical-join, schema, held-out evidence, and Slice 7 diagnostic parity remain unchanged",
+      "status": "passed"
+    },
+    {
+      "check": "portable candidate verification and exact Git-backed production-anchor parity",
+      "status": "passed"
+    }
+  ],
+  "status": "passed"
+}
