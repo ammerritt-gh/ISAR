@@ -1165,6 +1165,21 @@ def run_case1_counterfactual_fork(raw: dict[str, Any], *, case_seed: int) -> dic
     return {"analysis": analysis, "fork": fork}
 
 
+def _grid_fault_provenance(
+        state: Mapping[str, Any], emitted: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Select the acquisition record for the exact mismatching physical job."""
+    payload = emitted.get("payload")
+    job_id = payload.get("job_id") if isinstance(payload, Mapping) else None
+    matches = [
+        item for item in state.get("acquisition_provenance") or []
+        if isinstance(item, Mapping) and item.get("job_id") == job_id
+    ]
+    if job_id is None or len(matches) != 1:
+        raise gate.GateEvidenceError(
+            "grid-order fault did not resolve to one exact acquisition-provenance job")
+    return matches[0]
+
+
 def run_grid_order_fault(raw: Mapping[str, Any], *, case_seed: int) -> dict[str, Any]:
     """Inject a returned-grid order fault through the production completion seam."""
     source = Path(raw["source_workspace"])
@@ -1172,16 +1187,14 @@ def run_grid_order_fault(raw: Mapping[str, Any], *, case_seed: int) -> dict[str,
     if fault_workspace.exists():
         shutil.rmtree(fault_workspace)
     shutil.copytree(source, fault_workspace)
-    proposal, wrapper, events = _run_controller_completion(
+    _proposal, wrapper, events = _run_controller_completion(
         raw, fault_workspace, fault_workspace.parent / "grid-order-fault-capture",
         case_seed=case_seed, reverse_returned_grid=True)
     emitted = next(event for event in events if event["kind"] == "exception"
                    and (event.get("payload") or {}).get("action")
                    == "executed_grid_mismatch")
     state = read_card_state(fault_workspace)
-    provenance = next(
-        item for item in reversed(state.get("acquisition_provenance") or [])
-        if item.get("acquisition_id") == proposal.acquisition_id)
+    provenance = _grid_fault_provenance(state, emitted)
     rows = read_results_csv(fault_workspace)
     fitted = [row for row in rows if row.get("status") == "fitted"]
     pooled = [row for row in rows if str(row.get("pooled", "")).lower() in {"true", "1"}]

@@ -111,6 +111,22 @@ def test_repair_fixture_uses_one_action_and_distinct_prior_inventory(tmp_path):
     assert reloaded_objective.scan_window_eig is not None
 
 
+def test_grid_fault_provenance_selects_exact_mismatching_job_not_later_recovery():
+    state = {"acquisition_provenance": [
+        {"job_id": "fault-job", "acquisition_id": "logical-1",
+         "scan_design_executed_grid_status": "mismatch"},
+        {"job_id": "recovery-job", "acquisition_id": "logical-1",
+         "scan_design_executed_grid_status": "not_applicable"},
+    ]}
+    emitted = {"kind": "exception", "payload": {
+        "action": "executed_grid_mismatch", "job_id": "fault-job"}}
+
+    provenance = fixtures._grid_fault_provenance(state, emitted)
+
+    assert provenance["job_id"] == "fault-job"
+    assert provenance["scan_design_executed_grid_status"] == "mismatch"
+
+
 def test_repair_prefreeze_rejects_contrary_128_by_8_regime(tmp_path):
     parameters = json.loads(PARAMETERS.read_text(encoding="utf-8"))
     with pytest.raises(gate.GateEvidenceError, match=(
