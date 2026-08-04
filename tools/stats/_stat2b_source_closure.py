@@ -159,6 +159,10 @@ EXPLICIT_ADJACENT = {
     "isar/schema/eig_policy.py",
 }
 EXPLICIT_EXEMPT = {
+    "isar/eig/o41_authority.py": (
+        "The restricted scan-window selector is reached only when the separately frozen EIG mode "
+        "is authoritative; the frozen STAT-2b campaign uses the off/default path."
+    ),
     "isar/schema/action_identity.py": (
         "EIG action identity is absent from the STAT-2b selection and accepted predictive "
         "evidence path."
@@ -170,6 +174,10 @@ EXPLICIT_EXEMPT = {
     "isar/schema/eig_realized.py": (
         "EIG realized-request comparison serialization is diagnostic-only and is not imported "
         "by the STAT-2b selection or predictive evidence path."
+    ),
+    "isar/schema/eig_authority.py": (
+        "The O41 authority-decision sidecar is outside the frozen STAT-2b selection and accepted "
+        "predictive evidence path."
     ),
     "isar/eig/policy.py": (
         "Only conditionally reached for a non-empty EIG policy set; the frozen STAT-2b "
@@ -195,17 +203,24 @@ MANUAL_DEPENDENCIES: tuple[dict[str, str], ...] = ()
 
 CURRENT_CHANGE_DISPOSITIONS = {
     "isar/drive/objective.py": "adjacent_nonsemantic",
+    "isar/drive/session_log.py": "adjacent_nonsemantic",
     "isar/schema/action_identity.py": "unrelated_exempt",
     "isar/schema/card.py": "adjacent_nonsemantic",
     "isar/schema/eig_policy.py": "adjacent_nonsemantic",
     "isar/schema/eig_shadow.py": "unrelated_exempt",
     "isar/schema/eig_realized.py": "unrelated_exempt",
+    "isar/schema/eig_authority.py": "unrelated_exempt",
+    "isar/schema/hypotheses.py": "adjacent_nonsemantic",
     "isar/session/predictive_artifact.py": "evidence_contract_semantic",
 }
 PROOF_TESTS = {
     "isar/drive/objective.py": [
         "isar/synth/tests/test_stat2b_campaign.py",
         "tests/session/test_target_projection.py",
+    ],
+    "isar/drive/session_log.py": [
+        "tests/drive/test_session_log.py",
+        "tests/session/test_driver_smoke.py",
     ],
     "isar/schema/action_identity.py": ["tests/eig/test_eligibility.py"],
     "isar/schema/card.py": [
@@ -217,6 +232,11 @@ PROOF_TESTS = {
     "isar/schema/eig_realized.py": [
         "tests/drive/test_realized_comparison.py",
         "tests/eig/test_realized_score.py",
+    ],
+    "isar/schema/eig_authority.py": ["tests/schema/test_eig_authority.py"],
+    "isar/schema/hypotheses.py": [
+        "isar/synth/tests/test_stat2b_campaign.py",
+        "tests/schema/test_hypotheses.py",
     ],
     "isar/session/predictive_artifact.py": [
         "tests/session/test_master_predictive.py",

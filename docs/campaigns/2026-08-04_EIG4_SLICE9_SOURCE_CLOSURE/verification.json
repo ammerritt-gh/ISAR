@@ -1,0 +1,84 @@
+{
+  "commands": [
+    {
+      "command": "python -m py_compile isar\\cli\\main.py isar\\drive\\acquisition\\authority.py isar\\drive\\acquisition\\eig_shadow.py isar\\drive\\acquisition\\scan_design.py isar\\drive\\loop.py isar\\drive\\objective.py isar\\drive\\session_log.py isar\\drive\\supervisor\\goal_to_spec.py isar\\eig\\o41_authority.py isar\\eig\\shadow_inventory.py isar\\schema\\eig_authority.py isar\\schema\\hypotheses.py isar_gui\\commands.py isar_gui\\main_window.py isar_gui\\operation_coordinator.py isar_gui\\viewmodels\\campaign.py isar_gui\\views\\campaign_dock.py isar_gui\\views\\campaign_monitor.py tests\\cli\\test_drive_cmd.py tests\\drive\\test_acquire.py tests\\drive\\test_realized_comparison.py tests\\drive\\test_scan_design.py tests\\eig\\test_o41_authority.py tests\\gui\\test_campaign_vm.py tests\\gui\\test_commands.py tests\\gui\\test_o41_example.py tests\\schema\\test_eig_authority.py",
+      "deselected": 0,
+      "failed": 0,
+      "files_checked": 27,
+      "passed": 27,
+      "skipped": 0
+    },
+    {
+      "command": "python -m pytest tests\\eig\\test_o41_authority.py tests\\schema\\test_eig_authority.py tests\\drive\\test_scan_design.py tests\\drive\\test_acquire.py tests\\drive\\test_realized_comparison.py tests\\cli\\test_drive_cmd.py tests\\gui\\test_commands.py tests\\gui\\test_campaign_vm.py tests\\gui\\test_o41_example.py tests\\docs -q",
+      "deselected": 0,
+      "duration_seconds": 7.14,
+      "failed": 0,
+      "passed": 307,
+      "skipped": 1
+    },
+    {
+      "command": "python -m pytest isar\\synth\\tests\\test_stat2b_campaign.py tests\\drive\\test_session_log.py tests\\schema\\test_hypotheses.py tests\\session\\test_target_projection.py -q",
+      "deselected": 0,
+      "duration_seconds": 60.92,
+      "failed": 0,
+      "passed": 87,
+      "skipped": 0
+    },
+    {
+      "command": "python -m pytest tests\\stats\\test_stat2b_source_closure.py -q",
+      "deselected": 0,
+      "duration_seconds": 28.75,
+      "failed": 0,
+      "passed": 26,
+      "skipped": 0
+    },
+    {
+      "command": "python -m pytest -m \"not slow\" -n 16 --dist worksteal",
+      "deselected": 39,
+      "deselection_basis": "the slow-marker set contains 39 tests; xdist selected 3572 items",
+      "duration_seconds": 76.57,
+      "failed": 0,
+      "passed": 3564,
+      "skipped": 8
+    },
+    {
+      "command": "python -m pytest -n 16 --dist worksteal",
+      "deselected": 0,
+      "duration_seconds": 518.69,
+      "failed": 0,
+      "passed": 3603,
+      "skipped": 8
+    }
+  ],
+  "parity_checks": [
+    {
+      "check": "the complete held-out STAT-2b summary and accepted AIC disposition were reused without rerunning the campaign",
+      "status": "passed"
+    },
+    {
+      "check": "objective, hypothesis-mode, and event-vocabulary changes are protected-adjacent and preserve the frozen off/default STAT-2b path",
+      "status": "passed"
+    },
+    {
+      "check": "the conditional O41 selector edge and authority sidecar are explicitly unrelated to STAT-2b selection and predictive-evidence semantics",
+      "status": "passed"
+    },
+    {
+      "check": "the shared refresh is bounded to two passes and a second refusal restores the initially authenticated legacy request",
+      "status": "passed"
+    },
+    {
+      "check": "target-only adapter adjustment persists a visible unavailable-authority legacy outcome",
+      "status": "passed"
+    },
+    {
+      "check": "off and shadow parity, resume compatibility, strict decision authentication, recovery, returned-grid handling, and GUI authoring/monitoring are focused-tested",
+      "status": "passed"
+    },
+    {
+      "check": "the candidate remains unapproved and binds the exact preceding production anchor",
+      "status": "passed"
+    }
+  ],
+  "status": "passed"
+}

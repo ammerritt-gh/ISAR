@@ -172,23 +172,25 @@ def test_historical_replay_recomputes_the_complete_summary_fingerprint(
         ENGINE.replay_heldout_aggregate(repo, gate)
 
 
-def test_historical_drift_inventory_is_the_reviewed_three_three_zero():
+def test_historical_drift_inventory_is_the_reviewed_five_four_zero():
     gate = ENGINE.authenticate_historical_gate(ROOT)
     inventory = ENGINE.drift_inventory(ROOT, gate)
 
     assert inventory["counts"] == {
-        "added": 4,
-        "modified": 3,
+        "added": 5,
+        "modified": 4,
         "deleted": 0,
-        "unchanged": 57,
+        "unchanged": 56,
     }
     assert {entry["path"] for entry in inventory["entries"]} == {
         "isar/drive/objective.py",
         "isar/schema/action_identity.py",
         "isar/schema/card.py",
         "isar/schema/eig_policy.py",
+        "isar/schema/eig_authority.py",
         "isar/schema/eig_realized.py",
         "isar/schema/eig_shadow.py",
+        "isar/schema/hypotheses.py",
         "isar/session/predictive_artifact.py",
     }
     dispositions = {
@@ -206,6 +208,7 @@ def test_historical_drift_inventory_is_the_reviewed_three_three_zero():
     assert dispositions["isar/schema/action_identity.py"] == "unrelated_exempt"
     assert dispositions["isar/schema/eig_shadow.py"] == "unrelated_exempt"
     assert dispositions["isar/schema/eig_realized.py"] == "unrelated_exempt"
+    assert dispositions["isar/schema/eig_authority.py"] == "unrelated_exempt"
     assert all("current_public_symbols" in entry for entry in inventory["entries"])
     assert all("changed_symbols" not in entry for entry in inventory["entries"])
 
@@ -270,8 +273,8 @@ def test_dependency_graph_is_deterministic_and_contains_real_edges():
 
     assert first == second
     modules, edges = first
-    assert len(modules) == 88
-    assert len(edges) == 192
+    assert len(modules) == 90
+    assert len(edges) == 193
     assert {
         (edge["importer"], edge["imported"])
         for edge in edges
@@ -279,6 +282,7 @@ def test_dependency_graph_is_deterministic_and_contains_real_edges():
         ("isar/session/predictive_artifact.py", "isar/predictive.py"),
         ("isar/analyze/shadow_selection.py", "isar/analyze/select.py"),
         ("isar/drive/objective.py", "isar/schema/eig_policy.py"),
+        ("isar/drive/objective.py", "isar/eig/o41_authority.py"),
     }
     policy = {module["path"]: module for module in modules}
     assert policy["isar/session/driver.py"]["dependency_disposition"] == (
@@ -291,6 +295,12 @@ def test_dependency_graph_is_deterministic_and_contains_real_edges():
         "unrelated_exempt"
     )
     assert policy["isar/schema/eig_realized.py"]["dependency_disposition"] == (
+        "unrelated_exempt"
+    )
+    assert policy["isar/eig/o41_authority.py"]["dependency_disposition"] == (
+        "unrelated_exempt"
+    )
+    assert policy["isar/schema/eig_authority.py"]["dependency_disposition"] == (
         "unrelated_exempt"
     )
     assert policy["isar/predictive.py"]["module_role"] == "evidence_critical"

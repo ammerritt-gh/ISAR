@@ -97,6 +97,9 @@ acquisition architecture.
   `maximum_bridge_steps` is a path-geometry allowance only.
 - A proposal-less frontier that still has authorized same-q work is a `ControllerInvariantError`
   — a controller fault, not a scientific result.
+- Same-action scan-window authority is an inner physical-design choice after the scientific action
+  and Q are selected. The O41-restricted Slice 9 selector may choose only between authenticated
+  `legacy_uniform/1` and `target_core/1`; it cannot alter branch identity, action class, or Q.
 
 **The current contract is `docs/MEASUREMENT_STEERING.md` and DECISIONS O27–O31; read those, not
 this section.** The objective and persisted-state changes are additive from v2, so existing frozen

@@ -192,6 +192,14 @@ Speedup work is governed by [SPEEDUP_DESIGN.md](docs/SPEEDUP_DESIGN.md); steerin
       half is [SPEEDUP_DESIGN.md](docs/SPEEDUP_DESIGN.md).
       **Acceptance:** a chronically flaky q is abandoned by policy, and triage output shows both.
 
+- [ ] **DRV-5 — EIG-4 Slice 10 deterministic TAVI demonstration.** Slice 9 implements the
+      O41-restricted authority path but does not itself supply the production demonstration or O42
+      owner acceptance. Run the maintained GUI-seeded positive case through deterministic TAVI and
+      exercise an ineligible return to the ordinary non-EIG path.
+      **Acceptance:** one narrower target-selected scan proves exact scored/executed grid agreement,
+      fewer executed points, normal fit/campaign rejoining, and a separate ineligible case returns
+      to non-EIG behavior; O42 records the owner's release decision without protected source changes.
+
 - [ ] **DOC-1 — Promote the remaining disposable-path evidence.** The three validation reports were
       committed under `docs/assets/` on 2026-07-25 with a provenance manifest, and `README.md`,
       `READING_GUIDE.md` and `WORKED_EXAMPLE.md` now cite them there.
@@ -317,3 +325,6 @@ conditions — these are wants, not commitments.
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test
 fires real `urlopen` calls at the operator's live LLMM/TAVI ports, so results would depend on which
 services happen to be running.
+
+
+User idea: some sort of Brier-score certification of how well targeted campaigns run, given a known intensity distribution.

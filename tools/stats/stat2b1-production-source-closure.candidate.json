@@ -14,7 +14,7 @@
   "candidate_artifact_commit": null,
   "candidate_artifact_path": "tools/stats/stat2b1-production-source-closure.candidate.json",
   "candidate_artifact_sha256": null,
-  "candidate_closure_fingerprint": "c49e92670df0b9c8a5ed6316cdd7fd36941554555daf6b17f253a0d8e21dad6e",
+  "candidate_closure_fingerprint": "9e4c4e4ed32c7cd32deac23726295636bd5e1f6050bf0edac81ac4aad8f43302",
   "comparison_basis": {
     "candidate_closure_fingerprint": null,
     "dependency_graph_fingerprint": null,
@@ -26,7 +26,7 @@
     {
       "basis_hash": "97a124360654d37467c026ec088519a863964b4da1a74475f979dcc385d8913d",
       "current_change_disposition": "adjacent_nonsemantic",
-      "current_hash": "06d131c865058044327feded48c245991acf0b0b435cc775c073c64306dbce49",
+      "current_hash": "1a2d2f31342a1ced2280356cfc56ed5bf4ac16d846650a373a7f7a49fc3ba811",
       "current_public_symbols": [
         "ObjectiveSpec",
         "current_objective_comparison_scope",
@@ -76,6 +76,20 @@
         "tests/schema/test_eig_policy.py"
       ],
       "status": "modified"
+    },
+    {
+      "basis_hash": null,
+      "current_change_disposition": "unrelated_exempt",
+      "current_hash": "e569366705ca3339411dd56dcc10b5027055b30addced65b095cfd03b39016f4",
+      "current_public_symbols": [
+        "ScanDesignAuthorityDecision",
+        "validate_scan_design_authority_decision"
+      ],
+      "path": "isar/schema/eig_authority.py",
+      "proof_tests": [
+        "tests/schema/test_eig_authority.py"
+      ],
+      "status": "added"
     },
     {
       "basis_hash": null,
@@ -140,6 +154,25 @@
         "tests/schema/test_eig_shadow.py"
       ],
       "status": "added"
+    },
+    {
+      "basis_hash": "66e58a57fdf3fea69a41ae7c767daef481ceabe3b7f6d26583ea600a0cb7a5a4",
+      "current_change_disposition": "adjacent_nonsemantic",
+      "current_hash": "8af690f082de76d617548b3b293dba16ce373f1b4c6cabbc95ae03519db7f940",
+      "current_public_symbols": [
+        "ExcitationHypothesis",
+        "GaussianPrior",
+        "SteeringPolicy",
+        "content_fingerprint",
+        "preset",
+        "resolve_hypothesis"
+      ],
+      "path": "isar/schema/hypotheses.py",
+      "proof_tests": [
+        "isar/synth/tests/test_stat2b_campaign.py",
+        "tests/schema/test_hypotheses.py"
+      ],
+      "status": "modified"
     },
     {
       "basis_hash": "963c424cd2c921a2c52f708b347f7fba68f00a0dc61d48757daf2e5993d80f0e",
@@ -408,6 +441,11 @@
       "edge_kind": "runtime",
       "imported": "isar/synth/resolution.py",
       "importer": "isar/calibrate/tas.py"
+    },
+    {
+      "edge_kind": "conditional",
+      "imported": "isar/eig/o41_authority.py",
+      "importer": "isar/drive/objective.py"
     },
     {
       "edge_kind": "conditional",
@@ -1140,7 +1178,7 @@
     "isar/session/driver.py",
     "isar/session/predictive_artifact.py"
   ],
-  "dependency_graph_fingerprint": "db1258426e112ca2fe97fce541695c48e910166c9bcb5d7e421c7c95ae103e9c",
+  "dependency_graph_fingerprint": "3cda1b8a97ab0b2e0046d74aa31bcda645833ef9a3255703d76031b0c44887d8",
   "historical_evidence": {
     "aggregate_replay_fingerprint": "48b17e372543eca0e7d848d4eda595f7fa3b9a5381a5acbd15ed8a348e3b8f56",
     "development_summary_fingerprint": "cae8a48fd687a2cb725b2a36bc9f82ae2a4cb4874ef490b8b7bb61b8dfcb0da7",
@@ -1337,14 +1375,14 @@
       "module_role": "campaign_runtime_dependency",
       "path": "isar/drive/objective.py",
       "rationale": "Reached by the frozen campaign/runtime path but does not own accepted selection or evidence semantics.",
-      "sha256": "81c0138fd33ae8e2e9a558b0dbfa6e859f673c150ac626008f1bf9420ff01f82"
+      "sha256": "6cde299b97e9b5d25dd7aad4fc7044d95f6729648ebe10ed1ef5bc901fd0e480"
     },
     {
       "dependency_disposition": "protected_adjacent",
       "module_role": "campaign_runtime_dependency",
       "path": "isar/drive/session_log.py",
       "rationale": "Transitively discovered local runtime dependency; conservatively hashed pending a separately reviewed narrower proof.",
-      "sha256": "986dcb293d0bd6dfaf55156dd389ccdfd52df343cffdc88c95c7df641f3329ac"
+      "sha256": "c8b989d2bac06cd94e0c1e30bd6f3da3a362638bf0e08e3d191cda01565fa477"
     },
     {
       "dependency_disposition": "protected_adjacent",
@@ -1352,6 +1390,13 @@
       "path": "isar/drive/supervisor/stopping.py",
       "rationale": "Reached by the frozen campaign/runtime path but does not own accepted selection or evidence semantics.",
       "sha256": "49d37709105fabd275c7dbd82d5156678c0105cff0181f1eb92786583213089e"
+    },
+    {
+      "dependency_disposition": "unrelated_exempt",
+      "module_role": "unrelated",
+      "path": "isar/eig/o41_authority.py",
+      "rationale": "The restricted scan-window selector is reached only when the separately frozen EIG mode is authoritative; the frozen STAT-2b campaign uses the off/default path.",
+      "sha256": null
     },
     {
       "dependency_disposition": "unrelated_exempt",
@@ -1487,6 +1532,13 @@
       "sha256": "623b7fd9f3c97ec0cd0d10b1a53d4804e381c3295e23772df50924136abb1198"
     },
     {
+      "dependency_disposition": "unrelated_exempt",
+      "module_role": "unrelated",
+      "path": "isar/schema/eig_authority.py",
+      "rationale": "The O41 authority-decision sidecar is outside the frozen STAT-2b selection and accepted predictive evidence path.",
+      "sha256": null
+    },
+    {
       "dependency_disposition": "protected_adjacent",
       "module_role": "campaign_runtime_dependency",
       "path": "isar/schema/eig_policy.py",
@@ -1512,7 +1564,7 @@
       "module_role": "campaign_runtime_dependency",
       "path": "isar/schema/hypotheses.py",
       "rationale": "Reached by the frozen campaign/runtime path but does not own accepted selection or evidence semantics.",
-      "sha256": "18c502369b5f4fc138376c24ba351697dc0c0730e354841536cf5d34796b11f7"
+      "sha256": "8bf2055cdca0d76d66b6dd0931445b316492d594574424e4ca28e6851a723b81"
     },
     {
       "dependency_disposition": "protected_adjacent",
@@ -1775,12 +1827,12 @@
     }
   ],
   "owner_approved": false,
-  "production_source_fingerprint": "429c72e0cd5c731ac0b154cd063b133f17e90ebe609ee5ae69b0c58e77d7f7f3",
-  "proposed_production_anchor": "70958cd13437b227efef3bef6b19aa473387457a",
+  "production_source_fingerprint": "a84f1384b810b6004b1f5f7d0fa4d1cf713aa88ed7416e20d8107dbc147559e8",
+  "proposed_production_anchor": "8c5e376d03b4a0c323e23a355c6a1f8225b6bf0b",
   "review_record": {
-    "path": "docs/campaigns/2026-08-04_EIG4_SLICE7_REPAIR_SOURCE_CLOSURE/review.json",
-    "semantic_fingerprint": "3a3d77cd90735f93c0ba91abbc7030f808eaf607c96f102c11acb65b3eccef31",
-    "sha256": "eb05422f77059089ebe78661236cf584b2bfb4185154ef19b3df12855b628c0c"
+    "path": "docs/campaigns/2026-08-04_EIG4_SLICE9_SOURCE_CLOSURE/review.json",
+    "semantic_fingerprint": "7e14a4be75447afa4de6351846e5fe9e8abb674184735ecc2c21324a125a8372",
+    "sha256": "1eb7c360965e99936044521fa23aadf3810fbfcbdacc79c09fa23988b734b76d"
   },
   "schema": "isar.stat2b_production_source_closure/2",
   "status": "candidate"

@@ -93,10 +93,10 @@ master passes the frozen eligibility and policy joins, scores only `legacy_unifo
 `target_core/1`. A valid score records `shadow_legacy_control_scored`; every scoreless or unavailable
 case records `shadow_legacy_control_unscored`. Both retain the unique legacy selection and leave the
 emitted request unchanged by a single neutron.
-O41 authorizes implementation of the restricted selector after owner acceptance of the coherent
-Slice 8 V3 evidence; it does not make that selector available. Declaring `authoritative` therefore
-still refuses at campaign setup with `scan_window_eig_authoritative_unavailable` until Slice 9 lands
-and receives separate review. The derived `/3` inventory is content-addressed under
+O41 authorizes the implemented restricted selector after owner acceptance of the coherent Slice 8
+V3 evidence. Declaring `authoritative` requires the exact O41 profile; invalid profiles refuse with a
+user-visible reason, while authenticated eligible evidence may select `target_core/1`. The
+implementation still awaits separate O42 release review. The derived `/3` inventory is content-addressed under
 `report/scan-design/<sha256>.json` and referenced from proposal provenance. Its candidate id names the
 pre-finalization design; the existing proposal fingerprint separately names the exact request after
 live point/count clamps. A changed realization appends an `isar.scan_design_realization/1` record
@@ -146,11 +146,13 @@ authority envelope contains one clean case, and `delta - 2 * paired_SE > 0` rema
 engineering margin rather than calibrated 95% coverage. The tools-only evaluator is not imported by
 the controller and grants no current eligibility, selection, proposal, or submission authority.
 
-Slice 9 is authorized for implementation only. Eligible decisive superiority may select target-core;
-eligible unresolved or inferior evidence retains legacy; ineligible states use the existing non-EIG
-path. Stale, malformed, unauthenticated, unavailable, or grid-mismatched evidence has no EIG
-authority. Until Slice 9 lands and receives separate owner review, runtime behavior remains shadow
-only and `authoritative` setup continues to refuse.
+Slice 9 implements the O41-restricted authority path. Eligible decisive superiority may select
+target-core; eligible unresolved or inferior evidence retains legacy; ineligible states use the
+existing non-EIG path. Stale, malformed, unauthenticated, unavailable, or grid-mismatched evidence
+has no EIG authority. One shared refresh permits at most one rebuild and reselection; a second
+mutation submits authenticated legacy without a third pass. The durable authority decision precedes
+submission and its hash is bound into the submission record. Returned-grid mismatch invalidates only
+that acquisition lineage. O42 remains the separate release review.
 
 The allowance is cooperative, not preemptive: the adapter checks before each synchronous variant
 score and again after it returns. If the second check crosses the deadline, that raw score set is

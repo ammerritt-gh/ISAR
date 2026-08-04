@@ -11,11 +11,12 @@
 
 ## Status and boundary
 
-**EIG-4 is the approved execution roadmap and current SVP, not implemented runtime authority.**
+**EIG-4 is the approved execution roadmap and current SVP; restricted Slice 9 runtime authority is
+implemented and awaits the separate O42 release review.**
 The pure full-vector Poisson score kernel, the controlled offline Slice 5 counterfactual, Slice 6
 scored shadow inventories, and Slice 7 exact realized-request rescoring are implemented. The coherent
-Slice 8 V3 gate is owner-accepted under O41 and authorizes implementation of Slice 9 only, but
-authoritative selection is not implemented or reviewed. Candidate generation, predictive `/2`, arbitrary-grid evaluation, executed-grid identity, target
+Slice 8 V3 gate is owner-accepted under O41 and authorizes the implemented Slice 9 selector, but O42
+has not yet accepted it for release. Candidate generation, predictive `/2`, arbitrary-grid evaluation, executed-grid identity, target
 projection, Slice 2 eligibility/QoI adaptation, the Slice 3 homogeneous design measure, the Slice 4
 caller-supplied score set, and Slice 5 completed-campaign comparison are implemented.
 Current acquisition ranks scientific actions and Q
@@ -34,8 +35,10 @@ policy card, frozen into `ScanDesignContext`) chooses the regime:
   target-core and records `selection_basis = shadow_legacy_control_scored`; every unavailable or
   scoreless comparison records `shadow_legacy_control_unscored`. The emitted request is identical to
   `off` in either case.
-- `authoritative` — refuses at campaign setup with the stable error code
-  `scan_window_eig_authoritative_unavailable`; it is never silently degraded to shadow or off.
+- `authoritative` — accepts only the exact O41 profile, authenticates the final legacy/target pair,
+  durably records the decision, and may submit `target_core/1`. Invalid profiles fail loudly; absent,
+  ineligible, stale, malformed, or unauthenticated evidence returns to the bounded legacy/non-EIG path.
+  This implementation remains pending O42 release review.
 
 Because `scan_window_eig` was added additively to `isar.objective/2`, the `/2` reader treats an
 omitted block as the frozen no-policy/default-scoring configuration. This is historical read
@@ -197,8 +200,42 @@ comparison before `target_core/1` may win.
 
 O41 accepts the coherent Slice 8 V3 gate as sufficient evidence to implement this selector. The
 positive envelope contains exactly one clean case. Its `delta - 2 * paired_SE > 0` threshold is a
-pragmatic engineering margin, not calibrated 95% coverage, and the acceptance does not itself make
-the authoritative runtime available. Slice 9 must land and receive separate owner review first.
+pragmatic engineering margin, not calibrated 95% coverage. Here `delta` is the mean of the eight
+paired block target-minus-legacy per-point score deltas and `paired_SE` is their sample standard
+deviation (`ddof=1`) divided by `sqrt(8)`. The factor 2.0 is the sole selector safety margin; the
+profile does not apply a second advantage multiplier. Slice 9 implements this contract, while O42
+remains the separate release decision.
+
+The exact restricted profile is 128 simulations, 8 paired blocks, the two candidates
+`legacy_uniform/1` and `target_core/1`, equal finalized per-point `ncount`, resolved score status,
+strictly fewer target points, and no candidate or score refusal. Independent adapter validation of
+both final clones adds one extra validation call per authoritative selection; this traffic is
+negligible compared with executing the scan and does not affect `off` or `shadow`.
+
+### Slice 9 bounded selection lifecycle
+
+The refresh allowance is one shared campaign-iteration budget across every cause. It permits at
+most two selector calls and never a third materialize/reselect loop.
+
+| State | Trigger | Permitted next selection | Refresh left | Required action |
+|---|---|---|---:|---|
+| Initial pair | Both independently validated clones authenticate | Legacy or target | 1 | Select once, materialize that exact request, and authenticate it. |
+| Initial pair | Target validation/refinalization changes or refuses the target | Legacy or target after rebuilding both clones | 0 | Consume the shared refresh and reselect from the refreshed pair. |
+| Selected request | Materialization or immediate pre-submit authentication changes any bound request field | Legacy or target after rebuilding both clones | 0 | Consume the same shared refresh and reselect; either direction is allowed. |
+| Refreshed selection | The second selected request changes, refuses, or fails authentication | Legacy only | 0 | Rebuild and authenticate the legacy request, submit it, and record the fallback; no third selector pass. |
+| Any state | Evidence is unavailable, stale, malformed, or unauthenticated | Legacy/non-EIG path | 0 | Grant no EIG authority and preserve the ordinary recovery semantics. |
+
+The decision artifact uses `isar.scan_design_authority_decision/o41.1` and is durably written under
+`report/scan-design-authority/` before the durable `submission_intent` event and before the TAVI
+submit. The submission record binds the exact decision hash. Recovery reauthenticates that hash and
+the selected request rather than inferring authority from a role label.
+
+Returned-grid mismatch invalidates EIG applicability only for that acquisition/decision lineage.
+It never permanently disables the target band, master scan, or campaign: a later independent
+acquisition may build fresh evidence and try again. The mismatched acquisition is retained and
+analyzed, is never automatically resubmitted, and grants no realized EIG comparison authority.
+The campaign reducer counts failed selector predicates and displays them with the latest selected
+role, so a persistently legacy-only campaign is visible rather than a silent no-op.
 
 Absolute target-QoI information noninferiority is not required: a narrower design may deliberately
 contain less total information. `legacy_uniform/1` is the eligible comparison control, not a
@@ -584,11 +621,11 @@ gated live scored-shadow step described by O38; it preserves those same authorit
    comparison-to-execution join, and byte-reproducible passed gate are implemented and accepted
    under O41. The positive envelope contains one clean case. The gate cannot select or submit a
    request.
-10. **Slice 9 — opt-in authoritative selector (authorized for implementation, not implemented).**
+10. **Slice 9 — opt-in authoritative selector (implemented; O42 release review pending).**
     `target_core` may win on authenticated, resolved EIG-per-point superiority; unresolved or
     inferior eligible comparisons retain the eligible control; ineligible states return to the
-    existing non-EIG design/recovery path. Stale, malformed, unauthenticated, unavailable, or
-    grid-mismatched evidence has no EIG authority.
+    existing non-EIG design/recovery path. The bounded lifecycle, durable decision binding,
+    predicate telemetry, and lineage-scoped grid-mismatch invalidation above are implemented.
 11. **Slice 10 — deterministic TAVI EIG-4 SVP.** Execute at least one narrower EIG-selected scan;
     show exact scored/executed grid agreement, fewer executed points, normal fit/campaign rejoining,
     and return to the existing non-EIG path on an ineligible state.
