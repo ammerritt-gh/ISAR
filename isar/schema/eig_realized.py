@@ -93,11 +93,18 @@ class RealizedScanRequest:
     realized_request_fingerprint: str = field(default="", init=False)
 
     def __post_init__(self) -> None:
+        status_matches_family = (
+            self.candidate_family == "legacy_uniform/1"
+            and self.validation_status in {
+                "finalized_selected_legacy", "submitted_legacy"}
+        ) or (
+            self.candidate_family == "target_core/1"
+            and self.validation_status == "not_instrument_validated_counterfactual"
+        )
         if (not isinstance(self.source_candidate_id, str) or not self.source_candidate_id
                 or self.candidate_family not in {"legacy_uniform/1", "target_core/1"}
                 or not valid_fingerprint(self.source_grid_fingerprint)
-                or self.validation_status not in {
-                    "submitted_legacy", "not_instrument_validated_counterfactual"}
+                or not status_matches_family
                 or len(self.hkl) != 3 or any(not _finite(item) for item in self.hkl)
                 or any(not _finite(item) for item in (self.e_lo, self.e_hi, self.e_step))
                 or self.e_step <= 0.0 or not isinstance(self.scan_command, str)

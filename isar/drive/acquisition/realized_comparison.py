@@ -10,16 +10,20 @@ from pathlib import Path
 from typing import Any
 
 from isar.drive.acquisition.acquire import ScanProposal
-from isar.drive.acquisition.grid_adapters import DEFAULT_GRID_ADAPTER
+from isar.drive.acquisition.grid_adapters import TAVI_GRID_ADAPTER
 from isar.drive.acquisition.inventory import canonical_json
 from isar.drive.acquisition.scan_design import (
+    BudgetInsufficientForMinimumBatch,
     FAMILY_LEGACY_UNIFORM,
     FAMILY_TARGET_CORE,
+    InstrumentLimitBelowMinimumBatch,
+    InstrumentPointLimitExceeded,
+    SCAN_DESIGN_INVENTORY_SCHEMA_V2,
     ScanDesignInventory,
     load_scan_design_inventory,
     validate_scan_design_inventory,
 )
-from isar.drive.acquisition.scan_grid import UniformGrid
+from isar.drive.acquisition.scan_grid import UniformGrid, resolve_point_count
 from isar.eig.shadow_inventory import (
     _normalized_comparison,
     _partition_from_mapping,
@@ -50,6 +54,14 @@ Rescorer = Callable[[RealizedCandidatePair, float], tuple[
     tuple[RealizedScoreVariant, ...], RealizedSeedEvidence | None]]
 
 
+class RealizedPairConstructionError(RuntimeError):
+    """Unexpected target construction failure carrying the exact finalized legacy request."""
+
+    def __init__(self, message: str, unavailable_pair: RealizedCandidatePair) -> None:
+        super().__init__(message)
+        self.unavailable_pair = unavailable_pair
+
+
 def _source_candidate(inventory: ScanDesignInventory, family: str):
     matches = [item for item in inventory.candidates if item.candidate_family == family]
     return matches[0] if len(matches) == 1 else None
@@ -74,7 +86,7 @@ def _request(candidate: Any, proposal: ScanProposal, *, validation_status: str,
              adjustments: Sequence[str]) -> RealizedScanRequest:
     grid = UniformGrid(
         e_lo=float(proposal.e_lo), e_hi=float(proposal.e_hi), e_step=float(proposal.e_step),
-        n_points=int(proposal.n_points), adapter=DEFAULT_GRID_ADAPTER)
+        n_points=int(proposal.n_points), adapter=TAVI_GRID_ADAPTER)
     fingerprint = (proposal.meta or {}).get("proposal_fingerprint")
     if not isinstance(fingerprint, str):
         raise ValueError("realized_candidate_invalid")
@@ -128,7 +140,7 @@ def construct_realized_pair(
             and "runtime_finalization" not in legacy_adjustment_list):
         legacy_adjustment_list.append("runtime_finalization")
     legacy = _request(
-        legacy_source, proposal, validation_status="submitted_legacy",
+        legacy_source, proposal, validation_status="finalized_selected_legacy",
         adjustments=legacy_adjustment_list)
 
     target_source = _source_candidate(inventory, FAMILY_TARGET_CORE)
@@ -153,13 +165,29 @@ def construct_realized_pair(
     try:
         finalizer(
             target_proposal, objective, cfg, isolated_budget, it=it, event_sink=None)
-    except Exception:  # noqa: BLE001 - counterfactual refusal must not suppress the legacy action
+    except (BudgetInsufficientForMinimumBatch, InstrumentLimitBelowMinimumBatch,
+            InstrumentPointLimitExceeded) as error:
+        reason = (
+            "budget_insufficient_for_minimum_batch"
+            if isinstance(error, BudgetInsufficientForMinimumBatch)
+            else "instrument_limit_below_minimum_batch"
+            if isinstance(error, InstrumentLimitBelowMinimumBatch)
+            else "instrument_point_limit_exceeded"
+        )
         target = RealizedCandidateRefusal(
             source_candidate_id=target_source.candidate_id,
             candidate_family=FAMILY_TARGET_CORE,
             source_grid_fingerprint=target_source.grid.fingerprint(target_source.ncount),
-            reason_codes=("realized_candidate_invalid",))
+            reason_codes=(reason,))
         return RealizedCandidatePair(_planned_pair_fingerprint(inventory), legacy, target)
+    except Exception as error:  # noqa: BLE001 - logged at the outer fail-open authority boundary
+        target = RealizedCandidateRefusal(
+            source_candidate_id=target_source.candidate_id,
+            candidate_family=FAMILY_TARGET_CORE,
+            source_grid_fingerprint=target_source.grid.fingerprint(target_source.ncount),
+            reason_codes=("realized_construction_failed",))
+        pair = RealizedCandidatePair(_planned_pair_fingerprint(inventory), legacy, target)
+        raise RealizedPairConstructionError(str(error), pair) from error
     if int(target_proposal.ncount) != int(legacy.ncount):
         target = RealizedCandidateRefusal(
             source_candidate_id=target_source.candidate_id,
@@ -378,10 +406,17 @@ def load_scan_design_realized_comparison(
                 or source_candidate.grid.fingerprint(source_candidate.ncount)
                 != request.source_grid_fingerprint):
             raise ValueError("realized request source candidate is invalid")
+        if canonical_json(thaw(request.grid_adapter)) != canonical_json(
+                TAVI_GRID_ADAPTER.identity()):
+            raise ValueError("realized request grid adapter is unsupported")
+        expected_count, sanitized_step = resolve_point_count(
+            request.e_lo, request.e_hi, request.e_step, adapter=TAVI_GRID_ADAPTER)
         grid = UniformGrid(
-            request.e_lo, request.e_hi, request.e_step, request.executed_point_count,
-            adapter=DEFAULT_GRID_ADAPTER)
-        if (canonical_json(grid.adapter.identity()) != canonical_json(thaw(request.grid_adapter))
+            request.e_lo, request.e_hi, sanitized_step, expected_count,
+            adapter=TAVI_GRID_ADAPTER)
+        if (request.e_step != sanitized_step
+                or request.executed_point_count != expected_count
+                or len(request.executed_energies) != expected_count
                 or request.scan_command != grid.scan_command()
                 or request.executed_energies != grid.energies
                 or request.grid_fingerprint != grid.fingerprint(request.ncount)):
@@ -418,6 +453,9 @@ def load_scan_design_realized_comparison(
             realized_pair_fingerprint=comparison.realized_pair.realized_pair_fingerprint)
         if comparison.seed_evidence.to_dict() != expected_seed.to_dict():
             raise ValueError("realized seed evidence does not reproduce")
+    if (not isinstance(comparison.realized_pair.target_core, RealizedScanRequest)
+            and any(variant.score_set is not None for variant in comparison.variants)):
+        raise ValueError("realized score set requires a realized target request")
     for variant in comparison.variants:
         source_policy = policy_variants.get((variant.policy_id, variant.variant_id))
         if (source_policy is None
@@ -456,6 +494,69 @@ def load_scan_design_realized_comparison(
     return comparison
 
 
+def authenticate_realized_submission(
+        proposal: ScanProposal, workspace: str | Path,
+) -> ScanDesignRealizedComparison | None:
+    """Authenticate every Slice 7 claim against the exact proposal about to be submitted."""
+    meta = proposal.meta if isinstance(proposal.meta, dict) else {}
+    inventory = getattr(proposal, "scan_design_inventory", None)
+    identity_fields = (
+        "scan_design_realized_comparison_ref",
+        "scan_design_realized_comparison_fingerprint",
+        "scan_design_realized_variant_fingerprints",
+        "scan_design_realized_selected_request_fingerprint",
+        "scan_design_realized_selected_grid_fingerprint",
+    )
+    applicability = meta.get("scan_design_eig_applicability")
+    if getattr(inventory, "inventory_version", None) == SCAN_DESIGN_INVENTORY_SCHEMA_V2:
+        if any(meta.get(field) is not None for field in identity_fields):
+            raise ValueError("historical scan-design inventory carries realized claims")
+        return None
+    if applicability in {None, "unavailable"}:
+        if any(meta.get(field) is not None for field in identity_fields):
+            raise ValueError("unavailable realized evidence carries identity claims")
+        return None
+    if applicability == "invalidated":
+        if any(meta.get(field) is not None for field in identity_fields[2:]):
+            raise ValueError("invalidated realized evidence carries selected claims")
+        return None
+    if applicability != "applicable":
+        raise ValueError("realized evidence applicability is invalid")
+
+    comparison = load_scan_design_realized_comparison(
+        meta.get("scan_design_realized_comparison_ref"), workspace)
+    legacy = comparison.realized_pair.legacy
+    expected_count, sanitized_step = resolve_point_count(
+        proposal.e_lo, proposal.e_hi, proposal.e_step, adapter=TAVI_GRID_ADAPTER)
+    grid = UniformGrid(
+        float(proposal.e_lo), float(proposal.e_hi), sanitized_step, expected_count,
+        adapter=TAVI_GRID_ADAPTER)
+    if (meta.get("scan_design_realized_comparison_fingerprint")
+            != comparison.realized_comparison_fingerprint
+            or meta.get("scan_design_realized_variant_fingerprints")
+            != list(comparison.realized_variant_fingerprints)
+            or meta.get("scan_design_realized_selected_request_fingerprint")
+            != comparison.selected_request_fingerprint
+            or meta.get("scan_design_realized_selected_grid_fingerprint")
+            != comparison.selected_grid_fingerprint
+            or legacy.candidate_family != FAMILY_LEGACY_UNIFORM
+            or legacy.validation_status != "finalized_selected_legacy"
+            or meta.get("proposal_fingerprint") != legacy.request_fingerprint
+            or tuple(map(float, (proposal.h, proposal.k, proposal.l))) != legacy.hkl
+            or float(proposal.e_lo) != legacy.e_lo
+            or float(proposal.e_hi) != legacy.e_hi
+            or float(proposal.e_step) != legacy.e_step
+            or sanitized_step != legacy.e_step
+            or proposal.scan_command() != legacy.scan_command
+            or int(proposal.n_points or 0) != expected_count
+            or expected_count != legacy.executed_point_count
+            or int(proposal.ncount) != legacy.ncount
+            or grid.energies != legacy.executed_energies
+            or grid.fingerprint(proposal.ncount) != legacy.grid_fingerprint):
+        raise ValueError("realized-comparison submission identity is inconsistent")
+    return comparison
+
+
 def attach_realized_metadata(proposal: ScanProposal, reference: Mapping[str, Any],
                              comparison: ScanDesignRealizedComparison) -> None:
     meta = proposal.meta if isinstance(proposal.meta, dict) else {}
@@ -473,7 +574,8 @@ def attach_realized_metadata(proposal: ScanProposal, reference: Mapping[str, Any
 
 
 __all__ = [
-    "REALIZED_COMPARISON_ALLOWANCE_SECONDS", "attach_realized_metadata",
+    "REALIZED_COMPARISON_ALLOWANCE_SECONDS", "RealizedPairConstructionError",
+    "attach_realized_metadata", "authenticate_realized_submission",
     "build_realized_comparison", "construct_realized_pair",
     "load_scan_design_realized_comparison", "persist_realized_comparison",
 ]

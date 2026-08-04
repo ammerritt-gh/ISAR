@@ -1951,6 +1951,63 @@ def test_missed_window_triggers_recenter(tmp_path):
             "scan_design_context_fingerprint"]
 
 
+def test_missed_window_point_limit_refuses_recovery_without_resubmitting(
+        tmp_path, monkeypatch):
+    original_finalize = loop_mod._finalize_proposal
+    original_invalidate = loop_mod._invalidate_realized_comparison_for_recovery
+    original_declined = loop_mod._declined_observation
+    declined = []
+
+    def seed_and_invalidate(proposal):
+        proposal.meta["scan_design_realized_comparison_ref"] = {
+            "kind": "isar.scan_design_realized_comparison/1",
+            "path": "report/eig/parent.json",
+        }
+        proposal.meta["scan_design_realized_comparison_fingerprint"] = "f" * 64
+        original_invalidate(proposal)
+
+    def refuse_invalidated_recovery(proposal, *args, **kwargs):
+        if (proposal.meta or {}).get("scan_design_eig_applicability") == "invalidated":
+            raise loop_mod.InstrumentPointLimitExceeded(
+                "instrument_point_limit_exceeded: recovery remains above the live cap")
+        return original_finalize(proposal, *args, **kwargs)
+
+    def capture_decline(proposal, verdict):
+        declined.append((verdict, dict(proposal.meta or {})))
+        return original_declined(proposal, verdict)
+
+    monkeypatch.setattr(loop_mod, "_finalize_proposal", refuse_invalidated_recovery)
+    monkeypatch.setattr(
+        loop_mod, "_invalidate_realized_comparison_for_recovery", seed_and_invalidate)
+    monkeypatch.setattr(loop_mod, "_declined_observation", capture_decline)
+    client = MockTavi(lambda _h: 9.0)
+    summary, _workspace = _run(
+        tmp_path, _objective(), client,
+        make_mock_runner(lambda _h: 9.0, window_gate=True), max_iters=60)
+    submissions = [event["payload"] for event in read_log(summary["session_log"])
+                   if event["kind"] == "physical_submission"]
+    first_acquisition = submissions[0]["acquisition_id"]
+
+    assert sum(item["acquisition_id"] == first_acquisition for item in submissions) == 1
+    verdict, meta = next(item for item in declined
+                         if item[0] == "instrument_point_limit_exceeded")
+    assert verdict == "instrument_point_limit_exceeded"
+    assert meta["scan_design_eig_applicability"] == "invalidated"
+    assert meta["scan_design_eig_invalidation_reason"] == (
+        "eig_realization_invalidated_by_recovery")
+    assert meta["scan_design_realized_comparison_ref"]
+    assert meta["scan_design_realized_comparison_fingerprint"]
+    assert not any(meta.get(field) is not None for field in (
+        "scan_design_realized_variant_fingerprints",
+        "scan_design_realized_selected_request_fingerprint",
+        "scan_design_realized_selected_grid_fingerprint",
+    ))
+    assert any(event["kind"] == "exception"
+               and event["payload"].get("action") == "instrument_point_limit_exceeded"
+               and event["payload"].get("phase") == "missed_window_recovery"
+               for event in read_log(summary["session_log"]))
+
+
 def test_missed_window_elastic_refusal_widening_preserves_design_lineage(tmp_path):
     client = MockTavi(lambda _h: 0.0)
     summary, _ws = _run(

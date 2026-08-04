@@ -49,6 +49,7 @@ from isar.drive.acquisition.scan_design import (
     BudgetInsufficientForMinimumBatch,
     InstrumentLimitBelowMinimumBatch,
     InstrumentPointLimitExceeded,
+    SCAN_DESIGN_INVENTORY_SCHEMA_V2,
     points_in_window,
 )
 from isar.drive.acquisition.scan_grid import (
@@ -65,7 +66,9 @@ from isar.drive.acquisition.eig_shadow import (
 )
 from isar.drive.acquisition.realized_comparison import (
     REALIZED_COMPARISON_ALLOWANCE_SECONDS,
+    RealizedPairConstructionError,
     attach_realized_metadata,
+    authenticate_realized_submission,
     build_realized_comparison,
     construct_realized_pair,
     load_scan_design_realized_comparison,
@@ -2418,6 +2421,7 @@ _REJECTION_RULES: dict[str, tuple[RejectionClass, str]] = {
     "all_points_infeasible": (RejectionClass.STRUCTURAL, "geometry"),
     "validation_rejected": (RejectionClass.STRUCTURAL, "request"),
     "insufficient_target_support": (RejectionClass.STRUCTURAL, "request"),
+    "instrument_point_limit_exceeded": (RejectionClass.STRUCTURAL, "request"),
     "budget_insufficient_for_minimum_batch": (RejectionClass.BUDGET, "request"),
 }
 
@@ -3182,6 +3186,19 @@ def _persist_scan_design_inventory(cfg: CampaignConfig, proposal, *, it: int) ->
     return ref
 
 
+def _clear_realized_claims(proposal, *, applicability: str = "unavailable",
+                           preserve_parent: bool = False) -> None:
+    """Remove Slice 7 claims that cannot authenticate the request which may be submitted."""
+    meta = proposal.meta if isinstance(proposal.meta, dict) else {}
+    proposal.meta = meta
+    start = 2 if preserve_parent else 0
+    for key in _REALIZED_SUBMISSION_FIELDS[start:]:
+        meta.pop(key, None)
+    meta["scan_design_eig_applicability"] = applicability
+    if applicability != "invalidated":
+        meta.pop("scan_design_eig_invalidation_reason", None)
+
+
 def _refresh_realized_comparison(
         cfg: CampaignConfig,
         objective,
@@ -3205,25 +3222,9 @@ def _refresh_realized_comparison(
             and meta.get("scan_design_realized_selected_request_fingerprint") == current_request
             and isinstance(meta.get("scan_design_realized_comparison_ref"), dict)):
         return meta["scan_design_realized_comparison_ref"]
-    inventory_ref = meta.get("scan_design_inventory_ref")
-    if not isinstance(inventory_ref, dict):
-        raise RuntimeError("realized comparison requires a persisted scan-design inventory")
-
-    # A mandatory refresh starts by removing the current-request claims. A failure below may retain
-    # the old immutable artifact on disk, but it can never leave that stale artifact attached to the
-    # request that proceeds toward submission.
-    for key in (
-            "scan_design_realized_comparison_ref",
-            "scan_design_realized_comparison_fingerprint",
-            "scan_design_realized_variant_fingerprints",
-            "scan_design_realized_selected_request_fingerprint",
-            "scan_design_realized_selected_grid_fingerprint"):
-        meta.pop(key, None)
-    meta.pop("scan_design_eig_invalidation_reason", None)
-
-    pair = construct_realized_pair(
-        proposal, inventory, objective, cfg, budget_state, it=it,
-        finalizer=_finalize_proposal, legacy_adjustments=legacy_adjustments)
+    _clear_realized_claims(proposal)
+    if inventory.inventory_version == SCAN_DESIGN_INVENTORY_SCHEMA_V2:
+        return None
     if proposal.realized_scoring_remaining_seconds is None:
         proposal.realized_scoring_remaining_seconds = REALIZED_COMPARISON_ALLOWANCE_SECONDS
 
@@ -3250,49 +3251,101 @@ def _refresh_realized_comparison(
             proposal.realized_scoring_remaining_seconds = max(allowance - elapsed, 0.0)
 
     try:
-        comparison = build_realized_comparison(
-            inventory, inventory_ref, pair,
-            remaining_seconds=float(proposal.realized_scoring_remaining_seconds),
-            rescorer=rescore)
-    except AnalysisLimitExceeded as error:
-        comparison = build_realized_comparison(
-            inventory, inventory_ref, pair, remaining_seconds=0.0, rescorer=None,
-            unavailable_reason="realized_scoring_deadline")
-        log_event(cfg.log_path, "exception", {
-            "action": "realized_scoring_deadline", "severity": "high",
-            "error": str(error), "iter": it})
-    except Exception as error:  # noqa: BLE001 - Slice 7 scoring is fail-open
-        reason = str(getattr(error, "reason_code", "realized_scoring_failed"))
-        comparison = build_realized_comparison(
-            inventory, inventory_ref, pair,
-            remaining_seconds=float(proposal.realized_scoring_remaining_seconds or 0.0),
-            rescorer=None, unavailable_reason=reason)
-        _LOG.exception("realized scan-window scoring failed; continuing with legacy control")
-        log_event(cfg.log_path, "exception", {
-            "action": reason, "severity": "high", "error": str(error), "iter": it})
-    reference = persist_realized_comparison(cfg.workspace, comparison)
-    attach_realized_metadata(proposal, reference, comparison)
-    log_event(cfg.log_path, "scan_design_realized_comparison", {
-        "iter": it, "comparison_ref": reference,
-        "realized_comparison_fingerprint": comparison.realized_comparison_fingerprint,
-        "realized_pair_fingerprint": comparison.realized_pair.realized_pair_fingerprint,
-        "score_disposition": comparison.score_disposition,
-        "reason_codes": list(comparison.reason_codes),
-        "request_fingerprint": comparison.selected_request_fingerprint})
-    return reference
+        inventory_ref = meta.get("scan_design_inventory_ref")
+        if not isinstance(inventory_ref, dict):
+            raise RuntimeError("realized comparison requires a persisted scan-design inventory")
+        try:
+            pair = construct_realized_pair(
+                proposal, inventory, objective, cfg, budget_state, it=it,
+                finalizer=_finalize_proposal, legacy_adjustments=legacy_adjustments)
+        except RealizedPairConstructionError as error:
+            pair = error.unavailable_pair
+            _LOG.exception("realized counterfactual construction failed; retaining exact legacy")
+            log_event(cfg.log_path, "exception", {
+                "action": "realized_construction_failed", "severity": "high",
+                "error": str(error), "iter": it})
+            comparison = build_realized_comparison(
+                inventory, inventory_ref, pair,
+                remaining_seconds=float(proposal.realized_scoring_remaining_seconds or 0.0),
+                rescorer=None, unavailable_reason="realized_construction_failed")
+        else:
+            try:
+                comparison = build_realized_comparison(
+                    inventory, inventory_ref, pair,
+                    remaining_seconds=float(proposal.realized_scoring_remaining_seconds),
+                    rescorer=rescore)
+            except AnalysisLimitExceeded as error:
+                comparison = build_realized_comparison(
+                    inventory, inventory_ref, pair, remaining_seconds=0.0, rescorer=None,
+                    unavailable_reason="realized_scoring_deadline")
+                log_event(cfg.log_path, "exception", {
+                    "action": "realized_scoring_deadline", "severity": "high",
+                    "error": str(error), "iter": it})
+            except Exception as error:  # noqa: BLE001 - fail open at the authority boundary
+                reason = str(getattr(error, "reason_code", "realized_scoring_failed"))
+                comparison = build_realized_comparison(
+                    inventory, inventory_ref, pair,
+                    remaining_seconds=float(proposal.realized_scoring_remaining_seconds or 0.0),
+                    rescorer=None, unavailable_reason=reason)
+                _LOG.exception("realized scan-window scoring failed; continuing with legacy control")
+                log_event(cfg.log_path, "exception", {
+                    "action": reason, "severity": "high", "error": str(error), "iter": it})
+        reference = persist_realized_comparison(cfg.workspace, comparison)
+        attach_realized_metadata(proposal, reference, comparison)
+        log_event(cfg.log_path, "scan_design_realized_comparison", {
+            "iter": it, "comparison_ref": reference,
+            "realized_comparison_fingerprint": comparison.realized_comparison_fingerprint,
+            "realized_pair_fingerprint": comparison.realized_pair.realized_pair_fingerprint,
+            "score_disposition": comparison.score_disposition,
+            "reason_codes": list(comparison.reason_codes),
+            "request_fingerprint": comparison.selected_request_fingerprint})
+        return reference
+    except Exception as error:  # noqa: BLE001 - Slice 7 evidence never blocks legacy control
+        _clear_realized_claims(proposal)
+        _LOG.exception("realized comparison refresh failed; continuing without Slice 7 claims")
+        try:
+            log_event(cfg.log_path, "exception", {
+                "action": "realized_comparison_refresh_failed", "severity": "high",
+                "error": str(error), "iter": it})
+        except Exception:  # noqa: BLE001 - the process logger remains the final visible channel
+            _LOG.exception("failed to persist the realized-comparison refresh failure event")
+        return None
 
 
 def _invalidate_realized_comparison_for_recovery(proposal) -> None:
     """Retain parent design lineage while removing claims about a non-EIG recovery request."""
     meta = proposal.meta if isinstance(proposal.meta, dict) else {}
     proposal.meta = meta
-    meta["scan_design_eig_applicability"] = "invalidated"
+    _clear_realized_claims(proposal, applicability="invalidated", preserve_parent=True)
     meta["scan_design_eig_invalidation_reason"] = "eig_realization_invalidated_by_recovery"
-    for key in (
-            "scan_design_realized_variant_fingerprints",
-            "scan_design_realized_selected_request_fingerprint",
-            "scan_design_realized_selected_grid_fingerprint"):
-        meta.pop(key, None)
+
+
+def _authenticate_realized_before_submission(
+        cfg: CampaignConfig, objective, proposal, budget_state: dict, *, it: int,
+) -> None:
+    """Reauthenticate once after validation, then strip claims rather than block legacy control."""
+    inventory = getattr(proposal, "scan_design_inventory", None)
+    if inventory is None or inventory.context.scan_window_eig_mode != "shadow":
+        return
+    try:
+        authenticate_realized_submission(proposal, cfg.workspace)
+        return
+    except Exception as error:  # noqa: BLE001 - one forced refresh is the bounded recovery
+        first_error = error
+    _refresh_realized_comparison(
+        cfg, objective, proposal, budget_state, it=it,
+        legacy_adjustments=("pre_submit_reauthentication",), force=True)
+    try:
+        authenticate_realized_submission(proposal, cfg.workspace)
+    except Exception as error:  # noqa: BLE001 - legacy submission remains safe without EIG claims
+        _clear_realized_claims(proposal)
+        _LOG.exception("realized submission authentication failed; submitting legacy without claims")
+        try:
+            log_event(cfg.log_path, "exception", {
+                "action": "realized_submission_authentication_failed", "severity": "high",
+                "initial_error": str(first_error), "error": str(error), "iter": it})
+        except Exception:  # noqa: BLE001 - logging failure cannot block the legacy request
+            _LOG.exception("failed to persist the realized-submission authentication event")
 
 
 def _persist_action_inventory(cfg: CampaignConfig, inventory, *, it: int, proposal,
@@ -3641,7 +3694,16 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
     while True:
         # Single checkpoint before EVERY validate/submit, including support/recenter retries.
         previous_request_fingerprint = (proposal.meta or {}).get("proposal_fingerprint")
-        _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+        try:
+            _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+        except InstrumentPointLimitExceeded as error:
+            log_event(log_path, "exception", {
+                "action": "instrument_point_limit_exceeded", "phase": "execution_finalization",
+                "error": str(error), "hkl": [proposal.h, proposal.k, proposal.l], "iter": it})
+            observations.append(
+                _declined_observation(proposal, "instrument_point_limit_exceeded"))
+            declined_verdict = "instrument_point_limit_exceeded"
+            break
         _refresh_realized_comparison(
             cfg, objective, proposal, budget_state, it=it,
             legacy_adjustments=("execution_time_finalization",))
@@ -3737,6 +3799,8 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         with timed(log_path, "submit", iteration=it, attempt=attempt) as _m:
             body = _scan_body(proposal, cfg.engine, cfg.base_seed + scan_counter,
                                sample=cfg.sample, background=cfg.sample_background_frozen)
+            _authenticate_realized_before_submission(
+                cfg, objective, proposal, budget_state, it=it)
             try:
                 submit = client.submit_scan(
                     body,
@@ -3886,7 +3950,24 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         _invalidate_realized_comparison_for_recovery(proposal)
         proposal.e_lo = act.params["e_lo"]
         proposal.e_hi = act.params["e_hi"]
-        _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+        try:
+            _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+        except InstrumentPointLimitExceeded as error:
+            proposal.n_points, _sanitized_step = resolve_point_count(
+                proposal.e_lo, proposal.e_hi, proposal.e_step,
+                adapter=TAVI_GRID_ADAPTER)
+            _stamp_proposal_provenance(proposal)
+            _record_scan_design_realization(
+                cfg, proposal, adjustment="missed_window_recovery_point_limit_refusal",
+                previous_request_fingerprint=previous_request_fingerprint,
+                it=it, attempt=attempt + 1)
+            log_event(log_path, "exception", {
+                "action": "instrument_point_limit_exceeded", "phase": "missed_window_recovery",
+                "error": str(error), "hkl": [proposal.h, proposal.k, proposal.l], "iter": it})
+            observations.append(
+                _declined_observation(proposal, "instrument_point_limit_exceeded"))
+            declined_verdict = "instrument_point_limit_exceeded"
+            break
         _record_scan_design_realization(
             cfg,
             proposal,

@@ -13,12 +13,19 @@ from isar.drive import loop
 from isar.drive.acquisition.acquire import ScanProposal
 from isar.drive.acquisition.inventory import canonical_json
 from isar.drive.acquisition.realized_comparison import (
+    attach_realized_metadata,
+    authenticate_realized_submission,
     build_realized_comparison,
     construct_realized_pair,
     load_scan_design_realized_comparison,
     persist_realized_comparison,
 )
-from isar.drive.acquisition.scan_design import design_scan_windows
+from isar.drive.acquisition.scan_design import (
+    SCAN_DESIGN_INVENTORY_SCHEMA_V2,
+    SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED,
+    design_scan_windows,
+)
+from isar.drive.acquisition.scan_grid import UniformGrid
 from isar.drive.session_log import read_log
 from isar.eig.realized_score import score_realized_pair
 from isar.eig.shadow_inventory import score_shadow_inventory
@@ -133,6 +140,9 @@ def test_historical_coarsening_refuses_if_adapter_still_reports_over_cap(monkeyp
     assert proposal.e_step == 0.01
     assert proposal.n_points == 2_001
     assert not (tmp_path / "session.jsonl").exists()
+    rejection = loop.classify_rejection("instrument_point_limit_exceeded")
+    assert rejection.rejection_class.value == "structural"
+    assert rejection.scope == "request"
 
 
 def test_identical_realized_pair_reuses_the_complete_slice6_score(monkeypatch, tmp_path):
@@ -168,13 +178,20 @@ def test_identical_realized_pair_reuses_the_complete_slice6_score(monkeypatch, t
                for item in comparison.variants)
 
 
-def test_changed_exposure_rescores_the_complete_equal_exposure_pair(monkeypatch, tmp_path):
+@pytest.mark.parametrize("legacy_change", ["exposure", "grid"])
+def test_changed_legacy_request_rescores_the_complete_equal_exposure_pair(
+        monkeypatch, tmp_path, legacy_change):
     helpers = runpy.run_path(str(
         Path(__file__).parents[1] / "eig" / "test_shadow_inventory.py"))
     inventory, scoring = helpers["_complete_scoring"](monkeypatch)
     inventory = inventory.with_shadow_scoring(scoring)
     proposal = _proposal(inventory)
-    proposal.ncount -= 1
+    if legacy_change == "exposure":
+        proposal.ncount -= 1
+    else:
+        proposal.e_step *= 2.0
+        proposal.n_points = loop._emitted_point_count(
+            proposal.e_lo, proposal.e_hi, proposal.e_step)
 
     def finalize(target, *_args, **_kwargs):
         target.meta["proposal_fingerprint"] = "e" * 64
@@ -206,6 +223,9 @@ def test_changed_exposure_rescores_the_complete_equal_exposure_pair(monkeypatch,
 
     assert len(calls) == 1 and calls[0][0] is pair
     assert pair.legacy.ncount == pair.target_core.ncount == proposal.ncount
+    if legacy_change == "grid":
+        assert pair.legacy.executed_energies != tuple(
+            inventory.selected_candidate.energies)
     assert comparison.score_disposition == "rescored"
     assert comparison.variants[0].score_disposition == "rescored"
 
@@ -224,18 +244,178 @@ def _persist_unavailable_comparison(tmp_path: Path):
     comparison = build_realized_comparison(
         inventory, inventory_ref, pair, remaining_seconds=0.0, rescorer=None)
     reference = persist_realized_comparison(tmp_path, comparison)
-    proposal.meta.update({
-        "proposal_fingerprint": comparison.selected_request_fingerprint,
-        "scan_design_realized_comparison_ref": reference,
-        "scan_design_realized_comparison_fingerprint": (
-            comparison.realized_comparison_fingerprint),
-        "scan_design_realized_selected_request_fingerprint": (
-            comparison.selected_request_fingerprint),
-        "scan_design_realized_selected_grid_fingerprint": comparison.selected_grid_fingerprint,
-    })
+    proposal.meta["proposal_fingerprint"] = comparison.selected_request_fingerprint
+    attach_realized_metadata(proposal, reference, comparison)
     payload = dict(proposal.meta)
     payload["job_id"] = "job-1"
     return proposal, comparison, payload
+
+
+def test_strict_loader_recomputes_point_count_and_rejects_unknown_adapter(tmp_path):
+    _proposal_value, comparison, _payload = _persist_unavailable_comparison(tmp_path)
+    legacy = comparison.realized_pair.legacy
+    bad_grid = UniformGrid(
+        legacy.e_lo, legacy.e_hi, legacy.e_step, legacy.executed_point_count - 1)
+    bad_legacy = replace(
+        legacy,
+        executed_energies=bad_grid.energies,
+        executed_point_count=bad_grid.n_points,
+        grid_fingerprint=bad_grid.fingerprint(legacy.ncount),
+        point_neutron_cost=bad_grid.n_points * legacy.ncount,
+    )
+    bad_count = replace(
+        comparison, realized_pair=replace(comparison.realized_pair, legacy=bad_legacy))
+    with pytest.raises(ValueError, match="grid does not reproduce"):
+        load_scan_design_realized_comparison(
+            persist_realized_comparison(tmp_path, bad_count), tmp_path)
+
+    unknown_adapter = replace(
+        comparison, realized_pair=replace(
+            comparison.realized_pair,
+            legacy=replace(legacy, grid_adapter={
+                "adapter_schema": "isar.instrument_grid_adapter/1",
+                "adapter_id": "future_adapter",
+                "adapter_version": 2,
+            })))
+    with pytest.raises(ValueError, match="adapter is unsupported"):
+        load_scan_design_realized_comparison(
+            persist_realized_comparison(tmp_path, unknown_adapter), tmp_path)
+
+
+def test_legacy_status_is_family_strict_but_historical_spelling_still_loads(tmp_path):
+    _proposal_value, comparison, _payload = _persist_unavailable_comparison(tmp_path)
+    legacy = comparison.realized_pair.legacy
+    assert legacy.validation_status == "finalized_selected_legacy"
+    historical = replace(
+        comparison, realized_pair=replace(
+            comparison.realized_pair,
+            legacy=replace(legacy, validation_status="submitted_legacy")))
+    loaded = load_scan_design_realized_comparison(
+        persist_realized_comparison(tmp_path, historical), tmp_path)
+    assert loaded.realized_pair.legacy.validation_status == "submitted_legacy"
+    with pytest.raises(ValueError, match="realized request is invalid"):
+        replace(legacy, validation_status="not_instrument_validated_counterfactual")
+
+
+def test_pre_submit_authentication_is_exact_and_strips_corrupt_claims_once(
+        monkeypatch, tmp_path):
+    proposal, comparison, _payload = _persist_unavailable_comparison(tmp_path)
+    assert authenticate_realized_submission(proposal, tmp_path) == comparison
+    body_before = loop._scan_body(
+        proposal, "mock", 7, sample="Al_phonon_DFT", background=None)
+    sidecar = tmp_path / proposal.meta["scan_design_realized_comparison_ref"]["path"]
+    sidecar.write_bytes(sidecar.read_bytes() + b" ")
+    refreshes = []
+    monkeypatch.setattr(
+        loop, "_refresh_realized_comparison",
+        lambda *_args, **_kwargs: refreshes.append(True))
+    cfg = SimpleNamespace(
+        workspace=tmp_path, log_path=tmp_path / "report" / "session.jsonl")
+
+    loop._authenticate_realized_before_submission(
+        cfg, SimpleNamespace(), proposal, {}, it=4)
+
+    assert refreshes == [True]
+    assert proposal.meta["scan_design_eig_applicability"] == "unavailable"
+    assert not any(proposal.meta.get(field) is not None
+                   for field in loop._REALIZED_SUBMISSION_FIELDS)
+    assert loop._scan_body(
+        proposal, "mock", 7, sample="Al_phonon_DFT", background=None) == body_before
+    failure = [event for event in read_log(cfg.log_path)
+               if event["kind"] == "exception"][-1]
+    assert failure["payload"]["action"] == "realized_submission_authentication_failed"
+    assert failure["payload"]["severity"] == "high"
+
+
+def test_refresh_persistence_failure_and_process_interrupt_have_distinct_boundaries(
+        monkeypatch, tmp_path):
+    inventory = _inventory()
+    proposal = _proposal(inventory)
+    proposal.meta["scan_design_inventory_ref"] = _inventory_reference(tmp_path, inventory)
+    cfg = SimpleNamespace(
+        workspace=tmp_path, log_path=tmp_path / "report" / "session.jsonl",
+        run_nonce="run", max_points=200, max_points_source="default",
+        instrument_limits=None)
+    objective = SimpleNamespace(
+        analysis_limit_seconds=100.0, tolerance_meV=0.5,
+        steering={"max_scan_points": 100, "production_batch_ncount": 10_000,
+                  "max_ncount_per_scan": 1_000_000})
+    monkeypatch.setattr(
+        loop, "persist_realized_comparison",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")))
+
+    assert loop._refresh_realized_comparison(
+        cfg, objective, proposal,
+        {"kind": "neutrons", "amount": 10**12, "spent": 0.0}, it=2) is None
+    assert proposal.meta["scan_design_eig_applicability"] == "unavailable"
+    assert not any(proposal.meta.get(field) is not None
+                   for field in loop._REALIZED_SUBMISSION_FIELDS)
+    assert any(event["kind"] == "exception"
+               and event["payload"].get("action") == "realized_comparison_refresh_failed"
+               and event["payload"].get("severity") == "high"
+               for event in read_log(cfg.log_path))
+
+    monkeypatch.setattr(
+        loop, "persist_realized_comparison",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        loop._refresh_realized_comparison(
+            cfg, objective, proposal,
+            {"kind": "neutrons", "amount": 10**12, "spent": 0.0}, it=3, force=True)
+
+
+def test_allowance_exhaustion_replaces_stale_claims_and_historical_v2_never_rescores(
+        monkeypatch, tmp_path):
+    inventory = _inventory()
+    proposal = _proposal(inventory)
+    proposal.meta["scan_design_inventory_ref"] = _inventory_reference(tmp_path, inventory)
+    proposal.meta.update({field: "stale" for field in loop._REALIZED_SUBMISSION_FIELDS})
+    proposal.realized_scoring_remaining_seconds = 0.0
+    cfg = SimpleNamespace(
+        workspace=tmp_path, log_path=tmp_path / "report" / "session.jsonl",
+        run_nonce="run", max_points=200, max_points_source="default",
+        instrument_limits=None)
+    objective = SimpleNamespace(
+        analysis_limit_seconds=100.0, tolerance_meV=0.5,
+        steering={"max_scan_points": 100, "production_batch_ncount": 10_000,
+                  "max_ncount_per_scan": 1_000_000})
+
+    reference = loop._refresh_realized_comparison(
+        cfg, objective, proposal,
+        {"kind": "neutrons", "amount": 10**12, "spent": 0.0}, it=5, force=True)
+    comparison = load_scan_design_realized_comparison(reference, tmp_path)
+    assert comparison.score_disposition == "unavailable"
+    assert comparison.reason_codes == ("realized_scoring_deadline",)
+    assert proposal.meta["scan_design_realized_selected_request_fingerprint"] == (
+        proposal.meta["proposal_fingerprint"])
+
+    historical = replace(
+        inventory, inventory_version=SCAN_DESIGN_INVENTORY_SCHEMA_V2,
+        shadow_scoring=None,
+        selection_basis=SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED)
+    historical_proposal = _proposal(historical)
+    historical_proposal.meta["scan_design_inventory_ref"] = _inventory_reference(
+        tmp_path, historical)
+    monkeypatch.setattr(
+        loop, "score_proposal_realized_pair",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not rescore /2")))
+    assert loop._refresh_realized_comparison(
+        cfg, objective, historical_proposal,
+        {"kind": "neutrons", "amount": 10**12, "spent": 0.0}, it=6) is None
+    assert historical_proposal.meta["scan_design_eig_applicability"] == "unavailable"
+
+
+@pytest.mark.parametrize("returned", [
+    [],
+    [float("nan")],
+    [float("inf")],
+])
+def test_returned_grid_rejects_length_and_nonfinite_values(tmp_path, returned):
+    proposal, _comparison, payload = _persist_unavailable_comparison(tmp_path)
+    cfg = SimpleNamespace(workspace=tmp_path, log_path=tmp_path / "report" / "session.jsonl")
+    assert loop._compare_returned_realized_grid(
+        cfg, proposal, payload, {"result": {"scan_values_1": returned}}, it=2) == (
+            "mismatch", "executed_grid_mismatch")
 
 
 def test_returned_grid_accepts_only_representation_noise(tmp_path):
@@ -252,6 +432,11 @@ def test_returned_grid_accepts_only_representation_noise(tmp_path):
     status, reason = loop._compare_returned_realized_grid(
         cfg, proposal, payload, {"result": {"scan_values_1": returned}}, it=2)
     assert (status, reason) == ("mismatch", "executed_grid_mismatch")
+
+    reversed_grid = list(reversed(comparison.realized_pair.legacy.executed_energies))
+    assert loop._compare_returned_realized_grid(
+        cfg, proposal, payload, {"result": {"scan_values_1": reversed_grid}}, it=2) == (
+            "mismatch", "executed_grid_mismatch")
 
 
 def test_unreadable_recovery_sidecar_fails_open(tmp_path):
@@ -300,6 +485,16 @@ def test_recovery_restores_sidecar_provenance_without_recomputing_and_then_inval
         "scan_design_realized_selected_request_fingerprint",
         "scan_design_realized_selected_grid_fingerprint",
     ))
+    invalidated_payload = {**payload, **recovered.meta}
+    for field in (
+            "scan_design_realized_variant_fingerprints",
+            "scan_design_realized_selected_request_fingerprint",
+            "scan_design_realized_selected_grid_fingerprint"):
+        invalidated_payload.pop(field, None)
+    cfg = SimpleNamespace(workspace=tmp_path, log_path=tmp_path / "report" / "session.jsonl")
+    assert loop._compare_returned_realized_grid(
+        cfg, recovered, invalidated_payload, {"result": {"scan_values_1": []}}, it=2) == (
+            "not_applicable", None)
 
 
 def test_public_loader_rejects_tampered_bytes_and_decision_fields(tmp_path):
@@ -379,6 +574,19 @@ def test_public_loader_deeply_reproduces_a_rescored_numeric_sidecar(monkeypatch,
         with pytest.raises(ValueError):
             load_scan_design_realized_comparison(tampered_ref, tmp_path)
 
+    target = comparison.realized_pair.target_core
+    refused_target = RealizedCandidateRefusal(
+        source_candidate_id=target.source_candidate_id,
+        candidate_family=target.candidate_family,
+        source_grid_fingerprint=target.source_grid_fingerprint,
+        reason_codes=("realized_pair_unavailable",))
+    refused_with_scores = replace(
+        comparison, realized_pair=replace(
+            comparison.realized_pair, target_core=refused_target))
+    with pytest.raises(ValueError):
+        load_scan_design_realized_comparison(
+            persist_realized_comparison(tmp_path, refused_with_scores), tmp_path)
+
 
 def test_runtime_scoring_failure_persists_unavailable_exact_request_and_keeps_legacy(
         monkeypatch, tmp_path):
@@ -408,7 +616,49 @@ def test_runtime_scoring_failure_persists_unavailable_exact_request_and_keeps_le
     assert before == (proposal.e_lo, proposal.e_hi, proposal.e_step, proposal.ncount)
     assert comparison.score_disposition == "unavailable"
     assert comparison.reason_codes == ("realized_scoring_failed",)
+    assert comparison.variants == ()
+    assert comparison.seed_evidence is None
     assert proposal.meta["scan_design_realized_selected_request_fingerprint"] == (
         proposal.meta["proposal_fingerprint"])
     assert proposal.meta["scan_design_realized_selected_grid_fingerprint"] == (
         comparison.selected_grid_fingerprint)
+
+
+def test_unexpected_target_construction_is_logged_and_retains_exact_legacy(
+        monkeypatch, tmp_path):
+    inventory = _inventory()
+    proposal = _proposal(inventory)
+    proposal.meta["scan_design_inventory_ref"] = _inventory_reference(tmp_path, inventory)
+    before = (proposal.e_lo, proposal.e_hi, proposal.e_step, proposal.ncount)
+    cfg = SimpleNamespace(
+        workspace=tmp_path, log_path=tmp_path / "report" / "session.jsonl",
+        run_nonce="run", max_points=200, max_points_source="default",
+        instrument_limits=None)
+    objective = SimpleNamespace(
+        analysis_limit_seconds=100.0, tolerance_meV=0.5,
+        steering={"max_scan_points": 100, "production_batch_ncount": 10_000,
+                  "max_ncount_per_scan": 1_000_000})
+
+    def broken_target(*_args, **_kwargs):
+        raise RuntimeError("counterfactual finalizer defect")
+
+    monkeypatch.setattr(loop, "_finalize_proposal", broken_target)
+    reference = loop._refresh_realized_comparison(
+        cfg, objective, proposal,
+        {"kind": "neutrons", "amount": 10**12, "spent": 0.0}, it=7)
+    comparison = load_scan_design_realized_comparison(reference, tmp_path)
+
+    assert before == (proposal.e_lo, proposal.e_hi, proposal.e_step, proposal.ncount)
+    assert comparison.selected_request_fingerprint == proposal.meta["proposal_fingerprint"]
+    assert comparison.score_disposition == "unavailable"
+    assert comparison.reason_codes == ("realized_construction_failed",)
+    assert any(event["kind"] == "exception"
+               and event["payload"].get("action") == "realized_construction_failed"
+               and event["payload"].get("severity") == "high"
+               for event in read_log(cfg.log_path))
+
+
+def test_realized_comparison_event_kind_is_registered(tmp_path):
+    record = loop.log_event(
+        tmp_path / "session.jsonl", "scan_design_realized_comparison", {"ok": True})
+    assert "kind_unknown" not in record

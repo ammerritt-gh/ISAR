@@ -143,25 +143,25 @@ def score_realized_pair(
                 measure, inputs, qoi_discretization=partition, seed=seed.seed,
                 simulation_count=config.simulation_count, block_count=config.block_count))
             check()
-        except Exception as error:  # noqa: BLE001 - bounded per-variant fail-open
+        except Exception as error:  # noqa: BLE001 - recognize only the injected deadline type
             deadline = type(error).__name__ == "AnalysisLimitExceeded"
-            reason = "realized_scoring_deadline" if deadline else "realized_scoring_failed"
+            if not deadline:
+                raise
+            reason = "realized_scoring_deadline"
             variants.append(RealizedScoreVariant(
                 policy_id=policy.policy_id, policy_fingerprint=policy.policy_fingerprint,
                 variant_id=variant.variant_id, variant_fingerprint=variant.variant_fingerprint,
                 status="unavailable", score_disposition="unavailable", reason_codes=(reason,),
                 compiled_partition=partition.to_dict(), authority_scopes=INELIGIBLE_AUTHORITY))
-            if deadline:
-                for pending, pending_partition in compiled[index + 1:]:
-                    variants.append(RealizedScoreVariant(
-                        policy_id=policy.policy_id, policy_fingerprint=policy.policy_fingerprint,
-                        variant_id=pending.variant_id,
-                        variant_fingerprint=pending.variant_fingerprint,
-                        status="unavailable", score_disposition="unavailable",
-                        reason_codes=(reason,), compiled_partition=pending_partition.to_dict(),
-                        authority_scopes=INELIGIBLE_AUTHORITY))
-                break
-            continue
+            for pending, pending_partition in compiled[index + 1:]:
+                variants.append(RealizedScoreVariant(
+                    policy_id=policy.policy_id, policy_fingerprint=policy.policy_fingerprint,
+                    variant_id=pending.variant_id,
+                    variant_fingerprint=pending.variant_fingerprint,
+                    status="unavailable", score_disposition="unavailable",
+                    reason_codes=(reason,), compiled_partition=pending_partition.to_dict(),
+                    authority_scopes=INELIGIBLE_AUTHORITY))
+            break
         delta = _comparison(
             score_set, legacy.realized_request_fingerprint,
             target.realized_request_fingerprint) if score_set.status == "complete" else None

@@ -39,7 +39,7 @@ EVENT_KINDS = ("propose", "validate", "run", "analyze", "decide", "escalate_fit"
                "stop", "timing", "activity_start", "activity_progress", "activity_end",
                "analysis_clock", "physical_submission", "pooled_master_update", "candidate_update",
                "certification_crossing", "recovery_pending", "recovery_completed",
-               "scan_design_realization")
+               "scan_design_realization", "scan_design_realized_comparison")
 
 
 class AnalysisLimitExceeded(RuntimeError):

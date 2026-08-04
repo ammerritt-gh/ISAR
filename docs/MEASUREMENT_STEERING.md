@@ -119,15 +119,25 @@ otherwise both realized candidates are evaluated and scored together under a sep
 five-second per-proposal allowance. Failure publishes numerical unavailability but still carries the
 exact selected legacy request and grid fingerprints. Initial and execution-time finalization refresh
 stale evidence; minimum-target-support step reduction forces a refresh before revalidation.
+Because Slice 6 and Slice 7 have separate five-second allowances, a shadow proposal can spend roughly
+ten seconds in the worst case; a forced pre-submit refresh consumes only the Slice 7 allowance that
+remains.
 
-Submission and card provenance carry the comparison reference/fingerprint, variant fingerprints, and
-selected request/grid fingerprints. Completed TAVI data compare `result.scan_values_1` with that
-ordered adapter-canonical grid: representation noise at the declared precision is normalized first,
-then equality is exact. A changed value/order/length logs `executed_grid_mismatch` and cannot support
-later authority, while ordinary shadow analysis continues. Missed-window recovery clears the realized
+Submission and card provenance carry seven realized fields: five identities (comparison reference and
+fingerprint, ordered variant fingerprints, selected request fingerprint, and selected grid
+fingerprint), applicability, and invalidation reason. A rescored `o36.7` variant nests the existing
+`o36.5` score-set internals. Completed TAVI data compare `result.scan_values_1` with the selected grid
+using ordered adapter-canonical equality after representation normalization, not raw floating-point bit
+equality. A changed value/order/length logs `executed_grid_mismatch` and cannot support later authority,
+while ordinary shadow analysis continues. Missed-window recovery clears the realized
 variant/request/grid claims, marks `eig_realization_invalidated_by_recovery`, and proceeds outside EIG.
 If recovery cannot authenticate the retained sidecar, it logs `realized_comparison_unavailable` and
-continues without recomputation or replacement evidence.
+continues without recomputation or replacement evidence. Refresh/persistence failure or a failed
+pre-submit authentication after its single forced refresh removes all five current EIG identities,
+marks applicability unavailable, and leaves the ordinary legacy request available for submission.
+
+`isar.scan_design_realization/1` is additive-open: readers must ignore unknown additive fields. Slice 8
+remains planned; none of these diagnostics grants eligibility or selection authority.
 
 The allowance is cooperative, not preemptive: the adapter checks before each synchronous variant
 score and again after it returns. If the second check crosses the deadline, that raw score set is

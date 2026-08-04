@@ -572,7 +572,7 @@ gated live scored-shadow step described by O38; it preserves those same authorit
 8. **Slice 7 — exact realized-request rescoring (implemented).** Score or reuse evidence for the
    adapter-exact grid and equal per-point exposure relevant at submission; retain candidate →
    realization → submission provenance and verify the returned TAVI grid.
-9. **Slice 8 — bounded EIG-3 shadow gate.** Add exact mathematical fixtures, existing predictive
+9. **Slice 8 — bounded EIG-3 shadow gate (planned).** Add exact mathematical fixtures, existing predictive
    fixtures, and a small full-pipeline authority-envelope set.
 10. **Slice 9 — opt-in authoritative selector.** `target_core` may win on resolved EIG-per-point
     superiority; unresolved eligible comparisons retain the eligible control; ineligible states
@@ -828,30 +828,37 @@ The selected candidate remains immutable when instrument finalization or target-
 changes the request. Slice 7 constructs an isolated `legacy_uniform/1`/`target_core/1` realized pair
 after each such mutation, gives both candidates the finalized legacy per-point exposure, and either
 references the authenticated Slice 6 score when candidate identities, ordered executed grids, and
-exposure are identical or scores the complete changed pair together. The five-second cumulative
-per-proposal allowance is enforced in memory; a deadline or scorer failure publishes an unavailable
-comparison while retaining the exact selected legacy request and grid identities.
+exposure are identical or scores the complete changed pair together. The separate five-second Slice 6
+and five-second Slice 7 allowances can therefore consume roughly ten seconds in the worst case. The
+Slice 7 cumulative per-proposal allowance is enforced in memory; cooperative deadline expiry publishes
+per-variant unavailability without changing the exact selected legacy request.
 
 Only `isar.scan_design_realized_comparison/o36.7` is independently persisted, under
 `report/scan-design-realizations/<sha256>.json`. Its nested realized requests, pair, variants, and
 seed bind the immutable `/3` inventory, source shadow evidence, policy/design identities, exact
 rendered commands, adapter-canonical ordered grids, equal exposure, and diagnostic-only authority.
-The physical submission and acquisition provenance carry the comparison reference/fingerprint,
-variant fingerprints, and selected request/grid fingerprints. The original `/3` inventory is never
-rewritten.
+A rescored variant nests the existing `isar.scan_window_score_set/o36.5` internals; `/o36.7` does not
+redefine that numerical score contract. The physical submission and acquisition provenance carry
+seven realized fields: five identities (comparison reference and fingerprint, ordered variant
+fingerprints, selected request fingerprint, and selected grid fingerprint), applicability, and
+invalidation reason. The original `/3` inventory is never rewritten.
 
 Missed-window recentering or widening retains the parent comparison reference but clears its variant
 and selected request/grid claims and records `eig_realization_invalidated_by_recovery`; the recovery
 request is not relabeled as either EIG candidate. On completion, the TAVI-returned `scan_values_1`
-must be within serialization tolerance of the adapter precision and then equal the selected ordered
-grid exactly. `executed_grid_mismatch`, or an unreadable comparison sidecar during recovery, makes
-the case ineligible for later authority evidence but does not block ordinary shadow analysis.
+must normalize to ordered adapter-canonical equality with the selected grid; equality is not raw
+floating-point bit equality. `executed_grid_mismatch`, or an unreadable comparison sidecar during
+recovery, makes the case ineligible for later authority evidence but does not block ordinary shadow
+analysis. Refresh/persistence failure or a failed pre-submit authentication (including its single
+forced refresh) removes all five current EIG identities and marks the evidence unavailable while the
+ordinary legacy request remains executable.
 
 Each changed realization is also recorded as
 `isar.scan_design_realization/1`, chaining the inventory reference, candidate id, and context
 fingerprint to the previous and realized request fingerprints plus the exact emitted window/count.
 Physical-submission and acquisition-provenance records carry both identities so crash recovery retains
-the join without loading the derived inventory as controller state.
+the join without loading the derived inventory as controller state. This `/1` event is additive-open:
+readers must ignore unknown additive fields.
 
 The normative fixture `tests/fixtures/eig_predictive_v2.json` contains competing null/one-phonon,
 one-mode/two-mode, and acoustic/optic branch hypotheses on original, shifted, narrower, and coarser

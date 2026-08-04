@@ -1179,20 +1179,27 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   rendered commands, ordered executed grids, request/grid fingerprints, score disposition, and
   diagnostic-only authority. Exact identity/grid/exposure parity reuses authenticated Slice 6 variant
   evidence; any change evaluates and scores the complete pair together under the distinct
-  `isar.scan_window_realized_seed/o36.7` domain. A cumulative five-second in-memory allowance covers
-  all refreshes for one proposal. Numerical failure remains fail-open and still publishes the exact
-  selected legacy request/grid fingerprints.
+  `isar.scan_window_realized_seed/o36.7` domain. Rescored variants nest the existing
+  `isar.scan_window_score_set/o36.5` internals. A cumulative five-second in-memory allowance covers all
+  Slice 7 refreshes for one proposal, separately from Slice 6's five seconds; worst-case shadow work can
+  therefore approach ten seconds. A forced pre-submit refresh consumes only the remaining Slice 7
+  allowance.
 
-  Physical submissions and acquisition provenance carry the realized comparison, variant, selected
-  request, and selected grid identities. Returned TAVI energies must first fall within serialization
-  tolerance of the adapter's canonical precision and then equal the recorded ordered tuple exactly;
+  Physical submissions and acquisition provenance carry seven realized fields: five identities
+  (comparison reference and fingerprint, ordered variant fingerprints, selected request fingerprint,
+  and selected grid fingerprint), applicability, and invalidation reason. Returned TAVI energies must
+  have ordered adapter-canonical equality with the recorded tuple after representation normalization,
+  not raw floating-point bit equality;
   `executed_grid_mismatch` invalidates later authority evidence without blocking ordinary analysis.
   Missed-window recovery retains the parent sidecar reference but clears realized variant/request/grid
   claims and records `eig_realization_invalidated_by_recovery`. Missing or unauthenticated recovery
   sidecars log `realized_comparison_unavailable` and never block recovery, rescore, or search for
-  replacement evidence. Shadow mode still always executes `legacy_uniform/1`; thresholds, winners,
-  recommendations, target-core execution, Slice 8 eligibility, and authoritative selection remain
-  forbidden.
+  replacement evidence. Refresh/persistence failure or failed pre-submit authentication after one
+  forced refresh removes all five current EIG identities and leaves ordinary legacy execution
+  available. `isar.scan_design_realization/1` is additive-open, so readers ignore unknown additive
+  fields. Shadow mode still always executes `legacy_uniform/1`; thresholds, winners, recommendations,
+  target-core execution, and authoritative selection remain forbidden. Slice 8 remains explicitly
+  planned.
 
 - **S9.** (2026-08-03, In force; governance and evidence-maintenance rule, no production behavior
   change) **Completed STAT-2b.1 execution evidence is immutable, while current production source
