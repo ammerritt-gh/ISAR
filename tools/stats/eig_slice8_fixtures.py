@@ -46,7 +46,11 @@ from isar.drive.acquisition.realized_comparison import (
     load_scan_design_realized_comparison,
     persist_realized_comparison,
 )
-from isar.drive.acquisition.scan_design import ScanDesignContext, design_scan_windows
+from isar.drive.acquisition.scan_design import (
+    ScanDesignContext,
+    design_scan_windows,
+    load_scan_design_inventory,
+)
 from isar.drive.objective import ObjectiveSpec, current_objective_comparison_scope
 from isar.drive.instrument.tavi_client import TaviClient
 from isar.drive.isar_io.readers import read_card_state, read_results_csv

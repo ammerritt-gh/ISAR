@@ -104,6 +104,11 @@ def test_repair_fixture_uses_one_action_and_distinct_prior_inventory(tmp_path):
     assert prior.content_hash() != current.content_hash()
     assert prior.context.scientific_action_fingerprint != action
     assert diagnostics["predictive_seed"] == 8040801
+    reloaded_proposal, reloaded_objective = fixtures._repair_proposal_from_retained(
+        raw, root)
+    assert reloaded_proposal.intent.scientific_action_fingerprint == action
+    assert reloaded_proposal.scan_design_inventory.content_hash() == current.content_hash()
+    assert reloaded_objective.scan_window_eig is not None
 
 
 def test_repair_prefreeze_rejects_contrary_128_by_8_regime(tmp_path):
