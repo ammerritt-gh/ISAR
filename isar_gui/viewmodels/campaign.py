@@ -82,6 +82,8 @@ class CampaignState:
     analysis_limit_seconds: float | None = None
     certification_status: dict | None = None
     certification_end_status: str | None = None
+    scan_design_authority: dict | None = None
+    authority_predicate_failure_counts: dict = field(default_factory=dict)
 
 
 def _is_campaign_start(rec: dict) -> bool:
@@ -151,6 +153,8 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
     last_scan = None
     exceptions = 0
     stage_seconds: dict = {}
+    scan_design_authority = None
+    authority_predicate_failure_counts: dict[str, int] = {}
 
     for rec in events[start_idx:]:
         kind = rec.get("kind")
@@ -191,6 +195,13 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
         elif kind == "exception":
             exceptions += 1
             last_decision = f"exception: {p.get('action', '?')}"
+        elif kind == "scan_design_authority_decision":
+            scan_design_authority = dict(p)
+            if p.get("decision_outcome") == "retain_legacy_control":
+                for reason in p.get("reason_codes") or ():
+                    key = str(reason)
+                    authority_predicate_failure_counts[key] = (
+                        authority_predicate_failure_counts.get(key, 0) + 1)
         elif kind == "stop":
             stop_state = p.get("state")
             reasons = p.get("reasons")
@@ -220,7 +231,9 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
         budget_kind=budget.get("kind"), budget_amount=budget.get("amount"),
         analysis_spent_seconds=sum(analysis_operations.values()),
         analysis_limit_seconds=(objective or {}).get("analysis_limit_seconds"),
-        certification_end_status=certification_end_status)
+        certification_end_status=certification_end_status,
+        scan_design_authority=scan_design_authority,
+        authority_predicate_failure_counts=authority_predicate_failure_counts)
 
 
 def _fmt_hkl(hkl) -> str:
@@ -269,6 +282,17 @@ def render_feed_item(rec: dict) -> FeedItem | None:
         ok = p.get("would_queue")
         text = "validate: ok" if ok else f"validate: blocked {p.get('blockers') or '(unspecified)'}"
         return FeedItem(ts, kind, text + tail, "info" if ok else "warn")
+    if kind == "scan_design_authority_decision":
+        role = p.get("selected_role", "?")
+        outcome = str(p.get("decision_outcome", "?")).replace("_", " ")
+        points = p.get("point_counts") or {}
+        margin = p.get("lower_margin")
+        margin_text = "unavailable" if margin is None else f"{float(margin):.4g} nats/point"
+        text = (f"scan-window authority: {outcome}; selected {role}; "
+                f"points {points.get('legacy', '?')}→{points.get('target_core', '?')}; "
+                f"lower margin {margin_text}")
+        severity = "notice" if role == "target_core" else "info"
+        return FeedItem(ts, kind, text + tail, severity)
     if kind == "analyze":
         text = f"analyzed {p.get('n_rows', 0)} row(s): {p.get('dispositions')}{tail}"
         return FeedItem(ts, kind, text, "info")

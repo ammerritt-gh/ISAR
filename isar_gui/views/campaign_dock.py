@@ -120,6 +120,13 @@ class CampaignDock(QDockWidget):
         form.setContentsMargins(0, 0, 0, 0)
         self._tier = QComboBox(body)
         self._tier.addItems(["deterministic", "mcstas"])
+        self._eig_mode = QComboBox(body)
+        self._eig_mode.addItem("Off", "off")
+        self._eig_mode.addItem("Shadow — observe only", "shadow")
+        self._eig_mode.addItem("Authoritative — restricted O41", "authoritative")
+        self._eig_mode.setToolTip(
+            "Authoritative mode is restricted to the exact 128-simulation, 8-block O41 profile "
+            "frozen from card.policy.toml.")
         self._budget = QLineEdit(body)
         self._budget.setPlaceholderText("measurement: 8h | 1e10n (optional)")
         self._analysis_limit = QLineEdit(body)
@@ -131,6 +138,7 @@ class CampaignDock(QDockWidget):
         self._max_iters.setValue(200)
         self._max_iters.setToolTip("Iteration cap PER INVOCATION — a resume gets a fresh cap.")
         form.addRow("Tier", self._tier)
+        form.addRow("Scan-window EIG", self._eig_mode)
         form.addRow("Measurement budget", self._budget)
         form.addRow("Analysis limit", self._analysis_limit)
         form.addRow("Seed", self._seed)
@@ -195,6 +203,8 @@ class CampaignDock(QDockWidget):
         self._analysis_bar.setRange(0, 1000)
         self._analysis_bar.setValue(0)
         self._converge_label = QLabel("", body)
+        self._authority_label = QLabel("scan-window authority: —", body)
+        self._authority_label.setWordWrap(True)
         self._master_detail = QLabel("Select a pooled master to inspect its decision state.", body)
         self._master_detail.setWordWrap(True)
         self._master_detail.setStyleSheet(
@@ -203,6 +213,7 @@ class CampaignDock(QDockWidget):
         outer.addWidget(self._budget_bar)
         outer.addWidget(self._analysis_bar)
         outer.addWidget(self._converge_label)
+        outer.addWidget(self._authority_label)
         outer.addWidget(self._master_detail)
 
         # ---- Feed ------------------------------------------------------------
@@ -253,6 +264,7 @@ class CampaignDock(QDockWidget):
         self._analysis_limit.textChanged.connect(self._on_form_edited)
         self._src_goal.toggled.connect(self._on_form_edited)
         self._tier.currentTextChanged.connect(self._on_form_edited)
+        self._eig_mode.currentIndexChanged.connect(self._on_form_edited)
         self._seed.valueChanged.connect(self._on_form_edited)
         self._max_iters.valueChanged.connect(self._on_form_edited)
 
@@ -289,6 +301,9 @@ class CampaignDock(QDockWidget):
         tier = str(form.get("tier", "deterministic"))
         if self._tier.findText(tier) >= 0:
             self._tier.setCurrentText(tier)
+        eig_mode = str(form.get("scan_window_eig_mode", "off"))
+        eig_index = self._eig_mode.findData(eig_mode)
+        self._eig_mode.setCurrentIndex(eig_index if eig_index >= 0 else 0)
         self._budget.setText(str(form.get("budget", "")))
         self._analysis_limit.setText(str(form.get("analysis_limit", "")))
         try:
@@ -305,6 +320,7 @@ class CampaignDock(QDockWidget):
             "goal": self._goal.toPlainText(),
             "spec_path": self._spec_path.text(),
             "tier": self._tier.currentText(),
+            "scan_window_eig_mode": self._eig_mode.currentData(),
             "budget": self._budget.text(),
             "analysis_limit": self._analysis_limit.text(),
             "seed": self._seed.value(),
@@ -366,7 +382,8 @@ class CampaignDock(QDockWidget):
         opts = DriveOptions(resume_latest=True, tier=self._tier.currentText(),
                             budget=self._budget.text().strip() or None,
                             analysis_limit=self._analysis_limit.text().strip() or None,
-                            seed=self._seed.value(), max_iters=self._max_iters.value())
+                            seed=self._seed.value(), max_iters=self._max_iters.value(),
+                            scan_window_eig_mode=str(self._eig_mode.currentData()))
         if not self._operations.request_drive(opts, env=dict(self._llm_env())):
             self._status_line.setText("could not start — workspace not ready")
             return
@@ -386,12 +403,14 @@ class CampaignDock(QDockWidget):
             opts = DriveOptions(spec_path=self._spec_path.text().strip(),
                                 tier=self._tier.currentText(), budget=budget,
                                 analysis_limit=analysis_limit,
-                                seed=self._seed.value(), max_iters=self._max_iters.value())
+                                seed=self._seed.value(), max_iters=self._max_iters.value(),
+                                scan_window_eig_mode=str(self._eig_mode.currentData()))
         else:
             opts = DriveOptions(goal=self._goal.toPlainText().strip(),
                                 tier=self._tier.currentText(), budget=budget,
                                 analysis_limit=analysis_limit,
-                                seed=self._seed.value(), max_iters=self._max_iters.value())
+                                seed=self._seed.value(), max_iters=self._max_iters.value(),
+                                scan_window_eig_mode=str(self._eig_mode.currentData()))
         if not hasattr(self._operations, "request_drive_compile"):
             self._status_line.setText("could not compile objective — coordinator is unavailable")
             return
@@ -458,6 +477,7 @@ class CampaignDock(QDockWidget):
             f"Tolerance: ±{objective.get('tolerance_meV')} meV",
             f"Budget: {budget.get('amount')} {budget.get('kind')}",
             f"Analysis limit: {objective.get('analysis_limit_seconds')} seconds",
+            f"Scan-window EIG: {(objective.get('steering') or {}).get('scan_window_eig_mode', 'off')}",
             "",
             "Frozen envelope:",
             json.dumps(envelope, indent=2),
@@ -583,6 +603,12 @@ class CampaignDock(QDockWidget):
         self._tier.setEnabled(not resuming)
         self._tier.setToolTip("Tier is frozen with the campaign objective — it applies to new "
                               "starts only." if resuming else "")
+        self._eig_mode.setEnabled(not resuming)
+        self._eig_mode.setToolTip(
+            "Scan-window EIG mode is frozen with the resumed objective."
+            if resuming else
+            "Authoritative mode is restricted to the exact 128-simulation, 8-block O41 profile "
+            "frozen from card.policy.toml.")
 
         self._stop_btn.setEnabled(running)
         self._force_btn.setVisible(running and self._stop_pending())
@@ -632,6 +658,20 @@ class CampaignDock(QDockWidget):
         vt = "  ·  scan verdicts: " + ", ".join(
             f"{k} {v}" for k, v in sorted(verdicts.items())) if verdicts else ""
         self._converge_label.setText(conv + vt)
+        authority = state.scan_design_authority or {}
+        if authority:
+            reasons = ", ".join(authority.get("reason_codes") or ()) or "none"
+            failures = ", ".join(
+                f"{name}×{count}" for name, count in sorted(
+                    state.authority_predicate_failure_counts.items())) or "none"
+            self._authority_label.setText(
+                f"scan-window authority: {authority.get('selected_role', '—')} — "
+                f"{authority.get('decision_outcome', '—')}; reasons {reasons}; "
+                f"campaign predicate failures {failures}")
+        else:
+            mode = ((state.objective or {}).get("steering") or {}).get(
+                "scan_window_eig_mode", "off")
+            self._authority_label.setText(f"scan-window authority: {mode} — no decision yet")
         self._now_label.setText(current_activity_text(state))
         self._master_detail.setText(self._selected_master_text(state))
 

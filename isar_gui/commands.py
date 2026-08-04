@@ -134,6 +134,7 @@ class DriveOptions:
     calibration: str | None = None
     worker: bool = True               # False => --no-worker (fresh subprocess per iteration)
     control_token: str | None = None
+    scan_window_eig_mode: str = "off" # off | shadow | authoritative
 
 
 def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list[str]:
@@ -153,6 +154,8 @@ def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list
             f"got {n_sources}")
     if opts.max_iters is not None and opts.max_iters < 1:
         raise ValueError(f"max_iters must be >= 1 (or None); got {opts.max_iters}")
+    if opts.scan_window_eig_mode not in {"off", "shadow", "authoritative"}:
+        raise ValueError("scan_window_eig_mode must be off, shadow, or authoritative")
 
     cmd = [python, "-m", "isar", "drive"]
     if opts.goal is not None:
@@ -182,17 +185,25 @@ def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list
         cmd += ["--max-iters", str(opts.max_iters)]
     if opts.control_token:
         cmd += ["--control-token", opts.control_token]
+    if (opts.scan_window_eig_mode != "off"
+            and not (opts.resume_latest or opts.envelope_path)):
+        cmd += ["--scan-window-eig-mode", opts.scan_window_eig_mode]
     if not opts.worker:
         cmd.append("--no-worker")
     return cmd
 
 
-def build_compile_command(python: str, opts: DriveOptions, output_path: str) -> list[str]:
-    """Compile a goal/spec into a frozen envelope without a workspace or TAVI contact."""
+def build_compile_command(python: str, opts: DriveOptions, output_path: str, *,
+                          workspace: str | None = None) -> list[str]:
+    """Compile goal/spec authoring input against a ready workspace without TAVI contact."""
     if (opts.goal is None) == (opts.spec_path is None):
         raise ValueError("compile needs exactly one of goal or spec_path")
+    if opts.scan_window_eig_mode not in {"off", "shadow", "authoritative"}:
+        raise ValueError("scan_window_eig_mode must be off, shadow, or authoritative")
     cmd = [python, "-m", "isar", "drive"]
     cmd += (["--goal", opts.goal] if opts.goal is not None else ["--spec", str(opts.spec_path)])
+    if workspace:
+        cmd += ["--workspace", str(workspace)]
     cmd += ["--compile-only", str(output_path)]
     if opts.tier != "deterministic":
         cmd += ["--tier", opts.tier]
@@ -200,6 +211,8 @@ def build_compile_command(python: str, opts: DriveOptions, output_path: str) -> 
         cmd += ["--budget", opts.budget]
     if opts.analysis_limit:
         cmd += ["--analysis-limit", opts.analysis_limit]
+    if opts.scan_window_eig_mode != "off":
+        cmd += ["--scan-window-eig-mode", opts.scan_window_eig_mode]
     return cmd
 
 

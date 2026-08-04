@@ -145,6 +145,36 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   slowest stages. Logs written before timing instrumentation degrade to approximate per-kind gap
   estimates from event timestamps.
 
+### Run the restricted O41 EIG example in the GUI
+
+Slice 9 adds an opt-in `authoritative` scan-window mode for the exact O41 profile. It remains a
+development-tier TAVI workflow pending O42 release review; `off` remains the default and `shadow`
+continues to execute the legacy request.
+
+1. Start the GUI and choose **File → Create O41 Authoritative Example…**. Select an empty parent
+   folder. The GUI copies the maintained positive seed into
+   `isar-eig4-o41-authoritative`, opens it through the normal workspace path, and prefills the
+   ordinary Campaign controls. It never mutates the retained evidence seed.
+2. Start deterministic TAVI with the normal **Launch TAVI** control.
+3. Review the Campaign form. The source is the copied `compact-goal.json`, the mode is
+   **Authoritative — restricted O41**, and the deterministic tier is selected. Choose **Start**.
+4. Watch the EIG status in the Campaign dock or compact monitor. It shows the latest selected role,
+   point-count reduction and lower-margin result. Predicate-failure counts make repeated legacy
+   retention visible; an invalid profile is shown as a user-facing refusal rather than merely a
+   machine reason code.
+5. Inspect `report/scan-design-authority/` and `report/session_log.jsonl` afterward. Each submitted
+   authoritative request binds a decision hash that was durably written before submission.
+
+The bundled resource files live under `isar_gui/resources/eig4-o41-authoritative/`, outside the
+gitignored `test_data/` and `examples/` conventions. CI copies the seed, opens it through
+`Workspace.open`, and compiles the objective through the same CLI path used by the GUI. The retained
+seed is under 500 KB; schema drift therefore fails fast instead of quietly rotting the demo.
+
+For CLI authoring, add `--scan-window-eig-mode authoritative` to a new goal or compact-spec drive.
+Full specs, frozen envelopes, and resumes retain their recorded mode: a conflicting override is
+rejected. Historical pre-Slice-9 campaigns whose default/off mode agrees resume with their original
+identity unchanged.
+
 ## Telling ISAR what you know — the `[fitting]` guidelines
 
 The card's `[fitting]` section is how you steer the fitter without touching code. Everything here

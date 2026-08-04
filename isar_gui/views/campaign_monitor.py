@@ -124,6 +124,10 @@ class CampaignMonitor(QWidget):
             text = "no campaign yet"
         if state.converged is not None and state.n_grid:
             text += f"   ({state.converged}/{state.n_grid} converged)"
+        authority = state.scan_design_authority or {}
+        if authority:
+            text += (f"   EIG: {authority.get('selected_role', '—')} "
+                     f"({authority.get('decision_outcome', '—')})")
         self._status.setText(text)
         permille, fmt = budget_readout(state)
         self._budget_bar.setVisible(state.budget_amount is not None)

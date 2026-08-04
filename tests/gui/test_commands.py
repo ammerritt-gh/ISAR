@@ -299,6 +299,23 @@ def test_build_drive_command_defaults_omit_optional_flags():
         assert flag not in cmd
 
 
+def test_authoritative_mode_is_emitted_only_for_authoring_sources():
+    authored = commands.build_drive_command(
+        "py", "ws", DriveOptions(goal="g", scan_window_eig_mode="authoritative"))
+    assert authored[authored.index("--scan-window-eig-mode") + 1] == "authoritative"
+    resumed = commands.build_drive_command(
+        "py", "ws", DriveOptions(resume_latest=True, scan_window_eig_mode="authoritative"))
+    assert "--scan-window-eig-mode" not in resumed
+
+
+def test_authoritative_compile_binds_the_ready_workspace():
+    cmd = commands.build_compile_command(
+        "py", DriveOptions(goal="g", scan_window_eig_mode="authoritative"), "frozen.json",
+        workspace="ready-ws")
+    assert cmd[cmd.index("--workspace") + 1] == "ready-ws"
+    assert cmd[cmd.index("--scan-window-eig-mode") + 1] == "authoritative"
+
+
 def test_build_drive_command_requires_exactly_one_source():
     import pytest
     # Zero sources → ValueError.
