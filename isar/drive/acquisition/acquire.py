@@ -145,6 +145,10 @@ class ScanProposal:
     # absent from ``to_dict`` and therefore cannot affect the request fingerprint or wire payload.
     shadow_scoring_source: ShadowScoringSource | None = field(
         default=None, repr=False, compare=False)
+    # In-memory only: Slice 7's post-finalization Monte Carlo allowance is independent of the
+    # pre-finalization Slice 6 allowance and is shared by every mandatory refresh for this proposal.
+    realized_scoring_remaining_seconds: float | None = field(
+        default=None, repr=False, compare=False)
 
     def scan_command(self) -> str:
         """The TAVI ``scan_command1`` for this window: ``deltaE <lo> <hi> <step>``.

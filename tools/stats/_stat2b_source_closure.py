@@ -167,6 +167,10 @@ EXPLICIT_EXEMPT = {
         "EIG shadow-score serialization is diagnostic-only and is not imported by the "
         "STAT-2b selection or predictive evidence path."
     ),
+    "isar/schema/eig_realized.py": (
+        "EIG realized-request comparison serialization is diagnostic-only and is not imported "
+        "by the STAT-2b selection or predictive evidence path."
+    ),
     "isar/eig/policy.py": (
         "Only conditionally reached for a non-empty EIG policy set; the frozen STAT-2b "
         "campaign constructs the empty policy default."
@@ -195,6 +199,7 @@ CURRENT_CHANGE_DISPOSITIONS = {
     "isar/schema/card.py": "adjacent_nonsemantic",
     "isar/schema/eig_policy.py": "adjacent_nonsemantic",
     "isar/schema/eig_shadow.py": "unrelated_exempt",
+    "isar/schema/eig_realized.py": "unrelated_exempt",
     "isar/session/predictive_artifact.py": "evidence_contract_semantic",
 }
 PROOF_TESTS = {
@@ -209,6 +214,10 @@ PROOF_TESTS = {
     ],
     "isar/schema/eig_policy.py": ["tests/schema/test_eig_policy.py"],
     "isar/schema/eig_shadow.py": ["tests/schema/test_eig_shadow.py"],
+    "isar/schema/eig_realized.py": [
+        "tests/drive/test_realized_comparison.py",
+        "tests/eig/test_realized_score.py",
+    ],
     "isar/session/predictive_artifact.py": [
         "tests/session/test_master_predictive.py",
         "tests/session/test_target_projection.py",

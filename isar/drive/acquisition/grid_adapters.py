@@ -22,6 +22,8 @@ fixtures in ``tests/drive/test_grid_adapters.py`` plus one live round-trip test.
 """
 from __future__ import annotations
 
+import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -119,6 +121,28 @@ class TaviUniformGridAdapter:
         # ``+ 0.0`` normalizes negative zero: two constructions that agree physically must not
         # fingerprint differently over ``-0.0`` versus ``0.0``.
         return tuple(float(value) + 0.0 for value in values)
+
+    def canonicalize_returned_energies(self, values: Sequence[float]) -> tuple[float, ...]:
+        """Validate and canonicalize TAVI's returned executed-energy values.
+
+        JSON float representation noise is accepted, but a genuinely off-contract instrument value
+        is not laundered by rounding.  Each input must already be within a tiny serialization
+        tolerance of TAVI's declared executed precision before the canonical tuple is returned.
+        """
+        if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+            raise ValueError("returned executed grid must be a numeric sequence")
+        canonical: list[float] = []
+        for value in values:
+            if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                    or not math.isfinite(float(value))):
+                raise ValueError("returned executed grid contains a non-finite numeric value")
+            number = float(value)
+            rounded = float(np.round(number, self.executed_decimals)) + 0.0
+            tolerance = 1e-12 * max(1.0, abs(rounded))
+            if abs(number - rounded) > tolerance:
+                raise ValueError("returned executed grid is outside adapter precision")
+            canonical.append(rounded)
+        return tuple(canonical)
 
 
 #: The instrument ISAR drives.  A second adapter declares its own id/version and is threaded through

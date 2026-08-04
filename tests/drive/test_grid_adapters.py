@@ -157,6 +157,13 @@ def test_adapter_declares_a_versioned_identity():
         -2.0, 7.0, 0.2, adapter=other).fingerprint(1000)
 
 
+def test_returned_grid_canonicalization_accepts_only_serialization_noise():
+    assert TAVI_GRID_ADAPTER.canonicalize_returned_energies(
+        [0.30000000000000004, -0.0, 1.25]) == (0.3, 0.0, 1.25)
+    with pytest.raises(ValueError, match="outside adapter precision"):
+        TAVI_GRID_ADAPTER.canonicalize_returned_energies([0.3004])
+
+
 def test_resolved_grid_point_count_is_the_adapters_and_respects_the_cap():
     # The resolver's count is the instrument's answer for the command ISAR would submit — including
     # after the cap coarsens the step, where the %g rendering of span/(cap-1) must not smuggle in an

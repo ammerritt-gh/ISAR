@@ -1799,6 +1799,7 @@ def test_minimum_target_support_adjustment_records_realized_request(tmp_path):
     frozen["steering"] = {
         **frozen["steering"],
         "minimum_target_support_points": 80,
+        "scan_window_eig_mode": "shadow",
     }
     frozen["hypothesis_fingerprint"] = content_fingerprint(
         frozen["hypotheses"], frozen["steering"])
@@ -1810,7 +1811,7 @@ def test_minimum_target_support_adjustment_records_realized_request(tmp_path):
         energy_search_meV=(-2.0, 12.0),
         **frozen,
     )
-    summary, _ws = _run(
+    summary, _workspace = _run(
         tmp_path,
         objective,
         _TargetSupportTavi(lambda _h: 6.0),
@@ -1836,6 +1837,53 @@ def test_minimum_target_support_adjustment_records_realized_request(tmp_path):
     assert realization["context_fingerprint"]
     assert realization["n_points"] == validation["requested_points"]
     assert validation["target_supporting_feasible_points"] < 80
+    comparisons = [event["payload"] for event in events
+                   if event["kind"] == "scan_design_realized_comparison"]
+    assert len(comparisons) >= 2
+    assert comparisons[-1]["request_fingerprint"] == realization["request_fingerprint"]
+
+
+def test_shadow_submission_carries_the_exact_selected_legacy_sidecar(tmp_path):
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "shadow"}
+    frozen["hypothesis_fingerprint"] = content_fingerprint(
+        frozen["hypotheses"], frozen["steering"])
+    objective = ObjectiveSpec(
+        path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e12}, target_branch="optic",
+        energy_search_meV=(-2.0, 12.0), **frozen)
+
+    summary, workspace = _run(
+        tmp_path, objective, MockTavi(lambda _h: 6.0),
+        make_mock_runner(lambda _h: 6.0), max_iters=1)
+    events = read_log(summary["session_log"])
+    submission = next(event["payload"] for event in events
+                      if event["kind"] == "physical_submission")
+    from isar.drive.acquisition.realized_comparison import (
+        load_scan_design_realized_comparison,
+    )
+    comparison = load_scan_design_realized_comparison(
+        submission["scan_design_realized_comparison_ref"], workspace)
+
+    assert submission["proposal_fingerprint"] == submission[
+        "scan_design_realized_selected_request_fingerprint"]
+    assert submission["proposal_fingerprint"] == comparison.selected_request_fingerprint
+    assert submission["scan_design_realized_selected_grid_fingerprint"] == (
+        comparison.selected_grid_fingerprint)
+    assert submission["scan_design_realized_comparison_fingerprint"] == (
+        comparison.realized_comparison_fingerprint)
+    assert submission["scan_design_realized_variant_fingerprints"] == list(
+        comparison.realized_variant_fingerprints)
+    from isar.schema.card import Card
+    provenance = Card.load(
+        workspace / "card.policy.toml", workspace / "card.state.json"
+    ).state.acquisition_provenance[-1]
+    assert provenance["scan_design_realized_selected_grid_fingerprint"] == (
+        comparison.selected_grid_fingerprint)
+    assert provenance["scan_design_executed_grid_status"] == "mismatch"
+    assert any(event["kind"] == "exception"
+               and event["payload"].get("action") == "executed_grid_mismatch"
+               for event in events)
 
 
 def test_missed_window_triggers_recenter(tmp_path):

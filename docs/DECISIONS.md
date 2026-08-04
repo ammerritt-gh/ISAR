@@ -1164,6 +1164,36 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   cooperative: a deadline check immediately after a synchronous scorer return discards that raw score
   set and marks the current and remaining variants unavailable without changing the legacy request.
 
+- **O40.** (2026-08-04, Implemented in the EIG-4 Slice 7 realized-comparison contract; does not grant
+  Slice 8 evidence eligibility or authoritative selection) **Every shadow submission binds the exact
+  adapter-realized legacy request and an equal-per-point-exposure target-core counterfactual to one
+  diagnostic comparison sidecar.** The immutable Slice 6 `/3` inventory remains the planned-pair
+  record. After initial finalization, execution-time finalization, and any minimum-target-support step
+  reduction, Slice 7 constructs the pair through isolated copies of the existing finalizer. The target
+  starts at the finalized legacy `ncount`; any final exposure change is a structured refusal. Adapter
+  point counts govern budget and request identity, and historical designed-span coarsening that still
+  exceeds the live cap refuses rather than clamping, switching algorithms, or submitting.
+
+  `isar.scan_design_realized_comparison/o36.7` is the sole independently persisted Slice 7 artifact.
+  Its nested realized request/pair/variant/seed records bind source inventory and shadow identities,
+  rendered commands, ordered executed grids, request/grid fingerprints, score disposition, and
+  diagnostic-only authority. Exact identity/grid/exposure parity reuses authenticated Slice 6 variant
+  evidence; any change evaluates and scores the complete pair together under the distinct
+  `isar.scan_window_realized_seed/o36.7` domain. A cumulative five-second in-memory allowance covers
+  all refreshes for one proposal. Numerical failure remains fail-open and still publishes the exact
+  selected legacy request/grid fingerprints.
+
+  Physical submissions and acquisition provenance carry the realized comparison, variant, selected
+  request, and selected grid identities. Returned TAVI energies must first fall within serialization
+  tolerance of the adapter's canonical precision and then equal the recorded ordered tuple exactly;
+  `executed_grid_mismatch` invalidates later authority evidence without blocking ordinary analysis.
+  Missed-window recovery retains the parent sidecar reference but clears realized variant/request/grid
+  claims and records `eig_realization_invalidated_by_recovery`. Missing or unauthenticated recovery
+  sidecars log `realized_comparison_unavailable` and never block recovery, rescore, or search for
+  replacement evidence. Shadow mode still always executes `legacy_uniform/1`; thresholds, winners,
+  recommendations, target-core execution, Slice 8 eligibility, and authoritative selection remain
+  forbidden.
+
 - **S9.** (2026-08-03, In force; governance and evidence-maintenance rule, no production behavior
   change) **Completed STAT-2b.1 execution evidence is immutable, while current production source
   closure is maintained through an explicitly approved candidate cycle.** The historical held-out
@@ -1185,7 +1215,8 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   approval commit that changes no protected production source or immutable review evidence.
 
   S9 does not amend S8: production remains AIC, no AICc switch is authorized, difficult-regime
-  findings remain open, and neither STAT-2c, Slice 7, nor another statistical campaign is authorized.
+  findings remain open, and neither STAT-2c nor another statistical campaign is authorized. O40
+  separately authorizes EIG-4 Slice 7 without changing those statistical dispositions.
 
 ## Session status update
 

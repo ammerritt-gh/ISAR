@@ -177,7 +177,7 @@ def test_historical_drift_inventory_is_the_reviewed_three_three_zero():
     inventory = ENGINE.drift_inventory(ROOT, gate)
 
     assert inventory["counts"] == {
-        "added": 3,
+        "added": 4,
         "modified": 3,
         "deleted": 0,
         "unchanged": 57,
@@ -187,6 +187,7 @@ def test_historical_drift_inventory_is_the_reviewed_three_three_zero():
         "isar/schema/action_identity.py",
         "isar/schema/card.py",
         "isar/schema/eig_policy.py",
+        "isar/schema/eig_realized.py",
         "isar/schema/eig_shadow.py",
         "isar/session/predictive_artifact.py",
     }
@@ -204,6 +205,7 @@ def test_historical_drift_inventory_is_the_reviewed_three_three_zero():
     }
     assert dispositions["isar/schema/action_identity.py"] == "unrelated_exempt"
     assert dispositions["isar/schema/eig_shadow.py"] == "unrelated_exempt"
+    assert dispositions["isar/schema/eig_realized.py"] == "unrelated_exempt"
     assert all("current_public_symbols" in entry for entry in inventory["entries"])
     assert all("changed_symbols" not in entry for entry in inventory["entries"])
 
@@ -267,7 +269,7 @@ def test_dependency_graph_is_deterministic_and_contains_real_edges():
 
     assert first == second
     modules, edges = first
-    assert len(modules) == 87
+    assert len(modules) == 88
     assert len(edges) == 192
     assert {
         (edge["importer"], edge["imported"])
@@ -285,6 +287,9 @@ def test_dependency_graph_is_deterministic_and_contains_real_edges():
         "protected_adjacent"
     )
     assert policy["isar/schema/action_identity.py"]["dependency_disposition"] == (
+        "unrelated_exempt"
+    )
+    assert policy["isar/schema/eig_realized.py"]["dependency_disposition"] == (
         "unrelated_exempt"
     )
     assert policy["isar/predictive.py"]["module_role"] == "evidence_critical"

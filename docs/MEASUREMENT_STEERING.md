@@ -110,6 +110,25 @@ continue with the same legacy request. The score envelope and variant fingerprin
 compact provenance; they do not enter the finalized request fingerprint. Historical inventory `/2`
 remains a strict read contract and is never reminted as `/3`.
 
+After finalization, shadow mode additionally persists
+`isar.scan_design_realized_comparison/o36.7` under
+`report/scan-design-realizations/<sha256>.json`. It records the exact rendered legacy request and an
+isolated target-core counterfactual at the same finalized per-point `ncount`. If identities, ordered
+adapter grids, and exposure still equal the Slice 6 pair, the sidecar references the existing score;
+otherwise both realized candidates are evaluated and scored together under a separate cumulative
+five-second per-proposal allowance. Failure publishes numerical unavailability but still carries the
+exact selected legacy request and grid fingerprints. Initial and execution-time finalization refresh
+stale evidence; minimum-target-support step reduction forces a refresh before revalidation.
+
+Submission and card provenance carry the comparison reference/fingerprint, variant fingerprints, and
+selected request/grid fingerprints. Completed TAVI data compare `result.scan_values_1` with that
+ordered adapter-canonical grid: representation noise at the declared precision is normalized first,
+then equality is exact. A changed value/order/length logs `executed_grid_mismatch` and cannot support
+later authority, while ordinary shadow analysis continues. Missed-window recovery clears the realized
+variant/request/grid claims, marks `eig_realization_invalidated_by_recovery`, and proceeds outside EIG.
+If recovery cannot authenticate the retained sidecar, it logs `realized_comparison_unavailable` and
+continues without recomputation or replacement evidence.
+
 The allowance is cooperative, not preemptive: the adapter checks before each synchronous variant
 score and again after it returns. If the second check crosses the deadline, that raw score set is
 discarded before validation, the current and remaining variants record `shadow_scoring_deadline`,

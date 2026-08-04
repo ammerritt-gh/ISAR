@@ -17,7 +17,9 @@ from isar.drive.objective import current_objective_comparison_scope
 from isar.drive.session_log import AnalysisLimitExceeded, read_log
 from isar.eig.eligibility import EligibilityInput
 from isar.eig.qoi import adapt_omega0_target_projection
+from isar.eig.realized_score import score_realized_pair
 from isar.eig.shadow_inventory import ScanDesignShadowScoring, score_shadow_inventory
+from isar.schema.eig_realized import RealizedCandidatePair
 
 
 SHADOW_SCORING_ALLOWANCE_SECONDS = 5.0
@@ -123,6 +125,58 @@ def _deadline_check(deadline_monotonic: float, monotonic: Callable[[], float]) -
         raise AnalysisLimitExceeded("scan-window shadow scoring exceeded its five-second allowance")
 
 
+def _resolved_scoring_inputs(proposal: Any, objective: Any, workspace_path: str | Path,
+                             check: Callable[[], None]) -> tuple[Any, EligibilityInput, Any, dict]:
+    """Resolve the exact source once for both planned and realized scoring paths."""
+    inventory = getattr(proposal, "scan_design_inventory", None)
+    source = getattr(proposal, "shadow_scoring_source", None)
+    if inventory is None or source is None:
+        raise ValueError("shadow_source_missing")
+    source_action = getattr(source, "scientific_action_fingerprint", None)
+    if (source_action != inventory.context.scientific_action_fingerprint
+            or source_action != (proposal.meta or {}).get("scientific_action_fingerprint")):
+        raise ValueError("shadow_source_action_mismatch")
+    check()
+    from isar.workspace_api import Workspace
+
+    workspace = Workspace.open(workspace_path)
+    entry, outcome = _exact_master(workspace, source)
+    predictive_ref = _exact_reference(
+        getattr(source, "predictive_ref", None), outcome, "predictive_ref")
+    projection_ref = _exact_reference(
+        getattr(source, "target_projection_ref", None), outcome, "target_projection_ref")
+    predictive = workspace.master_predictive(predictive_ref) if predictive_ref else None
+    projection = workspace.target_projection(projection_ref) if projection_ref else None
+    authority = None
+    if entry is not None:
+        ledger_authority = (entry.provenance or {}).get("target_projection_authority")
+        source_authority = getattr(source, "target_projection_authority", None)
+        if isinstance(ledger_authority, Mapping):
+            if source_authority is None or dict(source_authority) == dict(ledger_authority):
+                authority = dict(ledger_authority)
+    qoi_evidence = adapt_omega0_target_projection(
+        predictive, projection, expected_authority=authority)
+    source_acquisition = getattr(source, "source_acquisition_id", None)
+    source_request = getattr(source, "source_submission_request_fingerprint", None)
+    scan_design, scan_events = _scan_design_source(
+        Path(workspace_path),
+        str(source_acquisition) if source_acquisition is not None else None,
+        str(source_request) if source_request is not None else None)
+    eligibility = EligibilityInput.from_current_contract(
+        action_intent=_intent_mapping(source),
+        action_provenance=getattr(source, "action_provenance", None),
+        target_outcome=outcome,
+        selection_record=(outcome.get("fit_selection_semantics")
+                          if outcome is not None else None),
+        qoi_evidence=qoi_evidence,
+        shadow_record=(outcome.get("shadow_model_selection")
+                       if outcome is not None else None),
+        scan_design_provenance=scan_design,
+        scan_design_events=scan_events)
+    return predictive, eligibility, objective.scan_window_eig, current_objective_comparison_scope(
+        objective)
+
+
 def score_proposal_shadow_inventory(
         proposal: Any,
         objective: Any,
@@ -142,64 +196,16 @@ def score_proposal_shadow_inventory(
     deadline = (monotonic() + SHADOW_SCORING_ALLOWANCE_SECONDS
                 if deadline_monotonic is None else float(deadline_monotonic))
     check = lambda: _deadline_check(deadline, monotonic)
-    source = getattr(proposal, "shadow_scoring_source", None)
-    if source is None:
+    try:
+        predictive, eligibility, config, scope = _resolved_scoring_inputs(
+            proposal, objective, workspace_path, check)
+    except ValueError as error:
+        reason = str(error)
+        if reason not in {"shadow_source_missing", "shadow_source_action_mismatch"}:
+            raise
         proposal.scan_design_inventory = inventory.with_shadow_scoring(
-            ScanDesignShadowScoring.unavailable_internal("shadow_source_missing"))
+            ScanDesignShadowScoring.unavailable_internal(reason))
         return proposal
-    source_action = getattr(source, "scientific_action_fingerprint", None)
-    if (source_action != inventory.context.scientific_action_fingerprint
-            or source_action != (proposal.meta or {}).get("scientific_action_fingerprint")):
-        proposal.scan_design_inventory = inventory.with_shadow_scoring(
-            ScanDesignShadowScoring.unavailable_internal("shadow_source_action_mismatch"))
-        return proposal
-
-    check()  # before any workspace or artifact loading
-    # Lazy by design: importing the Stage III driver must not pull Stage II/session readers into the
-    # runtime module graph before a shadow-scoring operation actually starts.
-    from isar.workspace_api import Workspace
-
-    workspace = Workspace.open(workspace_path)
-    entry, outcome = _exact_master(workspace, source)
-    predictive_ref = _exact_reference(
-        getattr(source, "predictive_ref", None), outcome, "predictive_ref")
-    projection_ref = _exact_reference(
-        getattr(source, "target_projection_ref", None), outcome, "target_projection_ref")
-    predictive = workspace.master_predictive(predictive_ref) if predictive_ref else None
-    projection = workspace.target_projection(projection_ref) if projection_ref else None
-
-    authority = None
-    if entry is not None:
-        ledger_authority = (entry.provenance or {}).get("target_projection_authority")
-        source_authority = getattr(source, "target_projection_authority", None)
-        if isinstance(ledger_authority, Mapping):
-            if source_authority is None or dict(source_authority) == dict(ledger_authority):
-                authority = dict(ledger_authority)
-    qoi_evidence = adapt_omega0_target_projection(
-        predictive, projection, expected_authority=authority)
-
-    source_acquisition = getattr(source, "source_acquisition_id", None)
-    source_request = getattr(source, "source_submission_request_fingerprint", None)
-    scan_design, scan_events = _scan_design_source(
-        Path(workspace_path),
-        str(source_acquisition) if source_acquisition is not None else None,
-        str(source_request) if source_request is not None else None,
-    )
-
-    eligibility = EligibilityInput.from_current_contract(
-        action_intent=_intent_mapping(source),
-        action_provenance=getattr(source, "action_provenance", None),
-        target_outcome=outcome,
-        selection_record=(outcome.get("fit_selection_semantics")
-                          if outcome is not None else None),
-        qoi_evidence=qoi_evidence,
-        shadow_record=(outcome.get("shadow_model_selection")
-                       if outcome is not None else None),
-        scan_design_provenance=scan_design,
-        scan_design_events=scan_events,
-    )
-    scope = current_objective_comparison_scope(objective)
-    config = objective.scan_window_eig
     scoring = score_shadow_inventory(
         inventory,
         predictive_artifact=predictive,
@@ -212,6 +218,26 @@ def score_proposal_shadow_inventory(
     )
     proposal.scan_design_inventory = inventory.with_shadow_scoring(scoring)
     return proposal
+
+
+def score_proposal_realized_pair(
+        proposal: Any,
+        objective: Any,
+        workspace_path: str | Path,
+        pair: RealizedCandidatePair,
+        *,
+        deadline_monotonic: float,
+        monotonic: Callable[[], float] = time.monotonic,
+):
+    """Score one changed realized pair against the proposal's exact authenticated source."""
+    check = lambda: _deadline_check(float(deadline_monotonic), monotonic)
+    predictive, eligibility, config, scope = _resolved_scoring_inputs(
+        proposal, objective, workspace_path, check)
+    return score_realized_pair(
+        pair, predictive_artifact=predictive, eligibility_input=eligibility,
+        policy_set=config.policy_set, scoring_config=config.scoring_config,
+        scope_kind="campaign_configuration", scope_fingerprint=scope["fingerprint"],
+        deadline_check=check)
 
 
 def attach_unavailable_shadow(proposal: Any, reason_code: str, *, error: str | None = None) -> Any:
@@ -228,5 +254,6 @@ def attach_unavailable_shadow(proposal: Any, reason_code: str, *, error: str | N
 __all__ = [
     "SHADOW_SCORING_ALLOWANCE_SECONDS",
     "attach_unavailable_shadow",
+    "score_proposal_realized_pair",
     "score_proposal_shadow_inventory",
 ]

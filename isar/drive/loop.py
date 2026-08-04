@@ -48,12 +48,28 @@ from isar.drive.acquisition.scan_design import (
     MAX_POINTS,
     BudgetInsufficientForMinimumBatch,
     InstrumentLimitBelowMinimumBatch,
+    InstrumentPointLimitExceeded,
     points_in_window,
 )
+from isar.drive.acquisition.scan_grid import (
+    COARSEN_FROM_DESIGNED_SPAN,
+    resolve_point_count,
+    resolve_uniform_grid,
+)
+from isar.drive.acquisition.grid_adapters import TAVI_GRID_ADAPTER
 from isar.drive.acquisition.eig_shadow import (
     SHADOW_SCORING_ALLOWANCE_SECONDS,
     attach_unavailable_shadow,
+    score_proposal_realized_pair,
     score_proposal_shadow_inventory,
+)
+from isar.drive.acquisition.realized_comparison import (
+    REALIZED_COMPARISON_ALLOWANCE_SECONDS,
+    attach_realized_metadata,
+    build_realized_comparison,
+    construct_realized_pair,
+    load_scan_design_realized_comparison,
+    persist_realized_comparison,
 )
 from isar.drive.acquisition.inventory import (
     GENERATOR_REGISTRY, GENERATOR_REGISTRY_VERSION, TERMINAL_ACTION_INVENTORY_EXHAUSTED,
@@ -111,6 +127,14 @@ _LIMIT_KEYS = {
 _DEFAULT_CALIBRATION = (Path(__file__).resolve().parents[2] / "calibration"
                         / "phonon_dft_deterministic.json")
 _LOG = logging.getLogger(__name__)
+
+_REALIZED_SUBMISSION_FIELDS = (
+    "scan_design_realized_comparison_ref",
+    "scan_design_realized_comparison_fingerprint",
+    "scan_design_realized_variant_fingerprints",
+    "scan_design_realized_selected_request_fingerprint",
+    "scan_design_realized_selected_grid_fingerprint",
+)
 
 
 def _extract_limit(payload: Any, keys: tuple[str, ...]) -> int | None:
@@ -235,12 +259,12 @@ def _emitted_point_count(e_lo: float, e_hi: float, e_step: float) -> int:
     ``e_lo``/``e_hi`` without recomputing the (tight) ``e_step``, so the emitted command can carry far
     more points than the clamped ledger shows (the 594-pt over-limit scan). This is what the guard
     checks, so a wide-window/tight-step proposal cannot slip past the ledger clamp to TAVI."""
-    step = max(float(e_step), 1e-9)
-    span = max(float(e_hi) - float(e_lo), 0.0)
-    return int(span / step) + 1
+    count, _step = resolve_point_count(e_lo, e_hi, e_step)
+    return count
 
 
-def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int) -> bool:
+def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int, *,
+                       event_sink=log_event) -> bool:
     """Clamp ``proposal`` to the instrument's ``max_points`` limit BEFORE any validate/submit call.
 
     When the emitted point count exceeds the limit, COARSEN ``e_step`` to keep the FULL energy window
@@ -253,19 +277,26 @@ def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int
         proposal.n_points = n_emitted
         return False
     old_step = float(proposal.e_step)
-    span = max(float(proposal.e_hi) - float(proposal.e_lo), 0.0)
-    new_step = span / max(int(max_points) - 1, 1)   # exactly max_points points across the kept window
-    proposal.e_step = new_step
-    proposal.n_points = _emitted_point_count(proposal.e_lo, proposal.e_hi, new_step)
-    log_event(log_path, "exception", {
-        "action": "proposal_clamped",
-        "hkl": [proposal.h, proposal.k, proposal.l],
-        "limit": int(max_points), "limit_source": source,
-        "old_step": old_step, "new_step": new_step,
-        "old_n_points": int(n_emitted),
-        "new_n_points": _emitted_point_count(proposal.e_lo, proposal.e_hi, new_step),
-        "iter": it,
-    })
+    grid = resolve_uniform_grid(
+        proposal.e_lo, proposal.e_hi, proposal.e_step,
+        max_points=max_points, coarsen_span=COARSEN_FROM_DESIGNED_SPAN)
+    if grid.n_points > int(max_points):
+        raise InstrumentPointLimitExceeded(
+            "instrument_point_limit_exceeded: historical designed-span coarsening resolves to "
+            f"{grid.n_points} adapter-exact points above the live limit {int(max_points)} "
+            f"from {source}")
+    proposal.e_step = grid.e_step
+    proposal.n_points = grid.n_points
+    if event_sink is not None:
+        event_sink(log_path, "exception", {
+            "action": "proposal_clamped",
+            "hkl": [proposal.h, proposal.k, proposal.l],
+            "limit": int(max_points), "limit_source": source,
+            "old_step": old_step, "new_step": grid.e_step,
+            "old_n_points": int(n_emitted),
+            "new_n_points": grid.n_points,
+            "iter": it,
+        })
     return True
 
 
@@ -369,7 +400,8 @@ def validated_attempt(finalized: FinalizedProposal | None, validation: dict, *,
         status=str(status))
 
 
-def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int) -> None:
+def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int,
+                       event_sink=log_event) -> None:
     """Normalize one proposal immediately before validation/submission.
 
     The frozen steering ceiling and the live instrument ceiling are both authoritative.  Once the
@@ -380,7 +412,8 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int)
     limits = _runtime_limits(cfg, objective)
     cap = int(limits["max_points"])
     source = f"policy+{limits['sources'].get('max_points', 'default')}"
-    _guard_point_count(proposal, cap, source, cfg.log_path, it)
+    _guard_point_count(
+        proposal, cap, source, cfg.log_path, it, event_sink=event_sink)
     n_points = int(proposal.n_points or 0)
     limits = _runtime_limits(cfg, objective, n_points)
     minimum = int(policy.get(
@@ -401,16 +434,17 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int)
         if isinstance(diagnostics, dict):
             diagnostics["runtime_ncount_limit"] = instrument_cap
             diagnostics["limit_clamp_logged"] = True
-        log_event(cfg.log_path, "exception", {
-            "action": "proposal_ncount_clamped_to_limit",
-            "hkl": [proposal.h, proposal.k, proposal.l],
-            "requested_ncount": requested, "effective_ncount": instrument_cap,
-            "policy_limit": int(policy.get("max_ncount_per_scan", MAX_NCOUNT_PER_SCAN)),
-            "instrument_limits": {
-                "max_neutrons_per_point": limits.get("instrument_max_neutrons_per_point"),
-                "queue_neutron_budget": limits.get("queue_neutron_budget")},
-            "limit_sources": limits.get("effective_ncount_sources", []),
-            "n_points": n_points, "iter": it})
+        if event_sink is not None:
+            event_sink(cfg.log_path, "exception", {
+                "action": "proposal_ncount_clamped_to_limit",
+                "hkl": [proposal.h, proposal.k, proposal.l],
+                "requested_ncount": requested, "effective_ncount": instrument_cap,
+                "policy_limit": int(policy.get("max_ncount_per_scan", MAX_NCOUNT_PER_SCAN)),
+                "instrument_limits": {
+                    "max_neutrons_per_point": limits.get("instrument_max_neutrons_per_point"),
+                    "queue_neutron_budget": limits.get("queue_neutron_budget")},
+                "limit_sources": limits.get("effective_ncount_sources", []),
+                "n_points": n_points, "iter": it})
     budget = dict(budget_state or {})
     if budget.get("kind") != "neutrons" or budget.get("amount") is None:
         normalize_proposal_score(proposal, float(getattr(objective, "tolerance_meV", 0.0)))
@@ -419,11 +453,12 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int)
     if bool(policy.get("dynamic_ncount", False)) and int(proposal.ncount) < minimum:
         old_ncount = int(proposal.ncount)
         proposal.ncount = minimum
-        log_event(cfg.log_path, "exception", {
-            "action": "proposal_ncount_raised_to_floor",
-            "hkl": [proposal.h, proposal.k, proposal.l],
-            "old_ncount": old_ncount, "new_ncount": minimum,
-            "n_points": n_points, "iter": it})
+        if event_sink is not None:
+            event_sink(cfg.log_path, "exception", {
+                "action": "proposal_ncount_raised_to_floor",
+                "hkl": [proposal.h, proposal.k, proposal.l],
+                "old_ncount": old_ncount, "new_ncount": minimum,
+                "n_points": n_points, "iter": it})
     remaining = max(float(budget["amount"]) - float(budget.get("spent", 0.0)), 0.0)
     affordable = int(math.floor(remaining / max(n_points, 1)))
     if affordable < minimum:
@@ -433,10 +468,11 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int)
     if int(proposal.ncount) > affordable:
         old_ncount = int(proposal.ncount)
         proposal.ncount = affordable
-        log_event(cfg.log_path, "exception", {
-            "action": "proposal_ncount_clamped", "hkl": [proposal.h, proposal.k, proposal.l],
-            "old_ncount": old_ncount, "new_ncount": affordable, "n_points": n_points,
-            "remaining_neutrons": remaining, "iter": it})
+        if event_sink is not None:
+            event_sink(cfg.log_path, "exception", {
+                "action": "proposal_ncount_clamped", "hkl": [proposal.h, proposal.k, proposal.l],
+                "old_ncount": old_ncount, "new_ncount": affordable, "n_points": n_points,
+                "remaining_neutrons": remaining, "iter": it})
     normalize_proposal_score(proposal, float(getattr(objective, "tolerance_meV", 0.0)))
     _stamp_proposal_provenance(proposal)
 
@@ -1508,6 +1544,19 @@ def _proposal_from_submission(payload: dict) -> ScanProposal:
         "scan_design_shadow_fingerprint": payload.get("scan_design_shadow_fingerprint"),
         "scan_design_shadow_variant_fingerprints": payload.get(
             "scan_design_shadow_variant_fingerprints"),
+        "scan_design_realized_comparison_ref": payload.get(
+            "scan_design_realized_comparison_ref"),
+        "scan_design_realized_comparison_fingerprint": payload.get(
+            "scan_design_realized_comparison_fingerprint"),
+        "scan_design_realized_variant_fingerprints": payload.get(
+            "scan_design_realized_variant_fingerprints"),
+        "scan_design_realized_selected_request_fingerprint": payload.get(
+            "scan_design_realized_selected_request_fingerprint"),
+        "scan_design_realized_selected_grid_fingerprint": payload.get(
+            "scan_design_realized_selected_grid_fingerprint"),
+        "scan_design_eig_applicability": payload.get("scan_design_eig_applicability"),
+        "scan_design_eig_invalidation_reason": payload.get(
+            "scan_design_eig_invalidation_reason"),
         # The action identity a resumed scan must not lose. Without the sink a recovered auxiliary
         # probe becomes canonical by default and pools into the certified master; the scientific and
         # feasibility fingerprints are its audit identity. All three are already persisted on the
@@ -2569,9 +2618,11 @@ def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
             if proposal is not None:
                 _score_shadow_proposal(proposal, objective, cfg, it=it)
                 _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
-        except InstrumentLimitBelowMinimumBatch as error:
+        except (InstrumentLimitBelowMinimumBatch, InstrumentPointLimitExceeded) as error:
             log_event(cfg.log_path, "exception", {
-                "action": "instrument_limit_below_minimum_batch",
+                "action": ("instrument_point_limit_exceeded"
+                           if isinstance(error, InstrumentPointLimitExceeded)
+                           else "instrument_limit_below_minimum_batch"),
                 "error": str(error), "iter": it})
             instrument_error = error
             continue
@@ -2639,6 +2690,9 @@ def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
                 "reason": str(entry.get("reason") or "previously refused")}
             continue
         _persist_scan_design_inventory(cfg, proposal, it=it)
+        _refresh_realized_comparison(
+            cfg, objective, proposal, budget_state, it=it,
+            legacy_adjustments=("initial_finalization",))
         return proposal, None
 
 
@@ -2732,6 +2786,21 @@ def _persist_acquisition_provenance(workspace: Path, payload: dict) -> None:
         "scan_design_shadow_fingerprint": payload.get("scan_design_shadow_fingerprint"),
         "scan_design_shadow_variant_fingerprints": payload.get(
             "scan_design_shadow_variant_fingerprints"),
+        "scan_design_realized_comparison_ref": payload.get(
+            "scan_design_realized_comparison_ref"),
+        "scan_design_realized_comparison_fingerprint": payload.get(
+            "scan_design_realized_comparison_fingerprint"),
+        "scan_design_realized_variant_fingerprints": payload.get(
+            "scan_design_realized_variant_fingerprints"),
+        "scan_design_realized_selected_request_fingerprint": payload.get(
+            "scan_design_realized_selected_request_fingerprint"),
+        "scan_design_realized_selected_grid_fingerprint": payload.get(
+            "scan_design_realized_selected_grid_fingerprint"),
+        "scan_design_eig_applicability": payload.get("scan_design_eig_applicability"),
+        "scan_design_eig_invalidation_reason": payload.get(
+            "scan_design_eig_invalidation_reason"),
+        "scan_design_executed_grid_status": payload.get("scan_design_executed_grid_status"),
+        "scan_design_executed_grid_reason": payload.get("scan_design_executed_grid_reason"),
         # The one channel by which analysis learns this scan was not ordinary evidence. Written here,
         # before the raw scan is consumed, because reduction decides whether to pool it and the session
         # decides how the tracker may read it — both from this record, neither from the driver.
@@ -3113,6 +3182,119 @@ def _persist_scan_design_inventory(cfg: CampaignConfig, proposal, *, it: int) ->
     return ref
 
 
+def _refresh_realized_comparison(
+        cfg: CampaignConfig,
+        objective,
+        proposal,
+        budget_state: dict,
+        *,
+        it: int,
+        legacy_adjustments: tuple[str, ...] = (),
+        force: bool = False,
+) -> dict | None:
+    """Attach exact current Slice 7 evidence, replacing any stale realized comparison."""
+    inventory = getattr(proposal, "scan_design_inventory", None)
+    if inventory is None or inventory.context.scan_window_eig_mode != "shadow":
+        return None
+    meta = proposal.meta if isinstance(proposal.meta, dict) else {}
+    proposal.meta = meta
+    if meta.get("scan_design_eig_applicability") == "invalidated":
+        return meta.get("scan_design_realized_comparison_ref")
+    current_request = meta.get("proposal_fingerprint")
+    if (not force and meta.get("scan_design_eig_applicability") == "applicable"
+            and meta.get("scan_design_realized_selected_request_fingerprint") == current_request
+            and isinstance(meta.get("scan_design_realized_comparison_ref"), dict)):
+        return meta["scan_design_realized_comparison_ref"]
+    inventory_ref = meta.get("scan_design_inventory_ref")
+    if not isinstance(inventory_ref, dict):
+        raise RuntimeError("realized comparison requires a persisted scan-design inventory")
+
+    # A mandatory refresh starts by removing the current-request claims. A failure below may retain
+    # the old immutable artifact on disk, but it can never leave that stale artifact attached to the
+    # request that proceeds toward submission.
+    for key in (
+            "scan_design_realized_comparison_ref",
+            "scan_design_realized_comparison_fingerprint",
+            "scan_design_realized_variant_fingerprints",
+            "scan_design_realized_selected_request_fingerprint",
+            "scan_design_realized_selected_grid_fingerprint"):
+        meta.pop(key, None)
+    meta.pop("scan_design_eig_invalidation_reason", None)
+
+    pair = construct_realized_pair(
+        proposal, inventory, objective, cfg, budget_state, it=it,
+        finalizer=_finalize_proposal, legacy_adjustments=legacy_adjustments)
+    if proposal.realized_scoring_remaining_seconds is None:
+        proposal.realized_scoring_remaining_seconds = REALIZED_COMPARISON_ALLOWANCE_SECONDS
+
+    def rescore(realized_pair, remaining_seconds):
+        allowance = min(float(remaining_seconds),
+                        float(proposal.realized_scoring_remaining_seconds or 0.0))
+        if allowance <= 0.0:
+            raise AnalysisLimitExceeded("realized scoring allowance exhausted")
+        started = time.monotonic()
+        operation_id = ":".join((
+            "scan-window-realized", str(cfg.run_nonce), str(it),
+            str(inventory.context.fingerprint), str(inventory.selected_candidate_id)))
+        try:
+            with analysis_operation(
+                    cfg.log_path, operation_id, "scan_window_realized_scoring",
+                    limit_seconds=objective.analysis_limit_seconds, checkpoint_seconds=1.0,
+                    iteration=it,
+                    scientific_action_fingerprint=meta.get("scientific_action_fingerprint")):
+                return score_proposal_realized_pair(
+                    proposal, objective, cfg.workspace, realized_pair,
+                    deadline_monotonic=time.monotonic() + allowance)
+        finally:
+            elapsed = max(time.monotonic() - started, 0.0)
+            proposal.realized_scoring_remaining_seconds = max(allowance - elapsed, 0.0)
+
+    try:
+        comparison = build_realized_comparison(
+            inventory, inventory_ref, pair,
+            remaining_seconds=float(proposal.realized_scoring_remaining_seconds),
+            rescorer=rescore)
+    except AnalysisLimitExceeded as error:
+        comparison = build_realized_comparison(
+            inventory, inventory_ref, pair, remaining_seconds=0.0, rescorer=None,
+            unavailable_reason="realized_scoring_deadline")
+        log_event(cfg.log_path, "exception", {
+            "action": "realized_scoring_deadline", "severity": "high",
+            "error": str(error), "iter": it})
+    except Exception as error:  # noqa: BLE001 - Slice 7 scoring is fail-open
+        reason = str(getattr(error, "reason_code", "realized_scoring_failed"))
+        comparison = build_realized_comparison(
+            inventory, inventory_ref, pair,
+            remaining_seconds=float(proposal.realized_scoring_remaining_seconds or 0.0),
+            rescorer=None, unavailable_reason=reason)
+        _LOG.exception("realized scan-window scoring failed; continuing with legacy control")
+        log_event(cfg.log_path, "exception", {
+            "action": reason, "severity": "high", "error": str(error), "iter": it})
+    reference = persist_realized_comparison(cfg.workspace, comparison)
+    attach_realized_metadata(proposal, reference, comparison)
+    log_event(cfg.log_path, "scan_design_realized_comparison", {
+        "iter": it, "comparison_ref": reference,
+        "realized_comparison_fingerprint": comparison.realized_comparison_fingerprint,
+        "realized_pair_fingerprint": comparison.realized_pair.realized_pair_fingerprint,
+        "score_disposition": comparison.score_disposition,
+        "reason_codes": list(comparison.reason_codes),
+        "request_fingerprint": comparison.selected_request_fingerprint})
+    return reference
+
+
+def _invalidate_realized_comparison_for_recovery(proposal) -> None:
+    """Retain parent design lineage while removing claims about a non-EIG recovery request."""
+    meta = proposal.meta if isinstance(proposal.meta, dict) else {}
+    proposal.meta = meta
+    meta["scan_design_eig_applicability"] = "invalidated"
+    meta["scan_design_eig_invalidation_reason"] = "eig_realization_invalidated_by_recovery"
+    for key in (
+            "scan_design_realized_variant_fingerprints",
+            "scan_design_realized_selected_request_fingerprint",
+            "scan_design_realized_selected_grid_fingerprint"):
+        meta.pop(key, None)
+
+
 def _persist_action_inventory(cfg: CampaignConfig, inventory, *, it: int, proposal,
                               prev_fingerprint: str | None,
                               force_full: bool) -> tuple[dict | None, str | None]:
@@ -3170,6 +3352,63 @@ def _persist_action_inventory(cfg: CampaignConfig, inventory, *, it: int, propos
     return inventory_ref, fingerprint
 
 
+def _compare_returned_realized_grid(
+        cfg: CampaignConfig, proposal, submission_payload: dict,
+        document: Mapping[str, Any], *, it: int | None) -> tuple[str, str | None]:
+    """Authenticate Slice 7 evidence and compare TAVI's returned grid without blocking analysis."""
+    selected_grid = submission_payload.get("scan_design_realized_selected_grid_fingerprint")
+    if selected_grid is None:
+        return "not_applicable", None
+    reference = submission_payload.get("scan_design_realized_comparison_ref")
+    try:
+        comparison = load_scan_design_realized_comparison(reference, cfg.workspace)
+        if (submission_payload.get("scan_design_realized_comparison_fingerprint")
+                != comparison.realized_comparison_fingerprint
+                or submission_payload.get(
+                    "scan_design_realized_selected_request_fingerprint")
+                != comparison.selected_request_fingerprint
+                or selected_grid != comparison.selected_grid_fingerprint
+                or (proposal.meta or {}).get("proposal_fingerprint")
+                != comparison.selected_request_fingerprint):
+            raise ValueError("realized-comparison submission identity is inconsistent")
+    except Exception as error:  # noqa: BLE001 - evidence loss must not suppress recovery/analysis
+        _LOG.exception("realized-comparison evidence is unavailable for returned-grid comparison")
+        log_event(cfg.log_path, "exception", {
+            "action": "realized_comparison_unavailable", "severity": "high",
+            "job_id": submission_payload.get("job_id"), "error": str(error), "iter": it,
+            "comparison_ref": reference,
+            "selected_request_fingerprint": submission_payload.get(
+                "scan_design_realized_selected_request_fingerprint"),
+            "selected_grid_fingerprint": selected_grid,
+        })
+        return "unavailable", "realized_comparison_unavailable"
+
+    result = document.get("result") if isinstance(document, Mapping) else None
+    returned_raw = result.get("scan_values_1") if isinstance(result, Mapping) else None
+    try:
+        expected = TAVI_GRID_ADAPTER.canonicalize_returned_energies(
+            comparison.realized_pair.legacy.executed_energies)
+        returned = TAVI_GRID_ADAPTER.canonicalize_returned_energies(returned_raw)
+    except (TypeError, ValueError) as error:
+        expected = tuple(comparison.realized_pair.legacy.executed_energies)
+        returned = ()
+        reason = str(error)
+    else:
+        reason = "executed grid differs from the selected realized grid"
+    if returned != expected:
+        log_event(cfg.log_path, "exception", {
+            "action": "executed_grid_mismatch", "severity": "high",
+            "job_id": submission_payload.get("job_id"), "reason": reason,
+            "expected_energies": list(expected), "returned_energies": list(returned),
+            "comparison_ref": reference,
+            "realized_comparison_fingerprint": comparison.realized_comparison_fingerprint,
+            "selected_request_fingerprint": comparison.selected_request_fingerprint,
+            "selected_grid_fingerprint": comparison.selected_grid_fingerprint, "iter": it,
+        })
+        return "mismatch", "executed_grid_mismatch"
+    return "matched", None
+
+
 def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
                                    submission_payload: dict, budget_state: dict,
                                    observations: list[dict], consumed: set, scan_kind: dict,
@@ -3190,6 +3429,10 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
     with timed(cfg.log_path, "fetch_save", iteration=it):
         document = data if data is not None else cfg.client.get_scan_data(job_id)
         scan_path = save_scan_json(document, cfg.data_dir)
+    grid_status, grid_reason = _compare_returned_realized_grid(
+        cfg, proposal, submission_payload, document, it=it)
+    submission_payload["scan_design_executed_grid_status"] = grid_status
+    submission_payload["scan_design_executed_grid_reason"] = grid_reason
     executed_points = _executed_point_count(document, planned_points)
     if executed_points != planned_points and not reconciliation_applied:
         neutron_delta, seconds_delta = _reconcile_budget_points(
@@ -3399,6 +3642,9 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         # Single checkpoint before EVERY validate/submit, including support/recenter retries.
         previous_request_fingerprint = (proposal.meta or {}).get("proposal_fingerprint")
         _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+        _refresh_realized_comparison(
+            cfg, objective, proposal, budget_state, it=it,
+            legacy_adjustments=("execution_time_finalization",))
         _record_scan_design_realization(
             cfg,
             proposal,
@@ -3447,6 +3693,9 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                     "proposal_fingerprint")
                 proposal.e_step = desired_step
                 _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+                _refresh_realized_comparison(
+                    cfg, objective, proposal, budget_state, it=it,
+                    legacy_adjustments=("minimum_target_support",), force=True)
                 _record_scan_design_realization(
                     cfg,
                     proposal,
@@ -3554,6 +3803,20 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                 "scan_design_shadow_fingerprint"),
             "scan_design_shadow_variant_fingerprints": (proposal.meta or {}).get(
                 "scan_design_shadow_variant_fingerprints"),
+            "scan_design_realized_comparison_ref": (proposal.meta or {}).get(
+                "scan_design_realized_comparison_ref"),
+            "scan_design_realized_comparison_fingerprint": (proposal.meta or {}).get(
+                "scan_design_realized_comparison_fingerprint"),
+            "scan_design_realized_variant_fingerprints": (proposal.meta or {}).get(
+                "scan_design_realized_variant_fingerprints"),
+            "scan_design_realized_selected_request_fingerprint": (proposal.meta or {}).get(
+                "scan_design_realized_selected_request_fingerprint"),
+            "scan_design_realized_selected_grid_fingerprint": (proposal.meta or {}).get(
+                "scan_design_realized_selected_grid_fingerprint"),
+            "scan_design_eig_applicability": (proposal.meta or {}).get(
+                "scan_design_eig_applicability"),
+            "scan_design_eig_invalidation_reason": (proposal.meta or {}).get(
+                "scan_design_eig_invalidation_reason"),
             # The other two lifecycle identities, so a submitted scan joins back to the scientific
             # question it answers and the geometry its request was accepted under.
             "scientific_action_fingerprint": (proposal.meta or {}).get(
@@ -3620,6 +3883,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         if act.action not in ("recenter", "recenter_refused_elastic"):
             break
         previous_request_fingerprint = (proposal.meta or {}).get("proposal_fingerprint")
+        _invalidate_realized_comparison_for_recovery(proposal)
         proposal.e_lo = act.params["e_lo"]
         proposal.e_hi = act.params["e_hi"]
         _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
@@ -4489,14 +4753,20 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                         stop_campaign = True
                         break
                     except (BudgetInsufficientForMinimumBatch,
-                            InstrumentLimitBelowMinimumBatch) as error:
+                            InstrumentLimitBelowMinimumBatch,
+                            InstrumentPointLimitExceeded) as error:
                         log_event(cfg.log_path, "exception", {
-                            "action": ("instrument_limit_below_minimum_batch"
-                                       if isinstance(error, InstrumentLimitBelowMinimumBatch)
-                                       else "budget_insufficient_for_minimum_batch"),
+                            "action": (
+                                "instrument_point_limit_exceeded"
+                                if isinstance(error, InstrumentPointLimitExceeded)
+                                else "instrument_limit_below_minimum_batch"
+                                if isinstance(error, InstrumentLimitBelowMinimumBatch)
+                                else "budget_insufficient_for_minimum_batch"),
                             "error": str(error), "iter": it})
                         decision = StopDecision(
-                            ("infeasible" if isinstance(error, InstrumentLimitBelowMinimumBatch)
+                            ("infeasible" if isinstance(
+                                error, (InstrumentLimitBelowMinimumBatch,
+                                        InstrumentPointLimitExceeded))
                              else "incomplete"), [str(error)],
                             evaluate_stop(objective, grid, budget_state,
                                           calibration=cfg.calibration, floor=cfg.floor).per_q)

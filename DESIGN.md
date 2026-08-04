@@ -437,7 +437,7 @@ DECISIONS W1–W3.)*
 | γ-at-bound calibration v2; Γ prior | Planned |
 | `tas4d` convolution (TAVI-supplied ellipsoids) | Planned |
 | Stage III: per-point objective, EIG acquisition, stop-and-report | Implemented (analytic tier certified) |
-| Same-action scan-window EIG | **Partial:** predictive `/2`, arbitrary-grid evaluation, candidate generation, executed-grid identity, target projection, pure candidate scoring, and Slice 6 diagnostic scored-shadow inventories Implemented; exact realized-request rescoring and restricted authority Planned. Slice 6 always executes the legacy control. EIG-4 is the current SVP. |
+| Same-action scan-window EIG | **Partial:** predictive `/2`, arbitrary-grid evaluation, candidate generation, executed-grid identity, target projection, pure candidate scoring, Slice 6 diagnostic scored-shadow inventories, and Slice 7 exact realized-request rescoring/provenance Implemented; restricted authority Planned. Shadow mode always executes the legacy control. EIG-4 is the current SVP. |
 | Exposure-aware pooling + tolerance-driven dynamic `ncount` | **Partial** (O13, 2026-07-18; raw counts/ΣN retained and deterministic interval scaling/brakes/replay Implemented, Fisher/sample-based dwell optimisation Planned) |
 | Bayesian optic cold-start + selector-driven provisional evidence | **Partial** (2026-07-18; posterior assignment, neighboring-q evidence and probabilistic rejection implemented, sampled Stage-C MI Planned) |
 | Separate measurement budget + cumulative analysis guardrail | Implemented (2026-07-19; durable ten-second checkpoints) |

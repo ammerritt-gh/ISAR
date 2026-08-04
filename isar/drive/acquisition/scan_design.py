@@ -121,6 +121,10 @@ class InstrumentLimitBelowMinimumBatch(ValueError):
     """The instrument cannot accept one policy-floor scan."""
 
 
+class InstrumentPointLimitExceeded(ValueError):
+    """The adapter-exact legacy request still exceeds the live instrument point ceiling."""
+
+
 #: One shared non-finite-safe number rendering (:func:`isar.drive.acquisition.inventory.json_number`).
 #: The grid module fingerprints through the same helper, so a degenerate window cannot be strict-JSON
 #: clean in the candidate record and a raw ``ValueError`` inside the grid fingerprint.
