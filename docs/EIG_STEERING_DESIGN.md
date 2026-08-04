@@ -572,8 +572,11 @@ gated live scored-shadow step described by O38; it preserves those same authorit
 8. **Slice 7 — exact realized-request rescoring (implemented).** Score or reuse evidence for the
    adapter-exact grid and equal per-point exposure relevant at submission; retain candidate →
    realization → submission provenance and verify the returned TAVI grid.
-9. **Slice 8 — bounded EIG-3 shadow gate (planned).** Add exact mathematical fixtures, existing predictive
-   fixtures, and a small full-pipeline authority-envelope set.
+9. **Slice 8 — bounded EIG-3 shadow gate (partial).** The tools-only `o36.8` evaluator, frozen
+   six-case/fault manifest contract, conditional eligibility evidence rules, and self-contained
+   `/3` inventory plus realized-comparison retention path are implemented. Final manifests,
+   deterministic-TAVI evidence, retained gate disposition, and owner review remain pending. The
+   gate cannot select or submit a request.
 10. **Slice 9 — opt-in authoritative selector.** `target_core` may win on resolved EIG-per-point
     superiority; unresolved eligible comparisons retain the eligible control; ineligible states
     return to the existing non-EIG design/recovery path.
@@ -859,6 +862,29 @@ fingerprint to the previous and realized request fingerprints plus the exact emi
 Physical-submission and acquisition-provenance records carry both identities so crash recovery retains
 the join without loading the derived inventory as controller state. This `/1` event is additive-open:
 readers must ignore unknown additive fields.
+
+Slice 8 evaluates those records only after acquisition. Its primary distinction policy is one
+`excitation.energy` absolute-partition variant with 0.5 meV bins and half-bin-shifted offsets
+`[0.0, 0.25]`; runtime scoring remains the existing 128-simulation/eight-block configuration. The
+frozen engineering rule is target-core-minus-legacy information per executed point with
+`delta - 2 * paired_SE > 0`. The multiplier is a pragmatic margin, not a calibrated coverage
+statement. A win additionally requires equal per-point exposure and strict containment/reduction
+of both the rendered request and adapter-canonical executed support.
+
+Evidence is authenticated by branch. An authenticated ineligible or unassessable eligibility
+result returns to the existing non-EIG path and does not need a realized sidecar. An eligible case
+must authenticate the exact source `/3` inventory, realized comparison, primary score variant,
+submission provenance, applicability, and returned grid; missing or mismatched branch-required
+evidence is unavailable for selection. The retained bundle carries both content-addressed files
+under their original relative paths so the existing strict loader, rather than a Slice 8 duplicate,
+reproduces their join.
+
+The near-elastic authority case is measured at the pre-selection snapshot. Current O36 eligibility
+has no generic near-elastic exclusion, so the frozen case remains eligible and must safely retain
+legacy under the ordinary structural/margin rule. Recovery invalidation remains separately covered
+and must not be misreported as pre-selection near-elastic exclusion. The planned and realized
+scoring paths remain duplicated implementation seams held to focused parity tests; consolidating
+them is technical debt after Slice 8, not an authority granted to a test file.
 
 The normative fixture `tests/fixtures/eig_predictive_v2.json` contains competing null/one-phonon,
 one-mode/two-mode, and acoustic/optic branch hypotheses on original, shifted, narrower, and coarser
