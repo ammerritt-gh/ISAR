@@ -117,7 +117,13 @@ def _fit_semantics(label: str) -> dict:
     }, FIT_SELECTION_SCHEMA)
 
 
-def _clean_selection() -> dict:
+def _clean_selection(**route_updates) -> dict:
+    """Build a selection record in the shape ``isar.session.driver`` actually persists.
+
+    ``labels_before_guideline``/``offered_labels``/``scored_labels`` hold model
+    labels; ``guideline_structure_filter`` holds card-supplied structure
+    directives and is empty on an unguided route.
+    """
     labels = ("one", "two")
     semantics = {label: _fit_semantics(label) for label in labels}
     results = [SimpleNamespace(label=label, fit_semantics=semantics[label],
@@ -126,11 +132,13 @@ def _clean_selection() -> dict:
                               weight=0.75 - 0.5 * index, survives=True,
                               fit_semantics=semantics[label])
               for index, label in enumerate(labels)]
+    route = {"route": "full_two_stage", "supplied_hint": None, "hint_accepted": False,
+             "guideline_structure_filter": [], "guideline_changed_model_set": False,
+             "labels_before_guideline": list(labels), "multimode_route": "not_offered",
+             "offered_labels": list(labels), "scored_labels": list(labels)}
+    route.update(route_updates)
     return driver._build_selection_semantics(
-        results, SimpleNamespace(scores=scores, pooled=object()),
-        {"route": "full_two_stage", "labels_before_guideline": list(labels),
-         "guideline_structure_filter": list(labels), "offered_labels": list(labels),
-         "scored_labels": list(labels)},
+        results, SimpleNamespace(scores=scores, pooled=object()), route,
         error_attachment_labels=list(labels))
 
 
@@ -311,25 +319,67 @@ def test_selection_and_predictive_source_model_identities_must_match():
     assert "projection_join_mismatch" in result.scientific_codes
 
 
-def test_guideline_forced_and_accepted_hints_are_incomplete_comparisons():
-    for route_updates in (
-        {"multimode_route": "guideline_forced"},
-        {"supplied_hint": "two modes", "hint_accepted": True},
-    ):
-        selection = _clean_selection()
-        selection = driver._build_selection_semantics(
-            [SimpleNamespace(label=item["label"], fit_semantics=item["fit_semantics"],
-                             within_model={"omega0_samples": [1.0, 1.1]})
-             for item in selection["candidate_records"]],
-            SimpleNamespace(scores=[SimpleNamespace(label=item["label"], cost=item["cost"],
-                                                     k=item["effective_parameter_count"], aic=item["aic"],
-                                                     weight=item["akaike_weight"], survives=True,
-                                                     fit_semantics=item["fit_semantics"])
-                                    for item in selection["candidate_records"]], pooled=object()),
-            {**selection["candidate_generation_route"], **route_updates},
-            error_attachment_labels=[item["label"] for item in selection["candidate_records"]])
-        result = evaluate_eig_eligibility(_input(selection_record=selection, shadow_record=_neutral_shadow()))
-        assert "selection_comparison_incomplete" in result.scientific_codes
+@pytest.mark.parametrize("route_updates", [
+    {"multimode_route": "guideline_forced"},
+    {"supplied_hint": "two modes", "hint_accepted": True},
+    {"guideline_changed_model_set": True},
+    {"offered_labels": ["one"]},
+])
+def test_guideline_forced_and_accepted_hints_are_incomplete_comparisons(route_updates):
+    result = evaluate_eig_eligibility(_input(
+        selection_record=_clean_selection(**route_updates), shadow_record=_neutral_shadow()))
+    assert "selection_comparison_incomplete" in result.scientific_codes
+
+
+def test_unguided_route_with_empty_structure_filter_is_eligible():
+    """Model labels are never compared against structure directives (the R1-A bug)."""
+    result = evaluate_eig_eligibility(_input(
+        selection_record=_clean_selection(), shadow_record=_neutral_shadow()))
+    assert result.scientific_codes == ()
+    assert result.status == "eligible"
+
+
+def test_structure_filter_content_alone_does_not_block_a_complete_comparison():
+    result = evaluate_eig_eligibility(_input(
+        selection_record=_clean_selection(guideline_structure_filter=["dho_single"]),
+        shadow_record=_neutral_shadow()))
+    assert "selection_comparison_incomplete" not in result.scientific_codes
+
+
+def test_pre_guideline_model_set_must_survive_into_the_offered_set():
+    result = evaluate_eig_eligibility(_input(
+        selection_record=_clean_selection(labels_before_guideline=["one", "two", "three"]),
+        shadow_record=_neutral_shadow()))
+    assert "selection_comparison_incomplete" in result.scientific_codes
+
+
+def _input_with_target(**target_updates):
+    record = _input()
+    target = dict(record.target_outcome)
+    target.update(target_updates)
+    return _input(target_outcome=target, selection_record=_clean_selection(),
+                  shadow_record=_neutral_shadow())
+
+
+def test_confirmed_pool_consistent_unpooled_master_is_eligible():
+    result = evaluate_eig_eligibility(_input_with_target(modality="unpooled"))
+    assert result.scientific_codes == ()
+    assert result.status == "eligible"
+    assert dict(result.diagnostics)["target_modality"] == "unpooled"
+
+
+def test_fork_modality_stays_a_scientific_rejection():
+    result = evaluate_eig_eligibility(_input_with_target(modality="fork"))
+    assert result.status == "ineligible"
+    assert result.primary_scientific_code == "modality_fork"
+    assert dict(result.diagnostics)["target_modality"] == "fork"
+
+
+def test_pool_inconsistent_source_names_its_exact_blocker():
+    result = evaluate_eig_eligibility(_input_with_target(pool_consistent=False))
+    assert result.status == "ineligible"
+    assert result.scientific_codes == ("pool_inconsistent",)
+    assert result.primary_scientific_code == "pool_inconsistent"
 
 
 def test_action_fingerprint_disagreement_is_an_observability_gap():

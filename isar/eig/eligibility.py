@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 SCIENTIFIC_REASON_ORDER = (
     "target_delivery_ineligible", "target_not_finite", "target_not_confirmed",
-    "action_not_canonical_target", "modality_fork", "modality_not_fold", "pool_inconsistent",
+    "action_not_canonical_target", "modality_fork", "pool_inconsistent",
     "selection_ineligible", "selection_constrained", "selection_rescued",
     "selection_comparison_incomplete", "predictive_material_nonbootstrap_mass",
     "projection_incomplete", "projection_stale", "projection_join_mismatch",
@@ -206,10 +206,11 @@ class EligibilityResult:
         }
 
 
-def _target_checks(value: Mapping[str, Any] | None, science: list[str], gaps: list[str]) -> None:
+def _target_checks(value: Mapping[str, Any] | None, science: list[str], gaps: list[str]) -> str | None:
+    """Apply the target gates and return the observed modality for diagnostics."""
     if not isinstance(value, Mapping):
         gaps.extend(("target_delivery_unknown", "target_identity_unknown", "pool_consistency_unknown"))
-        return
+        return None
     delivery = value.get("target_delivery_eligible")
     if delivery is not True and delivery is not False:
         gaps.append("target_delivery_unknown")
@@ -225,18 +226,22 @@ def _target_checks(value: Mapping[str, Any] | None, science: list[str], gaps: li
         gaps.append("target_identity_unknown")
     elif track != "confirmed" or candidate != "confirmed":
         science.append("target_not_confirmed")
+    # Only a fork is a scientific rejection: it is the genuinely multi-branch
+    # answer the same-action seam cannot score.  Every other modality — notably
+    # ``unpooled`` for a confirmed single-member pooled source — is a
+    # representation and history state, not a statement about the science, so it
+    # is recorded diagnostically and gated on pool consistency alone.
     modality = value.get("modality")
     if modality is None:
         gaps.append("modality_unknown")
     elif modality == "fork":
         science.append("modality_fork")
-    elif modality != "fold":
-        science.append("modality_not_fold")
     pool = value.get("pool_consistent")
     if pool is None:
         gaps.append("pool_consistency_unknown")
     elif pool is False:
         science.append("pool_inconsistent")
+    return None if modality is None else str(modality)
 
 
 def _target_hkl(target: Mapping[str, Any]) -> Any:
@@ -364,15 +369,23 @@ def _selection_checks(record: Mapping[str, Any] | None, science: list[str], gaps
     scored = route.get("scored_labels")
     if not isinstance(offered, list) or not isinstance(scored, list) or set(offered) != set(scored):
         science.append("selection_comparison_incomplete")
+    # ``labels_before_guideline`` carries model labels; ``guideline_structure_filter``
+    # carries the card's structure directives (normally empty).  They are different
+    # vocabularies and were never comparable — comparing them rejected every real
+    # fit.  Completeness is instead grounded in producer-owned facts: the offered
+    # set was the scored set, the pre-guideline model set survived into it, the
+    # producer declares the guideline changed no model set, and no hint or
+    # guideline forced the route.  The label comparison is unconditional so the
+    # verdict never depends on whether the flag was written at all.
     before = route.get("labels_before_guideline")
-    filtered = route.get("guideline_structure_filter")
-    if isinstance(before, list) and isinstance(filtered, list) and set(before) != set(filtered):
+    if isinstance(before, list) and isinstance(offered, list) and set(before) != set(offered):
         science.append("selection_comparison_incomplete")
-    if (route.get("structure_hint") is not None or route.get("guideline_changed") is True
+    if (route.get("guideline_changed") is True
             or route.get("guideline_changed_model_set") is True
             or route.get("multimode_route") == "guideline_forced"
             or (route.get("supplied_hint") is not None
-                and (route.get("hint_accepted") is True or route.get("delivery_hint_accepted") is True))):
+                and (route.get("hint_accepted") is True
+                     or route.get("delivery_hint_accepted") is True))):
         science.append("selection_comparison_incomplete")
     return validated
 
@@ -531,7 +544,7 @@ def evaluate_eig_eligibility(value: EligibilityInput) -> EligibilityResult:
     """Apply the frozen O36 eligibility policy to immutable current-contract evidence."""
     science: list[str] = []
     gaps: list[str] = []
-    _target_checks(value.target_outcome, science, gaps)
+    target_modality = _target_checks(value.target_outcome, science, gaps)
     action_fingerprint = _action_checks(
         value.action_intent, value.action_provenance, value.target_outcome, science, gaps)
     validated_selection = _selection_checks(value.selection_record, science, gaps)
@@ -588,6 +601,9 @@ def evaluate_eig_eligibility(value: EligibilityInput) -> EligibilityResult:
     diagnostics = tuple(sorted((
         ("qoi_status", qoi_status),
         ("scan_design_event_count", len(value.scan_design_events)),
+        # Modality no longer gates beyond ``fork``; it stays visible so a reader
+        # can still tell an unpooled single-member master from a folded one.
+        ("target_modality", target_modality),
     )))
     return EligibilityResult(
         contract=ELIGIBILITY_CONTRACT,

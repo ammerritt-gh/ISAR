@@ -98,8 +98,9 @@ def _authenticated_projection(monkeypatch, *, explicit_weights: bool = False):
     selection = driver._build_selection_semantics(
         [result], SimpleNamespace(scores=[score], pooled=object()),
         {"route": "full_two_stage", "labels_before_guideline": ["one"],
-         "guideline_structure_filter": ["one"], "offered_labels": ["one"],
-         "scored_labels": ["one"]}, error_attachment_labels=["one"])
+         "guideline_structure_filter": [], "guideline_changed_model_set": False,
+         "offered_labels": ["one"], "scored_labels": ["one"]},
+        error_attachment_labels=["one"])
     artifact = predictive_artifact.build_master_predictive(
         SimpleNamespace(omega0=3.0), [score], {"one": result}, {"one": object()}, context,
         seed=11, n_members=1, fit_selection_semantics=selection)

@@ -711,7 +711,9 @@ def test_mixed_producer_bases_trigger_material_nonbootstrap_not_unknown(tmp_path
     (True, "fold", None),
     (True, None, "modality_unknown"),
     (True, "fork", "modality_fork"),
-    (True, "other", "modality_not_fold"),
+    # Only a fork is a modality rejection; ``unpooled`` is a representation and
+    # history state that the eligibility policy records but does not gate on.
+    (True, "unpooled", None),
 ])
 def test_delivery_and_modality_gates_are_visible_at_campaign_level(tmp_path: Path, delivery, modality, finding: str):
     _write_campaign(tmp_path, outcome={"pooled": True, "omega0": 2.0, "track_state": "confirmed",
@@ -723,6 +725,7 @@ def test_delivery_and_modality_gates_are_visible_at_campaign_level(tmp_path: Pat
         assert "target_delivery_unknown" not in row["findings"]
         assert "target_delivery_ineligible" not in row["findings"]
         assert "modality_unknown" not in row["findings"]
+        assert "modality_fork" not in row["findings"]
     else:
         assert finding in row["findings"]
 

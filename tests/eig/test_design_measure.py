@@ -170,8 +170,9 @@ def _bundle(monkeypatch, specs=None):
     selection = driver._build_selection_semantics(
         list(results.values()), SimpleNamespace(scores=scores, pooled=object()),
         {"route": "full_two_stage", "labels_before_guideline": labels,
-         "guideline_structure_filter": labels, "offered_labels": labels,
-         "scored_labels": labels}, error_attachment_labels=labels)
+         "guideline_structure_filter": [], "guideline_changed_model_set": False,
+         "offered_labels": labels, "scored_labels": labels},
+        error_attachment_labels=labels)
     artifact = predictive_artifact.build_master_predictive(
         SimpleNamespace(omega0=3.0), scores, results,
         {item["label"]: object() for item in specs}, context,
