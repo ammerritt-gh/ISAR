@@ -98,7 +98,6 @@ def _start_virtual(w, goal="map the branch"):
     dock._confirm_objective = lambda _envelope: True
     dock.set_backend_status("tavi", "ok", "up")
     dock._goal.setPlainText(goal)
-    dock._max_iters.setValue(12)
     assert dock._start_btn.isEnabled()
     dock._start_btn.click()
     compile_runner = _FakeRunner.instances[-1]

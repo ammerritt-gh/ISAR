@@ -165,6 +165,46 @@ def test_save_as_copies_tree_and_discards_temp(qtbot, temproot, tmp_path):
     assert not m.is_temporary()                   # the saved copy is a real workspace
 
 
+def test_save_as_creates_a_nested_destination_that_does_not_exist(qtbot, temproot, tmp_path):
+    """The operator names a folder in the save dialog; its parents need not exist yet."""
+    root = _temp_ws(temproot, name="ws-nested-dest",
+                    rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    m = WorkspaceManager()
+    assert m.open(root) is True
+    dest = tmp_path / "2026-08" / "beamtime-7" / "acoustic-map"
+
+    assert m.save_as(dest) is True
+    assert (dest / "card.policy.toml").exists()
+    assert m.root() == dest.resolve() and not m.is_temporary()
+    assert not root.exists()                          # the temp source is discarded only on success
+
+
+def test_save_as_failure_leaves_no_created_directories_behind(qtbot, temproot, tmp_path,
+                                                              monkeypatch):
+    """A failed transaction must leave the filesystem exactly as it found it — no half-made tree."""
+    root = _temp_ws(temproot, name="ws-nested-failure",
+                    rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    m = WorkspaceManager()
+    assert m.open(root)
+    dest = tmp_path / "2026-08" / "beamtime-7" / "acoustic-map"
+
+    def fail_open(path):
+        raise OSError("cannot validate staged workspace")
+
+    monkeypatch.setattr(wm.Workspace, "open", staticmethod(fail_open))
+    assert not m.save_as(dest)
+    assert not (tmp_path / "2026-08").exists()        # validation failed before anything was made
+    assert not list(tmp_path.glob("**/.acoustic-map.isar-saving-*"))
+    assert root.exists() and m.root() == root
+
+    # …and the same holds when the promotion itself is what fails, after the tree was created.
+    monkeypatch.undo()
+    monkeypatch.setattr(wm.os, "replace", lambda *_a: (_ for _ in ()).throw(OSError("rename boom")))
+    assert not m.save_as(dest)
+    assert not (tmp_path / "2026-08").exists()
+    assert root.exists() and m.root() == root
+
+
 def test_save_as_refuses_non_empty_dest(qtbot, temproot, tmp_path):
     root = _temp_ws(temproot, rows=[{"scan": 1, "detector": "det", "status": "fitted",
                                      "omega0": 5.0}])

@@ -28,6 +28,8 @@ from dataclasses import dataclass, field, replace
 
 from PySide6.QtCore import Signal
 
+from isar_gui.log_render import RenderedEvent as FeedItem
+from isar_gui.log_render import render_event, scan_text
 from isar_gui.viewmodels.base import ViewModel
 
 log = logging.getLogger(__name__)
@@ -35,15 +37,8 @@ log = logging.getLogger(__name__)
 #: Held statuses on results rows (mirror of the engine's exception vocabulary, display-only).
 _HELD_PREFIX = "held"
 
-
-@dataclass(frozen=True)
-class FeedItem:
-    """One operator-facing line of the campaign feed."""
-
-    ts: float
-    kind: str
-    text: str
-    severity: str   # "info" | "notice" | "warn" | "terminal"
+__all__ = ["CampaignState", "CampaignViewModel", "FeedItem", "analysis_readout", "budget_readout",
+           "current_activity_text", "reduce_campaign", "render_feed_item", "terminal_status_text"]
 
 
 @dataclass(frozen=True)
@@ -163,7 +158,7 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
         if isinstance(it, (int, float)):
             iteration = int(it) if iteration is None else max(iteration, int(it))
         if kind in ("propose", "run"):
-            last_scan = _scan_text(kind, p)
+            last_scan = scan_text(kind, p)
         if kind == "activity_start" and p.get("activity_id"):
             activities[str(p["activity_id"])] = {**p, "started_ts": rec.get("ts")}
             if p.get("stage") == "final_certification":
@@ -243,98 +238,13 @@ def _fmt_hkl(hkl) -> str:
         return str(hkl)
 
 
-def _fmt_count(value) -> str:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return str(value)
-    for scale, suffix in ((1e9, "G"), (1e6, "M"), (1e3, "k")):
-        if abs(number) >= scale:
-            return f"{number / scale:.3g}{suffix}"
-    return f"{number:g}"
-
-
-def _scan_text(kind: str, p: dict) -> str | None:
-    """The operator line for a propose/run payload — shared by the live feed and the reducer's
-    ``last_scan`` so both surfaces show the identical text for the same record."""
-    it = p.get("iter")
-    tail = f"  [iter {it}]" if it is not None else ""
-    if kind == "propose":
-        return (f"propose q={_fmt_hkl(p.get('hkl'))} E∈[{p.get('e_lo')}, {p.get('e_hi')}] "
-                f"n={_fmt_count(p.get('ncount'))} ({p.get('kind', '?')}){tail}")
-    if kind == "run":
-        return f"scan {p.get('job_id', '?')} submitted (cost {_fmt_count(p.get('cost'))} n){tail}"
-    return None
-
-
 def render_feed_item(rec: dict) -> FeedItem | None:
-    """One-line operator rendering of a session-log record; ``None`` = keep out of the feed."""
-    kind = rec.get("kind", "?")
-    p = rec.get("payload") or {}
-    ts = float(rec.get("ts") or 0.0)
-    it = p.get("iter")
-    tail = f"  [iter {it}]" if it is not None else ""
-    if kind in ("timing", "analysis_clock"):
-        return None                       # ~16/iteration profiling spans — noise in a feed
-    if kind in ("propose", "run"):
-        return FeedItem(ts, kind, _scan_text(kind, p), "info")
-    if kind == "validate":
-        ok = p.get("would_queue")
-        text = "validate: ok" if ok else f"validate: blocked {p.get('blockers') or '(unspecified)'}"
-        return FeedItem(ts, kind, text + tail, "info" if ok else "warn")
-    if kind == "scan_design_authority_decision":
-        role = p.get("selected_role", "?")
-        outcome = str(p.get("decision_outcome", "?")).replace("_", " ")
-        points = p.get("point_counts") or {}
-        margin = p.get("lower_margin")
-        margin_text = "unavailable" if margin is None else f"{float(margin):.4g} nats/point"
-        text = (f"scan-window authority: {outcome}; selected {role}; "
-                f"points {points.get('legacy', '?')}→{points.get('target_core', '?')}; "
-                f"lower margin {margin_text}")
-        severity = "notice" if role == "target_core" else "info"
-        return FeedItem(ts, kind, text + tail, severity)
-    if kind == "analyze":
-        text = f"analyzed {p.get('n_rows', 0)} row(s): {p.get('dispositions')}{tail}"
-        return FeedItem(ts, kind, text, "info")
-    if kind == "decide":
-        action = p.get("action", "?")
-        if action == "campaign_start":
-            src = (p.get("source") or {}).get("kind")
-            resumed = (p.get("resumed") or {}).get("n_observations")
-            text = f"campaign started ({src or 'unknown source'}"
-            text += f", resuming {resumed} observation(s))" if resumed else ")"
-            return FeedItem(ts, kind, text, "notice")
-        if action == "operator_stop":
-            return FeedItem(ts, kind, f"stop requested — honoring at the iteration boundary{tail}",
-                            "notice")
-        if action == "model_update":
-            text = (f"model update: {p.get('converged')}/{p.get('n_grid')} converged, "
-                    f"{p.get('n_observations')} obs{tail}")
-            return FeedItem(ts, kind, text, "info")
-        return FeedItem(ts, kind, str(action).replace("_", " ") + tail, "info")
-    if kind == "escalate_fit":
-        q = f" at {_fmt_hkl(p.get('hkl'))}" if p.get("hkl") is not None else ""
-        text = (f"fit escalated {p.get('from_tier')}→{p.get('to_tier')} "
-                f"{q} ({p.get('phase', p.get('outcome', '?'))})")
-        return FeedItem(ts, kind, text + tail, "info")
-    if kind == "activity_start":
-        stage = str(p.get("stage", "activity")).replace("_", " ")
-        q = f" at {_fmt_hkl(p.get('q'))}" if p.get("q") is not None else ""
-        return FeedItem(ts, kind, f"{stage} started{q}", "notice")
-    if kind == "activity_progress":
-        return None
-    if kind == "activity_end":
-        stage = str(p.get("stage", "activity")).replace("_", " ")
-        return FeedItem(ts, kind, f"{stage}: {p.get('status', 'completed')}",
-                        "warn" if p.get("status") in ("failed", "interrupted") else "info")
-    if kind == "exception":
-        return FeedItem(ts, kind, f"{p.get('action', 'exception')}{tail}", "warn")
-    if kind == "stop":
-        reasons = p.get("reasons")
-        text = f"campaign {p.get('state', '?')}: " + "; ".join(
-            str(r) for r in (reasons if isinstance(reasons, list) else []))
-        return FeedItem(ts, kind, text, "terminal")
-    return FeedItem(ts, kind, str(kind), "info")   # unknown kinds surface, never vanish silently
+    """One-line operator rendering of a session-log record; ``None`` = keep out of the feed.
+
+    The whole kind→sentence mapping, and the list of audit-trail/profiling kinds the dock hides,
+    live in :mod:`isar_gui.log_render`. This is the viewmodel-side name the docks already use.
+    """
+    return render_event(rec)
 
 
 def budget_readout(state: CampaignState) -> tuple[int, str]:
