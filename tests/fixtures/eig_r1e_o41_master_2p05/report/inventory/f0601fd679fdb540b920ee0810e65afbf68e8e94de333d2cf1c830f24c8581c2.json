@@ -1,0 +1,60 @@
+{
+  "inventory_version": "isar.action-inventory/1",
+  "generator_registry_version": "isar.generator-registry/1:8a13f7f73e03",
+  "canonicalization_version": "isar.canonical/1",
+  "reports": [
+    {
+      "generator": "legacy_selector_adapter",
+      "status": "completed",
+      "generated": 1,
+      "deduped": 0,
+      "reason_code": null,
+      "error_code": null
+    },
+    {
+      "generator": "narrow_rival_probe",
+      "status": "completed",
+      "generated": 0,
+      "deduped": 0,
+      "reason_code": "no_selectable_action",
+      "error_code": null
+    }
+  ],
+  "evaluations": [
+    {
+      "generator": "legacy_selector_adapter",
+      "eligibility": "eligible",
+      "rejection_class": null,
+      "rejection_reason": null,
+      "selection_reason": "master-predictive EIG q=0.05 (hkl=[2.05, 0.0, 0.0]); joint=0.431 nats, expected \u03c9 half-width reduction=0.004053 meV, model/branch entropy reduction=0.0347 nats",
+      "policy_rank": 0.0,
+      "scientific_action_fingerprint": "f447f498c0bf6fa4181a650fc6bfafd805b34301ae54082ce1a991bcd936a671",
+      "intent": {
+        "action_class": "production",
+        "hkl": [
+          2.05,
+          0.0,
+          0.0
+        ],
+        "energy_lo": -2.0,
+        "energy_hi": 7.0,
+        "window_family": "target",
+        "target_branch_role": "acoustic",
+        "rival_branch_role": "optic",
+        "evidence_basis_fingerprint": "8ecd5fbb13fc6f6c74ca57c9eeda3fdd60b5d59acf6e06664b6d3ac5703ecf74",
+        "hypotheses_fingerprint": "f6c5beecf674fbf9227ae24996c8aa847e0f50e2f55ae6b4534c7d68b15a4e82",
+        "campaign_slice_fingerprint": "isar.campaign-slice/1:80a59ce2c7f43071",
+        "evidence_sink": "canonical_master"
+      },
+      "score": {
+        "expected_identity_gain": 0.03469822108477968,
+        "expected_precision_gain": 0.261393600247663,
+        "expected_coverage_gain": null,
+        "expected_measurement_cost": 0.1432,
+        "expected_analysis_cost": null,
+        "score_method": "master_predictive",
+        "score_confidence": null
+      }
+    }
+  ]
+}
