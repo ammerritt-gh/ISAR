@@ -130,6 +130,13 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   and a running TAVI instrument. Use `--spec spec.json` for an LLM-free run. **Currently drives the
   TAVI simulator only** (development tier), not a live beamline. See
   [campaigns/2026-06_MVP_FIRST_RUN.md](campaigns/2026-06_MVP_FIRST_RUN.md).
+  The **budget is the only stop condition** — there is no iteration cap. A goal or spec compiled by
+  `isar drive` that declares no budget gets the canonical default for its tier: **1 hour** of counting time on the
+  `deterministic` tier, **8 hours** on `mcstas` (`isar.drive.objective.DEFAULT_BUDGET_HOURS_BY_TIER`,
+  overridable with `--budget 8h` / `--budget 1e10n`). No neutron budget is set by default, so a
+  counting-time campaign is unconstrained in neutrons. On the deterministic tier the analysis
+  guardrail (`--analysis-limit`) is clamped to the counting-time budget, so the stated budget is the
+  whole campaign's wall time.
   Final certification is authoritative. If it widens one or more provisional intervals beyond the
   objective, drive automatically resumes acquisition while budget remains; no operator click is
   needed. The next certification fits only failed, changed, or previously unassessed q revisions,
