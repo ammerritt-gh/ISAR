@@ -3,6 +3,6 @@
   "step_h": 0.05,
   "tolerance_meV": 0.5,
   "target_branch": "acoustic",
-  "energy_search_meV": [-2.0, 7.0],
+  "energy_search_meV": [-10.0, 10.0],
   "budget_neutrons": 10000000000.0
 }
