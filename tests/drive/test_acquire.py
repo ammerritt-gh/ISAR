@@ -815,6 +815,9 @@ def test_shadow_candidates_share_the_selected_action_q_kind_and_reason():
                                  proposal.n_points, proposal.ncount)
 
 
-def test_declaring_authoritative_scan_window_eig_refuses_at_campaign_setup():
-    with pytest.raises(ValueError, match="scan_window_eig_authoritative_unavailable"):
+def test_authoritative_scan_window_eig_requires_the_exact_o41_profile_at_campaign_setup():
+    with pytest.raises(ValueError) as raised:
         _eig_objective("authoritative")
+    message = str(raised.value)
+    assert "scan_window_eig_authoritative_profile_invalid" in message
+    assert "exactly one O41 policy is required" in message

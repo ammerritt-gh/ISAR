@@ -563,9 +563,12 @@ def test_identical_grids_deduplicate_with_alias_provenance():
         c.candidate_id for c in inventory.candidates]
 
 
-def test_authoritative_mode_refuses_with_a_stable_code():
-    with pytest.raises(ValueError, match="scan_window_eig_authoritative_unavailable"):
-        _context(scan_window_eig_mode="authoritative")
+def test_authoritative_mode_builds_the_same_candidate_space_as_shadow():
+    authoritative = design_scan_windows(_context(scan_window_eig_mode="authoritative"))
+    shadow = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    assert [candidate.candidate_id for candidate in authoritative.candidates] == [
+        candidate.candidate_id for candidate in shadow.candidates]
+    assert authoritative.selected_candidate.candidate_family == FAMILY_LEGACY_UNIFORM
     with pytest.raises(ValueError, match="scan_window_eig_mode must be one of"):
         _context(scan_window_eig_mode="on")
 

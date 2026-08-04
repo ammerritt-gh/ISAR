@@ -71,7 +71,6 @@ from isar.predictive import (
 )
 from isar.schema.hypotheses import (
     MAX_NCOUNT_PER_SCAN,
-    SCAN_WINDOW_EIG_AUTHORITATIVE_UNAVAILABLE,
     SCAN_WINDOW_EIG_MODES,
 )
 from isar.schema.eig_shadow import (
@@ -236,12 +235,6 @@ class ScanDesignContext:
             raise ValueError(
                 "scan_window_eig_mode must be one of "
                 f"{', '.join(SCAN_WINDOW_EIG_MODES)}")
-        if self.scan_window_eig_mode == "authoritative":
-            # Defence in depth: the policy contract already refuses this at campaign setup, so a
-            # context carrying it means the refusal was bypassed — never silently run as shadow.
-            raise ValueError(
-                f"{SCAN_WINDOW_EIG_AUTHORITATIVE_UNAVAILABLE}: scan-window EIG selection is not "
-                "implemented")
 
     def to_dict(self) -> dict:
         """Strict-JSON view used for audit and the context fingerprint."""
@@ -995,7 +988,7 @@ def design_scan_windows(
     candidates = [legacy]
     refusals: list[ScanDesignRefusal] = []
 
-    if context.scan_window_eig_mode == "shadow":
+    if context.scan_window_eig_mode in {"shadow", "authoritative"}:
         domain = authorized_domain(context, config)
         by_identity: dict[tuple[str, tuple[float, ...], int], int] = {
             _dedup_identity(legacy): 0}
@@ -1017,7 +1010,7 @@ def design_scan_windows(
             candidates.append(candidate)
 
     basis = (SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED
-             if context.scan_window_eig_mode == "shadow"
+             if context.scan_window_eig_mode in {"shadow", "authoritative"}
              else SELECTION_BASIS_LEGACY_CONTROL_OFF)
     return ScanDesignInventory(
         context=context,

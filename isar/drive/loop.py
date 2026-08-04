@@ -20,6 +20,7 @@ TAVI client and shell out to ``isar run``.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import copy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -74,6 +75,14 @@ from isar.drive.acquisition.realized_comparison import (
     load_scan_design_realized_comparison,
     persist_realized_comparison,
 )
+from isar.drive.acquisition.authority import (
+    apply_selected_request,
+    attach_authority_metadata,
+    authenticate_authority_submission,
+    build_authority_decision,
+    load_authority_decision,
+    persist_authority_decision,
+)
 from isar.drive.acquisition.inventory import (
     GENERATOR_REGISTRY, GENERATOR_REGISTRY_VERSION, TERMINAL_ACTION_INVENTORY_EXHAUSTED,
     TERMINAL_CONTROLLER_FAULT, CampaignSliceKey, FinalizedProposal, RejectionClass,
@@ -105,6 +114,8 @@ from isar.drive.supervisor.stopping import (
     systematic_floor,
 )
 from isar.predictive import PredictiveArtifactError, validate_master_predictive_artifact
+from isar.eig.o41_authority import validate_o41_authoritative_profile
+from isar.schema.eig_realized import RealizedScanRequest
 from isar.schema.card import Card
 from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
 from isar.schema.steering import (ANALYSIS_UNUSABLE, AUXILIARY_TRACK_NODE, CANDIDATE_NOT_DETECTED,
@@ -137,6 +148,23 @@ _REALIZED_SUBMISSION_FIELDS = (
     "scan_design_realized_variant_fingerprints",
     "scan_design_realized_selected_request_fingerprint",
     "scan_design_realized_selected_grid_fingerprint",
+)
+
+_AUTHORITY_SUBMISSION_FIELDS = (
+    "scan_design_authority_decision_ref",
+    "scan_design_authority_decision_fingerprint",
+    "scan_design_authority_outcome",
+    "scan_design_authority_status",
+    "scan_design_authority_selected_role",
+    "scan_design_authority_reason_codes",
+    "scan_design_authority_legacy_point_count",
+    "scan_design_authority_target_point_count",
+    "scan_design_authority_delta",
+    "scan_design_authority_standard_error",
+    "scan_design_authority_lower_margin",
+    "scan_design_selected_role",
+    "scan_design_selected_candidate_family",
+    "scan_design_selected_candidate_id",
 )
 
 
@@ -1568,6 +1596,8 @@ def _proposal_from_submission(payload: dict) -> ScanProposal:
         "scientific_action_fingerprint": payload.get("scientific_action_fingerprint"),
         "feasibility_manifest_fingerprint": payload.get("feasibility_manifest_fingerprint"),
     }
+    for field in _AUTHORITY_SUBMISSION_FIELDS:
+        meta[field] = copy.deepcopy(payload.get(field))
     if payload.get("insertion_purpose") is not None:
         meta["insertion_purpose"] = payload.get("insertion_purpose")
     return ScanProposal(
@@ -2523,7 +2553,8 @@ def _record_action_rejection(cfg, plan, proposal, verdict: str,
 def _score_shadow_proposal(proposal, objective, cfg, *, it: int) -> None:
     """Run diagnostic scan-window scoring after selection and before realization clamps."""
     inventory = getattr(proposal, "scan_design_inventory", None)
-    if inventory is None or inventory.context.scan_window_eig_mode != "shadow":
+    if inventory is None or inventory.context.scan_window_eig_mode not in {
+            "shadow", "authoritative"}:
         return
     selected_id = inventory.selected_candidate_id
     selected = inventory.selected_candidate
@@ -3211,7 +3242,8 @@ def _refresh_realized_comparison(
 ) -> dict | None:
     """Attach exact current Slice 7 evidence, replacing any stale realized comparison."""
     inventory = getattr(proposal, "scan_design_inventory", None)
-    if inventory is None or inventory.context.scan_window_eig_mode != "shadow":
+    if inventory is None or inventory.context.scan_window_eig_mode not in {
+            "shadow", "authoritative"}:
         return None
     meta = proposal.meta if isinstance(proposal.meta, dict) else {}
     proposal.meta = meta
@@ -3348,6 +3380,211 @@ def _authenticate_realized_before_submission(
             _LOG.exception("failed to persist the realized-submission authentication event")
 
 
+def _proposal_for_realized_request(proposal, request: RealizedScanRequest):
+    candidate = _clone_proposal(proposal)
+    candidate.h, candidate.k, candidate.l = request.hkl
+    candidate.e_lo = request.e_lo
+    candidate.e_hi = request.e_hi
+    candidate.e_step = request.e_step
+    candidate.n_points = request.executed_point_count
+    candidate.ncount = request.ncount
+    meta = candidate.meta if isinstance(candidate.meta, dict) else {}
+    candidate.meta = meta
+    meta["proposal_fingerprint"] = request.request_fingerprint
+    meta["scan_design_candidate_id"] = request.source_candidate_id
+    return candidate
+
+
+def _clone_proposal(proposal):
+    """Clone mutable proposal state without pickling immutable mapping-proxy evidence."""
+    candidate = copy.copy(proposal)
+    candidate.meta = copy.deepcopy(proposal.meta)
+    return candidate
+
+
+def _restore_proposal(proposal, snapshot) -> None:
+    restored = _clone_proposal(snapshot)
+    proposal.__dict__.clear()
+    proposal.__dict__.update(restored.__dict__)
+
+
+def _restore_authenticated_legacy_request(cfg: CampaignConfig, proposal) -> None:
+    """Replace any selected target with the persisted exact legacy request after late auth loss."""
+    meta = proposal.meta if isinstance(proposal.meta, dict) else {}
+    comparison = load_scan_design_realized_comparison(
+        meta.get("scan_design_realized_comparison_ref"), cfg.workspace)
+    legacy = comparison.realized_pair.legacy
+    restored = _proposal_for_realized_request(proposal, legacy)
+    proposal.h, proposal.k, proposal.l = restored.h, restored.k, restored.l
+    proposal.e_lo, proposal.e_hi, proposal.e_step = (
+        restored.e_lo, restored.e_hi, restored.e_step)
+    proposal.n_points, proposal.ncount = restored.n_points, restored.ncount
+    meta["proposal_fingerprint"] = legacy.request_fingerprint
+    meta["scan_design_candidate_id"] = legacy.source_candidate_id
+    for field in _AUTHORITY_SUBMISSION_FIELDS:
+        meta.pop(field, None)
+    meta["scan_design_realized_selected_request_fingerprint"] = legacy.request_fingerprint
+    meta["scan_design_realized_selected_grid_fingerprint"] = legacy.grid_fingerprint
+    authenticate_realized_submission(proposal, cfg.workspace)
+
+
+def _prepare_authoritative_submission(
+        cfg: CampaignConfig, objective, proposal, budget_state: dict,
+        legacy_validation: dict, *, it: int,
+) -> dict:
+    """Run the bounded O41 validation/selection lifecycle and return selected validation."""
+    inventory = getattr(proposal, "scan_design_inventory", None)
+    if inventory is None or inventory.context.scan_window_eig_mode != "authoritative":
+        return legacy_validation
+    profile = validate_o41_authoritative_profile(objective.scan_window_eig)
+    authenticated_legacy_snapshot = _clone_proposal(proposal)
+    authenticated_legacy_validation = copy.deepcopy(legacy_validation)
+    legacy_snapshot = _clone_proposal(proposal)
+    refresh_count = 0
+    selector_calls = 0
+
+    while True:
+        meta = proposal.meta if isinstance(proposal.meta, dict) else {}
+        inventory_ref = meta.get("scan_design_inventory_ref")
+        comparison_ref = meta.get("scan_design_realized_comparison_ref")
+        try:
+            if refresh_count:
+                with timed(cfg.log_path, "validate", iteration=it,
+                           candidate_role="legacy_uniform", authority_refresh=refresh_count):
+                    legacy_validation = cfg.client.validate(_validate_body(
+                        proposal, sample=cfg.sample,
+                        background=cfg.sample_background_frozen))
+                log_event(cfg.log_path, "validate", {
+                    "candidate_role": "legacy_uniform",
+                    "would_queue": legacy_validation.get("would_queue", False),
+                    "blockers": legacy_validation.get("blockers"),
+                    "requested_points": legacy_validation.get("requested_points"),
+                    "feasible_points": _feasible_point_count(
+                        legacy_validation, proposal.n_points or 1),
+                    "request_fingerprint": (proposal.meta or {}).get("proposal_fingerprint"),
+                    "authority_refresh": refresh_count,
+                    "iter": it,
+                })
+                if not legacy_validation.get("would_queue", False):
+                    raise RuntimeError(
+                        "refreshed legacy request failed adapter validation")
+            comparison = load_scan_design_realized_comparison(comparison_ref, cfg.workspace)
+            target_request = comparison.realized_pair.target_core
+            if isinstance(target_request, RealizedScanRequest):
+                target_proposal = _proposal_for_realized_request(legacy_snapshot, target_request)
+                with timed(cfg.log_path, "validate", iteration=it,
+                           candidate_role="target_core", authority_refresh=refresh_count):
+                    target_validation = cfg.client.validate(_validate_body(
+                        target_proposal, sample=cfg.sample,
+                        background=cfg.sample_background_frozen))
+                target_support = _target_supporting_feasible_points(
+                    target_validation, (target_proposal.meta or {}).get("target_band"))
+                min_support = int((getattr(objective, "steering", None) or {}).get(
+                    "minimum_target_support_points", 0))
+                target_valid = bool(target_validation.get("would_queue", False))
+                if min_support > 0 and target_support is not None and target_support < min_support:
+                    target_valid = False
+                target_request_fingerprint = target_request.request_fingerprint
+                target_blockers = target_validation.get("blockers")
+                target_requested_points = target_validation.get("requested_points")
+                target_feasible_points = _feasible_point_count(
+                    target_validation, target_proposal.n_points or 1)
+            else:
+                target_validation = {}
+                target_support = None
+                target_valid = False
+                target_request_fingerprint = None
+                target_blockers = list(target_request.reason_codes)
+                target_requested_points = None
+                target_feasible_points = 0
+            log_event(cfg.log_path, "validate", {
+                "candidate_role": "target_core",
+                "would_queue": target_validation.get("would_queue", False),
+                "blockers": target_blockers,
+                "requested_points": target_requested_points,
+                "feasible_points": target_feasible_points,
+                "target_supporting_feasible_points": target_support,
+                "request_fingerprint": target_request_fingerprint,
+                "authority_refresh": refresh_count,
+                "iter": it,
+            })
+            # A refused target gets the one shared refresh before any selector call.  The second
+            # refusal is final and becomes an unavailable-authority legacy decision.
+            if not target_valid and refresh_count == 0:
+                refresh_count = 1
+                _restore_proposal(proposal, legacy_snapshot)
+                _refresh_realized_comparison(
+                    cfg, objective, proposal, budget_state, it=it,
+                    legacy_adjustments=("authoritative_target_validation_refresh",), force=True)
+                legacy_snapshot = _clone_proposal(proposal)
+                continue
+
+            decision = build_authority_decision(
+                inventory=proposal.scan_design_inventory,
+                inventory_ref=inventory_ref,
+                comparison=comparison,
+                comparison_ref=comparison_ref,
+                profile=profile,
+                legacy_validation_status=(
+                    "validated" if legacy_validation.get("would_queue", False) else "refused"),
+                target_validation_status="validated" if target_valid else "refused",
+                applicability_status=(proposal.meta or {}).get(
+                    "scan_design_eig_applicability", "unavailable"),
+                refresh_count=refresh_count,
+            )
+            selector_calls += 1
+            reference = persist_authority_decision(cfg.workspace, decision)
+            attach_authority_metadata(proposal, reference, decision)
+            apply_selected_request(proposal, decision)
+            if decision.physical_role != "none":
+                authenticate_authority_submission(proposal, cfg.workspace)
+            log_event(cfg.log_path, "scan_design_authority_decision", {
+                "iter": it,
+                "mode": "authoritative",
+                "decision_outcome": decision.decision_outcome,
+                "authority_status": decision.authority_status,
+                "selected_role": decision.physical_role,
+                "candidate_ids": {
+                    "legacy": decision.legacy_validation["candidate_id"],
+                    "target_core": decision.target_core_validation["candidate_id"],
+                },
+                "comparison_fingerprint": decision.realized_comparison_fingerprint,
+                "decision_fingerprint": decision.authority_decision_fingerprint,
+                "delta": decision.delta_information_per_executed_point_nats,
+                "standard_error": decision.paired_standard_error_nats,
+                "lower_margin": decision.lower_margin_nats,
+                "point_counts": {
+                    "legacy": decision.legacy_validation["executed_point_count"],
+                    "target_core": decision.target_core_validation["executed_point_count"],
+                },
+                "reason_codes": list(decision.reason_codes),
+                "refresh_count": refresh_count,
+                "selector_calls": selector_calls,
+            })
+            return target_validation if decision.physical_role == "target_core" else legacy_validation
+        except Exception as error:  # noqa: BLE001 - one shared refresh, then safe legacy
+            if refresh_count == 0:
+                refresh_count = 1
+                _restore_proposal(proposal, legacy_snapshot)
+                _refresh_realized_comparison(
+                    cfg, objective, proposal, budget_state, it=it,
+                    legacy_adjustments=("authoritative_authentication_refresh",), force=True)
+                legacy_snapshot = _clone_proposal(proposal)
+                continue
+            _restore_proposal(proposal, authenticated_legacy_snapshot)
+            legacy_validation = authenticated_legacy_validation
+            for field in _AUTHORITY_SUBMISSION_FIELDS:
+                (proposal.meta or {}).pop(field, None)
+            _LOG.exception(
+                "authoritative selection failed after its bounded refresh; submitting legacy")
+            log_event(cfg.log_path, "exception", {
+                "action": "scan_design_authority_unavailable",
+                "severity": "high", "error": str(error), "iter": it,
+                "refresh_count": refresh_count, "selector_calls": selector_calls,
+            })
+            return legacy_validation
+
+
 def _persist_action_inventory(cfg: CampaignConfig, inventory, *, it: int, proposal,
                               prev_fingerprint: str | None,
                               force_full: bool) -> tuple[dict | None, str | None]:
@@ -3409,6 +3646,48 @@ def _compare_returned_realized_grid(
         cfg: CampaignConfig, proposal, submission_payload: dict,
         document: Mapping[str, Any], *, it: int | None) -> tuple[str, str | None]:
     """Authenticate Slice 7 evidence and compare TAVI's returned grid without blocking analysis."""
+    authority_ref = submission_payload.get("scan_design_authority_decision_ref")
+    if authority_ref is not None:
+        try:
+            decision = load_authority_decision(authority_ref, cfg.workspace)
+            request = decision.selected_request
+            if request is None and decision.physical_role == "none":
+                return "not_applicable", None
+            if request is None:
+                raise ValueError("authority decision has no selected physical request")
+            if (submission_payload.get("scan_design_authority_decision_fingerprint")
+                    != decision.authority_decision_fingerprint
+                    or submission_payload.get("scan_design_authority_selected_role")
+                    != decision.physical_role
+                    or submission_payload.get("proposal_fingerprint")
+                    != request["request_fingerprint"]):
+                raise ValueError("authority-decision submission identity is inconsistent")
+            expected = TAVI_GRID_ADAPTER.canonicalize_returned_energies(
+                request["executed_energies"])
+            result = document.get("result") if isinstance(document, Mapping) else None
+            returned = TAVI_GRID_ADAPTER.canonicalize_returned_energies(
+                result.get("scan_values_1") if isinstance(result, Mapping) else None)
+        except Exception as error:  # noqa: BLE001 - analysis continues after evidence loss
+            _LOG.exception("authority evidence is unavailable for returned-grid comparison")
+            log_event(cfg.log_path, "exception", {
+                "action": "scan_design_authority_unavailable", "severity": "high",
+                "job_id": submission_payload.get("job_id"), "error": str(error), "iter": it,
+                "authority_decision_ref": authority_ref,
+            })
+            return "unavailable", "scan_design_authority_unavailable"
+        if returned != expected:
+            log_event(cfg.log_path, "exception", {
+                "action": "executed_grid_mismatch", "severity": "high",
+                "job_id": submission_payload.get("job_id"),
+                "reason": "executed grid differs from the authority-selected request",
+                "expected_energies": list(expected), "returned_energies": list(returned),
+                "authority_decision_ref": authority_ref,
+                "authority_decision_fingerprint": decision.authority_decision_fingerprint,
+                "selected_role": decision.physical_role,
+                "selected_request_fingerprint": request["request_fingerprint"], "iter": it,
+            })
+            return "mismatch", "executed_grid_mismatch"
+        return "matched", None
     selected_grid = submission_payload.get("scan_design_realized_selected_grid_fingerprint")
     if selected_grid is None:
         return "not_applicable", None
@@ -3796,16 +4075,57 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             declined_verdict = "validation_rejected"
             break
 
+        legacy_validation = val
+        val = _prepare_authoritative_submission(
+            cfg, objective, proposal, budget_state, legacy_validation, it=it)
+        finalized = finalized_proposal(proposal)
+        manifest_fingerprint = (validated_attempt(
+            finalized, val, status=("would_queue" if val.get("would_queue", False)
+                                    else "validation_rejected")).feasibility_manifest_fingerprint
+            if finalized is not None else _feasibility_manifest_fingerprint(val))
+        feasible_points = _feasible_point_count(val, proposal.n_points or 1)
+
         with timed(log_path, "submit", iteration=it, attempt=attempt) as _m:
-            body = _scan_body(proposal, cfg.engine, cfg.base_seed + scan_counter,
-                               sample=cfg.sample, background=cfg.sample_background_frozen)
             _authenticate_realized_before_submission(
                 cfg, objective, proposal, budget_state, it=it)
+            if (proposal.meta or {}).get("scan_design_authority_selected_role") in {
+                    "legacy", "target_core"}:
+                try:
+                    authenticate_authority_submission(proposal, cfg.workspace)
+                except Exception as error:  # noqa: BLE001 - final fail-safe is exact legacy
+                    _LOG.exception(
+                        "authority identity changed at the submission boundary; restoring legacy")
+                    _restore_authenticated_legacy_request(cfg, proposal)
+                    val = legacy_validation
+                    finalized = finalized_proposal(proposal)
+                    manifest_fingerprint = (validated_attempt(
+                        finalized, val, status="would_queue").feasibility_manifest_fingerprint
+                        if finalized is not None else _feasibility_manifest_fingerprint(val))
+                    feasible_points = _feasible_point_count(val, proposal.n_points or 1)
+                    log_event(log_path, "exception", {
+                        "action": "scan_design_authority_late_authentication_failed",
+                        "severity": "high", "error": str(error), "iter": it,
+                        "recovery": "authenticated_legacy_request",
+                    })
+            body = _scan_body(proposal, cfg.engine, cfg.base_seed + scan_counter,
+                              sample=cfg.sample, background=cfg.sample_background_frozen)
+            idempotency_key = f"{objective.name or 'campaign'}-{cfg.run_nonce}-{scan_counter}"
+            log_event(log_path, "submission_intent", {
+                "iter": it,
+                "attempt": attempt,
+                "idempotency_key": idempotency_key,
+                "proposal_fingerprint": (proposal.meta or {}).get("proposal_fingerprint"),
+                "scan_design_authority_decision_ref": (proposal.meta or {}).get(
+                    "scan_design_authority_decision_ref"),
+                "scan_design_authority_decision_fingerprint": (proposal.meta or {}).get(
+                    "scan_design_authority_decision_fingerprint"),
+                "scan_design_authority_selected_role": (proposal.meta or {}).get(
+                    "scan_design_authority_selected_role"),
+            })
             try:
                 submit = client.submit_scan(
                     body,
-                    idempotency_key=(
-                        f"{objective.name or 'campaign'}-{cfg.run_nonce}-{scan_counter}"))
+                    idempotency_key=idempotency_key)
             except TaviError as error:
                 code = _tavi_error_code(error)
                 if error.status == 400 and code == "all_points_infeasible":
@@ -3881,6 +4201,34 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                 "scan_design_eig_applicability"),
             "scan_design_eig_invalidation_reason": (proposal.meta or {}).get(
                 "scan_design_eig_invalidation_reason"),
+            "scan_design_authority_decision_ref": (proposal.meta or {}).get(
+                "scan_design_authority_decision_ref"),
+            "scan_design_authority_decision_fingerprint": (proposal.meta or {}).get(
+                "scan_design_authority_decision_fingerprint"),
+            "scan_design_authority_outcome": (proposal.meta or {}).get(
+                "scan_design_authority_outcome"),
+            "scan_design_authority_status": (proposal.meta or {}).get(
+                "scan_design_authority_status"),
+            "scan_design_authority_selected_role": (proposal.meta or {}).get(
+                "scan_design_authority_selected_role"),
+            "scan_design_authority_reason_codes": (proposal.meta or {}).get(
+                "scan_design_authority_reason_codes"),
+            "scan_design_authority_legacy_point_count": (proposal.meta or {}).get(
+                "scan_design_authority_legacy_point_count"),
+            "scan_design_authority_target_point_count": (proposal.meta or {}).get(
+                "scan_design_authority_target_point_count"),
+            "scan_design_authority_delta": (proposal.meta or {}).get(
+                "scan_design_authority_delta"),
+            "scan_design_authority_standard_error": (proposal.meta or {}).get(
+                "scan_design_authority_standard_error"),
+            "scan_design_authority_lower_margin": (proposal.meta or {}).get(
+                "scan_design_authority_lower_margin"),
+            "scan_design_selected_role": (proposal.meta or {}).get(
+                "scan_design_selected_role"),
+            "scan_design_selected_candidate_family": (proposal.meta or {}).get(
+                "scan_design_selected_candidate_family"),
+            "scan_design_selected_candidate_id": (proposal.meta or {}).get(
+                "scan_design_selected_candidate_id"),
             # The other two lifecycle identities, so a submitted scan joins back to the scientific
             # question it answers and the geometry its request was accepted under.
             "scientific_action_fingerprint": (proposal.meta or {}).get(

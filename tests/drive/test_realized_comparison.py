@@ -11,6 +11,11 @@ import pytest
 
 from isar.drive import loop
 from isar.drive.acquisition.acquire import ScanProposal
+from isar.drive.acquisition.authority import (
+    build_authority_decision,
+    load_authority_decision,
+    persist_authority_decision,
+)
 from isar.drive.acquisition.inventory import canonical_json
 from isar.drive.acquisition.realized_comparison import (
     attach_realized_metadata,
@@ -28,6 +33,7 @@ from isar.drive.acquisition.scan_design import (
 from isar.drive.acquisition.scan_grid import UniformGrid
 from isar.drive.session_log import read_log
 from isar.eig.realized_score import score_realized_pair
+from isar.eig.o41_authority import O41AuthoritativeProfile
 from isar.eig.shadow_inventory import score_shadow_inventory
 from isar.schema.eig_policy import ScanWindowShadowScoringConfig
 from isar.schema.eig_realized import (
@@ -123,6 +129,93 @@ def test_counterfactual_exposure_change_is_a_refusal_not_a_coerced_pair():
 
     assert isinstance(pair.target_core, RealizedCandidateRefusal)
     assert pair.target_core.reason_codes == ("realized_exposure_mismatch",)
+
+
+def test_one_clone_exposure_adjustment_persists_visible_unavailable_authority(
+        tmp_path):
+    """A target-only adapter adjustment is a durable legacy outcome, never a silent no-op."""
+    inventory = _inventory()
+    inventory = replace(
+        inventory,
+        context=replace(inventory.context, scientific_action_fingerprint="9" * 64))
+    proposal = _proposal(inventory)
+
+    def finalize(target, *_args, **_kwargs):
+        target.ncount -= 1
+        target.meta["proposal_fingerprint"] = "e" * 64
+
+    pair = construct_realized_pair(
+        proposal, inventory, SimpleNamespace(), SimpleNamespace(), {},
+        it=1, finalizer=finalize)
+    inventory_ref = _inventory_reference(tmp_path, inventory)
+    comparison = build_realized_comparison(
+        inventory, inventory_ref, pair, remaining_seconds=0.0, rescorer=None)
+    comparison_ref = persist_realized_comparison(tmp_path, comparison)
+    profile = O41AuthoritativeProfile(
+        policy_fingerprint="1" * 64, variant_fingerprint="2" * 64,
+        policy_set_fingerprint="3" * 64, scoring_config_fingerprint="4" * 64)
+
+    decision = build_authority_decision(
+        inventory=inventory, inventory_ref=inventory_ref,
+        comparison=comparison, comparison_ref=comparison_ref, profile=profile,
+        legacy_validation_status="validated", target_validation_status="refused")
+    reference = persist_authority_decision(tmp_path, decision)
+
+    loaded = load_authority_decision(reference, tmp_path)
+    assert loaded.decision_outcome == "selection_evidence_unavailable"
+    assert loaded.physical_role == "legacy"
+    assert loaded.target_core_validation["validated_request_status"] == "refused"
+    assert "realized_exposure_mismatch" in loaded.target_core_validation["adjustments"]
+
+
+def test_bounded_authority_refresh_restores_the_initial_authenticated_legacy_without_third_pass(
+        monkeypatch, tmp_path):
+    """A refused target consumes the refresh; a refused refreshed legacy ends at pass two."""
+    proposal, comparison, _payload = _persist_unavailable_comparison(tmp_path)
+    proposal.scan_design_inventory = replace(
+        proposal.scan_design_inventory,
+        context=replace(
+            proposal.scan_design_inventory.context,
+            scan_window_eig_mode="authoritative"))
+    proposal.meta["scan_design_inventory_ref"] = _inventory_reference(
+        tmp_path, proposal.scan_design_inventory)
+    initial = loop._clone_proposal(proposal)
+    calls = []
+
+    class RefusingClient:
+        def validate(self, body):
+            calls.append(body)
+            return {"would_queue": False, "blockers": ["test_refusal"],
+                    "requested_points": body.get("n_points", 0), "feasible_points": 0}
+
+    monkeypatch.setattr(
+        loop, "load_scan_design_realized_comparison", lambda *_args: comparison)
+    refreshes = []
+    monkeypatch.setattr(
+        loop, "_refresh_realized_comparison",
+        lambda *_args, **kwargs: refreshes.append(kwargs.get("force")))
+    decisions = []
+    monkeypatch.setattr(
+        loop, "build_authority_decision",
+        lambda *_args, **_kwargs: decisions.append(True))
+    exact_config = runpy.run_path(str(
+        Path(__file__).parents[1] / "eig" / "test_o41_authority.py"))["_config"]()
+    cfg = SimpleNamespace(
+        workspace=tmp_path, log_path=tmp_path / "report" / "session_log.jsonl",
+        client=RefusingClient(), sample="sample", sample_background_frozen=None)
+
+    returned = loop._prepare_authoritative_submission(
+        cfg, SimpleNamespace(scan_window_eig=exact_config, steering={}), proposal,
+        {"kind": "neutrons", "amount": 1e9, "spent": 0.0},
+        {"would_queue": True, "requested_points": proposal.n_points,
+         "feasible_points": proposal.n_points},
+        it=3)
+
+    assert returned["would_queue"] is True
+    assert refreshes == [True]
+    assert len(calls) == 2  # target on pass one, refreshed legacy on pass two
+    assert decisions == []
+    assert proposal.__dict__ == initial.__dict__
 
 
 def test_historical_coarsening_refuses_if_adapter_still_reports_over_cap(monkeypatch, tmp_path):

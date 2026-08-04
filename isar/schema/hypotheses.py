@@ -189,13 +189,6 @@ class SteeringPolicy:
             raise ValueError(
                 "scan_window_eig_mode must be one of "
                 f"{', '.join(SCAN_WINDOW_EIG_MODES)}")
-        if self.scan_window_eig_mode == "authoritative":
-            # Refuse loudly at policy-freeze time.  Silently reading this as shadow (or off) would
-            # let a scientist believe a scored window was executed when no scorer exists.
-            raise ValueError(
-                f"{SCAN_WINDOW_EIG_AUTHORITATIVE_UNAVAILABLE}: scan-window EIG selection is not "
-                "implemented; declare 'shadow' to generate and persist candidates without "
-                "changing the executed scan")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

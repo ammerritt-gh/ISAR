@@ -30,6 +30,7 @@ from isar.drive.objective import (
 )
 from isar.eig.policy import compile_card_eig_policy_set
 from isar.schema.eig_policy import ScanWindowEIGConfig
+from isar.schema.hypotheses import content_fingerprint
 
 Dispatcher = _llm.Dispatcher
 LLMMClient = _llm.LLMMClient
@@ -330,6 +331,15 @@ def _build_spec(data: dict, merged: dict, *,
     frozen = resolve_hypothesis_snapshot(
         branch, resolved_energy, card_hypotheses=card_hypotheses, goal_override=goal_override,
         steering_override=data.get("steering"))
+    final_steering = dict(frozen["steering"])
+    if final_steering.get("scan_window_eig_mode") == "authoritative":
+        # The policy set is bound only after the objective comparison scope exists.  Construct the
+        # temporary scope carrier in off mode, then freeze authoritative mode together with the
+        # compiled card policy in the single final replacement below.
+        construction_steering = {**final_steering, "scan_window_eig_mode": "off"}
+        frozen = {**frozen, "steering": construction_steering,
+                  "hypothesis_fingerprint": content_fingerprint(
+                      frozen["hypotheses"], construction_steering)}
     common = dict(tolerance_meV=float(data["tolerance_meV"]), budget=budget,
                   tier=tier,
                   analysis_limit_seconds=(data.get("analysis_limit_seconds", 3600.0)
@@ -369,6 +379,8 @@ def _build_spec(data: dict, merged: dict, *,
     )
     frozen = replace(
         objective,
+        steering=final_steering,
+        hypothesis_fingerprint=content_fingerprint(objective.hypotheses, final_steering),
         scan_window_eig=ScanWindowEIGConfig(
             policy_set=policy_set,
             scoring_config=objective.scan_window_eig.scoring_config,

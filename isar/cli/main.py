@@ -173,6 +173,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="override budget as '<amount><unit>' e.g. '8h', '1e10n' (else from the spec/goal)")
     pd.add_argument("--analysis-limit", default=None,
                     help="absolute cumulative analysis ceiling, e.g. '1h', '3600s', or 'none'")
+    pd.add_argument("--scan-window-eig-mode", choices=["off", "shadow", "authoritative"],
+                    default=None,
+                    help="operator authoring choice for scan-window EIG; authoritative is restricted "
+                         "to the exact O41 profile frozen from a ready workspace")
     pd.add_argument("--calibration", default=None,
                     help="σ-calibration artifact path (default the repo phonon_dft_deterministic.json)")
     pd.add_argument("--tavi", default=None, help="TAVI API base URL (default http://127.0.0.1:8642/api/v1)")
@@ -250,12 +254,14 @@ def main(argv=None) -> int:
     if cmd == "drive":
         import hashlib
         import json
+        from dataclasses import replace
         from pathlib import Path
         from isar.drive.loop import run_campaign
         from isar.drive.session_log import read_log
         from isar.drive.supervisor.goal_to_spec import (
             ENVELOPE_SCHEMA, GoalParseError, envelope_from_json, goal_to_spec, make_envelope, spec_from_dict,
         )
+        from isar.schema.hypotheses import content_fingerprint
         try:
             if args.compile_only and (args.resume_latest or args.envelope):
                 raise GoalParseError("--compile-only accepts --goal or --spec, not resume/envelope")
@@ -272,6 +278,31 @@ def main(argv=None) -> int:
                 card_policy = load_policy(policy_path)
                 return card_policy.hypotheses, card_policy.scan_window_eig_policy_set
 
+            def apply_mode_override(objective, *, frozen: bool, declared_mode=None):
+                requested = args.scan_window_eig_mode
+                current = str((objective.steering or {}).get("scan_window_eig_mode", "off"))
+                if requested is None:
+                    return objective
+                if frozen:
+                    if requested != current:
+                        raise GoalParseError(
+                            "--scan-window-eig-mode conflicts with the frozen objective "
+                            f"({current})")
+                    return objective
+                if declared_mode is not None and requested != declared_mode:
+                    raise GoalParseError(
+                        "--scan-window-eig-mode conflicts with steering.scan_window_eig_mode "
+                        f"in the authoring input ({declared_mode})")
+                if requested == "authoritative" and not args.workspace:
+                    raise GoalParseError(
+                        "authoritative scan-window EIG requires a ready --workspace with "
+                        "card.policy.toml")
+                steering = {**dict(objective.steering), "scan_window_eig_mode": requested}
+                return replace(
+                    objective, steering=steering,
+                    hypothesis_fingerprint=content_fingerprint(
+                        objective.hypotheses, steering))
+
             if args.resume_latest:
                 # LLM-free resume: rebuild the FROZEN objective from the last campaign_start event; a
                 # goal is NEVER re-compiled through the LLM (spec_from_dict is a pure dict path).
@@ -287,6 +318,7 @@ def main(argv=None) -> int:
                 objective = spec_from_dict(payload["objective"],
                                            defaults={"tier": args.tier or "deterministic"},
                                            where="resume")
+                objective = apply_mode_override(objective, frozen=True)
                 # The frozen objective carries its own tier; an explicit --tier cannot override it
                 # (a full ObjectiveSpec dict bypasses the defaults). Say so instead of silently ignoring.
                 if args.tier is not None and objective.tier != args.tier:
@@ -296,8 +328,12 @@ def main(argv=None) -> int:
                 # Carry the resumed campaign's fingerprint over so it stays comparable across resumes.
                 prev_source = payload.get("source") or {}
                 source = {"kind": "resume", "sha256": prev_source.get("sha256")}
+                for field in ("campaign_authoring_fingerprint", "objective_fingerprint"):
+                    if prev_source.get(field) is not None:
+                        source[field] = prev_source[field]
             elif args.envelope:
                 objective, source, original_goal = envelope_from_json(args.envelope)
+                objective = apply_mode_override(objective, frozen=True)
                 source = dict(source)
                 source["envelope_schema"] = ENVELOPE_SCHEMA
                 if original_goal is not None:
@@ -317,6 +353,12 @@ def main(argv=None) -> int:
                     card_hypotheses=card_hypotheses,
                     card_eig_policy_set=card_eig_policy_set,
                 )
+                declared_mode = None
+                if isinstance(spec_data, dict) and isinstance(spec_data.get("steering"), dict):
+                    declared_mode = spec_data["steering"].get("scan_window_eig_mode")
+                objective = apply_mode_override(
+                    objective, frozen=isinstance(spec_data.get("path"), list),
+                    declared_mode=declared_mode)
                 source = {"kind": "spec",
                           "sha256": hashlib.sha256(Path(args.spec).read_bytes()).hexdigest()}
             else:
@@ -325,6 +367,11 @@ def main(argv=None) -> int:
                     args.goal, defaults={"tier": args.tier or "deterministic"},
                     card_hypotheses=card_hypotheses,
                     card_eig_policy_set=card_eig_policy_set)
+                raw = objective.meta.get("raw") if isinstance(objective.meta, dict) else None
+                declared_mode = ((raw.get("steering") or {}).get("scan_window_eig_mode")
+                                 if isinstance(raw, dict) else None)
+                objective = apply_mode_override(
+                    objective, frozen=False, declared_mode=declared_mode)
                 source = {"kind": "goal",
                           "sha256": hashlib.sha256(args.goal.encode("utf-8")).hexdigest()}
             if args.budget:
@@ -333,6 +380,26 @@ def main(argv=None) -> int:
             if args.analysis_limit is not None:
                 objective.analysis_limit_seconds = _parse_analysis_limit(args.analysis_limit)
                 objective.__post_init__()
+            if not args.resume_latest:
+                objective_payload = objective.to_dict()
+                objective_fingerprint = hashlib.sha256(json.dumps(
+                    objective_payload, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=True).encode("utf-8")).hexdigest()
+                policy_set = objective.scan_window_eig.policy_set
+                authoring_payload = {
+                    "source_sha256": source.get("sha256"),
+                    "scan_window_eig_mode": objective.steering.get(
+                        "scan_window_eig_mode", "off"),
+                    "policy_set_fingerprint": (
+                        None if policy_set is None else policy_set.policy_set_fingerprint),
+                    "tier": objective.tier,
+                    "budget": objective.budget,
+                    "analysis_limit_seconds": objective.analysis_limit_seconds,
+                }
+                source["objective_fingerprint"] = objective_fingerprint
+                source["campaign_authoring_fingerprint"] = hashlib.sha256(json.dumps(
+                    authoring_payload, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=True).encode("utf-8")).hexdigest()
             if args.compile_only:
                 original_goal = args.goal if args.goal is not None else None
                 envelope = make_envelope(objective, source=source, original_goal=original_goal)

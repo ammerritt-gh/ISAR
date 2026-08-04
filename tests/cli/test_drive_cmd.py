@@ -169,7 +169,10 @@ def test_spec_start_fingerprint_is_sha256_of_file_bytes(tmp_path, monkeypatch):
     p = _spec_file(tmp_path)
     main(["drive", "--spec", str(p), "--workspace", str(tmp_path / "ws")])
     expected = hashlib.sha256(p.read_bytes()).hexdigest()
-    assert captured[0][1]["source"] == {"kind": "spec", "sha256": expected}
+    source = captured[0][1]["source"]
+    assert source["kind"] == "spec" and source["sha256"] == expected
+    assert len(source["objective_fingerprint"]) == 64
+    assert len(source["campaign_authoring_fingerprint"]) == 64
 
 
 def test_goal_start_fingerprint_is_sha256_of_goal_text(tmp_path, monkeypatch):
@@ -181,7 +184,39 @@ def test_goal_start_fingerprint_is_sha256_of_goal_text(tmp_path, monkeypatch):
     captured = _stub_run_campaign(monkeypatch)
     main(["drive", "--goal", goal, "--workspace", str(tmp_path / "ws")])
     expected = hashlib.sha256(goal.encode("utf-8")).hexdigest()
-    assert captured[0][1]["source"] == {"kind": "goal", "sha256": expected}
+    source = captured[0][1]["source"]
+    assert source["kind"] == "goal" and source["sha256"] == expected
+    assert len(source["objective_fingerprint"]) == 64
+    assert len(source["campaign_authoring_fingerprint"]) == 64
+
+
+def test_shadow_mode_override_is_frozen_into_new_compact_spec(tmp_path, monkeypatch):
+    captured = _stub_run_campaign(monkeypatch)
+    assert main([
+        "drive", "--spec", str(_spec_file(tmp_path)),
+        "--workspace", str(tmp_path / "ws"), "--scan-window-eig-mode", "shadow",
+    ]) == 0
+    assert captured[0][0].steering["scan_window_eig_mode"] == "shadow"
+
+
+def test_resume_rejects_mode_that_conflicts_with_frozen_objective(
+        tmp_path, monkeypatch, capsys):
+    workspace = tmp_path / "ws"
+    (workspace / "report").mkdir(parents=True)
+    objective = ObjectiveSpec.along_h(
+        h_start=2.1, h_end=2.2, step=0.1, tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e3})
+    log_event(
+        workspace / "report" / "session_log.jsonl", "decide",
+        {"action": "campaign_start", "objective": objective.to_dict(),
+         "source": {"kind": "goal", "sha256": "legacy"}},
+    )
+    _stub_run_campaign(monkeypatch)
+    assert main([
+        "drive", "--resume-latest", "--workspace", str(workspace),
+        "--scan-window-eig-mode", "shadow",
+    ]) == 2
+    assert "conflicts with the frozen objective (off)" in capsys.readouterr().err
 
 
 def test_natural_goal_passes_inline_card_eig_authoring_to_objective_compiler(tmp_path, monkeypatch):

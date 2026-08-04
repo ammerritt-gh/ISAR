@@ -189,7 +189,7 @@ def score_proposal_shadow_inventory(
     inventory = getattr(proposal, "scan_design_inventory", None)
     if inventory is None:
         return proposal
-    if inventory.context.scan_window_eig_mode != "shadow":
+    if inventory.context.scan_window_eig_mode not in {"shadow", "authoritative"}:
         proposal.scan_design_inventory = inventory.with_shadow_scoring(
             ScanDesignShadowScoring.not_requested())
         return proposal
@@ -243,7 +243,8 @@ def score_proposal_realized_pair(
 def attach_unavailable_shadow(proposal: Any, reason_code: str, *, error: str | None = None) -> Any:
     """Fail open without minting source identities or changing the selected candidate."""
     inventory = getattr(proposal, "scan_design_inventory", None)
-    if inventory is None or inventory.context.scan_window_eig_mode != "shadow":
+    if inventory is None or inventory.context.scan_window_eig_mode not in {
+            "shadow", "authoritative"}:
         return proposal
     diagnostics = {} if error is None else {"error": str(error)}
     proposal.scan_design_inventory = inventory.with_shadow_scoring(

@@ -176,6 +176,9 @@ class ObjectiveSpec:
                 if policy.policy_kind == "isar.scalar_absolute_partitions/o36.5":
                     for variant in policy.variants:
                         compile_qoi_distinction_policy(policy, variant)
+        if self.steering.get("scan_window_eig_mode", "off") == "authoritative":
+            from isar.eig.o41_authority import validate_o41_authoritative_profile
+            validate_o41_authoritative_profile(self.scan_window_eig)
         if self.hypotheses:
             names: set[str] = set()
             for hypothesis in self.hypotheses:

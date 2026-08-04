@@ -443,7 +443,8 @@ def score_shadow_inventory(
 ) -> ScanDesignShadowScoring:
     """Score exactly legacy versus target-core without selecting either candidate."""
     check = deadline_check or (lambda: None)
-    if getattr(getattr(inventory, "context", None), "scan_window_eig_mode", None) != "shadow":
+    if getattr(getattr(inventory, "context", None), "scan_window_eig_mode", None) not in {
+            "shadow", "authoritative"}:
         return ScanDesignShadowScoring.not_requested()
     try:
         inventory = type(inventory).from_dict(inventory.to_full_dict())
