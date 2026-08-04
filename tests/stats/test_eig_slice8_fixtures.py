@@ -186,6 +186,8 @@ def test_replacement_prefreeze_reproduces_calibration_and_keeps_case2_unresolved
     assert standard_error > 0.0
     assert lower <= 0.0
     assert gate.CASE_DEFINITIONS[1]["expected_outcome"] == gate.OUTCOME_LEGACY
+    assert development["faults"][0]["fault_id"] == gate.FAULT_DEFINITIONS[0][
+        "fault_id"]
     gate_manifest = gate.build_replacement_gate_manifest("a" * 40)
     case_manifest = gate.build_replacement_case_manifest(
         gate_manifest, development["fixture_definitions"])

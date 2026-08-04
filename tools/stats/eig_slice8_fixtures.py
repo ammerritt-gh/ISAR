@@ -1189,7 +1189,7 @@ def run_grid_order_fault(raw: Mapping[str, Any], *, case_seed: int) -> dict[str,
     _write_json(evidence_root / "post-analysis.json", analysis)
     return {
         "contract": gate.REPAIR_FAULT_EVIDENCE_CONTRACT,
-        "fault_id": "s8-f01-executed-grid-order",
+        "fault_id": "s8-f01-grid-order-mismatch",
         "source_case_id": "s8-c01-strong-confirmed",
         "source_workspace": str(source.resolve()),
         "injected_grid_ref": "report/fault-evidence/injected-grid.json",
@@ -1563,7 +1563,7 @@ def build_repair_development_inputs(output: Path, parameters: Mapping[str, Any],
     else:
         fault = {
             "contract": gate.REPAIR_FAULT_EVIDENCE_CONTRACT,
-            "fault_id": "s8-f01-executed-grid-order",
+            "fault_id": "s8-f01-grid-order-mismatch",
             "source_case_id": "s8-c01-strong-confirmed",
             "source_workspace": raw_cases["s8-c01-strong-confirmed"]["source_workspace"],
             "injected_grid_ref": None, "event_ref": None,

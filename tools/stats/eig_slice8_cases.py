@@ -397,10 +397,10 @@ def capture_repair_bundle(bundle: Path, capture_spec: Mapping[str, Any]) -> dict
         by_case[item["case_id"]], item, bundle) for item in case_manifest["cases"]]
     strong = next(item for item in case_evidence
                   if item["case_id"] == "s8-c01-strong-confirmed")
-    raw_fault = by_fault["s8-f01-executed-grid-order"]
+    raw_fault = by_fault["s8-f01-grid-order-mismatch"]
     fault: dict[str, Any] = {
         "contract": gate.REPAIR_FAULT_EVIDENCE_CONTRACT,
-        "fault_id": "s8-f01-executed-grid-order",
+        "fault_id": "s8-f01-grid-order-mismatch",
         "source_case_id": "s8-c01-strong-confirmed",
         "artifact_root": strong["artifact_root"],
         "injected_grid_ref": raw_fault["injected_grid_ref"],
