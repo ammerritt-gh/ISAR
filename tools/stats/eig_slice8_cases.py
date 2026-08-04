@@ -37,6 +37,7 @@ log = logging.getLogger(__name__)
 CAPTURE_SPEC_CONTRACT = "isar.eig4_slice8_capture_spec/o36.8"
 RUN_MANIFEST_CONTRACT = "isar.eig4_slice8_run_manifest/o36.8"
 REPAIR_CAPTURE_SPEC_CONTRACT = "isar.eig4_slice8_capture_spec/o36.8.1"
+REPLACEMENT_CAPTURE_SPEC_CONTRACT = "isar.eig4_slice8_capture_spec/o36.8.2"
 
 
 def _read_json(path: Path) -> Mapping[str, Any]:
@@ -205,7 +206,8 @@ def _capture_fault(raw: Mapping[str, Any], definition: Mapping[str, Any]) -> dic
 
 
 def capture_bundle(bundle: Path, capture_spec: Mapping[str, Any]) -> dict[str, Any]:
-    if capture_spec.get("contract") == REPAIR_CAPTURE_SPEC_CONTRACT:
+    if capture_spec.get("contract") in {
+            REPAIR_CAPTURE_SPEC_CONTRACT, REPLACEMENT_CAPTURE_SPEC_CONTRACT}:
         return capture_repair_bundle(bundle, capture_spec)
     gate_manifest = gate.validate_gate_manifest(_read_json(bundle / "gate-manifest.json"))
     case_manifest = gate.validate_case_manifest(
@@ -358,16 +360,24 @@ def _repair_case_evidence(raw: Mapping[str, Any], definition: Mapping[str, Any],
 
 
 def capture_repair_bundle(bundle: Path, capture_spec: Mapping[str, Any]) -> dict[str, Any]:
-    """Capture the acyclic o36.8.1 bundle from already-generated coherent fixtures."""
+    """Capture an acyclic coherent bundle using the retained o36.8.1 evidence layer."""
     fields = {
         "contract", "implementation_anchor", "evidence_generation_anchor", "cases", "faults",
         "runtime_invariants", "verification_records", "commands", "durations_seconds",
     }
     if not isinstance(capture_spec, Mapping) or set(capture_spec) != fields:
         raise gate.GateEvidenceError("repair capture specification fields are invalid")
-    gate_manifest = gate.validate_repair_gate_manifest(_read_json(bundle / "gate-manifest.json"))
-    case_manifest = gate.validate_repair_case_manifest(
-        _read_json(bundle / "case-manifest.json"), gate_manifest)
+    replacement = capture_spec.get("contract") == REPLACEMENT_CAPTURE_SPEC_CONTRACT
+    if capture_spec.get("contract") not in {
+            REPAIR_CAPTURE_SPEC_CONTRACT, REPLACEMENT_CAPTURE_SPEC_CONTRACT}:
+        raise gate.GateEvidenceError("coherent capture specification contract is unsupported")
+    gate_document = _read_json(bundle / "gate-manifest.json")
+    case_document = _read_json(bundle / "case-manifest.json")
+    gate_manifest = (gate.validate_replacement_gate_manifest(gate_document) if replacement
+                     else gate.validate_repair_gate_manifest(gate_document))
+    case_manifest = (gate.validate_replacement_case_manifest(
+        case_document, gate_manifest) if replacement else gate.validate_repair_case_manifest(
+            case_document, gate_manifest))
     if (capture_spec["implementation_anchor"] != gate_manifest["implementation_anchor"]
             or not gate._valid_commit(capture_spec["evidence_generation_anchor"])):
         raise gate.GateEvidenceError("repair capture anchors are invalid")
@@ -454,7 +464,7 @@ def capture_repair_bundle(bundle: Path, capture_spec: Mapping[str, Any]) -> dict
         "isar.eig4_slice8_case_results_fingerprint/o36.8.1", results,
         "case_results_fingerprint")
     _write_json(bundle / "case-results.json", results)
-    disposition = gate.evaluate_repair_bundle(bundle)
+    disposition = gate.evaluate_repair_bundle(bundle, replacement=replacement)
     _write_json(bundle / "gate-result.json", disposition)
     return disposition
 

@@ -12,6 +12,14 @@ from tools.stats import eig_slice8_gate as gate
 PARAMETERS = Path("tools/stats/eig_slice8_fixture_parameters.json")
 CASE2_PROTOCOL = Path(
     "tools/stats/eig_slice8_case2_amplitude_protocol_o36_8_2.json")
+CASE2_TABLE = Path(
+    "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR/"
+    "case2-amplitude-calibration-table.json")
+CASE2_REPRODUCIBILITY = Path(
+    "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR/"
+    "case2-amplitude-reproducibility.json")
+REPLACEMENT_PARAMETERS = Path(
+    "tools/stats/eig_slice8_fixture_parameters_o36_8_2.json")
 
 
 def test_fixture_builder_uses_current_contracts_and_declared_regimes(tmp_path):
@@ -131,3 +139,50 @@ def test_case2_replacement_protocol_rejects_changes_to_fixed_parameters():
 
     with pytest.raises(gate.GateEvidenceError, match="fixed physical parameter"):
         fixtures.validate_case2_calibration_protocol(protocol)
+
+
+def test_case2_calibration_retains_ladder_and_first_qualifying_value():
+    protocol = json.loads(CASE2_PROTOCOL.read_text(encoding="utf-8"))
+    table = json.loads(CASE2_TABLE.read_text(encoding="utf-8"))
+    reproducibility = json.loads(
+        CASE2_REPRODUCIBILITY.read_text(encoding="utf-8"))
+
+    fixtures.validate_case2_calibration_table(table, protocol)
+    fixtures.validate_case2_reproducibility(reproducibility, table)
+
+    assert len(table["rows"]) == len(protocol["amplitude_ladder"])
+    assert table["rows"][0]["qualifies"] is False
+    assert table["selected_ladder_index"] == 1
+    assert table["selected_amplitude"] == 0.275
+    assert table["rows"][1]["qualifies"] is True
+    assert reproducibility["scorer_seed"] == 8374860497622894989
+
+
+def test_replacement_prefreeze_reproduces_calibration_and_keeps_case2_unresolved(
+        tmp_path):
+    protocol = json.loads(CASE2_PROTOCOL.read_text(encoding="utf-8"))
+    table = json.loads(CASE2_TABLE.read_text(encoding="utf-8"))
+    reproducibility = json.loads(
+        CASE2_REPRODUCIBILITY.read_text(encoding="utf-8"))
+    parameters = json.loads(REPLACEMENT_PARAMETERS.read_text(encoding="utf-8"))
+
+    development = fixtures.build_replacement_development_inputs(
+        tmp_path, parameters, protocol, table, reproducibility,
+        execute_live=False)
+
+    assessment = development["fixture_definitions"]["regime_assessment"]
+    case_2 = development["diagnostics"]["s8-c02-weak-unresolved-confirmed"]
+    delta, standard_error, lower = gate._paired_summary(case_2["blocks"])
+    assert development["contract"] == fixtures.REPLACEMENT_DEVELOPMENT_SPEC_CONTRACT
+    assert development["calibration_reproduced_at_prefreeze"] is True
+    assert assessment["case_2"] == {
+        "delta_positive": True, "lower_margin_positive": False}
+    assert delta > 0.0
+    assert standard_error > 0.0
+    assert lower <= 0.0
+    assert gate.CASE_DEFINITIONS[1]["expected_outcome"] == gate.OUTCOME_LEGACY
+    gate_manifest = gate.build_replacement_gate_manifest("a" * 40)
+    case_manifest = gate.build_replacement_case_manifest(
+        gate_manifest, development["fixture_definitions"])
+    assert gate.validate_replacement_case_manifest(
+        case_manifest, gate_manifest) == case_manifest

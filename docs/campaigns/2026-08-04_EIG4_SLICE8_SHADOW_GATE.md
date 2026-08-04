@@ -24,6 +24,15 @@ was frozen and no final repaired evidence was opened. The authenticated disposit
 coherence repair. An additive `o36.8.2` fixture revision may replace only Case 2's amplitude through
 a predeclared one-dimensional calibration ladder.
 
+That `o36.8.2` ladder was committed before execution and varied only Case 2 amplitude. It retained
+all fourteen rows from `0.3` through `0.00625`; `0.3` reproduced the decisive repaired result and
+the first qualifying value was `0.275`. At that value the coherent 128/8 score had delta
+`0.00031456335403114204` nats/point, SE `0.000598973672456868`, and lower margin
+`-0.000883383990882594`. An independent narrow rerun exactly reproduced those values, all eight
+paired blocks, scorer seed `8374860497622894989`, and the score-set fingerprint. The revised
+fixture therefore keeps Case 2's expected unresolved outcome; no later ladder row may replace the
+first qualifying value.
+
 The gate used implementation anchor `3b7f8eb263353ac55585498bad177a2bf631c0ad` and evidence-
 generation anchor `0dc20a475a426ef485ec9c82cb956a5e2227da79`. The primary policy was
 `eig4_slice8_excitation_energy`, variant `primary_0p5_mev`, with 0.5 meV bins, offsets

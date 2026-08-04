@@ -423,3 +423,16 @@ def test_coherence_repair_attempt_is_authenticated_as_aborted_before_freeze():
     assert fingerprint == gate.semantics_fingerprint(
         "isar.eig4_slice8_repair_attempt_disposition_fingerprint/o36.8.1",
         disposition)
+
+
+def test_replacement_gate_manifest_is_additive_and_keeps_gate_policy():
+    manifest = gate.build_replacement_gate_manifest("a" * 40)
+
+    assert gate.validate_replacement_gate_manifest(manifest) == manifest
+    assert manifest["gate_revision"] == "o36.8.2"
+    assert manifest["selection_margin_multiplier"] == 2.0
+    assert manifest["primary_policy"]["parameters"]["offsets"] == [0.0, 0.25]
+    assert manifest["runtime_scoring_configuration"]["simulation_count"] == 128
+    assert manifest["runtime_scoring_configuration"]["block_count"] == 8
+    assert manifest["cases"][1]["expected_outcome"] == gate.OUTCOME_LEGACY
+    assert manifest["case2_calibration"]["selected_amplitude"] == 0.275

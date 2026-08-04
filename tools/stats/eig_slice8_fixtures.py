@@ -84,10 +84,12 @@ DEVELOPMENT_SPEC_CONTRACT = "isar.eig4_slice8_fixture_development/o36.8"
 CAPTURE_SPEC_CONTRACT = "isar.eig4_slice8_capture_spec/o36.8"
 REPAIR_DEVELOPMENT_SPEC_CONTRACT = "isar.eig4_slice8_fixture_development/o36.8.1"
 REPAIR_CAPTURE_SPEC_CONTRACT = "isar.eig4_slice8_capture_spec/o36.8.1"
+REPLACEMENT_CAPTURE_SPEC_CONTRACT = "isar.eig4_slice8_capture_spec/o36.8.2"
 CASE2_CALIBRATION_PROTOCOL_CONTRACT = (
     "isar.eig4_slice8_case2_amplitude_calibration_protocol/o36.8.2")
 CASE2_CALIBRATION_TABLE_CONTRACT = (
     "isar.eig4_slice8_case2_amplitude_calibration_table/o36.8.2")
+REPLACEMENT_DEVELOPMENT_SPEC_CONTRACT = "isar.eig4_slice8_fixture_development/o36.8.2"
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -708,14 +710,16 @@ def validate_case2_calibration_protocol(value: Mapping[str, Any]) -> None:
 
 
 def build_case2_amplitude_calibration(
-        output: Path, protocol: Mapping[str, Any]) -> dict[str, Any]:
+        output: Path, protocol: Mapping[str, Any], *,
+        workspace_root: Path | None = None) -> dict[str, Any]:
     """Execute every predeclared amplitude and select the first qualifying row."""
     validate_case2_calibration_protocol(protocol)
     fixed = protocol["fixed_physical_parameters"]
+    calibration_workspace_root = workspace_root or output / "calibration-workspaces"
     rows: list[dict[str, Any]] = []
     for index, amplitude_raw in enumerate(protocol["amplitude_ladder"]):
         amplitude = float(amplitude_raw)
-        root = output / "calibration-workspaces" / f"amplitude-{index:02d}"
+        root = calibration_workspace_root / f"amplitude-{index:02d}"
         raw, detail = _persist_repair_eligible_case(
             root, case_id="s8-c02-weak-unresolved-confirmed", case_seed=8040802,
             q=tuple(float(item) for item in fixed["q"]),
@@ -768,6 +772,103 @@ def build_case2_amplitude_calibration(
         table, "calibration_table_fingerprint")
     _write_json(output / "case2-amplitude-calibration-table.json", table)
     return table
+
+
+def validate_case2_calibration_table(
+        value: Mapping[str, Any], protocol: Mapping[str, Any]) -> Mapping[str, Any]:
+    validate_case2_calibration_protocol(protocol)
+    _exact_fields = {
+        "contract", "protocol_fingerprint", "rows", "selected_ladder_index",
+        "selected_amplitude", "selection_outcome", "calibration_table_fingerprint",
+    }
+    if (set(value) != _exact_fields
+            or value.get("contract") != CASE2_CALIBRATION_TABLE_CONTRACT
+            or value.get("protocol_fingerprint") != protocol["protocol_fingerprint"]
+            or value.get("selection_outcome")
+            != "first_predeclared_value_satisfying_rule"):
+        raise gate.GateEvidenceError("Case 2 calibration table fields are invalid")
+    rows = value.get("rows")
+    if not isinstance(rows, list) or len(rows) != len(protocol["amplitude_ladder"]):
+        raise gate.GateEvidenceError("Case 2 calibration table does not retain the full ladder")
+    qualifiers: list[int] = []
+    expected_row_fields = {
+        "ladder_index", "amplitude", "ordinary_weak_target_regime_valid",
+        "eligibility_status", "delta_information_per_executed_point_nats",
+        "delta_standard_error_per_executed_point_nats",
+        "two_standard_error_lower_margin_nats", "qualifies", "case_generation_seed",
+        "scorer_seed_evidence", "score_set_fingerprint",
+        "paired_block_deltas_per_executed_point_nats",
+    }
+    for index, (row, amplitude) in enumerate(zip(rows, protocol["amplitude_ladder"])):
+        if not isinstance(row, Mapping) or set(row) != expected_row_fields:
+            raise gate.GateEvidenceError("Case 2 calibration row fields are invalid")
+        blocks = row["paired_block_deltas_per_executed_point_nats"]
+        delta, standard_error, lower = gate._paired_summary(blocks)
+        seed = row["scorer_seed_evidence"]
+        qualifies = (row["ordinary_weak_target_regime_valid"] is True
+                     and delta > 0.0 and lower <= 0.0)
+        if (row["ladder_index"] != index or row["amplitude"] != amplitude
+                or row["case_generation_seed"] != 8040802
+                or row["eligibility_status"] != "eligible"
+                or delta != row["delta_information_per_executed_point_nats"]
+                or standard_error
+                != row["delta_standard_error_per_executed_point_nats"]
+                or lower != row["two_standard_error_lower_margin_nats"]
+                or row["qualifies"] is not qualifies
+                or not isinstance(seed, Mapping)
+                or seed.get("scoring_config_fingerprint")
+                != ScanWindowShadowScoringConfig().scoring_config_fingerprint
+                or not isinstance(seed.get("seed"), int)
+                or isinstance(seed.get("seed"), bool)
+                or not gate._valid_sha256(seed.get("seed_evidence_fingerprint"))
+                or not gate._valid_sha256(row["score_set_fingerprint"])):
+            raise gate.GateEvidenceError("Case 2 calibration row is internally inconsistent")
+        if qualifies:
+            qualifiers.append(index)
+    if (not qualifiers or value["selected_ladder_index"] != qualifiers[0]
+            or value["selected_amplitude"]
+            != protocol["amplitude_ladder"][qualifiers[0]]):
+        raise gate.GateEvidenceError("Case 2 calibration did not select the first qualifying row")
+    if value["calibration_table_fingerprint"] != gate._fingerprint(
+            "isar.eig4_slice8_case2_amplitude_calibration_table_fingerprint/o36.8.2",
+            value, "calibration_table_fingerprint"):
+        raise gate.GateEvidenceError("Case 2 calibration table fingerprint is invalid")
+    return value
+
+
+def validate_case2_reproducibility(
+        value: Mapping[str, Any], table: Mapping[str, Any]) -> Mapping[str, Any]:
+    fingerprint = value.get("reproducibility_fingerprint")
+    if (value.get("contract")
+            != "isar.eig4_slice8_case2_amplitude_reproducibility/o36.8.2"
+            or fingerprint != gate._fingerprint(
+                "isar.eig4_slice8_case2_amplitude_reproducibility_fingerprint/o36.8.2",
+                value, "reproducibility_fingerprint")
+            or value.get("calibration_table_fingerprint")
+            != table["calibration_table_fingerprint"]
+            or value.get("selected_ladder_index") != table["selected_ladder_index"]
+            or value.get("selected_amplitude") != table["selected_amplitude"]
+            or value.get("independent_rerun_count") != 1
+            or not isinstance(value.get("exact_match"), Mapping)
+            or not value["exact_match"]
+            or not all(item is True for item in value["exact_match"].values())):
+        raise gate.GateEvidenceError("Case 2 reproducibility evidence is invalid")
+    selected = table["rows"][table["selected_ladder_index"]]
+    if (value.get("delta_information_per_executed_point_nats")
+            != selected["delta_information_per_executed_point_nats"]
+            or value.get("delta_standard_error_per_executed_point_nats")
+            != selected["delta_standard_error_per_executed_point_nats"]
+            or value.get("two_standard_error_lower_margin_nats")
+            != selected["two_standard_error_lower_margin_nats"]
+            or value.get("scorer_seed")
+            != selected["scorer_seed_evidence"]["seed"]
+            or value.get("scorer_seed_evidence_fingerprint")
+            != selected["scorer_seed_evidence"]["seed_evidence_fingerprint"]
+            or value.get("score_set_fingerprint") != selected["score_set_fingerprint"]
+            or value.get("paired_block_deltas_per_executed_point_nats")
+            != selected["paired_block_deltas_per_executed_point_nats"]):
+        raise gate.GateEvidenceError("Case 2 reproducibility evidence does not match selection")
+    return value
 
 
 def _repair_proposal_from_retained(raw: Mapping[str, Any], root: Path
@@ -1565,6 +1666,117 @@ def build_repair_development_inputs(output: Path, parameters: Mapping[str, Any],
     }
     _write_json(output / "repair-fixture-definitions.json", fixture_definitions)
     _write_json(output / "repair-development-inputs.json", development)
+    return development
+
+
+def validate_replacement_parameters(
+        parameters: Mapping[str, Any], protocol: Mapping[str, Any],
+        table: Mapping[str, Any]) -> None:
+    validate_case2_calibration_table(table, protocol)
+    if set(parameters) != {
+            "contract", "eligible_cases", "positive_analysis_outcome",
+            "calibration_binding"} or parameters.get(
+                "contract") != REPLACEMENT_DEVELOPMENT_SPEC_CONTRACT:
+        raise gate.GateEvidenceError("o36.8.2 fixture parameter fields are invalid")
+    original = json.loads((_REPO_ROOT / "tools" / "stats" /
+                           "eig_slice8_fixture_parameters.json").read_text(
+                               encoding="utf-8"))
+    if (parameters["positive_analysis_outcome"] != original["positive_analysis_outcome"]
+            or set(parameters["eligible_cases"]) != set(original["eligible_cases"])):
+        raise gate.GateEvidenceError("o36.8.2 changed an unapproved fixture field")
+    for case_id, original_physical in original["eligible_cases"].items():
+        actual = parameters["eligible_cases"][case_id]
+        if case_id == "s8-c02-weak-unresolved-confirmed":
+            expected = {**original_physical, "amplitude": table["selected_amplitude"]}
+        else:
+            expected = original_physical
+        if actual != expected:
+            raise gate.GateEvidenceError(
+                f"o36.8.2 changed unapproved physical parameters for {case_id}")
+    if parameters["calibration_binding"] != {
+            "protocol_fingerprint": protocol["protocol_fingerprint"],
+            "calibration_table_fingerprint": table["calibration_table_fingerprint"],
+            "reproducibility_fingerprint": (
+                gate.CASE2_CALIBRATION_REPRODUCIBILITY_FINGERPRINT),
+            "selected_ladder_index": table["selected_ladder_index"],
+            "selected_amplitude": table["selected_amplitude"]}:
+        raise gate.GateEvidenceError("o36.8.2 fixture parameters do not bind calibration")
+
+
+def build_replacement_development_inputs(
+        output: Path, parameters: Mapping[str, Any], protocol: Mapping[str, Any],
+        calibration_table: Mapping[str, Any], reproducibility: Mapping[str, Any], *,
+        execute_live: bool = False) -> dict[str, Any]:
+    """Build the o36.8.2 pre-freeze fixtures with only Case 2 amplitude revised."""
+    validate_replacement_parameters(parameters, protocol, calibration_table)
+    validate_case2_reproducibility(reproducibility, calibration_table)
+    repair_parameters = {
+        "contract": DEVELOPMENT_SPEC_CONTRACT,
+        "eligible_cases": parameters["eligible_cases"],
+        "positive_analysis_outcome": parameters["positive_analysis_outcome"],
+    }
+    development = build_repair_development_inputs(
+        output, repair_parameters, execute_live=execute_live)
+    selected = calibration_table["rows"][calibration_table["selected_ladder_index"]]
+    observed = development["diagnostics"]["s8-c02-weak-unresolved-confirmed"]
+    observed_delta, observed_se, observed_lower = gate._paired_summary(observed["blocks"])
+    if (observed["blocks"]
+            != selected["paired_block_deltas_per_executed_point_nats"]
+            or observed_delta != selected["delta_information_per_executed_point_nats"]
+            or observed_se != selected["delta_standard_error_per_executed_point_nats"]
+            or observed_lower != selected["two_standard_error_lower_margin_nats"]
+            or observed["scorer_seed_evidence"] != selected["scorer_seed_evidence"]
+            or observed["score_set_fingerprint"] != selected["score_set_fingerprint"]):
+        raise gate.GateEvidenceError(
+            "o36.8.2 pre-freeze Case 2 does not reproduce the selected calibration row")
+    cases = development["fixture_definitions"]["cases"]
+    physical = {
+        item["case_id"]: item["physical_parameters"] for item in cases
+        if item["case_id"] in {
+            "s8-c01-strong-confirmed", "s8-c02-weak-unresolved-confirmed",
+            "s8-c03-near-elastic-selection-time",
+        }
+    }
+    strong_delta, _strong_se, strong_lower = gate._paired_summary(
+        development["diagnostics"]["s8-c01-strong-confirmed"]["blocks"])
+    regime: dict[str, Any] = {
+        "contract": "isar.eig4_slice8_fixture_regime_assessment/o36.8.2",
+        "parameter_set_fingerprint": semantics_fingerprint(
+            "isar.eig4_slice8_fixture_parameter_set/o36.8.2", physical),
+        "scoring_config_fingerprint": (
+            ScanWindowShadowScoringConfig().scoring_config_fingerprint),
+        "case_1": {"delta_positive": strong_delta > 0.0,
+                   "lower_margin_positive": strong_lower > 0.0},
+        "case_2": {"delta_positive": observed_delta > 0.0,
+                   "lower_margin_positive": observed_lower > 0.0},
+        "calibration_table_fingerprint": calibration_table[
+            "calibration_table_fingerprint"],
+        "no_post_selection_retuning_claim": (
+            "first qualifying predeclared amplitude selected; no later row can replace it"),
+        "regime_assessment_fingerprint": "",
+    }
+    regime["regime_assessment_fingerprint"] = gate._fingerprint(
+        "isar.eig4_slice8_fixture_regime_assessment_fingerprint/o36.8.2",
+        regime, "regime_assessment_fingerprint")
+    fixture_definitions: dict[str, Any] = {
+        "contract": gate.REPLACEMENT_FIXTURE_DEFINITIONS_CONTRACT,
+        "cases": cases,
+        "regime_assessment": regime,
+        "calibration_binding": dict(parameters["calibration_binding"]),
+        "fixture_definitions_fingerprint": "",
+    }
+    fixture_definitions["fixture_definitions_fingerprint"] = gate._fingerprint(
+        "isar.eig4_slice8_fixture_definitions_fingerprint/o36.8.2",
+        fixture_definitions, "fixture_definitions_fingerprint")
+    gate.validate_replacement_fixture_definitions(fixture_definitions)
+    development.update({
+        "contract": REPLACEMENT_DEVELOPMENT_SPEC_CONTRACT,
+        "fixture_definitions": fixture_definitions,
+        "calibration_binding": dict(parameters["calibration_binding"]),
+        "calibration_reproduced_at_prefreeze": True,
+    })
+    _write_json(output / "replacement-fixture-definitions.json", fixture_definitions)
+    _write_json(output / "replacement-development-inputs.json", development)
     return development
 
 
