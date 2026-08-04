@@ -1016,6 +1016,38 @@ def _run_controller_completion(raw: Mapping[str, Any], workspace: Path,
     return proposal, wrapper, read_log(workspace / "report" / "session_log.jsonl")
 
 
+def retain_case1_production_comparison(
+        raw: dict[str, Any], *, source: Path, production_workspace: Path,
+        comparison_ref: Mapping[str, Any], physical_submission: Mapping[str, Any],
+        acquisition_provenance: Mapping[str, Any]) -> None:
+    """Make Case 1 classify the exact comparison attached by production."""
+    relative = comparison_ref.get("path")
+    if not isinstance(relative, str):
+        raise gate.GateEvidenceError("Case 1 production comparison reference is invalid")
+    production_path = (production_workspace / relative).resolve()
+    production_root = production_workspace.resolve()
+    try:
+        production_path.relative_to(production_root)
+    except ValueError as error:
+        raise gate.GateEvidenceError(
+            "Case 1 production comparison escapes its workspace") from error
+    if not production_path.is_file():
+        raise gate.GateEvidenceError("Case 1 production comparison is missing")
+    retained_path = source / relative
+    retained_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(production_path, retained_path)
+    loaded = load_scan_design_realized_comparison(comparison_ref, source)
+    if (loaded.realized_comparison_fingerprint
+            != physical_submission.get("scan_design_realized_comparison_fingerprint")):
+        raise gate.GateEvidenceError(
+            "Case 1 retained production comparison does not match physical submission")
+    _write_json(source / "report" / "current-submission.json", physical_submission)
+    _write_json(
+        source / "report" / "current-acquisition-provenance.json",
+        acquisition_provenance)
+    raw["realized_comparison_ref"] = dict(comparison_ref)
+
+
 def run_case1_counterfactual_fork(raw: dict[str, Any], *, case_seed: int) -> dict[str, Any]:
     """Execute the strong case's legacy and target requests from byte-identical source clones."""
     source = Path(raw["source_workspace"])
@@ -1047,6 +1079,10 @@ def run_case1_counterfactual_fork(raw: dict[str, Any], *, case_seed: int) -> dic
     acquisition = next(item for item in reversed(state_a.get("acquisition_provenance") or [])
                        if item.get("acquisition_id") == legacy_proposal.acquisition_id)
     returned_legacy = (legacy_client.returned_data.get("result") or {}).get("scan_values_1")
+    retain_case1_production_comparison(
+        raw, source=source, production_workspace=branch_a,
+        comparison_ref=legacy_proposal.meta["scan_design_realized_comparison_ref"],
+        physical_submission=physical, acquisition_provenance=acquisition)
 
     target_client = TaviClient()
     schema = target_client.get_schema()
@@ -1119,6 +1155,7 @@ def run_case1_counterfactual_fork(raw: dict[str, Any], *, case_seed: int) -> dic
                 "source_master_revision"],
         "scientific_action_fingerprint": raw["scientific_action_fingerprint"],
         "realized_comparison_fingerprint": comparison.realized_comparison_fingerprint,
+        "classified_realized_comparison_ref": dict(raw["realized_comparison_ref"]),
         "legacy_submission_exact": (
             physical.get("proposal_fingerprint") == comparison.selected_request_fingerprint
             and (legacy_client.submitted_body.get("parameters") or {}).get("scan_command1")

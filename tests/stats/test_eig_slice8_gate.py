@@ -488,6 +488,23 @@ def test_opened_o36_8_2_attempt_is_preserved_as_invalid_and_superseded():
         disposition)
 
 
+def test_v2_case1_comparison_join_gap_is_preserved_as_invalid_and_superseded():
+    bundle = Path(
+        "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V2")
+    disposition = json.loads(
+        (bundle / "attempt-disposition.json").read_text(encoding="utf-8"))
+    fingerprint = disposition.pop("attempt_disposition_fingerprint")
+
+    assert disposition["status"] == "invalid_superseded"
+    assert disposition["reason_code"] == "case1_comparison_execution_join_mismatch"
+    assert disposition["production_behavior_changed"] is False
+    assert disposition["statistical_evidence_changed"] is False
+    assert disposition["case_definitions_changed"] is False
+    assert fingerprint == gate.semantics_fingerprint(
+        "isar.eig4_slice8_attempt_disposition_fingerprint/o36.8.2",
+        disposition)
+
+
 def test_replacement_gate_manifest_is_additive_and_keeps_gate_policy():
     manifest = gate.build_replacement_gate_manifest("a" * 40)
 
@@ -499,3 +516,5 @@ def test_replacement_gate_manifest_is_additive_and_keeps_gate_policy():
     assert manifest["runtime_scoring_configuration"]["block_count"] == 8
     assert manifest["cases"][1]["expected_outcome"] == gate.OUTCOME_LEGACY
     assert manifest["case2_calibration"]["selected_amplitude"] == 0.275
+    assert manifest["superseded_attempts"][-1]["reason_code"] == (
+        "case1_comparison_execution_join_mismatch")

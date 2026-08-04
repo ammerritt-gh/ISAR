@@ -459,6 +459,13 @@ def build_replacement_gate_manifest(implementation_anchor: str) -> dict[str, Any
                 "attempt_disposition_fingerprint": (
                     "6867a22e61eb48b6195b2daf65c61f25ce2ecff2c5a0650d0dcf8943f2155604"),
             },
+            {
+                "revision": "o36.8.2-v2-evidence",
+                "status": "invalid_superseded",
+                "reason_code": "case1_comparison_execution_join_mismatch",
+                "attempt_disposition_fingerprint": (
+                    "a3b66479d42267abff020e9016d0f8a061f87deebdf53445c5955a966e5d48fd"),
+            },
         ],
         "case2_calibration": {
             "protocol_fingerprint": CASE2_CALIBRATION_PROTOCOL_FINGERPRINT,
@@ -1333,8 +1340,11 @@ def _strong_provenance_join_valid(fork: Mapping[str, Any]) -> bool:
 
 def _strong_analysis_valid(analysis: Mapping[str, Any], fork: Mapping[str, Any],
                            raw_scan: Mapping[str, Any], target: Any,
-                           scientific_action_fingerprint: str) -> bool:
+                           scientific_action_fingerprint: str,
+                           realized_comparison_fingerprint: str) -> bool:
     returned = (raw_scan.get("result") or {}).get("scan_values_1")
+    request = analysis.get("exact_request")
+    parameters = request.get("parameters") if isinstance(request, Mapping) else None
     return (
         analysis.get("ordinary_analysis_command") == "isar run"
         and analysis.get("returncode") == 0
@@ -1347,12 +1357,19 @@ def _strong_analysis_valid(analysis: Mapping[str, Any], fork: Mapping[str, Any],
         and analysis.get("source_workspace_fingerprint_before")
         == analysis.get("source_workspace_fingerprint_after")
         and isinstance(target, RealizedScanRequest)
+        and isinstance(parameters, Mapping)
+        and parameters.get("scan_command1") == target.scan_command
+        and parameters.get("number_neutrons") == target.ncount
+        and [parameters.get("H"), parameters.get("K"), parameters.get("L")]
+        == list(target.hkl)
         and canonical_json(returned) == canonical_json(list(target.executed_energies))
         and fork.get("branch_a_initial_tree_fingerprint")
         == fork.get("branch_b_initial_tree_fingerprint")
         == fork.get("source_tree_fingerprint")
         and fork.get("scientific_action_fingerprint")
         == scientific_action_fingerprint
+        and fork.get("realized_comparison_fingerprint")
+        == realized_comparison_fingerprint
         and fork.get("legacy_submission_exact") is True
         and fork.get("legacy_returned_grid_exact") is True
         and _strong_provenance_join_valid(fork)
@@ -1463,7 +1480,11 @@ def _repair_joined_case(case: Mapping[str, Any], definition: Mapping[str, Any],
         "scoring_source": scoring_source.get("scientific_action_fingerprint"),
         "current_context": current.context.scientific_action_fingerprint,
         "submission": submission.get("scientific_action_fingerprint"),
-        "acquisition": acquisition.get("scientific_action_fingerprint"),
+        "acquisition": (
+            acquisition.get("scientific_action_fingerprint")
+            or (submission.get("scientific_action_fingerprint")
+                if acquisition.get("acquisition_id") == submission.get("acquisition_id")
+                and acquisition.get("job_id") == submission.get("job_id") else None)),
     }
     if not isinstance(action, str) or set(action_values.values()) != {action}:
         raise _repair_invalid(
@@ -1477,6 +1498,12 @@ def _repair_joined_case(case: Mapping[str, Any], definition: Mapping[str, Any],
             != prior.get("source_acquisition_id")
             or scoring_source.get("source_submission_request_fingerprint")
             != prior.get("source_submission_request_fingerprint")
+            or scoring_source.get("source_master_revision")
+            != prior.get("source_master_revision")
+            or scoring_source.get("source_master_session_key")
+            != prior.get("source_master_session_key")
+            or scoring_source.get("source_detector_id")
+            != prior.get("source_detector_id")
             or prior_inventory.context.fingerprint
             != prior.get("prior_scan_design_context_fingerprint")
             or prior_inventory.selected_candidate_id
@@ -1544,7 +1571,9 @@ def _repair_joined_case(case: Mapping[str, Any], definition: Mapping[str, Any],
             bundle, artifact_relative(analysis.get("raw_tavi_json_ref")), retained,
             stage=stage, validated=validated)
         target = comparison.realized_pair.target_core
-        analysis_ok = _strong_analysis_valid(analysis, fork, raw_scan, target, action)
+        analysis_ok = _strong_analysis_valid(
+            analysis, fork, raw_scan, target, action,
+            comparison.realized_comparison_fingerprint)
         diagnostics["strong_analysis_and_fork_passed"] = analysis_ok
         if not analysis_ok:
             raise _repair_invalid(
