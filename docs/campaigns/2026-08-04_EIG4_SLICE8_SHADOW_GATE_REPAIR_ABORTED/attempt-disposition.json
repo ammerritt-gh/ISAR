@@ -1,0 +1,62 @@
+{
+  "contract": "isar.eig4_slice8_repair_attempt_disposition/o36.8.1",
+  "status": "aborted_pre_freeze",
+  "reason_code": "fixture_regime_mismatch",
+  "reason": "expected unresolved, coherently observed decisive target-core superiority",
+  "recorded_at": "2026-08-04",
+  "implementation_base": "8047df4694fb473f808fe923e8e9397a094a2aea",
+  "repair_contract_revision": "o36.8.1",
+  "manifests_frozen": false,
+  "final_evidence_opened": false,
+  "evidence_bundle_created": false,
+  "case_2": {
+    "case_id": "s8-c02-weak-unresolved-confirmed",
+    "expected_outcome": "unresolved",
+    "coherently_observed_outcome": "target_core",
+    "unchanged_physical_parameters": {
+      "q": [2.15, 0.0, 0.0],
+      "draw_energies_meV": [1.9, 2.1],
+      "target_energy_meV": 2.0,
+      "prediction_sigma_meV": 0.4,
+      "amplitude": 0.3,
+      "ncount": 1,
+      "survey": true
+    },
+    "case_generation_seed": 8040802,
+    "scoring_config_fingerprint": "c13778320ef113625e8a7784733d414d334d64908446db1334ef4a8f98ecc790",
+    "scorer_seed_evidence": {
+      "contract": "isar.scan_window_shadow_seed_evidence/o36.6",
+      "algorithm": "sha256-first-8-bytes-big-endian-signed-63-bit",
+      "domain": "isar.scan_window_shadow_seed/o36.6",
+      "digest_prefix_bytes": 8,
+      "signed_mask_bits": 63,
+      "seed": 5724296368191850781,
+      "seed_evidence_fingerprint": "1c5f6fe94b31a0bc18673419196206f6d30a450ecd07463442d730d92cd1e78b"
+    },
+    "paired_block_deltas_per_executed_point_nats": [
+      0.000028150714252795045,
+      0.0015002501880536916,
+      0.0014754991721834115,
+      0.0011105561121722788,
+      0.0008753398090232246,
+      0.003121772974628934,
+      -0.00014359572630044367,
+      0.0015500383797627643
+    ],
+    "delta_information_per_executed_point_nats": 0.0011897514529720821,
+    "delta_standard_error_per_executed_point_nats": 0.00036037759497617574,
+    "two_standard_error_lower_margin_nats": 0.0004689962630197306
+  },
+  "reproducibility_check": {
+    "run_count": 2,
+    "delta_se_seed_and_paired_blocks_reproduced": true,
+    "alternative_evidence_contract_investigated": false,
+    "alternative_seed_contract_investigated": false
+  },
+  "authorized_replacement": {
+    "contract_revision": "o36.8.2",
+    "only_mutable_case_field": "eligible_cases.s8-c02-weak-unresolved-confirmed.amplitude",
+    "selection_protocol": "first value in a predeclared one-dimensional amplitude ladder satisfying ordinary weak-target validity, delta > 0, and delta - 2SE <= 0"
+  },
+  "attempt_disposition_fingerprint": "6867a22e61eb48b6195b2daf65c61f25ce2ecff2c5a0650d0dcf8943f2155604"
+}

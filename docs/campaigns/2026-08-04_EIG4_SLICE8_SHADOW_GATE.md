@@ -5,9 +5,24 @@
 
 ## Outcome
 
-The frozen `o36.8` gate passed. This is retained evidence for owner review, not a grant of runtime
-authority: shadow mode still submits `legacy_uniform/1`, authoritative setup still refuses, and no
-Slice 9 selector exists. O41 has deliberately not been added.
+The frozen `o36.8` evaluator reported `passed`, but subsequent source review scientifically
+invalidated the attempt: eligible fixtures independently minted their eligibility and proposal
+scientific-action fingerprints. The bundle remains byte-valid and unchanged; the additive
+`attempt-disposition.json` marks it `invalid_superseded` with reason
+`eligible_same_action_join_mismatch`. None of its positive classifications can authorize Slice 9.
+
+This is retained evidence of the invalidated first attempt, not a grant of runtime authority:
+shadow mode still submits `legacy_uniform/1`, authoritative setup still refuses, and no Slice 9
+selector exists. O41 has deliberately not been added.
+
+The additive `o36.8.1` coherence repair then stopped at its pre-freeze regime guard. With the
+original Case 2 amplitude, coherent production-adapter scoring observed decisive target-core
+superiority where the frozen expectation was unresolved (`Delta - 2SE > 0`). No repaired manifest
+was frozen and no final repaired evidence was opened. The authenticated disposition in
+`2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_ABORTED/attempt-disposition.json` records this as
+`aborted_pre_freeze` / `fixture_regime_mismatch`; it does not reclassify Case 2 or invalidate the
+coherence repair. An additive `o36.8.2` fixture revision may replace only Case 2's amplitude through
+a predeclared one-dimensional calibration ladder.
 
 The gate used implementation anchor `3b7f8eb263353ac55585498bad177a2bf631c0ad` and evidence-
 generation anchor `0dc20a475a426ef485ec9c82cb956a5e2227da79`. The primary policy was
@@ -25,7 +40,10 @@ It is not a calibrated 95% criterion. The structural conditions also required eq
 `ncount`, a wire-contained request, contained and strictly narrower adapter-canonical executed
 support, and fewer executed points.
 
-## Frozen cases
+## Originally reported cases
+
+The table and numbers below are what the byte-valid first attempt reported. They remain historical
+forensics only; the broken same-action join invalidates them before scientific evaluation.
 
 | Case | Eligibility evidence | Counterfactual result |
 |---|---|---|
@@ -82,9 +100,9 @@ over this directory reproduced `gate-result.json` byte for byte.
 
 ## Review boundary and limitations
 
-The positive envelope contains one strong point. Any future O41 should say so explicitly and may
-authorize implementation of only the already-restricted Slice 9 selector. It must not describe
-this evidence as runtime authority.
+The first attempt appeared to contain one strong positive point, but its invalidated provenance
+means it establishes no authority envelope. Any future O41 requires a coherent repaired bundle and
+explicit owner acceptance; it must not describe this first attempt as runtime authority.
 
 Planned and realized scoring still use duplicated pipelines. Current parity is tested, but no test
 file is architectural authority; consolidating that seam remains technical debt. The removed

@@ -36,6 +36,7 @@ log = logging.getLogger(__name__)
 
 CAPTURE_SPEC_CONTRACT = "isar.eig4_slice8_capture_spec/o36.8"
 RUN_MANIFEST_CONTRACT = "isar.eig4_slice8_run_manifest/o36.8"
+REPAIR_CAPTURE_SPEC_CONTRACT = "isar.eig4_slice8_capture_spec/o36.8.1"
 
 
 def _read_json(path: Path) -> Mapping[str, Any]:
@@ -204,6 +205,8 @@ def _capture_fault(raw: Mapping[str, Any], definition: Mapping[str, Any]) -> dic
 
 
 def capture_bundle(bundle: Path, capture_spec: Mapping[str, Any]) -> dict[str, Any]:
+    if capture_spec.get("contract") == REPAIR_CAPTURE_SPEC_CONTRACT:
+        return capture_repair_bundle(bundle, capture_spec)
     gate_manifest = gate.validate_gate_manifest(_read_json(bundle / "gate-manifest.json"))
     case_manifest = gate.validate_case_manifest(
         _read_json(bundle / "case-manifest.json"), gate_manifest)
@@ -292,6 +295,168 @@ def capture_bundle(bundle: Path, capture_spec: Mapping[str, Any]) -> dict[str, A
     )
     _write_json(bundle / "run-manifest.json", run_manifest)
     return gate_result
+
+
+def _repair_case_evidence(raw: Mapping[str, Any], definition: Mapping[str, Any],
+                          bundle: Path) -> dict[str, Any]:
+    status = definition["expected_eligibility"]
+    source_workspace = raw.get("source_workspace")
+    if status == "eligible":
+        source = _safe_source_root(source_workspace)
+        artifact_root = bundle / "artifacts" / definition["case_id"]
+        if artifact_root.exists():
+            raise gate.GateEvidenceError(f"repair artifact root already exists: {artifact_root}")
+        shutil.copytree(source, artifact_root)
+        relative_root = artifact_root.relative_to(bundle).as_posix()
+        fields = {
+            "artifact_root": relative_root,
+            "runtime_evidence_status": "available", "runtime_unavailability": None,
+            "scientific_action_fingerprint": raw["scientific_action_fingerprint"],
+            "proposal_metadata_ref": raw["proposal_metadata_ref"],
+            "scoring_source_ref": raw["scoring_source_ref"],
+            "prior_source_record_ref": raw["prior_source_record_ref"],
+            "prior_scan_design_inventory_ref": raw["prior_scan_design_inventory_ref"],
+            "current_scan_design_inventory_ref": raw["current_scan_design_inventory_ref"],
+            "realized_comparison_ref": raw["realized_comparison_ref"],
+            "applicability": raw["applicability"],
+            "executed_grid_status": raw["executed_grid_status"],
+            "submission_provenance_ref": "report/current-submission.json",
+            "acquisition_provenance_ref": "report/current-acquisition-provenance.json",
+            "paired_block_deltas_per_executed_point_nats": list(
+                raw["paired_block_deltas_per_executed_point_nats"]),
+            "analysis_evidence_ref": raw.get("analysis_evidence_ref"),
+            "fork_evidence_ref": raw.get("fork_evidence_ref"),
+        }
+    else:
+        fields = {
+            "artifact_root": None,
+            "runtime_evidence_status": "available", "runtime_unavailability": None,
+            "scientific_action_fingerprint": None,
+            "proposal_metadata_ref": None, "scoring_source_ref": None,
+            "prior_source_record_ref": None, "prior_scan_design_inventory_ref": None,
+            "current_scan_design_inventory_ref": None, "realized_comparison_ref": None,
+            "applicability": None, "executed_grid_status": None,
+            "submission_provenance_ref": None, "acquisition_provenance_ref": None,
+            "paired_block_deltas_per_executed_point_nats": None,
+            "analysis_evidence_ref": None, "fork_evidence_ref": None,
+        }
+    value: dict[str, Any] = {
+        "contract": gate.REPAIR_CASE_EVIDENCE_CONTRACT,
+        "case_id": definition["case_id"],
+        "case_generation_seed": definition["case_generation_seed"],
+        "classification": definition["classification"],
+        "fixture_definition_fingerprint": gate.fixture_definition_fingerprint(
+            definition["fixture_definition"]),
+        "eligibility_source": raw["eligibility_source"],
+        **fields,
+        "case_evidence_fingerprint": "",
+    }
+    value["case_evidence_fingerprint"] = gate._fingerprint(
+        "isar.eig4_slice8_case_evidence_fingerprint/o36.8.1", value,
+        "case_evidence_fingerprint")
+    return value
+
+
+def capture_repair_bundle(bundle: Path, capture_spec: Mapping[str, Any]) -> dict[str, Any]:
+    """Capture the acyclic o36.8.1 bundle from already-generated coherent fixtures."""
+    fields = {
+        "contract", "implementation_anchor", "evidence_generation_anchor", "cases", "faults",
+        "runtime_invariants", "verification_records", "commands", "durations_seconds",
+    }
+    if not isinstance(capture_spec, Mapping) or set(capture_spec) != fields:
+        raise gate.GateEvidenceError("repair capture specification fields are invalid")
+    gate_manifest = gate.validate_repair_gate_manifest(_read_json(bundle / "gate-manifest.json"))
+    case_manifest = gate.validate_repair_case_manifest(
+        _read_json(bundle / "case-manifest.json"), gate_manifest)
+    if (capture_spec["implementation_anchor"] != gate_manifest["implementation_anchor"]
+            or not gate._valid_commit(capture_spec["evidence_generation_anchor"])):
+        raise gate.GateEvidenceError("repair capture anchors are invalid")
+    if (_git("rev-parse", "HEAD") != capture_spec["evidence_generation_anchor"]
+            or _git("status", "--porcelain")):
+        raise gate.GateEvidenceError(
+            "repair evidence capture requires clean HEAD at its evidence-generation anchor")
+    by_case = {item.get("case_id"): item for item in capture_spec["cases"]
+               if isinstance(item, Mapping)}
+    by_fault = {item.get("fault_id"): item for item in capture_spec["faults"]
+                if isinstance(item, Mapping)}
+    if (set(by_case) != {item["case_id"] for item in gate.CASE_DEFINITIONS}
+            or set(by_fault) != {item["fault_id"] for item in gate.FAULT_DEFINITIONS}):
+        raise gate.GateEvidenceError("repair capture does not cover the frozen case/fault set")
+
+    case_evidence = [_repair_case_evidence(
+        by_case[item["case_id"]], item, bundle) for item in case_manifest["cases"]]
+    strong = next(item for item in case_evidence
+                  if item["case_id"] == "s8-c01-strong-confirmed")
+    raw_fault = by_fault["s8-f01-executed-grid-order"]
+    fault: dict[str, Any] = {
+        "contract": gate.REPAIR_FAULT_EVIDENCE_CONTRACT,
+        "fault_id": "s8-f01-executed-grid-order",
+        "source_case_id": "s8-c01-strong-confirmed",
+        "artifact_root": strong["artifact_root"],
+        "injected_grid_ref": raw_fault["injected_grid_ref"],
+        "event_ref": raw_fault["event_ref"],
+        "mismatch_provenance_ref": raw_fault["mismatch_provenance_ref"],
+        "post_analysis_ref": raw_fault["post_analysis_ref"],
+        "fault_evidence_fingerprint": "",
+    }
+    fault["fault_evidence_fingerprint"] = gate._fingerprint(
+        "isar.eig4_slice8_fault_evidence_fingerprint/o36.8.1", fault,
+        "fault_evidence_fingerprint")
+    verification: dict[str, Any] = {
+        "contract": gate.REPAIR_VERIFICATION_CONTRACT,
+        "implementation_anchor": gate_manifest["implementation_anchor"],
+        "records": capture_spec["verification_records"],
+        "verification_evidence_fingerprint": "",
+    }
+    verification["verification_evidence_fingerprint"] = gate._fingerprint(
+        "isar.eig4_slice8_verification_evidence_fingerprint/o36.8.1", verification,
+        "verification_evidence_fingerprint")
+    _write_json(bundle / "verification-evidence.json", verification)
+
+    retained_paths = [
+        path for path in bundle.rglob("*") if path.is_file()
+        and path.name not in {"run-manifest.json", "case-results.json", "gate-result.json"}
+    ]
+    retained_files = [{
+        "path": path.relative_to(bundle).as_posix(), "sha256": _sha256(path),
+    } for path in sorted(retained_paths)]
+    run: dict[str, Any] = {
+        "contract": gate.REPAIR_RUN_MANIFEST_CONTRACT,
+        "implementation_anchor": gate_manifest["implementation_anchor"],
+        "evidence_generation_anchor": capture_spec["evidence_generation_anchor"],
+        "gate_manifest_fingerprint": gate_manifest["gate_manifest_fingerprint"],
+        "case_manifest_fingerprint": case_manifest["case_manifest_fingerprint"],
+        "verification_evidence_fingerprint": verification[
+            "verification_evidence_fingerprint"],
+        "retained_files": retained_files,
+        "commands": list(capture_spec["commands"]),
+        "durations_seconds": dict(capture_spec["durations_seconds"]),
+        "run_manifest_fingerprint": "",
+    }
+    run["run_manifest_fingerprint"] = gate._fingerprint(
+        "isar.eig4_slice8_run_manifest_fingerprint/o36.8.1", run,
+        "run_manifest_fingerprint")
+    _write_json(bundle / "run-manifest.json", run)
+    results: dict[str, Any] = {
+        "contract": gate.REPAIR_CASE_RESULTS_CONTRACT,
+        "gate_manifest_fingerprint": gate_manifest["gate_manifest_fingerprint"],
+        "case_manifest_fingerprint": case_manifest["case_manifest_fingerprint"],
+        "run_manifest_fingerprint": run["run_manifest_fingerprint"],
+        "verification_evidence_fingerprint": verification[
+            "verification_evidence_fingerprint"],
+        "implementation_anchor": gate_manifest["implementation_anchor"],
+        "evidence_generation_anchor": capture_spec["evidence_generation_anchor"],
+        "cases": case_evidence, "faults": [fault],
+        "runtime_invariants": capture_spec["runtime_invariants"],
+        "case_results_fingerprint": "",
+    }
+    results["case_results_fingerprint"] = gate._fingerprint(
+        "isar.eig4_slice8_case_results_fingerprint/o36.8.1", results,
+        "case_results_fingerprint")
+    _write_json(bundle / "case-results.json", results)
+    disposition = gate.evaluate_repair_bundle(bundle)
+    _write_json(bundle / "gate-result.json", disposition)
+    return disposition
 
 
 def build_parser() -> argparse.ArgumentParser:

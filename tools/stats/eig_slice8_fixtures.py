@@ -14,7 +14,9 @@ import json
 import logging
 import math
 import os
+import shutil
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
@@ -28,8 +30,16 @@ if str(_REPO_ROOT) not in sys.path:
 
 from isar.analyze.context import ScanContext
 from isar.analyze.shadow_selection import unavailable_shadow_selection
-from isar.drive.acquisition.acquire import ScanProposal
-from isar.drive.acquisition.inventory import scientific_fingerprint_from_mapping
+from isar.drive.acquisition.acquire import ScanProposal, ShadowScoringSource
+from isar.drive.acquisition.eig_shadow import (
+    _resolved_scoring_inputs,
+    score_proposal_realized_pair,
+    score_proposal_shadow_inventory,
+)
+from isar.drive.acquisition.inventory import (
+    MeasurementIntent,
+    scientific_fingerprint_from_mapping,
+)
 from isar.drive.acquisition.realized_comparison import (
     build_realized_comparison,
     construct_realized_pair,
@@ -37,10 +47,12 @@ from isar.drive.acquisition.realized_comparison import (
     persist_realized_comparison,
 )
 from isar.drive.acquisition.scan_design import ScanDesignContext, design_scan_windows
+from isar.drive.objective import ObjectiveSpec, current_objective_comparison_scope
 from isar.drive.instrument.tavi_client import TaviClient
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
 from isar.drive.isar_io.runner import run_isar
 from isar.drive.isar_io.scan_writer import save_scan_json
+from isar.drive.session_log import log_event, read_log
 from isar.eig import EligibilityInput, adapt_omega0_target_projection
 from isar.eig.shadow_inventory import score_shadow_inventory
 from isar.schema.action_identity import canonical_json
@@ -49,8 +61,10 @@ from isar.schema.eig_policy import (
     QoIDistinctionPolicy,
     QoIDistinctionPolicySet,
     QoIDistinctionVariant,
+    ScanWindowEIGConfig,
     ScanWindowShadowScoringConfig,
 )
+from isar.schema.eig_shadow import thaw
 from isar.schema.statistics import (
     FIT_SELECTION_SCHEMA,
     authority_scopes,
@@ -58,8 +72,9 @@ from isar.schema.statistics import (
     validate_for_write,
 )
 from isar.session import driver, predictive_artifact
-from isar.session.state import SessionState
+from isar.session.state import ScanEntry, SessionState
 from isar.session.predictive_artifact import build_target_projection
+from isar.drive import loop as drive_loop
 from tools.stats import eig_slice8_gate as gate
 
 
@@ -67,6 +82,8 @@ log = logging.getLogger(__name__)
 
 DEVELOPMENT_SPEC_CONTRACT = "isar.eig4_slice8_fixture_development/o36.8"
 CAPTURE_SPEC_CONTRACT = "isar.eig4_slice8_capture_spec/o36.8"
+REPAIR_DEVELOPMENT_SPEC_CONTRACT = "isar.eig4_slice8_fixture_development/o36.8.1"
+REPAIR_CAPTURE_SPEC_CONTRACT = "isar.eig4_slice8_capture_spec/o36.8.1"
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -145,19 +162,52 @@ def _neutral_shadow() -> dict[str, Any]:
         shadow_execution_kind="skipped")
 
 
-def _eligibility(qoi: Any, selection: Mapping[str, Any], *, q: tuple[float, float, float],
-                 target_energy: float, modality: str = "fold") -> EligibilityInput:
-    intent = {
-        "action_class": "production", "hkl": list(q),
-        "energy_lo": -2.0, "energy_hi": 7.0, "window_family": "target",
-        "target_branch_role": None, "rival_branch_role": None,
-        "evidence_basis_fingerprint": "slice8-basis",
-        "hypotheses_fingerprint": "slice8-hypotheses",
-        "campaign_slice_fingerprint": "slice8-campaign",
-        "evidence_sink": "canonical_master",
+def _intent_mapping(intent: MeasurementIntent) -> dict[str, Any]:
+    return {
+        "action_class": intent.action_class,
+        "hkl": list(intent.hkl),
+        "energy_lo": intent.energy_lo,
+        "energy_hi": intent.energy_hi,
+        "window_family": intent.window_family,
+        "target_branch_role": intent.target_branch_role,
+        "rival_branch_role": intent.rival_branch_role,
+        "evidence_basis_fingerprint": intent.evidence_basis_fingerprint,
+        "hypotheses_fingerprint": intent.hypotheses_fingerprint,
+        "campaign_slice_fingerprint": intent.campaign_slice_fingerprint,
+        "evidence_sink": intent.evidence_sink,
+        "window_center_meV": intent.window_center_meV,
+        "scientific_action_fingerprint": intent.scientific_action_fingerprint,
     }
-    fingerprint = scientific_fingerprint_from_mapping(intent)
-    intent["scientific_action_fingerprint"] = fingerprint
+
+
+def _canonical_intent(*, q: tuple[float, float, float], target_energy: float,
+                      case_id: str) -> MeasurementIntent:
+    # ``case_id`` is deliberately not part of scientific identity.  It is an administrative fixture
+    # label; including it would alter scorer seed derivation for an otherwise unchanged action.
+    _ = case_id
+    return MeasurementIntent(
+        action_class="production",
+        hkl=q,
+        energy_lo=-2.0,
+        energy_hi=7.0,
+        window_family="target",
+        target_branch_role=None,
+        rival_branch_role=None,
+        evidence_basis_fingerprint="slice8-basis",
+        hypotheses_fingerprint="slice8-hypotheses",
+        campaign_slice_fingerprint="slice8-campaign",
+        evidence_sink="canonical_master",
+        window_center_meV=target_energy,
+    )
+
+
+def _eligibility(qoi: Any, selection: Mapping[str, Any], *, q: tuple[float, float, float],
+                 target_energy: float, modality: str = "fold",
+                 intent: MeasurementIntent | None = None) -> EligibilityInput:
+    canonical_intent = intent or _canonical_intent(
+        q=q, target_energy=target_energy, case_id="legacy-fixture")
+    intent_mapping = _intent_mapping(canonical_intent)
+    fingerprint = canonical_intent.scientific_action_fingerprint
     provenance = {
         "action_class": "production", "scientific_action_fingerprint": fingerprint,
         "proposal_scientific_action_fingerprint": fingerprint,
@@ -173,13 +223,14 @@ def _eligibility(qoi: Any, selection: Mapping[str, Any], *, q: tuple[float, floa
         "modality": modality, "master_revision": "slice8-master-r1",
     }
     return EligibilityInput.from_current_contract(
-        action_intent=intent, action_provenance=provenance, target_outcome=target,
+        action_intent=intent_mapping, action_provenance=provenance, target_outcome=target,
         selection_record=selection, qoi_evidence=qoi, shadow_record=_neutral_shadow())
 
 
 def _predictive_bundle(*, q: tuple[float, float, float], draw_energies: Sequence[float],
                        target_energy: float, amplitude: float,
-                       constrained: bool = False) -> tuple[dict[str, Any], EligibilityInput]:
+                       constrained: bool = False, seed: int = 11,
+                       intent: MeasurementIntent | None = None) -> tuple[dict[str, Any], EligibilityInput]:
     if len(draw_energies) < 2 or any(not math.isfinite(float(item)) for item in draw_energies):
         raise ValueError("fixture draw energies must contain at least two finite values")
     label = "phonon-constrained" if constrained else "phonon"
@@ -229,7 +280,7 @@ def _predictive_bundle(*, q: tuple[float, float, float], draw_energies: Sequence
           patch.object(predictive_artifact, "bounded_parameter_draws", draws_of)):
         artifact = predictive_artifact.build_master_predictive(
             SimpleNamespace(omega0=target_energy), [score], {label: result},
-            {label: object()}, context, seed=11, n_members=1,
+            {label: object()}, context, seed=int(seed), n_members=1,
             fit_selection_semantics=selection)
     target = {
         "omega0": target_energy, "target_delivery_eligible": True,
@@ -243,14 +294,16 @@ def _predictive_bundle(*, q: tuple[float, float, float], draw_energies: Sequence
     qoi = adapt_omega0_target_projection(
         artifact, projection, expected_authority=projection["authority"])
     return artifact, _eligibility(
-        qoi, selection, q=q, target_energy=target_energy)
+        qoi, selection, q=q, target_energy=target_energy, intent=intent)
 
 
 def _context(*, q: tuple[float, float, float], target_energy: float,
-             prediction_sigma: float, ncount: int, survey: bool) -> ScanDesignContext:
+             prediction_sigma: float, ncount: int, survey: bool,
+             scientific_action_fingerprint: str | None = None) -> ScanDesignContext:
     return ScanDesignContext(
-        scientific_action_fingerprint=semantics_fingerprint(
-            "isar.eig4_slice8.fixture.action", {"q": q, "energy": target_energy}),
+        scientific_action_fingerprint=(scientific_action_fingerprint
+            or semantics_fingerprint(
+                "isar.eig4_slice8.fixture.action", {"q": q, "energy": target_energy})),
         hkl=q, q=abs(q[0] - round(q[0])), kind="production",
         reason="frozen Slice 8 target confirmation", window_family="target",
         declared_energy_lo=None, declared_energy_hi=None,
@@ -282,6 +335,630 @@ def _policy(scope: str) -> QoIDistinctionPolicySet:
         {"kind": "explicit_user_analysis/1", "source_id": "owner",
          "rationale": "frozen two-offset Slice 8 distinction scale"}, (variant,))
     return QoIDistinctionPolicySet((policy,))
+
+
+def _content_addressed_json(root: Path, subdirectory: str,
+                            value: Mapping[str, Any]) -> str:
+    encoded = canonical_json(value).encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    relative = f"data/{subdirectory}/{digest}.json"
+    _write_json(root / relative, value)
+    return relative
+
+
+def _plain_json(value: Any) -> Any:
+    return json.loads(canonical_json(thaw(value)))
+
+
+def _repair_objective(q: tuple[float, float, float], target_energy: float) -> ObjectiveSpec:
+    objective = ObjectiveSpec(
+        path=[q], tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1.0e12},
+        target_branch="acoustic", target_label="acoustic",
+        target_selector="nearest_energy", target_energy_meV=target_energy,
+        energy_search_meV=(-2.0, 7.0),
+    )
+    scope = current_objective_comparison_scope(objective)["fingerprint"]
+    objective.scan_window_eig = ScanWindowEIGConfig(
+        policy_set=_policy(scope), scoring_config=ScanWindowShadowScoringConfig())
+    return objective
+
+
+def _persist_prior_source(
+        root: Path, *, case_id: str, q: tuple[float, float, float],
+        target_energy: float, prediction_sigma: float, ncount: int, survey: bool,
+        artifact: Mapping[str, Any], eligibility: EligibilityInput,
+) -> dict[str, Any]:
+    """Persist one completed acquisition that is strictly prior to the candidate inventory."""
+    _init_tavi_workspace(root)
+    master_revision = "slice8-master-r1"
+    target = {
+        **dict(eligibility.target_outcome),
+        "master_revision": master_revision,
+    }
+    projection = build_target_projection(
+        artifact, target, master_revision=master_revision,
+        calibration_fingerprint="slice8-cal-r1",
+        policy_fingerprint="slice8-policy-r1", action_role="certification")
+    predictive_ref = _content_addressed_json(root, "master_predictive", artifact)
+    projection_ref = _content_addressed_json(root, "target_projection", projection)
+
+    prior_action = semantics_fingerprint(
+        "isar.eig4_slice8.repair.prior_action/o36.8.1", {
+            "hkl": list(q), "target_energy_meV": target_energy,
+            "prediction_sigma_meV": prediction_sigma, "ncount": ncount,
+            "survey": survey,
+        })
+    prior_inventory = design_scan_windows(_context(
+        q=q, target_energy=target_energy, prediction_sigma=prediction_sigma,
+        ncount=ncount, survey=survey,
+        scientific_action_fingerprint=prior_action))
+    prior_digest = prior_inventory.content_hash()
+    prior_relative = f"report/scan-design/{prior_digest}.json"
+    _write_json(root / prior_relative, prior_inventory.to_full_dict())
+    prior_ref = {
+        "kind": "scan_design_inventory", "sha256": prior_digest,
+        "path": prior_relative,
+    }
+    source_acquisition_id = f"{case_id}:prior-source"
+    source_request_fingerprint = semantics_fingerprint(
+        "isar.eig4_slice8.repair.prior_request/o36.8.1", {
+            "hkl": list(q),
+            "candidate_id": prior_inventory.selected_candidate_id,
+            "grid_fingerprint": prior_inventory.selected_candidate.grid.fingerprint(
+                prior_inventory.selected_candidate.ncount),
+        })
+    source_submission = {
+        "job_id": f"{case_id}-prior-job",
+        "state": "done",
+        "attempt": 0,
+        "acquisition_id": source_acquisition_id,
+        "proposal_fingerprint": source_request_fingerprint,
+        "scientific_action_fingerprint": prior_action,
+        "scan_design_inventory_ref": prior_ref,
+        "scan_design_candidate_id": prior_inventory.selected_candidate_id,
+        "scan_design_context_fingerprint": prior_inventory.context.fingerprint,
+        "hkl": list(q),
+    }
+    log_event(root / "report" / "session_log.jsonl", "physical_submission", source_submission)
+    log_event(root / "report" / "session_log.jsonl", "analyze", {
+        "job_id": source_submission["job_id"],
+        "acquisition_id": source_acquisition_id,
+        "status": "completed",
+    })
+
+    outcome = {
+        **target,
+        "predictive_ref": predictive_ref,
+        "target_projection_ref": projection_ref,
+        "fit_selection_semantics": _plain_json(eligibility.selection_record),
+        "shadow_model_selection": _plain_json(eligibility.shadow_record),
+    }
+    source_key = f"{case_id}:source-master"
+    detector_id = "pooled"
+    state = SessionState()
+    state.put(ScanEntry(
+        scan_id=source_key, scan_number=9_800_000, scan_type="pooled_master",
+        status="fitted", detectors={detector_id: outcome},
+        provenance={"target_projection_authority": projection["authority"]},
+    ))
+    state.save(root / "session.json")
+    _write_json(root / "report" / "prior-source-record.json", {
+        "contract": "isar.eig4_slice8_prior_source/o36.8.1",
+        "case_id": case_id,
+        "source_acquisition_id": source_acquisition_id,
+        "source_submission_request_fingerprint": source_request_fingerprint,
+        "source_master_session_key": source_key,
+        "source_detector_id": detector_id,
+        "source_master_revision": master_revision,
+        "predictive_ref": predictive_ref,
+        "target_projection_ref": projection_ref,
+        "prior_scan_design_inventory_ref": prior_ref,
+        "prior_scan_design_context_fingerprint": prior_inventory.context.fingerprint,
+        "prior_scan_design_candidate_id": prior_inventory.selected_candidate_id,
+        "source_submission": source_submission,
+    })
+    return {
+        "master_session_key": source_key,
+        "detector_id": detector_id,
+        "master_revision": master_revision,
+        "source_acquisition_id": source_acquisition_id,
+        "source_submission_request_fingerprint": source_request_fingerprint,
+        "predictive_ref": predictive_ref,
+        "target_projection_ref": projection_ref,
+        "target_outcome": outcome,
+        "target_projection_authority": projection["authority"],
+        "prior_inventory_ref": prior_ref,
+        "prior_context_fingerprint": prior_inventory.context.fingerprint,
+        "prior_candidate_id": prior_inventory.selected_candidate_id,
+        "source_submission": source_submission,
+    }
+
+
+def _persist_repair_eligible_case(
+        root: Path, *, case_id: str, case_seed: int,
+        q: tuple[float, float, float], draw_energies: Sequence[float],
+        target_energy: float, prediction_sigma: float, amplitude: float,
+        ncount: int, survey: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Construct one coherent eligible fixture through the production scoring adapter."""
+    intent = _canonical_intent(q=q, target_energy=target_energy, case_id=case_id)
+    artifact, seed_eligibility = _predictive_bundle(
+        q=q, draw_energies=draw_energies, target_energy=target_energy,
+        amplitude=amplitude, seed=case_seed, intent=intent)
+    source = _persist_prior_source(
+        root, case_id=case_id, q=q, target_energy=target_energy,
+        prediction_sigma=prediction_sigma, ncount=ncount, survey=survey,
+        artifact=artifact, eligibility=seed_eligibility)
+    objective = _repair_objective(q, target_energy)
+    inventory = design_scan_windows(_context(
+        q=q, target_energy=target_energy, prediction_sigma=prediction_sigma,
+        ncount=ncount, survey=survey,
+        scientific_action_fingerprint=intent.scientific_action_fingerprint))
+    legacy = inventory.selected_candidate
+    proposal = ScanProposal(
+        h=q[0], k=q[1], l=q[2], e_lo=legacy.e_lo, e_hi=legacy.e_hi,
+        e_step=legacy.e_step, ncount=legacy.ncount, kind="production",
+        reason="frozen Slice 8 repair legacy control", e_pred=target_energy,
+        fwhm_dE=0.8, n_points=legacy.n_points,
+        meta={
+            "proposal_fingerprint": semantics_fingerprint(
+                "isar.eig4_slice8.repair.legacy_request/o36.8.1", {"case_id": case_id}),
+            "scientific_action_fingerprint": intent.scientific_action_fingerprint,
+            "acquisition_action_role": "production",
+            "target_branch_role": "acoustic",
+            "rival_branch_role": "optic",
+            "evidence_sink": "canonical_master",
+            "driver_inserted": False,
+            "certification_eligible": True,
+        },
+        intent=intent,
+        scan_design_inventory=inventory,
+    )
+    proposal.shadow_scoring_source = ShadowScoringSource(
+        master_session_key=source["master_session_key"],
+        detector_id=source["detector_id"],
+        master_revision=source["master_revision"],
+        source_acquisition_id=source["source_acquisition_id"],
+        source_submission_request_fingerprint=source[
+            "source_submission_request_fingerprint"],
+        scientific_action_fingerprint=intent.scientific_action_fingerprint,
+        predictive_ref=source["predictive_ref"],
+        target_projection_ref=source["target_projection_ref"],
+        target_outcome=dict(source["target_outcome"]),
+        selection_record=dict(seed_eligibility.selection_record),
+        shadow_record=dict(seed_eligibility.shadow_record),
+        target_projection_authority=dict(source["target_projection_authority"]),
+        action_intent=intent,
+        action_provenance=dict(seed_eligibility.action_provenance),
+    )
+    drive_loop._stamp_proposal_provenance(proposal)
+    _write_json(root / "report" / "current-proposal.json", {
+        "contract": "isar.eig4_slice8_current_proposal/o36.8.1",
+        "request": proposal.to_dict(),
+        "meta": _plain_json(proposal.meta),
+        "scientific_action_fingerprint": intent.scientific_action_fingerprint,
+    })
+    _write_json(root / "report" / "scoring-source.json", {
+        "contract": "isar.eig4_slice8_scoring_source/o36.8.1",
+        "scientific_action_fingerprint": intent.scientific_action_fingerprint,
+        "source_acquisition_id": source["source_acquisition_id"],
+        "source_submission_request_fingerprint": source[
+            "source_submission_request_fingerprint"],
+        "source_master_session_key": source["master_session_key"],
+        "source_detector_id": source["detector_id"],
+        "source_master_revision": source["master_revision"],
+        "predictive_ref": source["predictive_ref"],
+        "target_projection_ref": source["target_projection_ref"],
+    })
+    score_proposal_shadow_inventory(proposal, objective, root)
+    scoring = proposal.scan_design_inventory.shadow_scoring
+    if scoring is None or scoring.status != "complete":
+        raise gate.GateEvidenceError(
+            f"{case_id} production-adapter scoring is unavailable: "
+            f"{None if scoring is None else scoring.reason_codes}")
+    # Authenticate the completed prior acquisition before constructing any current realized pair.
+    _predictive, adapter_eligibility, _config, scope = _resolved_scoring_inputs(
+        proposal, objective, root, lambda: None)
+    inventory = proposal.scan_design_inventory
+    digest = inventory.content_hash()
+    inventory_relative = f"report/scan-design/{digest}.json"
+    _write_json(root / inventory_relative, inventory.to_full_dict())
+    inventory_ref = {
+        "kind": "scan_design_inventory", "sha256": digest,
+        "path": inventory_relative,
+    }
+
+    def finalize(target: ScanProposal, *_args: Any, **_kwargs: Any) -> None:
+        drive_loop._stamp_proposal_provenance(target)
+
+    pair = construct_realized_pair(
+        proposal, inventory, SimpleNamespace(), SimpleNamespace(), {}, it=1,
+        finalizer=finalize)
+    comparison = build_realized_comparison(
+        inventory, inventory_ref, pair, remaining_seconds=5.0,
+        rescorer=lambda realized_pair, **_kwargs: score_proposal_realized_pair(
+            proposal, objective, root, realized_pair,
+            deadline_monotonic=time.monotonic() + 5.0))
+    comparison_ref = persist_realized_comparison(root, comparison)
+    primary = next(item for item in comparison.variants
+                   if item.variant_id == gate.PRIMARY_VARIANT_ID)
+    score_set, legacy_id, target_id = gate._score_set_payload(
+        comparison, inventory, primary)
+    blocks = list(gate._paired_blocks(score_set, legacy_id, target_id))
+    selected = pair.legacy
+    submission = {
+        "scan_design_realized_comparison_fingerprint": (
+            comparison.realized_comparison_fingerprint),
+        "scan_design_realized_selected_request_fingerprint": (
+            comparison.selected_request_fingerprint),
+        "scan_design_realized_selected_grid_fingerprint": (
+            comparison.selected_grid_fingerprint),
+        "scientific_action_fingerprint": intent.scientific_action_fingerprint,
+        "proposal_fingerprint": comparison.selected_request_fingerprint,
+        "scan_design_inventory_ref": inventory_ref,
+        "scan_design_context_fingerprint": inventory.context.fingerprint,
+        "scan_design_candidate_id": inventory.selected_candidate_id,
+        "hkl": list(q),
+        "returned_grid": list(selected.executed_energies),
+    }
+    acquisition_provenance = dict(submission)
+    acquisition_provenance["acquisition_id"] = f"{case_id}:current-candidate"
+    _write_json(root / "report" / "current-submission.json", submission)
+    _write_json(root / "report" / "current-acquisition-provenance.json",
+                acquisition_provenance)
+    raw = {
+        "case_id": case_id,
+        "eligibility_source": gate.serialize_repair_eligibility_input(adapter_eligibility),
+        "source_workspace": str(root.resolve()),
+        "realized_comparison_ref": comparison_ref,
+        "applicability": "applicable",
+        "executed_grid_status": "matched",
+        "submission_provenance": submission,
+        "acquisition_provenance": acquisition_provenance,
+        "scientific_action_fingerprint": intent.scientific_action_fingerprint,
+        "proposal_metadata_ref": "report/current-proposal.json",
+        "scoring_source_ref": "report/scoring-source.json",
+        "prior_source_record_ref": "report/prior-source-record.json",
+        "prior_scan_design_inventory_ref": source["prior_inventory_ref"],
+        "current_scan_design_inventory_ref": inventory_ref,
+        "analysis_outcome": {},
+    }
+    diagnostics = {
+        "blocks": blocks,
+        "legacy_points": pair.legacy.executed_point_count,
+        "target_points": pair.target_core.executed_point_count,
+        "legacy_window": [pair.legacy.e_lo, pair.legacy.e_hi],
+        "target_window": [pair.target_core.e_lo, pair.target_core.e_hi],
+        "scope_fingerprint": scope["fingerprint"],
+        "scientific_action_fingerprint": intent.scientific_action_fingerprint,
+        "predictive_seed": case_seed,
+    }
+    return raw, diagnostics
+
+
+def _repair_proposal_from_retained(raw: Mapping[str, Any], root: Path
+                                   ) -> tuple[ScanProposal, ObjectiveSpec]:
+    eligibility, _summary = gate.deserialize_repair_eligibility_input(
+        raw["eligibility_source"])
+    intent_raw = dict(eligibility.action_intent)
+    intent_raw.pop("scientific_action_fingerprint", None)
+    intent = MeasurementIntent(
+        action_class=intent_raw["action_class"], hkl=tuple(intent_raw["hkl"]),
+        energy_lo=intent_raw["energy_lo"], energy_hi=intent_raw["energy_hi"],
+        window_family=intent_raw["window_family"],
+        target_branch_role=intent_raw["target_branch_role"],
+        rival_branch_role=intent_raw["rival_branch_role"],
+        evidence_basis_fingerprint=intent_raw["evidence_basis_fingerprint"],
+        hypotheses_fingerprint=intent_raw["hypotheses_fingerprint"],
+        campaign_slice_fingerprint=intent_raw["campaign_slice_fingerprint"],
+        evidence_sink=intent_raw["evidence_sink"],
+        window_center_meV=intent_raw.get("window_center_meV"),
+    )
+    inventory = load_scan_design_inventory(raw["current_scan_design_inventory_ref"], root)
+    source = json.loads((root / raw["prior_source_record_ref"]).read_text(encoding="utf-8"))
+    scoring_source = json.loads(
+        (root / raw["scoring_source_ref"]).read_text(encoding="utf-8"))
+    legacy = inventory.selected_candidate
+    proposal = ScanProposal(
+        h=float(intent.hkl[0]), k=float(intent.hkl[1]), l=float(intent.hkl[2]),
+        e_lo=legacy.e_lo, e_hi=legacy.e_hi, e_step=legacy.e_step,
+        ncount=legacy.ncount, kind="production",
+        reason="frozen Slice 8 repair legacy control",
+        e_pred=float(intent.window_center_meV), fwhm_dE=0.8,
+        n_points=legacy.n_points,
+        meta={
+            "scientific_action_fingerprint": intent.scientific_action_fingerprint,
+            "acquisition_action_role": "production",
+            "target_branch_role": "acoustic", "rival_branch_role": "optic",
+            "evidence_sink": "canonical_master", "driver_inserted": False,
+            "certification_eligible": True,
+            "target_band": [float(intent.window_center_meV), 0.35],
+        },
+        intent=intent, scan_design_inventory=inventory,
+    )
+    proposal.shadow_scoring_source = ShadowScoringSource(
+        master_session_key=scoring_source["source_master_session_key"],
+        detector_id=scoring_source["source_detector_id"],
+        master_revision=scoring_source["source_master_revision"],
+        source_acquisition_id=scoring_source["source_acquisition_id"],
+        source_submission_request_fingerprint=scoring_source[
+            "source_submission_request_fingerprint"],
+        scientific_action_fingerprint=intent.scientific_action_fingerprint,
+        predictive_ref=scoring_source["predictive_ref"],
+        target_projection_ref=scoring_source["target_projection_ref"],
+        target_outcome=dict(eligibility.target_outcome),
+        selection_record=dict(eligibility.selection_record),
+        shadow_record=dict(eligibility.shadow_record),
+        target_projection_authority=dict(
+            json.loads((root / scoring_source["target_projection_ref"]).read_text(
+                encoding="utf-8"))["authority"]),
+        action_intent=intent,
+        action_provenance=dict(eligibility.action_provenance),
+    )
+    return proposal, _repair_objective(tuple(intent.hkl), float(intent.window_center_meV))
+
+
+class _CaptureTavi:
+    """Transparent client wrapper that snapshots the authenticated pre-submit evidence."""
+
+    def __init__(self, inner: TaviClient, proposal: ScanProposal, capture: Path,
+                 *, reverse_returned_grid: bool = False) -> None:
+        self.inner = inner
+        self.proposal = proposal
+        self.capture = capture
+        self.reverse_returned_grid = reverse_returned_grid
+        self.submitted_body: dict[str, Any] | None = None
+        self.returned_data: dict[str, Any] | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+    def submit_scan(self, body: Mapping[str, Any], *, idempotency_key: str | None = None):
+        meta = self.proposal.meta or {}
+        comparison_ref = meta.get("scan_design_realized_comparison_ref")
+        inventory_ref = meta.get("scan_design_inventory_ref")
+        if not isinstance(comparison_ref, Mapping) or not isinstance(inventory_ref, Mapping):
+            raise gate.GateEvidenceError("pre-submit capture lacks authenticated realized evidence")
+        self.capture.mkdir(parents=True, exist_ok=True)
+        _write_json(self.capture / "captured-comparison-ref.json", dict(comparison_ref))
+        _write_json(self.capture / "captured-inventory-ref.json", dict(inventory_ref))
+        _write_json(self.capture / "captured-sidecar-metadata.json", {
+            "comparison_fingerprint": meta.get(
+                "scan_design_realized_comparison_fingerprint"),
+            "selected_request_fingerprint": meta.get(
+                "scan_design_realized_selected_request_fingerprint"),
+            "selected_grid_fingerprint": meta.get(
+                "scan_design_realized_selected_grid_fingerprint"),
+            "scientific_action_fingerprint": meta.get("scientific_action_fingerprint"),
+        })
+        self.submitted_body = _plain_json(body)
+        _write_json(self.capture / "submitted-body.json", self.submitted_body)
+        return self.inner.submit_scan(body, idempotency_key=idempotency_key)
+
+    def get_scan_data(self, job_id: str):
+        value = _plain_json(self.inner.get_scan_data(job_id))
+        if self.reverse_returned_grid:
+            result = value.get("result") or {}
+            result["scan_values_1"] = list(reversed(result.get("scan_values_1") or []))
+            value["result"] = result
+        self.returned_data = value
+        _write_json(self.capture / "returned-data.json", value)
+        return value
+
+
+def _run_controller_completion(raw: Mapping[str, Any], workspace: Path,
+                               capture: Path, *, case_seed: int,
+                               reverse_returned_grid: bool = False
+                               ) -> tuple[ScanProposal, _CaptureTavi, list[dict[str, Any]]]:
+    proposal, objective = _repair_proposal_from_retained(raw, workspace)
+    wrapper = _CaptureTavi(
+        TaviClient(), proposal, capture, reverse_returned_grid=reverse_returned_grid)
+    cfg = drive_loop._campaign_config(objective, {
+        "workspace": workspace, "client": wrapper, "run_isar": run_isar,
+        "resolution": {"fwhm_dE": 0.8}, "seed": int(case_seed),
+        "max_iters": 1, "wait_timeout": 120.0,
+    })
+    budget = {"kind": "neutrons", "amount": 1.0e12,
+              "neutrons": 0.0, "seconds": 0.0, "spent": 0.0}
+    drive_loop._score_shadow_proposal(proposal, objective, cfg, it=0)
+    scoring = proposal.scan_design_inventory.shadow_scoring
+    if scoring is None or scoring.status != "complete":
+        raise gate.GateEvidenceError("production controller did not complete shadow scoring")
+    drive_loop._finalize_proposal(proposal, objective, cfg, budget, it=0)
+    drive_loop._persist_scan_design_inventory(cfg, proposal, it=0)
+    drive_loop._refresh_realized_comparison(
+        cfg, objective, proposal, budget, it=0,
+        legacy_adjustments=("repair_pre_submit",))
+    proposal.acquisition_id = "s8-c01-current-candidate"
+    observations: list[dict[str, Any]] = []
+    drive_loop._execute_proposal(
+        cfg=cfg, objective=objective, proposal=proposal, it=0, scan_counter=0,
+        budget_state=budget, observations=observations, consumed=set(), scan_kind={})
+    return proposal, wrapper, read_log(workspace / "report" / "session_log.jsonl")
+
+
+def run_case1_counterfactual_fork(raw: dict[str, Any], *, case_seed: int) -> dict[str, Any]:
+    """Execute the strong case's legacy and target requests from byte-identical source clones."""
+    source = Path(raw["source_workspace"])
+    source_before = _tree_fingerprint(source)
+    branch_root = source.parent.parent / "case1-counterfactual-branches"
+    if branch_root.exists():
+        shutil.rmtree(branch_root)
+    branch_a = branch_root / "legacy"
+    branch_b = branch_root / "target-core"
+    shutil.copytree(source, branch_a)
+    shutil.copytree(source, branch_b)
+    branch_a_initial = _tree_fingerprint(branch_a)
+    branch_b_initial = _tree_fingerprint(branch_b)
+    if branch_a_initial != source_before or branch_b_initial != source_before:
+        raise gate.GateEvidenceError("Case 1 counterfactual clones do not match their source tree")
+
+    legacy_proposal, legacy_client, legacy_events = _run_controller_completion(
+        raw, branch_a, branch_root / "captured-pre-submit", case_seed=case_seed)
+    comparison = load_scan_design_realized_comparison(
+        legacy_proposal.meta["scan_design_realized_comparison_ref"], branch_a)
+    legacy = comparison.realized_pair.legacy
+    target = comparison.realized_pair.target_core
+    if not hasattr(target, "scan_command"):
+        raise gate.GateEvidenceError("Case 1 target-core request was not realized")
+    physical = next(event["payload"] for event in legacy_events
+                    if event["kind"] == "physical_submission"
+                    and event["payload"].get("acquisition_id") == legacy_proposal.acquisition_id)
+    state_a = read_card_state(branch_a)
+    acquisition = next(item for item in reversed(state_a.get("acquisition_provenance") or [])
+                       if item.get("acquisition_id") == legacy_proposal.acquisition_id)
+    returned_legacy = (legacy_client.returned_data.get("result") or {}).get("scan_values_1")
+
+    target_client = TaviClient()
+    schema = target_client.get_schema()
+    background = {
+        "catalog_version": schema["background"]["catalog_version"],
+        "enabled": False, "sources": {},
+    }
+    target_body = {
+        "parameters": {
+            "H": target.hkl[0], "K": target.hkl[1], "L": target.hkl[2],
+            "scan_command1": target.scan_command, "number_neutrons": target.ncount,
+            "sample": "Al_phonon_DFT",
+        },
+        "engine": "deterministic", "seed": int(case_seed), "isolated": True,
+        "background": background,
+    }
+    target_submit = target_client.submit_scan(target_body)
+    target_snapshot = target_client.wait_scan(
+        target_submit["job_id"], timeout=120.0, poll_wait=5.0)
+    if target_snapshot.get("state") != "done":
+        raise gate.GateEvidenceError("Case 1 target-core counterfactual did not complete")
+    target_data = target_client.get_scan_data(target_submit["job_id"])
+    saved = save_scan_json(target_data, branch_b / "data")
+    process = run_isar(branch_b, [branch_b / "data"])
+    rows = read_results_csv(branch_b) if process.returncode == 0 else []
+    state_b = read_card_state(branch_b) if process.returncode == 0 else {}
+    fitted = [row for row in rows if row.get("status") == "fitted"]
+    pooled = [row for row in rows if str(row.get("pooled", "")).lower() in {"true", "1"}]
+    usable = [row for row in rows if row.get("omega0") not in (None, "")
+              and row.get("disposition") not in {"declined", "held"}]
+    expected_target = [row for row in usable
+                       if row.get("branch_id") in {None, "", "acoustic"}]
+    source_after = _tree_fingerprint(source)
+    evidence_root = source / "report" / "fork-evidence"
+    target_raw_ref = "report/fork-evidence/target-raw-tavi.json"
+    _write_json(source / target_raw_ref, target_data)
+    row_evidence = [{
+        "scan_id": row.get("scan_id") or row.get("scan"),
+        "status": row.get("status"), "verdict": row.get("verdict"),
+        "disposition": row.get("disposition"), "omega0": row.get("omega0"),
+        "branch_id": row.get("branch_id"), "pooled": row.get("pooled"),
+        "target_delivery_eligible": row.get("target_delivery_eligible"),
+    } for row in rows]
+    analysis = {
+        "contract": "isar.eig4_slice8_positive_analysis/o36.8.1",
+        "job_id": target_submit["job_id"], "exact_request": target_body,
+        "raw_tavi_json_ref": target_raw_ref,
+        "returned_scan_values_1": (target_data.get("result") or {}).get("scan_values_1"),
+        "ordinary_analysis_command": "isar run", "returncode": process.returncode,
+        "result_rows": row_evidence,
+        "pooled_rows": [row for row in row_evidence if str(row.get("pooled")).lower() in {"true", "1"}],
+        "card_state_excerpt": {
+            "dispersion_prior_count": len(state_b.get("dispersion_prior") or []),
+            "acquisition_provenance_count": len(state_b.get("acquisition_provenance") or []),
+        },
+        "usable_target_delivery": bool(usable),
+        "expected_acoustic_target_delivered": bool(expected_target),
+        "source_workspace_fingerprint_before": source_before,
+        "source_workspace_fingerprint_after": source_after,
+        "isolated_workspace_fingerprint": _tree_fingerprint(branch_b),
+        "input_scan_sha256": hashlib.sha256(saved.read_bytes()).hexdigest(),
+    }
+    fork = {
+        "contract": "isar.eig4_slice8_case1_counterfactual_fork/o36.8.1",
+        "source_tree_fingerprint": source_before,
+        "branch_a_initial_tree_fingerprint": branch_a_initial,
+        "branch_b_initial_tree_fingerprint": branch_b_initial,
+        "source_master_revision": json.loads(
+            (source / raw["prior_source_record_ref"]).read_text(encoding="utf-8"))[
+                "source_master_revision"],
+        "scientific_action_fingerprint": raw["scientific_action_fingerprint"],
+        "realized_comparison_fingerprint": comparison.realized_comparison_fingerprint,
+        "legacy_submission_exact": (
+            physical.get("proposal_fingerprint") == comparison.selected_request_fingerprint
+            and (legacy_client.submitted_body.get("parameters") or {}).get("scan_command1")
+            == legacy.scan_command),
+        "legacy_returned_grid_exact": canonical_json(returned_legacy)
+        == canonical_json(list(legacy.executed_energies)),
+        "legacy_acquisition_provenance_exact": (
+            acquisition.get("scan_design_realized_comparison_fingerprint")
+            == comparison.realized_comparison_fingerprint
+            and acquisition.get("scientific_action_fingerprint")
+            == raw["scientific_action_fingerprint"]),
+        "target_request_from_captured_sidecar": (
+            target_body["parameters"]["scan_command1"] == target.scan_command),
+        "target_returned_grid_exact": canonical_json(
+            (target_data.get("result") or {}).get("scan_values_1"))
+            == canonical_json(list(target.executed_energies)),
+        "target_rejoined_only_in_branch_b": saved.exists() and not any(
+            str(item.get("job_id")) == str(target_submit["job_id"])
+            for item in state_a.get("acquisition_provenance") or []),
+        "legacy_physical_submission": physical,
+        "legacy_acquisition_provenance": acquisition,
+    }
+    _write_json(evidence_root / "positive-analysis.json", analysis)
+    _write_json(evidence_root / "case1-fork.json", fork)
+    raw["analysis_evidence_ref"] = "report/fork-evidence/positive-analysis.json"
+    raw["fork_evidence_ref"] = "report/fork-evidence/case1-fork.json"
+    return {"analysis": analysis, "fork": fork}
+
+
+def run_grid_order_fault(raw: Mapping[str, Any], *, case_seed: int) -> dict[str, Any]:
+    """Inject a returned-grid order fault through the production completion seam."""
+    source = Path(raw["source_workspace"])
+    fault_workspace = source.parent.parent / "grid-order-fault-workspace"
+    if fault_workspace.exists():
+        shutil.rmtree(fault_workspace)
+    shutil.copytree(source, fault_workspace)
+    proposal, wrapper, events = _run_controller_completion(
+        raw, fault_workspace, fault_workspace.parent / "grid-order-fault-capture",
+        case_seed=case_seed, reverse_returned_grid=True)
+    emitted = next(event for event in events if event["kind"] == "exception"
+                   and (event.get("payload") or {}).get("action")
+                   == "executed_grid_mismatch")
+    state = read_card_state(fault_workspace)
+    provenance = next(
+        item for item in reversed(state.get("acquisition_provenance") or [])
+        if item.get("acquisition_id") == proposal.acquisition_id)
+    rows = read_results_csv(fault_workspace)
+    fitted = [row for row in rows if row.get("status") == "fitted"]
+    pooled = [row for row in rows if str(row.get("pooled", "")).lower() in {"true", "1"}]
+    evidence_root = source / "report" / "fault-evidence"
+    injected = {
+        "contract": "isar.eig4_slice8_injected_grid/o36.8.1",
+        "scan_values_1": (wrapper.returned_data.get("result") or {}).get("scan_values_1"),
+    }
+    analysis = {
+        "contract": "isar.eig4_slice8_fault_post_analysis/o36.8.1",
+        "ordinary_analysis_continued": True,
+        "fitted_rows": [{"scan_id": row.get("scan_id") or row.get("scan"),
+                          "status": row.get("status"), "omega0": row.get("omega0")}
+                         for row in fitted],
+        "pooled_rows": [{"scan_id": row.get("scan_id") or row.get("scan"),
+                          "status": row.get("status"), "omega0": row.get("omega0")}
+                         for row in pooled],
+    }
+    _write_json(evidence_root / "injected-grid.json", injected)
+    _write_json(evidence_root / "emitted-event.json", emitted)
+    _write_json(evidence_root / "mismatch-provenance.json", provenance)
+    _write_json(evidence_root / "post-analysis.json", analysis)
+    return {
+        "contract": gate.REPAIR_FAULT_EVIDENCE_CONTRACT,
+        "fault_id": "s8-f01-executed-grid-order",
+        "source_case_id": "s8-c01-strong-confirmed",
+        "source_workspace": str(source.resolve()),
+        "injected_grid_ref": "report/fault-evidence/injected-grid.json",
+        "event_ref": "report/fault-evidence/emitted-event.json",
+        "mismatch_provenance_ref": "report/fault-evidence/mismatch-provenance.json",
+        "post_analysis_ref": "report/fault-evidence/post-analysis.json",
+    }
 
 
 def _persist_eligible_case(root: Path, *, case_id: str, q: tuple[float, float, float],
@@ -598,6 +1275,163 @@ def build_development_inputs(output: Path, parameters: Mapping[str, Any]) -> dic
     }
     _write_json(output / "fixture-definitions.json", fixture_definitions)
     _write_json(output / "development-inputs.json", development)
+    return development
+
+
+def build_repair_development_inputs(output: Path, parameters: Mapping[str, Any], *,
+                                    execute_live: bool = False) -> dict[str, Any]:
+    """Build the o36.8.1 fixtures; live mode executes the Case 1 fork and grid fault."""
+    if parameters.get("contract") != DEVELOPMENT_SPEC_CONTRACT:
+        raise gate.GateEvidenceError("repair uses the unchanged Slice 8 fixture parameters")
+    case_by_id = {item["case_id"]: item for item in gate.CASE_DEFINITIONS}
+    raw_cases: dict[str, dict[str, Any]] = {}
+    diagnostics: dict[str, Any] = {}
+    fixture_rows: list[dict[str, Any]] = []
+    eligible_inputs: dict[str, EligibilityInput] = {}
+    for case_id in (
+            "s8-c01-strong-confirmed", "s8-c02-weak-unresolved-confirmed",
+            "s8-c03-near-elastic-selection-time"):
+        definition = case_by_id[case_id]
+        physical = parameters["eligible_cases"].get(case_id)
+        if not isinstance(physical, Mapping):
+            raise gate.GateEvidenceError(f"repair fixture lacks {case_id}")
+        q = tuple(float(item) for item in physical["q"])
+        raw, detail = _persist_repair_eligible_case(
+            output / "source-workspaces" / case_id,
+            case_id=case_id, case_seed=definition["case_generation_seed"], q=q,
+            draw_energies=physical["draw_energies_meV"],
+            target_energy=float(physical["target_energy_meV"]),
+            prediction_sigma=float(physical["prediction_sigma_meV"]),
+            amplitude=float(physical["amplitude"]), ncount=int(physical["ncount"]),
+            survey=bool(physical["survey"]))
+        raw["analysis_evidence_ref"] = None
+        raw["fork_evidence_ref"] = None
+        raw["paired_block_deltas_per_executed_point_nats"] = list(detail["blocks"])
+        raw_cases[case_id] = raw
+        diagnostics[case_id] = detail
+        eligible_inputs[case_id], _summary = gate.deserialize_repair_eligibility_input(
+            raw["eligibility_source"])
+        fixture_rows.append(_fixture_definition(
+            definition, physical,
+            source_kind=("deterministic_tavi_with_synthetic_predictive_fixture"
+                         if case_id == "s8-c01-strong-confirmed"
+                         else "deterministic_synthetic")))
+
+    if execute_live:
+        run_case1_counterfactual_fork(
+            raw_cases["s8-c01-strong-confirmed"], case_seed=8040801)
+        fault = run_grid_order_fault(
+            raw_cases["s8-c01-strong-confirmed"], case_seed=8040801)
+    else:
+        fault = {
+            "contract": gate.REPAIR_FAULT_EVIDENCE_CONTRACT,
+            "fault_id": "s8-f01-executed-grid-order",
+            "source_case_id": "s8-c01-strong-confirmed",
+            "source_workspace": raw_cases["s8-c01-strong-confirmed"]["source_workspace"],
+            "injected_grid_ref": None, "event_ref": None,
+            "mismatch_provenance_ref": None, "post_analysis_ref": None,
+        }
+
+    strong_physical = parameters["eligible_cases"]["s8-c01-strong-confirmed"]
+    strong_q = tuple(float(item) for item in strong_physical["q"])
+    for case_id, mutation in (
+            ("s8-c04-forked-target", "fork"),
+            ("s8-c05-projection-join-mismatch", "projection"),
+            ("s8-c06-constrained-selection", "constrained")):
+        definition = case_by_id[case_id]
+        intent = _canonical_intent(
+            q=strong_q, target_energy=float(strong_physical["target_energy_meV"]),
+            case_id=case_id)
+        _artifact, source = _predictive_bundle(
+            q=strong_q, draw_energies=strong_physical["draw_energies_meV"],
+            target_energy=float(strong_physical["target_energy_meV"]),
+            amplitude=float(strong_physical["amplitude"]),
+            constrained=mutation == "constrained",
+            seed=definition["case_generation_seed"], intent=intent)
+        if mutation == "fork":
+            source = EligibilityInput.from_current_contract(
+                action_intent=source.action_intent,
+                action_provenance=source.action_provenance,
+                target_outcome={**dict(source.target_outcome), "modality": "fork"},
+                selection_record=source.selection_record, qoi_evidence=source.qoi_evidence,
+                shadow_record=source.shadow_record)
+        elif mutation == "projection":
+            source = EligibilityInput.from_current_contract(
+                action_intent=source.action_intent,
+                action_provenance=source.action_provenance,
+                target_outcome=source.target_outcome,
+                selection_record=_selection("alternate-phonon"),
+                qoi_evidence=source.qoi_evidence, shadow_record=source.shadow_record)
+        raw_cases[case_id] = {
+            "case_id": case_id,
+            "eligibility_source": gate.serialize_repair_eligibility_input(source),
+            "source_workspace": None,
+            "analysis_evidence_ref": None, "fork_evidence_ref": None,
+        }
+        fixture_rows.append(_fixture_definition(definition, {
+            "authenticated_mutation": definition["required_eligibility_code"],
+            "source_case_id": "s8-c01-strong-confirmed",
+            "predictive_seed": definition["case_generation_seed"],
+        }))
+
+    fixture_rows.sort(key=lambda item: [row["case_id"] for row in gate.CASE_DEFINITIONS].index(
+        item["case_id"]))
+    physical = {
+        item["case_id"]: item["physical_parameters"] for item in fixture_rows
+        if item["case_id"] in {
+            "s8-c01-strong-confirmed", "s8-c02-weak-unresolved-confirmed",
+            "s8-c03-near-elastic-selection-time",
+        }
+    }
+    strong_delta, _strong_se, strong_lower = gate._paired_summary(
+        diagnostics["s8-c01-strong-confirmed"]["blocks"])
+    weak_delta, _weak_se, weak_lower = gate._paired_summary(
+        diagnostics["s8-c02-weak-unresolved-confirmed"]["blocks"])
+    regime: dict[str, Any] = {
+        "contract": "isar.eig4_slice8_fixture_regime_assessment/o36.8.1",
+        "parameter_set_fingerprint": semantics_fingerprint(
+            "isar.eig4_slice8_fixture_parameter_set/o36.8.1", physical),
+        "scoring_config_fingerprint": (
+            ScanWindowShadowScoringConfig().scoring_config_fingerprint),
+        "case_1": {"delta_positive": strong_delta > 0.0,
+                   "lower_margin_positive": strong_lower > 0.0},
+        "case_2": {"delta_positive": weak_delta > 0.0,
+                   "lower_margin_positive": weak_lower > 0.0},
+        "no_retuning_claim": "assessment cannot rescue a contrary frozen repaired result",
+        "regime_assessment_fingerprint": "",
+    }
+    regime["regime_assessment_fingerprint"] = gate._fingerprint(
+        "isar.eig4_slice8_fixture_regime_assessment_fingerprint/o36.8.1", regime,
+        "regime_assessment_fingerprint")
+    fixture_definitions: dict[str, Any] = {
+        "contract": gate.REPAIR_FIXTURE_DEFINITIONS_CONTRACT,
+        "cases": fixture_rows, "regime_assessment": regime,
+        "fixture_definitions_fingerprint": "",
+    }
+    fixture_definitions["fixture_definitions_fingerprint"] = gate._fingerprint(
+        "isar.eig4_slice8_fixture_definitions_fingerprint/o36.8.1",
+        fixture_definitions, "fixture_definitions_fingerprint")
+    gate.validate_repair_fixture_definitions(fixture_definitions)
+    by_fixture = {item["case_id"]: item for item in fixture_rows}
+    cases = []
+    for definition in gate.CASE_DEFINITIONS:
+        raw = raw_cases[definition["case_id"]]
+        raw.update({
+            "case_generation_seed": definition["case_generation_seed"],
+            "classification": definition["classification"],
+            "fixture_definition_fingerprint": gate.fixture_definition_fingerprint(
+                by_fixture[definition["case_id"]]),
+        })
+        cases.append(raw)
+    development = {
+        "contract": REPAIR_DEVELOPMENT_SPEC_CONTRACT,
+        "fixture_definitions": fixture_definitions,
+        "cases": cases,
+        "faults": [fault],
+        "diagnostics": diagnostics,
+    }
+    _write_json(output / "repair-fixture-definitions.json", fixture_definitions)
+    _write_json(output / "repair-development-inputs.json", development)
     return development
 
 

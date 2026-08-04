@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from isar.drive.acquisition.realized_comparison import load_scan_design_realized_comparison
 from isar.drive.acquisition.scan_design import load_scan_design_inventory
 from tools.stats import eig_slice8_fixtures as fixtures
@@ -64,3 +66,40 @@ def test_isolated_tavi_workspace_seeds_only_ordinary_campaign_state(tmp_path):
     assert state["branch_belief_models"]
     assert state["campaign_target"] == {}
     assert state["acquisition_provenance"] == []
+
+
+def test_repair_fixture_uses_one_action_and_distinct_prior_inventory(tmp_path):
+    parameters = json.loads(PARAMETERS.read_text(encoding="utf-8"))
+    physical = parameters["eligible_cases"]["s8-c01-strong-confirmed"]
+    raw, diagnostics = fixtures._persist_repair_eligible_case(
+        tmp_path / "case", case_id="s8-c01-strong-confirmed", case_seed=8040801,
+        q=tuple(physical["q"]), draw_energies=physical["draw_energies_meV"],
+        target_energy=physical["target_energy_meV"],
+        prediction_sigma=physical["prediction_sigma_meV"],
+        amplitude=physical["amplitude"], ncount=physical["ncount"],
+        survey=physical["survey"])
+
+    root = Path(raw["source_workspace"])
+    current = load_scan_design_inventory(raw["current_scan_design_inventory_ref"], root)
+    prior = load_scan_design_inventory(raw["prior_scan_design_inventory_ref"], root)
+    source, summary = gate.deserialize_repair_eligibility_input(raw["eligibility_source"])
+    action = raw["scientific_action_fingerprint"]
+
+    assert summary["status"] == "eligible"
+    assert source.action_intent["scientific_action_fingerprint"] == action
+    assert source.action_provenance["scientific_action_fingerprint"] == action
+    assert current.context.scientific_action_fingerprint == action
+    assert raw["submission_provenance"]["scientific_action_fingerprint"] == action
+    assert raw["acquisition_provenance"]["scientific_action_fingerprint"] == action
+    assert prior.content_hash() != current.content_hash()
+    assert prior.context.scientific_action_fingerprint != action
+    assert diagnostics["predictive_seed"] == 8040801
+
+
+def test_repair_prefreeze_rejects_contrary_128_by_8_regime(tmp_path):
+    parameters = json.loads(PARAMETERS.read_text(encoding="utf-8"))
+    with pytest.raises(gate.GateEvidenceError, match=(
+            r'"case_1":\{"delta_positive":true,"lower_margin_positive":true\}.*'
+            r'"case_2":\{"delta_positive":true,"lower_margin_positive":true\}')):
+        fixtures.build_repair_development_inputs(
+            tmp_path, parameters, execute_live=False)

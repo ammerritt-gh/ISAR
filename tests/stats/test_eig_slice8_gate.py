@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import runpy
 from pathlib import Path
 from types import SimpleNamespace
@@ -59,6 +60,19 @@ def test_frozen_manifest_uses_one_two_offset_runtime_variant():
     assert manifest["runtime_scoring_configuration"]["simulation_count"] == 128
     assert manifest["runtime_scoring_configuration"]["block_count"] == 8
     assert "2048" not in gate.canonical_json(manifest)
+
+
+def test_repair_manifest_is_additive_and_preserves_original_attempt_identity():
+    manifest = gate.build_repair_gate_manifest("a" * 40)
+
+    assert gate.validate_repair_gate_manifest(manifest) is manifest
+    assert manifest["gate_revision"] == "o36.8.1"
+    assert manifest["runtime_scoring_configuration"]["simulation_count"] == 128
+    assert manifest["runtime_scoring_configuration"]["block_count"] == 8
+    assert manifest["evidence_dependency_order"] == [
+        "verification-evidence.json", "run-manifest.json",
+        "case-results.json", "gate-result.json"]
+    assert manifest["original_attempt"]["status"] == "invalid_superseded"
 
 
 def _fixture_definitions():
@@ -135,6 +149,15 @@ def test_full_eligibility_source_round_trips_and_reproduces_summary():
     assert gate.serialize_eligibility_input(restored) == source
 
 
+def test_repair_eligibility_source_round_trips_without_changing_o368():
+    source = gate.serialize_repair_eligibility_input(_eligible_input())
+    restored, summary = gate.deserialize_repair_eligibility_input(source)
+
+    assert source["contract"] == gate.REPAIR_ELIGIBILITY_SOURCE_CONTRACT
+    assert summary["status"] == "eligible"
+    assert gate.serialize_repair_eligibility_input(restored) == source
+
+
 def test_ineligible_case_requires_no_realized_comparison(tmp_path):
     base = _eligible_input()
     target = dict(base.target_outcome)
@@ -174,6 +197,47 @@ def test_paired_margin_uses_block_mean_standard_error():
     assert delta == 0.5
     assert standard_error > 0.0
     assert lower == delta - 2.0 * standard_error
+
+
+def test_strong_case_requires_lower_total_information():
+    assert gate._strong_total_condition({
+        "legacy_total_information_nats": 1.0,
+        "target_core_total_information_nats": 0.9,
+    }) is True
+    assert gate._strong_total_condition({
+        "legacy_total_information_nats": 1.0,
+        "target_core_total_information_nats": 1.0,
+    }) is False
+
+
+def test_repair_top_level_reports_missing_retained_bundle_as_invalid(tmp_path):
+    result = gate.evaluate_repair_bundle(tmp_path)
+
+    assert result["overall_disposition"] == "invalid"
+    assert result["invalid_stage"] == "gate_manifest"
+    assert result["invalid_reason_code"] == "manifest_or_anchor_mismatch"
+    assert result["validated_fingerprints_so_far"] == []
+
+
+def test_false_repair_verification_record_is_bundle_invalid():
+    manifest = gate.build_repair_gate_manifest("a" * 40)
+    records = {
+        name: {"status": "passed", "command": f"verify {name}", "returncode": 0}
+        for name in (
+            "parse_import", "focused", "normative_predictive", "non_slow", "full",
+            "copied_bundle", "documentation", "source_closure")
+    }
+    records["full"]["returncode"] = 1
+    value = {
+        "contract": gate.REPAIR_VERIFICATION_CONTRACT,
+        "implementation_anchor": "a" * 40,
+        "records": records,
+        "verification_evidence_fingerprint": "0" * 64,
+    }
+
+    with pytest.raises(gate.BundleInvalid) as error:
+        gate._validate_repair_verification(value, manifest, [])
+    assert error.value.reason_code == "verification_record_invalid"
 
 
 def test_frozen_grid_fault_requires_fail_open_shadow_continuation():
@@ -317,3 +381,45 @@ def test_retained_slice8_bundle_is_self_contained_and_reproduces_exact_bytes():
 
     assert gate._canonical_bytes(reproduced) == (bundle / "gate-result.json").read_bytes()
     assert reproduced["overall_disposition"] == "passed"
+
+
+def test_original_attempt_disposition_is_additive_and_authenticates_old_bundle():
+    bundle = Path("docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE")
+    disposition = json.loads(
+        (bundle / "attempt-disposition.json").read_text(encoding="utf-8"))
+    fingerprint = disposition.pop("attempt_disposition_fingerprint")
+
+    assert disposition["status"] == "invalid_superseded"
+    assert disposition["reason_code"] == "eligible_same_action_join_mismatch"
+    assert fingerprint == gate.semantics_fingerprint(
+        "isar.eig4_slice8_attempt_disposition_fingerprint/o36.8.1", disposition)
+    assert disposition["authenticated_artifacts"]["gate_result_fingerprint"] == json.loads(
+        (bundle / "gate-result.json").read_text(encoding="utf-8"))[
+            "gate_result_fingerprint"]
+
+
+def test_coherence_repair_attempt_is_authenticated_as_aborted_before_freeze():
+    path = Path(
+        "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_ABORTED/"
+        "attempt-disposition.json")
+    disposition = json.loads(path.read_text(encoding="utf-8"))
+    fingerprint = disposition.pop("attempt_disposition_fingerprint")
+    case_2 = disposition["case_2"]
+    delta, standard_error, lower = gate._paired_summary(
+        case_2["paired_block_deltas_per_executed_point_nats"])
+
+    assert disposition["status"] == "aborted_pre_freeze"
+    assert disposition["reason_code"] == "fixture_regime_mismatch"
+    assert disposition["manifests_frozen"] is False
+    assert disposition["final_evidence_opened"] is False
+    assert case_2["expected_outcome"] == "unresolved"
+    assert case_2["coherently_observed_outcome"] == "target_core"
+    assert delta == case_2["delta_information_per_executed_point_nats"]
+    assert standard_error == case_2[
+        "delta_standard_error_per_executed_point_nats"]
+    assert lower == case_2["two_standard_error_lower_margin_nats"]
+    assert lower > 0.0
+    assert case_2["scorer_seed_evidence"]["seed"] == 5724296368191850781
+    assert fingerprint == gate.semantics_fingerprint(
+        "isar.eig4_slice8_repair_attempt_disposition_fingerprint/o36.8.1",
+        disposition)
