@@ -2,7 +2,7 @@
 
 > **Lifecycle:** Active plan
 > **Provenance:** hand-written
-> **Verified against code revision:** `b6db5bc` (2026-08-03)
+> **Verified against code revision:** `9d77631` (2026-08-04)
 > **Owner:** @ammerritt-gh
 > **Exit criteria:** the restricted authoritative selector exists; Slice 10 completes the deterministic
 > TAVI EIG-4 demonstration; exact eligible selection and ineligible non-EIG return behavior are
@@ -13,8 +13,9 @@
 
 **EIG-4 is the approved execution roadmap and current SVP, not implemented runtime authority.**
 The pure full-vector Poisson score kernel, the controlled offline Slice 5 counterfactual, Slice 6
-scored shadow inventories, and Slice 7 exact realized-request rescoring are implemented, but
-authoritative selection is not. Candidate generation, predictive `/2`, arbitrary-grid evaluation, executed-grid identity, target
+scored shadow inventories, and Slice 7 exact realized-request rescoring are implemented. The coherent
+Slice 8 V3 gate is owner-accepted under O41 and authorizes implementation of Slice 9 only, but
+authoritative selection is not implemented or reviewed. Candidate generation, predictive `/2`, arbitrary-grid evaluation, executed-grid identity, target
 projection, Slice 2 eligibility/QoI adaptation, the Slice 3 homogeneous design measure, the Slice 4
 caller-supplied score set, and Slice 5 completed-campaign comparison are implemented.
 Current acquisition ranks scientific actions and Q
@@ -193,6 +194,11 @@ canonical target production or confirmation. The frozen eligible comparison is
 `legacy_uniform/1` versus `target_core/1`, with equal per-point exposure. Rank candidates by
 conditional target-QoI information per executed point; paired uncertainty must resolve the
 comparison before `target_core/1` may win.
+
+O41 accepts the coherent Slice 8 V3 gate as sufficient evidence to implement this selector. The
+positive envelope contains exactly one clean case. Its `delta - 2 * paired_SE > 0` threshold is a
+pragmatic engineering margin, not calibrated 95% coverage, and the acceptance does not itself make
+the authoritative runtime available. Slice 9 must land and receive separate owner review first.
 
 Absolute target-QoI information noninferiority is not required: a narrower design may deliberately
 contain less total information. `legacy_uniform/1` is the eligible comparison control, not a
@@ -572,14 +578,17 @@ gated live scored-shadow step described by O38; it preserves those same authorit
 8. **Slice 7 — exact realized-request rescoring (implemented).** Score or reuse evidence for the
    adapter-exact grid and equal per-point exposure relevant at submission; retain candidate →
    realization → submission provenance and verify the returned TAVI grid.
-9. **Slice 8 — bounded EIG-3 shadow gate (partial pending owner acceptance).** The tools-only
-   `o36.8` evaluator, frozen six-case/fault manifest, conditional eligibility evidence rules,
-   self-contained `/3` inventory plus realized-comparison retention, deterministic-TAVI analysis,
-   and byte-reproducible passed gate are implemented. Owner review and any O41 ruling remain
-   pending. The gate cannot select or submit a request.
-10. **Slice 9 — opt-in authoritative selector.** `target_core` may win on resolved EIG-per-point
-    superiority; unresolved eligible comparisons retain the eligible control; ineligible states
-    return to the existing non-EIG design/recovery path.
+9. **Slice 8 — bounded EIG-3 shadow gate (owner-accepted).** The tools-only `o36.8.2` V3 evaluator,
+   frozen six-case/fault manifest, conditional eligibility evidence rules, self-contained `/3`
+   inventory plus realized-comparison retention, deterministic-TAVI analysis, exact production
+   comparison-to-execution join, and byte-reproducible passed gate are implemented and accepted
+   under O41. The positive envelope contains one clean case. The gate cannot select or submit a
+   request.
+10. **Slice 9 — opt-in authoritative selector (authorized for implementation, not implemented).**
+    `target_core` may win on authenticated, resolved EIG-per-point superiority; unresolved or
+    inferior eligible comparisons retain the eligible control; ineligible states return to the
+    existing non-EIG design/recovery path. Stale, malformed, unauthenticated, unavailable, or
+    grid-mismatched evidence has no EIG authority.
 11. **Slice 10 — deterministic TAVI EIG-4 SVP.** Execute at least one narrower EIG-selected scan;
     show exact scored/executed grid agreement, fewer executed points, normal fit/campaign rejoining,
     and return to the existing non-EIG path on an ineligible state.

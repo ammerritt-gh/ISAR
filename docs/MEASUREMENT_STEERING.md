@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the steering research foundation and the current controller contract
 > **Provenance:** hand-written
-> **Verified against code revision:** `b6db5bc` (2026-08-03)
+> **Verified against code revision:** `9d77631` (2026-08-04)
 
 > **Status: design locked; the core is built.** The model-free descriptor (L0), branch model +
 > normalized branch-assignment scoring, soft/hard Γ constraints, Stokes-only rescue, under-model
@@ -93,8 +93,10 @@ master passes the frozen eligibility and policy joins, scores only `legacy_unifo
 `target_core/1`. A valid score records `shadow_legacy_control_scored`; every scoreless or unavailable
 case records `shadow_legacy_control_unscored`. Both retain the unique legacy selection and leave the
 emitted request unchanged by a single neutron.
-Declaring `authoritative` refuses at campaign setup with `scan_window_eig_authoritative_unavailable`,
-because no authoritative selector exists. The derived `/3` inventory is content-addressed under
+O41 authorizes implementation of the restricted selector after owner acceptance of the coherent
+Slice 8 V3 evidence; it does not make that selector available. Declaring `authoritative` therefore
+still refuses at campaign setup with `scan_window_eig_authoritative_unavailable` until Slice 9 lands
+and receives separate review. The derived `/3` inventory is content-addressed under
 `report/scan-design/<sha256>.json` and referenced from proposal provenance. Its candidate id names the
 pre-finalization design; the existing proposal fingerprint separately names the exact request after
 live point/count clamps. A changed realization appends an `isar.scan_design_realization/1` record
@@ -136,11 +138,19 @@ continues without recomputation or replacement evidence. Refresh/persistence fai
 pre-submit authentication after its single forced refresh removes all five current EIG identities,
 marks applicability unavailable, and leaves the ordinary legacy request available for submission.
 
-`isar.scan_design_realization/1` is additive-open: readers must ignore unknown additive fields. Slice
-8 remains Partial pending owner acceptance: its passed retained gate reauthenticates eligibility,
-`/3` inventory, realized-comparison, submission, and executed-grid evidence and calculates a
-counterfactual classification after the run. It is not imported by the controller and grants no
-eligibility, selection, proposal, or submission authority. Owner review remains pending.
+`isar.scan_design_realization/1` is additive-open: readers must ignore unknown additive fields. The
+coherent Slice 8 V3 gate is owner-accepted under O41: it reauthenticates eligibility, `/3` inventory,
+the actual production-created realized comparison, submission, acquisition, target request, and
+executed-grid evidence and calculates a counterfactual classification after the run. Its positive
+authority envelope contains one clean case, and `delta - 2 * paired_SE > 0` remains a pragmatic
+engineering margin rather than calibrated 95% coverage. The tools-only evaluator is not imported by
+the controller and grants no current eligibility, selection, proposal, or submission authority.
+
+Slice 9 is authorized for implementation only. Eligible decisive superiority may select target-core;
+eligible unresolved or inferior evidence retains legacy; ineligible states use the existing non-EIG
+path. Stale, malformed, unauthenticated, unavailable, or grid-mismatched evidence has no EIG
+authority. Until Slice 9 lands and receives separate owner review, runtime behavior remains shadow
+only and `authoritative` setup continues to refuse.
 
 The allowance is cooperative, not preemptive: the adapter checks before each synchronous variant
 score and again after it returns. If the second check crosses the deadline, that raw score set is

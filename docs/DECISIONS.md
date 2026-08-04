@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the append-only ruling ledger; IDs are stable citation anchors (D2, D4)
 > **Provenance:** hand-written
-> **Verified against code revision:** `b6db5bc` (2026-08-03)
+> **Verified against code revision:** `9d77631` (2026-08-04)
 
 Append-only ledger of design rulings. IDs are stable citation anchors (D2). Started at the
 2026-07-09 design review; each ruling is final unless explicitly reopened; "future" means
@@ -1224,6 +1224,30 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   S9 does not amend S8: production remains AIC, no AICc switch is authorized, difficult-regime
   findings remain open, and neither STAT-2c nor another statistical campaign is authorized. O40
   separately authorizes EIG-4 Slice 7 without changing those statistical dispositions.
+
+- **O41.** (2026-08-04, In force; owner acceptance of the EIG-4 Slice 8 V3 evidence and
+  authorization to implement Slice 9 only; no production behavior change) **The coherent bounded
+  shadow gate is sufficient to implement the restricted authoritative selector, but it does not
+  itself make authoritative runtime available.** Owner acceptance binds the passed
+  `isar.eig4_slice8_gate_result/o36.8.2` V3 result with fingerprint
+  `f6fd65ddf1aca48443d31727c5a81aeddc6b6bfea0eccb5020d8f55ef3b38f8f`. Its positive authority
+  envelope contains exactly one clean case, `s8-c01-strong-confirmed`; this is deliberately narrow
+  evidence, not a general phenomenon claim.
+
+  Within the frozen O36 envelope, an eligible comparison may select `target_core/1` only when all
+  authenticated structural and execution joins hold and target-core-minus-legacy information per
+  executed point satisfies `delta - 2 * paired_SE > 0`. The multiplier is a pragmatic engineering
+  margin, not calibrated 95% coverage. An eligible unresolved or inferior comparison retains
+  `legacy_uniform/1`. An ineligible state takes the existing non-EIG design/recovery path rather than
+  treating the legacy comparison control as a universal recovery rule.
+
+  Stale, malformed, unauthenticated, or adapter-grid-mismatched evidence has no EIG authority.
+  Slice 9 must preserve the established unavailable-evidence and fallback behavior, including the
+  rule that a grid mismatch cannot authorize either candidate. This ruling authorizes implementation
+  and review of Slice 9 only: `authoritative` setup must continue to refuse with
+  `scan_window_eig_authoritative_unavailable` until that selector lands and receives separate owner
+  review. It authorizes no Slice 10 demonstration, additional campaign, STAT rerun, broader
+  statistical claim, or production change in this documentation-only acceptance commit.
 
 ## Session status update
 

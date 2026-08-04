@@ -13,7 +13,7 @@ scientific-action fingerprints. The bundle remains byte-valid and unchanged; the
 
 This is retained evidence of the invalidated first attempt, not a grant of runtime authority:
 shadow mode still submits `legacy_uniform/1`, authoritative setup still refuses, and no Slice 9
-selector exists. O41 has deliberately not been added.
+selector exists. O41 was later added only after owner acceptance of the coherent V3 replacement.
 
 The additive `o36.8.1` coherence repair then stopped at its pre-freeze regime guard. With the
 original Case 2 amplitude, coherent production-adapter scoring observed decisive target-core
@@ -79,8 +79,8 @@ physical job rather than a recovery job sharing its logical acquisition ID; its 
 mismatch provenance, and fitted/pooled continuation evidence now rejoin coherently.
 
 All six expected case outcomes and the authentic fault matched. The positive authority envelope is
-exactly one case: `s8-c01-strong-confirmed`. This remains evidence eligible for owner review, not
-owner acceptance or O41 authority.
+exactly one case: `s8-c01-strong-confirmed`. The owner subsequently accepted this V3 evidence under
+O41 as sufficient to implement Slice 9; the evidence itself still grants no runtime authority.
 
 The invalidated first-attempt gate used implementation anchor
 `3b7f8eb263353ac55585498bad177a2bf631c0ad` and evidence-
@@ -179,8 +179,9 @@ For the invalidated first attempt, retained for historical comparison:
 ## Review boundary and limitations
 
 The first attempt appeared to contain one strong positive point, but its invalidated provenance
-means it establishes no authority envelope. Any future O41 requires a coherent repaired bundle and
-explicit owner acceptance; it must not describe this first attempt as runtime authority.
+means it establishes no authority envelope. O41 relies only on the coherent V3 replacement and
+explicit owner acceptance; it does not describe this first attempt or the tools-only gate as runtime
+authority.
 
 Planned and realized scoring still use duplicated pipelines. Current parity is tested, but no test
 file is architectural authority; consolidating that seam remains technical debt. The removed
