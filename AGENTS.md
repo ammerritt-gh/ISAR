@@ -162,6 +162,12 @@ contract changes are additive only (DESIGN §4).
    harmless change needs source review and focused parity until authority-seam extraction lands as a
    separately reviewed refactor.
 
+> **Temporary suspension (2026-08-04, owner: Adrian):** rules 6–8 are suspended for the EIG-4
+> repair series (slices R1–R3, per the EIG-4 end-to-end audit). Ordinary code review and the test
+> suite still apply; the closure/ceremony machinery does not. Restoration of rules 6–8 is an exit
+> criterion of slice R3 (the SVP campaign). Rule 5 (STAT-2b history immutability) remains fully in
+> force.
+
 ## Documentation policy (what a document is allowed to be)
 
 Every maintained `.md` declares three **orthogonal** fields in a banner under its title. Conflating
