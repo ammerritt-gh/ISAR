@@ -69,4 +69,7 @@ def test_file_action_creates_and_prefills_the_normal_campaign_workspace(
     assert window.campaign_dock._eig_mode.currentData() == "authoritative"
     assert window.campaign_dock._spec_path.text() == str(
         destination / "compact-goal.json")
-    assert window.campaign_dock._analysis_limit.text() == "10m"
+    # Budget and analysis limit are left blank so the canonical tier defaults
+    # (unlimited neutrons, 1 h deterministic wall clock) govern the example.
+    assert window.campaign_dock._analysis_limit.text() == ""
+    assert window.campaign_dock._budget.text() == ""

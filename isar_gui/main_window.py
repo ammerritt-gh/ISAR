@@ -834,8 +834,8 @@ class MainWindow(QMainWindow):
                 "spec_path": str(destination / "compact-goal.json"),
                 "tier": "deterministic",
                 "scan_window_eig_mode": "authoritative",
-                "budget": "1e10n",
-                "analysis_limit": "10m",
+                "budget": "",
+                "analysis_limit": "",
                 "seed": 0,
             })
             self.campaign_dock._save_form()
