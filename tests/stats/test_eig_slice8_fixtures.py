@@ -10,6 +10,8 @@ from tools.stats import eig_slice8_gate as gate
 
 
 PARAMETERS = Path("tools/stats/eig_slice8_fixture_parameters.json")
+CASE2_PROTOCOL = Path(
+    "tools/stats/eig_slice8_case2_amplitude_protocol_o36_8_2.json")
 
 
 def test_fixture_builder_uses_current_contracts_and_declared_regimes(tmp_path):
@@ -103,3 +105,29 @@ def test_repair_prefreeze_rejects_contrary_128_by_8_regime(tmp_path):
             r'"case_2":\{"delta_positive":true,"lower_margin_positive":true\}')):
         fixtures.build_repair_development_inputs(
             tmp_path, parameters, execute_live=False)
+
+
+def test_case2_replacement_protocol_predeclares_only_an_amplitude_ladder():
+    protocol = json.loads(CASE2_PROTOCOL.read_text(encoding="utf-8"))
+
+    fixtures.validate_case2_calibration_protocol(protocol)
+
+    assert protocol["case_generation_seed"] == 8040802
+    assert protocol["fixed_physical_parameters"] == {
+        "q": [2.15, 0.0, 0.0], "draw_energies_meV": [1.9, 2.1],
+        "target_energy_meV": 2.0, "prediction_sigma_meV": 0.4,
+        "ncount": 1, "survey": True,
+    }
+    assert protocol["amplitude_ladder"][0] == 0.3
+    assert protocol["selection_rule"]["order"] == "first_ladder_value"
+    assert protocol["scoring_contract"]["simulation_count"] == 128
+    assert protocol["scoring_contract"]["block_count"] == 8
+    assert protocol["policy_contract"]["offsets_meV"] == [0.0, 0.25]
+
+
+def test_case2_replacement_protocol_rejects_changes_to_fixed_parameters():
+    protocol = json.loads(CASE2_PROTOCOL.read_text(encoding="utf-8"))
+    protocol["fixed_physical_parameters"]["prediction_sigma_meV"] = 0.5
+
+    with pytest.raises(gate.GateEvidenceError, match="fixed physical parameter"):
+        fixtures.validate_case2_calibration_protocol(protocol)

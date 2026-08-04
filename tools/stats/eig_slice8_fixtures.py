@@ -84,6 +84,10 @@ DEVELOPMENT_SPEC_CONTRACT = "isar.eig4_slice8_fixture_development/o36.8"
 CAPTURE_SPEC_CONTRACT = "isar.eig4_slice8_capture_spec/o36.8"
 REPAIR_DEVELOPMENT_SPEC_CONTRACT = "isar.eig4_slice8_fixture_development/o36.8.1"
 REPAIR_CAPTURE_SPEC_CONTRACT = "isar.eig4_slice8_capture_spec/o36.8.1"
+CASE2_CALIBRATION_PROTOCOL_CONTRACT = (
+    "isar.eig4_slice8_case2_amplitude_calibration_protocol/o36.8.2")
+CASE2_CALIBRATION_TABLE_CONTRACT = (
+    "isar.eig4_slice8_case2_amplitude_calibration_table/o36.8.2")
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -633,8 +637,137 @@ def _persist_repair_eligible_case(
         "scope_fingerprint": scope["fingerprint"],
         "scientific_action_fingerprint": intent.scientific_action_fingerprint,
         "predictive_seed": case_seed,
+        "scorer_seed_evidence": scoring.seed_evidence.to_dict(),
+        "score_set_fingerprint": score_set["score_set_fingerprint"],
     }
     return raw, diagnostics
+
+
+def validate_case2_calibration_protocol(value: Mapping[str, Any]) -> None:
+    """Authenticate the predeclared one-dimensional o36.8.2 calibration protocol."""
+    required = {
+        "contract", "authorized_from", "case_id", "case_generation_seed",
+        "fixed_physical_parameters", "amplitude_ladder", "ordinary_regime_contract",
+        "scoring_contract", "policy_contract", "selection_rule", "protocol_fingerprint",
+    }
+    if set(value) != required or value.get("contract") != CASE2_CALIBRATION_PROTOCOL_CONTRACT:
+        raise gate.GateEvidenceError("Case 2 calibration protocol fields are invalid")
+    if (value.get("case_id") != "s8-c02-weak-unresolved-confirmed"
+            or value.get("case_generation_seed") != 8040802):
+        raise gate.GateEvidenceError("Case 2 calibration identity or seed changed")
+    fixed = value.get("fixed_physical_parameters")
+    if fixed != {
+        "q": [2.15, 0.0, 0.0], "draw_energies_meV": [1.9, 2.1],
+        "target_energy_meV": 2.0, "prediction_sigma_meV": 0.4,
+        "ncount": 1, "survey": True,
+    }:
+        raise gate.GateEvidenceError("Case 2 calibration changed a fixed physical parameter")
+    ladder = value.get("amplitude_ladder")
+    if (not isinstance(ladder, list) or not ladder
+            or any(not isinstance(item, (int, float)) or isinstance(item, bool)
+                   or not math.isfinite(float(item)) or float(item) <= 0.0
+                   for item in ladder)
+            or len({float(item) for item in ladder}) != len(ladder)
+            or any(float(left) <= float(right) for left, right in zip(ladder, ladder[1:]))):
+        raise gate.GateEvidenceError(
+            "Case 2 amplitude ladder must contain unique descending positive values")
+    config = ScanWindowShadowScoringConfig()
+    if value.get("scoring_contract") != {
+        "simulation_count": 128, "block_count": 8,
+        "scoring_config_fingerprint": config.scoring_config_fingerprint,
+        "seed_derivation": "production",
+    }:
+        raise gate.GateEvidenceError("Case 2 calibration scoring contract changed")
+    if value.get("policy_contract") != {
+        "policy_id": gate.PRIMARY_POLICY_ID,
+        "variant_id": gate.PRIMARY_VARIANT_ID,
+        "bin_width_meV": 0.5, "offsets_meV": [0.0, 0.25],
+    }:
+        raise gate.GateEvidenceError("Case 2 calibration policy changed")
+    if value.get("ordinary_regime_contract") != {
+        "eligibility_status": "eligible", "target_modality": "fold",
+        "target_state": "confirmed", "pool_consistent": True,
+        "target_delivery_eligible": True, "ncount": 1,
+        "maximum_amplitude": 0.3,
+    }:
+        raise gate.GateEvidenceError("Case 2 ordinary weak-target contract changed")
+    if value.get("selection_rule") != {
+        "order": "first_ladder_value",
+        "requirements": [
+            "ordinary_weak_target_regime_valid",
+            "delta_information_per_executed_point_nats > 0",
+            "delta_information_per_executed_point_nats - 2 * standard_error <= 0",
+        ],
+        "no_fallback_retuning": True,
+    }:
+        raise gate.GateEvidenceError("Case 2 calibration selection rule changed")
+    if value.get("protocol_fingerprint") != gate._fingerprint(
+            "isar.eig4_slice8_case2_amplitude_calibration_protocol_fingerprint/o36.8.2",
+            value, "protocol_fingerprint"):
+        raise gate.GateEvidenceError("Case 2 calibration protocol fingerprint is invalid")
+
+
+def build_case2_amplitude_calibration(
+        output: Path, protocol: Mapping[str, Any]) -> dict[str, Any]:
+    """Execute every predeclared amplitude and select the first qualifying row."""
+    validate_case2_calibration_protocol(protocol)
+    fixed = protocol["fixed_physical_parameters"]
+    rows: list[dict[str, Any]] = []
+    for index, amplitude_raw in enumerate(protocol["amplitude_ladder"]):
+        amplitude = float(amplitude_raw)
+        root = output / "calibration-workspaces" / f"amplitude-{index:02d}"
+        raw, detail = _persist_repair_eligible_case(
+            root, case_id="s8-c02-weak-unresolved-confirmed", case_seed=8040802,
+            q=tuple(float(item) for item in fixed["q"]),
+            draw_energies=fixed["draw_energies_meV"],
+            target_energy=float(fixed["target_energy_meV"]),
+            prediction_sigma=float(fixed["prediction_sigma_meV"]),
+            amplitude=amplitude, ncount=int(fixed["ncount"]),
+            survey=bool(fixed["survey"]))
+        eligibility, summary = gate.deserialize_repair_eligibility_input(
+            raw["eligibility_source"])
+        target = eligibility.target_outcome
+        ordinary_valid = (
+            summary["status"] == "eligible"
+            and target.get("modality") == "fold"
+            and target.get("candidate_state") == "confirmed"
+            and target.get("pool_consistent") is True
+            and target.get("target_delivery_eligible") is True
+            and int(fixed["ncount"]) == 1
+            and 0.0 < amplitude <= 0.3)
+        delta, standard_error, lower = gate._paired_summary(detail["blocks"])
+        qualifies = ordinary_valid and delta > 0.0 and lower <= 0.0
+        rows.append({
+            "ladder_index": index, "amplitude": amplitude,
+            "ordinary_weak_target_regime_valid": ordinary_valid,
+            "eligibility_status": summary["status"],
+            "delta_information_per_executed_point_nats": delta,
+            "delta_standard_error_per_executed_point_nats": standard_error,
+            "two_standard_error_lower_margin_nats": lower,
+            "qualifies": qualifies,
+            "case_generation_seed": 8040802,
+            "scorer_seed_evidence": detail["scorer_seed_evidence"],
+            "score_set_fingerprint": detail["score_set_fingerprint"],
+            "paired_block_deltas_per_executed_point_nats": list(detail["blocks"]),
+        })
+    selected = next((row for row in rows if row["qualifies"]), None)
+    if selected is None:
+        raise gate.GateEvidenceError(
+            "predeclared Case 2 amplitude ladder contains no qualifying value")
+    table: dict[str, Any] = {
+        "contract": CASE2_CALIBRATION_TABLE_CONTRACT,
+        "protocol_fingerprint": protocol["protocol_fingerprint"],
+        "rows": rows,
+        "selected_ladder_index": selected["ladder_index"],
+        "selected_amplitude": selected["amplitude"],
+        "selection_outcome": "first_predeclared_value_satisfying_rule",
+        "calibration_table_fingerprint": "",
+    }
+    table["calibration_table_fingerprint"] = gate._fingerprint(
+        "isar.eig4_slice8_case2_amplitude_calibration_table_fingerprint/o36.8.2",
+        table, "calibration_table_fingerprint")
+    _write_json(output / "case2-amplitude-calibration-table.json", table)
+    return table
 
 
 def _repair_proposal_from_retained(raw: Mapping[str, Any], root: Path
