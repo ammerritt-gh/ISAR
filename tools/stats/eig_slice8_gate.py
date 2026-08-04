@@ -1307,6 +1307,30 @@ def _strong_total_condition(diagnostics: Mapping[str, Any]) -> bool:
         diagnostics["legacy_total_information_nats"])
 
 
+def _strong_provenance_join_valid(fork: Mapping[str, Any]) -> bool:
+    """Authenticate Case 1's split production acquisition-provenance record."""
+    acquisition = fork.get("legacy_acquisition_provenance")
+    physical = fork.get("legacy_physical_submission")
+    if not isinstance(acquisition, Mapping) or not isinstance(physical, Mapping):
+        return False
+    comparison = fork.get("realized_comparison_fingerprint")
+    action = fork.get("scientific_action_fingerprint")
+    return (
+        fork.get("legacy_acquisition_provenance_exact") is True
+        and acquisition.get("acquisition_id") == physical.get("acquisition_id")
+        and acquisition.get("job_id") == physical.get("job_id")
+        and acquisition.get("scan_design_realized_comparison_fingerprint")
+        == physical.get("scan_design_realized_comparison_fingerprint")
+        == comparison
+        and acquisition.get("proposal_fingerprint")
+        == physical.get("proposal_fingerprint")
+        == acquisition.get("scan_design_realized_selected_request_fingerprint")
+        == physical.get("scan_design_realized_selected_request_fingerprint")
+        and acquisition.get("scan_design_realized_selected_grid_fingerprint")
+        == physical.get("scan_design_realized_selected_grid_fingerprint")
+        and physical.get("scientific_action_fingerprint") == action)
+
+
 def _strong_analysis_valid(analysis: Mapping[str, Any], fork: Mapping[str, Any],
                            raw_scan: Mapping[str, Any], target: Any,
                            scientific_action_fingerprint: str) -> bool:
@@ -1331,7 +1355,7 @@ def _strong_analysis_valid(analysis: Mapping[str, Any], fork: Mapping[str, Any],
         == scientific_action_fingerprint
         and fork.get("legacy_submission_exact") is True
         and fork.get("legacy_returned_grid_exact") is True
-        and fork.get("legacy_acquisition_provenance_exact") is True
+        and _strong_provenance_join_valid(fork)
         and fork.get("target_request_from_captured_sidecar") is True
         and fork.get("target_returned_grid_exact") is True
         and fork.get("target_rejoined_only_in_branch_b") is True)

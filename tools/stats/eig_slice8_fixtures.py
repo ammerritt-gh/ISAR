@@ -1125,10 +1125,27 @@ def run_case1_counterfactual_fork(raw: dict[str, Any], *, case_seed: int) -> dic
             == legacy.scan_command),
         "legacy_returned_grid_exact": canonical_json(returned_legacy)
         == canonical_json(list(legacy.executed_energies)),
+        # Card-state acquisition provenance is the analysis-facing half of the
+        # production record.  The physical-submission event is the half that
+        # authenticates scientific action identity.  Join the two by their
+        # acquisition/job identities and then require comparison, request,
+        # grid, and action identity across the composed record.
         "legacy_acquisition_provenance_exact": (
-            acquisition.get("scan_design_realized_comparison_fingerprint")
+            acquisition.get("acquisition_id") == physical.get("acquisition_id")
+            and acquisition.get("job_id") == physical.get("job_id")
+            and acquisition.get("scan_design_realized_comparison_fingerprint")
+            == physical.get("scan_design_realized_comparison_fingerprint")
             == comparison.realized_comparison_fingerprint
-            and acquisition.get("scientific_action_fingerprint")
+            and acquisition.get("proposal_fingerprint")
+            == physical.get("proposal_fingerprint")
+            == comparison.selected_request_fingerprint
+            and acquisition.get("scan_design_realized_selected_request_fingerprint")
+            == physical.get("scan_design_realized_selected_request_fingerprint")
+            == comparison.selected_request_fingerprint
+            and acquisition.get("scan_design_realized_selected_grid_fingerprint")
+            == physical.get("scan_design_realized_selected_grid_fingerprint")
+            == comparison.selected_grid_fingerprint
+            and physical.get("scientific_action_fingerprint")
             == raw["scientific_action_fingerprint"]),
         "target_request_from_captured_sidecar": (
             target_body["parameters"]["scan_command1"] == target.scan_command),

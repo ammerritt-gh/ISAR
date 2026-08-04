@@ -17,6 +17,43 @@ from isar.schema.eig_policy import (
     ScanWindowShadowScoringConfig,
 )
 from tools.stats import eig_slice8_gate as gate
+
+
+def _split_acquisition_provenance() -> dict:
+    shared = {
+        "acquisition_id": "acq-1", "job_id": "job-1",
+        "scan_design_realized_comparison_fingerprint": "comparison",
+        "proposal_fingerprint": "request",
+        "scan_design_realized_selected_request_fingerprint": "request",
+        "scan_design_realized_selected_grid_fingerprint": "grid",
+    }
+    return {
+        "legacy_acquisition_provenance_exact": True,
+        "realized_comparison_fingerprint": "comparison",
+        "scientific_action_fingerprint": "action",
+        "legacy_acquisition_provenance": dict(shared),
+        "legacy_physical_submission": {
+            **shared, "scientific_action_fingerprint": "action"},
+    }
+
+
+def test_case1_split_acquisition_provenance_joins_action_through_physical_event():
+    assert gate._strong_provenance_join_valid(_split_acquisition_provenance())
+
+
+@pytest.mark.parametrize("record,field", [
+    ("legacy_acquisition_provenance", "acquisition_id"),
+    ("legacy_acquisition_provenance", "job_id"),
+    ("legacy_acquisition_provenance", "scan_design_realized_comparison_fingerprint"),
+    ("legacy_acquisition_provenance", "proposal_fingerprint"),
+    ("legacy_acquisition_provenance", "scan_design_realized_selected_grid_fingerprint"),
+    ("legacy_physical_submission", "scientific_action_fingerprint"),
+])
+def test_case1_split_acquisition_provenance_rejects_each_broken_join(record, field):
+    fork = _split_acquisition_provenance()
+    fork[record][field] = "wrong"
+
+    assert not gate._strong_provenance_join_valid(fork)
 from tools.stats import eig_slice8_cases as cases
 
 
@@ -422,6 +459,28 @@ def test_coherence_repair_attempt_is_authenticated_as_aborted_before_freeze():
     assert case_2["scorer_seed_evidence"]["seed"] == 5724296368191850781
     assert fingerprint == gate.semantics_fingerprint(
         "isar.eig4_slice8_repair_attempt_disposition_fingerprint/o36.8.1",
+        disposition)
+
+
+def test_opened_o36_8_2_attempt_is_preserved_as_invalid_and_superseded():
+    bundle = Path(
+        "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR")
+    disposition = json.loads(
+        (bundle / "attempt-disposition.json").read_text(encoding="utf-8"))
+    fingerprint = disposition.pop("attempt_disposition_fingerprint")
+
+    assert disposition["status"] == "invalid_superseded"
+    assert disposition["reason_code"] == (
+        "acquisition_provenance_join_contract_mismatch")
+    assert disposition["manifests_frozen"] is True
+    assert disposition["final_evidence_opened"] is True
+    assert disposition["production_behavior_changed"] is False
+    assert disposition["case_definitions_changed"] is False
+    assert disposition["authenticated_artifacts"]["gate_result_fingerprint"] == json.loads(
+        (bundle / "gate-result.json").read_text(encoding="utf-8"))[
+            "gate_result_fingerprint"]
+    assert fingerprint == gate.semantics_fingerprint(
+        "isar.eig4_slice8_attempt_disposition_fingerprint/o36.8.2",
         disposition)
 
 
