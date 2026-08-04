@@ -12,6 +12,7 @@ LLM supervisor's job — see :mod:`isar.drive.supervisor.goal_to_spec` (a stub t
 """
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -32,6 +33,30 @@ TARGET_SELECTORS = ("lowest_energy", "highest_energy", "nearest_energy", "tracke
 OBJECTIVE_SCHEMA = "isar.objective/2"
 CURRENT_OBJECTIVE_SCOPE_REVISION = "isar.current_objective_comparison_scope/1"
 _DEFAULT_ANALYSIS_LIMIT = object()
+
+log = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------- canonical budget defaults
+# THE single source of truth for the campaign budget a goal/spec gets when it declares none. Every
+# other surface (the supervisor compiler, the CLI, the GUI campaign form, example goal resources)
+# imports these rather than restating a number — a second copy is how an example goal ends up
+# carrying a budget nobody chose. They are re-exported from
+# :mod:`isar.drive.supervisor.goal_to_spec`, which is where callers outside this package find them.
+#
+# Tier-aware because the two tiers cost wildly different wall time per counting second:
+# ``deterministic`` is TAVI's fast analytic engine, where an hour of virtual counting time already
+# covers a full development campaign; ``mcstas`` is the full Monte-Carlo, sized for an overnight run.
+DEFAULT_BUDGET_HOURS_BY_TIER: dict[str, float] = {"deterministic": 1.0, "mcstas": 8.0}
+#: The fallback for a tier not listed above — the conservative overnight figure.
+DEFAULT_BUDGET_HOURS = 8.0
+#: No neutron budget by default. ``None`` means UNLIMITED, and every spend check treats it as
+#: unconstrained via an explicit ``is None`` guard (never as an infinite amount to compare against).
+DEFAULT_BUDGET_NEUTRONS: float | None = None
+
+
+def default_budget_hours(tier: str) -> float:
+    """The canonical default counting-time budget, in hours, for ``tier``."""
+    return float(DEFAULT_BUDGET_HOURS_BY_TIER.get(str(tier), DEFAULT_BUDGET_HOURS))
 
 
 @dataclass
@@ -125,13 +150,32 @@ class ObjectiveSpec:
                 raise ValueError("budget must be None or a dict with 'kind' and 'amount' keys")
             self.budget = dict(self.budget)
         elif self.tier != "deterministic":
-            self.budget = {"kind": "counting_seconds", "amount": 8.0 * 3600.0}
+            self.budget = {"kind": "counting_seconds",
+                           "amount": default_budget_hours(self.tier) * 3600.0}
+        # NOTE a deterministic-tier spec constructed here with ``budget=None`` keeps it: at this
+        # layer ``None`` is an explicit "unlimited", and the loop honours it. The canonical tier
+        # default is applied one layer up, where an *undeclared* budget is distinguishable from a
+        # deliberately unlimited one (:func:`isar.drive.supervisor.goal_to_spec._budget`), which is
+        # the path every goal and spec file takes.
         if self.analysis_limit_seconds is _DEFAULT_ANALYSIS_LIMIT:
             self.analysis_limit_seconds = 3600.0 if self.tier == "deterministic" else None
         elif self.analysis_limit_seconds is not None:
             self.analysis_limit_seconds = float(self.analysis_limit_seconds)
             if not math.isfinite(self.analysis_limit_seconds) or self.analysis_limit_seconds <= 0.0:
                 raise ValueError("analysis_limit_seconds must be positive or None")
+        # An analysis guardrail longer than the whole counting-time budget is not a guardrail: the
+        # campaign would stop on beam time with the analysis clock still nominally open, and the
+        # operator's "one hour" would silently mean "one hour of counting plus an hour of fitting".
+        # Clamp it to the budget on the deterministic tier, where both clocks are the same wall time.
+        if (self.tier == "deterministic" and self.analysis_limit_seconds is not None
+                and isinstance(self.budget, dict)
+                and self.budget.get("kind") == "counting_seconds"
+                and self.budget.get("amount") is not None):
+            total = float(self.budget["amount"])
+            if math.isfinite(total) and 0.0 < total < float(self.analysis_limit_seconds):
+                log.info("clamping analysis_limit_seconds %.1fs to the %.1fs counting-time budget",
+                         float(self.analysis_limit_seconds), total)
+                self.analysis_limit_seconds = total
         if self.target_temperature_K is not None:
             self.target_temperature_K = float(self.target_temperature_K)
             if not math.isfinite(self.target_temperature_K) or self.target_temperature_K <= 0.0:

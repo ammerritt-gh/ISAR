@@ -38,6 +38,35 @@ def test_budget_neutrons_mapping():
     assert spec.budget == {"kind": "neutrons", "amount": 1e10}
 
 
+def test_absent_budget_takes_the_canonical_tier_default():
+    # The single source of truth is the constant table; the test reads it rather than restating a
+    # number, so a deliberate change to the default cannot be mistaken for a regression here.
+    payload = dict(_GOOD); payload.pop("budget_hours")
+    for tier, hours in g2s.DEFAULT_BUDGET_HOURS_BY_TIER.items():
+        spec = g2s.spec_from_dict(payload, defaults={"tier": tier})
+        assert spec.budget == {"kind": "counting_seconds", "amount": hours * 3600.0}
+    assert g2s.DEFAULT_BUDGET_HOURS_BY_TIER["deterministic"] == 1.0
+    assert g2s.DEFAULT_BUDGET_HOURS_BY_TIER["mcstas"] == 8.0
+
+
+def test_no_neutron_budget_by_default():
+    # None means unlimited: an undeclared neutron budget never becomes a neutron-kind budget.
+    assert g2s.DEFAULT_BUDGET_NEUTRONS is None
+    payload = dict(_GOOD); payload.pop("budget_hours")
+    spec = g2s.spec_from_dict(payload, defaults={"tier": "deterministic"})
+    assert spec.budget["kind"] == "counting_seconds"
+
+
+def test_analysis_limit_is_clamped_to_the_counting_time_budget():
+    payload = {**_GOOD, "budget_hours": 0.25}       # 900 s, shorter than the 3600 s analysis default
+    spec = g2s.spec_from_dict(payload, defaults={"tier": "deterministic"})
+    assert spec.analysis_limit_seconds == 900.0
+    # A limit already inside the budget is left exactly as declared.
+    inside = g2s.spec_from_dict({**_GOOD, "budget_hours": 2.0, "analysis_limit_seconds": 1200.0},
+                                defaults={"tier": "deterministic"})
+    assert inside.analysis_limit_seconds == 1200.0
+
+
 def test_recovers_from_fenced_text_output():
     fenced = "```json\n" + json.dumps(_GOOD) + "\n```"
     disp = _FakeDispatcher(DispatchResult(structured=None, output=fenced))
