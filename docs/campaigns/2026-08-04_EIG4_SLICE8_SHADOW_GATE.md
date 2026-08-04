@@ -41,13 +41,21 @@ scientific-action field that production deliberately records on the physical-sub
 The additive disposition in `2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR/` authenticates that opened
 invalid result and records that neither production behaviour nor any case definition changed.
 
-The versioned `2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V2/` replacement authenticates the actual
-production two-record join: acquisition ID and job ID join card-state provenance to the physical
-submission, after which comparison, request, grid, and scientific-action identities must all agree.
-The replacement passed with gate-result fingerprint
-`9dcc11744ca9807a9bd6708b476e2a577333f1e4c43fb782e098331439c03f67`.
-Its implementation anchor is `7dc193223cb8eafd1fbdc87e9aa8d5d42189e8dd` and its evidence-
-generation anchor is `13886648c3dd279b080c06814ca988d2c79140ee`.
+The versioned `2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V2/` replacement authenticated the
+production two-record acquisition join, but subsequent review found that it classified Case 1
+through retained comparison `6052e0b1…` while the physical submission and acquisition provenance
+named production comparison `f0b33abf…`. Its additive disposition now marks it
+`invalid_superseded` / `case1_comparison_execution_join_mismatch`; its numerical result is not an
+authority grant.
+
+The evidence-only `2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3/` replacement retains and strictly
+loads the actual production-created `f0b33abf…` sidecar and makes it Case 1's classified comparison.
+The evaluator now requires that comparison's fingerprint to match the production fork, submission,
+and acquisition records, and directly checks the independently executed target request and returned
+grid against its target-core realized request. V3 passed with gate-result fingerprint
+`f6fd65ddf1aca48443d31727c5a81aeddc6b6bfea0eccb5020d8f55ef3b38f8f`.
+Its implementation anchor is `d98a35f86c887a3051303d6ce388746cf9924402` and its evidence-
+generation anchor is `0285e4d79663c5323811e36d28faa15348b31380`.
 
 Case 1 began from one completed prior-source acquisition and one frozen source tree. Byte-identical
 legacy and target-core clones reproduced that tree identity. The production controller submitted
@@ -56,7 +64,9 @@ adapter grid and ordinary ingestion and analysis completed. The target clone sub
 target-core request from that captured sidecar and returned its exact adapter grid. Prior-source
 acquisition provenance supports eligibility and prediction; the distinct current inventory and
 realized comparison describe the proposed next action. The current inventory is never accepted as
-its own prior source.
+its own prior source. The locally retained production sidecar allowed V3 to reuse the unchanged raw
+TAVI response, ordinary fit, pooled result, score evidence, and five other cases; no acquisition was
+rerun.
 
 Case seeds `8040801` through `8040806` generate their respective predictive fixtures. They do not
 replace the production scorer seed contract: each eligible score derives its scorer seed from the
@@ -133,19 +143,22 @@ over this directory reproduced `gate-result.json` byte for byte.
 
 ## Verification and fingerprints
 
-For the coherent V2 replacement:
+For the coherent V3 replacement:
 
-- Focused gate, scorer, eligibility, realization, controller, recovery, predictive, and
-  documentation tests: 705 passed, 3 skipped in 173.23 seconds.
-- Day-to-day suite: 3,527 passed, 8 skipped in 81.43 seconds.
-- Full suite: 3,566 passed, 8 skipped in 510.42 seconds.
-- An isolated copy of the V2 directory reproduced `gate-result.json` byte for byte.
+- Syntax/import and ten directly affected production-comparison, split-provenance, disposition, and
+  manifest tests passed during implementation.
+- All six retained cases and the authentic fault were re-evaluated without regenerating their
+  scientific evidence.
+- An isolated copy of the V3 directory reproduced `gate-result.json` byte for byte.
+- The previous Slice 8 boundary runs at `13886648` remain the unchanged production baseline:
+  non-slow 3,527 passed, 8 skipped; full 3,566 passed, 8 skipped. They were not reflexively rerun for
+  this evidence-only descendant repair.
 - Gate manifest fingerprint:
-  `7b85bf826bbf639f0dbb04482048b5b58f240fef1f18c3faa2a9da75f598aacd`.
+  `a0e9e1238c8020cebbb49d830b0a1c9c7e2b3c0cc296bd5aaddef1aee0f781f8`.
 - Case manifest fingerprint:
-  `e5dff0b1f40492914bdd00581bbfef24aad641e71e4898729b8da6cc18cc45eb`.
+  `626817f7f8620a46bd4332eb19d9e1fed196efbd663f587938d12cc75fb9c04c`.
 - Gate result fingerprint:
-  `9dcc11744ca9807a9bd6708b476e2a577333f1e4c43fb782e098331439c03f67`.
+  `f6fd65ddf1aca48443d31727c5a81aeddc6b6bfea0eccb5020d8f55ef3b38f8f`.
 
 For the invalidated first attempt, retained for historical comparison:
 
@@ -177,4 +190,4 @@ configuration and fingerprint without affecting this gate.
 The machine-readable bundle is
 [`2026-08-04_EIG4_SLICE8_SHADOW_GATE/`](2026-08-04_EIG4_SLICE8_SHADOW_GATE/).
 The coherent replacement bundle is
-[`2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V2/`](2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V2/).
+[`2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3/`](2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3/).

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from isar.drive.acquisition.realized_comparison import load_scan_design_realized_comparison
 from isar.eig.eligibility import EligibilityInput
 from isar.eig.shadow_inventory import score_shadow_inventory
 from isar.schema.eig_policy import (
@@ -414,7 +415,7 @@ def test_capture_copy_accepts_a_relative_bundle_root(tmp_path, monkeypatch):
 
 def test_repaired_slice8_bundle_is_self_contained_and_reproduces_exact_bytes(tmp_path):
     source = Path(
-        "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V2")
+        "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3")
     bundle = tmp_path / "isolated-repaired-bundle"
     shutil.copytree(source, bundle)
 
@@ -422,6 +423,39 @@ def test_repaired_slice8_bundle_is_self_contained_and_reproduces_exact_bytes(tmp
 
     assert gate._canonical_bytes(reproduced) == (bundle / "gate-result.json").read_bytes()
     assert reproduced["overall_disposition"] == "passed"
+
+
+def test_repaired_case1_classifies_the_exact_production_comparison():
+    bundle = Path(
+        "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3")
+    results = json.loads((bundle / "case-results.json").read_text(encoding="utf-8"))
+    case = next(item for item in results["cases"]
+                if item["case_id"] == "s8-c01-strong-confirmed")
+    root = bundle / case["artifact_root"]
+    fork = json.loads((root / case["fork_evidence_ref"]).read_text(encoding="utf-8"))
+    analysis = json.loads(
+        (root / case["analysis_evidence_ref"]).read_text(encoding="utf-8"))
+    comparison = load_scan_design_realized_comparison(
+        case["realized_comparison_ref"], root)
+    target = comparison.realized_pair.target_core
+    parameters = analysis["exact_request"]["parameters"]
+    retained = {
+        item["path"] for item in json.loads(
+            (bundle / "run-manifest.json").read_text(encoding="utf-8"))[
+                "retained_files"]}
+
+    assert case["realized_comparison_ref"] == fork[
+        "classified_realized_comparison_ref"]
+    assert comparison.realized_comparison_fingerprint == fork[
+        "realized_comparison_fingerprint"] == fork[
+            "legacy_physical_submission"][
+                "scan_design_realized_comparison_fingerprint"]
+    assert parameters["scan_command1"] == target.scan_command
+    assert parameters["number_neutrons"] == target.ncount
+    assert analysis["returned_scan_values_1"] == list(target.executed_energies)
+    assert any(path.endswith(
+        "f0b33abf45f91167860dd57bf198a5046949e2d77f56111e1618db7f74211af7.json")
+        for path in retained)
 
 
 def test_original_attempt_disposition_is_additive_and_authenticates_old_bundle():
