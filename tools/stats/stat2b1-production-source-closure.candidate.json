@@ -14,7 +14,7 @@
   "candidate_artifact_commit": null,
   "candidate_artifact_path": "tools/stats/stat2b1-production-source-closure.candidate.json",
   "candidate_artifact_sha256": null,
-  "candidate_closure_fingerprint": "e1989c7ceab3efe949dda0b3fff71a243acf9b985274a8b00e42bc7cf7c28b52",
+  "candidate_closure_fingerprint": "c49e92670df0b9c8a5ed6316cdd7fd36941554555daf6b17f253a0d8e21dad6e",
   "comparison_basis": {
     "candidate_closure_fingerprint": null,
     "dependency_graph_fingerprint": null,
@@ -102,7 +102,7 @@
     {
       "basis_hash": null,
       "current_change_disposition": "unrelated_exempt",
-      "current_hash": "61d9a3f15e3409cfa5f760cf0c40aa116aaa0dd5c926e575c886938541b8ad00",
+      "current_hash": "6c0fbdc0564862b981a954f2b4129fca2c5d5d5c64b7b12f106f255a53c058c8",
       "current_public_symbols": [
         "RealizedCandidatePair",
         "RealizedCandidateRefusal",
@@ -1344,7 +1344,7 @@
       "module_role": "campaign_runtime_dependency",
       "path": "isar/drive/session_log.py",
       "rationale": "Transitively discovered local runtime dependency; conservatively hashed pending a separately reviewed narrower proof.",
-      "sha256": "4a6abbe96503026796bf6d4cf0d62a6ca7fed139e6e2beccf6a0c6616d9a7042"
+      "sha256": "986dcb293d0bd6dfaf55156dd389ccdfd52df343cffdc88c95c7df641f3329ac"
     },
     {
       "dependency_disposition": "protected_adjacent",
@@ -1775,12 +1775,12 @@
     }
   ],
   "owner_approved": false,
-  "production_source_fingerprint": "34ae255263a289deeb4bc91a48d0feae318414340ab60edd4f6338ad9ea74a87",
-  "proposed_production_anchor": "d3f2ee24baabf03519b21705df730408992e4243",
+  "production_source_fingerprint": "429c72e0cd5c731ac0b154cd063b133f17e90ebe609ee5ae69b0c58e77d7f7f3",
+  "proposed_production_anchor": "70958cd13437b227efef3bef6b19aa473387457a",
   "review_record": {
-    "path": "docs/campaigns/2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE/review.json",
-    "semantic_fingerprint": "aba0713adc03c06bdf19a3ae8fa92747f519e2d2bf325614e1e9637b18a0565f",
-    "sha256": "03d9b67c65887e5548f6025be76cf21ceabd2907ed308875062210ee9bcf5f32"
+    "path": "docs/campaigns/2026-08-04_EIG4_SLICE7_REPAIR_SOURCE_CLOSURE/review.json",
+    "semantic_fingerprint": "3a3d77cd90735f93c0ba91abbc7030f808eaf607c96f102c11acb65b3eccef31",
+    "sha256": "eb05422f77059089ebe78661236cf584b2bfb4185154ef19b3df12855b628c0c"
   },
   "schema": "isar.stat2b_production_source_closure/2",
   "status": "candidate"
