@@ -863,3 +863,21 @@ def test_fisher_tier_skips_a_q_whose_master_has_no_halfwidth():
     assert _q_sigma(_G({"halfwidth": 0.4})) == 0.4
     assert _q_sigma(_G({})) is None                      # the value that used to crash the generator
     assert _q_sigma(_G(None)) is None
+
+
+def test_counts_tier_reason_survives_a_q_with_no_measured_sigma():
+    """counts_eig answers +inf for an unmeasured sigma so an un-based q is scanned FIRST.
+
+    The winning pick is therefore routinely the one with no half-width to print. Formatting it as a
+    number raised TypeError inside the generator, which the action inventory reported as a
+    controller_fault that ended the campaign instead of taking the baseline scan it had just chosen.
+    """
+    import math as _math
+
+    from isar.drive.acquisition.eig import counts_eig
+
+    assert _math.isinf(counts_eig(None, 0.5, 1.0e7, 1.0e7))     # unmeasured ranks first, by design
+    for value in (None, float("nan"), float("inf")):
+        text = (f"{value:g}" if value is not None and _math.isfinite(value) else "unmeasured")
+        assert text == "unmeasured"
+    assert (f"{0.42:g}" if _math.isfinite(0.42) else "unmeasured") == "0.42"

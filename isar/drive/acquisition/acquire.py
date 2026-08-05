@@ -24,6 +24,7 @@ virtual instrument clock exists; until then the function counts neutrons only.
 from __future__ import annotations
 
 import inspect
+import logging
 import math
 import time
 from dataclasses import dataclass, field, replace
@@ -77,6 +78,8 @@ from isar.drive.acquisition.scan_design import (
 from isar.drive.acquisition.scan_grid import format_scan_command
 from isar.schema.steering import AUXILIARY_TRACK_NODE, NON_CANONICAL_SINKS, ProposalScore
 from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
+
+_LOG = logging.getLogger(__name__)
 
 # Where an identity probe sits in the selection order. Above zero so every ordinary action outranks it:
 # the probe is what to try when the cheap path has run out, never a competitor for beam while ordinary
@@ -1198,14 +1201,22 @@ def _select_target(grid: list[GridQ], model, *,
             return eig_per_cost(target + classification_weight * classification, dc)
         pick = max(candidates, key=_ckey)
         dc = _q_next_cost(pick)
-        eig = counts_eig(_q_sigma(pick), pick.tolerance, pick.counts_spent, dc)
+        sigma_prior = _q_sigma(pick)
+        eig = counts_eig(sigma_prior, pick.tolerance, pick.counts_spent, dc)
         classification = max(float(classify(pick)), 0.0) if classify is not None else 0.0
         combined = eig + classification_weight * classification
-        reason = (f"max-EIG/cost q={pick.q:g} (hkl={list(pick.hkl)}); σ={_q_sigma(pick):g} meV over "
+        # ``_q_sigma`` is None for a q whose pooled master carries no half-width, and ``counts_eig``
+        # answers +inf for exactly that case so an un-based q is scanned FIRST. The winning pick is
+        # therefore routinely the one with no sigma to print, and formatting it as a number raised
+        # TypeError inside the generator — reported as a controller_fault that ended the campaign,
+        # rather than the baseline scan the ranking had just correctly chosen.
+        sigma_text = (f"{sigma_prior:g}"
+                      if sigma_prior is not None and math.isfinite(sigma_prior) else "unmeasured")
+        reason = (f"max-EIG/cost q={pick.q:g} (hkl={list(pick.hkl)}); σ={sigma_text} meV over "
                   f"tolerance {pick.tolerance:g}, C={pick.counts_spent:g}; production scan (EIG-per-cost ranked)")
         return pick, "production", reason, ProposalScore(
-            method="counts", eig=_finite_or_none(eig), sigma_prior=_finite_or_none(_q_sigma(pick)),
-            sigma_scan=_finite_or_none(predicted_sigma_after(_q_sigma(pick), pick.counts_spent, dc)),
+            method="counts", eig=_finite_or_none(eig), sigma_prior=_finite_or_none(sigma_prior),
+            sigma_scan=_finite_or_none(predicted_sigma_after(sigma_prior, pick.counts_spent, dc)),
             c_spent=float(pick.counts_spent), reason=reason,
             classification_eig=_finite_or_none(classification),
             classification_weight=float(classification_weight),
@@ -1735,6 +1746,10 @@ def generate_action_intents(
                 declared_reasons[spec.generator_id] = str(result.reason_code)[:300]
         except Exception as error:  # noqa: BLE001 - a fault must be recorded, never escape
             failures[spec.generator_id] = f"{type(error).__name__}: {error}"[:300]
+            # The recorded code is a 300-character summary, and a generator fault ends the whole
+            # campaign as a controller_fault. Without the traceback the operator (and the next
+            # session) get a bare exception type and no line to look at.
+            _LOG.exception("action generator %s failed", spec.generator_id)
     kept = _dedupe_generated(raw)
     return kept, _generator_reports(raw, kept, failures, declared_reasons)
 
