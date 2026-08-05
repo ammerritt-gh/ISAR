@@ -135,6 +135,15 @@ def test_transverse_optic_k_segment_compiles_to_eleven_points():
     assert spec.target_selector == "tracked_branch" and spec.target_energy_meV is None
 
 
+def test_acoustic_goal_without_a_range_gets_the_canonical_symmetric_band():
+    payload = {"path": {"h_start": 2.0, "h_end": 3.0, "k": 0.0, "l": 0.0}, "step_h": 0.05,
+               "tolerance_meV": 0.5, "target_branch": "acoustic"}
+    spec = g2s.goal_to_spec(
+        "map the acoustic phonon from (2,0,0) to (3,0,0)",
+        dispatcher=_FakeDispatcher(DispatchResult(structured=payload)))
+    assert spec.energy_search_meV == g2s.DEFAULT_ENERGY_SEARCH_ACOUSTIC_MEV == (-9.0, 9.0)
+
+
 def test_supplied_target_energy_implies_nearest_selector():
     payload = {"q_start": [2, 0, 0], "q_end": [2, 0.5, 0], "step_rlu": 0.05,
                "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic",

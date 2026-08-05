@@ -134,6 +134,12 @@ _EXAMPLE = {
     "notes": "acoustic branch (1,0,0)->(2,0,0)",
 }
 
+# Canonical compiler defaults for the energy search band when the goal states none. These are the
+# single source for both the compile fallback and the LLM prompt guidance — the example
+# compact-goal.json ships the same acoustic band, so goal-path and spec-path campaigns agree.
+DEFAULT_ENERGY_SEARCH_ACOUSTIC_MEV = (-9.0, 9.0)
+DEFAULT_ENERGY_SEARCH_OPTIC_MEV = (-2.0, 12.0)
+
 SYSTEM = (
     "You translate a neutron triple-axis measurement goal into a machine objective for an autonomous "
     "driver. Express a general reciprocal-space line as q_start [h,k,l], q_end [h,k,l], and "
@@ -151,8 +157,8 @@ SYSTEM = (
     "the path, put that energy in target_energy_meV and use target_selector='nearest_energy'. If the user explicitly asks for the "
     "highest optic mode use target_selector='highest_energy'. If the user states a zone-centre or gap energy, "
     "put it in target_zc_energy_meV and put an explicitly stated uncertainty in "
-    "target_zc_energy_sigma_meV. For optic goals use energy_search_meV [-2,12] unless the user "
-    "provides a range. Optionally a short notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
+    "target_zc_energy_sigma_meV. For optic goals use energy_search_meV [-2,12] and for acoustic "
+    "goals [-9,9] unless the user provides a range. Optionally a short notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
     "these keys, no wrapper object, no extra keys, and never enumerate grid points:\n"
     + json.dumps(LLM_GOAL_SCHEMA)
     + "\n\nExample. Goal: 'map the acoustic phonon from (1,0,0) to (2,0,0) to +-0.5 meV, steps of 0.1, "
@@ -315,7 +321,8 @@ def _build_spec(data: dict, merged: dict, *,
         target_energy = None
     energy = data.get("energy_search_meV")
     resolved_energy = tuple(energy) if energy is not None else (
-        (-2.0, 12.0) if branch == "optic" else (-2.0, 7.0))
+        DEFAULT_ENERGY_SEARCH_OPTIC_MEV if branch == "optic"
+        else DEFAULT_ENERGY_SEARCH_ACOUSTIC_MEV)
     # Record who chose the band here, where the answer is still known. Downstream, a band that equals
     # the shipped default is indistinguishable from one the scientist asked for exactly — and the
     # difference decides whether identity work may be widened past it.
