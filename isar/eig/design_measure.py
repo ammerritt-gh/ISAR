@@ -693,12 +693,14 @@ def build_scan_window_design_measure(
     recomputed_masses = _source_mass_state(artifact, artifact_models, qoi_models)
     if not _compatibility_masses_match(qoi_evidence, recomputed_masses):
         return _finish(eligibility=eligibility, construction_codes=("design_measure_input_mismatch",))
-    if (recomputed_masses["nested"] + recomputed_masses["laplace"]
-            >= PREDICTIVE_MODEL_WEIGHT_FLOOR
+    if (recomputed_masses["bootstrap"] < PREDICTIVE_MODEL_WEIGHT_FLOOR
             or recomputed_masses["basis_unknown"] + recomputed_masses["dropped_model"]
             >= PREDICTIVE_MODEL_WEIGHT_FLOOR):
         # Slice 2 owns these vetoes. Reaching this branch after an eligible result means the
-        # authenticated evidence and its source have diverged.
+        # authenticated evidence and its source have diverged. The bootstrap half mirrors
+        # ``predictive_insufficient_bootstrap_mass``: what disqualifies a master is too little
+        # usable mass, not the presence of non-bootstrap models — those are excluded and the
+        # remainder renormalised a few lines below.
         return _finish(eligibility=eligibility, construction_codes=("design_measure_input_mismatch",))
 
     source_draw_fingerprint = _source_draw_identity_fingerprint(source_draw_records)

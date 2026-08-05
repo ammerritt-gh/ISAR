@@ -525,8 +525,14 @@ def _particle_codes(predictive: Mapping[str, Any], models: tuple[_QoIModel, ...]
                 mass["basis_unknown"] += PREDICTIVE_MODEL_WEIGHT_FLOOR
     else:
         mass["basis_unknown"] += PREDICTIVE_MODEL_WEIGHT_FLOOR
-    if mass["nested"] + mass["laplace"] >= PREDICTIVE_MODEL_WEIGHT_FLOOR:
-        science.append("predictive_material_nonbootstrap_mass")
+    # The question is whether enough BOOTSTRAP mass survives to carry the design measure, not
+    # whether any non-bootstrap mass exists. The measure marginalises over the bootstrap-grade
+    # models alone and renormalises them, so a mixed artifact is usable — vetoing on the mere
+    # presence of a laplace model (this test's previous form, at the same 0.005 floor) rejected
+    # every master whose Akaike set retained one unconverged structure, which is most of them.
+    # A master with no usable mass at all still fails here, exactly as a laplace-only one did.
+    if mass["bootstrap"] < PREDICTIVE_MODEL_WEIGHT_FLOOR:
+        science.append("predictive_insufficient_bootstrap_mass")
     if mass["basis_unknown"] + mass["dropped_model"] >= PREDICTIVE_MODEL_WEIGHT_FLOOR:
         gaps.append("predictive_material_basis_unknown")
     if mass["retention_unknown"] >= PREDICTIVE_MODEL_WEIGHT_FLOOR:

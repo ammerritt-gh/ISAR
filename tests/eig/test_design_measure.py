@@ -314,7 +314,10 @@ def test_submaterial_unknown_basis_has_an_honest_exclusion_reason(monkeypatch):
 
 
 @pytest.mark.parametrize("basis", ["nested_sampling", "laplace_hesse"])
-def test_material_nonbootstrap_mass_is_an_upstream_scientific_refusal(monkeypatch, basis):
+def test_a_mixed_basis_artifact_is_designed_against_its_bootstrap_models(monkeypatch, basis):
+    # Only converged candidates are bootstrapped, so a retained Akaike set routinely mixes bases.
+    # The measure marginalises over the bootstrap-grade models and renormalises them; refusing the
+    # whole master instead made escalation futile for 19 of 21 O41 Test 10 masters.
     artifact, _projection, _qoi, eligibility = _bundle(monkeypatch, [
         {"label": "bootstrap", "weight": 0.5, "basis": "parametric_bootstrap",
          "draw_ids": ["b-0"], "phonon": True},
@@ -322,25 +325,32 @@ def test_material_nonbootstrap_mass_is_an_upstream_scientific_refusal(monkeypatc
          "draw_ids": ["n-0"], "phonon": True},
     ])
     result = build_scan_window_design_measure(artifact, eligibility)
-    assert result.status == "unavailable"
-    assert result.reason_codes[0] == "predictive_material_nonbootstrap_mass"
-    assert result.construction_codes == ()
-    assert result.models == () and result.predictive_scenarios == ()
+    assert result.status == "available"
+    payload = result.to_dict()
+    assert [item["label"] for item in payload["excluded_models"]] == ["other"]
+    assert payload["excluded_models"][0]["reason"] == "nonbootstrap_source_basis"
+    # The surviving model carries the whole retained measure after renormalisation.
+    assert [item["label"] for item in payload["models"]] == ["bootstrap"]
+    assert payload["models"][0]["retained_predictive_weight"] == pytest.approx(1.0)
+    assert payload["models"][0]["design_ensemble_weight"] == pytest.approx(1.0)
 
 
-def test_split_nonbootstrap_mass_combines_at_the_upstream_gate(monkeypatch):
-    part = PREDICTIVE_MODEL_WEIGHT_FLOOR * 0.6
+def test_insufficient_bootstrap_mass_is_an_upstream_scientific_refusal(monkeypatch):
+    # What still has to hold is that enough bootstrap mass survives to carry the measure. Below
+    # the floor there is no usable particle set, exactly as for a laplace-only artifact.
+    part = PREDICTIVE_MODEL_WEIGHT_FLOOR * 0.4
     artifact, _projection, _qoi, eligibility = _bundle(monkeypatch, [
-        {"label": "bootstrap", "weight": 1.0 - 2 * part, "basis": "parametric_bootstrap",
+        {"label": "bootstrap", "weight": part, "basis": "parametric_bootstrap",
          "draw_ids": ["b-0"], "phonon": True},
-        {"label": "nested", "weight": part, "basis": "nested_sampling",
+        {"label": "nested", "weight": (1.0 - part) / 2, "basis": "nested_sampling",
          "draw_ids": ["n-0"], "phonon": True},
-        {"label": "laplace", "weight": part, "basis": "laplace_hesse",
+        {"label": "laplace", "weight": (1.0 - part) / 2, "basis": "laplace_hesse",
          "draw_ids": ["l-0"], "phonon": True},
     ])
     result = build_scan_window_design_measure(artifact, eligibility)
     assert result.status == "unavailable"
-    assert "predictive_material_nonbootstrap_mass" in result.reason_codes
+    assert "predictive_insufficient_bootstrap_mass" in result.reason_codes
+    assert result.models == () and result.predictive_scenarios == ()
 
 
 def test_material_unknown_basis_remains_an_upstream_observability_category(monkeypatch):

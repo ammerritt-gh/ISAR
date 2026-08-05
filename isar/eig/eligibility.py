@@ -30,7 +30,7 @@ SCIENTIFIC_REASON_ORDER = (
     "target_delivery_ineligible", "target_not_finite", "target_not_confirmed",
     "action_not_canonical_target", "modality_fork", "pool_inconsistent",
     "selection_ineligible", "selection_constrained", "selection_rescued",
-    "selection_comparison_incomplete", "predictive_material_nonbootstrap_mass",
+    "selection_comparison_incomplete", "predictive_insufficient_bootstrap_mass",
     "projection_incomplete", "projection_stale", "projection_join_mismatch",
     "qoi_materially_unavailable", "shadow_disagrees", "shadow_comparison_invalid",
     "recovery_or_missed_window_state",
