@@ -1,4 +1,5 @@
 """goal→ObjectiveSpec: schema validation with a FAKE dispatcher, plus the LLM-free JSON path."""
+import copy
 import json
 
 import pytest
@@ -357,12 +358,65 @@ def test_rebinding_after_a_steering_override_restores_an_exact_scope_match():
         "eig4_slice8_excitation_energy"]
 
 
-def test_rebinding_keeps_an_objective_without_a_policy_set_unchanged():
-    objective = g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test")
+def test_rebinding_keeps_an_off_objective_without_a_policy_set_unchanged():
+    # A frozen objective from before the canonical default existed carries no policy set; with the
+    # mode off there is nothing to serve, so rebinding must leave it exactly as it is.
+    from dataclasses import replace
+
+    from isar.schema.eig_policy import ScanWindowEIGConfig
+
+    objective = replace(
+        g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test"),
+        scan_window_eig=ScanWindowEIGConfig())
     assert objective.scan_window_eig.policy_set is None
     assert g2s.rebind_scan_window_eig_policy(objective, None) is objective
 
 
-def test_rebinding_refuses_when_the_card_authoring_source_is_unavailable():
+def test_rebinding_refuses_when_a_hand_authored_policy_cannot_be_reconstructed():
+    # A policy that is not the canonical default cannot be recompiled from truth once its card
+    # authoring is gone; substituting the default would silently measure a different partition.
+    authoring = copy.deepcopy(_CARD_EIG_AUTHORING)
+    authoring["policies"][0]["variants"][0]["parameters"]["bin_width"] = 1.0
+    objective = g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test",
+                                   card_eig_policy_set=authoring)
+    # Drifted to shadow, not authoritative: this deliberately non-O41 policy could not survive the
+    # authoritative profile check at construction, and the rebinding rule under test is mode-free.
     with pytest.raises(g2s.GoalParseError, match="card authoring source is unavailable"):
-        g2s.rebind_scan_window_eig_policy(_scope_drifted(_eig_objective()), None)
+        g2s.rebind_scan_window_eig_policy(_scope_drifted(objective, mode="shadow"), None)
+
+
+def test_a_policy_differing_only_in_attribution_is_not_the_canonical_default():
+    # The annotation and provenance are the scientist's account of why this partition is measured.
+    # A policy matching the default's parameters but carrying its own attribution must not be
+    # silently rebound to the default's, which would rewrite that account.
+    authoring = copy.deepcopy(_CARD_EIG_AUTHORING)
+    authoring["policies"][0]["provenance"]["rationale"] = "a specific reviewed decision"
+    objective = g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test",
+                                   card_eig_policy_set=authoring)
+    with pytest.raises(g2s.GoalParseError, match="card authoring source is unavailable"):
+        g2s.rebind_scan_window_eig_policy(_scope_drifted(objective), None)
+
+
+def test_rebinding_the_canonical_policy_needs_no_card_authoring():
+    # An ordinary campaign never declares the table, so its policy IS the canonical default and
+    # can be recompiled against the post-override scope without a card to read it from.
+    ordinary = g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test")
+    rebound = g2s.rebind_scan_window_eig_policy(_scope_drifted(ordinary), None)
+    assert [policy.policy_id for policy in _matches(rebound)] == [
+        "eig4_slice8_excitation_energy"]
+
+
+def test_an_ordinary_campaign_can_switch_scan_window_eig_on():
+    # The whole point: an ordinary campaign that never authored a policy table must be able to
+    # turn authoritative EIG on, instead of refusing with
+    # scan_window_eig_authoritative_profile_invalid and demanding a purpose-built O41 campaign.
+    from isar.eig.o41_authority import validate_o41_authoritative_profile
+
+    objective = g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test")
+    assert objective.scan_window_eig.policy_set is not None      # carried, unused while off
+    assert (objective.steering or {}).get("scan_window_eig_mode", "off") == "off"
+
+    authoritative = g2s.rebind_scan_window_eig_policy(_scope_drifted(objective), None)
+    validate_o41_authoritative_profile(authoritative.scan_window_eig)
+    assert [policy.policy_id for policy in _matches(authoritative)] == [
+        "eig4_slice8_excitation_energy"]

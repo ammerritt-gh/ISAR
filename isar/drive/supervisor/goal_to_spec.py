@@ -29,7 +29,11 @@ from isar.drive.objective import (
     current_objective_comparison_scope,
     resolve_hypothesis_snapshot,
 )
-from isar.eig.policy import compile_card_eig_policy_set
+from isar.eig.policy import (
+    canonical_scan_window_eig_policy_authoring,
+    compile_card_eig_policy_set,
+    policy_identity,
+)
 from isar.schema.eig_policy import ScanWindowEIGConfig
 from isar.schema.hypotheses import content_fingerprint
 
@@ -390,7 +394,7 @@ def _build_spec(data: dict, merged: dict, *,
             step=float(data.get("step_h") or merged.get("step_h") or 0.05), **common)
     scope = current_objective_comparison_scope(objective)
     policy_set = compile_card_eig_policy_set(
-        card_eig_policy_set,
+        _eig_policy_authoring(card_eig_policy_set, final_steering),
         scope,
         max_runtime_variants=objective.scan_window_eig.scoring_config.max_runtime_variants,
     )
@@ -408,6 +412,20 @@ def _build_spec(data: dict, merged: dict, *,
     return frozen
 
 
+def _eig_policy_authoring(card_eig_policy_set, steering=None):
+    """The card's scan-window EIG authoring, or the canonical default when it declares none.
+
+    Compiled unconditionally, exactly as a declared card policy always was: ``ObjectiveSpec``
+    validates the authoritative profile on construction, so the policy has to be in place *before*
+    the mode can be switched on. Compiling it only for campaigns already in shadow/authoritative
+    would leave every ordinary campaign unable to turn EIG on at all — the failure this exists to
+    remove. In ``off`` mode the policy is carried and never consulted.
+    """
+    if card_eig_policy_set not in (None, {}):
+        return card_eig_policy_set
+    return canonical_scan_window_eig_policy_authoring()
+
+
 def rebind_scan_window_eig_policy(objective: ObjectiveSpec, card_eig_policy_set) -> ObjectiveSpec:
     """Recompile the card's scan-window EIG policy against the objective's *current* scope.
 
@@ -418,16 +436,42 @@ def rebind_scan_window_eig_policy(objective: ObjectiveSpec, card_eig_policy_set)
     scan-window score then reports ``qoi_policy_missing`` for the whole campaign.  Recompiling from
     the card authoring keeps the match exact while computing it from current truth.
 
-    Objectives without a compiled policy set are returned unchanged.
+    Switching the mode on is also what first *earns* a policy set: an objective frozen in ``off``
+    mode carries none, so a ``--scan-window-eig-mode`` override compiles the card's authoring (or
+    the canonical default) here rather than leaving the campaign in a mode it cannot serve.
     """
     current = objective.scan_window_eig
     if current.policy_set is None:
-        return objective
+        # An objective frozen before the canonical default existed carries no policy set. Backfill
+        # one only when the mode is actually on: an ``off`` objective has nothing to serve, and
+        # silently rewriting a frozen campaign's identity to add an unused policy is not a rebind.
+        if str((objective.steering or {}).get("scan_window_eig_mode", "off")) == "off":
+            return objective
+        authoring = _eig_policy_authoring(card_eig_policy_set)
+        if authoring in (None, {}):
+            return objective
+        scope = current_objective_comparison_scope(objective)
+        rebound = replace(objective, scan_window_eig=ScanWindowEIGConfig(
+            policy_set=compile_card_eig_policy_set(
+                authoring, scope,
+                max_runtime_variants=current.scoring_config.max_runtime_variants),
+            scoring_config=current.scoring_config))
+        if current_objective_comparison_scope(rebound) != scope:
+            raise ValueError("scan-window EIG policy binding changed objective comparison scope")
+        return rebound
     if card_eig_policy_set in (None, {}):
-        raise GoalParseError(
-            "the objective carries a scan-window EIG policy set but its card authoring source is "
-            "unavailable, so the binding cannot be recomputed for the current campaign "
-            "configuration")
+        # A campaign that never declared the table carries the canonical default, which can be
+        # recompiled from truth. Anything else is a hand-authored policy whose source is genuinely
+        # gone — substituting the default there would silently measure a different QoI partition.
+        card_eig_policy_set = canonical_scan_window_eig_policy_authoring()
+        default_set = compile_card_eig_policy_set(
+            card_eig_policy_set, current_objective_comparison_scope(objective),
+            max_runtime_variants=current.scoring_config.max_runtime_variants)
+        if policy_identity(default_set) != policy_identity(current.policy_set):
+            raise GoalParseError(
+                "the objective carries a hand-authored scan-window EIG policy set but its card "
+                "authoring source is unavailable, so the binding cannot be recomputed for the "
+                "current campaign configuration")
     scope = current_objective_comparison_scope(objective)
     policy_set = compile_card_eig_policy_set(
         card_eig_policy_set,
