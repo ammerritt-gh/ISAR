@@ -193,6 +193,65 @@ def test_two_refits_single_worker_stays_serial(monkeypatch):
     assert n == 2
 
 
+def test_force_masters_refits_only_the_named_master(monkeypatch):
+    # The predictive-escalation contract: an unchanged member set is carried on a plain rerun, and
+    # ``force_masters`` exempts exactly the named master from that carry — nothing else refits.
+    calls = _stub(monkeypatch)
+    col = _two_groups([("tavi", 1, "det"), ("tavi", 2, "det")], [("tavi", 3, "det")])
+    s = SessionState()
+    assert driver._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000) == 2
+    target = sorted(k for k in s.scans if k.startswith("master:"))[0]
+
+    calls.clear()
+    assert driver._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000) == 0
+    assert driver._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000,
+                               force_masters=frozenset({target})) == 1
+    assert calls == [target]
+
+
+def test_force_masters_unknown_id_fails_loud(monkeypatch):
+    # A typo'd/stale id must be a hard failure: the escalation charge that requested it is durable,
+    # so a silent no-op would leave the master unpromotable forever with a "completed" outcome on
+    # file. The run failing turns that into a visible "failed" promotion instead.
+    _stub(monkeypatch)
+    col = _Col("merge", [_Grp(("tavi", "42", 200.0), _MS([("tavi", 1, "det")]))])
+    s = SessionState()
+    assert driver._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000) == 1
+    with pytest.raises(ValueError, match="match no collation group"):
+        driver._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000,
+                            force_masters=frozenset({"master:nope"}))
+
+
+def test_force_masters_accepts_a_bare_string_as_one_id(tmp_path, monkeypatch):
+    # A bare string is one ledger id, not an iterable of characters; iterating it would produce
+    # one-character ids that match nothing and fail the targeted refit loudly but wrongly.
+    data = _in8_file(tmp_path, "STRM", 54700, 2.25)
+    ws = Workspace.open(tmp_path / "string-ws")
+    ws.root.mkdir(parents=True, exist_ok=True)
+    ws.policy_path.write_text(Path(ill_in8._CARD_PATH).read_text(encoding="utf-8"),
+                              encoding="utf-8")
+    captured = {}
+
+    def fake_fit_masters(*a, **kw):
+        captured["force_masters"] = kw.get("force_masters")
+        return 0
+
+    monkeypatch.setattr(driver, "_fit_masters", fake_fit_masters)
+    driver.run_batch(ws, [data], force_masters="master:tavi_(43, 0, 0)_200.0",
+                     detectors="det0", formats=(), workers=1, errors_tier="cheap")
+    assert captured["force_masters"] == frozenset({"master:tavi_(43, 0, 0)_200.0"})
+
+
+def test_force_masters_without_merged_collation_fails_loud(monkeypatch):
+    # merge="separate" (or no collation at all) can never satisfy a targeted refit; failing beats
+    # returning 0 and letting the caller record a completed promotion.
+    _stub(monkeypatch)
+    col = _Col("separate", [_Grp(("tavi", "42", 200.0), _MS([("tavi", 1, "det")]))])
+    with pytest.raises(ValueError, match="no merged collation"):
+        driver._fit_masters(col, [], None, None, None, SessionState(), M=10, seed_base=6000,
+                            force_masters=frozenset({"master:tavi_('42',)_200.0"}))
+
+
 def _in8_file(tmp_path, exp_id, first_numor, h):
     card = ill_in8.card_template()
     run = run_builder.build_in8_run(exp_id, n_scans=2, seed0=first_numor, first_numor=first_numor,

@@ -111,7 +111,9 @@ def run(args) -> int:
         if master_errors_tier is not None:
             role_kwargs["master_errors_tier"] = master_errors_tier
         summary = driver.run_batch(
-            ws, args.data, force=args.force, llm=args.llm, M=args.M, scan_M=scan_M,
+            ws, args.data, force=args.force,
+            force_masters=getattr(args, "force_masters", None),
+            llm=args.llm, M=args.M, scan_M=scan_M,
             detectors=args.detectors, formats=formats,
             workers=getattr(args, "workers", None), errors_tier=errors_tier,
             bayes_cli=bayes_cli, timer=timer,

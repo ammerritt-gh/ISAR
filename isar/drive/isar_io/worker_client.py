@@ -76,6 +76,7 @@ class WorkerRunner:
     def run(self, workspace, data_paths: Sequence, *, force: bool = False, errors_tier: str = "full",
             render: bool = True, timeout: float | None = None,
             scan_errors_tier: str | None = None, master_errors_tier: str | None = None,
+            force_masters: Sequence[str] | None = None,
             certification_manifest: str | Path | None = None,
             certification_request: str | Path | None = None,
             analysis_allowance_seconds: float | None = None,
@@ -94,19 +95,22 @@ class WorkerRunner:
             return self._fallback_run(workspace, data_paths, force, errors_tier, render, timeout,
                                       certification_manifest, certification_request,
                                       analysis_allowance_seconds,
-                                      finish_initial_wave, scan_errors_tier, master_errors_tier)
+                                      finish_initial_wave, scan_errors_tier, master_errors_tier,
+                                      force_masters=force_masters)
 
         job_timeout = self._job_timeout if timeout is None else float(timeout)
         reply = self._try_round_trip(data_paths, force, errors_tier, job_timeout,
                                      certification_manifest, certification_request,
                                      analysis_allowance_seconds,
-                                     finish_initial_wave, scan_errors_tier, master_errors_tier)
+                                     finish_initial_wave, scan_errors_tier, master_errors_tier,
+                                     force_masters=force_masters)
         if reply is _TRANSPORT_FAIL:
             self._on_transport_failure()
             return self._fallback_run(workspace, data_paths, force, errors_tier, render, timeout,
                                       certification_manifest, certification_request,
                                       analysis_allowance_seconds,
-                                      finish_initial_wave, scan_errors_tier, master_errors_tier)
+                                      finish_initial_wave, scan_errors_tier, master_errors_tier,
+                                      force_masters=force_masters)
 
         # A clean reply (ok or not) means transport is healthy → reset the failure streak.
         self._consecutive_failures = 0
@@ -150,7 +154,7 @@ class WorkerRunner:
                         certification_manifest=None, certification_request=None,
                         analysis_allowance_seconds=None,
                         finish_initial_wave=False, scan_errors_tier=None,
-                        master_errors_tier=None):
+                        master_errors_tier=None, force_masters=None):
         """Ensure a live worker, send one ``run`` request, await its reply.
 
         Returns the parsed reply dict, or :data:`_TRANSPORT_FAIL` on any spawn/pipe/timeout/EOF/parse
@@ -165,6 +169,8 @@ class WorkerRunner:
             req["scan_errors_tier"] = scan_errors_tier
         if master_errors_tier is not None:
             req["master_errors_tier"] = master_errors_tier
+        if force_masters:
+            req["force_masters"] = [str(m) for m in force_masters]
         if certification_manifest is not None:
             req["certification_manifest"] = str(certification_manifest)
         if certification_request is not None:
@@ -258,7 +264,7 @@ class WorkerRunner:
                       certification_manifest=None, certification_request=None,
                       analysis_allowance_seconds=None,
                       finish_initial_wave=False, scan_errors_tier=None,
-                      master_errors_tier=None) -> RunResult:
+                      master_errors_tier=None, force_masters=None) -> RunResult:
         if self._fallback is None:
             raise IsarRunError(1, "", "worker transport failed and no fallback runner is configured",
                                ["python", "-m", "isar.session.worker", "run"])
@@ -268,6 +274,8 @@ class WorkerRunner:
             kwargs["scan_errors_tier"] = scan_errors_tier
         if master_errors_tier is not None:
             kwargs["master_errors_tier"] = master_errors_tier
+        if force_masters:
+            kwargs["force_masters"] = [str(m) for m in force_masters]
         # Preserve the pre-extension runner protocol for ordinary jobs and legacy adapters.
         if certification_manifest is not None:
             kwargs["certification_manifest"] = certification_manifest

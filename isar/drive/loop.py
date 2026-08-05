@@ -262,6 +262,21 @@ def _runtime_limits(cfg, objective, n_points: int | None = None) -> dict[str, An
     return result
 
 
+def _runner_accepts(runner, name: str) -> bool:
+    """Whether ``runner.run`` takes ``name`` (or absorbs it via ``**kwargs``).
+
+    Runners are a configurable seam — a campaign may supply its own — so a keyword added to the
+    protocol cannot be assumed present. An unreadable signature is treated as accepting, which
+    keeps callable/proxy doubles working exactly as they did before the keyword existed.
+    """
+    try:
+        parameters = inspect.signature(runner.run).parameters
+    except (TypeError, ValueError):
+        return True
+    return name in parameters or any(item.kind == inspect.Parameter.VAR_KEYWORD
+                                     for item in parameters.values())
+
+
 def _analysis_runner_kwargs(cfg, objective, *, finish_initial_wave: bool = False) -> dict:
     """Deadline allowance supported by the runner seam, without imposing it on old test doubles."""
     limit = objective.analysis_limit_seconds
@@ -1532,10 +1547,21 @@ def _predictive_design_measure_ready(master) -> bool:
 
     - a validated artifact is present (the loader already refused an incomplete one — ADR-014's
       ``predictive_complete_for_eig`` — and it is re-checked here defensively);
-    - its particle basis is **homogeneous**: one draw basis across every retained model, so the
-      particles are exchangeable and can be pooled into a single design measure;
-    - and that basis is **simulation-grade** (:data:`EIG_SIMULATION_GRADE_DRAW_BASES`); a
-      ``laplace_hesse`` ensemble is rejected exactly as a non-bootstrap particle set is.
+    - and **at least one** retained model carries a simulation-grade basis
+      (:data:`EIG_SIMULATION_GRADE_DRAW_BASES`), so there is a resampled particle set to design
+      against at all.
+
+    Homogeneity is deliberately NOT required. It was, and it made escalation largely futile: only
+    ``optimizer_converged`` candidates are bootstrapped, so a master whose retained Akaike set mixes
+    converged and unconverged structures publishes a mixed basis, and a single ``laplace_hesse``
+    model disqualified the whole master — permanently, because the promotion charge is durable.
+    Measured on the O41 Test 10 masters, that rejected 19 of 21 *after* a full-tier refit. The
+    design measure does not need homogeneity: it already marginalises over the bootstrap-grade
+    models alone and renormalises their weights, recording each exclusion as
+    ``nonbootstrap_source_basis`` (:mod:`isar.eig.design_measure`). What still has to hold is that
+    the surviving bootstrap mass is enough to carry the measure, and that is adjudicated on the
+    real masses one layer down (``predictive_insufficient_bootstrap_mass`` in
+    :mod:`isar.eig.qoi`) rather than guessed from the basis list here.
     """
     predictive = (master or {}).get("predictive")
     if not isinstance(predictive, Mapping):
@@ -1545,7 +1571,7 @@ def _predictive_design_measure_ready(master) -> bool:
             and completeness.get("predictive_complete_for_eig") is not True:
         return False
     bases = _predictive_draw_bases(predictive)
-    return len(bases) == 1 and bases[0] in EIG_SIMULATION_GRADE_DRAW_BASES
+    return any(basis in EIG_SIMULATION_GRADE_DRAW_BASES for basis in bases)
 
 
 def _master_revision_key(master) -> str:
@@ -1613,11 +1639,31 @@ def _promote_master_predictive_basis(cfg, objective, item, revision_key: str, *,
     (see :func:`_promoted_master_revisions`).
     """
     full_tier = _full_tier(cfg)
+    # Targeted refit: only the promoted master is owed a full-tier basis, and the ledger id in
+    # ``master_session_key`` names it exactly (results.csv scan_id == the driver's master id). A
+    # global ``force`` re-fit every scan and every master — routing the batch onto the
+    # parallel-across-groups path whose per-child bootstrap is deliberately serial — so one owed
+    # basis cost a whole-campaign reanalysis (~20 serial 200-draw bootstraps' wall time). The
+    # single-target refit takes the serial master path, whose bootstrap fans out over the full
+    # worker budget. Fallback to the old whole-batch force only when the id is unavailable.
+    target_master = str((item.master or {}).get("master_session_key") or "") or None
+    if target_master is None:
+        _LOG.warning("predictive promotion for %s: master_session_key unavailable; "
+                     "falling back to whole-batch force", revision_key)
+    elif not _runner_accepts(cfg.runner, "force_masters"):
+        # A config-supplied runner predating the targeted seam would raise TypeError here, and the
+        # promotion charge is durable — a spent revision is never retried — so an unsupported
+        # keyword would permanently deny this master its basis. Degrade to the old whole-batch
+        # force instead: slower, but it still publishes the basis the campaign is owed.
+        _LOG.warning("predictive promotion for %s: runner %s does not accept targeted refits; "
+                     "falling back to whole-batch force",
+                     revision_key, type(cfg.runner).__name__)
+        target_master = None
     log_event(cfg.log_path, "escalate_fit", {
         "phase": "promote", "iter": it, "hkl": list(item.hkl),
         "from_tier": (item.master or {}).get("fit_kind"),
         "to_tier": full_tier, "reason": "master_predictive_basis_missing",
-        "revision_key": revision_key})
+        "revision_key": revision_key, "target_master": target_master})
     try:
         with activity(cfg.log_path, "full_fit", q=list(item.hkl),
                       fit_tier=full_tier, iteration=it):
@@ -1629,7 +1675,8 @@ def _promote_master_predictive_basis(cfg, objective, item, revision_key: str, *,
                 run_result = cfg.runner.run(
                     cfg.workspace, [cfg.data_dir], errors_tier=full_tier,
                     scan_errors_tier="fast", master_errors_tier=full_tier,
-                    force=True, render=False,
+                    force=target_master is None, render=False,
+                    **({"force_masters": [target_master]} if target_master else {}),
                     **_analysis_runner_kwargs(cfg, objective))
                 _require_complete_analysis(run_result, objective)
     except AnalysisLimitExceeded as error:

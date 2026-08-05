@@ -53,6 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("data", nargs="+")
     pr.add_argument("--workspace", required=True)
     pr.add_argument("--force", action="store_true", help="refit every scan, ignoring the ledger")
+    pr.add_argument("--force-master", dest="force_masters", action="append", default=None,
+                    metavar="MASTER_ID", help=argparse.SUPPRESS)
     pr.add_argument("--llm", action="store_true", help="enable LLM adjudication of QC flags")
     pr.add_argument("--M", type=int, default=200,
                     help="bootstrap draw cap for pooled masters and certification (default 200)")

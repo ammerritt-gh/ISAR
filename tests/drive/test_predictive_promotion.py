@@ -8,6 +8,7 @@ promotion the scan-window EIG needs.
 """
 from __future__ import annotations
 
+import types
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -68,11 +69,24 @@ def test_a_laplace_artifact_is_present_but_not_an_eig_design_measure():
     assert not loop_mod._predictive_design_measure_ready(master)
 
 
-def test_a_heterogeneous_particle_basis_is_refused():
+def test_a_heterogeneous_particle_basis_is_accepted():
+    # Only converged candidates are bootstrapped, so a retained Akaike set routinely mixes bases —
+    # on the O41 Test 10 masters the unconverged models carried ~1e-11 of the weight, and demanding
+    # homogeneity rejected 19 of 21 masters over them. The design measure marginalises over the
+    # bootstrap-grade models and renormalises; sufficiency of the surviving mass is adjudicated on
+    # the real masses downstream (predictive_insufficient_bootstrap_mass), not on the basis list.
     master = _master("parametric_bootstrap")
     master["predictive"]["models"][1]["draw_basis"] = "laplace_hesse"
     master["predictive"]["uncertainty_provenance"]["draw_basis"] = [
         "laplace_hesse", "parametric_bootstrap"]
+    assert loop_mod._predictive_design_measure_ready(master)
+
+
+def test_an_all_laplace_particle_basis_is_still_refused():
+    # Nothing simulation-grade to design against at all: this is the case the predicate exists for,
+    # and it is what kept the R1-E replay's cheap-particle masters correctly blocked.
+    master = _master("laplace_hesse")
+    master["predictive"]["uncertainty_provenance"]["draw_basis"] = ["laplace_hesse"]
     assert not loop_mod._predictive_design_measure_ready(master)
 
 
@@ -156,6 +170,79 @@ def test_promotion_happens_once_and_the_source_is_ready_afterwards(tmp_path):
     item.master = _master("parametric_bootstrap")
     assert loop_mod._predictive_design_measure_ready(item.master)
     assert loop_mod._predictive_promotion_target(proposal, [item], log_path) is None
+
+
+# --------------------------------------------------------------------------- targeted refit scope
+class _RecordingRunner:
+    """Runner-protocol double that records each ``run`` call's kwargs and reports success."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def run(self, workspace, data_paths, **kwargs):
+        self.calls.append(kwargs)
+        return types.SimpleNamespace(completed=True)
+
+    def close(self):
+        pass
+
+
+def _promotion_cfg(tmp_path, runner):
+    return types.SimpleNamespace(log_path=_log(tmp_path), runner=runner, workspace=tmp_path,
+                                 data_dir=tmp_path / "data", bayes_errors=False)
+
+
+def test_promotion_is_a_targeted_master_refit(tmp_path):
+    # The escalation charges ONE master's full-tier basis; it must not force the whole batch
+    # (which re-fit every master on the parallel path whose per-child bootstrap is serial).
+    runner = _RecordingRunner()
+    cfg = _promotion_cfg(tmp_path, runner)
+    objective = types.SimpleNamespace(analysis_limit_seconds=None)
+    item = _GridItem((2.1, 0.0, 0.0),
+                     _master("laplace_hesse", master_session_key="master:2.1_0.0_0.0_300.0"))
+    outcome, error = loop_mod._promote_master_predictive_basis(
+        cfg, objective, item, "hash-a:rev-1", it=3)
+    assert outcome == "completed" and error is None
+    (call,) = runner.calls
+    assert call["force_masters"] == ["master:2.1_0.0_0.0_300.0"]
+    assert call["force"] is False
+    assert call["master_errors_tier"] == "full"
+
+
+def test_promotion_falls_back_when_the_runner_predates_targeted_refits(tmp_path):
+    # The runner is a configurable seam and the promotion charge is durable, so a runner that
+    # cannot take `force_masters` must degrade to the slow whole-batch force rather than raise
+    # and deny this master revision its basis forever.
+    class _OldRunner(_RecordingRunner):
+        def run(self, workspace, data_paths, *, force=False, errors_tier="full", render=True,
+                scan_errors_tier=None, master_errors_tier=None):
+            self.calls.append({"force": force, "errors_tier": errors_tier})
+            return types.SimpleNamespace(completed=True)
+
+    runner = _OldRunner()
+    cfg = _promotion_cfg(tmp_path, runner)
+    objective = types.SimpleNamespace(analysis_limit_seconds=None)
+    item = _GridItem((2.1, 0.0, 0.0),
+                     _master("laplace_hesse", master_session_key="master:2.1_0.0_0.0_300.0"))
+    outcome, error = loop_mod._promote_master_predictive_basis(
+        cfg, objective, item, "hash-a:rev-1", it=3)
+    assert outcome == "completed" and error is None
+    assert runner.calls == [{"force": True, "errors_tier": "full"}]
+
+
+def test_promotion_without_a_session_key_falls_back_to_whole_batch_force(tmp_path):
+    # An old results.csv row with no scan_id cannot be targeted; the promotion must still happen
+    # (whole-batch force), never silently no-op with a durable "completed" charge.
+    runner = _RecordingRunner()
+    cfg = _promotion_cfg(tmp_path, runner)
+    objective = types.SimpleNamespace(analysis_limit_seconds=None)
+    item = _GridItem((2.1, 0.0, 0.0), _master("laplace_hesse"))
+    outcome, _error = loop_mod._promote_master_predictive_basis(
+        cfg, objective, item, "hash-a:rev-1", it=3)
+    assert outcome == "completed"
+    (call,) = runner.calls
+    assert call["force"] is True
+    assert "force_masters" not in call
 
 
 def test_a_spent_promotion_is_not_repeated_on_resume(tmp_path):

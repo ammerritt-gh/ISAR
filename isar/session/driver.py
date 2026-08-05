@@ -2039,13 +2039,24 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
         return out
 
 
-def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200, scan_M=None,
+def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=None, llm=False,
+              M=200, scan_M=None,
               detectors=None, formats=("html", "markdown"), workers=None,
               errors_tier="full", scan_errors_tier=None, master_errors_tier=None,
               bayes_cli=None, timer=None,
               certification_manifest=None, analysis_allowance_seconds=None,
               finish_initial_wave=False) -> RunSummary:
     timer = timer or NullTimer()
+    # ``force_masters``: refit exactly these master ledger ids (e.g. "master:2.65_0.0_0.0_300")
+    # even when their member set is unchanged, without forcing anything else. This is the
+    # predictive-escalation path: one master is owed a full-tier basis, and a global ``force``
+    # re-fits every scan and every master (the parallel-across-groups path whose per-child
+    # bootstrap is deliberately serial) when only one group's work was wanted.
+    # A bare string is one id, not an iterable of characters — silently iterating it would turn a
+    # valid single-target request into a set of one-character ids that match nothing.
+    if isinstance(force_masters, str):
+        force_masters = (force_masters,)
+    force_masters = frozenset(str(m) for m in (force_masters or ()))
     scan_M = 50 if scan_M is None else int(scan_M)
     if scan_M <= 0 or int(M) <= 0:
         raise ValueError("M and scan_M must be positive")
@@ -2059,8 +2070,9 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
         checkpoint_store = CheckpointStore(certification_manifest)
     master_certification = bool(
         checkpoint_store is not None and checkpoint_store.is_master_certification)
-    if master_certification and force:
-        raise ValueError("force=True is invalid for isar.certification/2 master-only runs")
+    if master_certification and (force or force_masters):
+        raise ValueError(
+            "force=True / force_masters are invalid for isar.certification/2 master-only runs")
     if master_certification:
         unresolved = unresolved_current_promotions(workspace.root, session)
         if unresolved:
@@ -2305,7 +2317,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
                 for e in entries if e.provenance.get("fit_seconds") is not None]
         completed_master_keys: list[str] = []
         _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
-                          workspace, force=force, M=M, seed_base=seed_base, errors_tier=master_tier,
+                          workspace, force=force, force_masters=force_masters,
+                          M=M, seed_base=seed_base, errors_tier=master_tier,
                           master_boot_workers=master_boot_workers, boot_executor=shared_pool,
                           boot_adaptive=master_boot_adaptive, scan_workers=scan_workers,
                           bayes_opts=bayes_opts, timer=timer, source_by_name=source_by_name,
@@ -3104,7 +3117,8 @@ def _master_prior_admissible(entry: ScanEntry, outcome: dict) -> bool:
 
 
 def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
-                      workspace, *, force, M, seed_base, errors_tier, master_boot_workers,
+                      workspace, *, force, force_masters=frozenset(), M, seed_base, errors_tier,
+                      master_boot_workers,
                       boot_executor, boot_adaptive, scan_workers=1, bayes_opts=None, timer=None,
                       source_by_name=None, checkpoint_store=None, completed_master_keys=None,
                       deadline_gate=None):
@@ -3166,6 +3180,7 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
             n_masters = _fit_masters(summary.collation, records, card, runcal, g, session,
                                      data_dir=workspace.root / "data",
                                      M=M, seed_base=seed_base, errors_tier=errors_tier, force=force,
+                                     force_masters=force_masters,
                                      boot_workers=master_boot_workers, boot_executor=boot_executor,
                                      boot_adaptive=boot_adaptive, scan_workers=scan_workers,
                                      bayes_opts=bayes_opts, per_master=per_master,
@@ -3179,7 +3194,10 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
         except Exception as exc:  # noqa: BLE001 — ordinary master fitting is additive
             # Certification must fail closed: suppressing a corrupt/mismatched checkpoint here
             # would let the runner publish a superficially complete revision with a missing unit.
-            if checkpoint_store is not None:
+            # A targeted force_masters run fails closed too: the run exists solely to refit that
+            # master, and a swallowed failure would let the predictive escalation record a
+            # "completed" promotion (a durable, never-retried charge) with the basis still missing.
+            if checkpoint_store is not None or force_masters:
                 raise
             summary.context_lines.append(f"master fitting skipped: {exc}")
 
@@ -3750,7 +3768,8 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
 
 
 def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None, M, seed_base,
-                 errors_tier="full", force=False, boot_workers=1, boot_executor=None,
+                 errors_tier="full", force=False, force_masters=frozenset(),
+                 boot_workers=1, boot_executor=None,
                  boot_adaptive=False, scan_workers=1, bayes_opts=None, per_master=None,
                  checkpoint_store=None, completed_master_keys=None, deadline_gate=None) -> int:
     """Fit the merged master scan for each (Q,T) group; returns how many were (re)fit this run.
@@ -3760,7 +3779,9 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
     single scan and stored as a ``master:<key>`` ledger entry marked ``pooled=True``. Idempotent on the
     member SET: the entry's ``content_hash`` is a hash of ``ms.members``, so a master refits exactly
     when a member scan arrives or drifts (``collate`` re-runs over all records every batch, so masters
-    cannot piggyback on the per-scan freshness flags). Never fatal — a bad group yields a
+    cannot piggyback on the per-scan freshness flags). ``force_masters`` (ledger ids) exempts exactly
+    those masters from the unchanged-member carry, so a predictive escalation re-fits its one target
+    at the requested tier without forcing the whole batch. Never fatal — a bad group yields a
     ``non_result`` entry, never a crash.
 
     When more than one group needs refitting and the scan-worker budget allows, the group fits run in
@@ -3770,6 +3791,10 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
     refit (the normal-iteration case) keeps the in-process serial path with the shared bootstrap pool.
     """
     if collation is None or getattr(collation, "merge", "separate") != "merge":
+        if force_masters:
+            raise ValueError(
+                f"force_masters: {sorted(force_masters)!r} requested but no merged collation "
+                "exists — the targeted refit cannot happen")
         return 0
     from isar.session.state import canonical_hash
 
@@ -3783,15 +3808,18 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
     # idx is the ORIGINAL sorted-group enumeration position (NOT the refit-list position) so the
     # per-group seed `seed_base + _MASTER_SCAN_BASE + idx` and synthetic scan_number stay stable.
     refits = []     # (idx, grp, ms, master_id, chash, member_rec, member_det, structure_hint)
+    seen_master_ids: list[str] = []
     for idx, grp in enumerate(sorted(collation.groups, key=lambda gg: str(gg.key))):
         ms = getattr(grp, "merged", None)
         if ms is None or ms.n_members < 1:
             continue
         master_id = "master:" + "_".join(str(k) for k in grp.key)
+        seen_master_ids.append(master_id)
         chash = canonical_hash([list(m) for m in ms.members])
         prev = session.get(master_id)               # read BEFORE the refit overwrites the ledger
         carried_contract = (prev.provenance or {}).get("predictive_contract") if prev else None
-        if not force and prev is not None and prev.content_hash == chash \
+        if not force and master_id not in force_masters and prev is not None \
+                and prev.content_hash == chash \
                 and carried_contract == PREDICTIVE_CONTRACT:
             # Member set unchanged → carry the prior master. Backfill the member provenance onto an
             # older ledger entry that predates this field: the content-hash match proves the member
@@ -3818,6 +3846,17 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
             hint = (prev.detectors.get(member_det or "merged") or {}).get("best_label")
         refits.append((idx, grp, ms, master_id, chash, rec_by_scan.get(member_scan), member_det,
                        hint))
+    if force_masters:
+        # A requested id that matches no collation group means the caller's targeted refit would
+        # silently not happen — and the predictive-escalation charge that requested it is durable
+        # (the same master revision is never re-promoted), so a quiet no-op would record a
+        # "completed" promotion whose basis is still missing. Fail the run instead: the escalation
+        # then records a visible "failed" outcome rather than a false success.
+        unmatched = sorted(force_masters - set(seen_master_ids))
+        if unmatched:
+            raise ValueError(
+                f"force_masters: {unmatched!r} match no collation group "
+                f"(known masters: {sorted(seen_master_ids)!r})")
     if not refits:
         return 0
 
