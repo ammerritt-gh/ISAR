@@ -1,0 +1,59 @@
+{
+  "status": "passed",
+  "parity_checks": [
+    {
+      "check": "the complete held-out STAT-2b summary and accepted AIC disposition were reused without rerunning the campaign",
+      "status": "passed"
+    },
+    {
+      "check": "isar/drive/supervisor/stopping.py drift is confined to the acoustic reduced-q origin exemption: one new GridQ field, one branch-conditional early return in precision_coverage_eligible, and reading the tracker's already-published reduced_q_origin_index in summarize_grid",
+      "status": "passed"
+    },
+    {
+      "check": "the exemption is branch-conditional, so an optic campaign's zone centre stays precision-coverage eligible; pinned by test_an_optic_zone_centre_is_still_a_measurable_target",
+      "status": "passed"
+    },
+    {
+      "check": "only the single origin index is marked; every other grid point keeps the dataclass default and stays eligible; pinned by test_the_zone_anchor_is_read_from_the_tracker_geometry_not_from_its_inference",
+      "status": "passed"
+    },
+    {
+      "check": "no fit, model selection, weighting, interval or predictive-evidence semantics are touched; the change decides only which q the controller schedules and must certify",
+      "status": "passed"
+    },
+    {
+      "check": "the pre-existing inferred_unresolved exemption path is preserved unchanged for campaigns that earn it, and the retained non-origin malformed-state test still refuses to shrink the denominator",
+      "status": "passed"
+    }
+  ],
+  "commands": [
+    {
+      "command": "python -m py_compile isar/drive/supervisor/stopping.py",
+      "deselected": 0,
+      "failed": 0,
+      "files_checked": 1,
+      "passed": 1,
+      "skipped": 0
+    },
+    {
+      "command": "python -m pytest tests/drive/test_stopping.py tests/drive/test_loop.py isar/synth/tests/test_stat2b_campaign.py -n 8 --dist worksteal -q",
+      "deselected": 0,
+      "duration_seconds": 42.96,
+      "failed": 0,
+      "passed": 247,
+      "skipped": 0
+    },
+    {
+      "command": "python -m pytest -m \"not slow\" -n 16 --dist worksteal -q",
+      "deselected": 0,
+      "duration_seconds": 73.82,
+      "failed": 4,
+      "passed": 3723,
+      "skipped": 8
+    }
+  ],
+  "notes": [
+    "The four failures in the not-slow run are tests/stats/test_stat2b_source_closure.py itself, expected while this very drift is open; they are the reason this cycle exists and close with it.",
+    "Renewal cycle against the active closure promoted earlier the same day, whose own review record is docs/campaigns/2026-08-05_EIG4_R3_SOURCE_CLOSURE/review.json."
+  ]
+}

@@ -204,6 +204,7 @@ MANUAL_DEPENDENCIES: tuple[dict[str, str], ...] = ()
 CURRENT_CHANGE_DISPOSITIONS = {
     "isar/drive/objective.py": "adjacent_nonsemantic",
     "isar/drive/session_log.py": "adjacent_nonsemantic",
+    "isar/drive/supervisor/stopping.py": "adjacent_nonsemantic",
     "isar/schema/action_identity.py": "unrelated_exempt",
     "isar/schema/card.py": "adjacent_nonsemantic",
     "isar/schema/eig_policy.py": "adjacent_nonsemantic",
@@ -223,6 +224,11 @@ PROOF_TESTS = {
     "isar/drive/session_log.py": [
         "tests/drive/test_session_log.py",
         "tests/session/test_driver_smoke.py",
+    ],
+    "isar/drive/supervisor/stopping.py": [
+        "tests/drive/test_stopping.py",
+        "tests/drive/test_loop.py",
+        "isar/synth/tests/test_stat2b_campaign.py",
     ],
     "isar/schema/action_identity.py": ["tests/eig/test_eligibility.py"],
     "isar/schema/card.py": [

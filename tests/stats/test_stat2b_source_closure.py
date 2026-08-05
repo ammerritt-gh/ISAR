@@ -43,6 +43,16 @@ def _closure_repo(tmp_path: Path) -> Path:
         ENGINE.HISTORICAL_EVALUATOR_PATH,
         *[module["path"] for module in manifest["modules"]],
     }
+    # Once a closure has been promoted, the candidate is a *renewal* written against the active
+    # manifest rather than a bootstrap written against the held-out gate, and it names that file as
+    # its comparison basis. A portable copy that omitted it would leave every renewal candidate
+    # unverifiable here for a reason that exists only in the fixture.
+    if (ROOT / ENGINE.DEFAULT_ACTIVE_PATH).is_file():
+        relatives.add(ENGINE.DEFAULT_ACTIVE_PATH)
+        active = json.loads(
+            (ROOT / ENGINE.DEFAULT_ACTIVE_PATH).read_text(encoding="utf-8"))
+        relatives.add(active["review_record"]["path"])
+        relatives.update(module["path"] for module in active["modules"])
     for relative in sorted(relatives):
         _copy_file(ROOT / relative, tmp_path / relative)
     return tmp_path
@@ -103,6 +113,13 @@ def _approved_fixture(tmp_path: Path) -> tuple[Path, dict, str]:
     original = _candidate()
     (repo / ENGINE.DEFAULT_CANDIDATE_PATH).unlink()
     (repo / original["review_record"]["path"]).unlink()
+    # This fixture constructs its own approved state from a bootstrap cycle, so it must start with
+    # no active closure. The repository's real one is copied in for renewal candidates and would
+    # otherwise send build_candidate down the renewal path, where it would try to authenticate
+    # commits that exist only in the real history.
+    active_path = repo / ENGINE.DEFAULT_ACTIVE_PATH
+    if active_path.is_file():
+        active_path.unlink()
     anchor = _initialize_git(repo)
     candidate, _ = ENGINE.build_candidate(
         repo,
@@ -172,15 +189,15 @@ def test_historical_replay_recomputes_the_complete_summary_fingerprint(
         ENGINE.replay_heldout_aggregate(repo, gate)
 
 
-def test_historical_drift_inventory_is_the_reviewed_five_six_zero():
+def test_historical_drift_inventory_is_the_reviewed_five_seven_zero():
     gate = ENGINE.authenticate_historical_gate(ROOT)
     inventory = ENGINE.drift_inventory(ROOT, gate)
 
     assert inventory["counts"] == {
         "added": 5,
-        "modified": 6,
+        "modified": 7,
         "deleted": 0,
-        "unchanged": 54,
+        "unchanged": 53,
     }
     assert {entry["path"] for entry in inventory["entries"]} == {
         "isar/drive/objective.py",
@@ -191,6 +208,7 @@ def test_historical_drift_inventory_is_the_reviewed_five_six_zero():
         "isar/schema/eig_realized.py",
         "isar/schema/eig_shadow.py",
         "isar/schema/hypotheses.py",
+        "isar/drive/supervisor/stopping.py",
         "isar/session/driver.py",
         "isar/session/predictive_artifact.py",
         "isar/session/worker.py",
