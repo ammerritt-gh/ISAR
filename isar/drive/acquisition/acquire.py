@@ -276,6 +276,27 @@ def _resolve_fwhm(resolution_info, h: float, k: float, l: float, deltaE: float) 
 
 
 def _fwhm_from(info) -> float:
+    """The energy FWHM to size scan windows and steps with.
+
+    ``GET /resolution`` reports two energy widths of the same ellipsoid, and they differ by a
+    factor of ~2.5 on the TAVI configuration this drives:
+
+    - ``fwhm.dE`` is the MARGINAL width, ``sqrt(8 ln2 * inv(M)[E,E])`` — the ellipsoid projected
+      onto the energy axis, integrating over Q. TAVI publishes the identical number as
+      ``vanadium_fwhm_meV``, because that projection is exactly what an incoherent elastic
+      scatterer measures.
+    - ``bragg.dE`` is the SECTION width, ``sqrt(8 ln2 / M[E,E])`` — the ellipsoid cut at fixed Q.
+
+    A constant-Q energy scan through a sharp excitation measures a section, not a projection, so
+    the marginal width overestimates the peak it will actually see (a projection is never narrower
+    than the corresponding section). Sizing windows on it made every target core ~2.5x too wide,
+    which is what overflowed the declared energy domain at high q. Prefer the section.
+
+    The exact width of a DISPERSIVE mode is a slope-dependent section — focusing or defocusing with
+    the sign of the dispersion against the ellipsoid tilt — and lies between these two; TAVI exposes
+    ``projections`` for that refinement. ``bragg.dE`` is the right order and the honest choice until
+    that is built.
+    """
     if info is None:
         return DEFAULT_FWHM_MEV
     if isinstance(info, (int, float)):
@@ -284,6 +305,11 @@ def _fwhm_from(info) -> float:
     if isinstance(info, dict):
         if info.get("ok") is False:               # /resolution refusal (infeasible geometry)
             return DEFAULT_FWHM_MEV
+        bragg = info.get("bragg")
+        if isinstance(bragg, dict) and bragg.get("dE"):
+            value = float(bragg["dE"])
+            if value > 0:
+                return value
         if "fwhm_dE" in info and info["fwhm_dE"]:
             return float(info["fwhm_dE"])
         fwhm = info.get("fwhm")

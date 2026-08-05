@@ -821,3 +821,27 @@ def test_authoritative_scan_window_eig_requires_the_exact_o41_profile_at_campaig
     message = str(raised.value)
     assert "scan_window_eig_authoritative_profile_invalid" in message
     assert "exactly one O41 policy is required" in message
+
+
+def test_resolution_energy_width_prefers_the_section_over_the_projection():
+    """A constant-Q energy scan measures a section of the resolution ellipsoid, not a projection.
+
+    ``GET /resolution`` reports both: ``fwhm.dE`` is the marginal/vanadium width (the ellipsoid
+    integrated over Q) and ``bragg.dE`` is the section at fixed Q. On the driven TAVI configuration
+    they are 1.1577 and 0.4616 meV, so reading the marginal one made every window ~2.5x too wide.
+    """
+    body = {"ok": True,
+            "fwhm": {"dE": 1.1577, "dq_par": 0.0478},
+            "bragg": {"dE": 0.4616, "dq_par": 0.0470},
+            "vanadium_fwhm_meV": 1.1577}
+    assert acq._fwhm_from(body) == 0.4616
+
+    # Without a section the marginal width is still better than nothing, and the explicit
+    # single-value forms every existing caller and fake uses are unchanged.
+    assert acq._fwhm_from({"ok": True, "fwhm": {"dE": 1.1577}}) == 1.1577
+    assert acq._fwhm_from({"fwhm_dE": 0.8}) == 0.8
+    assert acq._fwhm_from(0.7) == 0.7
+    # A refusal, a non-positive section, and a missing body all fall back.
+    assert acq._fwhm_from({"ok": False, "bragg": {"dE": 0.4616}}) == acq.DEFAULT_FWHM_MEV
+    assert acq._fwhm_from({"bragg": {"dE": 0.0}, "fwhm_dE": 0.8}) == 0.8
+    assert acq._fwhm_from(None) == acq.DEFAULT_FWHM_MEV
