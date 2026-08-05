@@ -341,9 +341,21 @@ def _render(kind: str, payload: dict) -> tuple[str, str]:
         return _render_inventory(payload, tail)
     if kind in ("activity_start", "activity_end"):
         return _render_activity(kind, payload)
+    if kind == "feasibility_trim":
+        return _render_feasibility_trim(payload, tail)
     # Unknown kinds surface rather than vanish: the log vocabulary grows upstream, and an operator
     # seeing "event: something_new" can still expand the row for the payload.
     return f"event: {kind}", "info"
+
+
+def _render_feasibility_trim(payload: dict, tail: str) -> tuple[str, str]:
+    dropped = payload.get("dropped_point_count")
+    lo, hi = _num(payload.get("new_e_lo"), ".2f"), _num(payload.get("new_e_hi"), ".2f")
+    window = (f"; scanning E {lo}…{hi} meV" if lo is not None and hi is not None else "")
+    plural = "" if dropped == 1 else "s"
+    count = dropped if dropped is not None else "some"
+    return (f"Trimmed {count} unreachable point{plural} from the scan window{window}{tail}",
+            "notice")
 
 
 # ---- synthesized budget status ------------------------------------------------------

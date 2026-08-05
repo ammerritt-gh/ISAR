@@ -3,5 +3,5 @@
   "step_h": 0.05,
   "tolerance_meV": 0.5,
   "target_branch": "acoustic",
-  "energy_search_meV": [-10.0, 10.0]
+  "energy_search_meV": [-9.0, 9.0]
 }

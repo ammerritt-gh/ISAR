@@ -799,8 +799,11 @@ class MainWindow(QMainWindow):
         if self._operations.is_busy():
             self.statusBar().showMessage("Workspace is busy — wait before creating the example")
             return
+        # Non-native dialog: the Windows-native picker refuses paths whose parents
+        # do not exist yet, and the backend creates the chain at promote time.
         parent = QFileDialog.getExistingDirectory(
-            self, "Create O41 Example (choose a parent folder)")
+            self, "Create O41 Example (choose a parent folder)", "",
+            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
         if not parent:
             return
         repo = Path(__file__).resolve().parents[1]
@@ -924,9 +927,13 @@ class MainWindow(QMainWindow):
         # forced to pre-create an empty one and then pick it. Overwrite confirmation is declined
         # here because the manager's own "absent or empty" check is the authority (and Qt would
         # otherwise ask about a folder we are going to refuse anyway).
+        # DontUseNativeDialog: the Windows-native dialog rejects typed paths whose
+        # parent folders do not exist ("This folder does not exist"), while the
+        # manager creates the whole parent chain at promote time.
         dest, _selected = QFileDialog.getSaveFileName(
             self, "Save Workspace As — name a new folder", "isar-workspace", "",
-            options=QFileDialog.Option.DontConfirmOverwrite)
+            options=(QFileDialog.Option.DontConfirmOverwrite
+                     | QFileDialog.Option.DontUseNativeDialog))
         if not dest:
             return False
         # Flush a pending GUI-store write into the temp workspace BEFORE it is copied, so the saved
@@ -1447,7 +1454,8 @@ class MainWindow(QMainWindow):
         if path is None:
             default = f"{Path(self._ws.root).name}_{dock_key.split()[0].lower()}.png"
             path, _ = QFileDialog.getSaveFileName(self, "Export view as PNG", default,
-                                                  "PNG image (*.png)")
+                                                  "PNG image (*.png)", "",
+                                                  QFileDialog.Option.DontUseNativeDialog)
             if not path:
                 return False
         ok = save_widget_png(glw, path)

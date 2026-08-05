@@ -32,6 +32,15 @@ def test_propose_names_the_point_the_window_and_the_exposure():
     assert event.severity == "info" and not event.loud
 
 
+def test_feasibility_trim_names_the_dropped_points_and_new_window():
+    event = _rendered("feasibility_trim", {
+        "old_e_lo": -9.0, "old_e_hi": 9.0, "new_e_lo": -8.65, "new_e_hi": 9.0,
+        "dropped_point_count": 1, "iter": 13})
+    assert event.text == ("Trimmed 1 unreachable point from the scan window; "
+                          "scanning E -8.65…9.00 meV  [iter 13]")
+    assert event.severity == "notice"
+
+
 def test_validate_reports_reachability_and_flags_a_block():
     ok = _rendered("validate", {"would_queue": True, "blockers": [], "requested_points": 32,
                                 "feasible_points": 32, "iter": 0})

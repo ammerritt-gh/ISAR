@@ -785,7 +785,8 @@ class CampaignDock(QDockWidget):
 
     def _save_feed(self) -> None:
         path, _kind = QFileDialog.getSaveFileName(self, "Save campaign log", "campaign-log.txt",
-                                                   "Text (*.txt);;All files (*)")
+                                                   "Text (*.txt);;All files (*)", "",
+                                                   QFileDialog.Option.DontUseNativeDialog)
         if not path:
             return
         try:
