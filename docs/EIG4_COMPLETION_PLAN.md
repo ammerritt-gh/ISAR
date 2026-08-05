@@ -12,9 +12,10 @@
 ## Why this exists
 
 The EIG-4 repair series (R1–R3) is mechanically finished. R3's cold-start SVP met its agreed
-minimal gate on 2026-08-05: stop state `met`, all 20 measurable grid q converged inside the
-canonical 1 h budget, and **3 `target_core` grants from a cold start** where the gate required one
-— against warm-seeded O41 Test 10's single grant. What remains is not repair. It is the governance
+minimal gate on 2026-08-05, and met it twice: once on the original resolution widths and again
+after the section-width correction, both reaching stop state `met` with all 20 measurable grid q
+converged and **3 `target_core` grants from a cold start** where the gate required one — against
+warm-seeded O41 Test 10's single grant. What remains is not repair. It is the governance
 restoration the suspension owes, the tuning that makes the capability worth having, and a closure
 cleanup.
 
@@ -79,10 +80,21 @@ one pass, EIG as the follow-up instrument thereafter.
 
 ### Where the rate stands
 
-| Campaign | Scored decisions | Grants | Rate |
-|---|---|---|---|
-| O41 Test 10 (warm seed) | 15 | 1 | ~7% |
-| R3 cold start (vanadium widths) | 17 | 3 | 18% |
+| Campaign | Iterations | Scored decisions | Grants | Rate |
+|---|---|---|---|---|
+| O41 Test 10 (warm seed) | 45 | 15 | 1 | ~7% |
+| R3 cold start (vanadium widths) | 59 | 17 | 3 | 18% |
+| R3 cold start (section widths, cap 220) | 103 | 12 | 3 | **25%** |
+
+All three cold-start grants narrow 105→17, 103→17 and 108→17 points — a 6× reduction, about 84% of
+the neutrons, against the vanadium run's 3× (49→17). The legacy survey needs ~105 points at section
+sampling while the core stays at 17, so the *saving per grant* rose along with the rate.
+
+**The binding constraint has moved, and this is the single most important fact for this slice.**
+On the vanadium run the blockers split evenly (20 `o41_applicability_unavailable`, 20
+`o36_ineligible`). On the repaired run they are 22 and **69**: `o36_ineligible` now accounts for
+two thirds of all decisions and is the reason the rate is 25% rather than far higher. Applicability
+is no longer the problem; eligibility is.
 
 ### Attribution comes from the histogram, not from guesswork
 
@@ -99,9 +111,13 @@ the histogram before touching a threshold. The blocker names the knob:
   gates.
 - **`o41_applicability_unavailable`** → masters never reached an escalated basis. After `c3d1c02`
   and `f8cbd0f` this should be rare; if it is not, that is a regression, not a tuning target.
-- **`o36_ineligible`** → 8 of 10 were honest on Test 10 and 2 were indeterminate because
-  `eligibility_summary` drops diagnostics carrying `target_modality`. **Persist that diagnostic
-  first**; two indeterminate cases in ten is enough to mislead a tuning decision.
+- **`o36_ineligible`** → **now the dominant blocker (69 of 103 decisions) and therefore the first
+  thing to work on.** On Test 10, 8 of 10 such classifications were honest and 2 were
+  indeterminate, because `eligibility_summary` drops diagnostics carrying `target_modality`. At 20
+  cases a 20% blind spot was tolerable; at 69 it is not — **persist that diagnostic before drawing
+  any conclusion from this code**, or two thirds of the histogram remains unreadable. Only once the
+  honest and indeterminate cases can be told apart is it worth asking whether the O36 eligibility
+  gate itself is too strict for a cold campaign.
 
 ### Carry into this slice
 
