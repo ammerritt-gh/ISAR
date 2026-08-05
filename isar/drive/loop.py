@@ -4240,8 +4240,12 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             run = _largest_feasible_run(val, requested_points)
             run_length = 0 if run is None else run[1] - run[0] + 1
             if run is not None and run_length < FEASIBLE_TRIM_MIN_POINTS:
+                # Request scope, not geometry: this window clipped the reachable band down to
+                # (nearly) nothing, but a shifted or widened window at the same Q may still be
+                # fully measurable — the widen/re-center ladder must stay open. Only a
+                # zero-feasible verdict condemns the geometry itself.
                 log_event(log_path, "exception", {
-                    "action": "geometry_unreachable", "phase": "validation",
+                    "action": "feasible_run_below_minimum", "phase": "validation",
                     "hkl": [proposal.h, proposal.k, proposal.l], "blockers": val.get("blockers"),
                     "reason": "largest_feasible_run_below_minimum",
                     "feasible_points": feasible_points,
@@ -4250,8 +4254,8 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                     "minimum_points": FEASIBLE_TRIM_MIN_POINTS,
                     "planned_feasible_mask": val.get("planned_feasible_mask"),
                     "iter": it})
-                observations.append(_declined_observation(proposal, "geometry_unreachable"))
-                declined_verdict = "geometry_unreachable"
+                observations.append(_declined_observation(proposal, "validation_rejected"))
+                declined_verdict = "validation_rejected"
                 break
             if run is not None and feasibility_trimmed:
                 # One trim per proposal. A second partial verdict on an already-trimmed window means

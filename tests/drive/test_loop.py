@@ -2024,20 +2024,23 @@ def test_a_partially_infeasible_window_is_trimmed_and_submitted(tmp_path):
 
 def test_a_window_with_one_feasible_point_is_declined_not_trimmed(tmp_path):
     """A one-point window is a degenerate window and the instrument 400s it, so the trim floor must
-    decline rather than manufacture an unusable scan."""
+    decline rather than manufacture an unusable scan — but only request-scoped: a shifted window at
+    the same q may still be fully measurable, so the hkl must not be condemned as geometry."""
     omega = lambda h: (h - 2.0) * 2.0
     summary, _workspace = _run(
         tmp_path, _objective(), _SingleFeasiblePointTavi(omega), make_mock_runner(omega))
     events = read_log(summary["session_log"])
 
     assert not [event for event in events if event["kind"] == "feasibility_trim"]
-    unreachable = [event["payload"] for event in events if event["kind"] == "exception"
-                   and event["payload"].get("action") == "geometry_unreachable"]
-    assert unreachable, "a sub-minimum feasible run must be recorded as unreachable geometry"
-    assert unreachable[0]["reason"] == "largest_feasible_run_below_minimum"
-    assert unreachable[0]["feasible_run_points"] == 1
+    below = [event["payload"] for event in events if event["kind"] == "exception"
+             and event["payload"].get("action") == "feasible_run_below_minimum"]
+    assert below, "a sub-minimum feasible run must be recorded"
+    assert below[0]["reason"] == "largest_feasible_run_below_minimum"
+    assert below[0]["feasible_run_points"] == 1
     suppressed = [event["payload"] for event in events if event["kind"] == "action_suppressed"]
-    assert suppressed and suppressed[0]["verdict"] == "geometry_unreachable"
+    assert suppressed and suppressed[0]["verdict"] == "validation_rejected"
+    assert all(event["payload"].get("scope") != "geometry" for event in events
+               if event["kind"] == "action_suppressed")
 
 
 def test_a_second_partial_verdict_after_a_trim_refuses_only_the_request(tmp_path):
