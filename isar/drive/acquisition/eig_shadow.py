@@ -67,6 +67,73 @@ def _exact_reference(source_value: Any, outcome: Mapping[str, Any] | None,
     return source_value
 
 
+# A target projection is bound to a NINE-field authority basis (``isar.eig.qoi``
+# ``_AUTHORITY_FIELDS``), and that basis is assembled from two sources at publication time
+# (``isar.session.driver._publish_target_projections`` →
+# ``isar.session.predictive_artifact.build_target_projection``):
+#
+#   * the four fields frozen on the ledger entry at fit time, under
+#     ``provenance["target_projection_authority"]`` — the fit is the only scope that holds the
+#     calibration and policy fingerprints; and
+#   * the five tracker fields, read from the pooled master's outcome, because branch triage and
+#     the connected tracker can still move the target after the fit.
+#
+# The currentness check needs the same nine fields as they stand NOW, so the frozen half alone is
+# not an expected authority: it names no track or candidate, and every field the consumer omits
+# makes the projection's currentness unknown rather than current.
+_AUTHORITY_BASIS_FIELDS = ("action_role", "master_revision",
+                           "calibration_fingerprint", "policy_fingerprint")
+_AUTHORITY_TRACK_FIELDS = ("track_revision", "track_state", "candidate_id",
+                           "candidate_state", "selected_candidate_index")
+
+
+def _authority_basis(entry: Any, source: Any) -> Mapping[str, Any] | None:
+    """The frozen basis from the exact ledger entry and/or the proposal, or ``None``.
+
+    Either provenance alone is accepted; when both are present they must agree exactly, because
+    disagreeing provenance is no provenance and must not authenticate a currentness verdict.
+    """
+    recorded = ((getattr(entry, "provenance", None) or {}).get("target_projection_authority")
+                if entry is not None else None)
+    ledger = dict(recorded) if isinstance(recorded, Mapping) else None
+    declared = getattr(source, "target_projection_authority", None)
+    declared = dict(declared) if isinstance(declared, Mapping) else None
+    if ledger is not None and declared is not None and ledger != declared:
+        return None
+    return ledger if ledger is not None else declared
+
+
+def _expected_authority(entry: Any, outcome: Mapping[str, Any] | None,
+                        source: Any) -> dict[str, Any] | None:
+    """The authority basis a projection published from this exact master NOW would be bound to.
+
+    Returns ``None`` — leaving the adapter to fail closed on unknown currentness — when the frozen
+    basis is unavailable or self-contradictory, or when there is no exact ledger outcome to read
+    the current tracker state from.  Every field is resolved exactly as the publisher resolves it,
+    so a genuinely stale projection (a superseded master revision, or a track or candidate the
+    tracker has since moved) still differs field-wise and is still reported stale.
+
+    The two ``or`` fallbacks below are not defaults chosen here; they mirror
+    ``_publish_target_projections`` verbatim, which resolves ``master_revision=authority.get(
+    "master_revision") or outcome.get("master_revision")`` and ``action_role=authority.get(
+    "action_role") or "master"``.  Resolving either field differently from the publisher would
+    manufacture a mismatch on an unmoved master and report a current projection stale.  Neither
+    fallback can hide staleness: both sides read the ledger outcome, so a master that has since
+    been refit carries a new revision here and still differs from the frozen projection.
+    """
+    basis = _authority_basis(entry, source)
+    if basis is None or outcome is None:
+        return None
+    expected = {
+        "action_role": basis.get("action_role") or "master",
+        "master_revision": basis.get("master_revision") or outcome.get("master_revision"),
+        "calibration_fingerprint": basis.get("calibration_fingerprint"),
+        "policy_fingerprint": basis.get("policy_fingerprint"),
+    }
+    expected.update({name: outcome.get(name) for name in _AUTHORITY_TRACK_FIELDS})
+    return expected
+
+
 def _scan_design_source(workspace: Path, acquisition_id: str | None,
                         request_fingerprint: str | None
                         ) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
@@ -147,13 +214,7 @@ def _resolved_scoring_inputs(proposal: Any, objective: Any, workspace_path: str 
         getattr(source, "target_projection_ref", None), outcome, "target_projection_ref")
     predictive = workspace.master_predictive(predictive_ref) if predictive_ref else None
     projection = workspace.target_projection(projection_ref) if projection_ref else None
-    authority = None
-    if entry is not None:
-        ledger_authority = (entry.provenance or {}).get("target_projection_authority")
-        source_authority = getattr(source, "target_projection_authority", None)
-        if isinstance(ledger_authority, Mapping):
-            if source_authority is None or dict(source_authority) == dict(ledger_authority):
-                authority = dict(ledger_authority)
+    authority = _expected_authority(entry, outcome, source)
     qoi_evidence = adapt_omega0_target_projection(
         predictive, projection, expected_authority=authority)
     source_acquisition = getattr(source, "source_acquisition_id", None)

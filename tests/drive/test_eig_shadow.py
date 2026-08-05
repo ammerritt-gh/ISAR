@@ -10,11 +10,14 @@ import pytest
 from isar.drive import loop
 from isar.drive.acquisition.acquire import ScanProposal, ShadowScoringSource
 from isar.drive.acquisition.eig_shadow import (
+    _AUTHORITY_BASIS_FIELDS,
     _exact_master,
     _exact_reference,
+    _expected_authority,
     _scan_design_source,
     score_proposal_shadow_inventory,
 )
+from isar.eig.qoi import adapt_omega0_target_projection
 from isar.drive.acquisition.inventory import MeasurementIntent, canonical_json
 from isar.drive.acquisition.scan_design import ScanDesignContext, design_scan_windows
 from isar.drive.session_log import AnalysisLimitExceeded, read_log
@@ -281,7 +284,7 @@ def test_exact_pooled_source_runs_producer_grounded_numeric_path(monkeypatch, tm
     }
     entry = SimpleNamespace(
         detectors={"det": outcome},
-        provenance={"target_projection_authority": projection["authority"]})
+        provenance={"target_projection_authority": dict(_LEDGER_BASIS)})
     fake_workspace = SimpleNamespace(
         snapshot=SimpleNamespace(scans={"master": entry}),
         master_predictive=lambda ref: predictive,
@@ -295,7 +298,7 @@ def test_exact_pooled_source_runs_producer_grounded_numeric_path(monkeypatch, tm
         predictive_ref="data/master_predictive/exact.json",
         target_projection_ref="data/target_projection/exact.json",
         target_outcome=dict(outcome), selection_record=selection, shadow_record=shadow,
-        target_projection_authority=dict(projection["authority"]), action_intent=intent,
+        target_projection_authority=None, action_intent=intent,
         action_provenance=dict(source_input.action_provenance),
     )
     scope = "a" * 64
@@ -315,3 +318,141 @@ def test_exact_pooled_source_runs_producer_grounded_numeric_path(monkeypatch, tm
     assert scoring.status == "complete", (
         scoring.reason_codes, scoring.eligibility, scoring.design_measure)
     assert proposal.scan_design_inventory.selected_candidate_id == inventory.selected_candidate_id
+
+
+# Exactly what ``isar.session.driver`` freezes on the ledger entry at fit time: the four basis
+# fields, and none of the five tracker fields the published projection is equally bound to.
+_LEDGER_BASIS = {
+    "master_revision": "master-r1", "calibration_fingerprint": "cal-r1",
+    "policy_fingerprint": "policy-r1", "action_role": "certification",
+}
+
+
+def _authority_case(monkeypatch):
+    """The real `/2` producer chain, plus the exact ledger outcome its projection was built from."""
+    helpers = runpy.run_path(str(
+        Path(__file__).parents[1] / "eig" / "test_design_measure.py"))
+    predictive, projection, _qoi, source_input = helpers["_bundle"](monkeypatch)
+    outcome = {**dict(source_input.target_outcome), "master_revision": "master-r1"}
+    return predictive, projection, outcome
+
+
+def test_frozen_ledger_basis_is_only_the_four_fields_the_fit_scope_can_know():
+    assert set(_LEDGER_BASIS) == set(_AUTHORITY_BASIS_FIELDS)
+
+
+def test_fresh_campaign_resolves_currentness_from_the_basis_and_the_current_tracker(monkeypatch):
+    """A campaign with no prior currentness record still authenticates its own projection.
+
+    The frozen basis names no track or candidate, so consuming it alone left every authority
+    decision on ``projection_currentness_unknown`` — a state a fresh campaign could never leave.
+    """
+    predictive, projection, outcome = _authority_case(monkeypatch)
+    entry = SimpleNamespace(provenance={"target_projection_authority": dict(_LEDGER_BASIS)})
+    source = SimpleNamespace(target_projection_authority=None)
+
+    expected = _expected_authority(entry, outcome, source)
+
+    assert expected == dict(projection["authority"])
+    evidence = adapt_omega0_target_projection(
+        predictive, projection, expected_authority=expected)
+    assert evidence.status == "valid", (evidence.observability_codes, evidence.scientific_codes)
+    assert "projection_currentness_unknown" not in evidence.observability_codes
+
+    # The frozen half alone is what the adapter used to receive, and it can never be current.
+    stalled = adapt_omega0_target_projection(
+        predictive, projection, expected_authority=dict(_LEDGER_BASIS))
+    assert "projection_currentness_unknown" in stalled.observability_codes
+
+
+def test_matching_ledger_and_proposal_basis_compose_the_same_authority(monkeypatch):
+    predictive, projection, outcome = _authority_case(monkeypatch)
+    entry = SimpleNamespace(provenance={"target_projection_authority": dict(_LEDGER_BASIS)})
+    source = SimpleNamespace(target_projection_authority=dict(_LEDGER_BASIS))
+
+    expected = _expected_authority(entry, outcome, source)
+
+    assert expected == dict(projection["authority"])
+    assert adapt_omega0_target_projection(
+        predictive, projection, expected_authority=expected).status == "valid"
+
+
+def test_disagreeing_ledger_and_proposal_basis_still_fails_closed(monkeypatch):
+    predictive, projection, outcome = _authority_case(monkeypatch)
+    entry = SimpleNamespace(provenance={"target_projection_authority": dict(_LEDGER_BASIS)})
+    source = SimpleNamespace(
+        target_projection_authority={**_LEDGER_BASIS, "calibration_fingerprint": "cal-other"})
+
+    assert _expected_authority(entry, outcome, source) is None
+    evidence = adapt_omega0_target_projection(predictive, projection, expected_authority=None)
+    assert evidence.status == "invalid"
+    assert "projection_currentness_unknown" in evidence.observability_codes
+
+
+def test_no_exact_outcome_or_basis_leaves_currentness_unknowable(monkeypatch):
+    _authority_case(monkeypatch)
+    entry = SimpleNamespace(provenance={"target_projection_authority": dict(_LEDGER_BASIS)})
+    source = SimpleNamespace(target_projection_authority=None)
+
+    assert _expected_authority(entry, None, source) is None
+    assert _expected_authority(None, {"master_revision": "master-r1"}, source) is None
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("master_revision", "master-r2"),
+    ("track_revision", 2),
+    ("track_state", "ambiguous"),
+    ("candidate_id", "other-candidate"),
+    ("candidate_state", "ambiguous"),
+    ("selected_candidate_index", 1),
+])
+def test_a_moved_master_or_tracker_still_reports_the_projection_stale(monkeypatch, field, value):
+    """Composing from the CURRENT outcome must not blunt staleness on any bound field."""
+    predictive, projection, outcome = _authority_case(monkeypatch)
+    entry = SimpleNamespace(provenance={"target_projection_authority": dict(_LEDGER_BASIS)})
+    source = SimpleNamespace(target_projection_authority=None)
+    basis = dict(_LEDGER_BASIS)
+    if field == "master_revision":
+        basis[field] = value
+    moved = {**outcome, field: value}
+
+    expected = _expected_authority(
+        SimpleNamespace(provenance={"target_projection_authority": basis}), moved, source)
+
+    assert expected != dict(projection["authority"])
+    evidence = adapt_omega0_target_projection(
+        predictive, projection, expected_authority=expected)
+    assert "projection_stale" in evidence.scientific_codes
+    assert "projection_currentness_unknown" not in evidence.observability_codes
+    assert _expected_authority(entry, outcome, source) == dict(projection["authority"])
+
+
+def test_publisher_mirrored_fallbacks_cannot_hide_a_refit_master(monkeypatch):
+    """A basis without ``master_revision``/``action_role`` resolves as the publisher resolves it.
+
+    Both fields fall back exactly as ``driver._publish_target_projections`` does, so an unmoved
+    master still compares current — and a master refit since the projection was published still
+    carries a new revision on the ledger outcome, so it is still reported stale.
+    """
+    predictive, projection, outcome = _authority_case(monkeypatch)
+    partial = {name: value for name, value in _LEDGER_BASIS.items()
+               if name not in {"master_revision", "action_role"}}
+    entry = SimpleNamespace(provenance={"target_projection_authority": partial})
+    source = SimpleNamespace(target_projection_authority=None)
+
+    # ``action_role`` falls back to "master", which the certification projection was not bound to.
+    assert _expected_authority(entry, outcome, source)["master_revision"] == "master-r1"
+    assert _expected_authority(entry, outcome, source)["action_role"] == "master"
+
+    master_role = {**partial, "action_role": "certification"}
+    entry = SimpleNamespace(provenance={"target_projection_authority": master_role})
+    assert _expected_authority(entry, outcome, source) == dict(projection["authority"])
+    assert adapt_omega0_target_projection(
+        predictive, projection, expected_authority=_expected_authority(
+            entry, outcome, source)).status == "valid"
+
+    refit = {**outcome, "master_revision": "master-r2"}
+    evidence = adapt_omega0_target_projection(
+        predictive, projection,
+        expected_authority=_expected_authority(entry, refit, source))
+    assert "projection_stale" in evidence.scientific_codes
