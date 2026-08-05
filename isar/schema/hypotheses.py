@@ -98,7 +98,12 @@ class SteeringPolicy:
     assignment_entropy_stop_nats: float = 0.2
     minimum_information_per_cost: float = 0.0
     minimum_target_support_points: int = 6
-    max_scan_points: int = 100
+    # A ceiling, not a target: a scan asks for the points its window and step need, and a typical
+    # target core is ~17. The old 100 was set when windows were sized on the marginal ("vanadium")
+    # resolution width, which is ~2.5x the section width a constant-Q scan actually measures. Once
+    # the step follows the section, covering a +/-9 meV survey band takes ~105-125 points, so 100
+    # silently clamped the survey scans a cold campaign needs to classify a branch at all.
+    max_scan_points: int = 220
     absent_signal_widen_step: float = 0.5
     absent_signal_widen_steps: int = 3
     quadrature_order: int = 32

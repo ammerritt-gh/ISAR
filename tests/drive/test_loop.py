@@ -3276,8 +3276,13 @@ def test_emitted_point_count_is_unclamped():
     # The TRUE count TAVI computes from the command — NOT clamped to the acquisition budget (which
     # points_in_window is): a wide window with a tight step is exactly the over-limit case (the
     # documented 594-pt scan came from a widened window keeping a ~0.05 meV step).
+    from isar.drive.acquisition.scan_grid import MAX_POINTS
+
     assert _emitted_point_count(-2.0, 27.65, 0.05) > DEFAULT_MAX_POINTS   # ~594, unclamped
-    assert points_in_window(-2.0, 27.65, 0.05) == 100   # ledger clamp hides the true count
+    # The clamp value itself is a policy number and has moved; what this pins is that the ledger
+    # count IS clamped while the emitted count is not.
+    assert points_in_window(-2.0, 27.65, 0.05) == MAX_POINTS
+    assert _emitted_point_count(-2.0, 27.65, 0.05) > points_in_window(-2.0, 27.65, 0.05)
 
 
 def test_guard_clamps_over_limit_proposal_keeping_window(tmp_path):
