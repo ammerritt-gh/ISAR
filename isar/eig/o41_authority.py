@@ -23,10 +23,13 @@ PRIMARY_PARAMETERS = {"origin": 0.0, "bin_width": 0.5, "offsets": [0.0, 0.25]}
 SIMULATION_COUNT = 128
 BLOCK_COUNT = 8
 MARGIN_MULTIPLIER = 2.0
-# A target-core grant must clear the paired standard error by this multiple.  The R1-E replay on
-# real O41_Test4 masters produced "decisive" grants resting on ~1.7e-5 nats/point — a margin that
-# changed role between the policy's two 0.5 meV partition offsets.  Three paired standard errors,
-# together with per-offset agreement, is the floor below which the margin is partition noise.
+# The half-width, in paired standard errors, of the band where the two candidates are
+# indistinguishable on information per neutron.  Originally a one-sided floor a target-core grant
+# had to clear, installed after the R1-E replay produced "decisive" grants resting on ~1.7e-5
+# nats/point that changed role between the policy's two 0.5 meV partition offsets.  It is now
+# two-sided and decides nothing on its own: inside the band the comparison has no preference and
+# cost breaks the tie, outside it the sign does.  The value is unchanged and the persisted
+# ``margin_standard_error_multiple`` still reads 3.0, which the authority schema requires.
 O41_MARGIN_SE_MULTIPLE = 3.0
 
 OUTCOME_TARGET = "select_target_core"
@@ -415,19 +418,43 @@ def select_o41_authority(value: O41SelectorInput) -> O41SelectorResult:
     failed = tuple(name for name, passed in structural.items() if not passed)
     if failed:
         return _result(OUTCOME_LEGACY, ROLE_LEGACY, AUTHORITY_GRANTED, *failed, **common)
-    reasons: list[str] = []
-    if flipped:
-        reasons.append("o41_offset_disagreement")
-    if lower <= 0.0:
-        reasons.append("o41_margin_not_decisive")
-    if delta <= O41_MARGIN_SE_MULTIPLE * standard_error:
-        reasons.append("o41_margin_below_floor")
-    if not agree and not reasons:
-        # Offsets that unanimously select legacy normally also drive the pooled margin below the
-        # floor; the grant still requires unanimity, so refuse it explicitly if they somehow do not.
-        reasons.append("o41_offset_disagreement")
-    if reasons:
-        return _result(OUTCOME_LEGACY, ROLE_LEGACY, AUTHORITY_GRANTED, *reasons, **common)
+    # The two candidates are compared on information per neutron and the winner is taken.  Neither
+    # has to justify itself against the other: ``per_point_ncount_equal`` is a structural
+    # precondition above, so this per-executed-point delta *is* the per-neutron delta up to a fixed
+    # constant, and its sign is the entire comparison.
+    #
+    # ``O41_MARGIN_SE_MULTIPLE`` is no longer a veto on acting.  It is the half-width of the band
+    # in which the two scans are indistinguishable, and inside that band the comparison expresses
+    # no preference — so cost decides it.  The structural preconditions already guarantee the
+    # target core executes strictly fewer points at an equal per-point ncount, so it is the smaller
+    # purchase: at an equal information *rate* the legacy scan buys more of the same thing for
+    # proportionally more beam, and the smaller buy reaches the next decision sooner, which matters
+    # while the peak estimate is still moving between iterations.  Offsets that select opposite
+    # roles put the sign itself inside the noise; that is the same situation and resolves the same
+    # way.
+    #
+    # This deliberately reverses the R1-E gate, which refused margins of ~1.7e-5 nats/point that
+    # changed role between the two 0.5 meV offsets.  Those cases are now acted on, because the
+    # tie-break is cost rather than information and the wrong-peak guard is identity confirmation:
+    # o36 refuses an unconfirmed target, a fork modality or a pool-inconsistent master long before
+    # this comparison is reached.  A narrow scan centred on a wrong peak can never discover it was
+    # wrong, and an information margin never protected against that; identity does.  Every measured
+    # quantity below is still computed and persisted — it explains the decision, it no longer vetoes
+    # it.
+    indistinguishable = abs(delta) <= O41_MARGIN_SE_MULTIPLE * standard_error
+    if flipped or indistinguishable:
+        descriptive = ["o41_offset_disagreement"] if flipped else []
+        if indistinguishable:
+            descriptive.append("o41_margin_below_floor")
+        if lower <= 0.0:
+            descriptive.append("o41_margin_not_decisive")
+        return _result(OUTCOME_TARGET, ROLE_TARGET, AUTHORITY_GRANTED,
+                       "o41_tie_resolved_by_cost", *descriptive, **common)
+    if delta < 0.0:
+        # Legacy won the comparison outright. That is a real answer about this q, not a fallback:
+        # the broad survey is genuinely the more informative use of the next neutrons here.
+        return _result(OUTCOME_LEGACY, ROLE_LEGACY, AUTHORITY_GRANTED,
+                       "o41_legacy_decisive", **common)
     return _result(OUTCOME_TARGET, ROLE_TARGET, AUTHORITY_GRANTED,
                    "o41_margin_decisive", **common)
 

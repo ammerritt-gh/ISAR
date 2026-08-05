@@ -156,16 +156,32 @@ def test_paired_sample_standard_error_reproduces_o41_gate():
     assert result.lower_margin_nats == pytest.approx(mean - 2.0 * expected_se)
 
 
-@pytest.mark.parametrize("blocks", [
-    (0.01, -0.01) * 4,
-    (-0.2,) * 8,
-    (0.0,) * 8,
-])
-def test_unresolved_negative_and_zero_advantage_retain_legacy(blocks):
-    result = select_o41_authority(_input(blocks=blocks))
+def test_a_decisive_negative_advantage_selects_the_legacy_survey():
+    """Legacy winning is a real answer about this q, not a fallback."""
+    result = select_o41_authority(_input(blocks=(-0.2,) * 8))
     assert (result.decision_outcome, result.physical_role, result.authority_status) == (
         OUTCOME_LEGACY, ROLE_LEGACY, AUTHORITY_GRANTED)
-    assert "o41_margin_not_decisive" in result.reason_codes
+    assert result.reason_codes == ("o41_legacy_decisive",)
+
+
+@pytest.mark.parametrize("blocks", [
+    (0.01, -0.01) * 4,   # mean zero, all of it scatter
+    (0.0,) * 8,          # both candidates scored identically, the R3 exact-tie signature
+])
+def test_an_indistinguishable_comparison_buys_the_cheaper_scan(blocks):
+    """Inside the standard-error band the comparison expresses no preference, so cost decides.
+
+    ``per_point_ncount_equal`` and ``executed_points_strictly_fewer`` are structural
+    preconditions, so a tie means equal information per neutron and the legacy scan is simply the
+    larger purchase of the same thing.  The smaller buy also reaches the next decision sooner,
+    which matters while the peak estimate is still moving.
+    """
+    result = select_o41_authority(_input(blocks=blocks))
+    assert (result.decision_outcome, result.physical_role, result.authority_status) == (
+        OUTCOME_TARGET, ROLE_TARGET, AUTHORITY_GRANTED)
+    assert "o41_tie_resolved_by_cost" in result.reason_codes
+    # The measured quantities still describe the tie; they no longer veto it.
+    assert "o41_margin_below_floor" in result.reason_codes
 
 
 @pytest.mark.parametrize(("target", "reason"), [
@@ -200,39 +216,48 @@ def _blocks(mean: float, standard_error: float) -> tuple[float, ...]:
     return tuple(mean + (half if index % 2 == 0 else -half) for index in range(8))
 
 
-def test_offset_flip_from_the_r1e_replay_never_grants_the_target_core():
-    # Master (49,0,0) of the R1-E replay: offset 0.0 selected target_core "decisively" on a margin
-    # of 1.68e-5 nats/point while offset 0.25 selected legacy on the same scoring run.
+def test_offset_flip_from_the_r1e_replay_now_buys_the_cheaper_scan():
+    """Master (49,0,0) of the R1-E replay: the offsets disagree, so the sign is inside the noise.
+
+    This case is the reason the three-sigma floor and the per-offset agreement rule were installed
+    — offset 0.0 selected target_core "decisively" on 1.68e-5 nats/point while offset 0.25 selected
+    legacy on the same scoring run.  The refusal is deliberately reversed.  A disagreement means
+    the comparison has no preference, not that the expensive scan is safer, and the wrong-peak risk
+    the old refusal was reaching for is held by o36 identity confirmation upstream, which refuses
+    an unconfirmed target, a fork modality or a pool-inconsistent master before this point.  The
+    disagreement is still recorded on the decision.
+    """
     result = select_o41_authority(_input(
         blocks=_blocks(1.68e-5, 6.6e-6),
         offsets=((0.0, 1.0, 1.0), (0.25, 1.0, 0.0))))
-    assert (result.decision_outcome, result.physical_role) == (OUTCOME_LEGACY, ROLE_LEGACY)
+    assert (result.decision_outcome, result.physical_role) == (OUTCOME_TARGET, ROLE_TARGET)
+    assert result.reason_codes[0] == "o41_tie_resolved_by_cost"
     assert "o41_offset_disagreement" in result.reason_codes
     assert result.partition_offsets_agree is False
     assert [item.physical_role for item in result.partition_offset_selections] == [
         ROLE_TARGET, ROLE_LEGACY]
 
 
-def test_zero_information_offset_blocks_the_grant_as_a_disagreement():
+def test_an_offset_that_separates_nothing_is_a_tie_not_a_refusal():
     # Master (41,0,0) at offset 0.25: the predictive falls inside one bin cell and both candidates
-    # score exactly zero.  An offset that separates nothing is not evidence for the target core.
+    # score exactly zero.  An offset that separates nothing is not evidence for either candidate,
+    # which is a tie — and a tie is bought at the lower price.
     result = select_o41_authority(_input(
         blocks=_blocks(0.02, 0.001),
         offsets=((0.0, 1.0, 1.0), (0.25, 0.0, 0.0))))
-    assert (result.decision_outcome, result.physical_role) == (OUTCOME_LEGACY, ROLE_LEGACY)
+    assert (result.decision_outcome, result.physical_role) == (OUTCOME_TARGET, ROLE_TARGET)
     assert "o41_offset_disagreement" in result.reason_codes
     assert result.partition_offset_selections[1].delta_information_per_executed_point_nats == 0.0
 
 
-def test_agreeing_offsets_with_margin_below_the_paired_se_floor_retain_legacy():
+def test_a_margin_inside_the_standard_error_band_buys_the_cheaper_scan():
     standard_error = 1e-4
     result = select_o41_authority(_input(
         blocks=_blocks(2.5 * standard_error, standard_error)))
-    assert (result.decision_outcome, result.physical_role) == (OUTCOME_LEGACY, ROLE_LEGACY)
+    assert (result.decision_outcome, result.physical_role) == (OUTCOME_TARGET, ROLE_TARGET)
     assert result.partition_offsets_agree is True
-    # Decisive under the retained two-sigma margin, and still refused by the three-sigma floor.
     assert result.lower_margin_nats > 0.0
-    assert result.reason_codes == ("o41_margin_below_floor",)
+    assert result.reason_codes == ("o41_tie_resolved_by_cost", "o41_margin_below_floor")
 
 
 def test_agreeing_offsets_with_margin_above_the_paired_se_floor_grant_the_target_core():

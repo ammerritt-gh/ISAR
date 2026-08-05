@@ -1249,6 +1249,40 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   review. It authorizes no Slice 10 demonstration, additional campaign, STAT rerun, broader
   statistical claim, or production change in this documentation-only acceptance commit.
 
+- **O43.** (2026-08-05, In force; owner ruling during EIG-4 completion; reverses the acting half of
+  the O41/`2ea22c8` margin gate) **The scan-window choice is a symmetric comparison on information
+  per neutron, and ties are broken by cost, not by retaining the survey.** Neither candidate
+  justifies itself against the other. `per_point_ncount_equal` is already a structural
+  precondition, so the persisted per-executed-point delta *is* a per-neutron delta up to a fixed
+  constant: its sign is the comparison. A positive sign selects `target_core/1`; a negative sign
+  selects `legacy_uniform/1` as a real answer about that q rather than as a fallback.
+
+  `O41_MARGIN_SE_MULTIPLE` (3.0, unchanged, and still persisted as
+  `margin_standard_error_multiple`) becomes the two-sided half-width of the band in which the two
+  candidates are indistinguishable. Inside that band, and equally when the two partition offsets
+  select opposite roles, the comparison expresses no preference — so the smaller purchase wins.
+  The structural preconditions guarantee the target core executes strictly fewer points at equal
+  per-point exposure, so at an equal information *rate* the legacy scan buys proportionally more
+  of the same thing for proportionally more beam, and the smaller buy reaches the next decision
+  sooner while the peak estimate is still moving.
+
+  **What this deliberately gives up.** `2ea22c8` installed the three-sigma floor and the per-offset
+  agreement rule precisely to refuse the R1-E margins of ~1.7e-5 nats/point that changed role
+  between the two 0.5 meV offsets. Those cases are now acted on. The evidence for accepting that:
+  across the twelve scored decisions of the repaired R3 cold start
+  (`test_workspaces/O41_R3_Bragg200`) the 17-point core was **never worse per neutron** than the
+  79-152 point legacy scan — the delta was non-negative in all twelve, three were exact ties at
+  delta = 0.0 with standard error 0.0, and two refusals rested on offset disagreement at 4.2 and
+  202.6 standard errors. Nine of twelve were refused. Under this ruling all twelve select the core.
+
+  **What now carries the risk.** A narrow scan centred on a wrong peak cannot discover it was
+  wrong, and an information margin never protected against that. Identity confirmation does, and it
+  is already upstream and unchanged: O36 eligibility refuses an unconfirmed target, a fork
+  modality, or a pool-inconsistent master before this comparison is reached. Codes
+  `o41_offset_disagreement`, `o41_margin_below_floor` and `o41_margin_not_decisive` remain computed
+  and persisted as descriptions of a decision; they no longer veto one. New codes
+  `o41_tie_resolved_by_cost` and `o41_legacy_decisive` name the two outcomes this ruling adds.
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:
