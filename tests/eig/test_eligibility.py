@@ -323,12 +323,41 @@ def test_selection_and_predictive_source_model_identities_must_match():
     {"multimode_route": "guideline_forced"},
     {"supplied_hint": "two modes", "hint_accepted": True},
     {"guideline_changed_model_set": True},
-    {"offered_labels": ["one"]},
 ])
 def test_guideline_forced_and_accepted_hints_are_incomplete_comparisons(route_updates):
     result = evaluate_eig_eligibility(_input(
         selection_record=_clean_selection(**route_updates), shadow_record=_neutral_shadow()))
-    assert "selection_comparison_incomplete" in result.scientific_codes
+    assert "selection_guideline_forced" in result.scientific_codes
+
+
+def test_a_scored_label_the_route_never_offered_is_an_unaccountable_denominator():
+    """The weight denominator may not hold a model the generation route cannot account for."""
+    result = evaluate_eig_eligibility(_input(
+        selection_record=_clean_selection(offered_labels=["one"]),
+        shadow_record=_neutral_shadow()))
+    assert "selection_scored_not_offered" in result.scientific_codes
+
+
+def test_a_route_that_scored_fewer_models_than_it_offered_is_still_complete():
+    """``score_models`` scores only converged fits, so scored is routinely a strict subset.
+
+    Requiring equality required every offered structure to converge on every master, which
+    rejected two thirds of the real fits in the R3 cold-start campaign.  Whether the surviving
+    normalisation is sound is the producer's own ``selection_eligibility`` judgement, read
+    separately; the route check only owes the containment.
+    """
+    result = evaluate_eig_eligibility(_input(
+        selection_record=_clean_selection(scored_labels=["one"]),
+        shadow_record=_neutral_shadow()))
+    assert result.scientific_codes == ()
+    assert result.status == "eligible"
+
+
+def test_a_route_that_scored_nothing_is_not_a_comparison():
+    result = evaluate_eig_eligibility(_input(
+        selection_record=_clean_selection(scored_labels=[]),
+        shadow_record=_neutral_shadow()))
+    assert "selection_scored_not_offered" in result.scientific_codes
 
 
 def test_unguided_route_with_empty_structure_filter_is_eligible():
@@ -343,14 +372,14 @@ def test_structure_filter_content_alone_does_not_block_a_complete_comparison():
     result = evaluate_eig_eligibility(_input(
         selection_record=_clean_selection(guideline_structure_filter=["dho_single"]),
         shadow_record=_neutral_shadow()))
-    assert "selection_comparison_incomplete" not in result.scientific_codes
+    assert "selection_guideline_forced" not in result.scientific_codes
 
 
 def test_pre_guideline_model_set_must_survive_into_the_offered_set():
     result = evaluate_eig_eligibility(_input(
         selection_record=_clean_selection(labels_before_guideline=["one", "two", "three"]),
         shadow_record=_neutral_shadow()))
-    assert "selection_comparison_incomplete" in result.scientific_codes
+    assert "selection_labels_shifted_before_guideline" in result.scientific_codes
 
 
 def _input_with_target(**target_updates):

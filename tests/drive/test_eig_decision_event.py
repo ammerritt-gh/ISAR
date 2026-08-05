@@ -125,6 +125,32 @@ def test_a_broken_payload_is_reported_and_never_raised(tmp_path):
     assert "eig_decision_event_failed" in actions
 
 
+def test_the_event_carries_the_eligibility_diagnostics_the_envelope_cannot(tmp_path):
+    """``o36_ineligible`` alone cannot separate an honest fork from an unpooled master.
+
+    The six-field eligibility envelope is re-checked key for key and folded into
+    ``design_measure_fingerprint``, so the explanatory facts cannot ride there without moving the
+    scorer seed.  They travel on the design measure's non-fingerprinted diagnostics channel and
+    surface here, which is what makes a blocker histogram readable at all.
+    """
+    fixtures = _fixtures()
+    inventory = fixtures["_inventory"]()
+    inventory = replace(
+        inventory, context=replace(inventory.context, scan_window_eig_mode="authoritative"))
+    proposal = fixtures["_proposal"](inventory)
+    shadow = proposal.scan_design_inventory.shadow_scoring
+    design = dict(shadow.design_measure or {})
+    design["diagnostics"] = {"eligibility_target_modality": "fold",
+                             "predictive_validation_message": "not an eligibility fact"}
+    proposal.scan_design_inventory = replace(
+        proposal.scan_design_inventory,
+        shadow_scoring=replace(shadow, design_measure=design))
+
+    loop._log_eig_decision(_cfg(tmp_path), proposal, it=11)
+    payload, = _events(tmp_path)
+    assert payload["eligibility_diagnostics"] == {"eligibility_target_modality": "fold"}
+
+
 def test_a_generic_authority_blocker_still_names_the_underlying_evidence_reason(tmp_path):
     # O41's refusal codes say only that the evidence was unavailable. Without the realized reason
     # beside them a campaign-wide policy-binding failure reads as an ordinary unscoreable pair.

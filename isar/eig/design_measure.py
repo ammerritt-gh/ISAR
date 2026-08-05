@@ -489,6 +489,16 @@ def _finish(*, eligibility: Any, construction_codes: Sequence[str] = (),
     scientific_codes = tuple(eligibility.scientific_codes)
     observability_codes = tuple(eligibility.observability_codes)
     construction_codes = tuple(dict.fromkeys(str(code) for code in construction_codes))
+    # The eligibility verdict travels in a six-field envelope that this measure re-checks key for
+    # key and folds into ``design_measure_fingerprint``, so the facts that explain a verdict
+    # cannot ride there without moving the scorer seed.  ``target_modality`` is the one that
+    # matters most: without it an operator reading a histogram of ``o36_ineligible`` cannot tell
+    # an honest fork rejection from an unpooled single-member master, and a fifth of the
+    # classifications stay indeterminate.  The diagnostics channel exists for exactly this and is
+    # popped from the fingerprint payload, so carrying them here explains without deciding.
+    diagnostic_values = dict(diagnostic_values or {})
+    for name, item in getattr(eligibility, "diagnostics", ()) or ():
+        diagnostic_values.setdefault(f"eligibility_{name}", item)
     reason_codes = _dedupe(scientific_codes, observability_codes, construction_codes)
     scopes = _AVAILABLE_SCOPES if status == "available" else _INELIGIBLE_SCOPES
     values = {

@@ -30,7 +30,16 @@ SCIENTIFIC_REASON_ORDER = (
     "target_delivery_ineligible", "target_not_finite", "target_not_confirmed",
     "action_not_canonical_target", "modality_fork", "pool_inconsistent",
     "selection_ineligible", "selection_constrained", "selection_rescued",
-    "selection_comparison_incomplete", "predictive_insufficient_bootstrap_mass",
+    # RETIRED, never emitted: one shared string across seven emission sites made the blocker
+    # histogram bottom out, because two thirds of a campaign's decisions named a cause covering
+    # seven unrelated conditions that could not be told apart.  It stays in the vocabulary at its
+    # original rank so eligibility summaries persisted before the split still authenticate.
+    "selection_comparison_incomplete",
+    # The split, most severe first.
+    "selection_no_candidates", "selection_candidate_semantics_missing",
+    "selection_route_missing", "selection_route_kind_unsupported",
+    "selection_scored_not_offered", "selection_labels_shifted_before_guideline",
+    "selection_guideline_forced", "predictive_insufficient_bootstrap_mass",
     "projection_incomplete", "projection_stale", "projection_join_mismatch",
     "qoi_materially_unavailable", "shadow_disagrees", "shadow_comparison_invalid",
     "recovery_or_missed_window_state",
@@ -101,7 +110,14 @@ def _result_payload(*, status: str, scientific_codes: tuple[str, ...] | list[str
 
 
 def eligibility_summary(value: "EligibilityResult") -> dict[str, Any]:
-    """Return the compact authenticated eligibility record embedded by downstream evidence."""
+    """Return the compact authenticated eligibility record embedded by downstream evidence.
+
+    Deliberately six fields and no diagnostics.  The design measure re-checks this envelope key
+    for key and folds it into ``design_measure_fingerprint``, which seeds the scorer, so a
+    seventh explanatory field here would move a number rather than explain one.  The diagnostics
+    a reader needs -- ``target_modality`` above all -- ride on the ``eig_decision`` session-log
+    event instead, which is diagnostic-only and fingerprints nothing.
+    """
     return {
         "contract": value.contract, "status": value.status,
         "scientific_codes": list(value.scientific_codes),
@@ -336,12 +352,12 @@ def _selection_checks(record: Mapping[str, Any] | None, science: list[str], gaps
         science.append("selection_ineligible")
     candidates = validated.get("candidate_records")
     if not isinstance(candidates, list) or not candidates:
-        science.append("selection_comparison_incomplete")
+        science.append("selection_no_candidates")
         return validated
     for candidate in candidates:
         semantics = candidate.get("fit_semantics") if isinstance(candidate, Mapping) else None
         if not isinstance(semantics, Mapping):
-            science.append("selection_comparison_incomplete")
+            science.append("selection_candidate_semantics_missing")
             continue
         if semantics.get("estimator_kind") != "data_likelihood_mle":
             science.append("selection_ineligible")
@@ -357,18 +373,31 @@ def _selection_checks(record: Mapping[str, Any] | None, science: list[str], gaps
             science.append("selection_rescued")
     route = validated.get("candidate_generation_route")
     if not isinstance(route, Mapping):
-        science.append("selection_comparison_incomplete")
+        science.append("selection_route_missing")
         return validated
     # The persisted producer uses ``route`` while the read-only census exposes
     # its normalized ``route_kind`` diagnostic.  They carry the same contract
     # value; accepting both keeps this pure seam grounded in either caller.
     route_kind = route.get("route_kind", route.get("route"))
     if route_kind not in {"standard_two_stage", "full_two_stage"}:
-        science.append("selection_comparison_incomplete")
+        science.append("selection_route_kind_unsupported")
     offered = route.get("offered_labels")
     scored = route.get("scored_labels")
-    if not isinstance(offered, list) or not isinstance(scored, list) or set(offered) != set(scored):
-        science.append("selection_comparison_incomplete")
+    # ``scored_labels`` is the set that received an Akaike weight, and
+    # :func:`isar.analyze.select.score_models` scores only the fits whose optimizer converged —
+    # the weights then normalise over exactly that set, which is the only thing they can do.  So
+    # a route that offers four structures and scores two has not truncated a comparison; it has
+    # reported that two structures failed to converge, and the surviving comparison is complete
+    # over what could be compared.  Demanding ``offered == scored`` demanded that every offered
+    # structure converge on every master, which rejected two thirds of the real fits in the R3
+    # cold-start campaign.  What actually matters is the reverse containment: a scored label that
+    # was never offered means the weight denominator holds a model the route cannot account for.
+    # Whether the surviving normalisation is sound is the producer's own judgement and is already
+    # read above through ``selection_eligibility``.
+    if not isinstance(offered, list) or not isinstance(scored, list) or not scored:
+        science.append("selection_scored_not_offered")
+    elif not set(scored) <= set(offered):
+        science.append("selection_scored_not_offered")
     # ``labels_before_guideline`` carries model labels; ``guideline_structure_filter``
     # carries the card's structure directives (normally empty).  They are different
     # vocabularies and were never comparable — comparing them rejected every real
@@ -379,14 +408,14 @@ def _selection_checks(record: Mapping[str, Any] | None, science: list[str], gaps
     # verdict never depends on whether the flag was written at all.
     before = route.get("labels_before_guideline")
     if isinstance(before, list) and isinstance(offered, list) and set(before) != set(offered):
-        science.append("selection_comparison_incomplete")
+        science.append("selection_labels_shifted_before_guideline")
     if (route.get("guideline_changed") is True
             or route.get("guideline_changed_model_set") is True
             or route.get("multimode_route") == "guideline_forced"
             or (route.get("supplied_hint") is not None
                 and (route.get("hint_accepted") is True
                      or route.get("delivery_hint_accepted") is True))):
-        science.append("selection_comparison_incomplete")
+        science.append("selection_guideline_forced")
     return validated
 
 

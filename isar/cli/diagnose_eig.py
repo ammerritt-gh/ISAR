@@ -210,6 +210,86 @@ def _table(rows: list[dict]) -> list[str]:
     return lines
 
 
+def _decision_events(root: Path) -> list[dict[str, Any]]:
+    """Every ``eig_decision`` payload in iteration order; an unreadable log costs this section."""
+    try:
+        records = read_log(root / "report" / "session_log.jsonl")
+    except OSError as error:
+        log.warning("EIG diagnostic could not read the session log (%s) — rate section omitted",
+                    error)
+        return []
+    events = [record["payload"] for record in records
+              if isinstance(record, dict) and record.get("kind") == "eig_decision"
+              and isinstance(record.get("payload"), dict)]
+    return sorted(events, key=lambda payload: payload.get("iter") or 0)
+
+
+def _first_pass_last_iteration(events: list[dict[str, Any]]) -> int | None:
+    """The iteration that completed the campaign's first pass across Q.
+
+    Before a q has ever been measured there is no confirmed target to centre a scan on, so every
+    decision in the first pass is blocked for a reason that says nothing about whether EIG works.
+    Folding those into one rate is what makes a working capability look broken.
+    """
+    seen: set[tuple] = set()
+    last = None
+    for payload in events:
+        hkl = payload.get("hkl")
+        # Accept any numeric triple, matching ``_q_text``: a log that serialized hkl as anything
+        # other than a list would otherwise be treated as having no q at all, silently moving the
+        # first-pass boundary that every rate below is measured against.
+        key = (tuple(float(value) for value in hkl)
+               if isinstance(hkl, (list, tuple)) and len(hkl) == 3
+               and all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                       for value in hkl) else None)
+        if key is not None and key not in seen:
+            seen.add(key)
+            iteration = payload.get("iter")
+            if isinstance(iteration, int):
+                last = iteration
+    return last
+
+
+def _rate_lines(events: list[dict[str, Any]]) -> list[str]:
+    """Grants, scored decisions and production requests, split at the first pass across Q."""
+    if not events:
+        return []
+    boundary = _first_pass_last_iteration(events)
+    after = [payload for payload in events
+             if boundary is None or (payload.get("iter") or 0) > boundary]
+    before = len(events) - len(after)
+    grants = sum(1 for payload in after
+                 if payload.get("decision_outcome") == "select_target_core")
+    scored = sum(1 for payload in after
+                 if payload.get("decision_outcome") in {"select_target_core",
+                                                        "retain_legacy_control"})
+    # A campaign that ran before the event carried a request kind has none, which is not the same
+    # fact as "no production requests" and must not print as zero.
+    recorded = any("request_kind" in payload for payload in after)
+    production = (str(sum(1 for payload in after if payload.get("request_kind") == "production"))
+                  if recorded else "not recorded by this campaign")
+    lines = ["", f"  After the first pass across Q (completed at iteration {boundary}):"]
+    # All three, always. The gate is grants over scored decisions, but that denominator moves
+    # whenever an eligibility gate changes, so a rate reported alone cannot distinguish a worse
+    # selector from a bigger denominator.
+    rate = f"{100.0 * grants / scored:.1f}%" if scored else "—"
+    lines.append(f"    grants / scored decisions      {grants} / {scored}  ({rate})")
+    lines.append(f"    production requests            {production}")
+    lines.append(f"    decisions in total             {len(after)}")
+    if before:
+        lines.append(f"  First pass across Q: {before} decision(s), before any confirmed target")
+    blockers = Counter(str(payload.get("blocker")) for payload in after
+                       if payload.get("blocker"))
+    if blockers:
+        lines.append("")
+        lines.append("  Blocker after the first pass:")
+        width = max(len(code) for code in blockers)
+        lines.extend(f"    {code.ljust(width)}  {count}"
+                     for code, count in sorted(blockers.items(),
+                                               key=lambda item: (-item[1], item[0])))
+    return lines
+
+
 def render(workspace: str | Path) -> list[str]:
     """The complete report as printable lines. Reads the workspace; never writes to it."""
     root = Path(workspace)
@@ -237,6 +317,7 @@ def render(workspace: str | Path) -> list[str]:
                                                key=lambda item: (-item[1], item[0])))
     else:
         lines.append("  no reason codes recorded")
+    lines.extend(_rate_lines(_decision_events(root)))
     problems = decision_problems + realization_problems
     if problems:
         lines.append("")

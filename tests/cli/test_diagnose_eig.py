@@ -14,7 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from isar.cli import diagnose_cmd
+from isar.cli import diagnose_cmd, diagnose_eig
 from isar.drive.acquisition.authority import (
     build_authority_decision,
     persist_authority_decision,
@@ -132,3 +132,42 @@ def test_diagnose_without_the_flag_still_renders_the_campaign_diagnostic(tmp_pat
 def test_diagnose_eig_rejects_a_missing_workspace(tmp_path, capsys):
     assert diagnose_cmd.run(_args(tmp_path / "absent")) == 1
     assert "no workspace at" in capsys.readouterr().err
+
+
+def _event(iteration, hkl, outcome=None, blocker=None, kind="production"):
+    return {"iter": iteration, "hkl": list(hkl), "decision_outcome": outcome,
+            "blocker": blocker, "request_kind": kind}
+
+
+def test_the_rate_section_splits_at_the_first_pass_across_q():
+    """A first-pass block says nothing about whether EIG works — no q has a confirmed target yet.
+
+    Folding those decisions into one rate is what made a working capability read as broken: on the
+    R3 baseline all twenty first-pass decisions are ``o41_applicability_unavailable``.
+    """
+    events = [
+        _event(1, (2.0, 0, 0), "selection_evidence_unavailable", "o41_applicability_unavailable"),
+        _event(2, (2.5, 0, 0), "selection_evidence_unavailable", "o41_applicability_unavailable"),
+        _event(5, (2.5, 0, 0), "select_target_core"),
+        _event(6, (2.0, 0, 0), "retain_legacy_control"),
+        _event(7, (2.5, 0, 0), "use_non_eig_path", "o36_ineligible"),
+    ]
+    lines = diagnose_eig._rate_lines(events)
+    text = "\n".join(lines)
+    assert "completed at iteration 2" in text
+    assert "grants / scored decisions      1 / 2  (50.0%)" in text
+    assert "production requests            3" in text
+    assert "First pass across Q: 2 decision(s)" in text
+    # The first-pass blocker must not appear in the post-first-pass histogram.
+    assert "o36_ineligible" in text and "o41_applicability_unavailable" not in text.split(
+        "Blocker after the first pass:")[1]
+
+
+def test_a_campaign_without_a_recorded_request_kind_does_not_report_zero():
+    """``0 production requests`` and ``the field did not exist yet`` are different facts."""
+    events = [_event(1, (2.0, 0, 0), "select_target_core", kind=None),
+              _event(2, (2.5, 0, 0), "retain_legacy_control", kind=None)]
+    for payload in events:
+        payload.pop("request_kind")
+    text = "\n".join(diagnose_eig._rate_lines(events))
+    assert "not recorded by this campaign" in text

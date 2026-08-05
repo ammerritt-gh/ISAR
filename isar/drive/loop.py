@@ -3872,6 +3872,10 @@ def _log_eig_decision(cfg: CampaignConfig, proposal, *, it: int) -> bool:
         identities = design.get("source_identities") if isinstance(design, Mapping) else None
         master_id = (identities.get("predictive_basis_fingerprint")
                      if isinstance(identities, Mapping) else None)
+        diagnostics = design.get("diagnostics") if isinstance(design, Mapping) else None
+        eligibility_diagnostics = {
+            str(name): item for name, item in (dict(diagnostics or {})).items()
+            if str(name).startswith("eligibility_")}
         log_event(cfg.log_path, "eig_decision", {
             "iter": it,
             "hkl": [proposal.h, proposal.k, proposal.l],
@@ -3882,6 +3886,15 @@ def _log_eig_decision(cfg: CampaignConfig, proposal, *, it: int) -> bool:
             "blocker_detail": list(blocker_detail),
             "eligibility_status": (None if eligibility is None
                                    else eligibility.get("status")),
+            # Without these an ``o36_ineligible`` histogram cannot separate an honest fork
+            # rejection from an unpooled single-member master, and a fifth of the entries stay
+            # indeterminate.  The design measure keeps them off its fingerprint, so reading them
+            # here explains the blocker without touching a decided number.
+            "eligibility_diagnostics": eligibility_diagnostics,
+            # Quicklook and production requests are not the same denominator: a survey pass buys
+            # identification, and only production requests are the beam time an EIG-designed scan
+            # is meant to save. Reporting a rate over both mixes the two.
+            "request_kind": getattr(getattr(inventory, "context", None), "kind", None),
             "point_count_basis": basis,
             "legacy_points": legacy_points,
             "target_points": target_points,
