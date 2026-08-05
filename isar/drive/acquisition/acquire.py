@@ -1158,7 +1158,14 @@ def _select_target(grid: list[GridQ], model, *,
             w0 = float(model.predict(g.q)[0])
             sp = _q_sigma(g)
             ss = fisher(g, w0, sp)
-            if ss is not None and math.isfinite(ss):
+            # Both widths must be real numbers. This tier ranks the prior->scan improvement
+            # sigma_prior -> sigma_scan, which is undefined for a q whose pooled master carries no
+            # half-width yet (``_q_sigma`` returns None there, and a cold campaign has many such q).
+            # Only ``ss`` used to be checked, so such a candidate was graded and then crashed the
+            # whole generator formatting its reason string -- surfacing as a controller_fault that
+            # abandoned the campaign rather than as one unrankable q.
+            if (sp is not None and math.isfinite(sp)
+                    and ss is not None and math.isfinite(ss)):
                 graded.append((g, sp, ss))
         if graded:
             def _fkey(t):

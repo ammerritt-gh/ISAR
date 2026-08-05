@@ -845,3 +845,21 @@ def test_resolution_energy_width_prefers_the_section_over_the_projection():
     assert acq._fwhm_from({"ok": False, "bragg": {"dE": 0.4616}}) == acq.DEFAULT_FWHM_MEV
     assert acq._fwhm_from({"bragg": {"dE": 0.0}, "fwhm_dE": 0.8}) == 0.8
     assert acq._fwhm_from(None) == acq.DEFAULT_FWHM_MEV
+
+
+def test_fisher_tier_skips_a_q_whose_master_has_no_halfwidth():
+    """A q with no pooled-master half-width is unrankable here, not a campaign-ending fault.
+
+    ``_q_sigma`` returns None for a master that carries no half-width yet, which is common in a
+    cold campaign. Only the scan-side width used to be checked, so such a candidate was graded and
+    then raised TypeError while formatting ``sigma_prior={sp:g}`` into its reason string. The
+    generator reported that as a controller_fault and the driver abandoned the campaign.
+    """
+    from isar.drive.acquisition.acquire import _q_sigma
+
+    class _G:
+        def __init__(self, master):
+            self.master = master
+    assert _q_sigma(_G({"halfwidth": 0.4})) == 0.4
+    assert _q_sigma(_G({})) is None                      # the value that used to crash the generator
+    assert _q_sigma(_G(None)) is None
