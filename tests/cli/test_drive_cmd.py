@@ -425,3 +425,48 @@ def test_envelope_start_applies_absolute_budget_override(tmp_path, monkeypatch):
                "--budget", "8h"])
     assert rc == 0
     assert captured[0][0].budget == {"kind": "counting_seconds", "amount": 8 * 3600.0}
+
+
+# ------------------------------------------------------- --goal is prose, --spec is a file
+def test_a_spec_path_passed_to_goal_is_refused_rather_than_compiled(tmp_path, capsys, monkeypatch):
+    """Handing a path to the LLM supervisor does not fail — it compiles a *different* campaign.
+
+    A spec for the acoustic branch along h 2.0→3.0 compiled instead as an optic campaign along
+    [hh0] from the zone origin over [-2, 12] meV, and the only symptom was an immediately exhausted
+    action inventory. The file must be refused before it reaches the supervisor.
+    """
+    spec = _spec_file(tmp_path)
+    called = []
+    monkeypatch.setattr(g2s, "goal_to_spec", lambda *a, **k: called.append(a) or None)
+
+    code = main(["drive", "--goal", str(spec), "--workspace", str(tmp_path / "ws")])
+
+    assert code == 2
+    assert called == []
+    err = capsys.readouterr().err
+    assert "natural-language measurement goal, not a file path" in err
+    assert f"--spec {spec}" in err
+
+
+def test_a_missing_spec_suffix_is_still_refused_as_a_path(tmp_path, capsys):
+    """A mistyped path is the same mistake as a correct one, so absence is not the test."""
+    code = main(["drive", "--goal", str(tmp_path / "does-not-exist.json"),
+                 "--workspace", str(tmp_path / "ws")])
+
+    assert code == 2
+    assert "not a file path" in capsys.readouterr().err
+
+
+def test_a_real_natural_language_goal_still_reaches_the_supervisor(tmp_path, monkeypatch):
+    seen = []
+
+    def _fake(goal, **kwargs):
+        seen.append(goal)
+        raise RuntimeError("stop here — reaching the supervisor is the whole assertion")
+
+    monkeypatch.setattr("isar.drive.supervisor.goal_to_spec.goal_to_spec", _fake)
+    with pytest.raises(RuntimeError, match="stop here"):
+        main(["drive", "--goal", "measure the acoustic branch along h from 2 to 3",
+              "--workspace", str(tmp_path / "ws")])
+
+    assert seen == ["measure the acoustic branch along h from 2 to 3"]

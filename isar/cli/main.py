@@ -180,6 +180,29 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+_SPEC_SUFFIXES = {".json", ".toml", ".yaml", ".yml"}
+
+
+def _looks_like_a_path(text: str) -> bool:
+    """Whether ``text`` is a file path rather than a natural-language goal.
+
+    Deliberately generous: an existing file is decisive, and so is a spec-shaped suffix even when
+    the file is absent, because a mistyped path is the same mistake as a correct one. A real goal
+    is a sentence and does not end in ``.json``. Path construction itself can raise on Windows for
+    a sentence containing characters illegal in a filename, which is only more evidence it is prose.
+    """
+    from pathlib import Path  # local, matching this module's deferred-import style
+
+    value = (text or "").strip()
+    if not value:
+        return False
+    try:
+        candidate = Path(value)
+        return candidate.suffix.lower() in _SPEC_SUFFIXES or candidate.is_file()
+    except (OSError, ValueError):
+        return False
+
+
 def _parse_budget(text: str) -> dict:
     """Parse a ``--budget`` override: ``'8h'`` → counting_seconds, ``'1e10n'`` → neutrons.
 
@@ -364,6 +387,18 @@ def main(argv=None) -> int:
                 source = {"kind": "spec",
                           "sha256": hashlib.sha256(Path(args.spec).read_bytes()).hexdigest()}
             else:
+                # ``--goal`` is natural language for the LLM supervisor; ``--spec`` reads a file.
+                # Handing a path to the supervisor does not fail — it compiles *something*, and the
+                # campaign then runs a different objective than the file describes, silently. That
+                # cost a real run: a spec for the acoustic branch along h 2.0→3.0 compiled instead
+                # as an optic campaign along [hh0] from the zone origin over [-2, 12] meV, and the
+                # only symptom was an immediately exhausted action inventory.
+                if _looks_like_a_path(args.goal):
+                    print(f"error: --goal takes a natural-language measurement goal, not a file "
+                          f"path ({args.goal!r}).\n"
+                          f"       Use --spec {args.goal} to read an objective spec from a file.",
+                          file=sys.stderr)
+                    return 2
                 card_hypotheses, card_eig_policy_set = card_objective_authoring()
                 objective = goal_to_spec(
                     args.goal, defaults={"tier": args.tier or "deterministic"},
