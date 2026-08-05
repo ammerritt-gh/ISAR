@@ -12,7 +12,13 @@
 ## Status and boundary
 
 **EIG-4 is the approved execution roadmap and current SVP; restricted Slice 9 runtime authority is
-implemented and awaits the separate O42 release review.**
+implemented and awaits the separate O42 release review. The first real authoritative target-core
+grant executed in deterministic simulation on 2026-08-05 (O41 Test 10 iter 28: Δ/pt 0.0069 nats at
+3.31× the paired SE, a 17-point core executed against the 50-point legacy), so authoritative
+selection is demonstrated, not merely implemented. The intended end state treats legacy as the
+survey instrument for the first pass across Q and EIG-designed scans as the follow-up instrument —
+legacy becomes the backstop, not the default — with that polarity switch deferred to a post-R3
+tuning decision on campaign evidence.**
 The pure full-vector Poisson score kernel, the controlled offline Slice 5 counterfactual, Slice 6
 scored shadow inventories, and Slice 7 exact realized-request rescoring are implemented. The coherent
 Slice 8 V3 gate is owner-accepted under O41 and authorizes the implemented Slice 9 selector, but O42
