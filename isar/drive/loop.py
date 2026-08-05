@@ -49,6 +49,8 @@ from isar.drive.acquisition.acquire import (
 from isar.drive.acquisition.scan_design import (
     MAX_POINTS,
     BudgetInsufficientForMinimumBatch,
+    FAMILY_LEGACY_UNIFORM,
+    FAMILY_TARGET_CORE,
     InstrumentLimitBelowMinimumBatch,
     InstrumentPointLimitExceeded,
     SCAN_DESIGN_INVENTORY_SCHEMA_V2,
@@ -3717,6 +3719,124 @@ def _restore_authenticated_legacy_request(cfg: CampaignConfig, proposal) -> None
     authenticate_realized_submission(proposal, cfg.workspace)
 
 
+def _eig_eligibility(inventory) -> Mapping[str, Any] | None:
+    scoring = getattr(inventory, "shadow_scoring", None)
+    eligibility = getattr(scoring, "eligibility", None)
+    return eligibility if isinstance(eligibility, Mapping) else None
+
+
+def _eig_primary_blocker(inventory, meta: Mapping[str, Any]) -> str | None:
+    """The single code that answers "why did EIG not act this iteration", most specific first.
+
+    The authority's own reason codes win when a decision exists, because they already account for
+    everything below them; eligibility codes answer the far more common case where no decision was
+    ever reachable.  ``None`` means nothing recorded a blocker — an operator reads that as "ready".
+    """
+    codes = meta.get("scan_design_authority_reason_codes")
+    if isinstance(codes, (list, tuple)) and codes:
+        return str(codes[0])
+    invalidation = meta.get("scan_design_eig_invalidation_reason")
+    if invalidation:
+        return str(invalidation)
+    eligibility = _eig_eligibility(inventory)
+    if eligibility is not None:
+        for key in ("scientific_codes", "observability_codes"):
+            values = eligibility.get(key)
+            if isinstance(values, (list, tuple)) and values:
+                return str(values[0])
+    reasons = getattr(getattr(inventory, "shadow_scoring", None), "reason_codes", ())
+    if isinstance(reasons, (list, tuple)) and reasons:
+        return str(reasons[0])
+    applicability = meta.get("scan_design_eig_applicability")
+    if applicability and applicability != "applicable":
+        return f"realized_evidence_{applicability}"
+    return None
+
+
+def _eig_planned_point_counts(inventory) -> tuple[int | None, int | None]:
+    """Planned legacy / target-core point counts straight off the in-memory inventory."""
+    legacy = target = None
+    for candidate in getattr(inventory, "candidates", ()) or ():
+        if candidate.candidate_family == FAMILY_LEGACY_UNIFORM and legacy is None:
+            legacy = int(candidate.n_points)
+        elif candidate.candidate_family == FAMILY_TARGET_CORE and target is None:
+            target = int(candidate.n_points)
+    return legacy, target
+
+
+def _log_eig_decision(cfg: CampaignConfig, proposal, *, it: int) -> bool:
+    """Emit the one operator-facing ``eig_decision`` summary for an iteration that considered EIG.
+
+    Presentation only: every value is copied from evidence the authority/shadow path already wrote
+    (``proposal.meta`` and the in-memory inventory).  Nothing is loaded, recomputed or decided here,
+    and the emitter never raises — a campaign must not die because a log line could not be formed.
+
+    ``point_count_basis`` says which counts the payload carries, because the two differ: under an
+    authority decision they are the *validated realized* counts, otherwise they are the *planned*
+    inventory counts (the realized pair is only content-addressed on disk).
+
+    Returns ``True`` when this iteration's single event slot has been spent (including the failure
+    case, so a failed emission is not retried and re-reported at the end of the iteration), and
+    ``False`` when the iteration never considered EIG at all.
+    """
+    try:
+        inventory = getattr(proposal, "scan_design_inventory", None)
+        mode = None if inventory is None else inventory.context.scan_window_eig_mode
+        if mode not in {"shadow", "authoritative"}:
+            return False
+        meta = proposal.meta if isinstance(proposal.meta, dict) else {}
+        decision_ref = meta.get("scan_design_authority_decision_ref")
+        decision_sha = (decision_ref.get("sha256") if isinstance(decision_ref, Mapping) else None)
+        if decision_sha is not None:
+            legacy_points = meta.get("scan_design_authority_legacy_point_count")
+            target_points = meta.get("scan_design_authority_target_point_count")
+            basis = "authority_decision"
+        else:
+            legacy_points, target_points = _eig_planned_point_counts(inventory)
+            basis = "planned_inventory"
+        if mode == "authoritative":
+            ready = meta.get("scan_design_authority_status") == "granted"
+        else:
+            ready = (getattr(getattr(inventory, "shadow_scoring", None), "status", None)
+                     == "complete"
+                     and meta.get("scan_design_eig_applicability") == "applicable")
+        blocker = None if ready else _eig_primary_blocker(inventory, meta)
+        eligibility = _eig_eligibility(inventory)
+        design = getattr(getattr(inventory, "shadow_scoring", None), "design_measure", None)
+        identities = design.get("source_identities") if isinstance(design, Mapping) else None
+        master_id = (identities.get("predictive_basis_fingerprint")
+                     if isinstance(identities, Mapping) else None)
+        log_event(cfg.log_path, "eig_decision", {
+            "iter": it,
+            "hkl": [proposal.h, proposal.k, proposal.l],
+            "mode": mode,
+            "master_id": master_id,
+            "ready": bool(ready),
+            "blocker": blocker,
+            "eligibility_status": (None if eligibility is None
+                                   else eligibility.get("status")),
+            "point_count_basis": basis,
+            "legacy_points": legacy_points,
+            "target_points": target_points,
+            "delta_nats_per_point": meta.get("scan_design_authority_delta"),
+            "standard_error_nats": meta.get("scan_design_authority_standard_error"),
+            "lower_margin_nats": meta.get("scan_design_authority_lower_margin"),
+            "selected_role": meta.get("scan_design_authority_selected_role"),
+            "decision_outcome": meta.get("scan_design_authority_outcome"),
+            "decision_ref": decision_sha,
+        })
+        return True
+    except Exception as error:  # noqa: BLE001 - an operator line may never break the campaign
+        _LOG.exception("could not form the eig_decision operator event")
+        try:
+            log_event(cfg.log_path, "exception", {
+                "action": "eig_decision_event_failed", "severity": "low",
+                "error": str(error), "iter": it})
+        except Exception:  # noqa: BLE001 - the process logger stays the final visible channel
+            _LOG.exception("failed to persist the eig_decision emission failure")
+        return True
+
+
 def _prepare_authoritative_submission(
         cfg: CampaignConfig, objective, proposal, budget_state: dict,
         legacy_validation: dict, *, it: int,
@@ -4283,6 +4403,10 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
     # selector re-emits it next iteration, repeating trim → decline for the rest of the campaign.
     pre_trim_request_fingerprint: str | None = None
     declined_verdict: str | None = None
+    # One operator-facing EIG line per iteration, wherever this iteration's EIG story ends: right
+    # after the authority path concludes when it gets that far, otherwise at the single exit below
+    # (a declined or unvalidatable request still owes the operator a "why nothing happened").
+    eig_event_emitted = False
     while True:
         # Single checkpoint before EVERY validate/submit, including support/recenter retries.
         previous_request_fingerprint = (proposal.meta or {}).get("proposal_fingerprint")
@@ -4543,6 +4667,8 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         legacy_validation = val
         val = _prepare_authoritative_submission(
             cfg, objective, proposal, budget_state, legacy_validation, it=it)
+        if not eig_event_emitted:
+            eig_event_emitted = _log_eig_decision(cfg, proposal, it=it)
         finalized = finalized_proposal(proposal)
         manifest_fingerprint = (validated_attempt(
             finalized, val, status=("would_queue" if val.get("would_queue", False)
@@ -4819,6 +4945,8 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         )
         attempt += 1
 
+    if not eig_event_emitted:
+        _log_eig_decision(cfg, proposal, it=it)
     return rows, scan_counter, declined_verdict
 
 
