@@ -123,3 +123,24 @@ def test_a_broken_payload_is_reported_and_never_raised(tmp_path):
     actions = [record["payload"].get("action")
                for record in read_log(tmp_path / "report" / "session_log.jsonl")]
     assert "eig_decision_event_failed" in actions
+
+
+def test_a_generic_authority_blocker_still_names_the_underlying_evidence_reason(tmp_path):
+    # O41's refusal codes say only that the evidence was unavailable. Without the realized reason
+    # beside them a campaign-wide policy-binding failure reads as an ordinary unscoreable pair.
+    fixtures = _fixtures()
+    inventory = fixtures["_inventory"]()
+    inventory = replace(
+        inventory, context=replace(inventory.context, scan_window_eig_mode="authoritative"))
+    proposal = fixtures["_proposal"](inventory)
+    proposal.meta.update({
+        "scan_design_authority_status": "not_granted",
+        "scan_design_authority_outcome": "use_non_eig_path",
+        "scan_design_authority_reason_codes": ["primary_score_evidence_unavailable"],
+        "scan_design_realized_reason_codes": ["qoi_policy_missing"],
+    })
+
+    loop._log_eig_decision(_cfg(tmp_path), proposal, it=9)
+    payload, = _events(tmp_path)
+    assert payload["blocker"] == "primary_score_evidence_unavailable"
+    assert "qoi_policy_missing" in payload["blocker_detail"]

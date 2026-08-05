@@ -289,3 +289,80 @@ def test_schema_checker_requires_real_booleans_and_rejects_unknown_types():
     assert not g2s._conforms(1, {"type": "boolean"})
     assert g2s._conforms("anything", {})
     assert not g2s._conforms("anything", {"type": "mystery"})
+
+
+# --------------------------------------------------------------- scan-window EIG policy rebinding
+_CARD_EIG_AUTHORING = {"policies": [{
+    "policy_id": "eig4_slice8_excitation_energy",
+    "policy_kind": "isar.scalar_absolute_partitions/o36.5",
+    "source_qoi": {"id": "excitation.energy", "unit": "meV"},
+    "scope": {"bind_to_current_campaign_configuration": True,
+              "annotation": {"campaign_name": "regression",
+                             "experiment_description": "policy scope rebinding",
+                             "date": "2026-08-05"}},
+    "provenance": {"kind": "explicit_user_analysis/1", "source_id": "O41",
+                   "rationale": "regression fixture"},
+    "variants": [{"variant_id": "primary_0p5_mev",
+                  "parameters": {"origin": 0.0, "bin_width": 0.5, "offsets": [0.0, 0.25]}}],
+}]}
+
+_EIG_SPEC = {"path": {"h_start": 2.0, "h_end": 2.2, "k": 0.0, "l": 0.0}, "step_h": 0.1,
+             "tolerance_meV": 0.5, "target_branch": "acoustic", "budget_hours": 1,
+             "energy_search_meV": [-9.0, 9.0]}
+
+
+def _eig_objective():
+    return g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test",
+                              card_eig_policy_set=_CARD_EIG_AUTHORING)
+
+
+def _scope_drifted(objective, mode="authoritative"):
+    """Reproduce the CLI's steering override, which recomputes the hypothesis fingerprint."""
+    from dataclasses import replace
+
+    from isar.schema.hypotheses import content_fingerprint
+
+    steering = {**dict(objective.steering), "scan_window_eig_mode": mode}
+    return replace(objective, steering=steering,
+                   hypothesis_fingerprint=content_fingerprint(objective.hypotheses, steering))
+
+
+def _matches(objective):
+    from isar.drive.objective import current_objective_comparison_scope
+    from isar.schema.eig_policy import matching_qoi_policies
+
+    scope = current_objective_comparison_scope(objective)
+    return matching_qoi_policies(
+        objective.scan_window_eig.policy_set, qoi_id="excitation.energy", qoi_unit="meV",
+        scope_kind="campaign_configuration", scope_fingerprint=scope["fingerprint"])
+
+
+def test_compiled_card_policy_matches_the_objective_it_was_compiled_from():
+    assert [policy.policy_id for policy in _matches(_eig_objective())] == [
+        "eig4_slice8_excitation_energy"]
+
+
+def test_steering_override_without_rebinding_leaves_the_policy_unmatchable():
+    # The Test9 failure shape: the policy is present but bound to the pre-override scope, so every
+    # scan-window score refuses with qoi_policy_missing.
+    drifted = _scope_drifted(_eig_objective())
+    assert drifted.scan_window_eig.policy_set is not None
+    assert _matches(drifted) == ()
+
+
+def test_rebinding_after_a_steering_override_restores_an_exact_scope_match():
+    rebound = g2s.rebind_scan_window_eig_policy(
+        _scope_drifted(_eig_objective()), _CARD_EIG_AUTHORING)
+    assert [policy.policy_id for policy in _matches(rebound)] == [
+        "eig4_slice8_excitation_energy"]
+
+
+def test_rebinding_keeps_an_objective_without_a_policy_set_unchanged():
+    objective = g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test")
+    assert objective.scan_window_eig.policy_set is None
+    assert g2s.rebind_scan_window_eig_policy(objective, None) is objective
+
+
+def test_rebinding_refuses_when_the_card_authoring_source_is_unavailable():
+    with pytest.raises(g2s.GoalParseError, match="card authoring source is unavailable"):
+        g2s.rebind_scan_window_eig_policy(_scope_drifted(_eig_objective()), None)

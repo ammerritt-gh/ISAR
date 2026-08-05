@@ -251,7 +251,8 @@ def main(argv=None) -> int:
         from isar.drive.loop import run_campaign
         from isar.drive.session_log import read_log
         from isar.drive.supervisor.goal_to_spec import (
-            ENVELOPE_SCHEMA, GoalParseError, envelope_from_json, goal_to_spec, make_envelope, spec_from_dict,
+            ENVELOPE_SCHEMA, GoalParseError, envelope_from_json, goal_to_spec, make_envelope,
+            rebind_scan_window_eig_policy, spec_from_dict,
         )
         from isar.schema.hypotheses import content_fingerprint
         try:
@@ -270,7 +271,8 @@ def main(argv=None) -> int:
                 card_policy = load_policy(policy_path)
                 return card_policy.hypotheses, card_policy.scan_window_eig_policy_set
 
-            def apply_mode_override(objective, *, frozen: bool, declared_mode=None):
+            def apply_mode_override(objective, *, frozen: bool, declared_mode=None,
+                                    card_eig_policy_set=None):
                 requested = args.scan_window_eig_mode
                 current = str((objective.steering or {}).get("scan_window_eig_mode", "off"))
                 if requested is None:
@@ -290,10 +292,15 @@ def main(argv=None) -> int:
                         "authoritative scan-window EIG requires a ready --workspace with "
                         "card.policy.toml")
                 steering = {**dict(objective.steering), "scan_window_eig_mode": requested}
-                return replace(
+                overridden = replace(
                     objective, steering=steering,
                     hypothesis_fingerprint=content_fingerprint(
                         objective.hypotheses, steering))
+                # The recomputed hypothesis fingerprint is part of the objective comparison scope a
+                # card EIG policy binds to, so the policy compiled before this override no longer
+                # matches. Rebind it here, or scan-window scoring reports qoi_policy_missing for the
+                # whole campaign.
+                return rebind_scan_window_eig_policy(overridden, card_eig_policy_set)
 
             if args.resume_latest:
                 # LLM-free resume: rebuild the FROZEN objective from the last campaign_start event; a
@@ -350,7 +357,8 @@ def main(argv=None) -> int:
                     declared_mode = spec_data["steering"].get("scan_window_eig_mode")
                 objective = apply_mode_override(
                     objective, frozen=isinstance(spec_data.get("path"), list),
-                    declared_mode=declared_mode)
+                    declared_mode=declared_mode,
+                    card_eig_policy_set=card_eig_policy_set)
                 source = {"kind": "spec",
                           "sha256": hashlib.sha256(Path(args.spec).read_bytes()).hexdigest()}
             else:
@@ -363,7 +371,8 @@ def main(argv=None) -> int:
                 declared_mode = ((raw.get("steering") or {}).get("scan_window_eig_mode")
                                  if isinstance(raw, dict) else None)
                 objective = apply_mode_override(
-                    objective, frozen=False, declared_mode=declared_mode)
+                    objective, frozen=False, declared_mode=declared_mode,
+                    card_eig_policy_set=card_eig_policy_set)
                 source = {"kind": "goal",
                           "sha256": hashlib.sha256(args.goal.encode("utf-8")).hexdigest()}
             if args.budget:

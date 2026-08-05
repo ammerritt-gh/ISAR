@@ -907,3 +907,37 @@ def test_missing_or_short_per_offset_information_fails_closed(score_set):
     assert _partition_offset_evidence(
         score_set, {"offsets": [0.0, 0.25]},
         {"legacy-request"}, {"target-request"}) is None
+
+
+def test_a_refused_rescore_persists_and_reports_its_own_reason_code(monkeypatch, tmp_path):
+    """A reasoned refusal (here: the Test9 policy-scope mismatch) must survive to the artifact and
+    to the operator meta — a bare "unavailable" cannot be diagnosed after the beamtime."""
+    from isar.eig.realized_score import RealizedScoringUnavailable
+
+    inventory = _inventory()
+    proposal = _proposal(inventory)
+    proposal.meta["scan_design_inventory_ref"] = _inventory_reference(tmp_path, inventory)
+    cfg = SimpleNamespace(
+        workspace=tmp_path, log_path=tmp_path / "report" / "session.jsonl",
+        run_nonce="run", max_points=200, max_points_source="default",
+        instrument_limits=None)
+    objective = SimpleNamespace(
+        analysis_limit_seconds=100.0, tolerance_meV=0.5,
+        steering={"max_scan_points": 100, "production_batch_ncount": 10_000,
+                  "max_ncount_per_scan": 1_000_000})
+
+    def refuse(*_args, **_kwargs):
+        raise RealizedScoringUnavailable("qoi_policy_missing")
+
+    monkeypatch.setattr(loop, "score_proposal_realized_pair", refuse)
+    reference = loop._refresh_realized_comparison(
+        cfg, objective, proposal,
+        {"kind": "neutrons", "amount": 10**12, "spent": 0.0}, it=4)
+    comparison = load_scan_design_realized_comparison(reference, tmp_path)
+
+    assert comparison.score_disposition == "unavailable"
+    assert comparison.reason_codes == ("qoi_policy_missing",)
+    assert proposal.meta["scan_design_realized_reason_codes"] == ["qoi_policy_missing"]
+    assert any(event["kind"] == "exception"
+               and event["payload"].get("action") == "qoi_policy_missing"
+               for event in read_log(cfg.log_path))

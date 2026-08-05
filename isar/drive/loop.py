@@ -3516,6 +3516,8 @@ def _clear_realized_claims(proposal, *, applicability: str = "unavailable",
     start = 2 if preserve_parent else 0
     for key in _REALIZED_SUBMISSION_FIELDS[start:]:
         meta.pop(key, None)
+    # Diagnostic only, never authenticated: drop it with the claims it explained.
+    meta.pop("scan_design_realized_reason_codes", None)
     meta["scan_design_eig_applicability"] = applicability
     if applicability != "invalidated":
         meta.pop("scan_design_eig_invalidation_reason", None)
@@ -3753,6 +3755,22 @@ def _eig_primary_blocker(inventory, meta: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _eig_blocker_detail(inventory, meta: Mapping[str, Any], blocker: str | None) -> tuple[str, ...]:
+    """The underlying evidence codes behind a generic blocker, most proximate first.
+
+    The O41 selector's own codes ("primary score evidence unavailable") deliberately say only that
+    the evidence was missing.  Without the realized/shadow reason beside them an operator sees a
+    histogram of generic blockers and cannot tell a stale policy binding from a genuinely
+    unscoreable pair, so the reason is carried here rather than folded into selector semantics.
+    """
+    detail: list[str] = []
+    for value in (meta.get("scan_design_realized_reason_codes"),
+                  getattr(getattr(inventory, "shadow_scoring", None), "reason_codes", ())):
+        if isinstance(value, (list, tuple)):
+            detail.extend(str(code) for code in value)
+    return tuple(code for code in dict.fromkeys(detail) if code != blocker)
+
+
 def _eig_planned_point_counts(inventory) -> tuple[int | None, int | None]:
     """Planned legacy / target-core point counts straight off the in-memory inventory."""
     legacy = target = None
@@ -3801,6 +3819,7 @@ def _log_eig_decision(cfg: CampaignConfig, proposal, *, it: int) -> bool:
                      == "complete"
                      and meta.get("scan_design_eig_applicability") == "applicable")
         blocker = None if ready else _eig_primary_blocker(inventory, meta)
+        blocker_detail = () if ready else _eig_blocker_detail(inventory, meta, blocker)
         eligibility = _eig_eligibility(inventory)
         design = getattr(getattr(inventory, "shadow_scoring", None), "design_measure", None)
         identities = design.get("source_identities") if isinstance(design, Mapping) else None
@@ -3813,6 +3832,7 @@ def _log_eig_decision(cfg: CampaignConfig, proposal, *, it: int) -> bool:
             "master_id": master_id,
             "ready": bool(ready),
             "blocker": blocker,
+            "blocker_detail": list(blocker_detail),
             "eligibility_status": (None if eligibility is None
                                    else eligibility.get("status")),
             "point_count_basis": basis,

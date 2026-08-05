@@ -200,6 +200,51 @@ def test_shadow_mode_override_is_frozen_into_new_compact_spec(tmp_path, monkeypa
     assert captured[0][0].steering["scan_window_eig_mode"] == "shadow"
 
 
+def test_mode_override_rebinds_the_card_eig_policy_to_the_new_objective_scope(
+        tmp_path, monkeypatch):
+    """--scan-window-eig-mode recomputes the hypothesis fingerprint, which is part of the objective
+    comparison scope a card EIG policy binds to. Without a rebind the policy stops matching and the
+    whole campaign scores qoi_policy_missing (the O41 Test9 failure)."""
+    import isar.schema.card as card_module
+    from isar.drive.objective import current_objective_comparison_scope
+    from isar.schema.eig_policy import matching_qoi_policies
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "card.policy.toml").write_text("# mocked card\n", encoding="utf-8")
+    authoring = {"policies": [{
+        "policy_id": "eig4_slice8_excitation_energy",
+        "policy_kind": "isar.scalar_absolute_partitions/o36.5",
+        "source_qoi": {"id": "excitation.energy", "unit": "meV"},
+        "scope": {"bind_to_current_campaign_configuration": True,
+                  "annotation": {"campaign_name": "regression",
+                                 "experiment_description": "policy scope rebinding",
+                                 "date": "2026-08-05"}},
+        "provenance": {"kind": "explicit_user_analysis/1", "source_id": "O41",
+                       "rationale": "regression fixture"},
+        "variants": [{"variant_id": "primary_0p5_mev",
+                      "parameters": {"origin": 0.0, "bin_width": 0.5, "offsets": [0.0, 0.25]}}],
+    }]}
+
+    class _Policy:
+        hypotheses = None
+        scan_window_eig_policy_set = authoring
+
+    monkeypatch.setattr(card_module, "load_policy", lambda _path: _Policy())
+    captured = _stub_run_campaign(monkeypatch)
+    assert main([
+        "drive", "--spec", str(_spec_file(tmp_path)), "--workspace", str(workspace),
+        "--scan-window-eig-mode", "authoritative",
+    ]) == 0
+    objective = captured[0][0]
+    assert objective.steering["scan_window_eig_mode"] == "authoritative"
+    scope = current_objective_comparison_scope(objective)
+    assert [policy.policy_id for policy in matching_qoi_policies(
+        objective.scan_window_eig.policy_set, qoi_id="excitation.energy", qoi_unit="meV",
+        scope_kind="campaign_configuration",
+        scope_fingerprint=scope["fingerprint"])] == ["eig4_slice8_excitation_energy"]
+
+
 def test_resume_rejects_mode_that_conflicts_with_frozen_objective(
         tmp_path, monkeypatch, capsys):
     workspace = tmp_path / "ws"

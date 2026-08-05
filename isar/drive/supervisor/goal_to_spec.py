@@ -408,6 +408,39 @@ def _build_spec(data: dict, merged: dict, *,
     return frozen
 
 
+def rebind_scan_window_eig_policy(objective: ObjectiveSpec, card_eig_policy_set) -> ObjectiveSpec:
+    """Recompile the card's scan-window EIG policy against the objective's *current* scope.
+
+    A card policy binds to the current campaign configuration, so its compiled scope fingerprint is
+    only valid for the objective identity it was compiled from.  Anything that edits a scope-bearing
+    field after compilation (notably a steering change, which recomputes ``hypothesis_fingerprint``)
+    silently invalidates the binding: the policy still exists, it simply stops matching, and every
+    scan-window score then reports ``qoi_policy_missing`` for the whole campaign.  Recompiling from
+    the card authoring keeps the match exact while computing it from current truth.
+
+    Objectives without a compiled policy set are returned unchanged.
+    """
+    current = objective.scan_window_eig
+    if current.policy_set is None:
+        return objective
+    if card_eig_policy_set in (None, {}):
+        raise GoalParseError(
+            "the objective carries a scan-window EIG policy set but its card authoring source is "
+            "unavailable, so the binding cannot be recomputed for the current campaign "
+            "configuration")
+    scope = current_objective_comparison_scope(objective)
+    policy_set = compile_card_eig_policy_set(
+        card_eig_policy_set,
+        scope,
+        max_runtime_variants=current.scoring_config.max_runtime_variants,
+    )
+    rebound = replace(objective, scan_window_eig=ScanWindowEIGConfig(
+        policy_set=policy_set, scoring_config=current.scoring_config))
+    if current_objective_comparison_scope(rebound) != scope:
+        raise ValueError("scan-window EIG policy binding changed objective comparison scope")
+    return rebound
+
+
 def _budget(data: dict, *, tier: str) -> dict[str, Any] | None:
     """The campaign budget for this goal: what it declared, else the canonical tier default.
 

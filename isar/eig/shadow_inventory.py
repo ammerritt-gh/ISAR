@@ -493,6 +493,13 @@ def score_shadow_inventory(
         return _unavailable(inventory, "qoi_policy_invalid", common, stage="policy_match")
     match["matching_policy_ids"] = [item.policy_id for item in matches]
     if not matches:
+        # Name the mismatch: a policy that exists but binds a different campaign scope is the
+        # common cause, and it is indistinguishable from "no policy at all" in the reason code.
+        log.warning(
+            "shadow QoI policy did not match: qoi=%s/%s scope_kind=%s scope_fingerprint=%s "
+            "declared=%s", qoi["id"], qoi["unit"], scope_kind, scope_fingerprint,
+            [(item.policy_id, dict(item.source_qoi), item.scope["kind"],
+              item.scope["fingerprint"]) for item in policies.policies])
         return _unavailable(inventory, "qoi_policy_missing", common, stage="policy_match")
     if len(matches) != 1:
         return _unavailable(inventory, "qoi_policy_ambiguous", common, stage="policy_match")

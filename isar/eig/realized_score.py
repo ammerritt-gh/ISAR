@@ -1,6 +1,7 @@
 """Pure paired rescoring for exact Slice 7 realized requests."""
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -24,6 +25,9 @@ from .design_measure import build_scan_window_design_measure, validate_scan_wind
 from .eligibility import EligibilityInput
 from .policy import compile_qoi_distinction_policy
 from .scorer import CandidateEvaluationInput, score_scan_window_candidates, validate_scan_window_score_set
+
+
+log = logging.getLogger(__name__)
 
 
 class RealizedScoringUnavailable(ValueError):
@@ -92,6 +96,13 @@ def score_realized_pair(
     except (KeyError, TypeError, ValueError) as error:
         raise RealizedScoringUnavailable("qoi_policy_invalid") from error
     if not matches:
+        # Same refusal code covers "no policy" and "policy bound to a different campaign scope";
+        # only the log distinguishes them, so it carries both sides of the comparison.
+        log.warning(
+            "realized QoI policy did not match: qoi=%s/%s scope_kind=%s scope_fingerprint=%s "
+            "declared=%s", qoi["id"], qoi["unit"], scope_kind, scope_fingerprint,
+            [(item.policy_id, dict(item.source_qoi), item.scope["kind"],
+              item.scope["fingerprint"]) for item in policies.policies])
         raise RealizedScoringUnavailable("qoi_policy_missing")
     if len(matches) != 1:
         raise RealizedScoringUnavailable("qoi_policy_ambiguous")

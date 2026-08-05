@@ -292,9 +292,14 @@ def build_realized_comparison(
             reason_codes=() if complete else reasons or ("realized_score_incomplete",),
             authority_scopes=DIAGNOSTIC_AUTHORITY if complete else INELIGIBLE_AUTHORITY)
     if not isinstance(pair.target_core, RealizedScanRequest):
+        # A refusal always explains itself: its own codes first, then the caller's reason, and a
+        # last-resort code so an unavailable comparison is never persisted without one.
+        reasons = (tuple(pair.target_core.reason_codes)
+                   or ((unavailable_reason,) if unavailable_reason else ())
+                   or ("realized_pair_unavailable",))
         return ScanDesignRealizedComparison(
             **source, realized_pair=pair, score_disposition="unavailable", variants=(),
-            reason_codes=tuple(pair.target_core.reason_codes), authority_scopes=INELIGIBLE_AUTHORITY)
+            reason_codes=reasons, authority_scopes=INELIGIBLE_AUTHORITY)
     if rescorer is None or remaining_seconds <= 0.0:
         reason = (unavailable_reason or "realized_scoring_deadline"
                   if remaining_seconds <= 0.0 else unavailable_reason
@@ -569,6 +574,9 @@ def attach_realized_metadata(proposal: ScanProposal, reference: Mapping[str, Any
         "scan_design_realized_selected_request_fingerprint": (
             comparison.selected_request_fingerprint),
         "scan_design_realized_selected_grid_fingerprint": comparison.selected_grid_fingerprint,
+        # The authority's own blocker codes are deliberately generic; keep the realized reason so
+        # the operator event can say *why* the evidence was unavailable.
+        "scan_design_realized_reason_codes": list(comparison.reason_codes),
         "scan_design_eig_applicability": "applicable",
     })
 
