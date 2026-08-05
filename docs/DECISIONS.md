@@ -1283,6 +1283,33 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   and persisted as descriptions of a decision; they no longer veto one. New codes
   `o41_tie_resolved_by_cost` and `o41_legacy_decisive` name the two outcomes this ruling adds.
 
+- **O44.** (2026-08-05, In force; owner ruling after the A11 campaign) **An acoustic branch has no
+  measurable target at the reduced-q origin, and the campaign must know that from its geometry
+  rather than discover it from failed fits.** For an acoustic branch ω(q→0) → 0, so at the zone
+  centre the excitation is degenerate with the elastic line and nothing separable exists to measure,
+  however many neutrons are spent. That q is therefore not precision-coverage eligible from the
+  first iteration, on the branch type and the tracker's published `reduced_q_origin_index` alone.
+
+  This is **branch-conditional, not origin-conditional.** An optic branch has a finite ω at the zone
+  centre and is perfectly measurable there — often preferentially — so the exemption keys on the
+  target branch. What changes is precisely one thing: that q stops being a *branch target* the
+  controller schedules and must certify. Calibration paths are untouched by this ruling and are not
+  claimed to schedule it either; if an acoustic campaign is ever required to measure its own elastic
+  reference at the zone centre, that is a separate acquisition concern to be designed, not something
+  this exemption silently provides.
+
+  **Why the existing exemption was not enough.** `branch_tracking` already retires the origin once a
+  linear fit through resolved neighbours can infer the intercept, marking it `inferred_unresolved`.
+  That is earned late and only if the fit passes. Until then, fitting a DHO at the zone centre
+  returns a centre with an error bar thousands of times larger than itself — measured at
+  ω₀ = 0.485 meV ± 2065 meV on A11 — which classifies as a *confirmed* identity rather than an
+  unresolved one, so the campaign never earns the exemption and keeps returning. Measured waste:
+  **19 of 60 scans in A11 (32%), 122 of 163 in the R3 cold-start baseline (75%), and 152 of 193 in
+  its repeat (79%)**, against a constant 41 scans of useful work on the other twenty q in all three.
+
+  Consequence for the stop contract: an acoustic campaign's "N measurable grid q converged" now
+  excludes the origin, so N is one lower than the path length. That is the honest count.
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:
