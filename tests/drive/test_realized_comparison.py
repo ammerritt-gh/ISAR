@@ -385,6 +385,77 @@ def _persist_unavailable_comparison(tmp_path: Path):
     return proposal, comparison, payload
 
 
+def test_a_partially_infeasible_target_core_is_refused_and_legacy_is_submitted(
+        monkeypatch, tmp_path):
+    """The authority cannot trim a target-core window — the window *is* the candidate's identity —
+    so a partially-infeasible one must be refused here. Selecting it would hand the submit boundary
+    a grid TAVI rejects with HTTP 400, which is how a whole campaign executed zero scans."""
+    proposal, comparison, _payload = _persist_unavailable_comparison(tmp_path)
+    proposal.scan_design_inventory = replace(
+        proposal.scan_design_inventory,
+        context=replace(
+            proposal.scan_design_inventory.context,
+            scan_window_eig_mode="authoritative"))
+    proposal.meta["scan_design_inventory_ref"] = _inventory_reference(
+        tmp_path, proposal.scan_design_inventory)
+    legacy_command = loop._validate_body(
+        proposal, sample="sample", background=None)["parameters"]["scan_command1"]
+    roles = []
+
+    class PartialTargetClient:
+        """Legacy validates cleanly; the target core comes back one point short."""
+
+        def validate(self, body):
+            _axis, lo, hi, step = body["parameters"]["scan_command1"].split()
+            points = int((float(hi) - float(lo)) / float(step)) + 1
+            if body["parameters"]["scan_command1"] == legacy_command:
+                roles.append("legacy")
+                return {"would_queue": True, "blockers": [],
+                        "requested_points": points, "feasible_points": points}
+            roles.append("target_core")
+            return {"would_queue": True, "blockers": [],
+                    "requested_points": points, "feasible_points": max(points - 1, 0),
+                    "partial": True,
+                    "planned_feasible_mask": [False] + [True] * max(points - 1, 0)}
+
+    monkeypatch.setattr(
+        loop, "load_scan_design_realized_comparison", lambda *_args: comparison)
+    monkeypatch.setattr(
+        loop, "_refresh_realized_comparison", lambda *_args, **_kwargs: None)
+    captured = []
+
+    def capture(**kwargs):
+        captured.append(kwargs)
+        raise RuntimeError("selector not exercised by this test")
+
+    monkeypatch.setattr(loop, "build_authority_decision", capture)
+    exact_config = runpy.run_path(str(
+        Path(__file__).parents[1] / "eig" / "test_o41_authority.py"))["_config"]()
+    log_path = tmp_path / "report" / "session_log.jsonl"
+    cfg = SimpleNamespace(
+        workspace=tmp_path, log_path=log_path,
+        client=PartialTargetClient(), sample="sample", sample_background_frozen=None)
+    legacy_validation = {"would_queue": True, "requested_points": proposal.n_points,
+                         "feasible_points": proposal.n_points}
+
+    returned = loop._prepare_authoritative_submission(
+        cfg, SimpleNamespace(scan_window_eig=exact_config, steering={}), proposal,
+        {"kind": "neutrons", "amount": 1e9, "spent": 0.0}, legacy_validation, it=3)
+
+    assert returned["feasible_points"] == returned["requested_points"], \
+        "a partially-infeasible target must never be the submitted request"
+    assert "target_core" in roles
+    target_events = [event["payload"] for event in read_log(log_path)
+                     if event["kind"] == "validate"
+                     and event["payload"].get("candidate_role") == "target_core"]
+    assert target_events
+    assert {event["refusal_reason"] for event in target_events} == {
+        "target_core_partially_infeasible"}
+    # The target is refused *despite* would_queue being true, so the selector — if it is reached at
+    # all — is told the target is unusable rather than being offered an unsubmittable window.
+    assert all(entry["target_validation_status"] == "refused" for entry in captured)
+
+
 def test_strict_loader_recomputes_point_count_and_rejects_unknown_adapter(tmp_path):
     _proposal_value, comparison, _payload = _persist_unavailable_comparison(tmp_path)
     legacy = comparison.realized_pair.legacy

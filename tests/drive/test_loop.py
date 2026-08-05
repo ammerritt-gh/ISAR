@@ -1878,6 +1878,224 @@ def test_minimum_target_support_adjustment_records_realized_request(tmp_path):
     assert comparisons[-1]["request_fingerprint"] == realization["request_fingerprint"]
 
 
+_INFEASIBLE_POINTS_BODY = json.dumps({"error": {
+    "code": "infeasible_points",
+    "message": "One or more requested scan points are infeasible",
+}})
+
+
+class _PartialFeasibilityTavi(MockTavi):
+    """A TAVI with a hard low-energy cutoff: below it the scattering triangle does not close.
+
+    The cutoff is pinned, on the first request seen, just above that request's lowest energy — the
+    real 2026-08-04 geometry, where exactly the ΔE = −10 meV edge point at Q = 2.7 was unreachable.
+    It is an *energy* threshold, not an index, so a trimmed grid is genuinely feasible.
+
+    Validation reports the partial manifest TAVI really sends, and ``submit_scan`` refuses any grid
+    that still contains an infeasible point with the same HTTP 400 the instrument returns — the
+    failure that cost that campaign every one of its scans.
+    """
+
+    def __init__(self, omega_true):
+        super().__init__(omega_true)
+        self.min_feasible_energy: float | None = None
+        self.validated_grids: list[list[float]] = []
+
+    def _mask(self, grid):
+        return [energy >= self.min_feasible_energy for energy in grid]
+
+    def validate(self, body):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        if self.min_feasible_energy is None:
+            self.min_feasible_energy = grid[0] + 0.5 * (grid[1] - grid[0])
+        self.validated_grids.append(grid)
+        mask = self._mask(grid)
+        return {"would_queue": True, "blockers": [], "eta": {"estimated_seconds": 5.0},
+                "requested_points": len(grid), "feasible_points": sum(mask),
+                "planned_feasible_mask": mask, "partial": not all(mask),
+                "point_manifest": [{"feasible": feasible, "values": {"deltaE": energy}}
+                                   for feasible, energy in zip(mask, grid)]}
+
+    def submit_scan(self, body, idempotency_key=None):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        if not all(self._mask(grid)):
+            raise TaviError(400, "POST /scan -> HTTP 400", _INFEASIBLE_POINTS_BODY)
+        return super().submit_scan(body, idempotency_key=idempotency_key)
+
+
+class _FirstPointInfeasibleTavi(MockTavi):
+    """Pathological instrument: whatever grid it is handed, its FIRST point is infeasible.
+
+    Trimming can never converge here, which is exactly the case the one-trim-per-proposal bound
+    exists for.
+    """
+
+    def validate(self, body):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        mask = [index > 0 for index in range(len(grid))]
+        return {"would_queue": True, "blockers": [], "eta": {"estimated_seconds": 5.0},
+                "requested_points": len(grid), "feasible_points": sum(mask),
+                "planned_feasible_mask": mask, "partial": True}
+
+    def submit_scan(self, body, idempotency_key=None):
+        raise AssertionError("a partially-infeasible grid must never be submitted")
+
+
+class _SingleFeasiblePointTavi(MockTavi):
+    """Only one point of any requested grid is reachable — below the trim floor, so undoable."""
+
+    def validate(self, body):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        mask = [index == 0 for index in range(len(grid))]
+        return {"would_queue": True, "blockers": ["a2_out_of_range"],
+                "eta": {"estimated_seconds": 5.0},
+                "requested_points": len(grid), "feasible_points": 1,
+                "planned_feasible_mask": mask, "partial": True}
+
+    def submit_scan(self, body, idempotency_key=None):
+        raise AssertionError("a one-point window must never be submitted")
+
+
+class _InfeasibleAtSubmitTavi(MockTavi):
+    """Validation says the grid is fine; the instrument then refuses it as partially infeasible."""
+
+    def submit_scan(self, body, idempotency_key=None):
+        raise TaviError(400, "POST /scan -> HTTP 400", _INFEASIBLE_POINTS_BODY)
+
+
+def _shadow_objective():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "shadow"}
+    frozen["hypothesis_fingerprint"] = content_fingerprint(
+        frozen["hypotheses"], frozen["steering"])
+    return ObjectiveSpec(
+        path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e12}, target_branch="optic",
+        energy_search_meV=(-2.0, 12.0), **frozen)
+
+
+def test_a_partially_infeasible_window_is_trimmed_and_submitted(tmp_path):
+    """The repair. TAVI reported 54 of 55 points feasible, the loop submitted the full grid anyway,
+    the instrument 400'd it, and the campaign executed zero scans. A partially-reachable window is
+    now trimmed to its largest contiguous feasible run and submitted."""
+    omega = lambda _h: 6.0
+    client = _PartialFeasibilityTavi(omega)
+    summary, _workspace = _run(
+        tmp_path, _shadow_objective(), client, make_mock_runner(omega), stop_after=1)
+    events = read_log(summary["session_log"])
+
+    assert client.jobs, "the trimmed grid must reach the instrument"
+    requested = client.validated_grids[0]
+    submitted = _parse_grid(
+        next(iter(client.jobs.values()))["parameters"]["scan_command1"])
+    assert min(submitted) > client.min_feasible_energy, \
+        "the infeasible edge energy is still in the submitted grid"
+    assert len(submitted) == len(requested) - 1
+
+    trim = next(event["payload"] for event in events if event["kind"] == "feasibility_trim")
+    assert trim["dropped_point_count"] == 1
+    assert trim["old_e_lo"] == pytest.approx(requested[0])
+    assert trim["new_e_lo"] == pytest.approx(requested[1])
+    # The trimmed bounds are the feasible run's own endpoints, so e_hi lands on the last *emitted*
+    # energy rather than the designed ceiling the emitted grid never reached.
+    assert trim["new_e_hi"] == pytest.approx(requested[-1])
+    assert trim["old_e_hi"] >= requested[-1]
+    assert trim["feasible_run"][0] == 1
+    assert trim["planned_feasible_mask"][0] is False
+
+    realization = next(
+        event["payload"] for event in events
+        if event["kind"] == "scan_design_realization"
+        and event["payload"].get("adjustment") == "validation_feasibility_trim")
+    assert realization["previous_request_fingerprint"] != realization["request_fingerprint"]
+    assert realization["e_lo"] == pytest.approx(trim["new_e_lo"])
+
+    # The request that was finally validated is the request that was submitted.
+    intent = next(event["payload"] for event in events
+                  if event["kind"] == "submission_intent")
+    validations = [event["payload"] for event in events if event["kind"] == "validate"]
+    assert validations[-1]["request_fingerprint"] == intent["proposal_fingerprint"]
+    assert validations[-1]["feasible_points"] == validations[-1]["requested_points"]
+
+    # Partial infeasibility must never cost the hkl.
+    assert not [event for event in events if event["kind"] == "action_suppressed"
+                and event["payload"]["scope"] == "geometry"]
+
+
+def test_a_window_with_one_feasible_point_is_declined_not_trimmed(tmp_path):
+    """A one-point window is a degenerate window and the instrument 400s it, so the trim floor must
+    decline rather than manufacture an unusable scan."""
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, _workspace = _run(
+        tmp_path, _objective(), _SingleFeasiblePointTavi(omega), make_mock_runner(omega))
+    events = read_log(summary["session_log"])
+
+    assert not [event for event in events if event["kind"] == "feasibility_trim"]
+    unreachable = [event["payload"] for event in events if event["kind"] == "exception"
+                   and event["payload"].get("action") == "geometry_unreachable"]
+    assert unreachable, "a sub-minimum feasible run must be recorded as unreachable geometry"
+    assert unreachable[0]["reason"] == "largest_feasible_run_below_minimum"
+    assert unreachable[0]["feasible_run_points"] == 1
+    suppressed = [event["payload"] for event in events if event["kind"] == "action_suppressed"]
+    assert suppressed and suppressed[0]["verdict"] == "geometry_unreachable"
+
+
+def test_a_second_partial_verdict_after_a_trim_refuses_only_the_request(tmp_path):
+    """One trim per proposal. An instrument whose answer never converges must cost the request, not
+    the hkl, and must not spin the loop."""
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, _workspace = _run(
+        tmp_path, _objective(), _FirstPointInfeasibleTavi(omega), make_mock_runner(omega),
+        stop_after=2)
+    events = read_log(summary["session_log"])
+
+    assert [event for event in events if event["kind"] == "feasibility_trim"]
+    assert [event["payload"] for event in events if event["kind"] == "exception"
+            and event["payload"].get("action") == "feasibility_trim_did_not_converge"]
+    suppressed = [event["payload"] for event in events if event["kind"] == "action_suppressed"]
+    assert suppressed, "the refused request must be recorded"
+    assert {entry["scope"] for entry in suppressed} == {"request"}
+    assert {entry["verdict"] for entry in suppressed} == {"validation_rejected"}
+    assert summary["stop"]["state"] in {"met", "incomplete", "operator_stopped"}
+
+
+def test_infeasible_points_at_submit_costs_the_request_not_the_hkl(tmp_path):
+    """The backstop for a manifest that did not localize: the campaign records the refusal and keeps
+    going instead of aborting on an unhandled TaviError."""
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, _workspace = _run(
+        tmp_path, _objective(), _InfeasibleAtSubmitTavi(omega), make_mock_runner(omega),
+        stop_after=2)
+    events = read_log(summary["session_log"])
+
+    refusals = [event["payload"] for event in events if event["kind"] == "exception"
+                and event["payload"].get("action") == "infeasible_points_at_submit"]
+    assert refusals and refusals[0]["severity"] == "high"
+    suppressed = [event["payload"] for event in events if event["kind"] == "action_suppressed"]
+    assert suppressed
+    assert {entry["scope"] for entry in suppressed} == {"request"}
+    assert {entry["verdict"] for entry in suppressed} == {"infeasible_points_at_submit"}
+    assert summary["stop"]["state"] in {"met", "incomplete", "operator_stopped"}
+    rejection = loop_mod.classify_rejection("infeasible_points_at_submit")
+    assert rejection.scope == "request"
+    assert rejection.rejection_class.value == "structural"
+
+
+def test_largest_feasible_run_refuses_a_manifest_that_does_not_match_the_request():
+    """A mask of the wrong length describes a different grid; trimming against it would move the
+    window to the wrong energies, so it must read as 'no localization'."""
+    assert loop_mod._largest_feasible_run({"planned_feasible_mask": [True] * 4}, 5) is None
+    assert loop_mod._largest_feasible_run(
+        {"feasible_segments": [{"start_index": 1, "end_index": 9}]}, 5) is None
+    assert loop_mod._largest_feasible_run({"planned_feasible_mask": [False] * 5}, 5) is None
+    assert loop_mod._largest_feasible_run({}, 5) is None
+    # Longest run wins, and the segment form agrees with the mask form.
+    assert loop_mod._largest_feasible_run(
+        {"planned_feasible_mask": [True, False, True, True, True]}, 5) == (2, 4)
+    assert loop_mod._largest_feasible_run(
+        {"feasible_segments": [{"start_index": 2, "end_index": 4}]}, 5) == (2, 4)
+
+
 def test_shadow_submission_carries_the_exact_selected_legacy_sidecar(tmp_path):
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
     frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "shadow"}

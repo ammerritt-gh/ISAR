@@ -128,6 +128,11 @@ DEFAULT_WAIT_TIMEOUT = 600.0
 # docs/campaigns/2026-07_MVP_ZONE_RETEST.md), so ISAR must never submit/validate one. Used only as the
 # fallback when the live limit cannot be read from the instrument once per campaign.
 DEFAULT_MAX_POINTS = 200
+# Smallest energy window a feasibility trim is allowed to produce. A one-point window is a degenerate
+# window (``isar/drive/acquisition/physical_windows.py`` rejects it as ``degenerate_window``), and the
+# instrument itself refuses a single-point scan command with an HTTP 400 — so a feasible run shorter
+# than this is not a scan worth salvaging and the request is declined instead of trimmed.
+FEASIBLE_TRIM_MIN_POINTS = 2
 # Candidate keys a TAVI /state or /schema payload might carry the point-count limit under.
 _MAX_POINTS_KEYS = ("max_points", "maxPoints", "scan_max_points", "max_scan_points", "points_max")
 _LIMIT_KEYS = {
@@ -763,6 +768,61 @@ def _feasible_point_count(validation: dict, fallback: int) -> int:
     if isinstance(mask, list):
         return sum(bool(item) for item in mask)
     return max(int(fallback), 0)
+
+
+def _largest_feasible_run(validation: dict, n_points: int) -> tuple[int, int] | None:
+    """Positional bounds of the largest contiguous feasible run in TAVI's frozen manifest.
+
+    Returns the inclusive ``(first_index, last_index)`` of the longest run of feasible points, or
+    ``None`` when the manifest does not localize the infeasibility against the exact grid that was
+    requested. ``planned_feasible_mask`` and ``feasible_segments`` are positional against the
+    requested point list, so a mask whose length disagrees with the requested count describes a
+    *different* grid: indexing into it would trim to the wrong energies, which is far worse than not
+    trimming at all. That mismatch is logged and reported as "no localization".
+
+    Ties go to the first run encountered, which keeps the choice deterministic for a given manifest.
+    """
+    if not isinstance(validation, dict) or int(n_points) <= 0:
+        return None
+    mask = validation.get("planned_feasible_mask")
+    flags: list[bool] | None = None
+    if isinstance(mask, list):
+        if len(mask) != int(n_points):
+            _LOG.warning(
+                "planned_feasible_mask length %d does not match the %d requested points; "
+                "refusing to localize the infeasible region", len(mask), int(n_points))
+            return None
+        flags = [bool(item) for item in mask]
+    else:
+        segments = validation.get("feasible_segments")
+        if isinstance(segments, list) and segments:
+            flags = [False] * int(n_points)
+            for segment in segments:
+                if not isinstance(segment, dict):
+                    continue
+                start, end = segment.get("start_index"), segment.get("end_index")
+                if not isinstance(start, int) or not isinstance(end, int):
+                    continue
+                if start < 0 or end >= int(n_points) or end < start:
+                    _LOG.warning(
+                        "feasible_segments entry [%r, %r] falls outside the %d requested points; "
+                        "refusing to localize the infeasible region", start, end, int(n_points))
+                    return None
+                for index in range(start, end + 1):
+                    flags[index] = True
+    if flags is None or not any(flags):
+        return None
+    best: tuple[int, int] | None = None
+    run_start: int | None = None
+    for index, feasible in enumerate([*flags, False]):
+        if feasible and run_start is None:
+            run_start = index
+        elif not feasible and run_start is not None:
+            length = index - run_start
+            if best is None or length > (best[1] - best[0] + 1):
+                best = (run_start, index - 1)
+            run_start = None
+    return best
 
 
 def _executed_point_count(data: dict, fallback: int) -> int:
@@ -2577,6 +2637,9 @@ class ActionRejection:
 _REJECTION_RULES: dict[str, tuple[RejectionClass, str]] = {
     "geometry_unreachable": (RejectionClass.STRUCTURAL, "geometry"),
     "all_points_infeasible": (RejectionClass.STRUCTURAL, "geometry"),
+    # Partial infeasibility refused at submit: this exact grid is unsubmittable, but the q is
+    # reachable — scoping it to "geometry" would suppress an HKL the instrument can still measure.
+    "infeasible_points_at_submit": (RejectionClass.STRUCTURAL, "request"),
     "validation_rejected": (RejectionClass.STRUCTURAL, "request"),
     "insufficient_target_support": (RejectionClass.STRUCTURAL, "request"),
     "instrument_point_limit_exceeded": (RejectionClass.STRUCTURAL, "request"),
@@ -3610,17 +3673,28 @@ def _prepare_authoritative_submission(
                 min_support = int((getattr(objective, "steering", None) or {}).get(
                     "minimum_target_support_points", 0))
                 target_valid = bool(target_validation.get("would_queue", False))
+                target_refusal_reason = None
                 if min_support > 0 and target_support is not None and target_support < min_support:
                     target_valid = False
+                    target_refusal_reason = "target_core_below_minimum_support"
                 target_request_fingerprint = target_request.request_fingerprint
                 target_blockers = target_validation.get("blockers")
                 target_requested_points = target_validation.get("requested_points")
                 target_feasible_points = _feasible_point_count(
                     target_validation, target_proposal.n_points or 1)
+                # A partially-infeasible target core is unsubmittable (TAVI 400s the grid), and the
+                # authority has no way to trim it — the target window is the candidate's identity.
+                # Refuse it here so the existing refused-target path submits the legacy request,
+                # rather than selecting a window that would abort the campaign at submit.
+                if (target_requested_points is not None
+                        and 0 < target_feasible_points < int(target_requested_points)):
+                    target_valid = False
+                    target_refusal_reason = "target_core_partially_infeasible"
             else:
                 target_validation = {}
                 target_support = None
                 target_valid = False
+                target_refusal_reason = "target_core_refused_by_generator"
                 target_request_fingerprint = None
                 target_blockers = list(target_request.reason_codes)
                 target_requested_points = None
@@ -3633,6 +3707,7 @@ def _prepare_authoritative_submission(
                 "feasible_points": target_feasible_points,
                 "target_supporting_feasible_points": target_support,
                 "request_fingerprint": target_request_fingerprint,
+                "refusal_reason": target_refusal_reason,
                 "authority_refresh": refresh_count,
                 "iter": it,
             })
@@ -4097,6 +4172,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
     attempt = 0
     rows: list[dict] = []
     support_adjusted = False
+    feasibility_trimmed = False
     declined_verdict: str | None = None
     while True:
         # Single checkpoint before EVERY validate/submit, including support/recenter retries.
@@ -4152,6 +4228,86 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                                               if finalized is not None else None),
                                           "feasibility_manifest_fingerprint": manifest_fingerprint,
                                           "iter": it})
+        # ---- partial infeasibility: trim the window to the instrument's reachable run -----------
+        # TAVI refuses a partially-infeasible scan command outright (HTTP 400 ``infeasible_points``),
+        # so a grid whose edge point cannot close the scattering triangle is unsubmittable as-is even
+        # though the physics of interest is perfectly reachable. Trimming to the largest contiguous
+        # feasible run keeps the campaign moving; the alternative — submitting anyway — cost a whole
+        # authoritative campaign zero executed scans. This is a *request* adjustment, exactly like the
+        # step-shrink below: the q itself is never charged for it.
+        requested_points = int(val.get("requested_points") or proposal.n_points or 0)
+        if 0 < feasible_points < requested_points:
+            run = _largest_feasible_run(val, requested_points)
+            run_length = 0 if run is None else run[1] - run[0] + 1
+            if run is not None and run_length < FEASIBLE_TRIM_MIN_POINTS:
+                log_event(log_path, "exception", {
+                    "action": "geometry_unreachable", "phase": "validation",
+                    "hkl": [proposal.h, proposal.k, proposal.l], "blockers": val.get("blockers"),
+                    "reason": "largest_feasible_run_below_minimum",
+                    "feasible_points": feasible_points,
+                    "requested_points": requested_points,
+                    "feasible_run_points": run_length,
+                    "minimum_points": FEASIBLE_TRIM_MIN_POINTS,
+                    "planned_feasible_mask": val.get("planned_feasible_mask"),
+                    "iter": it})
+                observations.append(_declined_observation(proposal, "geometry_unreachable"))
+                declined_verdict = "geometry_unreachable"
+                break
+            if run is not None and feasibility_trimmed:
+                # One trim per proposal. A second partial verdict on an already-trimmed window means
+                # the instrument's answer is not converging, so refuse *this request* and let the
+                # ladder try a different window rather than looping on the same geometry.
+                log_event(log_path, "exception", {
+                    "action": "feasibility_trim_did_not_converge",
+                    "hkl": [proposal.h, proposal.k, proposal.l],
+                    "feasible_points": feasible_points,
+                    "requested_points": requested_points,
+                    "planned_feasible_mask": val.get("planned_feasible_mask"),
+                    "iter": it})
+                observations.append(_declined_observation(proposal, "validation_rejected"))
+                declined_verdict = "validation_rejected"
+                break
+            if run is not None:
+                old_e_lo, old_e_hi = float(proposal.e_lo), float(proposal.e_hi)
+                e_step = float(proposal.e_step)
+                previous_request_fingerprint = (proposal.meta or {}).get(
+                    "proposal_fingerprint")
+                proposal.e_lo = old_e_lo + run[0] * e_step
+                proposal.e_hi = old_e_lo + run[1] * e_step
+                # ``_finalize_proposal`` re-derives ``n_points`` from the mutated window through
+                # ``_guard_point_count``, so the trimmed grid is re-costed and re-fingerprinted the
+                # same way the step-shrink path is.
+                _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+                _refresh_realized_comparison(
+                    cfg, objective, proposal, budget_state, it=it,
+                    legacy_adjustments=("validation_feasibility_trim",), force=True)
+                _record_scan_design_realization(
+                    cfg,
+                    proposal,
+                    adjustment="validation_feasibility_trim",
+                    previous_request_fingerprint=previous_request_fingerprint,
+                    it=it,
+                    attempt=attempt,
+                )
+                feasibility_trimmed = True
+                log_event(log_path, "feasibility_trim", {
+                    "hkl": [proposal.h, proposal.k, proposal.l],
+                    "old_e_lo": old_e_lo, "old_e_hi": old_e_hi,
+                    "new_e_lo": float(proposal.e_lo), "new_e_hi": float(proposal.e_hi),
+                    "e_step": e_step,
+                    "dropped_point_count": int(requested_points - run_length),
+                    "requested_points": requested_points,
+                    "feasible_points": feasible_points,
+                    "feasible_run": [run[0], run[1]],
+                    "n_points": int(proposal.n_points or 0),
+                    "planned_feasible_mask": val.get("planned_feasible_mask"),
+                    "iter": it, "attempt": attempt})
+                continue
+            # No localization: fall through. The zero-feasible branch and the submit-time
+            # ``infeasible_points`` fallback below both remain in force.
+            _LOG.warning(
+                "validation reported %d of %d points feasible with no positional manifest; "
+                "submitting unchanged", feasible_points, requested_points)
         if (min_support > 0 and target_support is not None and target_support < min_support
                 and val.get("would_queue", False)):
             mean, sigma = map(float, target_band)
@@ -4266,6 +4422,30 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                     observations.append(
                         _declined_observation(proposal, "geometry_unreachable"))
                     declined_verdict = "all_points_infeasible"
+                    break
+                if error.status == 400 and code == "infeasible_points":
+                    # Partial infeasibility that validation did not catch or could not localize.
+                    # The q is reachable — only this exact grid is not — so the consequence is scoped
+                    # to the request. Loud, because reaching here means the validation-time trim
+                    # above did not fire and the manifest contract deserves a look.
+                    _LOG.warning(
+                        "instrument refused a partially-infeasible grid at submit; "
+                        "validation should have trimmed it")
+                    log_event(log_path, "exception", {
+                        "action": "infeasible_points_at_submit",
+                        "severity": "high",
+                        "error": str(error),
+                        "hkl": [proposal.h, proposal.k, proposal.l],
+                        "e_lo": float(proposal.e_lo), "e_hi": float(proposal.e_hi),
+                        "e_step": float(proposal.e_step),
+                        "n_points": int(proposal.n_points or 0),
+                        "note": ("validation reported the grid submittable; the trim at validation "
+                                 "time did not fire, so only this request is suppressed"),
+                        "iter": it,
+                    })
+                    observations.append(
+                        _declined_observation(proposal, "infeasible_points_at_submit"))
+                    declined_verdict = "infeasible_points_at_submit"
                     break
                 raise
             scan_counter += 1
