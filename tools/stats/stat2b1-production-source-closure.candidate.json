@@ -14,41 +14,15 @@
   "candidate_artifact_commit": null,
   "candidate_artifact_path": "tools/stats/stat2b1-production-source-closure.candidate.json",
   "candidate_artifact_sha256": null,
-  "candidate_closure_fingerprint": "31b15215f1175fffd797365149c442bd76cd0b74e91d8f0ece762d6827f52e21",
+  "candidate_closure_fingerprint": "91010341a6c11eae7f06f6dc7307386e15fc2a5ac54980232026e662898ea45f",
   "comparison_basis": {
-    "candidate_closure_fingerprint": "d93771b0ed564c105d25caf4807b398163e6f99c3d4b0d96a74a7ae9bbc72525",
+    "candidate_closure_fingerprint": "31b15215f1175fffd797365149c442bd76cd0b74e91d8f0ece762d6827f52e21",
     "dependency_graph_fingerprint": "3cda1b8a97ab0b2e0046d74aa31bcda645833ef9a3255703d76031b0c44887d8",
     "manifest_path": "tools/stats/stat2b1-production-source-closure.json",
     "mode": "renewal",
-    "production_source_fingerprint": "09dddc6a1de7c0efaca39083c96652c53be967dac781f7590a700d59eae1b334"
+    "production_source_fingerprint": "c820209b901e79595b4a08276e2a4a377df4b6d5e6fc9854cccaf25c81501dbb"
   },
-  "current_change_reviews": [
-    {
-      "basis_hash": "49d37709105fabd275c7dbd82d5156678c0105cff0181f1eb92786583213089e",
-      "current_change_disposition": "adjacent_nonsemantic",
-      "current_hash": "4a22ec72492226b9f685db1da0b3de30c47fd318bb71bf1c8366f5a4186b1ff0",
-      "current_public_symbols": [
-        "GridQ",
-        "StopDecision",
-        "evaluate_stop",
-        "local_exhaustion_status",
-        "match_grid_index",
-        "model_points",
-        "next_kind_for_q",
-        "path_scalars",
-        "q_converged",
-        "summarize_grid",
-        "systematic_floor"
-      ],
-      "path": "isar/drive/supervisor/stopping.py",
-      "proof_tests": [
-        "tests/drive/test_stopping.py",
-        "tests/drive/test_loop.py",
-        "isar/synth/tests/test_stat2b_campaign.py"
-      ],
-      "status": "modified"
-    }
-  ],
+  "current_change_reviews": [],
   "cycle_mode": "renewal",
   "dependency_drift": {
     "added": [],
@@ -1681,11 +1655,11 @@
   ],
   "owner_approved": false,
   "production_source_fingerprint": "c820209b901e79595b4a08276e2a4a377df4b6d5e6fc9854cccaf25c81501dbb",
-  "proposed_production_anchor": "60c3de59c31bdb1de309b5ffc89f9718d4384fd2",
+  "proposed_production_anchor": "434e1e7fe8f23a988b3d2eaa7fbb7dc42f1e9ef5",
   "review_record": {
-    "path": "docs/campaigns/2026-08-05_O44_ZONE_CENTRE_SOURCE_CLOSURE/review.json",
-    "semantic_fingerprint": "39c5e8454e49e9c122f3a2320b43e7aa01761c99db004e96a44453e9a172faa8",
-    "sha256": "1af566559b3d1a9190dcb03af03b198b203eafa5044e2eb6f59ebcf201d58e8e"
+    "path": "docs/campaigns/2026-08-05_O44_ZONE_CENTRE_SOURCE_CLOSURE/review-post-promotion.json",
+    "semantic_fingerprint": "c52b96cca3428b56e28be0a3bbcec5306a957602b94a5af97884b525b42b3e4e",
+    "sha256": "8031393a3f242770f9eaafbc2e8ceea7724793d5590c88a45c05fc25546596ab"
   },
   "schema": "isar.stat2b_production_source_closure/2",
   "status": "candidate"
