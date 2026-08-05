@@ -790,7 +790,12 @@ class MainWindow(QMainWindow):
 
     def _on_open_workspace(self) -> None:
         start_dir = "" if self._ws.root is None else str(self._ws.root)
-        path = QFileDialog.getExistingDirectory(self, "Open Workspace", start_dir)
+        # Non-native, like every other workspace dialog here: the Windows-native directory picker
+        # refuses a typed path whose folder does not exist yet and offers no way to make one, so
+        # the operator had to leave the application and create the folder in Explorer first.
+        path = QFileDialog.getExistingDirectory(
+            self, "Open Workspace", start_dir,
+            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
         if path:
             self.load_workspace(path)
 
@@ -946,6 +951,21 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Could not save to {dest}: {reason}")
         self.log(f"Save As failed for {dest}: {reason}")
         return False
+
+    @staticmethod
+    def _is_empty_target(path) -> bool:
+        """Whether ``path`` is a folder an operator could still save a new campaign into."""
+        try:
+            target = Path(path)
+            return not target.exists() or (target.is_dir() and not any(target.iterdir()))
+        except OSError:
+            return False
+
+    @staticmethod
+    def _empty_target_hint(path) -> str:
+        return ("Empty folder — start a campaign, then Save As here"
+                if Path(path).exists() else
+                "Folder does not exist yet — start a campaign, then Save As to create it")
 
     @staticmethod
     def _is_workspace_dir(path: Path) -> bool:
@@ -1776,7 +1796,11 @@ class MainWindow(QMainWindow):
         try:
             Workspace.open(path)
         except (WorkspaceNotFound, OSError) as exc:
-            self.statusBar().showMessage(f"Not a workspace: {path}")
+            # An absent or empty folder is the operator naming where a campaign should live, not a
+            # broken workspace; saying "not a workspace" sent them looking for a corrupt folder.
+            self.statusBar().showMessage(
+                f"{self._empty_target_hint(path)}: {path}" if self._is_empty_target(path)
+                else f"Not a workspace: {path}")
             self.log(f"Not opening {path}: {exc}")
             return False
         if not self._resolve_dirty_card("open another workspace"):
