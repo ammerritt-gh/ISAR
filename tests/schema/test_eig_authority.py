@@ -49,7 +49,7 @@ def _candidate(role: str, points: int, lo: float, hi: float) -> O41CandidateEvid
         lo, hi, energies, 100, f"scan {lo} {hi}")
 
 
-def _decision() -> ScanDesignAuthorityDecision:
+def _decision(include_offsets: bool = False) -> ScanDesignAuthorityDecision:
     profile = _profile()
     legacy = _candidate(ROLE_LEGACY, 46, -2.0, 7.0)
     target = _candidate(ROLE_TARGET, 17, 0.4, 3.6)
@@ -116,6 +116,12 @@ def _decision() -> ScanDesignAuthorityDecision:
             "point_neutron_cost": target.ncount * target.point_count,
             "scan_command": target.scan_command,
         },
+        **({} if not include_offsets else {
+            "partition_offset_selections": tuple(
+                item.to_dict() for item in result.partition_offset_selections),
+            "partition_offsets_agree": result.partition_offsets_agree,
+            "margin_standard_error_multiple": result.margin_standard_error_multiple,
+        }),
     )
 
 
@@ -125,6 +131,37 @@ def test_authority_decision_round_trip_and_content_hash_are_stable():
     assert ScanDesignAuthorityDecision.from_dict(decision.to_dict()) == decision
     assert len(decision.content_hash()) == 64
 
+
+def test_authority_decision_persists_offset_evidence_and_stays_compatible():
+    # New decisions carry the per-offset evidence behind the pooled margin; decisions persisted
+    # before the extension (no offset keys) keep loading with their recorded fingerprint.
+    with_offsets = _decision(include_offsets=True)
+    payload = with_offsets.to_dict()
+    assert payload["decision"]["partition_offsets_agree"] is True
+    assert payload["decision"]["margin_standard_error_multiple"] == 3.0
+    assert [item["physical_role"] for item in
+            payload["decision"]["partition_offset_selections"]] == ["target_core", "target_core"]
+    assert ScanDesignAuthorityDecision.from_dict(payload) == with_offsets
+
+    legacy_shape = _decision().to_dict()
+    assert "partition_offsets_agree" not in legacy_shape["decision"]
+    assert ScanDesignAuthorityDecision.from_dict(legacy_shape) == _decision()
+    # The two shapes are different durable bytes, so their fingerprints must differ.
+    assert (legacy_shape["authority_decision_fingerprint"]
+            != payload["authority_decision_fingerprint"])
+
+
+def test_authority_decision_rejects_inconsistent_offset_evidence():
+    # The trio is all-or-nothing: a payload carrying selections while claiming no agreement
+    # verdict (or missing one of the three keys) is invalid, not silently reinterpreted.
+    payload = copy.deepcopy(_decision(include_offsets=True).to_dict())
+    payload["decision"]["partition_offsets_agree"] = None
+    with pytest.raises(ValueError, match="offset evidence"):
+        ScanDesignAuthorityDecision.from_dict(payload)
+    partial = copy.deepcopy(_decision(include_offsets=True).to_dict())
+    del partial["decision"]["margin_standard_error_multiple"]
+    with pytest.raises(ValueError, match="selector result fields"):
+        ScanDesignAuthorityDecision.from_dict(partial)
 
 def test_authority_decision_rejects_tampering():
     payload = copy.deepcopy(_decision().to_dict())

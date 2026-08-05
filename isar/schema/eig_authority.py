@@ -167,6 +167,12 @@ class ScanDesignAuthorityDecision:
     lower_margin_nats: float | None
     refresh_count: int
     selected_request: Mapping[str, Any] | None
+    # Per-offset evidence behind the pooled margin (additive, o41.1-compatible): serialized only
+    # when the selector actually evaluated offsets, so every pre-extension persisted decision
+    # reproduces its recorded fingerprint byte-for-byte on load.
+    partition_offset_selections: tuple[Mapping[str, Any], ...] = ()
+    partition_offsets_agree: bool | None = None
+    margin_standard_error_multiple: float | None = None
     contract: str = field(default=AUTHORITY_DECISION_CONTRACT, init=False)
     authority_decision_fingerprint: str = field(default="", init=False)
 
@@ -226,6 +232,30 @@ class ScanDesignAuthorityDecision:
         legacy = _candidate(self.legacy_validation, "legacy")
         target = _candidate(self.target_core_validation, "target_core")
         selected = _selected_request(self.selected_request, self.physical_role)
+        selections = tuple(self.partition_offset_selections)
+        if self.partition_offsets_agree is None:
+            if selections or self.margin_standard_error_multiple is not None:
+                raise ValueError("authority decision offset evidence is inconsistent")
+        else:
+            if (not isinstance(self.partition_offsets_agree, bool)
+                    or float(self.margin_standard_error_multiple or 0.0) != 3.0
+                    or not selections):
+                raise ValueError("authority decision offset evidence is invalid")
+            for item in selections:
+                if (not isinstance(item, Mapping)
+                        or set(item) != {"offset", "delta_information_per_executed_point_nats",
+                                         "physical_role"}
+                        or not isinstance(item["offset"], (int, float))
+                        or isinstance(item["offset"], bool)
+                        or not math.isfinite(float(item["offset"]))
+                        or not isinstance(
+                            item["delta_information_per_executed_point_nats"], (int, float))
+                        or isinstance(item["delta_information_per_executed_point_nats"], bool)
+                        or not math.isfinite(
+                            float(item["delta_information_per_executed_point_nats"]))
+                        or item["physical_role"] not in {"target_core", "legacy"}):
+                    raise ValueError("authority decision offset selection is invalid")
+            selections = tuple(_freeze(dict(item)) for item in selections)
         object.__setattr__(self, "source_inventory_ref", inventory_ref)
         object.__setattr__(self, "realized_comparison_ref", comparison_ref)
         object.__setattr__(self, "profile", profile)
@@ -236,6 +266,7 @@ class ScanDesignAuthorityDecision:
         object.__setattr__(self, "structural_conditions", structural)
         object.__setattr__(self, "paired_block_deltas_per_executed_point_nats", blocks)
         object.__setattr__(self, "selected_request", selected)
+        object.__setattr__(self, "partition_offset_selections", selections)
         object.__setattr__(self, "authority_decision_fingerprint", _fingerprint(
             self.to_unfingerprinted_dict()))
 
@@ -270,6 +301,13 @@ class ScanDesignAuthorityDecision:
                 "selection_margin_multiplier": self.selection_margin_multiplier,
                 "lower_margin_nats": self.lower_margin_nats,
                 "refresh_count": self.refresh_count,
+                # Serialized only when present so pre-extension decisions keep their fingerprints.
+                **({} if self.partition_offsets_agree is None else {
+                    "partition_offset_selections": [
+                        _thaw(item) for item in self.partition_offset_selections],
+                    "partition_offsets_agree": self.partition_offsets_agree,
+                    "margin_standard_error_multiple": self.margin_standard_error_multiple,
+                }),
             },
             "selected_request": _thaw(self.selected_request),
         }
@@ -305,7 +343,12 @@ class ScanDesignAuthorityDecision:
             "delta_information_per_executed_point_nats", "paired_standard_error_nats",
             "selection_margin_multiplier", "lower_margin_nats", "refresh_count",
         }
-        if not isinstance(decision, Mapping) or set(decision) != decision_fields:
+        offset_fields = {
+            "partition_offset_selections", "partition_offsets_agree",
+            "margin_standard_error_multiple",
+        }
+        if not isinstance(decision, Mapping) or set(decision) not in (
+                decision_fields, decision_fields | offset_fields):
             raise ValueError("authority selector result fields are invalid")
         item = cls(
             configured_mode=value["configured_mode"],
@@ -332,6 +375,10 @@ class ScanDesignAuthorityDecision:
             selection_margin_multiplier=decision["selection_margin_multiplier"],
             lower_margin_nats=decision["lower_margin_nats"],
             refresh_count=decision["refresh_count"], selected_request=value["selected_request"],
+            partition_offset_selections=tuple(
+                decision.get("partition_offset_selections") or ()),
+            partition_offsets_agree=decision.get("partition_offsets_agree"),
+            margin_standard_error_multiple=decision.get("margin_standard_error_multiple"),
         )
         if value["authority_decision_fingerprint"] != item.authority_decision_fingerprint:
             raise ValueError("authority decision fingerprint is invalid")

@@ -305,6 +305,12 @@ def build_authority_decision(
         refresh_count=refresh_count,
         selected_request=(None if selected is None else _selected_request(
             selected, result.physical_role)),
+        partition_offset_selections=tuple(
+            item.to_dict() for item in result.partition_offset_selections),
+        partition_offsets_agree=result.partition_offsets_agree,
+        margin_standard_error_multiple=(
+            None if result.partition_offsets_agree is None
+            else result.margin_standard_error_multiple),
     )
 
 
