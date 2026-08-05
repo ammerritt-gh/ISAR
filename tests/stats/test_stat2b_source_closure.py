@@ -172,15 +172,15 @@ def test_historical_replay_recomputes_the_complete_summary_fingerprint(
         ENGINE.replay_heldout_aggregate(repo, gate)
 
 
-def test_historical_drift_inventory_is_the_reviewed_five_four_zero():
+def test_historical_drift_inventory_is_the_reviewed_five_six_zero():
     gate = ENGINE.authenticate_historical_gate(ROOT)
     inventory = ENGINE.drift_inventory(ROOT, gate)
 
     assert inventory["counts"] == {
         "added": 5,
-        "modified": 4,
+        "modified": 6,
         "deleted": 0,
-        "unchanged": 56,
+        "unchanged": 54,
     }
     assert {entry["path"] for entry in inventory["entries"]} == {
         "isar/drive/objective.py",
@@ -191,7 +191,9 @@ def test_historical_drift_inventory_is_the_reviewed_five_four_zero():
         "isar/schema/eig_realized.py",
         "isar/schema/eig_shadow.py",
         "isar/schema/hypotheses.py",
+        "isar/session/driver.py",
         "isar/session/predictive_artifact.py",
+        "isar/session/worker.py",
     }
     dispositions = {
         entry["path"]: entry["current_change_disposition"]
@@ -200,7 +202,15 @@ def test_historical_drift_inventory_is_the_reviewed_five_four_zero():
     assert dispositions["isar/session/predictive_artifact.py"] == (
         "evidence_contract_semantic"
     )
+    # The EIG-4 slice-10 targeted-refit path (``force_masters``) changed which masters a run
+    # re-fits.  Per-master fit mathematics, model selection and weighting are untouched — the
+    # A/B proved a byte-identical predictive artifact — but the drift sits in a
+    # selection-critical module and is reviewed as selection-semantic rather than adjacent,
+    # because the set of masters carrying freshly computed selection outputs is what moved.
+    assert dispositions["isar/session/driver.py"] == "selection_semantic"
+    assert dispositions["isar/session/worker.py"] == "adjacent_nonsemantic"
     assert set(dispositions.values()) == {
+        "selection_semantic",
         "evidence_contract_semantic",
         "adjacent_nonsemantic",
         "unrelated_exempt",

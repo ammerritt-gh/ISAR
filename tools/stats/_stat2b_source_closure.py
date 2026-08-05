@@ -211,7 +211,9 @@ CURRENT_CHANGE_DISPOSITIONS = {
     "isar/schema/eig_realized.py": "unrelated_exempt",
     "isar/schema/eig_authority.py": "unrelated_exempt",
     "isar/schema/hypotheses.py": "adjacent_nonsemantic",
+    "isar/session/driver.py": "selection_semantic",
     "isar/session/predictive_artifact.py": "evidence_contract_semantic",
+    "isar/session/worker.py": "adjacent_nonsemantic",
 }
 PROOF_TESTS = {
     "isar/drive/objective.py": [
@@ -238,10 +240,20 @@ PROOF_TESTS = {
         "isar/synth/tests/test_stat2b_campaign.py",
         "tests/schema/test_hypotheses.py",
     ],
+    "isar/session/driver.py": [
+        "tests/session/test_master_fit.py",
+        "tests/session/test_driver_smoke.py",
+        "tests/drive/test_predictive_promotion.py",
+        "isar/synth/tests/test_stat2b_campaign.py",
+    ],
     "isar/session/predictive_artifact.py": [
         "tests/session/test_master_predictive.py",
         "tests/session/test_target_projection.py",
         "tests/session/test_statistical_semantics.py",
+    ],
+    "isar/session/worker.py": [
+        "tests/drive/test_worker_client.py",
+        "tests/session/test_driver_smoke.py",
     ],
 }
 
