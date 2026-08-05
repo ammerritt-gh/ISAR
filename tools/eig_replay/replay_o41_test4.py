@@ -51,6 +51,7 @@ from isar.eig import adapt_omega0_target_projection  # noqa: E402
 from isar.eig.eligibility import EligibilityInput, evaluate_eig_eligibility  # noqa: E402
 from isar.eig.o41_authority import (  # noqa: E402
     O41CandidateEvidence,
+    O41PartitionOffsetEvidence,
     O41ScoreEvidence,
     O41SelectorInput,
     select_o41_authority,
@@ -369,13 +370,34 @@ def _score_once(inventory: Any, predictive_artifact: Mapping[str, Any] | None,
                     candidate.get("conditional_target_qoi_information_nats"), 9),
                 "information_standard_error_nats": _round(
                     candidate.get("conditional_target_qoi_information_standard_error_nats"), 9),
+                "partition_information_nats": [
+                    _round(value, 9)
+                    for value in candidate.get("partition_information_nats") or ()],
             }
         summary["variants"].append(entry)
     return summary
 
 
+def _partition_offsets(variant: Mapping[str, Any], legacy_id: str, target_id: str
+                       ) -> tuple[O41PartitionOffsetEvidence, ...]:
+    """Per-offset information the scoring run already retained, in the partition's offset order."""
+    offsets = list((variant.get("partition") or {}).get("offsets") or ())
+    points = variant.get("candidate_points") or {}
+    legacy = (points.get(legacy_id) or {}).get("partition_information_nats") or []
+    target = (points.get(target_id) or {}).get("partition_information_nats") or []
+    if len(legacy) != len(offsets) or len(target) != len(offsets):
+        return ()
+    return tuple(
+        O41PartitionOffsetEvidence(
+            offset=float(offset), legacy_information_nats=float(legacy_value),
+            target_core_information_nats=float(target_value))
+        for offset, legacy_value, target_value in zip(offsets, legacy, target))
+
+
 def _selector_role(profile: Any, inventory: Any, blocks: list[float],
-                   eligibility_status: str) -> dict[str, Any]:
+                   eligibility_status: str,
+                   partition_offsets: tuple[O41PartitionOffsetEvidence, ...] = ()
+                   ) -> dict[str, Any]:
     """Run the real O41 selector over the replayed candidate pair and paired block deltas."""
     families = {candidate.candidate_family: candidate for candidate in inventory.candidates}
     legacy, target = families.get(LEGACY_FAMILY), families.get(TARGET_FAMILY)
@@ -395,10 +417,12 @@ def _selector_role(profile: Any, inventory: Any, blocks: list[float],
             executed_energies=tuple(float(value) for value in candidate.energies),
             ncount=int(candidate.ncount), scan_command=str(command))
 
+    complete = bool(blocks) and bool(partition_offsets)
     score = O41ScoreEvidence(
-        status="complete" if blocks else "unavailable",
+        status="complete" if complete else "unavailable",
         orientation="target_core_minus_legacy",
-        paired_block_deltas_per_executed_point_nats=tuple(blocks))
+        paired_block_deltas_per_executed_point_nats=tuple(blocks) if complete else (),
+        partition_offsets=partition_offsets if complete else ())
     result = select_o41_authority(O41SelectorInput(
         profile=profile, eligibility_status=eligibility_status,
         applicability_status="applicable", legacy=evidence(legacy, "legacy"),
@@ -610,10 +634,14 @@ def _replay_master(*, engine, workspace: Path, key: str, detector: str, entry: A
         after_inventory, predictive.get("_record"), eligibility_input,
         eig_config.policy_set, eig_config.scoring_config, scope["fingerprint"])
     row["score_primary"] = primary
+    families = {candidate.candidate_family: candidate for candidate in after_inventory.candidates}
+    legacy_id = getattr(families.get(LEGACY_FAMILY), "candidate_id", "")
+    target_id = getattr(families.get(TARGET_FAMILY), "candidate_id", "")
     complete = [variant for variant in primary["variants"] if variant["status"] == "complete"]
     if complete:
         row["selector"] = _selector_role(
-            profile, after_inventory, complete[0]["paired_blocks"], eligibility.status)
+            profile, after_inventory, complete[0]["paired_blocks"], eligibility.status,
+            _partition_offsets(complete[0], legacy_id, target_id))
 
     offsets: dict[str, Any] = {}
     for offset, policy_set in offset_policy_sets.items():
@@ -622,7 +650,9 @@ def _replay_master(*, engine, workspace: Path, key: str, detector: str, entry: A
             policy_set, eig_config.scoring_config, scope["fingerprint"])
         variants = [variant for variant in probe["variants"] if variant["status"] == "complete"]
         selector = (_selector_role(profile, after_inventory, variants[0]["paired_blocks"],
-                                   eligibility.status) if variants else {"available": False})
+                                   eligibility.status,
+                                   _partition_offsets(variants[0], legacy_id, target_id))
+                    if variants else {"available": False})
         offsets[offset] = {"score": probe, "selector": selector}
     row["score_offset_probe"] = offsets
     roles = {offset: value["selector"].get("physical_role")

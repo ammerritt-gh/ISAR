@@ -9,7 +9,9 @@ from isar.eig.o41_authority import (
     AUTHORITY_GRANTED,
     AUTHORITY_NOT_GRANTED,
     AUTHORITY_UNAVAILABLE,
+    O41_MARGIN_SE_MULTIPLE,
     O41CandidateEvidence,
+    O41PartitionOffsetEvidence,
     O41ScoreEvidence,
     O41SelectorInput,
     OUTCOME_LEGACY,
@@ -86,9 +88,15 @@ def _candidate(role: str, *, points: int, lo: float, hi: float, ncount: int = 10
     )
 
 
+# Both offsets favour the target core: the same total information over strictly fewer executed
+# points is a positive per-point delta at each offset.
+BOTH_OFFSETS_FAVOUR_TARGET = ((0.0, 1.0, 1.0), (0.25, 1.0, 1.0))
+
+
 def _input(*, blocks=(0.3,) * 8, eligibility="eligible", applicability="applicable",
            legacy=None, target=None, score_status="complete", orientation="target_core_minus_legacy",
-           evidence_join="matched") -> O41SelectorInput:
+           evidence_join="matched", offsets=BOTH_OFFSETS_FAVOUR_TARGET) -> O41SelectorInput:
+    complete = score_status == "complete"
     return O41SelectorInput(
         profile=validate_o41_authoritative_profile(_config()),
         eligibility_status=eligibility,
@@ -99,8 +107,10 @@ def _input(*, blocks=(0.3,) * 8, eligibility="eligible", applicability="applicab
             status=score_status,
             orientation=orientation,
             paired_block_deltas_per_executed_point_nats=(
-                tuple(blocks) if score_status == "complete" else ()),
+                tuple(blocks) if complete else ()),
             evidence_join_status=evidence_join,
+            partition_offsets=tuple(
+                O41PartitionOffsetEvidence(*values) for values in offsets) if complete else (),
         ),
     )
 
@@ -126,10 +136,13 @@ def test_non_o41_profiles_are_refused(config):
 
 
 def test_decisive_density_win_selects_target_even_when_total_information_can_be_lower():
+    # The eight retained blocks are identical, so the paired standard error is exactly zero and the
+    # margin clears any multiple of it; both partition offsets also select the target core.
     result = select_o41_authority(_input(blocks=(0.02570423,) * 8))
     assert (result.decision_outcome, result.physical_role, result.authority_status) == (
         OUTCOME_TARGET, ROLE_TARGET, AUTHORITY_GRANTED)
     assert result.lower_margin_nats == pytest.approx(0.02570423)
+    assert result.paired_standard_error_nats == 0.0
 
 
 def test_paired_sample_standard_error_reproduces_o41_gate():
@@ -179,6 +192,62 @@ def test_incomplete_or_malformed_selection_evidence_fails_closed(kwargs):
     result = select_o41_authority(_input(**kwargs))
     assert (result.decision_outcome, result.physical_role, result.authority_status) == (
         OUTCOME_UNAVAILABLE, ROLE_LEGACY, AUTHORITY_UNAVAILABLE)
+
+
+def _blocks(mean: float, standard_error: float) -> tuple[float, ...]:
+    """Eight paired blocks with exactly this sample mean and paired standard error."""
+    half = standard_error * math.sqrt(7.0)
+    return tuple(mean + (half if index % 2 == 0 else -half) for index in range(8))
+
+
+def test_offset_flip_from_the_r1e_replay_never_grants_the_target_core():
+    # Master (49,0,0) of the R1-E replay: offset 0.0 selected target_core "decisively" on a margin
+    # of 1.68e-5 nats/point while offset 0.25 selected legacy on the same scoring run.
+    result = select_o41_authority(_input(
+        blocks=_blocks(1.68e-5, 6.6e-6),
+        offsets=((0.0, 1.0, 1.0), (0.25, 1.0, 0.0))))
+    assert (result.decision_outcome, result.physical_role) == (OUTCOME_LEGACY, ROLE_LEGACY)
+    assert "o41_offset_disagreement" in result.reason_codes
+    assert result.partition_offsets_agree is False
+    assert [item.physical_role for item in result.partition_offset_selections] == [
+        ROLE_TARGET, ROLE_LEGACY]
+
+
+def test_zero_information_offset_blocks_the_grant_as_a_disagreement():
+    # Master (41,0,0) at offset 0.25: the predictive falls inside one bin cell and both candidates
+    # score exactly zero.  An offset that separates nothing is not evidence for the target core.
+    result = select_o41_authority(_input(
+        blocks=_blocks(0.02, 0.001),
+        offsets=((0.0, 1.0, 1.0), (0.25, 0.0, 0.0))))
+    assert (result.decision_outcome, result.physical_role) == (OUTCOME_LEGACY, ROLE_LEGACY)
+    assert "o41_offset_disagreement" in result.reason_codes
+    assert result.partition_offset_selections[1].delta_information_per_executed_point_nats == 0.0
+
+
+def test_agreeing_offsets_with_margin_below_the_paired_se_floor_retain_legacy():
+    standard_error = 1e-4
+    result = select_o41_authority(_input(
+        blocks=_blocks(2.5 * standard_error, standard_error)))
+    assert (result.decision_outcome, result.physical_role) == (OUTCOME_LEGACY, ROLE_LEGACY)
+    assert result.partition_offsets_agree is True
+    # Decisive under the retained two-sigma margin, and still refused by the three-sigma floor.
+    assert result.lower_margin_nats > 0.0
+    assert result.reason_codes == ("o41_margin_below_floor",)
+
+
+def test_agreeing_offsets_with_margin_above_the_paired_se_floor_grant_the_target_core():
+    standard_error = 1e-4
+    result = select_o41_authority(_input(
+        blocks=_blocks((O41_MARGIN_SE_MULTIPLE + 1.0) * standard_error, standard_error)))
+    assert (result.decision_outcome, result.physical_role, result.authority_status) == (
+        OUTCOME_TARGET, ROLE_TARGET, AUTHORITY_GRANTED)
+    assert result.reason_codes == ("o41_margin_decisive",)
+    assert result.partition_offsets_agree is True
+
+
+def test_complete_score_evidence_without_per_offset_evidence_is_refused():
+    with pytest.raises(ValueError, match="O41 score evidence is invalid"):
+        O41ScoreEvidence("complete", "target_core_minus_legacy", (0.3,) * 8)
 
 
 def test_o36_ineligible_and_recovery_invalidation_use_non_eig_path():

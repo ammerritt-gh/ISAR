@@ -12,6 +12,7 @@ import pytest
 from isar.drive import loop
 from isar.drive.acquisition.acquire import ScanProposal
 from isar.drive.acquisition.authority import (
+    _partition_offset_evidence,
     build_authority_decision,
     load_authority_decision,
     persist_authority_decision,
@@ -875,3 +876,34 @@ def test_realized_comparison_event_kind_is_registered(tmp_path):
     record = loop.log_event(
         tmp_path / "session.jsonl", "scan_design_realized_comparison", {"ok": True})
     assert "kind_unknown" not in record
+
+
+def _offset_score_set(legacy_partitions, target_partitions):
+    return SimpleNamespace(candidate_scores=(
+        {"candidate_id": "legacy-request",
+         "partition_information_nats": list(legacy_partitions)},
+        {"candidate_id": "target-request",
+         "partition_information_nats": list(target_partitions)},
+    ))
+
+
+def test_per_offset_information_reaches_the_selector_in_partition_order():
+    """The selector's offset-agreement test needs every compiled offset, not the pooled margin."""
+    offsets = _partition_offset_evidence(
+        _offset_score_set((0.4, 0.0), (0.9, 0.0)),
+        {"offsets": [0.0, 0.25]}, {"legacy-request"}, {"target-request"})
+
+    assert [item.offset for item in offsets] == [0.0, 0.25]
+    assert [item.legacy_information_nats for item in offsets] == [0.4, 0.0]
+    assert [item.target_core_information_nats for item in offsets] == [0.9, 0.0]
+
+
+@pytest.mark.parametrize("score_set", [
+    _offset_score_set((0.4,), (0.9,)),
+    SimpleNamespace(candidate_scores=(
+        {"candidate_id": "legacy-request", "partition_information_nats": [0.4, 0.0]},)),
+])
+def test_missing_or_short_per_offset_information_fails_closed(score_set):
+    assert _partition_offset_evidence(
+        score_set, {"offsets": [0.0, 0.25]},
+        {"legacy-request"}, {"target-request"}) is None

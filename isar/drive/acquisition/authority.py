@@ -21,6 +21,7 @@ from isar.drive.acquisition.scan_grid import UniformGrid, resolve_point_count
 from isar.eig.o41_authority import (
     O41AuthoritativeProfile,
     O41CandidateEvidence,
+    O41PartitionOffsetEvidence,
     O41ScoreEvidence,
     O41SelectorInput,
     OUTCOME_UNAVAILABLE,
@@ -120,6 +121,40 @@ def _refused_target_evidence(inventory: Any, refusal: Any) -> O41CandidateEviden
     )
 
 
+def _partition_offset_evidence(
+        score_set: Any, partition: Mapping[str, Any], legacy_ids: set[str], target_ids: set[str],
+) -> tuple[O41PartitionOffsetEvidence, ...] | None:
+    """Pair each compiled offset's retained per-candidate information for the selector.
+
+    ``partition_information_nats`` is the mean information the scoring run already computed for
+    each offset of the compiled partition, in the partition's own offset order.  Anything that
+    does not join exactly returns ``None`` so the caller fails closed instead of granting on the
+    pooled margin alone.
+    """
+    offsets = [float(value) for value in partition["offsets"]]
+    if not offsets:
+        return None
+    scores = {str(item.get("candidate_id")): item for item in score_set.candidate_scores}
+    legacy = next((scores[key] for key in scores if key in legacy_ids), None)
+    target = next((scores[key] for key in scores if key in target_ids), None)
+    if legacy is None or target is None:
+        return None
+    legacy_information = [float(value) for value in legacy.get("partition_information_nats") or ()]
+    target_information = [float(value) for value in target.get("partition_information_nats") or ()]
+    if len(legacy_information) != len(offsets) or len(target_information) != len(offsets):
+        return None
+    try:
+        return tuple(
+            O41PartitionOffsetEvidence(
+                offset=offset,
+                legacy_information_nats=legacy_value,
+                target_core_information_nats=target_value)
+            for offset, legacy_value, target_value
+            in zip(offsets, legacy_information, target_information))
+    except ValueError:
+        return None
+
+
 def _primary_score_evidence(inventory: Any, comparison: ScanDesignRealizedComparison,
                             legacy: RealizedScanRequest,
                             target: RealizedScanRequest) -> O41ScoreEvidence:
@@ -162,7 +197,12 @@ def _primary_score_evidence(inventory: Any, comparison: ScanDesignRealizedCompar
     sign = 1.0 if pair["candidate_b_id"] in target_ids else -1.0
     blocks = tuple(sign * float(value) for value in
                    pair["paired_block_deltas_per_executed_point_nats"])
-    return O41ScoreEvidence("complete", "target_core_minus_legacy", blocks)
+    offsets = _partition_offset_evidence(score_set, partition, legacy_ids, target_ids)
+    if offsets is None:
+        return O41ScoreEvidence(
+            "unavailable", "target_core_minus_legacy", (), evidence_join_status="mismatch")
+    return O41ScoreEvidence(
+        "complete", "target_core_minus_legacy", blocks, partition_offsets=offsets)
 
 
 def _validation_mapping(evidence: O41CandidateEvidence, adjustments: tuple[str, ...]) -> dict:
