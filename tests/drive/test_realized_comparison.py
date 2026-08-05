@@ -385,8 +385,9 @@ def _persist_unavailable_comparison(tmp_path: Path):
     return proposal, comparison, payload
 
 
+@pytest.mark.parametrize("echo_requested_points", [True, False])
 def test_a_partially_infeasible_target_core_is_refused_and_legacy_is_submitted(
-        monkeypatch, tmp_path):
+        monkeypatch, tmp_path, echo_requested_points):
     """The authority cannot trim a target-core window — the window *is* the candidate's identity —
     so a partially-infeasible one must be refused here. Selecting it would hand the submit boundary
     a grid TAVI rejects with HTTP 400, which is how a whole campaign executed zero scans."""
@@ -403,7 +404,12 @@ def test_a_partially_infeasible_target_core_is_refused_and_legacy_is_submitted(
     roles = []
 
     class PartialTargetClient:
-        """Legacy validates cleanly; the target core comes back one point short."""
+        """Legacy validates cleanly; the target core comes back one point short.
+
+        ``echo_requested_points=False`` is the adapter that reports only the mask. The mask is
+        positional against the requested point list, so its length IS the requested count — without
+        that fallback the partial target slips through the check unnoticed.
+        """
 
         def validate(self, body):
             _axis, lo, hi, step = body["parameters"]["scan_command1"].split()
@@ -413,10 +419,12 @@ def test_a_partially_infeasible_target_core_is_refused_and_legacy_is_submitted(
                 return {"would_queue": True, "blockers": [],
                         "requested_points": points, "feasible_points": points}
             roles.append("target_core")
-            return {"would_queue": True, "blockers": [],
-                    "requested_points": points, "feasible_points": max(points - 1, 0),
-                    "partial": True,
-                    "planned_feasible_mask": [False] + [True] * max(points - 1, 0)}
+            payload = {"would_queue": True, "blockers": [],
+                       "feasible_points": max(points - 1, 0), "partial": True,
+                       "planned_feasible_mask": [False] + [True] * max(points - 1, 0)}
+            if echo_requested_points:
+                payload["requested_points"] = points
+            return payload
 
     monkeypatch.setattr(
         loop, "load_scan_design_realized_comparison", lambda *_args: comparison)

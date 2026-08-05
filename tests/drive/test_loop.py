@@ -4,6 +4,7 @@ The mock isar runner is the analysis boundary stand-in: it reads the saved scan 
 ``report/results.csv`` exactly as ISAR would, so the loop exercises the real readers, real σ-calibration,
 real acquisition, and real stopping — only the fitting and the instrument are faked.
 """
+import collections
 import csv
 import json
 import math
@@ -36,6 +37,7 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
                              _run_nonce, _target_supporting_feasible_points, _validate_body,
                              run_campaign)
 from isar.drive.acquisition.acquire import ScanProposal, points_in_window
+from isar.drive.acquisition.grid_adapters import TAVI_GRID_ADAPTER
 from isar.drive.acquisition.eig import counts_eig
 from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
 from isar.drive.instrument.tavi_client import TaviError
@@ -665,10 +667,17 @@ def test_campaign_summary_persists_hypothesis_mismatch_not_just_a_log(monkeypatc
 
 
 def _parse_grid(scan_command):
+    """The exact point list TAVI executes for a ``scan_command1``.
+
+    Goes through the production grid adapter rather than reimplementing the arithmetic: TAVI counts
+    ``floor((hi - lo) / step + 0.5) + 1`` on the ``%g``-rendered wire values, and a truncating
+    ``int((hi - lo) / step) + 1`` here disagrees by a point on windows whose span is a hair under a
+    whole number of steps — which would silently mis-align every feasibility mask a mock builds.
+    """
     _, lo, hi, step = scan_command.split()
     lo, hi, step = float(lo), float(hi), float(step)
-    n = int((hi - lo) / step) + 1
-    return [lo + step * i for i in range(n)]
+    return list(TAVI_GRID_ADAPTER.executed_energies(
+        lo, step, TAVI_GRID_ADAPTER.point_count(lo, hi, step)))
 
 
 def _counts_at(grid, peak):
@@ -1963,6 +1972,102 @@ class _InfeasibleAtSubmitTavi(MockTavi):
         raise TaviError(400, "POST /scan -> HTTP 400", _INFEASIBLE_POINTS_BODY)
 
 
+class _ExecutedGridMismatchTavi(MockTavi):
+    """An instrument that executes one point fewer than the grid it was handed."""
+
+    def get_scan_data(self, job_id):
+        document = super().get_scan_data(job_id)
+        result = document["result"]
+        result["scan_values_1"] = result["scan_values_1"][:-1]
+        result["counts"] = result["counts"][:-1]
+        return document
+
+
+class _TargetOutsideLongestRunTavi(MockTavi):
+    """The reachable stretch and the physics are in different places.
+
+    A wide high-energy band is reachable while the peak sits in a short low-energy island, so
+    maximizing run length alone would submit a long, cheap, perfectly feasible scan of nothing.
+    """
+
+    def __init__(self, omega_true, *, island_half_width=0.4, gap=2.0):
+        super().__init__(omega_true)
+        self.island_half_width = float(island_half_width)
+        self.gap = float(gap)
+        self.masks: list[list[bool]] = []
+
+    def _mask(self, grid, peak):
+        # A short island around the peak, then an infeasible gap, then everything above is reachable
+        # — so the longest run is the high-energy band that cannot see the excitation at all.
+        return [abs(energy - peak) <= self.island_half_width or energy >= peak + self.gap
+                for energy in grid]
+
+    def validate(self, body):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        mask = self._mask(grid, self.omega_true(body["parameters"]["H"]))
+        self.masks.append(mask)
+        if all(mask):
+            return super().validate(body)
+        return {"would_queue": True, "blockers": [], "eta": {"estimated_seconds": 5.0},
+                "requested_points": len(grid), "feasible_points": sum(mask),
+                "planned_feasible_mask": mask, "partial": True}
+
+    def submit_scan(self, body, idempotency_key=None):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        if not all(self._mask(grid, self.omega_true(body["parameters"]["H"]))):
+            raise TaviError(400, "POST /scan -> HTTP 400", _INFEASIBLE_POINTS_BODY)
+        return super().submit_scan(body, idempotency_key=idempotency_key)
+
+
+class _TargetUnreachableTavi(MockTavi):
+    """Only energies far above the peak are reachable — no run can see the excitation."""
+
+    def __init__(self, omega_true, *, reachable_above):
+        super().__init__(omega_true)
+        self.reachable_above = float(reachable_above)
+
+    def validate(self, body):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        mask = [energy >= self.reachable_above for energy in grid]
+        if all(mask) or not any(mask):
+            return {"would_queue": bool(all(mask)), "blockers": [] if all(mask) else ["infeasible"],
+                    "eta": {"estimated_seconds": 5.0},
+                    "requested_points": len(grid), "feasible_points": sum(mask),
+                    "planned_feasible_mask": mask}
+        return {"would_queue": True, "blockers": [], "eta": {"estimated_seconds": 5.0},
+                "requested_points": len(grid), "feasible_points": sum(mask),
+                "planned_feasible_mask": mask, "partial": True}
+
+    def submit_scan(self, body, idempotency_key=None):
+        # A window the ladder later re-centred entirely into the reachable band is fully feasible
+        # and legitimately submittable; only a partially-infeasible grid is refused, as TAVI does.
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        if not all(energy >= self.reachable_above for energy in grid):
+            raise TaviError(400, "POST /scan -> HTTP 400", _INFEASIBLE_POINTS_BODY)
+        return super().submit_scan(body, idempotency_key=idempotency_key)
+
+
+class _NotQueueablePartialTavi(MockTavi):
+    """A transient refusal (full queue) that happens to carry a partial feasibility mask."""
+
+    def __init__(self, omega_true):
+        super().__init__(omega_true)
+        self.validated_windows: list[tuple[float, float]] = []
+
+    def validate(self, body):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        _axis, lo, hi, _step = body["parameters"]["scan_command1"].split()
+        self.validated_windows.append((round(float(lo), 6), round(float(hi), 6)))
+        mask = [index > 0 for index in range(len(grid))]
+        return {"would_queue": False, "blockers": ["queue_full: 10 of 10 jobs pending"],
+                "eta": {"estimated_seconds": 5.0},
+                "requested_points": len(grid), "feasible_points": sum(mask),
+                "planned_feasible_mask": mask, "partial": True}
+
+    def submit_scan(self, body, idempotency_key=None):
+        raise AssertionError("a refused validation must never reach submit")
+
+
 def _shadow_objective():
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
     frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "shadow"}
@@ -2084,6 +2189,145 @@ def test_infeasible_points_at_submit_costs_the_request_not_the_hkl(tmp_path):
     assert rejection.rejection_class.value == "structural"
 
 
+def test_the_trim_keeps_the_run_containing_the_target_not_the_longest_one(tmp_path):
+    """A trim that only maximizes run length can submit a long, cheap, feasible scan of nothing.
+
+    Repro shape from review: the peak sits at 6 meV in a short low-energy island while a wide band
+    above it is reachable. The kept window must be the island."""
+    omega = lambda _h: 6.0
+    client = _TargetOutsideLongestRunTavi(omega)
+    summary, _workspace = _run(
+        tmp_path, _shadow_objective(), client, make_mock_runner(omega), stop_after=1)
+    events = read_log(summary["session_log"])
+
+    trim = next(event["payload"] for event in events if event["kind"] == "feasibility_trim")
+    assert trim["run_selection"] == "contains_target"
+    assert trim["new_e_lo"] <= trim["target_energy"] <= trim["new_e_hi"]
+    # The rejected alternative: a longer, entirely feasible, entirely useless high-energy window.
+    mask = client.masks[0]
+    assert sum(mask) - (trim["feasible_run"][1] - trim["feasible_run"][0] + 1) > 0, \
+        "the repro needs a longer feasible run outside the target island"
+    assert client.jobs, "the trimmed window must still be submitted"
+    submitted = _parse_grid(next(iter(client.jobs.values()))["parameters"]["scan_command1"])
+    assert submitted[0] <= 6.0 <= submitted[-1], \
+        "the submitted window dropped the excitation it exists to measure"
+
+
+def test_a_window_whose_reachable_runs_all_miss_the_target_is_declined(tmp_path):
+    """No reachable stretch can see the peak, so there is nothing worth submitting here — and the
+    refusal is request-scoped, leaving the widen/re-center ladder open at that q."""
+    omega = lambda _h: 6.0
+    summary, _workspace = _run(
+        tmp_path, _shadow_objective(), _TargetUnreachableTavi(omega, reachable_above=11.0),
+        make_mock_runner(omega))
+    events = read_log(summary["session_log"])
+
+    excluded = [event["payload"] for event in events if event["kind"] == "exception"
+                and event["payload"].get("action") == "feasible_run_excludes_target"]
+    assert excluded, "a window that cannot see the target must say so"
+    assert excluded[0]["reason"] == "no_feasible_run_overlaps_the_declared_target"
+    assert not [event for event in events if event["kind"] == "feasibility_trim"]
+    suppressed = [event["payload"] for event in events if event["kind"] == "action_suppressed"]
+    assert suppressed and {entry["scope"] for entry in suppressed} == {"request"}
+
+
+def test_a_transient_refusal_carrying_a_partial_mask_does_not_move_the_window(tmp_path):
+    """A full queue is not a geometry statement. Trimming on it would rewrite the request while
+    answering none of the actual blocker, and lose the original window in the process."""
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _NotQueueablePartialTavi(omega)
+    summary, _workspace = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+    events = read_log(summary["session_log"])
+
+    assert not [event for event in events if event["kind"] == "feasibility_trim"]
+    assert not [event for event in events if event["kind"] == "exception"
+                and event["payload"].get("action") in {"feasible_run_below_minimum",
+                                                       "feasible_run_excludes_target",
+                                                       "feasibility_trim_did_not_converge"}], \
+        "a transient refusal must take the ordinary validation-rejected path"
+    assert not client.jobs
+    # No window the instrument saw differs from a window the planner proposed: nothing was mutated.
+    proposed = {(round(event["payload"]["e_lo"], 6), round(event["payload"]["e_hi"], 6))
+                for event in events if event["kind"] == "propose"}
+    assert proposed
+    assert client.validated_windows, "the campaign must still have validated something"
+    assert set(client.validated_windows) <= proposed
+    verdicts = {event["payload"]["verdict"] for event in events
+                if event["kind"] == "action_suppressed"}
+    assert verdicts == {"validation_rejected"}
+
+
+def test_a_trimmed_then_declined_request_does_not_re_emit_next_iteration(tmp_path):
+    """The trim re-fingerprints the proposal, so a decline afterwards charges only the trimmed
+    request. Without also charging the pre-trim original the selector re-emits it every iteration
+    and repeats trim -> decline forever."""
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _FirstPointInfeasibleTavi(omega)
+    summary, _workspace = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+    events = read_log(summary["session_log"])
+
+    trims = [event["payload"] for event in events if event["kind"] == "feasibility_trim"]
+    assert trims, "the first partial verdict must still trim"
+    suppressed = [event["payload"] for event in events if event["kind"] == "action_suppressed"]
+    assert suppressed
+    charged = [entry for entry in suppressed if entry["superseded_request_fingerprints"]]
+    assert charged, "the pre-trim request must be charged alongside the trimmed one"
+    for entry in charged:
+        assert entry["request_fingerprint"] not in entry["superseded_request_fingerprints"]
+    # The churn signature is the SAME pre-trim REQUEST coming back. A different request at the same
+    # q — a wider window, a production escalation — is the ladder doing its job and stays allowed.
+    charged_fingerprints = {value for entry in suppressed
+                            for value in entry["superseded_request_fingerprints"]}
+    pre_trim = collections.Counter(entry["previous_request_fingerprint"] for entry in trims)
+    assert max(pre_trim.values()) == 1, \
+        f"a declined request was re-emitted and re-trimmed: {pre_trim}"
+    assert set(pre_trim) <= charged_fingerprints, \
+        "every trimmed-then-declined original must be suppressed, or it re-emits next iteration"
+
+
+def test_suppression_rebuild_recovers_superseded_request_fingerprints(tmp_path):
+    """Resume rebuilds suppression from the log, so the superseded original has to survive there."""
+    log_path = tmp_path / "session.jsonl"
+    log_event(log_path, "action_suppressed", {
+        "scope": "request", "verdict": "validation_rejected", "rejection_class": "structural",
+        "reason": "validation_rejected at hkl=[2.1, 0.0, 0.0]",
+        "request_fingerprint": "b" * 64,
+        "superseded_request_fingerprints": ["a" * 64],
+        "hkl": [2.1, 0.0, 0.0], "iter": 1})
+    _by_action, _by_hkl, by_request = loop_mod.suppressed_actions(log_path)
+    assert set(by_request) == {"a" * 64, "b" * 64}
+
+
+def test_feasibility_shaped_refusal_recognises_geometry_and_nothing_else():
+    assert loop_mod._is_feasibility_shaped_refusal({"blockers": ["a2_out_of_range"]})
+    assert loop_mod._is_feasibility_shaped_refusal(
+        {"blockers": ["physical_infeasible", "scattering triangle does not close"]})
+    assert not loop_mod._is_feasibility_shaped_refusal(
+        {"blockers": ["limit_exceeded: queue neutron budget exceeded"]})
+    # Mixed verdicts fail closed: one non-geometry blocker is enough to leave the window alone.
+    assert not loop_mod._is_feasibility_shaped_refusal(
+        {"blockers": ["a2_out_of_range", "queue_full"]})
+    assert not loop_mod._is_feasibility_shaped_refusal({"blockers": []})
+
+
+def test_select_feasible_run_prefers_the_target_and_refuses_a_blind_window():
+    energies = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+    manifest = {"planned_feasible_mask": [True, False, True, True, True, True]}
+    # A one-point island containing the target beats a four-point run that does not.
+    assert loop_mod._select_feasible_run(
+        manifest, energies, target_energy=0.0, acceptance=(-0.5, 0.5)) == ((0, 0),
+                                                                          "contains_target")
+    # No target declared → longest run, unchanged behaviour for survey/legacy proposals.
+    assert loop_mod._select_feasible_run(
+        manifest, energies, target_energy=None, acceptance=None) == ((2, 5), "longest")
+    # Target in the infeasible gap and the longest run does not reach it → refuse.
+    assert loop_mod._select_feasible_run(
+        manifest, energies, target_energy=1.0, acceptance=(0.9, 1.1)) == (None, "target_excluded")
+    # Same target, but the acceptance interval reaches the feasible run → longest run is enough.
+    assert loop_mod._select_feasible_run(
+        manifest, energies, target_energy=1.0, acceptance=(0.5, 2.5)) == ((2, 5), "longest")
+
+
 def test_largest_feasible_run_refuses_a_manifest_that_does_not_match_the_request():
     """A mask of the wrong length describes a different grid; trimming against it would move the
     window to the wrong energies, so it must read as 'no localization'."""
@@ -2109,8 +2353,11 @@ def test_shadow_submission_carries_the_exact_selected_legacy_sidecar(tmp_path):
         budget={"kind": "neutrons", "amount": 1e12}, target_branch="optic",
         energy_search_meV=(-2.0, 12.0), **frozen)
 
+    # An instrument that executes a grid other than the one it was handed. Previously this test got
+    # its mismatch for free from a mock helper whose point count disagreed with the adapter; that
+    # accident is fixed, so the misbehaving instrument is now declared on purpose.
     summary, workspace = _run(
-        tmp_path, objective, MockTavi(lambda _h: 6.0),
+        tmp_path, objective, _ExecutedGridMismatchTavi(lambda _h: 6.0),
         make_mock_runner(lambda _h: 6.0), stop_after=1)
     events = read_log(summary["session_log"])
     submission = next(event["payload"] for event in events

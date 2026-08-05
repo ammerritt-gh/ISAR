@@ -23,7 +23,7 @@ from collections.abc import Mapping
 import copy
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 import json
 import hashlib
@@ -770,17 +770,15 @@ def _feasible_point_count(validation: dict, fallback: int) -> int:
     return max(int(fallback), 0)
 
 
-def _largest_feasible_run(validation: dict, n_points: int) -> tuple[int, int] | None:
-    """Positional bounds of the largest contiguous feasible run in TAVI's frozen manifest.
+def _feasible_runs(validation: dict, n_points: int) -> list[tuple[int, int]] | None:
+    """Every maximal contiguous feasible run in TAVI's frozen manifest, in positional order.
 
-    Returns the inclusive ``(first_index, last_index)`` of the longest run of feasible points, or
-    ``None`` when the manifest does not localize the infeasibility against the exact grid that was
-    requested. ``planned_feasible_mask`` and ``feasible_segments`` are positional against the
-    requested point list, so a mask whose length disagrees with the requested count describes a
-    *different* grid: indexing into it would trim to the wrong energies, which is far worse than not
-    trimming at all. That mismatch is logged and reported as "no localization".
-
-    Ties go to the first run encountered, which keeps the choice deterministic for a given manifest.
+    Returns inclusive ``(first_index, last_index)`` pairs, or ``None`` when the manifest does not
+    localize the infeasibility against the exact grid that was requested. ``planned_feasible_mask``
+    and ``feasible_segments`` are positional against the requested point list, so a mask whose
+    length disagrees with the requested count describes a *different* grid: indexing into it would
+    trim to the wrong energies, which is far worse than not trimming at all. That mismatch is logged
+    and reported as "no localization".
     """
     if not isinstance(validation, dict) or int(n_points) <= 0:
         return None
@@ -812,17 +810,87 @@ def _largest_feasible_run(validation: dict, n_points: int) -> tuple[int, int] | 
                     flags[index] = True
     if flags is None or not any(flags):
         return None
-    best: tuple[int, int] | None = None
+    runs: list[tuple[int, int]] = []
     run_start: int | None = None
     for index, feasible in enumerate([*flags, False]):
         if feasible and run_start is None:
             run_start = index
         elif not feasible and run_start is not None:
-            length = index - run_start
-            if best is None or length > (best[1] - best[0] + 1):
-                best = (run_start, index - 1)
+            runs.append((run_start, index - 1))
             run_start = None
-    return best
+    return runs
+
+
+def _largest_feasible_run(validation: dict, n_points: int) -> tuple[int, int] | None:
+    """The longest contiguous feasible run, or ``None`` without localization.
+
+    Ties go to the first run encountered, which keeps the choice deterministic for a given manifest.
+    """
+    runs = _feasible_runs(validation, n_points)
+    if not runs:
+        return None
+    return max(runs, key=lambda run: run[1] - run[0])
+
+
+def _select_feasible_run(validation: dict, energies: Sequence[float], *,
+                         target_energy: float | None,
+                         acceptance: tuple[float, float] | None,
+                         ) -> tuple[tuple[int, int] | None, str]:
+    """Choose which feasible run a trimmed window should keep, and say why.
+
+    Returns ``(run, decision)``. ``decision`` is one of:
+
+    * ``"no_localization"`` — the manifest cannot be indexed against this grid (``run`` is ``None``);
+    * ``"contains_target"`` — the kept run spans the energy this scan is *about*;
+    * ``"longest"`` — no run contains the target (or none is declared), so the longest run wins;
+    * ``"target_excluded"`` — a target is declared, no run contains it, and the longest run does not
+      even overlap its acceptance interval (``run`` is ``None``).
+
+    The last case is the point of this function. Maximizing run length alone can keep a long stretch
+    of reachable-but-irrelevant energies while dropping the excitation the scan exists to measure —
+    a scan that is submittable, cheap, and scientifically empty. Declining is strictly better than
+    submitting a blind window.
+    """
+    runs = _feasible_runs(validation, len(energies))
+    if not runs:
+        return None, "no_localization"
+    longest = max(runs, key=lambda run: run[1] - run[0])
+    if target_energy is None:
+        return longest, "longest"
+
+    def span(run: tuple[int, int]) -> tuple[float, float]:
+        return float(energies[run[0]]), float(energies[run[1]])
+
+    for run in runs:
+        low, high = span(run)
+        if low - 1e-9 <= float(target_energy) <= high + 1e-9:
+            return run, "contains_target"
+    if acceptance is not None:
+        low, high = span(longest)
+        if not (low <= float(acceptance[1]) + 1e-9 and high >= float(acceptance[0]) - 1e-9):
+            return None, "target_excluded"
+    return longest, "longest"
+
+
+# Blocker vocabulary is TAVI's, not ISAR's, so the trim recognises infeasibility by marker rather
+# than by an enumerated list it cannot keep in sync. Anything unrecognised (queue limits, budget
+# refusals, transport complaints) fails CLOSED: the window is left alone and the ordinary decline
+# path runs, because mutating a request in response to a refusal that had nothing to do with
+# geometry both loses the original request and answers the wrong question.
+_INFEASIBILITY_BLOCKER_MARKERS = (
+    "infeasible", "unreachable", "out_of_range", "outofrange", "out of range",
+    "triangle", "geometry", "not_reachable",
+)
+
+
+def _is_feasibility_shaped_refusal(validation: dict) -> bool:
+    """Whether a ``would_queue=False`` verdict is about geometry and nothing else."""
+    blockers = validation.get("blockers") if isinstance(validation, dict) else None
+    if not isinstance(blockers, list) or not blockers:
+        return False
+    return all(
+        any(marker in str(blocker).lower() for marker in _INFEASIBILITY_BLOCKER_MARKERS)
+        for blocker in blockers)
 
 
 def _executed_point_count(data: dict, fallback: int) -> int:
@@ -2686,6 +2754,11 @@ def suppressed_actions(log_path) -> tuple[dict[str, dict], dict[str, dict], dict
             by_action[str(payload["scientific_action_fingerprint"])] = entry
         elif scope == "request" and payload.get("request_fingerprint"):
             by_request[str(payload["request_fingerprint"])] = entry
+            # Requests the proposal was adjusted away from before it was refused are charged too, so
+            # a resume does not re-emit the un-adjusted original and repeat the adjustment.
+            for value in (payload.get("superseded_request_fingerprints") or []):
+                if value:
+                    by_request[str(value)] = entry
     return by_action, by_hkl, by_request
 
 
@@ -2717,6 +2790,10 @@ def _record_action_rejection(cfg, plan, proposal, verdict: str,
     meta = proposal.meta or {}
     fingerprint = meta.get("scientific_action_fingerprint")
     request_fingerprint = meta.get("proposal_fingerprint")
+    # Requests this proposal was adjusted away from in flight. They are charged alongside the final
+    # one, or the un-adjusted original re-emits next iteration and repeats the same decline.
+    superseded = [str(value) for value in (meta.get("superseded_request_fingerprints") or [])
+                  if value and str(value) != str(request_fingerprint)]
     hkl = [proposal.h, proposal.k, proposal.l]
     reason = f"{verdict} at hkl={hkl}"
     log_event(cfg.log_path, "action_suppressed", {
@@ -2726,6 +2803,7 @@ def _record_action_rejection(cfg, plan, proposal, verdict: str,
         "reason": reason,
         "scientific_action_fingerprint": fingerprint,
         "request_fingerprint": request_fingerprint,
+        "superseded_request_fingerprints": superseded,
         "hkl": hkl,
         "acquisition_id": proposal.acquisition_id,
         "iter": it})
@@ -2736,6 +2814,8 @@ def _record_action_rejection(cfg, plan, proposal, verdict: str,
         action_suppressions[str(fingerprint)] = entry
     elif rejection.scope == "request" and request_fingerprint:
         request_suppressions[str(request_fingerprint)] = entry
+        for value in superseded:
+            request_suppressions[value] = entry
     else:
         return None
     return plan.next_proposal() if plan is not None else None
@@ -2920,6 +3000,24 @@ def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
             cfg, objective, proposal, budget_state, it=it,
             legacy_adjustments=("initial_finalization",))
         return proposal, None
+
+
+def _mark_request_superseded(proposal, fingerprint: str | None) -> None:
+    """Remember a request fingerprint this proposal has already moved on from.
+
+    An in-flight adjustment (today: the feasibility trim) re-fingerprints the proposal, so a decline
+    afterwards charges only the *adjusted* request. The original is then still unsuppressed and the
+    selector re-emits it on the next iteration, which adjusts it into the same decline again — churn
+    that costs an iteration every time and never terminates. Recording the superseded fingerprint
+    here lets :func:`_record_action_rejection` charge both.
+    """
+    if not fingerprint:
+        return
+    meta = proposal.meta if isinstance(proposal.meta, dict) else {}
+    proposal.meta = meta
+    superseded = meta.setdefault("superseded_request_fingerprints", [])
+    if str(fingerprint) not in superseded:
+        superseded.append(str(fingerprint))
 
 
 def _declined_observation(proposal, verdict: str) -> dict:
@@ -3682,6 +3780,13 @@ def _prepare_authoritative_submission(
                 target_requested_points = target_validation.get("requested_points")
                 target_feasible_points = _feasible_point_count(
                     target_validation, target_proposal.n_points or 1)
+                if target_requested_points is None:
+                    # ``planned_feasible_mask`` is positional against the requested point list, so
+                    # its length IS the requested count. Without this fallback an adapter that omits
+                    # the echoed count hides a partially-infeasible target from the check below.
+                    mask = target_validation.get("planned_feasible_mask")
+                    if isinstance(mask, list) and mask:
+                        target_requested_points = len(mask)
                 # A partially-infeasible target core is unsubmittable (TAVI 400s the grid), and the
                 # authority has no way to trim it — the target window is the candidate's identity.
                 # Refuse it here so the existing refused-target path submits the legacy request,
@@ -4173,6 +4278,10 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
     rows: list[dict] = []
     support_adjusted = False
     feasibility_trimmed = False
+    # The request as it stood before a feasibility trim. A decline after the trim charges the
+    # *trimmed* fingerprint, so without this the untrimmed original stays unsuppressed and the
+    # selector re-emits it next iteration, repeating trim → decline for the rest of the campaign.
+    pre_trim_request_fingerprint: str | None = None
     declined_verdict: str | None = None
     while True:
         # Single checkpoint before EVERY validate/submit, including support/recenter retries.
@@ -4236,10 +4345,53 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         # authoritative campaign zero executed scans. This is a *request* adjustment, exactly like the
         # step-shrink below: the q itself is never charged for it.
         requested_points = int(val.get("requested_points") or proposal.n_points or 0)
-        if 0 < feasible_points < requested_points:
-            run = _largest_feasible_run(val, requested_points)
+        # Only a feasibility-shaped verdict may move the window. A refusal for an unrelated reason
+        # (a full queue, an exceeded neutron budget) can still carry a partial mask, and trimming on
+        # it would silently rewrite the request while answering none of the actual blocker.
+        trim_admissible = bool(val.get("would_queue", False)) or _is_feasibility_shaped_refusal(val)
+        if 0 < feasible_points < requested_points and trim_admissible:
+            # The energy this scan is *about* — for a rival probe that is the rival centre, not the
+            # target model's prediction, which is exactly why ``e_pred`` and not ``target_band`` is
+            # the primary signal. The acceptance interval is the target band when the band actually
+            # describes this scan, and a resolution width around ``e_pred`` otherwise.
+            target_energy = (float(proposal.e_pred)
+                             if isinstance(proposal.e_pred, (int, float))
+                             and not isinstance(proposal.e_pred, bool)
+                             and math.isfinite(float(proposal.e_pred)) else None)
+            def _in_window(value) -> bool:
+                return (value is not None
+                        and float(proposal.e_lo) - 1e-9 <= float(value) <= float(proposal.e_hi)
+                        + 1e-9)
+
+            if not _in_window(target_energy):
+                # A survey quicklook leaves ``e_pred`` at 0.0 and searches a whole band; the
+                # hypothesis' own centre is then what the window is about. With neither, the
+                # proposal declares no target and longest-run is the honest choice.
+                target_energy = None
+                if target_band is not None and _in_window(float(target_band[0])):
+                    target_energy = float(target_band[0])
+            acceptance = None
+            if target_energy is not None:
+                # A resolution width, deliberately NOT the ±2σ credible band. The question here is
+                # "can this window still see the excitation", and a window touching the far tail of a
+                # broad prior answers no — the shipped optic prior is wide enough that a 2σ test
+                # accepts a window five resolution widths away from the peak.
+                half_width = max(float(proposal.fwhm_dE or 0.0), float(proposal.e_step), 1e-6)
+                acceptance = (target_energy - half_width, target_energy + half_width)
+            # The exact point list the instrument masked, at its own execution precision — never a
+            # re-derived ``e_lo + i·step``, which drifts from the wire values the mask indexes.
+            grid_energies = TAVI_GRID_ADAPTER.executed_energies(
+                proposal.e_lo, proposal.e_step, requested_points)
+            run, run_decision = _select_feasible_run(
+                val, grid_energies, target_energy=target_energy, acceptance=acceptance)
             run_length = 0 if run is None else run[1] - run[0] + 1
-            if run is not None and run_length < FEASIBLE_TRIM_MIN_POINTS:
+            # "Nothing here is a scan" is a more basic fact than "nothing here is your peak", so the
+            # floor is judged against the whole manifest and reported first — otherwise a manifest
+            # with no usable run at all would be filed under the target-coverage verdict.
+            all_runs = _feasible_runs(val, requested_points) or []
+            longest_run_length = max((end - start + 1 for start, end in all_runs), default=0)
+            if (all_runs and longest_run_length < FEASIBLE_TRIM_MIN_POINTS) or (
+                    run is not None and run_length < FEASIBLE_TRIM_MIN_POINTS):
                 # Request scope, not geometry: this window clipped the reachable band down to
                 # (nearly) nothing, but a shifted or widened window at the same Q may still be
                 # fully measurable — the widen/re-center ladder must stay open. Only a
@@ -4250,10 +4402,29 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                     "reason": "largest_feasible_run_below_minimum",
                     "feasible_points": feasible_points,
                     "requested_points": requested_points,
-                    "feasible_run_points": run_length,
+                    "feasible_run_points": max(run_length, longest_run_length),
                     "minimum_points": FEASIBLE_TRIM_MIN_POINTS,
                     "planned_feasible_mask": val.get("planned_feasible_mask"),
                     "iter": it})
+                _mark_request_superseded(proposal, pre_trim_request_fingerprint)
+                observations.append(_declined_observation(proposal, "validation_rejected"))
+                declined_verdict = "validation_rejected"
+                break
+            if run_decision == "target_excluded":
+                # Every reachable stretch misses the excitation. Submitting the longest run would buy
+                # a clean, cheap, scientifically empty scan; refuse the request and let the
+                # widen/re-center ladder propose a window the instrument can actually measure.
+                log_event(log_path, "exception", {
+                    "action": "feasible_run_excludes_target", "phase": "validation",
+                    "hkl": [proposal.h, proposal.k, proposal.l], "blockers": val.get("blockers"),
+                    "reason": "no_feasible_run_overlaps_the_declared_target",
+                    "target_energy": target_energy,
+                    "acceptance": list(acceptance) if acceptance is not None else None,
+                    "feasible_points": feasible_points,
+                    "requested_points": requested_points,
+                    "planned_feasible_mask": val.get("planned_feasible_mask"),
+                    "iter": it})
+                _mark_request_superseded(proposal, pre_trim_request_fingerprint)
                 observations.append(_declined_observation(proposal, "validation_rejected"))
                 declined_verdict = "validation_rejected"
                 break
@@ -4268,6 +4439,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                     "requested_points": requested_points,
                     "planned_feasible_mask": val.get("planned_feasible_mask"),
                     "iter": it})
+                _mark_request_superseded(proposal, pre_trim_request_fingerprint)
                 observations.append(_declined_observation(proposal, "validation_rejected"))
                 declined_verdict = "validation_rejected"
                 break
@@ -4276,8 +4448,9 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                 e_step = float(proposal.e_step)
                 previous_request_fingerprint = (proposal.meta or {}).get(
                     "proposal_fingerprint")
-                proposal.e_lo = old_e_lo + run[0] * e_step
-                proposal.e_hi = old_e_lo + run[1] * e_step
+                pre_trim_request_fingerprint = previous_request_fingerprint
+                proposal.e_lo = float(grid_energies[run[0]])
+                proposal.e_hi = float(grid_energies[run[1]])
                 # ``_finalize_proposal`` re-derives ``n_points`` from the mutated window through
                 # ``_guard_point_count``, so the trimmed grid is re-costed and re-fingerprinted the
                 # same way the step-shrink path is.
@@ -4303,6 +4476,10 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                     "requested_points": requested_points,
                     "feasible_points": feasible_points,
                     "feasible_run": [run[0], run[1]],
+                    "run_selection": run_decision,
+                    "target_energy": target_energy,
+                    "previous_request_fingerprint": previous_request_fingerprint,
+                    "request_fingerprint": (proposal.meta or {}).get("proposal_fingerprint"),
                     "n_points": int(proposal.n_points or 0),
                     "planned_feasible_mask": val.get("planned_feasible_mask"),
                     "iter": it, "attempt": attempt})
