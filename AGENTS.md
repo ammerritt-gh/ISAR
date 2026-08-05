@@ -138,10 +138,33 @@ contract changes are additive only (DESIGN §4).
 1. **Parse:** `python -m py_compile` the changed files (or your editor's syntax check).
 2. **Import:** import the changed public surface (e.g. `import isar.analyze.components`); for GUI work
    confirm no Qt leaked into `workspace_api`/`geometry`/`plotspec`.
-3. **Tests:** `python -m pytest -m "not slow" -n 16 --dist worksteal` from the repo root (~1 min);
-   `python -m pytest -n 16 --dist worksteal` before calling non-trivial work done (~10 min), and a
-   full serial `python -m pytest` at release gates. Reproduce a failure serially before debugging
-   it. Real-data subset needs local `test_data/`; `live` needs TAVI at `127.0.0.1:8642`.
+3. **Tests — targeted while iterating, broad once per slice.** Verification fan-out, not
+   implementation, is the historical bottleneck: the failure this rule prevents is "rerun the world
+   after every manifest tweak." The three lanes (not-slow parallel ~1 min, full parallel ~10 min,
+   full serial at release gates) are *slice-boundary* tools, not per-commit reflexes:
+   - **During active repair work** run only: parse/import checks on changed files, the tests that
+     directly cover the changed modules, and the specific case/fault harness affected. Do **not**
+     run the not-slow or full suite after every repair. A manifest/hash/path correction gets its
+     bundle verifier only; an evaluator fix gets evaluator tests plus retained cases; a fixture
+     change reruns that case, not the campaign; live TAVI reruns only when its raw evidence was
+     actually invalidated.
+   - **At each slice boundary** (final candidate of a slice, before reporting it done): one
+     parallel not-slow run and one parallel full run — once. Full **serial** `python -m pytest`
+     only before merging to `main` or after test-infrastructure changes. Reproduce any failure
+     serially before debugging it. Real-data subset needs local `test_data/`; `live` needs TAVI at
+     `127.0.0.1:8642`.
+   - **Dependency-aware invalidation:** retained artifacts form a chain — raw acquisition →
+     analysis result → score evidence → eligibility evidence → gate classification →
+     manifest/index. A repair invalidates only its *descendants*: a manifest-pointer change
+     regenerates the manifest and gate result, never the scan, fits, or scores; an evaluator change
+     reclassifies existing authenticated evidence rather than regenerating it. Unchanged cases
+     remain authenticated inputs.
+   - **Blocker threshold for review findings:** repair now only what can affect the physical
+     request, the score or its uncertainty, the gate classification, evidence authentication,
+     fallback behavior, or crash/replay correctness. Naming imperfections, redundant hashes,
+     duplicated evidence, optional diagnostics, and documentation elegance are deferred unless they
+     make evidence materially ambiguous — a review must not turn "this could be cleaner" into
+     "rerun the world."
 4. **Status discipline:** DESIGN §15 marks every capability Implemented / Partial / Planned. Do not
    describe Planned work in the implemented voice, and match that table when you change status.
 5. **STAT-2b history is immutable:** never refresh the completed held-out gate or aggregate to match
