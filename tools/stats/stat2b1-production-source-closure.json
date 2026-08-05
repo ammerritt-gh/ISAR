@@ -7,235 +7,49 @@
     "stat2c_authorized": false
   },
   "approved_by": "ammerritt-gh",
-  "approved_candidate_fingerprint": "d93771b0ed564c105d25caf4807b398163e6f99c3d4b0d96a74a7ae9bbc72525",
+  "approved_candidate_fingerprint": "31b15215f1175fffd797365149c442bd76cd0b74e91d8f0ece762d6827f52e21",
   "approved_on": "2026-08-05",
-  "approved_production_anchor": "309663eb2325e2a9bc107193d5bfe0116ed50682",
+  "approved_production_anchor": "60c3de59c31bdb1de309b5ffc89f9718d4384fd2",
   "boundary_revision": "isar.stat2b_production_dependency_boundary/2",
-  "candidate_artifact_commit": "60b1196204bca1dda1fc72f9f6529ff4d1d9719c",
+  "candidate_artifact_commit": "cda26b12a8ed73d8516032f5da2694a20761a01d",
   "candidate_artifact_path": "tools/stats/stat2b1-production-source-closure.candidate.json",
-  "candidate_artifact_sha256": "3610c18c8ae0abbc275fe5bdb9d6a7b1f731fa32945e8fa761bcb455a389bd8c",
-  "candidate_closure_fingerprint": "d93771b0ed564c105d25caf4807b398163e6f99c3d4b0d96a74a7ae9bbc72525",
+  "candidate_artifact_sha256": "99949d098effb9b5a002ed2a327e09da67ebb3d98c817e34299893939a7c5fa4",
+  "candidate_closure_fingerprint": "31b15215f1175fffd797365149c442bd76cd0b74e91d8f0ece762d6827f52e21",
   "comparison_basis": {
-    "candidate_closure_fingerprint": null,
-    "dependency_graph_fingerprint": null,
-    "manifest_path": "tools/stats/stat2b1-heldout-gate.json",
-    "mode": "bootstrap",
-    "production_source_fingerprint": "e655e3bbf92f2f57b1fbab4074120f8194d15930f46f55fb56590909f0662525"
+    "candidate_closure_fingerprint": "d93771b0ed564c105d25caf4807b398163e6f99c3d4b0d96a74a7ae9bbc72525",
+    "dependency_graph_fingerprint": "3cda1b8a97ab0b2e0046d74aa31bcda645833ef9a3255703d76031b0c44887d8",
+    "manifest_path": "tools/stats/stat2b1-production-source-closure.json",
+    "mode": "renewal",
+    "production_source_fingerprint": "09dddc6a1de7c0efaca39083c96652c53be967dac781f7590a700d59eae1b334"
   },
   "current_change_reviews": [
     {
-      "basis_hash": "97a124360654d37467c026ec088519a863964b4da1a74475f979dcc385d8913d",
+      "basis_hash": "49d37709105fabd275c7dbd82d5156678c0105cff0181f1eb92786583213089e",
       "current_change_disposition": "adjacent_nonsemantic",
-      "current_hash": "0cfeaa4af360dc6b13d4e8288cfcffa5d3ee99ac0805b77954b0a68bc2ecf0d0",
+      "current_hash": "4a22ec72492226b9f685db1da0b3de30c47fd318bb71bf1c8366f5a4186b1ff0",
       "current_public_symbols": [
-        "ObjectiveSpec",
-        "current_objective_comparison_scope",
-        "default_budget_hours",
-        "resolve_hypothesis_snapshot",
-        "shipped_hypothesis_snapshot"
+        "GridQ",
+        "StopDecision",
+        "evaluate_stop",
+        "local_exhaustion_status",
+        "match_grid_index",
+        "model_points",
+        "next_kind_for_q",
+        "path_scalars",
+        "q_converged",
+        "summarize_grid",
+        "systematic_floor"
       ],
-      "path": "isar/drive/objective.py",
+      "path": "isar/drive/supervisor/stopping.py",
       "proof_tests": [
-        "isar/synth/tests/test_stat2b_campaign.py",
-        "tests/session/test_target_projection.py"
-      ],
-      "status": "modified"
-    },
-    {
-      "basis_hash": null,
-      "current_change_disposition": "unrelated_exempt",
-      "current_hash": "ee854664627898e868a88579301eebca833d5c65f5060f5ba130790093556395",
-      "current_public_symbols": [
-        "canonical_hkl",
-        "canonical_json",
-        "scientific_fingerprint_from_mapping"
-      ],
-      "path": "isar/schema/action_identity.py",
-      "proof_tests": [
-        "tests/eig/test_eligibility.py"
-      ],
-      "status": "added"
-    },
-    {
-      "basis_hash": "d597e3ecd4f4a8622d7178d2a05f511acf26cce8736a61f207d07c66f6602ac6",
-      "current_change_disposition": "adjacent_nonsemantic",
-      "current_hash": "b3e88eaa4c9ecdf47c55afc4e5413184059c85d461dd5c267a3ee7bdf926eddf",
-      "current_public_symbols": [
-        "Card",
-        "CardPolicy",
-        "CardState",
-        "DetectorSpec",
-        "PolicyValidation",
-        "load_policy",
-        "load_state",
-        "unknown_toml_tables",
-        "validate_policy_text"
-      ],
-      "path": "isar/schema/card.py",
-      "proof_tests": [
-        "isar/synth/tests/test_stat2b_campaign.py",
-        "tests/schema/test_eig_policy.py"
-      ],
-      "status": "modified"
-    },
-    {
-      "basis_hash": null,
-      "current_change_disposition": "unrelated_exempt",
-      "current_hash": "28f896f1e0928a19e65806c5be7d5a231a2d056c1ee7bd2b26d4f1c9b905ec57",
-      "current_public_symbols": [
-        "ScanDesignAuthorityDecision",
-        "validate_scan_design_authority_decision"
-      ],
-      "path": "isar/schema/eig_authority.py",
-      "proof_tests": [
-        "tests/schema/test_eig_authority.py"
-      ],
-      "status": "added"
-    },
-    {
-      "basis_hash": null,
-      "current_change_disposition": "adjacent_nonsemantic",
-      "current_hash": "45e4eb0ef951733526338890c0ff84ad2bda5b5da3f46f64e402131b1e091047",
-      "current_public_symbols": [
-        "QoIDistinctionPolicy",
-        "QoIDistinctionPolicySet",
-        "QoIDistinctionVariant",
-        "ScanWindowEIGConfig",
-        "ScanWindowShadowScoringConfig",
-        "matching_qoi_policies",
-        "validate_qoi_distinction_policy",
-        "validate_qoi_distinction_policy_set",
-        "validate_scan_window_eig_config",
-        "validate_scan_window_shadow_scoring_config"
-      ],
-      "path": "isar/schema/eig_policy.py",
-      "proof_tests": [
-        "tests/schema/test_eig_policy.py"
-      ],
-      "status": "added"
-    },
-    {
-      "basis_hash": null,
-      "current_change_disposition": "unrelated_exempt",
-      "current_hash": "6c0fbdc0564862b981a954f2b4129fca2c5d5d5c64b7b12f106f255a53c058c8",
-      "current_public_symbols": [
-        "RealizedCandidatePair",
-        "RealizedCandidateRefusal",
-        "RealizedScanRequest",
-        "RealizedScoreVariant",
-        "RealizedSeedEvidence",
-        "ScanDesignRealizedComparison",
-        "derive_realized_seed",
-        "validate_scan_design_realized_comparison"
-      ],
-      "path": "isar/schema/eig_realized.py",
-      "proof_tests": [
-        "tests/drive/test_realized_comparison.py",
-        "tests/eig/test_realized_score.py"
-      ],
-      "status": "added"
-    },
-    {
-      "basis_hash": null,
-      "current_change_disposition": "unrelated_exempt",
-      "current_hash": "8d098db53490357517ad34aa4422d571a88ec0fb49b4e8d794a27a19ef91a8fe",
-      "current_public_symbols": [
-        "ScanDesignShadowScoring",
-        "ScanDesignShadowVariant",
-        "ScoreRefusalEvidence",
-        "ShadowSeedEvidence",
-        "derive_shadow_seed",
-        "freeze",
-        "thaw",
-        "valid_fingerprint",
-        "validate_scan_design_shadow_scoring"
-      ],
-      "path": "isar/schema/eig_shadow.py",
-      "proof_tests": [
-        "tests/schema/test_eig_shadow.py"
-      ],
-      "status": "added"
-    },
-    {
-      "basis_hash": "66e58a57fdf3fea69a41ae7c767daef481ceabe3b7f6d26583ea600a0cb7a5a4",
-      "current_change_disposition": "adjacent_nonsemantic",
-      "current_hash": "5b0b5ee798fcf803c41085d14d2268442b0b5edfebc49925aa0bf492e06c2368",
-      "current_public_symbols": [
-        "ExcitationHypothesis",
-        "GaussianPrior",
-        "SteeringPolicy",
-        "content_fingerprint",
-        "preset",
-        "resolve_hypothesis"
-      ],
-      "path": "isar/schema/hypotheses.py",
-      "proof_tests": [
-        "isar/synth/tests/test_stat2b_campaign.py",
-        "tests/schema/test_hypotheses.py"
-      ],
-      "status": "modified"
-    },
-    {
-      "basis_hash": "0a0ba11d091d1f6758e2e4f253cd23daf65509f76b2cdfc1db1ef2b53a7b160b",
-      "current_change_disposition": "selection_semantic",
-      "current_hash": "6da59053e0787c19cad40ecb92f8731ac49d2e8119c396141e4d5e9b397643ab",
-      "current_public_symbols": [
-        "AnalysisWorkIncomplete",
-        "FitOutcome",
-        "RunSummary",
-        "build_context",
-        "current_master_revisions",
-        "fit_one",
-        "run_batch",
-        "unresolved_current_promotions"
-      ],
-      "path": "isar/session/driver.py",
-      "proof_tests": [
-        "tests/session/test_master_fit.py",
-        "tests/session/test_driver_smoke.py",
-        "tests/drive/test_predictive_promotion.py",
+        "tests/drive/test_stopping.py",
+        "tests/drive/test_loop.py",
         "isar/synth/tests/test_stat2b_campaign.py"
-      ],
-      "status": "modified"
-    },
-    {
-      "basis_hash": "963c424cd2c921a2c52f708b347f7fba68f00a0dc61d48757daf2e5993d80f0e",
-      "current_change_disposition": "evidence_contract_semantic",
-      "current_hash": "22069fc10957c8c176164c8c6ca1e262786ea33a5cb2af3c9e10ef7bb6da77c8",
-      "current_public_symbols": [
-        "bounded_parameter_draws",
-        "build_master_predictive",
-        "build_target_projection",
-        "exposure_basis",
-        "mode_selection_rule",
-        "model_entropy_probability_semantics",
-        "model_manifest_of"
-      ],
-      "path": "isar/session/predictive_artifact.py",
-      "proof_tests": [
-        "tests/session/test_master_predictive.py",
-        "tests/session/test_target_projection.py",
-        "tests/session/test_statistical_semantics.py"
-      ],
-      "status": "modified"
-    },
-    {
-      "basis_hash": "87eeaef3624280a0b89aceb1c0d942dc5a48ca370e800ee53634cb61a8793a4f",
-      "current_change_disposition": "adjacent_nonsemantic",
-      "current_hash": "7f108d79c46ca234fac69f9796fa8e1f9e5ab3f9f5e27102683aeb83cba90b44",
-      "current_public_symbols": [
-        "main",
-        "serve"
-      ],
-      "path": "isar/session/worker.py",
-      "proof_tests": [
-        "tests/drive/test_worker_client.py",
-        "tests/session/test_driver_smoke.py"
       ],
       "status": "modified"
     }
   ],
-  "cycle_mode": "bootstrap",
+  "cycle_mode": "renewal",
   "dependency_drift": {
     "added": [],
     "removed": []
@@ -1428,7 +1242,7 @@
       "module_role": "campaign_runtime_dependency",
       "path": "isar/drive/supervisor/stopping.py",
       "rationale": "Reached by the frozen campaign/runtime path but does not own accepted selection or evidence semantics.",
-      "sha256": "49d37709105fabd275c7dbd82d5156678c0105cff0181f1eb92786583213089e"
+      "sha256": "4a22ec72492226b9f685db1da0b3de30c47fd318bb71bf1c8366f5a4186b1ff0"
     },
     {
       "dependency_disposition": "unrelated_exempt",
@@ -1866,12 +1680,12 @@
     }
   ],
   "owner_approved": true,
-  "production_source_fingerprint": "09dddc6a1de7c0efaca39083c96652c53be967dac781f7590a700d59eae1b334",
-  "proposed_production_anchor": "309663eb2325e2a9bc107193d5bfe0116ed50682",
+  "production_source_fingerprint": "c820209b901e79595b4a08276e2a4a377df4b6d5e6fc9854cccaf25c81501dbb",
+  "proposed_production_anchor": "60c3de59c31bdb1de309b5ffc89f9718d4384fd2",
   "review_record": {
-    "path": "docs/campaigns/2026-08-05_EIG4_R3_SOURCE_CLOSURE/review.json",
-    "semantic_fingerprint": "71dc1c63eb6d6336664671ddb890890ef409f043247bef584d211637c67770cc",
-    "sha256": "84b9bd5a93fb434bb6fd8a6314e8a00d74332a194a66a88bb2508415f7dd61f9"
+    "path": "docs/campaigns/2026-08-05_O44_ZONE_CENTRE_SOURCE_CLOSURE/review.json",
+    "semantic_fingerprint": "39c5e8454e49e9c122f3a2320b43e7aa01761c99db004e96a44453e9a172faa8",
+    "sha256": "1af566559b3d1a9190dcb03af03b198b203eafa5044e2eb6f59ebcf201d58e8e"
   },
   "schema": "isar.stat2b_production_source_closure/2",
   "status": "active"
