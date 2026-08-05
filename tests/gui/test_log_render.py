@@ -150,6 +150,47 @@ def test_inventory_says_what_was_weighed_and_what_was_chosen():
     assert blocked.severity == "warn"
 
 
+def test_eig_decision_explains_a_selection_and_a_refusal():
+    selected = _rendered("eig_decision", {
+        "iter": 12, "hkl": [2.2, 0.0, 0.0], "mode": "authoritative",
+        "master_id": "b" * 64, "ready": True, "blocker": None,
+        "eligibility_status": "eligible", "point_count_basis": "authority_decision",
+        "legacy_points": 46, "target_points": 17,
+        "delta_nats_per_point": 0.02412, "standard_error_nats": 0.00318,
+        "lower_margin_nats": 0.01776, "selected_role": "target_core",
+        "decision_outcome": "select_target_core", "decision_ref": "d" * 64})
+    assert selected.text == ("EIG H=2.2 — legacy 46 pts vs core 17 pts, ΔI/pt +0.0241±0.0032 — "
+                             "target_core selected  [iter 12]")
+    assert selected.severity == "notice"                 # the one case that changed the window
+    assert "d" * 64 not in selected.text                 # the decision sha stays in the payload
+    assert "d" * 64 in selected.raw_json()
+
+    blocked = _rendered("eig_decision", {
+        "iter": 3, "hkl": [2.15, 0.0, 0.0], "mode": "authoritative", "master_id": None,
+        "ready": False, "blocker": "projection_currentness_unknown",
+        "eligibility_status": "ineligible", "point_count_basis": "planned_inventory",
+        "legacy_points": 54, "target_points": 17, "delta_nats_per_point": None,
+        "standard_error_nats": None, "lower_margin_nats": None, "selected_role": None,
+        "decision_outcome": None, "decision_ref": None})
+    assert blocked.text == ("EIG H=2.15 — not ready (projection_currentness_unknown)  [iter 3]")
+    assert blocked.severity == "info"
+
+
+def test_eig_decision_retains_legacy_without_pretending_to_a_score():
+    retained = _rendered("eig_decision", {
+        "iter": 8, "hkl": [2.75, 0.0, 0.0], "mode": "shadow", "master_id": "c" * 64,
+        "ready": True, "blocker": None, "eligibility_status": "eligible",
+        "point_count_basis": "planned_inventory", "legacy_points": 52, "target_points": None,
+        "delta_nats_per_point": None, "standard_error_nats": None, "lower_margin_nats": None,
+        "selected_role": None, "decision_outcome": None, "decision_ref": None})
+    assert retained.text == "EIG H=2.75  [iter 8]"
+    assert retained.severity == "info"
+
+
+def test_eig_decision_reaches_the_dock():
+    assert "eig_decision" not in HIDDEN_KINDS
+
+
 def test_activity_start_and_end_read_as_plain_progress():
     started = _rendered("activity_start", {"activity_id": "68ea8f78", "stage": "full_fit",
                                            "q": [2.15, 0.0, 0.0], "iteration": 0})

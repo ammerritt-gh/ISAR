@@ -279,6 +279,34 @@ def _render_inventory(payload: dict, tail: str) -> tuple[str, str]:
             f"{chosen}{at}{by}{tail}"), "info"
 
 
+def _render_eig_decision(payload: dict, tail: str) -> tuple[str, str]:
+    """Why the scan-window EIG did — or did not — change the window this iteration.
+
+    The audit answer lives in ``report/scan-design-authority/<sha>.json``; this is the sentence that
+    saves an operator from having to open it. Everything is copied from the payload: the two point
+    counts, the paired information margin the engine already computed, and the role it selected.
+    """
+    at = f" {q_text(payload['hkl'])}" if payload.get("hkl") is not None else ""
+    if not payload.get("ready"):
+        # Reason codes stay verbatim: they are the words the operator will grep the artifacts and
+        # the design docs for, and prettifying them breaks that search.
+        why = payload.get("blocker") or "no reason recorded"
+        return f"EIG{at} — not ready ({why}){tail}", "info"
+    bits = []
+    legacy, target = payload.get("legacy_points"), payload.get("target_points")
+    if legacy is not None and target is not None:
+        bits.append(f"legacy {legacy} pts vs core {target} pts")
+    delta = _num(payload.get("delta_nats_per_point"), "+.4f")
+    if delta is not None:
+        error = _num(payload.get("standard_error_nats"), ".4f")
+        bits.append(f"ΔI/pt {delta}±{error}" if error is not None else f"ΔI/pt {delta}")
+    detail = " — " + ", ".join(bits) if bits else ""
+    role = payload.get("selected_role")
+    chose = f" — {role} selected" if role else ""
+    severity = "notice" if role == "target_core" else "info"
+    return f"EIG{at}{detail}{chose}{tail}", severity
+
+
 def _render_activity(kind: str, payload: dict) -> tuple[str, str]:
     stage = _phrase(payload.get("stage"), "activity")
     at = f" at {q_text(payload['q'])}" if payload.get("q") is not None else ""
@@ -339,6 +367,8 @@ def _render(kind: str, payload: dict) -> tuple[str, str]:
         return _render_scan_design(payload, tail)
     if kind == "inventory":
         return _render_inventory(payload, tail)
+    if kind == "eig_decision":
+        return _render_eig_decision(payload, tail)
     if kind in ("activity_start", "activity_end"):
         return _render_activity(kind, payload)
     if kind == "feasibility_trim":

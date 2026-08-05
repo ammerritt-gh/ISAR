@@ -142,7 +142,8 @@ _KNOWN_KINDS = frozenset({"propose", "validate", "run", "analyze", "decide", "es
                           "exception", "stop", "timing", "activity_start",
                           "activity_progress", "activity_end", "analysis_clock",
                           "physical_submission", "pooled_master_update", "candidate_update",
-                          "certification_crossing", "recovery_pending", "recovery_completed"})
+                          "certification_crossing", "recovery_pending", "recovery_completed",
+                          "eig_decision"})
 
 
 def _event_counts(events: list) -> EventCounts:

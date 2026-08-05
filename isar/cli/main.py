@@ -114,6 +114,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     pdg = sub.add_parser("diagnose", help="render the architect's CAMPAIGN_DIAGNOSTIC.md for a campaign")
     pdg.add_argument("--workspace", required=True)
+    pdg.add_argument("--eig", action="store_true",
+                     help="print the scan-window EIG decision table instead (read-only: says why "
+                          "EIG did or did not change each scan window, and what blocked it)")
 
     psc = sub.add_parser("score", help="score a run against a human gold CSV or known analytic truth")
     psc.add_argument("--workspace", required=True)
