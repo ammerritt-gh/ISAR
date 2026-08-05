@@ -6,6 +6,7 @@ import pytest
 
 from isar.eig.o41_authority import (
     O41CandidateEvidence,
+    O41PartitionOffsetEvidence,
     O41ScoreEvidence,
     O41SelectorInput,
     ROLE_LEGACY,
@@ -54,7 +55,11 @@ def _decision() -> ScanDesignAuthorityDecision:
     target = _candidate(ROLE_TARGET, 17, 0.4, 3.6)
     result = select_o41_authority(O41SelectorInput(
         profile, "eligible", "applicable", legacy, target,
-        O41ScoreEvidence("complete", "target_core_minus_legacy", (0.25,) * 8)))
+        O41ScoreEvidence(
+            "complete", "target_core_minus_legacy", (0.25,) * 8,
+            partition_offsets=(
+                O41PartitionOffsetEvidence(0.0, 1.0, 1.0),
+                O41PartitionOffsetEvidence(0.25, 1.0, 1.0)))))
     selected = target
     return ScanDesignAuthorityDecision(
         configured_mode="authoritative",

@@ -23,6 +23,11 @@ PRIMARY_PARAMETERS = {"origin": 0.0, "bin_width": 0.5, "offsets": [0.0, 0.25]}
 SIMULATION_COUNT = 128
 BLOCK_COUNT = 8
 MARGIN_MULTIPLIER = 2.0
+# A target-core grant must clear the paired standard error by this multiple.  The R1-E replay on
+# real O41_Test4 masters produced "decisive" grants resting on ~1.7e-5 nats/point — a margin that
+# changed role between the policy's two 0.5 meV partition offsets.  Three paired standard errors,
+# together with per-offset agreement, is the floor below which the margin is partition noise.
+O41_MARGIN_SE_MULTIPLE = 3.0
 
 OUTCOME_TARGET = "select_target_core"
 OUTCOME_LEGACY = "retain_legacy_control"
@@ -169,6 +174,50 @@ class O41CandidateEvidence:
 
 
 @dataclass(frozen=True)
+class O41PartitionOffsetEvidence:
+    """One compiled partition offset's information for both candidates of the same scoring run.
+
+    The scorer already evaluates every offset of the compiled partition inside a single run and
+    retains each offset's mean information per candidate (``partition_information_nats``).  This
+    record carries that evidence to the selector so a role can be resolved per offset without
+    rescoring; the selector normalizes by each candidate's executed-point count.
+    """
+
+    offset: float
+    legacy_information_nats: float
+    target_core_information_nats: float
+
+    def __post_init__(self) -> None:
+        if (
+            not _finite(self.offset) or float(self.offset) < 0.0
+            or not _finite(self.legacy_information_nats)
+            or not _finite(self.target_core_information_nats)
+        ):
+            raise ValueError("O41 partition offset evidence is invalid")
+        object.__setattr__(self, "offset", float(self.offset))
+        object.__setattr__(self, "legacy_information_nats", float(self.legacy_information_nats))
+        object.__setattr__(
+            self, "target_core_information_nats", float(self.target_core_information_nats))
+
+
+@dataclass(frozen=True)
+class O41OffsetSelection:
+    """The role one compiled partition offset selects on its own evidence."""
+
+    offset: float
+    delta_information_per_executed_point_nats: float
+    physical_role: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "offset": self.offset,
+            "delta_information_per_executed_point_nats": (
+                self.delta_information_per_executed_point_nats),
+            "physical_role": self.physical_role,
+        }
+
+
+@dataclass(frozen=True)
 class O41ScoreEvidence:
     """Authenticated primary comparison reduced to the selector's numerical inputs."""
 
@@ -176,9 +225,12 @@ class O41ScoreEvidence:
     orientation: str
     paired_block_deltas_per_executed_point_nats: tuple[float, ...]
     evidence_join_status: str = "matched"
+    partition_offsets: tuple[O41PartitionOffsetEvidence, ...] = ()
 
     def __post_init__(self) -> None:
         blocks = tuple(float(value) for value in self.paired_block_deltas_per_executed_point_nats)
+        offsets = tuple(self.partition_offsets)
+        values = [item.offset for item in offsets]
         if (
             self.status not in {"complete", "unavailable"}
             or self.orientation not in {"target_core_minus_legacy", "legacy_minus_target_core"}
@@ -186,9 +238,19 @@ class O41ScoreEvidence:
             or any(not _finite(value) for value in blocks)
             or (self.status == "complete" and len(blocks) != BLOCK_COUNT)
             or (self.status == "unavailable" and blocks)
+            or any(not isinstance(item, O41PartitionOffsetEvidence) for item in offsets)
+            or sorted(values) != values or len(set(values)) != len(values)
+            # Complete score evidence without per-offset evidence would grant on the pooled margin
+            # alone, which is the failure this record exists to prevent.  The offset *count* is not
+            # pinned to the profile here: the adapter already refuses any compiled partition whose
+            # offsets are not exactly the profile's, and off-profile diagnostic callers legitimately
+            # score a single offset.  Every offset carried must agree for a grant either way.
+            or (self.status == "complete" and not offsets)
+            or (self.status == "unavailable" and offsets)
         ):
             raise ValueError("O41 score evidence is invalid")
         object.__setattr__(self, "paired_block_deltas_per_executed_point_nats", blocks)
+        object.__setattr__(self, "partition_offsets", offsets)
 
 
 @dataclass(frozen=True)
@@ -223,8 +285,11 @@ class O41SelectorResult:
     delta_information_per_executed_point_nats: float | None
     paired_standard_error_nats: float | None
     lower_margin_nats: float | None
+    partition_offset_selections: tuple[O41OffsetSelection, ...] = ()
+    partition_offsets_agree: bool | None = None
     selector_contract: str = field(default=SELECTOR_CONTRACT, init=False)
     margin_multiplier: float = field(default=MARGIN_MULTIPLIER, init=False)
+    margin_standard_error_multiple: float = field(default=O41_MARGIN_SE_MULTIPLE, init=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -241,6 +306,10 @@ class O41SelectorResult:
             "paired_standard_error_nats": self.paired_standard_error_nats,
             "selection_margin_multiplier": self.margin_multiplier,
             "lower_margin_nats": self.lower_margin_nats,
+            "margin_standard_error_multiple": self.margin_standard_error_multiple,
+            "partition_offset_selections": [
+                item.to_dict() for item in self.partition_offset_selections],
+            "partition_offsets_agree": self.partition_offsets_agree,
         }
 
 
@@ -248,7 +317,9 @@ def _result(outcome: str, role: str, authority: str, *reasons: str,
             structural: Mapping[str, bool] | None = None,
             blocks: tuple[float, ...] = (), delta: float | None = None,
             standard_error: float | None = None,
-            lower: float | None = None) -> O41SelectorResult:
+            lower: float | None = None,
+            offsets: tuple[O41OffsetSelection, ...] = (),
+            offsets_agree: bool | None = None) -> O41SelectorResult:
     return O41SelectorResult(
         decision_outcome=outcome,
         physical_role=role,
@@ -259,6 +330,8 @@ def _result(outcome: str, role: str, authority: str, *reasons: str,
         delta_information_per_executed_point_nats=delta,
         paired_standard_error_nats=standard_error,
         lower_margin_nats=lower,
+        partition_offset_selections=offsets,
+        partition_offsets_agree=offsets_agree,
     )
 
 
@@ -268,6 +341,22 @@ def _paired_summary(blocks: tuple[float, ...]) -> tuple[float, float, float]:
     variance = math.fsum((value - delta) ** 2 for value in blocks) / (count - 1)
     standard_error = math.sqrt(variance) / math.sqrt(count)
     return delta, standard_error, delta - MARGIN_MULTIPLIER * standard_error
+
+
+def _offset_selections(
+        evidence: tuple[O41PartitionOffsetEvidence, ...],
+        *, legacy: O41CandidateEvidence,
+        target: O41CandidateEvidence) -> tuple[O41OffsetSelection, ...]:
+    """Resolve the role each compiled partition offset selects on its own information."""
+    selections: list[O41OffsetSelection] = []
+    for item in evidence:
+        offset_delta = (item.target_core_information_nats / target.point_count
+                        - item.legacy_information_nats / legacy.point_count)
+        selections.append(O41OffsetSelection(
+            offset=item.offset,
+            delta_information_per_executed_point_nats=offset_delta,
+            physical_role=ROLE_TARGET if offset_delta > 0.0 else ROLE_LEGACY))
+    return tuple(selections)
 
 
 def select_o41_authority(value: O41SelectorInput) -> O41SelectorResult:
@@ -314,24 +403,40 @@ def select_o41_authority(value: O41SelectorInput) -> O41SelectorResult:
     }
     blocks = value.score.paired_block_deltas_per_executed_point_nats
     delta, standard_error, lower = _paired_summary(blocks)
+    offsets = _offset_selections(value.score.partition_offsets, legacy=legacy, target=target)
+    # An offset that separates nothing (both candidates score exactly zero inside one bin cell)
+    # carries no evidence for the target core, so it selects legacy and blocks the grant.
+    roles = {item.physical_role for item in offsets}
+    agree = roles == {ROLE_TARGET}
+    flipped = len(roles) > 1
+    common = {"structural": structural, "blocks": blocks, "delta": delta,
+              "standard_error": standard_error, "lower": lower,
+              "offsets": offsets, "offsets_agree": agree}
     failed = tuple(name for name, passed in structural.items() if not passed)
     if failed:
-        return _result(OUTCOME_LEGACY, ROLE_LEGACY, AUTHORITY_GRANTED,
-                       *failed, structural=structural, blocks=blocks, delta=delta,
-                       standard_error=standard_error, lower=lower)
+        return _result(OUTCOME_LEGACY, ROLE_LEGACY, AUTHORITY_GRANTED, *failed, **common)
+    reasons: list[str] = []
+    if flipped:
+        reasons.append("o41_offset_disagreement")
     if lower <= 0.0:
-        return _result(OUTCOME_LEGACY, ROLE_LEGACY, AUTHORITY_GRANTED,
-                       "o41_margin_not_decisive", structural=structural, blocks=blocks,
-                       delta=delta, standard_error=standard_error, lower=lower)
+        reasons.append("o41_margin_not_decisive")
+    if delta <= O41_MARGIN_SE_MULTIPLE * standard_error:
+        reasons.append("o41_margin_below_floor")
+    if not agree and not reasons:
+        # Offsets that unanimously select legacy normally also drive the pooled margin below the
+        # floor; the grant still requires unanimity, so refuse it explicitly if they somehow do not.
+        reasons.append("o41_offset_disagreement")
+    if reasons:
+        return _result(OUTCOME_LEGACY, ROLE_LEGACY, AUTHORITY_GRANTED, *reasons, **common)
     return _result(OUTCOME_TARGET, ROLE_TARGET, AUTHORITY_GRANTED,
-                   "o41_margin_decisive", structural=structural, blocks=blocks,
-                   delta=delta, standard_error=standard_error, lower=lower)
+                   "o41_margin_decisive", **common)
 
 
 __all__ = [
     "AUTHORITATIVE_PROFILE_INVALID", "AUTHORITY_GRANTED", "AUTHORITY_NOT_GRANTED",
-    "AUTHORITY_UNAVAILABLE", "BLOCK_COUNT", "MARGIN_MULTIPLIER", "O41AuthoritativeProfile",
-    "O41CandidateEvidence", "O41ScoreEvidence", "O41SelectorInput", "O41SelectorResult",
+    "AUTHORITY_UNAVAILABLE", "BLOCK_COUNT", "MARGIN_MULTIPLIER", "O41_MARGIN_SE_MULTIPLE",
+    "O41AuthoritativeProfile", "O41CandidateEvidence", "O41OffsetSelection",
+    "O41PartitionOffsetEvidence", "O41ScoreEvidence", "O41SelectorInput", "O41SelectorResult",
     "OUTCOME_LEGACY", "OUTCOME_NON_EIG", "OUTCOME_TARGET", "OUTCOME_UNAVAILABLE",
     "PRIMARY_PARAMETERS", "PRIMARY_POLICY_ID", "PRIMARY_POLICY_KIND", "PRIMARY_QOI",
     "PRIMARY_VARIANT_ID", "ROLE_LEGACY", "ROLE_NONE", "ROLE_TARGET", "SELECTOR_CONTRACT",
