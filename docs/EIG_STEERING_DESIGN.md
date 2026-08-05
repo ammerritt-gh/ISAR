@@ -11,14 +11,30 @@
 
 ## Status and boundary
 
-**EIG-4 is the approved execution roadmap and current SVP; restricted Slice 9 runtime authority is
-implemented and awaits the separate O42 release review. The first real authoritative target-core
-grant executed in deterministic simulation on 2026-08-05 (O41 Test 10 iter 28: Δ/pt 0.0069 nats at
-3.31× the paired SE, a 17-point core executed against the 50-point legacy), so authoritative
-selection is demonstrated, not merely implemented. The intended end state treats legacy as the
-survey instrument for the first pass across Q and EIG-designed scans as the follow-up instrument —
-legacy becomes the backstop, not the default — with that polarity switch deferred to a post-R3
-tuning decision on campaign evidence.**
+**EIG-4 is complete as of 2026-08-05; restricted Slice 9 runtime authority is implemented and awaits
+the separate O42 release review. Authoritative selection is demonstrated, not merely implemented:
+the first real target-core grant executed in deterministic simulation on 2026-08-05 (O41 Test 10
+iter 28: Δ/pt 0.0069 nats at 3.31× the paired SE, a 17-point core against the 50-point legacy), and
+a cold-start campaign now selects the core on every scored decision.**
+
+**The polarity question is settled, and not by switching a default.** The intended end state was
+described as legacy the survey instrument for the first pass and EIG the follow-up, with a polarity
+switch deferred. What landed instead (O43) is a *symmetric* comparison: the two candidates are
+compared on information per neutron and the winner is taken, with ties broken by cost rather than by
+retaining the survey. Neither is a default. The survey still wins the first pass, but structurally —
+before a q has been measured there is no prediction to centre a core on, so no core candidate
+exists — rather than by a rule that prefers it.
+
+**Two limitations to read the grant rate against.** The QoI partition is `bin_width = 0.5 meV` while
+the design prediction sigma in a converging campaign has a median of 0.0182 meV, so once a fit
+exists both candidates answer "which bin?" identically and the comparison is very often a tie
+decided on cost rather than on information. That was accepted deliberately at EIG-4 close: narrowing
+the partition would churn every policy and variant fingerprint and the frozen Slice-8 fixtures, and
+the physics says the centred core is the right scan anyway. It remains the honest next improvement
+if the comparison is ever required to do real work. Separately, the eligibility route check owes only
+the containment `scored ⊆ offered`; whether the surviving normalisation is sound is delegated to the
+producer's own `selection_eligibility`, and the reason a label went unscored is not itself
+authenticated per label.
 The pure full-vector Poisson score kernel, the controlled offline Slice 5 counterfactual, Slice 6
 scored shadow inventories, and Slice 7 exact realized-request rescoring are implemented. The coherent
 Slice 8 V3 gate is owner-accepted under O41 and authorizes the implemented Slice 9 selector, but O42

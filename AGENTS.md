@@ -112,7 +112,7 @@ area.
 | Card / schema across facilities | `docs/SCHEMA_LANDSCAPE.md` |
 | Flag adjudication (opt-in LLM) | `docs/ADJUDICATION.md` |
 | The autonomous driver (`isar drive`) | `docs/MEASUREMENT_STEERING.md` |
-| Same-action scan-window EIG (candidate generation and exact realized scoring Partial; authoritative selection Partial — first target-core grant 2026-08-05, opt-in, pending O42 release review) | `docs/EIG_STEERING_DESIGN.md`, then `docs/MEASUREMENT_STEERING.md` |
+| Same-action scan-window EIG (candidate generation and exact realized scoring Partial; authoritative selection Partial — symmetric per-neutron comparison, O43; opt-in, pending O42 release review) | `docs/EIG_STEERING_DESIGN.md`, then `docs/MEASUREMENT_STEERING.md` |
 | Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
 | Campaign diagnostic report | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` |
 | Why a decision was made | `docs/DECISIONS.md` (IDs P*/D*/V/R/S/O/T/W are stable, safe to cite) |

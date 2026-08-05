@@ -120,7 +120,6 @@ copies.
 | `docs/SPEEDUP_DESIGN.md` | Active plan | Phase 1 complete; Phase 2 Partial (async scheduling + fresh-master `auto` open, blocked on the shadow gate); 3/4 conditional | — |
 | `docs/STEERING_DESIGN.md` | Active plan | Phase 0 shipped as O27/O28/O29/O31; A→B→C Planned | Phase 0 is summarized only; the contract is `MEASUREMENT_STEERING.md` + DECISIONS O27–O31 |
 | `docs/BACKGROUND_DESIGN.md` | Active plan | approved 2026-07-19; implementation not started | — |
-| `docs/EIG4_COMPLETION_PLAN.md` | Active plan | R1–R3 complete (R3 cold-start gate met 2026-08-05); rules 6–8 restoration, the tuning slice that owns the 80% post-sweep grant rate, and the STAT-2b protected-hash closure remain | Sequencing successor to `EIG_STEERING_DESIGN.md`, which stays the design contract; this plan owns only the completion work |
 | `docs/EIG_STEERING_DESIGN.md` | Active plan | predictive `/2`, arbitrary-grid evaluation, candidate generation, executed-grid identity, target projection, Slice 2 `o36.2.1` eligibility/QoI adaptation, Slice 3 `o36.3` homogeneous predictive-scenario design measure, Slice 4 `o36.4` pure full-vector Poisson scoring, Slice 5.1 `o36.5.1` controlled offline `off`→`shadow` comparison, and Slice 6 `o36.6` scored shadow inventories implemented; exact realized-request rescoring, authoritative selection, and EIG-4 SVP execution Planned | Documents same-action scan-window EIG, authenticated QoI evidence, bounded hand-authored distinction-policy provenance, objective `/2` omission compatibility, diagnostic-only score sets, exact-source live shadow integration, and the invariant that Slice 6 always executes legacy |
 | `docs/stats/STATISTICAL_SEMANTICS_AUDIT.md` | Active plan | STAT-0/1/1.5 and STAT-2a/2b.1 complete; S8 recorded; STAT-2c through STAT-6 remain active, with the restricted O36 EIG-4 sequencing exception | Temporary producer/consumer audit; findings remain authoritative for the broader statistics program and STAT-6 closeout |
 | `docs/plans/STAT2_SELECTION_CONSISTENCY_PLAN.md` | Active plan | STAT-2a and STAT-2b.1 complete; S8 retains AIC; STAT-2c and STAT-2d pending | Temporary execution plan; STAT-2d folds accepted behavior into canonical statistics documents, then deletes and tombstones it |
@@ -212,6 +211,7 @@ file cannot be named inside that same commit, so the last-containing commit is t
 | `docs/DATA_SCHEME_RESEARCH.md` | `bba902c` | Superseded by `SCHEMA_LANDSCAPE.md`; `AGENTS.md` routing narrowed |
 | `docs/WISHLIST.md` | `9a16a75` | Content merged into `TODO.md` before deletion |
 | `docs/campaigns/PHASE_5_NOTES.md` | `24e1ab5` | "Forward notes only. Not designed." Described nothing that exists |
+| `docs/EIG4_COMPLETION_PLAN.md` | `cda26b1` | EIG-4 completion plan, finished 2026-08-05. Rules 6–8 restored, the five STAT-2b mismatches closed through the candidate/active cycle, and the tuning slice landed as O43; the durable outcome and its two named limitations are in `EIG_STEERING_DESIGN.md` |
 
 **Two references are deliberately left dangling.** `DECISIONS.md` mentions two deleted handoffs by
 bare filename (not as links, so no link check breaks). The ledger is append-only under D4, and a
