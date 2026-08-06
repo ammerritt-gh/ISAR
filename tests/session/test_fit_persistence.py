@@ -21,6 +21,15 @@ from isar.analyze.context import ScanContext
 from isar.drive.isar_io import readers
 from isar.report.audit import reconstruct_curve
 from isar.schema import card as card_mod
+from isar.schema.statistics import (
+    FIT_SELECTION_SCHEMA,
+    INTERVAL_SCHEMA,
+    PROBABILITY_SCHEMA,
+    SHADOW_MODEL_SELECTION_SCHEMA,
+    authority_scopes,
+    semantics_fingerprint,
+)
+from isar.analyze.shadow_selection import unavailable_shadow_selection
 from isar.session import driver
 from isar.session.state import ScanEntry, SessionState
 from isar.session.workspace import Workspace
@@ -65,13 +74,20 @@ def test_fit_one_populates_amplitudes_and_candidates():
     cands = fit["candidates"]
     assert isinstance(cands, list) and cands
     keys = {"label", "k", "ndof", "cost", "cost_per_dof", "n_modes",
-            "delta_aic", "akaike_weight", "usable"}
+            "delta_aic", "akaike_weight", "usable", "estimator_kind", "fit_kind",
+            "constraint_origin", "selection_eligibility", "conditioning_fingerprint",
+            "data_likelihood_fingerprint", "model_parameterization_fingerprint",
+            "constraint_fingerprint", "comparison_context_fingerprint"}
     for row in cands:
         assert set(row) == keys
         assert isinstance(row["label"], str) and isinstance(row["k"], int)
         assert isinstance(row["ndof"], int) and isinstance(row["n_modes"], int)
         assert isinstance(row["cost"], float) and isinstance(row["delta_aic"], float)
         assert isinstance(row["akaike_weight"], float) and isinstance(row["usable"], bool)
+        assert row["estimator_kind"] in {
+            "data_likelihood_mle", "soft_penalized_likelihood", "hard_conditioned_likelihood"}
+        assert row["selection_eligibility"]
+        assert len(row["conditioning_fingerprint"]) == 64
 
     # delta_aic >= 0 with the winner at exactly 0, and the winner row equals best_label.
     assert all(r["delta_aic"] >= -1e-9 for r in cands)
@@ -83,6 +99,24 @@ def test_fit_one_populates_amplitudes_and_candidates():
 
     # Akaike weights are a normalised distribution over the scored candidates.
     assert sum(r["akaike_weight"] for r in cands) == pytest.approx(1.0, abs=1e-6)
+    semantics = fit["fit_selection_semantics"]
+    route = semantics["candidate_generation_route"]
+    assert route["route"] == "full_two_stage"
+    assert route["supplied_hint"] is None
+    assert route["hint_accepted"] is False
+    assert route["offered_labels"]
+    assert route["scored_labels"] == [row["label"] for row in cands]
+    assert all(
+        semantics[name]
+        for name in (
+            "offered_model_set_fingerprint",
+            "scored_model_set_fingerprint",
+            "weight_denominator_fingerprint",
+            "error_attachment_set_fingerprint",
+            "legacy_pool_set_fingerprint",
+            "model_selection_fingerprint",
+        )
+    )
 
 
 @pytest.mark.slow
@@ -221,6 +255,72 @@ def test_results_csv_none_when_absent(tmp_path):
     assert row["candidates"] is None
 
 
+def test_full_session_and_compact_csv_semantics_roundtrip(tmp_path):
+    fingerprint = semantics_fingerprint("test.persistence", {"models": ["one"]})
+    scopes = authority_scopes(single_fit_delivery="active")
+    fit_record = {
+        "schema": FIT_SELECTION_SCHEMA,
+        "offered_model_set_fingerprint": fingerprint,
+        "candidate_records": [{"label": "one", "offered_models": [{"verbose": True}]}],
+        "authority_scopes": scopes,
+    }
+    interval_record = {
+        "schema": INTERVAL_SCHEMA,
+        "quantities": {"interval": {"availability": True, "authority_scopes": scopes}},
+        "authority_scopes": scopes,
+    }
+    probability_record = {
+        "schema": PROBABILITY_SCHEMA,
+        "quantities": {
+            "confidence": {
+                "quantity_kind": "heuristic_score",
+                "source_measure_semantics": "heuristic_triage_score",
+                "authority_scopes": scopes,
+            }
+        },
+        "authority_scopes": scopes,
+    }
+    shadow_record = unavailable_shadow_selection(
+        "shadow_skipped_soft_deadline",
+        stage="execution_policy",
+        selection_context_fingerprint=fingerprint,
+        candidate_generation_route={"route": "shadow_not_evaluated"},
+        legacy_model_selection_fingerprint=fingerprint,
+        legacy_selected_label="one",
+        legacy_model_weights={"one": 1.0},
+    )
+    outcome = _outcome_with(None, None)
+    outcome.fit_selection_semantics = fit_record
+    outcome.interval_semantics = interval_record
+    outcome.probability_semantics = probability_record
+    outcome.shadow_model_selection = shadow_record
+
+    row = _write_read(tmp_path, outcome)
+    assert row["fit_selection_semantics"]["schema"] == FIT_SELECTION_SCHEMA
+    assert row["interval_semantics"]["schema"] == INTERVAL_SCHEMA
+    assert row["probability_semantics"]["schema"] == PROBABILITY_SCHEMA
+    assert row["shadow_model_selection"]["schema"] == SHADOW_MODEL_SELECTION_SCHEMA
+    assert (
+        row["shadow_model_selection"]["unavailable_reason_code"]
+        == "shadow_skipped_soft_deadline"
+    )
+    assert row["shadow_model_selection"]["shadow_execution_kind"] == "skipped"
+    assert row["shadow_model_selection"]["reused_model_identities"] == []
+    assert row["shadow_model_selection"]["freshly_fitted_model_identities"] == []
+
+    state = SessionState()
+    state.put(ScanEntry(
+        scan_id="E:7:ana7", scan_number=7, scan_type="measurement", status="fitted",
+        detectors={"ana7": outcome.to_dict()},
+    ))
+    reloaded = SessionState.load(state.save(tmp_path / "session.json"))
+    full = reloaded.scans["E:7:ana7"].detectors["ana7"]
+    assert full["fit_selection_semantics"] == fit_record
+    assert full["interval_semantics"] == interval_record
+    assert full["probability_semantics"] == probability_record
+    assert full["shadow_model_selection"] == shadow_record
+
+
 def test_old_results_csv_without_columns_reads_none(tmp_path):
     """A results.csv written before these columns existed must still read, with both fields None."""
     ws = Workspace.open(tmp_path / "ws")
@@ -231,6 +331,7 @@ def test_old_results_csv_without_columns_reads_none(tmp_path):
     row = readers.read_results_csv(ws.root)[0]
     assert row["omega0"] == pytest.approx(5.0)
     assert "amplitudes" not in row and "candidates" not in row  # column absent → key absent
+    assert "shadow_model_selection" not in row
 
 
 # --------------------------------------------------------------------------- rehydration boundary

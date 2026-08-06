@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for declaring expected excitations
 > **Provenance:** hand-written
-> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Verified against code revision:** `b6db5bc` (2026-08-03)
 
 > **Status: Implemented (branch hypotheses).** The branch schema, shipped presets, frozen objective fingerprint, parameter
 > priors, branch-MI acquisition, opening moves, deterministic widening, incremental count batches,
@@ -67,13 +67,18 @@ confidence = 0.7                   # how strongly the prior weighs against data 
 
 [hypotheses.acoustic]              # the expected rival; the preset alone is usually enough
 
-# Something we don't ship a preset for — Tier 1: a new character is data, not code
+# Something we don't ship a preset for — Tier 1: a new locally recognized hypothesis
 [hypotheses.my_gapped_mode]
 dispersion_type = "branch"
 zc_energy = { mode = 4.0, sigma = 1.5 }
 slope_zc = { mean = 0.0, sigma = 5.0 }     # meV per r.l.u., at the zone centre
 confidence = 0.5
 ```
+
+Custom branch hypotheses can seed local assignment beliefs and appear in diagnostic branch
+evidence. End-to-end connected target tracking and selectable target authority currently
+support only the acoustic and optic roles; the Γ/intensity rescue model is currently
+acoustic-only.
 
 Field reference (all optional unless noted; unset fields inherit the preset or an
 uninformative default):
@@ -140,8 +145,11 @@ The hypothesis may be wrong; the design treats that as a first-class outcome, no
 
 ## Extending the system (the three tiers, O10)
 
-1. **New character → TOML, no code.** Anything branch-shaped — a gapped magnon, a soft mode — is
-   a new parameter preset, declarable inline as above.
+1. **New locally recognized branch hypothesis → TOML, no code.** A custom branch-shaped
+   hypothesis — a gapped magnon, a soft mode — is a new parameter preset, declarable inline as
+   above, and can participate in local assignment and diagnostic belief construction. Promoting
+   it to a selectable, connected campaign target still requires extending the current
+   acoustic/optic tracking machinery.
 2. **New machinery → registry plugin.** A `continuum` is not a curve; a crystal-field `level`
    needs the slope prior disabled; a new classification feature (intensity-vs-Q, polarization)
    must be supplied by the fitter. Each `dispersion_type` is a registry entry implementing a
@@ -162,6 +170,20 @@ prior-vs-data-only check under `hypothesis_mismatch`, drive regression ingredien
 `branch_belief_models`, and viewer/report rows under `branch_belief`. Each viewer row carries
 `label_probabilities`, `assignment_entropy`, and `p_is_target`; there is no ambiguous
 `target_probability` field.
+
+Scan-window distinction policy is frozen separately under the objective's top-level
+`scan_window_eig` block. Its authenticated policy-set and numerical-scoring fingerprints are
+deliberately excluded from `hypothesis_fingerprint` and from the stable current-objective comparison
+scope: changing a diagnostic partition or Monte Carlo count must not claim the excitation hypothesis
+changed, and a policy may bind to the current campaign without recursively hashing itself. The
+`scan_window_eig_mode` intent remains in the ordinary steering snapshot; card-only scope-binding
+markers and authoring records never survive into a frozen objective.
+
+The block was added without changing `isar.objective/2`, so historical `/2` records may omit it. On
+read, omission materializes the authenticated no-policy/default-scoring value; new serialization
+always writes the block. This compatibility rule does not merge current card intent into a frozen
+record: full specs, envelopes, and resumes remain self-contained, and explicit null or authoring
+markers are invalid.
 
 Resolution precedence is deterministic: an energy/gap stated in the natural-language goal wins;
 otherwise a matching `[hypotheses.<target>]` card declaration wins; otherwise the shipped preset is

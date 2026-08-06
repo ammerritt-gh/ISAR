@@ -26,12 +26,11 @@ DISPERSION_TYPES = ("branch", "level", "continuum")
 IMPLEMENTED_DISPERSION_TYPES = ("branch",)
 PRESET_NAMES = ("acoustic", "optic", "null")
 
-#: Same-action scan-window EIG regime.  ``off`` designs the single legacy window; ``shadow`` also
-#: generates and persists the alternative uniform-window family while still executing the legacy one;
-#: ``authoritative`` would let a scored winner be executed and is not implemented yet — declaring it
-#: refuses at campaign setup rather than silently degrading to shadow or off.
+#: Same-action scan-window EIG regime. ``off`` designs the legacy window; ``shadow`` also
+#: generates and scores alternatives diagnostically; ``authoritative`` may execute the scored
+#: winner only under the restricted O41 profile validated at campaign setup. Authoritative use
+#: remains opt-in pending the O42 release review.
 SCAN_WINDOW_EIG_MODES = ("off", "shadow", "authoritative")
-SCAN_WINDOW_EIG_AUTHORITATIVE_UNAVAILABLE = "scan_window_eig_authoritative_unavailable"
 
 
 @dataclass(frozen=True)
@@ -98,7 +97,12 @@ class SteeringPolicy:
     assignment_entropy_stop_nats: float = 0.2
     minimum_information_per_cost: float = 0.0
     minimum_target_support_points: int = 6
-    max_scan_points: int = 100
+    # A ceiling, not a target: a scan asks for the points its window and step need, and a typical
+    # target core is ~17. The old 100 was set when windows were sized on the marginal ("vanadium")
+    # resolution width, which is ~2.5x the section width a constant-Q scan actually measures. Once
+    # the step follows the section, covering a +/-9 meV survey band takes ~105-125 points, so 100
+    # silently clamped the survey scans a cold campaign needs to classify a branch at all.
+    max_scan_points: int = 220
     absent_signal_widen_step: float = 0.5
     absent_signal_widen_steps: int = 3
     quadrature_order: int = 32
@@ -189,13 +193,6 @@ class SteeringPolicy:
             raise ValueError(
                 "scan_window_eig_mode must be one of "
                 f"{', '.join(SCAN_WINDOW_EIG_MODES)}")
-        if self.scan_window_eig_mode == "authoritative":
-            # Refuse loudly at policy-freeze time.  Silently reading this as shadow (or off) would
-            # let a scientist believe a scored window was executed when no scorer exists.
-            raise ValueError(
-                f"{SCAN_WINDOW_EIG_AUTHORITATIVE_UNAVAILABLE}: scan-window EIG selection is not "
-                "implemented; declare 'shadow' to generate and persist candidates without "
-                "changing the executed scan")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for statistical methods; §7 is the sole record of the 2026-07-19 audit
 > **Provenance:** hand-written
-> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Verified against code revision:** `1310969` (2026-07-30)
 
 *For physicists who fit by hand — and who will check.*
 
@@ -28,7 +28,8 @@ command that regenerates its evidence. Where a capability is not yet wired in, i
 
 Every number in a `results.csv` row answers exactly one of the three questions, and trusting a
 number means trusting the machinery behind its question. Fig. 1 is the map; note the one dashed
-box — the Bayesian rung of the certification ladder — which is built but **does not certify**.
+box — the single-fit Bayesian rung of the certification ladder — which is built but **does not
+certify on its own**.
 
 ![FIG. 1](stats/figures/three_questions.svg)
 
@@ -39,18 +40,49 @@ Vocabulary is discipline, not pedagogy, in this document:
 
 > - **Bootstrap** means *frequentist-by-simulation*: refit many Poisson redraws of the best-fit
 >   model and read the spread. It is not Bayesian and is never called "credible".
-> - The branch-assignment posterior (`assignment_entropy`, `branch_id`) is a stored posterior over
->   branch identity **[Implemented]**.
+> - The branch-assignment weights (`branch_posterior`, `assignment_entropy`, `branch_id`) are a
+>   normalized, versioned assignment-score distribution **[Implemented]**. They are probability-like
+>   weights, but are not claimed to be a calibrated Bayesian posterior.
 > - The dispersion-prior MAP fit (`prior_omega`, `prior_sigma` → `fit_kind=soft_prior`) is a
 >   prior-regularized point estimate **[Implemented]**. It is not a stored posterior distribution
 >   or a credible interval.
 > - Bayesian credible **intervals** on ω₀ are **[Implemented, diagnostics-only]**: the nested
 >   sampler (`isar/analyze/errors/bayes.py`) is wired through `--errors bayes` and stores
->   `bayes_interval` plus posterior samples and agreement diagnostics, but certification and
->   confidence never read it (`isar/session/driver.py:135`). Every interval ISAR *certifies* on is
->   frequentist.
->   Coverage validation of the credible interval, and any promotion of it to certifying
->   authority, remain **[Planned]**.
+>   `bayes_interval` plus posterior samples and agreement diagnostics. A physical row never
+>   certifies directly from `bayes_interval`. A pooled master's legacy model interval can,
+>   however, include those nested particles in a model-dependent mixture and currently seats
+>   certification; §4.1 records that distinct authority and its limitations.
+> - `confidence` is a heuristic triage score, not an empirical or Bayesian probability.
+
+### 0.1 Additive statistical-semantics contract
+
+STAT-1 adds optional metadata without changing a fit, score, interval, verdict, stop, or action.
+Full records live in `session.json`; compact projections are appended to `results.csv`; legacy
+rows expose no semantics rather than inventing producer provenance. The four record schemas are
+`isar.fit_selection_semantics/1`, `isar.interval_semantics/1`,
+`isar.probability_semantics/1`, and `isar.predictive_semantics/1`.
+
+Every authority declaration is scoped: for example, an interval can remain active for
+`legacy_master_certification` and `stopping` while being ineligible for `eig_shadow`,
+`eig_authoritative`, and `acquisition_selection`. `unknown_legacy` is reader-only. If a producer
+cannot construct valid metadata, it records a structured `semantics_construction_failed` warning
+and publishes the otherwise-valid scientific result with semantics unavailable.
+
+Candidate comparability is represented by four identities, not inferred from a shared model label:
+the exact data/energy-grid/mask/normalization/likelihood context, model parameterization, effective
+constraints, and their combined comparison context. Model-set fingerprints contain sorted
+structured model/context records, so enumeration order is irrelevant, while changing a candidate
+route or Akaike denominator changes the complete selection identity. The selection record publishes
+its aggregate eligibility and every candidate-specific reason. STAT-2a consumes those
+producer-owned classifications in a diagnostics-only shadow comparison rather than re-deriving
+them; STAT-2c will enforce them for authority only after the STAT-2b evidence gate.
+
+For intervals, producer capability and realized authority are separate. A bootstrap or profile
+producer may offer an interval to the delivery ladder, but only the value actually selected after
+reliability/trust gates, branch triage, and connected tracking carries delivery or stopping
+authority. Predictive/projection semantics fingerprints are authenticated by readers. Missing
+semantics remain valid legacy numerical input; present-but-modified semantics are refused under the
+stable `predictive_semantics_invalid` reason.
 
 Verify the map (no workspace needed):
 
@@ -92,12 +124,30 @@ Verify (no workspace; ~1–8 min depending on `--workers`):
 python docs/stats/make_figures.py --only cost_bias --workers 8
 ```
 
-## 2. Select: which model, decided by evidence
+## 2. Select: which model, decided by relative information-criterion support
 
 Adding parameters always lowers the cost, so raw χ² (or raw likelihood) always votes for the
 more flexible model, and eyeballing a shoulder is not reproducible. ISAR scores each candidate
 model with **AIC** (= cost + 2 per free parameter) and reports **Akaike weights** — each model's
-share of the evidence — plus a nested likelihood-ratio test for nested pairs **[Implemented]**.
+relative weight within the exact scored denominator — plus a nested likelihood-ratio test for
+nested pairs **[Implemented]**. An Akaike weight is neither a Bayesian posterior model probability
+nor a Bayes factor. STAT-1 records estimator, effective constraints, candidate route, selection
+eligibility, and each model-set transition. It deliberately leaves the legacy calculation intact:
+soft-penalized and hard-conditioned candidates can still receive ordinary-AIC weights even when
+their new semantics mark them ineligible.
+
+STAT-2a now also records a diagnostics-only `isar.model_selection/2-shadow` comparison
+**[Implemented]**. For an unconstrained complete route it reuses the exact fitted candidate objects;
+when delivery constraints are effective it fits the complete standard family under the same data,
+mask, normalization, likelihood, and unconstrained parameterization. The full record is persisted
+in `session.json` and a compact projection is appended to `results.csv`. A finite runtime allowance
+skips the shadow work with a structured reason, and any shadow failure leaves the legacy selector,
+verdict, intervals, certification, stopping, cache identities, and acquisition behavior unchanged.
+The current `isar.shadow_model_selection/2` schema authenticates every candidate against the
+declared data-likelihood context and records whether shadow evidence was exactly reused, partly
+reused, freshly fitted, skipped, or unavailable. Those execution fields are provenance, not inputs
+to the standard-selection fingerprint; `/1` records remain readable.
+STAT-2c, not this shadow lane, owns authoritative enforcement after STAT-2b evidence.
 
 Fig. 3 is scan 507 of the archived workspace, chosen by criterion (`n_modes==2`,
 `verdict=="resolved"`, `interval_reliable`), not by eye. The one-mode fit (dashed) leaves
@@ -127,9 +177,10 @@ The fast error bar every tool quotes is the Hessian ("HESSE"): invert the curvat
 at the minimum. It assumes the cost is a clean parabola. ISAR computes it
 (`hesse_lo`/`hesse_hi`) **[Implemented]**, then climbs: a profile-likelihood (MINOS) interval,
 which can be asymmetric (`omega0_profile_lo/hi`) **[Implemented]**; a parametric bootstrap —
-M refits of Poisson redraws — as the authoritative interval (`interval_lo/hi`)
-**[Implemented]**; and a Bayesian credible interval as the top rung
-**[Implemented, diagnostics-only]** — computed under `--errors bayes`, but never certifying.
+M refits of Poisson redraws — as the ordinary physical-fit authoritative interval
+(`interval_lo/hi`) **[Implemented]**; and a Bayesian credible interval as the top single-fit rung
+**[Implemented, diagnostics-only]**. Pooled-master certification uses the separate mixed interval
+described in §4.1.
 
 A ladder is only worth its cost if the rungs differ measurably, so we measured them. The claim
 "a 68% interval covers the truth 68% of the time" can only be tested where the truth is known,
@@ -282,11 +333,22 @@ points and treats zero counts exactly. A failure says “this pool is internally
 not license automatic exclusion or prove the requested physics infeasible.
 
 The certifying ω interval is taken across the retained model-weighted full-parameter predictive
-ensemble, not from whichever individual scan or single fitted structure happened to look best. That
-distinction resolves the Γ wall correctly: Γ can sit at the instrumental resolution boundary while ω
-remains identifiable after marginalizing over Γ and model uncertainty. Conversely, unresolved ω
-multimodality, label switching, target-track ambiguity, or pool inconsistency blocks certification no
-matter how narrow one model's HESSE bar looks.
+ensemble, not from whichever individual scan or single fitted structure happened to look best. In
+the current `isar.master_predictive/2` contract, the parameter particles are selected model by model:
+nested posterior resamples first, then parametric-bootstrap draws, then a trusted HESSE/Laplace
+approximation. Retained ordinary-AIC weights are fixed at their observed-data values. The resulting
+`model_interval` is therefore a conditional-on-target-present, heterogeneous mixed-particle quantile;
+it is neither a Bayesian model-averaged credible interval nor a bootstrap distribution of the complete
+refit-and-reselect procedure. No-target mass is not included in its ω quantiles.
+
+That interval retains active **legacy** master-certification and stopping authority so STAT-1 changes
+no behavior. Its semantics explicitly make it ineligible for EIG and acquisition. The distinction
+still resolves the Γ wall operationally: Γ can sit at the instrumental resolution boundary while ω
+remains identifiable after mixing over retained parameter and model uncertainty. Conversely,
+unresolved ω multimodality, label switching, target-track ambiguity, or pool inconsistency blocks
+certification no matter how narrow one model's HESSE bar looks. Coverage and unconditional
+false-certification calibration of this actual mixed delivery remain required before changing its
+scientific authority.
 
 The final-certification computation preserves that statistical unit. It refits—or exactly reuses—one
 frozen pooled master per requested `(q,T)`, never the physical scans that contributed its counts.
@@ -294,16 +356,18 @@ Completed master units checkpoint immediately, but the authoritative generation 
 when the entire objective-path worklist is complete. Thus interruption changes elapsed time, not the
 sample, seed, model inputs, reduction order, or reported interval.
 
-## 5. The earned Bayesian pieces
+## 5. Bayesian and probability-like pieces
 
-Chapter 0 separates three related outputs: a branch-assignment posterior, a prior-regularized MAP
-point estimate, and diagnostics-only nested-sampler credible intervals. A MAP estimate is not by
-itself a stored posterior distribution or interval.
+Chapter 0 separates three related outputs: normalized branch-assignment weights, a
+prior-regularized MAP point estimate, and diagnostics-only nested-sampler credible intervals. A MAP
+estimate is not by itself a stored posterior distribution or interval.
 
-**The branch-assignment posterior [Implemented].** Which dispersion branch a fitted mode
-belongs to is genuinely a Bayesian question — a prior over branches updated by the fit — and
-ISAR reports the full answer: `branch_id`, the posterior weights, and their Shannon entropy
-`assignment_entropy`. Fig. 8 contrasts scan 505 (entropy 0.008 — certain, weight 0.999
+**The branch-assignment score distribution [Implemented].** ISAR reports `branch_id`, normalized
+assignment weights in `branch_posterior`, and their Shannon entropy `assignment_entropy`. The
+versioned scorer combines likelihood-like compatibility with explicit assignment rules and
+penalties. The weights are useful for ranking and thresholding, but no reliability campaign or
+fully normalized generative model currently earns calibrated-posterior language. Fig. 8 contrasts
+scan 505 (entropy 0.008 — concentrated, weight 0.999
 acoustic) with scan 477 (entropy 0.646 of a possible ln 2 ≈ 0.693 — a coin flip, 0.653 vs
 0.347). The entropy *number* is the deliverable: near 0, the assignment can be banked into the
 dispersion prior; near ln 2, ISAR reports the ambiguity instead of guessing a branch and
@@ -312,15 +376,18 @@ not re-derivation.
 
 ![FIG. 8](stats/figures/branch_posterior.png)
 
-**FIG. 8.** The branch posterior for a certain and an ambiguous scan of `mvp_zone_test16`;
-entropy is the honesty meter.
+**FIG. 8.** The normalized branch-assignment weights for a concentrated and an ambiguous scan of
+`mvp_zone_test16`; entropy records concentration over the declared assignment state space.
 
 **The dispersion-prior MAP point estimate [Implemented].** When the campaign has a belief about
 ω₀ at a q-point, the fit can be softly constrained by it; `prior_omega`, `prior_sigma`, `prior_n`
 record the regularizing prior and `fit_kind` records that it was used. The optimizer returns a MAP
 point estimate, not a stored posterior distribution or credible interval. The data-only cost is
-kept separate (`cost` vs `posterior_cost`), so a constrained fit is never mistaken for independent
-evidence.
+kept separate (`cost` vs `posterior_cost`), but the data cost is evaluated at the constrained
+optimum. STAT-1 therefore labels effective soft constraints and unapproved hard conditioning as
+selection-ineligible while retaining the legacy scores. STAT-2a now observes comparable
+unconstrained selection fits beside constrained delivery fits without changing authority. STAT-2c
+must enforce that separation before ordinary-AIC eligibility controls production.
 
 **Nested-sampler credible intervals [Implemented, diagnostics-only].** Under `--errors bayes` the
 nested sampler runs on the preliminary-best label and records `bayes_interval`,
@@ -328,10 +395,13 @@ nested sampler runs on the preliminary-best label and records `bayes_interval`,
 convergence gates (`bayes_ok`, `bayes_ess`, `bayes_fail_reason`). The frequentist↔Bayesian
 agreement check is live as a per-scan trust signal of the §3.2 kind (`bayes_freq_ratio`).
 
-What remains **[Planned]** is not the machinery but the *licence*: certification and confidence
-deliberately never read the credible interval (`isar/session/driver.py:135`), because its
-coverage has not been measured the way §3's bootstrap coverage was. Promotion to the ladder's
-certifying rung waits on that measurement.
+These samples are a Bayesian posterior under an optimizer-bound, data-dependent prior kernel.
+That makes the individual posterior interval a coherent conditional result under that kernel, but
+its `log_evidence` is not comparable across models or campaigns, and the current system is not a
+Bayesian model average. What remains **[Planned]** is the *licence*: prior normalization and
+sensitivity, all-model coverage including null, evidence stability, SBC/PPC, and calibration before
+any formal Bayesian model-average or authority claim. A physical row's `bayes_interval` remains
+diagnostic; §4.1 separately describes the legacy mixed master interval.
 
 Verify:
 

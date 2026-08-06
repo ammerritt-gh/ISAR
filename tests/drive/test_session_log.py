@@ -174,3 +174,36 @@ def test_analysis_clock_resume_carries_elapsed_and_closes_latest_unmatched(tmp_p
     assert analysis_clock_state(path)["unmatched"] == ["same"]
     close_interrupted_analysis(path)
     assert read_log(path)[-1]["payload"]["status"] == "interrupted"
+
+
+# The seven kinds below are emitted by isar/drive/loop.py but are NOT in EVENT_KINDS, so every one of
+# them is written with a "kind_unknown" marker. They pre-date PR #9 and are out of its scope; they are
+# listed here so a NEW unregistered kind fails this test instead of joining them silently.
+_KNOWN_UNREGISTERED_KINDS = frozenset({
+    "action_suppressed", "differentiation_probe", "evidence_only_master", "exposure_saturation",
+    "inventory", "scan_design", "strategy_ceiling",
+})
+
+
+def test_every_emitted_event_kind_is_registered():
+    """An emitted kind that EVENT_KINDS does not know is logged as ``kind_unknown``.
+
+    ``feasibility_trim`` was emitted, rendered by the GUI and asserted by four tests while missing
+    from the vocabulary — an unregistered kind is silently degraded, never rejected, so nothing else
+    catches it.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "isar"
+    emitted: dict[str, str] = {}
+    for path in root.rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        for match in re.finditer(r'log_event\(\s*[^,]+,\s*"([a-z_]+)"', source):
+            emitted.setdefault(match.group(1),
+                               f"{path.relative_to(root)}:{source[:match.start()].count(chr(10)) + 1}")
+
+    unregistered = {kind: where for kind, where in emitted.items()
+                    if kind not in EVENT_KINDS and kind not in _KNOWN_UNREGISTERED_KINDS}
+    assert unregistered == {}, f"unregistered event kinds emitted: {unregistered}"
+    assert "feasibility_trim" in emitted and "feasibility_trim" in EVENT_KINDS

@@ -1,0 +1,1074 @@
+from __future__ import annotations
+
+import copy
+import inspect
+from dataclasses import dataclass
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+from isar.analyze import loop, select
+from isar.analyze import errors as errors_mod
+from isar.drive import loop as drive_loop
+from isar.predictive import (
+    PREDICTIVE_SEMANTICS_INVALID,
+    PredictiveArtifactError,
+    predictive_basis_fingerprint,
+    validate_master_predictive_artifact,
+)
+from isar.schema.statistics import (
+    FIT_SELECTION_SCHEMA,
+    PREDICTIVE_SCHEMA,
+    SemanticsConstructionError,
+    authority_scopes,
+    compact_for_csv,
+    read_optional,
+    semantics_fingerprint,
+    validate_predictive_semantics,
+    validate_for_write,
+)
+from isar.schema.steering import ParamConstraints
+from isar.session import branch_tracking, certification, driver, predictive_artifact
+from isar.session.state import canonical_hash, content_hash
+from isar.workspace_api.views import FitView
+
+
+def _fit_semantics(*, estimator="data_likelihood_mle", eligibility="eligible", constraints=None):
+    constraints = list(constraints or [])
+    data_fingerprint = semantics_fingerprint(
+        "test.data_likelihood", {"energy": [0.0, 1.0], "counts": [2.0, 3.0]}
+    )
+    model_fingerprint = semantics_fingerprint(
+        "test.model_parameterization", {"label": "one", "parameters": ["a"]}
+    )
+    constraint_fingerprint = semantics_fingerprint(
+        "test.constraints", {"effective_constraints": constraints}
+    )
+    comparison_fingerprint = semantics_fingerprint(
+        "test.comparison",
+        {
+            "data_likelihood_fingerprint": data_fingerprint,
+            "model_parameterization_fingerprint": model_fingerprint,
+            "constraint_fingerprint": constraint_fingerprint,
+            "estimator_kind": estimator,
+        },
+    )
+    return validate_for_write(
+        {
+            "schema": FIT_SELECTION_SCHEMA,
+            "estimator_kind": estimator,
+            "fit_kind": "unconstrained",
+            "effective_constraints": constraints,
+            "aggregate_constraint_origin": "none" if not constraints else constraints[0]["origin"],
+            "selection_eligibility": eligibility,
+            "selection_ineligibility_reasons": [],
+            "data_likelihood_fingerprint": data_fingerprint,
+            "model_parameterization_fingerprint": model_fingerprint,
+            "constraint_fingerprint": constraint_fingerprint,
+            "comparison_context_fingerprint": comparison_fingerprint,
+            "conditioning_fingerprint": comparison_fingerprint,
+            "authority_scopes": authority_scopes(single_fit_delivery="active"),
+        },
+        FIT_SELECTION_SCHEMA,
+    )
+
+
+def _selection_semantics():
+    fingerprints = {
+        name: semantics_fingerprint(f"test.{name}", ["one", "two"])
+        for name in (
+            "offered_model_set_fingerprint",
+            "scored_model_set_fingerprint",
+            "weight_denominator_fingerprint",
+            "error_attachment_set_fingerprint",
+            "legacy_pool_set_fingerprint",
+        )
+    }
+    return validate_for_write(
+        {
+            "schema": FIT_SELECTION_SCHEMA,
+            **fingerprints,
+            "model_selection_fingerprint": semantics_fingerprint(
+                "test.selection", fingerprints
+            ),
+            "model_weight_kind": "akaike_relative_weight",
+            "selection_eligibility": "eligible",
+            "selection_ineligibility_reasons": [],
+            "authority_scopes": authority_scopes(single_fit_delivery="active"),
+        },
+        FIT_SELECTION_SCHEMA,
+    )
+
+
+def _fit_context(*, constraints=None, **changes):
+    values = {
+        "x": np.array([-1.0, 0.0, 1.0]),
+        "counts": np.array([3.0, 8.0, 4.0]),
+        "mask": np.array([False, False, False]),
+        "exposure_scale": np.array([1.0, 1.0, 1.0]),
+        "exposure_reference": 1.0,
+        "T": 300.0,
+        "center": 0.0,
+        "gauss_fwhm": 0.4,
+        "lorentz_fwhm": 0.1,
+        "quasielastic_fwhm": 0.2,
+        "instrument": "test",
+        "energy_status": "absolute",
+        "prior_omega": None,
+        "acoustic_omega": None,
+        "constraints": constraints,
+    }
+    values.update(changes)
+    return SimpleNamespace(**values)
+
+
+def _problem(*, composite=None, bounds=None, free_names=None, fixed_pos=None, fixed_vals=None):
+    names = list(free_names or ["phonon.Gamma", "phonon.A"])
+    return loop.Problem(
+        composite=object() if composite is None else composite,
+        costv=lambda theta: 0.0,
+        x0=np.array([0.3, 25.0][:len(names)]),
+        bounds=list(bounds or [(0.0, 1.0), (0.0, 100.0)][:len(names)]),
+        free_names=names,
+        k=len(names) - len(fixed_pos or []),
+        n_used=10,
+        penalty=lambda theta: 0.0,
+        fixed_pos=list(fixed_pos or []),
+        fixed_vals=list(fixed_vals or []),
+    )
+
+
+def test_effective_constraints_are_classified_from_actual_origins():
+    constraints = ParamConstraints(
+        soft={"phonon.Gamma": (0.3, 0.1)},
+        hard={"phonon.A": 25.0},
+        origins={
+            "phonon.Gamma": "prior_predictive",
+            "phonon.A": "data_dependent_rescue",
+        },
+    )
+    problem = _problem(fixed_pos=[1], fixed_vals=[25.0])
+    semantics = loop._fit_semantics_for(
+        problem, _fit_context(constraints=constraints), "branch_conditional"
+    )
+    assert semantics["estimator_kind"] == "soft_penalized_likelihood"
+    assert semantics["aggregate_constraint_origin"] == "mixed"
+    assert semantics["selection_eligibility"] == "ineligible_data_dependent_conditioning"
+    assert semantics["selection_ineligibility_reasons"] == [
+        "effective_soft_constraint",
+        "data_dependent_or_post_selection_hard_constraint",
+    ]
+    assert [item["parameter"] for item in semantics["effective_constraints"]] == [
+        "phonon.A",
+        "phonon.Gamma",
+    ]
+
+
+def test_missing_constraint_origin_fails_soft_at_fit_producer(caplog):
+    problem = _problem(
+        free_names=["phonon.Gamma"],
+        bounds=[(0.0, 1.0)],
+    )
+    result = SimpleNamespace(label="stokes+bg", fit_kind="soft_prior", fit_semantics="sentinel")
+    loop._attach_fit_semantics(
+        result,
+        problem,
+        _fit_context(
+            constraints=ParamConstraints(soft={"phonon.Gamma": (0.3, 0.1)})
+        ),
+    )
+    assert result.fit_semantics is None
+    assert "semantics_construction_failed" in caplog.text
+    assert "missing_constraint_origin" in caplog.text
+
+
+def test_selection_publishes_each_distinct_model_set_transition():
+    fit_semantics = _fit_semantics()
+    results = [
+        SimpleNamespace(
+            label="one",
+            fit_semantics=fit_semantics,
+            within_model={"omega0_samples": np.array([1.0, 1.1])},
+        ),
+        SimpleNamespace(label="two", fit_semantics=fit_semantics, within_model={}),
+    ]
+    scores = [
+        SimpleNamespace(
+            label="one", cost=10.0, k=2, aic=14.0, weight=0.8, survives=True,
+            fit_semantics=fit_semantics,
+        ),
+        SimpleNamespace(
+            label="two", cost=11.0, k=3, aic=17.0, weight=0.2, survives=True,
+            fit_semantics=fit_semantics,
+        ),
+    ]
+    selection = SimpleNamespace(scores=scores, pooled=object())
+    record = driver._build_selection_semantics(
+        results,
+        selection,
+        {
+            "route": "full_two_stage",
+            "multimode_route": "residual_triggered",
+            "offered_labels": ["one", "two"],
+            "scored_labels": ["one", "two"],
+        },
+        error_attachment_labels=["one", "two"],
+    )
+    names = (
+        "offered_model_set_fingerprint",
+        "scored_model_set_fingerprint",
+        "weight_denominator_fingerprint",
+        "error_attachment_set_fingerprint",
+        "legacy_pool_set_fingerprint",
+    )
+    assert all(record[name] for name in names)
+    assert record["legacy_pool_set_fingerprint"] == semantics_fingerprint(
+        "isar.legacy_pool_set/1",
+        [driver._model_set_record(results[0].label, results[0].fit_semantics)],
+    )
+    assert record["selection_eligibility"] == "eligible"
+    assert record["selection_ineligibility_reasons"] == []
+    assert record["model_selection_fingerprint"] not in {record[name] for name in names}
+
+
+def test_comparison_fingerprint_mutation_matrix(monkeypatch):
+    base_problem = _problem()
+    base_context = _fit_context()
+    baseline = loop._fit_semantics_for(base_problem, base_context, "unconstrained")
+
+    data_changes = (
+        {"counts": np.array([3.0, 9.0, 4.0])},
+        {"x": np.array([-1.1, 0.0, 1.0])},
+        {"mask": np.array([False, True, False])},
+        {"exposure_scale": np.array([1.0, 2.0, 1.0])},
+    )
+    for change in data_changes:
+        changed = loop._fit_semantics_for(
+            base_problem, _fit_context(**change), "unconstrained"
+        )
+        assert changed["data_likelihood_fingerprint"] != baseline[
+            "data_likelihood_fingerprint"
+        ]
+        assert changed["comparison_context_fingerprint"] != baseline[
+            "comparison_context_fingerprint"
+        ]
+
+    monkeypatch.setattr(loop, "DATA_LIKELIHOOD_REVISION", "test.changed_likelihood/1")
+    changed_likelihood = loop._fit_semantics_for(
+        base_problem, base_context, "unconstrained"
+    )
+    assert changed_likelihood["data_likelihood_fingerprint"] != baseline[
+        "data_likelihood_fingerprint"
+    ]
+    monkeypatch.undo()
+
+    component = SimpleNamespace(
+        prefix="phonon.",
+        params=[SimpleNamespace(name="omega0", kind="positive")],
+        peak="stokes",
+    )
+    model_changes = (
+        _problem(composite=SimpleNamespace(components=[component])),
+        _problem(bounds=[(0.0, 2.0), (0.0, 100.0)]),
+        _problem(
+            free_names=["phonon.Gamma", "phonon.scale"],
+            bounds=[(0.0, 1.0), (0.0, 100.0)],
+        ),
+    )
+    for problem in model_changes:
+        changed = loop._fit_semantics_for(problem, base_context, "unconstrained")
+        assert changed["model_parameterization_fingerprint"] != baseline[
+            "model_parameterization_fingerprint"
+        ]
+        assert changed["comparison_context_fingerprint"] != baseline[
+            "comparison_context_fingerprint"
+        ]
+
+    constrained_problem = _problem(fixed_pos=[1], fixed_vals=[25.0])
+    constraints = ParamConstraints(
+        hard={"phonon.A": 25.0},
+        origins={"phonon.A": "prior_predictive"},
+    )
+    changed_constraint = loop._fit_semantics_for(
+        constrained_problem,
+        _fit_context(constraints=constraints),
+        "branch_conditional",
+    )
+    assert changed_constraint["constraint_fingerprint"] != baseline[
+        "constraint_fingerprint"
+    ]
+    assert changed_constraint["comparison_context_fingerprint"] != baseline[
+        "comparison_context_fingerprint"
+    ]
+
+
+def test_selection_fingerprints_are_order_invariant_and_route_sensitive():
+    first = _fit_semantics()
+    second = _fit_semantics()
+    results = [
+        SimpleNamespace(
+            label="one",
+            fit_semantics=first,
+            within_model={"omega0_samples": np.array([1.0])},
+        ),
+        SimpleNamespace(
+            label="two",
+            fit_semantics=second,
+            within_model={"omega0_samples": np.array([2.0])},
+        ),
+    ]
+    scores = [
+        SimpleNamespace(
+            label="one", cost=10.0, k=2, aic=14.0, weight=0.7,
+            survives=True, fit_semantics=first,
+        ),
+        SimpleNamespace(
+            label="two", cost=11.0, k=2, aic=15.0, weight=0.3,
+            survives=True, fit_semantics=second,
+        ),
+    ]
+    route = {
+        "route": "full_two_stage",
+        "multimode_route": "residual_triggered",
+        "offered_labels": ["one", "two"],
+        "scored_labels": ["one", "two"],
+    }
+    baseline = driver._build_selection_semantics(
+        results,
+        SimpleNamespace(scores=scores, pooled=object()),
+        route,
+        error_attachment_labels=["one", "two"],
+    )
+    permuted = driver._build_selection_semantics(
+        list(reversed(results)),
+        SimpleNamespace(scores=list(reversed(scores)), pooled=object()),
+        {
+            **route,
+            "offered_labels": ["two", "one"],
+            "scored_labels": ["two", "one"],
+        },
+        error_attachment_labels=["two", "one"],
+    )
+    for name in (
+        "offered_model_set_fingerprint",
+        "scored_model_set_fingerprint",
+        "weight_denominator_fingerprint",
+        "error_attachment_set_fingerprint",
+        "legacy_pool_set_fingerprint",
+        "model_selection_fingerprint",
+    ):
+        assert permuted[name] == baseline[name]
+
+    changed_route = driver._build_selection_semantics(
+        results,
+        SimpleNamespace(scores=scores, pooled=object()),
+        {**route, "multimode_route": "guideline_forced"},
+        error_attachment_labels=["one", "two"],
+    )
+    assert changed_route["model_selection_fingerprint"] != baseline[
+        "model_selection_fingerprint"
+    ]
+    changed_denominator_scores = [copy.copy(scores[0])]
+    changed_denominator_scores[0].weight = 1.0
+    changed_denominator = driver._build_selection_semantics(
+        results,
+        SimpleNamespace(scores=changed_denominator_scores, pooled=object()),
+        route,
+        error_attachment_labels=["one"],
+    )
+    assert changed_denominator["weight_denominator_fingerprint"] != baseline[
+        "weight_denominator_fingerprint"
+    ]
+
+
+def test_selection_aggregate_preserves_strongest_reason_and_incomparability():
+    eligible = _fit_semantics()
+    data_dependent = _fit_semantics(
+        estimator="hard_conditioned_likelihood",
+        eligibility="ineligible_data_dependent_conditioning",
+        constraints=[
+            {
+                "parameter": "phonon.A",
+                "constraint_kind": "hard",
+                "value": 25.0,
+                "origin": "data_dependent_rescue",
+            }
+        ],
+    )
+    data_dependent["selection_ineligibility_reasons"] = [
+        "data_dependent_or_post_selection_hard_constraint"
+    ]
+    data_dependent["data_likelihood_fingerprint"] = semantics_fingerprint(
+        "test.other_data_likelihood", {"counts": [99.0]}
+    )
+    comparison = semantics_fingerprint(
+        "test.other_comparison",
+        {
+            "data_likelihood_fingerprint": data_dependent[
+                "data_likelihood_fingerprint"
+            ]
+        },
+    )
+    data_dependent["comparison_context_fingerprint"] = comparison
+    data_dependent["conditioning_fingerprint"] = comparison
+    data_dependent = validate_for_write(data_dependent, FIT_SELECTION_SCHEMA)
+    candidates = [
+        {"label": "one", "fit_semantics": eligible},
+        {"label": "two", "fit_semantics": data_dependent},
+    ]
+    aggregate, reasons = driver._aggregate_selection_eligibility(candidates)
+    assert aggregate == "ineligible_incomparable_context"
+    assert {item["reason_code"] for item in reasons} == {
+        "candidate_data_likelihood_contexts_differ",
+        "data_dependent_or_post_selection_hard_constraint",
+    }
+
+
+def test_interval_metadata_failure_does_not_remove_interval(caplog):
+    result = SimpleNamespace(label="one", fit_semantics=None)
+    within = {"freq_interval": (1.0, 1.1, 1.2)}
+    errors_mod._attach_interval_semantics(result, within)
+    assert within["freq_interval"] == (1.0, 1.1, 1.2)
+    assert within["interval_semantics"] is None
+    assert "semantics_construction_failed" in caplog.text
+
+
+def test_pooled_interval_references_exact_selection_and_fit_conditioning():
+    fit_semantics = _fit_semantics()
+    selection_semantics = _selection_semantics()
+    record = driver._outcome_interval_semantics(
+        best=SimpleNamespace(fit_semantics=fit_semantics, within_model={}),
+        selection=SimpleNamespace(
+            pooled=object(), fit_selection_semantics=selection_semantics
+        ),
+        interval=(1.0, 1.1, 1.2),
+        omega0_profile=None,
+        hesse_interval=(1.0, 1.1, 1.2),
+        hesse_trusted=True,
+        bayes_interval=None,
+        interval_reliable=True,
+    )
+
+    pooled = record["quantities"]["interval"]
+    assert pooled["legacy_pool_set_fingerprint"] == (
+        selection_semantics["legacy_pool_set_fingerprint"]
+    )
+    assert pooled["source_model_selection_fingerprint"] == (
+        selection_semantics["model_selection_fingerprint"]
+    )
+    assert pooled["conditioning_fingerprint"] == semantics_fingerprint(
+        "isar.legacy_pooled_interval_conditioning/1",
+        {
+            "legacy_pool_set_fingerprint": selection_semantics[
+                "legacy_pool_set_fingerprint"
+            ],
+            "source_model_selection_fingerprint": selection_semantics[
+                "model_selection_fingerprint"
+            ],
+        },
+    )
+    hesse = record["quantities"]["hesse_interval"]
+    assert hesse["estimator_kind"] == fit_semantics["estimator_kind"]
+    assert hesse["effective_constraints"] == fit_semantics["effective_constraints"]
+    assert hesse["conditioning_fingerprint"] == fit_semantics[
+        "conditioning_fingerprint"
+    ]
+
+
+@pytest.mark.parametrize(
+    (
+        "interval",
+        "profile",
+        "hesse",
+        "hesse_trusted",
+        "reliable",
+        "selected",
+        "certifiable",
+    ),
+    [
+        ((1.0, 1.1, 1.2), None, None, False, True, "interval", True),
+        (
+            (1.0, 1.1, 1.2),
+            (0.9, 1.1, 1.3),
+            None,
+            False,
+            False,
+            "omega0_profile",
+            False,
+        ),
+        (None, (0.9, 1.1, 1.3), None, False, True, "omega0_profile", True),
+        (None, None, (1.0, 1.1, 1.2), True, False, "hesse_interval", True),
+        (None, None, (1.0, 1.1, 1.2), False, False, None, False),
+    ],
+)
+def test_interval_authority_matches_realized_delivery(
+    interval,
+    profile,
+    hesse,
+    hesse_trusted,
+    reliable,
+    selected,
+    certifiable,
+):
+    fit_semantics = _fit_semantics()
+    produced = {
+        "freq_interval": interval,
+        "profile_interval": profile,
+    }
+    producer_semantics = errors_mod._interval_semantics_for(
+        SimpleNamespace(label="one", fit_semantics=fit_semantics),
+        produced,
+    )
+    record = driver._outcome_interval_semantics(
+        best=SimpleNamespace(
+            fit_semantics=fit_semantics,
+            within_model={"interval_semantics": producer_semantics},
+        ),
+        selection=SimpleNamespace(pooled=None, fit_selection_semantics=None),
+        interval=interval,
+        omega0_profile=profile,
+        hesse_interval=hesse,
+        hesse_trusted=hesse_trusted,
+        bayes_interval=None,
+        interval_reliable=reliable,
+    )
+    assert record["selected_interval_quantity"] == selected
+    assert record["selected_interval_certifiable"] is certifiable
+    for name, item in record["quantities"].items():
+        assert item["selected_for_delivery"] is (name == selected)
+    if selected is not None:
+        scopes = record["quantities"][selected]["authority_scopes"]
+        assert scopes["single_fit_delivery"] == "active"
+        assert scopes["stopping"] == ("active" if certifiable else "ineligible")
+    if interval is not None and not reliable:
+        assert record["quantities"]["interval"]["authority_scopes"][
+            "single_fit_delivery"
+        ] == "inactive"
+    if hesse is not None and not hesse_trusted:
+        scopes = record["quantities"]["hesse_interval"]["authority_scopes"]
+        assert scopes["single_fit_delivery"] == "inactive"
+        assert scopes["user_diagnostic"] == "active"
+
+
+def test_interval_authority_is_revoked_when_tracking_withholds_delivery():
+    fit_semantics = _fit_semantics()
+    producer = errors_mod._interval_semantics_for(
+        SimpleNamespace(label="one", fit_semantics=fit_semantics),
+        {"freq_interval": (1.0, 1.1, 1.2)},
+    )
+    outcome = {
+        "interval": (1.0, 1.1, 1.2),
+        "omega0_profile": None,
+        "hesse_interval": None,
+        "bayes_interval": None,
+        "hesse_trusted": False,
+        "interval_reliable": True,
+        "interval_semantics": driver._outcome_interval_semantics(
+            best=SimpleNamespace(
+                fit_semantics=fit_semantics,
+                within_model={"interval_semantics": producer},
+            ),
+            selection=SimpleNamespace(pooled=None, fit_selection_semantics=None),
+            interval=(1.0, 1.1, 1.2),
+            omega0_profile=None,
+            hesse_interval=None,
+            bayes_interval=None,
+            hesse_trusted=False,
+            interval_reliable=True,
+        ),
+    }
+    driver._clear_tracked_selection(outcome, {}, 2)
+    assert outcome["interval"] is None
+    assert outcome["interval_semantics"]["selected_interval_quantity"] is None
+    assert outcome["interval_semantics"]["quantities"]["interval"][
+        "producer_availability"
+    ] is True
+    assert outcome["interval_semantics"]["quantities"]["interval"][
+        "authority_scopes"
+    ]["single_fit_delivery"] == "inactive"
+
+
+def test_full_session_semantics_win_over_compact_csv_and_legacy_is_none():
+    constraint = {
+        "parameter": "phonon.Gamma",
+        "constraint_kind": "hard",
+        "value": 0.2,
+        "origin": "prior_predictive",
+    }
+    full = _fit_semantics(
+        estimator="hard_conditioned_likelihood",
+        eligibility="ineligible_unapproved_conditioning",
+        constraints=[constraint],
+    )
+    compact = compact_for_csv(full)
+    view = FitView.from_row(
+        {"fit_selection_semantics": compact},
+        outcome={"fit_selection_semantics": full},
+    )
+    assert view.fit_selection_semantics["effective_constraints"] == [constraint]
+    csv_only = FitView.from_row({"fit_selection_semantics": compact})
+    assert "effective_constraints" not in csv_only.fit_selection_semantics
+    assert FitView.from_row({}).fit_selection_semantics is None
+
+
+def test_predictive_semantics_exposes_heterogeneous_measures_and_bayesian_limits():
+    selection_semantics = _selection_semantics()
+    fit_semantics = _fit_semantics()
+    prior_fingerprint = semantics_fingerprint("test.prior", {"bounds": [0.0, 1.0]})
+    fits = {
+        "nested": SimpleNamespace(
+            fit_semantics=fit_semantics,
+            within_model={"bayes_prior_fingerprint": prior_fingerprint},
+        ),
+        "bootstrap": SimpleNamespace(fit_semantics=fit_semantics, within_model={}),
+    }
+    models = [
+        {"label": "nested", "source_weight": 0.6, "weight": 0.6, "draw_basis": "nested_sampling"},
+        {
+            "label": "bootstrap",
+            "source_weight": 0.4,
+            "weight": 0.4,
+            "draw_basis": "parametric_bootstrap",
+        },
+    ]
+    record, by_label = predictive_artifact._predictive_statistical_semantics(
+        models, fits, selection_semantics, complete=True
+    )
+    assert record["schema"] == PREDICTIVE_SCHEMA
+    assert record["particle_measure_kind"] == "heterogeneous_model_dependent"
+    assert record["actual_particle_measure_kind"] == "heterogeneous_model_dependent"
+    assert record["actual_particle_basis_homogeneous"] is False
+    assert record["contract_permits_heterogeneous_fallback"] is True
+    assert record["quantities"]["model_interval"][
+        "actual_particle_measure_kind"
+    ] == "heterogeneous_model_dependent"
+    assert record["formal_bayesian_model"] is False
+    assert record["homogeneous_design_eligible"] is False
+    assert by_label["nested"]["prior_kind"] == "optimizer_bound_data_dependent"
+    assert by_label["nested"]["prior_data_dependent"] is True
+    assert by_label["nested"]["evidence_comparable"] is False
+    assert by_label["nested"]["bayesian_model_average"] is False
+
+
+@pytest.mark.parametrize(
+    ("basis", "particle_kind", "paradigm"),
+    [
+        (
+            "parametric_bootstrap",
+            "parametric_bootstrap_sampling_distribution",
+            "frequentist_sampling_distribution",
+        ),
+        (
+            "laplace_hesse",
+            "laplace_hesse_parameter_approximation",
+            "frequentist_asymptotic",
+        ),
+    ],
+)
+def test_predictive_interval_records_actual_homogeneous_contents(
+    basis, particle_kind, paradigm
+):
+    models = [
+        {"label": "one", "source_weight": 1.0, "weight": 1.0, "draw_basis": basis}
+    ]
+    record, _ = predictive_artifact._predictive_statistical_semantics(
+        models,
+        {"one": SimpleNamespace(fit_semantics=_fit_semantics(), within_model={})},
+        _selection_semantics(),
+        complete=True,
+    )
+    assert record["particle_measure_kind"] == particle_kind
+    assert record["actual_particle_measure_kind"] == particle_kind
+    assert record["actual_particle_basis_homogeneous"] is True
+    interval = record["quantities"]["model_interval"]
+    assert interval["particle_measure_kind"] == particle_kind
+    assert interval["actual_particle_measure_kind"] == particle_kind
+    assert interval["inference_paradigm"] == paradigm
+    assert interval["contract_permits_heterogeneous_fallback"] is True
+    assert record["homogeneous_design_eligible"] is False
+
+
+def test_predictive_semantics_self_fingerprint_authenticates_on_read():
+    record, _ = predictive_artifact._predictive_statistical_semantics(
+        [
+            {
+                "label": "one",
+                "source_weight": 1.0,
+                "weight": 1.0,
+                "draw_basis": "parametric_bootstrap",
+            }
+        ],
+        {"one": SimpleNamespace(fit_semantics=_fit_semantics(), within_model={})},
+        _selection_semantics(),
+        complete=True,
+    )
+    assert validate_predictive_semantics(record) == record
+    tampered = copy.deepcopy(record)
+    tampered["construction_complete"] = False
+    with pytest.raises(SemanticsConstructionError) as raised:
+        validate_predictive_semantics(tampered)
+    assert raised.value.reason_code == "statistical_semantics_fingerprint_mismatch"
+    assert read_optional(tampered, PREDICTIVE_SCHEMA) is None
+
+
+def test_predictive_and_projection_metadata_fail_soft(caplog):
+    models = [
+        {"label": "one", "source_weight": 1.0, "weight": 1.0, "draw_basis": "laplace_hesse"}
+    ]
+    record, per_model = predictive_artifact._predictive_statistical_semantics(
+        models, {"one": SimpleNamespace(fit_semantics=None)}, None, complete=True
+    )
+    assert record is None and per_model == {}
+
+    artifact = {
+        "models": [
+            {
+                "label": "one",
+                "identity_label": "one",
+                "weight": 1.0,
+                "mode_energies": [[2.0], [2.1]],
+            }
+        ],
+        "evaluation_context": {"gaussian_fwhm_meV": 0.4},
+        "predictive_basis_fingerprint": "basis",
+    }
+    projection = predictive_artifact.build_target_projection(
+        artifact,
+        {"omega0": 2.0},
+        master_revision="master",
+        calibration_fingerprint="calibration",
+        policy_fingerprint="policy",
+    )
+    assert projection["complete"] is True
+    assert projection["target_projection_complete"] is True
+    assert projection["statistical_semantics"] is None
+    assert projection["target_projection_set_fingerprint"]
+    assert "semantics_construction_failed" in caplog.text
+
+
+def test_probability_like_fields_have_distinct_declared_measures():
+    retained = semantics_fingerprint("test.retained", ["one", "two"])
+    outcome = {
+        "confidence": 0.7,
+        "branch_posterior": {"acoustic": 0.8, "new": 0.2},
+        "branch_weight": 0.8,
+        "assignment_entropy": 0.5,
+        "target_probability": 0.9,
+        "identity_entropy": 0.1,
+        "target_branch": "acoustic",
+        "model_entropy": 0.3,
+        "probability_semantics": None,
+    }
+    record = driver._refresh_probability_semantics(
+        outcome,
+        predictive_payload={"predictive_retained_set_fingerprint": retained},
+    )
+    quantities = record["quantities"]
+    assert quantities["confidence"]["quantity_kind"] == "heuristic_score"
+    assert quantities["branch_posterior"]["source_measure_semantics"] == \
+        "normalized_assignment_weight"
+    assert quantities["target_probability"]["source_measure_semantics"] == \
+        "normalized_factor_graph_score"
+    assert quantities["identity_entropy"]["conditioning"] == "known_branch"
+    assert quantities["model_entropy"]["state_space"]["fingerprint"] == retained
+
+
+def test_metadata_is_excluded_from_scientific_selection_and_identity_firewalls():
+    base_results = [
+        SimpleNamespace(
+            label="one", optimizer_converged=True, cost=10.0, k=2, ndof=20,
+            params={"a": 1.0}, fit_semantics=None,
+        ),
+        SimpleNamespace(
+            label="two", optimizer_converged=True, cost=10.0, k=2, ndof=20,
+            params={"a": 1.0}, fit_semantics=None,
+        ),
+    ]
+    before = select.score_models(base_results)
+    for result in base_results:
+        result.fit_semantics = _fit_semantics()
+    after = select.score_models(base_results)
+    numeric = lambda rows: [
+        (row.label, row.aic, row.aicc, row.bic, row.weight, row.survives) for row in rows
+    ]
+    assert numeric(before) == numeric(after)
+    assert [row.label for row in before] == [row.label for row in after] == [
+        "one",
+        "two",
+    ]
+    promotion_candidate = {
+        "label": "one",
+        "k": 2,
+        "ndof": 20,
+        "cost": 10.0,
+        "cost_per_dof": 0.5,
+        "n_modes": 1,
+        "delta_aic": 0.0,
+        "akaike_weight": 1.0,
+        "usable": True,
+    }
+    assert driver._promotion_candidate_identity([promotion_candidate]) == (
+        driver._promotion_candidate_identity(
+            [
+                {
+                    **promotion_candidate,
+                    "estimator_kind": "data_likelihood_mle",
+                    "selection_eligibility": "eligible",
+                    "conditioning_fingerprint": "0" * 64,
+                    "shadow_model_selection": {"selection_status": "complete"},
+                }
+            ]
+        )
+    )
+
+    model = {
+        "label": "one",
+        "identity_label": "one",
+        "source_weight": 1.0,
+        "model_manifest": {"schema": "isar.model_manifest/1"},
+        "parameter_names": ["x"],
+        "parameter_draws": [[1.0]],
+        "draw_weighting": "equal_weight_resampled",
+        "draw_weights": None,
+        "mode_energies": [[1.0]],
+    }
+    fp_before = predictive_basis_fingerprint(
+        models=[model],
+        energy_meV=[0.0],
+        evaluation_context={"temperature_K": 1.0},
+        exposure_basis={"unit": "monitor_counts"},
+    )
+    fp_after = predictive_basis_fingerprint(
+        models=[{**model, "statistical_semantics": {"schema": PREDICTIVE_SCHEMA},
+                 "shadow_model_selection": {"selection_status": "complete"}}],
+        energy_meV=[0.0],
+        evaluation_context={"temperature_K": 1.0},
+        exposure_basis={"unit": "monitor_counts"},
+    )
+    assert fp_before == fp_after
+
+    observation = {
+        "authority": "master:1",
+        "gauss_fwhm": 0.4,
+        "candidates": [{"energy_meV": 2.0, "omega0_err": 0.1}],
+    }
+    signature_args = {
+        "target_branch": "acoustic",
+        "period": 1.0,
+        "hypotheses": [],
+        "entropy_stop": 0.2,
+        "maximum_bridge_steps": 1,
+    }
+    sig_before = driver._tracked_authority_signature([observation], **signature_args)
+    sig_after = driver._tracked_authority_signature(
+        [{**observation, "probability_semantics": {"schema": "ignored"},
+          "shadow_model_selection": {"selection_status": "complete"}}],
+        **signature_args,
+    )
+    assert sig_before == sig_after
+
+    row = {
+        "interval_lo": 1.0,
+        "interval_hi": 1.2,
+        "interval_reliable": True,
+    }
+    assert drive_loop._pick_interval(row) == drive_loop._pick_interval(
+        {**row, "interval_semantics": {"schema": "ignored"}}
+    )
+
+    proposal = SimpleNamespace(
+        h=1.0,
+        k=0.0,
+        l=0.0,
+        kind="production",
+        meta={"target_branch_role": "target", "authoritative_evidence_revision": "r1"},
+    )
+    proposal_with_semantics = copy.deepcopy(proposal)
+    proposal_with_semantics.meta["statistical_semantics"] = {"schema": "ignored"}
+    kwargs = {"e_lo": 1.0, "e_hi": 3.0, "e_step": 0.1, "ncount": 100}
+    assert drive_loop._request_fingerprint_for(proposal, **kwargs) == \
+        drive_loop._request_fingerprint_for(proposal_with_semantics, **kwargs)
+
+    @dataclass
+    class ParsedScientificRecord:
+        counts: list[float]
+
+    parsed = ParsedScientificRecord([1.0, 2.0])
+    scan_hash = content_hash(parsed)
+    parsed.statistical_semantics = {"schema": "ignored"}
+    assert content_hash(parsed) == scan_hash
+
+    members = [["scan:1", "det", "content-a"], ["scan:2", "det", "content-b"]]
+    master_revision = canonical_hash(members)
+    delivery = {"master_revision": master_revision}
+    delivery["statistical_semantics"] = {"schema": "ignored"}
+    assert delivery["master_revision"] == canonical_hash(members)
+
+    cache_parameters = inspect.signature(
+        certification.master_fit_fingerprint
+    ).parameters
+    assert {
+        "fit_selection_semantics",
+        "interval_semantics",
+        "probability_semantics",
+        "shadow_model_selection",
+        "statistical_semantics",
+    }.isdisjoint(cache_parameters)
+
+    tracking_observation = {
+        "gauss_fwhm": 0.8,
+        "candidates": [
+            {
+                "candidate_ref": "c0",
+                "energy_meV": 6.0,
+                "omega0_err": 0.1,
+                "sigma_meV": 0.1,
+                "gamma": 0.4,
+                "amplitude": 1.0,
+                "reliable": True,
+            }
+        ],
+    }
+    track_kwargs = {
+        "period": 2.0,
+        "hypotheses": [
+            {
+                "name": "optic",
+                "zc_energy": {"mean": 6.0, "sigma": 1.0},
+                "slope_zc": {"mean": 0.0, "sigma": 8.0},
+            }
+        ],
+        "target_branch": "optic",
+    }
+    track_before = branch_tracking.track_path(
+        [[2.0, 0.0, 0.0]], [tracking_observation], **track_kwargs
+    )
+    track_after = branch_tracking.track_path(
+        [[2.0, 0.0, 0.0]],
+        [
+            {
+                **tracking_observation,
+                "probability_semantics": {"schema": "ignored"},
+                "shadow_model_selection": {"selection_status": "complete"},
+            }
+        ],
+        **track_kwargs,
+    )
+    assert track_before["revision"] == track_after["revision"]
+    assert track_before["assignments"] == track_after["assignments"]
+
+    calibration = SimpleNamespace(buckets={"100": object()})
+    exposure_row = {"effective_exposure": 100.0}
+    exposure_before = drive_loop._effective_exposure_bucket(exposure_row, 50)
+    exposure_after = drive_loop._effective_exposure_bucket(
+        {**exposure_row, "interval_semantics": {"schema": "ignored"}}, 50
+    )
+    assert exposure_before == exposure_after
+    assert drive_loop._calibration_bucket(
+        calibration, exposure_before[0]
+    ) == drive_loop._calibration_bucket(calibration, exposure_after[0])
+
+
+# ---------------------------------------------------------------------------
+# R13/R34: a failed interval producer returns a nan tuple, not None. Availability
+# decided on ``is not None`` therefore published failures as available intervals.
+# ---------------------------------------------------------------------------
+_NAN3 = (float("nan"), float("nan"), float("nan"))
+
+
+def _producer(within):
+    return errors_mod._interval_semantics_for(
+        SimpleNamespace(label="one", fit_semantics=_fit_semantics()), within
+    )
+
+
+def test_a_nan_interval_is_published_unavailable_with_its_failure_reason():
+    record = _producer({"freq_interval": _NAN3, "profile_interval": (float("nan"), 5.2)})
+    freq = record["quantities"]["freq_interval"]
+    assert freq["availability"] is False
+    assert freq["failure_reason"] == "bootstrap_interval_unavailable"
+    profile = record["quantities"]["profile_interval"]
+    assert profile["availability"] is False
+    assert profile["failure_reason"] == "profile_interval_unavailable"
+
+
+def test_a_bound_truncated_profile_side_is_distinguishable_from_an_unavailable_one():
+    from isar.analyze.errors.profile import BoundTruncated
+
+    record = _producer({"freq_interval": (1.0, 1.1, 1.2),
+                        "profile_interval": (BoundTruncated(), 5.2)})
+    profile = record["quantities"]["profile_interval"]
+    assert profile["availability"] is False
+    assert profile["failure_reason"] == "profile_bound_truncated"
+    assert record["quantities"]["freq_interval"]["availability"] is True
+
+
+def test_a_bayes_run_without_a_prior_fingerprint_degrades_only_its_own_entry(caplog):
+    # It used to raise, and _attach_interval_semantics then set the ENTIRE record to None: an
+    # optional Bayesian diagnostic erased the valid bootstrap and profile semantics beside it.
+    record = _producer({"freq_interval": (1.0, 1.1, 1.2),
+                        "profile_interval": (0.9, 1.3),
+                        "bayes_interval": _NAN3,
+                        "bayes_ok": False,
+                        "bayes_fail_reason": "ESS below gate",
+                        "bayes_prior_fingerprint": None})
+    assert record["quantities"]["freq_interval"]["availability"] is True
+    assert record["quantities"]["profile_interval"]["availability"] is True
+    bayes = record["quantities"]["bayes_interval"]
+    assert bayes["availability"] is False
+    assert bayes["failure_reason"] == "missing_bayesian_prior_fingerprint"
+    assert "missing_bayesian_prior_fingerprint" in caplog.text
+
+
+def test_a_non_converged_bayes_run_carries_its_own_failure_reason():
+    fingerprint = semantics_fingerprint("test.prior", {"omega0": 5.0})
+    record = _producer({"freq_interval": (1.0, 1.1, 1.2),
+                        "bayes_interval": _NAN3,
+                        "bayes_ok": False,
+                        "bayes_fail_reason": "ESS below gate",
+                        "bayes_prior_fingerprint": fingerprint})
+    bayes = record["quantities"]["bayes_interval"]
+    assert bayes["availability"] is False
+    assert bayes["failure_reason"] == "ESS below gate"
+    assert bayes["prior_fingerprint"] == fingerprint
+
+
+def test_a_nan_interval_is_never_selected_for_delivery():
+    # (nan, nan, nan) is `not None`, so the ladder used to select it, stamp availability=True and
+    # hand the stopping rule a nan half-width that no tolerance can ever satisfy.
+    fit_semantics = _fit_semantics()
+    produced = {"freq_interval": _NAN3, "profile_interval": (0.9, 1.3)}
+    record = driver._outcome_interval_semantics(
+        best=SimpleNamespace(fit_semantics=fit_semantics,
+                             within_model={"interval_semantics": _producer(produced)}),
+        selection=SimpleNamespace(pooled=None, fit_selection_semantics=None),
+        interval=_NAN3,
+        omega0_profile=(0.9, 1.3),
+        hesse_interval=None,
+        hesse_trusted=False,
+        bayes_interval=None,
+        interval_reliable=True,
+    )
+    assert record["selected_interval_quantity"] == "omega0_profile"
+    assert record["quantities"]["interval"]["availability"] is False
+    assert record["quantities"]["interval"]["authority_scopes"] == authority_scopes()
+
+
+def test_every_interval_nan_leaves_nothing_selected():
+    fit_semantics = _fit_semantics()
+    record = driver._outcome_interval_semantics(
+        best=SimpleNamespace(fit_semantics=fit_semantics,
+                             within_model={"interval_semantics": _producer(
+                                 {"freq_interval": _NAN3, "profile_interval": _NAN3[:2]})}),
+        selection=SimpleNamespace(pooled=None, fit_selection_semantics=None),
+        interval=_NAN3,
+        omega0_profile=_NAN3[:2],
+        hesse_interval=_NAN3[:2],
+        hesse_trusted=True,
+        bayes_interval=None,
+        interval_reliable=True,
+    )
+    assert record["selected_interval_quantity"] is None
+    assert record["selected_interval_certifiable"] is False
+    assert not any(item["availability"] for item in record["quantities"].values())

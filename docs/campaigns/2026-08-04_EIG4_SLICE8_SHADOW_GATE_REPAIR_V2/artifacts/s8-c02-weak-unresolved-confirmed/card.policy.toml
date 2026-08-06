@@ -1,0 +1,81 @@
+# TAVI — McStas triple-axis SIMULATOR (virtual PUMA), HTTP-API scan JSON. Human-authored policy
+# half of the experiment card (D8): the machine READS this, never writes it.
+#
+# TAVI is NOT a real instrument. Each input file is the JSON body of a `GET /scan/{id}/data` response
+# (one completed scan per file): a frozen `launch.parameters` set + a `result` block with the scanned
+# variable and per-point RAW COUNTS. The stored signal is RAW COUNTS; the "monitor" is the simulated
+# source budget `number_neutrons` per point (constant) — stored, not divided in.
+#
+# Because TAVI is a simulator with fixed ki/kf geometry, the meV energy axis is ABSOLUTE (exact) — no
+# elastic-zero fit. Cooper-Nathans resolution is analytical per scan. TAVI's payload now carries the
+# per-scan instrument truth these constants used to stand in for (sample temperature, mono/ana/sample
+# mosaics, scattering senses, vertical collimations). PRECEDENCE: the parser PREFERS the payload value
+# when present and uses the [calibration]/[temperature_rule] constant below only as a GAP-FILLER —
+# the same payload-wins rule as the horizontal collimations. Legacy JSONs without the truth fields
+# fall back to these constants and parse unchanged. Per-field provenance (payload vs card) lands in
+# raw_header["provenance"] plus an info-level `card_fallback` scan flag.
+
+facility = "TAVI"              # dedicated simulator catalogue — never collides with real-instrument
+instrument = "PUMA"            # parsers (ill_in8, spec_s30). Registry tuple (facility, instrument, fmt).
+format_version = "v1"
+plugin = "tavi"
+
+# TAVI JSON has no column table; these name the logical channels the parser reads from the payload.
+energy_column = "deltaE"       # result.scan_values_1 when result.variable_1 == "deltaE"
+monitor_column = "number_neutrons"   # the simulated source budget per point (constant)
+counting_mode = "monitor"      # counts to a fixed neutron budget per point (monitor-like)
+normalize_by = "monitor"       # number_neutrons gates the normalizer; signal stays RAW COUNTS
+raw_abscissa_kind = "energy"   # deltaE scans are energy transfer (meV)...
+energy_status = "absolute"     # ...and fixed ki/kf simulator geometry makes the axis exact
+variance_convention = "none"   # D3: variance = counts, NO zero-count floor
+min_points = 5
+hkl_round_step = 0.05
+measurement_pattern = "deltaE" # a deltaE scan is a measurement
+alignment_pattern = "omega"    # a motor/angle scan is an alignment
+exclusions_seed = []
+
+[temperature_rule]
+# Gap-filler only: used when the payload has no `temperature`. When the payload carries the true
+# sample setpoint (launch.parameters.temperature) the parser prefers it and marks provenance=payload.
+setpoint = 300.0
+
+[collation]
+key = ["sample", "q", "T"]
+merge = "merge"                # combine repeat simulated scans at the same (Q, T)
+t_round = 5.0
+
+[calibration]                  # UNIFICATION_DESIGN §3
+method = "cooper_nathans"      # analytical per-scan energy resolution (isar.calibrate.tas)
+# d-spacings (Angstrom): override the crystal-id → d map baked into the parser. Uncomment to pin.
+# dm = 3.355                   # monochromator (PG002)
+# da = 3.355                   # analyzer (PG002)
+# Mosaics + senses — GAP-FILLERS (arcmin; senses = SM, SS, SA). The payload's eta_m/eta_a/eta_s and
+# sense_m/sense_s/sense_a win when present; these apply only to legacy JSONs that omit them.
+etam = 30.0                    # monochromator mosaic (fallback for payload eta_m)
+etaa = 30.0                    # analyzer mosaic (fallback for payload eta_a)
+etas = 0.0                     # sample mosaic (fallback for payload eta_s); 0 = omit (CN reuses etam).
+                               # A payload eta_s <= 0 is likewise omitted — same div-by-zero guard.
+senses = [1, -1, 1]            # SM, SS, SA (fallback for payload sense_m/sense_s/sense_a)
+# Vertical collimations BET1..4 (arcmin) — fallback for the payload's beta_1..beta_4. Horizontal
+# ALF1..4 come from the scan's `collimation.alpha_*`; `collimations` below is only their gap-filler.
+bet = [30.0, 30.0, 30.0, 30.0]
+collimations = [30.0, 30.0, 30.0, 30.0]
+
+[sample]
+name = "tavi"                  # experiment_id fallback (TAVI JSONs carry no EXPNO)
+# experiment_id = "SIM-001"    # optional explicit experiment id (wins over name)
+
+[dispersion]                   # steering branch-assignment geometry (Phase A). SAMPLE geometry, not
+                               # instrument: edit per experiment. Absent ⇒ the branch-assignment
+                               # posterior is off (pre-steering polyfit prior).
+zone_period = 2.0              # reduced-zone fold period (rlu) in which the acoustic branch is gapless
+                               # (ω₀→0 at a zone centre). The Al_phonon_DFT toy folds with period 2
+                               # (zone centres at even H); a real crystal sets its own reciprocal period.
+
+# The single McStas detector. value_index is unused (no #V lines); signal_column names the payload's
+# per-point counts. Per-scan Q comes from launch.parameters H/K/L, not an offset.
+[[detectors]]
+detector_id = "det"
+value_index = 0
+signal_column = "counts"
+enabled = true

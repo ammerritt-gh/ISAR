@@ -82,6 +82,7 @@ class SubprocessRunner:
     def run(self, workspace: str | Path, data_paths: Sequence[str | Path], *, force: bool = False,
             errors_tier: str = "full", render: bool = True, timeout: float | None = None,
             scan_errors_tier: str | None = None, master_errors_tier: str | None = None,
+            force_masters: Sequence[str] | None = None,
             certification_manifest: str | Path | None = None,
             certification_request: str | Path | None = None,
             analysis_allowance_seconds: float | None = None,
@@ -92,6 +93,9 @@ class SubprocessRunner:
             workspace: the ISAR workspace directory (must already be ``isar init``-ialized).
             data_paths: the scan files (or directories) to feed ISAR (typically the workspace data dir).
             force: pass ``--force`` to refit every scan, ignoring the ledger.
+            force_masters: master ledger ids passed as repeated ``--force-master`` — refit exactly
+                these masters even when their member set is unchanged (the predictive-escalation
+                path), without the whole-batch cost of ``--force``.
             errors_tier: the ``--errors`` tier (``cheap`` | ``fast`` | ``full``).
             render: whether the run should render human reports. ``False`` appends ``--no-render`` so
                 the child skips report.md/.html/.json + figures (results.csv / card.state.json still
@@ -111,6 +115,8 @@ class SubprocessRunner:
             cmd.extend(["--scan-errors", str(scan_errors_tier)])
         if master_errors_tier is not None:
             cmd.extend(["--master-errors", str(master_errors_tier)])
+        for master_id in (force_masters or ()):
+            cmd.extend(["--force-master", str(master_id)])
         if not render:
             cmd.append("--no-render")
         if certification_manifest is not None:
@@ -147,6 +153,7 @@ class _CallableRunner:
     def run(self, workspace, data_paths, *, force: bool = False, errors_tier: str = "full",
             render: bool = True, timeout: float | None = None,
             scan_errors_tier: str | None = None, master_errors_tier: str | None = None,
+            force_masters: Sequence[str] | None = None,
             certification_manifest: str | Path | None = None,
             certification_request: str | Path | None = None,
             analysis_allowance_seconds: float | None = None,
@@ -160,6 +167,8 @@ class _CallableRunner:
             extra_args.extend(["--scan-errors", str(scan_errors_tier)])
         if master_errors_tier is not None:
             extra_args.extend(["--master-errors", str(master_errors_tier)])
+        for master_id in (force_masters or ()):
+            extra_args.extend(["--force-master", str(master_id)])
         if force:
             extra_args.append("--force")
         result = self._fn(workspace, data_paths, extra_args=extra_args)

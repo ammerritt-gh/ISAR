@@ -98,7 +98,7 @@ and verified by `git grep` at deletion time rather than by bookkeeping.
 | `docs/STATS_PRIMER.md` | Current | statistical methods; **§7 is the sole record of the 2026-07-19 audit** | — |
 | `docs/SCHEMA_LANDSCAPE.md` | Current | the schema survey (sole) | — |
 | `docs/DECISIONS.md` | Current | append-only decision ledger (D4) | Append-only: existing entries are never edited, including their references to since-deleted files |
-| `docs/MEASUREMENT_STEERING.md` | Current | steering research foundation + current controller | With DECISIONS O27–O31, the current controller contract — `STEERING_DESIGN.md` defers to it |
+| `docs/MEASUREMENT_STEERING.md` | Current | steering research foundation + current controller | With DECISIONS O27–O31 and O38–O39, the current controller contract — `STEERING_DESIGN.md` defers to it |
 | `docs/GUI_DESIGN.md` | Current | GUI architecture + ownership boundaries | — |
 | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` | Current | campaign diagnostic contract | As-built section precedes the original design body |
 | `docs/DOC_INVENTORY.md` | Current | this register | — |
@@ -109,21 +109,30 @@ and verified by `git grep` at deletion time rather than by bookkeeping.
 
 ## `docs/` — active plans
 
-All three are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
-status block — `tests/docs/` fails the build if either is missing. Each cited the 2026-07-19
-statistics-contract audit as motivation; that audit's shared findings were promoted once into
-`STATS_PRIMER.md` §7, so the three plans do not carry three drifting copies.
+All six are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
+status block — `tests/docs/` fails the build if either is missing. Their shared statistical
+motivation and current sequence are recorded in the 2026-07-19 statistics-contract audit; its
+accepted findings were promoted once into `STATS_PRIMER.md` §7, so the plans do not carry drifting
+copies.
 
 | Path | Lifecycle | Status as written | Maintenance note |
 |---|---|---|---|
 | `docs/SPEEDUP_DESIGN.md` | Active plan | Phase 1 complete; Phase 2 Partial (async scheduling + fresh-master `auto` open, blocked on the shadow gate); 3/4 conditional | — |
 | `docs/STEERING_DESIGN.md` | Active plan | Phase 0 shipped as O27/O28/O29/O31; A→B→C Planned | Phase 0 is summarized only; the contract is `MEASUREMENT_STEERING.md` + DECISIONS O27–O31 |
 | `docs/BACKGROUND_DESIGN.md` | Active plan | approved 2026-07-19; implementation not started | — |
-| `docs/EIG_STEERING_DESIGN.md` | Active plan | maintenance seam shipped; `/2`, arbitrary-grid evaluation, and same-action window ranking Planned | Distinguishes future scan-window EIG from current master-grid action/Q ranking |
+| `docs/EIG_STEERING_DESIGN.md` | Active plan | predictive `/2`, arbitrary-grid evaluation, candidate generation, executed-grid identity, target projection, Slice 2 `o36.2.1` eligibility/QoI adaptation, Slice 3 `o36.3` homogeneous predictive-scenario design measure, Slice 4 `o36.4` pure full-vector Poisson scoring, Slice 5.1 `o36.5.1` controlled offline `off`→`shadow` comparison, and Slice 6 `o36.6` scored shadow inventories implemented; exact realized-request rescoring, authoritative selection, and EIG-4 SVP execution Planned | Documents same-action scan-window EIG, authenticated QoI evidence, bounded hand-authored distinction-policy provenance, objective `/2` omission compatibility, diagnostic-only score sets, exact-source live shadow integration, and the invariant that Slice 6 always executes legacy |
+| `docs/stats/STATISTICAL_SEMANTICS_AUDIT.md` | Active plan | STAT-0/1/1.5 and STAT-2a/2b.1 complete; S8 recorded; STAT-2c through STAT-6 remain active, with the restricted O36 EIG-4 sequencing exception | Temporary producer/consumer audit; findings remain authoritative for the broader statistics program and STAT-6 closeout |
+| `docs/plans/STAT2_SELECTION_CONSISTENCY_PLAN.md` | Active plan | STAT-2a and STAT-2b.1 complete; S8 retains AIC; STAT-2c and STAT-2d pending | Temporary execution plan; STAT-2d folds accepted behavior into canonical statistics documents, then deletes and tombstones it |
+
+## `docs/` — historical evidence
+
+| Path | Lifecycle | Maintenance note |
+|---|---|---|
+| `docs/ISAR_PRE_EIG3_STATISTICAL_CONSISTENCY_HANDOFF.md` | Historical evidence | Original pre-EIG roadmap retained temporarily for its through-STAT-5 rationale; current stage names and contracts live in the statistical-semantics audit and code-grounded plans |
 
 ## `docs/campaigns/` — historical evidence
 
-Thirteen records keep their dated filenames and stay in place, indexed by
+Sixteen records keep their dated filenames and stay in place, indexed by
 [`campaigns/README.md`](campaigns/README.md), which states the historical-evidence rule for the
 directory and gives each record a forward pointer to its governing decision. **None may be cited as
 a current behavioural contract.**
@@ -138,6 +147,15 @@ a current behavioural contract.**
 | `docs/campaigns/2026-07-21_OP9_OP10_TRACKED_FRONTIER.md` | Historical evidence | Evidence behind O27; the contract itself is `MEASUREMENT_STEERING.md` |
 | `docs/campaigns/2026-07-23_AP6_ACTION_INVENTORY.md` | Historical evidence | Evidence behind O28 |
 | `docs/campaigns/2026-07-29_EIG_EXPOSURE_BASIS.md` | Historical evidence | EIG-0 spike evidence behind ADR-017; the contract itself is `EIG_STEERING_DESIGN.md` |
+| `docs/campaigns/2026-07-30_STAT2B1_CORRECTED_DEVELOPMENT.md` | Historical evidence | Corrected STAT-2b.1 development, scaling, and superseded held-out disposition; the contract remains the STAT-2 plan |
+| `docs/campaigns/2026-07-31_STAT2B1_HELDOUT.md` | Historical evidence | Completed STAT-2b.1 held-out evidence; the frozen gate withheld authority for an AICc switch, and S8 records the resulting retain-AIC disposition |
+| `docs/campaigns/2026-08-02_EIG4_SLICE1_CENSUS.md` | Historical evidence | Reviewed Slice 1 census evidence; the current contract remains `EIG_STEERING_DESIGN.md` |
+| `docs/campaigns/2026-08-03_EIG4_SLICE5_OFFLINE.md` | Historical evidence | Retained Slice 5.1 discovery and zero-policy score evidence; the current contract remains `EIG_STEERING_DESIGN.md` |
+| `docs/campaigns/2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md` | Historical evidence | STAT-2b.1 historical replay and unapproved production source-closure upkeep evidence; S9 and the STAT-2 plan govern the current approval boundary |
+| `docs/campaigns/2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md` | Historical evidence | Rejected schema-v1 candidate disposition and schema-v2 renewal/authentication repair; S9 and the STAT-2 plan govern approval |
+| `docs/campaigns/2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE.md` | Historical evidence | Slice 7 protected-boundary review and unapproved replacement bootstrap candidate; O40, S9, and the STAT-2 plan govern current behavior and approval |
+| `docs/campaigns/2026-08-04_EIG4_SLICE7_REPAIR_SOURCE_CLOSURE.md` | Historical evidence | Slice 7 repair verification, protected-adjacent event registration review, and unapproved renewed bootstrap candidate; O40, S9, and the STAT-2 plan govern current behavior and approval |
+| `docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE.md` | Historical evidence | Passed bounded Slice 8 tools-only shadow-gate evidence; owner acceptance and any O41 ruling remain pending, while `EIG_STEERING_DESIGN.md` governs current behavior |
 | `docs/campaigns/2026-07_AP1_BRANCH_MAPPING_DEADLOCK.md` | Historical evidence | — |
 | `docs/campaigns/2026-07_AP3_GLOBAL_BRANCH_EVIDENCE.md` | Historical evidence | — |
 | `docs/campaigns/2026-07_MVP_ZONE_RETEST.md` | Historical evidence | Was cited by `README.md` as "current test state"; re-pointed |
@@ -166,6 +184,7 @@ corrections" framing behind mask-not-delete, the error-spine-as-architecture pri
 | `docs/assets/**` (`FINDINGS.md` + caption sidecars) | generated by the `docs/*_check.py` scripts, promoted by `tools/docs/collect_evidence.py` | Promoted report output. `docs/assets/README.md` is the hand-written index and is **not** exempt; its provenance lives per-file in `docs/assets/MANIFEST.json`, and `tests/docs/` checks every file against its recorded hash |
 | `tests/data/golden/CAMPAIGN_DIAGNOSTIC.mvp16.md` | golden output of `isar diagnose` | A test fixture; a banner would break the byte comparison |
 | `CLAUDE.md` | hand-written | A 12-byte `@AGENTS.md` stub. A four-line banner on a one-line redirect is worse than none; `AGENTS.md` carries the real header |
+| `docs/DESIGN_GOALS.md` | hand-written by the owner | The master objectives list — what ISAR is *aiming* for, mixing shipped, in-progress and wishlist items. It declares itself off-limits to agent editing, so the banner cannot be added by the tooling that would enforce it, and a lifecycle field would misdescribe a document that is deliberately part aspiration. Discrepancies against it are raised with the owner, never edited away |
 
 `docs/DECISION_INDEX.md` **is** generated (by `tools/docs/make_decision_index.py`) but still
 carries a banner, because the generator writes one. Generated does not mean unlabelled — it means
@@ -193,6 +212,7 @@ file cannot be named inside that same commit, so the last-containing commit is t
 | `docs/DATA_SCHEME_RESEARCH.md` | `bba902c` | Superseded by `SCHEMA_LANDSCAPE.md`; `AGENTS.md` routing narrowed |
 | `docs/WISHLIST.md` | `9a16a75` | Content merged into `TODO.md` before deletion |
 | `docs/campaigns/PHASE_5_NOTES.md` | `24e1ab5` | "Forward notes only. Not designed." Described nothing that exists |
+| `docs/EIG4_COMPLETION_PLAN.md` | `cda26b1` | EIG-4 completion plan, finished 2026-08-05. Rules 6–8 restored, the five STAT-2b mismatches closed through the candidate/active cycle, and the tuning slice landed as O43; the durable outcome and its two named limitations are in `EIG_STEERING_DESIGN.md` |
 
 **Two references are deliberately left dangling.** `DECISIONS.md` mentions two deleted handoffs by
 bare filename (not as links, so no link check breaks). The ledger is append-only under D4, and a

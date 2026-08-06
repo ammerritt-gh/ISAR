@@ -1,4 +1,4 @@
-"""`isar drive` CLI plumbing: --max-iters validation, --control-token, --resume-latest (LLM-free),
+"""`isar drive` CLI plumbing: --control-token, --resume-latest (LLM-free),
 the campaign_start provenance fingerprint, and the operator_stopped exit code.
 
 These exercise the argument parser and the drive handler's config assembly with run_campaign stubbed —
@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from isar.cli.main import build_parser, main
+from isar.cli.main import _parse_analysis_limit, _parse_budget, build_parser, main
 import isar.drive.loop as loop_mod
 import isar.drive.supervisor.goal_to_spec as g2s
 from isar.drive.objective import ObjectiveSpec
@@ -38,29 +38,59 @@ def _stub_run_campaign(monkeypatch, *, state="met"):
     return captured
 
 
-# --------------------------------------------------------------------------- --max-iters validation
-def test_max_iters_rejects_zero_and_negative_at_argparse():
+# --------------------------------------------------------------------------- no iteration cap
+def test_no_max_iters_option_exists():
+    # The budgets are the only stop conditions; an iteration cap silently truncated campaigns that
+    # were still making progress with beam time left, so the flag is gone rather than deprecated.
     parser = build_parser()
-    for bad in ("0", "-1"):
-        with pytest.raises(SystemExit):
-            parser.parse_args(["drive", "--spec", "s.json", "--workspace", "w", "--max-iters", bad])
-    # a valid value parses to the int
-    ns = parser.parse_args(["drive", "--spec", "s.json", "--workspace", "w", "--max-iters", "3"])
-    assert ns.max_iters == 3
+    with pytest.raises(SystemExit):
+        parser.parse_args(["drive", "--spec", "s.json", "--workspace", "w", "--max-iters", "3"])
+    ns = parser.parse_args(["drive", "--spec", "s.json", "--workspace", "w"])
+    assert not hasattr(ns, "max_iters")
 
 
-def test_max_iters_lands_in_config(tmp_path, monkeypatch):
-    captured = _stub_run_campaign(monkeypatch)
-    rc = main(["drive", "--spec", str(_spec_file(tmp_path)), "--workspace", str(tmp_path / "ws"),
-               "--max-iters", "5"])
-    assert rc == 0
-    assert captured[0][1]["max_iters"] == 5
-
-
-def test_max_iters_absent_is_not_in_config(tmp_path, monkeypatch):
+def test_drive_config_carries_no_iteration_cap(tmp_path, monkeypatch):
     captured = _stub_run_campaign(monkeypatch)
     main(["drive", "--spec", str(_spec_file(tmp_path)), "--workspace", str(tmp_path / "ws")])
-    assert "max_iters" not in captured[0][1]         # the loop's built-in default is used
+    assert "max_iters" not in captured[0][1]
+
+
+def test_analysis_limit_accepts_gui_minute_duration(tmp_path, monkeypatch):
+    captured = _stub_run_campaign(monkeypatch)
+    assert main([
+        "drive", "--spec", str(_spec_file(tmp_path)),
+        "--workspace", str(tmp_path / "ws"), "--analysis-limit", "10m",
+    ]) == 0
+    assert captured[0][0].analysis_limit_seconds == 600.0
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("10m", 600.0), ("10min", 600.0), ("10mins", 600.0), ("10minute", 600.0),
+    ("10minutes", 600.0), ("10 min", 600.0), ("10s", 10.0), ("10sec", 10.0),
+    ("2h", 7200.0), ("2hrs", 7200.0), ("2hours", 7200.0), ("90", 90.0),
+])
+def test_analysis_limit_parses_every_duration_abbreviation(text, expected):
+    """``10min`` used to crash: the unit table matched ``n`` for neutrons before ``min``."""
+    assert _parse_analysis_limit(text) == expected
+
+
+def test_analysis_limit_accepts_none_and_rejects_neutrons():
+    assert _parse_analysis_limit("none") is None
+    with pytest.raises(ValueError):
+        _parse_analysis_limit("1e10n")
+
+
+@pytest.mark.parametrize("text", ["1e10n", "1e10neutron", "1e10neutrons"])
+def test_budget_parses_neutrons_in_every_spelling(text):
+    assert _parse_budget(text) == {"kind": "neutrons", "amount": 1e10}
+
+
+@pytest.mark.parametrize("text", ["inf", "-inf", "1e999", "nan", "10mi", "10xyz", ""])
+def test_budget_rejects_non_finite_and_unparseable_amounts(text):
+    # A non-finite amount serializes as bare ``Infinity``, which is not JSON, and is the input that
+    # made the GUI's budget line raise OverflowError mid-campaign.
+    with pytest.raises(ValueError):
+        _parse_budget(text)
 
 
 def test_control_token_lands_in_config(tmp_path, monkeypatch):
@@ -144,13 +174,35 @@ def test_resume_latest_errors_cleanly_when_no_log(tmp_path, monkeypatch, capsys)
     assert "no campaign to resume" in capsys.readouterr().err
 
 
+def test_resume_loads_legacy_objective_without_explicit_scan_window_eig(tmp_path, monkeypatch):
+    workspace = tmp_path / "ws"
+    (workspace / "report").mkdir(parents=True)
+    objective = ObjectiveSpec.along_h(
+        h_start=2.1, h_end=2.2, step=0.1, tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e3}).to_dict()
+    del objective["scan_window_eig"]
+    log_event(
+        workspace / "report" / "session_log.jsonl", "decide",
+        {"event": "campaign_start", "action": "campaign_start", "objective": objective,
+         "source": {"kind": "goal", "sha256": "legacy"}},
+    )
+    captured = _stub_run_campaign(monkeypatch)
+    assert main(["drive", "--resume-latest", "--workspace", str(workspace)]) == 0
+    assert captured[0][0].scan_window_eig.policy_set is None
+    assert captured[0][0].to_dict()["scan_window_eig"]["scoring_config"][
+        "simulation_count"] == 128
+
+
 # --------------------------------------------------------------------------- provenance fingerprint
 def test_spec_start_fingerprint_is_sha256_of_file_bytes(tmp_path, monkeypatch):
     captured = _stub_run_campaign(monkeypatch)
     p = _spec_file(tmp_path)
     main(["drive", "--spec", str(p), "--workspace", str(tmp_path / "ws")])
     expected = hashlib.sha256(p.read_bytes()).hexdigest()
-    assert captured[0][1]["source"] == {"kind": "spec", "sha256": expected}
+    source = captured[0][1]["source"]
+    assert source["kind"] == "spec" and source["sha256"] == expected
+    assert len(source["objective_fingerprint"]) == 64
+    assert len(source["campaign_authoring_fingerprint"]) == 64
 
 
 def test_goal_start_fingerprint_is_sha256_of_goal_text(tmp_path, monkeypatch):
@@ -162,7 +214,112 @@ def test_goal_start_fingerprint_is_sha256_of_goal_text(tmp_path, monkeypatch):
     captured = _stub_run_campaign(monkeypatch)
     main(["drive", "--goal", goal, "--workspace", str(tmp_path / "ws")])
     expected = hashlib.sha256(goal.encode("utf-8")).hexdigest()
-    assert captured[0][1]["source"] == {"kind": "goal", "sha256": expected}
+    source = captured[0][1]["source"]
+    assert source["kind"] == "goal" and source["sha256"] == expected
+    assert len(source["objective_fingerprint"]) == 64
+    assert len(source["campaign_authoring_fingerprint"]) == 64
+
+
+def test_shadow_mode_override_is_frozen_into_new_compact_spec(tmp_path, monkeypatch):
+    captured = _stub_run_campaign(monkeypatch)
+    assert main([
+        "drive", "--spec", str(_spec_file(tmp_path)),
+        "--workspace", str(tmp_path / "ws"), "--scan-window-eig-mode", "shadow",
+    ]) == 0
+    assert captured[0][0].steering["scan_window_eig_mode"] == "shadow"
+
+
+def test_mode_override_rebinds_the_card_eig_policy_to_the_new_objective_scope(
+        tmp_path, monkeypatch):
+    """--scan-window-eig-mode recomputes the hypothesis fingerprint, which is part of the objective
+    comparison scope a card EIG policy binds to. Without a rebind the policy stops matching and the
+    whole campaign scores qoi_policy_missing (the O41 Test9 failure)."""
+    import isar.schema.card as card_module
+    from isar.drive.objective import current_objective_comparison_scope
+    from isar.schema.eig_policy import matching_qoi_policies
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "card.policy.toml").write_text("# mocked card\n", encoding="utf-8")
+    authoring = {"policies": [{
+        "policy_id": "eig4_slice8_excitation_energy",
+        "policy_kind": "isar.scalar_absolute_partitions/o36.5",
+        "source_qoi": {"id": "excitation.energy", "unit": "meV"},
+        "scope": {"bind_to_current_campaign_configuration": True,
+                  "annotation": {"campaign_name": "regression",
+                                 "experiment_description": "policy scope rebinding",
+                                 "date": "2026-08-05"}},
+        "provenance": {"kind": "explicit_user_analysis/1", "source_id": "O41",
+                       "rationale": "regression fixture"},
+        "variants": [{"variant_id": "primary_0p5_mev",
+                      "parameters": {"origin": 0.0, "bin_width": 0.5, "offsets": [0.0, 0.25]}}],
+    }]}
+
+    class _Policy:
+        hypotheses = None
+        scan_window_eig_policy_set = authoring
+
+    monkeypatch.setattr(card_module, "load_policy", lambda _path: _Policy())
+    captured = _stub_run_campaign(monkeypatch)
+    assert main([
+        "drive", "--spec", str(_spec_file(tmp_path)), "--workspace", str(workspace),
+        "--scan-window-eig-mode", "authoritative",
+    ]) == 0
+    objective = captured[0][0]
+    assert objective.steering["scan_window_eig_mode"] == "authoritative"
+    scope = current_objective_comparison_scope(objective)
+    assert [policy.policy_id for policy in matching_qoi_policies(
+        objective.scan_window_eig.policy_set, qoi_id="excitation.energy", qoi_unit="meV",
+        scope_kind="campaign_configuration",
+        scope_fingerprint=scope["fingerprint"])] == ["eig4_slice8_excitation_energy"]
+
+
+def test_resume_rejects_mode_that_conflicts_with_frozen_objective(
+        tmp_path, monkeypatch, capsys):
+    workspace = tmp_path / "ws"
+    (workspace / "report").mkdir(parents=True)
+    objective = ObjectiveSpec.along_h(
+        h_start=2.1, h_end=2.2, step=0.1, tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e3})
+    log_event(
+        workspace / "report" / "session_log.jsonl", "decide",
+        {"action": "campaign_start", "objective": objective.to_dict(),
+         "source": {"kind": "goal", "sha256": "legacy"}},
+    )
+    _stub_run_campaign(monkeypatch)
+    assert main([
+        "drive", "--resume-latest", "--workspace", str(workspace),
+        "--scan-window-eig-mode", "shadow",
+    ]) == 2
+    assert "conflicts with the frozen objective (off)" in capsys.readouterr().err
+
+
+def test_natural_goal_passes_inline_card_eig_authoring_to_objective_compiler(tmp_path, monkeypatch):
+    import isar.schema.card as card_module
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "card.policy.toml").write_text("# mocked card\n", encoding="utf-8")
+    authoring = {"policies": []}
+
+    class _Policy:
+        hypotheses = {"acoustic": {}}
+        scan_window_eig_policy_set = authoring
+
+    monkeypatch.setattr(card_module, "load_policy", lambda _path: _Policy())
+    seen = {}
+
+    def fake_goal_to_spec(goal, **kwargs):
+        seen.update(kwargs)
+        return ObjectiveSpec.along_h(
+            h_start=2.0, h_end=2.1, step=0.1, tolerance_meV=0.5,
+            budget={"kind": "neutrons", "amount": 1e3})
+
+    monkeypatch.setattr(g2s, "goal_to_spec", fake_goal_to_spec)
+    _stub_run_campaign(monkeypatch)
+    assert main(["drive", "--goal", "map acoustic", "--workspace", str(workspace)]) == 0
+    assert seen["card_hypotheses"] == _Policy.hypotheses
+    assert seen["card_eig_policy_set"] is authoring
 
 
 # --------------------------------------------------------------------------- exit codes
@@ -198,6 +355,57 @@ def test_compile_only_writes_frozen_envelope_without_running_campaign(tmp_path, 
     assert envelope["objective"]["path"][0] == [2.1, 0.0, 0.0]
 
 
+def test_compact_spec_compile_only_freezes_inline_card_eig_policy(tmp_path, monkeypatch):
+    import isar.schema.card as card_module
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "card.policy.toml").write_text("# mocked card\n", encoding="utf-8")
+
+    class _Policy:
+        hypotheses = {}
+        scan_window_eig_policy_set = {"policies": []}
+
+    monkeypatch.setattr(card_module, "load_policy", lambda _path: _Policy())
+    out = tmp_path / "compact-envelope.json"
+    assert main([
+        "drive", "--spec", str(_spec_file(tmp_path)), "--workspace", str(workspace),
+        "--compile-only", str(out),
+    ]) == 0
+    objective = json.loads(out.read_text(encoding="utf-8"))["objective"]
+    assert objective["scan_window_eig"]["policy_set"]["policies"] == []
+    assert objective["scan_window_eig"]["scoring_config"]["simulation_count"] == 128
+
+
+def test_full_spec_never_reads_or_supplements_card_policy(tmp_path, monkeypatch):
+    import isar.schema.card as card_module
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "card.policy.toml").write_text("malformed on purpose", encoding="utf-8")
+    monkeypatch.setattr(
+        card_module, "load_policy",
+        lambda _path: (_ for _ in ()).throw(AssertionError("full spec read card policy")),
+    )
+    frozen = ObjectiveSpec.along_h(
+        h_start=2.1, h_end=2.2, step=0.1, tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e3})
+    legacy = frozen.to_dict()
+    del legacy["scan_window_eig"]
+    path = tmp_path / "frozen.json"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    captured = _stub_run_campaign(monkeypatch)
+    assert main(["drive", "--spec", str(path), "--workspace", str(workspace)]) == 0
+    assert captured[0][0].scan_window_eig.policy_set is None
+
+    out = tmp_path / "legacy-compiled.json"
+    assert main(["drive", "--spec", str(path), "--workspace", str(workspace),
+                 "--compile-only", str(out)]) == 0
+    compiled = json.loads(out.read_text(encoding="utf-8"))["objective"]
+    assert compiled["scan_window_eig"]["policy_set"] is None
+    assert compiled["scan_window_eig"]["scoring_config"]["simulation_count"] == 128
+
+
 def test_envelope_start_preserves_original_source_fingerprint(tmp_path, monkeypatch):
     spec = ObjectiveSpec.segment(q_start=[2, 0, 0], q_end=[2, 0.5, 0], step_rlu=0.05,
                                  tolerance_meV=0.5,
@@ -215,6 +423,22 @@ def test_envelope_start_preserves_original_source_fingerprint(tmp_path, monkeypa
     assert captured[0][1]["source"]["original_goal"] == "map transverse optic"
 
 
+def test_envelope_loads_legacy_objective_without_explicit_scan_window_eig(tmp_path, monkeypatch):
+    objective = ObjectiveSpec.along_h(
+        h_start=2.1, h_end=2.2, step=0.1, tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e3}).to_dict()
+    del objective["scan_window_eig"]
+    path = tmp_path / "legacy-envelope.json"
+    path.write_text(json.dumps({
+        "schema": "isar.objective-envelope/2", "objective": objective,
+        "source": {"kind": "goal", "sha256": "legacy"},
+    }), encoding="utf-8")
+    captured = _stub_run_campaign(monkeypatch)
+    assert main(["drive", "--envelope", str(path), "--workspace", str(tmp_path / "ws")]) == 0
+    assert captured[0][0].scan_window_eig.policy_set is None
+    assert captured[0][0].to_dict()["scan_window_eig"]["policy_set"] is None
+
+
 def test_envelope_start_applies_absolute_budget_override(tmp_path, monkeypatch):
     spec = ObjectiveSpec.segment(q_start=[2, 0, 0], q_end=[2, 0.5, 0], step_rlu=0.05,
                                  tolerance_meV=0.5,
@@ -230,3 +454,48 @@ def test_envelope_start_applies_absolute_budget_override(tmp_path, monkeypatch):
                "--budget", "8h"])
     assert rc == 0
     assert captured[0][0].budget == {"kind": "counting_seconds", "amount": 8 * 3600.0}
+
+
+# ------------------------------------------------------- --goal is prose, --spec is a file
+def test_a_spec_path_passed_to_goal_is_refused_rather_than_compiled(tmp_path, capsys, monkeypatch):
+    """Handing a path to the LLM supervisor does not fail — it compiles a *different* campaign.
+
+    A spec for the acoustic branch along h 2.0→3.0 compiled instead as an optic campaign along
+    [hh0] from the zone origin over [-2, 12] meV, and the only symptom was an immediately exhausted
+    action inventory. The file must be refused before it reaches the supervisor.
+    """
+    spec = _spec_file(tmp_path)
+    called = []
+    monkeypatch.setattr(g2s, "goal_to_spec", lambda *a, **k: called.append(a) or None)
+
+    code = main(["drive", "--goal", str(spec), "--workspace", str(tmp_path / "ws")])
+
+    assert code == 2
+    assert called == []
+    err = capsys.readouterr().err
+    assert "natural-language measurement goal, not a file path" in err
+    assert f"--spec {spec}" in err
+
+
+def test_a_missing_spec_suffix_is_still_refused_as_a_path(tmp_path, capsys):
+    """A mistyped path is the same mistake as a correct one, so absence is not the test."""
+    code = main(["drive", "--goal", str(tmp_path / "does-not-exist.json"),
+                 "--workspace", str(tmp_path / "ws")])
+
+    assert code == 2
+    assert "not a file path" in capsys.readouterr().err
+
+
+def test_a_real_natural_language_goal_still_reaches_the_supervisor(tmp_path, monkeypatch):
+    seen = []
+
+    def _fake(goal, **kwargs):
+        seen.append(goal)
+        raise RuntimeError("stop here — reaching the supervisor is the whole assertion")
+
+    monkeypatch.setattr("isar.drive.supervisor.goal_to_spec.goal_to_spec", _fake)
+    with pytest.raises(RuntimeError, match="stop here"):
+        main(["drive", "--goal", "measure the acoustic branch along h from 2 to 3",
+              "--workspace", str(tmp_path / "ws")])
+
+    assert seen == ["measure the acoustic branch along h from 2 to 3"]

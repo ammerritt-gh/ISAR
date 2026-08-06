@@ -29,6 +29,11 @@ from isar.synth.fit import assess_success, omega0_value_error
 GAMMA_FLOOR = 1e-3
 GAMMA_MAX = 5.0
 
+# STAT-1.5 metadata revisions.  These are descriptive fingerprints only: changing either label
+# changes semantic comparability identity, never a fit/cache/scientific identity.
+DATA_LIKELIHOOD_REVISION = "isar.baker_cousins_data_likelihood/1"
+MODEL_PARAMETERIZATION_REVISION = "isar.fit_model_parameterization/1"
+
 # A phonon Γ this close to the floor is a resolution-limited δ-spike, not a fitted intrinsic
 # width: ω₀ = √(Ω_d²+Γ²) ≈ Ω_d with Γ unmovable, so the parametric bootstrap collapses to a
 # degenerate ω₀ interval (halfwidth ~1e-3 meV) that is spuriously tight, not trustworthy. Fits
@@ -164,6 +169,332 @@ class StructureFitResult:
     # Full fitted-parameter covariance in ``params`` insertion order.  Retained for posterior-
     # predictive acquisition; a missing/untrusted covariance is represented by ``None``.
     parameter_covariance: list | None = None
+    # Additive statistical provenance.  A construction failure leaves this ``None`` while the
+    # numerical fit remains usable.
+    fit_semantics: dict | None = None
+
+
+@dataclass
+class ShadowCandidateBundle:
+    """Point-fit-only evidence for the diagnostics-only STAT-2a comparison.
+
+    ``results`` deliberately remains the caller-owned list when the existing full, unconstrained
+    route is reused.  The shadow lane can therefore prove object/list identity without copying or
+    re-fitting the common path.
+    """
+
+    results: list[StructureFitResult]
+    offered_labels: list[str]
+    attempted_labels: list[str]
+    converged_labels: list[str]
+    failed_labels: list[str]
+    reused_labels: list[str]
+    freshly_fitted_labels: list[str]
+    multimode_route: str
+
+
+def _fingerprint_number(value):
+    """Finite JSON representation that preserves non-finite scientific inputs explicitly."""
+    if value is None:
+        return None
+    number = float(value)
+    if np.isnan(number):
+        return "nan"
+    if np.isposinf(number):
+        return "positive_infinity"
+    if np.isneginf(number):
+        return "negative_infinity"
+    return number
+
+
+def _fingerprint_vector(values) -> list:
+    return [_fingerprint_number(value) for value in np.asarray(values).reshape(-1)]
+
+
+def _data_likelihood_payload(ctx) -> dict:
+    """Everything that fixes the observed-data likelihood shared by candidate models."""
+    missing = [
+        name for name in ("x", "counts", "mask")
+        if not hasattr(ctx, name)
+    ]
+    if missing:
+        from isar.schema.statistics import SemanticsConstructionError
+        raise SemanticsConstructionError(
+            "missing_data_likelihood_provenance", ",".join(missing)
+        )
+    energy = np.asarray(ctx.x)
+    counts = np.asarray(ctx.counts)
+    mask = np.asarray(ctx.mask, dtype=bool)
+    if energy.shape != counts.shape or energy.shape != mask.shape:
+        from isar.schema.statistics import SemanticsConstructionError
+        raise SemanticsConstructionError("misaligned_data_likelihood_inputs")
+    exposure = getattr(ctx, "exposure_scale", None)
+    if exposure is not None and np.asarray(exposure).shape != energy.shape:
+        from isar.schema.statistics import SemanticsConstructionError
+        raise SemanticsConstructionError("misaligned_exposure_provenance")
+    return {
+        "revision": DATA_LIKELIHOOD_REVISION,
+        "estimator": {
+            "name": "baker_cousins",
+            "model_floor": float(estimators.FMIN),
+            "cost_scale": "minus_two_log_likelihood",
+        },
+        "observed_data": {
+            "energy": _fingerprint_vector(energy),
+            "counts": _fingerprint_vector(counts),
+            "mask": mask.reshape(-1).tolist(),
+        },
+        "normalization": {
+            "kind": (
+                "relative_exposure_scale"
+                if exposure is not None
+                else "uniform_raw_counts"
+            ),
+            "exposure_scale": (
+                None if exposure is None else _fingerprint_vector(exposure)
+            ),
+            "exposure_reference": _fingerprint_number(
+                getattr(ctx, "exposure_reference", None)
+            ),
+        },
+        "fixed_likelihood_context": {
+            "temperature": _fingerprint_number(getattr(ctx, "T", None)),
+            "center": _fingerprint_number(getattr(ctx, "center", None)),
+            "gaussian_fwhm": _fingerprint_number(
+                getattr(ctx, "gauss_fwhm", None)
+            ),
+            "lorentzian_fwhm": _fingerprint_number(
+                getattr(ctx, "lorentz_fwhm", None)
+            ),
+            "quasielastic_fwhm": _fingerprint_number(
+                getattr(ctx, "quasielastic_fwhm", None)
+            ),
+            "instrument": getattr(ctx, "instrument", None),
+            "energy_status": getattr(ctx, "energy_status", None),
+        },
+    }
+
+
+def data_likelihood_fingerprint(ctx) -> str:
+    """Canonical identity of the observed likelihood shared by candidate models."""
+    from isar.schema.statistics import semantics_fingerprint
+
+    return semantics_fingerprint(
+        "isar.data_likelihood_context/1", _data_likelihood_payload(ctx)
+    )
+
+
+def _model_parameterization_payload(prob: Problem) -> dict:
+    """Declarative component, parameter, bound, and effective-free-space identity."""
+    names = [str(name) for name in prob.free_names]
+    fixed = {
+        names[index]: _fingerprint_number(value)
+        for index, value in zip(prob.fixed_pos, prob.fixed_vals)
+    }
+    components = []
+    for component in list(getattr(prob.composite, "components", ()) or ()):
+        parameters = [
+            {"name": str(parameter.name), "kind": str(parameter.kind)}
+            for parameter in (getattr(component, "params", ()) or ())
+        ]
+        item = {
+            "type": (
+                f"{type(component).__module__}.{type(component).__qualname__}"
+            ),
+            "prefix": str(getattr(component, "prefix", "")),
+            "parameters": parameters,
+        }
+        if hasattr(component, "peak"):
+            item["peak"] = str(component.peak)
+        components.append(item)
+    if not components:
+        components.append(
+            {
+                "type": (
+                    f"{type(prob.composite).__module__}."
+                    f"{type(prob.composite).__qualname__}"
+                ),
+                "prefix": None,
+                "parameters": [],
+            }
+        )
+    bounds = [
+        {
+            "parameter": name,
+            "lower": _fingerprint_number(bound[0]),
+            "upper": _fingerprint_number(bound[1]),
+        }
+        for name, bound in zip(names, prob.bounds)
+    ]
+    return {
+        "revision": MODEL_PARAMETERIZATION_REVISION,
+        "components": components,
+        "parameter_names": names,
+        "free_parameter_names": [name for name in names if name not in fixed],
+        "fixed_parameters": [
+            {"parameter": name, "value": fixed[name]} for name in sorted(fixed)
+        ],
+        "bounds": bounds,
+        "effective_parameter_count": int(prob.k),
+    }
+
+
+def model_parameterization_fingerprint(hypothesis, ctx) -> str:
+    """Canonical declarative parameter-space identity for one hypothesis/context."""
+    from isar.schema.statistics import semantics_fingerprint
+
+    return semantics_fingerprint(
+        "isar.model_parameterization_context/1",
+        _model_parameterization_payload(build_problem(hypothesis, ctx)),
+    )
+
+
+def _fit_semantics_for(prob: Problem, ctx, fit_kind: str) -> dict:
+    """Build semantics from the constraints that actually enter ``prob``."""
+    from isar.schema.statistics import (
+        FIT_SELECTION_SCHEMA,
+        EffectiveConstraint,
+        SemanticsConstructionError,
+        authority_scopes,
+        semantics_fingerprint,
+        validate_for_write,
+    )
+
+    constraints = getattr(ctx, "constraints", None)
+    origins = dict(getattr(constraints, "origins", None) or {})
+    names = list(prob.free_names)
+    fixed_names = {names[index] for index in prob.fixed_pos}
+    effective = []
+    if constraints is not None:
+        for name, value in (getattr(constraints, "hard", None) or {}).items():
+            if name not in fixed_names:
+                continue
+            effective.append(
+                EffectiveConstraint(
+                    parameter=str(name),
+                    constraint_kind="hard",
+                    value=float(value),
+                    origin=origins.get(name),
+                ).to_dict()
+            )
+        for name, value in (getattr(constraints, "soft", None) or {}).items():
+            if name not in names or name in fixed_names:
+                continue
+            mean, sigma = float(value[0]), float(value[1])
+            if sigma <= 0:
+                continue
+            effective.append(
+                EffectiveConstraint(
+                    parameter=str(name),
+                    constraint_kind="soft",
+                    mean=mean,
+                    sigma=sigma,
+                    origin=origins.get(name),
+                ).to_dict()
+            )
+    effective.sort(key=lambda item: (item["parameter"], item["constraint_kind"]))
+    if any(not item.get("origin") for item in effective):
+        missing = ",".join(item["parameter"] for item in effective if not item.get("origin"))
+        raise SemanticsConstructionError("missing_constraint_origin", missing)
+    origin_set = sorted({item["origin"] for item in effective})
+    aggregate_origin = (
+        "none" if not origin_set else origin_set[0] if len(origin_set) == 1 else "mixed"
+    )
+    has_soft = any(item["constraint_kind"] == "soft" for item in effective)
+    has_data_conditioning = any(
+        item["origin"] in {"data_dependent_rescue", "post_selection"} for item in effective
+    )
+    has_other_hard = any(
+        item["constraint_kind"] == "hard"
+        and item["origin"] in {"prespecified_scientific", "prior_predictive"}
+        for item in effective
+    )
+    if has_data_conditioning:
+        eligibility = "ineligible_data_dependent_conditioning"
+    elif has_soft:
+        eligibility = "ineligible_soft_penalized"
+    elif has_other_hard:
+        eligibility = "ineligible_unapproved_conditioning"
+    else:
+        eligibility = "eligible"
+    reasons = []
+    if has_soft:
+        reasons.append("effective_soft_constraint")
+    if has_data_conditioning:
+        reasons.append("data_dependent_or_post_selection_hard_constraint")
+    if has_other_hard:
+        reasons.append("unapproved_prespecified_or_prior_predictive_hard_constraint")
+    estimator_kind = (
+        "soft_penalized_likelihood"
+        if has_soft
+        else "hard_conditioned_likelihood"
+        if effective
+        else "data_likelihood_mle"
+    )
+    data_likelihood_fingerprint = semantics_fingerprint(
+        "isar.data_likelihood_context/1", _data_likelihood_payload(ctx)
+    )
+    model_parameterization_fingerprint = semantics_fingerprint(
+        "isar.model_parameterization_context/1",
+        _model_parameterization_payload(prob),
+    )
+    constraint_fingerprint = semantics_fingerprint(
+        "isar.effective_constraint_context/1",
+        {"effective_constraints": effective},
+    )
+    comparison_context_fingerprint = semantics_fingerprint(
+        "isar.fit_comparison_context/1",
+        {
+            "data_likelihood_fingerprint": data_likelihood_fingerprint,
+            "model_parameterization_fingerprint": model_parameterization_fingerprint,
+            "constraint_fingerprint": constraint_fingerprint,
+            "estimator_kind": estimator_kind,
+            "fit_kind": str(fit_kind),
+            "initialization_and_qoi_context": {
+                "prior_omega": _fingerprint_number(
+                    getattr(ctx, "prior_omega", None)
+                ),
+                "acoustic_omega": _fingerprint_number(
+                    getattr(ctx, "acoustic_omega", None)
+                ),
+            },
+        },
+    )
+    record = {
+        "schema": FIT_SELECTION_SCHEMA,
+        "estimator_kind": estimator_kind,
+        "fit_kind": str(fit_kind),
+        "effective_constraints": effective,
+        "aggregate_constraint_origin": aggregate_origin,
+        "selection_eligibility": eligibility,
+        "selection_ineligibility_reasons": reasons,
+        "data_likelihood_fingerprint": data_likelihood_fingerprint,
+        "model_parameterization_fingerprint": model_parameterization_fingerprint,
+        "constraint_fingerprint": constraint_fingerprint,
+        "comparison_context_fingerprint": comparison_context_fingerprint,
+        # Additive compatibility alias.  Since STAT-1.5 it names the complete comparison context,
+        # never merely the constraint payload.
+        "conditioning_fingerprint": comparison_context_fingerprint,
+        "authority_scopes": authority_scopes(
+            single_fit_delivery="active",
+            user_diagnostic="active",
+        ),
+    }
+    return validate_for_write(record, FIT_SELECTION_SCHEMA)
+
+
+def _attach_fit_semantics(result: StructureFitResult, prob: Problem, ctx) -> None:
+    from isar.schema.statistics import SemanticsConstructionError
+
+    try:
+        result.fit_semantics = _fit_semantics_for(prob, ctx, result.fit_kind)
+    except SemanticsConstructionError as exc:
+        log.warning(
+            "semantics_construction_failed producer=isar.analyze.loop quantity=%s reason_code=%s",
+            result.label,
+            exc.reason_code,
+        )
+        result.fit_semantics = None
 
 
 def build_problem(hyp, ctx, *, x0=None) -> Problem:
@@ -371,10 +702,20 @@ def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False, x0=None) -> Stru
     be_names = [_sanitize(n) for n in prob.free_names]
     br = _minimize_fixed(backend, prob.objective, prob.x0, prob.bounds, be_names,
                          prob.fixed_pos, prob.fixed_vals, minos=minos)
-    return result_from_backend(hyp.label, prob.composite, prob.costv, prob.n_used, prob.k, br,
-                               prior_omega=getattr(ctx, "prior_omega", None),
-                               acoustic_omega=getattr(ctx, "acoustic_omega", None),
-                               penalty=prob.penalty, hard_fixed=prob.is_hard_fixed)
+    result = result_from_backend(
+        hyp.label,
+        prob.composite,
+        prob.costv,
+        prob.n_used,
+        prob.k,
+        br,
+        prior_omega=getattr(ctx, "prior_omega", None),
+        acoustic_omega=getattr(ctx, "acoustic_omega", None),
+        penalty=prob.penalty,
+        hard_fixed=prob.is_hard_fixed,
+    )
+    _attach_fit_semantics(result, prob, ctx)
+    return result
 
 
 def _fit_hypothesis_task(args):
@@ -393,6 +734,165 @@ def _fit_hypothesis_batch(tasks, executor=None, *, phase="candidate"):
         log.warning("parallel %s fit failed; retrying serially: %s: %s",
                     phase, type(exc).__name__, exc)
         return [_fit_hypothesis_task(task) for task in tasks]
+
+
+def _shadow_result_matches(result, hyp, ctx, data_likelihood_fingerprint: str) -> bool:
+    """Whether ``result`` is exact unconstrained evidence for ``hyp`` under ``ctx``.
+
+    This is intentionally stricter than a label join.  STAT-2a reuse requires the same observed
+    likelihood, the same declarative parameterization, and an eligible data-likelihood estimate.
+    """
+    semantics = getattr(result, "fit_semantics", None)
+    if not isinstance(semantics, dict):
+        return False
+    if semantics.get("selection_eligibility") != "eligible":
+        return False
+    if semantics.get("estimator_kind") != "data_likelihood_mle":
+        return False
+    if semantics.get("data_likelihood_fingerprint") != data_likelihood_fingerprint:
+        return False
+    expected_parameterization = model_parameterization_fingerprint(hyp, ctx)
+    return (
+        semantics.get("model_parameterization_fingerprint")
+        == expected_parameterization
+    )
+
+
+def _fit_shadow_stage(hypotheses, ctx, reusable_by_label, *, backend, minos, executor,
+                      phase, x0_for=None):
+    """Fit the missing members of one canonical shadow stage and preserve hypothesis order."""
+    data_fingerprint = data_likelihood_fingerprint(ctx)
+    results_by_label = {}
+    reused_labels = []
+    tasks = []
+    task_hypotheses = []
+    for hypothesis in hypotheses:
+        reusable = reusable_by_label.get(str(hypothesis.label))
+        if reusable is not None and _shadow_result_matches(
+                reusable, hypothesis, ctx, data_fingerprint):
+            results_by_label[str(hypothesis.label)] = reusable
+            reused_labels.append(str(hypothesis.label))
+            continue
+        x0 = None if x0_for is None else x0_for(hypothesis)
+        tasks.append((hypothesis, ctx, backend, minos, x0))
+        task_hypotheses.append(hypothesis)
+    fitted = _fit_hypothesis_batch(tasks, executor, phase=phase)
+    for result, hypothesis in zip(fitted, task_hypotheses):
+        results_by_label[str(hypothesis.label)] = result
+    return (
+        [results_by_label[str(hypothesis.label)] for hypothesis in hypotheses],
+        reused_labels,
+    )
+
+
+def shadow_bundle_from_complete_results(results, *, peaks=None) -> ShadowCandidateBundle:
+    """Wrap an already-complete unconstrained two-stage result list without copying it."""
+    has_multimode = any(int(getattr(result, "n_modes", 1)) > 1 for result in results)
+    multimode_route = (
+        "guideline_forced"
+        if has_multimode and peaks is not None and len(peaks) >= 2
+        else "residual_triggered"
+        if has_multimode
+        else "not_offered"
+    )
+    labels = [str(result.label) for result in results]
+    converged = [
+        str(result.label) for result in results if result.optimizer_converged
+    ]
+    failed = [
+        str(result.label) for result in results if not result.optimizer_converged
+    ]
+    return ShadowCandidateBundle(
+        results=results,
+        offered_labels=labels,
+        attempted_labels=labels,
+        converged_labels=converged,
+        failed_labels=failed,
+        reused_labels=labels,
+        freshly_fitted_labels=[],
+        multimode_route=multimode_route,
+    )
+
+
+def fit_shadow_candidates(ctx, *, reusable_results=(), backend="iminuit", minos=False,
+                          peaks=None, executor=None) -> ShadowCandidateBundle:
+    """Fit the complete unconstrained STAT-2a candidate route, reusing exact results.
+
+    The hint itself is intentionally absent from this interface: a previous-structure hint may
+    provide a result in ``reusable_results``, but only the ordinary residual/expected-peak route
+    can offer a two-mode hypothesis.
+    """
+    reusable_by_label = {
+        str(result.label): result for result in reusable_results
+    }
+    one_hypotheses = list(enumerate_structures(ctx))
+    one_results, reused_one = _fit_shadow_stage(
+        one_hypotheses,
+        ctx,
+        reusable_by_label,
+        backend=backend,
+        minos=minos,
+        executor=executor,
+        phase="shadow one-mode candidate",
+    )
+
+    expected_two = peaks is not None and len(peaks) >= 2
+    residual_two = _offer_multimode(one_results, ctx)
+    multi_hypotheses = []
+    multi_results = []
+    reused_multi = []
+    if residual_two or expected_two:
+        best_one = _best_converged(one_results)
+        n_used = int(ctx.x_used.size)
+        multi_hypotheses = [
+            hypothesis for hypothesis in enumerate_multimode(ctx)
+            if n_used - hypothesis.k > 0
+        ]
+
+        def multimode_x0(hypothesis):
+            return greedy_multimode_ic(
+                hypothesis.build(), ctx, best_one, peaks=peaks
+            )
+
+        multi_results, reused_multi = _fit_shadow_stage(
+            multi_hypotheses,
+            ctx,
+            reusable_by_label,
+            backend=backend,
+            minos=minos,
+            executor=executor,
+            phase="shadow multi-mode candidate",
+            x0_for=multimode_x0,
+        )
+
+    results = one_results + multi_results
+    offered_labels = [
+        str(hypothesis.label) for hypothesis in one_hypotheses + multi_hypotheses
+    ]
+    return ShadowCandidateBundle(
+        results=results,
+        offered_labels=offered_labels,
+        attempted_labels=[str(result.label) for result in results],
+        converged_labels=[
+            str(result.label) for result in results if result.optimizer_converged
+        ],
+        failed_labels=[
+            str(result.label) for result in results if not result.optimizer_converged
+        ],
+        reused_labels=reused_one + reused_multi,
+        freshly_fitted_labels=[
+            str(result.label)
+            for result in results
+            if str(result.label) not in set(reused_one + reused_multi)
+        ],
+        multimode_route=(
+            "guideline_forced"
+            if expected_two
+            else "residual_triggered"
+            if residual_two
+            else "not_offered"
+        ),
+    )
 
 
 def fit_admissible_structures(ctx, *, backend="iminuit", minos=False, errors=False,

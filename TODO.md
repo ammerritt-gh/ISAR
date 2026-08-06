@@ -16,9 +16,9 @@ Design references: [DESIGN.md](DESIGN.md) (architecture + per-capability status 
 capstone in the sibling TAVI repo (`..\TAVI\docs\CLOSED_LOOP_DESIGN.md` — TAVI = instrument,
 ISAR = analysis authority). Forward workstreams live in their own plans:
 [SPEEDUP](docs/SPEEDUP_DESIGN.md), [STEERING](docs/STEERING_DESIGN.md),
-[BACKGROUND](docs/BACKGROUND_DESIGN.md).
+[BACKGROUND](docs/BACKGROUND_DESIGN.md), [EIG](docs/EIG_STEERING_DESIGN.md).
 
-Last updated: 2026-07-26.
+Last updated: 2026-08-02.
 
 ---
 
@@ -42,14 +42,6 @@ Things that are wrong now, as opposed to things not yet built.
       question, not a prior question.
       **Acceptance:** a test with a deliberately wrong prior, plus a data-driven cross-check
       before the anti-Stokes side is dropped.
-
-- [ ] **DEFECT-4 — `build_beliefs()` doesn't filter by `fit_kind`.**
-      Contract 4 ("constrained fits never seed a branch") is enforced for Γ/A via
-      `_is_clean_anchor` but *not* for the ω₀ assignment belief: a `branch_conditional` delivery
-      (gated only by the weaker `constrained_ok` bar — p_acoustic ≥ 0.6, no dominance or entropy
-      check) feeds later assignment posteriors. Narrow but real self-reinforcement channel.
-      **Acceptance:** the ω₀ assignment belief applies the same `fit_kind` filter, with a test
-      that a `branch_conditional` delivery cannot seed a later posterior.
 
 - [ ] **DEFECT-5 — `branch_continuation` mislabeling loses the recenter/widen retry.**
       Fit-derived features get `float("inf")` significance in `features_from`, so a garbage fit on
@@ -176,13 +168,14 @@ Speedup work is governed by [SPEEDUP_DESIGN.md](docs/SPEEDUP_DESIGN.md); steerin
 - [ ] **DRV-2 — Objective-aware Γ exclusion.** Acoustic ω₀ → 0 at zone centers is structurally
       unmeasurable; parse-time exclusion beats spending ~4 scans per campaign discovering it.
       **Acceptance:** a zone-center q is excluded at objective-compile time with the reason recorded.
-- [ ] **DRV-3 — The SVP, remaining rungs.** (a) Realistic clocks — counting time reported as the
+- [ ] **DRV-3 — TAVI runtime and McStas validation rungs.** (a) Realistic clocks — counting time reported as the
       instrument would report it (TAVI-side virtual clock), exercising wall-clock budget semantics
       (§8, O2); today `budget.spent` sums TAVI's *compute* eta, which is the root cause of the
       MVP16 "10.6 of 28 800" (a semantics gap, not units). (b) The McStas rung. The deterministic
       rung ran 2026-07-10.
-      **Governing:** T1/T2, `DESIGN.md` §9. **Acceptance:** a campaign runs against a virtual
-      clock with honest budget accounting; `DESIGN.md` §15 SVP row moves off Partial.
+      **Governing:** T1/T2 as amended by O36, `DESIGN.md` §9. **Acceptance:** a campaign runs
+      against a virtual clock with honest budget accounting; the McStas fidelity rung completes;
+      the corresponding TAVI validation row in `DESIGN.md` §15 reflects completion.
 - [ ] **DRV-4 — Confirm-churn intent confirmations** (SVP_RECERT, still open): `n_uncertifiable`
       never resets, so a chronically flaky q is never abandoned; and triage should show confidence
       beside `(unreliable)`. Related: a q with its half-width right at tolerance re-confirms
@@ -190,6 +183,14 @@ Speedup work is governed by [SPEEDUP_DESIGN.md](docs/SPEEDUP_DESIGN.md); steerin
       q). Capping confirms per q is the cheap half of the fitting-bound problem — the per-fit
       half is [SPEEDUP_DESIGN.md](docs/SPEEDUP_DESIGN.md).
       **Acceptance:** a chronically flaky q is abandoned by policy, and triage output shows both.
+
+- [ ] **DRV-5 — EIG-4 Slice 10 deterministic TAVI demonstration.** Slice 9 implements the
+      O41-restricted authority path but does not itself supply the production demonstration or O42
+      owner acceptance. Run the maintained GUI-seeded positive case through deterministic TAVI and
+      exercise an ineligible return to the ordinary non-EIG path.
+      **Acceptance:** one narrower target-selected scan proves exact scored/executed grid agreement,
+      fewer executed points, normal fit/campaign rejoining, and a separate ineligible case returns
+      to non-EIG behavior; O42 records the owner's release decision without protected source changes.
 
 - [ ] **DOC-1 — Promote the remaining disposable-path evidence.** The three validation reports were
       committed under `docs/assets/` on 2026-07-25 with a provenance manifest, and `README.md`,
@@ -316,3 +317,6 @@ conditions — these are wants, not commitments.
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test
 fires real `urlopen` calls at the operator's live LLMM/TAVI ports, so results would depend on which
 services happen to be running.
+
+
+User idea: some sort of Brier-score certification of how well targeted campaigns run, given a known intensity distribution.

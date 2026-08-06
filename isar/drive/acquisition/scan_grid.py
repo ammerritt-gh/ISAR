@@ -25,7 +25,10 @@ from isar.drive.acquisition.grid_adapters import (
 from isar.drive.acquisition.inventory import canonical_json, json_number
 
 
-MAX_POINTS = 100
+#: Point ceiling used when a caller supplies no policy cap; kept equal to
+#: ``SteeringPolicy.max_scan_points`` so a window built without a policy is not clamped harder than
+#: one built with the default policy. See that field for why 100 no longer covers a survey band.
+MAX_POINTS = 220
 UNIFORM_SCAN_GRID_SCHEMA = "isar.uniform_scan_grid/2"
 
 #: Which span the step is widened against when a window exceeds the point cap.  The two values are

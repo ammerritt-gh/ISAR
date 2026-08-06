@@ -67,6 +67,33 @@ def test_health_probe_coalesces_without_overlapping_workers():
     assert results and results[0].generation == latest
 
 
+def test_health_probe_checks_independent_backends_concurrently():
+    slow_started = Event()
+    fast_started = Event()
+    release = Event()
+
+    def prober(url: str) -> health.Health:
+        if url == "slow-llm":
+            slow_started.set()
+            assert release.wait(2)
+        else:
+            fast_started.set()
+        return health.Health(True, "reachable")
+
+    probe = health.HealthProbe(prober)
+    probe.request({"llm": "slow-llm", "tavi": "fast-tavi"})
+    assert slow_started.wait(2)
+    assert fast_started.wait(0.5), "TAVI probe waited behind the LLMM timeout"
+    release.set()
+
+    import time
+    deadline = time.monotonic() + 2
+    while probe.in_flight and time.monotonic() < deadline:
+        probe.poll()
+        time.sleep(0.01)
+    assert not probe.in_flight
+
+
 def test_health_probe_shutdown_does_not_schedule_pending_work():
     started = Event()
     release = Event()

@@ -1,0 +1,26 @@
+{
+  "contract": "isar.eig4_slice8_attempt_disposition/o36.8.2",
+  "status": "invalid_superseded",
+  "reason_code": "acquisition_provenance_join_contract_mismatch",
+  "reason": "the opened evidence treated the analysis-facing card-state acquisition record as if it directly carried scientific-action identity instead of authenticating the production two-record join through the physical-submission event",
+  "recorded_at": "2026-08-04",
+  "manifests_frozen": true,
+  "final_evidence_opened": true,
+  "production_behavior_changed": false,
+  "case_definitions_changed": false,
+  "authenticated_artifacts": {
+    "gate_manifest_fingerprint": "c2c7fc60cb5a75a7fd6e1a627577508a18df47ddd70965b1e2c473ea25e0faba",
+    "case_manifest_fingerprint": "52168ffb3ee6bc39534f7851b5fa6d4edfcd06c3bcc1127284cea2a43391be05",
+    "verification_evidence_fingerprint": "43f3e2a4b27ea48fea314476256c61362704e737206b3757c89f905e83887069",
+    "run_manifest_fingerprint": "c552d08726b950fd8894bd92c92b7003e0b83ca79cbb41d33b696dee37c0a871",
+    "gate_result_fingerprint": "bac8b29a0c9ba2a07d48f04df0c0608af98a8c3e12e99a4a49c028c30add5170"
+  },
+  "invalid_result": {
+    "overall_disposition": "invalid",
+    "invalid_stage": "case:s8-c01-strong-confirmed",
+    "invalid_reason_code": "positive_analysis_or_fork_invalid"
+  },
+  "replacement_bundle": "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V2",
+  "replacement_scope": "join the authenticated card-state acquisition record to the physical-submission event by acquisition ID and job ID, then require exact comparison, request, grid, and scientific-action identity",
+  "attempt_disposition_fingerprint": "d4068bca887da1a8dfbe9b021d3e8c4eb0b664c0c00014d144230dd00bb56b5a"
+}

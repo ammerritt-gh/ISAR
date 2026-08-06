@@ -129,20 +129,19 @@ class DriveOptions:
     budget: str | None = None         # '<amount><unit>' e.g. '8h', '1e10n'; None => from spec/goal
     analysis_limit: str | None = None # duration or 'none'; None => tier default/frozen objective
     seed: int = 0
-    max_iters: int | None = None      # per-invocation loop cap (>= 1); None => the loop's built-in cap
     tavi_url: str | None = None
     calibration: str | None = None
     worker: bool = True               # False => --no-worker (fresh subprocess per iteration)
     control_token: str | None = None
+    scan_window_eig_mode: str = "off" # off | shadow | authoritative
 
 
 def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list[str]:
     """The argv for ``isar drive --<source> --workspace <ws> [opts]`` run as ``<python> -m isar ...``.
 
     Validates (raising ``ValueError`` — unit-testable without Qt) that exactly ONE campaign source is
-    set (``goal`` / ``spec_path`` / ``resume_latest``) and that ``max_iters`` is either ``None`` or
-    ``>= 1``, matching the CLI's mutually-exclusive source group and its ``_positive_int`` type. Only
-    non-default options add flags, so the command stays legible in the log dock.
+    set (``goal`` / ``spec_path`` / ``resume_latest``), matching the CLI's mutually-exclusive source
+    group. Only non-default options add flags, so the command stays legible in the log dock.
     """
     sources = [opts.goal is not None, opts.spec_path is not None,
                opts.envelope_path is not None, opts.resume_latest]
@@ -151,8 +150,8 @@ def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list
         raise ValueError(
             "exactly one campaign source must be set (goal, spec_path, envelope_path, or resume_latest); "
             f"got {n_sources}")
-    if opts.max_iters is not None and opts.max_iters < 1:
-        raise ValueError(f"max_iters must be >= 1 (or None); got {opts.max_iters}")
+    if opts.scan_window_eig_mode not in {"off", "shadow", "authoritative"}:
+        raise ValueError("scan_window_eig_mode must be off, shadow, or authoritative")
 
     cmd = [python, "-m", "isar", "drive"]
     if opts.goal is not None:
@@ -178,21 +177,27 @@ def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list
         cmd += ["--tavi", opts.tavi_url]
     if opts.seed != 0:
         cmd += ["--seed", str(opts.seed)]
-    if opts.max_iters is not None:
-        cmd += ["--max-iters", str(opts.max_iters)]
     if opts.control_token:
         cmd += ["--control-token", opts.control_token]
+    if (opts.scan_window_eig_mode != "off"
+            and not (opts.resume_latest or opts.envelope_path)):
+        cmd += ["--scan-window-eig-mode", opts.scan_window_eig_mode]
     if not opts.worker:
         cmd.append("--no-worker")
     return cmd
 
 
-def build_compile_command(python: str, opts: DriveOptions, output_path: str) -> list[str]:
-    """Compile a goal/spec into a frozen envelope without a workspace or TAVI contact."""
+def build_compile_command(python: str, opts: DriveOptions, output_path: str, *,
+                          workspace: str | None = None) -> list[str]:
+    """Compile goal/spec authoring input against a ready workspace without TAVI contact."""
     if (opts.goal is None) == (opts.spec_path is None):
         raise ValueError("compile needs exactly one of goal or spec_path")
+    if opts.scan_window_eig_mode not in {"off", "shadow", "authoritative"}:
+        raise ValueError("scan_window_eig_mode must be off, shadow, or authoritative")
     cmd = [python, "-m", "isar", "drive"]
     cmd += (["--goal", opts.goal] if opts.goal is not None else ["--spec", str(opts.spec_path)])
+    if workspace:
+        cmd += ["--workspace", str(workspace)]
     cmd += ["--compile-only", str(output_path)]
     if opts.tier != "deterministic":
         cmd += ["--tier", opts.tier]
@@ -200,6 +205,8 @@ def build_compile_command(python: str, opts: DriveOptions, output_path: str) -> 
         cmd += ["--budget", opts.budget]
     if opts.analysis_limit:
         cmd += ["--analysis-limit", opts.analysis_limit]
+    if opts.scan_window_eig_mode != "off":
+        cmd += ["--scan-window-eig-mode", opts.scan_window_eig_mode]
     return cmd
 
 

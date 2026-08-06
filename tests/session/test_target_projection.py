@@ -6,6 +6,7 @@ conversion, before branch triage could withhold a delivery, and before the conne
 reassigned or cleared the target. Every one of those three can move the target, so a projection
 resolved before them can name the wrong mode with full confidence.
 """
+import copy
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,8 @@ import numpy as np
 import pytest
 
 from isar.analyze.context import ScanContext
+from isar.predictive import target_projection_set_fingerprint
+from isar.schema.statistics import semantics_fingerprint
 from isar.session import driver, predictive_artifact
 from isar.session.predictive_artifact import build_master_predictive, build_target_projection
 
@@ -104,6 +107,39 @@ def test_the_projection_follows_the_tracked_target_not_the_fits_local_best(monke
     assert model["target_qoi_draws"] == pytest.approx([row[1] for row in modes])
     # The whole point: the old in-/2 projection would have published the 2.0 mode here.
     assert model["target_qoi_draws"] != pytest.approx(payload["models"][0]["omega0_draws"])
+
+
+def test_projection_set_helper_is_byte_semantic_parity_with_the_historical_producer():
+    """The Slice-6 helper extraction must not change the accepted evidence identity."""
+    artifact = {
+        **_hand_artifact([[2.0], [2.1]], label="one", weight=0.75),
+        "models": [
+            _hand_artifact([[2.0], [2.1]], label="one", weight=0.75)["models"][0],
+            _hand_artifact([[5.0], [5.1]], label="two", weight=0.25)["models"][0],
+        ],
+    }
+    projection = build_target_projection(
+        artifact, _outcome(omega0=2.0), **_AUTHORITY
+    )
+    historical_payload = sorted(
+        [
+            {
+                "label": model.get("label"),
+                "weight": model.get("weight"),
+                "draw_count": len(model.get("target_present_by_draw") or ()),
+            }
+            for model in projection["models"]
+        ],
+        key=lambda item: str(item["label"]),
+    )
+    historical = semantics_fingerprint(
+        "isar.target_projection_model_set/1", historical_payload
+    )
+
+    assert [model["label"] for model in projection["models"]] == ["one", "two"]
+    assert [model["weight"] for model in projection["models"]] == [0.75, 0.25]
+    assert target_projection_set_fingerprint(projection["models"]) == historical
+    assert projection["target_projection_set_fingerprint"] == historical
 
 
 def test_mode_identity_can_switch_between_draws_without_switching_the_target():
@@ -280,6 +316,34 @@ def test_the_projection_records_the_full_authority_basis_it_was_decided_under():
     assert "action_role" not in projection
 
 
+def test_the_facade_authenticates_projection_semantics_when_present(tmp_path):
+    from isar.workspace_api import Workspace as ReadOnlyWorkspace
+
+    artifact = {
+        **_hand_artifact([[2.0, 5.0], [2.1, 5.1]]),
+        "predictive_retained_set_fingerprint": "0" * 64,
+        "statistical_semantics_fingerprint": "1" * 64,
+    }
+    projection = build_target_projection(artifact, _outcome(), **_AUTHORITY)
+    assert projection["statistical_semantics"] is not None
+
+    root = tmp_path / "ws"
+    target_root = root / "data" / "target_projection"
+    target_root.mkdir(parents=True)
+    (root / "card.policy.toml").write_text("", encoding="utf-8")
+    path = target_root / "projection.json"
+    path.write_text(json.dumps(projection), encoding="utf-8")
+    facade = ReadOnlyWorkspace.open(root)
+    assert facade.target_projection("data/target_projection/projection.json") == projection
+
+    tampered = copy.deepcopy(projection)
+    tampered["statistical_semantics"]["construction_complete"] = False
+    path.write_text(json.dumps(tampered), encoding="utf-8")
+    facade.refresh()
+    with pytest.raises(ValueError, match="statistical semantics are invalid"):
+        facade.target_projection("data/target_projection/projection.json")
+
+
 def test_a_role_change_alone_makes_a_stored_projection_stale():
     # The staleness test a consumer is documented to run is a comparison of the authority block. A
     # projection resolved for the master and one resolved for a rival probe are different bindings
@@ -400,3 +464,69 @@ def test_one_ambiguous_model_blanks_the_whole_projection_regardless_of_order(amb
     assert projection["reason"] == "no_unique_mode"
     assert all(not any(model["target_present_by_draw"]) for model in projection["models"])
     assert all(model["target_qoi_draws"] == [None] for model in projection["models"])
+
+
+# ---------------------------------------------------------------------------
+# R12: a projection that cannot be fingerprinted is an incomplete projection,
+# not an exception and not a "complete" record with no semantics.
+# ---------------------------------------------------------------------------
+def _raiser(exc):
+    def _raise(*_args, **_kwargs):
+        raise exc
+    return _raise
+
+
+def test_a_plain_value_error_from_the_fingerprint_does_not_escape_as_attribute_error():
+    # A malformed/legacy model record makes the fingerprint helper raise a PLAIN ValueError, which
+    # carries no ``reason_code``. Reading one unconditionally raised AttributeError straight out of
+    # a function documented to always return an artifact — and the driver does not catch that.
+    artifact = _hand_artifact([[2.0], [2.1]], weight=None)
+    projection = build_target_projection(artifact, _outcome(omega0=2.0), **_AUTHORITY)
+    assert projection["complete"] is False
+    assert projection["reason"] == predictive_artifact.PROJECTION_FINGERPRINT_FAILED
+    assert projection["target_projection_set_fingerprint"] is None
+    assert projection["statistical_semantics"] is None
+    assert all(not any(model["target_present_by_draw"]) for model in projection["models"])
+    assert all(all(draw is None for draw in model["target_qoi_draws"])
+               for model in projection["models"])
+
+
+def test_a_type_error_from_the_fingerprint_is_an_incomplete_projection(monkeypatch):
+    monkeypatch.setattr(predictive_artifact, "_target_projection_set_fingerprint",
+                        _raiser(TypeError("draw list is not a list")))
+    projection = build_target_projection(
+        _hand_artifact([[2.0], [2.1]]), _outcome(omega0=2.0), **_AUTHORITY)
+    assert projection["complete"] is False
+    assert projection["reason"] == predictive_artifact.PROJECTION_FINGERPRINT_FAILED
+    assert projection["target_projection_set_fingerprint"] is None
+
+
+def test_a_semantics_construction_error_also_marks_the_projection_incomplete(monkeypatch):
+    # This one used to null the fingerprint and the semantics but leave ``reason`` at None, so the
+    # record claimed complete=True with nothing to authenticate it — a corrupt record to a consumer
+    # rather than an honest incomplete one.
+    monkeypatch.setattr(
+        predictive_artifact, "_target_projection_set_fingerprint",
+        _raiser(predictive_artifact.SemanticsConstructionError("nonfinite_fingerprint_input")))
+    projection = build_target_projection(
+        _hand_artifact([[2.0], [2.1]]), _outcome(omega0=2.0), **_AUTHORITY)
+    assert projection["complete"] is False
+    assert projection["target_projection_complete"] is False
+    assert projection["reason"] == predictive_artifact.PROJECTION_FINGERPRINT_FAILED
+    assert projection["statistical_semantics_fingerprint"] is None
+
+
+def test_the_driver_records_an_attribute_error_instead_of_aborting_the_run(tmp_path, monkeypatch):
+    ref = "data/predictive.json"
+    (tmp_path / "data").mkdir()
+    (tmp_path / ref).write_text(json.dumps(_hand_artifact([[2.0]])), encoding="utf-8")
+    entry = driver.ScanEntry(scan_id="master:1:d", scan_number=1, scan_type="master", status="ok")
+    entry.detectors["d"] = {"pooled": True, "predictive_ref": ref}
+    session = driver.SessionState(scans={"master:1:d": entry})
+    monkeypatch.setattr(predictive_artifact, "build_target_projection",
+                        _raiser(AttributeError("'ValueError' object has no attribute 'reason_code'")))
+
+    assert driver._resolve_target_projections(session, tmp_path / "data") == 0
+    unavailable = entry.provenance["target_projection_unavailable"]
+    assert unavailable["error_type"] == "AttributeError"
+    assert unavailable["reason_code"] == predictive_artifact.PROJECTION_UNAVAILABLE_CONSTRUCTION_FAILED

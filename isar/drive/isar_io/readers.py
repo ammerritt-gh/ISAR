@@ -50,7 +50,9 @@ _LIST_COLUMNS = frozenset({"members"})
 # with json.loads; "" / None → None; a malformed cell is left as the raw string (never raises).
 _JSON_COLUMNS = frozenset({"amplitudes", "candidates", "model_manifest",
                            "exposure_provenance", "branch_posterior",
-                           "branch_candidates"})
+                           "branch_candidates", "fit_selection_semantics",
+                           "interval_semantics", "probability_semantics",
+                           "shadow_model_selection"})
 
 
 def _report_dir(workspace: str | Path) -> Path:

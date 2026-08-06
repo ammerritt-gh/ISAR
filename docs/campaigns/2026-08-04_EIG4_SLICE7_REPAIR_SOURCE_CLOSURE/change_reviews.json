@@ -1,0 +1,9 @@
+{
+  "isar/drive/session_log.py": {
+    "current_change_disposition": "adjacent_nonsemantic",
+    "proof_tests": [
+      "tests/drive/test_realized_comparison.py",
+      "tests/stats/test_stat2b_source_closure.py"
+    ]
+  }
+}

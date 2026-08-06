@@ -133,10 +133,16 @@ def discard_dir(root) -> bool:
 
 
 def _unique_stage_path(destination: Path) -> Path:
-    """Return a non-existent sibling staging path for a Save As operation."""
-    # A sibling is deliberate: ``os.replace`` is atomic only within one filesystem.  The random
-    # suffix also means a stale staging directory can never be mistaken for this operation's work.
-    return destination.parent / f".{destination.name}.isar-saving-{uuid.uuid4().hex}"
+    """Return a non-existent staging path for a Save As operation, near the destination."""
+    # The nearest EXISTING ancestor is deliberate on two counts: ``os.replace`` is atomic only
+    # within one filesystem (an ancestor is always on the destination's volume), and staging there
+    # means a destination whose parents do not exist yet stays uncreated until promotion — a failed
+    # copy or validation leaves no new directories behind at all.  The random suffix also means a
+    # stale staging directory can never be mistaken for this operation's work.
+    base = Path(destination).parent
+    while base != base.parent and not base.exists():
+        base = base.parent
+    return base / f".{Path(destination).name}.isar-saving-{uuid.uuid4().hex}"
 
 
 def _clean_stage(stage: Path) -> None:
@@ -147,6 +153,41 @@ def _clean_stage(stage: Path) -> None:
         shutil.rmtree(stage)
     except OSError as exc:
         log.warning("could not clean Save As staging directory %s: %s", stage, exc)
+
+
+def missing_ancestors(destination: Path) -> list[Path]:
+    """The not-yet-existing parent directories of ``destination``, outermost first.
+
+    Save As accepts a destination the operator merely *named* (``…/2026-08/beamtime/run3``), so the
+    parent chain may not exist.  Returning it explicitly is what lets :meth:`save_as` undo exactly
+    the directories it created when the transaction later fails.
+    """
+    missing: list[Path] = []
+    current = Path(destination).parent
+    while current != current.parent and not current.exists():
+        missing.append(current)
+        current = current.parent
+    missing.reverse()
+    return missing
+
+
+def _prune_created(created: list[Path]) -> None:
+    """Remove directories created for a Save As destination, innermost first, empty ones only.
+
+    A failed transaction must leave the filesystem as it found it.  ``rmdir`` (never ``rmtree``) is
+    the safety rail: if anything landed inside a directory we made, it stays and is logged.
+    """
+    for index, directory in enumerate(reversed(created)):
+        try:
+            directory.rmdir()
+        except OSError as exc:
+            # Stopping here is deliberate: a directory that would not go is still present, so every
+            # ancestor above it is non-empty and would only produce a cascade of identical
+            # warnings. Name what is being left behind instead.
+            kept = [str(path) for path in reversed(created)][index:]
+            log.warning("could not remove Save As directory %s created for the destination (%s); "
+                        "leaving %s in place", directory, exc, ", ".join(kept))
+            return
 
 
 # ---- the QObject lifecycle owner --------------------------------------------
@@ -291,10 +332,15 @@ class WorkspaceManager(QObject):
     def save_as(self, dest) -> bool:
         """Transactionally save the current temporary workspace at ``dest``.
 
-        The source is copied into a unique sibling staging directory, validated as a workspace,
-        then atomically promoted into an absent/empty destination.  The original temporary work is
-        discarded *only after* the promoted destination has opened.  Thus an interrupted copy,
-        collision, validation failure, or open failure always leaves the source recoverable.
+        The source is copied into a unique staging directory beside the destination's nearest
+        existing ancestor, validated as a workspace, then atomically promoted into an absent/empty
+        destination.  The original temporary work is discarded *only after* the promoted
+        destination has opened.  Thus an interrupted copy, collision, validation failure, or open
+        failure always leaves the source recoverable.
+
+        ``dest`` need not exist and neither need its parents — the operator names a new folder and
+        the missing chain is created at the promotion step (and removed again if promotion fails).
+        An *existing* destination must still be an empty directory.
         """
         self._last_error = None
         if self._root is None:
@@ -320,11 +366,6 @@ class WorkspaceManager(QObject):
         if is_under(resolved_dest, temp_root()):
             self._last_error = "destination must be outside the temporary-workspace recovery folder"
             log.warning("save_as refused temporary destination %s", dest)
-            return False
-        parent = resolved_dest.parent
-        if not parent.is_dir():
-            self._last_error = f"destination parent does not exist: {parent}"
-            log.warning("save_as refused destination with missing parent %s", parent)
             return False
         try:
             if resolved_dest.exists() and (not resolved_dest.is_dir() or any(resolved_dest.iterdir())):
@@ -356,6 +397,10 @@ class WorkspaceManager(QObject):
 
         # Recheck immediately before promotion.  The initial check was advisory: a different
         # process may have created or populated the destination while this copy was running.
+        # The destination's missing parents are created HERE, at the promote step, so that an
+        # earlier copy or validation failure leaves nothing at all on disk; whatever this call
+        # creates is undone again if the promotion itself fails.
+        created = missing_ancestors(resolved_dest)
         try:
             if resolved_dest.exists():
                 if not resolved_dest.is_dir() or any(resolved_dest.iterdir()):
@@ -364,9 +409,12 @@ class WorkspaceManager(QObject):
                     _clean_stage(stage)
                     return False
                 resolved_dest.rmdir()
+            elif created:
+                resolved_dest.parent.mkdir(parents=True, exist_ok=True)
             os.replace(stage, resolved_dest)
         except OSError as exc:
             _clean_stage(stage)
+            _prune_created(created)
             self._last_error = f"could not promote saved workspace to {resolved_dest}: {exc}"
             log.warning("save_as promotion %s -> %s failed: %s", stage, resolved_dest, exc)
             return False

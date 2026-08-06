@@ -652,9 +652,9 @@ model selection, branch model, verdicts, the driver, the ledger. The GUI adds no
 | C7 | Directive composer + inbox monitor: pending/consumed/rejected with driver reasons | 1, 3, 4, 5 | session_events | all four types | C |
 | C8 | Sandbox refit panel — **Partial:** live fast-tier preview, manual E₀, SANDBOX banner implemented; structure editor, prior sliders, Commit → directive planned | 3 (interactive) | `isar.sandbox_api` | `prior_edit`, `fit_correction` (planned) | C |
 | C9 | NL command bar: text → compiled directive(s) via LLMM → user confirms artifact → inbox | 5 | — | any (via compiler) | C |
-| C10 | Drive dashboard — **Partial (Pass 3):** live decision feed, aggregate progress (iteration, converged-of-grid, whole-log budget), scan verdicts, stop states implemented; EIG landscape, per-q state machine, refusal log, proposal queue still Planned (blocked on the per-q event contract, §16.6) | 4 | campaign, session_events, watch | — | C |
+| C10 | Drive dashboard — **Partial (Pass 3 + EIG-4 Slice 9):** live decision feed, aggregate progress, scan verdicts, stop states, latest restricted EIG selection, and selector-predicate failure counts implemented; full EIG landscape, per-q state machine, general refusal log, and proposal queue still Planned (blocked on the per-q event contract, §16.6) | 4 | campaign, session_events, watch | — | C |
 | C11 | Dispersion-guess editor: drag the prior curve / control points → `prior_edit` scoped to line/model | 4 | branch_model | `prior_edit` | C |
-| C12 | Campaign launcher — **Implemented (Pass 3):** setup form → `isar drive` subprocess behind the coordinator; Resume via the frozen objective; cooperative stop + force escalation (G19) | 4 | card, campaign, session_events | none directly — the sole-writer drive subprocess performs mutations; the stop control request is the one sanctioned GUI write | Pass 3 |
+| C12 | Campaign launcher — **Implemented (Pass 3 + EIG-4 Slice 9):** setup form → `isar drive` subprocess behind the coordinator; explicit off/shadow/restricted-authoritative authoring; frozen-mode Resume; maintained O41 example creation; cooperative stop + force escalation (G19) | 4 | card, campaign, session_events | none directly — the sole-writer drive subprocess performs mutations; the stop control request is the one sanctioned GUI write | Pass 3 |
 
 ---
 

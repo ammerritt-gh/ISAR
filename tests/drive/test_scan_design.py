@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import FrozenInstanceError
+import hashlib
+from dataclasses import FrozenInstanceError, fields, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,12 +29,15 @@ from isar.drive.acquisition.scan_design import (
     SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED,
     STEERING_REGIME,
     PhysicalWindowGeneratorConfig,
+    ScanDesignCandidate,
     ScanDesignContext,
+    ScanDesignInventory,
     _declared_window,
     _energy_window,
     design_scan_windows,
 )
 from isar.drive.acquisition.grid_adapters import DEFAULT_GRID_ADAPTER
+from isar.drive.acquisition.inventory import canonical_json
 from isar.drive.acquisition.scan_grid import (
     format_scan_command,
     resolve_uniform_grid,
@@ -148,9 +152,11 @@ def test_context_candidate_and_inventory_hashes_are_stable_and_sensitive():
     assert first.content_hash() == duplicate.content_hash()
     assert changed.content_hash() != first.content_hash()
     payload = first.to_full_dict()
-    # No score, utility, or ranking has been computed at this stage: the only permitted mention of
-    # EIG anywhere in the artifact is the declared mode, never a number a selector could act on.
-    assert _eig_mentions(payload) == {"scan_window_eig_mode"}
+    # Slice 6 always emits the diagnostic envelope, but an unscored inventory still carries no
+    # utility, ranking, winner, or authoritative selection.
+    assert _eig_mentions(payload) == {
+        "scan_window_eig_mode", "eig_authoritative", "eig_shadow"}
+    assert payload["shadow_scoring"]["status"] == "not_requested"
     json.dumps(payload, allow_nan=False)
 
 
@@ -181,7 +187,13 @@ def test_provenance_artifact_joins_planned_candidate_to_final_request(tmp_path: 
     assert proposal.meta["scan_design_context_fingerprint"] == inventory.context.fingerprint
     artifact = tmp_path / ref["path"]
     assert artifact.is_file()
+    assert hashlib.sha256(artifact.read_bytes()).hexdigest() == ref["sha256"]
     assert json.loads(artifact.read_text(encoding="utf-8")) == inventory.to_full_dict()
+    assert proposal.meta["scan_design_selection_basis"] == inventory.selection_basis
+    assert proposal.meta["scan_design_shadow_status"] == "not_requested"
+    assert proposal.meta["scan_design_shadow_fingerprint"] == (
+        inventory.shadow_scoring.shadow_scoring_fingerprint)
+    assert proposal.meta["scan_design_shadow_variant_fingerprints"] == []
     assert proposal.meta["proposal_fingerprint"] == request_fingerprint
     _stamp_proposal_provenance(proposal)
     assert proposal.meta["proposal_fingerprint"] == request_fingerprint
@@ -362,7 +374,10 @@ def test_shadow_mode_generates_the_family_and_still_selects_the_legacy_control()
         legacy_off.e_lo, legacy_off.e_hi, legacy_off.e_step,
         legacy_off.n_points, legacy_off.ncount)
     assert shadow.selected_candidate_id == off.selected_candidate_id
-    assert _eig_mentions(shadow.to_full_dict()) == {"scan_window_eig_mode"}
+    payload = shadow.to_full_dict()
+    assert _eig_mentions(payload) == {
+        "scan_window_eig_mode", "eig_authoritative", "eig_shadow"}
+    assert payload["shadow_scoring"]["status"] == "unavailable"
 
 
 def test_shadow_inventory_is_deterministic_and_json_serializable():
@@ -373,6 +388,22 @@ def test_shadow_inventory_is_deterministic_and_json_serializable():
     assert [c.candidate_id for c in first.candidates] == [
         c.candidate_id for c in second.candidates]
     json.dumps(first.to_full_dict(), allow_nan=False)
+
+
+def test_inventory_v3_rejects_nonlegacy_selection_and_inconsistent_basis():
+    inventory = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    target = next(candidate for candidate in inventory.candidates
+                  if candidate.candidate_family == FAMILY_TARGET_CORE)
+
+    nonlegacy = inventory.to_full_dict()
+    nonlegacy["selection"]["selected_candidate_id"] = target.candidate_id
+    with pytest.raises(ValueError, match="legacy"):
+        ScanDesignInventory.from_dict(nonlegacy)
+
+    inconsistent = inventory.to_full_dict()
+    inconsistent["selection"]["basis"] = "shadow_legacy_control_scored"
+    with pytest.raises(ValueError, match="basis"):
+        ScanDesignInventory.from_dict(inconsistent)
 
 
 def test_inventory_declares_generator_config_and_provider_identity():
@@ -402,6 +433,18 @@ def test_inventory_declares_generator_config_and_provider_identity():
         "steering_regime": STEERING_REGIME,
     }
     assert payload["selection"]["scan_window_eig_mode"] == "shadow"
+
+
+def test_generator_configuration_strictly_round_trips_nondefault_values():
+    configured = PhysicalWindowGeneratorConfig(core_fwhm_multiple=4.25)
+    restored = PhysicalWindowGeneratorConfig.from_dict(configured.to_dict())
+    assert restored == configured
+    assert restored.fingerprint == configured.fingerprint
+
+    malformed = configured.to_dict()
+    malformed["unexpected"] = True
+    with pytest.raises(ValueError, match="fields"):
+        PhysicalWindowGeneratorConfig.from_dict(malformed)
 
 
 def test_family_windows_follow_the_frozen_generator_constants():
@@ -522,9 +565,12 @@ def test_identical_grids_deduplicate_with_alias_provenance():
         c.candidate_id for c in inventory.candidates]
 
 
-def test_authoritative_mode_refuses_with_a_stable_code():
-    with pytest.raises(ValueError, match="scan_window_eig_authoritative_unavailable"):
-        _context(scan_window_eig_mode="authoritative")
+def test_authoritative_mode_builds_the_same_candidate_space_as_shadow():
+    authoritative = design_scan_windows(_context(scan_window_eig_mode="authoritative"))
+    shadow = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    assert [candidate.candidate_id for candidate in authoritative.candidates] == [
+        candidate.candidate_id for candidate in shadow.candidates]
+    assert authoritative.selected_candidate.candidate_family == FAMILY_LEGACY_UNIFORM
     with pytest.raises(ValueError, match="scan_window_eig_mode must be one of"):
         _context(scan_window_eig_mode="on")
 
@@ -591,6 +637,33 @@ def test_candidate_id_covers_the_grid_and_exposure_but_not_alias_provenance():
 
     payload = json.loads(json.dumps(candidate.to_dict()))
     assert payload["candidate_id"] == candidate.candidate_id
+
+
+def test_nominal_cost_must_be_the_product_it_claims_to_be():
+    # ``nominal_cost`` is folded into ``candidate_id`` and into the shadow pair fields, so a value
+    # that is not ``n_points * ncount`` forks candidate identity with nothing downstream to catch
+    # it.  Tampering must be refused even when the record re-mints its own id consistently.
+    candidate = design_scan_windows(_context()).selected_candidate
+    assert candidate.nominal_cost == candidate.n_points * candidate.ncount
+
+    with pytest.raises(ValueError, match="nominal_cost"):
+        replace(candidate, nominal_cost=1)
+    with pytest.raises(ValueError, match="nominal_cost must be an integer"):
+        replace(candidate, nominal_cost=True)
+
+    payload = candidate.to_dict()
+    payload["nominal_cost"] = {"kind": "point_neutrons", "value": 1}
+    # Re-mint the content address so the round-trip self-reproduction check cannot be what refuses.
+    forged = ScanDesignCandidate(
+        **{**{field.name: getattr(candidate, field.name)
+              for field in fields(candidate)}, "nominal_cost": candidate.nominal_cost})
+    payload["candidate_id"] = hashlib.sha256(canonical_json({
+        "candidate_schema": SCAN_DESIGN_CANDIDATE_SCHEMA,
+        **{**forged._content_dict(),
+           "nominal_cost": {"kind": "point_neutrons", "value": 1}},
+    }).encode("utf-8")).hexdigest()
+    with pytest.raises(ValueError, match="nominal_cost"):
+        ScanDesignCandidate.from_dict(payload)
 
 
 # ---- degenerate and clipped windows ----------------------------------------------------------
@@ -776,6 +849,36 @@ def test_target_core_needs_its_whole_core_while_anchors_may_lose_margin():
     assert (anchor.e_lo, anchor.e_hi) == pytest.approx((4.0, 6.6))
 
 
+def test_target_core_containment_is_judged_on_the_executed_grid_to_within_a_step():
+    """Containment is a promise about measured points, held to the grid's own resolution.
+
+    A sigma-dominated core [0.65, 9.35] with a 0.2 meV wire step: the span does not divide by the
+    step, so the instrument executes up to 9.25 and never lands exactly on the core's high edge.
+    That is arithmetic, not a missed measurement — a stepped grid cannot express an edge finer than
+    half a step, and the adapter rounds to nearest, so this is the *best* a core can be retained.
+    The candidate must survive.
+
+    This is the guard against re-tightening the gate.  Testing containment tighter than half a step
+    refused 46 % of sigma-dominated target cores in a 4000-case sweep (span 6·sigma against a step
+    of FWHM/4, where divisibility is accidental) for shortfalls no larger than 0.24 meV, while
+    catching nothing extra: real truncation is the domain clipping the core, which removes whole
+    points and is covered by ``test_target_core_needs_its_whole_core_while_anchors_may_lose_margin``.
+    """
+    inventory = design_scan_windows(_context(
+        scan_window_eig_mode="shadow", design_prediction_sigma_meV=1.45,
+        target_prediction_sigma_meV=1.45, energy_search_meV=(-2.0, 12.0)))
+
+    assert FAMILY_TARGET_CORE in _families(inventory)
+    core = next(c for c in inventory.candidates if c.candidate_family == FAMILY_TARGET_CORE)
+
+    # The shortfall is real and tolerated, not absent: the executed grid genuinely stops short of
+    # the requested high bound, which is why the gate must read `energies` rather than `e_hi`.
+    executed = core.grid.energies
+    assert max(executed) < core.e_hi
+    assert core.e_hi - max(executed) <= 0.5 * core.e_step
+    assert max(executed) == pytest.approx(9.25)
+
+
 def test_minimum_target_support_is_enforced_against_a_fallback_band_without_a_target_band():
     # No declared target_band: before the repair the support gate silently did not run at all, so a
     # window with three points anywhere near the prediction counted as a target measurement.
@@ -805,3 +908,39 @@ def test_a_declared_target_band_still_wins_over_the_fallback():
                   if r.candidate_family == FAMILY_TARGET_CORE).to_dict()["detail"]
     assert detail["support_band_source"] == "declared"
     assert detail["support_band_sigma"] == pytest.approx(0.05)
+
+
+def test_a_pre_canonical_encoding_still_loads_at_its_semantic_address(tmp_path, caplog):
+    """A ``main``-era artifact authenticates semantically but not byte-for-byte.
+
+    The writer changed from ``json.dump(..., indent=2)`` to canonical bytes; the content address is
+    the semantics, so every artifact the previous release wrote still authenticates. Rejecting them
+    turned an intact historical acquisition into a silent ``scan_design_provenance_invalid`` for
+    every shadow replay of a resumed workspace.
+    """
+    import logging
+
+    from isar.drive.acquisition.inventory import canonical_json
+    from isar.drive.acquisition.scan_design import load_scan_design_inventory
+
+    inventory = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    digest = inventory.content_hash()
+    path = tmp_path / "report" / "scan-design" / f"{digest}.json"
+    path.parent.mkdir(parents=True)
+    payload = json.loads(canonical_json(inventory.to_full_dict()))
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")   # the main-era encoding
+    assert hashlib.sha256(path.read_bytes()).hexdigest() != digest
+    reference = {"kind": "scan_design_inventory", "sha256": digest,
+                 "path": f"report/scan-design/{digest}.json"}
+
+    with caplog.at_level(logging.WARNING):
+        loaded = load_scan_design_inventory(reference, tmp_path)
+
+    assert loaded.content_hash() == digest
+    assert "legacy_artifact_encoding" in caplog.text
+
+    # Tampered semantics are still refused — the fallback is on encoding, not on content.
+    path.write_text(json.dumps({**payload, "selected_candidate_id": "tampered"}, indent=2),
+                    encoding="utf-8")
+    with pytest.raises(ValueError, match="content address is invalid"):
+        load_scan_design_inventory(reference, tmp_path)

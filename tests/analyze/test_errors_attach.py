@@ -167,3 +167,21 @@ def test_with_bayes_failure_keeps_frequentist_interval(monkeypatch):
     lo, _med, hi = wm["freq_interval"]
     assert lo <= fit.omega0 <= hi
     assert wm["agreement"].bayes_available is False   # a failed posterior is not used in the cross-check
+
+
+def test_a_failed_posterior_is_published_unavailable_and_keeps_the_frequentist_semantics(monkeypatch):
+    """The end-to-end half of the §5.4 fallback: the failed diagnostic used to be published as an
+    AVAILABLE interval of nan, and its missing prior fingerprint wiped the whole semantics record
+    along with the valid bootstrap entry beside it."""
+    ctx = _ctx()
+    hyp, fit = _fitted(ctx)
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior",
+                        lambda *a, **k: _canned_bayes(converged=False,
+                                                      omega0_interval=(float("nan"),) * 3))
+    attach(fit, hyp, ctx, M=40, seed=2, with_bayes=True)
+    semantics = fit.within_model["interval_semantics"]
+    assert semantics is not None, "an optional Bayesian failure must not erase the whole record"
+    assert semantics["quantities"]["freq_interval"]["availability"] is True
+    bayes = semantics["quantities"]["bayes_interval"]
+    assert bayes["availability"] is False
+    assert bayes["failure_reason"] is not None

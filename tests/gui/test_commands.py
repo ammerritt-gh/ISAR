@@ -237,16 +237,16 @@ def test_build_drive_command_goal_only_defaults_are_minimal():
                    "--workspace", r"D:\ws\exp1"]
 
 
-def test_build_drive_command_spec_with_budget_seed_maxiters_token():
-    opts = DriveOptions(spec_path=r"D:\obj\spec.json", budget="8h", seed=7, max_iters=25,
+def test_build_drive_command_spec_with_budget_seed_token():
+    opts = DriveOptions(spec_path=r"D:\obj\spec.json", budget="8h", seed=7,
                         control_token="abc123")
     cmd = commands.build_drive_command("py", "ws", opts)
     assert cmd[:6] == ["py", "-m", "isar", "drive", "--spec", r"D:\obj\spec.json"]
     assert cmd[cmd.index("--workspace") + 1] == "ws"
     assert cmd[cmd.index("--budget") + 1] == "8h"
     assert cmd[cmd.index("--seed") + 1] == "7"
-    assert cmd[cmd.index("--max-iters") + 1] == "25"
     assert cmd[cmd.index("--control-token") + 1] == "abc123"
+    assert "--max-iters" not in cmd                  # budgets are the only stop conditions
     assert "--goal" not in cmd and "--resume-latest" not in cmd
 
 
@@ -299,6 +299,23 @@ def test_build_drive_command_defaults_omit_optional_flags():
         assert flag not in cmd
 
 
+def test_authoritative_mode_is_emitted_only_for_authoring_sources():
+    authored = commands.build_drive_command(
+        "py", "ws", DriveOptions(goal="g", scan_window_eig_mode="authoritative"))
+    assert authored[authored.index("--scan-window-eig-mode") + 1] == "authoritative"
+    resumed = commands.build_drive_command(
+        "py", "ws", DriveOptions(resume_latest=True, scan_window_eig_mode="authoritative"))
+    assert "--scan-window-eig-mode" not in resumed
+
+
+def test_authoritative_compile_binds_the_ready_workspace():
+    cmd = commands.build_compile_command(
+        "py", DriveOptions(goal="g", scan_window_eig_mode="authoritative"), "frozen.json",
+        workspace="ready-ws")
+    assert cmd[cmd.index("--workspace") + 1] == "ready-ws"
+    assert cmd[cmd.index("--scan-window-eig-mode") + 1] == "authoritative"
+
+
 def test_build_drive_command_requires_exactly_one_source():
     import pytest
     # Zero sources → ValueError.
@@ -309,12 +326,6 @@ def test_build_drive_command_requires_exactly_one_source():
         commands.build_drive_command("py", "ws", DriveOptions(goal="g", resume_latest=True))
     with pytest.raises(ValueError):
         commands.build_drive_command("py", "ws", DriveOptions(goal="g", spec_path="s.json"))
-
-
-def test_build_drive_command_max_iters_zero_is_rejected():
-    import pytest
-    with pytest.raises(ValueError):
-        commands.build_drive_command("py", "ws", DriveOptions(goal="g", max_iters=0))
 
 
 # ---- source fingerprint (must match the CLI's campaign_start sha256) ---------

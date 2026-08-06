@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the append-only ruling ledger; IDs are stable citation anchors (D2, D4)
 > **Provenance:** hand-written
-> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Verified against code revision:** `9d77631` (2026-08-04)
 
 Append-only ledger of design rulings. IDs are stable citation anchors (D2). Started at the
 2026-07-09 design review; each ruling is final unless explicitly reopened; "future" means
@@ -927,6 +927,388 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   stamping is transport and choosing a background would be a scientific decision the loop has no
   business making. References: T2 (same-interface backend rule), T3, P4,
   `docs/BACKGROUND_DESIGN.md` "TAVI prerequisite (landed)".
+
+- **S6.** (2026-07-29, Implemented; amends S1 and S5 without changing their legacy authority)
+  **Every decision-bearing statistical object now has an optional, producer-owned semantics record;
+  authority is named by use, never asserted once for the object.** STAT-1 is metadata-only. It changes
+  no fit, constraint value, likelihood, AIC/AICc/BIC value, Akaike weight, survivor, interval,
+  calibration, verdict, certification result, stop, action, acquisition, or EIG calculation.
+
+  The pure `isar/schema/statistics.py` seam defines four v1 records:
+  `isar.fit_selection_semantics/1`, `isar.interval_semantics/1`,
+  `isar.probability_semantics/1`, and `isar.predictive_semantics/1`. It owns controlled vocabulary,
+  strict writer and tolerant legacy-reader validation, finite canonical-JSON SHA-256 fingerprints,
+  compact CSV projections, and scoped authority. Full fit records persist in `session.json`; compact
+  projections are appended to the frozen `results.csv` columns; predictive and projection sidecars
+  keep full records. `unknown_legacy` is reader-only. Missing or invalid producer provenance emits
+  `semantics_construction_failed` and leaves semantics unavailable without suppressing or changing
+  the scientific result. New authority consumers must abstain on absent or unsupported semantics.
+
+  Effective constraints now carry per-parameter origin. Candidate semantics distinguish
+  data-likelihood, soft-penalized, and hard-conditioned estimates; record the candidate-generation
+  route; and fingerprint the offered, scored, Akaike-denominator, error-attachment, and legacy-pool
+  model sets separately. Effective soft constraints, data-dependent/post-selection hard constraints,
+  and prespecified/prior-predictive hard constraints are labeled selection-ineligible under their
+  respective reasons. Ordinary AIC nevertheless continues to score them until STAT-2 separates
+  comparable selection fits from constrained delivery fits and resolves AIC versus AICc.
+
+  Interval metadata is producer-owned: HESSE, unconstrained/penalized/conditional profile,
+  unconstrained/penalized/conditional parametric bootstrap, legacy Akaike-weighted bootstrap pool,
+  and optimizer-bound nested intervals are distinct measures. `confidence` is a heuristic triage
+  score; branch assignment is a normalized assignment-score distribution; tracker weights are
+  normalized factor-graph scores; every entropy names its state space and source measure. Existing
+  field names and thresholds remain unchanged.
+
+  Current nested output is classified as a Bayesian posterior under an
+  `optimizer_bound_data_dependent` prior kernel, with
+  `posterior_measure_kind=posterior_resample`, `evidence_comparable=false`, and
+  `bayesian_model_average=false`. A current `isar.master_predictive/2` artifact records its actual
+  per-model nested/bootstrap/Laplace particle basis, has `formal_bayesian_model=false`, and is always
+  design-ineligible because `/2` permits heterogeneous fallback. `predictive_complete_for_eig` and
+  `construction_complete` mean construction completeness only. The mixed `model_interval` remains
+  active for `legacy_master_certification`, `stopping`, and diagnostic display, but is explicitly
+  ineligible for EIG and acquisition. It remains conditional on target-present retained models;
+  target-presence aggregation is deferred to STAT-4a.
+
+  STAT-1 does not bump `PREDICTIVE_CONTRACT`, alter numerical `predictive_basis_fingerprint`, backfill
+  cached masters, or join semantics-bearing references into scientific/cache/tracking/action
+  identities. STAT-2 must introduce or bump the selection contract used by both the master-fit cache
+  fingerprint and the unchanged-master carry gate. STAT-3 refuses pre-STAT-2 or semantics-incomplete
+  inputs when constructing the homogeneous
+  `akaike_weighted_parametric_bootstrap_predictive` shadow artifact. A workspace cannot enter EIG-3
+  by carrying a pre-STAT-1 cached artifact. EIG-3 remains blocked on STAT-2, STAT-3, and STAT-4a and is
+  shadow-only after those gates; certification repair, target-presence support, scan-window scoring,
+  and acquisition authority are outside this ruling.
+
+- **S7.** (2026-07-29, Implemented; amends S6)
+  **STAT-1 semantics identities prove their stated comparison context, and interval authority is
+  attached to the realized delivery rather than producer capability.** This STAT-1.5 repair is
+  metadata-only: it changes no fit, likelihood, information criterion, weight, interval value,
+  verdict, certification result, stop, action, cache contract, acquisition, or EIG calculation.
+
+  Candidate fit records now publish distinct `data_likelihood_fingerprint`,
+  `model_parameterization_fingerprint`, `constraint_fingerprint`, and
+  `comparison_context_fingerprint` values. The data identity includes observed counts, fitted
+  energy grid, mask, exposure normalization, fixed likelihood context, and the Baker–Cousins
+  revision. The parameterization identity includes component structure, parameter names, bounds,
+  fixed values, and effective parameter count. `conditioning_fingerprint` remains an additive
+  compatibility alias for the complete comparison-context identity rather than the former
+  constraint-only hash.
+
+  Every offered, scored, Akaike-denominator, error-attachment, and legacy-pool identity is now a
+  sorted set of structured model/context records. The complete selection identity also includes the
+  canonical candidate-generation route, each candidate's full fit semantics, criterion inputs, and
+  aggregate `selection_eligibility` with all structured contributing reasons. Merely permuting
+  candidate order cannot change these fingerprints. Data-dependent or post-selection conditioning
+  is the strongest candidate-level constraint defect; an incomparable data-likelihood context is
+  the strongest selection-level defect.
+
+  Interval records separately retain `producer_authority_scopes` and realized
+  `authority_scopes`. The latter is recomputed after the delivery ladder, branch triage, and
+  connected-tracker selection or withholding. A selected reliable bootstrap, certifiable profile,
+  or trusted HESSE interval can carry active delivery/stopping authority; a flagged bootstrap,
+  unselected profile, untrusted HESSE result, or withdrawn scalar delivery cannot.
+
+  Recognized predictive/projection semantics are self-authenticated on read by recomputing
+  `statistical_semantics_fingerprint`; the strict `isar.master_predictive/2` reader additionally
+  checks the artifact-level reference and every per-model semantics record against the authenticated
+  ensemble. Absence remains accepted for legacy numerical use and unavailable to later semantics
+  authority. The master interval records both the particle measure actually present and that the
+  `/2` contract permits heterogeneous fallback; an accidentally homogeneous artifact remains
+  design-ineligible until STAT-3 supplies the homogeneous contract.
+
+  The metadata identity firewall is pinned through result-content hashing, master revision and fit
+  cache inputs, tied model ordering, branch-track revision and assignments, calibration lookup,
+  predictive numerical identity, stopping, action fingerprints, and the deterministic campaign
+  harness. `PREDICTIVE_CONTRACT` and the unchanged-master carry gate remain unchanged. With these
+  repairs landed, the descriptive STAT-1 contract is complete enough for STAT-2 to begin enforcing
+  selection eligibility.
+
+- **S8.** (2026-08-02, In force; no production behavior change)
+  **STAT-2b.1 held-out disposition: retain AIC and withhold an AICc switch.** The completed sealed
+  STAT-2b.1 campaign is accepted as valid evidence under its frozen decision gate. It found no
+  reproducible practical basis for replacing production AIC with AICc. Production model selection
+  therefore remains on AIC.
+
+  This ruling does not declare AIC, the current candidate-generation route, or the current
+  constrained-delivery selection path ideal or fully calibrated. The held-out evidence leaves
+  difficult-regime, comparison-completeness, RMSE, missed-mode, and false-certification problems
+  open for continuing statistical work.
+
+  No AICc switch is authorized. S8 does not authorize STAT-2c or any production-selection authority
+  change; STAT-2c remains pending a separate owner decision. The continuing selection and
+  error-method program may address the open problems without blocking the separately bounded EIG-4
+  workstream established by O36.
+
+- **O36.** (2026-08-02, Planned; amends the milestone naming in T1 and T2 without changing their
+  validation requirements) **Restricted same-action EIG may proceed before the full statistical and
+  phenomenon-generalization programs are complete.** EIG-4 is the current SVP. Its first authority
+  is frozen to a clean, already-confirmed target at an already-selected scientific action and Q,
+  using canonical target production or confirmation only. It compares `legacy_uniform/1` as the
+  control with `target_core/1` as the possible narrower winner at equal per-point exposure.
+
+  The objective is conditional target-QoI information per executed point. A narrower scan may
+  contain less total target-QoI information; absolute-information noninferiority is not required.
+  Authority requires paired uncertainty to resolve superiority in information per executed point.
+  An unresolved comparison does not authorize `target_core/1`.
+
+  `legacy_uniform/1` is the control for the first eligible same-action comparison, not the universal
+  safety or recovery scan. An ineligible EIG state returns control to the existing non-EIG design and
+  recovery path without EIG altering its choice. That path may choose the legacy window, a
+  broad/recovery window, or another already-established action-specific behavior.
+
+  EIG must not choose or change Q, scientific action, target identity, fit model, hypothesis,
+  physical constraint, interval method, certification rule, or model-selection authority.
+  Target-presence, model-identity, and branch-identity information may be calculated but remain
+  diagnostics-only for this first authority. Current production AIC weights remain the input source;
+  the held-out campaign did not validate those weights.
+
+  A later change that alters the EIG design measure, model weights, particle semantics, QoI
+  projection, or eligibility basis must change the affected fingerprints. Earlier shadow or
+  authority evidence is then non-reusable until the changed path is re-evaluated.
+
+  The scorer core consumes a generic QoI projection. Its first adapter exposes
+  `qoi_id = "excitation.energy"` and `qoi_unit = "meV"`; the scorer core must not import or branch
+  on `PhononDHO`, phonon classes, acoustic/optic labels, `omega0`, or DHO parameter names. This is a
+  bounded local fit-model comparison at one already-selected Q. Phenomenon-level information transfer
+  across Q and energy, a phenomenon registry, continuum framework, magnon implementation, and a full
+  model refactor are post-SVP. This documents a future seam; it introduces no runtime interface here.
+
+  O36 amends the milestone naming in both T1 and T2. T1's backend-validation ladder and T2's
+  realistic-clock requirement remain required, but are backend-runtime and fidelity-validation rungs,
+  not the current SVP definition. Historical evidence and filenames remain unchanged.
+
+- **O37.** (2026-08-03, Implemented in the Slice 5 offline comparison contract; does not amend O36)
+  **Slice 5 distinguishes exactly scoped scientific policy from diagnostic discovery and grants no
+  acquisition authority.** A distinction policy is hand-authored scientific intent, matched only to
+  the completed decision context and policy provenance it declares. Discovery has no global
+  distinction scale: completed variants remain separate diagnostics, and their identities and refusal
+  reasons must not be collapsed into an inferred scientific class.
+
+  The first supported conditional target-QoI compiler is
+  `isar.scalar_absolute_partitions/o36.5`. That is a bounded scoring mechanism, not a universal
+  model of phenomena, branches, continua, or discovery.
+  Slice 5 may transform coherent completed `off` decisions into `shadow` counterfactual diagnostics,
+  compare only `legacy_uniform/1` with `target_core/1` at equal per-point exposure, and report
+  `target_core_minus_legacy`. Candidate-pair or exposure mismatches are refusals, never substitutions
+  or normalized estimates.
+
+  Strict loaders must reject missing, malformed, stale, mismatched, or incoherent completed
+  artifacts. The established retained evidence basis has 12 reviewed roots, 233 master rows, and
+  230 pooled outcomes, but zero authenticated predictive `/2` plus projection evidence; zero
+  Slice 5-ready comparisons are therefore expected until a runner establishes otherwise. A retained
+  corpus with zero ready comparisons is a truthful result of the narrow contract, not permission to
+  broaden it. Slice 5 has `eig_shadow = diagnostic` only:
+  `eig_authoritative` and `acquisition_selection` remain ineligible. It creates no scored inventory,
+  recommendation, request, or execution authority; Slice 6 remains the planned separately gated
+  scored-shadow-inventory step.
+
+- **O38.** (2026-08-03, Implemented in the Slice 6 scored-shadow inventory contract; does not grant
+  Slice 7 or authoritative selection) **A live shadow comparison authenticates one exact completed
+  source master, scores only `legacy_uniform/1` versus `target_core/1`, and always executes the
+  legacy control.** The proposal carries an in-memory source reference naming the atomic master
+  session key, detector, master revision, predictive/projection artifacts, selection identities,
+  and source acquisition provenance. The adapter resolves only those references; a same-Q or newer
+  master is never a substitute.
+
+  New inventories use `isar.scan_design_inventory/3` with a mandatory shadow envelope. `off` records
+  `not_requested`; `shadow` records complete, partial, or unavailable diagnostic evidence and chooses
+  the scored/unscored legacy-control basis accordingly. Every basis still selects the unique legacy
+  candidate. `isar.scan_design_candidate/2` and historical inventory `/2` remain unchanged; retained
+  Slice 5.1 artifacts are not migrated or reminted.
+
+  Policy authoring is human-owned card content, compiled against the non-recursive current campaign
+  configuration scope before campaign start. Frozen objectives are self-contained and carry the
+  authenticated policy set plus the separately fingerprinted `isar.scan_window_shadow_scoring_config/o36.6`.
+  Card/goal defaults are 128 simulations, eight blocks, and at most eight runtime variants. Explicit
+  frozen specs may reduce the simulation count within the validated bounds, but runtime policy and
+  variant limits are always enforced before acquisition begins.
+
+  The pure scorer evaluates the exact legacy and target-core predictive grids once each, reuses those
+  results across supported policy variants, and preserves the Slice 4 paired orientation alongside a
+  normalized target-core-minus-legacy diagnostic. Its seed is the signed-63-bit prefix of SHA-256 over
+  the scoring-configuration, design-measure, and candidate-pair identities in the
+  `isar.scan_window_shadow_seed/o36.6` domain. Complete or partial evidence grants only
+  `eig_shadow = diagnostic`; every selection scope remains ineligible.
+
+  Live scoring occurs between action selection and request finalization under a fixed five-second
+  soft allowance charged to the cumulative analysis clock. Deadline, local analysis-limit, and
+  unexpected failures persist valid unavailable evidence and fail open to the same legacy request;
+  they never catch process interrupts. Realization clamps run afterward and do not relabel the
+  pre-finalization comparison. Slice 7 realized-request rescoring, thresholds, winners,
+  recommendations, and authoritative selection remain planned and forbidden in Slice 6 evidence.
+
+- **O39.** (2026-08-03, Implemented compatibility and provenance correction to O38) **An omitted
+  `scan_window_eig` block in a frozen `isar.objective/2` means the authenticated no-policy default
+  scoring configuration; it does not authorize card supplementation, and exact-master shadow
+  provenance does not rewrite the proposal's established evidence identity.** Slice 6 added the
+  top-level block without minting an objective `/3`, so the `/2` reader accepts historical omission
+  and materializes `ScanWindowEIGConfig()` (128 simulations, eight blocks, eight runtime variants,
+  no policy). New serialization always emits the complete frozen block. Explicit null, malformed
+  records, unknown fields, and card authoring or binding markers still refuse. Full spec, envelope,
+  and resume inputs remain self-contained; a historical `shadow` objective with no policy therefore
+  produces an unscored legacy control, never a card-derived score.
+
+  The proposal-wide `authoritative_evidence_revision` retains the pre-Slice transition-first fallback
+  chain because it participates in finalized request identity. The in-memory
+  `ShadowScoringSource.action_provenance`, by contrast, records the exact selected completed master's
+  `master_revision` (or null) used by Slice 2 eligibility. These are deliberately separate meanings:
+  a transition revision preserves off/shadow request parity, while the exact master revision prevents
+  same-Q, later-master, or cross-revision substitution in diagnostic scoring.
+
+  The scan-design layer owns only lightweight `isar.schema.eig_shadow` records; strict scored `/3`
+  reads invoke numerical EIG validation lazily. Pair refusal precedence is degenerate alias, exact
+  target-generator refusal, missing family, ambiguous family, exposure mismatch, then remaining pair
+  invalidity, all before prediction. Incomplete Slice 4 variants may retain fingerprinted nonnumeric
+  `score_refusal_evidence`, omitted otherwise for payload compatibility. The five-second allowance is
+  cooperative: a deadline check immediately after a synchronous scorer return discards that raw score
+  set and marks the current and remaining variants unavailable without changing the legacy request.
+
+- **O40.** (2026-08-04, Implemented in the EIG-4 Slice 7 realized-comparison contract; does not grant
+  Slice 8 evidence eligibility or authoritative selection) **Every shadow submission binds the exact
+  adapter-realized legacy request and an equal-per-point-exposure target-core counterfactual to one
+  diagnostic comparison sidecar.** The immutable Slice 6 `/3` inventory remains the planned-pair
+  record. After initial finalization, execution-time finalization, and any minimum-target-support step
+  reduction, Slice 7 constructs the pair through isolated copies of the existing finalizer. The target
+  starts at the finalized legacy `ncount`; any final exposure change is a structured refusal. Adapter
+  point counts govern budget and request identity, and historical designed-span coarsening that still
+  exceeds the live cap refuses rather than clamping, switching algorithms, or submitting.
+
+  `isar.scan_design_realized_comparison/o36.7` is the sole independently persisted Slice 7 artifact.
+  Its nested realized request/pair/variant/seed records bind source inventory and shadow identities,
+  rendered commands, ordered executed grids, request/grid fingerprints, score disposition, and
+  diagnostic-only authority. Exact identity/grid/exposure parity reuses authenticated Slice 6 variant
+  evidence; any change evaluates and scores the complete pair together under the distinct
+  `isar.scan_window_realized_seed/o36.7` domain. Rescored variants nest the existing
+  `isar.scan_window_score_set/o36.5` internals. A cumulative five-second in-memory allowance covers all
+  Slice 7 refreshes for one proposal, separately from Slice 6's five seconds; worst-case shadow work can
+  therefore approach ten seconds. A forced pre-submit refresh consumes only the remaining Slice 7
+  allowance.
+
+  Physical submissions and acquisition provenance carry seven realized fields: five identities
+  (comparison reference and fingerprint, ordered variant fingerprints, selected request fingerprint,
+  and selected grid fingerprint), applicability, and invalidation reason. Returned TAVI energies must
+  have ordered adapter-canonical equality with the recorded tuple after representation normalization,
+  not raw floating-point bit equality;
+  `executed_grid_mismatch` invalidates later authority evidence without blocking ordinary analysis.
+  Missed-window recovery retains the parent sidecar reference but clears realized variant/request/grid
+  claims and records `eig_realization_invalidated_by_recovery`. Missing or unauthenticated recovery
+  sidecars log `realized_comparison_unavailable` and never block recovery, rescore, or search for
+  replacement evidence. Refresh/persistence failure or failed pre-submit authentication after one
+  forced refresh removes all five current EIG identities and leaves ordinary legacy execution
+  available. `isar.scan_design_realization/1` is additive-open, so readers ignore unknown additive
+  fields. Shadow mode still always executes `legacy_uniform/1`; thresholds, winners, recommendations,
+  target-core execution, and authoritative selection remain forbidden. Slice 8 remains explicitly
+  planned.
+
+- **S9.** (2026-08-03, In force; governance and evidence-maintenance rule, no production behavior
+  change) **Completed STAT-2b.1 execution evidence is immutable, while current production source
+  closure is maintained through an explicitly approved candidate cycle.** The historical held-out
+  gate, evaluator identity, and committed aggregate are authenticated and replayed at their frozen
+  identities; they are never refreshed to make current source pass. Current production closure is a
+  separate manifest rooted at an approved production anchor.
+
+  Protected-semantic drift requires selection or evidence-contract review and proportionate proof.
+  Protected-adjacent drift requires bounded source review and focused parity. A repository-local
+  dependency newly reached from the protected boundary is unclassified until reviewed; only a
+  dependency incapable of affecting that path may be recorded as unrelated and exempt. The whole
+  `isar/session/driver.py` remains protected as the high-churn selection-critical owner until any
+  authority-seam extraction is separately reviewed.
+
+  A mismatch may remain visible while an in-flight branch updates its closure record, but it must be
+  closed before that statistical slice or containing PR merges. Candidate construction and passing
+  verification never grant approval. Promotion requires explicit owner review of the complete
+  boundary, exemptions, classifications, and candidate fingerprint, followed by a separate minimal
+  approval commit that changes no protected production source or immutable review evidence.
+
+  S9 does not amend S8: production remains AIC, no AICc switch is authorized, difficult-regime
+  findings remain open, and neither STAT-2c nor another statistical campaign is authorized. O40
+  separately authorizes EIG-4 Slice 7 without changing those statistical dispositions.
+
+- **O41.** (2026-08-04, In force; owner acceptance of the EIG-4 Slice 8 V3 evidence and
+  authorization to implement Slice 9 only; no production behavior change) **The coherent bounded
+  shadow gate is sufficient to implement the restricted authoritative selector, but it does not
+  itself make authoritative runtime available.** Owner acceptance binds the passed
+  `isar.eig4_slice8_gate_result/o36.8.2` V3 result with fingerprint
+  `f6fd65ddf1aca48443d31727c5a81aeddc6b6bfea0eccb5020d8f55ef3b38f8f`. Its positive authority
+  envelope contains exactly one clean case, `s8-c01-strong-confirmed`; this is deliberately narrow
+  evidence, not a general phenomenon claim.
+
+  Within the frozen O36 envelope, an eligible comparison may select `target_core/1` only when all
+  authenticated structural and execution joins hold and target-core-minus-legacy information per
+  executed point satisfies `delta - 2 * paired_SE > 0`. The multiplier is a pragmatic engineering
+  margin, not calibrated 95% coverage. An eligible unresolved or inferior comparison retains
+  `legacy_uniform/1`. An ineligible state takes the existing non-EIG design/recovery path rather than
+  treating the legacy comparison control as a universal recovery rule.
+
+  Stale, malformed, unauthenticated, or adapter-grid-mismatched evidence has no EIG authority.
+  Slice 9 must preserve the established unavailable-evidence and fallback behavior, including the
+  rule that a grid mismatch cannot authorize either candidate. This ruling authorizes implementation
+  and review of Slice 9 only: `authoritative` setup must continue to refuse with
+  `scan_window_eig_authoritative_unavailable` until that selector lands and receives separate owner
+  review. It authorizes no Slice 10 demonstration, additional campaign, STAT rerun, broader
+  statistical claim, or production change in this documentation-only acceptance commit.
+
+- **O43.** (2026-08-05, In force; owner ruling during EIG-4 completion; reverses the acting half of
+  the O41/`2ea22c8` margin gate) **The scan-window choice is a symmetric comparison on information
+  per neutron, and ties are broken by cost, not by retaining the survey.** Neither candidate
+  justifies itself against the other. `per_point_ncount_equal` is already a structural
+  precondition, so the persisted per-executed-point delta *is* a per-neutron delta up to a fixed
+  constant: its sign is the comparison. A positive sign selects `target_core/1`; a negative sign
+  selects `legacy_uniform/1` as a real answer about that q rather than as a fallback.
+
+  `O41_MARGIN_SE_MULTIPLE` (3.0, unchanged, and still persisted as
+  `margin_standard_error_multiple`) becomes the two-sided half-width of the band in which the two
+  candidates are indistinguishable. Inside that band, and equally when the two partition offsets
+  select opposite roles, the comparison expresses no preference — so the smaller purchase wins.
+  The structural preconditions guarantee the target core executes strictly fewer points at equal
+  per-point exposure, so at an equal information *rate* the legacy scan buys proportionally more
+  of the same thing for proportionally more beam, and the smaller buy reaches the next decision
+  sooner while the peak estimate is still moving.
+
+  **What this deliberately gives up.** `2ea22c8` installed the three-sigma floor and the per-offset
+  agreement rule precisely to refuse the R1-E margins of ~1.7e-5 nats/point that changed role
+  between the two 0.5 meV offsets. Those cases are now acted on. The evidence for accepting that:
+  across the twelve scored decisions of the repaired R3 cold start
+  (`test_workspaces/O41_R3_Bragg200`) the 17-point core was **never worse per neutron** than the
+  79-152 point legacy scan — the delta was non-negative in all twelve, three were exact ties at
+  delta = 0.0 with standard error 0.0, and two refusals rested on offset disagreement at 4.2 and
+  202.6 standard errors. Nine of twelve were refused. Under this ruling all twelve select the core.
+
+  **What now carries the risk.** A narrow scan centred on a wrong peak cannot discover it was
+  wrong, and an information margin never protected against that. Identity confirmation does, and it
+  is already upstream and unchanged: O36 eligibility refuses an unconfirmed target, a fork
+  modality, or a pool-inconsistent master before this comparison is reached. Codes
+  `o41_offset_disagreement`, `o41_margin_below_floor` and `o41_margin_not_decisive` remain computed
+  and persisted as descriptions of a decision; they no longer veto one. New codes
+  `o41_tie_resolved_by_cost` and `o41_legacy_decisive` name the two outcomes this ruling adds.
+
+- **O44.** (2026-08-05, In force; owner ruling after the A11 campaign) **An acoustic branch has no
+  measurable target at the reduced-q origin, and the campaign must know that from its geometry
+  rather than discover it from failed fits.** For an acoustic branch ω(q→0) → 0, so at the zone
+  centre the excitation is degenerate with the elastic line and nothing separable exists to measure,
+  however many neutrons are spent. That q is therefore not precision-coverage eligible from the
+  first iteration, on the branch type and the tracker's published `reduced_q_origin_index` alone.
+
+  This is **branch-conditional, not origin-conditional.** An optic branch has a finite ω at the zone
+  centre and is perfectly measurable there — often preferentially — so the exemption keys on the
+  target branch. What changes is precisely one thing: that q stops being a *branch target* the
+  controller schedules and must certify. Calibration paths are untouched by this ruling and are not
+  claimed to schedule it either; if an acoustic campaign is ever required to measure its own elastic
+  reference at the zone centre, that is a separate acquisition concern to be designed, not something
+  this exemption silently provides.
+
+  **Why the existing exemption was not enough.** `branch_tracking` already retires the origin once a
+  linear fit through resolved neighbours can infer the intercept, marking it `inferred_unresolved`.
+  That is earned late and only if the fit passes. Until then, fitting a DHO at the zone centre
+  returns a centre with an error bar thousands of times larger than itself — measured at
+  ω₀ = 0.485 meV ± 2065 meV on A11 — which classifies as a *confirmed* identity rather than an
+  unresolved one, so the campaign never earns the exemption and keeps returning. Measured waste:
+  **19 of 60 scans in A11 (32%), 122 of 163 in the R3 cold-start baseline (75%), and 152 of 193 in
+  its repeat (79%)**, against a constant 41 scans of useful work on the other twenty q in all three.
+
+  Consequence for the stop contract: an acoustic campaign's "N measurable grid q converged" now
+  excludes the origin, so N is one lower than the path length. That is the honest count.
 
 ## Session status update
 

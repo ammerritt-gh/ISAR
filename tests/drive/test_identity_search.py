@@ -115,7 +115,7 @@ def test_the_compiler_records_who_chose_each_band():
     supplied = spec_from_dict({
         "q_start": [2.0, 0.0, 0.0], "q_end": [3.0, 0.0, 0.0], "step_rlu": 0.1,
         "tolerance_meV": 0.5, "budget_neutrons": 1e12,
-        "target_branch": "acoustic", "energy_search_meV": [-2.0, 7.0]})
+        "target_branch": "acoustic", "energy_search_meV": [-9.0, 9.0]})
     assert supplied.target_search_source == "operator"
 
     defaulted = spec_from_dict({

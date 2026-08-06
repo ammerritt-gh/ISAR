@@ -4,6 +4,7 @@ The mock isar runner is the analysis boundary stand-in: it reads the saved scan 
 ``report/results.csv`` exactly as ISAR would, so the loop exercises the real readers, real σ-calibration,
 real acquisition, and real stopping — only the fitting and the instrument are faked.
 """
+import collections
 import csv
 import json
 import math
@@ -36,6 +37,7 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
                              _run_nonce, _target_supporting_feasible_points, _validate_body,
                              run_campaign)
 from isar.drive.acquisition.acquire import ScanProposal, points_in_window
+from isar.drive.acquisition.grid_adapters import TAVI_GRID_ADAPTER
 from isar.drive.acquisition.eig import counts_eig
 from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
 from isar.drive.instrument.tavi_client import TaviError
@@ -665,10 +667,17 @@ def test_campaign_summary_persists_hypothesis_mismatch_not_just_a_log(monkeypatc
 
 
 def _parse_grid(scan_command):
+    """The exact point list TAVI executes for a ``scan_command1``.
+
+    Goes through the production grid adapter rather than reimplementing the arithmetic: TAVI counts
+    ``floor((hi - lo) / step + 0.5) + 1`` on the ``%g``-rendered wire values, and a truncating
+    ``int((hi - lo) / step) + 1`` here disagrees by a point on windows whose span is a hair under a
+    whole number of steps — which would silently mis-align every feasibility mask a mock builds.
+    """
     _, lo, hi, step = scan_command.split()
     lo, hi, step = float(lo), float(hi), float(step)
-    n = int((hi - lo) / step) + 1
-    return [lo + step * i for i in range(n)]
+    return list(TAVI_GRID_ADAPTER.executed_energies(
+        lo, step, TAVI_GRID_ADAPTER.point_count(lo, hi, step)))
 
 
 def _counts_at(grid, peak):
@@ -1322,14 +1331,49 @@ def test_campaign_certify_pass_uses_bayes_tier_when_flag_set(tmp_path):
     assert "full" not in tiers_seen
 
 
-def _objective(tol=0.5, amount=1e13):
+# The driver has no iteration cap — the budget is the only stop condition — so a test campaign is
+# bounded by its neutron budget. ~2e11 funds a few tens of scans against the mock instrument: enough
+# for every behaviour these tests exercise, and short enough that a campaign which never converges
+# (a deliberately unreachable tolerance, a repeatedly refused window) still ends in seconds.
+def _objective(tol=0.5, amount=2e11):
     return ObjectiveSpec.along_h(h_start=2.1, h_end=2.4, step=0.1, tolerance_meV=tol,
                                  budget={"kind": "neutrons", "amount": amount}, name="mvp")
 
 
-def _run(tmp_path, objective, client, runner, **extra):
+_SCAN_BOUND_TOKEN = "scan-bound"
+
+
+def _stop_after_scans(client, workspace, count):
+    """Arm a cooperative operator stop once ``count`` requests have been validated.
+
+    The loop has no iteration cap, so a test that only needs the campaign's first request bounds it
+    the way an operator does — a stop file honoured at the next iteration boundary. The in-flight
+    iteration still completes (submit -> wait -> persist -> analyze), so the first submission is
+    fully recorded. Armed on ``validate`` rather than ``wait_scan`` because every realized request
+    is validated, including one the instrument then refuses.
+    """
+    control = Path(workspace) / "report" / "control"
+    original = client.validate
+    seen = {"n": 0}
+
+    def validate(body):
+        seen["n"] += 1
+        if seen["n"] >= count:
+            control.mkdir(parents=True, exist_ok=True)
+            (control / f"stop-{_SCAN_BOUND_TOKEN}.json").write_text(
+                json.dumps({"requested_by": "test", "reason": "scan bound"}), encoding="utf-8")
+        return original(body)
+
+    client.validate = validate
+    return client
+
+
+def _run(tmp_path, objective, client, runner, *, stop_after=None, **extra):
     ws = tmp_path / "ws"
     (ws / "report").mkdir(parents=True, exist_ok=True)
+    if stop_after is not None:
+        _stop_after_scans(client, ws, stop_after)
+        extra.setdefault("control_token", _SCAN_BOUND_TOKEN)
     cfg = {"workspace": ws, "client": client, "run_isar": runner, "calibration": _UNITY_CAL,
            "resolution": {"fwhm_dE": 0.8}, "seed": 7, **extra}
     return run_campaign(objective, cfg), ws
@@ -1503,7 +1547,7 @@ def test_certification_regression_automatically_acquires_and_recertifies(
         return observations, True
 
     monkeypatch.setattr(loop_mod, "_certify", widen_first_certification)
-    monkeypatch.setattr(loop_mod, "_predictive_escalation_candidate", lambda *_args: None)
+    monkeypatch.setattr(loop_mod, "_predictive_promotion_target", lambda *_args: None)
     summary, ws = _run(tmp_path, _objective(), MockTavi(omega), runner)
 
     assert summary["stop"]["state"] == "met"
@@ -1536,7 +1580,7 @@ def test_certification_retry_stops_when_provisional_basis_did_not_change(
         tmp_path, _objective(), MockTavi(omega), make_mock_runner(omega))
 
     # One predictive full-fit escalation legitimately changes the basis and permits a second check;
-    # the unchanged second basis is then stopped rather than spinning through max_iters.
+    # the unchanged second basis is then stopped rather than spinning on unchanged evidence.
     assert len(certification_calls) == 2
     assert summary["stop"]["state"] == "incomplete"
     assert "without a changed scientific state" in summary["stop"]["reasons"][0]
@@ -1673,7 +1717,7 @@ def test_optic_campaign_tracks_target_amid_acoustic_distractor_deterministically
             energy_search_meV=(-2.0, 12.0), **frozen)
         client = BranchAwareOpticTavi(lambda _h: 0.0)
         summary, workspace = _run(
-            root, objective, client, make_branch_aware_optic_runner(objective), max_iters=60)
+            root, objective, client, make_branch_aware_optic_runner(objective))
         events = read_log(summary["session_log"])
         proposals = [event["payload"] for event in events if event["kind"] == "propose"]
         return summary, proposals, workspace
@@ -1753,7 +1797,7 @@ def test_optic_campaign_with_supplied_energy_runs_nearest_selector(tmp_path, mon
 
     summary, _workspace = _run(
         tmp_path, objective, BranchAwareOpticTavi(lambda _h: 0.0),
-        make_branch_aware_optic_runner(objective), max_iters=40)
+        make_branch_aware_optic_runner(objective))
     proposals = [event["payload"] for event in read_log(summary["session_log"])
                  if event["kind"] == "propose"]
     assert proposals[0]["e_lo"] < 6.1 < proposals[0]["e_hi"]
@@ -1799,6 +1843,7 @@ def test_minimum_target_support_adjustment_records_realized_request(tmp_path):
     frozen["steering"] = {
         **frozen["steering"],
         "minimum_target_support_points": 80,
+        "scan_window_eig_mode": "shadow",
     }
     frozen["hypothesis_fingerprint"] = content_fingerprint(
         frozen["hypotheses"], frozen["steering"])
@@ -1810,12 +1855,12 @@ def test_minimum_target_support_adjustment_records_realized_request(tmp_path):
         energy_search_meV=(-2.0, 12.0),
         **frozen,
     )
-    summary, _ws = _run(
+    summary, _workspace = _run(
         tmp_path,
         objective,
         _TargetSupportTavi(lambda _h: 6.0),
         make_mock_runner(lambda _h: 6.0),
-        max_iters=1,
+        stop_after=1,
     )
     events = read_log(summary["session_log"])
     realization = next(
@@ -1836,6 +1881,512 @@ def test_minimum_target_support_adjustment_records_realized_request(tmp_path):
     assert realization["context_fingerprint"]
     assert realization["n_points"] == validation["requested_points"]
     assert validation["target_supporting_feasible_points"] < 80
+    comparisons = [event["payload"] for event in events
+                   if event["kind"] == "scan_design_realized_comparison"]
+    assert len(comparisons) >= 2
+    assert comparisons[-1]["request_fingerprint"] == realization["request_fingerprint"]
+
+
+_INFEASIBLE_POINTS_BODY = json.dumps({"error": {
+    "code": "infeasible_points",
+    "message": "One or more requested scan points are infeasible",
+}})
+
+
+class _PartialFeasibilityTavi(MockTavi):
+    """A TAVI with a hard low-energy cutoff: below it the scattering triangle does not close.
+
+    The cutoff is pinned, on the first request seen, just above that request's lowest energy — the
+    real 2026-08-04 geometry, where exactly the ΔE = −10 meV edge point at Q = 2.7 was unreachable.
+    It is an *energy* threshold, not an index, so a trimmed grid is genuinely feasible.
+
+    Validation reports the partial manifest TAVI really sends, and ``submit_scan`` refuses any grid
+    that still contains an infeasible point with the same HTTP 400 the instrument returns — the
+    failure that cost that campaign every one of its scans.
+    """
+
+    def __init__(self, omega_true):
+        super().__init__(omega_true)
+        self.min_feasible_energy: float | None = None
+        self.validated_grids: list[list[float]] = []
+
+    def _mask(self, grid):
+        return [energy >= self.min_feasible_energy for energy in grid]
+
+    def validate(self, body):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        if self.min_feasible_energy is None:
+            self.min_feasible_energy = grid[0] + 0.5 * (grid[1] - grid[0])
+        self.validated_grids.append(grid)
+        mask = self._mask(grid)
+        return {"would_queue": True, "blockers": [], "eta": {"estimated_seconds": 5.0},
+                "requested_points": len(grid), "feasible_points": sum(mask),
+                "planned_feasible_mask": mask, "partial": not all(mask),
+                "point_manifest": [{"feasible": feasible, "values": {"deltaE": energy}}
+                                   for feasible, energy in zip(mask, grid)]}
+
+    def submit_scan(self, body, idempotency_key=None):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        if not all(self._mask(grid)):
+            raise TaviError(400, "POST /scan -> HTTP 400", _INFEASIBLE_POINTS_BODY)
+        return super().submit_scan(body, idempotency_key=idempotency_key)
+
+
+class _FirstPointInfeasibleTavi(MockTavi):
+    """Pathological instrument: whatever grid it is handed, its FIRST point is infeasible.
+
+    Trimming can never converge here, which is exactly the case the one-trim-per-proposal bound
+    exists for.
+    """
+
+    def validate(self, body):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        mask = [index > 0 for index in range(len(grid))]
+        return {"would_queue": True, "blockers": [], "eta": {"estimated_seconds": 5.0},
+                "requested_points": len(grid), "feasible_points": sum(mask),
+                "planned_feasible_mask": mask, "partial": True}
+
+    def submit_scan(self, body, idempotency_key=None):
+        raise AssertionError("a partially-infeasible grid must never be submitted")
+
+
+class _SingleFeasiblePointTavi(MockTavi):
+    """Only one point of any requested grid is reachable — below the trim floor, so undoable."""
+
+    def validate(self, body):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        mask = [index == 0 for index in range(len(grid))]
+        return {"would_queue": True, "blockers": ["a2_out_of_range"],
+                "eta": {"estimated_seconds": 5.0},
+                "requested_points": len(grid), "feasible_points": 1,
+                "planned_feasible_mask": mask, "partial": True}
+
+    def submit_scan(self, body, idempotency_key=None):
+        raise AssertionError("a one-point window must never be submitted")
+
+
+class _InfeasibleAtSubmitTavi(MockTavi):
+    """Validation says the grid is fine; the instrument then refuses it as partially infeasible."""
+
+    def submit_scan(self, body, idempotency_key=None):
+        raise TaviError(400, "POST /scan -> HTTP 400", _INFEASIBLE_POINTS_BODY)
+
+
+class _ExecutedGridMismatchTavi(MockTavi):
+    """An instrument that executes one point fewer than the grid it was handed."""
+
+    def get_scan_data(self, job_id):
+        document = super().get_scan_data(job_id)
+        result = document["result"]
+        result["scan_values_1"] = result["scan_values_1"][:-1]
+        result["counts"] = result["counts"][:-1]
+        return document
+
+
+class _TargetOutsideLongestRunTavi(MockTavi):
+    """The reachable stretch and the physics are in different places.
+
+    A wide high-energy band is reachable while the peak sits in a short low-energy island, so
+    maximizing run length alone would submit a long, cheap, perfectly feasible scan of nothing.
+    """
+
+    def __init__(self, omega_true, *, island_half_width=0.4, gap=2.0):
+        super().__init__(omega_true)
+        self.island_half_width = float(island_half_width)
+        self.gap = float(gap)
+        self.masks: list[list[bool]] = []
+
+    def _mask(self, grid, peak):
+        # A short island around the peak, then an infeasible gap, then everything above is reachable
+        # — so the longest run is the high-energy band that cannot see the excitation at all.
+        return [abs(energy - peak) <= self.island_half_width or energy >= peak + self.gap
+                for energy in grid]
+
+    def validate(self, body):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        mask = self._mask(grid, self.omega_true(body["parameters"]["H"]))
+        self.masks.append(mask)
+        if all(mask):
+            return super().validate(body)
+        return {"would_queue": True, "blockers": [], "eta": {"estimated_seconds": 5.0},
+                "requested_points": len(grid), "feasible_points": sum(mask),
+                "planned_feasible_mask": mask, "partial": True}
+
+    def submit_scan(self, body, idempotency_key=None):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        if not all(self._mask(grid, self.omega_true(body["parameters"]["H"]))):
+            raise TaviError(400, "POST /scan -> HTTP 400", _INFEASIBLE_POINTS_BODY)
+        return super().submit_scan(body, idempotency_key=idempotency_key)
+
+
+class _TargetUnreachableTavi(MockTavi):
+    """Only energies far above the peak are reachable — no run can see the excitation."""
+
+    def __init__(self, omega_true, *, reachable_above):
+        super().__init__(omega_true)
+        self.reachable_above = float(reachable_above)
+
+    def validate(self, body):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        mask = [energy >= self.reachable_above for energy in grid]
+        if all(mask) or not any(mask):
+            return {"would_queue": bool(all(mask)), "blockers": [] if all(mask) else ["infeasible"],
+                    "eta": {"estimated_seconds": 5.0},
+                    "requested_points": len(grid), "feasible_points": sum(mask),
+                    "planned_feasible_mask": mask}
+        return {"would_queue": True, "blockers": [], "eta": {"estimated_seconds": 5.0},
+                "requested_points": len(grid), "feasible_points": sum(mask),
+                "planned_feasible_mask": mask, "partial": True}
+
+    def submit_scan(self, body, idempotency_key=None):
+        # A window the ladder later re-centred entirely into the reachable band is fully feasible
+        # and legitimately submittable; only a partially-infeasible grid is refused, as TAVI does.
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        if not all(energy >= self.reachable_above for energy in grid):
+            raise TaviError(400, "POST /scan -> HTTP 400", _INFEASIBLE_POINTS_BODY)
+        return super().submit_scan(body, idempotency_key=idempotency_key)
+
+
+class _NotQueueablePartialTavi(MockTavi):
+    """A transient refusal (full queue) that happens to carry a partial feasibility mask."""
+
+    def __init__(self, omega_true):
+        super().__init__(omega_true)
+        self.validated_windows: list[tuple[float, float]] = []
+
+    def validate(self, body):
+        grid = _parse_grid(body["parameters"]["scan_command1"])
+        _axis, lo, hi, _step = body["parameters"]["scan_command1"].split()
+        self.validated_windows.append((round(float(lo), 6), round(float(hi), 6)))
+        mask = [index > 0 for index in range(len(grid))]
+        return {"would_queue": False, "blockers": ["queue_full: 10 of 10 jobs pending"],
+                "eta": {"estimated_seconds": 5.0},
+                "requested_points": len(grid), "feasible_points": sum(mask),
+                "planned_feasible_mask": mask, "partial": True}
+
+    def submit_scan(self, body, idempotency_key=None):
+        raise AssertionError("a refused validation must never reach submit")
+
+
+def _shadow_objective():
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "shadow"}
+    frozen["hypothesis_fingerprint"] = content_fingerprint(
+        frozen["hypotheses"], frozen["steering"])
+    return ObjectiveSpec(
+        path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e12}, target_branch="optic",
+        energy_search_meV=(-2.0, 12.0), **frozen)
+
+
+def test_a_partially_infeasible_window_is_trimmed_and_submitted(tmp_path):
+    """The repair. TAVI reported 54 of 55 points feasible, the loop submitted the full grid anyway,
+    the instrument 400'd it, and the campaign executed zero scans. A partially-reachable window is
+    now trimmed to its largest contiguous feasible run and submitted."""
+    omega = lambda _h: 6.0
+    client = _PartialFeasibilityTavi(omega)
+    summary, _workspace = _run(
+        tmp_path, _shadow_objective(), client, make_mock_runner(omega), stop_after=1)
+    events = read_log(summary["session_log"])
+
+    assert client.jobs, "the trimmed grid must reach the instrument"
+    requested = client.validated_grids[0]
+    submitted = _parse_grid(
+        next(iter(client.jobs.values()))["parameters"]["scan_command1"])
+    assert min(submitted) > client.min_feasible_energy, \
+        "the infeasible edge energy is still in the submitted grid"
+    assert len(submitted) == len(requested) - 1
+
+    trim = next(event["payload"] for event in events if event["kind"] == "feasibility_trim")
+    assert trim["dropped_point_count"] == 1
+    assert trim["old_e_lo"] == pytest.approx(requested[0])
+    assert trim["new_e_lo"] == pytest.approx(requested[1])
+    # The trimmed bounds are the feasible run's own endpoints, so e_hi lands on the last *emitted*
+    # energy rather than the designed ceiling the emitted grid never reached.
+    assert trim["new_e_hi"] == pytest.approx(requested[-1])
+    assert trim["old_e_hi"] >= requested[-1]
+    assert trim["feasible_run"][0] == 1
+    assert trim["planned_feasible_mask"][0] is False
+
+    realization = next(
+        event["payload"] for event in events
+        if event["kind"] == "scan_design_realization"
+        and event["payload"].get("adjustment") == "validation_feasibility_trim")
+    assert realization["previous_request_fingerprint"] != realization["request_fingerprint"]
+    assert realization["e_lo"] == pytest.approx(trim["new_e_lo"])
+
+    # The request that was finally validated is the request that was submitted.
+    intent = next(event["payload"] for event in events
+                  if event["kind"] == "submission_intent")
+    validations = [event["payload"] for event in events if event["kind"] == "validate"]
+    assert validations[-1]["request_fingerprint"] == intent["proposal_fingerprint"]
+    assert validations[-1]["feasible_points"] == validations[-1]["requested_points"]
+
+    # Partial infeasibility must never cost the hkl.
+    assert not [event for event in events if event["kind"] == "action_suppressed"
+                and event["payload"]["scope"] == "geometry"]
+
+
+def test_a_window_with_one_feasible_point_is_declined_not_trimmed(tmp_path):
+    """A one-point window is a degenerate window and the instrument 400s it, so the trim floor must
+    decline rather than manufacture an unusable scan — but only request-scoped: a shifted window at
+    the same q may still be fully measurable, so the hkl must not be condemned as geometry."""
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, _workspace = _run(
+        tmp_path, _objective(), _SingleFeasiblePointTavi(omega), make_mock_runner(omega))
+    events = read_log(summary["session_log"])
+
+    assert not [event for event in events if event["kind"] == "feasibility_trim"]
+    below = [event["payload"] for event in events if event["kind"] == "exception"
+             and event["payload"].get("action") == "feasible_run_below_minimum"]
+    assert below, "a sub-minimum feasible run must be recorded"
+    assert below[0]["reason"] == "largest_feasible_run_below_minimum"
+    assert below[0]["feasible_run_points"] == 1
+    suppressed = [event["payload"] for event in events if event["kind"] == "action_suppressed"]
+    assert suppressed and suppressed[0]["verdict"] == "validation_rejected"
+    assert all(event["payload"].get("scope") != "geometry" for event in events
+               if event["kind"] == "action_suppressed")
+
+
+def test_a_second_partial_verdict_after_a_trim_refuses_only_the_request(tmp_path):
+    """One trim per proposal. An instrument whose answer never converges must cost the request, not
+    the hkl, and must not spin the loop."""
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, _workspace = _run(
+        tmp_path, _objective(), _FirstPointInfeasibleTavi(omega), make_mock_runner(omega),
+        stop_after=2)
+    events = read_log(summary["session_log"])
+
+    assert [event for event in events if event["kind"] == "feasibility_trim"]
+    assert [event["payload"] for event in events if event["kind"] == "exception"
+            and event["payload"].get("action") == "feasibility_trim_did_not_converge"]
+    suppressed = [event["payload"] for event in events if event["kind"] == "action_suppressed"]
+    assert suppressed, "the refused request must be recorded"
+    assert {entry["scope"] for entry in suppressed} == {"request"}
+    assert {entry["verdict"] for entry in suppressed} == {"validation_rejected"}
+    assert summary["stop"]["state"] in {"met", "incomplete", "operator_stopped"}
+
+
+def test_infeasible_points_at_submit_costs_the_request_not_the_hkl(tmp_path):
+    """The backstop for a manifest that did not localize: the campaign records the refusal and keeps
+    going instead of aborting on an unhandled TaviError."""
+    omega = lambda h: (h - 2.0) * 2.0
+    summary, _workspace = _run(
+        tmp_path, _objective(), _InfeasibleAtSubmitTavi(omega), make_mock_runner(omega),
+        stop_after=2)
+    events = read_log(summary["session_log"])
+
+    refusals = [event["payload"] for event in events if event["kind"] == "exception"
+                and event["payload"].get("action") == "infeasible_points_at_submit"]
+    assert refusals and refusals[0]["severity"] == "high"
+    suppressed = [event["payload"] for event in events if event["kind"] == "action_suppressed"]
+    assert suppressed
+    assert {entry["scope"] for entry in suppressed} == {"request"}
+    assert {entry["verdict"] for entry in suppressed} == {"infeasible_points_at_submit"}
+    assert summary["stop"]["state"] in {"met", "incomplete", "operator_stopped"}
+    rejection = loop_mod.classify_rejection("infeasible_points_at_submit")
+    assert rejection.scope == "request"
+    assert rejection.rejection_class.value == "structural"
+
+
+def test_the_trim_keeps_the_run_containing_the_target_not_the_longest_one(tmp_path):
+    """A trim that only maximizes run length can submit a long, cheap, feasible scan of nothing.
+
+    Repro shape from review: the peak sits at 6 meV in a short low-energy island while a wide band
+    above it is reachable. The kept window must be the island."""
+    omega = lambda _h: 6.0
+    client = _TargetOutsideLongestRunTavi(omega)
+    summary, _workspace = _run(
+        tmp_path, _shadow_objective(), client, make_mock_runner(omega), stop_after=1)
+    events = read_log(summary["session_log"])
+
+    trim = next(event["payload"] for event in events if event["kind"] == "feasibility_trim")
+    assert trim["run_selection"] == "contains_target"
+    assert trim["new_e_lo"] <= trim["target_energy"] <= trim["new_e_hi"]
+    # The rejected alternative: a longer, entirely feasible, entirely useless high-energy window.
+    mask = client.masks[0]
+    assert sum(mask) - (trim["feasible_run"][1] - trim["feasible_run"][0] + 1) > 0, \
+        "the repro needs a longer feasible run outside the target island"
+    assert client.jobs, "the trimmed window must still be submitted"
+    submitted = _parse_grid(next(iter(client.jobs.values()))["parameters"]["scan_command1"])
+    assert submitted[0] <= 6.0 <= submitted[-1], \
+        "the submitted window dropped the excitation it exists to measure"
+
+
+def test_a_window_whose_reachable_runs_all_miss_the_target_is_declined(tmp_path):
+    """No reachable stretch can see the peak, so there is nothing worth submitting here — and the
+    refusal is request-scoped, leaving the widen/re-center ladder open at that q."""
+    omega = lambda _h: 6.0
+    summary, _workspace = _run(
+        tmp_path, _shadow_objective(), _TargetUnreachableTavi(omega, reachable_above=11.0),
+        make_mock_runner(omega))
+    events = read_log(summary["session_log"])
+
+    excluded = [event["payload"] for event in events if event["kind"] == "exception"
+                and event["payload"].get("action") == "feasible_run_excludes_target"]
+    assert excluded, "a window that cannot see the target must say so"
+    assert excluded[0]["reason"] == "no_feasible_run_overlaps_the_declared_target"
+    assert not [event for event in events if event["kind"] == "feasibility_trim"]
+    suppressed = [event["payload"] for event in events if event["kind"] == "action_suppressed"]
+    assert suppressed and {entry["scope"] for entry in suppressed} == {"request"}
+
+
+def test_a_transient_refusal_carrying_a_partial_mask_does_not_move_the_window(tmp_path):
+    """A full queue is not a geometry statement. Trimming on it would rewrite the request while
+    answering none of the actual blocker, and lose the original window in the process."""
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _NotQueueablePartialTavi(omega)
+    summary, _workspace = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+    events = read_log(summary["session_log"])
+
+    assert not [event for event in events if event["kind"] == "feasibility_trim"]
+    assert not [event for event in events if event["kind"] == "exception"
+                and event["payload"].get("action") in {"feasible_run_below_minimum",
+                                                       "feasible_run_excludes_target",
+                                                       "feasibility_trim_did_not_converge"}], \
+        "a transient refusal must take the ordinary validation-rejected path"
+    assert not client.jobs
+    # No window the instrument saw differs from a window the planner proposed: nothing was mutated.
+    proposed = {(round(event["payload"]["e_lo"], 6), round(event["payload"]["e_hi"], 6))
+                for event in events if event["kind"] == "propose"}
+    assert proposed
+    assert client.validated_windows, "the campaign must still have validated something"
+    assert set(client.validated_windows) <= proposed
+    verdicts = {event["payload"]["verdict"] for event in events
+                if event["kind"] == "action_suppressed"}
+    assert verdicts == {"validation_rejected"}
+
+
+def test_a_trimmed_then_declined_request_does_not_re_emit_next_iteration(tmp_path):
+    """The trim re-fingerprints the proposal, so a decline afterwards charges only the trimmed
+    request. Without also charging the pre-trim original the selector re-emits it every iteration
+    and repeats trim -> decline forever."""
+    omega = lambda h: (h - 2.0) * 2.0
+    client = _FirstPointInfeasibleTavi(omega)
+    summary, _workspace = _run(tmp_path, _objective(), client, make_mock_runner(omega))
+    events = read_log(summary["session_log"])
+
+    trims = [event["payload"] for event in events if event["kind"] == "feasibility_trim"]
+    assert trims, "the first partial verdict must still trim"
+    suppressed = [event["payload"] for event in events if event["kind"] == "action_suppressed"]
+    assert suppressed
+    charged = [entry for entry in suppressed if entry["superseded_request_fingerprints"]]
+    assert charged, "the pre-trim request must be charged alongside the trimmed one"
+    for entry in charged:
+        assert entry["request_fingerprint"] not in entry["superseded_request_fingerprints"]
+    # The churn signature is the SAME pre-trim REQUEST coming back. A different request at the same
+    # q — a wider window, a production escalation — is the ladder doing its job and stays allowed.
+    charged_fingerprints = {value for entry in suppressed
+                            for value in entry["superseded_request_fingerprints"]}
+    pre_trim = collections.Counter(entry["previous_request_fingerprint"] for entry in trims)
+    assert max(pre_trim.values()) == 1, \
+        f"a declined request was re-emitted and re-trimmed: {pre_trim}"
+    assert set(pre_trim) <= charged_fingerprints, \
+        "every trimmed-then-declined original must be suppressed, or it re-emits next iteration"
+
+
+def test_suppression_rebuild_recovers_superseded_request_fingerprints(tmp_path):
+    """Resume rebuilds suppression from the log, so the superseded original has to survive there."""
+    log_path = tmp_path / "session.jsonl"
+    log_event(log_path, "action_suppressed", {
+        "scope": "request", "verdict": "validation_rejected", "rejection_class": "structural",
+        "reason": "validation_rejected at hkl=[2.1, 0.0, 0.0]",
+        "request_fingerprint": "b" * 64,
+        "superseded_request_fingerprints": ["a" * 64],
+        "hkl": [2.1, 0.0, 0.0], "iter": 1})
+    _by_action, _by_hkl, by_request = loop_mod.suppressed_actions(log_path)
+    assert set(by_request) == {"a" * 64, "b" * 64}
+
+
+def test_feasibility_shaped_refusal_recognises_geometry_and_nothing_else():
+    assert loop_mod._is_feasibility_shaped_refusal({"blockers": ["a2_out_of_range"]})
+    assert loop_mod._is_feasibility_shaped_refusal(
+        {"blockers": ["physical_infeasible", "scattering triangle does not close"]})
+    assert not loop_mod._is_feasibility_shaped_refusal(
+        {"blockers": ["limit_exceeded: queue neutron budget exceeded"]})
+    # Mixed verdicts fail closed: one non-geometry blocker is enough to leave the window alone.
+    assert not loop_mod._is_feasibility_shaped_refusal(
+        {"blockers": ["a2_out_of_range", "queue_full"]})
+    assert not loop_mod._is_feasibility_shaped_refusal({"blockers": []})
+
+
+def test_select_feasible_run_prefers_the_target_and_refuses_a_blind_window():
+    energies = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+    manifest = {"planned_feasible_mask": [True, False, True, True, True, True]}
+    # A one-point island containing the target beats a four-point run that does not.
+    assert loop_mod._select_feasible_run(
+        manifest, energies, target_energy=0.0, acceptance=(-0.5, 0.5)) == ((0, 0),
+                                                                          "contains_target")
+    # No target declared → longest run, unchanged behaviour for survey/legacy proposals.
+    assert loop_mod._select_feasible_run(
+        manifest, energies, target_energy=None, acceptance=None) == ((2, 5), "longest")
+    # Target in the infeasible gap and the longest run does not reach it → refuse.
+    assert loop_mod._select_feasible_run(
+        manifest, energies, target_energy=1.0, acceptance=(0.9, 1.1)) == (None, "target_excluded")
+    # Same target, but the acceptance interval reaches the feasible run → longest run is enough.
+    assert loop_mod._select_feasible_run(
+        manifest, energies, target_energy=1.0, acceptance=(0.5, 2.5)) == ((2, 5), "longest")
+
+
+def test_largest_feasible_run_refuses_a_manifest_that_does_not_match_the_request():
+    """A mask of the wrong length describes a different grid; trimming against it would move the
+    window to the wrong energies, so it must read as 'no localization'."""
+    assert loop_mod._largest_feasible_run({"planned_feasible_mask": [True] * 4}, 5) is None
+    assert loop_mod._largest_feasible_run(
+        {"feasible_segments": [{"start_index": 1, "end_index": 9}]}, 5) is None
+    assert loop_mod._largest_feasible_run({"planned_feasible_mask": [False] * 5}, 5) is None
+    assert loop_mod._largest_feasible_run({}, 5) is None
+    # Longest run wins, and the segment form agrees with the mask form.
+    assert loop_mod._largest_feasible_run(
+        {"planned_feasible_mask": [True, False, True, True, True]}, 5) == (2, 4)
+    assert loop_mod._largest_feasible_run(
+        {"feasible_segments": [{"start_index": 2, "end_index": 4}]}, 5) == (2, 4)
+
+
+def test_shadow_submission_carries_the_exact_selected_legacy_sidecar(tmp_path):
+    frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
+    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "shadow"}
+    frozen["hypothesis_fingerprint"] = content_fingerprint(
+        frozen["hypotheses"], frozen["steering"])
+    objective = ObjectiveSpec(
+        path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
+        budget={"kind": "neutrons", "amount": 1e12}, target_branch="optic",
+        energy_search_meV=(-2.0, 12.0), **frozen)
+
+    # An instrument that executes a grid other than the one it was handed. Previously this test got
+    # its mismatch for free from a mock helper whose point count disagreed with the adapter; that
+    # accident is fixed, so the misbehaving instrument is now declared on purpose.
+    summary, workspace = _run(
+        tmp_path, objective, _ExecutedGridMismatchTavi(lambda _h: 6.0),
+        make_mock_runner(lambda _h: 6.0), stop_after=1)
+    events = read_log(summary["session_log"])
+    submission = next(event["payload"] for event in events
+                      if event["kind"] == "physical_submission")
+    from isar.drive.acquisition.realized_comparison import (
+        load_scan_design_realized_comparison,
+    )
+    comparison = load_scan_design_realized_comparison(
+        submission["scan_design_realized_comparison_ref"], workspace)
+
+    assert submission["proposal_fingerprint"] == submission[
+        "scan_design_realized_selected_request_fingerprint"]
+    assert submission["proposal_fingerprint"] == comparison.selected_request_fingerprint
+    assert submission["scan_design_realized_selected_grid_fingerprint"] == (
+        comparison.selected_grid_fingerprint)
+    assert submission["scan_design_realized_comparison_fingerprint"] == (
+        comparison.realized_comparison_fingerprint)
+    assert submission["scan_design_realized_variant_fingerprints"] == list(
+        comparison.realized_variant_fingerprints)
+    from isar.schema.card import Card
+    provenance = Card.load(
+        workspace / "card.policy.toml", workspace / "card.state.json"
+    ).state.acquisition_provenance[-1]
+    assert provenance["scan_design_realized_selected_grid_fingerprint"] == (
+        comparison.selected_grid_fingerprint)
+    assert provenance["scan_design_executed_grid_status"] == "mismatch"
+    assert any(event["kind"] == "exception"
+               and event["payload"].get("action") == "executed_grid_mismatch"
+               for event in events)
 
 
 def test_missed_window_triggers_recenter(tmp_path):
@@ -1845,7 +2396,7 @@ def test_missed_window_triggers_recenter(tmp_path):
     omega = lambda h: 9.0
     client = MockTavi(omega)
     summary, ws = _run(tmp_path, _objective(), client,
-                       make_mock_runner(omega, window_gate=True), max_iters=60)
+                       make_mock_runner(omega, window_gate=True))
     events = read_log(summary["session_log"])
     recenters = [e for e in events if e["kind"] == "exception"
                  and e["payload"].get("action") == "recenter"]
@@ -1903,6 +2454,63 @@ def test_missed_window_triggers_recenter(tmp_path):
             "scan_design_context_fingerprint"]
 
 
+def test_missed_window_point_limit_refuses_recovery_without_resubmitting(
+        tmp_path, monkeypatch):
+    original_finalize = loop_mod._finalize_proposal
+    original_invalidate = loop_mod._invalidate_realized_comparison_for_recovery
+    original_declined = loop_mod._declined_observation
+    declined = []
+
+    def seed_and_invalidate(proposal):
+        proposal.meta["scan_design_realized_comparison_ref"] = {
+            "kind": "isar.scan_design_realized_comparison/1",
+            "path": "report/eig/parent.json",
+        }
+        proposal.meta["scan_design_realized_comparison_fingerprint"] = "f" * 64
+        original_invalidate(proposal)
+
+    def refuse_invalidated_recovery(proposal, *args, **kwargs):
+        if (proposal.meta or {}).get("scan_design_eig_applicability") == "invalidated":
+            raise loop_mod.InstrumentPointLimitExceeded(
+                "instrument_point_limit_exceeded: recovery remains above the live cap")
+        return original_finalize(proposal, *args, **kwargs)
+
+    def capture_decline(proposal, verdict):
+        declined.append((verdict, dict(proposal.meta or {})))
+        return original_declined(proposal, verdict)
+
+    monkeypatch.setattr(loop_mod, "_finalize_proposal", refuse_invalidated_recovery)
+    monkeypatch.setattr(
+        loop_mod, "_invalidate_realized_comparison_for_recovery", seed_and_invalidate)
+    monkeypatch.setattr(loop_mod, "_declined_observation", capture_decline)
+    client = MockTavi(lambda _h: 9.0)
+    summary, _workspace = _run(
+        tmp_path, _objective(), client,
+        make_mock_runner(lambda _h: 9.0, window_gate=True))
+    submissions = [event["payload"] for event in read_log(summary["session_log"])
+                   if event["kind"] == "physical_submission"]
+    first_acquisition = submissions[0]["acquisition_id"]
+
+    assert sum(item["acquisition_id"] == first_acquisition for item in submissions) == 1
+    verdict, meta = next(item for item in declined
+                         if item[0] == "instrument_point_limit_exceeded")
+    assert verdict == "instrument_point_limit_exceeded"
+    assert meta["scan_design_eig_applicability"] == "invalidated"
+    assert meta["scan_design_eig_invalidation_reason"] == (
+        "eig_realization_invalidated_by_recovery")
+    assert meta["scan_design_realized_comparison_ref"]
+    assert meta["scan_design_realized_comparison_fingerprint"]
+    assert not any(meta.get(field) is not None for field in (
+        "scan_design_realized_variant_fingerprints",
+        "scan_design_realized_selected_request_fingerprint",
+        "scan_design_realized_selected_grid_fingerprint",
+    ))
+    assert any(event["kind"] == "exception"
+               and event["payload"].get("action") == "instrument_point_limit_exceeded"
+               and event["payload"].get("phase") == "missed_window_recovery"
+               for event in read_log(summary["session_log"]))
+
+
 def test_missed_window_elastic_refusal_widening_preserves_design_lineage(tmp_path):
     client = MockTavi(lambda _h: 0.0)
     summary, _ws = _run(
@@ -1910,7 +2518,6 @@ def test_missed_window_elastic_refusal_widening_preserves_design_lineage(tmp_pat
         _objective(),
         client,
         make_mock_runner(lambda _h: 9.0, window_gate=True),
-        max_iters=1,
     )
     events = read_log(summary["session_log"])
     realizations = [
@@ -2000,8 +2607,7 @@ def test_full_tier_promotion_logs_paired_escalate_fit_events(tmp_path):
     # repeat production. Each promotion must appear as a paired escalate_fit promote/outcome record.
     omega = lambda h: (h - 2.0) * 2.0
     client = MockTavi(omega)
-    summary, ws = _run(tmp_path, _objective(), client, make_untrusted_hesse_runner(omega),
-                       max_iters=80)
+    summary, ws = _run(tmp_path, _objective(), client, make_untrusted_hesse_runner(omega))
     events = read_log(summary["session_log"])
     esc = [e for e in events if e["kind"] == "escalate_fit"]
     promotes = [e for e in esc if (e["payload"] or {}).get("phase") == "promote"]
@@ -2036,8 +2642,7 @@ def test_full_tier_promotion_logs_paired_escalate_fit_events(tmp_path):
 def test_bayes_master_promotion_logs_actual_tier_and_outcome(tmp_path):
     omega = lambda h: (h - 2.0) * 2.0
     summary, _ws = _run(
-        tmp_path, _objective(), MockTavi(omega), make_untrusted_hesse_runner(omega),
-        max_iters=80, bayes_errors=True)
+        tmp_path, _objective(), MockTavi(omega), make_untrusted_hesse_runner(omega), bayes_errors=True)
     events = read_log(summary["session_log"])
     promoted = [event for event in events if event["kind"] == "escalate_fit"
                 and (event.get("payload") or {}).get("phase") == "promote"
@@ -2390,10 +2995,23 @@ class _RecoveryTavi(MockTavi):
         return {"job_id": job_id, "state": self.wait_state}
 
 
-def _recovery_config(ws, client, omega, *, max_iters=0):
+_RECOVERY_STOP_TOKEN = "recovery-bound"
+
+
+def _recovery_config(ws, client, omega):
+    """A campaign config that performs crash recovery and then acquires nothing.
+
+    The loop has no iteration cap to set to zero, so the bound is a cooperative operator stop that
+    is already present at the first iteration boundary — the supported way to say "recover, then
+    stop". Recovery itself runs before the loop, so every recovery event still appears.
+    """
+    control = Path(ws) / "report" / "control"
+    control.mkdir(parents=True, exist_ok=True)
+    (control / f"stop-{_RECOVERY_STOP_TOKEN}.json").write_text(
+        json.dumps({"requested_by": "test", "reason": "recover only"}), encoding="utf-8")
     return {"workspace": ws, "client": client, "run_isar": make_mock_runner(omega),
             "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8},
-            "seed": 7, "max_iters": max_iters}
+            "seed": 7, "control_token": _RECOVERY_STOP_TOKEN}
 
 
 def test_resume_reconstructs_analyzed_zero_rows_and_terminal_failure(tmp_path):
@@ -2490,7 +3108,7 @@ def test_resume_pending_recovery_never_submits_new_scan(
     client = _RecoveryTavi(
         body, state=state, wait_state=wait_state, unreachable=unreachable)
     summary = run_campaign(
-        _objective(), _recovery_config(ws, client, lambda _h: 0.2, max_iters=5))
+        _objective(), _recovery_config(ws, client, lambda _h: 0.2))
     assert summary["stop"]["state"] == "pending_recovery"
     assert client.submit_calls == 0
     assert client.wait_calls == (0 if unreachable else 1)
@@ -2658,8 +3276,13 @@ def test_emitted_point_count_is_unclamped():
     # The TRUE count TAVI computes from the command — NOT clamped to the acquisition budget (which
     # points_in_window is): a wide window with a tight step is exactly the over-limit case (the
     # documented 594-pt scan came from a widened window keeping a ~0.05 meV step).
+    from isar.drive.acquisition.scan_grid import MAX_POINTS
+
     assert _emitted_point_count(-2.0, 27.65, 0.05) > DEFAULT_MAX_POINTS   # ~594, unclamped
-    assert points_in_window(-2.0, 27.65, 0.05) == 100   # ledger clamp hides the true count
+    # The clamp value itself is a policy number and has moved; what this pins is that the ledger
+    # count IS clamped while the emitted count is not.
+    assert points_in_window(-2.0, 27.65, 0.05) == MAX_POINTS
+    assert _emitted_point_count(-2.0, 27.65, 0.05) > points_in_window(-2.0, 27.65, 0.05)
 
 
 def test_guard_clamps_over_limit_proposal_keeping_window(tmp_path):
@@ -2945,7 +3568,7 @@ def test_campaign_clamps_dynamic_400m_batch_and_publishes_limit_envelope(
 
     monkeypatch.setattr(loop_mod, "plan_actions", desired_400m)
     summary, _ws = _run(
-        tmp_path, _objective(), client, make_mock_runner(omega), max_iters=1)
+        tmp_path, _objective(), client, make_mock_runner(omega), stop_after=1)
     assert client.validated_ncounts == [100_000_000]
     assert client.submitted_ncounts == [100_000_000]
     events = read_log(summary["session_log"])
@@ -2981,8 +3604,7 @@ def test_validation_refusals_use_distinct_logical_acquisitions(tmp_path):
 
     client = _RejectingTavi()
     summary, _ws = _run(
-        tmp_path, _objective(), client, make_mock_runner(lambda h: (h - 2.0) * 2.0),
-        max_iters=20)
+        tmp_path, _objective(), client, make_mock_runner(lambda h: (h - 2.0) * 2.0))
     proposals = [e["payload"] for e in read_log(summary["session_log"])
                  if e["kind"] == "propose"]
 
@@ -2993,7 +3615,7 @@ def test_validation_refusals_use_distinct_logical_acquisitions(tmp_path):
                 for p in proposals]
     assert len(set(requests)) == len(requests), "an identical refused request is never re-emitted"
     assert len(proposals) < 20, "the iteration limit is no longer the guardrail"
-    assert summary["stop"]["terminal_cause"] == TERMINAL_CONTROLLER_FAULT
+    assert summary["stop"]["terminal_cause"] == loop_mod.TERMINAL_CONTROLLER_FAULT
     assert "no unsuppressed realization" in summary["stop"]["reasons"][0]
 
 
@@ -3010,7 +3632,7 @@ def test_campaign_never_submits_over_limit_scan(tmp_path):
     omega = lambda h: 9.0
     client = _StateTavi(omega, max_points=50)
     summary, ws = _run(tmp_path, _objective(), client,
-                       make_mock_runner(omega, window_gate=True), max_iters=40)
+                       make_mock_runner(omega, window_gate=True))
     assert client.submitted_cmds
     assert all(_cmd_points(c) <= 50 for c in client.submitted_cmds), \
         [(_cmd_points(c), c) for c in client.submitted_cmds if _cmd_points(c) > 50]
@@ -3042,7 +3664,7 @@ def test_campaign_submit_idempotency_key_contains_run_nonce(tmp_path):
 def test_submission_failure_finishes_with_terminal_summary_instead_of_sticking(tmp_path):
     omega = lambda h: (h - 2.0) * 2.0
     summary, _ws = _run(
-        tmp_path, _objective(), _SubmitFailingTavi(omega), make_mock_runner(omega), max_iters=1)
+        tmp_path, _objective(), _SubmitFailingTavi(omega), make_mock_runner(omega))
 
     assert summary["stop"]["state"] == "incomplete"
     assert any("instrument submission failed" in reason
@@ -3057,7 +3679,7 @@ def test_submission_failure_finishes_with_terminal_summary_instead_of_sticking(t
 def test_post_submission_failure_remains_pending_for_resume_recovery(tmp_path):
     omega = lambda h: (h - 2.0) * 2.0
     summary, _ws = _run(
-        tmp_path, _objective(), _WaitFailingTavi(omega), make_mock_runner(omega), max_iters=1)
+        tmp_path, _objective(), _WaitFailingTavi(omega), make_mock_runner(omega))
 
     assert summary["stop"]["state"] == "pending_recovery"
     assert any("press Resume" in reason for reason in summary["stop"]["reasons"])
@@ -3209,7 +3831,7 @@ def test_operator_stop_during_final_allowed_iteration_is_honored(tmp_path, monke
     client = _StopFileTavi(omega, ws, token)
     cfg = {"workspace": ws, "client": client, "run_isar": make_mock_runner(omega),
            "calibration": _UNITY_CAL, "resolution": {"fwhm_dE": 0.8}, "seed": 7,
-           "control_token": token, "max_iters": 1}
+           "control_token": token}
     summary = run_campaign(_objective(), cfg)
 
     assert summary["stop"]["state"] == "operator_stopped"
@@ -3217,7 +3839,7 @@ def test_operator_stop_during_final_allowed_iteration_is_honored(tmp_path, monke
     assert any(e["kind"] == "run" for e in events)              # the final iteration completed its scan
     acks = [e for e in events if e["kind"] == "decide"
             and (e.get("payload") or {}).get("event") == "operator_stop"]
-    assert len(acks) == 1 and acks[0]["payload"]["iter"] == 1   # the post-exhaustion boundary (== max_iters)
+    assert len(acks) == 1 and acks[0]["payload"]["iter"] == 1   # the next iteration boundary
     # Certification must not run on an operator stop, even on this path.
     assert not any((e.get("payload") or {}).get("event") == "certify_start"
                    for e in events if e["kind"] == "decide")
@@ -3226,27 +3848,21 @@ def test_operator_stop_during_final_allowed_iteration_is_honored(tmp_path, monke
     assert stops[0]["payload"]["state"] == "operator_stopped"
 
 
-# --------------------------------------------------------------------------- per-invocation max_iters
-def test_max_iters_restart_grants_fresh_cap(tmp_path):
-    # --max-iters is per invocation: each run_campaign restarts iteration numbering at zero (range over
-    # cfg.max_iters), so a second run with the same cap does MORE work rather than treating the cap as
-    # already exhausted. (Not "one run event per invocation" — a single iteration may submit several
-    # scans via recenter/widen retries.)
+# --------------------------------------------------------------------------- budget-bounded loop
+def test_counting_time_budget_terminates_a_neutron_unlimited_campaign(tmp_path):
+    # There is no iteration cap: with the neutron budget unset (unlimited by operator choice) the
+    # counting-time budget is the only thing that can stop an unconverged campaign, and it must.
     omega = lambda h: (h - 2.0) * 2.0
-    ws = tmp_path / "ws"
-    (ws / "report").mkdir(parents=True)
-    base = {"workspace": ws, "run_isar": make_mock_runner(omega), "calibration": _UNITY_CAL,
-            "resolution": {"fwhm_dE": 0.8}, "seed": 7, "max_iters": 1}
-    s1 = run_campaign(_objective(), dict(base, client=MockTavi(omega)))
-    runs1 = [e for e in read_log(s1["session_log"]) if e["kind"] == "run"]
-    assert runs1                                               # the first capped invocation did work
-    s2 = run_campaign(_objective(), dict(base, client=MockTavi(omega)))
-    runs2 = [e for e in read_log(s2["session_log"]) if e["kind"] == "run"]
-    assert len(runs2) > len(runs1)                            # the restart's fresh cap submitted more scans
-    # The restart resumed the prior spend ledger (didn't reset) and started a fresh campaign.
-    starts = [e for e in read_log(s2["session_log"])
-              if (e.get("payload") or {}).get("action") == "campaign_start"]
-    assert starts[-1]["payload"]["resumed"]["scan_counter"] == len(runs1)
+    objective = ObjectiveSpec.along_h(
+        h_start=2.1, h_end=2.4, step=0.1, tolerance_meV=0.001,       # never reachable
+        budget={"kind": "counting_seconds", "amount": 12.0},         # MockTavi bills 5 s per scan
+        name="time-bounded")
+    assert objective.budget["kind"] == "counting_seconds"            # no neutron limit anywhere
+    summary, _ws = _run(tmp_path, objective, MockTavi(omega), make_mock_runner(omega))
+    assert summary["stop"]["state"] == "incomplete"
+    assert any("budget exhausted" in reason for reason in summary["stop"]["reasons"]), \
+        summary["stop"]["reasons"]
+    assert summary["budget"]["spent"] >= 12.0
 
 
 # --------------------------------------------------------------------------- campaign_start fingerprint
@@ -3401,7 +4017,7 @@ def test_a_sole_refused_request_terminates_instead_of_being_re_emitted(tmp_path,
     ``validation_rejected``, ``insufficient_target_support`` and
     ``budget_insufficient_for_minimum_batch`` ever reach ``request_suppressions`` -- transient verdicts
     are scoped "none" and never recorded -- so every re-emission re-submitted a request the instrument
-    or budget had refused *structurally*, once per iteration until max_iters.
+    or budget had refused *structurally*, once per iteration for the rest of the campaign.
 
     The scientific intent stays eligible: one refused realization does not prove the action is
     scientifically exhausted, and saying so would collapse the request/action distinction the
@@ -3828,3 +4444,201 @@ def test_scan_and_validate_bodies_omit_background_when_none():
     body = loop_mod._scan_body(proposal, "deterministic", 3, sample="Al_phonon_DFT",
                                background=frozen)
     assert body["background"] == frozen and body["engine"] == "deterministic"
+
+
+class _AlwaysFailingTavi(MockTavi):
+    """Every submitted job comes back ``failed`` — the instrument never produces data."""
+
+    def wait_scan(self, job_id, timeout=0.0, **kw):
+        return {"job_id": job_id, "state": "failed", "error": "detector offline"}
+
+
+def test_a_persistently_failing_instrument_terminates_instead_of_spinning(tmp_path, monkeypatch):
+    """An unlimited budget plus a rejection class that suppresses nothing had NO termination bound.
+
+    ``scan_not_done:*`` is not in the rejection rules, so it classes transient with scope "none" and
+    suppresses nothing; the identical action is re-selected and re-submitted every iteration. Nothing
+    is ever charged either — with ``budget=None`` the deterministic tier keeps "unlimited", so
+    ``spent`` stays 0.0 and the budget exception can never fire. The absolute iteration ceiling is the
+    only thing that ends this, and it must end it with a named reason.
+    """
+    _no_subprocess(monkeypatch)
+    monkeypatch.setattr(loop_mod, "_ABSOLUTE_ITERATION_CEILING", 3)
+    omega = lambda h: (h - 2.0) * 2.0
+    objective = ObjectiveSpec.along_h(
+        h_start=2.1, h_end=2.4, step=0.1, tolerance_meV=0.5, budget=None, name="unbounded")
+
+    summary, _ws = _run(tmp_path, objective, _AlwaysFailingTavi(omega), make_mock_runner(omega))
+
+    assert summary["stop"]["state"] == "incomplete"
+    reason = summary["stop"]["reasons"][0]
+    assert "absolute iteration ceiling" in reason and "3" in reason
+    assert summary["stop"]["terminal_cause"] == loop_mod.TERMINAL_CONTROLLER_FAULT
+
+    events = read_log(summary["session_log"])
+    ceilings = [event["payload"] for event in events
+                if event["kind"] == "exception"
+                and event["payload"].get("action") == "iteration_ceiling_reached"]
+    assert len(ceilings) == 1 and ceilings[0]["ceiling"] == 3
+    stops = [event for event in events if event["kind"] == "stop"]
+    assert len(stops) == 1 and stops[0]["payload"]["resume_supported"] is True
+    # Certification must not run on a controller fault.
+    assert not any((event.get("payload") or {}).get("event") == "certify_start"
+                   for event in events if event["kind"] == "decide")
+
+
+def test_acquisition_provenance_names_the_authority_decision_and_executed_identity(tmp_path):
+    """In authoritative mode the record must say which of two selections it means.
+
+    ``ScanDesignRealizedComparison.selected_request_fingerprint`` always returns the LEGACY request,
+    while ``apply_selected_request`` overwrites ``scan_design_realized_selected_request_fingerprint``
+    with the request the authority decision actually granted (the target core). The persisted record
+    previously carried the overwritten value with nothing naming the decision that caused it, so an
+    auditor loading the comparison beside the record and applying its own accessor got a different
+    answer with no way to tell which was right.
+    """
+    from isar.drive.loop import _persist_acquisition_provenance
+    from isar.schema.card import Card
+
+    shutil.copy(Path(loop_mod.__file__).resolve().parents[1] / "parsers" / "cards"
+                / "tavi.policy.toml", tmp_path / "card.policy.toml")
+    decision_ref = {"kind": "scan_design_authority_decision", "sha256": "a" * 64,
+                    "path": f"report/scan-design/{'a' * 64}.json"}
+    _persist_acquisition_provenance(tmp_path, {
+        "job_id": "j1", "acquisition_id": "acq-1", "acquisition_target_energy": 5.0,
+        "submitted_ncount": 10_000, "kind": "production",
+        # What the loop executed, after apply_selected_request moved it to the target core.
+        "scan_design_realized_selected_request_fingerprint": "t" * 64,
+        "scan_design_realized_selected_grid_fingerprint": "g" * 64,
+        "scan_design_authority_decision_ref": decision_ref,
+        "scan_design_authority_decision_fingerprint": "a" * 64,
+        "scan_design_authority_selected_request_fingerprint": "t" * 64,
+        "scan_design_authority_selected_grid_fingerprint": "g" * 64,
+    })
+
+    entry = Card.load(tmp_path / "card.policy.toml",
+                      tmp_path / "card.state.json").state.acquisition_provenance[-1]
+    assert entry["scan_design_authority_decision_ref"] == decision_ref
+    assert entry["scan_design_authority_decision_fingerprint"] == "a" * 64
+    assert entry["scan_design_authority_selected_request_fingerprint"] == "t" * 64
+    assert entry["scan_design_authority_selected_grid_fingerprint"] == "g" * 64
+    # Additive: the pre-existing key keeps its meaning and value.
+    assert entry["scan_design_realized_selected_request_fingerprint"] == "t" * 64
+
+
+def test_a_shadow_only_acquisition_record_carries_no_authority_keys(tmp_path):
+    """Shadow/off mode records the authority keys as ``None`` — presence is what marks a decision."""
+    from isar.drive.loop import _persist_acquisition_provenance
+    from isar.schema.card import Card
+
+    shutil.copy(Path(loop_mod.__file__).resolve().parents[1] / "parsers" / "cards"
+                / "tavi.policy.toml", tmp_path / "card.policy.toml")
+    _persist_acquisition_provenance(tmp_path, {
+        "job_id": "j1", "acquisition_id": "acq-1", "acquisition_target_energy": 5.0,
+        "submitted_ncount": 10_000, "kind": "production",
+        "scan_design_realized_selected_request_fingerprint": "l" * 64,
+    })
+
+    entry = Card.load(tmp_path / "card.policy.toml",
+                      tmp_path / "card.state.json").state.acquisition_provenance[-1]
+    assert entry["scan_design_authority_decision_ref"] is None
+    assert entry["scan_design_authority_selected_request_fingerprint"] is None
+
+
+# ------------------------------------------------------------- PR #9 R24: the pre-submission gate
+def test_analysis_overrun_during_planning_stops_before_any_measurement_is_submitted(
+        tmp_path, monkeypatch):
+    """The declared analysis budget must be re-checked between planning and submit.
+
+    Planning is itself charged (predictive + shadow + realized scoring) and ``analysis_operation``
+    only raises when a NEW operation starts over the limit, so an overrun that happens *inside* a
+    started operation reaches the submit boundary silently. With only the pre-planning check, a
+    campaign that is under the limit at the top of the iteration submits a full batch of scans and
+    their full-tier fits past the budget it declared.
+    """
+    _no_subprocess(monkeypatch)
+    omega = lambda h: (h - 2.0) * 2.0
+    burned = {"yes": False}
+    real_clock = loop_mod.analysis_clock_state
+    real_plan = loop_mod.plan_actions
+
+    def burning_plan(*args, **kwargs):
+        plan = real_plan(*args, **kwargs)
+        burned["yes"] = True          # planning consumed the remaining allowance
+        return plan
+
+    def clock(log_path, *args, **kwargs):
+        state = dict(real_clock(log_path, *args, **kwargs))
+        if burned["yes"]:
+            state["spent_seconds"] = 9_999.0
+        return state
+
+    monkeypatch.setattr(loop_mod, "plan_actions", burning_plan)
+    monkeypatch.setattr(loop_mod, "analysis_clock_state", clock)
+
+    summary, _ws = _run(tmp_path, _objective(), MockTavi(omega),
+                        make_mock_runner(omega, hesse_only=True))
+
+    events = read_log(summary["session_log"])
+    # The load-bearing claim: no measurement was submitted past the declared analysis budget.
+    assert not any(event["kind"] == "run" for event in events)
+    assert summary["stop"]["state"] == "incomplete"
+    assert any("before measurement submission" in reason
+               for reason in summary["stop"]["reasons"]), summary["stop"]["reasons"]
+    assert [event for event in events if event["kind"] == "stop"]
+
+
+# ------------------------------------------- PR #9 R27: an invariant violation is a named terminal
+def test_scan_design_invariant_violation_is_a_classified_controller_fault(tmp_path, monkeypatch):
+    """A broken scan-design invariant is a controller fault, not a refusal to retry.
+
+    ``_score_shadow_proposal`` raises when the legacy control is no longer the selected candidate.
+    A bare ``RuntimeError`` escaped every handler in ``run_campaign``, so the terminal was an
+    uncaught exception with no classification and no reason for the operator.
+    """
+    monkeypatch.setattr(
+        loop_mod, "_score_shadow_proposal",
+        lambda *a, **k: (_ for _ in ()).throw(
+            loop_mod.ScanDesignInvariantViolation("legacy control was replaced")))
+    monkeypatch.setattr(loop_mod, "evaluate_stop",
+                        lambda *a, **k: StopDecision("continue", [], [{"hkl": [2.1, 0.0, 0.0]}]))
+    plan = _FakePlan([_fake_proposal("only")])
+
+    proposal, terminal = loop_mod._next_finalized_proposal(
+        plan, types.SimpleNamespace(), _helper_cfg(tmp_path), [],
+        {"kind": "neutrons", "amount": 1_000_000.0, "spent": 0.0}, {}, it=0)
+
+    assert proposal is None
+    assert terminal is not None and terminal.state == "incomplete"
+    assert terminal.terminal_cause == loop_mod.TERMINAL_CONTROLLER_FAULT
+    assert "legacy control was replaced" in terminal.reasons[0]
+    faults = [event["payload"] for event in read_log(_helper_cfg(tmp_path).log_path)
+              if event["kind"] == "exception"]
+    assert faults[-1]["action"] == "scan_design_invariant_violated"
+    assert faults[-1]["severity"] == "high"
+
+
+def test_scan_design_invariant_violation_still_writes_a_terminal_stop_event(tmp_path, monkeypatch):
+    """The defect this covers is the ABSENCE of a ``stop`` event.
+
+    An uncaught raise skipped every terminal path — ``run_campaign``'s only ``finally`` closes the
+    runner — so the session log ended with no ``stop`` and the GUI, ``isar status`` and resume all
+    saw a campaign that was still running.
+    """
+    _no_subprocess(monkeypatch)
+    omega = lambda h: (h - 2.0) * 2.0
+    monkeypatch.setattr(
+        loop_mod, "_score_shadow_proposal",
+        lambda *a, **k: (_ for _ in ()).throw(
+            loop_mod.ScanDesignInvariantViolation("legacy control was replaced")))
+
+    summary, _ws = _run(tmp_path, _objective(), MockTavi(omega),
+                        make_mock_runner(omega, hesse_only=True))
+
+    events = read_log(summary["session_log"])
+    stops = [event for event in events if event["kind"] == "stop"]
+    assert len(stops) == 1 and events[-1]["kind"] == "stop"
+    assert stops[0]["payload"]["state"] == "incomplete"
+    assert stops[0]["payload"]["terminal_cause"] == loop_mod.TERMINAL_CONTROLLER_FAULT
+    assert stops[0]["payload"]["resume_supported"] is True
+    assert summary["stop"]["state"] == "incomplete"

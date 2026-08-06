@@ -22,6 +22,7 @@ routes the scan to "Bayesian interval untrustworthy → fall back to frequentist
 from __future__ import annotations
 
 import math
+import logging
 from dataclasses import dataclass
 
 import numpy as np
@@ -30,6 +31,7 @@ from dynesty.utils import resample_equal
 
 from isar.analyze import loop
 from isar.analyze.errors.bootstrap import _percentile_interval, is_bimodal
+from isar.schema.statistics import SemanticsConstructionError, semantics_fingerprint
 from isar.synth import estimators
 
 # Production defaults + diagnostic thresholds (D10-adjacent empirical pins, like loop.GAMMA_FLOOR).
@@ -45,6 +47,7 @@ RAIL_RTOL = 0.02         # a draw is "railed" if within 2 % of a parameter's spa
 RAIL_FRAC = 0.15         # >15 % of Ω_d draws railed ⇒ ill-posed position (hard fail)
 
 _LOG_SQRT_2PI = 0.5 * math.log(2.0 * math.pi)
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -64,6 +67,8 @@ class BayesResult:
     fail_reason: str | None = None
     parameter_names: tuple[str, ...] = ()
     parameter_samples: np.ndarray | None = None
+    prior_fingerprint: str | None = None
+    prior_specification: dict | None = None
 
 
 def _gauss_logpdf(x: float, mu: float, sigma: float) -> float:
@@ -117,6 +122,8 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, seed: int = 12345,
     expectation a literal Normal prior on ω₀; ``None`` ⇒ weakly-informative (posterior ≈
     likelihood ≈ bootstrap in the well-counted regime, by Bernstein–von Mises)."""
     prior_used = prior is not None
+    prior_specification = None
+    prior_fingerprint = None
     nan3 = (float("nan"), float("nan"), float("nan"))
 
     def _failed(reason: str) -> BayesResult:
@@ -125,7 +132,9 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, seed: int = 12345,
                            log_evidence=float("nan"), log_evidence_err=float("nan"),
                            ess=0.0, bimodal=False, converged=False, n_live=int(n_live),
                            seed=int(seed), prior_used=prior_used, fail_reason=reason,
-                           parameter_samples=np.empty((0, 0)))
+                           parameter_samples=np.empty((0, 0)),
+                           prior_fingerprint=prior_fingerprint,
+                           prior_specification=prior_specification)
 
     if not fit_result.optimizer_converged:
         return _failed("fit did not converge")
@@ -144,6 +153,34 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, seed: int = 12345,
 
     lows = np.array([b[0] for b in prob.bounds], dtype=float)
     spans = np.array([b[1] - b[0] for b in prob.bounds], dtype=float)
+    prior_specification = {
+        "prior_kind": "optimizer_bound_data_dependent",
+        "parameter_prior": "uniform_over_optimizer_bounds",
+        "optimizer_bounds": [
+            {"parameter": str(name), "lower": float(bounds[0]), "upper": float(bounds[1])}
+            for name, bounds in zip(names, prob.bounds)
+        ],
+        "omega_loglike_term": (
+            {
+                "kind": "normalized_gaussian",
+                "mean": float(prior.omega0),
+                "sigma": float(prior.omega0_sigma),
+            }
+            if prior_used
+            else None
+        ),
+    }
+    try:
+        prior_fingerprint = semantics_fingerprint(
+            "isar.optimizer_bound_nested_prior/1", prior_specification
+        )
+    except SemanticsConstructionError as exc:
+        log.warning(
+            "semantics_construction_failed producer=isar.analyze.errors.bayes "
+            "quantity=optimizer_bound_prior reason_code=%s",
+            exc.reason_code,
+        )
+        prior_fingerprint = None
 
     def ptform(u):
         return lows + np.asarray(u) * spans
@@ -187,4 +224,6 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, seed: int = 12345,
                        bimodal=is_bimodal(omega0_samples), converged=ok,
                        n_live=int(n_live), seed=int(seed), prior_used=prior_used,
                        fail_reason=reason, parameter_names=tuple(names),
-                       parameter_samples=np.asarray(eq, dtype=float))
+                       parameter_samples=np.asarray(eq, dtype=float),
+                       prior_fingerprint=prior_fingerprint,
+                       prior_specification=prior_specification)

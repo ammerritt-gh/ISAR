@@ -1,4 +1,5 @@
 """goal→ObjectiveSpec: schema validation with a FAKE dispatcher, plus the LLM-free JSON path."""
+import copy
 import json
 
 import pytest
@@ -36,6 +37,35 @@ def test_budget_neutrons_mapping():
     payload = dict(_GOOD); payload.pop("budget_hours"); payload["budget_neutrons"] = 1e10
     spec = g2s.goal_to_spec("x", dispatcher=_FakeDispatcher(DispatchResult(structured=payload)))
     assert spec.budget == {"kind": "neutrons", "amount": 1e10}
+
+
+def test_absent_budget_takes_the_canonical_tier_default():
+    # The single source of truth is the constant table; the test reads it rather than restating a
+    # number, so a deliberate change to the default cannot be mistaken for a regression here.
+    payload = dict(_GOOD); payload.pop("budget_hours")
+    for tier, hours in g2s.DEFAULT_BUDGET_HOURS_BY_TIER.items():
+        spec = g2s.spec_from_dict(payload, defaults={"tier": tier})
+        assert spec.budget == {"kind": "counting_seconds", "amount": hours * 3600.0}
+    assert g2s.DEFAULT_BUDGET_HOURS_BY_TIER["deterministic"] == 1.0
+    assert g2s.DEFAULT_BUDGET_HOURS_BY_TIER["mcstas"] == 8.0
+
+
+def test_no_neutron_budget_by_default():
+    # None means unlimited: an undeclared neutron budget never becomes a neutron-kind budget.
+    assert g2s.DEFAULT_BUDGET_NEUTRONS is None
+    payload = dict(_GOOD); payload.pop("budget_hours")
+    spec = g2s.spec_from_dict(payload, defaults={"tier": "deterministic"})
+    assert spec.budget["kind"] == "counting_seconds"
+
+
+def test_analysis_limit_is_clamped_to_the_counting_time_budget():
+    payload = {**_GOOD, "budget_hours": 0.25}       # 900 s, shorter than the 3600 s analysis default
+    spec = g2s.spec_from_dict(payload, defaults={"tier": "deterministic"})
+    assert spec.analysis_limit_seconds == 900.0
+    # A limit already inside the budget is left exactly as declared.
+    inside = g2s.spec_from_dict({**_GOOD, "budget_hours": 2.0, "analysis_limit_seconds": 1200.0},
+                                defaults={"tier": "deterministic"})
+    assert inside.analysis_limit_seconds == 1200.0
 
 
 def test_recovers_from_fenced_text_output():
@@ -104,6 +134,15 @@ def test_transverse_optic_k_segment_compiles_to_eleven_points():
     assert spec.target_branch == "optic" and spec.target_label == "transverse optic"
     assert spec.energy_search_meV == (-2.0, 12.0)
     assert spec.target_selector == "tracked_branch" and spec.target_energy_meV is None
+
+
+def test_acoustic_goal_without_a_range_gets_the_canonical_symmetric_band():
+    payload = {"path": {"h_start": 2.0, "h_end": 3.0, "k": 0.0, "l": 0.0}, "step_h": 0.05,
+               "tolerance_meV": 0.5, "target_branch": "acoustic"}
+    spec = g2s.goal_to_spec(
+        "map the acoustic phonon from (2,0,0) to (3,0,0)",
+        dispatcher=_FakeDispatcher(DispatchResult(structured=payload)))
+    assert spec.energy_search_meV == g2s.DEFAULT_ENERGY_SEARCH_ACOUSTIC_MEV == (-9.0, 9.0)
 
 
 def test_supplied_target_energy_implies_nearest_selector():
@@ -251,3 +290,133 @@ def test_schema_checker_requires_real_booleans_and_rejects_unknown_types():
     assert not g2s._conforms(1, {"type": "boolean"})
     assert g2s._conforms("anything", {})
     assert not g2s._conforms("anything", {"type": "mystery"})
+
+
+# --------------------------------------------------------------- scan-window EIG policy rebinding
+_CARD_EIG_AUTHORING = {"policies": [{
+    "policy_id": "eig4_slice8_excitation_energy",
+    "policy_kind": "isar.scalar_absolute_partitions/o36.5",
+    "source_qoi": {"id": "excitation.energy", "unit": "meV"},
+    "scope": {"bind_to_current_campaign_configuration": True,
+              "annotation": {"campaign_name": "regression",
+                             "experiment_description": "policy scope rebinding",
+                             "date": "2026-08-05"}},
+    "provenance": {"kind": "explicit_user_analysis/1", "source_id": "O41",
+                   "rationale": "regression fixture"},
+    "variants": [{"variant_id": "primary_0p5_mev",
+                  "parameters": {"origin": 0.0, "bin_width": 0.5, "offsets": [0.0, 0.25]}}],
+}]}
+
+_EIG_SPEC = {"path": {"h_start": 2.0, "h_end": 2.2, "k": 0.0, "l": 0.0}, "step_h": 0.1,
+             "tolerance_meV": 0.5, "target_branch": "acoustic", "budget_hours": 1,
+             "energy_search_meV": [-9.0, 9.0]}
+
+
+def _eig_objective():
+    return g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test",
+                              card_eig_policy_set=_CARD_EIG_AUTHORING)
+
+
+def _scope_drifted(objective, mode="authoritative"):
+    """Reproduce the CLI's steering override, which recomputes the hypothesis fingerprint."""
+    from dataclasses import replace
+
+    from isar.schema.hypotheses import content_fingerprint
+
+    steering = {**dict(objective.steering), "scan_window_eig_mode": mode}
+    return replace(objective, steering=steering,
+                   hypothesis_fingerprint=content_fingerprint(objective.hypotheses, steering))
+
+
+def _matches(objective):
+    from isar.drive.objective import current_objective_comparison_scope
+    from isar.schema.eig_policy import matching_qoi_policies
+
+    scope = current_objective_comparison_scope(objective)
+    return matching_qoi_policies(
+        objective.scan_window_eig.policy_set, qoi_id="excitation.energy", qoi_unit="meV",
+        scope_kind="campaign_configuration", scope_fingerprint=scope["fingerprint"])
+
+
+def test_compiled_card_policy_matches_the_objective_it_was_compiled_from():
+    assert [policy.policy_id for policy in _matches(_eig_objective())] == [
+        "eig4_slice8_excitation_energy"]
+
+
+def test_steering_override_without_rebinding_leaves_the_policy_unmatchable():
+    # The Test9 failure shape: the policy is present but bound to the pre-override scope, so every
+    # scan-window score refuses with qoi_policy_missing.
+    drifted = _scope_drifted(_eig_objective())
+    assert drifted.scan_window_eig.policy_set is not None
+    assert _matches(drifted) == ()
+
+
+def test_rebinding_after_a_steering_override_restores_an_exact_scope_match():
+    rebound = g2s.rebind_scan_window_eig_policy(
+        _scope_drifted(_eig_objective()), _CARD_EIG_AUTHORING)
+    assert [policy.policy_id for policy in _matches(rebound)] == [
+        "eig4_slice8_excitation_energy"]
+
+
+def test_rebinding_keeps_an_off_objective_without_a_policy_set_unchanged():
+    # A frozen objective from before the canonical default existed carries no policy set; with the
+    # mode off there is nothing to serve, so rebinding must leave it exactly as it is.
+    from dataclasses import replace
+
+    from isar.schema.eig_policy import ScanWindowEIGConfig
+
+    objective = replace(
+        g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test"),
+        scan_window_eig=ScanWindowEIGConfig())
+    assert objective.scan_window_eig.policy_set is None
+    assert g2s.rebind_scan_window_eig_policy(objective, None) is objective
+
+
+def test_rebinding_refuses_when_a_hand_authored_policy_cannot_be_reconstructed():
+    # A policy that is not the canonical default cannot be recompiled from truth once its card
+    # authoring is gone; substituting the default would silently measure a different partition.
+    authoring = copy.deepcopy(_CARD_EIG_AUTHORING)
+    authoring["policies"][0]["variants"][0]["parameters"]["bin_width"] = 1.0
+    objective = g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test",
+                                   card_eig_policy_set=authoring)
+    # Drifted to shadow, not authoritative: this deliberately non-O41 policy could not survive the
+    # authoritative profile check at construction, and the rebinding rule under test is mode-free.
+    with pytest.raises(g2s.GoalParseError, match="card authoring source is unavailable"):
+        g2s.rebind_scan_window_eig_policy(_scope_drifted(objective, mode="shadow"), None)
+
+
+def test_a_policy_differing_only_in_attribution_is_not_the_canonical_default():
+    # The annotation and provenance are the scientist's account of why this partition is measured.
+    # A policy matching the default's parameters but carrying its own attribution must not be
+    # silently rebound to the default's, which would rewrite that account.
+    authoring = copy.deepcopy(_CARD_EIG_AUTHORING)
+    authoring["policies"][0]["provenance"]["rationale"] = "a specific reviewed decision"
+    objective = g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test",
+                                   card_eig_policy_set=authoring)
+    with pytest.raises(g2s.GoalParseError, match="card authoring source is unavailable"):
+        g2s.rebind_scan_window_eig_policy(_scope_drifted(objective), None)
+
+
+def test_rebinding_the_canonical_policy_needs_no_card_authoring():
+    # An ordinary campaign never declares the table, so its policy IS the canonical default and
+    # can be recompiled against the post-override scope without a card to read it from.
+    ordinary = g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test")
+    rebound = g2s.rebind_scan_window_eig_policy(_scope_drifted(ordinary), None)
+    assert [policy.policy_id for policy in _matches(rebound)] == [
+        "eig4_slice8_excitation_energy"]
+
+
+def test_an_ordinary_campaign_can_switch_scan_window_eig_on():
+    # The whole point: an ordinary campaign that never authored a policy table must be able to
+    # turn authoritative EIG on, instead of refusing with
+    # scan_window_eig_authoritative_profile_invalid and demanding a purpose-built O41 campaign.
+    from isar.eig.o41_authority import validate_o41_authoritative_profile
+
+    objective = g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test")
+    assert objective.scan_window_eig.policy_set is not None      # carried, unused while off
+    assert (objective.steering or {}).get("scan_window_eig_mode", "off") == "off"
+
+    authoritative = g2s.rebind_scan_window_eig_policy(_scope_drifted(objective), None)
+    validate_o41_authoritative_profile(authoritative.scan_window_eig)
+    assert [policy.policy_id for policy in _matches(authoritative)] == [
+        "eig4_slice8_excitation_energy"]

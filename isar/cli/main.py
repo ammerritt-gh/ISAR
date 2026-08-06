@@ -18,14 +18,6 @@ def _reconfigure_stdio() -> None:
             pass
 
 
-def _positive_int(text: str) -> int:
-    """argparse ``type`` for ``--max-iters``: a strictly-positive integer (>= 1)."""
-    value = int(text)   # a non-integer raises ValueError, which argparse reports as an invalid value
-    if value < 1:
-        raise argparse.ArgumentTypeError(f"must be >= 1, got {value}")
-    return value
-
-
 def _control_token(text: str) -> str:
     """argparse ``type`` for ``--control-token``: a bounded opaque-token alphabet.
 
@@ -61,6 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("data", nargs="+")
     pr.add_argument("--workspace", required=True)
     pr.add_argument("--force", action="store_true", help="refit every scan, ignoring the ledger")
+    pr.add_argument("--force-master", dest="force_masters", action="append", default=None,
+                    metavar="MASTER_ID", help=argparse.SUPPRESS)
     pr.add_argument("--llm", action="store_true", help="enable LLM adjudication of QC flags")
     pr.add_argument("--M", type=int, default=200,
                     help="bootstrap draw cap for pooled masters and certification (default 200)")
@@ -122,6 +116,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     pdg = sub.add_parser("diagnose", help="render the architect's CAMPAIGN_DIAGNOSTIC.md for a campaign")
     pdg.add_argument("--workspace", required=True)
+    pdg.add_argument("--eig", action="store_true",
+                     help="print the scan-window EIG decision table instead (read-only: says why "
+                          "EIG did or did not change each scan window, and what blocked it)")
 
     psc = sub.add_parser("score", help="score a run against a human gold CSV or known analytic truth")
     psc.add_argument("--workspace", required=True)
@@ -158,10 +155,6 @@ def build_parser() -> argparse.ArgumentParser:
                     help="ISAR workspace the driver drives (auto-init'd after the first scan)")
     pd.add_argument("--compile-only", dest="compile_only", metavar="OUTPUT",
                     help="compile --goal/--spec to a frozen envelope and exit without contacting TAVI")
-    pd.add_argument("--max-iters", dest="max_iters", type=_positive_int, default=None,
-                    help="cap the adaptive-loop iterations for THIS invocation (>= 1). Applies per "
-                         "invocation: each run_campaign restarts iteration numbering at zero, so a "
-                         "restart grants a fresh cap. Default: the built-in cap")
     pd.add_argument("--control-token", dest="control_token", default=None, type=_control_token,
                     help="opaque token ([A-Za-z0-9_-], max 64) enabling a cooperative operator stop: "
                          "writing <workspace>/report/control/stop-<token>.json makes the loop finish "
@@ -172,7 +165,11 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--budget", default=None,
                     help="override budget as '<amount><unit>' e.g. '8h', '1e10n' (else from the spec/goal)")
     pd.add_argument("--analysis-limit", default=None,
-                    help="absolute cumulative analysis ceiling, e.g. '1h', '3600s', or 'none'")
+                    help="absolute cumulative analysis ceiling, e.g. '1h', '10m', '3600s', or 'none'")
+    pd.add_argument("--scan-window-eig-mode", choices=["off", "shadow", "authoritative"],
+                    default=None,
+                    help="operator authoring choice for scan-window EIG; authoritative is restricted "
+                         "to the exact O41 profile frozen from a ready workspace")
     pd.add_argument("--calibration", default=None,
                     help="σ-calibration artifact path (default the repo phonon_dft_deterministic.json)")
     pd.add_argument("--tavi", default=None, help="TAVI API base URL (default http://127.0.0.1:8642/api/v1)")
@@ -183,22 +180,67 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+_SPEC_SUFFIXES = {".json", ".toml", ".yaml", ".yml"}
+
+
+def _looks_like_a_path(text: str) -> bool:
+    """Whether ``text`` is a file path rather than a natural-language goal.
+
+    Deliberately generous: an existing file is decisive, and so is a spec-shaped suffix even when
+    the file is absent, because a mistyped path is the same mistake as a correct one. A real goal
+    is a sentence and does not end in ``.json``. Path construction itself can raise on Windows for
+    a sentence containing characters illegal in a filename, which is only more evidence it is prose.
+    """
+    from pathlib import Path  # local, matching this module's deferred-import style
+
+    value = (text or "").strip()
+    if not value:
+        return False
+    try:
+        candidate = Path(value)
+        return candidate.suffix.lower() in _SPEC_SUFFIXES or candidate.is_file()
+    except (OSError, ValueError):
+        return False
+
+
 def _parse_budget(text: str) -> dict:
     """Parse a ``--budget`` override: ``'8h'`` → counting_seconds, ``'1e10n'`` → neutrons.
 
-    A bare number is treated as counting-seconds. Accepts ``h``/``hour(s)``, ``s``/``sec``, ``n``.
+    A bare number is treated as counting-seconds. Accepts hours, minutes, seconds, and neutrons.
+
+    The unit is matched as a whole word, never as a suffix: suffix matching across overlapping
+    vocabularies resolved ``10min`` as "…n for neutrons" and crashed on ``float('10mi')``.
     """
+    import math
+    import re
+
     s = str(text).strip().lower()
-    if s.endswith(("h", "hour", "hours")):
-        num = s.rstrip("hours").rstrip("h")
-        return {"kind": "counting_seconds", "amount": float(num) * 3600.0}
-    if s.endswith("n") or s.endswith("neutrons"):
-        num = s.rstrip("neutrons").rstrip("n")
-        return {"kind": "neutrons", "amount": float(num)}
-    if s.endswith(("s", "sec", "secs")):
-        num = s.rstrip("secs").rstrip("s")
-        return {"kind": "counting_seconds", "amount": float(num)}
-    return {"kind": "counting_seconds", "amount": float(s)}
+    match = re.fullmatch(r"([0-9.eE+-]+)\s*([a-z]*)", s)
+    if match is None:
+        raise ValueError(f"could not parse a budget from {text!r}")
+    amount = float(match.group(1))
+    if not math.isfinite(amount):
+        # A non-finite budget serializes as bare ``Infinity``/``NaN``, which is not JSON and which
+        # a strict reader of the campaign objective rejects.
+        raise ValueError(f"budget amount must be finite, not {match.group(1)!r}")
+    units = {
+        "": ("counting_seconds", 1.0),
+        "n": ("neutrons", 1.0), "neutron": ("neutrons", 1.0), "neutrons": ("neutrons", 1.0),
+        "h": ("counting_seconds", 3600.0), "hr": ("counting_seconds", 3600.0),
+        "hrs": ("counting_seconds", 3600.0), "hour": ("counting_seconds", 3600.0),
+        "hours": ("counting_seconds", 3600.0),
+        "m": ("counting_seconds", 60.0), "min": ("counting_seconds", 60.0),
+        "mins": ("counting_seconds", 60.0), "minute": ("counting_seconds", 60.0),
+        "minutes": ("counting_seconds", 60.0),
+        "s": ("counting_seconds", 1.0), "sec": ("counting_seconds", 1.0),
+        "secs": ("counting_seconds", 1.0), "second": ("counting_seconds", 1.0),
+        "seconds": ("counting_seconds", 1.0),
+    }
+    unit = match.group(2)
+    if unit not in units:
+        raise ValueError(f"unknown budget unit {unit!r} in {text!r}")
+    kind, multiplier = units[unit]
+    return {"kind": kind, "amount": amount * multiplier}
 
 
 def _parse_analysis_limit(text: str) -> float | None:
@@ -250,17 +292,62 @@ def main(argv=None) -> int:
     if cmd == "drive":
         import hashlib
         import json
+        from dataclasses import replace
         from pathlib import Path
         from isar.drive.loop import run_campaign
         from isar.drive.session_log import read_log
         from isar.drive.supervisor.goal_to_spec import (
-            ENVELOPE_SCHEMA, GoalParseError, envelope_from_json, goal_to_spec, make_envelope, spec_from_dict,
-            spec_from_json)
+            ENVELOPE_SCHEMA, GoalParseError, envelope_from_json, goal_to_spec, make_envelope,
+            rebind_scan_window_eig_policy, spec_from_dict,
+        )
+        from isar.schema.hypotheses import content_fingerprint
         try:
             if args.compile_only and (args.resume_latest or args.envelope):
                 raise GoalParseError("--compile-only accepts --goal or --spec, not resume/envelope")
             if not args.compile_only and not args.workspace:
                 raise GoalParseError("--workspace is required unless --compile-only is used")
+
+            def card_objective_authoring():
+                if not args.workspace:
+                    return None, None
+                policy_path = Path(args.workspace) / "card.policy.toml"
+                if not policy_path.exists():
+                    return None, None
+                from isar.schema.card import load_policy
+                card_policy = load_policy(policy_path)
+                return card_policy.hypotheses, card_policy.scan_window_eig_policy_set
+
+            def apply_mode_override(objective, *, frozen: bool, declared_mode=None,
+                                    card_eig_policy_set=None):
+                requested = args.scan_window_eig_mode
+                current = str((objective.steering or {}).get("scan_window_eig_mode", "off"))
+                if requested is None:
+                    return objective
+                if frozen:
+                    if requested != current:
+                        raise GoalParseError(
+                            "--scan-window-eig-mode conflicts with the frozen objective "
+                            f"({current})")
+                    return objective
+                if declared_mode is not None and requested != declared_mode:
+                    raise GoalParseError(
+                        "--scan-window-eig-mode conflicts with steering.scan_window_eig_mode "
+                        f"in the authoring input ({declared_mode})")
+                if requested == "authoritative" and not args.workspace:
+                    raise GoalParseError(
+                        "authoritative scan-window EIG requires a ready --workspace with "
+                        "card.policy.toml")
+                steering = {**dict(objective.steering), "scan_window_eig_mode": requested}
+                overridden = replace(
+                    objective, steering=steering,
+                    hypothesis_fingerprint=content_fingerprint(
+                        objective.hypotheses, steering))
+                # The recomputed hypothesis fingerprint is part of the objective comparison scope a
+                # card EIG policy binds to, so the policy compiled before this override no longer
+                # matches. Rebind it here, or scan-window scoring reports qoi_policy_missing for the
+                # whole campaign.
+                return rebind_scan_window_eig_policy(overridden, card_eig_policy_set)
+
             if args.resume_latest:
                 # LLM-free resume: rebuild the FROZEN objective from the last campaign_start event; a
                 # goal is NEVER re-compiled through the LLM (spec_from_dict is a pure dict path).
@@ -276,6 +363,7 @@ def main(argv=None) -> int:
                 objective = spec_from_dict(payload["objective"],
                                            defaults={"tier": args.tier or "deterministic"},
                                            where="resume")
+                objective = apply_mode_override(objective, frozen=True)
                 # The frozen objective carries its own tier; an explicit --tier cannot override it
                 # (a full ObjectiveSpec dict bypasses the defaults). Say so instead of silently ignoring.
                 if args.tier is not None and objective.tier != args.tier:
@@ -285,26 +373,64 @@ def main(argv=None) -> int:
                 # Carry the resumed campaign's fingerprint over so it stays comparable across resumes.
                 prev_source = payload.get("source") or {}
                 source = {"kind": "resume", "sha256": prev_source.get("sha256")}
+                for field in ("campaign_authoring_fingerprint", "objective_fingerprint"):
+                    if prev_source.get(field) is not None:
+                        source[field] = prev_source[field]
             elif args.envelope:
                 objective, source, original_goal = envelope_from_json(args.envelope)
+                objective = apply_mode_override(objective, frozen=True)
                 source = dict(source)
                 source["envelope_schema"] = ENVELOPE_SCHEMA
                 if original_goal is not None:
                     source["original_goal"] = original_goal
             elif args.spec:
-                objective = spec_from_json(args.spec, defaults={"tier": args.tier or "deterministic"})
+                spec_data = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+                card_hypotheses = None
+                card_eig_policy_set = None
+                # Compact goal-schema specs are authoring input and may inherit the human-owned
+                # card.  A full ObjectiveSpec is already frozen and must never reread card policy.
+                if not isinstance(spec_data, dict) or not isinstance(spec_data.get("path"), list):
+                    card_hypotheses, card_eig_policy_set = card_objective_authoring()
+                objective = spec_from_dict(
+                    spec_data,
+                    defaults={"tier": args.tier or "deterministic"},
+                    where=str(args.spec),
+                    card_hypotheses=card_hypotheses,
+                    card_eig_policy_set=card_eig_policy_set,
+                )
+                declared_mode = None
+                if isinstance(spec_data, dict) and isinstance(spec_data.get("steering"), dict):
+                    declared_mode = spec_data["steering"].get("scan_window_eig_mode")
+                objective = apply_mode_override(
+                    objective, frozen=isinstance(spec_data.get("path"), list),
+                    declared_mode=declared_mode,
+                    card_eig_policy_set=card_eig_policy_set)
                 source = {"kind": "spec",
                           "sha256": hashlib.sha256(Path(args.spec).read_bytes()).hexdigest()}
             else:
-                card_hypotheses = None
-                if args.workspace:
-                    policy_path = Path(args.workspace) / "card.policy.toml"
-                    if policy_path.exists():
-                        from isar.schema.card import load_policy
-                        card_hypotheses = load_policy(policy_path).hypotheses
+                # ``--goal`` is natural language for the LLM supervisor; ``--spec`` reads a file.
+                # Handing a path to the supervisor does not fail — it compiles *something*, and the
+                # campaign then runs a different objective than the file describes, silently. That
+                # cost a real run: a spec for the acoustic branch along h 2.0→3.0 compiled instead
+                # as an optic campaign along [hh0] from the zone origin over [-2, 12] meV, and the
+                # only symptom was an immediately exhausted action inventory.
+                if _looks_like_a_path(args.goal):
+                    print(f"error: --goal takes a natural-language measurement goal, not a file "
+                          f"path ({args.goal!r}).\n"
+                          f"       Use --spec {args.goal} to read an objective spec from a file.",
+                          file=sys.stderr)
+                    return 2
+                card_hypotheses, card_eig_policy_set = card_objective_authoring()
                 objective = goal_to_spec(
                     args.goal, defaults={"tier": args.tier or "deterministic"},
-                    card_hypotheses=card_hypotheses)
+                    card_hypotheses=card_hypotheses,
+                    card_eig_policy_set=card_eig_policy_set)
+                raw = objective.meta.get("raw") if isinstance(objective.meta, dict) else None
+                declared_mode = ((raw.get("steering") or {}).get("scan_window_eig_mode")
+                                 if isinstance(raw, dict) else None)
+                objective = apply_mode_override(
+                    objective, frozen=False, declared_mode=declared_mode,
+                    card_eig_policy_set=card_eig_policy_set)
                 source = {"kind": "goal",
                           "sha256": hashlib.sha256(args.goal.encode("utf-8")).hexdigest()}
             if args.budget:
@@ -313,6 +439,26 @@ def main(argv=None) -> int:
             if args.analysis_limit is not None:
                 objective.analysis_limit_seconds = _parse_analysis_limit(args.analysis_limit)
                 objective.__post_init__()
+            if not args.resume_latest:
+                objective_payload = objective.to_dict()
+                objective_fingerprint = hashlib.sha256(json.dumps(
+                    objective_payload, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=True).encode("utf-8")).hexdigest()
+                policy_set = objective.scan_window_eig.policy_set
+                authoring_payload = {
+                    "source_sha256": source.get("sha256"),
+                    "scan_window_eig_mode": objective.steering.get(
+                        "scan_window_eig_mode", "off"),
+                    "policy_set_fingerprint": (
+                        None if policy_set is None else policy_set.policy_set_fingerprint),
+                    "tier": objective.tier,
+                    "budget": objective.budget,
+                    "analysis_limit_seconds": objective.analysis_limit_seconds,
+                }
+                source["objective_fingerprint"] = objective_fingerprint
+                source["campaign_authoring_fingerprint"] = hashlib.sha256(json.dumps(
+                    authoring_payload, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=True).encode("utf-8")).hexdigest()
             if args.compile_only:
                 original_goal = args.goal if args.goal is not None else None
                 envelope = make_envelope(objective, source=source, original_goal=original_goal)
@@ -327,8 +473,6 @@ def main(argv=None) -> int:
         config = {"workspace": args.workspace, "calibration": args.calibration,
                   "tavi_url": args.tavi, "seed": args.seed, "worker": args.worker,
                   "control_token": args.control_token, "source": source}
-        if args.max_iters is not None:
-            config["max_iters"] = args.max_iters      # per-invocation cap; else the loop's built-in default
         try:
             summary = run_campaign(objective, config)
         except Exception as exc:  # noqa: BLE001  (a campaign error is exit 2, not a stack trace)

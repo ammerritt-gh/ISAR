@@ -1,0 +1,53 @@
+{
+  "status": "passed",
+  "parity_checks": [
+    {
+      "check": "the complete held-out STAT-2b summary and accepted AIC disposition were reused without rerunning the campaign",
+      "status": "passed"
+    },
+    {
+      "check": "isar/session/driver.py drift is confined to the slice-10 force_masters targeted-refit path and changes refit scope, not fit mathematics, model selection, weighting or delivery semantics",
+      "status": "passed"
+    },
+    {
+      "check": "the targeted refit reproduces the whole-batch force refit exactly: byte-identical predictive artifact (sha256 prefix 5b04814954e0) on the O41_Test10 workspace A/B",
+      "status": "passed"
+    },
+    {
+      "check": "an unmatched force_masters id and a missing merged collation both raise rather than silently no-op, so a durable predictive-escalation charge can never record a false completed promotion",
+      "status": "passed"
+    },
+    {
+      "check": "session_log event-kind addition, worker JSONL force_masters passthrough, steering max_scan_points ceiling and objective budget centralisation are protected-adjacent and leave the frozen STAT-2b path unchanged",
+      "status": "passed"
+    },
+    {
+      "check": "the worker protocol extension is guarded so an absent force_masters key leaves runner behaviour byte-identical for legacy in-process adapters and test doubles",
+      "status": "passed"
+    }
+  ],
+  "commands": [
+    {
+      "command": "python -m py_compile isar/drive/objective.py isar/drive/session_log.py isar/schema/hypotheses.py isar/session/driver.py isar/session/worker.py",
+      "deselected": 0,
+      "failed": 0,
+      "files_checked": 5,
+      "passed": 5,
+      "skipped": 0
+    },
+    {
+      "command": "python -m pytest isar/synth/tests/test_stat2b_campaign.py tests/session/test_target_projection.py tests/drive/test_session_log.py tests/session/test_driver_smoke.py tests/schema/test_hypotheses.py tests/drive/test_worker_client.py tests/session/test_master_fit.py tests/drive/test_predictive_promotion.py -n 8 --dist worksteal -q",
+      "deselected": 0,
+      "duration_seconds": 49.03,
+      "failed": 0,
+      "passed": 137,
+      "skipped": 0
+    }
+  ],
+  "scope": "Focused parity for the five drifted protected sources of the EIG-4 R-series (R1-R3). The pytest command is the union of the registered PROOF_TESTS for isar/drive/objective.py, isar/drive/session_log.py and isar/schema/hypotheses.py, plus the reviewer-supplied proof tests for isar/session/driver.py and isar/session/worker.py, which carry no registered entry.",
+  "notes": [
+    "isar/session/driver.py is the only protected_semantic drift. Its whole diff since the anchor is the slice-10 force_masters targeted-refit path: refit SCOPE, not fit mathematics, model selection, weighting or delivery semantics.",
+    "Proportionate STAT-2b evidence for that file is the slice-10 A/B on the O41_Test10 workspace copy, which produced a byte-identical predictive artifact (sha256 prefix 5b04814954e0) between a whole-batch force refit and the targeted force_masters refit. That measurement is cited rather than re-run; nothing in the intervening commits touched the compared path.",
+    "The four remaining drifts are adjacent and non-semantic: an additive session-log event kind, a steering point-ceiling default, centralised budget constants plus an analysis-limit clamp, and an additive worker JSONL protocol field guarded so an absent key leaves behaviour unchanged."
+  ]
+}

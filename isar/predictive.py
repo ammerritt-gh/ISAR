@@ -138,6 +138,29 @@ TARGET_QOI = "omega0"
 # ``predictive_basis_fingerprint``, so a basis pruned under one rule can never be scored under
 # another.
 PREDICTIVE_MODEL_WEIGHT_FLOOR = 0.005
+#: The share of the production Akaike weight the design basis should RETAIN before the scan-window
+#: design measure can fairly be said to speak for the master.  **Recorded, not yet enforced.**
+#: Nothing gates on it today: the retained mass is published on every measure as
+#: ``mass_diagnostics.source_aic_scale.bootstrap_model_mass``, and this constant names the reviewed
+#: bound so a future gate and a fresh census reference one number rather than each inventing one.
+#: It is not wired in because an observability code would make eligibility ``unassessable``
+#: (``isar/eig/eligibility.py``), which both the design measure and the O41 selector treat as a
+#: refusal — so a bound routed that way would switch EIG off for roughly half of all masters
+#: instead of qualifying them.  Gating needs a route that degrades without refusing.
+#:
+#: It bounds what is kept, not what is discarded, so mass that is unaccounted for
+#: (``basis_unknown``, pruned models) cannot slip through the gap a discarded-mass ceiling would
+#: leave.  The structures that split an Akaike set
+#: are the ones that add a component, and those move omega0 rather than only the linewidth, so
+#: discarded model mass is discarded omega0 information — not a cosmetic difference.
+#:
+#: 0.5 is a REVIEWED PLACEHOLDER, not an empirical calibration: the Slice 1 census aggregate is
+#: 43.6 % bootstrap / 56.4 % laplace / 0.0 % nested across 234 masters, so 0.5 flags roughly the
+#: worse half.  It cannot be set empirically from that census — 230 of its 234 masters carry
+#: ``projection_predictive_basis_unknown`` and every ``particle_source_masses`` field is 0.0, so it
+#: predates a working projection path and holds no retained-mass distribution.  A fresh census pass
+#: over a working projection path is the follow-up that can replace this number with a measured one.
+MINIMUM_AUTHORITATIVE_DESIGN_MASS = 0.5
 PREDICTIVE_MAX_PRUNED_MASS = 0.01
 PREDICTIVE_MAX_DROPPED_DRAW_MASS = 0.01
 
@@ -159,6 +182,8 @@ PREDICTIVE_BASIS_INCOMPLETE = "predictive_basis_incomplete"
 PREDICTIVE_BASIS_FINGERPRINT_MISMATCH = "predictive_basis_fingerprint_mismatch"
 #: Structural/measure violations found by :func:`validate_master_predictive_artifact`.
 PREDICTIVE_ARTIFACT_INVALID = "predictive_artifact_invalid"
+#: A recognized additive statistical-semantics record does not authenticate against its contents.
+PREDICTIVE_SEMANTICS_INVALID = "predictive_semantics_invalid"
 
 
 class PredictiveArtifactError(ValueError):
@@ -219,6 +244,40 @@ def predictive_basis_fingerprint(*, models, energy_meV, evaluation_context,
         },
     }
     return json_fingerprint(payload)
+
+
+def target_projection_set_fingerprint(models: Sequence[Mapping]) -> str:
+    """Fingerprint the actual records in an ``isar.target_projection/2`` model set.
+
+    The target projection is deliberately outside the physical predictive `/2`
+    artifact.  Its producer and every adapting reader therefore share this
+    small, structural identity calculation rather than trusting a duplicated
+    stored value.  It intentionally captures the historic projection-set
+    identity only: model label, model weight, and the aligned draw count.
+    """
+    records = []
+    for index, model in enumerate(models):
+        if not isinstance(model, Mapping):
+            raise ValueError(f"target projection model {index} must be a mapping")
+        label = model.get("label")
+        if not isinstance(label, str) or not label:
+            raise ValueError(f"target projection model {index} has no label")
+        try:
+            weight = float(model.get("weight"))
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"target projection model {label!r} has no finite weight") from error
+        if not math.isfinite(weight) or weight <= 0.0:
+            raise ValueError(f"target projection model {label!r} has no finite positive weight")
+        present = model.get("target_present_by_draw")
+        if not _is_list(present):
+            raise ValueError(f"target projection model {label!r} has no target-presence draws")
+        records.append({"label": label, "weight": model.get("weight"), "draw_count": len(present)})
+    from isar.schema.statistics import semantics_fingerprint
+
+    return semantics_fingerprint(
+        "isar.target_projection_model_set/1",
+        sorted(records, key=lambda item: str(item["label"])),
+    )
 
 
 # --------------------------------------------------------------------------------------------
@@ -420,6 +479,10 @@ def validate_master_predictive_artifact(artifact) -> Mapping:
 
 def _validate_master_predictive_artifact(artifact) -> Mapping:
     from isar.analyze import model_manifest as manifest_mod
+    from isar.schema.statistics import (
+        SemanticsConstructionError,
+        validate_predictive_semantics,
+    )
 
     if not isinstance(artifact, Mapping):
         _invalid("predictive artifact must be an object", ARTIFACT_SCHEMA_UNSUPPORTED)
@@ -459,6 +522,54 @@ def _validate_master_predictive_artifact(artifact) -> Mapping:
                for index, model in enumerate(models)]
     if not math.isclose(sum(weights), 1.0, rel_tol=1e-6, abs_tol=1e-9):
         _invalid("predictive model weights are not normalized")
+
+    semantics = artifact.get("statistical_semantics")
+    if semantics is not None:
+        try:
+            validated_semantics = validate_predictive_semantics(semantics)
+        except (SemanticsConstructionError, TypeError, ValueError, OverflowError) as error:
+            detail = (
+                error.reason_code
+                if isinstance(error, SemanticsConstructionError)
+                else type(error).__name__
+            )
+            _invalid(
+                f"predictive statistical semantics failed authentication ({detail})",
+                PREDICTIVE_SEMANTICS_INVALID,
+            )
+        semantics_fingerprint = validated_semantics["statistical_semantics_fingerprint"]
+        if artifact.get("statistical_semantics_fingerprint") != semantics_fingerprint:
+            _invalid(
+                "artifact statistical_semantics_fingerprint does not match its semantics record",
+                PREDICTIVE_SEMANTICS_INVALID,
+            )
+        for name in (
+            "predictive_retained_set_fingerprint",
+            "construction_complete",
+            "homogeneous_design_eligible",
+        ):
+            if artifact.get(name) != validated_semantics.get(name):
+                _invalid(
+                    f"artifact {name} does not match its authenticated semantics record",
+                    PREDICTIVE_SEMANTICS_INVALID,
+                )
+        semantic_models = {
+            str(item.get("label")): item
+            for item in validated_semantics.get("models") or ()
+            if isinstance(item, Mapping)
+        }
+        if set(semantic_models) != {str(model["label"]) for model in models}:
+            _invalid(
+                "predictive statistical semantics model set does not match the physical artifact",
+                PREDICTIVE_SEMANTICS_INVALID,
+            )
+        for model in models:
+            label = str(model["label"])
+            if model.get("statistical_semantics") != semantic_models[label]:
+                _invalid(
+                    f"predictive model {label!r} semantics do not match the authenticated ensemble",
+                    PREDICTIVE_SEMANTICS_INVALID,
+                )
 
     stored = artifact.get("predictive_basis_fingerprint")
     if not isinstance(stored, str) or not stored:

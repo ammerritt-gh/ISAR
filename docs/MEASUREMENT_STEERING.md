@@ -3,10 +3,10 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the steering research foundation and the current controller contract
 > **Provenance:** hand-written
-> **Verified against code revision:** `6935ec5` (2026-07-29)
+> **Verified against code revision:** `9d77631` (2026-08-04)
 
 > **Status: design locked; the core is built.** The model-free descriptor (L0), branch model +
-> Bayesian branch assignment, soft/hard Γ constraints, Stokes-only rescue, under-model
+> normalized branch-assignment scoring, soft/hard Γ constraints, Stokes-only rescue, under-model
 > falsification, cost-normalised EIG acquisition, and the anti-Stokes fold + rival-branch banking
 > are implemented (`isar/analyze/descriptor.py`, `isar/session/branch_model.py` /
 > `branch_assignment.py`, `isar/drive/acquisition/eig.py`); what ran and what failed is recorded in
@@ -87,11 +87,16 @@ campaign may call itself blocked, and growing the registry cannot leave an old p
 Once an action is selected, `ScanDesignInventory` resolves it into window/count candidates. The
 `legacy_uniform/1` candidate — the exact historical window arithmetic — is always generated and is
 always the selected, executed one. The `scan_window_eig_mode` steering knob decides what else is
-recorded beside it: `off` designs that candidate alone (`legacy_control_off`), `shadow` additionally
-generates and persists the alternative uniform-window family unscored
-(`shadow_legacy_control_unscored`) without changing the emitted request by a single neutron.
-Declaring `authoritative` refuses at campaign setup with `scan_window_eig_authoritative_unavailable`,
-because no scorer or selector exists yet. The derived inventory is content-addressed under
+recorded beside it: `off` designs that candidate alone (`legacy_control_off`), while `shadow`
+additionally generates the alternative uniform-window family and, when one exact completed source
+master passes the frozen eligibility and policy joins, scores only `legacy_uniform/1` against
+`target_core/1`. A valid score records `shadow_legacy_control_scored`; every scoreless or unavailable
+case records `shadow_legacy_control_unscored`. Both retain the unique legacy selection and leave the
+emitted request unchanged by a single neutron.
+O41 authorizes the implemented restricted selector after owner acceptance of the coherent Slice 8
+V3 evidence. Declaring `authoritative` requires the exact O41 profile; invalid profiles refuse with a
+user-visible reason, while authenticated eligible evidence may select `target_core/1`. The
+implementation still awaits separate O42 release review. The derived `/3` inventory is content-addressed under
 `report/scan-design/<sha256>.json` and referenced from proposal provenance. Its candidate id names the
 pre-finalization design; the existing proposal fingerprint separately names the exact request after
 live point/count clamps. A changed realization appends an `isar.scan_design_realization/1` record
@@ -99,6 +104,68 @@ linking those identities through initial finalization, target-support step reduc
 recovery. Every physical submission and acquisition-provenance entry repeats the design reference,
 candidate/context fingerprints, and exact realized window/count, so crash recovery does not sever the
 join; the inventory itself remains derived and recomputed rather than loaded as controller state.
+Shadow scoring runs at the loop's pre-finalization seam under its own five-second soft allowance and
+is charged to the cumulative analysis clock. It resolves the source through its exact session key,
+detector, revision, and side-artifact references—never by Q or recency. Deadline, missing evidence,
+unsupported policy, and unexpected scorer failure all persist diagnostic unavailable evidence and
+continue with the same legacy request. The score envelope and variant fingerprints travel only as
+compact provenance; they do not enter the finalized request fingerprint. Historical inventory `/2`
+remains a strict read contract and is never reminted as `/3`.
+
+After finalization, shadow mode additionally persists
+`isar.scan_design_realized_comparison/o36.7` under
+`report/scan-design-realizations/<sha256>.json`. It records the exact rendered legacy request and an
+isolated target-core counterfactual at the same finalized per-point `ncount`. If identities, ordered
+adapter grids, and exposure still equal the Slice 6 pair, the sidecar references the existing score;
+otherwise both realized candidates are evaluated and scored together under a separate cumulative
+five-second per-proposal allowance. Failure publishes numerical unavailability but still carries the
+exact selected legacy request and grid fingerprints. Initial and execution-time finalization refresh
+stale evidence; minimum-target-support step reduction forces a refresh before revalidation.
+Because Slice 6 and Slice 7 have separate five-second allowances, a shadow proposal can spend roughly
+ten seconds in the worst case; a forced pre-submit refresh consumes only the Slice 7 allowance that
+remains.
+
+Submission and card provenance carry seven realized fields: five identities (comparison reference and
+fingerprint, ordered variant fingerprints, selected request fingerprint, and selected grid
+fingerprint), applicability, and invalidation reason. A rescored `o36.7` variant nests the existing
+`o36.5` score-set internals. Completed TAVI data compare `result.scan_values_1` with the selected grid
+using ordered adapter-canonical equality after representation normalization, not raw floating-point bit
+equality. A changed value/order/length logs `executed_grid_mismatch` and cannot support later authority,
+while ordinary shadow analysis continues. Missed-window recovery clears the realized
+variant/request/grid claims, marks `eig_realization_invalidated_by_recovery`, and proceeds outside EIG.
+If recovery cannot authenticate the retained sidecar, it logs `realized_comparison_unavailable` and
+continues without recomputation or replacement evidence. Refresh/persistence failure or a failed
+pre-submit authentication after its single forced refresh removes all five current EIG identities,
+marks applicability unavailable, and leaves the ordinary legacy request available for submission.
+
+`isar.scan_design_realization/1` is additive-open: readers must ignore unknown additive fields. The
+coherent Slice 8 V3 gate is owner-accepted under O41: it reauthenticates eligibility, `/3` inventory,
+the actual production-created realized comparison, submission, acquisition, target request, and
+executed-grid evidence and calculates a counterfactual classification after the run. Its positive
+authority envelope contains one clean case, and `delta - 2 * paired_SE > 0` remains a pragmatic
+engineering margin rather than calibrated 95% coverage. The tools-only evaluator is not imported by
+the controller and grants no current eligibility, selection, proposal, or submission authority.
+
+Slice 9 implements the O41-restricted authority path. Eligible decisive superiority may select
+target-core; eligible unresolved or inferior evidence retains legacy; ineligible states use the
+existing non-EIG path. Stale, malformed, unauthenticated, unavailable, or grid-mismatched evidence
+has no EIG authority. One shared refresh permits at most one rebuild and reselection; a second
+mutation submits authenticated legacy without a third pass. The durable authority decision precedes
+submission and its hash is bound into the submission record. Returned-grid mismatch invalidates only
+that acquisition lineage. O42 remains the separate release review.
+
+The allowance is cooperative, not preemptive: the adapter checks before each synchronous variant
+score and again after it returns. If the second check crosses the deadline, that raw score set is
+discarded before validation, the current and remaining variants record `shadow_scoring_deadline`,
+and the in-flight legacy proposal continues normally.
+
+The proposal-wide `authoritative_evidence_revision` remains transition-first and continues to name
+the evidence transition used by proposal/request identity. Shadow scoring has a narrower exact-source
+join: its in-memory action provenance names the selected completed master's `master_revision` (or
+null), independently of the proposal-wide revision. This preserves off/shadow request parity while
+refusing same-Q or later-master substitution. Historical `isar.objective/2` records that omit the
+additive `scan_window_eig` block load as no-policy/default-scoring objectives; readers never consult
+the current card to supplement such a full spec, envelope, or resume record.
 Alongside the interval/no-progress brakes there is an identity-space one, `identity_saturated`, for
 the case those cannot speak to — an identity-ambiguous q never matches the target branch, so it never
 accumulates the pooled-master updates `interval_floored` reads. It requires both the target
@@ -313,11 +380,12 @@ So the chosen engine is:
    **not** closed-form: for a multi-point scan the posterior-predictive `p(y|d)` is a mixture over the
    posterior samples, so EIG is a **sample-based estimate**, not an analytic quantity. (Only the
    linear-Gaussian special case, §6, is closed-form.)
-2. **Estimate it heavy-but-honest from the posterior samples ISAR already draws** (parametric bootstrap /
-   nested sampling): a **fixed sample-based posterior-predictive mutual-information / contrastive
-   estimator** per candidate — affordable at a minute/point, and **validated against expensive
-   nested-Monte-Carlo in Tier 1** (§3). Hold the estimator fixed when ranking designs so its bias is
-   common-mode.
+2. **Estimate it from one explicitly declared parameter measure.** ISAR currently stores
+   parametric-bootstrap, nested-posterior, and HESSE/Laplace particles. They are not interchangeable
+   posterior samples. The first scan-window design contract will therefore use a homogeneous
+   `akaike_weighted_parametric_bootstrap_predictive` shadow measure and validate it against realized
+   complete refit-and-reselect updates. A later all-model Bayesian posterior mixture is the formal
+   comparator. Hold the estimator fixed when ranking designs so its bias is common-mode.
 3. **Cheap Poisson-Fisher score `(∂λ/∂θ_ω₀)²/λ` as a fast screen** to shortlist candidates before the
    heavy rank (light for simulation/proof-of-concept, heavy where it matters). The **acquisition unit is a
    whole constant-Q scan**: rank scan proposals by EIG-per-cost first; per-energy-bin dwell optimisation
@@ -334,21 +402,25 @@ So the chosen engine is:
 5. **Escalate estimator honesty where the posterior is non-Gaussian** (weak signal): HESSE/Laplace when
    clean → bootstrap / nested sampling when not. ISAR already has all three; wire the acquisition to the
    same ladder.
-6. **Model-average the EIG** over competing hypotheses so the loop does not optimise for one possibly-wrong
-   model (see §4.2 and §6).
+6. **Average the design score over competing hypotheses using an explicitly named weight measure**
+   so the loop does not optimise for one possibly-wrong model (see §4.2 and §6).
 7. **Two-term scan value** *(Implemented 2026-07-17 — DECISIONS O6)*:
    The shipped master-authoritative path draws incremental Poisson counts from every retained
-   plausible model in `isar.master_predictive/2` and estimates mutual information about the joint
-   target-ω/model/branch state. It reports expected ω-half-width reduction and model/branch-identity
-   entropy reduction separately; neither is converted into the other's units by a λ weight. Common
-   random numbers make candidate comparisons deterministic, with progressively larger simulation
-   batches when the leading candidates are not separated. The older λ-weighted deterministic
+   plausible model in `isar.master_predictive/2` and computes a legacy sample-based information
+   score about the joint target-ω/model/branch state. Its model-dependent mix of nested,
+   bootstrap, and HESSE/Laplace particles is not a formal Bayesian posterior predictive and is
+   ineligible for scan-window EIG or acquisition under STAT-1 semantics. It reports expected
+   ω-half-width reduction and model/branch-identity entropy reduction separately; neither is
+   converted into the other's units by a λ weight. Common random numbers make action/Q comparisons
+   deterministic, with progressively larger simulation batches when the leading candidates are not
+   separated. The older λ-weighted deterministic
    branch-confusion proxy remains only in the explicit classification/opening-move fallback where a
    master predictive artifact does not yet exist; it is not the acquisition score for a usable master.
    Here a “candidate” is a scientific action/Q alternative whose counts are already evaluated on its
-   master's fitted grid. The controller generates alternative energy windows for one action in
-   `shadow` mode but does **not** score or select among them; that planned interface is specified in
-   `EIG_STEERING_DESIGN.md`.
+   master's fitted grid. In `shadow` mode the controller may diagnostically score the exact
+   `legacy_uniform/1` and `target_core/1` pair from one exact eligible source master, but still never
+   selects among them: it executes the legacy control in every outcome. The restricted contract is
+   specified in `EIG_STEERING_DESIGN.md`.
 
 **Honest limit:** at single-digit counts the information is simply not there; no method conjures it.
 Correct behaviour is to report low confidence honestly and let EIG decide *count more here / move*;
@@ -383,14 +455,16 @@ later "survey mode."
 
 ### 4.4 The fit-vs-decide contract (engineering invariants)
 
-Constraining a fit with a prior and *deciding what the data actually says* are different jobs; the
-implementation must keep them apart or the prior silently corrupts model selection and falsification:
+Constraining a fit with a prior and *deciding what the data actually says* are different jobs. This
+is the target contract; STAT-1 exposes where the current implementation does not yet satisfy it, and
+STAT-2 owns enforcement:
 
 - **Separate the data cost from the posterior cost.** A soft prior penalty enters the *optimiser's*
-  objective — so the reported error bar is the honest data∩prior width — but **never** the scalar that
-  goodness-of-fit, AIC/BIC model selection, and the falsification gate read; those are recomputed from the
-  pure Poisson `data_cost` at the fitted parameters. Selection and falsification judge the data alone;
-  only the point estimate and its error bar see the prior.
+  objective, while goodness-of-fit and AIC/BIC read the pure Poisson `data_cost`. Today that data cost
+  is nevertheless evaluated at the constrained optimum, so it is not generally the comparable
+  data-only MLE required by ordinary model comparison. STAT-1 labels such candidates
+  selection-ineligible but leaves their scores and weights unchanged; STAT-2 must separate
+  comparable selection fits from constrained delivery fits.
 - **Intensity is provenance-bearing, not a bare number.** A fitted amplitude is not portable across dwell
   time, monitor/time normalisation, resolution, detector, instrument, or merge state. What crosses between
   scans (to seed detection power or a branch prior) is a **normalised integrated intensity with its
@@ -634,9 +708,7 @@ The loop gained a small, additive operator-control contract (GUI_DESIGN.md G19 h
 
 - **Cooperative stop.** `isar drive --control-token <t>` (token alphabet `[A-Za-z0-9_-]`, max
   64 — it names the control file) makes the loop check `report/control/stop-<t>.json` at every
-  iteration boundary: the top of each iteration **and once more after the final allowed
-  iteration** (so a stop written during the last `--max-iters` scan is still honored — with
-  `--max-iters 1` that post-exhaustion boundary is the only one that can see it). Present → one
+  iteration boundary, i.e. at the top of each iteration. Present → one
   acknowledgement `decide` event (`action="operator_stop"`), the in-flight iteration having
   already completed (wait → persist → analyze), then a clean exit with the first-class terminal
   state **`operator_stopped`** (CLI exit **4**; met 0 / incomplete 3 / infeasible 6 / error 2):
@@ -646,8 +718,11 @@ The loop gained a small, additive operator-control contract (GUI_DESIGN.md G19 h
   checks, byte-identical behavior. A campaign that ends on its own (met/incomplete/infeasible) at a
   boundary where no stop was yet visible reports its true state — the stop check always runs
   before, never after, that decision.
-- **`--max-iters` is a per-invocation cap.** `run_campaign` restarts iteration numbering at zero
-  each invocation; a resume gets a fresh cap. Spend does not reset — the ledger is whole-log.
+- **The budget is the only stop condition.** There is no iteration cap: the loop runs until the
+  campaign completes, the operator stops it, or the declared budget (counting seconds, or neutrons
+  when that is the declared kind) is exhausted. A budget of `None` is unlimited by operator choice.
+  `run_campaign` restarts iteration numbering at zero each invocation, but spend does not reset —
+  the ledger is whole-log.
 - **LLM-free resume.** `--resume-latest` (mutually exclusive with `--goal`/`--spec`) rebuilds
   the objective from the last `campaign_start` event's frozen `objective` dict — a goal is never
   re-compiled through the LLM on resume. `--budget` may still override explicitly; **`--tier` is
@@ -752,8 +827,25 @@ the connected tracker into a separate `isar.target_projection/2` bound to the au
 produced it (ADR-019; [`EIG_STEERING_DESIGN.md`](EIG_STEERING_DESIGN.md)).
 Nested draws win, then full-fit
 bootstrap draws, then a trusted multivariate HESSE/Laplace approximation. The model-weighted ω interval
-is the certification interval; therefore Γ may be `resolution_limited` without blocking an otherwise
-identified ω. Missing simulation-grade draws trigger a single full-tier escalation for that revision.
+is conditional on target-present retained models and can therefore mix three different parameter
+measures. It remains the legacy certification and stopping interval; therefore Γ may be
+`resolution_limited` without blocking an otherwise identified ω. It is not a Bayesian
+model-averaged credible interval, does not carry no-target mass, and is ineligible for EIG and
+acquisition. Missing simulation-grade draws trigger a single full-tier escalation for that revision.
+
+STAT-1 records those facts additively in `isar.predictive_semantics/1`, including exact
+offered/scored/weight-denominator/retained/projection set fingerprints, per-model estimator and
+constraint eligibility, particle and draw measures, Bayesian prior dimensions, and named authority
+scopes. `construction_complete` and the legacy `predictive_complete_for_eig` describe artifact
+construction only; every `/2` artifact has `homogeneous_design_eligible=false` because its contract
+permits model-dependent fallback. `target_projection_complete` is an explicit alias for projection
+construction completeness, not target-presence support.
+
+STAT-1 deliberately neither bumps `PREDICTIVE_CONTRACT` nor regenerates cached masters. STAT-2 must
+introduce or bump the selection contract used by both the master-fit cache fingerprint and the
+unchanged-master carry gate. STAT-3 then refuses pre-STAT-2 or semantics-incomplete inputs when it
+builds the homogeneous shadow-design artifact. Carrying a pre-STAT-1 cached artifact can therefore
+never make a workspace eligible for EIG-3.
 
 Acquisition estimates information about the joint target-ω/model/branch latent state from incremental
 Poisson counts. Deterministic mode ranks per predicted analysis second; measurement-dominated tiers use

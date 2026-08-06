@@ -97,7 +97,7 @@ def test_monitor_built_mid_scan_shows_the_current_scan_immediately(qtbot, ready_
     w.campaign_vm.on_workspace_changed({"events"})   # consumed with no monitor in existence
     w.toggle_compact_mode()                          # NOW the monitor is created
     text = w._campaign_monitor._current.text()
-    assert "q=(2, 0, 0)" in text and "no scan yet" not in text
+    assert "H=2" in text and "no scan yet" not in text
 
 
 def test_monitor_ticker_mirrors_log(qtbot, ready_window):

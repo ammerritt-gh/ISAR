@@ -16,9 +16,11 @@ repo, command). Also, fittingly, the river through Munich.
 **Status:** Living design, consolidated 2026-07-09 (refinement patches merged; decision ledger
 split out to `docs/DECISIONS.md`). Stages I–II (parse/reduce, analysis) are built and validated;
 the drive loop (Stage III) is built and has passed its first certification campaign against the
-**analytic synthetic tier** (`fn:phonon_dft`; see `docs/campaigns/`). The TAVI-as-backend campaign
-(the SVP, §9) has cleared its **deterministic** rung (2026-07-10); the next proofs are the
-realistic-clock and McStas rungs, both Planned (§15). Statuses in this document follow the discipline:
+**analytic synthetic tier** (`fn:phonon_dft`; see `docs/campaigns/`). Deterministic TAVI backend
+validation ran on 2026-07-10; realistic-clock and McStas validation remain Planned backend-runtime
+and fidelity-validation rungs (§9, §15). EIG-4 is the current SVP; same-action scan-window scoring
+is implemented through diagnostic scored-shadow inventories, while exact realized-request rescoring
+and authority remain Planned. Statuses in this document follow the discipline:
 every capability is **Implemented**, **Partial**, or **Planned**, and nothing is described in the
 implemented voice unless it is.
 
@@ -334,13 +336,13 @@ The certification ladder: **analytic synth** (`fn:phonon_dft` truth; instant, de
 Stage III's first certification ran here) → **TAVI as backend** (McStas-faithful physics; the
 driver cannot tell it from the instrument) → **instrument** (PUMA/MLZ, IN8/ILL, S30/APS).
 
-**The SVP: a full campaign against TAVI-as-backend** — same objective and driver as the analytic
-certification, TAVI answering scans, and **realistic clocks**: counting time reported as the
-instrument would report it, so the wall-clock budget semantics (§8) are exercised before they
+**Backend-runtime and fidelity validation** — the TAVI campaign uses the same objective and driver
+as the analytic certification, TAVI answering scans, and **realistic clocks**: counting time reported
+as the instrument would report it, so the wall-clock budget semantics (§8) are exercised before they
 meet a real night. TAVI will surprise in ways the analytic tier cannot (resolution tails,
 backgrounds, count-rate reality); better simulated than actual. *(Partial — the deterministic rung ran
 2026-07-10 as the S3 re-certification, `docs/campaigns/2026-07-10_SVP_RECERT.md`; realistic
-clocks and the McStas rung remain Planned.)*
+clocks and the McStas rung remain Planned.)* EIG-4, not TAVI/McStas, is the current SVP.
 
 **Backend-first integration.** Oracle use (simulate a proposed scan before spending beam) and
 dry runs are the same interface invoked off-path; getting the backend right gets them free.
@@ -435,6 +437,8 @@ DECISIONS W1–W3.)*
 | γ-at-bound calibration v2; Γ prior | Planned |
 | `tas4d` convolution (TAVI-supplied ellipsoids) | Planned |
 | Stage III: per-point objective, EIG acquisition, stop-and-report | Implemented (analytic tier certified) |
+| Same-action scan-window EIG | **Partial:** predictive `/2`, arbitrary-grid evaluation, candidate generation, executed-grid identity, target projection, pure candidate scoring, Slice 6 diagnostic scored-shadow inventories, Slice 7 exact realized-request rescoring/provenance, the accepted retained Slice 8 tools-only gate, and the O41-restricted Slice 9 opt-in authority path Implemented. Authoritative selection is **Partial**: demonstrated in deterministic simulation, opt-in, pending O42 release review. The selection rule is a **symmetric per-neutron comparison** (O43) — the two candidates are compared on information per neutron and the winner is taken, with ties and partition-offset disagreements broken by cost rather than by retaining the survey. There is no polarity to switch: neither candidate is a default. The survey still wins the first pass across Q, but structurally, because an unmeasured q has no prediction to centre a core on and so offers no core candidate. On a cold-start campaign every scored decision after the first pass selected the centred core. Known limitation: the QoI partition (0.5 meV) is far coarser than the design prediction sigma (median 0.0182 meV), so once a fit exists the comparison is frequently a tie decided on cost rather than on information — accepted deliberately at EIG-4 close, see `docs/EIG_STEERING_DESIGN.md`. EIG-4 is complete. |
+| Acoustic zone-centre exclusion | **Implemented** (O44, 2026-08-05): an acoustic branch has ω(q→0) → 0, so at the reduced-q origin the excitation is degenerate with the elastic line and is not a measurable target at any exposure. That q is not precision-coverage eligible from the first iteration, on the branch type and the tracker's published `reduced_q_origin_index` alone. Branch-conditional: an optic branch has a finite ω at the zone centre and stays eligible there. An acoustic campaign's "N measurable grid q converged" is therefore one lower than its path length. |
 | Exposure-aware pooling + tolerance-driven dynamic `ncount` | **Partial** (O13, 2026-07-18; raw counts/ΣN retained and deterministic interval scaling/brakes/replay Implemented, Fisher/sample-based dwell optimisation Planned) |
 | Bayesian optic cold-start + selector-driven provisional evidence | **Partial** (2026-07-18; posterior assignment, neighboring-q evidence and probabilistic rejection implemented, sampled Stage-C MI Planned) |
 | Separate measurement budget + cumulative analysis guardrail | Implemented (2026-07-19; durable ten-second checkpoints) |
@@ -443,7 +447,7 @@ DECISIONS W1–W3.)*
 | Master-only restart-invariant final certification | Implemented (2026-07-19; one requested pooled master/unit, completion-order checkpoints, complete-generation hash marker, append-only revisions) |
 | `diminishing_returns` strategy diagnostic (nonterminal) | Implemented (2026-07-19; O18) |
 | Async one-step-stale loop | Planned |
-| TAVI-as-backend campaign (the SVP) | **Partial** (deterministic rung 2026-07-10; clocks + McStas Planned) |
+| TAVI backend-runtime and McStas fidelity-validation rungs | **Partial** (deterministic rung 2026-07-10; realistic clocks + McStas Planned) |
 | Campaign diagnostic report (`isar diagnose`) | Implemented (2026-07-10) |
 | Fit-free ingest to the ledger (`isar ingest`, `ingested` status) | Implemented (2026-07-12) |
 | Per-unit data files (`data/ingest/`, `isar.unit_data/1`) + ingest provenance enrichment | Implemented (2026-07-12) |

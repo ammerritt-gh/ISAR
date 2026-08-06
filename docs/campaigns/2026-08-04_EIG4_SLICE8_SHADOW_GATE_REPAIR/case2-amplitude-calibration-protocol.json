@@ -1,0 +1,65 @@
+{
+  "contract": "isar.eig4_slice8_case2_amplitude_calibration_protocol/o36.8.2",
+  "authorized_from": {
+    "status": "aborted_pre_freeze",
+    "reason_code": "fixture_regime_mismatch",
+    "disposition_fingerprint": "6867a22e61eb48b6195b2daf65c61f25ce2ecff2c5a0650d0dcf8943f2155604"
+  },
+  "case_id": "s8-c02-weak-unresolved-confirmed",
+  "case_generation_seed": 8040802,
+  "fixed_physical_parameters": {
+    "q": [2.15, 0.0, 0.0],
+    "draw_energies_meV": [1.9, 2.1],
+    "target_energy_meV": 2.0,
+    "prediction_sigma_meV": 0.4,
+    "ncount": 1,
+    "survey": true
+  },
+  "amplitude_ladder": [
+    0.3,
+    0.275,
+    0.25,
+    0.225,
+    0.2,
+    0.175,
+    0.15,
+    0.125,
+    0.1,
+    0.075,
+    0.05,
+    0.025,
+    0.0125,
+    0.00625
+  ],
+  "ordinary_regime_contract": {
+    "eligibility_status": "eligible",
+    "target_modality": "fold",
+    "target_state": "confirmed",
+    "pool_consistent": true,
+    "target_delivery_eligible": true,
+    "ncount": 1,
+    "maximum_amplitude": 0.3
+  },
+  "scoring_contract": {
+    "simulation_count": 128,
+    "block_count": 8,
+    "scoring_config_fingerprint": "c13778320ef113625e8a7784733d414d334d64908446db1334ef4a8f98ecc790",
+    "seed_derivation": "production"
+  },
+  "policy_contract": {
+    "policy_id": "eig4_slice8_excitation_energy",
+    "variant_id": "primary_0p5_mev",
+    "bin_width_meV": 0.5,
+    "offsets_meV": [0.0, 0.25]
+  },
+  "selection_rule": {
+    "order": "first_ladder_value",
+    "requirements": [
+      "ordinary_weak_target_regime_valid",
+      "delta_information_per_executed_point_nats > 0",
+      "delta_information_per_executed_point_nats - 2 * standard_error <= 0"
+    ],
+    "no_fallback_retuning": true
+  },
+  "protocol_fingerprint": "43472339639932aa6bbdc1982cd87bcf40b250d9e061a8e88ed286a03a42e9bb"
+}

@@ -20,6 +20,41 @@ _OD_FLOOR = 1e-6  # keep Ω_d = √(ω₀²−Γ²) strictly real/positive in th
 log = logging.getLogger(__name__)
 
 
+class BoundTruncated(float):
+    """A profile side that walked to a physical Ω_d bound before reaching Δcost=`delta`.
+
+    A fit that reaches its bounds normally means something is wrong upstream, so the honest
+    output is a refusal a human can see — never a half-interval delivered as if it were 1σ.
+    It is a ``nan`` float subclass so every existing numeric consumer keeps behaving exactly as
+    it did (``np.isfinite`` is False, arithmetic propagates nan), while the interval-semantics
+    layer can tell a bound truncation from a profile that simply was not available.
+
+    **The marker is an in-process signal with a required lifetime, not a durable value.**  It
+    survives pickling (including inside a tuple, so the worker-pool hand-back is safe), deepcopy,
+    and ``list``/``tuple`` conversion — but ``np.asarray``, ``float()``, arithmetic and any
+    text round-trip erase the subclass and leave a plain ``nan`` that ``is_bound_truncated``
+    cannot recognise.  That is sound only because the one consumer, ``_interval_semantics_for``,
+    runs inside ``attach``/``attach_batch`` in the same process that produced the marker, and
+    converts it into the durable ``failure_reason`` string before anything is written.  A change
+    that moves interval-semantics construction after a serialisation boundary — notably the
+    ``results.csv`` round-trip, which reads ``omega0_profile_lo``/``_hi`` back as plain floats —
+    would silently downgrade every bound truncation to ``profile_interval_unavailable`` with no
+    test failing.  ``test_the_bound_marker_survives_exactly_the_transports_it_must`` pins this.
+    """
+
+    __slots__ = ()
+
+    def __new__(cls, _value=None):
+        # ``_value`` exists only so pickle's float-subclass reconstruction (which replays the
+        # instance's own nan) round-trips: these sides are computed in a worker process.
+        return super().__new__(cls, float("nan"))
+
+
+def is_bound_truncated(value) -> bool:
+    """True when ``value`` is the explicit bound-truncated refusal (not a plain nan)."""
+    return isinstance(value, BoundTruncated)
+
+
 def _cost_closure(prob, ctx):
     """The objective the profile scans: data cost + soft-prior penalty (contract 1). Unconstrained
     fits scan the data cost exactly as before, so the ω₀ profile interval is the honest posterior
@@ -71,6 +106,21 @@ def _omega0_profile_crossing(hyp, ctx, fit_result, direction, delta: float = 1.0
     # itself is frozen, ω₀↔Ω_d is 1:1 and the scan re-minimises only the remaining free amplitudes.
     fixed_map = {names[i]: float(v) for i, v in zip(prob.fixed_pos, prob.fixed_vals)}
     g_fixed = g_name in fixed_map
+    # The derived coordinate has a physical lower edge set by the fitted model's Omega_d bound.
+    # A lower-side scan can step past that edge before reaching delta-cost=1, especially for
+    # weak/near-elastic fits. Keep the exact geometry explicit so we never hand scipy an inverted
+    # Gamma bound or manufacture a crossing outside the fitted parameter space.
+    od_lo = max(float(bounds[od_name][0]), _OD_FLOOR)
+    od_hi = float(bounds[od_name][1])
+    if g_fixed:
+        omega0_floor = float(np.hypot(fixed_map[g_name], od_lo))
+        omega0_ceiling = float(np.hypot(fixed_map[g_name], od_hi))
+    else:
+        g_lo, g_hi = (float(v) for v in bounds[g_name])
+        min_abs_gamma = 0.0 if g_lo <= 0.0 <= g_hi else min(abs(g_lo), abs(g_hi))
+        omega0_floor = float(np.hypot(min_abs_gamma, od_lo))
+        omega0_ceiling = float(np.hypot(max(abs(g_lo), abs(g_hi)), od_hi))
+    omega0_edge = float(np.nextafter(omega0_floor, np.inf))
     reduced = [n for n in names if n != od_name and n not in fixed_map]   # free: (Γ), A, (E), BG
     costv = _cost_closure(prob, ctx)
     theta_fit = {n: float(fit_result.params[n]) for n in names}
@@ -80,18 +130,24 @@ def _omega0_profile_crossing(hyp, ctx, fit_result, direction, delta: float = 1.0
 
     def _full(omega0, red):
         g = _gamma_of(red)
-        od = float(np.sqrt(max(omega0 ** 2 - g ** 2, _OD_FLOOR ** 2)))
+        # Clamp Ω_d on BOTH sides of its fitted box. Clamping only from below let the upper side
+        # of the scan leave the fitted parameter space while the lower side was truncated,
+        # producing an asymmetric, upward-skewed "1σ" interval.
+        od = min(float(np.sqrt(max(omega0 ** 2 - g ** 2, od_lo ** 2))), od_hi)
         vals = {n: float(red[reduced.index(n)]) for n in reduced}
         vals.update(fixed_map)                            # frozen params at their branch values
         vals[od_name] = od
         return np.array([vals[n] for n in names], dtype=float)
 
     def profile_cost(omega0: float) -> float:
+        if omega0 < omega0_edge:
+            return float("inf")
         rbounds, red0 = [], []
         for n in reduced:
             lo, hi = bounds[n]
             if n == g_name:
-                hi = min(hi, omega0 - _OD_FLOOR)         # Γ < ω₀ so Ω_d stays real
+                gamma_hi = float(np.sqrt(max(omega0 ** 2 - od_lo ** 2, 0.0)))
+                hi = min(hi, gamma_hi)
             lo, hi = float(lo), float(hi)
             rbounds.append((lo, hi))
             red0.append(min(max(theta_fit[n], lo), hi))
@@ -122,11 +178,20 @@ def _omega0_profile_crossing(hyp, ctx, fit_result, direction, delta: float = 1.0
             return float("nan")
         for _ in range(80):
             nxt = prev + direction * step
-            if nxt <= _OD_FLOOR:
-                return float("nan")
+            reached_edge = (nxt <= omega0_edge if direction < 0 else nxt >= omega0_ceiling)
+            if reached_edge:
+                nxt = omega0_edge if direction < 0 else omega0_ceiling
             if g(nxt) > 0:
                 a, b = (prev, nxt) if direction > 0 else (nxt, prev)
                 return float(brentq(g, a, b))
+            if reached_edge:
+                # The profile ran out of parameter space before Δcost=delta. That is a refusal,
+                # not a number, and it must stay distinguishable from "no profile available".
+                log.warning("omega0 profile truncated at the %s Omega_d bound (edge=%.6g) "
+                            "before reaching delta-cost=%.3g",
+                            "lower" if direction < 0 else "upper",
+                            omega0_edge if direction < 0 else omega0_ceiling, delta)
+                return BoundTruncated()
             prev, step = nxt, step * 1.4
         return float("nan")
 

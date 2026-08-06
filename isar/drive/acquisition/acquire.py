@@ -24,6 +24,7 @@ virtual instrument clock exists; until then the function counts neutrons only.
 from __future__ import annotations
 
 import inspect
+import logging
 import math
 import time
 from dataclasses import dataclass, field, replace
@@ -78,12 +79,39 @@ from isar.drive.acquisition.scan_grid import format_scan_command
 from isar.schema.steering import AUXILIARY_TRACK_NODE, NON_CANONICAL_SINKS, ProposalScore
 from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
 
+_LOG = logging.getLogger(__name__)
+
 # Where an identity probe sits in the selection order. Above zero so every ordinary action outranks it:
 # the probe is what to try when the cheap path has run out, never a competitor for beam while ordinary
 # work remains. One shared constant so the identity generators cannot drift apart.
 IDENTITY_PROBE_RANK = 100.0
 
 ASSOCIATION_UNCERTAINTY_PER_UNMEASURED_STEP = 0.15
+
+
+@dataclass(frozen=True)
+class ShadowScoringSource:
+    """Exact completed-master evidence carried to the live shadow-scoring adapter.
+
+    This value is deliberately in-memory only.  It freezes the selected action's source records at
+    realization time so the adapter never has to search the workspace for a plausible same-Q or
+    newer master after action selection has already happened.
+    """
+
+    master_session_key: str | None
+    detector_id: str | None
+    master_revision: str | None
+    source_acquisition_id: str | None
+    source_submission_request_fingerprint: str | None
+    scientific_action_fingerprint: str
+    predictive_ref: str | None
+    target_projection_ref: str | None
+    target_outcome: dict[str, Any] | None
+    selection_record: dict[str, Any] | None
+    shadow_record: dict[str, Any] | None
+    target_projection_authority: dict[str, Any] | None
+    action_intent: MeasurementIntent
+    action_provenance: dict[str, Any]
 
 
 @dataclass
@@ -115,6 +143,14 @@ class ScanProposal:
     # In-memory only: the complete scan-design inventory that produced this planned request. The drive
     # loop persists it after finalization and adds only its content-addressed reference to ``meta``.
     scan_design_inventory: ScanDesignInventory | None = field(
+        default=None, repr=False, compare=False)
+    # In-memory only: exact source evidence for diagnostic scan-window scoring.  It is intentionally
+    # absent from ``to_dict`` and therefore cannot affect the request fingerprint or wire payload.
+    shadow_scoring_source: ShadowScoringSource | None = field(
+        default=None, repr=False, compare=False)
+    # In-memory only: Slice 7's post-finalization Monte Carlo allowance is independent of the
+    # pre-finalization Slice 6 allowance and is shared by every mandatory refresh for this proposal.
+    realized_scoring_remaining_seconds: float | None = field(
         default=None, repr=False, compare=False)
 
     def scan_command(self) -> str:
@@ -243,6 +279,27 @@ def _resolve_fwhm(resolution_info, h: float, k: float, l: float, deltaE: float) 
 
 
 def _fwhm_from(info) -> float:
+    """The energy FWHM to size scan windows and steps with.
+
+    ``GET /resolution`` reports two energy widths of the same ellipsoid, and they differ by a
+    factor of ~2.5 on the TAVI configuration this drives:
+
+    - ``fwhm.dE`` is the MARGINAL width, ``sqrt(8 ln2 * inv(M)[E,E])`` — the ellipsoid projected
+      onto the energy axis, integrating over Q. TAVI publishes the identical number as
+      ``vanadium_fwhm_meV``, because that projection is exactly what an incoherent elastic
+      scatterer measures.
+    - ``bragg.dE`` is the SECTION width, ``sqrt(8 ln2 / M[E,E])`` — the ellipsoid cut at fixed Q.
+
+    A constant-Q energy scan through a sharp excitation measures a section, not a projection, so
+    the marginal width overestimates the peak it will actually see (a projection is never narrower
+    than the corresponding section). Sizing windows on it made every target core ~2.5x too wide,
+    which is what overflowed the declared energy domain at high q. Prefer the section.
+
+    The exact width of a DISPERSIVE mode is a slope-dependent section — focusing or defocusing with
+    the sign of the dispersion against the ellipsoid tilt — and lies between these two; TAVI exposes
+    ``projections`` for that refinement. ``bragg.dE`` is the right order and the honest choice until
+    that is built.
+    """
     if info is None:
         return DEFAULT_FWHM_MEV
     if isinstance(info, (int, float)):
@@ -251,6 +308,11 @@ def _fwhm_from(info) -> float:
     if isinstance(info, dict):
         if info.get("ok") is False:               # /resolution refusal (infeasible geometry)
             return DEFAULT_FWHM_MEV
+        bragg = info.get("bragg")
+        if isinstance(bragg, dict) and bragg.get("dE"):
+            value = float(bragg["dE"])
+            if value > 0:
+                return value
         if "fwhm_dE" in info and info["fwhm_dE"]:
             return float(info["fwhm_dE"])
         fwhm = info.get("fwhm")
@@ -555,7 +617,15 @@ def _rival_gap_pick(grid: list[GridQ], frontier_index: int, direction: int) -> G
         # mode count.  Without the cap a reconnect that never resolves the rival would be re-picked
         # until the point's own 12-production ceiling — with geometric escalation, billions of
         # counts spent proving the same negative.  The point's own ceiling still applies on top.
-        if (point.visited and 1 <= resolved < want
+        #
+        # ``precision_coverage_eligible`` is O44.  An acoustic branch has ω(q→0) → 0, so at the
+        # reduced-q origin the mode is degenerate with the elastic line and there is nothing
+        # separable to reconnect — the "gap" there is structural, not statistical, and counting it
+        # cannot raise its mode count.  Nothing else on this rung excludes it: the fit at that q
+        # returns a centre with an error bar thousands of times larger than itself (0.485 ± 2065
+        # meV in A11), which classifies as ``confirmed`` and so passes the walk's own state test.
+        if (point.precision_coverage_eligible
+                and point.visited and 1 <= resolved < want
                 and point.n_production < MAX_RECONNECT_PRODUCTIONS
                 and not (point.same_q_ceiling_reached or point.exposure_saturated)):
             options.append((abs(index - frontier_index), index, point))
@@ -739,9 +809,19 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
     actions = []
     for direction in (-1, 1):
         frontier_index = anchor_index + direction
+        # Walk *past* an O44-exempt q as well as past a tracked one.  An acoustic branch has
+        # ω(q→0) → 0, so at the reduced-q origin the excitation is degenerate with the elastic line
+        # and there is nothing separable to measure however many neutrons are spent.  The exemption
+        # must be tested here explicitly rather than left to ``visited``: O44 makes ``GridQ.visited``
+        # return True for the exempt origin, which means the cheap quicklook rung below is skipped
+        # and the exempt q falls straight through to the *production* rung — the opposite of the
+        # intended effect.  That is how eight consecutive production scans landed on the acoustic
+        # origin: this walk stops on any q whose ``track_state`` is not confirmed/inferred, and the
+        # origin's spurious ω₀ ± 4000σ fit leaves it in exactly that state.
         while (0 <= frontier_index < len(grid)
-               and grid[frontier_index].track_state in {
-                   "confirmed", "inferred_unresolved"}):
+               and (grid[frontier_index].track_state in {
+                   "confirmed", "inferred_unresolved"}
+                    or not grid[frontier_index].precision_coverage_eligible)):
             frontier_index += direction
         if not 0 <= frontier_index < len(grid):
             continue
@@ -768,7 +848,10 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
         bridge_index = frontier_index + direction
         if maximum_bridge_steps > 0 and 0 <= bridge_index < len(grid):
             bridge = grid[bridge_index]
-            if not bridge.visited:
+            # The eligibility test is stated even though an O44-exempt q reads as ``visited``:
+            # relying on that coincidence is what made the frontier walk above spend production
+            # scans on the origin, and the same coincidence would silently carry the bridge rung.
+            if bridge.precision_coverage_eligible and not bridge.visited:
                 actions.append((2, bridge.index, bridge, "quicklook",
                                 "tracked branch: one provisional adjacent bridge to resolve the ambiguous frontier"))
                 continue
@@ -1099,7 +1182,14 @@ def _select_target(grid: list[GridQ], model, *,
             w0 = float(model.predict(g.q)[0])
             sp = _q_sigma(g)
             ss = fisher(g, w0, sp)
-            if ss is not None and math.isfinite(ss):
+            # Both widths must be real numbers. This tier ranks the prior->scan improvement
+            # sigma_prior -> sigma_scan, which is undefined for a q whose pooled master carries no
+            # half-width yet (``_q_sigma`` returns None there, and a cold campaign has many such q).
+            # Only ``ss`` used to be checked, so such a candidate was graded and then crashed the
+            # whole generator formatting its reason string -- surfacing as a controller_fault that
+            # abandoned the campaign rather than as one unrankable q.
+            if (sp is not None and math.isfinite(sp)
+                    and ss is not None and math.isfinite(ss)):
                 graded.append((g, sp, ss))
         if graded:
             def _fkey(t):
@@ -1132,14 +1222,22 @@ def _select_target(grid: list[GridQ], model, *,
             return eig_per_cost(target + classification_weight * classification, dc)
         pick = max(candidates, key=_ckey)
         dc = _q_next_cost(pick)
-        eig = counts_eig(_q_sigma(pick), pick.tolerance, pick.counts_spent, dc)
+        sigma_prior = _q_sigma(pick)
+        eig = counts_eig(sigma_prior, pick.tolerance, pick.counts_spent, dc)
         classification = max(float(classify(pick)), 0.0) if classify is not None else 0.0
         combined = eig + classification_weight * classification
-        reason = (f"max-EIG/cost q={pick.q:g} (hkl={list(pick.hkl)}); σ={_q_sigma(pick):g} meV over "
+        # ``_q_sigma`` is None for a q whose pooled master carries no half-width, and ``counts_eig``
+        # answers +inf for exactly that case so an un-based q is scanned FIRST. The winning pick is
+        # therefore routinely the one with no sigma to print, and formatting it as a number raised
+        # TypeError inside the generator — reported as a controller_fault that ended the campaign,
+        # rather than the baseline scan the ranking had just correctly chosen.
+        sigma_text = (f"{sigma_prior:g}"
+                      if sigma_prior is not None and math.isfinite(sigma_prior) else "unmeasured")
+        reason = (f"max-EIG/cost q={pick.q:g} (hkl={list(pick.hkl)}); σ={sigma_text} meV over "
                   f"tolerance {pick.tolerance:g}, C={pick.counts_spent:g}; production scan (EIG-per-cost ranked)")
         return pick, "production", reason, ProposalScore(
-            method="counts", eig=_finite_or_none(eig), sigma_prior=_finite_or_none(_q_sigma(pick)),
-            sigma_scan=_finite_or_none(predicted_sigma_after(_q_sigma(pick), pick.counts_spent, dc)),
+            method="counts", eig=_finite_or_none(eig), sigma_prior=_finite_or_none(sigma_prior),
+            sigma_scan=_finite_or_none(predicted_sigma_after(sigma_prior, pick.counts_spent, dc)),
             c_spent=float(pick.counts_spent), reason=reason,
             classification_eig=_finite_or_none(classification),
             classification_weight=float(classification_weight),
@@ -1669,6 +1767,10 @@ def generate_action_intents(
                 declared_reasons[spec.generator_id] = str(result.reason_code)[:300]
         except Exception as error:  # noqa: BLE001 - a fault must be recorded, never escape
             failures[spec.generator_id] = f"{type(error).__name__}: {error}"[:300]
+            # The recorded code is a 300-character summary, and a generator fault ends the whole
+            # campaign as a controller_fault. Without the traceback the operator (and the next
+            # session) get a bare exception type and no line to look at.
+            _LOG.exception("action generator %s failed", spec.generator_id)
     kept = _dedupe_generated(raw)
     return kept, _generator_reports(raw, kept, failures, declared_reasons)
 
@@ -1944,6 +2046,74 @@ def propose_scan(objective, model, results_so_far: list[dict], resolution_info=N
     return proposal
 
 
+SAME_Q_SOURCE_MODEL_INTERVAL = "same_q_master_model_interval"
+SAME_Q_SOURCE_DIAGNOSTIC_INTERVAL = "same_q_master_diagnostic_interval"
+
+
+def _positive_finite(value) -> float | None:
+    """``value`` as a strictly positive finite float, or ``None`` — never an exception."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0.0 else None
+
+
+def _same_q_design_prediction(pick, intent, *, driver_inserted: bool) -> tuple[
+        float, float, str] | None:
+    """``(mean, sigma, source)`` from this q's own confirmed master, or ``None`` to use ω(q).
+
+    A canonical production/confirmation action at a q that already carries a confirmed pooled master
+    is not asking where the mode *might* be — that q supplied the predictive artifact, and its own
+    ω₀ and interval are a strictly better centre and spread than the global dispersion fit's
+    extrapolation.  Using the global model there is what made late-q target cores wider than the
+    authorized domain (the core half-width is ``max(2·FWHM, 3·σ)``, and the tricube/WLS σ grows to
+    tens of meV at high q), so ``target_core/1`` was refused with
+    ``target_core_truncated_after_domain_clip`` at exactly the points that were best measured.
+
+    Deliberately narrow — every clause names a case where the local number is *not* better:
+
+    * a driver-inserted probe or a non-``target`` window family (rival probe, differentiation probe)
+      is about a different energy, and the families that declare their own window own it outright;
+    * a non-canonical evidence sink never delivered the target, so it has no target QoI to speak for;
+    * an unvisited/survey q, or one whose identity is ambiguous (``master`` absent, fork modality,
+      inconsistent pool, unusable fit, withheld delivery, non-confirmed track), has no confirmed
+      same-q answer at all and keeps the global prediction exactly as before.
+
+    The spread prefers the certifying model/projection interval and falls back to the conservative
+    local diagnostic half-width; with neither, there is no local spread evidence and the global
+    prediction stands.
+    """
+    if driver_inserted or intent.window_family != "target":
+        return None
+    if intent.evidence_sink in NON_CANONICAL_SINKS:
+        return None
+    if getattr(pick, "track_state", None) not in (None, "confirmed"):
+        return None
+    master = getattr(pick, "master", None) or {}
+    if not master.get("usable") or master.get("target_delivery_eligible") is False:
+        return None
+    if master.get("modality") == "fork" or master.get("pool_consistent") is False:
+        return None
+    try:
+        mean = float(master["omega0"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not math.isfinite(mean):
+        return None
+    certifiable = master.get("certifiable")
+    if certifiable is None:
+        certifiable = master.get("reliable")
+    source = SAME_Q_SOURCE_MODEL_INTERVAL
+    sigma = _positive_finite(master.get("halfwidth")) if certifiable else None
+    if sigma is None:
+        source = SAME_Q_SOURCE_DIAGNOSTIC_INTERVAL
+        sigma = _positive_finite(master.get("diagnostic_halfwidth"))
+    if sigma is None:
+        return None
+    return mean, sigma, source
+
+
 def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_info,
                     budget_state, fisher, rival_band, classify) -> ScanProposal:
     """Build the executable :class:`ScanProposal` from a selected candidate.
@@ -1961,6 +2131,7 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
     # Reuse the decision the intent was fixed against — never re-derive it here, or the emitted
     # action's scientific class can disagree with the inventory's.
     driver_inserted = chosen.driver_inserted
+    intent = chosen.evaluation.intent
     if driver_inserted:
         reason = (f"driver-inserted classification probe q={pick.q:g} (hkl={list(pick.hkl)}); "
                   "higher expected branch-information value than every certification point")
@@ -1971,29 +2142,52 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
                         classification_weight=classification_weight,
                         combined_information=_finite_or_none(combined))
 
+    # The evidence this action responds to is identified *first*: when this q already carries a
+    # confirmed master it, not the global dispersion fit, is the authority on where the target sits,
+    # and the whole window geometry below is built from that decision.
+    selected_evidence = pick.evidence_master or pick.master or {}
+    same_q = _same_q_design_prediction(pick, intent, driver_inserted=driver_inserted)
+
     e_pred, e_sigma = model.predict(pick.q)
     target_prediction_mean = float(e_pred)
     target_prediction_sigma = float(e_sigma)
     design_prediction_mean = target_prediction_mean
     design_prediction_sigma = target_prediction_sigma
+    design_prediction_source = "dispersion_model"
+    if same_q is not None:
+        design_prediction_mean, design_prediction_sigma, design_prediction_source = same_q
+        # ``e_pred`` is the energy this scan is *about*: it becomes the persisted
+        # ``acquisition_target_energy`` and the centre the effective-exposure weighting is computed
+        # around. Leaving it on the extrapolation while the window is built around the measured ω₀
+        # would attribute the scan's counts to an energy it deliberately did not centre on.
+        e_pred, e_sigma = design_prediction_mean, design_prediction_sigma
     h, k, l = pick.hkl
     fwhm = _resolve_fwhm(resolution_info, h, k, l, max(float(e_pred), 0.0))
     # Survey the band until this q has a confirmed resolved fit — a concave dispersion sits above the
     # local-linear e_pred, so a tight window on an unconfirmed q misses the peak and never seeds.
     survey = not bool(getattr(pick, "best_resolved", False))
+    optic_survey = (target_hypothesis is not None
+                    and target_hypothesis.get("name") == "optic" and survey)
+    # The detailed-balance / optic restriction is a fact about the excitation, not about which
+    # prediction centred the window, so it survives the same-q path unchanged.
+    positive_only = bool(optic_survey)
     target_band = None
-    positive_only = False
-    if target_hypothesis is not None and target_hypothesis.get("name") == "optic" and survey:
-        zc = target_hypothesis.get("zc_energy") or {}
-        target_band = (zc.get("mean", zc.get("mode", e_pred)), zc.get("sigma", e_sigma))
-        positive_only = True
-    elif target_hypothesis is not None:
-        target_band = (max(float(e_pred), 0.0), max(float(e_sigma), 0.5 * fwhm))
+    if target_hypothesis is not None:
+        if same_q is not None:
+            # The support band has to travel with the centre it certifies. Left on the hypothesis'
+            # or the global model's band, the support gate would measure coverage of a region the
+            # window no longer spans — the same core/band disagreement this slice removes.
+            target_band = (max(design_prediction_mean, 0.0),
+                           max(design_prediction_sigma, 0.5 * fwhm))
+        elif optic_survey:
+            zc = target_hypothesis.get("zc_energy") or {}
+            target_band = (zc.get("mean", zc.get("mode", e_pred)), zc.get("sigma", e_sigma))
+        else:
+            target_band = (max(float(e_pred), 0.0), max(float(e_sigma), 0.5 * fwhm))
     widen = widen_factor(
         getattr(pick, "n_decline", 0), step=float(policy.get("absent_signal_widen_step", 0.5)),
         max_steps=int(policy.get("absent_signal_widen_steps", 3)))
     rb = rival_band(pick) if callable(rival_band) else rival_band
-    intent = chosen.evaluation.intent
     if intent.window_family == "rival" and intent.energy_lo is not None and intent.energy_hi is not None:
         if (rb is None or len(rb) != 2
                 or not all(math.isfinite(float(value)) for value in rb)
@@ -2001,6 +2195,7 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
             raise ValueError(
                 "rival-window scan design requires a finite rival mean and non-negative sigma")
         design_prediction_mean, design_prediction_sigma = map(float, rb)
+        design_prediction_source = "rival_band"
         # The energy this scan is *about* is the rival, not the target. ``e_pred`` becomes the
         # persisted ``acquisition_target_energy`` and the centre the effective-exposure weighting is
         # computed around, so leaving it at the target model's prediction would score the probe's
@@ -2079,12 +2274,12 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
     ncount = design.ncount
     count_diagnostics = design.diagnostics
 
-    selected_evidence = pick.evidence_master or pick.master or {}
-    evidence_revision = ((score.evidence_transition or {}).get(
-        "authoritative_evidence_revision")
+    evidence_revision = (
+        (score.evidence_transition or {}).get("authoritative_evidence_revision")
         or selected_evidence.get("content_hash")
         or selected_evidence.get("production_batch_fingerprint")
-        or selected_evidence.get("track_revision"))
+        or selected_evidence.get("track_revision")
+    )
     action_role = ("classification" if score.purpose == "differentiate" else
                    "discovery" if kind == "quicklook" else "production")
     target_branch = getattr(objective, "target_branch", None)
@@ -2110,6 +2305,11 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
         reason=reason, e_pred=float(e_pred), fwhm_dE=float(fwhm), n_points=n_points,
         meta={"e_sigma": _finite_or_none(e_sigma), "q": pick.q, "score": score.to_dict(),
               "purpose": score.purpose, "widen_factor": widen,
+              # Which prediction the emitted window was centred and sized from, so a scan's geometry
+              # can be attributed without re-deriving it from the model of the day.
+              "design_prediction_source": design_prediction_source,
+              "design_prediction_mean": _finite_or_none(design_prediction_mean),
+              "design_prediction_sigma": _finite_or_none(design_prediction_sigma),
               "acquisition_action_role": action_role,
               "target_branch_role": target_branch,
               "rival_branch_role": rival_branch,
@@ -2142,6 +2342,57 @@ def _build_proposal(objective, chosen: "_CandidateAction", model, resolution_inf
         score_recompute=score_recompute,
         intent=chosen.evaluation.intent,
         scan_design_inventory=design_inventory)
+    proposal.shadow_scoring_source = ShadowScoringSource(
+        master_session_key=(
+            str(selected_evidence["master_session_key"])
+            if selected_evidence.get("master_session_key") is not None else None),
+        detector_id=(
+            str(selected_evidence["detector_id"])
+            if selected_evidence.get("detector_id") is not None else None),
+        master_revision=(
+            str(selected_evidence["master_revision"])
+            if selected_evidence.get("master_revision") is not None else None),
+        source_acquisition_id=(
+            str(selected_evidence["source_acquisition_id"])
+            if selected_evidence.get("source_acquisition_id") is not None else None),
+        source_submission_request_fingerprint=(
+            str(selected_evidence["source_submission_request_fingerprint"])
+            if selected_evidence.get("source_submission_request_fingerprint") is not None else None),
+        scientific_action_fingerprint=intent.scientific_action_fingerprint,
+        predictive_ref=(
+            str(selected_evidence["predictive_ref"])
+            if selected_evidence.get("predictive_ref") is not None else None),
+        target_projection_ref=(
+            str(selected_evidence["target_projection_ref"])
+            if selected_evidence.get("target_projection_ref") is not None else None),
+        target_outcome=dict(selected_evidence) if selected_evidence else None,
+        selection_record=(
+            dict(selected_evidence["fit_selection_semantics"])
+            if isinstance(selected_evidence.get("fit_selection_semantics"), dict) else None),
+        shadow_record=(
+            dict(selected_evidence["shadow_model_selection"])
+            if isinstance(selected_evidence.get("shadow_model_selection"), dict) else None),
+        target_projection_authority=(
+            dict(selected_evidence["target_projection_authority"])
+            if isinstance(selected_evidence.get("target_projection_authority"), dict) else None),
+        action_intent=intent,
+        action_provenance={
+            "action_class": proposal.meta.get("action_class"),
+            "scientific_action_fingerprint": intent.scientific_action_fingerprint,
+            "proposal_scientific_action_fingerprint": intent.scientific_action_fingerprint,
+            "acquisition_action_role": proposal.meta.get("acquisition_action_role"),
+            "evidence_sink": proposal.meta.get("evidence_sink"),
+            "driver_inserted": proposal.meta.get("driver_inserted"),
+            "insertion_purpose": proposal.meta.get("insertion_purpose"),
+            # The proposal-wide identity keeps the established transition-first chain.  Shadow
+            # eligibility instead joins prospectively formed provenance to the exact selected
+            # completed master, so it must never inherit that transition identity.
+            "authoritative_evidence_revision": (
+                str(selected_evidence["master_revision"])
+                if selected_evidence.get("master_revision") is not None else None),
+            "hkl": [float(h), float(k), float(l)],
+        },
+    )
     normalize_proposal_score(proposal, float(objective.tolerance_meV))
     normalized_score = proposal.meta["score"]
     epc = normalized_score.get("eig_per_cost")

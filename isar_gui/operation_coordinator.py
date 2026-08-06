@@ -312,7 +312,8 @@ class WorkspaceOperationCoordinator(QObject):
 
     def _start_compile(self, job: _Job) -> None:
         opts, env, output = job.payload
-        cmd = build_compile_command(self._python, opts, output)
+        cmd = build_compile_command(
+            self._python, opts, output, workspace=job.root)
         log_path = Path(output).with_suffix(".log")
         self._log("$ " + " ".join(cmd))
         runner = ProcessRunner(self)

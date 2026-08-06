@@ -38,6 +38,7 @@ EXEMPT_PREFIXES = (
 )
 EXEMPT_FILES = (
     "CLAUDE.md",                 # a 12-byte `@AGENTS.md` stub
+    "docs/DESIGN_GOALS.md",      # owner-authored objectives list; declared off-limits to agents
 )
 # Carve-outs: hand-written index files that happen to sit under an exempt prefix. Without these,
 # adding one generated directory would silently stop checking its own README.

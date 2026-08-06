@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for term definitions
 > **Provenance:** hand-written
-> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Verified against code revision:** `1310969` (2026-07-30)
 
 Plain-language definitions for the terms in ISAR's reports and figures. Written for a scientist who
 knows inelastic scattering and manual fitting but is new to ISAR. (Seeded during the
@@ -54,10 +54,37 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   there are plenty of counts; ISAR checks this per scan.
 - **credible interval** — a Bayesian posterior interval, reserved for quantities that really are
   posteriors. ISAR computes one for ω₀ and Γ under `--errors bayes` (`bayes_interval`), but it is
-  **diagnostics-only**: the bootstrap interval is what certifies. Confidence intervals (bootstrap,
-  profile) are never called credible. See DECISIONS S5.
+  **diagnostics-only as a single-fit interval**. A pooled master's legacy certifying interval can
+  include nested posterior particles inside a heterogeneous model-dependent mixture; that mixed
+  interval is not itself called credible. Confidence intervals (bootstrap, profile) are never
+  called credible. See DECISIONS S5 and S6.
 - **AIC / Akaike weight** — a way to compare candidate models that penalizes extra parameters; the
-  weight is the relative evidence for each model (higher = better supported).
+  weight is relative information-criterion support within the exact scored model set (higher =
+  better supported), not a posterior model probability or Bayes factor. Legacy production weights
+  may still be evaluated at constrained optima; the STAT-2a shadow weights use comparable
+  unconstrained fits but have no production authority.
+- **statistical semantics** — additive producer metadata declaring what estimator, constraints,
+  model denominator, interval/particle measure, probability-like score, and authority scope a
+  quantity actually has. Missing metadata leaves a legacy quantity valid but semantically
+  unavailable; readers never fabricate producer provenance. Candidate comparison identity is split
+  into data-likelihood, model-parameterization, constraint, and combined-context fingerprints;
+  predictive/projection semantics are self-authenticated when present.
+- **shadow selection lane** — the diagnostics-only `isar.model_selection/2-shadow` comparison
+  introduced by STAT-2a. It exactly reuses a complete unconstrained delivery fit bundle when
+  possible; otherwise it fits the complete standard candidate family without delivery constraints.
+  Schema `/2` binds each candidate to the declared data-likelihood context and distinguishes exact,
+  partial, fresh, skipped, and unavailable execution while retaining `/1` read compatibility.
+  Its weights and changed-selection flag cannot affect verdicts, intervals, certification,
+  stopping, acquisition, or cache identity. STAT-2c may promote an evidence-backed successor only
+  after the STAT-2b campaign.
+- **authority scope** — one named use for which a statistical quantity is active, diagnostic,
+  shadow-only, inactive, or ineligible. Certification, stopping, EIG, acquisition selection, and
+  user diagnostics are separate scopes. For intervals, a producer's capability is distinct from
+  the realized authority of the value that survives reliability, triage, and tracking gates.
+- **model interval** — the current pooled-master ω quantile from retained ordinary-AIC-weighted
+  particles. It is conditional on target-present models and may mix nested, bootstrap, and
+  HESSE/Laplace particles. It remains active for legacy certification and stopping, but is
+  ineligible for EIG or acquisition.
 - **fork / fold** — a *fork* is two or more equally-supported answers reported separately (the data are
   ambiguous); a *fold* is a single agreed answer.
 
@@ -91,10 +118,11 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 
 - **branch** — one dispersion curve ω(Q) (e.g. the transverse acoustic phonon). A campaign
   targets one branch; others it encounters are **rivals**.
-- **branch assignment / assignment entropy** — the Bayesian posterior assigning each fitted
-  feature to a branch label ({acoustic, optic, new, …}), and the Shannon entropy of that
-  posterior — high entropy means "the labels are genuinely ambiguous here." Shown as a color
-  channel in the GUI.
+- **branch assignment / assignment entropy** — the normalized, versioned assignment-score
+  distribution over branch labels ({acoustic, optic, new, …}), and its Shannon entropy. It is
+  useful probability-like state, not a calibrated Bayesian posterior; high entropy means the
+  scorer distributes weight across several declared assignment states. Shown as a color channel
+  in the GUI.
 - **branch belief** — the driver's per-branch dispersion estimate: a weighted local regression
   over that branch's confirmed points, with honest uncertainty growth away from data.
 - **excitation hypothesis** *(branch hypotheses Implemented; `level`/`continuum` Partial —
@@ -102,6 +130,8 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   expectation for the target (and rivals) in `card.policy.toml`: character (acoustic / optic /
   custom), zone-centre energy with uncertainty, flatness, confidence. It weights the driver's
   seeding, classification, and scan choice; it never forces a fit.
+- **confidence** — a heuristic triage score produced by `isar.confidence/1`, not a calibrated
+  probability that a result is correct.
 - **differentiation tolerance** — the looser precision to which a *rival* branch is
   measured: enough to tell it apart from the target, never the target's tolerance. Rivals get
   identification, not publication error bars.

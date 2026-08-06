@@ -35,6 +35,7 @@ import numpy as np
 from isar.probability import lower_truncated_normal_moments
 
 from isar.analyze.truth import _fold
+from isar.session.session_prior import is_unconstrained_prior_point
 
 # --- tunables (module-level so tests / a future card can override) ---------------------------
 SIGMA_SLACK = 0.3          # meV — generous per-feature noise floor + nominal anchor σ (§6)
@@ -61,6 +62,32 @@ EXTRAP_MARGIN = 0.25       # rlu — how far past the highest ACOUSTIC anchor an
 #                            Generous enough to bootstrap outward (each delivery extends the range).
 ACOUSTIC = "acoustic"
 NEW = "new"
+BRANCH_ASSIGNMENT_SCORER_REVISION = "isar.branch_assignment/1"
+
+
+def probability_semantics(probabilities: dict | None) -> dict:
+    """Producer-owned declarations for local branch-assignment outputs."""
+    from isar.schema.statistics import authority_scopes
+
+    labels = sorted(str(label) for label in (probabilities or {}))
+    state_space = {"kind": "branch_assignment", "labels": labels}
+    common = {
+        "source_measure_semantics": "normalized_assignment_weight",
+        "scorer_revision": BRANCH_ASSIGNMENT_SCORER_REVISION,
+        "calibration_reference": None,
+        "conditioning": "observed_features_and_branch_beliefs",
+        "state_space": state_space,
+        "inference_paradigm": "normalized_score_distribution",
+        "authority_scopes": authority_scopes(
+            single_fit_delivery="active",
+            user_diagnostic="active",
+        ),
+    }
+    return {
+        "branch_posterior": {**common, "quantity_kind": "distribution"},
+        "branch_weight": {**common, "quantity_kind": "marginal_weight"},
+        "assignment_entropy": {**common, "quantity_kind": "entropy"},
+    }
 
 
 def reduced_q(q, period: float) -> float:
@@ -272,6 +299,8 @@ def build_beliefs(points, *, sample, t_bin, period: float,
         w = p.get("omega0")
         if w is None or not np.isfinite(float(w)):
             continue
+        if not is_unconstrained_prior_point(p):
+            continue                       # contract 4: a constrained/demoted fit never seeds a branch
         bid = p.get("branch_id") or ACOUSTIC
         by.setdefault(bid, []).append(
             (reduced_q(p["q"], period), float(w), float(p.get("weight", 1.0))))

@@ -1,0 +1,1 @@
+**Critical-stratum AICc minus AIC predictive loss** — paired development differences for every independent veto stratum. Values at or below zero favor AICc; held-out authority remains sealed pending owner approval.

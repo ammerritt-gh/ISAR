@@ -1,0 +1,32 @@
+{
+  "contract": "isar.eig4_slice8_case2_amplitude_reproducibility/o36.8.2",
+  "calibration_table_fingerprint": "ce57e976cd70753a46a4a2705370d9aee3ee4730c8a3b278feedbc455aeeb775",
+  "selected_ladder_index": 1,
+  "selected_amplitude": 0.275,
+  "independent_rerun_count": 1,
+  "delta_information_per_executed_point_nats": 0.00031456335403114204,
+  "delta_standard_error_per_executed_point_nats": 0.000598973672456868,
+  "two_standard_error_lower_margin_nats": -0.000883383990882594,
+  "scorer_seed": 8374860497622894989,
+  "scorer_seed_evidence_fingerprint": "5e9ddf3cedd611c7dd91c99fc2326f5ea87a071dc56e927e16c7edbcfcee16a4",
+  "score_set_fingerprint": "58c911fdc0305104a0a7b284690536ac848d5493826d18db9ce57c6e6e973243",
+  "paired_block_deltas_per_executed_point_nats": [
+    0.0002131614785260059,
+    -0.0013744153343550251,
+    0.0027271391576490956,
+    0.0002623981645089767,
+    -0.0015708996819520885,
+    -0.0012250714973161927,
+    0.0009043136793003835,
+    0.0025798808658879808
+  ],
+  "exact_match": {
+    "delta": true,
+    "standard_error": true,
+    "lower_margin": true,
+    "scorer_seed_evidence": true,
+    "score_set_fingerprint": true,
+    "paired_blocks": true
+  },
+  "reproducibility_fingerprint": "9ef7bf515f97aa3a6d8bfdfb9f8df63c7adfac578966117ca8d7b17430baf1ec"
+}

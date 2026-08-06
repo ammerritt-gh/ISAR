@@ -32,8 +32,16 @@ from isar.predictive import (PREDICTIVE_ARTIFACT_SCHEMA, PREDICTIVE_CONTRACT,
                              PREDICTIVE_MAX_DROPPED_DRAW_MASS,
                              PREDICTIVE_MAX_PRUNED_MASS, PREDICTIVE_MODEL_WEIGHT_FLOOR,
                              TARGET_PROJECTION_SCHEMA, TARGET_PROJECTION_VERSION, TARGET_QOI,
-                             predictive_basis_fingerprint)
+                             predictive_basis_fingerprint,
+                             target_projection_set_fingerprint as _target_projection_set_fingerprint)
 from isar.predictive import predictive_score as _predictive_score
+from isar.schema.statistics import (
+    PREDICTIVE_SCHEMA,
+    SemanticsConstructionError,
+    authority_scopes,
+    semantics_fingerprint,
+    validate_for_write,
+)
 
 log = logging.getLogger("isar.session.predictive_artifact")
 
@@ -79,6 +87,11 @@ PROJECTION_REFERENCE_BEYOND_SUPPORT = "reference_beyond_mode_support"
 #: alternative, disabling the gate, would silently restore the unconditional nearest-mode rule for
 #: exactly the artifacts least entitled to it.
 PROJECTION_NO_RESOLUTION_BASIS = "no_resolution_basis_for_mode_support"
+#: The projected model set could not be fingerprinted (a malformed or legacy record: no label, no
+#: finite positive weight, no draw list). The projection is then incomplete like any other blocked
+#: one — the alternative, a record carrying ``complete=true`` with no fingerprint and no semantics,
+#: reaches a consumer as a *corrupt* record rather than an honest non-result.
+PROJECTION_FINGERPRINT_FAILED = "target_projection_set_fingerprint_failed"
 
 #: Structured reasons the predictive side produced nothing for a master that otherwise fitted fine.
 PREDICTIVE_UNAVAILABLE_CONSTRUCTION_FAILED = "predictive_construction_failed"
@@ -142,6 +155,220 @@ DRAW_WEIGHTING = {
     "parametric_bootstrap": "equal_weight_resampled",
     "laplace_hesse": "equal_weight_resampled",
 }
+
+_PARTICLE_KIND_BY_BASIS = {
+    "nested_sampling": "optimizer_bound_nested_parameter_distribution",
+    "parametric_bootstrap": "parametric_bootstrap_sampling_distribution",
+    "laplace_hesse": "laplace_hesse_parameter_approximation",
+}
+
+
+def _bootstrap_kind(estimator_kind: str) -> str:
+    return {
+        "data_likelihood_mle": "unconstrained_parametric_bootstrap",
+        "soft_penalized_likelihood": "soft_penalized_parametric_bootstrap",
+        "hard_conditioned_likelihood": "hard_conditioned_parametric_bootstrap",
+    }[estimator_kind]
+
+
+def _predictive_statistical_semantics(models, fits, fit_selection_semantics, *, complete: bool):
+    """Build additive ensemble metadata; return ``(record, by_label)`` or ``(None, {})``."""
+    try:
+        if fit_selection_semantics is None:
+            raise SemanticsConstructionError("missing_fit_selection_semantics")
+        required_fingerprints = (
+            "model_selection_fingerprint",
+            "offered_model_set_fingerprint",
+            "scored_model_set_fingerprint",
+            "weight_denominator_fingerprint",
+        )
+        missing = [name for name in required_fingerprints if not fit_selection_semantics.get(name)]
+        if missing:
+            raise SemanticsConstructionError(
+                "missing_selection_fingerprint", ",".join(missing)
+            )
+        retained_payload = {
+            "retained_source_weight_total": float(
+                sum(float(model["source_weight"]) for model in models)
+            ),
+            "published_models": sorted([
+                {
+                    "label": str(model["label"]),
+                    "source_weight": float(model["source_weight"]),
+                    "published_weight": float(model["weight"]),
+                }
+                for model in models
+            ], key=lambda item: item["label"]),
+        }
+        retained_fingerprint = semantics_fingerprint(
+            "isar.predictive_retained_model_set/1", retained_payload
+        )
+        per_model = {}
+        particle_kinds = []
+        for model in models:
+            label = model["label"]
+            result = fits.get(label)
+            fit_semantics = getattr(result, "fit_semantics", None)
+            if fit_semantics is None:
+                raise SemanticsConstructionError("missing_candidate_fit_semantics", str(label))
+            basis = str(model["draw_basis"])
+            particle_kind = _PARTICLE_KIND_BY_BASIS[basis]
+            particle_kinds.append(particle_kind)
+            item = {
+                "label": str(label),
+                "source_model_selection_fingerprint": fit_selection_semantics[
+                    "model_selection_fingerprint"
+                ],
+                "offered_model_set_fingerprint": fit_selection_semantics[
+                    "offered_model_set_fingerprint"
+                ],
+                "scored_model_set_fingerprint": fit_selection_semantics[
+                    "scored_model_set_fingerprint"
+                ],
+                "weight_denominator_fingerprint": fit_selection_semantics[
+                    "weight_denominator_fingerprint"
+                ],
+                "fit_semantics": fit_semantics,
+                "selection_eligibility": fit_semantics["selection_eligibility"],
+                "conditioning_fingerprint": fit_semantics["conditioning_fingerprint"],
+                "model_weight_kind": "akaike_relative_weight",
+                "particle_measure_kind": particle_kind,
+                "draw_measure_kind": "equal_weight_empirical_particles",
+                "draw_basis": basis,
+            }
+            if basis == "nested_sampling":
+                prior_fingerprint = (
+                    (getattr(result, "within_model", None) or {}).get(
+                        "bayes_prior_fingerprint"
+                    )
+                )
+                if prior_fingerprint is None:
+                    raise SemanticsConstructionError(
+                        "missing_bayesian_prior_fingerprint", str(label)
+                    )
+                item.update(
+                    {
+                        "inference_paradigm": "bayesian_posterior",
+                        "prior_kind": "optimizer_bound_data_dependent",
+                        "prior_data_dependent": True,
+                        "prior_fingerprint": prior_fingerprint,
+                        "posterior_measure_kind": "posterior_resample",
+                        "evidence_comparable": False,
+                        "bayesian_model_average": False,
+                    }
+                )
+            elif basis == "parametric_bootstrap":
+                item.update(
+                    {
+                        "bootstrap_measure_kind": _bootstrap_kind(
+                            fit_semantics["estimator_kind"]
+                        ),
+                        "inference_paradigm": "frequentist_sampling_distribution",
+                        "prior_kind": "none",
+                        "prior_data_dependent": False,
+                        "posterior_measure_kind": None,
+                        "evidence_comparable": False,
+                        "bayesian_model_average": False,
+                    }
+                )
+            else:
+                item.update(
+                    {
+                        "inference_paradigm": "frequentist_asymptotic",
+                        "prior_kind": "none",
+                        "prior_data_dependent": False,
+                        "posterior_measure_kind": None,
+                        "evidence_comparable": False,
+                        "bayesian_model_average": False,
+                    }
+                )
+            per_model[str(label)] = item
+        distinct_particles = sorted(set(particle_kinds))
+        ensemble_particle_kind = (
+            distinct_particles[0]
+            if len(distinct_particles) == 1
+            else "heterogeneous_model_dependent"
+        )
+        ensemble_inference_paradigm = (
+            "mixed" if len(distinct_particles) > 1 else
+            next(iter(per_model.values()))["inference_paradigm"]
+        )
+        record = {
+            "schema": PREDICTIVE_SCHEMA,
+            "artifact_kind": "master_predictive",
+            "source_model_selection_fingerprint": fit_selection_semantics[
+                "model_selection_fingerprint"
+            ],
+            "offered_model_set_fingerprint": fit_selection_semantics[
+                "offered_model_set_fingerprint"
+            ],
+            "scored_model_set_fingerprint": fit_selection_semantics[
+                "scored_model_set_fingerprint"
+            ],
+            "weight_denominator_fingerprint": fit_selection_semantics[
+                "weight_denominator_fingerprint"
+            ],
+            "predictive_retained_set_fingerprint": retained_fingerprint,
+            "model_weight_kind": "akaike_relative_weight",
+            "particle_measure_kind": ensemble_particle_kind,
+            "actual_particle_measure_kind": ensemble_particle_kind,
+            "draw_measure_kind": "equal_weight_empirical_particles",
+            "actual_particle_basis_homogeneous": len(distinct_particles) == 1,
+            "contract_permits_heterogeneous_fallback": True,
+            "inference_paradigm": ensemble_inference_paradigm,
+            "formal_bayesian_model": False,
+            "construction_complete": bool(complete),
+            "homogeneous_design_eligible": False,
+            "homogeneous_design_ineligibility_reasons": [
+                "predictive_contract_permits_heterogeneous_model_dependent_fallback"
+            ],
+            "quantities": {
+                "model_interval": {
+                    "interval_kind": "conditional_target_present_mixed_particle_quantile",
+                    "particle_measure_kind": ensemble_particle_kind,
+                    "actual_particle_measure_kind": ensemble_particle_kind,
+                    "model_weight_kind": "akaike_relative_weight",
+                    "inference_paradigm": ensemble_inference_paradigm,
+                    "contract_permits_heterogeneous_fallback": True,
+                    "formal_bayesian_model": False,
+                    "conditioning": "target_present_models_only",
+                    "authority_scopes": authority_scopes(
+                        legacy_master_certification="active",
+                        stopping="active",
+                        user_diagnostic="active",
+                        eig_shadow="ineligible",
+                        eig_authoritative="ineligible",
+                        acquisition_selection="ineligible",
+                    ),
+                }
+            },
+            "models": [per_model[str(model["label"])] for model in models],
+            "authority_scopes": authority_scopes(
+                legacy_master_certification="active",
+                stopping="active",
+                eig_shadow="ineligible",
+                eig_authoritative="ineligible",
+                acquisition_selection="ineligible",
+                user_diagnostic="active",
+            ),
+        }
+        validated = validate_for_write(record, PREDICTIVE_SCHEMA)
+        validated["statistical_semantics_fingerprint"] = semantics_fingerprint(
+            "isar.predictive_statistical_semantics/1", validated
+        )
+        validated = validate_for_write(validated, PREDICTIVE_SCHEMA)
+        return validated, per_model
+    except (SemanticsConstructionError, KeyError) as exc:
+        reason_code = (
+            exc.reason_code if isinstance(exc, SemanticsConstructionError)
+            else "missing_predictive_semantics_field"
+        )
+        log.warning(
+            "semantics_construction_failed producer=isar.session.predictive_artifact "
+            "quantity=master_predictive reason_code=%s",
+            reason_code,
+        )
+        return None, {}
 
 
 def bounded_parameter_draws(result, *, seed: int, maximum: int = 64):
@@ -270,7 +497,8 @@ def exposure_basis(ctx, n_members: int) -> tuple[dict, np.ndarray]:
 
 
 def build_master_predictive(best, scores, fits, by_hyp, ctx, *, seed: int,
-                            n_members: int) -> dict | None:
+                            n_members: int, fit_selection_semantics: dict | None = None
+                            ) -> dict | None:
     """Bounded model-weighted full-parameter ensemble retained with a master revision.
 
     Publishes ``isar.master_predictive/2``: the same draws the fit produced, plus everything needed
@@ -415,6 +643,14 @@ def build_master_predictive(best, scores, fits, by_hyp, ctx, *, seed: int,
     model_entropy = -sum(float(model["weight"]) * math.log(max(float(model["weight"]), 1e-300))
                          for model in models)
     diagnostics = _predictive_score(models, seed=_PREDICTIVE_SCORE_SEED, n_simulations=128)
+    statistical_semantics, per_model_semantics = _predictive_statistical_semantics(
+        models,
+        fits,
+        fit_selection_semantics,
+        complete=bool(complete),
+    )
+    for model in models:
+        model["statistical_semantics"] = per_model_semantics.get(str(model["label"]))
     return {"schema": PREDICTIVE_ARTIFACT_SCHEMA,
             # Self-description of the payload SHAPE under that schema label; it is hashed into the
             # basis fingerprint, so the two can never drift apart.
@@ -427,6 +663,20 @@ def build_master_predictive(best, scores, fits, by_hyp, ctx, *, seed: int,
             "evaluation_context": evaluation_context,
             "exposure_basis": basis_values,
             "completeness": completeness,
+            "construction_complete": bool(complete),
+            "homogeneous_design_eligible": False,
+            "homogeneous_design_ineligibility_reasons": [
+                "predictive_contract_permits_heterogeneous_model_dependent_fallback"
+            ],
+            "predictive_retained_set_fingerprint": (
+                statistical_semantics.get("predictive_retained_set_fingerprint")
+                if statistical_semantics is not None else None
+            ),
+            "statistical_semantics": statistical_semantics,
+            "statistical_semantics_fingerprint": (
+                statistical_semantics.get("statistical_semantics_fingerprint")
+                if statistical_semantics is not None else None
+            ),
             "predictive_basis_fingerprint": predictive_basis_fingerprint(
                 models=models, energy_meV=grid.tolist(),
                 evaluation_context=evaluation_context, exposure_basis=basis_values),
@@ -549,6 +799,68 @@ def _project_model(model, reference: float, rule: dict) -> tuple[list, list, str
     return present, qoi, blocked
 
 
+def _target_projection_semantics(
+    artifact,
+    *,
+    target_projection_set_fingerprint: str,
+    complete: bool,
+) -> dict | None:
+    try:
+        source_retained = artifact.get("predictive_retained_set_fingerprint")
+        source_semantics = artifact.get("statistical_semantics_fingerprint")
+        if source_retained is None or source_semantics is None:
+            raise SemanticsConstructionError("missing_source_predictive_semantics")
+        record = {
+            "schema": PREDICTIVE_SCHEMA,
+            "artifact_kind": "target_projection",
+            "source_predictive_retained_set_fingerprint": source_retained,
+            "source_predictive_semantics_fingerprint": source_semantics,
+            "target_projection_set_fingerprint": target_projection_set_fingerprint,
+            "construction_complete": bool(complete),
+            "model_weight_kind": "akaike_relative_weight",
+            "inference_paradigm": "mixed",
+            "formal_bayesian_model": False,
+            "conditioning": "authoritative_target_identity_and_target_present_draws",
+            "authority_scopes": authority_scopes(
+                eig_shadow="ineligible",
+                eig_authoritative="ineligible",
+                acquisition_selection="ineligible",
+                user_diagnostic="active",
+            ),
+        }
+        validated = validate_for_write(record, PREDICTIVE_SCHEMA)
+        validated["statistical_semantics_fingerprint"] = semantics_fingerprint(
+            "isar.target_projection_statistical_semantics/1", validated
+        )
+        return validate_for_write(validated, PREDICTIVE_SCHEMA)
+    except SemanticsConstructionError as exc:
+        log.warning(
+            "semantics_construction_failed producer=isar.session.predictive_artifact "
+            "quantity=target_projection reason_code=%s",
+            exc.reason_code,
+        )
+        return None
+
+
+def model_entropy_probability_semantics(
+    predictive_retained_set_fingerprint: str,
+) -> dict:
+    """Producer-owned declaration for ``model_entropy_nats`` / ``model_entropy``."""
+    return {
+        "quantity_kind": "entropy",
+        "source_measure_semantics": "akaike_relative_weight",
+        "state_space": {
+            "kind": "predictive_retained_model_set",
+            "fingerprint": predictive_retained_set_fingerprint,
+        },
+        "conditioning": "models_retained_after_draw_and_manifest_pruning",
+        "model_weight_kind": "akaike_relative_weight",
+        "calibration_reference": None,
+        "inference_paradigm": "information_criterion_weight_distribution",
+        "authority_scopes": authority_scopes(user_diagnostic="active"),
+    }
+
+
 def build_target_projection(artifact, outcome, *, master_revision, calibration_fingerprint,
                             policy_fingerprint, action_role: str = "master") -> dict:
     """One ``isar.target_projection/2`` resolved against the AUTHORITATIVE target of this row.
@@ -597,11 +909,51 @@ def build_target_projection(artifact, outcome, *, master_revision, calibration_f
         reason = PROJECTION_NO_TARGET_MODE
         for item in projected:
             item["target_qoi_draws"] = [None] * len(item["target_present_by_draw"])
+    try:
+        target_projection_set_fingerprint = _target_projection_set_fingerprint(projected)
+    except (SemanticsConstructionError, TypeError, ValueError) as exc:
+        # Only SemanticsConstructionError carries a reason_code; the plain ValueError/TypeError
+        # raised for a malformed model record does not, and reading it unconditionally used to
+        # raise AttributeError straight out of an "always returns an artifact" function.
+        log.warning(
+            "semantics_construction_failed producer=isar.session.predictive_artifact "
+            "quantity=target_projection_set reason_code=%s detail=%s",
+            getattr(exc, "reason_code", type(exc).__name__),
+            exc,
+        )
+        target_projection_set_fingerprint = None
+        reason = PROJECTION_FINGERPRINT_FAILED
+        for item in projected:
+            present = item.get("target_present_by_draw")
+            count = len(present) if isinstance(present, (list, tuple)) else 0
+            item["target_present_by_draw"] = [False] * count
+            item["target_qoi_draws"] = [None] * count
+    statistical_semantics = (
+        _target_projection_semantics(
+            artifact,
+            target_projection_set_fingerprint=target_projection_set_fingerprint,
+            complete=reason is None,
+        )
+        if target_projection_set_fingerprint is not None
+        else None
+    )
     return {
         "schema": TARGET_PROJECTION_SCHEMA,
         "qoi": TARGET_QOI,
         "projection_version": TARGET_PROJECTION_VERSION,
         "predictive_basis_fingerprint": artifact.get("predictive_basis_fingerprint"),
+        "source_predictive_retained_set_fingerprint": artifact.get(
+            "predictive_retained_set_fingerprint"
+        ),
+        "source_predictive_semantics_fingerprint": artifact.get(
+            "statistical_semantics_fingerprint"
+        ),
+        "target_projection_set_fingerprint": target_projection_set_fingerprint,
+        "statistical_semantics": statistical_semantics,
+        "statistical_semantics_fingerprint": (
+            statistical_semantics.get("statistical_semantics_fingerprint")
+            if statistical_semantics is not None else None
+        ),
         "reference_energy_meV": reference,
         # The resolution-relative rule the nearest-mode selection ran under, so the verdict can be
         # re-derived from the record instead of from whatever the constants say today.
@@ -625,6 +977,13 @@ def build_target_projection(artifact, outcome, *, master_revision, calibration_f
             "policy_fingerprint": policy_fingerprint,
         },
         "complete": reason is None,
+        "target_projection_complete": reason is None,
+        "authority_scopes": authority_scopes(
+            eig_shadow="ineligible",
+            eig_authoritative="ineligible",
+            acquisition_selection="ineligible",
+            user_diagnostic="active",
+        ),
         "reason": reason,
         "models": projected,
     }

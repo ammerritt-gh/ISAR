@@ -144,6 +144,34 @@ def test_finish_initial_wave_reaches_warm_worker_without_allowance(fake_env, mon
         r.close()
 
 
+def test_force_masters_reaches_warm_worker_and_is_absent_by_default(fake_env, monkeypatch):
+    # The predictive-escalation targeting must survive the worker JSONL protocol: a dropped
+    # ``force_masters`` would run a plain (non-forced) analysis and report the promotion
+    # "completed" while the master's basis stayed missing.
+    monkeypatch.setenv("ISAR_FAKE_MODE", "echo")
+    r = _runner(fake_env)
+    sent = []
+    original_send = r._send
+
+    def recording_send(message):
+        sent.append(dict(message))
+        original_send(message)
+
+    monkeypatch.setattr(r, "_send", recording_send)
+    try:
+        result = r.run(fake_env.ws, [fake_env.ws / "data"], render=False,
+                       force_masters=["master:tavi_(43, 0, 0)_200.0"])
+        assert result.returncode == 0
+        run_request = next(message for message in sent if message.get("cmd") == "run")
+        assert run_request["force_masters"] == ["master:tavi_(43, 0, 0)_200.0"]
+        sent.clear()
+        r.run(fake_env.ws, [fake_env.ws / "data"], render=False)
+        run_request = next(message for message in sent if message.get("cmd") == "run")
+        assert "force_masters" not in run_request
+    finally:
+        r.close()
+
+
 def test_timeout_falls_back_and_respawns(fake_env, monkeypatch):
     monkeypatch.setenv("ISAR_FAKE_MODE", "timeout")
     r = _runner(fake_env, job_timeout=0.6, max_respawns=5)

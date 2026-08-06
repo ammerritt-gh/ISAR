@@ -16,13 +16,26 @@ Two entry points:
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
 from typing import Any
 
 import isar.reduce.llm_client as _llm  # boundary carve-out: the shared LLMM HTTP plumbing only
-from isar.drive.objective import ObjectiveSpec, resolve_hypothesis_snapshot
+import isar.drive.objective as _obj
+from isar.drive.objective import (
+    ObjectiveSpec,
+    current_objective_comparison_scope,
+    resolve_hypothesis_snapshot,
+)
+from isar.eig.policy import (
+    canonical_scan_window_eig_policy_authoring,
+    compile_card_eig_policy_set,
+    policy_identity,
+)
+from isar.schema.eig_policy import ScanWindowEIGConfig
+from isar.schema.hypotheses import content_fingerprint
 
 Dispatcher = _llm.Dispatcher
 LLMMClient = _llm.LLMMClient
@@ -125,6 +138,12 @@ _EXAMPLE = {
     "notes": "acoustic branch (1,0,0)->(2,0,0)",
 }
 
+# Canonical compiler defaults for the energy search band when the goal states none. These are the
+# single source for both the compile fallback and the LLM prompt guidance — the example
+# compact-goal.json ships the same acoustic band, so goal-path and spec-path campaigns agree.
+DEFAULT_ENERGY_SEARCH_ACOUSTIC_MEV = (-9.0, 9.0)
+DEFAULT_ENERGY_SEARCH_OPTIC_MEV = (-2.0, 12.0)
+
 SYSTEM = (
     "You translate a neutron triple-axis measurement goal into a machine objective for an autonomous "
     "driver. Express a general reciprocal-space line as q_start [h,k,l], q_end [h,k,l], and "
@@ -142,8 +161,8 @@ SYSTEM = (
     "the path, put that energy in target_energy_meV and use target_selector='nearest_energy'. If the user explicitly asks for the "
     "highest optic mode use target_selector='highest_energy'. If the user states a zone-centre or gap energy, "
     "put it in target_zc_energy_meV and put an explicitly stated uncertainty in "
-    "target_zc_energy_sigma_meV. For optic goals use energy_search_meV [-2,12] unless the user "
-    "provides a range. Optionally a short notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
+    "target_zc_energy_sigma_meV. For optic goals use energy_search_meV [-2,12] and for acoustic "
+    "goals [-9,9] unless the user provides a range. Optionally a short notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
     "these keys, no wrapper object, no extra keys, and never enumerate grid points:\n"
     + json.dumps(LLM_GOAL_SCHEMA)
     + "\n\nExample. Goal: 'map the acoustic phonon from (1,0,0) to (2,0,0) to +-0.5 meV, steps of 0.1, "
@@ -158,6 +177,15 @@ _REPAIR_SUFFIX = (
 DEFAULTS: dict[str, Any] = {"step_h": 0.05, "tier": "deterministic"}
 ENVELOPE_SCHEMA = "isar.objective-envelope/2"
 
+# The canonical, tier-aware budget defaults. Defined next to the dataclass they configure
+# (:mod:`isar.drive.objective`) and re-exported here, which is the import site every other surface —
+# the CLI, the GUI campaign form, example goal resources — should use. There is exactly one copy of
+# these numbers in the tree; do not restate them.
+DEFAULT_BUDGET_HOURS_BY_TIER = _obj.DEFAULT_BUDGET_HOURS_BY_TIER
+DEFAULT_BUDGET_HOURS = _obj.DEFAULT_BUDGET_HOURS
+DEFAULT_BUDGET_NEUTRONS = _obj.DEFAULT_BUDGET_NEUTRONS
+default_budget_hours = _obj.default_budget_hours
+
 
 class GoalParseError(ValueError):
     """The goal could not be turned into a valid ObjectiveSpec (LLM refusal / non-conforming output)."""
@@ -166,6 +194,7 @@ class GoalParseError(ValueError):
 # --------------------------------------------------------------------------- LLM path
 def goal_to_spec(goal: str, *, dispatcher: Dispatcher | None = None, defaults: dict | None = None,
                  card_hypotheses: dict[str, Any] | None = None,
+                 card_eig_policy_set: dict[str, Any] | None = None,
                  endpoint: str | None = None, model_pin: str | None = None,
                  temperature: float = 0.1, max_tokens: int = 800) -> ObjectiveSpec:
     """Parse ``goal`` into an :class:`ObjectiveSpec` via the LLM supervisor.
@@ -198,12 +227,18 @@ def goal_to_spec(goal: str, *, dispatcher: Dispatcher | None = None, defaults: d
             "goal→ObjectiveSpec failed: the supervisor LLM did not return a schema-valid objective"
             + detail + (f"; raw: {raw!r}" if raw else "")
             + ". Use `isar drive --spec <file.json>` for an LLM-free run.")
-    return _build_spec(data, merged, card_hypotheses=card_hypotheses)
+    return _build_spec(
+        data,
+        merged,
+        card_hypotheses=card_hypotheses,
+        card_eig_policy_set=card_eig_policy_set,
+    )
 
 
 # --------------------------------------------------------------------------- LLM-free path
 def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec",
-                   card_hypotheses: dict[str, Any] | None = None) -> ObjectiveSpec:
+                   card_hypotheses: dict[str, Any] | None = None,
+                   card_eig_policy_set: dict[str, Any] | None = None) -> ObjectiveSpec:
     """Build an :class:`ObjectiveSpec` from an already-parsed dict — no LLM, no file I/O.
 
     Accepts either the goal schema (``{"path": {"h_start", …}, "step_h", "tolerance_meV", …}``) or a
@@ -219,20 +254,32 @@ def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec"
         return ObjectiveSpec.from_dict(d)         # already a full ObjectiveSpec
     if not _conforms(d, FILE_SPEC_SCHEMA):
         raise GoalParseError(f"{where}: not a valid goal spec (needs path{{h_start,h_end,k,l}}, step_h, "
-                             "tolerance_meV, and a budget)")
+                             "and tolerance_meV; a budget is optional and defaults per tier)")
     merged = {**DEFAULTS, **(defaults or {})}
-    return _build_spec(d, merged, card_hypotheses=card_hypotheses)
+    return _build_spec(
+        d,
+        merged,
+        card_hypotheses=card_hypotheses,
+        card_eig_policy_set=card_eig_policy_set,
+    )
 
 
 def spec_from_json(path: str | Path, *, defaults: dict | None = None,
-                   card_hypotheses: dict[str, Any] | None = None) -> ObjectiveSpec:
+                   card_hypotheses: dict[str, Any] | None = None,
+                   card_eig_policy_set: dict[str, Any] | None = None) -> ObjectiveSpec:
     """Build an :class:`ObjectiveSpec` from a JSON file — no LLM.
 
     Accepts either the goal schema (``{"path": {"h_start", …}, "step_h", "tolerance_meV", …}``) or a
     full ``ObjectiveSpec.to_dict()`` (``path`` is a list of triples).
     """
     d = json.loads(Path(path).read_text(encoding="utf-8"))
-    return spec_from_dict(d, defaults=defaults, where=str(path), card_hypotheses=card_hypotheses)
+    return spec_from_dict(
+        d,
+        defaults=defaults,
+        where=str(path),
+        card_hypotheses=card_hypotheses,
+        card_eig_policy_set=card_eig_policy_set,
+    )
 
 
 def make_envelope(spec: ObjectiveSpec, *, source: dict, original_goal: str | None = None) -> dict:
@@ -257,7 +304,8 @@ def envelope_from_json(path: str | Path) -> tuple[ObjectiveSpec, dict, str | Non
 
 # --------------------------------------------------------------------------- shared
 def _build_spec(data: dict, merged: dict, *,
-                card_hypotheses: dict[str, Any] | None = None) -> ObjectiveSpec:
+                card_hypotheses: dict[str, Any] | None = None,
+                card_eig_policy_set: dict[str, Any] | None = None) -> ObjectiveSpec:
     tier = str(merged.get("tier", "deterministic"))
     budget = _budget(data, tier=tier)
     branch = str(data.get("target_branch", "acoustic"))
@@ -277,7 +325,8 @@ def _build_spec(data: dict, merged: dict, *,
         target_energy = None
     energy = data.get("energy_search_meV")
     resolved_energy = tuple(energy) if energy is not None else (
-        (-2.0, 12.0) if branch == "optic" else (-2.0, 7.0))
+        DEFAULT_ENERGY_SEARCH_OPTIC_MEV if branch == "optic"
+        else DEFAULT_ENERGY_SEARCH_ACOUSTIC_MEV)
     # Record who chose the band here, where the answer is still known. Downstream, a band that equals
     # the shipped default is indistinguishable from one the scientist asked for exactly — and the
     # difference decides whether identity work may be widened past it.
@@ -303,6 +352,15 @@ def _build_spec(data: dict, merged: dict, *,
     frozen = resolve_hypothesis_snapshot(
         branch, resolved_energy, card_hypotheses=card_hypotheses, goal_override=goal_override,
         steering_override=data.get("steering"))
+    final_steering = dict(frozen["steering"])
+    if final_steering.get("scan_window_eig_mode") == "authoritative":
+        # The policy set is bound only after the objective comparison scope exists.  Construct the
+        # temporary scope carrier in off mode, then freeze authoritative mode together with the
+        # compiled card policy in the single final replacement below.
+        construction_steering = {**final_steering, "scan_window_eig_mode": "off"}
+        frozen = {**frozen, "steering": construction_steering,
+                  "hypothesis_fingerprint": content_fingerprint(
+                      frozen["hypotheses"], construction_steering)}
     common = dict(tolerance_meV=float(data["tolerance_meV"]), budget=budget,
                   tier=tier,
                   analysis_limit_seconds=(data.get("analysis_limit_seconds", 3600.0)
@@ -323,25 +381,122 @@ def _build_spec(data: dict, merged: dict, *,
             raise GoalParseError("goal spec needs both q_start and q_end")
         if list(data["q_start"]) == list(data["q_end"]):
             raise GoalParseError("natural-language path is degenerate; q_start and q_end are identical")
-        return ObjectiveSpec.segment(q_start=data["q_start"], q_end=data["q_end"],
-                                     step_rlu=float(data.get("step_rlu") or 0.05), **common)
-    if "path" not in data:
-        raise GoalParseError("goal spec needs q_start/q_end or legacy path")
-    p = data["path"]
-    return ObjectiveSpec.along_h(
-        h_start=float(p["h_start"]), h_end=float(p["h_end"]),
-        k=float(p.get("k", 0.0)), l=float(p.get("l", 0.0)),
-        step=float(data.get("step_h") or merged.get("step_h") or 0.05), **common)
+        objective = ObjectiveSpec.segment(
+            q_start=data["q_start"], q_end=data["q_end"],
+            step_rlu=float(data.get("step_rlu") or 0.05), **common)
+    else:
+        if "path" not in data:
+            raise GoalParseError("goal spec needs q_start/q_end or legacy path")
+        p = data["path"]
+        objective = ObjectiveSpec.along_h(
+            h_start=float(p["h_start"]), h_end=float(p["h_end"]),
+            k=float(p.get("k", 0.0)), l=float(p.get("l", 0.0)),
+            step=float(data.get("step_h") or merged.get("step_h") or 0.05), **common)
+    scope = current_objective_comparison_scope(objective)
+    policy_set = compile_card_eig_policy_set(
+        _eig_policy_authoring(card_eig_policy_set, final_steering),
+        scope,
+        max_runtime_variants=objective.scan_window_eig.scoring_config.max_runtime_variants,
+    )
+    frozen = replace(
+        objective,
+        steering=final_steering,
+        hypothesis_fingerprint=content_fingerprint(objective.hypotheses, final_steering),
+        scan_window_eig=ScanWindowEIGConfig(
+            policy_set=policy_set,
+            scoring_config=objective.scan_window_eig.scoring_config,
+        ),
+    )
+    if current_objective_comparison_scope(frozen) != scope:
+        raise ValueError("scan-window EIG policy binding changed objective comparison scope")
+    return frozen
+
+
+def _eig_policy_authoring(card_eig_policy_set, steering=None):
+    """The card's scan-window EIG authoring, or the canonical default when it declares none.
+
+    Compiled unconditionally, exactly as a declared card policy always was: ``ObjectiveSpec``
+    validates the authoritative profile on construction, so the policy has to be in place *before*
+    the mode can be switched on. Compiling it only for campaigns already in shadow/authoritative
+    would leave every ordinary campaign unable to turn EIG on at all — the failure this exists to
+    remove. In ``off`` mode the policy is carried and never consulted.
+    """
+    if card_eig_policy_set not in (None, {}):
+        return card_eig_policy_set
+    return canonical_scan_window_eig_policy_authoring()
+
+
+def rebind_scan_window_eig_policy(objective: ObjectiveSpec, card_eig_policy_set) -> ObjectiveSpec:
+    """Recompile the card's scan-window EIG policy against the objective's *current* scope.
+
+    A card policy binds to the current campaign configuration, so its compiled scope fingerprint is
+    only valid for the objective identity it was compiled from.  Anything that edits a scope-bearing
+    field after compilation (notably a steering change, which recomputes ``hypothesis_fingerprint``)
+    silently invalidates the binding: the policy still exists, it simply stops matching, and every
+    scan-window score then reports ``qoi_policy_missing`` for the whole campaign.  Recompiling from
+    the card authoring keeps the match exact while computing it from current truth.
+
+    Switching the mode on is also what first *earns* a policy set: an objective frozen in ``off``
+    mode carries none, so a ``--scan-window-eig-mode`` override compiles the card's authoring (or
+    the canonical default) here rather than leaving the campaign in a mode it cannot serve.
+    """
+    current = objective.scan_window_eig
+    if current.policy_set is None:
+        # An objective frozen before the canonical default existed carries no policy set. Backfill
+        # one only when the mode is actually on: an ``off`` objective has nothing to serve, and
+        # silently rewriting a frozen campaign's identity to add an unused policy is not a rebind.
+        if str((objective.steering or {}).get("scan_window_eig_mode", "off")) == "off":
+            return objective
+        authoring = _eig_policy_authoring(card_eig_policy_set)
+        if authoring in (None, {}):
+            return objective
+        scope = current_objective_comparison_scope(objective)
+        rebound = replace(objective, scan_window_eig=ScanWindowEIGConfig(
+            policy_set=compile_card_eig_policy_set(
+                authoring, scope,
+                max_runtime_variants=current.scoring_config.max_runtime_variants),
+            scoring_config=current.scoring_config))
+        if current_objective_comparison_scope(rebound) != scope:
+            raise ValueError("scan-window EIG policy binding changed objective comparison scope")
+        return rebound
+    if card_eig_policy_set in (None, {}):
+        # A campaign that never declared the table carries the canonical default, which can be
+        # recompiled from truth. Anything else is a hand-authored policy whose source is genuinely
+        # gone — substituting the default there would silently measure a different QoI partition.
+        card_eig_policy_set = canonical_scan_window_eig_policy_authoring()
+        default_set = compile_card_eig_policy_set(
+            card_eig_policy_set, current_objective_comparison_scope(objective),
+            max_runtime_variants=current.scoring_config.max_runtime_variants)
+        if policy_identity(default_set) != policy_identity(current.policy_set):
+            raise GoalParseError(
+                "the objective carries a hand-authored scan-window EIG policy set but its card "
+                "authoring source is unavailable, so the binding cannot be recomputed for the "
+                "current campaign configuration")
+    scope = current_objective_comparison_scope(objective)
+    policy_set = compile_card_eig_policy_set(
+        card_eig_policy_set,
+        scope,
+        max_runtime_variants=current.scoring_config.max_runtime_variants,
+    )
+    rebound = replace(objective, scan_window_eig=ScanWindowEIGConfig(
+        policy_set=policy_set, scoring_config=current.scoring_config))
+    if current_objective_comparison_scope(rebound) != scope:
+        raise ValueError("scan-window EIG policy binding changed objective comparison scope")
+    return rebound
 
 
 def _budget(data: dict, *, tier: str) -> dict[str, Any] | None:
-    if data.get("budget_neutrons"):
-        return {"kind": "neutrons", "amount": float(data["budget_neutrons"])}
-    if data.get("budget_hours"):
-        return {"kind": "counting_seconds", "amount": float(data["budget_hours"]) * 3600.0}
-    if tier != "deterministic":
-        return {"kind": "counting_seconds", "amount": 8.0 * 3600.0}
-    return None
+    """The campaign budget for this goal: what it declared, else the canonical tier default.
+
+    A declared neutron budget wins; otherwise the budget is counting-time, and an undeclared one
+    falls back to :func:`default_budget_hours`. There is deliberately no "no budget at all" outcome
+    here: a goal that states nothing gets the documented tier default rather than an unbounded run.
+    """
+    neutrons = data.get("budget_neutrons", DEFAULT_BUDGET_NEUTRONS)
+    if neutrons:
+        return {"kind": "neutrons", "amount": float(neutrons)}
+    hours = data.get("budget_hours") or default_budget_hours(tier)
+    return {"kind": "counting_seconds", "amount": float(hours) * 3600.0}
 
 
 def _extract(res) -> dict | None:

@@ -27,11 +27,15 @@ isar = "isar.cli.main:main"
 [tool.setuptools]
 # Fitting_Functions.py is a top-level module at the repo root, imported unchanged.
 py-modules = ["Fitting_Functions"]
-packages = ["isar", "isar.synth", "isar.schema", "isar.parsers", "isar.synth_format", "isar.reduce", "isar.report", "isar.analyze", "isar.analyze.errors", "isar.calibrate", "isar.session", "isar.cli", "isar.drive", "isar.drive.supervisor", "isar.drive.acquisition", "isar.drive.instrument", "isar.drive.isar_io", "isar.geometry", "isar.workspace_api", "isar.plotspec", "isar.plotspec.backends", "isar_gui", "isar_gui.viewmodels", "isar_gui.views"]
+packages = ["isar", "isar.synth", "isar.synth.stat2b", "isar.schema", "isar.parsers", "isar.synth_format", "isar.reduce", "isar.report", "isar.analyze", "isar.analyze.errors", "isar.calibrate", "isar.session", "isar.cli", "isar.drive", "isar.drive.supervisor", "isar.drive.acquisition", "isar.drive.instrument", "isar.drive.isar_io", "isar.geometry", "isar.workspace_api", "isar.plotspec", "isar.plotspec.backends", "isar.eig", "isar_gui", "isar_gui.viewmodels", "isar_gui.views"]
 
 [tool.setuptools.package-data]
 # Ship the human-authored card policy templates (D8) inside the wheel.
 "isar.parsers" = ["cards/*.toml"]
+# Overlay files for the O41 example workspace (Help ▸ Create O41 Example). The seed campaign
+# artifacts they overlay live under docs/campaigns/ and are NOT packaged, so the menu item still
+# needs a source checkout; without this entry it would fail even from one.
+"isar_gui" = ["resources/eig4-o41-authoritative/*"]
 
 [tool.pytest.ini_options]
 # Phase 1 lives under isar/synth/tests; Phase 2 (schema, parsers, synth_format) under tests/.

@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Mapping
 
 from isar.drive.acquisition.inventory import canonical_json, json_number
 from isar.drive.acquisition.scan_grid import (
@@ -122,6 +122,11 @@ class PhysicalWindowGeneratorConfig:
     broad_recovery_default_hi_meV: float = SURVEY_E_HI_MEV
 
     def __post_init__(self) -> None:
+        if (self.config_schema != "isar.physical_window_generator_config/2"
+                or not isinstance(self.config_version, int)
+                or isinstance(self.config_version, bool)
+                or self.config_version != 2):
+            raise ValueError("physical-window generator configuration contract is unsupported")
         positives = {
             "step_resolution_fraction": self.step_resolution_fraction,
             "core_fwhm_multiple": self.core_fwhm_multiple,
@@ -131,10 +136,53 @@ class PhysicalWindowGeneratorConfig:
             "target_support_sigma_multiple": self.target_support_sigma_multiple,
         }
         for name, value in positives.items():
-            if not math.isfinite(float(value)) or float(value) <= 0.0:
+            if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                    or not math.isfinite(float(value)) or float(value) <= 0.0):
                 raise ValueError(f"{name} must be finite and positive")
-        if self.broad_recovery_default_hi_meV <= self.broad_recovery_default_lo_meV:
+        if (not isinstance(self.broad_recovery_default_lo_meV, (int, float))
+                or isinstance(self.broad_recovery_default_lo_meV, bool)
+                or not isinstance(self.broad_recovery_default_hi_meV, (int, float))
+                or isinstance(self.broad_recovery_default_hi_meV, bool)
+                or not math.isfinite(float(self.broad_recovery_default_lo_meV))
+                or not math.isfinite(float(self.broad_recovery_default_hi_meV))
+                or self.broad_recovery_default_hi_meV
+                <= self.broad_recovery_default_lo_meV):
             raise ValueError("broad-recovery defaults must be [low, high] with low < high")
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "PhysicalWindowGeneratorConfig":
+        """Strictly reconstruct one persisted version-2 generator configuration."""
+        if not isinstance(value, Mapping):
+            raise TypeError("physical-window generator configuration must be a mapping")
+        expected = {
+            "config_schema",
+            "config_version",
+            "step_resolution_fraction",
+            "core_fwhm_multiple",
+            "core_sigma_multiple",
+            "anchor_extension_fwhm_multiple",
+            "rival_band_sigma_multiple",
+            "target_support_sigma_multiple",
+            "broad_recovery",
+        }
+        if set(value) != expected:
+            raise ValueError("physical-window generator configuration fields are invalid")
+        broad = value.get("broad_recovery")
+        if (not isinstance(broad, Mapping)
+                or set(broad) != {"default_lo_meV", "default_hi_meV"}):
+            raise ValueError("physical-window broad-recovery configuration is invalid")
+        return cls(
+            config_schema=value["config_schema"],
+            config_version=value["config_version"],
+            step_resolution_fraction=value["step_resolution_fraction"],
+            core_fwhm_multiple=value["core_fwhm_multiple"],
+            core_sigma_multiple=value["core_sigma_multiple"],
+            anchor_extension_fwhm_multiple=value["anchor_extension_fwhm_multiple"],
+            rival_band_sigma_multiple=value["rival_band_sigma_multiple"],
+            target_support_sigma_multiple=value["target_support_sigma_multiple"],
+            broad_recovery_default_lo_meV=broad["default_lo_meV"],
+            broad_recovery_default_hi_meV=broad["default_hi_meV"],
+        )
 
     def to_dict(self) -> dict:
         return {
@@ -447,12 +495,35 @@ def _target_gates(family: str, grid: UniformGrid, context: "ScanDesignContext",
                          else "target_core_lost_after_domain_clip"),
             detail=_detail_items(shared))
     if family == FAMILY_TARGET_CORE:
-        slack = _CORE_CONTAINMENT_TOL * max(abs(core_lo), abs(core_hi), 1.0)
-        if grid.e_lo > core_lo + slack or grid.e_hi < core_hi - slack:
+        # Containment is a promise about *measured* points, so it is tested against the executed
+        # grid, not the requested command bounds: when the span is not divisible by the wire step
+        # the last executed energy falls short of ``grid.e_hi`` by up to half a step, and a core
+        # whose high edge is never visited was not retained.  Same rule as ``support_points``.
+        executed = grid.energies
+        executed_lo = min(executed) if executed else grid.e_lo
+        executed_hi = max(executed) if executed else grid.e_hi
+        # Slack is half a step, because that is the finest edge a stepped grid can express.  The
+        # adapter rounds each point to nearest, so a core edge landing between two points is short
+        # by at most half a step — arithmetic, not a missed measurement, and "retains the core" can
+        # only ever mean "to within the grid's own resolution".  What this gate is named for is the
+        # authorized domain *clipping* the core, which removes whole points and so shows up far
+        # outside that band.  Testing tighter than half a step does not catch clipping sooner; it
+        # only refuses candidates whose span happens not to divide by the step, which is most of
+        # them whenever the core is sigma-dominated (span 6·sigma against a step of FWHM/4, where
+        # divisibility is accidental) and none of them when it is resolution-dominated (span
+        # 4·FWHM, step FWHM/4 — exactly 16 intervals, always).  Measured: a tighter bound refused
+        # 46 % of sigma-dominated target cores for shortfalls no larger than 0.24 meV.
+        quantum = 10.0 ** -int(getattr(grid.adapter, "executed_decimals", 12))
+        slack = max(_CORE_CONTAINMENT_TOL * max(abs(core_lo), abs(core_hi), 1.0),
+                    0.5 * quantum, 0.5 * abs(float(grid.e_step)))
+        if executed_lo > core_lo + slack or executed_hi < core_hi - slack:
             return WindowRefusal(
                 candidate_family=family,
                 reason_code="target_core_truncated_after_domain_clip",
-                detail=_detail_items(shared))
+                detail=_detail_items({
+                    **shared,
+                    "requested_e_lo": grid.e_lo, "requested_e_hi": grid.e_hi,
+                    "executed_e_lo": executed_lo, "executed_e_hi": executed_hi}))
     return None
 
 

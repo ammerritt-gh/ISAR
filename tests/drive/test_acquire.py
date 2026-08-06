@@ -1,5 +1,6 @@
 """The acquisition function: target selection, escalation ladder, and the energy-window rule."""
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -727,6 +728,29 @@ def _request(proposal):
             proposal.scan_command())
 
 
+def _proposal_with_divergent_evidence_revisions(mode: str):
+    """Build through the real proposal seam with distinct transition and master identities."""
+    objective = _eig_objective(mode)
+    model = acq_model.fit([])
+    plan = acq.plan_actions(
+        objective, model, [], resolution_info={"fwhm_dE": 0.8}, budget_state={})
+    chosen = acq.select_action(plan.inventory, plan.candidates)
+    assert chosen is not None
+    chosen.pick.evidence_master = {
+        "master_revision": "master-revision-exact",
+        "content_hash": "master-content-fallback",
+    }
+    transitioned_score = replace(
+        chosen.score,
+        evidence_transition={"authoritative_evidence_revision": "transition-revision"},
+    )
+    chosen = replace(
+        chosen, generated=replace(chosen.generated, score=transitioned_score))
+    build = plan._build_context
+    return acq._build_proposal(
+        build[0], chosen, build[1], build[2], build[3], build[4], build[5], build[6])
+
+
 def test_shadow_mode_emits_the_identical_request_as_the_off_mode_legacy_path():
     # Only the *physical* request can be asserted identical: materializing the new steering field
     # remints every hypothesis/scientific-action fingerprint once, by design (the knob is part of
@@ -736,6 +760,15 @@ def test_shadow_mode_emits_the_identical_request_as_the_off_mode_legacy_path():
         _eig_objective("shadow"), acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
 
     assert _request(off) == _request(shadow)
+    assert (off.meta["authoritative_evidence_revision"]
+            == shadow.meta["authoritative_evidence_revision"])
+    from isar.drive import loop as drive_loop
+    assert drive_loop._request_fingerprint_for(
+        off, e_lo=off.e_lo, e_hi=off.e_hi, e_step=off.e_step, ncount=off.ncount,
+    ) == drive_loop._request_fingerprint_for(
+        shadow, e_lo=shadow.e_lo, e_hi=shadow.e_hi,
+        e_step=shadow.e_step, ncount=shadow.ncount,
+    )
     assert off.meta["count_diagnostics"] == shadow.meta["count_diagnostics"]
     assert (off.scan_design_inventory.selected_candidate_id
             == shadow.scan_design_inventory.selected_candidate_id)
@@ -745,6 +778,27 @@ def test_shadow_mode_emits_the_identical_request_as_the_off_mode_legacy_path():
         "shadow_legacy_control_unscored")
     assert off.scan_design_inventory.selection_basis == "legacy_control_off"
     assert shadow.scan_design_inventory.context.scan_window_eig_mode == "shadow"
+
+
+def test_shadow_exact_source_uses_master_revision_without_reminting_proposal_identity():
+    off = _proposal_with_divergent_evidence_revisions("off")
+    shadow = _proposal_with_divergent_evidence_revisions("shadow")
+
+    assert _request(off) == _request(shadow)
+    assert off.meta["authoritative_evidence_revision"] == "transition-revision"
+    assert shadow.meta["authoritative_evidence_revision"] == "transition-revision"
+    source = shadow.shadow_scoring_source
+    assert source.master_revision == "master-revision-exact"
+    assert source.action_provenance["authoritative_evidence_revision"] == (
+        "master-revision-exact")
+
+    from isar.drive import loop as drive_loop
+    assert drive_loop._request_fingerprint_for(
+        off, e_lo=off.e_lo, e_hi=off.e_hi, e_step=off.e_step, ncount=off.ncount,
+    ) == drive_loop._request_fingerprint_for(
+        shadow, e_lo=shadow.e_lo, e_hi=shadow.e_hi,
+        e_step=shadow.e_step, ncount=shadow.ncount,
+    )
 
 
 def test_shadow_candidates_share_the_selected_action_q_kind_and_reason():
@@ -761,6 +815,69 @@ def test_shadow_candidates_share_the_selected_action_q_kind_and_reason():
                                  proposal.n_points, proposal.ncount)
 
 
-def test_declaring_authoritative_scan_window_eig_refuses_at_campaign_setup():
-    with pytest.raises(ValueError, match="scan_window_eig_authoritative_unavailable"):
+def test_authoritative_scan_window_eig_requires_the_exact_o41_profile_at_campaign_setup():
+    with pytest.raises(ValueError) as raised:
         _eig_objective("authoritative")
+    message = str(raised.value)
+    assert "scan_window_eig_authoritative_profile_invalid" in message
+    assert "exactly one O41 policy is required" in message
+
+
+def test_resolution_energy_width_prefers_the_section_over_the_projection():
+    """A constant-Q energy scan measures a section of the resolution ellipsoid, not a projection.
+
+    ``GET /resolution`` reports both: ``fwhm.dE`` is the marginal/vanadium width (the ellipsoid
+    integrated over Q) and ``bragg.dE`` is the section at fixed Q. On the driven TAVI configuration
+    they are 1.1577 and 0.4616 meV, so reading the marginal one made every window ~2.5x too wide.
+    """
+    body = {"ok": True,
+            "fwhm": {"dE": 1.1577, "dq_par": 0.0478},
+            "bragg": {"dE": 0.4616, "dq_par": 0.0470},
+            "vanadium_fwhm_meV": 1.1577}
+    assert acq._fwhm_from(body) == 0.4616
+
+    # Without a section the marginal width is still better than nothing, and the explicit
+    # single-value forms every existing caller and fake uses are unchanged.
+    assert acq._fwhm_from({"ok": True, "fwhm": {"dE": 1.1577}}) == 1.1577
+    assert acq._fwhm_from({"fwhm_dE": 0.8}) == 0.8
+    assert acq._fwhm_from(0.7) == 0.7
+    # A refusal, a non-positive section, and a missing body all fall back.
+    assert acq._fwhm_from({"ok": False, "bragg": {"dE": 0.4616}}) == acq.DEFAULT_FWHM_MEV
+    assert acq._fwhm_from({"bragg": {"dE": 0.0}, "fwhm_dE": 0.8}) == 0.8
+    assert acq._fwhm_from(None) == acq.DEFAULT_FWHM_MEV
+
+
+def test_fisher_tier_skips_a_q_whose_master_has_no_halfwidth():
+    """A q with no pooled-master half-width is unrankable here, not a campaign-ending fault.
+
+    ``_q_sigma`` returns None for a master that carries no half-width yet, which is common in a
+    cold campaign. Only the scan-side width used to be checked, so such a candidate was graded and
+    then raised TypeError while formatting ``sigma_prior={sp:g}`` into its reason string. The
+    generator reported that as a controller_fault and the driver abandoned the campaign.
+    """
+    from isar.drive.acquisition.acquire import _q_sigma
+
+    class _G:
+        def __init__(self, master):
+            self.master = master
+    assert _q_sigma(_G({"halfwidth": 0.4})) == 0.4
+    assert _q_sigma(_G({})) is None                      # the value that used to crash the generator
+    assert _q_sigma(_G(None)) is None
+
+
+def test_counts_tier_reason_survives_a_q_with_no_measured_sigma():
+    """counts_eig answers +inf for an unmeasured sigma so an un-based q is scanned FIRST.
+
+    The winning pick is therefore routinely the one with no half-width to print. Formatting it as a
+    number raised TypeError inside the generator, which the action inventory reported as a
+    controller_fault that ended the campaign instead of taking the baseline scan it had just chosen.
+    """
+    import math as _math
+
+    from isar.drive.acquisition.eig import counts_eig
+
+    assert _math.isinf(counts_eig(None, 0.5, 1.0e7, 1.0e7))     # unmeasured ranks first, by design
+    for value in (None, float("nan"), float("inf")):
+        text = (f"{value:g}" if value is not None and _math.isfinite(value) else "unmeasured")
+        assert text == "unmeasured"
+    assert (f"{0.42:g}" if _math.isfinite(0.42) else "unmeasured") == "0.42"

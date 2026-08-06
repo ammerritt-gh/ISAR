@@ -246,6 +246,11 @@ class GridQ:
     track_revision: int | None = None
     structural_endpoint_status: str | None = None
     is_reduced_q_origin: bool = False
+    # Whether the campaign's target branch is acoustic.  An acoustic branch has ω(q→0) → 0, so at
+    # the reduced-q origin the excitation is degenerate with the elastic line and there is nothing
+    # separable to measure, however many neutrons are spent.  An optic branch has a finite ω at the
+    # zone centre and is perfectly measurable there, so this cannot key on the origin alone.
+    acoustic_target: bool = False
     # Local branch identity, carried verbatim from the tracker's own confirmation predicate
     # (``branch_tracking._frontier_states``).  ``track_state`` answers whether this q is *connected*
     # to the confirmed trajectory; these answer whether its identity is decisive *here*, which is a
@@ -352,7 +357,20 @@ class GridQ:
 
     @property
     def precision_coverage_eligible(self) -> bool:
-        """Whether this q represents a measurable target requiring a certified interval."""
+        """Whether this q represents a measurable target requiring a certified interval.
+
+        An acoustic branch is exempt at the reduced-q origin from the first iteration, on the
+        geometry alone.  The tracker also retires the origin once it can *infer* the intercept from
+        resolved neighbours (``branch_tracking`` sets ``inferred_unresolved`` after a linear fit
+        through them succeeds), but that is earned late and only if the fit passes — and until it
+        does, the controller keeps demanding a certified interval at a q where the mode sits under
+        the elastic line.  Fitting a DHO there returns a centre with an error bar thousands of times
+        larger than itself, which classifies as a confirmed identity rather than an unresolved one,
+        so the campaign never earns the exemption and returns forever: three quarters of the scans
+        in the R3 cold-start campaigns went to that single q.
+        """
+        if self.acoustic_target and self.is_reduced_q_origin:
+            return False
         return not (self.track_state == "inferred_unresolved"
                     and self.structural_endpoint_status == "inferred_unresolved"
                     and self.is_reduced_q_origin)
@@ -653,7 +671,8 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                   interval_floor_min_improvement=float(policy.get(
                       "interval_floor_min_improvement", 0.05)),
                   interval_floor_min_exposure_ratio=float(policy.get(
-                      "interval_floor_min_exposure_ratio", 2.0)))
+                      "interval_floor_min_exposure_ratio", 2.0)),
+                  acoustic_target=(target_branch == "acoustic"))
             for i in range(len(path))]
     for sequence, update in enumerate(observations):
         if update.get("kind") != "pooled_master_update" or update.get("hkl") is None:
@@ -753,6 +772,13 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                 # unclear so the controller counts rather than stops — the safe direction here.
                 grid[i].local_identity_clear = None if clear is None else bool(clear)
     track = dict(branch_track or {})
+    # The tracker publishes the zone anchor as plain geometry from its first revision, long before
+    # the linear-fit inference below can retire the origin.  Read it here so an acoustic campaign
+    # knows on iteration one which q has nothing separable to measure, rather than discovering it
+    # after spending most of its beam there.
+    origin_index = track.get("reduced_q_origin_index")
+    if isinstance(origin_index, int) and 0 <= origin_index < len(grid):
+        grid[origin_index].is_reduced_q_origin = True
     for assignment in track.get("assignments") or []:
         if (assignment.get("structural_endpoint_status") != "inferred_unresolved"
                 or not assignment.get("is_reduced_q_origin")):

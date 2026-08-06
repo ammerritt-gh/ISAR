@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-from isar.analyze import errors, loop, select, verdict
+from isar.analyze import errors, loop, select, shadow_selection, verdict
 from isar.analyze import gold as gold_mod
 from isar.analyze.context import (
     ScanContext, effective_exposure, normalized_exposure, select_exposure,
@@ -40,6 +40,18 @@ from isar.predictive import PREDICTIVE_CONTRACT
 from isar.predictive import json_fingerprint as _json_fingerprint
 from isar.schema.card import Card
 from isar.schema.hypotheses import preset as hypothesis_preset
+from isar.schema.statistics import (
+    FIT_SELECTION_SCHEMA,
+    INTERVAL_SCHEMA,
+    MODEL_SELECTION_CONTRACT,
+    PROBABILITY_SCHEMA,
+    SHADOW_MODEL_SELECTION_SCHEMA,
+    SemanticsConstructionError,
+    authority_scopes,
+    compact_for_csv,
+    semantics_fingerprint,
+    validate_for_write,
+)
 from isar.schema.steering import (AUXILIARY_TRACK_NODE, CANDIDATE_NOT_DETECTED, CANONICAL_MASTER,
                                   IntensityMeasure, ParamConstraints, evidence_sink_for,
                                   realized_outcome_for)
@@ -52,9 +64,10 @@ from isar.session.predictive_artifact import model_manifest_of as _model_manifes
 # phonon within this many resolution FWHM of the elastic line (the merging regime where Γ/A go
 # unidentifiable). Above it the peak is well separated and the fit is left unconstrained.
 LOW_Q_FWHM_FACTOR = 2.0
-# Error tiers that run the authoritative frequentist interval (MINOS + parametric bootstrap + ω₀
-# profile). "bayes" is a strict superset of "full" — everything full does, plus the nested-sampling
-# posterior on the prelim-best label (diagnostics-only; the bootstrap interval stays authoritative).
+# Error tiers that run the ordinary physical-fit frequentist interval (MINOS + parametric bootstrap
+# + ω₀ profile). "bayes" is a strict superset of "full" — everything full does, plus the
+# nested-sampling posterior on the prelim-best label. That single-fit Bayesian interval is
+# diagnostics-only; pooled-master certification separately uses the mixed predictive interval.
 FULL_TIERS = ("full", "bayes")
 from isar.session import unit_data
 from isar.session.state import ScanEntry, SessionState, canonical_hash, content_hash
@@ -119,10 +132,11 @@ class FitOutcome:
     # Fit provenance (steering contract 4): unconstrained | soft_prior | branch_conditional |
     # stokes_only | descriptor_only. Anything but "unconstrained" is not an ordinary phonon fit.
     fit_kind: str = "unconstrained"
-    # Phase A Bayesian branch assignment: which dispersion branch this scan's ω₀ was assigned to
-    # (acoustic | optic | new | ...), the Shannon entropy of that assignment, whether the acoustic ω₀
-    # was position-resolvable (ω₀ ≳ 1 FWHM), and the soft assignment weight fed to the branch model.
-    # None on older ledgers / when the branch-assignment posterior is off (no dispersion.zone_period).
+    # Phase A normalized branch-assignment scoring: which dispersion branch this scan's ω₀ was
+    # assigned to (acoustic | optic | new | ...), the Shannon entropy over assignment weights,
+    # whether the acoustic ω₀ was position-resolvable (ω₀ ≳ 1 FWHM), and the soft assignment weight
+    # fed to the branch model. These are probability-like scores, not calibrated posterior
+    # probabilities. None on older ledgers / when assignment is off (no dispersion.zone_period).
     branch_id: str | None = None
     assignment_entropy: float | None = None
     resolvable: bool | None = None
@@ -132,9 +146,10 @@ class FitOutcome:
     # belief can form and claim its own features at later q. None/empty on abstains + older ledgers.
     secondary_features: list | None = None
     # Bayes-errors tier (--errors bayes): the nested-sampling posterior on ω₀ + its §5.5
-    # three-method (HESSE / bootstrap / posterior) cross-check. Diagnostics-only — the bootstrap
-    # `interval` stays authoritative; certification/confidence never read these. All defaulted for
-    # back-compat with older ledgers and the non-bayes tiers.
+    # three-method (HESSE / bootstrap / posterior) cross-check. `bayes_interval` is diagnostics-only
+    # as a single-fit quantity; pooled-master predictive construction may use accepted nested
+    # particles inside its separate legacy mixed interval. All defaulted for back-compat with older
+    # ledgers and the non-bayes tiers.
     bayes_interval: tuple | None = None   # (lo, median, hi) 68% credible, diagnostics-only
     bayes_ok: bool | None = None          # None = tier didn't run bayes; False = ran, failed gate
     bayes_ess: float | None = None
@@ -222,6 +237,13 @@ class FitOutcome:
     consistency_pvalue: float | None = None
     consistency_alpha: float | None = None
     consistency_seed: int | None = None
+    # STAT-1 additive provenance. Full records persist in session.json; results.csv receives compact
+    # projections. Missing/legacy provenance is ``None`` and never invalidates the scientific result.
+    fit_selection_semantics: dict | None = None
+    interval_semantics: dict | None = None
+    probability_semantics: dict | None = None
+    # STAT-2a diagnostics only. It cannot drive any scientific or steering authority in this phase.
+    shadow_model_selection: dict | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -541,8 +563,588 @@ def _candidate_rows(scores, fits) -> list | None:
             "delta_aic": float(s.delta_aic),
             "akaike_weight": float(s.weight),
             "usable": bool(r.analysis_usable) if r is not None else True,
+            "estimator_kind": (s.fit_semantics or {}).get("estimator_kind"),
+            "fit_kind": (s.fit_semantics or {}).get("fit_kind"),
+            "constraint_origin": (s.fit_semantics or {}).get("aggregate_constraint_origin"),
+            "selection_eligibility": (s.fit_semantics or {}).get("selection_eligibility"),
+            "data_likelihood_fingerprint": (s.fit_semantics or {}).get(
+                "data_likelihood_fingerprint"
+            ),
+            "model_parameterization_fingerprint": (s.fit_semantics or {}).get(
+                "model_parameterization_fingerprint"
+            ),
+            "constraint_fingerprint": (s.fit_semantics or {}).get(
+                "constraint_fingerprint"
+            ),
+            "comparison_context_fingerprint": (s.fit_semantics or {}).get(
+                "comparison_context_fingerprint"
+            ),
+            "conditioning_fingerprint": (s.fit_semantics or {}).get(
+                "conditioning_fingerprint"
+            ),
         })
     return rows
+
+
+def _model_set_fingerprint(kind: str, payload) -> str:
+    return semantics_fingerprint(f"isar.{kind}/1", payload)
+
+
+_ELIGIBILITY_PRECEDENCE = {
+    "eligible": 0,
+    "ineligible_unapproved_conditioning": 1,
+    "ineligible_soft_penalized": 2,
+    "ineligible_data_dependent_conditioning": 3,
+    "ineligible_incomparable_context": 4,
+}
+
+
+def _canonical_candidate_generation_route(route: dict) -> dict:
+    """Order-invariant form of the model-set portions of a generation route."""
+    canonical = copy.deepcopy(dict(route))
+    for name in (
+        "guideline_structure_filter",
+        "labels_before_guideline",
+        "offered_labels",
+        "scored_labels",
+    ):
+        if canonical.get(name) is not None:
+            canonical[name] = sorted(str(value) for value in canonical[name])
+    return canonical
+
+
+def _model_set_record(label, fit_semantics: dict) -> dict:
+    """The structured model identity needed to distinguish equal labels in different contexts."""
+    return {
+        "label": str(label),
+        "data_likelihood_fingerprint": fit_semantics["data_likelihood_fingerprint"],
+        "model_parameterization_fingerprint": fit_semantics[
+            "model_parameterization_fingerprint"
+        ],
+        "constraint_fingerprint": fit_semantics["constraint_fingerprint"],
+        "comparison_context_fingerprint": fit_semantics[
+            "comparison_context_fingerprint"
+        ],
+        "selection_eligibility": fit_semantics["selection_eligibility"],
+    }
+
+
+def _aggregate_selection_eligibility(candidate_records: list[dict]) -> tuple[str, list[dict]]:
+    """Strongest complete normalization defect plus every candidate-specific cause."""
+    reason_labels: dict[str, list[str]] = {}
+    eligibilities = []
+    likelihoods = set()
+    for candidate in candidate_records:
+        label = str(candidate["label"])
+        fit_semantics = candidate["fit_semantics"]
+        eligibility = str(fit_semantics["selection_eligibility"])
+        eligibilities.append(eligibility)
+        likelihoods.add(str(fit_semantics["data_likelihood_fingerprint"]))
+        for reason in fit_semantics.get("selection_ineligibility_reasons") or ():
+            reason_labels.setdefault(str(reason), []).append(label)
+    if len(likelihoods) != 1:
+        eligibilities.append("ineligible_incomparable_context")
+        reason_labels.setdefault("candidate_data_likelihood_contexts_differ", []).extend(
+            str(candidate["label"]) for candidate in candidate_records
+        )
+    aggregate = max(
+        eligibilities or ["eligible"],
+        key=lambda value: _ELIGIBILITY_PRECEDENCE[value],
+    )
+    reasons = [
+        {
+            "reason_code": reason,
+            "candidate_labels": sorted(set(labels)),
+        }
+        for reason, labels in sorted(reason_labels.items())
+    ]
+    return aggregate, reasons
+
+
+def _build_selection_semantics(
+    results,
+    selection,
+    route,
+    *,
+    error_attachment_labels,
+) -> dict | None:
+    """Describe the exact candidate-set transitions without changing selection behavior."""
+    try:
+        missing = [r.label for r in results if getattr(r, "fit_semantics", None) is None]
+        if missing:
+            raise SemanticsConstructionError(
+                "missing_candidate_fit_semantics", ",".join(str(label) for label in missing)
+            )
+        by_label = {r.label: r for r in results}
+        offered_records = sorted(
+            (
+                _model_set_record(r.label, r.fit_semantics)
+                for r in results
+            ),
+            key=lambda item: item["label"],
+        )
+        scored_records = sorted(
+            (
+                _model_set_record(score.label, score.fit_semantics)
+                for score in selection.scores
+            ),
+            key=lambda item: item["label"],
+        )
+        denominator = sorted(
+            (
+                {
+                    **_model_set_record(score.label, score.fit_semantics),
+                    "aic": float(score.aic),
+                }
+                for score in selection.scores
+            ),
+            key=lambda item: item["label"],
+        )
+        pool_labels = []
+        for score in selection.scores:
+            if not score.survives:
+                continue
+            samples = (getattr(by_label.get(score.label), "within_model", None) or {}).get(
+                "omega0_samples"
+            )
+            if samples is not None and np.size(samples) > 0:
+                pool_labels.append(str(score.label))
+        error_attachment_records = sorted(
+            (
+                _model_set_record(label, by_label[label].fit_semantics)
+                for label in error_attachment_labels
+            ),
+            key=lambda item: item["label"],
+        )
+        pool_records = sorted(
+            (
+                _model_set_record(label, by_label[label].fit_semantics)
+                for label in pool_labels
+            ),
+            key=lambda item: item["label"],
+        )
+        component_fingerprints = {
+            "offered_model_set_fingerprint": _model_set_fingerprint(
+                "offered_model_set", offered_records
+            ),
+            "scored_model_set_fingerprint": _model_set_fingerprint(
+                "scored_model_set", scored_records
+            ),
+            "weight_denominator_fingerprint": _model_set_fingerprint(
+                "akaike_weight_denominator", denominator
+            ),
+            "error_attachment_set_fingerprint": _model_set_fingerprint(
+                "error_attachment_set", error_attachment_records
+            ),
+            "legacy_pool_set_fingerprint": _model_set_fingerprint(
+                "legacy_pool_set", pool_records
+            ),
+        }
+        candidate_records = []
+        for score in selection.scores:
+            candidate_records.append(
+                {
+                    "label": str(score.label),
+                    "cost": float(score.cost),
+                    "effective_parameter_count": int(score.k),
+                    "aic": float(score.aic),
+                    "akaike_weight": float(score.weight),
+                    "fit_semantics": score.fit_semantics,
+                }
+            )
+        aggregate_eligibility, aggregate_reasons = _aggregate_selection_eligibility(
+            candidate_records
+        )
+        canonical_route = _canonical_candidate_generation_route(route)
+        selection_payload = {
+            **component_fingerprints,
+            "ordinary_aic_revision": select.MODEL_SELECTION_REVISION,
+            "weight_floor": float(select.DEFAULT_WEIGHT_FLOOR),
+            "candidate_generation_route": canonical_route,
+            "selection_eligibility": aggregate_eligibility,
+            "selection_ineligibility_reasons": aggregate_reasons,
+            "candidates": sorted(candidate_records, key=lambda item: item["label"]),
+        }
+        record = {
+            "schema": FIT_SELECTION_SCHEMA,
+            "candidate_generation_route": route,
+            "model_weight_kind": "akaike_relative_weight" if selection.scores else "none",
+            "selection_eligibility": aggregate_eligibility,
+            "selection_ineligibility_reasons": aggregate_reasons,
+            **component_fingerprints,
+            "model_selection_fingerprint": semantics_fingerprint(
+                "isar.model_selection_semantics/1", selection_payload
+            ),
+            "candidate_records": candidate_records,
+            "authority_scopes": authority_scopes(
+                single_fit_delivery="active",
+                user_diagnostic="active",
+            ),
+        }
+        return validate_for_write(record, FIT_SELECTION_SCHEMA)
+    except SemanticsConstructionError as exc:
+        log.warning(
+            "semantics_construction_failed producer=isar.analyze.select "
+            "quantity=model_selection reason_code=%s",
+            exc.reason_code,
+        )
+        return None
+
+
+def _outcome_interval_semantics(
+    *,
+    best,
+    selection,
+    interval,
+    omega0_profile,
+    hesse_interval,
+    hesse_trusted,
+    bayes_interval,
+    interval_reliable,
+) -> dict | None:
+    """Propagate producer-owned interval meaning onto the four persisted quantities."""
+    try:
+        source = (
+            ((getattr(best, "within_model", None) or {}).get("interval_semantics") or {}).get(
+                "quantities", {}
+            )
+            if best is not None
+            else {}
+        )
+        fit_semantics = getattr(best, "fit_semantics", None) if best is not None else None
+
+        def unavailable(reason: str) -> dict:
+            item = {
+                "availability": False,
+                "nominal_level": 0.68,
+                "unavailable_reason": reason,
+                "calibration_target": None,
+                "producer_authority_scopes": authority_scopes(),
+                "authority_scopes": authority_scopes(),
+            }
+            if fit_semantics is not None:
+                item.update(
+                    {
+                        "estimator_kind": fit_semantics["estimator_kind"],
+                        "effective_constraints": list(
+                            fit_semantics.get("effective_constraints") or []
+                        ),
+                        "conditioning_fingerprint": fit_semantics[
+                            "conditioning_fingerprint"
+                        ],
+                    }
+                )
+            return item
+
+        if interval is not None and source.get("freq_interval") is not None:
+            interval_item = copy.deepcopy(source["freq_interval"])
+        elif interval is not None and selection.pooled is not None:
+            # The exact contributing set and its observed-data weights are owned by the selection
+            # producer.  Reference both component-set and complete-selection fingerprints instead
+            # of reverse-engineering either from the interval values.
+            selection_semantics = selection.fit_selection_semantics or {}
+            legacy_pool_set_fingerprint = selection_semantics.get(
+                "legacy_pool_set_fingerprint"
+            )
+            source_model_selection_fingerprint = selection_semantics.get(
+                "model_selection_fingerprint"
+            )
+            if (
+                legacy_pool_set_fingerprint is None
+                or source_model_selection_fingerprint is None
+            ):
+                raise SemanticsConstructionError(
+                    "missing_selection_fingerprint", "legacy_pooled_interval"
+                )
+            interval_item = {
+                "availability": True,
+                "nominal_level": 0.68,
+                "interval_kind": "akaike_weighted_parametric_bootstrap_pool",
+                "particle_measure_kind": "parametric_bootstrap_sampling_distribution",
+                "draw_measure_kind": "explicit_weight_empirical_particles",
+                "model_weight_kind": "akaike_relative_weight",
+                "inference_paradigm": "frequentist_empirical_model_mixture",
+                "legacy_pool_set_fingerprint": legacy_pool_set_fingerprint,
+                "source_model_selection_fingerprint": (
+                    source_model_selection_fingerprint
+                ),
+                "conditioning_fingerprint": semantics_fingerprint(
+                    "isar.legacy_pooled_interval_conditioning/1",
+                    {
+                        "legacy_pool_set_fingerprint": legacy_pool_set_fingerprint,
+                        "source_model_selection_fingerprint": (
+                            source_model_selection_fingerprint
+                        ),
+                    },
+                ),
+                "calibration_target": None,
+                "producer_authority_scopes": authority_scopes(
+                    single_fit_delivery="candidate",
+                    legacy_master_certification="candidate",
+                    stopping="candidate",
+                    user_diagnostic="active",
+                ),
+                "authority_scopes": authority_scopes(user_diagnostic="active"),
+            }
+        else:
+            interval_item = unavailable("not_produced")
+        interval_item["availability"] = interval is not None
+
+        profile_item = (
+            copy.deepcopy(source["profile_interval"])
+            if source.get("profile_interval") is not None
+            else unavailable("not_produced")
+        )
+        profile_item["availability"] = omega0_profile is not None
+
+        if hesse_interval is not None and fit_semantics is None:
+            raise SemanticsConstructionError("missing_candidate_fit_semantics", "hesse_interval")
+        hesse_item = unavailable("not_produced")
+        if hesse_interval is not None:
+            hesse_item.update(
+                {
+                    "availability": True,
+                    "interval_kind": "hesse_delta",
+                    "inference_paradigm": "frequentist_asymptotic",
+                    "hesse_trusted": bool(hesse_trusted),
+                    "particle_measure_kind": "laplace_hesse_parameter_approximation",
+                    "producer_authority_scopes": authority_scopes(
+                        single_fit_delivery="candidate",
+                        legacy_master_certification="candidate",
+                        stopping="candidate",
+                        user_diagnostic="active",
+                    ),
+                    "authority_scopes": authority_scopes(user_diagnostic="active"),
+                }
+            )
+
+        bayes_item = (
+            copy.deepcopy(source["bayes_interval"])
+            if source.get("bayes_interval") is not None
+            else unavailable("not_produced")
+        )
+        bayes_item["availability"] = bayes_interval is not None
+
+        quantity_items = {
+            "interval": interval_item,
+            "omega0_profile": profile_item,
+            "hesse_interval": hesse_item,
+            "bayes_interval": bayes_item,
+        }
+
+        record = {
+            "schema": INTERVAL_SCHEMA,
+            "quantities": quantity_items,
+            "authority_scopes": authority_scopes(user_diagnostic="active"),
+        }
+        return _realize_interval_authority(
+            record,
+            interval=interval,
+            omega0_profile=omega0_profile,
+            hesse_interval=hesse_interval,
+            bayes_interval=bayes_interval,
+            hesse_trusted=hesse_trusted,
+            interval_reliable=interval_reliable,
+        )
+    except (SemanticsConstructionError, KeyError) as exc:
+        reason_code = (
+            exc.reason_code if isinstance(exc, SemanticsConstructionError)
+            else "missing_interval_semantics_field"
+        )
+        log.warning(
+            "semantics_construction_failed producer=isar.session.driver "
+            "quantity=fit_outcome_intervals reason_code=%s",
+            reason_code,
+        )
+        return None
+
+
+def _realize_interval_authority(
+    record: dict | None,
+    *,
+    interval,
+    omega0_profile,
+    hesse_interval,
+    bayes_interval,
+    hesse_trusted,
+    interval_reliable,
+) -> dict | None:
+    """Bind producer capability to the interval ladder's actual delivered outcome.
+
+    Branch triage and connected tracking can replace or withdraw the scalar interval after the
+    error producer has run.  Reapplying this small projection at every such boundary keeps the
+    recorded authority attached to the value that survives, without reverse-inferring the
+    interval's statistical kind.
+    """
+    if record is None:
+        return None
+    try:
+        realized = copy.deepcopy(record)
+        quantities = realized["quantities"]
+        values = {
+            "interval": interval,
+            "omega0_profile": omega0_profile,
+            "hesse_interval": hesse_interval,
+            "bayes_interval": bayes_interval,
+        }
+        selected_quantity = None
+        # A failed interval producer returns a nan-filled tuple, not None: selecting or publishing
+        # one on `is not None` delivers a nan half-width that never satisfies the stopping
+        # tolerance, so the q silently never converges and never escalates.
+        if errors.usable_interval(interval) and interval_reliable is not False:
+            selected_quantity = "interval"
+        elif errors.usable_interval(omega0_profile):
+            selected_quantity = "omega0_profile"
+        elif errors.usable_interval(hesse_interval) and hesse_trusted:
+            selected_quantity = "hesse_interval"
+        certifiable = bool(
+            selected_quantity is not None
+            and (
+                interval_reliable is not False
+                or selected_quantity == "hesse_interval" and hesse_trusted
+            )
+        )
+        for name, item in quantities.items():
+            item.setdefault("producer_availability", bool(item.get("availability")))
+            item["availability"] = errors.usable_interval(values.get(name))
+            selected = name == selected_quantity
+            item["selected_for_delivery"] = selected
+            item["passed_reliability_gate"] = bool(selected and certifiable)
+            if not item["availability"]:
+                item["authority_scopes"] = authority_scopes()
+            elif selected and certifiable:
+                item["authority_scopes"] = authority_scopes(
+                    single_fit_delivery="active",
+                    legacy_master_certification="active",
+                    stopping="active",
+                    user_diagnostic="active",
+                )
+            elif selected:
+                item["authority_scopes"] = authority_scopes(
+                    single_fit_delivery="active",
+                    legacy_master_certification="ineligible",
+                    stopping="ineligible",
+                    user_diagnostic="active",
+                )
+            else:
+                item["authority_scopes"] = authority_scopes(
+                    user_diagnostic="active"
+                )
+        if interval is not None and interval_reliable is False:
+            quantities["interval"]["authority_scopes"] = authority_scopes(
+                single_fit_delivery="inactive",
+                legacy_master_certification="ineligible",
+                stopping="ineligible",
+                user_diagnostic="active",
+            )
+            quantities["interval"]["passed_reliability_gate"] = False
+        if hesse_interval is not None and not hesse_trusted:
+            quantities["hesse_interval"]["authority_scopes"] = authority_scopes(
+                user_diagnostic="active"
+            )
+            quantities["hesse_interval"]["passed_reliability_gate"] = False
+        realized["selected_interval_quantity"] = selected_quantity
+        realized["selected_interval_certifiable"] = certifiable
+        realized["authority_scopes"] = (
+            copy.deepcopy(quantities[selected_quantity]["authority_scopes"])
+            if selected_quantity is not None
+            else authority_scopes()
+        )
+        return validate_for_write(realized, INTERVAL_SCHEMA)
+    except (SemanticsConstructionError, KeyError) as exc:
+        reason_code = (
+            exc.reason_code if isinstance(exc, SemanticsConstructionError)
+            else "missing_interval_semantics_field"
+        )
+        log.warning(
+            "semantics_construction_failed producer=isar.session.driver "
+            "quantity=realized_fit_outcome_intervals reason_code=%s",
+            reason_code,
+        )
+        return None
+
+
+def _refresh_interval_semantics(outcome: dict) -> None:
+    """Refresh only realized authority after a delivery mutation."""
+    outcome["interval_semantics"] = _realize_interval_authority(
+        outcome.get("interval_semantics"),
+        interval=outcome.get("interval"),
+        omega0_profile=outcome.get("omega0_profile"),
+        hesse_interval=outcome.get("hesse_interval"),
+        bayes_interval=outcome.get("bayes_interval"),
+        hesse_trusted=bool(outcome.get("hesse_trusted", False)),
+        interval_reliable=outcome.get("interval_reliable", True),
+    )
+
+
+def _refresh_probability_semantics(
+    outcome: dict,
+    *,
+    predictive_payload: dict | None = None,
+) -> dict | None:
+    """Compose declarations supplied by the confidence, assignment, tracker, and predictive producers."""
+    from isar.analyze import confidence as confidence_mod
+
+    try:
+        quantities = {}
+        if outcome.get("confidence") is not None:
+            quantities["confidence"] = confidence_mod.probability_semantics()
+        if (
+            outcome.get("branch_posterior") is not None
+            or outcome.get("branch_weight") is not None
+            or outcome.get("assignment_entropy") is not None
+        ):
+            local = BA.probability_semantics(outcome.get("branch_posterior"))
+            for name in ("branch_posterior", "branch_weight", "assignment_entropy"):
+                if outcome.get(name) is not None:
+                    quantities[name] = local[name]
+        if outcome.get("target_probability") is not None or outcome.get("identity_entropy") is not None:
+            tracked = branch_tracking.probability_semantics(
+                outcome.get("branch_posterior"),
+                target_branch=str(outcome.get("target_branch") or "acoustic"),
+            )
+            for name in ("target_probability", "identity_entropy"):
+                if outcome.get(name) is not None:
+                    quantities[name] = tracked[name]
+        existing = outcome.get("probability_semantics")
+        existing_model_entropy = (
+            ((existing or {}).get("quantities") or {}).get("model_entropy")
+            if isinstance(existing, dict)
+            else None
+        )
+        if outcome.get("model_entropy") is not None:
+            predictive_retained = (
+                (predictive_payload or {}).get("predictive_retained_set_fingerprint")
+            )
+            if predictive_retained is not None:
+                quantities["model_entropy"] = (
+                    predictive_artifact.model_entropy_probability_semantics(
+                        predictive_retained
+                    )
+                )
+            elif existing_model_entropy is not None:
+                quantities["model_entropy"] = existing_model_entropy
+            else:
+                raise SemanticsConstructionError(
+                    "missing_predictive_retained_set_fingerprint", "model_entropy"
+                )
+        record = {
+            "schema": PROBABILITY_SCHEMA,
+            "quantities": quantities,
+            "authority_scopes": authority_scopes(user_diagnostic="active"),
+        }
+        return validate_for_write(record, PROBABILITY_SCHEMA)
+    except (SemanticsConstructionError, KeyError) as exc:
+        reason_code = (
+            exc.reason_code if isinstance(exc, SemanticsConstructionError)
+            else "missing_probability_semantics_field"
+        )
+        log.warning(
+            "semantics_construction_failed producer=isar.session.driver "
+            "quantity=probability_like_outputs reason_code=%s",
+            reason_code,
+        )
+        return None
 
 
 def _auto_escalation_reasons(prelim, fits, ctx) -> list[str]:
@@ -589,10 +1191,352 @@ def _auto_escalation_reasons(prelim, fits, ctx) -> list[str]:
     return reasons
 
 
+def _delivery_constraint_origins(results) -> list[str]:
+    origins = set()
+    for result in results:
+        semantics = getattr(result, "fit_semantics", None)
+        if not isinstance(semantics, dict):
+            continue
+        for constraint in semantics.get("effective_constraints") or ():
+            origin = constraint.get("origin") if isinstance(constraint, dict) else None
+            if origin:
+                origins.add(str(origin))
+    return sorted(origins)
+
+
+def _shadow_can_alias_delivery(results, *, structure_skipped: bool) -> bool:
+    if structure_skipped:
+        return False
+    for result in results:
+        semantics = getattr(result, "fit_semantics", None)
+        if not isinstance(semantics, dict):
+            return False
+        if semantics.get("estimator_kind") != "data_likelihood_mle":
+            return False
+        if semantics.get("selection_eligibility") != "eligible":
+            return False
+        if semantics.get("effective_constraints"):
+            return False
+    return True
+
+
+def _shadow_model_identities(results, selection_ctx) -> list[dict]:
+    hypotheses = {hypothesis.label: hypothesis for hypothesis in enumerate_structures(selection_ctx)}
+    hypotheses.update(
+        {hypothesis.label: hypothesis for hypothesis in enumerate_multimode(selection_ctx)}
+    )
+    identities = []
+    for result in results:
+        hypothesis = hypotheses.get(result.label)
+        if hypothesis is None:
+            raise SemanticsConstructionError(
+                "shadow_candidate_identity_join_failed", str(result.label)
+            )
+        parameterization = loop.model_parameterization_fingerprint(
+            hypothesis, selection_ctx
+        )
+        identities.append(
+            shadow_selection.shadow_model_identity(result.label, parameterization)
+        )
+    return identities
+
+
+def _shadow_unavailable_context_fingerprint(stage: str, reason_code: str) -> str:
+    return semantics_fingerprint(
+        "isar.shadow_selection_context_unavailable/1",
+        {"stage": str(stage), "reason_code": str(reason_code)},
+    )
+
+
+def _minimal_shadow_unavailable(reason_code: str, stage: str, *, runtime_seconds: float) -> dict:
+    """Last-resort JSON-clean record when even shadow schema construction is unavailable."""
+    return {
+        "schema": SHADOW_MODEL_SELECTION_SCHEMA,
+        "selection_contract_revision": MODEL_SELECTION_CONTRACT,
+        "selection_status": "unavailable",
+        "selection_complete": False,
+        "selection_changed": None,
+        "standard_selected_label": None,
+        "standard_model_weights": [],
+        "unavailable_stage": str(stage),
+        "unavailable_reason_code": str(reason_code),
+        "runtime_increment_seconds": max(float(runtime_seconds), 0.0),
+        "shadow_execution_kind": "unavailable",
+        "reused_model_identities": [],
+        "freshly_fitted_model_identities": [],
+        "authority_scopes": authority_scopes(user_diagnostic="active"),
+    }
+
+
+def _safe_shadow_unavailable(reason_code: str, stage: str, *, point, legacy_fingerprint,
+                             legacy_selected_label, legacy_weights) -> dict:
+    context_fingerprint = point.get("selection_context_fingerprint")
+    if not isinstance(context_fingerprint, str):
+        context_fingerprint = _shadow_unavailable_context_fingerprint(stage, reason_code)
+    try:
+        execution_kind = (
+            "skipped"
+            if reason_code == "shadow_skipped_soft_deadline"
+            else "unavailable"
+        )
+        return shadow_selection.unavailable_shadow_selection(
+            reason_code,
+            stage=stage,
+            selection_context_fingerprint=context_fingerprint,
+            candidate_generation_route=point.get("candidate_generation_route") or {
+                "route": "shadow_not_evaluated"
+            },
+            legacy_model_selection_fingerprint=legacy_fingerprint,
+            legacy_selected_label=legacy_selected_label,
+            legacy_model_weights=legacy_weights,
+            offered_model_identities=point.get("offered_model_identities") or (),
+            affected_candidate_identities=point.get("affected_candidate_identities") or (),
+            delivery_effective_constraint_origins=point.get(
+                "delivery_effective_constraint_origins"
+            ) or (),
+            runtime_increment_seconds=point.get("runtime_increment_seconds", 0.0),
+            shadow_execution_kind=execution_kind,
+        )
+    except Exception as exc:  # noqa: BLE001 — shadow metadata cannot invalidate a scientific fit
+        log.warning(
+            "shadow selection unavailable-record construction failed stage=%s reason_code=%s "
+            "(%s): %s",
+            stage, reason_code, type(exc).__name__, exc,
+        )
+        return _minimal_shadow_unavailable(
+            "shadow_unavailable_record_construction_failed",
+            "persistence_projection",
+            runtime_seconds=point.get("runtime_increment_seconds", 0.0),
+        )
+
+
+def _build_shadow_point_bundle(ctx, all_results, *, structure_labels, peaks,
+                               structure_hint, structure_skipped, boot_executor,
+                               shadow_enabled) -> dict:
+    """Produce point-fit-only standard evidence without touching legacy selection authority."""
+    started = time.perf_counter()
+    point = {
+        "delivery_effective_constraint_origins": _delivery_constraint_origins(all_results),
+        "shadow_execution_kind": "unavailable",
+        "reused_model_identities": [],
+        "freshly_fitted_model_identities": [],
+        "candidate_generation_route": {
+            "route": "shadow_not_evaluated",
+            "supplied_hint": None if structure_hint is None else str(structure_hint),
+            "delivery_hint_accepted": bool(structure_skipped),
+            "guideline_structure_filter": (
+                [str(label) for label in structure_labels] if structure_labels else []
+            ),
+            "peak_hint_count": int(len(peaks)) if peaks is not None else 0,
+        },
+    }
+    try:
+        selection_ctx = replace(ctx, constraints=ParamConstraints())
+        point["selection_context_fingerprint"] = loop.data_likelihood_fingerprint(selection_ctx)
+    except Exception as exc:  # noqa: BLE001 — shadow context construction is isolated
+        log.warning(
+            "shadow selection context construction failed (%s): %s",
+            type(exc).__name__, exc,
+        )
+        point.update(
+            status="unavailable",
+            unavailable_stage="context_construction",
+            unavailable_reason_code="shadow_context_construction_failed",
+            runtime_increment_seconds=max(time.perf_counter() - started, 0.0),
+        )
+        return point
+
+    if not shadow_enabled:
+        point.update(
+            status="unavailable",
+            shadow_execution_kind="skipped",
+            unavailable_stage="execution_policy",
+            unavailable_reason_code="shadow_skipped_soft_deadline",
+            runtime_increment_seconds=0.0,
+        )
+        return point
+
+    try:
+        if _shadow_can_alias_delivery(
+                all_results, structure_skipped=structure_skipped):
+            candidate_bundle = loop.shadow_bundle_from_complete_results(
+                all_results, peaks=peaks
+            )
+        else:
+            reusable = (
+                all_results
+                if not _delivery_constraint_origins(all_results)
+                else ()
+            )
+            candidate_bundle = loop.fit_shadow_candidates(
+                selection_ctx,
+                reusable_results=reusable,
+                peaks=peaks,
+                executor=boot_executor,
+            )
+    except Exception as exc:  # noqa: BLE001 — shadow fitting is isolated from delivery
+        log.warning(
+            "shadow selection candidate fitting failed (%s): %s",
+            type(exc).__name__, exc,
+        )
+        point.update(
+            status="unavailable",
+            unavailable_stage="candidate_fitting",
+            unavailable_reason_code="shadow_candidate_fitting_failed",
+            runtime_increment_seconds=max(time.perf_counter() - started, 0.0),
+        )
+        return point
+
+    try:
+        standard_results = candidate_bundle.results
+        guideline_changed = False
+        if structure_labels:
+            kept = [
+                result for result in standard_results
+                if result.label in structure_labels
+            ]
+            if kept:
+                guideline_changed = (
+                    [result.label for result in kept]
+                    != [result.label for result in standard_results]
+                )
+                standard_results = kept
+        selected_labels = {str(result.label) for result in standard_results}
+        route = {
+            "route": "full_two_stage",
+            "supplied_hint": None if structure_hint is None else str(structure_hint),
+            "delivery_hint_accepted": bool(structure_skipped),
+            "guideline_structure_filter": (
+                [str(label) for label in structure_labels] if structure_labels else []
+            ),
+            "guideline_changed_model_set": bool(guideline_changed),
+            "labels_before_guideline": list(candidate_bundle.offered_labels),
+            "peak_hint_count": int(len(peaks)) if peaks is not None else 0,
+            "multimode_route": candidate_bundle.multimode_route,
+            "offered_labels": [str(result.label) for result in standard_results],
+            "attempted_labels": [
+                label for label in candidate_bundle.attempted_labels
+                if label in selected_labels
+            ],
+            "converged_labels": [
+                label for label in candidate_bundle.converged_labels
+                if label in selected_labels
+            ],
+            "failed_labels": [
+                label for label in candidate_bundle.failed_labels
+                if label in selected_labels
+            ],
+        }
+        identities = _shadow_model_identities(standard_results, selection_ctx)
+        identity_by_label = {identity["label"]: identity for identity in identities}
+        reused_labels = [
+            label for label in candidate_bundle.reused_labels
+            if label in selected_labels
+        ]
+        freshly_fitted_labels = [
+            label for label in candidate_bundle.freshly_fitted_labels
+            if label in selected_labels
+        ]
+        if reused_labels and freshly_fitted_labels:
+            execution_kind = "partial"
+        elif reused_labels:
+            execution_kind = "exact"
+        else:
+            execution_kind = "fresh"
+        point.update(
+            status="ready",
+            shadow_execution_kind=execution_kind,
+            candidates=standard_results,
+            candidate_bundle=candidate_bundle,
+            offered_model_identities=identities,
+            attempted_model_identities=[
+                identity_by_label[label] for label in route["attempted_labels"]
+            ],
+            converged_model_identities=[
+                identity_by_label[label] for label in route["converged_labels"]
+            ],
+            failed_model_identities=[
+                identity_by_label[label] for label in route["failed_labels"]
+            ],
+            reused_model_identities=[
+                identity_by_label[label] for label in reused_labels
+            ],
+            freshly_fitted_model_identities=[
+                identity_by_label[label] for label in freshly_fitted_labels
+            ],
+            candidate_generation_route=route,
+            runtime_increment_seconds=max(time.perf_counter() - started, 0.0),
+        )
+        return point
+    except Exception as exc:  # noqa: BLE001 — projection cannot invalidate delivery
+        log.warning(
+            "shadow selection candidate projection failed (%s): %s",
+            type(exc).__name__, exc,
+        )
+        point.update(
+            status="unavailable",
+            unavailable_stage="candidate_projection",
+            unavailable_reason_code="shadow_candidate_projection_failed",
+            runtime_increment_seconds=max(time.perf_counter() - started, 0.0),
+        )
+        return point
+
+
+def _finalize_shadow_selection(point, selection, fit_selection_semantics) -> dict:
+    legacy_fingerprint = (
+        fit_selection_semantics.get("model_selection_fingerprint")
+        if isinstance(fit_selection_semantics, dict)
+        else None
+    )
+    legacy_weights = list(selection.scores)
+    if point.get("status") != "ready":
+        return _safe_shadow_unavailable(
+            point.get("unavailable_reason_code") or "shadow_point_bundle_unavailable",
+            point.get("unavailable_stage") or "point_bundle",
+            point=point,
+            legacy_fingerprint=legacy_fingerprint,
+            legacy_selected_label=selection.best,
+            legacy_weights=legacy_weights,
+        )
+    try:
+        return shadow_selection.compare_shadow_selection(
+            point["candidates"],
+            offered_model_identities=point["offered_model_identities"],
+            candidate_generation_route=point["candidate_generation_route"],
+            selection_context_fingerprint=point["selection_context_fingerprint"],
+            legacy_model_selection_fingerprint=legacy_fingerprint,
+            legacy_selected_label=selection.best,
+            legacy_model_weights=legacy_weights,
+            shadow_execution_kind=point["shadow_execution_kind"],
+            reused_model_identities=point["reused_model_identities"],
+            freshly_fitted_model_identities=point[
+                "freshly_fitted_model_identities"
+            ],
+            delivery_effective_constraint_origins=point.get(
+                "delivery_effective_constraint_origins"
+            ) or (),
+            runtime_increment_seconds=point["runtime_increment_seconds"],
+        )
+    except Exception as exc:  # noqa: BLE001 — comparator/validator failure is diagnostic only
+        log.warning(
+            "shadow selection comparison failed (%s): %s",
+            type(exc).__name__, exc,
+        )
+        return _safe_shadow_unavailable(
+            "shadow_comparison_failed",
+            "comparison",
+            point=point,
+            legacy_fingerprint=legacy_fingerprint,
+            legacy_selected_label=selection.best,
+            legacy_weights=legacy_weights,
+        )
+
+
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
             errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False,
             descriptor=None, structure_hint=None, bayes_opts=None,
-            predictive_n_members: int | None = None, fit_role="provisional_scan"):
+            predictive_n_members: int | None = None, fit_role="provisional_scan",
+            shadow_enabled=True):
     """Two-stage structure fit (§ multiplicity), optionally narrowed by guideline labels, then
     select + verdict. Mirrors docs/phase3_gold*_check.run_pipeline; returns extracted fields.
 
@@ -630,18 +1574,54 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         ctx, minos=False, peaks=peaks, structure_hint=structure_hint,
         executor=boot_executor)
     two_stage_seconds = round(time.perf_counter() - _t_two_stage, 4)
+    all_results = results
+    labels_before_guideline = [str(r.label) for r in results]
     # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
     by_hyp = {h.label: h for h in enumerate_structures(ctx)}
     by_hyp.update({h.label: h for h in enumerate_multimode(ctx)})
 
     warn = None
+    guideline_changed_set = False
     if structure_labels:
         kept = [r for r in results if r.label in structure_labels]
         if kept:
+            guideline_changed_set = [r.label for r in kept] != [r.label for r in results]
             results = kept
         else:
             warn = (f"guideline structures {list(structure_labels)} match no admissible "
                     f"{[r.label for r in results]}; kept all")
+
+    if structure_skipped:
+        multimode_route = "not_evaluated_structure_hint"
+    elif any(int(getattr(r, "n_modes", 1)) > 1 for r in results):
+        multimode_route = "guideline_forced" if peaks is not None and len(peaks) >= 2 \
+            else "residual_triggered"
+    else:
+        multimode_route = "not_offered"
+    candidate_generation_route = {
+        "route": "structure_hint_shortcut" if structure_skipped else "full_two_stage",
+        "supplied_hint": None if structure_hint is None else str(structure_hint),
+        "hint_accepted": bool(structure_skipped),
+        "guideline_structure_filter": (
+            [str(label) for label in structure_labels] if structure_labels else []
+        ),
+        "guideline_changed_model_set": bool(guideline_changed_set),
+        "labels_before_guideline": labels_before_guideline,
+        "peak_hint_count": int(len(peaks)) if peaks is not None else 0,
+        "multimode_route": multimode_route,
+        "offered_labels": [str(r.label) for r in results],
+    }
+
+    shadow_point = _build_shadow_point_bundle(
+        ctx,
+        all_results,
+        structure_labels=structure_labels,
+        peaks=peaks,
+        structure_hint=structure_hint,
+        structure_skipped=structure_skipped,
+        boot_executor=boot_executor,
+        shadow_enabled=shadow_enabled,
+    )
 
     fits = {r.label: r for r in results}
 
@@ -654,6 +1634,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     effective_tier = ("full" if errors_tier == "auto" and run_full
                       else "fast" if errors_tier == "auto" else errors_tier)
     errors_attach_seconds = 0.0
+    error_attachment_labels = []
     if run_full:
         _t_errors = time.perf_counter()
         survivor_items = []
@@ -661,6 +1642,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
             r = fits.get(label)
             if r is not None and r.optimizer_converged and label in by_hyp:
                 survivor_items.append((r, by_hyp[label], ctx))
+        error_attachment_labels = [str(item[0].label) for item in survivor_items]
         errors.attach_batch(
             survivor_items, M=M, seed=seed, with_profile=True,
             bayes_label=(prelim.best if run_bayes else None),
@@ -668,6 +1650,17 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
             executor=boot_executor, boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
         errors_attach_seconds = round(time.perf_counter() - _t_errors, 4)
     sel = select.select_models(results)
+    candidate_generation_route["scored_labels"] = [str(score.label) for score in sel.scores]
+    fit_selection_semantics = _build_selection_semantics(
+        results,
+        sel,
+        candidate_generation_route,
+        error_attachment_labels=error_attachment_labels,
+    )
+    sel.fit_selection_semantics = fit_selection_semantics
+    shadow_model_selection = _finalize_shadow_selection(
+        shadow_point, sel, fit_selection_semantics
+    )
     sv = verdict.classify(results, ctx, sel, prior=prior, descriptor=descriptor)
 
     best = fits.get(sel.best) if sel.best else None
@@ -810,7 +1803,8 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # is never published before the delivery decisions that follow this function have been made.
     predictive_inputs = (
         {"best": best, "scores": sel.scores, "fits": fits, "by_hyp": by_hyp, "seed": int(seed),
-         "n_members": int(predictive_n_members)}
+         "n_members": int(predictive_n_members),
+         "fit_selection_semantics": fit_selection_semantics}
         if predictive_n_members is not None else None)
 
     # Phase 4a — under-model falsification: the descriptor localised real signal the phonon model
@@ -828,6 +1822,17 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         log_evidence = log_evidence_err = None
         bayes_freq_ratio = hesse_freq_ratio = None
 
+    interval_semantics = _outcome_interval_semantics(
+        best=best,
+        selection=sel,
+        interval=interval,
+        omega0_profile=omega0_profile,
+        hesse_interval=hesse_interval,
+        hesse_trusted=hesse_trusted,
+        bayes_interval=bayes_interval,
+        interval_reliable=interval_reliable,
+    )
+
     return {
         "verdict": sv.verdict, "confidence": sv.confidence, "reasons": reasons,
         "omega0": omega0, "omega0_err": omega0_err,
@@ -842,6 +1847,9 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "n_modes": n_modes, "modes": modes,
         "amplitudes": amplitudes, "candidates": candidates,
         "model_manifest": model_manifest,
+        "fit_selection_semantics": fit_selection_semantics,
+        "shadow_model_selection": shadow_model_selection,
+        "interval_semantics": interval_semantics,
         "predictive_inputs": predictive_inputs,
         "fit_kind": fit_kind,
         "gamma_at_bound": bool(getattr(best, "gamma_at_bound", False)) if best else False,
@@ -971,24 +1979,31 @@ def _process_one_task(args):
     the returned :class:`ScanEntry` carries everything; the parent applies ledger + prior mutations
     serially in submission order."""
     (rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
-     M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts) = args
+     M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts, shadow_enabled) = args
+    shadow_kw = {} if shadow_enabled else {"shadow_enabled": False}
     return _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                         chash, ghash, M=M, seed=seed, errors_tier=errors_tier,
                         boot_workers=boot_workers, boot_adaptive=boot_adaptive,
-                        bayes_opts=bayes_opts)
+                        bayes_opts=bayes_opts, **shadow_kw)
 
 
 def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_workers,
                use_pool, scan_workers, boot_executor=None, boot_adaptive=False,
-               bayes_opts=None, on_complete=None, deadline_gate=None) -> list:
+               bayes_opts=None, on_complete=None, deadline_gate=None,
+               shadow_enabled=True) -> list:
     """Fit the fresh scan-detectors, serially or over a process pool, preserving submission order.
 
     ``boot_executor`` (a shared bootstrap pool) is threaded only through the SERIAL path — an
     executor is not picklable and must never enter a scan-pool worker (nested pools). The pool path
     only runs when ``boot_workers == 1`` (Layer A owns the workers), so it never wants a shared pool.
     """
+    effective_shadow_enabled = bool(
+        shadow_enabled
+        and (deadline_gate is None or deadline_gate.deadline is None)
+    )
     arg_list = [(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
-                 M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts)
+                 M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts,
+                 effective_shadow_enabled)
                 for (rec, det, q, T, sample, scan_id, chash, ghash, seed) in tasks]
     if not arg_list:
         return []
@@ -999,11 +2014,13 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
                 raise AnalysisWorkIncomplete(
                     f"analysis deadline reached after {len(out)}/{len(arg_list)} scan fit units")
             (rec, det, q, T, sample, scan_id, card_, g_, runcal_, exclusions_, chash, ghash,
-             M_, tier_, seed, bw, adaptive_, bopts_) = a
+             M_, tier_, seed, bw, adaptive_, bopts_, shadow_enabled_) = a
+            shadow_kw = {} if shadow_enabled_ else {"shadow_enabled": False}
             entry = _process_one(rec, det, q, T, sample, scan_id, card_, g_, runcal_,
                                  exclusions_, chash, ghash, M=M_, seed=seed, errors_tier=tier_,
                                  boot_workers=bw, boot_executor=boot_executor,
-                                 boot_adaptive=adaptive_, bayes_opts=bopts_)
+                                 boot_adaptive=adaptive_, bayes_opts=bopts_,
+                                 **shadow_kw)
             if on_complete is not None:
                 on_complete(entry)
             out.append(entry)
@@ -1025,13 +2042,24 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
         return out
 
 
-def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200, scan_M=None,
+def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=None, llm=False,
+              M=200, scan_M=None,
               detectors=None, formats=("html", "markdown"), workers=None,
               errors_tier="full", scan_errors_tier=None, master_errors_tier=None,
               bayes_cli=None, timer=None,
               certification_manifest=None, analysis_allowance_seconds=None,
               finish_initial_wave=False) -> RunSummary:
     timer = timer or NullTimer()
+    # ``force_masters``: refit exactly these master ledger ids (e.g. "master:2.65_0.0_0.0_300")
+    # even when their member set is unchanged, without forcing anything else. This is the
+    # predictive-escalation path: one master is owed a full-tier basis, and a global ``force``
+    # re-fits every scan and every master (the parallel-across-groups path whose per-child
+    # bootstrap is deliberately serial) when only one group's work was wanted.
+    # A bare string is one id, not an iterable of characters — silently iterating it would turn a
+    # valid single-target request into a set of one-character ids that match nothing.
+    if isinstance(force_masters, str):
+        force_masters = (force_masters,)
+    force_masters = frozenset(str(m) for m in (force_masters or ()))
     scan_M = 50 if scan_M is None else int(scan_M)
     if scan_M <= 0 or int(M) <= 0:
         raise ValueError("M and scan_M must be positive")
@@ -1045,8 +2073,9 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
         checkpoint_store = CheckpointStore(certification_manifest)
     master_certification = bool(
         checkpoint_store is not None and checkpoint_store.is_master_certification)
-    if master_certification and force:
-        raise ValueError("force=True is invalid for isar.certification/2 master-only runs")
+    if master_certification and (force or force_masters):
+        raise ValueError(
+            "force=True / force_masters are invalid for isar.certification/2 master-only runs")
     if master_certification:
         unresolved = unresolved_current_promotions(workspace.root, session)
         if unresolved:
@@ -1273,7 +2302,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
                 boot_workers=boot_workers, use_pool=use_pool,
                 scan_workers=scan_workers, boot_executor=shared_pool,
                 boot_adaptive=scan_boot_adaptive, bayes_opts=bayes_opts,
-                on_complete=checkpoint_entry, deadline_gate=deadline_gate)
+                on_complete=checkpoint_entry, deadline_gate=deadline_gate,
+                shadow_enabled=deadline_gate.deadline is None)
             cached.update(zip(remaining_indices, fresh_entries))
             entries = [cached[index] for index in range(len(tasks))]
             _m_fit["per_task"] = [
@@ -1290,7 +2320,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, llm=False, M=200
                 for e in entries if e.provenance.get("fit_seconds") is not None]
         completed_master_keys: list[str] = []
         _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
-                          workspace, force=force, M=M, seed_base=seed_base, errors_tier=master_tier,
+                          workspace, force=force, force_masters=force_masters,
+                          M=M, seed_base=seed_base, errors_tier=master_tier,
                           master_boot_workers=master_boot_workers, boot_executor=shared_pool,
                           boot_adaptive=master_boot_adaptive, scan_workers=scan_workers,
                           bayes_opts=bayes_opts, timer=timer, source_by_name=source_by_name,
@@ -1801,6 +2832,8 @@ def _select_mode(outcome: dict, candidate: dict, candidate_index: int, assignmen
     outcome["target_delivery_eligible"] = True
     outcome["identity_branch_id"] = None
     outcome["delivery_withheld_reason"] = None
+    _refresh_interval_semantics(outcome)
+    outcome["probability_semantics"] = _refresh_probability_semantics(outcome)
 
 
 def _carry_local_identity(outcome: dict, assignment: dict) -> None:
@@ -1842,6 +2875,8 @@ def _clear_tracked_selection(outcome: dict, assignment: dict, revision: int) -> 
                   "hesse_interval", "bayes_interval"):
         outcome[field] = None
     outcome["interval_reliable"] = False
+    _refresh_interval_semantics(outcome)
+    outcome["probability_semantics"] = _refresh_probability_semantics(outcome)
 
 
 def _withhold_tracked_delivery(outcome: dict, candidate: dict, assignment: dict, revision: int,
@@ -2085,7 +3120,8 @@ def _master_prior_admissible(entry: ScanEntry, outcome: dict) -> bool:
 
 
 def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
-                      workspace, *, force, M, seed_base, errors_tier, master_boot_workers,
+                      workspace, *, force, force_masters=frozenset(), M, seed_base, errors_tier,
+                      master_boot_workers,
                       boot_executor, boot_adaptive, scan_workers=1, bayes_opts=None, timer=None,
                       source_by_name=None, checkpoint_store=None, completed_master_keys=None,
                       deadline_gate=None):
@@ -2147,6 +3183,7 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
             n_masters = _fit_masters(summary.collation, records, card, runcal, g, session,
                                      data_dir=workspace.root / "data",
                                      M=M, seed_base=seed_base, errors_tier=errors_tier, force=force,
+                                     force_masters=force_masters,
                                      boot_workers=master_boot_workers, boot_executor=boot_executor,
                                      boot_adaptive=boot_adaptive, scan_workers=scan_workers,
                                      bayes_opts=bayes_opts, per_master=per_master,
@@ -2160,7 +3197,10 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
         except Exception as exc:  # noqa: BLE001 — ordinary master fitting is additive
             # Certification must fail closed: suppressing a corrupt/mismatched checkpoint here
             # would let the runner publish a superficially complete revision with a missing unit.
-            if checkpoint_store is not None:
+            # A targeted force_masters run fails closed too: the run exists solely to refit that
+            # master, and a swallowed failure would let the predictive escalation record a
+            # "completed" promotion (a durable, never-retried charge) with the basis still missing.
+            if checkpoint_store is not None or force_masters:
                 raise
             summary.context_lines.append(f"master fitting skipped: {exc}")
 
@@ -2292,6 +3332,33 @@ def _predicted_master_analysis_seconds(payload: dict) -> float:
     return round(max(0.1, 0.1 + 0.00015 * complexity), 4)
 
 
+_PROMOTION_CANDIDATE_IDENTITY_FIELDS = (
+    "label",
+    "k",
+    "ndof",
+    "cost",
+    "cost_per_dof",
+    "n_modes",
+    "delta_aic",
+    "akaike_weight",
+    "usable",
+)
+
+
+def _promotion_candidate_identity(candidates) -> list[dict] | None:
+    """Pre-STAT-1 numerical candidate projection used by promotion identity."""
+    if candidates is None:
+        return None
+    return [
+        {
+            key: row.get(key)
+            for key in _PROMOTION_CANDIDATE_IDENTITY_FIELDS
+            if key in row
+        }
+        for row in candidates
+    ]
+
+
 def _record_master_promotion(data_dir, entry: ScanEntry, *, source_revision: str,
                              M: int, seed: int) -> None:
     """Persist and publish a synchronous auto-tier promotion for this exact master revision."""
@@ -2303,11 +3370,16 @@ def _record_master_promotion(data_dir, entry: ScanEntry, *, source_revision: str
     from isar.session.promotions import PromotionKey, PromotionStore
 
     outcomes = [outcome for outcome in entry.detectors.values() if outcome.get("pooled")]
+    # Candidate rows gained additive STAT-1 classifications.  Promotion identity remains the
+    # pre-STAT-1 numerical contract: content-addressed semantics may change without reminting the
+    # scientific retry for an otherwise identical master fit.
+    candidates = outcomes[0].get("candidates") if outcomes else None
+    scientific_candidates = _promotion_candidate_identity(candidates)
     point_fingerprint = _json_fingerprint({
         "master_id": entry.scan_id,
         "source_revision": source_revision,
         "best_label": outcomes[0].get("best_label") if outcomes else None,
-        "candidates": outcomes[0].get("candidates") if outcomes else None,
+        "candidates": scientific_candidates,
     })
     key = PromotionKey(
         master_id=entry.scan_id, source_revision=source_revision,
@@ -2355,14 +3427,16 @@ def _fit_master_group_task(args):
     (ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number, chash,
      M, seed, errors_tier, boot_adaptive, structure_hint, bayes_opts, *role_tail) = args
     fit_role = role_tail[0] if role_tail else "master"
+    shadow_enabled = bool(role_tail[1]) if len(role_tail) > 1 else True
     # Pass structure_hint only when set: with the reuse policy off (default) hint is None and this
     # call is byte-identical to the pre-B2 call (keeps the "change nothing when off" guarantee).
     hint_kw = {"structure_hint": structure_hint} if structure_hint is not None else {}
     role_kw = {"fit_role": fit_role} if fit_role != "master" else {}
+    shadow_kw = {} if shadow_enabled else {"shadow_enabled": False}
     return _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id,
                              scan_number, chash, M=M, seed=seed, errors_tier=errors_tier,
                              boot_workers=1, boot_executor=None, boot_adaptive=boot_adaptive,
-                             bayes_opts=bayes_opts, **role_kw, **hint_kw)
+                             bayes_opts=bayes_opts, **shadow_kw, **role_kw, **hint_kw)
 
 
 def _stamp_master_analysis(entry: ScanEntry, *, errors_tier: str,
@@ -2572,7 +3646,7 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
                 fit_card, runcal, g, str(item["unit"]["master_id"]),
                 _MASTER_SCAN_BASE + item["group_index"], item["content_hash"], M,
                 int(item["unit"]["seed"]), requested_tier, boot_adaptive, None, bayes_opts,
-                "certification",
+                "certification", deadline_gate.deadline is None,
             ) for item in wave]
             progress(active=len(wave))
             pool = None
@@ -2697,7 +3771,8 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
 
 
 def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None, M, seed_base,
-                 errors_tier="full", force=False, boot_workers=1, boot_executor=None,
+                 errors_tier="full", force=False, force_masters=frozenset(),
+                 boot_workers=1, boot_executor=None,
                  boot_adaptive=False, scan_workers=1, bayes_opts=None, per_master=None,
                  checkpoint_store=None, completed_master_keys=None, deadline_gate=None) -> int:
     """Fit the merged master scan for each (Q,T) group; returns how many were (re)fit this run.
@@ -2707,7 +3782,9 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
     single scan and stored as a ``master:<key>`` ledger entry marked ``pooled=True``. Idempotent on the
     member SET: the entry's ``content_hash`` is a hash of ``ms.members``, so a master refits exactly
     when a member scan arrives or drifts (``collate`` re-runs over all records every batch, so masters
-    cannot piggyback on the per-scan freshness flags). Never fatal — a bad group yields a
+    cannot piggyback on the per-scan freshness flags). ``force_masters`` (ledger ids) exempts exactly
+    those masters from the unchanged-member carry, so a predictive escalation re-fits its one target
+    at the requested tier without forcing the whole batch. Never fatal — a bad group yields a
     ``non_result`` entry, never a crash.
 
     When more than one group needs refitting and the scan-worker budget allows, the group fits run in
@@ -2717,6 +3794,10 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
     refit (the normal-iteration case) keeps the in-process serial path with the shared bootstrap pool.
     """
     if collation is None or getattr(collation, "merge", "separate") != "merge":
+        if force_masters:
+            raise ValueError(
+                f"force_masters: {sorted(force_masters)!r} requested but no merged collation "
+                "exists — the targeted refit cannot happen")
         return 0
     from isar.session.state import canonical_hash
 
@@ -2730,15 +3811,18 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
     # idx is the ORIGINAL sorted-group enumeration position (NOT the refit-list position) so the
     # per-group seed `seed_base + _MASTER_SCAN_BASE + idx` and synthetic scan_number stay stable.
     refits = []     # (idx, grp, ms, master_id, chash, member_rec, member_det, structure_hint)
+    seen_master_ids: list[str] = []
     for idx, grp in enumerate(sorted(collation.groups, key=lambda gg: str(gg.key))):
         ms = getattr(grp, "merged", None)
         if ms is None or ms.n_members < 1:
             continue
         master_id = "master:" + "_".join(str(k) for k in grp.key)
+        seen_master_ids.append(master_id)
         chash = canonical_hash([list(m) for m in ms.members])
         prev = session.get(master_id)               # read BEFORE the refit overwrites the ledger
         carried_contract = (prev.provenance or {}).get("predictive_contract") if prev else None
-        if not force and prev is not None and prev.content_hash == chash \
+        if not force and master_id not in force_masters and prev is not None \
+                and prev.content_hash == chash \
                 and carried_contract == PREDICTIVE_CONTRACT:
             # Member set unchanged → carry the prior master. Backfill the member provenance onto an
             # older ledger entry that predates this field: the content-hash match proves the member
@@ -2765,6 +3849,17 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
             hint = (prev.detectors.get(member_det or "merged") or {}).get("best_label")
         refits.append((idx, grp, ms, master_id, chash, rec_by_scan.get(member_scan), member_det,
                        hint))
+    if force_masters:
+        # A requested id that matches no collation group means the caller's targeted refit would
+        # silently not happen — and the predictive-escalation charge that requested it is durable
+        # (the same master revision is never re-promoted), so a quiet no-op would record a
+        # "completed" promotion whose basis is still missing. Fail the run instead: the escalation
+        # then records a visible "failed" outcome rather than a false success.
+        unmatched = sorted(force_masters - set(seen_master_ids))
+        if unmatched:
+            raise ValueError(
+                f"force_masters: {unmatched!r} match no collation group "
+                f"(known masters: {sorted(seen_master_ids)!r})")
     if not refits:
         return 0
 
@@ -2790,7 +3885,8 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
         # preserves order → entries[k] aligns with refits[k], keeping the serial ledger order.
         arg_list = [(ms, grp, member_rec, member_det, card, runcal, g, master_id,
                      _MASTER_SCAN_BASE + idx, chash, M, seed_base + _MASTER_SCAN_BASE + idx,
-                     errors_tier, boot_adaptive, hint, bayes_opts)
+                     errors_tier, boot_adaptive, hint, bayes_opts, "master",
+                     deadline_gate is None or deadline_gate.deadline is None)
                     for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in pending]
         max_workers = min(scan_workers, len(arg_list))
         with ProcessPoolExecutor(max_workers=max_workers) as ex_pool:
@@ -2821,12 +3917,18 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
                     raise AnalysisWorkIncomplete(
                         f"analysis deadline reached after {len(fresh_entries)}/{len(pending)} "
                         "master fit units")
+                shadow_kw = (
+                    {}
+                    if deadline_gate is None or deadline_gate.deadline is None
+                    else {"shadow_enabled": False}
+                )
                 entry = _fit_master_group(
                     ms, grp, member_rec, member_det, card, runcal, g, master_id,
                     _MASTER_SCAN_BASE + idx, chash, M=M,
                     seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier,
                     boot_workers=boot_workers, boot_executor=ex,
                     boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
+                    **shadow_kw,
                     **({"structure_hint": hint} if hint is not None else {}))
                 if checkpoint_store is not None:
                     checkpoint_store.save(f"master:{entry.scan_id}", entry)
@@ -2883,7 +3985,7 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
 def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number,
                       chash, *, M, seed, errors_tier="full", boot_workers=1, boot_executor=None,
                       boot_adaptive=False, structure_hint=None, bayes_opts=None,
-                      fit_role="master") -> ScanEntry:
+                      fit_role="master", shadow_enabled=True) -> ScanEntry:
     """Fit one merged group's pooled spectrum → a ``pooled=True`` ScanEntry (or a non_result).
 
     ``structure_hint`` (the group's previous fitted best_label, opt-in via card policy
@@ -2967,7 +4069,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                       boot_workers=boot_workers, boot_executor=boot_executor,
                       boot_adaptive=boot_adaptive, descriptor=descriptor,
                       structure_hint=structure_hint, bayes_opts=bayes_opts,
-                      predictive_n_members=int(ms.n_members), fit_role=fit_role)
+                      predictive_n_members=int(ms.n_members), fit_role=fit_role,
+                      shadow_enabled=shadow_enabled)
     except Exception as exc:  # noqa: BLE001 — one unfittable pool must not kill the batch (N=16 wrinkle)
         return _stamp_master_analysis(
             ScanEntry(status="non_result",
@@ -3016,6 +4119,9 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         consistency_pvalue=getattr(ms, "consistency_pvalue", None),
         consistency_alpha=getattr(ms, "consistency_alpha", None),
         consistency_seed=getattr(ms, "consistency_seed", None),
+        fit_selection_semantics=fit.get("fit_selection_semantics"),
+        interval_semantics=fit.get("interval_semantics"),
+        shadow_model_selection=fit.get("shadow_model_selection"),
         descriptor=(descriptor.to_dict() if descriptor is not None else None),
         fit_kind=fit.get("fit_kind", "unconstrained"),
         branch_id=branch_id, assignment_entropy=assignment_entropy,
@@ -3033,6 +4139,10 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         target_branch=target_branch, target_label=target_label,
         effective_exposure=exposure_info.get("value"), exposure_provenance=exposure_info,
         acquisition_id=f"pooled:{chash}")
+    outcome.probability_semantics = _refresh_probability_semantics(
+        outcome.__dict__,
+        predictive_payload=predictive_payload,
+    )
     entry = ScanEntry(status="fitted", **base)
     entry.detectors[det] = outcome.to_dict()
     entry.provenance = {"pooled": True, "n_members": int(ms.n_members),
@@ -3241,7 +4351,8 @@ def _build_predictive_payload(fit, ctx, master_id: str) -> tuple[dict | None, di
     try:
         payload = predictive_artifact.build_master_predictive(
             inputs["best"], inputs["scores"], inputs["fits"], inputs["by_hyp"], ctx,
-            seed=inputs["seed"], n_members=inputs["n_members"])
+            seed=inputs["seed"], n_members=inputs["n_members"],
+            fit_selection_semantics=inputs.get("fit_selection_semantics"))
     except Exception as exc:  # noqa: BLE001 — the fit survives any predictive-construction failure
         log.warning("%s: predictive artifact construction failed (%s): %s",
                     master_id, type(exc).__name__, exc)
@@ -3288,7 +4399,7 @@ def _resolve_target_projections(session: SessionState, data_dir) -> int:
                     action_role=authority.get("action_role") or "master")
                 projection_ref = _persist_content_addressed(
                     data_dir, "target_projection", projection)
-            except (OSError, ValueError, KeyError, TypeError) as error:
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
                 # A projection is steering input, never a scientific number: record why it is
                 # missing and leave the master's fit and every other artifact untouched.
                 log.warning("%s: target projection unavailable (%s): %s",
@@ -3345,6 +4456,7 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
                 fit["omega0_profile"] = fit["hesse_interval"] = None
                 fit["bayes_interval"] = None
                 fit["interval_reliable"] = False
+    _refresh_interval_semantics(fit)
     return (branch_id, assignment_entropy, branch_weight, resolvable, secondary_features,
             branch_posterior, candidate_id, candidate_state, selected_energy)
 
@@ -3486,19 +4598,28 @@ def _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descri
             and not already_hard_gamma):
         pred = branch_model.branch_for(card.state, sample=sample, T=T, omega0=float(prior.omega0))
         if pred is not None and pred.in_anchor_range and pred.gamma > 0:
+            original_shadow = fit.get("shadow_model_selection")
             soft = dict(ctx.constraints.soft) if ctx.constraints is not None else {}
+            origins = dict(ctx.constraints.origins) if ctx.constraints is not None else {}
             soft.pop("phonon.Gamma", None)                 # Γ becomes hard, not soft
+            origins.pop("phonon.Gamma", None)
+            origins["phonon.Gamma"] = "data_dependent_rescue"
             hctx = replace(ctx, constraints=ParamConstraints(
-                soft=soft, hard={"phonon.Gamma": float(pred.gamma)}))
+                soft=soft,
+                hard={"phonon.Gamma": float(pred.gamma)},
+                origins=origins,
+            ))
             try:
                 hfit = fit_one(hctx, card, prior=prior, M=M, seed=seed, structure_labels=labels,
                                peaks=peaks, errors_tier=errors_tier, boot_workers=boot_workers,
                                boot_executor=boot_executor, boot_adaptive=boot_adaptive,
-                               descriptor=descriptor, bayes_opts=bayes_opts)
+                               descriptor=descriptor, bayes_opts=bayes_opts,
+                               shadow_enabled=False)
             except Exception:  # noqa: BLE001 — escalation is best-effort; keep the original fit
                 hfit = None
             if hfit is not None and hfit.get("omega0") is not None \
                     and not hfit.get("gamma_at_bound"):
+                hfit["shadow_model_selection"] = original_shadow
                 fit = hfit
                 region_reasons.append(
                     f"hard-fix escalation: Γ frozen to branch {pred.gamma:.2f} meV "
@@ -3573,8 +4694,12 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         acquisition_id=acquisition_id,
         search_energy_lo=(acquisition or {}).get("search_energy_lo"),
         search_energy_hi=(acquisition or {}).get("search_energy_hi"),
+        fit_selection_semantics=fit.get("fit_selection_semantics"),
+        interval_semantics=fit.get("interval_semantics"),
+        shadow_model_selection=fit.get("shadow_model_selection"),
         evidence_sink=evidence_sink_for(getattr(rec, "raw_header", None),
                                         getattr(card.state, "acquisition_provenance", None)))
+    outcome.probability_semantics = _refresh_probability_semantics(outcome.__dict__)
 
     # NB: the running dispersion prior (session_prior.add_point) is fed by the PARENT in
     # submission order after the fit returns — start-of-batch seeding, so a parallel batch is
@@ -3591,7 +4716,8 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
 
 def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                  chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
-                 boot_executor=None, boot_adaptive=False, bayes_opts=None) -> ScanEntry:
+                 boot_executor=None, boot_adaptive=False, bayes_opts=None,
+                 shadow_enabled=True) -> ScanEntry:
     _t_fit0 = time.perf_counter()
     base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
                 content_hash=chash, guidelines_hash=ghash)
@@ -3610,7 +4736,7 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
                       errors_tier=errors_tier, boot_workers=boot_workers,
                       boot_executor=boot_executor, boot_adaptive=boot_adaptive, descriptor=descriptor,
-                      bayes_opts=bayes_opts)
+                      bayes_opts=bayes_opts, shadow_enabled=shadow_enabled)
     except Exception as exc:  # noqa: BLE001 — one unfittable scan must not kill the batch
         return ScanEntry(status="non_result",
                          reasons=[f"fit error ({type(exc).__name__}): {exc}"] + region_reasons,
@@ -3727,6 +4853,10 @@ _CSV_COLUMNS = [
     # contract -- withheld delivery is only actionable downstream if the identity it kept, and the
     # reason the number is absent, travel with it.
     "target_delivery_eligible", "identity_branch_id", "delivery_withheld_reason",
+    # STAT-1 additive compact provenance. Full records remain in session.json.
+    "fit_selection_semantics", "interval_semantics", "probability_semantics",
+    # STAT-2a diagnostics-only comparison. Kept last for positional legacy CSV readers.
+    "shadow_model_selection",
 ]
 
 
@@ -3879,6 +5009,42 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                                if oc.get("candidates") is not None else None),
                 "model_manifest": (json.dumps(oc.get("model_manifest"), sort_keys=True)
                                    if oc.get("model_manifest") is not None else None),
+                "fit_selection_semantics": (
+                    json.dumps(
+                        compact_for_csv(oc.get("fit_selection_semantics")),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if oc.get("fit_selection_semantics") is not None
+                    else None
+                ),
+                "interval_semantics": (
+                    json.dumps(
+                        compact_for_csv(oc.get("interval_semantics")),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if oc.get("interval_semantics") is not None
+                    else None
+                ),
+                "probability_semantics": (
+                    json.dumps(
+                        compact_for_csv(oc.get("probability_semantics")),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if oc.get("probability_semantics") is not None
+                    else None
+                ),
+                "shadow_model_selection": (
+                    json.dumps(
+                        compact_for_csv(oc.get("shadow_model_selection")),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if oc.get("shadow_model_selection") is not None
+                    else None
+                ),
             })
     temporary = path.with_name(path.name + ".tmp")
     with open(temporary, "w", newline="", encoding="utf-8") as f:

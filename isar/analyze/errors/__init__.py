@@ -7,18 +7,184 @@ is itself the trust signal. This slice ships the frequentist half: the parametri
 (:mod:`~isar.analyze.errors.agree`). The Bayesian path (§5.4) is step 7.
 """
 import logging
+import math
 import time
 
 import numpy as np
 
 from isar.analyze.errors.bootstrap import BootstrapResult, parametric_bootstrap
+from isar.analyze.errors.profile import is_bound_truncated
+from isar.schema.statistics import (
+    INTERVAL_SCHEMA,
+    SemanticsConstructionError,
+    authority_scopes,
+    validate_for_write,
+)
 
-__all__ = ["BootstrapResult", "parametric_bootstrap", "attach", "attach_batch"]
+__all__ = ["BootstrapResult", "parametric_bootstrap", "attach", "attach_batch", "usable_interval"]
 log = logging.getLogger(__name__)
 
 # Bayes draws its own RNG stream via its own seed; offsetting it from the bootstrap seed
 # avoids two independent procedures consuming an identical stream while staying deterministic.
 _BAYES_SEED_OFFSET = 1_000_003
+
+
+def _bootstrap_measure(estimator_kind: str) -> str:
+    return {
+        "data_likelihood_mle": "unconstrained_parametric_bootstrap",
+        "soft_penalized_likelihood": "soft_penalized_parametric_bootstrap",
+        "hard_conditioned_likelihood": "hard_conditioned_parametric_bootstrap",
+    }[estimator_kind]
+
+
+def _profile_kind(estimator_kind: str) -> str:
+    return {
+        "data_likelihood_mle": "likelihood_profile",
+        "soft_penalized_likelihood": "penalized_profile",
+        "hard_conditioned_likelihood": "conditional_profile",
+    }[estimator_kind]
+
+
+def usable_interval(interval) -> bool:
+    """True when ``interval`` is a real interval and not a failure sentinel.
+
+    Every failure path in this package returns a nan-filled tuple rather than ``None``
+    (``bayes._failed``, an empty bootstrap percentile, a profile that found no crossing), so
+    ``is not None`` alone publishes a failed diagnostic as an *available* interval of nan.
+    """
+    if interval is None:
+        return False
+    try:
+        return all(math.isfinite(float(value)) for value in interval)
+    except (TypeError, ValueError):
+        return False
+
+
+def _availability(interval, reason_code: str, *, ok: bool = True) -> dict:
+    """Availability plus, when the quantity failed, the reason it is not deliverable."""
+    usable = bool(ok) and usable_interval(interval)
+    return {"availability": usable, "failure_reason": None if usable else reason_code}
+
+
+def _profile_failure_reason(interval) -> str:
+    if interval is not None and any(is_bound_truncated(value) for value in interval):
+        return "profile_bound_truncated"
+    return "profile_interval_unavailable"
+
+
+def _interval_semantics_for(result, within: dict, *, level: float = 0.68) -> dict:
+    fit_semantics = getattr(result, "fit_semantics", None)
+    if fit_semantics is None:
+        raise SemanticsConstructionError("missing_candidate_fit_semantics", str(result.label))
+    estimator_kind = fit_semantics["estimator_kind"]
+    common = {
+        "availability": True,
+        "nominal_level": float(level),
+        "estimator_kind": estimator_kind,
+        "effective_constraints": list(fit_semantics.get("effective_constraints") or []),
+        "conditioning_fingerprint": fit_semantics["conditioning_fingerprint"],
+        "calibration_target": None,
+    }
+    candidate_scopes = authority_scopes(
+        single_fit_delivery="candidate",
+        legacy_master_certification="candidate",
+        stopping="candidate",
+        user_diagnostic="active",
+    )
+    quantities = {
+        "freq_interval": {
+            **common,
+            **_availability(within.get("freq_interval"), "bootstrap_interval_unavailable"),
+            "interval_kind": "parametric_bootstrap_percentile",
+            "bootstrap_measure_kind": _bootstrap_measure(estimator_kind),
+            "particle_measure_kind": "parametric_bootstrap_sampling_distribution",
+            "draw_measure_kind": "equal_weight_empirical_particles",
+            "inference_paradigm": "frequentist_sampling_distribution",
+            # The producer can offer this interval to the delivery ladder.  The driver replaces
+            # ``authority_scopes`` with the realized selected/trust-gated authority for the outcome.
+            "producer_authority_scopes": candidate_scopes,
+            "authority_scopes": authority_scopes(user_diagnostic="active"),
+        }
+    }
+    if "profile_interval" in within:
+        profile_interval = within.get("profile_interval")
+        quantities["profile_interval"] = {
+            **common,
+            **_availability(profile_interval, _profile_failure_reason(profile_interval)),
+            "interval_kind": _profile_kind(estimator_kind),
+            "inference_paradigm": "frequentist_profile",
+            "minos_parameter_intervals_present": bool(within.get("minos")),
+            "producer_authority_scopes": candidate_scopes,
+            "authority_scopes": authority_scopes(user_diagnostic="active"),
+        }
+    if "bayes_interval" in within:
+        prior_fingerprint = within.get("bayes_prior_fingerprint")
+        bayes_ok = bool(within.get("bayes_ok", True))
+        bayes_reason = within.get("bayes_fail_reason") or "bayes_interval_unavailable"
+        if prior_fingerprint is None:
+            # The Bayesian road is an OPTIONAL diagnostic. Raising here used to wipe the ENTIRE
+            # interval-semantics record, so a failed posterior erased the valid bootstrap and
+            # profile semantics beside it. Degrade this one entry instead. The fingerprint fields
+            # are omitted rather than nulled: a null ``*_fingerprint`` fails write validation.
+            log.warning(
+                "semantics_construction_failed producer=isar.analyze.errors "
+                "quantity=bayes_interval reason_code=missing_bayesian_prior_fingerprint"
+            )
+            quantities["bayes_interval"] = {
+                "availability": False,
+                "failure_reason": "missing_bayesian_prior_fingerprint",
+                "nominal_level": float(level),
+                "interval_kind": "optimizer_bound_nested_credible",
+                "inference_paradigm": "bayesian_posterior",
+                "calibration_target": None,
+                "producer_authority_scopes": authority_scopes(user_diagnostic="active"),
+                "authority_scopes": authority_scopes(),
+            }
+        else:
+            quantities["bayes_interval"] = {
+                **_availability(within.get("bayes_interval"), bayes_reason, ok=bayes_ok),
+                "nominal_level": float(level),
+                "interval_kind": "optimizer_bound_nested_credible",
+                "particle_measure_kind": "optimizer_bound_nested_parameter_distribution",
+                "draw_measure_kind": "equal_weight_empirical_particles",
+                "inference_paradigm": "bayesian_posterior",
+                "prior_kind": "optimizer_bound_data_dependent",
+                "prior_data_dependent": True,
+                "prior_fingerprint": prior_fingerprint,
+                "prior_specification": within.get("bayes_prior_specification"),
+                "posterior_measure_kind": "posterior_resample",
+                "evidence_comparable": False,
+                "bayesian_model_average": False,
+                "conditioning_fingerprint": prior_fingerprint,
+                "calibration_target": None,
+                "producer_authority_scopes": authority_scopes(
+                    user_diagnostic="active"
+                ),
+                "authority_scopes": authority_scopes(user_diagnostic="active"),
+            }
+    record = {
+        "schema": INTERVAL_SCHEMA,
+        "quantities": quantities,
+        "authority_scopes": authority_scopes(user_diagnostic="active"),
+    }
+    return validate_for_write(record, INTERVAL_SCHEMA)
+
+
+def _attach_interval_semantics(result, within: dict) -> None:
+    try:
+        within["interval_semantics"] = _interval_semantics_for(result, within)
+    except (SemanticsConstructionError, KeyError) as exc:
+        reason_code = (
+            exc.reason_code if isinstance(exc, SemanticsConstructionError)
+            else "missing_fit_semantics_field"
+        )
+        log.warning(
+            "semantics_construction_failed producer=isar.analyze.errors "
+            "quantity=%s reason_code=%s",
+            result.label,
+            reason_code,
+        )
+        within["interval_semantics"] = None
 
 
 def attach(result, hyp, ctx, *, M=200, seed=12345, backend="iminuit",
@@ -86,12 +252,15 @@ def attach(result, hyp, ctx, *, M=200, seed=12345, backend="iminuit",
         within["bayes_seed"] = bres.seed
         within["bayes_parameter_names"] = bres.parameter_names
         within["bayes_parameter_samples"] = bres.parameter_samples
+        within["bayes_prior_fingerprint"] = bres.prior_fingerprint
+        within["bayes_prior_specification"] = bres.prior_specification
     if with_profile or with_bayes:
         from isar.analyze.errors import agree as _agree
         within["agreement"] = _agree.agreement(
             boot, minos, profile_omega0=prof, bayes=bres, prior=prior,
             hesse_omega0_sigma=result.omega0_err_hesse)
     result.within_model = within
+    _attach_interval_semantics(result, within)
     if with_profile:
         result.profile_ok = bool(minos) and all(bool(v[2]) for v in minos.values())
     return result
@@ -199,6 +368,8 @@ def attach_batch(items, *, M=200, seed=12345, backend="iminuit", with_profile=Fa
                 "bayes_seed": bres.seed,
                 "bayes_parameter_names": bres.parameter_names,
                 "bayes_parameter_samples": bres.parameter_samples,
+                "bayes_prior_fingerprint": bres.prior_fingerprint,
+                "bayes_prior_specification": bres.prior_specification,
             })
         if with_profile or bres is not None:
             # Reconstruct the BootstrapResult expected by agreement without repeating any work.
@@ -214,5 +385,6 @@ def attach_batch(items, *, M=200, seed=12345, backend="iminuit", with_profile=Fa
             within["agreement"] = _agree.agreement(
                 boot, minos, profile_omega0=prof, bayes=bres, prior=prior,
                 hesse_omega0_sigma=result.omega0_err_hesse)
+        _attach_interval_semantics(result, within)
     return [result for result, _hyp, _ctx in items]
 

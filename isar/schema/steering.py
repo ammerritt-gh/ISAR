@@ -284,15 +284,20 @@ class ParamConstraints:
 
     soft: dict = field(default_factory=dict)   # {global_name: (mu, sigma)}
     hard: dict = field(default_factory=dict)   # {global_name: value}
+    # Producer-owned provenance for every nonempty effective constraint.  Kept separate from the
+    # numerical values so adding it cannot alter the optimiser inputs.
+    origins: dict = field(default_factory=dict)  # {global_name: constraint_origin}
 
     def is_empty(self) -> bool:
         return not self.soft and not self.hard
 
     def to_dict(self) -> dict:
         return {"soft": {k: list(v) for k, v in self.soft.items()},
-                "hard": dict(self.hard)}
+                "hard": dict(self.hard),
+                "origins": dict(self.origins)}
 
     @classmethod
     def from_dict(cls, d: dict) -> "ParamConstraints":
         soft = {k: tuple(v) for k, v in (d.get("soft") or {}).items()}
-        return cls(soft=soft, hard=dict(d.get("hard") or {}))
+        return cls(soft=soft, hard=dict(d.get("hard") or {}),
+                   origins=dict(d.get("origins") or {}))

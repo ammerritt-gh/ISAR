@@ -12,7 +12,10 @@ The Docks-menu two-way sync (checkable action <-> dock ``visibilityChanged``) fo
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from weakref import WeakSet
@@ -752,6 +755,9 @@ class MainWindow(QMainWindow):
         self._new_workspace_menu_action.triggered.connect(self.new_workspace)
         self._open_workspace_menu_action = file_menu.addAction("Open Workspace…")
         self._open_workspace_menu_action.triggered.connect(self._on_open_workspace)
+        self._create_o41_example_action = file_menu.addAction(
+            "Create O41 Authoritative Example…")
+        self._create_o41_example_action.triggered.connect(self._create_o41_example)
         self._save_as_menu_action = file_menu.addAction("Save Workspace As…")
         self._save_as_menu_action.triggered.connect(self.save_workspace_as)
 
@@ -786,9 +792,79 @@ class MainWindow(QMainWindow):
 
     def _on_open_workspace(self) -> None:
         start_dir = "" if self._ws.root is None else str(self._ws.root)
-        path = QFileDialog.getExistingDirectory(self, "Open Workspace", start_dir)
+        # Non-native, like every other workspace dialog here: the Windows-native directory picker
+        # refuses a typed path whose folder does not exist yet and offers no way to make one, so
+        # the operator had to leave the application and create the folder in Explorer first.
+        path = QFileDialog.getExistingDirectory(
+            self, "Open Workspace", start_dir,
+            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
         if path:
             self.load_workspace(path)
+
+    def _create_o41_example(self) -> None:
+        """Copy the maintained positive seed to a user workspace and prefill normal controls."""
+        if self._operations.is_busy():
+            self.statusBar().showMessage("Workspace is busy — wait before creating the example")
+            return
+        # Non-native dialog: the Windows-native picker refuses paths whose parents
+        # do not exist yet, and the backend creates the chain at promote time.
+        parent = QFileDialog.getExistingDirectory(
+            self, "Create O41 Example (choose a parent folder)", "",
+            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
+        if not parent:
+            return
+        repo = Path(__file__).resolve().parents[1]
+        source = (repo / "docs" / "campaigns" /
+                  "2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3" /
+                  "artifacts" / "s8-c01-strong-confirmed")
+        resources = repo / "isar_gui" / "resources" / "eig4-o41-authoritative"
+        destination = Path(parent) / "isar-eig4-o41-authoritative"
+        if destination.exists():
+            QMessageBox.warning(
+                self, "Example already exists",
+                f"Choose another parent folder or rename this existing folder:\n{destination}")
+            return
+        # Staged in a sibling temp folder and renamed into place, so a failure part-way through
+        # (missing resource in a non-editable install, permission or AV lock) leaves NO partial
+        # workspace behind — a partial one would trip the exists() guard above on the next attempt
+        # and send the operator hunting for a name clash that is not the real problem.
+        staging = Path(tempfile.mkdtemp(dir=parent, prefix=".isar-example-"))
+        staged = staging / destination.name
+        try:
+            shutil.copytree(source, staged)
+            shutil.copy2(resources / "card.policy.toml", staged / "card.policy.toml")
+            shutil.copy2(resources / "compact-goal.json", staged / "compact-goal.json")
+            shutil.copy2(resources / "example-manifest.json", staged / "example-manifest.json")
+            # Historical gate events are evidence for the seed, not the new operator campaign's
+            # spend ledger. The copied prior/model artifacts remain; the campaign log starts clean.
+            (staged / "report" / "session_log.jsonl").write_text("", encoding="utf-8")
+            os.replace(staged, destination)
+        except OSError as exc:
+            log.exception("failed to create the O41 example workspace")
+            message = f"Could not create O41 example — {exc}"
+            self.statusBar().showMessage(message)
+            self.log(message)
+            return
+        finally:
+            try:
+                shutil.rmtree(staging)
+            except OSError:
+                log.warning("could not remove the O41 example staging folder %s",
+                            staging, exc_info=True)
+        self.load_workspace(str(destination))
+        if self.campaign_dock is not None:
+            self.campaign_dock.apply_form({
+                "source": "spec",
+                "spec_path": str(destination / "compact-goal.json"),
+                "tier": "deterministic",
+                "scan_window_eig_mode": "authoritative",
+                "budget": "",
+                "analysis_limit": "",
+                "seed": 0,
+            })
+            self.campaign_dock._save_form()
+        self.statusBar().showMessage(
+            "O41 example ready — review the Campaign settings, then select Start")
 
     # ---- Workspace toolbar (New / Open / Save As / Recent, Phase C) --------
     def _init_workspace_toolbar(self) -> None:
@@ -838,7 +914,8 @@ class MainWindow(QMainWindow):
         for action in (getattr(self, "_new_workspace_action", None),
                        getattr(self, "_open_workspace_action", None),
                        getattr(self, "_new_workspace_menu_action", None),
-                       getattr(self, "_open_workspace_menu_action", None)):
+                       getattr(self, "_open_workspace_menu_action", None),
+                       getattr(self, "_create_o41_example_action", None)):
             if action is not None:
                 action.setEnabled(not busy)
         if getattr(self, "_recents_button", None) is not None:
@@ -867,7 +944,17 @@ class MainWindow(QMainWindow):
         if not (self._wsm.state() == "ready" and self._wsm.is_temporary()):
             self.statusBar().showMessage("Save As is only for an unsaved temporary workspace")
             return False
-        dest = QFileDialog.getExistingDirectory(self, "Save Workspace As (choose an empty folder)")
+        # Save mode, not directory mode: the operator names the folder to create rather than being
+        # forced to pre-create an empty one and then pick it. Overwrite confirmation is declined
+        # here because the manager's own "absent or empty" check is the authority (and Qt would
+        # otherwise ask about a folder we are going to refuse anyway).
+        # DontUseNativeDialog: the Windows-native dialog rejects typed paths whose
+        # parent folders do not exist ("This folder does not exist"), while the
+        # manager creates the whole parent chain at promote time.
+        dest, _selected = QFileDialog.getSaveFileName(
+            self, "Save Workspace As — name a new folder", "isar-workspace", "",
+            options=(QFileDialog.Option.DontConfirmOverwrite
+                     | QFileDialog.Option.DontUseNativeDialog))
         if not dest:
             return False
         # Flush a pending GUI-store write into the temp workspace BEFORE it is copied, so the saved
@@ -880,6 +967,21 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Could not save to {dest}: {reason}")
         self.log(f"Save As failed for {dest}: {reason}")
         return False
+
+    @staticmethod
+    def _is_empty_target(path) -> bool:
+        """Whether ``path`` is a folder an operator could still save a new campaign into."""
+        try:
+            target = Path(path)
+            return not target.exists() or (target.is_dir() and not any(target.iterdir()))
+        except OSError:
+            return False
+
+    @staticmethod
+    def _empty_target_hint(path) -> str:
+        return ("Empty folder — start a campaign, then Save As here"
+                if Path(path).exists() else
+                "Folder does not exist yet — start a campaign, then Save As to create it")
 
     @staticmethod
     def _is_workspace_dir(path: Path) -> bool:
@@ -1388,7 +1490,8 @@ class MainWindow(QMainWindow):
         if path is None:
             default = f"{Path(self._ws.root).name}_{dock_key.split()[0].lower()}.png"
             path, _ = QFileDialog.getSaveFileName(self, "Export view as PNG", default,
-                                                  "PNG image (*.png)")
+                                                  "PNG image (*.png)", "",
+                                                  QFileDialog.Option.DontUseNativeDialog)
             if not path:
                 return False
         ok = save_widget_png(glw, path)
@@ -1573,7 +1676,9 @@ class MainWindow(QMainWindow):
         self._health_closed = False
         self._health_statuses: dict[str, str] = {}
         self._health_timer = QTimer(self)
-        self._health_timer.setInterval(30000)
+        # Campaign controls are health-gated.  Keep the localhost readiness view fresh enough that
+        # starting TAVI outside ISAR never leaves Start disabled behind a stale 30-second result.
+        self._health_timer.setInterval(3000)
         self._health_timer.timeout.connect(self._refresh_health)
         self._health_timer.start()
         self._health_poll_timer = QTimer(self)
@@ -1590,8 +1695,8 @@ class MainWindow(QMainWindow):
         llm_url = self._settings().get("llm_endpoint") or LLM_DEFAULT_ENDPOINT
         # Probe each backend's liveness endpoint, never its bare base — both bases 404 by design,
         # which would render a running backend amber (and block campaign launch) — see health_url.
-        self._health_generation = self._health_probe.request({"llm": health_url(llm_url),
-                                                               "tavi": health_url(TAVI_DEFAULT_URL)})
+        self._health_generation = self._health_probe.request({"tavi": health_url(TAVI_DEFAULT_URL),
+                                                               "llm": health_url(llm_url)})
         if not self._health_poll_timer.isActive():
             self._health_poll_timer.start()
 
@@ -1707,7 +1812,11 @@ class MainWindow(QMainWindow):
         try:
             Workspace.open(path)
         except (WorkspaceNotFound, OSError) as exc:
-            self.statusBar().showMessage(f"Not a workspace: {path}")
+            # An absent or empty folder is the operator naming where a campaign should live, not a
+            # broken workspace; saying "not a workspace" sent them looking for a corrupt folder.
+            self.statusBar().showMessage(
+                f"{self._empty_target_hint(path)}: {path}" if self._is_empty_target(path)
+                else f"Not a workspace: {path}")
             self.log(f"Not opening {path}: {exc}")
             return False
         if not self._resolve_dirty_card("open another workspace"):

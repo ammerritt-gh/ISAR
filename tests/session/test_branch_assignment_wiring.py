@@ -219,7 +219,15 @@ def test_hard_constraints_fix_gamma_and_amplitude():
     cons = pred.hard_constraints(exposure=1e6)
     assert "phonon.Gamma" in cons.hard and "phonon.A" in cons.hard
     assert not cons.soft                                  # nothing soft — the constrained recipe is hard
+    assert cons.origins == {
+        "phonon.Gamma": "prior_predictive",
+        "phonon.A": "prior_predictive",
+    }
     assert cons.hard["phonon.A"] == pytest.approx(pred.amplitude_norm * 1e6, rel=1e-6)
     # the ordinary soft rescue keeps A soft (never hard), for contrast
     soft = pred.soft_constraints(exposure=1e6)
     assert "phonon.A" in soft.soft and not soft.hard
+    assert soft.origins == {
+        "phonon.Gamma": "prior_predictive",
+        "phonon.A": "prior_predictive",
+    }

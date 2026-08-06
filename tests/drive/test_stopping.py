@@ -598,3 +598,57 @@ def test_match_grid_index_rounds_to_nearest():
     obj = _obj()
     assert st.match_grid_index((2.2000001, 0.0, 0.0), obj.path) == 1
     assert st.match_grid_index((2.9, 0.0, 0.0), obj.path) is None
+
+
+# --------------------------------------------------------------- acoustic zone-centre exemption
+def test_an_acoustic_zone_centre_is_never_a_measurable_target():
+    """omega(q->0) -> 0 on an acoustic branch, so the mode sits under the elastic line there.
+
+    The tracker also retires the origin once it can infer the intercept from resolved neighbours,
+    but that is earned late and only if the linear fit passes.  Until it does, fitting a DHO at the
+    zone centre returns a centre with an error bar thousands of times larger than itself, which
+    reads as a confirmed identity rather than an unresolved one — so the campaign never earns the
+    exemption and keeps returning.  Three quarters of the scans in the R3 cold-start campaigns went
+    to that single q.
+    """
+    origin = st.GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
+                      acoustic_target=True, is_reduced_q_origin=True,
+                      track_state="confirmed")
+    measured = st.GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
+                        acoustic_target=True, master=_master((2.05, 0.0, 0.0), 0.3))
+
+    decision = st.evaluate_stop(_obj(), [origin, measured], _BUDGET)
+
+    assert origin.precision_coverage_eligible is False
+    assert decision.per_q[0]["precision_coverage_eligible"] is False
+    assert decision.state == "met"
+    assert "1 measurable grid q converged" in decision.reasons[0]
+
+
+def test_an_optic_zone_centre_is_still_a_measurable_target():
+    """An optic branch has a finite omega at the zone centre and is measurable there.
+
+    The exemption keys on the branch, not on the origin, or an optic campaign would silently stop
+    demanding the one q it most wants.
+    """
+    origin = st.GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
+                      acoustic_target=False, is_reduced_q_origin=True,
+                      track_state="confirmed")
+
+    assert origin.precision_coverage_eligible is True
+
+
+def test_the_zone_anchor_is_read_from_the_tracker_geometry_not_from_its_inference():
+    """``reduced_q_origin_index`` is published from the tracker's first revision, as plain geometry.
+
+    The per-assignment flag only appears once ``branch_tracking`` has inferred the intercept, which
+    is exactly the state a stuck campaign never reaches.
+    """
+    obj = _obj()
+    grid = st.summarize_grid(obj, [], [], branch_track={"revision": 1, "reduced_q_origin_index": 0,
+                                                        "assignments": []})
+
+    assert grid[0].is_reduced_q_origin is True
+    assert grid[0].acoustic_target is True
+    assert grid[0].precision_coverage_eligible is False
+    assert all(point.precision_coverage_eligible for point in grid[1:])

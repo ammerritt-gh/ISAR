@@ -97,6 +97,30 @@ BUNDLE = [
             "figures/dispersion_summary.png", "figures/synthetic_fork.png",
         ],
     },
+    {
+        "name": "stat2b",
+        "source": "stat2b_evidence",
+        "command": "python tools/docs/export_stat2b_evidence.py",
+        "what": "Corrected STAT-2b.1 development evidence, delivery-separation comparison, and "
+                "the 4/8/16/24/28-worker scaling preflight.",
+        "replaces": [
+            "docs/plans/STAT2_SELECTION_CONSISTENCY_PLAN.md — corrected STAT-2b.1 "
+            "development and scaling evidence",
+        ],
+        "files": [
+            "2026-07-30-stat2b1/campaign-spec.toml",
+            "2026-07-30-stat2b1/run_manifest.json",
+            "2026-07-30-stat2b1/decision_summary.json",
+            "2026-07-30-stat2b1/cell_summaries.csv",
+            "2026-07-30-stat2b1/FINDINGS.md",
+            "2026-07-30-stat2b1/proposed_owner_gate.json",
+            "2026-07-30-stat2b1/development-comparison.json",
+            "2026-07-30-stat2b1/scaling-summary.json",
+            "2026-07-30-stat2b1/scaling-summary.csv",
+            "2026-07-30-stat2b1/figures/predictive_loss_by_arm.png",
+            "2026-07-30-stat2b1/figures/critical_strata_predictive_difference.png",
+        ],
+    },
 ]
 
 UNMANAGED = ("MANIFEST.json", "README.md")

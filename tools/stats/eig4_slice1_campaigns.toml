@@ -1,0 +1,110 @@
+# Explicit EIG-4 Slice 1 census population.  Roots are repository-relative.
+
+[[campaign]]
+id = "op7"
+cohort = "ordinary"
+evidence_tier = "primary"
+root = "test_workspaces/OP7"
+lineage = "op7"
+summary = "docs/campaigns/2026-07-20_op7_speedup_checkpoint.md"
+mapping_kind = "direct"
+
+[[campaign]]
+id = "op7-role-split"
+cohort = "ordinary"
+evidence_tier = "primary"
+root = "test_workspaces/OP7_role_split"
+lineage = "op7"
+summary = "docs/campaigns/2026-07-20_op7_speedup_checkpoint.md"
+mapping_kind = "direct"
+
+[[campaign]]
+id = "svp-recert1"
+cohort = "difficult"
+evidence_tier = "primary"
+root = "out/svp_recert1"
+lineage = "svp-force-refit"
+summary = "docs/campaigns/2026-07-10_SVP_RECERT.md"
+mapping_kind = "direct"
+
+[[campaign]]
+id = "speedup-phase2-auto"
+cohort = "difficult"
+evidence_tier = "primary"
+root = "out/speedup_phase2_auto"
+lineage = "svp-force-refit"
+summary = "docs/campaigns/2026-07-10_SVP_RECERT.md"
+mapping_kind = "lineage"
+
+[[campaign]]
+id = "ap1"
+cohort = "difficult"
+evidence_tier = "primary"
+root = "test_workspaces/AP1"
+lineage = "ap1-ap2"
+summary = "docs/campaigns/2026-07_AP1_BRANCH_MAPPING_DEADLOCK.md"
+mapping_kind = "direct"
+
+[[campaign]]
+id = "ap2"
+cohort = "difficult"
+evidence_tier = "primary"
+root = "test_workspaces/AP2"
+lineage = "ap1-ap2"
+summary = "docs/campaigns/2026-07_AP1_BRANCH_MAPPING_DEADLOCK.md"
+mapping_kind = "direct"
+
+[[campaign]]
+id = "ap3"
+cohort = "difficult"
+evidence_tier = "primary"
+root = "test_workspaces/AP3"
+lineage = "ap3"
+summary = "docs/campaigns/2026-07_AP3_GLOBAL_BRANCH_EVIDENCE.md"
+mapping_kind = "direct"
+
+[[campaign]]
+id = "op9"
+cohort = "difficult"
+evidence_tier = "primary"
+root = "test_workspaces/OP9"
+lineage = "op9-op10"
+summary = "docs/campaigns/2026-07-21_OP9_OP10_TRACKED_FRONTIER.md"
+mapping_kind = "direct"
+
+[[campaign]]
+id = "op10"
+cohort = "difficult"
+evidence_tier = "primary"
+root = "test_workspaces/OP10"
+lineage = "op9-op10"
+summary = "docs/campaigns/2026-07-21_OP9_OP10_TRACKED_FRONTIER.md"
+mapping_kind = "direct"
+
+[[campaign]]
+id = "ap6"
+cohort = "difficult"
+evidence_tier = "primary"
+root = "test_workspaces/AP6_Failed"
+lineage = "ap6"
+summary = "docs/campaigns/2026-07-23_AP6_ACTION_INVENTORY.md"
+mapping_kind = "direct"
+
+[[campaign]]
+id = "op11-repair-replay"
+cohort = "ordinary"
+evidence_tier = "supplementary"
+root = "test_workspaces/OP11_repair_replay"
+lineage = "op10-repair-replay"
+summary = "docs/campaigns/2026-07-21_OP9_OP10_TRACKED_FRONTIER.md"
+mapping_kind = "artifact_match"
+note = "Supplementary until durable campaign identity is reviewed."
+
+[[campaign]]
+id = "ap8-pool-inconsistent"
+cohort = "difficult"
+evidence_tier = "supplementary"
+root = "test_workspaces/AP8_Failed"
+lineage = "ap8"
+mapping_kind = "edge_case"
+note = "Retained for explicit pool-inconsistency coverage; no standalone campaign summary."

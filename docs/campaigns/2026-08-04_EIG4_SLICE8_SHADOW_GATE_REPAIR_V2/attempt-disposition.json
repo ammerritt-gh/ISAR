@@ -1,0 +1,24 @@
+{
+  "contract": "isar.eig4_slice8_attempt_disposition/o36.8.2",
+  "status": "invalid_superseded",
+  "reason_code": "case1_comparison_execution_join_mismatch",
+  "reason": "Case 1 classified retained comparison 6052e0b1 while the production legacy submission and acquisition provenance authenticated comparison f0b33abf; the bundle did not strictly prove that the executed comparison authorized the classified counterfactual win",
+  "recorded_at": "2026-08-04",
+  "production_behavior_changed": false,
+  "statistical_evidence_changed": false,
+  "case_definitions_changed": false,
+  "authenticated_artifacts": {
+    "gate_manifest_fingerprint": "7b85bf826bbf639f0dbb04482048b5b58f240fef1f18c3faa2a9da75f598aacd",
+    "case_manifest_fingerprint": "e5dff0b1f40492914bdd00581bbfef24aad641e71e4898729b8da6cc18cc45eb",
+    "run_manifest_fingerprint": "521b9692f1cfbb1ef69d454b112bafb264dcb5852fad327deccb1012ead50d4a",
+    "gate_result_fingerprint": "9dcc11744ca9807a9bd6708b476e2a577333f1e4c43fb782e098331439c03f67"
+  },
+  "case_1": {
+    "classified_comparison_ref": "report/scan-design-realizations/6052e0b1f6ab4ce512f79a6373d159eb765868a8c45f73667f7d1cc1679ec113.json",
+    "production_comparison_ref": "report/scan-design-realizations/f0b33abf45f91167860dd57bf198a5046949e2d77f56111e1618db7f74211af7.json",
+    "production_comparison_fingerprint": "550888f987b3ca29851cb9c67be8f06b3ea52d23bf38f39924c96f1f435bb88c"
+  },
+  "replacement_bundle": "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3",
+  "replacement_scope": "retain and classify the exact production-created Case 1 comparison and bind its target-core realized request directly to the independently executed target request and returned grid",
+  "attempt_disposition_fingerprint": "a3b66479d42267abff020e9016d0f8a061f87deebdf53445c5955a966e5d48fd"
+}

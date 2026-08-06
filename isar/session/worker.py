@@ -16,7 +16,9 @@ Without the guard those children would re-enter :func:`serve` on stdin they don'
 
 Protocol (one JSON object per line, request → reply):
 
-- Request:  ``{"id", "cmd": "run"|"ping"|"shutdown", "data_paths", "force", "errors_tier", "M", "workers"}``
+- Request:  ``{"id", "cmd": "run"|"ping"|"shutdown", "data_paths", "force", "errors_tier", "M",
+  "workers"}`` plus optional ``scan_errors_tier`` / ``master_errors_tier`` / ``force_masters`` (list
+  of master ledger ids for a targeted refit) and the certification/allowance extensions.
 - ``run`` reply:  ``{"id", "ok": true, "summary": {...}, "timings": {...}, "error": null}``
 - failure reply:  ``{"id", "ok": false, "summary": null, "timings": null, "error": {type, message, traceback}}``
 - ``ping`` reply:  ``{"id", "ok": true}``
@@ -84,6 +86,9 @@ def _run_job(workspace_path, req) -> tuple[dict, dict]:
         run_kwargs["scan_errors_tier"] = scan_errors_tier
     if master_errors_tier is not None:
         run_kwargs["master_errors_tier"] = master_errors_tier
+    force_masters = req.get("force_masters")
+    if force_masters:
+        run_kwargs["force_masters"] = [str(m) for m in force_masters]
     # Omit the additive extension entirely for normal jobs so legacy in-process adapters and test
     # doubles continue to satisfy the runner boundary unchanged.
     if certification_request is not None:

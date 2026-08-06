@@ -104,6 +104,33 @@ def test_reducer_tolerates_unknown_kinds_and_missing_fields(make_ws):
     assert state.scan_count == 1
 
 
+def test_reducer_surfaces_authority_selection_and_campaign_predicate_failures():
+    events = [
+        {"kind": "decide", "payload": {
+            "action": "campaign_start",
+            "objective": {"budget": {"kind": "neutrons", "amount": 1000}},
+            "source": {"kind": "spec", "sha256": "a" * 64},
+        }},
+        {"kind": "scan_design_authority_decision", "ts": 1.0, "payload": {
+            "decision_outcome": "retain_legacy_control", "selected_role": "legacy",
+            "reason_codes": ["per_point_ncount_equal", "o41_margin_not_decisive"],
+            "point_counts": {"legacy": 41, "target_core": 21}, "iter": 0,
+        }},
+        {"kind": "scan_design_authority_decision", "ts": 2.0, "payload": {
+            "decision_outcome": "select_target_core", "selected_role": "target_core",
+            "reason_codes": ["o41_margin_decisive"],
+            "point_counts": {"legacy": 41, "target_core": 21}, "iter": 1,
+        }},
+    ]
+    state = reduce_campaign(events)
+    assert state.scan_design_authority["selected_role"] == "target_core"
+    assert state.authority_predicate_failure_counts == {
+        "per_point_ncount_equal": 1, "o41_margin_not_decisive": 1}
+    # The per-iteration authority decisions are audit trail: the dock's dedicated authority label
+    # carries the current selection (from the state above), so the rows stay out of the feed.
+    assert render_feed_item(events[1]) is None
+
+
 def test_reducer_captures_last_scan_identical_to_the_feed_line(make_ws):
     # last_scan is state-derived so a consumer built mid-campaign (the lazily-created compact
     # monitor) shows the current scan immediately — and it must be the SAME text the feed shows.
@@ -159,10 +186,10 @@ def test_feed_renders_kinds_and_skips_timing():
     assert render_feed_item({"kind": "timing", "payload": {"stage": "x"}, "ts": 1}) is None
     prop = render_feed_item({"kind": "propose", "ts": 1, "payload": {
         "hkl": [2, 0, 0], "e_lo": 1.0, "e_hi": 9.0, "ncount": 200, "kind": "production"}})
-    assert "q=(2, 0, 0)" in prop.text and prop.severity == "info"
+    assert "H=2" in prop.text and prop.severity == "info"
     stop = render_feed_item({"kind": "stop", "ts": 1, "payload": {
         "state": "operator_stopped", "reasons": ["op"]}})
-    assert stop.severity == "terminal" and "operator_stopped" in stop.text
+    assert stop.severity == "terminal" and "operator stopped" in stop.text
     unknown = render_feed_item({"kind": "mystery", "ts": 1, "payload": {}})
     assert unknown is not None                       # unknown kinds surface, never vanish
 

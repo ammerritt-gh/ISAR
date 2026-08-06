@@ -28,6 +28,8 @@ from dataclasses import dataclass, field, replace
 
 from PySide6.QtCore import Signal
 
+from isar_gui.log_render import RenderedEvent as FeedItem
+from isar_gui.log_render import render_event, scan_text
 from isar_gui.viewmodels.base import ViewModel
 
 log = logging.getLogger(__name__)
@@ -35,15 +37,8 @@ log = logging.getLogger(__name__)
 #: Held statuses on results rows (mirror of the engine's exception vocabulary, display-only).
 _HELD_PREFIX = "held"
 
-
-@dataclass(frozen=True)
-class FeedItem:
-    """One operator-facing line of the campaign feed."""
-
-    ts: float
-    kind: str
-    text: str
-    severity: str   # "info" | "notice" | "warn" | "terminal"
+__all__ = ["CampaignState", "CampaignViewModel", "FeedItem", "analysis_readout", "budget_readout",
+           "current_activity_text", "reduce_campaign", "render_feed_item", "terminal_status_text"]
 
 
 @dataclass(frozen=True)
@@ -82,6 +77,8 @@ class CampaignState:
     analysis_limit_seconds: float | None = None
     certification_status: dict | None = None
     certification_end_status: str | None = None
+    scan_design_authority: dict | None = None
+    authority_predicate_failure_counts: dict = field(default_factory=dict)
 
 
 def _is_campaign_start(rec: dict) -> bool:
@@ -151,6 +148,8 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
     last_scan = None
     exceptions = 0
     stage_seconds: dict = {}
+    scan_design_authority = None
+    authority_predicate_failure_counts: dict[str, int] = {}
 
     for rec in events[start_idx:]:
         kind = rec.get("kind")
@@ -159,7 +158,7 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
         if isinstance(it, (int, float)):
             iteration = int(it) if iteration is None else max(iteration, int(it))
         if kind in ("propose", "run"):
-            last_scan = _scan_text(kind, p)
+            last_scan = scan_text(kind, p)
         if kind == "activity_start" and p.get("activity_id"):
             activities[str(p["activity_id"])] = {**p, "started_ts": rec.get("ts")}
             if p.get("stage") == "final_certification":
@@ -191,6 +190,13 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
         elif kind == "exception":
             exceptions += 1
             last_decision = f"exception: {p.get('action', '?')}"
+        elif kind == "scan_design_authority_decision":
+            scan_design_authority = dict(p)
+            if p.get("decision_outcome") == "retain_legacy_control":
+                for reason in p.get("reason_codes") or ():
+                    key = str(reason)
+                    authority_predicate_failure_counts[key] = (
+                        authority_predicate_failure_counts.get(key, 0) + 1)
         elif kind == "stop":
             stop_state = p.get("state")
             reasons = p.get("reasons")
@@ -220,7 +226,9 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
         budget_kind=budget.get("kind"), budget_amount=budget.get("amount"),
         analysis_spent_seconds=sum(analysis_operations.values()),
         analysis_limit_seconds=(objective or {}).get("analysis_limit_seconds"),
-        certification_end_status=certification_end_status)
+        certification_end_status=certification_end_status,
+        scan_design_authority=scan_design_authority,
+        authority_predicate_failure_counts=authority_predicate_failure_counts)
 
 
 def _fmt_hkl(hkl) -> str:
@@ -230,87 +238,13 @@ def _fmt_hkl(hkl) -> str:
         return str(hkl)
 
 
-def _fmt_count(value) -> str:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return str(value)
-    for scale, suffix in ((1e9, "G"), (1e6, "M"), (1e3, "k")):
-        if abs(number) >= scale:
-            return f"{number / scale:.3g}{suffix}"
-    return f"{number:g}"
-
-
-def _scan_text(kind: str, p: dict) -> str | None:
-    """The operator line for a propose/run payload — shared by the live feed and the reducer's
-    ``last_scan`` so both surfaces show the identical text for the same record."""
-    it = p.get("iter")
-    tail = f"  [iter {it}]" if it is not None else ""
-    if kind == "propose":
-        return (f"propose q={_fmt_hkl(p.get('hkl'))} E∈[{p.get('e_lo')}, {p.get('e_hi')}] "
-                f"n={_fmt_count(p.get('ncount'))} ({p.get('kind', '?')}){tail}")
-    if kind == "run":
-        return f"scan {p.get('job_id', '?')} submitted (cost {_fmt_count(p.get('cost'))} n){tail}"
-    return None
-
-
 def render_feed_item(rec: dict) -> FeedItem | None:
-    """One-line operator rendering of a session-log record; ``None`` = keep out of the feed."""
-    kind = rec.get("kind", "?")
-    p = rec.get("payload") or {}
-    ts = float(rec.get("ts") or 0.0)
-    it = p.get("iter")
-    tail = f"  [iter {it}]" if it is not None else ""
-    if kind in ("timing", "analysis_clock"):
-        return None                       # ~16/iteration profiling spans — noise in a feed
-    if kind in ("propose", "run"):
-        return FeedItem(ts, kind, _scan_text(kind, p), "info")
-    if kind == "validate":
-        ok = p.get("would_queue")
-        text = "validate: ok" if ok else f"validate: blocked {p.get('blockers') or '(unspecified)'}"
-        return FeedItem(ts, kind, text + tail, "info" if ok else "warn")
-    if kind == "analyze":
-        text = f"analyzed {p.get('n_rows', 0)} row(s): {p.get('dispositions')}{tail}"
-        return FeedItem(ts, kind, text, "info")
-    if kind == "decide":
-        action = p.get("action", "?")
-        if action == "campaign_start":
-            src = (p.get("source") or {}).get("kind")
-            resumed = (p.get("resumed") or {}).get("n_observations")
-            text = f"campaign started ({src or 'unknown source'}"
-            text += f", resuming {resumed} observation(s))" if resumed else ")"
-            return FeedItem(ts, kind, text, "notice")
-        if action == "operator_stop":
-            return FeedItem(ts, kind, f"stop requested — honoring at the iteration boundary{tail}",
-                            "notice")
-        if action == "model_update":
-            text = (f"model update: {p.get('converged')}/{p.get('n_grid')} converged, "
-                    f"{p.get('n_observations')} obs{tail}")
-            return FeedItem(ts, kind, text, "info")
-        return FeedItem(ts, kind, str(action).replace("_", " ") + tail, "info")
-    if kind == "escalate_fit":
-        q = f" at {_fmt_hkl(p.get('hkl'))}" if p.get("hkl") is not None else ""
-        text = (f"fit escalated {p.get('from_tier')}→{p.get('to_tier')} "
-                f"{q} ({p.get('phase', p.get('outcome', '?'))})")
-        return FeedItem(ts, kind, text + tail, "info")
-    if kind == "activity_start":
-        stage = str(p.get("stage", "activity")).replace("_", " ")
-        q = f" at {_fmt_hkl(p.get('q'))}" if p.get("q") is not None else ""
-        return FeedItem(ts, kind, f"{stage} started{q}", "notice")
-    if kind == "activity_progress":
-        return None
-    if kind == "activity_end":
-        stage = str(p.get("stage", "activity")).replace("_", " ")
-        return FeedItem(ts, kind, f"{stage}: {p.get('status', 'completed')}",
-                        "warn" if p.get("status") in ("failed", "interrupted") else "info")
-    if kind == "exception":
-        return FeedItem(ts, kind, f"{p.get('action', 'exception')}{tail}", "warn")
-    if kind == "stop":
-        reasons = p.get("reasons")
-        text = f"campaign {p.get('state', '?')}: " + "; ".join(
-            str(r) for r in (reasons if isinstance(reasons, list) else []))
-        return FeedItem(ts, kind, text, "terminal")
-    return FeedItem(ts, kind, str(kind), "info")   # unknown kinds surface, never vanish silently
+    """One-line operator rendering of a session-log record; ``None`` = keep out of the feed.
+
+    The whole kind→sentence mapping, and the list of audit-trail/profiling kinds the dock hides,
+    live in :mod:`isar_gui.log_render`. This is the viewmodel-side name the docks already use.
+    """
+    return render_event(rec)
 
 
 def budget_readout(state: CampaignState) -> tuple[int, str]:
@@ -340,6 +274,20 @@ def analysis_readout(state: CampaignState) -> tuple[int, str]:
     fraction = min(state.analysis_spent_seconds / limit, 1.0) if limit > 0 else 0.0
     return int(fraction * 1000), (f"analysis: {state.analysis_spent_seconds / 60.0:.1f} / "
                                   f"{limit / 60.0:.1f} min")
+
+
+def authority_iter_text(authority: dict | None) -> str:
+    """`" [iter 4]"` for an authority decision, or `""` when the payload carried no iteration.
+
+    The reducer keeps the LAST authority decision seen since ``campaign_start`` and never ages it
+    out, so a decision from an early iteration keeps rendering while the campaign moves on. The
+    stamp is what lets an operator tell a live grant from a stale one; it is read straight off the
+    payload (1-based, like every other iteration the docks print) and never re-derived.
+    """
+    it = (authority or {}).get("iter", (authority or {}).get("iteration"))
+    if not isinstance(it, (int, float)) or isinstance(it, bool):
+        return ""
+    return f" [iter {int(it) + 1}]"
 
 
 def terminal_status_text(state: CampaignState) -> str:
