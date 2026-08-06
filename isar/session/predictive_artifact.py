@@ -87,6 +87,11 @@ PROJECTION_REFERENCE_BEYOND_SUPPORT = "reference_beyond_mode_support"
 #: alternative, disabling the gate, would silently restore the unconditional nearest-mode rule for
 #: exactly the artifacts least entitled to it.
 PROJECTION_NO_RESOLUTION_BASIS = "no_resolution_basis_for_mode_support"
+#: The projected model set could not be fingerprinted (a malformed or legacy record: no label, no
+#: finite positive weight, no draw list). The projection is then incomplete like any other blocked
+#: one — the alternative, a record carrying ``complete=true`` with no fingerprint and no semantics,
+#: reaches a consumer as a *corrupt* record rather than an honest non-result.
+PROJECTION_FINGERPRINT_FAILED = "target_projection_set_fingerprint_failed"
 
 #: Structured reasons the predictive side produced nothing for a master that otherwise fitted fine.
 PREDICTIVE_UNAVAILABLE_CONSTRUCTION_FAILED = "predictive_construction_failed"
@@ -907,12 +912,22 @@ def build_target_projection(artifact, outcome, *, master_revision, calibration_f
     try:
         target_projection_set_fingerprint = _target_projection_set_fingerprint(projected)
     except (SemanticsConstructionError, TypeError, ValueError) as exc:
+        # Only SemanticsConstructionError carries a reason_code; the plain ValueError/TypeError
+        # raised for a malformed model record does not, and reading it unconditionally used to
+        # raise AttributeError straight out of an "always returns an artifact" function.
         log.warning(
             "semantics_construction_failed producer=isar.session.predictive_artifact "
-            "quantity=target_projection_set reason_code=%s",
-            exc.reason_code,
+            "quantity=target_projection_set reason_code=%s detail=%s",
+            getattr(exc, "reason_code", type(exc).__name__),
+            exc,
         )
         target_projection_set_fingerprint = None
+        reason = PROJECTION_FINGERPRINT_FAILED
+        for item in projected:
+            present = item.get("target_present_by_draw")
+            count = len(present) if isinstance(present, (list, tuple)) else 0
+            item["target_present_by_draw"] = [False] * count
+            item["target_qoi_draws"] = [None] * count
     statistical_semantics = (
         _target_projection_semantics(
             artifact,

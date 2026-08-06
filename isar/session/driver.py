@@ -988,11 +988,14 @@ def _realize_interval_authority(
             "bayes_interval": bayes_interval,
         }
         selected_quantity = None
-        if interval is not None and interval_reliable is not False:
+        # A failed interval producer returns a nan-filled tuple, not None: selecting or publishing
+        # one on `is not None` delivers a nan half-width that never satisfies the stopping
+        # tolerance, so the q silently never converges and never escalates.
+        if errors.usable_interval(interval) and interval_reliable is not False:
             selected_quantity = "interval"
-        elif omega0_profile is not None:
+        elif errors.usable_interval(omega0_profile):
             selected_quantity = "omega0_profile"
-        elif hesse_interval is not None and hesse_trusted:
+        elif errors.usable_interval(hesse_interval) and hesse_trusted:
             selected_quantity = "hesse_interval"
         certifiable = bool(
             selected_quantity is not None
@@ -1003,7 +1006,7 @@ def _realize_interval_authority(
         )
         for name, item in quantities.items():
             item.setdefault("producer_availability", bool(item.get("availability")))
-            item["availability"] = values.get(name) is not None
+            item["availability"] = errors.usable_interval(values.get(name))
             selected = name == selected_quantity
             item["selected_for_delivery"] = selected
             item["passed_reliability_gate"] = bool(selected and certifiable)
@@ -4396,7 +4399,7 @@ def _resolve_target_projections(session: SessionState, data_dir) -> int:
                     action_role=authority.get("action_role") or "master")
                 projection_ref = _persist_content_addressed(
                     data_dir, "target_projection", projection)
-            except (OSError, ValueError, KeyError, TypeError) as error:
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
                 # A projection is steering input, never a scientific number: record why it is
                 # missing and leave the master's fit and every other artifact untouched.
                 log.warning("%s: target projection unavailable (%s): %s",

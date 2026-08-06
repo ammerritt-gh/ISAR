@@ -968,3 +968,107 @@ def test_metadata_is_excluded_from_scientific_selection_and_identity_firewalls()
     assert drive_loop._calibration_bucket(
         calibration, exposure_before[0]
     ) == drive_loop._calibration_bucket(calibration, exposure_after[0])
+
+
+# ---------------------------------------------------------------------------
+# R13/R34: a failed interval producer returns a nan tuple, not None. Availability
+# decided on ``is not None`` therefore published failures as available intervals.
+# ---------------------------------------------------------------------------
+_NAN3 = (float("nan"), float("nan"), float("nan"))
+
+
+def _producer(within):
+    return errors_mod._interval_semantics_for(
+        SimpleNamespace(label="one", fit_semantics=_fit_semantics()), within
+    )
+
+
+def test_a_nan_interval_is_published_unavailable_with_its_failure_reason():
+    record = _producer({"freq_interval": _NAN3, "profile_interval": (float("nan"), 5.2)})
+    freq = record["quantities"]["freq_interval"]
+    assert freq["availability"] is False
+    assert freq["failure_reason"] == "bootstrap_interval_unavailable"
+    profile = record["quantities"]["profile_interval"]
+    assert profile["availability"] is False
+    assert profile["failure_reason"] == "profile_interval_unavailable"
+
+
+def test_a_bound_truncated_profile_side_is_distinguishable_from_an_unavailable_one():
+    from isar.analyze.errors.profile import BoundTruncated
+
+    record = _producer({"freq_interval": (1.0, 1.1, 1.2),
+                        "profile_interval": (BoundTruncated(), 5.2)})
+    profile = record["quantities"]["profile_interval"]
+    assert profile["availability"] is False
+    assert profile["failure_reason"] == "profile_bound_truncated"
+    assert record["quantities"]["freq_interval"]["availability"] is True
+
+
+def test_a_bayes_run_without_a_prior_fingerprint_degrades_only_its_own_entry(caplog):
+    # It used to raise, and _attach_interval_semantics then set the ENTIRE record to None: an
+    # optional Bayesian diagnostic erased the valid bootstrap and profile semantics beside it.
+    record = _producer({"freq_interval": (1.0, 1.1, 1.2),
+                        "profile_interval": (0.9, 1.3),
+                        "bayes_interval": _NAN3,
+                        "bayes_ok": False,
+                        "bayes_fail_reason": "ESS below gate",
+                        "bayes_prior_fingerprint": None})
+    assert record["quantities"]["freq_interval"]["availability"] is True
+    assert record["quantities"]["profile_interval"]["availability"] is True
+    bayes = record["quantities"]["bayes_interval"]
+    assert bayes["availability"] is False
+    assert bayes["failure_reason"] == "missing_bayesian_prior_fingerprint"
+    assert "missing_bayesian_prior_fingerprint" in caplog.text
+
+
+def test_a_non_converged_bayes_run_carries_its_own_failure_reason():
+    fingerprint = semantics_fingerprint("test.prior", {"omega0": 5.0})
+    record = _producer({"freq_interval": (1.0, 1.1, 1.2),
+                        "bayes_interval": _NAN3,
+                        "bayes_ok": False,
+                        "bayes_fail_reason": "ESS below gate",
+                        "bayes_prior_fingerprint": fingerprint})
+    bayes = record["quantities"]["bayes_interval"]
+    assert bayes["availability"] is False
+    assert bayes["failure_reason"] == "ESS below gate"
+    assert bayes["prior_fingerprint"] == fingerprint
+
+
+def test_a_nan_interval_is_never_selected_for_delivery():
+    # (nan, nan, nan) is `not None`, so the ladder used to select it, stamp availability=True and
+    # hand the stopping rule a nan half-width that no tolerance can ever satisfy.
+    fit_semantics = _fit_semantics()
+    produced = {"freq_interval": _NAN3, "profile_interval": (0.9, 1.3)}
+    record = driver._outcome_interval_semantics(
+        best=SimpleNamespace(fit_semantics=fit_semantics,
+                             within_model={"interval_semantics": _producer(produced)}),
+        selection=SimpleNamespace(pooled=None, fit_selection_semantics=None),
+        interval=_NAN3,
+        omega0_profile=(0.9, 1.3),
+        hesse_interval=None,
+        hesse_trusted=False,
+        bayes_interval=None,
+        interval_reliable=True,
+    )
+    assert record["selected_interval_quantity"] == "omega0_profile"
+    assert record["quantities"]["interval"]["availability"] is False
+    assert record["quantities"]["interval"]["authority_scopes"] == authority_scopes()
+
+
+def test_every_interval_nan_leaves_nothing_selected():
+    fit_semantics = _fit_semantics()
+    record = driver._outcome_interval_semantics(
+        best=SimpleNamespace(fit_semantics=fit_semantics,
+                             within_model={"interval_semantics": _producer(
+                                 {"freq_interval": _NAN3, "profile_interval": _NAN3[:2]})}),
+        selection=SimpleNamespace(pooled=None, fit_selection_semantics=None),
+        interval=_NAN3,
+        omega0_profile=_NAN3[:2],
+        hesse_interval=_NAN3[:2],
+        hesse_trusted=True,
+        bayes_interval=None,
+        interval_reliable=True,
+    )
+    assert record["selected_interval_quantity"] is None
+    assert record["selected_interval_certifiable"] is False
+    assert not any(item["availability"] for item in record["quantities"].values())

@@ -464,3 +464,69 @@ def test_one_ambiguous_model_blanks_the_whole_projection_regardless_of_order(amb
     assert projection["reason"] == "no_unique_mode"
     assert all(not any(model["target_present_by_draw"]) for model in projection["models"])
     assert all(model["target_qoi_draws"] == [None] for model in projection["models"])
+
+
+# ---------------------------------------------------------------------------
+# R12: a projection that cannot be fingerprinted is an incomplete projection,
+# not an exception and not a "complete" record with no semantics.
+# ---------------------------------------------------------------------------
+def _raiser(exc):
+    def _raise(*_args, **_kwargs):
+        raise exc
+    return _raise
+
+
+def test_a_plain_value_error_from_the_fingerprint_does_not_escape_as_attribute_error():
+    # A malformed/legacy model record makes the fingerprint helper raise a PLAIN ValueError, which
+    # carries no ``reason_code``. Reading one unconditionally raised AttributeError straight out of
+    # a function documented to always return an artifact — and the driver does not catch that.
+    artifact = _hand_artifact([[2.0], [2.1]], weight=None)
+    projection = build_target_projection(artifact, _outcome(omega0=2.0), **_AUTHORITY)
+    assert projection["complete"] is False
+    assert projection["reason"] == predictive_artifact.PROJECTION_FINGERPRINT_FAILED
+    assert projection["target_projection_set_fingerprint"] is None
+    assert projection["statistical_semantics"] is None
+    assert all(not any(model["target_present_by_draw"]) for model in projection["models"])
+    assert all(all(draw is None for draw in model["target_qoi_draws"])
+               for model in projection["models"])
+
+
+def test_a_type_error_from_the_fingerprint_is_an_incomplete_projection(monkeypatch):
+    monkeypatch.setattr(predictive_artifact, "_target_projection_set_fingerprint",
+                        _raiser(TypeError("draw list is not a list")))
+    projection = build_target_projection(
+        _hand_artifact([[2.0], [2.1]]), _outcome(omega0=2.0), **_AUTHORITY)
+    assert projection["complete"] is False
+    assert projection["reason"] == predictive_artifact.PROJECTION_FINGERPRINT_FAILED
+    assert projection["target_projection_set_fingerprint"] is None
+
+
+def test_a_semantics_construction_error_also_marks_the_projection_incomplete(monkeypatch):
+    # This one used to null the fingerprint and the semantics but leave ``reason`` at None, so the
+    # record claimed complete=True with nothing to authenticate it — a corrupt record to a consumer
+    # rather than an honest incomplete one.
+    monkeypatch.setattr(
+        predictive_artifact, "_target_projection_set_fingerprint",
+        _raiser(predictive_artifact.SemanticsConstructionError("nonfinite_fingerprint_input")))
+    projection = build_target_projection(
+        _hand_artifact([[2.0], [2.1]]), _outcome(omega0=2.0), **_AUTHORITY)
+    assert projection["complete"] is False
+    assert projection["target_projection_complete"] is False
+    assert projection["reason"] == predictive_artifact.PROJECTION_FINGERPRINT_FAILED
+    assert projection["statistical_semantics_fingerprint"] is None
+
+
+def test_the_driver_records_an_attribute_error_instead_of_aborting_the_run(tmp_path, monkeypatch):
+    ref = "data/predictive.json"
+    (tmp_path / "data").mkdir()
+    (tmp_path / ref).write_text(json.dumps(_hand_artifact([[2.0]])), encoding="utf-8")
+    entry = driver.ScanEntry(scan_id="master:1:d", scan_number=1, scan_type="master", status="ok")
+    entry.detectors["d"] = {"pooled": True, "predictive_ref": ref}
+    session = driver.SessionState(scans={"master:1:d": entry})
+    monkeypatch.setattr(predictive_artifact, "build_target_projection",
+                        _raiser(AttributeError("'ValueError' object has no attribute 'reason_code'")))
+
+    assert driver._resolve_target_projections(session, tmp_path / "data") == 0
+    unavailable = entry.provenance["target_projection_unavailable"]
+    assert unavailable["error_type"] == "AttributeError"
+    assert unavailable["reason_code"] == predictive_artifact.PROJECTION_UNAVAILABLE_CONSTRUCTION_FAILED
