@@ -8,6 +8,8 @@ import math
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from isar.eig.o41_authority import O41_MARGIN_SE_MULTIPLE
+
 AUTHORITY_DECISION_CONTRACT = "isar.scan_design_authority_decision/o41.1"
 _OUTCOMES = {
     "select_target_core", "retain_legacy_control", "use_non_eig_path",
@@ -198,6 +200,8 @@ class ScanDesignAuthorityDecision:
             or not _finite_or_none(self.delta_information_per_executed_point_nats)
             or not _finite_or_none(self.paired_standard_error_nats)
             or not _finite_or_none(self.lower_margin_nats)
+            # Descriptive: this multiplier only scales the reported ``lower_margin_nats``.  The
+            # multiplier that decides is ``margin_standard_error_multiple``, checked below.
             or float(self.selection_margin_multiplier) != 2.0
         ):
             raise ValueError("authority decision identity is invalid")
@@ -238,7 +242,10 @@ class ScanDesignAuthorityDecision:
                 raise ValueError("authority decision offset evidence is inconsistent")
         else:
             if (not isinstance(self.partition_offsets_agree, bool)
-                    or float(self.margin_standard_error_multiple or 0.0) != 3.0
+                            # The band the comparison was judged against, not a literal: it is derived
+                    # from the frozen tail probability at df = BLOCK_COUNT - 1, so a record states
+                    # the band in force when it was written.
+                    or float(self.margin_standard_error_multiple or 0.0) != O41_MARGIN_SE_MULTIPLE
                     or not selections):
                 raise ValueError("authority decision offset evidence is invalid")
             for item in selections:

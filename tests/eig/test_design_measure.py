@@ -21,7 +21,11 @@ from isar.eig import (
     adapt_omega0_target_projection,
     build_scan_window_design_measure,
 )
-from isar.predictive import PREDICTIVE_MODEL_WEIGHT_FLOOR, predictive_basis_fingerprint
+from isar.predictive import (
+    MINIMUM_AUTHORITATIVE_DESIGN_MASS,
+    PREDICTIVE_MODEL_WEIGHT_FLOOR,
+    predictive_basis_fingerprint,
+)
 from isar.schema.statistics import (
     FIT_SELECTION_SCHEMA,
     authority_scopes,
@@ -351,6 +355,76 @@ def test_insufficient_bootstrap_mass_is_an_upstream_scientific_refusal(monkeypat
     assert result.status == "unavailable"
     assert "predictive_insufficient_bootstrap_mass" in result.reason_codes
     assert result.models == () and result.predictive_scenarios == ()
+
+
+@pytest.mark.parametrize("bootstrap_weight, representative", [
+    (0.5 - 1e-6, False),   # just below the reviewed bound
+    (0.5, True),           # exactly at it
+    (0.4, False),          # bootstrap minority
+    (0.8, True),           # bootstrap majority
+])
+def test_the_retained_design_mass_is_published_for_every_measure(
+        monkeypatch, bootstrap_weight, representative):
+    """The mass that decides whether the basis speaks for the master is on the record.
+
+    The measure keeps the bootstrap models and renormalises them to 1.0, so a model holding a
+    sliver of the production Akaike weight can end up carrying the whole design ensemble.  That
+    is currently *recorded and not gated*, deliberately: an observability code would make
+    eligibility ``unassessable``, which both this constructor and the O41 selector treat as a
+    refusal, so a bound routed that way would switch EIG off for roughly half of all masters
+    (the Slice 1 census aggregate is 43.6 % bootstrap-grade) rather than qualify them.  Recording
+    it is what lets a future census set the bound from data instead of by assertion.
+    """
+    artifact, _projection, qoi, eligibility = _bundle(monkeypatch, [
+        {"label": "bootstrap", "weight": bootstrap_weight, "basis": "parametric_bootstrap",
+         "draw_ids": ["b-0", "b-1"], "phonon": True},
+        {"label": "laplace", "weight": 1.0 - bootstrap_weight, "basis": "laplace_hesse",
+         "draw_ids": ["l-0"], "phonon": True},
+    ])
+    # Representativeness is not a refusal today, on either surface.
+    assert qoi.status == "valid"
+    assert "predictive_unrepresentative_design_basis" not in qoi.observability_codes
+    assert "predictive_unrepresentative_design_basis" not in qoi.scientific_codes
+
+    result = build_scan_window_design_measure(artifact, eligibility)
+    assert result.status == "available"
+    assert [item["label"] for item in result.models] == ["bootstrap"]
+    assert result.models[0]["design_ensemble_weight"] == pytest.approx(1.0)
+
+    # The retained Akaike mass is published, so the gap between what the data supports and what
+    # steers is legible in every measure without anyone having to recompute it.
+    retained = dict(dict(result.mass_diagnostics)["source_aic_scale"])["bootstrap_model_mass"]
+    assert retained == pytest.approx(bootstrap_weight)
+    assert (retained >= MINIMUM_AUTHORITATIVE_DESIGN_MASS) is representative
+    discarded = (dict(dict(result.mass_diagnostics)["source_aic_scale"])["laplace_hesse_model_mass"]
+                 + dict(dict(result.mass_diagnostics)["source_aic_scale"])["nested_sampling_model_mass"])
+    assert retained + discarded == pytest.approx(1.0)
+
+
+def test_naming_the_representativeness_bound_invalidates_no_prior_scoring(monkeypatch):
+    """Introducing the constant must not move any fingerprint, because it gates nothing.
+
+    ADR-014 freezes a rule into the artifact when that rule changes what the measure *contains* —
+    ``PREDICTIVE_MODEL_WEIGHT_FLOOR`` prunes models, so a basis pruned under one rule must never be
+    scored under another.  ``MINIMUM_AUTHORITATIVE_DESIGN_MASS`` prunes nothing and currently
+    decides nothing, so freezing it would move every measure's fingerprint, and since the
+    fingerprint seeds the scorer that would reseed and invalidate scoring the rule never touched.
+    When it is eventually made to gate, the code it emits will travel in the eligibility envelope
+    the fingerprint already folds in, and the guarantee will hold through that.
+    """
+    models = [
+        {"label": "bootstrap", "weight": 0.4, "basis": "parametric_bootstrap",
+         "draw_ids": ["b-0", "b-1"], "phonon": True},
+        {"label": "laplace", "weight": 0.6, "basis": "laplace_hesse",
+         "draw_ids": ["l-0"], "phonon": True},
+    ]
+    artifact, _p, _q, eligibility = _bundle(monkeypatch, models)
+    below = build_scan_window_design_measure(artifact, eligibility)
+
+    # The constant appears nowhere in the frozen semantics, so it cannot have moved the seed.
+    assert MINIMUM_AUTHORITATIVE_DESIGN_MASS not in dict(below.semantics).values()
+    assert not any("authoritative_design_mass" in str(key) for key in dict(below.semantics))
+    assert below.status == "available"
 
 
 def test_material_unknown_basis_remains_an_upstream_observability_category(monkeypatch):

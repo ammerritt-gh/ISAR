@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 import math
 from typing import Any, Mapping
 
+from scipy.stats import t as student_t
+
 from isar.schema.eig_policy import ScanWindowEIGConfig
 
 
@@ -22,15 +24,26 @@ PRIMARY_QOI = {"id": "excitation.energy", "unit": "meV"}
 PRIMARY_PARAMETERS = {"origin": 0.0, "bin_width": 0.5, "offsets": [0.0, 0.25]}
 SIMULATION_COUNT = 128
 BLOCK_COUNT = 8
+# DESCRIPTIVE ONLY: scales the reported ``lower_margin_nats`` and the ``o41_margin_not_decisive``
+# reason code.  It decides nothing; ``O41_MARGIN_SE_MULTIPLE`` below is the one that decides.
 MARGIN_MULTIPLIER = 2.0
-# The half-width, in paired standard errors, of the band where the two candidates are
+# DECIDES: the half-width, in paired standard errors, of the band where the two candidates are
 # indistinguishable on information per neutron.  Originally a one-sided floor a target-core grant
 # had to clear, installed after the R1-E replay produced "decisive" grants resting on ~1.7e-5
 # nats/point that changed role between the policy's two 0.5 meV partition offsets.  It is now
 # two-sided and decides nothing on its own: inside the band the comparison has no preference and
-# cost breaks the tie, outside it the sign does.  The value is unchanged and the persisted
-# ``margin_standard_error_multiple`` still reads 3.0, which the authority schema requires.
-O41_MARGIN_SE_MULTIPLE = 3.0
+# cost breaks the tie, outside it the sign does.
+#
+# The frozen quantity is the TAIL PROBABILITY, not the multiplier.  The band was specified as "3
+# sigma", but the standard error is an eight-block estimate with df = BLOCK_COUNT - 1 = 7, so
+# 3.0 * SE covers materially less than the nominal 3-sigma probability and calls noise decisive:
+# on pure noise ``o41_legacy_decisive`` fired in 4 of 120 seeds while the reported SE varied 12x
+# across seeds.  Deriving the multiplier from the t distribution at the same tail probability
+# restores the intended false-positive rate and stays correct if BLOCK_COUNT changes
+# (df=7 -> 4.5300, df=15 -> 3.5864, df=31 -> 3.2609, -> 3.0 in the normal limit).
+O41_MARGIN_SE_TAIL_PROBABILITY = 0.0026997960632602
+O41_MARGIN_SE_MULTIPLE = float(
+    student_t.ppf(1.0 - O41_MARGIN_SE_TAIL_PROBABILITY / 2.0, BLOCK_COUNT - 1))
 
 OUTCOME_TARGET = "select_target_core"
 OUTCOME_LEGACY = "retain_legacy_control"
@@ -247,7 +260,8 @@ class O41ScoreEvidence:
             # alone, which is the failure this record exists to prevent.  The offset *count* is not
             # pinned to the profile here: the adapter already refuses any compiled partition whose
             # offsets are not exactly the profile's, and off-profile diagnostic callers legitimately
-            # score a single offset.  Every offset carried must agree for a grant either way.
+            # score a single offset.  Agreement between the offsets carried is recorded, not
+            # required: under O43 offsets that disagree are a tie and the tie goes to cost.
             or (self.status == "complete" and not offsets)
             or (self.status == "unavailable" and offsets)
         ):
@@ -407,8 +421,11 @@ def select_o41_authority(value: O41SelectorInput) -> O41SelectorResult:
     blocks = value.score.paired_block_deltas_per_executed_point_nats
     delta, standard_error, lower = _paired_summary(blocks)
     offsets = _offset_selections(value.score.partition_offsets, legacy=legacy, target=target)
-    # An offset that separates nothing (both candidates score exactly zero inside one bin cell)
-    # carries no evidence for the target core, so it selects legacy and blocks the grant.
+    # Each compiled offset resolves a role on its own per-point delta; an offset that separates
+    # nothing (both candidates score exactly zero inside one bin cell) has a delta of 0.0 and so
+    # resolves to legacy.  Disagreement between offsets does not block a grant — it puts the sign
+    # inside the noise, which is a tie, and O43 sends a tie to cost.  The roles are recorded on the
+    # decision as ``partition_offsets_agree`` and ``o41_offset_disagreement``.
     roles = {item.physical_role for item in offsets}
     agree = roles == {ROLE_TARGET}
     flipped = len(roles) > 1

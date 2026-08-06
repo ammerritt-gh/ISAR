@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import math
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -20,6 +21,8 @@ from isar.predictive import (
 )
 from isar.schema.statistics import SemanticsConstructionError, validate_predictive_semantics
 
+
+log = logging.getLogger(__name__)
 
 QOI_EVIDENCE_CONTRACT = "isar.eig_qoi_projection_evidence/o36.2.1"
 OMEGA0_ADAPTER_REVISION = "isar.target_projection_omega0_adapter/3"
@@ -366,9 +369,13 @@ def _validated_semantics(record: Mapping[str, Any]) -> Mapping[str, Any] | None:
         return None
     try:
         validated = validate_predictive_semantics(semantics)
-    except (SemanticsConstructionError, TypeError, ValueError, OverflowError):
+    except (SemanticsConstructionError, TypeError, ValueError, OverflowError) as error:
+        log.warning("statistical semantics rejected for %s: %s",
+                    record.get("schema", "<unknown schema>"), error)
         return None
     if record.get("statistical_semantics_fingerprint") != validated.get("statistical_semantics_fingerprint"):
+        log.warning("statistical semantics fingerprint does not authenticate its payload for %s",
+                    record.get("schema", "<unknown schema>"))
         return None
     return validated
 
@@ -533,6 +540,15 @@ def _particle_codes(predictive: Mapping[str, Any], models: tuple[_QoIModel, ...]
     # A master with no usable mass at all still fails here, exactly as a laplace-only one did.
     if mass["bootstrap"] < PREDICTIVE_MODEL_WEIGHT_FLOOR:
         science.append("predictive_insufficient_bootstrap_mass")
+    # The floor above only asks whether ANY usable mass survives.  The design measure keeps the
+    # bootstrap-grade models alone and renormalises them to 1.0, so a model holding 0.005 of the
+    # production Akaike weight can end up speaking for the whole master.  That retained mass is
+    # already published as ``mass_diagnostics.source_aic_scale.bootstrap_model_mass`` and is
+    # deliberately NOT gated here yet: an observability code would make eligibility
+    # ``unassessable`` (``eligibility.py`` line ~613), which both the design measure and the O41
+    # selector treat as a refusal, so emitting one would switch EIG off for roughly half of all
+    # masters rather than qualify them.  ``MINIMUM_AUTHORITATIVE_DESIGN_MASS`` names the reviewed
+    # bound so a future gate and a fresh census can reference one number; see that constant.
     if mass["basis_unknown"] + mass["dropped_model"] >= PREDICTIVE_MODEL_WEIGHT_FLOOR:
         gaps.append("predictive_material_basis_unknown")
     if mass["retention_unknown"] >= PREDICTIVE_MODEL_WEIGHT_FLOOR:
@@ -551,6 +567,8 @@ def adapt_omega0_target_projection(predictive_artifact: Any, target_projection: 
     try:
         validate_master_predictive_artifact(predictive_artifact)
     except PredictiveArtifactError as error:
+        log.warning("predictive artifact refused by the QoI adapter (%s): %s",
+                    error.reason_code, error.message)
         return _evidence(status="invalid", gaps=("predictive_record_invalid",), predictive=predictive_artifact,
                          projection=target_projection if isinstance(target_projection, Mapping) else None,
                          predictive_validation_reason=error.reason_code)
@@ -627,7 +645,8 @@ def adapt_omega0_target_projection(predictive_artifact: Any, target_projection: 
             science.append("projection_join_mismatch")
     try:
         recomputed_set = target_projection_set_fingerprint(target_projection.get("models"))
-    except (SemanticsConstructionError, TypeError, ValueError):
+    except (SemanticsConstructionError, TypeError, ValueError) as error:
+        log.warning("target projection set fingerprint could not be recomputed: %s", error)
         return _evidence(status="invalid", gaps=("projection_record_invalid",), predictive=predictive_artifact,
                          projection=target_projection, predictive_semantics=predictive_semantics,
                          projection_semantics=projection_semantics, source_scopes=source_scopes)

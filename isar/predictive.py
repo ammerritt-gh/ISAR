@@ -138,6 +138,29 @@ TARGET_QOI = "omega0"
 # ``predictive_basis_fingerprint``, so a basis pruned under one rule can never be scored under
 # another.
 PREDICTIVE_MODEL_WEIGHT_FLOOR = 0.005
+#: The share of the production Akaike weight the design basis should RETAIN before the scan-window
+#: design measure can fairly be said to speak for the master.  **Recorded, not yet enforced.**
+#: Nothing gates on it today: the retained mass is published on every measure as
+#: ``mass_diagnostics.source_aic_scale.bootstrap_model_mass``, and this constant names the reviewed
+#: bound so a future gate and a fresh census reference one number rather than each inventing one.
+#: It is not wired in because an observability code would make eligibility ``unassessable``
+#: (``isar/eig/eligibility.py``), which both the design measure and the O41 selector treat as a
+#: refusal — so a bound routed that way would switch EIG off for roughly half of all masters
+#: instead of qualifying them.  Gating needs a route that degrades without refusing.
+#:
+#: It bounds what is kept, not what is discarded, so mass that is unaccounted for
+#: (``basis_unknown``, pruned models) cannot slip through the gap a discarded-mass ceiling would
+#: leave.  The structures that split an Akaike set
+#: are the ones that add a component, and those move omega0 rather than only the linewidth, so
+#: discarded model mass is discarded omega0 information — not a cosmetic difference.
+#:
+#: 0.5 is a REVIEWED PLACEHOLDER, not an empirical calibration: the Slice 1 census aggregate is
+#: 43.6 % bootstrap / 56.4 % laplace / 0.0 % nested across 234 masters, so 0.5 flags roughly the
+#: worse half.  It cannot be set empirically from that census — 230 of its 234 masters carry
+#: ``projection_predictive_basis_unknown`` and every ``particle_source_masses`` field is 0.0, so it
+#: predates a working projection path and holds no retained-mass distribution.  A fresh census pass
+#: over a working projection path is the follow-up that can replace this number with a measured one.
+MINIMUM_AUTHORITATIVE_DESIGN_MASS = 0.5
 PREDICTIVE_MAX_PRUNED_MASS = 0.01
 PREDICTIVE_MAX_DROPPED_DRAW_MASS = 0.01
 

@@ -3,6 +3,13 @@ from __future__ import annotations
 import math
 
 import pytest
+from scipy.stats import t as student_t
+
+
+def _phi(value: float) -> float:
+    """Standard normal CDF, so the frozen tail probability is checked against its definition."""
+    return 0.5 * (1.0 + math.erf(value / math.sqrt(2.0)))
+
 
 from isar.eig.o41_authority import (
     AUTHORITATIVE_PROFILE_INVALID,
@@ -268,6 +275,30 @@ def test_agreeing_offsets_with_margin_above_the_paired_se_floor_grant_the_target
         OUTCOME_TARGET, ROLE_TARGET, AUTHORITY_GRANTED)
     assert result.reason_codes == ("o41_margin_decisive",)
     assert result.partition_offsets_agree is True
+
+
+def test_the_indistinguishable_band_is_a_t_quantile_not_a_fixed_three_sigma():
+    # The SE is an eight-block estimate with df = 7, so a nominal "3 sigma" band judged with the
+    # normal multiplier calls noise decisive.  The frozen quantity is the tail probability; the
+    # multiplier is derived from it and follows BLOCK_COUNT.
+    from isar.eig.o41_authority import BLOCK_COUNT, O41_MARGIN_SE_TAIL_PROBABILITY
+
+    assert BLOCK_COUNT == 8
+    assert O41_MARGIN_SE_TAIL_PROBABILITY == pytest.approx(2.0 * (1.0 - _phi(3.0)), abs=1e-12)
+    assert O41_MARGIN_SE_MULTIPLE == pytest.approx(4.5300, abs=5e-5)
+    for block_count, expected in ((16, 3.5864), (32, 3.2609)):
+        assert student_t.ppf(1.0 - O41_MARGIN_SE_TAIL_PROBABILITY / 2.0,
+                             block_count - 1) == pytest.approx(expected, abs=5e-5)
+
+    standard_error = 1e-4
+    # A margin that would have been "decisive" at the old fixed 3.0 is a tie inside the t band.
+    result = select_o41_authority(_input(blocks=_blocks(3.5 * standard_error, standard_error)))
+    assert result.reason_codes == ("o41_tie_resolved_by_cost", "o41_margin_below_floor")
+    # The realised band travels on the decision, so a record states what it was judged against.
+    assert result.margin_standard_error_multiple == O41_MARGIN_SE_MULTIPLE
+    assert result.to_dict()["margin_standard_error_multiple"] == O41_MARGIN_SE_MULTIPLE
+    # MARGIN_MULTIPLIER stays descriptive and unchanged.
+    assert result.to_dict()["selection_margin_multiplier"] == 2.0
 
 
 def test_complete_score_evidence_without_per_offset_evidence_is_refused():

@@ -5,6 +5,7 @@ import copy
 import pytest
 
 from isar.eig.o41_authority import (
+    O41_MARGIN_SE_MULTIPLE,
     O41CandidateEvidence,
     O41PartitionOffsetEvidence,
     O41ScoreEvidence,
@@ -138,7 +139,10 @@ def test_authority_decision_persists_offset_evidence_and_stays_compatible():
     with_offsets = _decision(include_offsets=True)
     payload = with_offsets.to_dict()
     assert payload["decision"]["partition_offsets_agree"] is True
-    assert payload["decision"]["margin_standard_error_multiple"] == 3.0
+    # The persisted band is the derived t quantile at df = BLOCK_COUNT - 1, not a fixed 3.0, so a
+    # record states the band its comparison was actually judged against.
+    assert payload["decision"]["margin_standard_error_multiple"] == O41_MARGIN_SE_MULTIPLE
+    assert payload["decision"]["margin_standard_error_multiple"] == pytest.approx(4.5300, abs=5e-5)
     assert [item["physical_role"] for item in
             payload["decision"]["partition_offset_selections"]] == ["target_core", "target_core"]
     assert ScanDesignAuthorityDecision.from_dict(payload) == with_offsets

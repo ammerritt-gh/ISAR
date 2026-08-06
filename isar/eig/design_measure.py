@@ -42,6 +42,17 @@ _SEMANTICS = {
     "inference_paradigm": "frequentist_sampling_distribution",
     "formal_bayesian": False,
     "conditioning": "authenticated_target_qoi_available",
+    # ``MINIMUM_AUTHORITATIVE_DESIGN_MASS`` is deliberately NOT frozen here.  The ADR-014 pattern
+    # applies to a rule that changes what the measure *contains* — ``PREDICTIVE_MODEL_WEIGHT_FLOOR``
+    # prunes models, so a basis pruned under one rule must never be scored under another.  The
+    # representativeness bound prunes nothing: it appends the observability gap
+    # ``predictive_unrepresentative_design_basis`` and leaves every retained model, weight and
+    # scenario identical.  That code already travels in the eligibility envelope this measure folds
+    # into ``design_measure_fingerprint``, so a measure that trips the bound already fingerprints
+    # differently from one that does not — the guarantee holds through the code.  Freezing the
+    # constant as well would move the fingerprint of *every* measure, including those nowhere near
+    # the bound, and since the fingerprint seeds the scorer that reseeds and invalidates scoring
+    # that the rule did not affect.
 }
 _NORMALIZATION_REL_TOL = 1e-12
 _NORMALIZATION_ABS_TOL = 1e-12
@@ -711,6 +722,13 @@ def build_scan_window_design_measure(
         # ``predictive_insufficient_bootstrap_mass``: what disqualifies a master is too little
         # usable mass, not the presence of non-bootstrap models — those are excluded and the
         # remainder renormalised a few lines below.
+        #
+        # ``MINIMUM_AUTHORITATIVE_DESIGN_MASS`` is deliberately NOT a veto here.  It is an
+        # observability gap, so a master whose retained basis is unrepresentative still builds a
+        # measure and still scores; the O41 authority layer decides whether a qualified basis may
+        # steer.  Vetoing it instead would refuse roughly half of all masters (the Slice 1 census
+        # aggregate is 43.6 % bootstrap-grade) and would report an ordinary mixed Akaike set as
+        # ``design_measure_input_mismatch`` — an evidence-integrity fault it is not.
         return _finish(eligibility=eligibility, construction_codes=("design_measure_input_mismatch",))
 
     source_draw_fingerprint = _source_draw_identity_fingerprint(source_draw_records)
