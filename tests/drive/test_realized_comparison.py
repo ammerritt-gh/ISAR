@@ -941,3 +941,123 @@ def test_a_refused_rescore_persists_and_reports_its_own_reason_code(monkeypatch,
     assert any(event["kind"] == "exception"
                and event["payload"].get("action") == "qoi_policy_missing"
                for event in read_log(cfg.log_path))
+
+
+# ------------------------------------- PR #9 R26: neither swallowed exception may go unrecorded
+def test_the_shared_authority_refresh_records_the_failure_that_caused_it(monkeypatch, tmp_path):
+    """A repaired evidence failure still has to leave a cause behind.
+
+    The bounded refresh can turn a tampered or truncated realized-comparison artifact into a clean
+    decision. Without an event here the only trace is ``refresh_count: 1`` on the eventual
+    ``scan_design_authority_decision``, so the operator never learns the artifact on disk was corrupt.
+    """
+    proposal, comparison, _payload = _persist_unavailable_comparison(tmp_path)
+    proposal.scan_design_inventory = replace(
+        proposal.scan_design_inventory,
+        context=replace(proposal.scan_design_inventory.context,
+                        scan_window_eig_mode="authoritative"))
+    proposal.meta["scan_design_inventory_ref"] = _inventory_reference(
+        tmp_path, proposal.scan_design_inventory)
+    loads = {"n": 0}
+
+    def load(*_args):
+        loads["n"] += 1
+        if loads["n"] == 1:
+            raise ValueError("realized-comparison raw-byte address is invalid")
+        return comparison
+
+    class RefusingClient:
+        def validate(self, body):
+            return {"would_queue": False, "blockers": ["test_refusal"],
+                    "requested_points": body.get("n_points", 0), "feasible_points": 0}
+
+    monkeypatch.setattr(loop, "load_scan_design_realized_comparison", load)
+    monkeypatch.setattr(loop, "_refresh_realized_comparison", lambda *_a, **_k: None)
+    exact_config = runpy.run_path(str(
+        Path(__file__).parents[1] / "eig" / "test_o41_authority.py"))["_config"]()
+    cfg = SimpleNamespace(
+        workspace=tmp_path, log_path=tmp_path / "report" / "session_log.jsonl",
+        client=RefusingClient(), sample="sample", sample_background_frozen=None)
+
+    loop._prepare_authoritative_submission(
+        cfg, SimpleNamespace(scan_window_eig=exact_config, steering={}), proposal,
+        {"kind": "neutrons", "amount": 1e9, "spent": 0.0},
+        {"would_queue": True, "requested_points": proposal.n_points,
+         "feasible_points": proposal.n_points},
+        it=3)
+
+    refreshes = [event["payload"] for event in read_log(cfg.log_path)
+                 if event["kind"] == "exception"
+                 and event["payload"]["action"] == "scan_design_authority_refresh"]
+    assert len(refreshes) == 1
+    assert "raw-byte address is invalid" in refreshes[0]["error"]
+    assert refreshes[0]["refresh_count"] == 1
+
+
+def test_a_repaired_pre_submit_authentication_still_records_the_drift(monkeypatch, tmp_path):
+    """Drift between a proposal and its realized comparison AT THE SUBMISSION BOUNDARY is the
+    stale-evidence signal. When the forced refresh repairs it, the first failure is the only record
+    that it ever happened — so it is logged where it is caught, not only when the retry also fails."""
+    proposal, comparison, _payload = _persist_unavailable_comparison(tmp_path)
+    attempts = {"n": 0}
+
+    def authenticate(*_args, **_kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise ValueError("submission identity is inconsistent")
+        return comparison
+
+    monkeypatch.setattr(loop, "authenticate_realized_submission", authenticate)
+    monkeypatch.setattr(loop, "_refresh_realized_comparison", lambda *_a, **_k: None)
+    cfg = SimpleNamespace(workspace=tmp_path, log_path=tmp_path / "report" / "session_log.jsonl")
+
+    loop._authenticate_realized_before_submission(
+        cfg, SimpleNamespace(), proposal, {}, it=4)
+
+    assert attempts["n"] == 2
+    # The repair succeeded, so the EIG claims survive — and the drift is still on the record.
+    assert proposal.meta.get("scan_design_eig_applicability") != "unavailable"
+    events = [event["payload"] for event in read_log(cfg.log_path)
+              if event["kind"] == "exception"]
+    assert [item["action"] for item in events] == [
+        "realized_submission_authentication_refresh"]
+    assert "submission identity is inconsistent" in events[0]["error"]
+
+
+# ------------- PR #9 R27: a malformed grid RETURNED BY TAVI is a mismatch, not missing evidence
+def test_authority_branch_calls_a_malformed_returned_grid_a_mismatch(monkeypatch, tmp_path):
+    """``canonicalize_returned_energies`` must sit outside the evidence-load ``try``.
+
+    Inside it, a non-finite or short grid returned by the INSTRUMENT was reported as
+    ``scan_design_authority_unavailable`` — telling the operator ISAR's evidence was missing when
+    TAVI had actually returned a malformed grid, and hiding the scan from the slice-8 gate, which
+    keys on ``"mismatch"``.
+    """
+    proposal, comparison, payload = _persist_unavailable_comparison(tmp_path)
+    energies = list(comparison.realized_pair.legacy.executed_energies)
+    decision = SimpleNamespace(
+        physical_role="legacy",
+        authority_decision_fingerprint="a" * 64,
+        selected_request={"request_fingerprint": payload["proposal_fingerprint"],
+                          "grid_fingerprint": "g" * 64,
+                          "executed_energies": energies})
+    monkeypatch.setattr(loop, "load_authority_decision", lambda *_a, **_k: decision)
+    payload["scan_design_authority_decision_ref"] = {
+        "kind": "scan_design_authority_decision", "sha256": "a" * 64,
+        "path": f"report/scan-design/{'a' * 64}.json"}
+    payload["scan_design_authority_decision_fingerprint"] = "a" * 64
+    payload["scan_design_authority_selected_role"] = "legacy"
+    cfg = SimpleNamespace(workspace=tmp_path, log_path=tmp_path / "report" / "session_log.jsonl")
+
+    for returned in ([], [float("nan")] * len(energies), [float("inf")] * len(energies)):
+        assert loop._compare_returned_realized_grid(
+            cfg, proposal, payload, {"result": {"scan_values_1": returned}}, it=2) == (
+                "mismatch", "executed_grid_mismatch")
+
+    actions = [event["payload"]["action"] for event in read_log(cfg.log_path)
+               if event["kind"] == "exception"]
+    assert actions == ["executed_grid_mismatch"] * 3
+    assert "scan_design_authority_unavailable" not in actions
+    # An intact grid still matches, so the move did not weaken the comparison.
+    assert loop._compare_returned_realized_grid(
+        cfg, proposal, payload, {"result": {"scan_values_1": energies}}, it=2) == ("matched", None)

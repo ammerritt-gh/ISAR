@@ -2883,6 +2883,18 @@ def _record_action_rejection(cfg, plan, proposal, verdict: str,
     return plan.next_proposal() if plan is not None else None
 
 
+class ScanDesignInvariantViolation(RuntimeError):
+    """A scan-design invariant the controller guarantees was violated.
+
+    Raised where the shadow scorer's fail-open handling deliberately does not apply: an invariant
+    break means the controller is wrong, not that an optional evidence path is unavailable. It is a
+    distinct type so :func:`_next_finalized_proposal` can turn it into a classified controller-fault
+    terminal — a bare ``RuntimeError`` escaped every handler in ``run_campaign`` and aborted the
+    campaign with no ``stop`` event, leaving every consumer (GUI, ``isar status``, resume) seeing a
+    campaign that was still running.
+    """
+
+
 def _score_shadow_proposal(proposal, objective, cfg, *, it: int) -> None:
     """Run diagnostic scan-window scoring after selection and before realization clamps."""
     inventory = getattr(proposal, "scan_design_inventory", None)
@@ -2892,7 +2904,8 @@ def _score_shadow_proposal(proposal, objective, cfg, *, it: int) -> None:
     selected_id = inventory.selected_candidate_id
     selected = inventory.selected_candidate
     if selected.candidate_family != "legacy_uniform/1":
-        raise RuntimeError("shadow scoring requires the legacy control to remain selected")
+        raise ScanDesignInvariantViolation(
+            "shadow scoring requires the legacy control to remain selected")
     operation_id = ":".join((
         "scan-window-shadow",
         str(cfg.run_nonce),
@@ -2935,7 +2948,8 @@ def _score_shadow_proposal(proposal, objective, cfg, *, it: int) -> None:
     scored = proposal.scan_design_inventory
     if (scored.selected_candidate_id != selected_id
             or scored.selected_candidate.candidate_family != "legacy_uniform/1"):
-        raise RuntimeError("shadow scoring changed the legacy scan-design selection")
+        raise ScanDesignInvariantViolation(
+            "shadow scoring changed the legacy scan-design selection")
 
 
 def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
@@ -3000,6 +3014,21 @@ def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
                 "error": str(error), "iter": it})
             budget_error = error
             continue
+        except ScanDesignInvariantViolation as error:
+            # Not a refusal: the next candidate would hit the same broken invariant, so this is a
+            # terminal, not a ``continue``. Classified rather than propagated — an uncaught raise
+            # aborted ``run_campaign`` without any ``stop`` event.
+            _LOG.exception("scan-design invariant violated; terminating as a controller fault")
+            log_event(cfg.log_path, "exception", {
+                "action": "scan_design_invariant_violated", "severity": "high",
+                "error": str(error), "iter": it})
+            return None, StopDecision(
+                "incomplete",
+                [f"controller_fault: scan-design invariant violated ({error}). Checkpoints "
+                 "retained and resume is supported after repair."],
+                evaluate_stop(objective, grid, budget_state,
+                              calibration=cfg.calibration, floor=cfg.floor).per_q,
+                terminal_cause=TERMINAL_CONTROLLER_FAULT)
         if proposal is None:
             # A named resource limit is a better answer than a generic fault, so an instrument or
             # budget terminal established during the sweep outranks the unrealizable-request one.
@@ -3731,6 +3760,16 @@ def _authenticate_realized_before_submission(
         return
     except Exception as error:  # noqa: BLE001 - one forced refresh is the bounded recovery
         first_error = error
+        # Logged unconditionally, not only when the refresh also fails: a proposal that has drifted
+        # from its realized comparison AT THE SUBMISSION BOUNDARY is the stale-evidence signal, and a
+        # successful repair below would otherwise erase every trace of it.
+        _LOG.warning("realized submission authentication failed; forcing one refresh: %s", error)
+        try:
+            log_event(cfg.log_path, "exception", {
+                "action": "realized_submission_authentication_refresh", "severity": "medium",
+                "error": str(error), "iter": it})
+        except Exception:  # noqa: BLE001 - logging failure cannot block the legacy request
+            _LOG.exception("failed to persist the realized-submission reauthentication event")
     _refresh_realized_comparison(
         cfg, objective, proposal, budget_state, it=it,
         legacy_adjustments=("pre_submit_reauthentication",), force=True)
@@ -4117,6 +4156,16 @@ def _prepare_authoritative_submission(
         except Exception as error:  # noqa: BLE001 - one shared refresh, then safe legacy
             if refresh_count == 0:
                 refresh_count = 1
+                # Recorded even though the retry may succeed: without it a corrupt or truncated
+                # realized-comparison artifact leaves no trace but ``refresh_count: 1`` on the
+                # eventual decision event, with nothing naming the cause.
+                _LOG.warning("authoritative selection failed; taking its one shared refresh: %s",
+                             error)
+                log_event(cfg.log_path, "exception", {
+                    "action": "scan_design_authority_refresh", "severity": "medium",
+                    "error": str(error), "iter": it,
+                    "refresh_count": refresh_count, "selector_calls": selector_calls,
+                })
                 _restore_proposal(proposal, legacy_snapshot)
                 _refresh_realized_comparison(
                     cfg, objective, proposal, budget_state, it=it,
@@ -4214,11 +4263,6 @@ def _compare_returned_realized_grid(
                     or submission_payload.get("proposal_fingerprint")
                     != request["request_fingerprint"]):
                 raise ValueError("authority-decision submission identity is inconsistent")
-            expected = TAVI_GRID_ADAPTER.canonicalize_returned_energies(
-                request["executed_energies"])
-            result = document.get("result") if isinstance(document, Mapping) else None
-            returned = TAVI_GRID_ADAPTER.canonicalize_returned_energies(
-                result.get("scan_values_1") if isinstance(result, Mapping) else None)
         except Exception as error:  # noqa: BLE001 - analysis continues after evidence loss
             _LOG.exception("authority evidence is unavailable for returned-grid comparison")
             log_event(cfg.log_path, "exception", {
@@ -4227,11 +4271,27 @@ def _compare_returned_realized_grid(
                 "authority_decision_ref": authority_ref,
             })
             return "unavailable", "scan_design_authority_unavailable"
+        # Canonicalization sits OUTSIDE the evidence-load try, mirroring the non-authority branch
+        # below: a malformed grid returned by the INSTRUMENT is a grid mismatch, not missing ISAR
+        # evidence, and reporting it as "unavailable" both misdirects the operator and hides the
+        # scan from the slice-8 gate, which keys on "mismatch".
+        result = document.get("result") if isinstance(document, Mapping) else None
+        returned_raw = result.get("scan_values_1") if isinstance(result, Mapping) else None
+        try:
+            expected = TAVI_GRID_ADAPTER.canonicalize_returned_energies(
+                request["executed_energies"])
+            returned = TAVI_GRID_ADAPTER.canonicalize_returned_energies(returned_raw)
+        except (TypeError, ValueError) as error:
+            expected = tuple(request["executed_energies"] or ())
+            returned = ()
+            reason = str(error)
+        else:
+            reason = "executed grid differs from the authority-selected request"
         if returned != expected:
             log_event(cfg.log_path, "exception", {
                 "action": "executed_grid_mismatch", "severity": "high",
                 "job_id": submission_payload.get("job_id"),
-                "reason": "executed grid differs from the authority-selected request",
+                "reason": reason,
                 "expected_energies": list(expected), "returned_energies": list(returned),
                 "authority_decision_ref": authority_ref,
                 "authority_decision_fingerprint": decision.authority_decision_fingerprint,
@@ -5906,6 +5966,24 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                             "acquisition_id": proposal.acquisition_id, "iter": it,
                             **transition,
                         })
+
+                    # Re-check the analysis clock here, not only before planning: planning itself is
+                    # charged (predictive + shadow + realized scoring), and ``analysis_operation``
+                    # only raises when a NEW operation starts over the limit, so an overrun inside a
+                    # started operation reaches this point silently. Without this, a campaign 30 s
+                    # under the limit at the pre-planning check can submit a full batch of scans and
+                    # their full-tier fits past the declared analysis budget.
+                    analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
+                    if (objective.analysis_limit_seconds is not None
+                            and analysis_spent >= float(objective.analysis_limit_seconds)):
+                        decision = StopDecision(
+                            "incomplete",
+                            [f"analysis limit exhausted ({analysis_spent:.1f}/"
+                             f"{float(objective.analysis_limit_seconds):.1f}s) before measurement submission"],
+                            evaluate_stop(objective, grid, budget_state,
+                                          calibration=cfg.calibration, floor=cfg.floor).per_q)
+                        stop_campaign = True
+                        break
 
                     b_act = exc.handle_budget(budget_state)
                     if b_act is not None:

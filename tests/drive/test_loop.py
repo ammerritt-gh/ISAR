@@ -4543,3 +4543,102 @@ def test_a_shadow_only_acquisition_record_carries_no_authority_keys(tmp_path):
                       tmp_path / "card.state.json").state.acquisition_provenance[-1]
     assert entry["scan_design_authority_decision_ref"] is None
     assert entry["scan_design_authority_selected_request_fingerprint"] is None
+
+
+# ------------------------------------------------------------- PR #9 R24: the pre-submission gate
+def test_analysis_overrun_during_planning_stops_before_any_measurement_is_submitted(
+        tmp_path, monkeypatch):
+    """The declared analysis budget must be re-checked between planning and submit.
+
+    Planning is itself charged (predictive + shadow + realized scoring) and ``analysis_operation``
+    only raises when a NEW operation starts over the limit, so an overrun that happens *inside* a
+    started operation reaches the submit boundary silently. With only the pre-planning check, a
+    campaign that is under the limit at the top of the iteration submits a full batch of scans and
+    their full-tier fits past the budget it declared.
+    """
+    _no_subprocess(monkeypatch)
+    omega = lambda h: (h - 2.0) * 2.0
+    burned = {"yes": False}
+    real_clock = loop_mod.analysis_clock_state
+    real_plan = loop_mod.plan_actions
+
+    def burning_plan(*args, **kwargs):
+        plan = real_plan(*args, **kwargs)
+        burned["yes"] = True          # planning consumed the remaining allowance
+        return plan
+
+    def clock(log_path, *args, **kwargs):
+        state = dict(real_clock(log_path, *args, **kwargs))
+        if burned["yes"]:
+            state["spent_seconds"] = 9_999.0
+        return state
+
+    monkeypatch.setattr(loop_mod, "plan_actions", burning_plan)
+    monkeypatch.setattr(loop_mod, "analysis_clock_state", clock)
+
+    summary, _ws = _run(tmp_path, _objective(), MockTavi(omega),
+                        make_mock_runner(omega, hesse_only=True))
+
+    events = read_log(summary["session_log"])
+    # The load-bearing claim: no measurement was submitted past the declared analysis budget.
+    assert not any(event["kind"] == "run" for event in events)
+    assert summary["stop"]["state"] == "incomplete"
+    assert any("before measurement submission" in reason
+               for reason in summary["stop"]["reasons"]), summary["stop"]["reasons"]
+    assert [event for event in events if event["kind"] == "stop"]
+
+
+# ------------------------------------------- PR #9 R27: an invariant violation is a named terminal
+def test_scan_design_invariant_violation_is_a_classified_controller_fault(tmp_path, monkeypatch):
+    """A broken scan-design invariant is a controller fault, not a refusal to retry.
+
+    ``_score_shadow_proposal`` raises when the legacy control is no longer the selected candidate.
+    A bare ``RuntimeError`` escaped every handler in ``run_campaign``, so the terminal was an
+    uncaught exception with no classification and no reason for the operator.
+    """
+    monkeypatch.setattr(
+        loop_mod, "_score_shadow_proposal",
+        lambda *a, **k: (_ for _ in ()).throw(
+            loop_mod.ScanDesignInvariantViolation("legacy control was replaced")))
+    monkeypatch.setattr(loop_mod, "evaluate_stop",
+                        lambda *a, **k: StopDecision("continue", [], [{"hkl": [2.1, 0.0, 0.0]}]))
+    plan = _FakePlan([_fake_proposal("only")])
+
+    proposal, terminal = loop_mod._next_finalized_proposal(
+        plan, types.SimpleNamespace(), _helper_cfg(tmp_path), [],
+        {"kind": "neutrons", "amount": 1_000_000.0, "spent": 0.0}, {}, it=0)
+
+    assert proposal is None
+    assert terminal is not None and terminal.state == "incomplete"
+    assert terminal.terminal_cause == loop_mod.TERMINAL_CONTROLLER_FAULT
+    assert "legacy control was replaced" in terminal.reasons[0]
+    faults = [event["payload"] for event in read_log(_helper_cfg(tmp_path).log_path)
+              if event["kind"] == "exception"]
+    assert faults[-1]["action"] == "scan_design_invariant_violated"
+    assert faults[-1]["severity"] == "high"
+
+
+def test_scan_design_invariant_violation_still_writes_a_terminal_stop_event(tmp_path, monkeypatch):
+    """The defect this covers is the ABSENCE of a ``stop`` event.
+
+    An uncaught raise skipped every terminal path — ``run_campaign``'s only ``finally`` closes the
+    runner — so the session log ended with no ``stop`` and the GUI, ``isar status`` and resume all
+    saw a campaign that was still running.
+    """
+    _no_subprocess(monkeypatch)
+    omega = lambda h: (h - 2.0) * 2.0
+    monkeypatch.setattr(
+        loop_mod, "_score_shadow_proposal",
+        lambda *a, **k: (_ for _ in ()).throw(
+            loop_mod.ScanDesignInvariantViolation("legacy control was replaced")))
+
+    summary, _ws = _run(tmp_path, _objective(), MockTavi(omega),
+                        make_mock_runner(omega, hesse_only=True))
+
+    events = read_log(summary["session_log"])
+    stops = [event for event in events if event["kind"] == "stop"]
+    assert len(stops) == 1 and events[-1]["kind"] == "stop"
+    assert stops[0]["payload"]["state"] == "incomplete"
+    assert stops[0]["payload"]["terminal_cause"] == loop_mod.TERMINAL_CONTROLLER_FAULT
+    assert stops[0]["payload"]["resume_supported"] is True
+    assert summary["stop"]["state"] == "incomplete"
