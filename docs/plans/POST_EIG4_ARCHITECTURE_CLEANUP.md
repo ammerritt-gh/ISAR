@@ -4,7 +4,7 @@
 > **Provenance:** hand-written
 > **Verified against production anchor:** `b9ae4907a9aa3dc0afc356bc6235b957dc2d9d03` (2026-08-06)
 > **Owner:** @ammerritt-gh
-> **Status:** P2.0 and P2.1 landed; P2.2–P2.8 not started.
+> **Status:** P2.0–P2.2 landed; P2.3–P2.8 not started.
 > **Exit criteria:** the Pass-2 exit criteria at the end of this document are met and verified;
 > accepted ownership boundaries are folded into `DESIGN.md` and `AGENTS.md`; this execution plan
 > is then deleted and tombstoned in `docs/DOC_INVENTORY.md`.
@@ -159,7 +159,8 @@ gate, never renewed.
 | Slice | Commit | Notes |
 |---|---|---|
 | P2.0 | `c6d1625` | Baseline, ownership map, active plan |
-| P2.1 | (this commit) | Lineshapes/backends/estimators under `analyze`; `phonon.py` seeded; `_ff.py` shim deleted; `lmfit` → `[test]` extra. Included repair: the held-out verifier hashed the *live* `stat2b/campaign.py` as the historical evaluator (a selection-critical live file, contra S10); its frozen source is now preserved as evidence at `tools/stats/stat2b1-heldout-evaluator.frozen` (extracted at `b9ae490`, same frozen SHA256) and authenticated there |
+| P2.1 | `648d738` | Lineshapes/backends/estimators under `analyze`; `phonon.py` seeded; `_ff.py` shim deleted; `lmfit` → `[test]` extra. Included repair: the held-out verifier hashed the *live* `stat2b/campaign.py` as the historical evaluator (a selection-critical live file, contra S10); its frozen source is now preserved as evidence at `tools/stats/stat2b1-heldout-evaluator.frozen` (extracted at `b9ae490`, same frozen SHA256) and authenticated there |
+| P2.2 | (this commit) | One action identity: `MeasurementIntent` + `scientific_fingerprint` consolidated into `schema/action_identity.py`; inventory re-exports; frozen digest vectors (incl. a historical fixture payload) captured pre-consolidation and unchanged after |
 
 Deferred findings (things noticed but out of scope for the slice that noticed them):
 
@@ -175,6 +176,10 @@ Deferred findings (things noticed but out of scope for the slice that noticed th
   a covariance supplied; `isar/analyze/backends.py` `lmfit_minimize` accepts finite-but-non-PSD
   covariance where the scipy path requires positive eigenvalues. Candidates for P2.7 when the
   phonon module is worked anyway.
+- Pre-existing, carried through P2.2 unchanged: `canonical_hkl` / the energy fields coerce
+  numeric strings via bare `float()`, so `["2","0","0"]` and `"1.25"` are accepted at the
+  persisted-artifact trust boundary. Tightening would move digests — only ever do it behind a
+  named milestone, never as cleanup.
 - `isar/synth_format/run_builder.py` imports `isar.synth.{config,generate,noise}` and is
   reachable from `isar/reduce/adjudicate_eyeball.py` — correct ownership (synth_format emits
   synthetic data), but the "no production import of `isar.synth`" criterion holds only with

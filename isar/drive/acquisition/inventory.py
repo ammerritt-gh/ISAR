@@ -25,13 +25,20 @@ out, or lacked required context makes the inventory incomplete, and an incomplet
 from __future__ import annotations
 
 import hashlib
-import json
 import math
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 
-from isar.schema.steering import CANONICAL_MASTER, EVIDENCE_SINKS
+# Scientific action identity lives in the schema, which owns the value type and the one
+# implementation of its fingerprint; these names are re-exported here so drive-internal callers keep
+# importing them from the inventory that publishes them.
+from isar.schema.action_identity import (  # noqa: F401  (re-exported for drive-internal callers)
+    MeasurementIntent,
+    canonical_hkl,
+    canonical_json,
+    scientific_fingerprint,
+    scientific_fingerprint_from_mapping,
+)
 
 
 class ActionEligibility(str, Enum):
@@ -110,16 +117,6 @@ def _finite(value: float | None) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def canonical_json(value) -> str:
-    """Deterministic JSON for content addressing — strict on purpose.
-
-    ``allow_nan=False`` because NaN/Infinity are not JSON and would make the artifact unreadable by a
-    conforming parser, and no ``default=`` coercion so an unserializable value raises instead of
-    silently becoming a ``str`` whose text (and therefore the content address) is not stable.
-    """
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
-
-
 def json_number(value):
     """Return a strict-JSON representation of one number without losing non-finite provenance.
 
@@ -153,48 +150,6 @@ def registry_fingerprint(registry: tuple[GeneratorSpec, ...] = GENERATOR_REGISTR
 GENERATOR_REGISTRY_VERSION = registry_fingerprint()
 
 
-def canonical_hkl(hkl) -> tuple[float, float, float]:
-    """Canonical scientific Q identity shared by action and EIG policy.
-
-    Fingerprints have always used nine decimal places.  Giving that rule one
-    named implementation prevents a nearby-but-not-identical tolerance from
-    becoming a second scientific identity rule in a later consumer.
-    """
-    if not isinstance(hkl, (list, tuple)) or len(hkl) != 3:
-        raise ValueError("HKL must contain exactly three values")
-    values = tuple(float(value) for value in hkl)
-    if not all(math.isfinite(value) for value in values):
-        raise ValueError("HKL values must be finite")
-    # ``+ 0.0`` collapses ``-0.0`` onto ``0.0``: reduced-zone arithmetic yields negative zero for a
-    # zone-centre component, and ``json.dumps`` writes it as ``-0.0``, which would mint a second
-    # fingerprint for the same scientific Q and escape dedup.
-    return tuple(round(value, 9) + 0.0 for value in values)
-
-
-def scientific_fingerprint(intent: "MeasurementIntent") -> str:
-    """Stable hash of the *scientific question* an intent resolves — its dedup / anti-repeat id.
-
-    Deliberately excludes anything about the exact emitted request (window step, ncount, feasibility):
-    two intents that ask the same scientific question with different executable realizations share one
-    fingerprint and must not both occupy the inventory.
-    """
-    payload = canonical_json([
-        intent.action_class,
-        list(canonical_hkl(intent.hkl)),
-        # ``+ 0.0``: see :func:`canonical_hkl` — a negative-zero bound must not fork identity.
-        None if intent.energy_lo is None else round(float(intent.energy_lo), 6) + 0.0,
-        None if intent.energy_hi is None else round(float(intent.energy_hi), 6) + 0.0,
-        intent.window_family,
-        intent.target_branch_role,
-        intent.rival_branch_role,
-        intent.evidence_basis_fingerprint,
-        intent.hypotheses_fingerprint,
-        intent.campaign_slice_fingerprint,
-        intent.evidence_sink,
-    ])
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
 @dataclass(frozen=True)
 class CampaignSliceKey:
     """Which ``(sample, temperature bin)`` slice of belief evidence an action belongs to.
@@ -225,105 +180,6 @@ class CampaignSliceKey:
         ])
         return "isar.campaign-slice/1:" + hashlib.sha256(
             payload.encode("utf-8")).hexdigest()[:16]
-
-
-@dataclass(frozen=True)
-class MeasurementIntent:
-    """The scientific question an action resolves, independent of any exact emitted request."""
-
-    action_class: str
-    hkl: tuple[float, float, float]
-    energy_lo: float | None
-    energy_hi: float | None
-    window_family: str
-    target_branch_role: str | None = None
-    rival_branch_role: str | None = None
-    evidence_basis_fingerprint: str | None = None
-    hypotheses_fingerprint: str | None = None
-    campaign_slice_fingerprint: str | None = None
-    # Where this action's evidence may go (isar.schema.steering.EVIDENCE_SINKS). Part of the scientific
-    # identity, not a delivery detail: the same window at the same q routed to a different sink is
-    # answered against different evidence and updates a different posterior, so the two are genuinely
-    # different actions and must not dedupe onto one another.
-    evidence_sink: str = CANONICAL_MASTER
-    # The energy this action is *about*, when that is not the midpoint of its window. A rival probe's
-    # bounds are clamped into the identity domain, so a domain that clips one side moves the midpoint
-    # off the predicted rival; realization must resolve the instrument resolution and persist the
-    # acquisition target at the prediction, not at the midpoint of what survived the clamp.
-    #
-    # Deliberately EXCLUDED from ``scientific_fingerprint``: ``energy_lo``/``energy_hi`` already carry
-    # the scientific window, and folding the centre in would re-mint every fingerprint ever computed,
-    # invalidating the frozen replay artifacts for no gain in what the identity distinguishes.
-    window_center_meV: float | None = None
-
-    def __post_init__(self) -> None:
-        if self.evidence_sink not in EVIDENCE_SINKS:
-            raise ValueError(f"unknown evidence_sink {self.evidence_sink!r}; "
-                             f"expected one of {EVIDENCE_SINKS}")
-
-    @property
-    def scientific_action_fingerprint(self) -> str:
-        return scientific_fingerprint(self)
-
-
-def scientific_fingerprint_from_mapping(payload: Mapping[str, object]) -> str:
-    """Reconstruct and authenticate a persisted :class:`MeasurementIntent`.
-
-    Inventory consumers must never hash a convenient subset of an intent map.
-    Rebuilding the value type keeps the persisted action identity subject to the
-    same Q, finite-number, and evidence-sink rules as a live proposal.
-    """
-    if not isinstance(payload, Mapping):
-        raise ValueError("measurement intent must be a mapping")
-
-    def required_text(name: str) -> str:
-        if name not in payload:
-            raise ValueError(f"measurement intent is missing {name!r}")
-        value = payload.get(name)
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"measurement intent {name!r} must be a non-empty string")
-        return value
-
-    def optional_text(name: str) -> str | None:
-        if name not in payload:
-            raise ValueError(f"measurement intent is missing {name!r}")
-        value = payload.get(name)
-        if value is not None and not isinstance(value, str):
-            raise ValueError(f"measurement intent {name!r} must be a string or null")
-        return value
-
-    def optional_number(name: str) -> float | None:
-        if name not in payload:
-            raise ValueError(f"measurement intent is missing {name!r}")
-        value = payload.get(name)
-        if value is None:
-            return None
-        if isinstance(value, bool):
-            raise ValueError(f"measurement intent {name!r} must be a finite number or null")
-        try:
-            number = float(value)
-        except (TypeError, ValueError) as error:
-            raise ValueError(f"measurement intent {name!r} must be a finite number or null") from error
-        if not math.isfinite(number):
-            raise ValueError(f"measurement intent {name!r} must be a finite number or null")
-        return number
-
-    intent = MeasurementIntent(
-        action_class=required_text("action_class"),
-        hkl=canonical_hkl(payload.get("hkl")),
-        energy_lo=optional_number("energy_lo"),
-        energy_hi=optional_number("energy_hi"),
-        window_family=required_text("window_family"),
-        target_branch_role=optional_text("target_branch_role"),
-        rival_branch_role=optional_text("rival_branch_role"),
-        evidence_basis_fingerprint=optional_text("evidence_basis_fingerprint"),
-        hypotheses_fingerprint=optional_text("hypotheses_fingerprint"),
-        campaign_slice_fingerprint=optional_text("campaign_slice_fingerprint"),
-        evidence_sink=required_text("evidence_sink"),
-        window_center_meV=(optional_number("window_center_meV")
-                           if "window_center_meV" in payload else None),
-    )
-    return scientific_fingerprint(intent)
 
 
 @dataclass(frozen=True)
