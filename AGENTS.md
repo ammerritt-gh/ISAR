@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for contributor rules and area routing
 > **Provenance:** hand-written
-> **Verified against code revision:** `9914eb7` (2026-07-26)
+> **Verified against code revision:** `24ff041` (2026-08-06)
 
 Automated **triage** pipeline for inelastic scattering (IXS + triple-axis): during a beamtime it
 parses incoming scans, QCs and calibrates them, fits DHO ⊗ resolution models with physics-gated
@@ -167,23 +167,13 @@ contract changes are additive only (DESIGN §4).
      "rerun the world."
 4. **Status discipline:** DESIGN §15 marks every capability Implemented / Partial / Planned. Do not
    describe Planned work in the implemented voice, and match that table when you change status.
-5. **STAT-2b history is immutable:** never refresh the completed held-out gate or aggregate to match
-   current production. Authenticate the aggregate's raw bytes and reproduce its complete semantic
-   fingerprint; maintain current production closure in the separate candidate/active cycle governed
-   by S9. Bootstrap uses history only when no active closure exists; renewal authenticates and keeps
-   the active file in force while writing a candidate against its source and graph identities.
-6. **Close protected drift before merge:** a protected-semantic mismatch requires selection or
-   evidence-contract review with proportionate proof; protected-adjacent drift requires bounded
-   source review and focused parity. A branch may be temporarily red while the boundary is updated,
-   but the mismatch must be closed before its statistical slice or containing PR merges.
-7. **No automatic source-closure approval:** passing tests and verification establish eligibility
-   for review, never owner approval. Promotion requires an explicit owner decision and a separate
-   minimal commit that changes no protected production source. The active manifest must bind the
-   exact preceding candidate commit, candidate bytes, and immutable review bytes; Git-backed
-   verification proves all three.
-8. **The whole driver is selection-critical:** protect all of `isar/session/driver.py`. Even a
-   harmless change needs source review and focused parity until authority-seam extraction lands as a
-   separately reviewed refactor.
+5. **Evidence is frozen once, at milestones, and never renewed (S10).** A completed formal gate
+   (the STAT-2b.1 held-out campaign) is authenticated at its frozen commit, inputs, and
+   interpretation — never refreshed to match current source. New formal freezes happen only when
+   the owner names a milestone (selection-criterion change, new acquisition authority,
+   real-instrument deployment, publication-grade claim): designed before the run, executed once,
+   kept at their commit. Everything else is ordinary development — normal review plus behavior
+   tests; no drift closure, no promotion commits, and no permanently "selection-critical" files.
 
 ## Documentation policy (what a document is allowed to be)
 
@@ -244,4 +234,4 @@ review item.
 
 ---
 
-*Last updated: 2026-07-26. Canonical file is `AGENTS.md`; `CLAUDE.md` is the `@AGENTS.md` stub.*
+*Last updated: 2026-08-06. Canonical file is `AGENTS.md`; `CLAUDE.md` is the `@AGENTS.md` stub.*
