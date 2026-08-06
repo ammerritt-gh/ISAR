@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from numbers import Integral, Real
 from typing import Any
 
+
+logger = logging.getLogger(__name__)
 
 FIT_SELECTION_SCHEMA = "isar.fit_selection_semantics/1"
 INTERVAL_SCHEMA = "isar.interval_semantics/1"
@@ -1020,8 +1023,17 @@ def _validate_shadow_model_selection(record: Mapping[str, Any]) -> None:
         )
     else:
         expected_weight_records = []
-    if standard_weights != expected_weight_records:
+    if len(standard_weights) != len(expected_weight_records):
         raise SemanticsConstructionError("shadow_selection_weight_mismatch")
+    for actual, expected in zip(standard_weights, expected_weight_records):
+        if (
+            not isinstance(actual, Mapping)
+            or set(actual) != set(expected)
+            or actual["label"] != expected["label"]
+            or actual["model_identity"] != expected["model_identity"]
+            or not _same_number(actual["weight"], expected["weight"])
+        ):
+            raise SemanticsConstructionError("shadow_selection_weight_mismatch")
 
     expected_changed = (
         None
@@ -1215,7 +1227,13 @@ def read_optional(record: Any, expected_schema: str) -> dict[str, Any] | None:
             SHADOW_MODEL_SELECTION_SCHEMA: validate_shadow_model_selection,
         }
         return validators[expected_schema](record)
-    except (SemanticsConstructionError, KeyError, TypeError, ValueError, OverflowError):
+    except (SemanticsConstructionError, KeyError, TypeError, ValueError, OverflowError) as exc:
+        logger.warning(
+            "Rejected %s record as unreadable: %s: %s",
+            expected_schema,
+            type(exc).__name__,
+            exc,
+        )
         return None
 
 
