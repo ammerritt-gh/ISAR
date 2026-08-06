@@ -4,7 +4,7 @@
 > **Provenance:** hand-written
 > **Verified against production anchor:** `b9ae4907a9aa3dc0afc356bc6235b957dc2d9d03` (2026-08-06)
 > **Owner:** @ammerritt-gh
-> **Status:** P2.0–P2.5 landed; P2.6–P2.8 not started.
+> **Status:** P2.0–P2.6a landed; P2.6b–P2.8 not started.
 > **Exit criteria:** the Pass-2 exit criteria at the end of this document are met and verified;
 > accepted ownership boundaries are folded into `DESIGN.md` and `AGENTS.md`; this execution plan
 > is then deleted and tombstoned in `docs/DOC_INVENTORY.md`.
@@ -163,7 +163,8 @@ gate, never renewed.
 | P2.2 | `19f8613` | One action identity: `MeasurementIntent` + `scientific_fingerprint` consolidated into `schema/action_identity.py`; inventory re-exports; frozen digest vectors (incl. a historical fixture payload) captured pre-consolidation and unchanged after |
 | P2.3 | `8fc8057` | TAVI wire knowledge (validate/scan bodies, limit discovery, feasibility interpretation, run selection) out of `drive/loop.py` into `drive/instrument/request_realization.py`; `FeasibilityDecision` seam replaces the inlined trim branching; loop keeps EIG refresh, budget, session-log side effects |
 | P2.4 | `704ddb0` | EIG runtime adaptation (shadow scoring, realized comparison, authority preparation, pre-submit authentication, submission-metadata assembly) out of `loop.py` into `drive/acquisition/eig_runtime.py`; loop passes `finalizer=_finalize_proposal` explicitly (no cycle). Scope notes: no frozen input record (existing signatures suffice); exact-source session-log joins (`_exact_pooled_master_sources`/`_read_master_rows`) stay in loop pending the P2.5 `isar_io` seam — partial delivery of the ownership-map row |
-| P2.5 | (this commit) | `refresh_analysis(...)` on `isar_io/runner.py` owns runner-signature inspection, kwarg assembly, and the completion decision; the three `runner.run` sites become explicit seam calls; P2.4-deferred readers land in `readers.py` (`read_run_timings`, `exact_pooled_master_sources`, `read_master_rows` with injected row-interpretation functions). Documented exception: one `runner_accepts` survives at the predictive-promotion degrade site (loop.py:1147) — it changes pre-run logging/targeting, not kwargs; replacing it with a declared `supports_targeted_masters` runner attribute is deferred |
+| P2.5 | `8a1e4ea` | `refresh_analysis(...)` on `isar_io/runner.py` owns runner-signature inspection, kwarg assembly, and the completion decision; the three `runner.run` sites become explicit seam calls; P2.4-deferred readers land in `readers.py` (`read_run_timings`, `exact_pooled_master_sources`, `read_master_rows` with injected row-interpretation functions). Documented exception: one `runner_accepts` survives at the predictive-promotion degrade site (loop.py:1147) — it changes pre-run logging/targeting, not kwargs; replacing it with a declared `supports_targeted_masters` runner attribute is deferred |
+| P2.6a | (this commit) | `FitOutcome` + `to_dict` + tolerant reader (`_coerce_fit_outcome`) + `_CSV_COLUMNS` + `_write_results_csv` and projection helpers moved to `session/outcome.py` (stdlib+schema imports only, purity-probed); driver imports the DTO; ledger-drift warning logger renamed to `isar.session.outcome` |
 
 Deferred findings (things noticed but out of scope for the slice that noticed them):
 

@@ -6,7 +6,7 @@ them with the stdlib only and never import ISAR internals:
 - :func:`read_results_csv` — ``report/results.csv`` (one row per scan×detector). Numeric columns the
   acquisition engine and stopping criterion need (``omega0``, ``interval_lo``/``interval_hi``,
   ``confidence``, ``omega0_err``, the Q components) are coerced to floats; everything else stays a
-  string. The columns are ISAR's ``driver._CSV_COLUMNS``.
+  string. The columns are ISAR's ``session.outcome._CSV_COLUMNS``.
 - :func:`read_report_json` — ``report/report.json`` (a light run summary, cheap to poll for progress).
 - :func:`read_card_state` — ``card.state.json`` (the accumulated ``dispersion_prior`` +
   ``resolution_versions``; the running physics model the ω(q) model mirrors).

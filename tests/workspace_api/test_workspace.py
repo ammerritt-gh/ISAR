@@ -328,7 +328,7 @@ def test_atomic_evaluation_lookup_never_falls_back_to_another_experiment(make_ws
 
 def test_results_writer_keeps_identity_for_no_detector_rows(tmp_path):
     """Held/non-result rows retain their additive identity even when no detector fit exists."""
-    from isar.session.driver import _write_results_csv
+    from isar.session.outcome import _write_results_csv
     from isar.session.state import ScanEntry, SessionState
     from isar.session.workspace import Workspace as SessionWorkspace
 
