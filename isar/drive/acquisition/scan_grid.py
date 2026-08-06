@@ -104,7 +104,8 @@ class UniformGrid:
                        sigma_multiple: float = 2.0) -> int | None:
         """Grid points inside ``mean ± sigma_multiple·sigma``; ``None`` without a declared band.
 
-        Mirrors the loop's target-support rule (:func:`isar.drive.loop._target_supporting_feasible_points`)
+        Mirrors the validation-time target-support rule
+        (:func:`isar.drive.instrument.request_realization._target_supporting_feasible_points`)
         at design time, where no feasibility manifest exists yet.  Counted over the *executed*
         energies: support the instrument will not actually measure is not support.
         """

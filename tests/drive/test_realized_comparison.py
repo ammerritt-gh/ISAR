@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from isar.drive import loop
+from isar.drive.instrument import request_realization as wire
 from isar.drive.acquisition.acquire import ScanProposal
 from isar.drive.acquisition.authority import (
     _partition_offset_evidence,
@@ -325,7 +326,7 @@ def test_changed_legacy_request_rescores_the_complete_equal_exposure_pair(
         proposal.ncount -= 1
     else:
         proposal.e_step *= 2.0
-        proposal.n_points = loop._emitted_point_count(
+        proposal.n_points = wire._emitted_point_count(
             proposal.e_lo, proposal.e_hi, proposal.e_step)
 
     def finalize(target, *_args, **_kwargs):
@@ -400,7 +401,7 @@ def test_a_partially_infeasible_target_core_is_refused_and_legacy_is_submitted(
             scan_window_eig_mode="authoritative"))
     proposal.meta["scan_design_inventory_ref"] = _inventory_reference(
         tmp_path, proposal.scan_design_inventory)
-    legacy_command = loop._validate_body(
+    legacy_command = wire._validate_body(
         proposal, sample="sample", background=None)["parameters"]["scan_command1"]
     roles = []
 
@@ -515,7 +516,7 @@ def test_pre_submit_authentication_is_exact_and_strips_corrupt_claims_once(
         monkeypatch, tmp_path):
     proposal, comparison, _payload = _persist_unavailable_comparison(tmp_path)
     assert authenticate_realized_submission(proposal, tmp_path) == comparison
-    body_before = loop._scan_body(
+    body_before = wire._scan_body(
         proposal, "mock", 7, sample="Al_phonon_DFT", background=None)
     sidecar = tmp_path / proposal.meta["scan_design_realized_comparison_ref"]["path"]
     sidecar.write_bytes(sidecar.read_bytes() + b" ")
@@ -533,7 +534,7 @@ def test_pre_submit_authentication_is_exact_and_strips_corrupt_claims_once(
     assert proposal.meta["scan_design_eig_applicability"] == "unavailable"
     assert not any(proposal.meta.get(field) is not None
                    for field in loop._REALIZED_SUBMISSION_FIELDS)
-    assert loop._scan_body(
+    assert wire._scan_body(
         proposal, "mock", 7, sample="Al_phonon_DFT", background=None) == body_before
     failure = [event for event in read_log(cfg.log_path)
                if event["kind"] == "exception"][-1]

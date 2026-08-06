@@ -92,6 +92,23 @@ from isar.drive.acquisition.inventory import (
     ValidatedAttempt, canonical_json)
 from isar.drive.acquisition.calibration import Calibration, load_calibration
 from isar.drive.instrument.tavi_client import TaviClient, TaviError
+from isar.drive.instrument.request_realization import (
+    DEFAULT_MAX_POINTS,
+    _emitted_point_count,
+    _executed_point_count,
+    _feasibility_manifest_fingerprint,
+    _feasible_point_count,
+    _is_feasibility_shaped_refusal,
+    _preflight_instrument_limits,
+    _scan_body,
+    _target_supporting_feasible_points,
+    _validate_body,
+    finalized_proposal,
+    plan_feasibility_response,
+    requested_point_count,
+    validated_attempt,
+    validation_event_fields,
+)
 from isar.drive.isar_io.readers import read_card_state, read_results_csv
 from isar.drive.isar_io.runner import SubprocessRunner, as_runner
 from isar.drive.isar_io.runner import init_isar as _default_init_isar
@@ -134,26 +151,6 @@ DEFAULT_WAIT_TIMEOUT = 600.0
 # by a controller that is not making progress; hitting it is classified as a controller fault, which
 # is unattended-safe — checkpoints are retained and the campaign resumes after repair.
 _ABSOLUTE_ITERATION_CEILING = 10_000
-# The instrument point-count ceiling (TAVI enforces max_points=200 on a scan command). An over-limit
-# scan latches TAVI's validator state and blocks all later API calls until restart (see
-# docs/campaigns/2026-07_MVP_ZONE_RETEST.md), so ISAR must never submit/validate one. Used only as the
-# fallback when the live limit cannot be read from the instrument once per campaign.
-DEFAULT_MAX_POINTS = 200
-# Smallest energy window a feasibility trim is allowed to produce. A one-point window is a degenerate
-# window (``isar/drive/acquisition/physical_windows.py`` rejects it as ``degenerate_window``), and the
-# instrument itself refuses a single-point scan command with an HTTP 400 — so a feasible run shorter
-# than this is not a scan worth salvaging and the request is declined instead of trimmed.
-FEASIBLE_TRIM_MIN_POINTS = 2
-# Candidate keys a TAVI /state or /schema payload might carry the point-count limit under.
-_MAX_POINTS_KEYS = ("max_points", "maxPoints", "scan_max_points", "max_scan_points", "points_max")
-_LIMIT_KEYS = {
-    "max_points": _MAX_POINTS_KEYS,
-    "max_neutrons_per_point": ("max_neutrons_per_point", "maxNeutronsPerPoint",
-                                "max_ncount", "max_ncount_per_point"),
-    "queue_neutron_budget": ("queue_neutron_budget", "queueNeutronBudget",
-                              "max_queue_neutrons", "queue_neutrons"),
-    "max_queued": ("max_queued", "maxQueued", "max_queue_size", "queue_max_scans"),
-}
 _DEFAULT_CALIBRATION = (Path(__file__).resolve().parents[2] / "calibration"
                         / "phonon_dft_deterministic.json")
 _LOG = logging.getLogger(__name__)
@@ -186,69 +183,6 @@ _AUTHORITY_SUBMISSION_FIELDS = (
     "scan_design_authority_selected_request_fingerprint",
     "scan_design_authority_selected_grid_fingerprint",
 )
-
-
-def _extract_limit(payload: Any, keys: tuple[str, ...]) -> int | None:
-    """Extract a positive integral limit from a top-level or nested TAVI limits document."""
-    if not isinstance(payload, dict):
-        return None
-    scopes = [payload]
-    for key in ("limits", "instrument_limits", "queue_limits"):
-        if isinstance(payload.get(key), dict):
-            scopes.append(payload[key])
-    for scope in scopes:
-        for key in keys:
-            value = scope.get(key)
-            if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
-                return int(value)
-            if (isinstance(value, float) and math.isfinite(value)
-                    and value >= 1.0 and value.is_integer()):
-                return int(value)
-    return None
-
-
-def _extract_max_points(payload: Any) -> int | None:
-    """Pull a positive integer point-count limit out of a TAVI /state or /schema body, checking the
-    known key names at the top level and inside a nested ``limits`` dict. Returns ``None`` when no
-    recognizable limit is present (the caller then falls back to :data:`DEFAULT_MAX_POINTS`)."""
-    return _extract_limit(payload, _MAX_POINTS_KEYS)
-
-
-def _preflight_instrument_limits(client) -> dict[str, Any]:
-    """Resolve the additive TAVI limit snapshot once, preferring /state field by field."""
-    values: dict[str, int | None] = {name: None for name in _LIMIT_KEYS}
-    sources: dict[str, str] = {name: "unavailable" for name in _LIMIT_KEYS}
-    for method in ("get_state", "get_schema"):
-        fn = getattr(client, method, None)
-        if not callable(fn):
-            continue
-        try:
-            payload = fn()
-        except Exception as error:   # noqa: BLE001 — discovery is best-effort and fallback-safe
-            _LOG.warning("TAVI instrument-limit discovery via %s failed: %s", method, error)
-            continue
-        for name, keys in _LIMIT_KEYS.items():
-            if values[name] is not None:
-                continue
-            value = _extract_limit(payload, keys)
-            if value is not None:
-                values[name] = value
-                sources[name] = method
-    if values["max_points"] is None:
-        values["max_points"] = DEFAULT_MAX_POINTS
-        sources["max_points"] = "default"
-    return {**values, "sources": sources}
-
-
-def _preflight_max_points(client) -> tuple[int, str]:
-    """Read the instrument's max-points limit ONCE per campaign, returning ``(limit, source)``.
-
-    Tries ``GET /state`` then ``GET /schema`` (whichever first carries a recognizable limit). A
-    preflight failure — endpoint unreachable, method absent on the client seam, or no limit present —
-    must never break the campaign: it falls back silently to :data:`DEFAULT_MAX_POINTS`, recording the
-    fallback via the ``source`` so the eventual clamp event states where the limit came from."""
-    snapshot = _preflight_instrument_limits(client)
-    return int(snapshot["max_points"]), str(snapshot["sources"]["max_points"])
 
 
 def _runtime_limits(cfg, objective, n_points: int | None = None) -> dict[str, Any]:
@@ -315,18 +249,6 @@ def _require_complete_analysis(result, objective) -> None:
     limit = float(objective.analysis_limit_seconds or 0.0)
     raise AnalysisLimitExceeded(
         f"analysis limit exhausted; active fit wave checkpointed (limit {limit:.1f}s)")
-
-
-def _emitted_point_count(e_lo: float, e_hi: float, e_step: float) -> int:
-    """The TRUE (unclamped) number of points TAVI computes from a ``deltaE lo hi step`` command.
-
-    :func:`~isar.drive.acquisition.acquire.points_in_window` clamps to the acquisition budget
-    (``MAX_POINTS``); TAVI does not — it counts the command literally. A missed-window recenter widens
-    ``e_lo``/``e_hi`` without recomputing the (tight) ``e_step``, so the emitted command can carry far
-    more points than the clamped ledger shows (the 594-pt over-limit scan). This is what the guard
-    checks, so a wide-window/tight-step proposal cannot slip past the ledger clamp to TAVI."""
-    count, _step = resolve_point_count(e_lo, e_hi, e_step)
-    return count
 
 
 def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int, *,
@@ -400,70 +322,6 @@ def _stamp_proposal_provenance(proposal) -> None:
         e_step=proposal.e_step,
         ncount=proposal.ncount,
     )
-
-
-def finalized_proposal(proposal) -> FinalizedProposal | None:
-    """Stage 2 of the action lifecycle: the exact request, after every clamp, before validation.
-
-    Built here rather than in ``acquire._build_proposal`` because the request is not final there —
-    :func:`_finalize_proposal` still applies the instrument point-count ceiling and the neutron
-    affordability clamp afterwards. ``request_fingerprint`` reuses the provenance hash
-    :func:`_stamp_proposal_provenance` already computes over the *finalized* window and count, so the
-    two can never disagree about what was actually asked for; re-finalizing after a step shrink or a
-    re-center moves it while the intent's scientific fingerprint stays put.
-
-    Returns ``None`` for a proposal that never carried an intent (older unit-level callers), so the
-    lifecycle is additive rather than a new precondition on every proposal.
-    """
-    intent = getattr(proposal, "intent", None)
-    fingerprint = (proposal.meta or {}).get("proposal_fingerprint")
-    if intent is None or not fingerprint:
-        return None
-    return FinalizedProposal(
-        intent=intent, request_fingerprint=str(fingerprint),
-        e_lo=float(proposal.e_lo), e_hi=float(proposal.e_hi), e_step=float(proposal.e_step),
-        n_points=int(proposal.n_points or 0), ncount=int(proposal.ncount))
-
-
-def _feasibility_manifest_fingerprint(validation: dict) -> str:
-    """Hash TAVI's frozen feasibility verdict — the geometry an attempt was judged under.
-
-    Deliberately covers only the instrument's answer (queueability, blockers, the planned/feasible
-    point manifest), never the request that produced it: a q that is reachable today and blocked
-    tomorrow must be distinguishable *at the same* request fingerprint, or a geometry rejection gets
-    charged to the scientific action and suppresses it permanently.
-
-    List order is preserved rather than normalized, except for ``blockers`` (an unordered set of
-    reasons). ``planned_feasible_mask`` and ``feasible_segments`` are positional — sorting them would
-    make two genuinely different geometries hash the same, and a false *match* is the dangerous
-    direction here: it would let a suppression formed under one geometry silently apply to another.
-    A false *difference* only costs a redundant retry.
-
-    Canonicalized with the same strict encoder as the inventory artifacts, so an unexpected type
-    raises instead of being silently stringified into a stable-looking but meaningless address.
-    """
-    manifest = {
-        "would_queue": bool(validation.get("would_queue", False)),
-        "blockers": sorted(str(b) for b in (validation.get("blockers") or [])),
-        "requested_points": validation.get("requested_points"),
-        "feasible_points": validation.get("feasible_points"),
-        "planned_feasible_mask": validation.get("planned_feasible_mask"),
-        "feasible_segments": validation.get("feasible_segments"),
-        "infeasible": validation.get("infeasible"),
-    }
-    return hashlib.sha256(canonical_json(manifest).encode("utf-8")).hexdigest()
-
-
-def validated_attempt(finalized: FinalizedProposal | None, validation: dict, *,
-                      status: str) -> ValidatedAttempt | None:
-    """Stage 3: TAVI's verdict on one finalized request, under one instrument geometry."""
-    if finalized is None:
-        return None
-    return ValidatedAttempt(
-        proposal=finalized,
-        feasibility_manifest_fingerprint=_feasibility_manifest_fingerprint(validation),
-        feasible_points=_feasible_point_count(validation, finalized.n_points or 1),
-        status=str(status))
 
 
 def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int,
@@ -741,215 +599,6 @@ def _make_classification_providers(card_state: dict, objective, resolution_cb, *
         return rival["mean"], rival["sigma"]
 
     return classify, rival_band
-
-
-def _validate_body(proposal, *, sample: str, background: dict | None = None) -> dict[str, Any]:
-    """The ``POST /validate`` body — ``parameters`` only (engine/seed/isolated are scan-only fields).
-
-    ``background`` is the campaign's frozen catalog-backed background profile (see
-    :func:`_freeze_sample_background`), stamped as a per-scan override. It rides on the validate body
-    too, because the instrument validates the background block (catalog version, source IDs, scales):
-    without it a scan could validate clean and then be refused at submit. ``None`` happens only for a
-    campaign that opted out of freezing via ``sample_background="instrument_config"`` → the key is
-    absent, the body is byte-identical to the pre-background one, and the instrument's live
-    configuration decides the background. An undeclared campaign stamps a frozen DISABLED profile
-    instead of omitting the key (see :func:`_freeze_sample_background`).
-    """
-    body: dict[str, Any] = {
-        "parameters": {
-            "H": proposal.h, "K": proposal.k, "L": proposal.l,
-            "scan_command1": proposal.scan_command(),
-            # A stale scan_command2 on the instrument (e.g. TAVI GUI residue)
-            # multiplies the point grid and can scan the same axis twice; the
-            # driver owns the scan definition, so clear it explicitly. The
-            # instrument-side bleed is fixed (TAVI GUI-independence change); this
-            # stays as belt-and-braces.
-            "scan_command2": "",
-            "number_neutrons": int(proposal.ncount),
-            # TAVI's API is now GUI-independent: POST /scan|/validate build state from
-            # instrument defaults (Al_bragg) + this request's parameters, no longer
-            # inheriting the operator's GUI sample selection. ISAR measures phonons, so
-            # the campaign's sample must be stamped explicitly.
-            "sample": sample,
-        },
-    }
-    if background is not None:
-        # Transport only: the loop never chooses, tunes, or re-resolves this — it stamps the profile
-        # frozen at campaign setup. The instrument derives ``source="per_scan_override"`` from the
-        # key's presence, so no companion ``background_source`` field is sent.
-        body["background"] = background
-    return body
-
-
-def _scan_body(proposal, engine: str, seed: int, *, sample: str,
-               background: dict | None = None) -> dict[str, Any]:
-    """The ``POST /scan`` body — the validate body plus the isolated/seeded engine selection."""
-    body = _validate_body(proposal, sample=sample, background=background)
-    body.update({"engine": engine, "seed": int(seed), "isolated": True})
-    return body
-
-
-def _feasible_point_count(validation: dict, fallback: int) -> int:
-    """Executable point count from TAVI's frozen feasibility manifest."""
-    value = validation.get("feasible_points") if isinstance(validation, dict) else None
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
-        return int(value)
-    mask = validation.get("planned_feasible_mask") if isinstance(validation, dict) else None
-    if isinstance(mask, list):
-        return sum(bool(item) for item in mask)
-    return max(int(fallback), 0)
-
-
-def _feasible_runs(validation: dict, n_points: int) -> list[tuple[int, int]] | None:
-    """Every maximal contiguous feasible run in TAVI's frozen manifest, in positional order.
-
-    Returns inclusive ``(first_index, last_index)`` pairs, or ``None`` when the manifest does not
-    localize the infeasibility against the exact grid that was requested. ``planned_feasible_mask``
-    and ``feasible_segments`` are positional against the requested point list, so a mask whose
-    length disagrees with the requested count describes a *different* grid: indexing into it would
-    trim to the wrong energies, which is far worse than not trimming at all. That mismatch is logged
-    and reported as "no localization".
-    """
-    if not isinstance(validation, dict) or int(n_points) <= 0:
-        return None
-    mask = validation.get("planned_feasible_mask")
-    flags: list[bool] | None = None
-    if isinstance(mask, list):
-        if len(mask) != int(n_points):
-            _LOG.warning(
-                "planned_feasible_mask length %d does not match the %d requested points; "
-                "refusing to localize the infeasible region", len(mask), int(n_points))
-            return None
-        flags = [bool(item) for item in mask]
-    else:
-        segments = validation.get("feasible_segments")
-        if isinstance(segments, list) and segments:
-            flags = [False] * int(n_points)
-            for segment in segments:
-                if not isinstance(segment, dict):
-                    continue
-                start, end = segment.get("start_index"), segment.get("end_index")
-                if not isinstance(start, int) or not isinstance(end, int):
-                    continue
-                if start < 0 or end >= int(n_points) or end < start:
-                    _LOG.warning(
-                        "feasible_segments entry [%r, %r] falls outside the %d requested points; "
-                        "refusing to localize the infeasible region", start, end, int(n_points))
-                    return None
-                for index in range(start, end + 1):
-                    flags[index] = True
-    if flags is None or not any(flags):
-        return None
-    runs: list[tuple[int, int]] = []
-    run_start: int | None = None
-    for index, feasible in enumerate([*flags, False]):
-        if feasible and run_start is None:
-            run_start = index
-        elif not feasible and run_start is not None:
-            runs.append((run_start, index - 1))
-            run_start = None
-    return runs
-
-
-def _largest_feasible_run(validation: dict, n_points: int) -> tuple[int, int] | None:
-    """The longest contiguous feasible run, or ``None`` without localization.
-
-    Ties go to the first run encountered, which keeps the choice deterministic for a given manifest.
-    """
-    runs = _feasible_runs(validation, n_points)
-    if not runs:
-        return None
-    return max(runs, key=lambda run: run[1] - run[0])
-
-
-def _select_feasible_run(validation: dict, energies: Sequence[float], *,
-                         target_energy: float | None,
-                         acceptance: tuple[float, float] | None,
-                         ) -> tuple[tuple[int, int] | None, str]:
-    """Choose which feasible run a trimmed window should keep, and say why.
-
-    Returns ``(run, decision)``. ``decision`` is one of:
-
-    * ``"no_localization"`` — the manifest cannot be indexed against this grid (``run`` is ``None``);
-    * ``"contains_target"`` — the kept run spans the energy this scan is *about*;
-    * ``"longest"`` — no run contains the target (or none is declared), so the longest run wins;
-    * ``"target_excluded"`` — a target is declared, no run contains it, and the longest run does not
-      even overlap its acceptance interval (``run`` is ``None``).
-
-    The last case is the point of this function. Maximizing run length alone can keep a long stretch
-    of reachable-but-irrelevant energies while dropping the excitation the scan exists to measure —
-    a scan that is submittable, cheap, and scientifically empty. Declining is strictly better than
-    submitting a blind window.
-    """
-    runs = _feasible_runs(validation, len(energies))
-    if not runs:
-        return None, "no_localization"
-    longest = max(runs, key=lambda run: run[1] - run[0])
-    if target_energy is None:
-        return longest, "longest"
-
-    def span(run: tuple[int, int]) -> tuple[float, float]:
-        return float(energies[run[0]]), float(energies[run[1]])
-
-    for run in runs:
-        low, high = span(run)
-        if low - 1e-9 <= float(target_energy) <= high + 1e-9:
-            return run, "contains_target"
-    if acceptance is not None:
-        low, high = span(longest)
-        if not (low <= float(acceptance[1]) + 1e-9 and high >= float(acceptance[0]) - 1e-9):
-            return None, "target_excluded"
-    return longest, "longest"
-
-
-# Blocker vocabulary is TAVI's, not ISAR's, so the trim recognises infeasibility by marker rather
-# than by an enumerated list it cannot keep in sync. Anything unrecognised (queue limits, budget
-# refusals, transport complaints) fails CLOSED: the window is left alone and the ordinary decline
-# path runs, because mutating a request in response to a refusal that had nothing to do with
-# geometry both loses the original request and answers the wrong question.
-_INFEASIBILITY_BLOCKER_MARKERS = (
-    "infeasible", "unreachable", "out_of_range", "outofrange", "out of range",
-    "triangle", "geometry", "not_reachable",
-)
-
-
-def _is_feasibility_shaped_refusal(validation: dict) -> bool:
-    """Whether a ``would_queue=False`` verdict is about geometry and nothing else."""
-    blockers = validation.get("blockers") if isinstance(validation, dict) else None
-    if not isinstance(blockers, list) or not blockers:
-        return False
-    return all(
-        any(marker in str(blocker).lower() for marker in _INFEASIBILITY_BLOCKER_MARKERS)
-        for blocker in blockers)
-
-
-def _executed_point_count(data: dict, fallback: int) -> int:
-    result = data.get("result") if isinstance(data, dict) else None
-    if not isinstance(result, dict):
-        return max(int(fallback), 0)
-    mask = result.get("executed_feasible_mask")
-    if isinstance(mask, list) and mask:
-        return sum(bool(item) for item in mask)
-    return max(int(fallback), 0)
-
-
-def _target_supporting_feasible_points(validation: dict, target_band) -> int | None:
-    """Feasible bins inside the target's 95%-credible energy support; None without a manifest."""
-    manifest = validation.get("point_manifest") if isinstance(validation, dict) else None
-    if not isinstance(manifest, list) or target_band is None:
-        return None
-    mean, sigma = map(float, target_band)
-    lo, hi = mean - 2.0 * sigma, mean + 2.0 * sigma
-    count = 0
-    for point in manifest:
-        if not isinstance(point, dict) or not point.get("feasible", False):
-            continue
-        values = point.get("values") or {}
-        energy = values.get("deltaE") if isinstance(values, dict) else None
-        if (isinstance(energy, (int, float)) and not isinstance(energy, bool)
-                and math.isfinite(float(energy)) and lo <= float(energy) <= hi):
-            count += 1
-    return count
 
 
 def _tavi_error_code(error: TaviError) -> str | None:
@@ -4043,16 +3692,11 @@ def _prepare_authoritative_submission(
                     target_refusal_reason = "target_core_below_minimum_support"
                 target_request_fingerprint = target_request.request_fingerprint
                 target_blockers = target_validation.get("blockers")
-                target_requested_points = target_validation.get("requested_points")
+                # The echoed count, or the manifest length when the adapter omits it — without that
+                # fallback a partially-infeasible target hides from the check below.
+                target_requested_points = requested_point_count(target_validation)
                 target_feasible_points = _feasible_point_count(
                     target_validation, target_proposal.n_points or 1)
-                if target_requested_points is None:
-                    # ``planned_feasible_mask`` is positional against the requested point list, so
-                    # its length IS the requested count. Without this fallback an adapter that omits
-                    # the echoed count hides a partially-infeasible target from the check below.
-                    mask = target_validation.get("planned_feasible_mask")
-                    if isinstance(mask, list) and mask:
-                        target_requested_points = len(mask)
                 # A partially-infeasible target core is unsubmittable (TAVI 400s the grid), and the
                 # authority has no way to trim it — the target window is the candidate's identity.
                 # Refuse it here so the existing refused-target path submits the legacy request,
@@ -4632,14 +4276,9 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         min_support = int((getattr(objective, "steering", None) or {}).get(
             "minimum_target_support_points", 0))
         target_support = _target_supporting_feasible_points(val, target_band)
-        log_event(log_path, "validate", {"would_queue": val.get("would_queue"),
-                                          "blockers": val.get("blockers"), "eta": val.get("eta"),
-                                          "requested_points": val.get("requested_points"),
-                                          "feasible_points": feasible_points,
-                                          "target_supporting_feasible_points": target_support,
-                                          "partial": val.get("partial"),
-                                          "feasible_segments": val.get("feasible_segments"),
-                                          "infeasible": val.get("infeasible"),
+        log_event(log_path, "validate", {**validation_event_fields(
+                                              val, feasible_points=feasible_points,
+                                              target_support=target_support),
                                           "request_fingerprint": (
                                               finalized.request_fingerprint
                                               if finalized is not None else None),
@@ -4690,16 +4329,12 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             # re-derived ``e_lo + i·step``, which drifts from the wire values the mask indexes.
             grid_energies = TAVI_GRID_ADAPTER.executed_energies(
                 proposal.e_lo, proposal.e_step, requested_points)
-            run, run_decision = _select_feasible_run(
-                val, grid_energies, target_energy=target_energy, acceptance=acceptance)
+            decision = plan_feasibility_response(
+                val, grid_energies, target_energy=target_energy, acceptance=acceptance,
+                already_trimmed=feasibility_trimmed)
+            run, run_decision = decision.run, decision.reason
             run_length = 0 if run is None else run[1] - run[0] + 1
-            # "Nothing here is a scan" is a more basic fact than "nothing here is your peak", so the
-            # floor is judged against the whole manifest and reported first — otherwise a manifest
-            # with no usable run at all would be filed under the target-coverage verdict.
-            all_runs = _feasible_runs(val, requested_points) or []
-            longest_run_length = max((end - start + 1 for start, end in all_runs), default=0)
-            if (all_runs and longest_run_length < FEASIBLE_TRIM_MIN_POINTS) or (
-                    run is not None and run_length < FEASIBLE_TRIM_MIN_POINTS):
+            if decision.reason == "largest_feasible_run_below_minimum":
                 # Request scope, not geometry: this window clipped the reachable band down to
                 # (nearly) nothing, but a shifted or widened window at the same Q may still be
                 # fully measurable — the widen/re-center ladder must stay open. Only a
@@ -4710,15 +4345,13 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                     "reason": "largest_feasible_run_below_minimum",
                     "feasible_points": feasible_points,
                     "requested_points": requested_points,
-                    "feasible_run_points": max(run_length, longest_run_length),
-                    "minimum_points": FEASIBLE_TRIM_MIN_POINTS,
-                    "planned_feasible_mask": val.get("planned_feasible_mask"),
+                    **decision.event_fields,
                     "iter": it})
                 _mark_request_superseded(proposal, pre_trim_request_fingerprint)
                 observations.append(_declined_observation(proposal, "validation_rejected"))
                 declined_verdict = "validation_rejected"
                 break
-            if run_decision == "target_excluded":
+            if decision.reason == "target_excluded":
                 # Every reachable stretch misses the excitation. Submitting the longest run would buy
                 # a clean, cheap, scientifically empty scan; refuse the request and let the
                 # widen/re-center ladder propose a window the instrument can actually measure.
@@ -4730,13 +4363,13 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                     "acceptance": list(acceptance) if acceptance is not None else None,
                     "feasible_points": feasible_points,
                     "requested_points": requested_points,
-                    "planned_feasible_mask": val.get("planned_feasible_mask"),
+                    **decision.event_fields,
                     "iter": it})
                 _mark_request_superseded(proposal, pre_trim_request_fingerprint)
                 observations.append(_declined_observation(proposal, "validation_rejected"))
                 declined_verdict = "validation_rejected"
                 break
-            if run is not None and feasibility_trimmed:
+            if decision.reason == "feasibility_trim_did_not_converge":
                 # One trim per proposal. A second partial verdict on an already-trimmed window means
                 # the instrument's answer is not converging, so refuse *this request* and let the
                 # ladder try a different window rather than looping on the same geometry.
@@ -4745,20 +4378,20 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                     "hkl": [proposal.h, proposal.k, proposal.l],
                     "feasible_points": feasible_points,
                     "requested_points": requested_points,
-                    "planned_feasible_mask": val.get("planned_feasible_mask"),
+                    **decision.event_fields,
                     "iter": it})
                 _mark_request_superseded(proposal, pre_trim_request_fingerprint)
                 observations.append(_declined_observation(proposal, "validation_rejected"))
                 declined_verdict = "validation_rejected"
                 break
-            if run is not None:
+            if decision.kind == "trim":
                 old_e_lo, old_e_hi = float(proposal.e_lo), float(proposal.e_hi)
                 e_step = float(proposal.e_step)
                 previous_request_fingerprint = (proposal.meta or {}).get(
                     "proposal_fingerprint")
                 pre_trim_request_fingerprint = previous_request_fingerprint
-                proposal.e_lo = float(grid_energies[run[0]])
-                proposal.e_hi = float(grid_energies[run[1]])
+                proposal.e_lo = float(decision.new_e_lo)
+                proposal.e_hi = float(decision.new_e_hi)
                 # ``_finalize_proposal`` re-derives ``n_points`` from the mutated window through
                 # ``_guard_point_count``, so the trimmed grid is re-costed and re-fingerprinted the
                 # same way the step-shrink path is.
@@ -4789,7 +4422,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                     "previous_request_fingerprint": previous_request_fingerprint,
                     "request_fingerprint": (proposal.meta or {}).get("proposal_fingerprint"),
                     "n_points": int(proposal.n_points or 0),
-                    "planned_feasible_mask": val.get("planned_feasible_mask"),
+                    **decision.event_fields,
                     "iter": it, "attempt": attempt})
                 continue
             # No localization: fall through. The zero-feasible branch and the submit-time
