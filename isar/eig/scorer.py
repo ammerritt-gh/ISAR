@@ -1137,7 +1137,6 @@ def score_scan_window_candidates(
     scenario_indices = _scenario_schedule(measure, seed, simulation_count)
     candidate_scores: list[_CandidateScore] = []
     for item in sorted(candidates, key=lambda value: value.candidate_id):
-        prepared: _PreparedCandidate | None = None
         try:
             prepared = _prepare_candidate(item, measure)
             score = _score_candidate(
@@ -1158,7 +1157,11 @@ def score_scan_window_candidates(
                 simulation_count=simulation_count,
                 block_count=block_count,
                 backend=backend,
-                prepared=prepared,
+                # No ``prepared``: a refusal raised *after* preparation (a failed Poisson draw, a
+                # non-finite information evaluation) would otherwise emit an ``unavailable`` score
+                # still carrying grid fingerprints, energies and exposure — exactly the set
+                # :func:`_validate_score_candidate` rejects.  An unavailable score carries no
+                # scientific values, whichever stage refused it.
                 diagnostic_values={"message": error.message},
             )
         candidate_scores.append(score)

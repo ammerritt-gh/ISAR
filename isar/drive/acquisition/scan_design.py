@@ -407,6 +407,18 @@ class ScanDesignCandidate:
     #: many construction rules happen to reach it.
     alias_families: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        # ``nominal_cost`` is content-addressed into :attr:`candidate_id`, so a value that is not
+        # the product it claims to be forks candidate identity with nothing downstream to catch it
+        # (O41 compares point count, ncount and executed energies, never this field).  It is a
+        # derived quantity: enforce it here, on construction and on every strict load.
+        for name in ("n_points", "ncount", "nominal_cost"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(f"scan-design candidate {name} must be an integer")
+        if self.nominal_cost != self.n_points * self.ncount:
+            raise ValueError("scan-design candidate nominal_cost is not n_points * ncount")
+
     @property
     def grid(self) -> UniformGrid:
         return UniformGrid(e_lo=self.e_lo, e_hi=self.e_hi, e_step=self.e_step,

@@ -236,7 +236,10 @@ def test_candidate_pair_refusal_taxonomy_is_ordered(monkeypatch, mutation, reaso
     if mutation == "equal_grid":
         target = replace(
             target, e_lo=legacy.e_lo, e_hi=legacy.e_hi, e_step=legacy.e_step,
-            n_points=legacy.n_points)
+            n_points=legacy.n_points,
+            # nominal_cost is a derived invariant of (n_points, ncount); keep it consistent so the
+            # mutation under test stays the grid, not the cost field.
+            nominal_cost=legacy.n_points * target.ncount)
         candidates = (legacy, target)
     elif mutation == "alias":
         candidates = (replace(legacy, alias_families=(*legacy.alias_families,
@@ -248,7 +251,8 @@ def test_candidate_pair_refusal_taxonomy_is_ordered(monkeypatch, mutation, reaso
                          if item.candidate_family not in {"legacy_uniform/1", "target_core/1"})
         candidates = (legacy, target, replace(alternate, candidate_family="target_core/1"))
     elif mutation == "exposure":
-        candidates = (legacy, replace(target, ncount=target.ncount + 1))
+        candidates = (legacy, replace(target, ncount=target.ncount + 1,
+                                      nominal_cost=target.n_points * (target.ncount + 1)))
     else:
         candidates = (legacy, replace(target, reason="different action"))
     unchecked = type("UncheckedInventory", (), {

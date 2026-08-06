@@ -113,8 +113,12 @@ class RealizedScanRequest:
                 or any(not _finite(item) for item in self.executed_energies)
                 or not valid_fingerprint(self.grid_fingerprint)
                 or not isinstance(self.executed_point_count, int)
+                or isinstance(self.executed_point_count, bool)
                 or self.executed_point_count != len(self.executed_energies)
                 or self.executed_point_count <= 0 or not isinstance(self.ncount, int)
+                or isinstance(self.ncount, bool)
+                or not isinstance(self.point_neutron_cost, int)
+                or isinstance(self.point_neutron_cost, bool)
                 or self.ncount <= 0 or self.point_neutron_cost != self.ncount * self.executed_point_count
                 or not valid_fingerprint(self.request_fingerprint)
                 or any(not isinstance(item, str) or not item for item in self.adjustments)):

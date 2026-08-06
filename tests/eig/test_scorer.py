@@ -613,6 +613,8 @@ def test_poisson_ppf_backend_anomalies_refuse_candidate(monkeypatch, returned):
     assert result.status == "unavailable"
     assert result.candidate_scores[0]["reason_codes"] == ("poisson_simulation_failed",)
     assert result.candidate_scores[0]["conditional_target_qoi_information_nats"] is None
+    # A refusal raised after preparation must still emit a set its own read gate accepts.
+    assert scorer_module.validate_scan_window_score_set(result) is result
 
 
 def test_nonfinite_mixture_evaluation_has_its_own_refusal_code(monkeypatch):
@@ -629,6 +631,7 @@ def test_nonfinite_mixture_evaluation_has_its_own_refusal_code(monkeypatch):
     assert result.status == "unavailable"
     assert result.candidate_scores[0]["reason_codes"] == (
         "information_evaluation_failed",)
+    assert scorer_module.validate_scan_window_score_set(result) is result
 
 
 def test_integer_valued_float_ppf_output_is_accepted(monkeypatch):

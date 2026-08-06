@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import hashlib
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, fields, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +29,7 @@ from isar.drive.acquisition.scan_design import (
     SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED,
     STEERING_REGIME,
     PhysicalWindowGeneratorConfig,
+    ScanDesignCandidate,
     ScanDesignContext,
     ScanDesignInventory,
     _declared_window,
@@ -36,6 +37,7 @@ from isar.drive.acquisition.scan_design import (
     design_scan_windows,
 )
 from isar.drive.acquisition.grid_adapters import DEFAULT_GRID_ADAPTER
+from isar.drive.acquisition.inventory import canonical_json
 from isar.drive.acquisition.scan_grid import (
     format_scan_command,
     resolve_uniform_grid,
@@ -637,6 +639,33 @@ def test_candidate_id_covers_the_grid_and_exposure_but_not_alias_provenance():
     assert payload["candidate_id"] == candidate.candidate_id
 
 
+def test_nominal_cost_must_be_the_product_it_claims_to_be():
+    # ``nominal_cost`` is folded into ``candidate_id`` and into the shadow pair fields, so a value
+    # that is not ``n_points * ncount`` forks candidate identity with nothing downstream to catch
+    # it.  Tampering must be refused even when the record re-mints its own id consistently.
+    candidate = design_scan_windows(_context()).selected_candidate
+    assert candidate.nominal_cost == candidate.n_points * candidate.ncount
+
+    with pytest.raises(ValueError, match="nominal_cost"):
+        replace(candidate, nominal_cost=1)
+    with pytest.raises(ValueError, match="nominal_cost must be an integer"):
+        replace(candidate, nominal_cost=True)
+
+    payload = candidate.to_dict()
+    payload["nominal_cost"] = {"kind": "point_neutrons", "value": 1}
+    # Re-mint the content address so the round-trip self-reproduction check cannot be what refuses.
+    forged = ScanDesignCandidate(
+        **{**{field.name: getattr(candidate, field.name)
+              for field in fields(candidate)}, "nominal_cost": candidate.nominal_cost})
+    payload["candidate_id"] = hashlib.sha256(canonical_json({
+        "candidate_schema": SCAN_DESIGN_CANDIDATE_SCHEMA,
+        **{**forged._content_dict(),
+           "nominal_cost": {"kind": "point_neutrons", "value": 1}},
+    }).encode("utf-8")).hexdigest()
+    with pytest.raises(ValueError, match="nominal_cost"):
+        ScanDesignCandidate.from_dict(payload)
+
+
 # ---- degenerate and clipped windows ----------------------------------------------------------
 #
 # All three of these were reachable from live instrument state: TAVI's ``GET /resolution`` accepts
@@ -818,6 +847,36 @@ def test_target_core_needs_its_whole_core_while_anchors_may_lose_margin():
     anchor = next(c for c in inventory.candidates
                   if c.candidate_family == FAMILY_TARGET_LOW_ANCHOR)
     assert (anchor.e_lo, anchor.e_hi) == pytest.approx((4.0, 6.6))
+
+
+def test_target_core_containment_is_judged_on_the_executed_grid_to_within_a_step():
+    """Containment is a promise about measured points, held to the grid's own resolution.
+
+    A sigma-dominated core [0.65, 9.35] with a 0.2 meV wire step: the span does not divide by the
+    step, so the instrument executes up to 9.25 and never lands exactly on the core's high edge.
+    That is arithmetic, not a missed measurement — a stepped grid cannot express an edge finer than
+    half a step, and the adapter rounds to nearest, so this is the *best* a core can be retained.
+    The candidate must survive.
+
+    This is the guard against re-tightening the gate.  Testing containment tighter than half a step
+    refused 46 % of sigma-dominated target cores in a 4000-case sweep (span 6·sigma against a step
+    of FWHM/4, where divisibility is accidental) for shortfalls no larger than 0.24 meV, while
+    catching nothing extra: real truncation is the domain clipping the core, which removes whole
+    points and is covered by ``test_target_core_needs_its_whole_core_while_anchors_may_lose_margin``.
+    """
+    inventory = design_scan_windows(_context(
+        scan_window_eig_mode="shadow", design_prediction_sigma_meV=1.45,
+        target_prediction_sigma_meV=1.45, energy_search_meV=(-2.0, 12.0)))
+
+    assert FAMILY_TARGET_CORE in _families(inventory)
+    core = next(c for c in inventory.candidates if c.candidate_family == FAMILY_TARGET_CORE)
+
+    # The shortfall is real and tolerated, not absent: the executed grid genuinely stops short of
+    # the requested high bound, which is why the gate must read `energies` rather than `e_hi`.
+    executed = core.grid.energies
+    assert max(executed) < core.e_hi
+    assert core.e_hi - max(executed) <= 0.5 * core.e_step
+    assert max(executed) == pytest.approx(9.25)
 
 
 def test_minimum_target_support_is_enforced_against_a_fallback_band_without_a_target_band():

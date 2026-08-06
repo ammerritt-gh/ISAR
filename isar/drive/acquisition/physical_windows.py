@@ -495,12 +495,35 @@ def _target_gates(family: str, grid: UniformGrid, context: "ScanDesignContext",
                          else "target_core_lost_after_domain_clip"),
             detail=_detail_items(shared))
     if family == FAMILY_TARGET_CORE:
-        slack = _CORE_CONTAINMENT_TOL * max(abs(core_lo), abs(core_hi), 1.0)
-        if grid.e_lo > core_lo + slack or grid.e_hi < core_hi - slack:
+        # Containment is a promise about *measured* points, so it is tested against the executed
+        # grid, not the requested command bounds: when the span is not divisible by the wire step
+        # the last executed energy falls short of ``grid.e_hi`` by up to half a step, and a core
+        # whose high edge is never visited was not retained.  Same rule as ``support_points``.
+        executed = grid.energies
+        executed_lo = min(executed) if executed else grid.e_lo
+        executed_hi = max(executed) if executed else grid.e_hi
+        # Slack is half a step, because that is the finest edge a stepped grid can express.  The
+        # adapter rounds each point to nearest, so a core edge landing between two points is short
+        # by at most half a step — arithmetic, not a missed measurement, and "retains the core" can
+        # only ever mean "to within the grid's own resolution".  What this gate is named for is the
+        # authorized domain *clipping* the core, which removes whole points and so shows up far
+        # outside that band.  Testing tighter than half a step does not catch clipping sooner; it
+        # only refuses candidates whose span happens not to divide by the step, which is most of
+        # them whenever the core is sigma-dominated (span 6·sigma against a step of FWHM/4, where
+        # divisibility is accidental) and none of them when it is resolution-dominated (span
+        # 4·FWHM, step FWHM/4 — exactly 16 intervals, always).  Measured: a tighter bound refused
+        # 46 % of sigma-dominated target cores for shortfalls no larger than 0.24 meV.
+        quantum = 10.0 ** -int(getattr(grid.adapter, "executed_decimals", 12))
+        slack = max(_CORE_CONTAINMENT_TOL * max(abs(core_lo), abs(core_hi), 1.0),
+                    0.5 * quantum, 0.5 * abs(float(grid.e_step)))
+        if executed_lo > core_lo + slack or executed_hi < core_hi - slack:
             return WindowRefusal(
                 candidate_family=family,
                 reason_code="target_core_truncated_after_domain_clip",
-                detail=_detail_items(shared))
+                detail=_detail_items({
+                    **shared,
+                    "requested_e_lo": grid.e_lo, "requested_e_hi": grid.e_hi,
+                    "executed_e_lo": executed_lo, "executed_e_hi": executed_hi}))
     return None
 
 
