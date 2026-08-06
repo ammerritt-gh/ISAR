@@ -59,6 +59,21 @@ def test_zone_plus_one_anchor_pins_dispersion_line():
     assert sigma <= 0.5
 
 
+def test_branch_conditional_point_cannot_seed_beliefs():
+    """Contract 4 at the ω₀ belief: a constrained (branch_conditional) delivery is retained in the
+    prior but must not seed the assignment belief — otherwise a conditioned fit feeds the posterior
+    that justifies conditioning the next one (self-reinforcement)."""
+    conditioned = _pt("S:0", 0.30, 2.8)
+    conditioned["fit_kind"] = "branch_conditional"
+    beliefs = BA.build_beliefs([conditioned], sample="S", t_bin=200.0, period=2.0)
+    assert beliefs[BA.ACOUSTIC].n_anchors == 0
+    # the resulting posterior is exactly the cold-start posterior — the point contributed nothing
+    cold = BA.build_beliefs([], sample="S", t_bin=200.0, period=2.0)
+    u = BA.reduced_q([2.30, 0, 0], 2.0)
+    feats = [BA.Feature(2.8, 0.4, 100.0, np.inf, "mode")]
+    assert BA.assignment_posterior(feats, beliefs, u) == BA.assignment_posterior(feats, cold, u)
+
+
 # ---------------------------------------------------------------- data outvotes the prior
 def test_real_anchor_outvotes_zone_prior():
     """A dispersing acoustic branch (anchors rising with q) must make a mid-energy feature read as

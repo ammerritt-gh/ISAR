@@ -35,6 +35,7 @@ import numpy as np
 from isar.probability import lower_truncated_normal_moments
 
 from isar.analyze.truth import _fold
+from isar.session.session_prior import is_unconstrained_prior_point
 
 # --- tunables (module-level so tests / a future card can override) ---------------------------
 SIGMA_SLACK = 0.3          # meV — generous per-feature noise floor + nominal anchor σ (§6)
@@ -298,6 +299,8 @@ def build_beliefs(points, *, sample, t_bin, period: float,
         w = p.get("omega0")
         if w is None or not np.isfinite(float(w)):
             continue
+        if not is_unconstrained_prior_point(p):
+            continue                       # contract 4: a constrained/demoted fit never seeds a branch
         bid = p.get("branch_id") or ACOUSTIC
         by.setdefault(bid, []).append(
             (reduced_q(p["q"], period), float(w), float(p.get("weight", 1.0))))

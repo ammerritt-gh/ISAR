@@ -24,6 +24,13 @@ SIGMA_FLOOR = 0.3       # meV — the predict_omega floor
 SAME_T_TOL = 0.5        # K — "same temperature" for pooling (matches predict_omega)
 
 
+def is_unconstrained_prior_point(point: dict) -> bool:
+    """Whether a stored prior point is independent unconstrained fit evidence (contract 4: a
+    constrained/demoted fit never seeds a branch — neither the Γ/A branch model nor the ω₀
+    assignment belief). Points without a ``fit_kind`` tag predate the tag and are unconstrained."""
+    return point.get("fit_kind", "unconstrained") == "unconstrained"
+
+
 def add_point(state: CardState, *, scan_id, sample, T, q, omega0, modality, verdict,
               gamma=None, gamma_err=None, intensity=None, fit_kind=None,
               branch_id=None, weight=None, branch_posterior=None, assignment_entropy=None,

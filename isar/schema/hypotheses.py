@@ -26,12 +26,11 @@ DISPERSION_TYPES = ("branch", "level", "continuum")
 IMPLEMENTED_DISPERSION_TYPES = ("branch",)
 PRESET_NAMES = ("acoustic", "optic", "null")
 
-#: Same-action scan-window EIG regime.  ``off`` designs the single legacy window; ``shadow`` also
-#: generates and persists the alternative uniform-window family while still executing the legacy one;
-#: ``authoritative`` would let a scored winner be executed and is not implemented yet — declaring it
-#: refuses at campaign setup rather than silently degrading to shadow or off.
+#: Same-action scan-window EIG regime. ``off`` designs the legacy window; ``shadow`` also
+#: generates and scores alternatives diagnostically; ``authoritative`` may execute the scored
+#: winner only under the restricted O41 profile validated at campaign setup. Authoritative use
+#: remains opt-in pending the O42 release review.
 SCAN_WINDOW_EIG_MODES = ("off", "shadow", "authoritative")
-SCAN_WINDOW_EIG_AUTHORITATIVE_UNAVAILABLE = "scan_window_eig_authoritative_unavailable"
 
 
 @dataclass(frozen=True)

@@ -23,6 +23,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from isar.schema.steering import ParamConstraints
+from isar.session.session_prior import is_unconstrained_prior_point
 
 BRANCH_ID = "acoustic"          # MVP: a single acoustic branch
 MIN_ANCHORS = 3                 # too few to fit a trend
@@ -82,7 +83,7 @@ def _is_clean_anchor(p: dict, sample, t_bin) -> bool:
     intensity, and is well-separated from the elastic line (ω₀ ≳ 2Γ and ≳ SEP·resolution)."""
     if p.get("sample") != sample:
         return False
-    if p.get("fit_kind", "unconstrained") != "unconstrained":
+    if not is_unconstrained_prior_point(p):
         return False                       # contract 4: a constrained/demoted fit never seeds a branch
     tb = p.get("t_bin", p.get("T"))
     if tb is None or abs(float(tb) - float(t_bin)) > 1e-9:

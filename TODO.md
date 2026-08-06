@@ -43,14 +43,6 @@ Things that are wrong now, as opposed to things not yet built.
       **Acceptance:** a test with a deliberately wrong prior, plus a data-driven cross-check
       before the anti-Stokes side is dropped.
 
-- [ ] **DEFECT-4 — `build_beliefs()` doesn't filter by `fit_kind`.**
-      Contract 4 ("constrained fits never seed a branch") is enforced for Γ/A via
-      `_is_clean_anchor` but *not* for the ω₀ assignment belief: a `branch_conditional` delivery
-      (gated only by the weaker `constrained_ok` bar — p_acoustic ≥ 0.6, no dominance or entropy
-      check) feeds later assignment posteriors. Narrow but real self-reinforcement channel.
-      **Acceptance:** the ω₀ assignment belief applies the same `fit_kind` filter, with a test
-      that a `branch_conditional` delivery cannot seed a later posterior.
-
 - [ ] **DEFECT-5 — `branch_continuation` mislabeling loses the recenter/widen retry.**
       Fit-derived features get `float("inf")` significance in `features_from`, so a garbage fit on
       an out-of-window scan can be triaged `branch_continuation` (not counted missed) and the q
