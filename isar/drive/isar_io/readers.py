@@ -20,8 +20,12 @@ from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+from isar.drive.session_log import log_event, read_log
+from isar.predictive import PredictiveArtifactError, validate_master_predictive_artifact
 
 # Columns coerced to float when present and non-empty. Everything else stays a string (or None).
 _NUMERIC_COLUMNS = frozenset({
@@ -131,3 +135,130 @@ def read_card_state(workspace: str | Path) -> dict[str, Any]:
 def dispersion_prior(workspace: str | Path) -> list[dict[str, Any]]:
     """The ``dispersion_prior`` list from ``card.state.json`` (empty on a fresh workspace)."""
     return list(read_card_state(workspace).get("dispersion_prior") or [])
+
+
+def read_run_timings(workspace) -> dict | None:
+    """Best-effort read of the subprocess stage-timing file ``isar run`` drops per invocation
+    (``workspace/report/run_timings.json``). Returns ``None`` when the file is absent or unparseable —
+    profiling is advisory and must never fail (or alter) the campaign. Read right after ``run_isar``
+    returns (the subprocess has exited), so it snapshots that invocation's own timings."""
+    p = Path(workspace) / "report" / "run_timings.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:   # noqa: BLE001  (missing / malformed timing file → no embedded timings, never a crash)
+        return None
+
+
+def exact_pooled_master_sources(workspace) -> dict[tuple[str, str, str], dict[str, str]]:
+    """Join pooled revisions to their originating physical request by durable identities only.
+
+    ``results.csv`` deliberately identifies a pooled scientific result with ``pooled:<hash>``.  That
+    is not the acquisition whose executed scan-design inventory supplied the data.  The session log
+    records the missing join on ``pooled_master_update``: exact master key/detector/revision plus the
+    physical acquisition and submitted request fingerprint.  Ambiguous, incomplete, or orphaned
+    joins are omitted so callers fail closed instead of substituting a same-Q or newer master.
+    """
+    events = read_log(Path(workspace) / "report" / "session_log.jsonl")
+    submitted: set[tuple[str, str]] = set()
+    for event in events:
+        if event.get("kind") != "physical_submission":
+            continue
+        payload = event.get("payload") or {}
+        acquisition_id = payload.get("acquisition_id")
+        request_fingerprint = payload.get("proposal_fingerprint")
+        if acquisition_id is not None and request_fingerprint is not None:
+            submitted.add((str(acquisition_id), str(request_fingerprint)))
+
+    candidates: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
+    for event in events:
+        if event.get("kind") != "pooled_master_update":
+            continue
+        payload = event.get("payload") or {}
+        identity = (
+            payload.get("master_session_key"),
+            payload.get("detector_id"),
+            payload.get("master_revision"),
+        )
+        source = (payload.get("acquisition_id"), payload.get("proposal_fingerprint"))
+        if any(value is None for value in identity) or any(value is None for value in source):
+            continue
+        exact_identity = tuple(str(value) for value in identity)
+        exact_source = tuple(str(value) for value in source)
+        if exact_source in submitted:
+            candidates.setdefault(exact_identity, set()).add(exact_source)
+
+    result: dict[tuple[str, str, str], dict[str, str]] = {}
+    for identity, sources in candidates.items():
+        if len(sources) != 1:
+            continue
+        acquisition_id, request_fingerprint = next(iter(sources))
+        result[identity] = {
+            "source_acquisition_id": acquisition_id,
+            "source_submission_request_fingerprint": request_fingerprint,
+        }
+    return result
+
+
+def read_master_rows(workspace, calibration, *, row_hkl, master_obs_from_row) -> list[dict]:
+    """All current master (pooled=True) rows in results.csv → convergence observations. Read FRESH
+    every iteration (not consume-once): a master's interval shrinks as scans accumulate into it.
+
+    ``row_hkl`` and ``master_obs_from_row`` are the caller's row-interpretation functions, injected
+    rather than imported: interpreting a fit row is the loop's science, and this reader is only the
+    file mechanics around it (importing them here would also close an ``isar_io``→``loop`` cycle).
+    """
+    try:
+        rows = read_results_csv(workspace)
+    except FileNotFoundError:
+        return []
+    source_index = exact_pooled_master_sources(workspace)
+    out = []
+    for r in rows:
+        if r.get("pooled") and row_hkl(r) is not None:
+            master = master_obs_from_row(r, calibration)
+            session_key = r.get("scan_id")
+            detector_id = r.get("detector")
+            if session_key is not None:
+                master["master_session_key"] = str(session_key)
+            if detector_id is not None:
+                master["detector_id"] = str(detector_id)
+            revision = master.get("master_revision")
+            if session_key is not None and detector_id is not None and revision is not None:
+                exact_source = source_index.get(
+                    (str(session_key), str(detector_id), str(revision)))
+                if exact_source is not None:
+                    master.update(exact_source)
+            ref = r.get("predictive_ref")
+            if ref:
+                candidate = (Path(workspace) / str(ref)).resolve()
+                root = (Path(workspace) / "data" / "master_predictive").resolve()
+                try:
+                    candidate.relative_to(root)
+                    predictive = json.loads(candidate.read_text(encoding="utf-8"))
+                    # ADR-020: the SAME strict validator the workspace facade and the arbitrary-grid
+                    # evaluator run — a schema check alone let a malformed or stale-fingerprinted
+                    # basis reach the loop that the other two readers would have refused.
+                    validate_master_predictive_artifact(predictive)
+                    master["predictive"] = predictive
+                    master["expected_next_information"] = predictive.get("diagnostics")
+                except PredictiveArtifactError as error:
+                    # An unusable predictive artifact is no predictive basis at all (ADR-006): the
+                    # master keeps every other property and the loop takes its ordinary
+                    # no-predictive path, refit or legacy, never a campaign abort.
+                    #
+                    # The declared schema is read defensively because the refusal being handled is
+                    # exactly the one that fires when the payload is not an object at all: a JSON
+                    # array, string, number or ``null`` validates to ``artifact_schema_unsupported``,
+                    # and ``predictive.get`` on it raised an AttributeError that escaped this whole
+                    # function — turning a degrade-and-continue into a campaign abort.
+                    log_event(Path(workspace) / "report" / "session_log.jsonl", "exception", {
+                        "action": "predictive_artifact_unsupported", "reference": str(ref),
+                        "reason": error.reason_code, "message": error.message,
+                        "schema": (predictive.get("schema")
+                                   if isinstance(predictive, Mapping) else None)})
+                except (ValueError, OSError, json.JSONDecodeError) as error:
+                    log_event(Path(workspace) / "report" / "session_log.jsonl", "exception", {
+                        "action": "predictive_artifact_unavailable", "reference": str(ref),
+                        "error": str(error)})
+            out.append(master)
+    return out

@@ -872,6 +872,7 @@ def test_all_three_readers_run_the_same_validator(tmp_path, monkeypatch):
     Three independent subsets is how a basis one reader refuses reached another one and got scored.
     """
     from isar.drive import loop as drive_loop
+    from isar.drive.isar_io import readers as drive_readers
     from isar.predictive import PredictiveArtifactError, validate_master_predictive_artifact
     from isar.workspace_api import Workspace as ReadOnlyWorkspace
 
@@ -895,9 +896,9 @@ def test_all_three_readers_run_the_same_validator(tmp_path, monkeypatch):
 
     # The drive loop degrades to no-predictive rather than aborting, and says why.
     events = []
-    monkeypatch.setattr(drive_loop, "log_event",
+    monkeypatch.setattr(drive_readers, "log_event",
                         lambda path, kind, payload: events.append((kind, payload)))
-    monkeypatch.setattr(drive_loop, "read_results_csv", lambda ws: [
+    monkeypatch.setattr(drive_readers, "read_results_csv", lambda ws: [
         {"pooled": True, "h": 2.0, "k": 0.0, "l": 0.0, "T": 300.0,
          "predictive_ref": "data/master_predictive/a.json"}])
     monkeypatch.setattr(drive_loop, "_master_obs_from_row",
@@ -919,15 +920,16 @@ def test_a_non_object_predictive_payload_degrades_instead_of_crashing_the_loop(
     entirely: a file a consumer was supposed to shrug off aborted the campaign instead.
     """
     from isar.drive import loop as drive_loop
+    from isar.drive.isar_io import readers as drive_readers
 
     root = tmp_path / "ws"
     (root / "data" / "master_predictive").mkdir(parents=True)
     (root / "data" / "master_predictive" / "a.json").write_text(payload, encoding="utf-8")
 
     events = []
-    monkeypatch.setattr(drive_loop, "log_event",
+    monkeypatch.setattr(drive_readers, "log_event",
                         lambda path, kind, event: events.append((kind, event)))
-    monkeypatch.setattr(drive_loop, "read_results_csv", lambda ws: [
+    monkeypatch.setattr(drive_readers, "read_results_csv", lambda ws: [
         {"pooled": True, "h": 2.0, "k": 0.0, "l": 0.0, "T": 300.0,
          "predictive_ref": "data/master_predictive/a.json"}])
     monkeypatch.setattr(drive_loop, "_master_obs_from_row",

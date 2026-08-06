@@ -21,6 +21,7 @@ from isar.drive.acquisition.eig_shadow import (
 from isar.eig.qoi import adapt_omega0_target_projection
 from isar.drive.acquisition.inventory import MeasurementIntent, canonical_json
 from isar.drive.acquisition.scan_design import ScanDesignContext, design_scan_windows
+from isar.drive.isar_io.readers import exact_pooled_master_sources
 from isar.drive.session_log import AnalysisLimitExceeded, read_log
 from isar.eig.shadow_inventory import ScanDesignShadowScoring
 from isar.schema.eig_policy import ScanWindowShadowScoringConfig
@@ -223,7 +224,7 @@ def test_pooled_master_source_join_uses_exact_revision_and_request(tmp_path):
     inventory = _inventory()
     _write_source_events(tmp_path, inventory)
 
-    sources = loop._exact_pooled_master_sources(tmp_path)
+    sources = exact_pooled_master_sources(tmp_path)
 
     assert sources[("master", "det", "revision-1")] == {
         "source_acquisition_id": "physical-a",
@@ -240,7 +241,7 @@ def test_ambiguous_pooled_source_join_refuses_instead_of_substituting(tmp_path):
     inventory = _inventory()
     _write_source_events(tmp_path, inventory, ambiguous=True)
 
-    assert ("master", "det", "revision-1") not in loop._exact_pooled_master_sources(tmp_path)
+    assert ("master", "det", "revision-1") not in exact_pooled_master_sources(tmp_path)
 
 
 def test_exact_pooled_source_runs_producer_grounded_numeric_path(monkeypatch, tmp_path):

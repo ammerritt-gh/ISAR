@@ -8,11 +8,14 @@ boundary: the driver never imports a fit internal.
 """
 from __future__ import annotations
 
+import inspect
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+
+from isar.drive.session_log import AnalysisLimitExceeded
 
 
 @dataclass
@@ -21,7 +24,7 @@ class RunResult:
 
     ``timings`` carries the subprocess stage-timing dict when a runner has it inline (the persistent
     worker will); the SubprocessRunner leaves it ``None`` — the loop reads ``report/run_timings.json``
-    off disk instead (see :func:`isar.drive.loop._read_run_timings`)."""
+    off disk instead (see :func:`isar.drive.isar_io.readers.read_run_timings`)."""
 
     returncode: int
     stdout: str
@@ -204,6 +207,67 @@ def as_runner(obj):
     if callable(obj):
         return _CallableRunner(obj)
     raise TypeError(f"as_runner: expected a runner or a callable, got {type(obj).__name__}")
+
+
+def runner_accepts(runner, name: str) -> bool:
+    """Whether ``runner.run`` takes ``name`` (or absorbs it via ``**kwargs``).
+
+    Runners are a configurable seam — a campaign may supply its own — so a keyword added to the
+    protocol cannot be assumed present. An unreadable signature is treated as accepting, which
+    keeps callable/proxy doubles working exactly as they did before the keyword existed.
+    """
+    try:
+        parameters = inspect.signature(runner.run).parameters
+    except (TypeError, ValueError):
+        return True
+    return name in parameters or any(item.kind == inspect.Parameter.VAR_KEYWORD
+                                     for item in parameters.values())
+
+
+def refresh_analysis(runner, workspace, data_dirs, *,
+                     errors_tier, scan_errors_tier=None, master_errors_tier=None,
+                     force: bool = False, force_masters=None,
+                     certification_request=None,
+                     analysis_allowance_seconds: float | None = None,
+                     finish_initial_wave: bool | None = None,
+                     enforce_completion: bool = False,
+                     analysis_limit_seconds: float | None = None,
+                     render: bool = False) -> RunResult:
+    """Re-run ISAR over ``data_dirs`` through the runner seam and return its :class:`RunResult`.
+
+    This owns every mechanical difference between runner shapes so the campaign loop does not:
+    optional keywords the configured runner cannot take (``force_masters``,
+    ``certification_request``, ``analysis_allowance_seconds``, ``finish_initial_wave``) are omitted
+    rather than passed, since a config-supplied runner predating a keyword would raise ``TypeError``.
+
+    ``analysis_allowance_seconds`` is the ALREADY-COMPUTED remaining allowance (the loop owns the
+    analysis clock); ``None`` means the campaign declares no analysis limit, in which case
+    ``finish_initial_wave`` is passed as ``None`` too and both keywords stay off the call — the
+    pre-seam behaviour, where an unlimited campaign sent neither.
+
+    With ``enforce_completion``, a soft runner checkpoint stop (``completed=False``) is turned into
+    the campaign's explicit incomplete outcome, :class:`AnalysisLimitExceeded`.
+    """
+    kwargs = {"errors_tier": errors_tier, "force": force, "render": render}
+    if scan_errors_tier is not None:
+        kwargs["scan_errors_tier"] = scan_errors_tier
+    if master_errors_tier is not None:
+        kwargs["master_errors_tier"] = master_errors_tier
+    if force_masters and runner_accepts(runner, "force_masters"):
+        kwargs["force_masters"] = list(force_masters)
+    if certification_request is not None and runner_accepts(runner, "certification_request"):
+        kwargs["certification_request"] = certification_request
+    if (analysis_allowance_seconds is not None
+            and runner_accepts(runner, "analysis_allowance_seconds")):
+        kwargs["analysis_allowance_seconds"] = analysis_allowance_seconds
+    if finish_initial_wave is not None and runner_accepts(runner, "finish_initial_wave"):
+        kwargs["finish_initial_wave"] = bool(finish_initial_wave)
+    result = runner.run(workspace, list(data_dirs), **kwargs)
+    if enforce_completion and not getattr(result, "completed", True):
+        raise AnalysisLimitExceeded(
+            "analysis limit exhausted; active fit wave checkpointed "
+            f"(limit {float(analysis_limit_seconds or 0.0):.1f}s)")
+    return result
 
 
 def run_isar(workspace: str | Path, data_paths: Sequence[str | Path], *, force: bool = False,

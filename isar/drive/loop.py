@@ -27,7 +27,6 @@ from typing import Any, Callable, Sequence
 
 import json
 import hashlib
-import inspect
 import itertools
 import logging
 import math
@@ -103,8 +102,9 @@ from isar.drive.instrument.request_realization import (
     validated_attempt,
     validation_event_fields,
 )
-from isar.drive.isar_io.readers import read_card_state, read_results_csv
-from isar.drive.isar_io.runner import SubprocessRunner, as_runner
+from isar.drive.isar_io.readers import (read_card_state, read_master_rows, read_results_csv,
+                                        read_run_timings)
+from isar.drive.isar_io.runner import SubprocessRunner, as_runner, refresh_analysis, runner_accepts
 from isar.drive.isar_io.runner import init_isar as _default_init_isar
 from isar.drive.isar_io.worker_client import WorkerRunner
 from isar.drive.isar_io.scan_writer import save_scan_json, scan_json_path
@@ -127,7 +127,6 @@ from isar.drive.supervisor.stopping import (
     summarize_grid,
     systematic_floor,
 )
-from isar.predictive import PredictiveArtifactError, validate_master_predictive_artifact
 from isar.schema.card import Card
 from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
 from isar.schema.steering import (ANALYSIS_UNUSABLE, AUXILIARY_TRACK_NODE, CANDIDATE_NOT_DETECTED,
@@ -172,46 +171,17 @@ def _runtime_limits(cfg, objective, n_points: int | None = None) -> dict[str, An
     return result
 
 
-def _runner_accepts(runner, name: str) -> bool:
-    """Whether ``runner.run`` takes ``name`` (or absorbs it via ``**kwargs``).
+def _analysis_allowance_seconds(cfg, objective) -> float | None:
+    """The campaign's remaining analysis time, or ``None`` when it declares no analysis limit.
 
-    Runners are a configurable seam — a campaign may supply its own — so a keyword added to the
-    protocol cannot be assumed present. An unreadable signature is treated as accepting, which
-    keeps callable/proxy doubles working exactly as they did before the keyword existed.
-    """
-    try:
-        parameters = inspect.signature(runner.run).parameters
-    except (TypeError, ValueError):
-        return True
-    return name in parameters or any(item.kind == inspect.Parameter.VAR_KEYWORD
-                                     for item in parameters.values())
-
-
-def _analysis_runner_kwargs(cfg, objective, *, finish_initial_wave: bool = False) -> dict:
-    """Deadline allowance supported by the runner seam, without imposing it on old test doubles."""
+    The clock is the loop's; :func:`~isar.drive.isar_io.runner.refresh_analysis` only forwards the
+    number. ``None`` propagates as "send neither allowance nor ``finish_initial_wave``" — an
+    unlimited campaign imposes no deadline keywords on the runner seam."""
     limit = objective.analysis_limit_seconds
     if limit is None:
-        return {}
+        return None
     spent = float(analysis_clock_state(cfg.log_path)["spent_seconds"])
-    remaining = max(float(limit) - spent, 0.0)
-    parameters = inspect.signature(cfg.runner.run).parameters
-    accepts_kwargs = any(item.kind == inspect.Parameter.VAR_KEYWORD
-                         for item in parameters.values())
-    result = {}
-    if "analysis_allowance_seconds" in parameters or accepts_kwargs:
-        result["analysis_allowance_seconds"] = remaining
-    if "finish_initial_wave" in parameters or accepts_kwargs:
-        result["finish_initial_wave"] = bool(finish_initial_wave)
-    return result
-
-
-def _require_complete_analysis(result, objective) -> None:
-    """Turn a soft runner checkpoint stop into the campaign's explicit incomplete outcome."""
-    if getattr(result, "completed", True):
-        return
-    limit = float(objective.analysis_limit_seconds or 0.0)
-    raise AnalysisLimitExceeded(
-        f"analysis limit exhausted; active fit wave checkpointed (limit {limit:.1f}s)")
+    return max(float(limit) - spent, 0.0)
 
 
 def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int, *,
@@ -1015,114 +985,13 @@ def _record_pooled_master_update(workspace, calibration: Calibration, proposal, 
     return payload
 
 
-def _exact_pooled_master_sources(workspace) -> dict[tuple[str, str, str], dict[str, str]]:
-    """Join pooled revisions to their originating physical request by durable identities only.
-
-    ``results.csv`` deliberately identifies a pooled scientific result with ``pooled:<hash>``.  That
-    is not the acquisition whose executed scan-design inventory supplied the data.  The session log
-    records the missing join on ``pooled_master_update``: exact master key/detector/revision plus the
-    physical acquisition and submitted request fingerprint.  Ambiguous, incomplete, or orphaned
-    joins are omitted so callers fail closed instead of substituting a same-Q or newer master.
-    """
-    events = read_log(Path(workspace) / "report" / "session_log.jsonl")
-    submitted: set[tuple[str, str]] = set()
-    for event in events:
-        if event.get("kind") != "physical_submission":
-            continue
-        payload = event.get("payload") or {}
-        acquisition_id = payload.get("acquisition_id")
-        request_fingerprint = payload.get("proposal_fingerprint")
-        if acquisition_id is not None and request_fingerprint is not None:
-            submitted.add((str(acquisition_id), str(request_fingerprint)))
-
-    candidates: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
-    for event in events:
-        if event.get("kind") != "pooled_master_update":
-            continue
-        payload = event.get("payload") or {}
-        identity = (
-            payload.get("master_session_key"),
-            payload.get("detector_id"),
-            payload.get("master_revision"),
-        )
-        source = (payload.get("acquisition_id"), payload.get("proposal_fingerprint"))
-        if any(value is None for value in identity) or any(value is None for value in source):
-            continue
-        exact_identity = tuple(str(value) for value in identity)
-        exact_source = tuple(str(value) for value in source)
-        if exact_source in submitted:
-            candidates.setdefault(exact_identity, set()).add(exact_source)
-
-    result: dict[tuple[str, str, str], dict[str, str]] = {}
-    for identity, sources in candidates.items():
-        if len(sources) != 1:
-            continue
-        acquisition_id, request_fingerprint = next(iter(sources))
-        result[identity] = {
-            "source_acquisition_id": acquisition_id,
-            "source_submission_request_fingerprint": request_fingerprint,
-        }
-    return result
-
-
 def _read_master_rows(workspace, calibration: Calibration) -> list[dict]:
-    """All current master (pooled=True) rows in results.csv → convergence observations. Read FRESH
-    every iteration (not consume-once): a master's interval shrinks as scans accumulate into it."""
-    try:
-        rows = read_results_csv(workspace)
-    except FileNotFoundError:
-        return []
-    source_index = _exact_pooled_master_sources(workspace)
-    out = []
-    for r in rows:
-        if r.get("pooled") and _row_hkl(r) is not None:
-            master = _master_obs_from_row(r, calibration)
-            session_key = r.get("scan_id")
-            detector_id = r.get("detector")
-            if session_key is not None:
-                master["master_session_key"] = str(session_key)
-            if detector_id is not None:
-                master["detector_id"] = str(detector_id)
-            revision = master.get("master_revision")
-            if session_key is not None and detector_id is not None and revision is not None:
-                exact_source = source_index.get(
-                    (str(session_key), str(detector_id), str(revision)))
-                if exact_source is not None:
-                    master.update(exact_source)
-            ref = r.get("predictive_ref")
-            if ref:
-                candidate = (Path(workspace) / str(ref)).resolve()
-                root = (Path(workspace) / "data" / "master_predictive").resolve()
-                try:
-                    candidate.relative_to(root)
-                    predictive = json.loads(candidate.read_text(encoding="utf-8"))
-                    # ADR-020: the SAME strict validator the workspace facade and the arbitrary-grid
-                    # evaluator run — a schema check alone let a malformed or stale-fingerprinted
-                    # basis reach the loop that the other two readers would have refused.
-                    validate_master_predictive_artifact(predictive)
-                    master["predictive"] = predictive
-                    master["expected_next_information"] = predictive.get("diagnostics")
-                except PredictiveArtifactError as error:
-                    # An unusable predictive artifact is no predictive basis at all (ADR-006): the
-                    # master keeps every other property and the loop takes its ordinary
-                    # no-predictive path, refit or legacy, never a campaign abort.
-                    #
-                    # The declared schema is read defensively because the refusal being handled is
-                    # exactly the one that fires when the payload is not an object at all: a JSON
-                    # array, string, number or ``null`` validates to ``artifact_schema_unsupported``,
-                    # and ``predictive.get`` on it raised an AttributeError that escaped this whole
-                    # function — turning a degrade-and-continue into a campaign abort.
-                    log_event(Path(workspace) / "report" / "session_log.jsonl", "exception", {
-                        "action": "predictive_artifact_unsupported", "reference": str(ref),
-                        "reason": error.reason_code, "message": error.message,
-                        "schema": (predictive.get("schema")
-                                   if isinstance(predictive, Mapping) else None)})
-                except (ValueError, OSError, json.JSONDecodeError) as error:
-                    log_event(Path(workspace) / "report" / "session_log.jsonl", "exception", {
-                        "action": "predictive_artifact_unavailable", "reference": str(ref),
-                        "error": str(error)})
-            out.append(master)
-    return out
+    """The seam's master-row reader bound to this module's row interpretation.
+
+    File mechanics live in :func:`isar.drive.isar_io.readers.read_master_rows`; ``_row_hkl`` and
+    ``_master_obs_from_row`` are the loop's science and stay here."""
+    return read_master_rows(workspace, calibration, row_hkl=_row_hkl,
+                            master_obs_from_row=_master_obs_from_row)
 
 
 def _grid_state(objective, observations: list[dict], workspace, calibration: Calibration):
@@ -1275,7 +1144,7 @@ def _promote_master_predictive_basis(cfg, objective, item, revision_key: str, *,
     if target_master is None:
         _LOG.warning("predictive promotion for %s: master_session_key unavailable; "
                      "falling back to whole-batch force", revision_key)
-    elif not _runner_accepts(cfg.runner, "force_masters"):
+    elif not runner_accepts(cfg.runner, "force_masters"):
         # A config-supplied runner predating the targeted seam would raise TypeError here, and the
         # promotion charge is durable — a spent revision is never retried — so an unsupported
         # keyword would permanently deny this master its basis. Degrade to the old whole-batch
@@ -1297,13 +1166,16 @@ def _promote_master_predictive_basis(cfg, objective, item, revision_key: str, *,
                     "master_predictive_escalation",
                     limit_seconds=objective.analysis_limit_seconds,
                     iteration=it, q=list(item.hkl)):
-                run_result = cfg.runner.run(
-                    cfg.workspace, [cfg.data_dir], errors_tier=full_tier,
+                allowance = _analysis_allowance_seconds(cfg, objective)
+                refresh_analysis(
+                    cfg.runner, cfg.workspace, [cfg.data_dir], errors_tier=full_tier,
                     scan_errors_tier="fast", master_errors_tier=full_tier,
                     force=target_master is None, render=False,
-                    **({"force_masters": [target_master]} if target_master else {}),
-                    **_analysis_runner_kwargs(cfg, objective))
-                _require_complete_analysis(run_result, objective)
+                    force_masters=([target_master] if target_master else None),
+                    analysis_allowance_seconds=allowance,
+                    finish_initial_wave=(False if allowance is not None else None),
+                    enforce_completion=True,
+                    analysis_limit_seconds=objective.analysis_limit_seconds)
     except AnalysisLimitExceeded as error:
         # The analysis clock is a campaign terminal, not a promotion failure: it is NOT recorded as
         # an outcome, so the revision stays promotable after a resume that grants more analysis time.
@@ -1877,18 +1749,6 @@ def _resume_state(workspace, log_path, calibration: Calibration) -> dict:
             "proposal_counter": max(scan_counter,
                                     sum(1 for event in events if event.get("kind") == "propose")),
             "unmatched_submissions": []}
-
-
-def _read_run_timings(workspace) -> dict | None:
-    """Best-effort read of the subprocess stage-timing file ``isar run`` drops per invocation
-    (``workspace/report/run_timings.json``). Returns ``None`` when the file is absent or unparseable —
-    profiling is advisory and must never fail (or alter) the campaign. Read right after ``run_isar``
-    returns (the subprocess has exited), so it snapshots that invocation's own timings."""
-    p = Path(workspace) / "report" / "run_timings.json"
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:   # noqa: BLE001  (missing / malformed timing file → no embedded timings, never a crash)
-        return None
 
 
 def _new_rows(workspace, consumed: set) -> list[dict]:
@@ -3553,11 +3413,14 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
                     "pooled_reduction_and_fit",
                     limit_seconds=objective.analysis_limit_seconds,
                     allow_overrun_start=True, iteration=it, q=[proposal.h, proposal.k, proposal.l]):
-                run_result = cfg.runner.run(
-                    cfg.workspace, [cfg.data_dir], errors_tier=tier,
+                allowance = _analysis_allowance_seconds(cfg, objective)
+                refresh_analysis(
+                    cfg.runner, cfg.workspace, [cfg.data_dir], errors_tier=tier,
                     scan_errors_tier=scan_tier, master_errors_tier=tier, render=False,
-                    **_analysis_runner_kwargs(cfg, objective, finish_initial_wave=True))
-                _require_complete_analysis(run_result, objective)
+                    analysis_allowance_seconds=allowance,
+                    finish_initial_wave=(True if allowance is not None else None),
+                    enforce_completion=True,
+                    analysis_limit_seconds=objective.analysis_limit_seconds)
     tracks_after = _read_branch_tracks(cfg.workspace)
     if tracks_after and tracks_after.get("revision") != tracks_before.get("revision"):
         log_event(cfg.log_path, "branch_track_update", {
@@ -3598,7 +3461,7 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
                 proposal.kind, proposal.ncount, proposal.acquisition_id)
         metrics["n_rows"] = len(rows)
 
-    timings = _read_run_timings(cfg.workspace)
+    timings = read_run_timings(cfg.workspace)
     analyze_payload = {"job_id": job_id, "errors_tier": tier,
                        "scan_errors_tier": scan_tier, "master_errors_tier": tier, "iter": it,
                        "n_rows": len(rows),
@@ -4537,20 +4400,19 @@ def _certify(*, cfg: CampaignConfig, objective: ObjectiveSpec, decision,
             log_activity_progress(log_path, activity_id, completed=0, total=total_points,
                                   progress_unit="points")
             with timed(log_path, "certify", iteration=None):
-                run_kwargs = {"errors_tier": full_tier,
-                              "force": not master_only, "render": False}
-                parameters = inspect.signature(cfg.runner.run).parameters
-                if (request_path is not None and ("certification_request" in parameters
-                        or any(p.kind == inspect.Parameter.VAR_KEYWORD
-                               for p in parameters.values()))):
-                    run_kwargs["certification_request"] = request_path
                 with analysis_operation(
                         log_path, (f"certification:{request_path.stem}"
                                    if request_path is not None else "certification:callable-seam"),
                         "final_certification", limit_seconds=objective.analysis_limit_seconds):
-                    run_kwargs.update(_analysis_runner_kwargs(cfg, objective))
-                    run_result = cfg.runner.run(workspace, [data_dir], **run_kwargs)
-                    _require_complete_analysis(run_result, objective)
+                    allowance = _analysis_allowance_seconds(cfg, objective)
+                    refresh_analysis(
+                        cfg.runner, workspace, [data_dir], errors_tier=full_tier,
+                        force=not master_only, render=False,
+                        certification_request=request_path,
+                        analysis_allowance_seconds=allowance,
+                        finish_initial_wave=(False if allowance is not None else None),
+                        enforce_completion=True,
+                        analysis_limit_seconds=objective.analysis_limit_seconds)
             if request_path is not None:
                 _verify_certification_publication(request_path, workspace)
             log_activity_progress(log_path, activity_id, completed=total_points,
@@ -4560,7 +4422,7 @@ def _certify(*, cfg: CampaignConfig, objective: ObjectiveSpec, decision,
         # newly published pooled masters directly from results.csv.
         # Embed the certification subprocess timings (iter=None — the certify pass is reported
         # separately, never averaged into per-iteration stats).
-        timings = _read_run_timings(workspace)
+        timings = read_run_timings(workspace)
         analyze_payload = {"job_id": None, "errors_tier": full_tier, "iter": None,
                            "n_rows": len(observations),
                            "dispositions": [o.get("disposition") or o.get("verdict")
