@@ -67,6 +67,13 @@ def probability_semantics(probabilities: dict | None, *, target_branch: str) -> 
 # same character; a full authoritative replay can still choose the opposite character everywhere.
 CHARACTER_HANDOFF_LOG_PENALTY = math.log(1e-12)
 
+# How close to the reduced-zone centre a path point must sit, in rlu, before the O44 exemption may
+# be published for it.  Deliberately a floating-point-noise tolerance and nothing wider: O44's
+# physics is "*at* the zone centre", where ω → 0 is degenerate with the elastic line.  Exempting a
+# merely *nearby* q would discard a measurable excitation, and widening this is a separate priced
+# decision rather than a tuning knob.
+_ORIGIN_TOL = 1e-9
+
 
 @dataclass(frozen=True)
 class _State:
@@ -674,6 +681,21 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
         reduced_distance = [abs(points[index][axis]
                                 - round(points[index][axis] / period) * period)
                             for index in range(len(points))]
+    # ``zone_anchor`` is the *nearest* point to the reduced-zone centre, which is what the transition
+    # geometry above needs and is defined for any path.  The published ``reduced_q_origin_index`` is a
+    # different claim: O44 exempts that q from precision coverage because an acoustic ω(q→0) → 0 is
+    # degenerate with the elastic line *at* the zone centre.  "Nearest" is not "at": on a path whose
+    # closest point is reduced q=0.05 the tracker's own resolvability predicate predicts ω ≈ 0.6 meV,
+    # resolvable at FWHM 0.3 and 0.5 — exempting it discards a measurable q.  And with no usable
+    # period (``[dispersion] zone_period`` absent from the hand-edited card, which the driver passes
+    # through unconditionally) ``anchor_index`` returns 0 as a fallback, so the exemption would land
+    # on path index 0 regardless of geometry — on a descending path, the point *farthest* from the
+    # zone centre.  Publish the field only when the geometry actually supports the claim; a consumer
+    # reads ``None`` as "no exempt origin" (``stopping._apply_branch_track`` requires an ``int``).
+    origin_index = (zone_anchor
+                    if (period is not None and np.isfinite(period) and period > 0.0
+                        and reduced_distance[zone_anchor] <= _ORIGIN_TOL)
+                    else None)
     optic_hypothesis = _hypothesis(hypotheses, "optic")
     acoustic_hypothesis = _hypothesis(hypotheses, "acoustic")
     candidates_by_q = [list(row.get("candidates") or []) for row in observations]
@@ -684,7 +706,7 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
                 "rival_branch": "acoustic" if target_branch == "optic" else "optic",
                 "anchor_index": anchor,
                 "acquisition_seed_index": anchor,
-                "reduced_q_origin_index": zone_anchor,
+                "reduced_q_origin_index": origin_index,
                 "energy_domain_meV": [list(interval) for interval in domain],
                 "scorer_revision": BRANCH_TRACKING_SCORER_REVISION,
                 "assignments": [], "tracks": [], "frontiers": {}}
@@ -777,10 +799,13 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
 
     _frontier_states(assignments, anchor, entropy_stop=float(assignment_entropy_stop_nats),
                      maximum_bridge_steps=max(0, int(maximum_bridge_steps)))
-    inferred_origin = (target_branch == "acoustic"
-                       and period is not None and np.isfinite(period) and period > 0.0
+    # Same "nearest is not at" test as the published index above, and for the same reason: this rung
+    # writes ``is_reduced_q_origin`` / ``precision_coverage_eligible: False`` onto the assignment row,
+    # which ``stopping._apply_branch_track`` reads as a second, independent route to the O44
+    # exemption.  Gating only the published field would leave that route exempting a measurable q.
+    inferred_origin = (target_branch == "acoustic" and origin_index is not None
                        and _infer_unresolved_acoustic_origin(
-                           assignments, zone_anchor, reduced_distance, observations))
+                           assignments, origin_index, reduced_distance, observations))
     old_revision = int((previous or {}).get("revision", 0))
     old_assignments = (previous or {}).get("assignments") or []
     reassignments = []
@@ -805,10 +830,10 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
         "rival_branch": "acoustic" if target_branch == "optic" else "optic",
         "anchor_index": anchor,
         "acquisition_seed_index": anchor,
-        "reduced_q_origin_index": zone_anchor,
+        "reduced_q_origin_index": origin_index,
         "energy_domain_meV": [list(interval) for interval in domain],
         "scorer_revision": BRANCH_TRACKING_SCORER_REVISION,
-        "inferred_endpoint_indices": [zone_anchor] if inferred_origin else [],
+        "inferred_endpoint_indices": [origin_index] if inferred_origin else [],
         "assignments": assignments,
         "tracks": [
             {"branch_id": branch, "role": ("target" if branch == target_branch else "rival"),

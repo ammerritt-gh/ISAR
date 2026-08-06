@@ -617,7 +617,15 @@ def _rival_gap_pick(grid: list[GridQ], frontier_index: int, direction: int) -> G
         # mode count.  Without the cap a reconnect that never resolves the rival would be re-picked
         # until the point's own 12-production ceiling — with geometric escalation, billions of
         # counts spent proving the same negative.  The point's own ceiling still applies on top.
-        if (point.visited and 1 <= resolved < want
+        #
+        # ``precision_coverage_eligible`` is O44.  An acoustic branch has ω(q→0) → 0, so at the
+        # reduced-q origin the mode is degenerate with the elastic line and there is nothing
+        # separable to reconnect — the "gap" there is structural, not statistical, and counting it
+        # cannot raise its mode count.  Nothing else on this rung excludes it: the fit at that q
+        # returns a centre with an error bar thousands of times larger than itself (0.485 ± 2065
+        # meV in A11), which classifies as ``confirmed`` and so passes the walk's own state test.
+        if (point.precision_coverage_eligible
+                and point.visited and 1 <= resolved < want
                 and point.n_production < MAX_RECONNECT_PRODUCTIONS
                 and not (point.same_q_ceiling_reached or point.exposure_saturated)):
             options.append((abs(index - frontier_index), index, point))
@@ -801,9 +809,19 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
     actions = []
     for direction in (-1, 1):
         frontier_index = anchor_index + direction
+        # Walk *past* an O44-exempt q as well as past a tracked one.  An acoustic branch has
+        # ω(q→0) → 0, so at the reduced-q origin the excitation is degenerate with the elastic line
+        # and there is nothing separable to measure however many neutrons are spent.  The exemption
+        # must be tested here explicitly rather than left to ``visited``: O44 makes ``GridQ.visited``
+        # return True for the exempt origin, which means the cheap quicklook rung below is skipped
+        # and the exempt q falls straight through to the *production* rung — the opposite of the
+        # intended effect.  That is how eight consecutive production scans landed on the acoustic
+        # origin: this walk stops on any q whose ``track_state`` is not confirmed/inferred, and the
+        # origin's spurious ω₀ ± 4000σ fit leaves it in exactly that state.
         while (0 <= frontier_index < len(grid)
-               and grid[frontier_index].track_state in {
-                   "confirmed", "inferred_unresolved"}):
+               and (grid[frontier_index].track_state in {
+                   "confirmed", "inferred_unresolved"}
+                    or not grid[frontier_index].precision_coverage_eligible)):
             frontier_index += direction
         if not 0 <= frontier_index < len(grid):
             continue
@@ -830,7 +848,10 @@ def _tracked_frontier_target(grid: list[GridQ], *, maximum_bridge_steps: int = 1
         bridge_index = frontier_index + direction
         if maximum_bridge_steps > 0 and 0 <= bridge_index < len(grid):
             bridge = grid[bridge_index]
-            if not bridge.visited:
+            # The eligibility test is stated even though an O44-exempt q reads as ``visited``:
+            # relying on that coincidence is what made the frontier walk above spend production
+            # scans on the origin, and the same coincidence would silently carry the bridge rung.
+            if bridge.precision_coverage_eligible and not bridge.visited:
                 actions.append((2, bridge.index, bridge, "quicklook",
                                 "tracked branch: one provisional adjacent bridge to resolve the ambiguous frontier"))
                 continue
